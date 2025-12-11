@@ -40,10 +40,9 @@ export default function Dashboard() {
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-sm font-medium">Response Latency</CardTitle>
             <div className="flex items-center gap-2">
-                <Clock className="h-4 w-4 text-muted-foreground" />
                 <Popover>
                     <PopoverTrigger asChild>
-                        <Info className="h-3 w-3 text-muted-foreground cursor-pointer hover:text-foreground transition-colors" />
+                        <Clock className="h-4 w-4 text-muted-foreground cursor-pointer hover:text-foreground transition-colors" />
                     </PopoverTrigger>
                     <PopoverContent className="w-80">
                         <div className="space-y-2">
