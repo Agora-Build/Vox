@@ -23,7 +23,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
             <div className="bg-primary/10 p-2 rounded-lg">
               <Activity className="h-6 w-6 text-primary" />
             </div>
-            <span className="font-mono font-bold text-lg tracking-tight">AI<span className="text-primary">Latency</span></span>
+            <span className="font-mono font-bold text-lg tracking-tight">Vox</span>
           </div>
 
           <div className="flex items-center gap-1">
