@@ -173,7 +173,7 @@ export default function Dashboard() {
         <Card className="col-span-1">
           <CardHeader>
             <CardTitle>Interrupt Latency (ms)</CardTitle>
-            <CardDescription>Time to stop generation after user speech</CardDescription>
+            <CardDescription>Time to Interrupt (TTI)</CardDescription>
           </CardHeader>
           <CardContent>
             <div className="h-[300px] w-full">
