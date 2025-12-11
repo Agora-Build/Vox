@@ -79,7 +79,7 @@ export default function Dashboard() {
         <Card className="col-span-1">
           <CardHeader>
             <CardTitle>Response Latency (ms)</CardTitle>
-            <CardDescription>Time to first token generation</CardDescription>
+            <CardDescription>Time to First Audio (TTFA)</CardDescription>
           </CardHeader>
           <CardContent>
             <div className="h-[300px] w-full">
