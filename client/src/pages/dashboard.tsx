@@ -1,0 +1,175 @@
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { liveMetrics } from "@/lib/mockData";
+import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from "recharts";
+import { Badge } from "@/components/ui/badge";
+import { Clock, Zap, Activity } from "lucide-react";
+
+export default function Dashboard() {
+  const agoraData = liveMetrics.filter(d => d.provider === "Agora ConvoAI");
+  const liveKitData = liveMetrics.filter(d => d.provider === "LiveKIT Agent");
+  
+  // Combine for charts
+  const combinedData = agoraData.map((d, i) => ({
+    timestamp: d.timestamp,
+    agoraResponse: d.responseLatency,
+    agoraInterrupt: d.interruptLatency,
+    liveKitResponse: liveKitData[i]?.responseLatency,
+    liveKitInterrupt: liveKitData[i]?.interruptLatency,
+  }));
+
+  return (
+    <div className="space-y-8 animate-in fade-in duration-500">
+      <div className="flex flex-col gap-2">
+        <h1 className="text-3xl font-bold tracking-tight">Live Dashboard</h1>
+        <p className="text-muted-foreground flex items-center gap-2">
+          <span className="relative flex h-2 w-2">
+            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
+            <span className="relative inline-flex rounded-full h-2 w-2 bg-green-500"></span>
+          </span>
+          System Status: Operational • Updating every 8 hours
+        </p>
+      </div>
+
+      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">Avg Response Latency</CardTitle>
+            <Clock className="h-4 w-4 text-muted-foreground" />
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold font-mono">428ms</div>
+            <p className="text-xs text-muted-foreground">-12ms from last run</p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">Avg Interrupt Latency</CardTitle>
+            <Zap className="h-4 w-4 text-muted-foreground" />
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold font-mono">195ms</div>
+            <p className="text-xs text-muted-foreground">+5ms from last run</p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">Total Tests Run</CardTitle>
+            <Activity className="h-4 w-4 text-muted-foreground" />
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold font-mono">1,284</div>
+            <p className="text-xs text-muted-foreground">Last 24 hours</p>
+          </CardContent>
+        </Card>
+      </div>
+
+      <div className="grid gap-4 md:grid-cols-2">
+        <Card className="col-span-1">
+          <CardHeader>
+            <CardTitle>Response Latency (ms)</CardTitle>
+            <CardDescription>Time to first token generation</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="h-[300px] w-full">
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart data={combinedData}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" vertical={false} />
+                  <XAxis 
+                    dataKey="timestamp" 
+                    stroke="hsl(var(--muted-foreground))" 
+                    fontSize={12} 
+                    tickLine={false} 
+                    axisLine={false} 
+                  />
+                  <YAxis 
+                    stroke="hsl(var(--muted-foreground))" 
+                    fontSize={12} 
+                    tickLine={false} 
+                    axisLine={false} 
+                    tickFormatter={(value) => `${value}ms`} 
+                  />
+                  <Tooltip 
+                    contentStyle={{ backgroundColor: 'hsl(var(--popover))', borderColor: 'hsl(var(--border))', borderRadius: '8px' }}
+                    itemStyle={{ color: 'hsl(var(--popover-foreground))' }}
+                  />
+                  <Legend />
+                  <Line 
+                    type="monotone" 
+                    dataKey="agoraResponse" 
+                    name="Agora ConvoAI" 
+                    stroke="hsl(var(--chart-1))" 
+                    strokeWidth={2} 
+                    dot={false}
+                    activeDot={{ r: 6 }} 
+                  />
+                  <Line 
+                    type="monotone" 
+                    dataKey="liveKitResponse" 
+                    name="LiveKIT Agent" 
+                    stroke="hsl(var(--chart-2))" 
+                    strokeWidth={2} 
+                    dot={false} 
+                    activeDot={{ r: 6 }}
+                  />
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card className="col-span-1">
+          <CardHeader>
+            <CardTitle>Interrupt Latency (ms)</CardTitle>
+            <CardDescription>Time to stop generation after user speech</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="h-[300px] w-full">
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart data={combinedData}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" vertical={false} />
+                  <XAxis 
+                    dataKey="timestamp" 
+                    stroke="hsl(var(--muted-foreground))" 
+                    fontSize={12} 
+                    tickLine={false} 
+                    axisLine={false} 
+                  />
+                  <YAxis 
+                    stroke="hsl(var(--muted-foreground))" 
+                    fontSize={12} 
+                    tickLine={false} 
+                    axisLine={false} 
+                    tickFormatter={(value) => `${value}ms`} 
+                  />
+                  <Tooltip 
+                    contentStyle={{ backgroundColor: 'hsl(var(--popover))', borderColor: 'hsl(var(--border))', borderRadius: '8px' }}
+                    itemStyle={{ color: 'hsl(var(--popover-foreground))' }}
+                  />
+                  <Legend />
+                  <Line 
+                    type="monotone" 
+                    dataKey="agoraInterrupt" 
+                    name="Agora ConvoAI" 
+                    stroke="hsl(var(--chart-1))" 
+                    strokeWidth={2} 
+                    dot={false}
+                    activeDot={{ r: 6 }}
+                  />
+                  <Line 
+                    type="monotone" 
+                    dataKey="liveKitInterrupt" 
+                    name="LiveKIT Agent" 
+                    stroke="hsl(var(--chart-2))" 
+                    strokeWidth={2} 
+                    dot={false}
+                    activeDot={{ r: 6 }}
+                  />
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+    </div>
+  );
+}
