@@ -26,29 +26,41 @@ export default function Dashboard() {
             <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
             <span className="relative inline-flex rounded-full h-2 w-2 bg-green-500"></span>
           </span>
-          System Status: Operational • Updating every 8 hours
+          System Status: Operational • Updating every 8 hours • Latest test happened 3 minutes ago
         </p>
       </div>
 
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Avg Response Latency</CardTitle>
+            <CardTitle className="text-sm font-medium">Response Latency</CardTitle>
             <Clock className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold font-mono">428ms</div>
-            <p className="text-xs text-muted-foreground">-12ms from last run</p>
+          <CardContent className="space-y-1">
+            <div className="flex justify-between items-baseline">
+                <span className="text-sm text-muted-foreground font-mono">MED</span>
+                <span className="text-2xl font-bold font-mono">1,200ms</span>
+            </div>
+            <div className="flex justify-between items-baseline">
+                <span className="text-sm text-muted-foreground font-mono">SD</span>
+                <span className="text-lg font-mono text-muted-foreground">180ms</span>
+            </div>
           </CardContent>
         </Card>
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Avg Interrupt Latency</CardTitle>
+            <CardTitle className="text-sm font-medium">Interrupt Latency</CardTitle>
             <Zap className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold font-mono">195ms</div>
-            <p className="text-xs text-muted-foreground">+5ms from last run</p>
+          <CardContent className="space-y-1">
+            <div className="flex justify-between items-baseline">
+                <span className="text-sm text-muted-foreground font-mono">MED</span>
+                <span className="text-2xl font-bold font-mono">480ms</span>
+            </div>
+            <div className="flex justify-between items-baseline">
+                <span className="text-sm text-muted-foreground font-mono">SD</span>
+                <span className="text-lg font-mono text-muted-foreground">200ms</span>
+            </div>
           </CardContent>
         </Card>
         <Card>
@@ -57,7 +69,7 @@ export default function Dashboard() {
             <Activity className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold font-mono">1,284</div>
+            <div className="text-2xl font-bold font-mono mt-2">1,284</div>
             <p className="text-xs text-muted-foreground">Last 24 hours</p>
           </CardContent>
         </Card>

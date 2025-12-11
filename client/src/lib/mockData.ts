@@ -26,20 +26,22 @@ const generateLiveMetrics = (): MetricPoint[] => {
   for (let i = 24; i >= 0; i--) {
     const time = subHours(now, i);
     
-    // Agora Mock Data (Generally slightly lower latency in this mock)
+    // Agora Mock Data 
+    // Response Latency: MED ~1200ms
+    // Interrupt Latency: MED ~480ms
     data.push({
       timestamp: format(time, "HH:mm"),
       provider: "Agora ConvoAI",
-      responseLatency: 450 + Math.random() * 100,
-      interruptLatency: 200 + Math.random() * 50,
+      responseLatency: 1200 + (Math.random() - 0.5) * 360, // 1200 +/- 180 (approx SD range)
+      interruptLatency: 480 + (Math.random() - 0.5) * 400, // 480 +/- 200 (approx SD range)
     });
 
     // LiveKIT Mock Data
     data.push({
       timestamp: format(time, "HH:mm"),
       provider: "LiveKIT Agent",
-      responseLatency: 500 + Math.random() * 120,
-      interruptLatency: 250 + Math.random() * 60,
+      responseLatency: 1250 + (Math.random() - 0.5) * 400,
+      interruptLatency: 520 + (Math.random() - 0.5) * 450,
     });
   }
   return data;
@@ -52,8 +54,8 @@ export const leaderboardData: LeaderboardEntry[] = [
     rank: 1,
     provider: "Agora ConvoAI",
     region: "North America (East)",
-    responseLatency: 420,
-    interruptLatency: 180,
+    responseLatency: 1180,
+    interruptLatency: 450,
     networkResilience: 98,
     naturalness: 4.8,
     noiseReduction: 95,
@@ -62,8 +64,8 @@ export const leaderboardData: LeaderboardEntry[] = [
     rank: 2,
     provider: "LiveKIT Agent",
     region: "North America (East)",
-    responseLatency: 460,
-    interruptLatency: 220,
+    responseLatency: 1220,
+    interruptLatency: 490,
     networkResilience: 96,
     naturalness: 4.7,
     noiseReduction: 92,
@@ -72,8 +74,8 @@ export const leaderboardData: LeaderboardEntry[] = [
     rank: 3,
     provider: "Agora ConvoAI",
     region: "Europe (Frankfurt)",
-    responseLatency: 480,
-    interruptLatency: 210,
+    responseLatency: 1250,
+    interruptLatency: 510,
     networkResilience: 97,
     naturalness: 4.8,
     noiseReduction: 94,
@@ -82,8 +84,8 @@ export const leaderboardData: LeaderboardEntry[] = [
     rank: 4,
     provider: "LiveKIT Agent",
     region: "Europe (Frankfurt)",
-    responseLatency: 510,
-    interruptLatency: 240,
+    responseLatency: 1300,
+    interruptLatency: 540,
     networkResilience: 94,
     naturalness: 4.6,
     noiseReduction: 90,
@@ -92,8 +94,8 @@ export const leaderboardData: LeaderboardEntry[] = [
     rank: 5,
     provider: "Agora ConvoAI",
     region: "Asia (Singapore)",
-    responseLatency: 550,
-    interruptLatency: 250,
+    responseLatency: 1350,
+    interruptLatency: 580,
     networkResilience: 95,
     naturalness: 4.7,
     noiseReduction: 93,
@@ -102,8 +104,8 @@ export const leaderboardData: LeaderboardEntry[] = [
     rank: 6,
     provider: "LiveKIT Agent",
     region: "Asia (Singapore)",
-    responseLatency: 590,
-    interruptLatency: 290,
+    responseLatency: 1420,
+    interruptLatency: 620,
     networkResilience: 92,
     naturalness: 4.5,
     noiseReduction: 89,
