@@ -73,7 +73,25 @@ export default function Dashboard() {
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-sm font-medium">Interrupt Latency</CardTitle>
-            <Zap className="h-4 w-4 text-muted-foreground" />
+            <div className="flex items-center gap-2">
+                <Popover>
+                    <PopoverTrigger asChild>
+                        <Zap className="h-4 w-4 text-muted-foreground cursor-pointer hover:text-foreground transition-colors" />
+                    </PopoverTrigger>
+                    <PopoverContent className="w-80">
+                        <div className="space-y-2">
+                            <h4 className="font-medium leading-none">Latency Metrics</h4>
+                            <p className="text-sm text-muted-foreground">
+                                <strong>Interrupt Latency:</strong> Time to stop generation after user speech.
+                            </p>
+                            <div className="text-xs text-muted-foreground space-y-1 pt-2 border-t">
+                                <p><strong>MED (Median):</strong> The middle value separating the higher half from the lower half of data samples.</p>
+                                <p><strong>SD (Standard Deviation):</strong> A measure of the amount of variation or dispersion of the latency values.</p>
+                            </div>
+                        </div>
+                    </PopoverContent>
+                </Popover>
+            </div>
           </CardHeader>
           <CardContent className="space-y-1">
             <div className="flex justify-between items-baseline">
