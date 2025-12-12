@@ -18,8 +18,8 @@ function Router() {
         <Route path="/" component={Home} />
         <Route path="/realtime" component={Dashboard} />
         <Route path="/leaderboard" component={Leaderboard} />
-        <Route path="/provider" component={ProviderGuide} />
-        <Route path="/test" component={SelfTest} />
+        <Route path="/dive" component={ProviderGuide} />
+        <Route path="/run-your-own" component={SelfTest} />
         <Route component={NotFound} />
       </Switch>
     </Layout>

@@ -13,8 +13,8 @@ export default function Layout({ children }: { children: React.ReactNode }) {
     { href: "/", label: "Home", icon: LayoutDashboard },
     { href: "/realtime", label: "Real-time", icon: Activity },
     { href: "/leaderboard", label: "Leaderboard", icon: Trophy },
-    { href: "/provider", label: "Deep Dive", icon: BookOpen },
-    { href: "/test", label: "Run Test", icon: Zap },
+    { href: "/dive", label: "Deep Dive", icon: BookOpen },
+    { href: "/run-your-own", label: "Run Test", icon: Zap },
   ];
 
   return (
@@ -136,7 +136,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
                   </Link>
                 </li>
                 <li>
-                  <Link href="/test" className="text-sm hover:text-foreground transition-colors text-muted-foreground" data-testid="link-footer-test">
+                  <Link href="/run-your-own" className="text-sm hover:text-foreground transition-colors text-muted-foreground" data-testid="link-footer-test">
                     Run Test
                   </Link>
                 </li>
@@ -148,7 +148,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
               <h4 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Resources</h4>
               <ul className="space-y-3">
                 <li>
-                  <Link href="/provider" className="text-sm hover:text-foreground transition-colors text-muted-foreground" data-testid="link-footer-deepdive">
+                  <Link href="/dive" className="text-sm hover:text-foreground transition-colors text-muted-foreground" data-testid="link-footer-deepdive">
                     Deep Dive
                   </Link>
                 </li>
