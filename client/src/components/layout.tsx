@@ -54,6 +54,30 @@ export default function Layout({ children }: { children: React.ReactNode }) {
       <main className="container mx-auto px-4 py-8 relative z-10">
         {children}
       </main>
+
+      <footer className="border-t border-border/40 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 relative z-10">
+        <div className="container mx-auto px-4 py-6">
+          <div className="flex flex-col md:flex-row items-center justify-between gap-4">
+            <div className="flex items-center gap-2">
+              <div className="bg-primary/10 p-1.5 rounded-md">
+                <Activity className="h-4 w-4 text-primary" />
+              </div>
+              <span className="font-mono font-semibold text-sm">Vox</span>
+            </div>
+            <p className="text-sm text-muted-foreground">
+              {new Date().getFullYear()} Vox. All rights reserved.
+            </p>
+            <div className="flex items-center gap-4 text-sm text-muted-foreground">
+              <Link href="/provider" className="hover:text-foreground transition-colors">
+                Provider Guide
+              </Link>
+              <Link href="/test" className="hover:text-foreground transition-colors">
+                Run Test
+              </Link>
+            </div>
+          </div>
+        </div>
+      </footer>
     </div>
   );
 }
