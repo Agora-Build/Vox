@@ -12,7 +12,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
     { href: "/", label: "Home", icon: LayoutDashboard },
     { href: "/realtime", label: "Real-time", icon: Activity },
     { href: "/leaderboard", label: "Leaderboard", icon: Trophy },
-    { href: "/provider", label: "Provider Guide", icon: BookOpen },
+    { href: "/provider", label: "Get Started", icon: BookOpen },
     { href: "/test", label: "Run Test", icon: Zap },
   ];
 
@@ -112,7 +112,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
             </div>
             <div className="flex flex-wrap items-center justify-center gap-4 text-sm text-muted-foreground">
               <Link href="/provider" className="hover:text-foreground transition-colors">
-                Provider Guide
+                Get Started
               </Link>
               <Link href="/test" className="hover:text-foreground transition-colors">
                 Run Test
