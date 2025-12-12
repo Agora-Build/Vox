@@ -71,8 +71,8 @@ export default function SelfTest() {
   return (
     <div className="max-w-2xl mx-auto space-y-8 animate-in zoom-in-95 duration-500">
       <div className="text-center">
-        <h1 className="text-3xl font-bold tracking-tight">Run Self-Initiated Benchmark</h1>
-        <p className="text-muted-foreground mt-2">Test your current connection quality against our reference agents.</p>
+        <h1 className="text-2xl sm:text-3xl font-bold tracking-tight">Run Self-Initiated Benchmark</h1>
+        <p className="text-sm sm:text-base text-muted-foreground mt-2">Test your current connection quality against our reference agents.</p>
       </div>
 
       <Card className="border-primary/20 shadow-lg relative overflow-hidden">
@@ -116,8 +116,8 @@ export default function SelfTest() {
              </div>
           )}
         </CardContent>
-        <CardFooter className="flex justify-between relative z-10">
-            <div className="text-sm text-muted-foreground">
+        <CardFooter className="flex flex-col sm:flex-row gap-3 sm:justify-between relative z-10">
+            <div className="text-xs sm:text-sm text-muted-foreground text-center sm:text-left">
                 Target: <strong>Agora ConvoAI (North America)</strong>
             </div>
           {!isTesting ? (
@@ -138,16 +138,16 @@ export default function SelfTest() {
         </CardHeader>
         <CardContent className="space-y-6">
             <div className="space-y-2">
-                <div className="flex justify-between">
+                <div className="flex flex-col sm:flex-row sm:justify-between gap-1">
                     <Label>Naturalness</Label>
-                    <span className="text-sm text-muted-foreground">How human-like was the interaction?</span>
+                    <span className="text-xs sm:text-sm text-muted-foreground">How human-like was the interaction?</span>
                 </div>
                 <Slider defaultValue={[3]} max={5} step={1} />
             </div>
              <div className="space-y-2">
-                <div className="flex justify-between">
+                <div className="flex flex-col sm:flex-row sm:justify-between gap-1">
                     <Label>Responsiveness</Label>
-                    <span className="text-sm text-muted-foreground">Did it feel instantaneous?</span>
+                    <span className="text-xs sm:text-sm text-muted-foreground">Did it feel instantaneous?</span>
                 </div>
                 <Slider defaultValue={[4]} max={5} step={1} />
             </div>

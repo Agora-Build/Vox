@@ -6,8 +6,8 @@ export default function ProviderGuide() {
   return (
     <div className="max-w-4xl mx-auto space-y-12 animate-in fade-in duration-500">
       <div className="text-center space-y-4">
-        <h1 className="text-4xl font-bold tracking-tight">Integration & Evaluation Guide</h1>
-        <p className="text-xl text-muted-foreground">How we measure performance and how to integrate your own product.</p>
+        <h1 className="text-2xl sm:text-3xl md:text-4xl font-bold tracking-tight">Integration & Evaluation Guide</h1>
+        <p className="text-base sm:text-lg md:text-xl text-muted-foreground">How we measure performance and how to integrate your own product.</p>
       </div>
 
       <section className="space-y-6">

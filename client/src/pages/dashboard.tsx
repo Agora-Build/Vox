@@ -25,13 +25,17 @@ export default function Dashboard() {
   return (
     <div className="space-y-8 animate-in fade-in duration-500">
       <div className="flex flex-col gap-2">
-        <h1 className="text-3xl font-bold tracking-tight">Real-time</h1>
-        <p className="text-muted-foreground flex items-center gap-2">
-          <span className="relative flex h-2 w-2">
+        <h1 className="text-2xl sm:text-3xl font-bold tracking-tight">Real-time</h1>
+        <p className="text-xs sm:text-sm text-muted-foreground flex flex-wrap items-center gap-2">
+          <span className="relative flex h-2 w-2 shrink-0">
             <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
             <span className="relative inline-flex rounded-full h-2 w-2 bg-green-500"></span>
           </span>
-          System Status: Operational • Updating every 8 hours • Latest test happened 3 minutes ago
+          <span>System Status: Operational</span>
+          <span className="hidden sm:inline">•</span>
+          <span>Updating every 8 hours</span>
+          <span className="hidden sm:inline">•</span>
+          <span>Latest test happened 3 minutes ago</span>
         </p>
       </div>
 

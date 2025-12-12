@@ -8,8 +8,8 @@ export default function Leaderboard() {
   return (
     <div className="space-y-8 animate-in slide-in-from-bottom-4 duration-500">
       <div>
-        <h1 className="text-3xl font-bold tracking-tight">Global Leaderboard</h1>
-        <p className="text-muted-foreground mt-2">Comprehensive benchmarks across 5 key performance metrics.</p>
+        <h1 className="text-2xl sm:text-3xl font-bold tracking-tight">Global Leaderboard</h1>
+        <p className="text-sm sm:text-base text-muted-foreground mt-2">Comprehensive benchmarks across 5 key performance metrics.</p>
       </div>
 
       <Card>
@@ -17,8 +17,8 @@ export default function Leaderboard() {
           <CardTitle>Performance Rankings</CardTitle>
           <CardDescription>Ranked by weighted average of all metrics</CardDescription>
         </CardHeader>
-        <CardContent>
-          <Table>
+        <CardContent className="overflow-x-auto">
+          <Table className="min-w-[800px]">
             <TableHeader>
               <TableRow>
                 <TableHead className="w-[80px]">Rank</TableHead>

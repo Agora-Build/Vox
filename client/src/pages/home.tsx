@@ -8,22 +8,22 @@ export default function Home() {
   return (
     <div className="space-y-20 animate-in fade-in duration-700 pb-20">
       {/* Hero Section */}
-      <section className="text-center space-y-6 pt-10">
-        <h1 className="text-5xl md:text-7xl font-bold tracking-tight bg-gradient-to-br from-foreground to-muted-foreground bg-clip-text text-transparent">
+      <section className="text-center space-y-6 pt-6 md:pt-10">
+        <h1 className="text-3xl sm:text-5xl md:text-7xl font-bold tracking-tight bg-gradient-to-br from-foreground to-muted-foreground bg-clip-text text-transparent">
           Track AI Performance<br />Across the World
         </h1>
-        <p className="text-xl text-muted-foreground max-w-3xl mx-auto leading-relaxed">
+        <p className="text-base sm:text-lg md:text-xl text-muted-foreground max-w-3xl mx-auto leading-relaxed px-2">
           Automated benchmark testing for conversational AI products. Monitor respond latency, 
           interrupt latency, network resilience, naturalness, and noise reduction across multiple regions.
         </p>
-        <div className="flex justify-center gap-4 pt-4">
+        <div className="flex flex-col sm:flex-row justify-center gap-3 sm:gap-4 pt-4 px-4 sm:px-0">
           <Link href="/realtime">
-            <Button size="lg" className="gap-2 h-12 px-8 text-base">
+            <Button size="lg" className="gap-2 w-full sm:w-auto">
               <Activity className="h-5 w-5" /> View Real-Time Data
             </Button>
           </Link>
           <Link href="/leaderboard">
-            <Button variant="outline" size="lg" className="gap-2 h-12 px-8 text-base">
+            <Button variant="outline" size="lg" className="gap-2 w-full sm:w-auto">
               <ArrowRight className="h-5 w-5" /> Check Leaderboard
             </Button>
           </Link>
