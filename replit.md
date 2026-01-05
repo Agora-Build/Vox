@@ -17,37 +17,115 @@ Preferred communication style: Simple, everyday language.
 - **State Management**: TanStack React Query for server state and data fetching
 - **Build Tool**: Vite for development and production builds
 
-The frontend follows a page-based structure with reusable UI components. Pages include Home, Real-time Dashboard, Leaderboard, Provider Guide, and Self-Test. The UI uses a consistent dark theme with a grid pattern background and responsive design for mobile support.
+The frontend follows a page-based structure with reusable UI components. Pages include:
+- **Home**: Landing page with overview
+- **Real-time Dashboard**: Live performance metrics
+- **Leaderboard**: Global rankings by provider/region
+- **Provider Guide**: Information about AI providers
+- **Self-Test**: User-initiated benchmarks
+- **Login**: Authentication page
+- **Console**: Admin dashboard (requires authentication)
 
 ### Backend Architecture
 - **Runtime**: Node.js with Express
 - **Language**: TypeScript with ESM modules
 - **Development**: tsx for TypeScript execution during development
+- **Authentication**: Session-based with express-session and PostgreSQL session store (connect-pg-simple)
 
 The server uses a modular structure with:
-- `server/index.ts`: Express app initialization and middleware setup
+- `server/index.ts`: Express app initialization, session middleware, and server setup
 - `server/routes.ts`: API route registration (prefixed with `/api`)
-- `server/storage.ts`: Data access layer with in-memory storage implementation
+- `server/auth.ts`: Authentication helpers (password hashing, session management, middleware)
+- `server/storage.ts`: Data access layer with PostgreSQL implementation
 - `server/vite.ts`: Vite dev server integration for development
 - `server/static.ts`: Static file serving for production
+
+### Authentication & Authorization
+
+**User Plans**:
+- **Basic**: Default plan, can only create public content
+- **Premium**: Can create private workflows and test sets
+- **Principal**: Full mainline curation rights (can mark content as mainline)
+
+**User Roles**:
+- **Admin**: Can manage users, invite new users, enable/disable accounts, assign roles
+- **Regular User**: Access based on plan level
+
+**Special Users**:
+- **Scout**: The platform's principal agent created during initialization. Scout has principal plan and is used for mainline content curation.
+
+**Initialization Flow**:
+1. Navigate to `/console` when system is not initialized
+2. Enter initialization code (dev: `VOX-DEBUG-2024`, prod: from `INIT_CODE` env var)
+3. Create admin account with email/username/password
+4. Scout is automatically created as principal agent
+5. System is marked as initialized
 
 ### Data Storage
 - **ORM**: Drizzle ORM with PostgreSQL dialect
 - **Schema**: Defined in `shared/schema.ts` using Drizzle's table definitions
 - **Validation**: Zod schemas generated from Drizzle schemas via `drizzle-zod`
-- **Current Storage**: In-memory storage implementation (`MemStorage` class) that can be swapped for database storage
+- **Session Store**: PostgreSQL via connect-pg-simple (table: `user_sessions`)
 
-The schema currently includes a users table with id, username, and password fields. The storage interface (`IStorage`) defines CRUD operations that can be implemented by different storage backends.
+**Database Tables**:
+- `users`: User accounts with plan, admin status, enabled status
+- `email_verification_tokens`: Email verification for new accounts
+- `invite_tokens`: Admin-created invitations for new users
+- `workflows`: Test workflows with visibility (public/private) and mainline flag
+- `test_sets`: Test configurations with visibility and mainline flag
+- `benchmark_results`: Performance measurements with optional workflow/test set references
+- `system_config`: Key-value system configuration (including initialization status)
+
+### API Routes
+
+**Authentication**:
+- `GET /api/auth/status`: Check if system is initialized and get current user
+- `POST /api/auth/init`: Initialize system (first-time setup)
+- `POST /api/auth/login`: Authenticate user
+- `POST /api/auth/logout`: End session
+- `POST /api/auth/register`: Register with invite token
+
+**Admin** (requires admin role):
+- `GET /api/admin/users`: List all users
+- `PATCH /api/admin/users/:id`: Update user (enable/disable, role, plan)
+- `POST /api/admin/invite`: Create invite token
+
+**Workflows** (requires auth):
+- `GET /api/workflows`: List accessible workflows
+- `POST /api/workflows`: Create workflow
+- `PATCH /api/workflows/:id/mainline`: Toggle mainline status (principal only)
+
+**Test Sets** (requires auth):
+- `GET /api/test-sets`: List accessible test sets
+- `POST /api/test-sets`: Create test set
+- `PATCH /api/test-sets/:id/mainline`: Toggle mainline status (principal only)
+
+**Metrics** (public):
+- `GET /api/metrics/realtime`: Recent benchmark results
+- `GET /api/metrics/leaderboard`: Aggregated provider rankings
+- `GET /api/config`: System configuration
 
 ### Build Process
 - Client: Vite builds to `dist/public`
 - Server: esbuild bundles to `dist/index.cjs` with selective dependency bundling for cold start optimization
+
+## Environment Variables
+
+- `DATABASE_URL`: PostgreSQL connection string (required)
+- `SESSION_SECRET`: Secret for signing sessions (defaults to dev secret if not set)
+- `INIT_CODE`: Initialization code for first-time setup (required in production)
+- `NODE_ENV`: Environment mode (development/production)
 
 ## External Dependencies
 
 ### Database
 - **PostgreSQL**: Configured via `DATABASE_URL` environment variable
 - **Drizzle Kit**: Database migrations stored in `./migrations` directory
+
+### Authentication
+- **bcryptjs**: Password hashing
+- **express-session**: Session management
+- **connect-pg-simple**: PostgreSQL session store
 
 ### UI Components
 - **Radix UI**: Comprehensive set of accessible, unstyled primitives
