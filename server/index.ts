@@ -2,9 +2,34 @@ import express, { type Request, Response, NextFunction } from "express";
 import { registerRoutes } from "./routes";
 import { serveStatic } from "./static";
 import { createServer } from "http";
+import session from "express-session";
+import connectPgSimple from "connect-pg-simple";
+import pkg from "pg";
+const { Pool } = pkg;
 
 const app = express();
 const httpServer = createServer(app);
+
+const PgSession = connectPgSimple(session);
+const sessionPool = new Pool({ connectionString: process.env.DATABASE_URL });
+
+app.use(
+  session({
+    store: new PgSession({
+      pool: sessionPool,
+      tableName: "user_sessions",
+      createTableIfMissing: true,
+    }),
+    secret: process.env.SESSION_SECRET || "vox-dev-secret-change-in-production",
+    resave: false,
+    saveUninitialized: false,
+    cookie: {
+      secure: process.env.NODE_ENV === "production",
+      httpOnly: true,
+      maxAge: 7 * 24 * 60 * 60 * 1000,
+    },
+  })
+);
 
 declare module "http" {
   interface IncomingMessage {
