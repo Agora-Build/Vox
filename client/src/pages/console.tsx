@@ -138,8 +138,11 @@ export default function Console() {
   }
 
   if (!authStatus?.user) {
-    setLocation("/login");
-    return null;
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="animate-pulse text-muted-foreground">Loading...</div>
+      </div>
+    );
   }
 
   if (!authStatus.user.isAdmin) {
