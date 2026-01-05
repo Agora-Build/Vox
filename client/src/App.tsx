@@ -5,6 +5,7 @@ import { useEffect } from "react";
 import { Toaster } from "@/components/ui/toaster";
 import { ThemeProvider } from "@/components/theme-provider";
 import Layout from "@/components/layout";
+import ConsoleLayout from "@/components/console-layout";
 import Home from "@/pages/home";
 import Dashboard from "@/pages/dashboard";
 import Leaderboard from "@/pages/leaderboard";
@@ -13,6 +14,8 @@ import SelfTest from "@/pages/self-test";
 import Login from "@/pages/login";
 import Console from "@/pages/console";
 import ConsoleInit from "@/pages/console-init";
+import ConsoleWorkflows from "@/pages/console-workflows";
+import ConsoleTestSets from "@/pages/console-testsets";
 import Activate from "@/pages/activate";
 import NotFound from "@/pages/not-found";
 
@@ -61,7 +64,89 @@ function ConsoleWrapper() {
     );
   }
 
-  return <Console />;
+  return (
+    <ConsoleLayout>
+      <Console />
+    </ConsoleLayout>
+  );
+}
+
+function ConsoleWorkflowsWrapper() {
+  const [, setLocation] = useLocation();
+  const { data: authStatus, isLoading } = useQuery<AuthStatus>({
+    queryKey: ["/api/auth/status"],
+  });
+
+  useEffect(() => {
+    if (!isLoading && authStatus?.initialized && !authStatus.user) {
+      setLocation("/login");
+    }
+  }, [isLoading, authStatus, setLocation]);
+
+  if (isLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="animate-pulse text-muted-foreground">Loading...</div>
+      </div>
+    );
+  }
+
+  if (!authStatus?.initialized) {
+    return <ConsoleInit />;
+  }
+
+  if (!authStatus.user) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="animate-pulse text-muted-foreground">Redirecting...</div>
+      </div>
+    );
+  }
+
+  return (
+    <ConsoleLayout>
+      <ConsoleWorkflows />
+    </ConsoleLayout>
+  );
+}
+
+function ConsoleTestSetsWrapper() {
+  const [, setLocation] = useLocation();
+  const { data: authStatus, isLoading } = useQuery<AuthStatus>({
+    queryKey: ["/api/auth/status"],
+  });
+
+  useEffect(() => {
+    if (!isLoading && authStatus?.initialized && !authStatus.user) {
+      setLocation("/login");
+    }
+  }, [isLoading, authStatus, setLocation]);
+
+  if (isLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="animate-pulse text-muted-foreground">Loading...</div>
+      </div>
+    );
+  }
+
+  if (!authStatus?.initialized) {
+    return <ConsoleInit />;
+  }
+
+  if (!authStatus.user) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="animate-pulse text-muted-foreground">Redirecting...</div>
+      </div>
+    );
+  }
+
+  return (
+    <ConsoleLayout>
+      <ConsoleTestSets />
+    </ConsoleLayout>
+  );
 }
 
 function Router() {
@@ -71,6 +156,12 @@ function Router() {
       <Route path="/activate/:token" component={Activate} />
       <Route path="/console">
         <ConsoleWrapper />
+      </Route>
+      <Route path="/console/workflows">
+        <ConsoleWorkflowsWrapper />
+      </Route>
+      <Route path="/console/test-sets">
+        <ConsoleTestSetsWrapper />
       </Route>
       <Route path="/console/init" component={ConsoleInit} />
       <Route path="/">
