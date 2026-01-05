@@ -24,7 +24,11 @@ The frontend follows a page-based structure with reusable UI components. Pages i
 - **Provider Guide**: Information about AI providers
 - **Self-Test**: User-initiated benchmarks
 - **Login**: Authentication page
-- **Console**: Admin dashboard (requires authentication)
+- **Console**: Management dashboard with sidebar navigation
+  - `/console` - User Management (admin only, redirects non-admins to workflows)
+  - `/console/workflows` - Test Workflows management (all authenticated users)
+  - `/console/test-sets` - Test Sets management (all authenticated users)
+- **Activate**: Account activation page for setting passwords via activation links
 
 ### Backend Architecture
 - **Runtime**: Node.js with Express
@@ -71,6 +75,7 @@ The server uses a modular structure with:
 - `users`: User accounts with plan, admin status, enabled status
 - `email_verification_tokens`: Email verification for new accounts
 - `invite_tokens`: Admin-created invitations for new users
+- `activation_tokens`: Admin-generated links for users to set passwords and activate accounts
 - `workflows`: Test workflows with visibility (public/private) and mainline flag
 - `test_sets`: Test configurations with visibility and mainline flag
 - `benchmark_results`: Performance measurements with optional workflow/test set references
@@ -89,6 +94,11 @@ The server uses a modular structure with:
 - `GET /api/admin/users`: List all users
 - `PATCH /api/admin/users/:id`: Update user (enable/disable, role, plan)
 - `POST /api/admin/invite`: Create invite token
+- `POST /api/admin/users/:id/activation-link`: Generate activation link for user
+
+**Activation** (public):
+- `GET /api/auth/activation/:token`: Verify activation token validity
+- `POST /api/auth/activate`: Set password and activate account
 
 **Workflows** (requires auth):
 - `GET /api/workflows`: List accessible workflows
