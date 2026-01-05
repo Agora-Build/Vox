@@ -46,6 +46,15 @@ export const inviteTokens = pgTable("invite_tokens", {
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
+export const activationTokens = pgTable("activation_tokens", {
+  id: serial("id").primaryKey(),
+  userId: varchar("user_id").notNull().references(() => users.id),
+  token: text("token").notNull().unique(),
+  expiresAt: timestamp("expires_at").notNull(),
+  usedAt: timestamp("used_at"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
 export const workflows = pgTable("workflows", {
   id: serial("id").primaryKey(),
   name: text("name").notNull(),

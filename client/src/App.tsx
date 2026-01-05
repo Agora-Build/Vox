@@ -13,6 +13,7 @@ import SelfTest from "@/pages/self-test";
 import Login from "@/pages/login";
 import Console from "@/pages/console";
 import ConsoleInit from "@/pages/console-init";
+import Activate from "@/pages/activate";
 import NotFound from "@/pages/not-found";
 
 interface AuthStatus {
@@ -67,6 +68,7 @@ function Router() {
   return (
     <Switch>
       <Route path="/login" component={Login} />
+      <Route path="/activate/:token" component={Activate} />
       <Route path="/console">
         <ConsoleWrapper />
       </Route>

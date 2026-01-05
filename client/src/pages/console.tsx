@@ -8,7 +8,7 @@ import { Switch } from "@/components/ui/switch";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
-import { Users, Settings, LogOut, Shield, Crown, Sparkles, UserPlus } from "lucide-react";
+import { Users, Settings, LogOut, Shield, Crown, Sparkles, UserPlus, Link, Copy, Check } from "lucide-react";
 import { useState } from "react";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
@@ -69,6 +69,12 @@ export default function Console() {
   const [inviteEmail, setInviteEmail] = useState("");
   const [invitePlan, setInvitePlan] = useState("basic");
   const [inviteIsAdmin, setInviteIsAdmin] = useState(false);
+  
+  const [activationOpen, setActivationOpen] = useState(false);
+  const [activationUserId, setActivationUserId] = useState<string | null>(null);
+  const [activationEmail, setActivationEmail] = useState("");
+  const [activationLink, setActivationLink] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
 
   const { data: authStatus, isLoading: authLoading } = useQuery<AuthStatus>({
     queryKey: ["/api/auth/status"],
@@ -127,6 +133,40 @@ export default function Console() {
       toast({ title: "Failed to create invite", description: error.message, variant: "destructive" });
     },
   });
+
+  const activationMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", `/api/admin/users/${activationUserId}/activation-link`, {
+        email: activationEmail || undefined,
+      });
+      return res.json();
+    },
+    onSuccess: (data) => {
+      const fullUrl = `${window.location.origin}${data.activationUrl}`;
+      setActivationLink(fullUrl);
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/users"] });
+      toast({ title: "Activation link created" });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Failed to create activation link", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const handleOpenActivation = (user: UserData) => {
+    setActivationUserId(user.id);
+    setActivationEmail(user.email === "scout@vox.internal" ? "" : user.email);
+    setActivationLink(null);
+    setCopied(false);
+    setActivationOpen(true);
+  };
+
+  const handleCopyLink = () => {
+    if (activationLink) {
+      navigator.clipboard.writeText(activationLink);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }
+  };
 
   if (authLoading) {
     return (
@@ -331,6 +371,17 @@ export default function Console() {
                     </TableCell>
                     <TableCell className="text-right">
                       <div className="flex items-center justify-end gap-2">
+                        {!user.emailVerified && (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => handleOpenActivation(user)}
+                            data-testid={`button-activate-${user.id}`}
+                          >
+                            <Link className="mr-1 h-3 w-3" />
+                            Activate
+                          </Button>
+                        )}
                         <Switch
                           checked={user.isEnabled}
                           onCheckedChange={(checked) => 
@@ -348,6 +399,78 @@ export default function Console() {
           )}
         </CardContent>
       </Card>
+
+      <Dialog open={activationOpen} onOpenChange={setActivationOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Generate Activation Link</DialogTitle>
+            <DialogDescription>
+              Create a link for the user to set their password and activate their account.
+            </DialogDescription>
+          </DialogHeader>
+          {!activationLink ? (
+            <>
+              <div className="space-y-4 py-4">
+                <div className="space-y-2">
+                  <Label htmlFor="activation-email">Email Address</Label>
+                  <Input
+                    id="activation-email"
+                    type="email"
+                    placeholder="user@example.com"
+                    value={activationEmail}
+                    onChange={(e) => setActivationEmail(e.target.value)}
+                    data-testid="input-activation-email"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Update the email address if needed before generating the link.
+                  </p>
+                </div>
+              </div>
+              <DialogFooter>
+                <Button 
+                  onClick={() => activationMutation.mutate()} 
+                  disabled={activationMutation.isPending}
+                  data-testid="button-generate-activation"
+                >
+                  Generate Link
+                </Button>
+              </DialogFooter>
+            </>
+          ) : (
+            <>
+              <div className="space-y-4 py-4">
+                <div className="space-y-2">
+                  <Label>Activation Link</Label>
+                  <div className="flex gap-2">
+                    <Input
+                      value={activationLink}
+                      readOnly
+                      className="font-mono text-sm"
+                      data-testid="input-activation-link"
+                    />
+                    <Button
+                      size="icon"
+                      variant="outline"
+                      onClick={handleCopyLink}
+                      data-testid="button-copy-link"
+                    >
+                      {copied ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
+                    </Button>
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    Share this link with the user. It expires in 7 days.
+                  </p>
+                </div>
+              </div>
+              <DialogFooter>
+                <Button variant="outline" onClick={() => setActivationOpen(false)}>
+                  Done
+                </Button>
+              </DialogFooter>
+            </>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

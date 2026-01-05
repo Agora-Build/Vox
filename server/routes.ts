@@ -89,11 +89,11 @@ export async function registerRoutes(
       const scout = await storage.createUser({
         username: "Scout",
         email: "scout@vox.internal",
-        passwordHash: await hashPassword(generateToken()),
+        passwordHash: "NEEDS_ACTIVATION",
         plan: "principal",
         isAdmin: false,
-        isEnabled: true,
-        emailVerifiedAt: new Date(),
+        isEnabled: false,
+        emailVerifiedAt: null,
       });
 
       await markSystemInitialized();
@@ -242,6 +242,129 @@ export async function registerRoutes(
     } catch (error) {
       console.error("Error creating invite:", error);
       res.status(500).json({ error: "Failed to create invite" });
+    }
+  });
+
+  app.post("/api/admin/users/:id/activation-link", requireAuth, requireAdmin, async (req, res) => {
+    try {
+      const { id } = req.params;
+      const { email } = req.body;
+      
+      const user = await storage.getUser(id);
+      if (!user) {
+        return res.status(404).json({ error: "User not found" });
+      }
+
+      if (email && email !== user.email) {
+        const existingEmail = await storage.getUserByEmail(email);
+        if (existingEmail) {
+          return res.status(400).json({ error: "Email already in use" });
+        }
+        await storage.updateUser(id, { email });
+      }
+
+      const token = generateToken();
+      const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+      
+      await storage.createActivationToken(id, token, expiresAt);
+
+      res.json({ 
+        message: "Activation link created",
+        token,
+        activationUrl: `/activate/${token}`,
+        expiresAt,
+      });
+    } catch (error) {
+      console.error("Error creating activation link:", error);
+      res.status(500).json({ error: "Failed to create activation link" });
+    }
+  });
+
+  app.get("/api/auth/activation/:token", async (req, res) => {
+    try {
+      const { token } = req.params;
+      
+      const activation = await storage.getActivationToken(token);
+      if (!activation) {
+        return res.status(400).json({ error: "Invalid activation token" });
+      }
+      
+      if (activation.usedAt) {
+        return res.status(400).json({ error: "Activation link already used" });
+      }
+      
+      if (new Date() > activation.expiresAt) {
+        return res.status(400).json({ error: "Activation link expired" });
+      }
+
+      const user = await storage.getUser(activation.userId);
+      if (!user) {
+        return res.status(400).json({ error: "User not found" });
+      }
+
+      res.json({ 
+        valid: true,
+        username: user.username,
+        email: user.email,
+      });
+    } catch (error) {
+      console.error("Error verifying activation token:", error);
+      res.status(500).json({ error: "Failed to verify activation token" });
+    }
+  });
+
+  app.post("/api/auth/activate", async (req, res) => {
+    try {
+      const { token, password } = req.body;
+      
+      if (!token || !password) {
+        return res.status(400).json({ error: "Token and password required" });
+      }
+
+      if (password.length < 8) {
+        return res.status(400).json({ error: "Password must be at least 8 characters" });
+      }
+
+      const activation = await storage.getActivationToken(token);
+      if (!activation) {
+        return res.status(400).json({ error: "Invalid activation token" });
+      }
+      
+      if (activation.usedAt) {
+        return res.status(400).json({ error: "Activation link already used" });
+      }
+      
+      if (new Date() > activation.expiresAt) {
+        return res.status(400).json({ error: "Activation link expired" });
+      }
+
+      const passwordHash = await hashPassword(password);
+      
+      await storage.updateUser(activation.userId, { 
+        passwordHash,
+        isEnabled: true,
+        emailVerifiedAt: new Date(),
+      });
+
+      await storage.markActivationTokenUsed(token);
+
+      const user = await storage.getUser(activation.userId);
+
+      req.session.userId = activation.userId;
+
+      res.json({ 
+        message: "Account activated successfully",
+        user: user ? {
+          id: user.id,
+          username: user.username,
+          email: user.email,
+          plan: user.plan,
+          isAdmin: user.isAdmin,
+        } : null,
+      });
+    } catch (error) {
+      console.error("Error activating account:", error);
+      res.status(500).json({ error: "Failed to activate account" });
     }
   });
 

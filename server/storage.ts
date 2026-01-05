@@ -16,6 +16,7 @@ import {
   testSets,
   emailVerificationTokens,
   inviteTokens,
+  activationTokens,
 } from "@shared/schema";
 import { drizzle } from "drizzle-orm/node-postgres";
 import pkg from "pg";
@@ -56,6 +57,10 @@ export interface IStorage {
   createInviteToken(email: string, plan: string, isAdmin: boolean, token: string, createdBy: string | null, expiresAt: Date): Promise<void>;
   getInviteToken(token: string): Promise<{ email: string; plan: string; isAdmin: boolean; expiresAt: Date; usedAt: Date | null } | undefined>;
   markInviteTokenUsed(token: string): Promise<void>;
+  
+  createActivationToken(userId: string, token: string, expiresAt: Date): Promise<void>;
+  getActivationToken(token: string): Promise<{ userId: string; expiresAt: Date; usedAt: Date | null } | undefined>;
+  markActivationTokenUsed(token: string): Promise<void>;
 }
 
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
@@ -224,6 +229,22 @@ export class DatabaseStorage implements IStorage {
 
   async markInviteTokenUsed(token: string): Promise<void> {
     await db.update(inviteTokens).set({ usedAt: new Date() }).where(eq(inviteTokens.token, token));
+  }
+
+  async createActivationToken(userId: string, token: string, expiresAt: Date): Promise<void> {
+    await db.insert(activationTokens).values({ userId, token, expiresAt });
+  }
+
+  async getActivationToken(token: string): Promise<{ userId: string; expiresAt: Date; usedAt: Date | null } | undefined> {
+    const result = await db.select().from(activationTokens).where(eq(activationTokens.token, token));
+    if (result[0]) {
+      return { userId: result[0].userId, expiresAt: result[0].expiresAt, usedAt: result[0].usedAt };
+    }
+    return undefined;
+  }
+
+  async markActivationTokenUsed(token: string): Promise<void> {
+    await db.update(activationTokens).set({ usedAt: new Date() }).where(eq(activationTokens.token, token));
   }
 }
 
