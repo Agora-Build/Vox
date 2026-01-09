@@ -12,7 +12,8 @@ import Leaderboard from "@/pages/leaderboard";
 import ProviderGuide from "@/pages/provider";
 import SelfTest from "@/pages/self-test";
 import Login from "@/pages/login";
-import { AdminLogin } from "@/pages/login";
+import AdminLogin from "@/pages/login-admin";
+import AdminConsolePage from "@/pages/admin-console";
 import Console from "@/pages/console";
 import ConsoleInit from "@/pages/console-init";
 import ConsoleWorkflows from "@/pages/console-workflows";
@@ -154,6 +155,7 @@ function Router() {
   return (
     <Switch>
       <Route path="/login" component={Login} />
+      <Route path="/admin/login" component={AdminLogin} />
       <Route path="/activate/:token" component={Activate} />
       <Route path="/console">
         <ConsoleWrapper />
@@ -164,6 +166,7 @@ function Router() {
       <Route path="/console/test-sets">
         <ConsoleTestSetsWrapper />
       </Route>
+      <Route path="/admin/console" component={AdminConsolePage} />
       <Route path="/setup" component={ConsoleInit} />
       <Route path="/">
         <Layout>
