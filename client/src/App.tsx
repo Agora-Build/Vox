@@ -12,6 +12,7 @@ import Leaderboard from "@/pages/leaderboard";
 import ProviderGuide from "@/pages/provider";
 import SelfTest from "@/pages/self-test";
 import Login from "@/pages/login";
+import { AdminLogin } from "@/pages/login";
 import Console from "@/pages/console";
 import ConsoleInit from "@/pages/console-init";
 import ConsoleWorkflows from "@/pages/console-workflows";
@@ -163,7 +164,7 @@ function Router() {
       <Route path="/console/test-sets">
         <ConsoleTestSetsWrapper />
       </Route>
-      <Route path="/console/init" component={ConsoleInit} />
+      <Route path="/setup" component={ConsoleInit} />
       <Route path="/">
         <Layout>
           <Home />
@@ -189,20 +190,66 @@ function Router() {
           <SelfTest />
         </Layout>
       </Route>
-      <Route>
-        <Layout>
-          <NotFound />
-        </Layout>
-      </Route>
+      <Route path="/not-found" component={NotFound} />
+      <Route component={NotFound} />
     </Switch>
   );
+}
+
+function AppGuard() {
+  const [location, setLocation] = useLocation();
+  const { data: authStatus, isLoading, isFetching } = useQuery<AuthStatus>({
+    queryKey: ["/api/auth/status"],
+  });
+
+  useEffect(() => {
+    if (isLoading || isFetching) {
+      return;
+    }
+
+    if (!authStatus?.initialized) {
+      if (location === "/setup") return;
+
+      if (location !== "/not-found") {
+        setLocation("/not-found");
+      }
+    }
+  }, [isLoading, isFetching, authStatus, location, setLocation]);
+
+  useEffect(() => {
+    if (isLoading || isFetching) {
+      return;
+    }
+
+    if (authStatus?.initialized && location === "/setup") {
+      setLocation("/");
+    }
+  }, [isLoading, isFetching, authStatus, location, setLocation]);
+
+  if ((isLoading || isFetching) && !authStatus) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="animate-pulse text-muted-foreground">Loading...</div>
+      </div>
+    );
+  }
+
+  if (!authStatus?.initialized) {
+    if (location === "/setup") {
+      return <ConsoleInit />;
+    }
+
+    return <NotFound />;
+  }
+
+  return <Router />;
 }
 
 function App() {
   return (
     <QueryClientProvider client={queryClient}>
       <ThemeProvider>
-        <Router />
+        <AppGuard />
         <Toaster />
       </ThemeProvider>
     </QueryClientProvider>

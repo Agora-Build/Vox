@@ -9,22 +9,45 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
 import { Loader2 } from "lucide-react";
 
-export default function Login() {
+interface LoginResponse {
+  user: {
+    id: string;
+    username: string;
+    email: string;
+    isAdmin: boolean;
+  };
+}
+
+type LoginVariant = "user" | "admin";
+
+interface LoginFormProps {
+  variant?: LoginVariant;
+}
+
+export function LoginForm({ variant = "user" }: LoginFormProps) {
   const [, setLocation] = useLocation();
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const isAdminVariant = variant === "admin";
 
-  const loginMutation = useMutation({
+  const loginMutation = useMutation<LoginResponse>({
     mutationFn: async () => {
       const res = await apiRequest("POST", "/api/auth/login", { email, password });
       return res.json();
     },
-    onSuccess: () => {
+    onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ["/api/auth/status"] });
-      toast({ title: "Welcome back!" });
-      setLocation("/console");
+
+      if (isAdminVariant && !data.user?.isAdmin) {
+        toast({ title: "Admin access required", description: "Please sign in with an admin account.", variant: "destructive" });
+        return;
+      }
+
+      const destination = isAdminVariant ? "/admin/console" : "/console";
+      toast({ title: isAdminVariant ? "Welcome back, Admin!" : "Welcome back!" });
+      setLocation(destination);
     },
     onError: (error: Error) => {
       toast({ title: "Login failed", description: error.message, variant: "destructive" });
@@ -40,8 +63,12 @@ export default function Login() {
     <div className="min-h-screen flex items-center justify-center p-4">
       <Card className="w-full max-w-md">
         <CardHeader className="text-center">
-          <CardTitle className="text-2xl" data-testid="text-login-title">Sign In</CardTitle>
-          <CardDescription>Access the Vox admin console</CardDescription>
+          <CardTitle className="text-2xl" data-testid="text-login-title">
+            {isAdminVariant ? "Admin Sign In" : "Sign In"}
+          </CardTitle>
+          <CardDescription>
+            {isAdminVariant ? "Access the Vox admin console" : "Sign in to your Vox workspace"}
+          </CardDescription>
         </CardHeader>
         <CardContent>
           <form onSubmit={handleSubmit} className="space-y-4">
@@ -50,7 +77,7 @@ export default function Login() {
               <Input
                 id="email"
                 type="email"
-                placeholder="admin@example.com"
+                placeholder={isAdminVariant ? "admin@example.com" : "you@example.com"}
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 required
@@ -68,9 +95,9 @@ export default function Login() {
                 data-testid="input-password"
               />
             </div>
-            <Button 
-              type="submit" 
-              className="w-full" 
+            <Button
+              type="submit"
+              className="w-full"
               disabled={loginMutation.isPending}
               data-testid="button-login"
             >
@@ -89,3 +116,8 @@ export default function Login() {
     </div>
   );
 }
+
+export default function Login() {
+  return <LoginForm variant="user" />;
+}
+
