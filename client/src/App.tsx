@@ -36,17 +36,17 @@ interface AuthStatus {
 
 function ConsoleWrapper() {
   const [, setLocation] = useLocation();
-  const { data: authStatus, isLoading } = useQuery<AuthStatus>({
+  const { data: authStatus, isLoading, isFetching } = useQuery<AuthStatus>({
     queryKey: ["/api/auth/status"],
   });
 
   useEffect(() => {
-    if (!isLoading && authStatus?.initialized && !authStatus.user) {
+    if (!isLoading && !isFetching && authStatus?.initialized && !authStatus.user) {
       setLocation("/login");
     }
-  }, [isLoading, authStatus, setLocation]);
+  }, [isLoading, isFetching, authStatus, setLocation]);
 
-  if (isLoading) {
+  if ((isLoading || isFetching) && !authStatus?.user) {
     return (
       <div className="min-h-screen flex items-center justify-center">
         <div className="animate-pulse text-muted-foreground">Loading...</div>
@@ -75,17 +75,17 @@ function ConsoleWrapper() {
 
 function ConsoleWorkflowsWrapper() {
   const [, setLocation] = useLocation();
-  const { data: authStatus, isLoading } = useQuery<AuthStatus>({
+  const { data: authStatus, isLoading, isFetching } = useQuery<AuthStatus>({
     queryKey: ["/api/auth/status"],
   });
 
   useEffect(() => {
-    if (!isLoading && authStatus?.initialized && !authStatus.user) {
+    if (!isLoading && !isFetching && authStatus?.initialized && !authStatus.user) {
       setLocation("/login");
     }
-  }, [isLoading, authStatus, setLocation]);
+  }, [isLoading, isFetching, authStatus, setLocation]);
 
-  if (isLoading) {
+  if ((isLoading || isFetching) && !authStatus?.user) {
     return (
       <div className="min-h-screen flex items-center justify-center">
         <div className="animate-pulse text-muted-foreground">Loading...</div>
@@ -114,17 +114,17 @@ function ConsoleWorkflowsWrapper() {
 
 function ConsoleTestSetsWrapper() {
   const [, setLocation] = useLocation();
-  const { data: authStatus, isLoading } = useQuery<AuthStatus>({
+  const { data: authStatus, isLoading, isFetching } = useQuery<AuthStatus>({
     queryKey: ["/api/auth/status"],
   });
 
   useEffect(() => {
-    if (!isLoading && authStatus?.initialized && !authStatus.user) {
+    if (!isLoading && !isFetching && authStatus?.initialized && !authStatus.user) {
       setLocation("/login");
     }
-  }, [isLoading, authStatus, setLocation]);
+  }, [isLoading, isFetching, authStatus, setLocation]);
 
-  if (isLoading) {
+  if ((isLoading || isFetching) && !authStatus?.user) {
     return (
       <div className="min-h-screen flex items-center justify-center">
         <div className="animate-pulse text-muted-foreground">Loading...</div>
