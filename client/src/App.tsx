@@ -17,7 +17,10 @@ import AdminConsolePage from "@/pages/admin-console";
 import Console from "@/pages/console";
 import ConsoleInit from "@/pages/console-init";
 import ConsoleWorkflows from "@/pages/console-workflows";
+import ConsoleWorkflowDetail from "@/pages/console-workflow-detail";
 import ConsoleTestSets from "@/pages/console-testsets";
+import ConsoleWorkerTokens from "@/pages/console-worker-tokens";
+import ConsoleWorkers from "@/pages/console-workers";
 import Activate from "@/pages/activate";
 import NotFound from "@/pages/not-found";
 
@@ -151,6 +154,128 @@ function ConsoleTestSetsWrapper() {
   );
 }
 
+function ConsoleWorkflowDetailWrapper() {
+  const [, setLocation] = useLocation();
+  const { data: authStatus, isLoading, isFetching } = useQuery<AuthStatus>({
+    queryKey: ["/api/auth/status"],
+  });
+
+  useEffect(() => {
+    if (!isLoading && !isFetching && authStatus?.initialized && !authStatus.user) {
+      setLocation("/login");
+    }
+  }, [isLoading, isFetching, authStatus, setLocation]);
+
+  if ((isLoading || isFetching) && !authStatus?.user) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="animate-pulse text-muted-foreground">Loading...</div>
+      </div>
+    );
+  }
+
+  if (!authStatus?.initialized) {
+    return <ConsoleInit />;
+  }
+
+  if (!authStatus.user) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="animate-pulse text-muted-foreground">Redirecting...</div>
+      </div>
+    );
+  }
+
+  return (
+    <ConsoleLayout>
+      <ConsoleWorkflowDetail />
+    </ConsoleLayout>
+  );
+}
+
+function ConsoleWorkerTokensWrapper() {
+  const [, setLocation] = useLocation();
+  const { data: authStatus, isLoading, isFetching } = useQuery<AuthStatus>({
+    queryKey: ["/api/auth/status"],
+  });
+
+  useEffect(() => {
+    if (!isLoading && !isFetching && authStatus?.initialized && !authStatus.user) {
+      setLocation("/login");
+    }
+  }, [isLoading, isFetching, authStatus, setLocation]);
+
+  if ((isLoading || isFetching) && !authStatus?.user) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="animate-pulse text-muted-foreground">Loading...</div>
+      </div>
+    );
+  }
+
+  if (!authStatus?.initialized) {
+    return <ConsoleInit />;
+  }
+
+  if (!authStatus.user) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="animate-pulse text-muted-foreground">Redirecting...</div>
+      </div>
+    );
+  }
+
+  if (!authStatus.user.isAdmin) {
+    setLocation("/console/workflows");
+    return null;
+  }
+
+  return (
+    <ConsoleLayout>
+      <ConsoleWorkerTokens />
+    </ConsoleLayout>
+  );
+}
+
+function ConsoleWorkersWrapper() {
+  const [, setLocation] = useLocation();
+  const { data: authStatus, isLoading, isFetching } = useQuery<AuthStatus>({
+    queryKey: ["/api/auth/status"],
+  });
+
+  useEffect(() => {
+    if (!isLoading && !isFetching && authStatus?.initialized && !authStatus.user) {
+      setLocation("/login");
+    }
+  }, [isLoading, isFetching, authStatus, setLocation]);
+
+  if ((isLoading || isFetching) && !authStatus?.user) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="animate-pulse text-muted-foreground">Loading...</div>
+      </div>
+    );
+  }
+
+  if (!authStatus?.initialized) {
+    return <ConsoleInit />;
+  }
+
+  if (!authStatus.user) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="animate-pulse text-muted-foreground">Redirecting...</div>
+      </div>
+    );
+  }
+
+  return (
+    <ConsoleLayout>
+      <ConsoleWorkers />
+    </ConsoleLayout>
+  );
+}
+
 function Router() {
   return (
     <Switch>
@@ -163,8 +288,17 @@ function Router() {
       <Route path="/console/workflows">
         <ConsoleWorkflowsWrapper />
       </Route>
+      <Route path="/console/workflows/:id">
+        <ConsoleWorkflowDetailWrapper />
+      </Route>
       <Route path="/console/test-sets">
         <ConsoleTestSetsWrapper />
+      </Route>
+      <Route path="/console/workers">
+        <ConsoleWorkersWrapper />
+      </Route>
+      <Route path="/console/worker-tokens">
+        <ConsoleWorkerTokensWrapper />
       </Route>
       <Route path="/admin/console" component={AdminConsolePage} />
       <Route path="/setup" component={ConsoleInit} />
