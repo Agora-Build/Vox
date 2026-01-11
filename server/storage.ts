@@ -9,6 +9,16 @@ import {
   type InsertWorkflow,
   type TestSet,
   type InsertTestSet,
+  type Vendor,
+  type InsertVendor,
+  type TestCase,
+  type InsertTestCase,
+  type WorkerToken,
+  type InsertWorkerToken,
+  type Worker,
+  type InsertWorker,
+  type Job,
+  type InsertJob,
   users,
   benchmarkResults,
   systemConfig,
@@ -17,11 +27,16 @@ import {
   emailVerificationTokens,
   inviteTokens,
   activationTokens,
+  vendors,
+  testCases,
+  workerTokens,
+  workers,
+  jobs,
 } from "@shared/schema";
 import { drizzle } from "drizzle-orm/node-postgres";
 import pkg from "pg";
 const { Pool } = pkg;
-import { desc, eq, and, or, isNull } from "drizzle-orm";
+import { desc, eq, and, or, isNull, lt } from "drizzle-orm";
 
 export interface IStorage {
   getUser(id: string): Promise<User | undefined>;
@@ -61,6 +76,46 @@ export interface IStorage {
   createActivationToken(userId: string, token: string, expiresAt: Date): Promise<void>;
   getActivationToken(token: string): Promise<{ userId: string; expiresAt: Date; usedAt: Date | null } | undefined>;
   markActivationTokenUsed(token: string): Promise<void>;
+  
+  // Vendor methods
+  createVendor(vendor: InsertVendor): Promise<Vendor>;
+  getVendor(id: number): Promise<Vendor | undefined>;
+  getVendorsByWorkflow(workflowId: number): Promise<Vendor[]>;
+  updateVendor(id: number, data: Partial<Vendor>): Promise<Vendor | undefined>;
+  deleteVendor(id: number): Promise<void>;
+  
+  // Test case methods
+  createTestCase(testCase: InsertTestCase): Promise<TestCase>;
+  getTestCase(id: number): Promise<TestCase | undefined>;
+  getTestCasesByWorkflow(workflowId: number): Promise<TestCase[]>;
+  getTestCasesByRegion(region: string): Promise<TestCase[]>;
+  updateTestCase(id: number, data: Partial<TestCase>): Promise<TestCase | undefined>;
+  deleteTestCase(id: number): Promise<void>;
+  
+  // Worker token methods
+  createWorkerToken(workerToken: InsertWorkerToken): Promise<WorkerToken>;
+  getWorkerToken(id: number): Promise<WorkerToken | undefined>;
+  getWorkerTokenByToken(token: string): Promise<WorkerToken | undefined>;
+  getAllWorkerTokens(): Promise<WorkerToken[]>;
+  revokeWorkerToken(id: number): Promise<void>;
+  updateWorkerTokenLastUsed(id: number): Promise<void>;
+  
+  // Worker methods
+  createWorker(worker: InsertWorker): Promise<Worker>;
+  getWorker(id: number): Promise<Worker | undefined>;
+  getWorkersByRegion(region: string): Promise<Worker[]>;
+  getAllWorkers(): Promise<Worker[]>;
+  updateWorker(id: number, data: Partial<Worker>): Promise<Worker | undefined>;
+  updateWorkerHeartbeat(id: number): Promise<void>;
+  
+  // Job methods
+  createJob(job: InsertJob): Promise<Job>;
+  getJob(id: number): Promise<Job | undefined>;
+  getPendingJobsByRegion(region: string): Promise<Job[]>;
+  getJobsByWorker(workerId: number): Promise<Job[]>;
+  updateJob(id: number, data: Partial<Job>): Promise<Job | undefined>;
+  claimJob(jobId: number, workerId: number): Promise<Job | undefined>;
+  completeJob(jobId: number, error?: string): Promise<Job | undefined>;
 }
 
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
@@ -245,6 +300,162 @@ export class DatabaseStorage implements IStorage {
 
   async markActivationTokenUsed(token: string): Promise<void> {
     await db.update(activationTokens).set({ usedAt: new Date() }).where(eq(activationTokens.token, token));
+  }
+
+  // Vendor methods
+  async createVendor(vendor: InsertVendor): Promise<Vendor> {
+    const result = await db.insert(vendors).values(vendor).returning();
+    return result[0];
+  }
+
+  async getVendor(id: number): Promise<Vendor | undefined> {
+    const result = await db.select().from(vendors).where(eq(vendors.id, id));
+    return result[0];
+  }
+
+  async getVendorsByWorkflow(workflowId: number): Promise<Vendor[]> {
+    return db.select().from(vendors).where(eq(vendors.workflowId, workflowId)).orderBy(desc(vendors.createdAt));
+  }
+
+  async updateVendor(id: number, data: Partial<Vendor>): Promise<Vendor | undefined> {
+    const result = await db.update(vendors).set({ ...data, updatedAt: new Date() }).where(eq(vendors.id, id)).returning();
+    return result[0];
+  }
+
+  async deleteVendor(id: number): Promise<void> {
+    await db.delete(vendors).where(eq(vendors.id, id));
+  }
+
+  // Test case methods
+  async createTestCase(testCase: InsertTestCase): Promise<TestCase> {
+    const result = await db.insert(testCases).values(testCase).returning();
+    return result[0];
+  }
+
+  async getTestCase(id: number): Promise<TestCase | undefined> {
+    const result = await db.select().from(testCases).where(eq(testCases.id, id));
+    return result[0];
+  }
+
+  async getTestCasesByWorkflow(workflowId: number): Promise<TestCase[]> {
+    return db.select().from(testCases).where(eq(testCases.workflowId, workflowId)).orderBy(desc(testCases.createdAt));
+  }
+
+  async getTestCasesByRegion(region: string): Promise<TestCase[]> {
+    return db.select().from(testCases).where(
+      and(eq(testCases.region, region as "na" | "apac" | "eu"), eq(testCases.isEnabled, true))
+    ).orderBy(desc(testCases.createdAt));
+  }
+
+  async updateTestCase(id: number, data: Partial<TestCase>): Promise<TestCase | undefined> {
+    const result = await db.update(testCases).set({ ...data, updatedAt: new Date() }).where(eq(testCases.id, id)).returning();
+    return result[0];
+  }
+
+  async deleteTestCase(id: number): Promise<void> {
+    await db.delete(testCases).where(eq(testCases.id, id));
+  }
+
+  // Worker token methods
+  async createWorkerToken(workerToken: InsertWorkerToken): Promise<WorkerToken> {
+    const result = await db.insert(workerTokens).values(workerToken).returning();
+    return result[0];
+  }
+
+  async getWorkerToken(id: number): Promise<WorkerToken | undefined> {
+    const result = await db.select().from(workerTokens).where(eq(workerTokens.id, id));
+    return result[0];
+  }
+
+  async getWorkerTokenByToken(token: string): Promise<WorkerToken | undefined> {
+    const result = await db.select().from(workerTokens).where(eq(workerTokens.token, token));
+    return result[0];
+  }
+
+  async getAllWorkerTokens(): Promise<WorkerToken[]> {
+    return db.select().from(workerTokens).orderBy(desc(workerTokens.createdAt));
+  }
+
+  async revokeWorkerToken(id: number): Promise<void> {
+    await db.update(workerTokens).set({ isRevoked: true }).where(eq(workerTokens.id, id));
+  }
+
+  async updateWorkerTokenLastUsed(id: number): Promise<void> {
+    await db.update(workerTokens).set({ lastUsedAt: new Date() }).where(eq(workerTokens.id, id));
+  }
+
+  // Worker methods
+  async createWorker(worker: InsertWorker): Promise<Worker> {
+    const result = await db.insert(workers).values(worker).returning();
+    return result[0];
+  }
+
+  async getWorker(id: number): Promise<Worker | undefined> {
+    const result = await db.select().from(workers).where(eq(workers.id, id));
+    return result[0];
+  }
+
+  async getWorkersByRegion(region: string): Promise<Worker[]> {
+    return db.select().from(workers).where(eq(workers.region, region as "na" | "apac" | "eu")).orderBy(desc(workers.createdAt));
+  }
+
+  async getAllWorkers(): Promise<Worker[]> {
+    return db.select().from(workers).orderBy(desc(workers.createdAt));
+  }
+
+  async updateWorker(id: number, data: Partial<Worker>): Promise<Worker | undefined> {
+    const result = await db.update(workers).set(data).where(eq(workers.id, id)).returning();
+    return result[0];
+  }
+
+  async updateWorkerHeartbeat(id: number): Promise<void> {
+    await db.update(workers).set({ lastHeartbeat: new Date(), status: "online" }).where(eq(workers.id, id));
+  }
+
+  // Job methods
+  async createJob(job: InsertJob): Promise<Job> {
+    const result = await db.insert(jobs).values(job).returning();
+    return result[0];
+  }
+
+  async getJob(id: number): Promise<Job | undefined> {
+    const result = await db.select().from(jobs).where(eq(jobs.id, id));
+    return result[0];
+  }
+
+  async getPendingJobsByRegion(region: string): Promise<Job[]> {
+    return db.select().from(jobs).where(
+      and(eq(jobs.region, region as "na" | "apac" | "eu"), eq(jobs.status, "pending"))
+    ).orderBy(jobs.createdAt);
+  }
+
+  async getJobsByWorker(workerId: number): Promise<Job[]> {
+    return db.select().from(jobs).where(eq(jobs.workerId, workerId)).orderBy(desc(jobs.createdAt));
+  }
+
+  async updateJob(id: number, data: Partial<Job>): Promise<Job | undefined> {
+    const result = await db.update(jobs).set(data).where(eq(jobs.id, id)).returning();
+    return result[0];
+  }
+
+  async claimJob(jobId: number, workerId: number): Promise<Job | undefined> {
+    const result = await db.update(jobs)
+      .set({ workerId, status: "running", startedAt: new Date() })
+      .where(and(eq(jobs.id, jobId), eq(jobs.status, "pending")))
+      .returning();
+    return result[0];
+  }
+
+  async completeJob(jobId: number, error?: string): Promise<Job | undefined> {
+    const result = await db.update(jobs)
+      .set({ 
+        status: error ? "failed" : "completed", 
+        completedAt: new Date(),
+        error: error || null,
+      })
+      .where(eq(jobs.id, jobId))
+      .returning();
+    return result[0];
   }
 }
 

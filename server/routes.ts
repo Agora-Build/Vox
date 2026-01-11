@@ -436,6 +436,20 @@ export async function registerRoutes(
     }
   });
 
+  app.get("/api/workflows/:id", requireAuth, async (req, res) => {
+    try {
+      const { id } = req.params;
+      const workflow = await storage.getWorkflow(parseInt(id));
+      if (!workflow) {
+        return res.status(404).json({ error: "Workflow not found" });
+      }
+      res.json(workflow);
+    } catch (error) {
+      console.error("Error fetching workflow:", error);
+      res.status(500).json({ error: "Failed to fetch workflow" });
+    }
+  });
+
   app.post("/api/workflows", requireAuth, async (req, res) => {
     try {
       const user = await getCurrentUser(req);
@@ -710,6 +724,621 @@ export async function registerRoutes(
     } catch (error) {
       console.error("Error seeding database:", error);
       res.status(500).json({ error: "Failed to seed database" });
+    }
+  });
+
+  // ==================== VENDOR ROUTES ====================
+  
+  app.get("/api/workflows/:workflowId/vendors", requireAuth, async (req, res) => {
+    try {
+      const { workflowId } = req.params;
+      const vendors = await storage.getVendorsByWorkflow(parseInt(workflowId));
+      res.json(vendors);
+    } catch (error) {
+      console.error("Error fetching vendors:", error);
+      res.status(500).json({ error: "Failed to fetch vendors" });
+    }
+  });
+
+  app.post("/api/workflows/:workflowId/vendors", requireAuth, async (req, res) => {
+    try {
+      const user = await getCurrentUser(req);
+      if (!user) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+
+      const { workflowId } = req.params;
+      const workflow = await storage.getWorkflow(parseInt(workflowId));
+      
+      if (!workflow) {
+        return res.status(404).json({ error: "Workflow not found" });
+      }
+
+      if (workflow.ownerId !== user.id && !user.isAdmin) {
+        return res.status(403).json({ error: "Not authorized to modify this workflow" });
+      }
+
+      const { name, type, config } = req.body;
+      
+      if (!name || !type) {
+        return res.status(400).json({ error: "Name and type required" });
+      }
+
+      if (!["livekit_agent", "agora_convoai"].includes(type)) {
+        return res.status(400).json({ error: "Invalid vendor type" });
+      }
+
+      const vendor = await storage.createVendor({
+        name,
+        type,
+        config: config || {},
+        workflowId: parseInt(workflowId),
+      });
+
+      res.json(vendor);
+    } catch (error) {
+      console.error("Error creating vendor:", error);
+      res.status(500).json({ error: "Failed to create vendor" });
+    }
+  });
+
+  app.patch("/api/vendors/:id", requireAuth, async (req, res) => {
+    try {
+      const user = await getCurrentUser(req);
+      if (!user) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+
+      const { id } = req.params;
+      const vendor = await storage.getVendor(parseInt(id));
+      
+      if (!vendor) {
+        return res.status(404).json({ error: "Vendor not found" });
+      }
+
+      const workflow = await storage.getWorkflow(vendor.workflowId);
+      if (!workflow || (workflow.ownerId !== user.id && !user.isAdmin)) {
+        return res.status(403).json({ error: "Not authorized to modify this vendor" });
+      }
+
+      const { name, config } = req.body;
+      const updates: Record<string, unknown> = {};
+      if (name) updates.name = name;
+      if (config) updates.config = config;
+
+      const updated = await storage.updateVendor(parseInt(id), updates);
+      res.json(updated);
+    } catch (error) {
+      console.error("Error updating vendor:", error);
+      res.status(500).json({ error: "Failed to update vendor" });
+    }
+  });
+
+  app.delete("/api/vendors/:id", requireAuth, async (req, res) => {
+    try {
+      const user = await getCurrentUser(req);
+      if (!user) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+
+      const { id } = req.params;
+      const vendor = await storage.getVendor(parseInt(id));
+      
+      if (!vendor) {
+        return res.status(404).json({ error: "Vendor not found" });
+      }
+
+      const workflow = await storage.getWorkflow(vendor.workflowId);
+      if (!workflow || (workflow.ownerId !== user.id && !user.isAdmin)) {
+        return res.status(403).json({ error: "Not authorized to delete this vendor" });
+      }
+
+      await storage.deleteVendor(parseInt(id));
+      res.json({ message: "Vendor deleted" });
+    } catch (error) {
+      console.error("Error deleting vendor:", error);
+      res.status(500).json({ error: "Failed to delete vendor" });
+    }
+  });
+
+  // ==================== TEST CASE ROUTES ====================
+
+  app.get("/api/workflows/:workflowId/test-cases", requireAuth, async (req, res) => {
+    try {
+      const { workflowId } = req.params;
+      const testCases = await storage.getTestCasesByWorkflow(parseInt(workflowId));
+      res.json(testCases);
+    } catch (error) {
+      console.error("Error fetching test cases:", error);
+      res.status(500).json({ error: "Failed to fetch test cases" });
+    }
+  });
+
+  app.post("/api/workflows/:workflowId/test-cases", requireAuth, async (req, res) => {
+    try {
+      const user = await getCurrentUser(req);
+      if (!user) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+
+      const { workflowId } = req.params;
+      const workflow = await storage.getWorkflow(parseInt(workflowId));
+      
+      if (!workflow) {
+        return res.status(404).json({ error: "Workflow not found" });
+      }
+
+      if (workflow.ownerId !== user.id && !user.isAdmin) {
+        return res.status(403).json({ error: "Not authorized to modify this workflow" });
+      }
+
+      const { name, description, vendorId, region, config, isEnabled } = req.body;
+      
+      if (!name || !vendorId || !region) {
+        return res.status(400).json({ error: "Name, vendorId, and region required" });
+      }
+
+      if (!["na", "apac", "eu"].includes(region)) {
+        return res.status(400).json({ error: "Invalid region. Must be na, apac, or eu" });
+      }
+
+      const vendor = await storage.getVendor(vendorId);
+      if (!vendor || vendor.workflowId !== parseInt(workflowId)) {
+        return res.status(400).json({ error: "Invalid vendor for this workflow" });
+      }
+
+      const testCase = await storage.createTestCase({
+        name,
+        description,
+        workflowId: parseInt(workflowId),
+        vendorId,
+        region,
+        config: config || {},
+        isEnabled: isEnabled !== false,
+      });
+
+      res.json(testCase);
+    } catch (error) {
+      console.error("Error creating test case:", error);
+      res.status(500).json({ error: "Failed to create test case" });
+    }
+  });
+
+  app.patch("/api/test-cases/:id", requireAuth, async (req, res) => {
+    try {
+      const user = await getCurrentUser(req);
+      if (!user) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+
+      const { id } = req.params;
+      const testCase = await storage.getTestCase(parseInt(id));
+      
+      if (!testCase) {
+        return res.status(404).json({ error: "Test case not found" });
+      }
+
+      const workflow = await storage.getWorkflow(testCase.workflowId);
+      if (!workflow || (workflow.ownerId !== user.id && !user.isAdmin)) {
+        return res.status(403).json({ error: "Not authorized to modify this test case" });
+      }
+
+      const { name, description, config, isEnabled } = req.body;
+      const updates: Record<string, unknown> = {};
+      if (name) updates.name = name;
+      if (description !== undefined) updates.description = description;
+      if (config) updates.config = config;
+      if (typeof isEnabled === "boolean") updates.isEnabled = isEnabled;
+
+      const updated = await storage.updateTestCase(parseInt(id), updates);
+      res.json(updated);
+    } catch (error) {
+      console.error("Error updating test case:", error);
+      res.status(500).json({ error: "Failed to update test case" });
+    }
+  });
+
+  app.delete("/api/test-cases/:id", requireAuth, async (req, res) => {
+    try {
+      const user = await getCurrentUser(req);
+      if (!user) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+
+      const { id } = req.params;
+      const testCase = await storage.getTestCase(parseInt(id));
+      
+      if (!testCase) {
+        return res.status(404).json({ error: "Test case not found" });
+      }
+
+      const workflow = await storage.getWorkflow(testCase.workflowId);
+      if (!workflow || (workflow.ownerId !== user.id && !user.isAdmin)) {
+        return res.status(403).json({ error: "Not authorized to delete this test case" });
+      }
+
+      await storage.deleteTestCase(parseInt(id));
+      res.json({ message: "Test case deleted" });
+    } catch (error) {
+      console.error("Error deleting test case:", error);
+      res.status(500).json({ error: "Failed to delete test case" });
+    }
+  });
+
+  // ==================== WORKER TOKEN ROUTES (Admin only) ====================
+
+  app.get("/api/admin/worker-tokens", requireAuth, requireAdmin, async (req, res) => {
+    try {
+      const tokens = await storage.getAllWorkerTokens();
+      res.json(tokens.map(t => ({
+        id: t.id,
+        name: t.name,
+        region: t.region,
+        isRevoked: t.isRevoked,
+        lastUsedAt: t.lastUsedAt,
+        createdAt: t.createdAt,
+        token: t.token.slice(0, 8) + "...",
+      })));
+    } catch (error) {
+      console.error("Error fetching worker tokens:", error);
+      res.status(500).json({ error: "Failed to fetch worker tokens" });
+    }
+  });
+
+  app.post("/api/admin/worker-tokens", requireAuth, requireAdmin, async (req, res) => {
+    try {
+      const user = await getCurrentUser(req);
+      if (!user) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+
+      const { name, region } = req.body;
+      
+      if (!name || !region) {
+        return res.status(400).json({ error: "Name and region required" });
+      }
+
+      if (!["na", "apac", "eu"].includes(region)) {
+        return res.status(400).json({ error: "Invalid region. Must be na, apac, or eu" });
+      }
+
+      const token = generateToken();
+      
+      const workerToken = await storage.createWorkerToken({
+        name,
+        token,
+        region,
+        createdBy: user.id,
+        isRevoked: false,
+      });
+
+      res.json({
+        id: workerToken.id,
+        name: workerToken.name,
+        token: workerToken.token,
+        region: workerToken.region,
+        createdAt: workerToken.createdAt,
+      });
+    } catch (error) {
+      console.error("Error creating worker token:", error);
+      res.status(500).json({ error: "Failed to create worker token" });
+    }
+  });
+
+  app.post("/api/admin/worker-tokens/:id/revoke", requireAuth, requireAdmin, async (req, res) => {
+    try {
+      const { id } = req.params;
+      await storage.revokeWorkerToken(parseInt(id));
+      res.json({ message: "Worker token revoked" });
+    } catch (error) {
+      console.error("Error revoking worker token:", error);
+      res.status(500).json({ error: "Failed to revoke worker token" });
+    }
+  });
+
+  // ==================== WORKER ROUTES ====================
+
+  app.get("/api/workers", async (req, res) => {
+    try {
+      const workers = await storage.getAllWorkers();
+      res.json(workers.map(w => ({
+        id: w.id,
+        name: w.name,
+        region: w.region,
+        status: w.status,
+        lastHeartbeat: w.lastHeartbeat,
+        createdAt: w.createdAt,
+      })));
+    } catch (error) {
+      console.error("Error fetching workers:", error);
+      res.status(500).json({ error: "Failed to fetch workers" });
+    }
+  });
+
+  // Worker registration endpoint (uses worker token for auth)
+  app.post("/api/worker/register", async (req, res) => {
+    try {
+      const authHeader = req.headers.authorization;
+      if (!authHeader || !authHeader.startsWith("Bearer ")) {
+        return res.status(401).json({ error: "Worker token required" });
+      }
+
+      const token = authHeader.slice(7);
+      const workerToken = await storage.getWorkerTokenByToken(token);
+      
+      if (!workerToken) {
+        return res.status(401).json({ error: "Invalid worker token" });
+      }
+
+      if (workerToken.isRevoked) {
+        return res.status(403).json({ error: "Worker token has been revoked" });
+      }
+
+      const { name, metadata } = req.body;
+      
+      if (!name) {
+        return res.status(400).json({ error: "Worker name required" });
+      }
+
+      await storage.updateWorkerTokenLastUsed(workerToken.id);
+
+      const worker = await storage.createWorker({
+        name,
+        tokenId: workerToken.id,
+        region: workerToken.region,
+        status: "online",
+        metadata: metadata || {},
+      });
+
+      await storage.updateWorkerHeartbeat(worker.id);
+
+      res.json({
+        id: worker.id,
+        name: worker.name,
+        region: worker.region,
+        status: worker.status,
+      });
+    } catch (error) {
+      console.error("Error registering worker:", error);
+      res.status(500).json({ error: "Failed to register worker" });
+    }
+  });
+
+  // Worker heartbeat endpoint
+  app.post("/api/worker/heartbeat", async (req, res) => {
+    try {
+      const authHeader = req.headers.authorization;
+      if (!authHeader || !authHeader.startsWith("Bearer ")) {
+        return res.status(401).json({ error: "Worker token required" });
+      }
+
+      const token = authHeader.slice(7);
+      const workerToken = await storage.getWorkerTokenByToken(token);
+      
+      if (!workerToken || workerToken.isRevoked) {
+        return res.status(401).json({ error: "Invalid or revoked worker token" });
+      }
+
+      const { workerId, status } = req.body;
+      
+      if (!workerId) {
+        return res.status(400).json({ error: "Worker ID required" });
+      }
+
+      const worker = await storage.getWorker(workerId);
+      if (!worker || worker.tokenId !== workerToken.id) {
+        return res.status(403).json({ error: "Worker not found or token mismatch" });
+      }
+
+      await storage.updateWorkerHeartbeat(workerId);
+      if (status && ["online", "offline", "busy"].includes(status)) {
+        await storage.updateWorker(workerId, { status });
+      }
+
+      res.json({ message: "Heartbeat received" });
+    } catch (error) {
+      console.error("Error processing heartbeat:", error);
+      res.status(500).json({ error: "Failed to process heartbeat" });
+    }
+  });
+
+  // ==================== JOB ROUTES ====================
+
+  // Get pending jobs for a worker's region
+  app.get("/api/worker/jobs", async (req, res) => {
+    try {
+      const authHeader = req.headers.authorization;
+      if (!authHeader || !authHeader.startsWith("Bearer ")) {
+        return res.status(401).json({ error: "Worker token required" });
+      }
+
+      const token = authHeader.slice(7);
+      const workerToken = await storage.getWorkerTokenByToken(token);
+      
+      if (!workerToken || workerToken.isRevoked) {
+        return res.status(401).json({ error: "Invalid or revoked worker token" });
+      }
+
+      const jobs = await storage.getPendingJobsByRegion(workerToken.region);
+      
+      const jobsWithDetails = await Promise.all(jobs.map(async (job) => {
+        const testCase = await storage.getTestCase(job.testCaseId);
+        const vendor = testCase ? await storage.getVendor(testCase.vendorId) : null;
+        return {
+          id: job.id,
+          testCaseId: job.testCaseId,
+          testCaseName: testCase?.name,
+          vendorType: vendor?.type,
+          vendorConfig: vendor?.config,
+          testCaseConfig: testCase?.config,
+          region: job.region,
+          status: job.status,
+          createdAt: job.createdAt,
+        };
+      }));
+
+      res.json(jobsWithDetails);
+    } catch (error) {
+      console.error("Error fetching jobs:", error);
+      res.status(500).json({ error: "Failed to fetch jobs" });
+    }
+  });
+
+  // Claim a job
+  app.post("/api/worker/jobs/:jobId/claim", async (req, res) => {
+    try {
+      const authHeader = req.headers.authorization;
+      if (!authHeader || !authHeader.startsWith("Bearer ")) {
+        return res.status(401).json({ error: "Worker token required" });
+      }
+
+      const token = authHeader.slice(7);
+      const workerToken = await storage.getWorkerTokenByToken(token);
+      
+      if (!workerToken || workerToken.isRevoked) {
+        return res.status(401).json({ error: "Invalid or revoked worker token" });
+      }
+
+      const { jobId } = req.params;
+      const { workerId } = req.body;
+
+      if (!workerId) {
+        return res.status(400).json({ error: "Worker ID required" });
+      }
+
+      const worker = await storage.getWorker(workerId);
+      if (!worker || worker.tokenId !== workerToken.id) {
+        return res.status(403).json({ error: "Worker not found or token mismatch" });
+      }
+
+      const job = await storage.claimJob(parseInt(jobId), workerId);
+      if (!job) {
+        return res.status(409).json({ error: "Job already claimed or not found" });
+      }
+
+      await storage.updateWorker(workerId, { status: "busy" });
+
+      res.json(job);
+    } catch (error) {
+      console.error("Error claiming job:", error);
+      res.status(500).json({ error: "Failed to claim job" });
+    }
+  });
+
+  // Complete a job and submit results
+  app.post("/api/worker/jobs/:jobId/complete", async (req, res) => {
+    try {
+      const authHeader = req.headers.authorization;
+      if (!authHeader || !authHeader.startsWith("Bearer ")) {
+        return res.status(401).json({ error: "Worker token required" });
+      }
+
+      const token = authHeader.slice(7);
+      const workerToken = await storage.getWorkerTokenByToken(token);
+      
+      if (!workerToken || workerToken.isRevoked) {
+        return res.status(401).json({ error: "Invalid or revoked worker token" });
+      }
+
+      const { jobId } = req.params;
+      const { workerId, error: jobError, results } = req.body;
+
+      if (!workerId) {
+        return res.status(400).json({ error: "Worker ID required" });
+      }
+
+      const worker = await storage.getWorker(workerId);
+      if (!worker || worker.tokenId !== workerToken.id) {
+        return res.status(403).json({ error: "Worker not found or token mismatch" });
+      }
+
+      const job = await storage.getJob(parseInt(jobId));
+      if (!job || job.workerId !== workerId) {
+        return res.status(403).json({ error: "Job not found or not assigned to this worker" });
+      }
+
+      await storage.completeJob(parseInt(jobId), jobError);
+      await storage.updateWorker(workerId, { status: "online" });
+
+      if (results && !jobError) {
+        const testCase = await storage.getTestCase(job.testCaseId);
+        const vendor = testCase ? await storage.getVendor(testCase.vendorId) : null;
+        const workflow = testCase ? await storage.getWorkflow(testCase.workflowId) : null;
+
+        const regionMap: Record<string, string> = {
+          na: "North America",
+          apac: "Asia Pacific",
+          eu: "Europe",
+        };
+
+        const vendorNameMap: Record<string, string> = {
+          livekit_agent: "LiveKIT Agent",
+          agora_convoai: "Agora ConvoAI",
+        };
+
+        await storage.createBenchmarkResult({
+          provider: vendor ? vendorNameMap[vendor.type] || vendor.name : "Unknown",
+          region: regionMap[job.region] || job.region,
+          responseLatency: results.responseLatency || 0,
+          interruptLatency: results.interruptLatency || 0,
+          networkResilience: results.networkResilience || 0,
+          naturalness: results.naturalness || 0,
+          noiseReduction: results.noiseReduction || 0,
+          workflowId: workflow?.id,
+          testSetId: null,
+        });
+      }
+
+      res.json({ message: "Job completed" });
+    } catch (error) {
+      console.error("Error completing job:", error);
+      res.status(500).json({ error: "Failed to complete job" });
+    }
+  });
+
+  // Create jobs from test cases (triggered by user or scheduler)
+  app.post("/api/workflows/:workflowId/run", requireAuth, async (req, res) => {
+    try {
+      const user = await getCurrentUser(req);
+      if (!user) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+
+      const { workflowId } = req.params;
+      const workflow = await storage.getWorkflow(parseInt(workflowId));
+      
+      if (!workflow) {
+        return res.status(404).json({ error: "Workflow not found" });
+      }
+
+      if (workflow.ownerId !== user.id && !user.isAdmin && user.plan !== "principal") {
+        return res.status(403).json({ error: "Not authorized to run this workflow" });
+      }
+
+      const testCases = await storage.getTestCasesByWorkflow(parseInt(workflowId));
+      const enabledTestCases = testCases.filter(tc => tc.isEnabled);
+
+      if (enabledTestCases.length === 0) {
+        return res.status(400).json({ error: "No enabled test cases in this workflow" });
+      }
+
+      const createdJobs = [];
+      for (const testCase of enabledTestCases) {
+        const job = await storage.createJob({
+          testCaseId: testCase.id,
+          region: testCase.region,
+          status: "pending",
+        });
+        createdJobs.push(job);
+      }
+
+      res.json({ 
+        message: `Created ${createdJobs.length} jobs`,
+        jobs: createdJobs,
+      });
+    } catch (error) {
+      console.error("Error running workflow:", error);
+      res.status(500).json({ error: "Failed to run workflow" });
     }
   });
 

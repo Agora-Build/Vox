@@ -12,8 +12,9 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import { Plus, Workflow, Globe, Lock, Star, StarOff } from "lucide-react";
+import { Plus, Workflow, Globe, Lock, Star, StarOff, ChevronRight } from "lucide-react";
 import { useState } from "react";
+import { useLocation } from "wouter";
 import type { Workflow as WorkflowType } from "@shared/schema";
 
 interface AuthStatus {
@@ -27,6 +28,7 @@ interface AuthStatus {
 
 export default function ConsoleWorkflows() {
   const { toast } = useToast();
+  const [, setLocation] = useLocation();
   const [createOpen, setCreateOpen] = useState(false);
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
@@ -181,13 +183,21 @@ export default function ConsoleWorkflows() {
               </TableHeader>
               <TableBody>
                 {workflows.map((workflow) => (
-                  <TableRow key={workflow.id} data-testid={`row-workflow-${workflow.id}`}>
+                  <TableRow 
+                    key={workflow.id} 
+                    data-testid={`row-workflow-${workflow.id}`}
+                    className="cursor-pointer hover:bg-muted/50"
+                    onClick={() => setLocation(`/console/workflows/${workflow.id}`)}
+                  >
                     <TableCell>
-                      <div>
-                        <div className="font-medium">{workflow.name}</div>
-                        {workflow.description && (
-                          <div className="text-sm text-muted-foreground">{workflow.description}</div>
-                        )}
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <div className="font-medium">{workflow.name}</div>
+                          {workflow.description && (
+                            <div className="text-sm text-muted-foreground">{workflow.description}</div>
+                          )}
+                        </div>
+                        <ChevronRight className="h-4 w-4 text-muted-foreground" />
                       </div>
                     </TableCell>
                     <TableCell>

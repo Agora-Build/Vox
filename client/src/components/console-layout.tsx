@@ -20,7 +20,7 @@ import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import { Users, Workflow, FileText, LogOut, Home, Shield, Crown, Sparkles, Zap } from "lucide-react";
+import { Users, Workflow, FileText, LogOut, Home, Shield, Crown, Sparkles, Zap, Server, Key } from "lucide-react";
 import { ThemeToggle } from "@/components/theme-toggle";
 
 interface AuthStatus {
@@ -108,6 +108,22 @@ export default function ConsoleLayout({ children }: ConsoleLayoutProps) {
     icon: FileText,
     active: location === "/console/test-sets",
   });
+
+  navItems.push({
+    title: "Workers",
+    url: "/console/workers",
+    icon: Server,
+    active: location === "/console/workers",
+  });
+
+  if (user?.isAdmin) {
+    navItems.push({
+      title: "Worker Tokens",
+      url: "/console/worker-tokens",
+      icon: Key,
+      active: location === "/console/worker-tokens",
+    });
+  }
 
   return (
     <SidebarProvider style={style as React.CSSProperties}>
