@@ -450,6 +450,43 @@ export async function registerRoutes(
     }
   });
 
+  app.patch("/api/workflows/:id", requireAuth, async (req, res) => {
+    try {
+      const user = await getCurrentUser(req);
+      if (!user) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+
+      const { id } = req.params;
+      const workflow = await storage.getWorkflow(parseInt(id));
+      
+      if (!workflow) {
+        return res.status(404).json({ error: "Workflow not found" });
+      }
+
+      if (workflow.ownerId !== user.id && !user.isAdmin) {
+        return res.status(403).json({ error: "Not authorized to modify this workflow" });
+      }
+
+      const { name, description, visibility } = req.body;
+      const updates: Record<string, unknown> = {};
+      if (name) updates.name = name;
+      if (description !== undefined) updates.description = description;
+      if (visibility) {
+        if (visibility === "private" && user.plan === "basic") {
+          return res.status(403).json({ error: "Premium plan required for private workflows" });
+        }
+        updates.visibility = visibility;
+      }
+
+      const updated = await storage.updateWorkflow(parseInt(id), updates);
+      res.json(updated);
+    } catch (error) {
+      console.error("Error updating workflow:", error);
+      res.status(500).json({ error: "Failed to update workflow" });
+    }
+  });
+
   app.post("/api/workflows", requireAuth, async (req, res) => {
     try {
       const user = await getCurrentUser(req);
