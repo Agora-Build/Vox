@@ -1,11 +1,7 @@
 import type { Express } from "express";
 import { createServer, type Server } from "http";
-import { storage, db } from "./storage";
-import { drizzle } from "drizzle-orm/node-postgres";
-import pkg from "pg";
-const { Pool } = pkg;
-import { benchmarkResults, systemConfig } from "@shared/schema";
-import { count } from "drizzle-orm";
+import { storage, hashToken, generateSecureToken } from "./storage";
+import { generateProviderId } from "@shared/schema";
 import { 
   hashPassword, 
   verifyPassword, 
@@ -24,6 +20,8 @@ export async function registerRoutes(
   app: Express
 ): Promise<Server> {
   
+  // ==================== AUTH ROUTES ====================
+
   app.get("/api/auth/status", async (req, res) => {
     try {
       const initialized = await isSystemInitialized();
@@ -38,6 +36,7 @@ export async function registerRoutes(
           isAdmin: user.isAdmin,
           isEnabled: user.isEnabled,
           emailVerified: !!user.emailVerifiedAt,
+          organizationId: user.organizationId,
         } : null 
       });
     } catch (error) {
@@ -89,12 +88,32 @@ export async function registerRoutes(
       const scout = await storage.createUser({
         username: "Scout",
         email: "scout@vox.internal",
-        passwordHash: "NEEDS_ACTIVATION",
+        passwordHash: null,
         plan: "principal",
         isAdmin: false,
         isEnabled: false,
         emailVerifiedAt: null,
       });
+
+      // Create default providers (ID is generated automatically)
+      await storage.createProvider({
+        name: "Agora ConvoAI Engine",
+        sku: "convoai",
+        description: "Agora's Conversational AI Engine",
+      });
+
+      await storage.createProvider({
+        name: "LiveKit Agents",
+        sku: "convoai",
+        description: "LiveKit's Real-time Communication Agents",
+      });
+
+      // Set default pricing config (prices in cents)
+      await storage.setPricingConfig({ name: "Solo Premium", pricePerSeat: 500, minSeats: 1, maxSeats: 1, discountPercent: 0, isActive: true });
+      await storage.setPricingConfig({ name: "Org Premium (1-2 seats)", pricePerSeat: 600, minSeats: 1, maxSeats: 2, discountPercent: 0, isActive: true });
+      await storage.setPricingConfig({ name: "Org Premium (3-5 seats)", pricePerSeat: 600, minSeats: 3, maxSeats: 5, discountPercent: 10, isActive: true });
+      await storage.setPricingConfig({ name: "Org Premium (6-10 seats)", pricePerSeat: 600, minSeats: 6, maxSeats: 10, discountPercent: 15, isActive: true });
+      await storage.setPricingConfig({ name: "Org Premium (11+ seats)", pricePerSeat: 600, minSeats: 11, maxSeats: 9999, discountPercent: 25, isActive: true });
 
       await markSystemInitialized();
 
@@ -126,6 +145,10 @@ export async function registerRoutes(
 
       if (!user.isEnabled) {
         return res.status(403).json({ error: "Account is disabled" });
+      }
+
+      if (!user.passwordHash) {
+        return res.status(401).json({ error: "Account requires activation" });
       }
 
       const valid = await verifyPassword(password, user.passwordHash);
@@ -160,6 +183,8 @@ export async function registerRoutes(
     });
   });
 
+  // ==================== ADMIN USER ROUTES ====================
+
   app.get("/api/admin/users", requireAuth, requireAdmin, async (req, res) => {
     try {
       const users = await storage.getAllUsers();
@@ -171,6 +196,7 @@ export async function registerRoutes(
         isAdmin: u.isAdmin,
         isEnabled: u.isEnabled,
         emailVerified: !!u.emailVerifiedAt,
+        organizationId: u.organizationId,
         createdAt: u.createdAt,
       })));
     } catch (error) {
@@ -184,12 +210,12 @@ export async function registerRoutes(
       const { id } = req.params;
       const { isEnabled, isAdmin, plan } = req.body;
       
-      const updates: any = {};
+      const updates: Record<string, unknown> = {};
       if (typeof isEnabled === "boolean") updates.isEnabled = isEnabled;
       if (typeof isAdmin === "boolean") updates.isAdmin = isAdmin;
-      if (plan && ["basic", "premium", "principal"].includes(plan)) updates.plan = plan;
+      if (plan && ["basic", "premium", "principal", "fellow"].includes(plan)) updates.plan = plan;
       
-      const updated = await storage.updateUser(id, updates);
+      const updated = await storage.updateUser(parseInt(id), updates);
       if (!updated) {
         return res.status(404).json({ error: "User not found" });
       }
@@ -223,13 +249,14 @@ export async function registerRoutes(
       }
 
       const token = generateToken();
+      const tokenHash = hashToken(token);
       const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
       
       await storage.createInviteToken(
         email, 
-        plan || "basic", 
+        (plan || "basic") as "basic" | "premium" | "principal" | "fellow", 
         isAdmin || false, 
-        token, 
+        tokenHash, 
         currentUser?.id || null, 
         expiresAt
       );
@@ -250,7 +277,7 @@ export async function registerRoutes(
       const { id } = req.params;
       const { email } = req.body;
       
-      const user = await storage.getUser(id);
+      const user = await storage.getUser(parseInt(id));
       if (!user) {
         return res.status(404).json({ error: "User not found" });
       }
@@ -260,13 +287,14 @@ export async function registerRoutes(
         if (existingEmail) {
           return res.status(400).json({ error: "Email already in use" });
         }
-        await storage.updateUser(id, { email });
+        await storage.updateUser(parseInt(id), { email });
       }
 
       const token = generateToken();
+      const tokenHash = hashToken(token);
       const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
       
-      await storage.createActivationToken(id, token, expiresAt);
+      await storage.createActivationToken(parseInt(id), tokenHash, expiresAt);
 
       res.json({ 
         message: "Activation link created",
@@ -283,8 +311,9 @@ export async function registerRoutes(
   app.get("/api/auth/activation/:token", async (req, res) => {
     try {
       const { token } = req.params;
+      const tokenHash = hashToken(token);
       
-      const activation = await storage.getActivationToken(token);
+      const activation = await storage.getActivationTokenByHash(tokenHash);
       if (!activation) {
         return res.status(400).json({ error: "Invalid activation token" });
       }
@@ -325,7 +354,8 @@ export async function registerRoutes(
         return res.status(400).json({ error: "Password must be at least 8 characters" });
       }
 
-      const activation = await storage.getActivationToken(token);
+      const tokenHash = hashToken(token);
+      const activation = await storage.getActivationTokenByHash(tokenHash);
       if (!activation) {
         return res.status(400).json({ error: "Invalid activation token" });
       }
@@ -338,15 +368,15 @@ export async function registerRoutes(
         return res.status(400).json({ error: "Activation link expired" });
       }
 
-      const passwordHash = await hashPassword(password);
+      const passwordHashNew = await hashPassword(password);
       
       await storage.updateUser(activation.userId, { 
-        passwordHash,
+        passwordHash: passwordHashNew,
         isEnabled: true,
         emailVerifiedAt: new Date(),
       });
 
-      await storage.markActivationTokenUsed(token);
+      await storage.markActivationTokenUsed(tokenHash);
 
       const user = await storage.getUser(activation.userId);
 
@@ -376,7 +406,8 @@ export async function registerRoutes(
         return res.status(400).json({ error: "Missing required fields" });
       }
 
-      const invite = await storage.getInviteToken(token);
+      const tokenHash = hashToken(token);
+      const invite = await storage.getInviteTokenByHash(tokenHash);
       if (!invite) {
         return res.status(400).json({ error: "Invalid invite token" });
       }
@@ -394,19 +425,20 @@ export async function registerRoutes(
         return res.status(400).json({ error: "Username already taken" });
       }
 
-      const passwordHash = await hashPassword(password);
+      const passwordHashNew = await hashPassword(password);
       
       const user = await storage.createUser({
         username,
         email: invite.email,
-        passwordHash,
-        plan: invite.plan as "basic" | "premium" | "principal",
+        passwordHash: passwordHashNew,
+        plan: invite.plan as "basic" | "premium" | "principal" | "fellow",
         isAdmin: invite.isAdmin,
         isEnabled: true,
         emailVerifiedAt: new Date(),
+        organizationId: invite.organizationId,
       });
 
-      await storage.markInviteTokenUsed(token);
+      await storage.markInviteTokenUsed(tokenHash);
 
       req.session.userId = user.id;
 
@@ -425,10 +457,117 @@ export async function registerRoutes(
     }
   });
 
+  // ==================== PROVIDER ROUTES ====================
+
+  app.get("/api/providers", async (req, res) => {
+    try {
+      const providers = await storage.getAllProviders();
+      res.json(providers);
+    } catch (error) {
+      console.error("Error fetching providers:", error);
+      res.status(500).json({ error: "Failed to fetch providers" });
+    }
+  });
+
+  app.post("/api/providers", requireAuth, requireAdmin, async (req, res) => {
+    try {
+      const { name, sku, description } = req.body;
+      
+      if (!name || !sku) {
+        return res.status(400).json({ error: "Name and SKU required" });
+      }
+
+      if (!["convoai", "rtc"].includes(sku)) {
+        return res.status(400).json({ error: "Invalid SKU. Must be convoai or rtc" });
+      }
+
+      const provider = await storage.createProvider({
+        name,
+        sku,
+        description,
+      });
+
+      res.json(provider);
+    } catch (error) {
+      console.error("Error creating provider:", error);
+      res.status(500).json({ error: "Failed to create provider" });
+    }
+  });
+
+  // ==================== PROJECT ROUTES ====================
+
+  app.get("/api/projects", requireAuth, async (req, res) => {
+    try {
+      const user = await getCurrentUser(req);
+      if (!user) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+      const projects = await storage.getProjectsByOwner(user.id);
+      res.json(projects);
+    } catch (error) {
+      console.error("Error fetching projects:", error);
+      res.status(500).json({ error: "Failed to fetch projects" });
+    }
+  });
+
+  app.post("/api/projects", requireAuth, async (req, res) => {
+    try {
+      const user = await getCurrentUser(req);
+      if (!user) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+
+      const { name, description } = req.body;
+      
+      if (!name) {
+        return res.status(400).json({ error: "Name required" });
+      }
+
+      // Check project limits
+      const projectCount = await storage.countProjectsByOwner(user.id);
+      const maxProjects = user.plan === "basic" ? 5 : 20;
+      
+      if (projectCount >= maxProjects) {
+        return res.status(403).json({ error: `Maximum ${maxProjects} projects allowed for ${user.plan} plan` });
+      }
+
+      const project = await storage.createProject({
+        name,
+        description,
+        ownerId: user.id,
+        organizationId: user.organizationId,
+      });
+
+      res.json(project);
+    } catch (error) {
+      console.error("Error creating project:", error);
+      res.status(500).json({ error: "Failed to create project" });
+    }
+  });
+
+  app.get("/api/projects/:id", requireAuth, async (req, res) => {
+    try {
+      const { id } = req.params;
+      const project = await storage.getProject(parseInt(id));
+      if (!project) {
+        return res.status(404).json({ error: "Project not found" });
+      }
+      res.json(project);
+    } catch (error) {
+      console.error("Error fetching project:", error);
+      res.status(500).json({ error: "Failed to fetch project" });
+    }
+  });
+
+  // ==================== WORKFLOW ROUTES ====================
+
   app.get("/api/workflows", requireAuth, async (req, res) => {
     try {
       const user = await getCurrentUser(req);
-      const workflows = await storage.getWorkflows(user?.id);
+      if (!user) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+      const workflows = await storage.getWorkflowsByOwner(user.id);
       res.json(workflows);
     } catch (error) {
       console.error("Error fetching workflows:", error);
@@ -450,6 +589,51 @@ export async function registerRoutes(
     }
   });
 
+  app.post("/api/workflows", requireAuth, async (req, res) => {
+    try {
+      const user = await getCurrentUser(req);
+      if (!user) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+
+      const { name, description, projectId, providerId, visibility } = req.body;
+      
+      if (!name) {
+        return res.status(400).json({ error: "Name required" });
+      }
+
+      if (visibility === "private" && user.plan === "basic") {
+        return res.status(403).json({ error: "Premium plan required for private workflows" });
+      }
+
+      // Check workflow limits per project
+      if (projectId) {
+        const workflowCount = await storage.countWorkflowsByProject(projectId);
+        const maxWorkflows = user.plan === "basic" ? 10 : 20;
+        
+        if (workflowCount >= maxWorkflows) {
+          return res.status(403).json({ error: `Maximum ${maxWorkflows} workflows per project allowed for ${user.plan} plan` });
+        }
+      }
+
+      const workflow = await storage.createWorkflow({
+        name,
+        description,
+        ownerId: user.id,
+        projectId,
+        providerId,
+        visibility: visibility || "public",
+        isMainline: false,
+        config: {},
+      });
+
+      res.json(workflow);
+    } catch (error) {
+      console.error("Error creating workflow:", error);
+      res.status(500).json({ error: "Failed to create workflow" });
+    }
+  });
+
   app.patch("/api/workflows/:id", requireAuth, async (req, res) => {
     try {
       const user = await getCurrentUser(req);
@@ -468,10 +652,11 @@ export async function registerRoutes(
         return res.status(403).json({ error: "Not authorized to modify this workflow" });
       }
 
-      const { name, description, visibility } = req.body;
+      const { name, description, visibility, config } = req.body;
       const updates: Record<string, unknown> = {};
       if (name) updates.name = name;
       if (description !== undefined) updates.description = description;
+      if (config) updates.config = config;
       if (visibility) {
         if (visibility === "private" && user.plan === "basic") {
           return res.status(403).json({ error: "Premium plan required for private workflows" });
@@ -484,38 +669,6 @@ export async function registerRoutes(
     } catch (error) {
       console.error("Error updating workflow:", error);
       res.status(500).json({ error: "Failed to update workflow" });
-    }
-  });
-
-  app.post("/api/workflows", requireAuth, async (req, res) => {
-    try {
-      const user = await getCurrentUser(req);
-      if (!user) {
-        return res.status(401).json({ error: "Not authenticated" });
-      }
-
-      const { name, description, visibility } = req.body;
-      
-      if (!name) {
-        return res.status(400).json({ error: "Name required" });
-      }
-
-      if (visibility === "private" && user.plan === "basic") {
-        return res.status(403).json({ error: "Premium plan required for private workflows" });
-      }
-
-      const workflow = await storage.createWorkflow({
-        name,
-        description,
-        ownerId: user.id,
-        visibility: visibility || "public",
-        isMainline: false,
-      });
-
-      res.json(workflow);
-    } catch (error) {
-      console.error("Error creating workflow:", error);
-      res.status(500).json({ error: "Failed to create workflow" });
     }
   });
 
@@ -545,468 +698,86 @@ export async function registerRoutes(
     }
   });
 
-  app.get("/api/test-sets", requireAuth, async (req, res) => {
+  // ==================== EVAL SET ROUTES ====================
+
+  app.get("/api/eval-sets", requireAuth, async (req, res) => {
     try {
       const user = await getCurrentUser(req);
-      const testSets = await storage.getTestSets(user?.id);
-      res.json(testSets);
+      if (!user) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+      const evalSets = await storage.getEvalSetsByOwner(user.id);
+      res.json(evalSets);
     } catch (error) {
-      console.error("Error fetching test sets:", error);
-      res.status(500).json({ error: "Failed to fetch test sets" });
+      console.error("Error fetching eval sets:", error);
+      res.status(500).json({ error: "Failed to fetch eval sets" });
     }
   });
 
-  app.post("/api/test-sets", requireAuth, async (req, res) => {
+  app.post("/api/eval-sets", requireAuth, async (req, res) => {
     try {
       const user = await getCurrentUser(req);
       if (!user) {
         return res.status(401).json({ error: "Not authenticated" });
       }
 
-      const { name, description, visibility } = req.body;
+      const { name, description, visibility, config } = req.body;
       
       if (!name) {
         return res.status(400).json({ error: "Name required" });
       }
 
       if (visibility === "private" && user.plan === "basic") {
-        return res.status(403).json({ error: "Premium plan required for private test sets" });
+        return res.status(403).json({ error: "Premium plan required for private eval sets" });
       }
 
-      const testSet = await storage.createTestSet({
+      const evalSet = await storage.createEvalSet({
         name,
         description,
         ownerId: user.id,
         visibility: visibility || "public",
         isMainline: false,
+        config: config || {},
       });
 
-      res.json(testSet);
+      res.json(evalSet);
     } catch (error) {
-      console.error("Error creating test set:", error);
-      res.status(500).json({ error: "Failed to create test set" });
+      console.error("Error creating eval set:", error);
+      res.status(500).json({ error: "Failed to create eval set" });
     }
   });
 
-  app.patch("/api/test-sets/:id/mainline", requireAuth, requirePrincipal, async (req, res) => {
+  app.patch("/api/eval-sets/:id/mainline", requireAuth, requirePrincipal, async (req, res) => {
     try {
       const { id } = req.params;
       const { isMainline } = req.body;
       
-      const testSet = await storage.getTestSet(parseInt(id));
-      if (!testSet) {
-        return res.status(404).json({ error: "Test set not found" });
+      const evalSet = await storage.getEvalSet(parseInt(id));
+      if (!evalSet) {
+        return res.status(404).json({ error: "Eval set not found" });
       }
 
-      if (isMainline && testSet.visibility === "private") {
-        return res.status(400).json({ error: "Mainline test sets must be public" });
+      if (isMainline && evalSet.visibility === "private") {
+        return res.status(400).json({ error: "Mainline eval sets must be public" });
       }
 
-      const updated = await storage.updateTestSet(parseInt(id), { 
+      const updated = await storage.updateEvalSet(parseInt(id), { 
         isMainline,
-        visibility: isMainline ? "public" : testSet.visibility,
+        visibility: isMainline ? "public" : evalSet.visibility,
       });
       
       res.json(updated);
     } catch (error) {
-      console.error("Error updating test set mainline:", error);
-      res.status(500).json({ error: "Failed to update test set" });
+      console.error("Error updating eval set mainline:", error);
+      res.status(500).json({ error: "Failed to update eval set" });
     }
   });
 
-  app.get("/api/metrics/realtime", async (req, res) => {
+  // ==================== EVAL AGENT TOKEN ROUTES (Admin only) ====================
+
+  app.get("/api/admin/eval-agent-tokens", requireAuth, requireAdmin, async (req, res) => {
     try {
-      const results = await storage.getBenchmarkResults(50);
-      res.json(results);
-    } catch (error) {
-      console.error("Error fetching realtime metrics:", error);
-      res.status(500).json({ error: "Failed to fetch metrics" });
-    }
-  });
-
-  app.get("/api/metrics/leaderboard", async (req, res) => {
-    try {
-      const results = await storage.getLeaderboardData();
-      
-      const providerRegionMap = new Map<string, { 
-        provider: string; 
-        region: string; 
-        responseLatencies: number[]; 
-        interruptLatencies: number[];
-        networkResiliences: number[];
-        naturalnesses: number[];
-        noiseReductions: number[];
-      }>();
-      
-      for (const result of results) {
-        const key = `${result.provider}-${result.region}`;
-        if (!providerRegionMap.has(key)) {
-          providerRegionMap.set(key, {
-            provider: result.provider,
-            region: result.region,
-            responseLatencies: [],
-            interruptLatencies: [],
-            networkResiliences: [],
-            naturalnesses: [],
-            noiseReductions: [],
-          });
-        }
-        const group = providerRegionMap.get(key)!;
-        group.responseLatencies.push(result.responseLatency);
-        group.interruptLatencies.push(result.interruptLatency);
-        group.networkResiliences.push(result.networkResilience);
-        group.naturalnesses.push(result.naturalness);
-        group.noiseReductions.push(result.noiseReduction);
-      }
-      
-      const avg = (arr: number[]) => arr.length > 0 ? arr.reduce((a, b) => a + b, 0) / arr.length : 0;
-      
-      const leaderboard = Array.from(providerRegionMap.values())
-        .map((group) => ({
-          provider: group.provider,
-          region: group.region,
-          responseLatency: Math.round(avg(group.responseLatencies)),
-          interruptLatency: Math.round(avg(group.interruptLatencies)),
-          networkResilience: Math.round(avg(group.networkResiliences)),
-          naturalness: Math.round(avg(group.naturalnesses) * 10) / 10,
-          noiseReduction: Math.round(avg(group.noiseReductions)),
-        }))
-        .sort((a, b) => a.responseLatency - b.responseLatency)
-        .map((entry, index) => ({
-          rank: index + 1,
-          ...entry,
-        }));
-      
-      res.json(leaderboard);
-    } catch (error) {
-      console.error("Error fetching leaderboard:", error);
-      res.status(500).json({ error: "Failed to fetch leaderboard" });
-    }
-  });
-
-  app.get("/api/config", async (req, res) => {
-    try {
-      const configs = await storage.getAllConfig();
-      const configObject: Record<string, string> = {};
-      for (const config of configs) {
-        configObject[config.key] = config.value;
-      }
-      res.json(configObject);
-    } catch (error) {
-      console.error("Error fetching config:", error);
-      res.status(500).json({ error: "Failed to fetch config" });
-    }
-  });
-
-  app.post("/api/seed", async (req, res) => {
-    try {
-      const pool = new Pool({ connectionString: process.env.DATABASE_URL });
-      const seedDb = drizzle(pool);
-      
-      const existingCount = await seedDb.select({ count: count() }).from(benchmarkResults);
-      if (existingCount[0].count > 0) {
-        res.json({ message: "Database already seeded", count: existingCount[0].count });
-        return;
-      }
-      
-      await seedDb.insert(systemConfig).values([
-        { key: "test_interval_hours", value: "8" },
-        { key: "total_tests_24h", value: "1284" },
-      ]).onConflictDoNothing();
-      
-      const providers = ["Agora ConvoAI", "LiveKIT Agent"];
-      const regions = ["North America (East)", "Europe (Frankfurt)", "Asia (Singapore)"];
-      
-      const baseMetrics: Record<string, Record<string, { response: number; interrupt: number; network: number; natural: number; noise: number }>> = {
-        "Agora ConvoAI": {
-          "North America (East)": { response: 1180, interrupt: 450, network: 98, natural: 4.8, noise: 95 },
-          "Europe (Frankfurt)": { response: 1250, interrupt: 510, network: 97, natural: 4.8, noise: 94 },
-          "Asia (Singapore)": { response: 1350, interrupt: 580, network: 95, natural: 4.7, noise: 93 },
-        },
-        "LiveKIT Agent": {
-          "North America (East)": { response: 1220, interrupt: 490, network: 96, natural: 4.7, noise: 92 },
-          "Europe (Frankfurt)": { response: 1300, interrupt: 540, network: 94, natural: 4.6, noise: 90 },
-          "Asia (Singapore)": { response: 1420, interrupt: 620, network: 92, natural: 4.5, noise: 89 },
-        },
-      };
-      
-      const now = new Date();
-      const results = [];
-      
-      for (let hoursAgo = 24; hoursAgo >= 0; hoursAgo -= 1) {
-        const timestamp = new Date(now.getTime() - hoursAgo * 60 * 60 * 1000);
-        
-        for (const provider of providers) {
-          for (const region of regions) {
-            const base = baseMetrics[provider][region];
-            const variation = () => (Math.random() - 0.5) * 0.1;
-            
-            results.push({
-              provider,
-              region,
-              responseLatency: Math.round(base.response * (1 + variation())),
-              interruptLatency: Math.round(base.interrupt * (1 + variation())),
-              networkResilience: Math.round(base.network * (1 + variation() * 0.5)),
-              naturalness: Math.round((base.natural * (1 + variation() * 0.2)) * 10) / 10,
-              noiseReduction: Math.round(base.noise * (1 + variation() * 0.5)),
-              timestamp,
-            });
-          }
-        }
-      }
-      
-      await seedDb.insert(benchmarkResults).values(results);
-      
-      res.json({ message: "Database seeded successfully", count: results.length });
-    } catch (error) {
-      console.error("Error seeding database:", error);
-      res.status(500).json({ error: "Failed to seed database" });
-    }
-  });
-
-  // ==================== VENDOR ROUTES ====================
-  
-  app.get("/api/workflows/:workflowId/vendors", requireAuth, async (req, res) => {
-    try {
-      const { workflowId } = req.params;
-      const vendors = await storage.getVendorsByWorkflow(parseInt(workflowId));
-      res.json(vendors);
-    } catch (error) {
-      console.error("Error fetching vendors:", error);
-      res.status(500).json({ error: "Failed to fetch vendors" });
-    }
-  });
-
-  app.post("/api/workflows/:workflowId/vendors", requireAuth, async (req, res) => {
-    try {
-      const user = await getCurrentUser(req);
-      if (!user) {
-        return res.status(401).json({ error: "Not authenticated" });
-      }
-
-      const { workflowId } = req.params;
-      const workflow = await storage.getWorkflow(parseInt(workflowId));
-      
-      if (!workflow) {
-        return res.status(404).json({ error: "Workflow not found" });
-      }
-
-      if (workflow.ownerId !== user.id && !user.isAdmin) {
-        return res.status(403).json({ error: "Not authorized to modify this workflow" });
-      }
-
-      const { name, type, config } = req.body;
-      
-      if (!name || !type) {
-        return res.status(400).json({ error: "Name and type required" });
-      }
-
-      if (!["livekit_agent", "agora_convoai"].includes(type)) {
-        return res.status(400).json({ error: "Invalid vendor type" });
-      }
-
-      const vendor = await storage.createVendor({
-        name,
-        type,
-        config: config || {},
-        workflowId: parseInt(workflowId),
-      });
-
-      res.json(vendor);
-    } catch (error) {
-      console.error("Error creating vendor:", error);
-      res.status(500).json({ error: "Failed to create vendor" });
-    }
-  });
-
-  app.patch("/api/vendors/:id", requireAuth, async (req, res) => {
-    try {
-      const user = await getCurrentUser(req);
-      if (!user) {
-        return res.status(401).json({ error: "Not authenticated" });
-      }
-
-      const { id } = req.params;
-      const vendor = await storage.getVendor(parseInt(id));
-      
-      if (!vendor) {
-        return res.status(404).json({ error: "Vendor not found" });
-      }
-
-      const workflow = await storage.getWorkflow(vendor.workflowId);
-      if (!workflow || (workflow.ownerId !== user.id && !user.isAdmin)) {
-        return res.status(403).json({ error: "Not authorized to modify this vendor" });
-      }
-
-      const { name, config } = req.body;
-      const updates: Record<string, unknown> = {};
-      if (name) updates.name = name;
-      if (config) updates.config = config;
-
-      const updated = await storage.updateVendor(parseInt(id), updates);
-      res.json(updated);
-    } catch (error) {
-      console.error("Error updating vendor:", error);
-      res.status(500).json({ error: "Failed to update vendor" });
-    }
-  });
-
-  app.delete("/api/vendors/:id", requireAuth, async (req, res) => {
-    try {
-      const user = await getCurrentUser(req);
-      if (!user) {
-        return res.status(401).json({ error: "Not authenticated" });
-      }
-
-      const { id } = req.params;
-      const vendor = await storage.getVendor(parseInt(id));
-      
-      if (!vendor) {
-        return res.status(404).json({ error: "Vendor not found" });
-      }
-
-      const workflow = await storage.getWorkflow(vendor.workflowId);
-      if (!workflow || (workflow.ownerId !== user.id && !user.isAdmin)) {
-        return res.status(403).json({ error: "Not authorized to delete this vendor" });
-      }
-
-      await storage.deleteVendor(parseInt(id));
-      res.json({ message: "Vendor deleted" });
-    } catch (error) {
-      console.error("Error deleting vendor:", error);
-      res.status(500).json({ error: "Failed to delete vendor" });
-    }
-  });
-
-  // ==================== TEST CASE ROUTES ====================
-
-  app.get("/api/workflows/:workflowId/test-cases", requireAuth, async (req, res) => {
-    try {
-      const { workflowId } = req.params;
-      const testCases = await storage.getTestCasesByWorkflow(parseInt(workflowId));
-      res.json(testCases);
-    } catch (error) {
-      console.error("Error fetching test cases:", error);
-      res.status(500).json({ error: "Failed to fetch test cases" });
-    }
-  });
-
-  app.post("/api/workflows/:workflowId/test-cases", requireAuth, async (req, res) => {
-    try {
-      const user = await getCurrentUser(req);
-      if (!user) {
-        return res.status(401).json({ error: "Not authenticated" });
-      }
-
-      const { workflowId } = req.params;
-      const workflow = await storage.getWorkflow(parseInt(workflowId));
-      
-      if (!workflow) {
-        return res.status(404).json({ error: "Workflow not found" });
-      }
-
-      if (workflow.ownerId !== user.id && !user.isAdmin) {
-        return res.status(403).json({ error: "Not authorized to modify this workflow" });
-      }
-
-      const { name, description, vendorId, region, config, isEnabled } = req.body;
-      
-      if (!name || !vendorId || !region) {
-        return res.status(400).json({ error: "Name, vendorId, and region required" });
-      }
-
-      if (!["na", "apac", "eu"].includes(region)) {
-        return res.status(400).json({ error: "Invalid region. Must be na, apac, or eu" });
-      }
-
-      const vendor = await storage.getVendor(vendorId);
-      if (!vendor || vendor.workflowId !== parseInt(workflowId)) {
-        return res.status(400).json({ error: "Invalid vendor for this workflow" });
-      }
-
-      const testCase = await storage.createTestCase({
-        name,
-        description,
-        workflowId: parseInt(workflowId),
-        vendorId,
-        region,
-        config: config || {},
-        isEnabled: isEnabled !== false,
-      });
-
-      res.json(testCase);
-    } catch (error) {
-      console.error("Error creating test case:", error);
-      res.status(500).json({ error: "Failed to create test case" });
-    }
-  });
-
-  app.patch("/api/test-cases/:id", requireAuth, async (req, res) => {
-    try {
-      const user = await getCurrentUser(req);
-      if (!user) {
-        return res.status(401).json({ error: "Not authenticated" });
-      }
-
-      const { id } = req.params;
-      const testCase = await storage.getTestCase(parseInt(id));
-      
-      if (!testCase) {
-        return res.status(404).json({ error: "Test case not found" });
-      }
-
-      const workflow = await storage.getWorkflow(testCase.workflowId);
-      if (!workflow || (workflow.ownerId !== user.id && !user.isAdmin)) {
-        return res.status(403).json({ error: "Not authorized to modify this test case" });
-      }
-
-      const { name, description, config, isEnabled } = req.body;
-      const updates: Record<string, unknown> = {};
-      if (name) updates.name = name;
-      if (description !== undefined) updates.description = description;
-      if (config) updates.config = config;
-      if (typeof isEnabled === "boolean") updates.isEnabled = isEnabled;
-
-      const updated = await storage.updateTestCase(parseInt(id), updates);
-      res.json(updated);
-    } catch (error) {
-      console.error("Error updating test case:", error);
-      res.status(500).json({ error: "Failed to update test case" });
-    }
-  });
-
-  app.delete("/api/test-cases/:id", requireAuth, async (req, res) => {
-    try {
-      const user = await getCurrentUser(req);
-      if (!user) {
-        return res.status(401).json({ error: "Not authenticated" });
-      }
-
-      const { id } = req.params;
-      const testCase = await storage.getTestCase(parseInt(id));
-      
-      if (!testCase) {
-        return res.status(404).json({ error: "Test case not found" });
-      }
-
-      const workflow = await storage.getWorkflow(testCase.workflowId);
-      if (!workflow || (workflow.ownerId !== user.id && !user.isAdmin)) {
-        return res.status(403).json({ error: "Not authorized to delete this test case" });
-      }
-
-      await storage.deleteTestCase(parseInt(id));
-      res.json({ message: "Test case deleted" });
-    } catch (error) {
-      console.error("Error deleting test case:", error);
-      res.status(500).json({ error: "Failed to delete test case" });
-    }
-  });
-
-  // ==================== WORKER TOKEN ROUTES (Admin only) ====================
-
-  app.get("/api/admin/worker-tokens", requireAuth, requireAdmin, async (req, res) => {
-    try {
-      const tokens = await storage.getAllWorkerTokens();
+      const tokens = await storage.getAllEvalAgentTokens();
       res.json(tokens.map(t => ({
         id: t.id,
         name: t.name,
@@ -1014,15 +785,14 @@ export async function registerRoutes(
         isRevoked: t.isRevoked,
         lastUsedAt: t.lastUsedAt,
         createdAt: t.createdAt,
-        token: t.token.slice(0, 8) + "...",
       })));
     } catch (error) {
-      console.error("Error fetching worker tokens:", error);
-      res.status(500).json({ error: "Failed to fetch worker tokens" });
+      console.error("Error fetching eval agent tokens:", error);
+      res.status(500).json({ error: "Failed to fetch eval agent tokens" });
     }
   });
 
-  app.post("/api/admin/worker-tokens", requireAuth, requireAdmin, async (req, res) => {
+  app.post("/api/admin/eval-agent-tokens", requireAuth, requireAdmin, async (req, res) => {
     try {
       const user = await getCurrentUser(req);
       if (!user) {
@@ -1039,137 +809,141 @@ export async function registerRoutes(
         return res.status(400).json({ error: "Invalid region. Must be na, apac, or eu" });
       }
 
-      const token = generateToken();
+      const token = generateSecureToken();
+      const tokenHash = hashToken(token);
       
-      const workerToken = await storage.createWorkerToken({
+      const evalAgentToken = await storage.createEvalAgentToken({
         name,
-        token,
+        tokenHash,
         region,
         createdBy: user.id,
         isRevoked: false,
       });
 
       res.json({
-        id: workerToken.id,
-        name: workerToken.name,
-        token: workerToken.token,
-        region: workerToken.region,
-        createdAt: workerToken.createdAt,
+        id: evalAgentToken.id,
+        name: evalAgentToken.name,
+        token,
+        region: evalAgentToken.region,
+        createdAt: evalAgentToken.createdAt,
       });
     } catch (error) {
-      console.error("Error creating worker token:", error);
-      res.status(500).json({ error: "Failed to create worker token" });
+      console.error("Error creating eval agent token:", error);
+      res.status(500).json({ error: "Failed to create eval agent token" });
     }
   });
 
-  app.post("/api/admin/worker-tokens/:id/revoke", requireAuth, requireAdmin, async (req, res) => {
+  app.post("/api/admin/eval-agent-tokens/:id/revoke", requireAuth, requireAdmin, async (req, res) => {
     try {
       const { id } = req.params;
-      await storage.revokeWorkerToken(parseInt(id));
-      res.json({ message: "Worker token revoked" });
+      await storage.revokeEvalAgentToken(parseInt(id));
+      res.json({ message: "Eval agent token revoked" });
     } catch (error) {
-      console.error("Error revoking worker token:", error);
-      res.status(500).json({ error: "Failed to revoke worker token" });
+      console.error("Error revoking eval agent token:", error);
+      res.status(500).json({ error: "Failed to revoke eval agent token" });
     }
   });
 
-  // ==================== WORKER ROUTES ====================
+  // ==================== EVAL AGENT ROUTES ====================
 
-  app.get("/api/workers", async (req, res) => {
+  app.get("/api/eval-agents", async (req, res) => {
     try {
-      const workers = await storage.getAllWorkers();
-      res.json(workers.map(w => ({
-        id: w.id,
-        name: w.name,
-        region: w.region,
-        status: w.status,
-        lastHeartbeat: w.lastHeartbeat,
-        createdAt: w.createdAt,
+      const agents = await storage.getAllEvalAgents();
+      res.json(agents.map(a => ({
+        id: a.id,
+        name: a.name,
+        region: a.region,
+        state: a.state,
+        lastSeenAt: a.lastSeenAt,
+        lastJobAt: a.lastJobAt,
+        createdAt: a.createdAt,
       })));
     } catch (error) {
-      console.error("Error fetching workers:", error);
-      res.status(500).json({ error: "Failed to fetch workers" });
+      console.error("Error fetching eval agents:", error);
+      res.status(500).json({ error: "Failed to fetch eval agents" });
     }
   });
 
-  // Worker registration endpoint (uses worker token for auth)
-  app.post("/api/worker/register", async (req, res) => {
+  // Eval agent registration endpoint (uses eval agent token for auth)
+  app.post("/api/eval-agent/register", async (req, res) => {
     try {
       const authHeader = req.headers.authorization;
       if (!authHeader || !authHeader.startsWith("Bearer ")) {
-        return res.status(401).json({ error: "Worker token required" });
+        return res.status(401).json({ error: "Eval agent token required" });
       }
 
       const token = authHeader.slice(7);
-      const workerToken = await storage.getWorkerTokenByToken(token);
+      const tokenHash = hashToken(token);
+      const evalAgentToken = await storage.getEvalAgentTokenByHash(tokenHash);
       
-      if (!workerToken) {
-        return res.status(401).json({ error: "Invalid worker token" });
+      if (!evalAgentToken) {
+        return res.status(401).json({ error: "Invalid eval agent token" });
       }
 
-      if (workerToken.isRevoked) {
-        return res.status(403).json({ error: "Worker token has been revoked" });
+      if (evalAgentToken.isRevoked) {
+        return res.status(403).json({ error: "Eval agent token has been revoked" });
       }
 
       const { name, metadata } = req.body;
       
       if (!name) {
-        return res.status(400).json({ error: "Worker name required" });
+        return res.status(400).json({ error: "Agent name required" });
       }
 
-      await storage.updateWorkerTokenLastUsed(workerToken.id);
+      await storage.updateEvalAgentTokenLastUsed(evalAgentToken.id);
 
-      const worker = await storage.createWorker({
+      const agent = await storage.createEvalAgent({
         name,
-        tokenId: workerToken.id,
-        region: workerToken.region,
-        status: "online",
+        tokenId: evalAgentToken.id,
+        region: evalAgentToken.region,
+        state: "idle",
         metadata: metadata || {},
       });
 
-      await storage.updateWorkerHeartbeat(worker.id);
+      await storage.updateEvalAgentHeartbeat(agent.id);
 
       res.json({
-        id: worker.id,
-        name: worker.name,
-        region: worker.region,
-        status: worker.status,
+        id: agent.id,
+        name: agent.name,
+        region: agent.region,
+        state: agent.state,
       });
     } catch (error) {
-      console.error("Error registering worker:", error);
-      res.status(500).json({ error: "Failed to register worker" });
+      console.error("Error registering eval agent:", error);
+      res.status(500).json({ error: "Failed to register eval agent" });
     }
   });
 
-  // Worker heartbeat endpoint
-  app.post("/api/worker/heartbeat", async (req, res) => {
+  // Eval agent heartbeat endpoint
+  app.post("/api/eval-agent/heartbeat", async (req, res) => {
     try {
       const authHeader = req.headers.authorization;
       if (!authHeader || !authHeader.startsWith("Bearer ")) {
-        return res.status(401).json({ error: "Worker token required" });
+        return res.status(401).json({ error: "Eval agent token required" });
       }
 
       const token = authHeader.slice(7);
-      const workerToken = await storage.getWorkerTokenByToken(token);
+      const tokenHash = hashToken(token);
+      const evalAgentToken = await storage.getEvalAgentTokenByHash(tokenHash);
       
-      if (!workerToken || workerToken.isRevoked) {
-        return res.status(401).json({ error: "Invalid or revoked worker token" });
+      if (!evalAgentToken || evalAgentToken.isRevoked) {
+        return res.status(401).json({ error: "Invalid or revoked eval agent token" });
       }
 
-      const { workerId, status } = req.body;
+      const { agentId, state } = req.body;
       
-      if (!workerId) {
-        return res.status(400).json({ error: "Worker ID required" });
+      if (!agentId) {
+        return res.status(400).json({ error: "Agent ID required" });
       }
 
-      const worker = await storage.getWorker(workerId);
-      if (!worker || worker.tokenId !== workerToken.id) {
-        return res.status(403).json({ error: "Worker not found or token mismatch" });
+      const agent = await storage.getEvalAgent(agentId);
+      if (!agent || agent.tokenId !== evalAgentToken.id) {
+        return res.status(403).json({ error: "Agent not found or token mismatch" });
       }
 
-      await storage.updateWorkerHeartbeat(workerId);
-      if (status && ["online", "offline", "busy"].includes(status)) {
-        await storage.updateWorker(workerId, { status });
+      await storage.updateEvalAgentHeartbeat(agentId);
+      if (state && ["idle", "offline", "occupied"].includes(state)) {
+        await storage.updateEvalAgent(agentId, { state });
       }
 
       res.json({ message: "Heartbeat received" });
@@ -1179,42 +953,26 @@ export async function registerRoutes(
     }
   });
 
-  // ==================== JOB ROUTES ====================
+  // ==================== EVAL JOB ROUTES ====================
 
-  // Get pending jobs for a worker's region
-  app.get("/api/worker/jobs", async (req, res) => {
+  // Get pending jobs for an eval agent's region
+  app.get("/api/eval-agent/jobs", async (req, res) => {
     try {
       const authHeader = req.headers.authorization;
       if (!authHeader || !authHeader.startsWith("Bearer ")) {
-        return res.status(401).json({ error: "Worker token required" });
+        return res.status(401).json({ error: "Eval agent token required" });
       }
 
       const token = authHeader.slice(7);
-      const workerToken = await storage.getWorkerTokenByToken(token);
+      const tokenHash = hashToken(token);
+      const evalAgentToken = await storage.getEvalAgentTokenByHash(tokenHash);
       
-      if (!workerToken || workerToken.isRevoked) {
-        return res.status(401).json({ error: "Invalid or revoked worker token" });
+      if (!evalAgentToken || evalAgentToken.isRevoked) {
+        return res.status(401).json({ error: "Invalid or revoked eval agent token" });
       }
 
-      const jobs = await storage.getPendingJobsByRegion(workerToken.region);
-      
-      const jobsWithDetails = await Promise.all(jobs.map(async (job) => {
-        const testCase = await storage.getTestCase(job.testCaseId);
-        const vendor = testCase ? await storage.getVendor(testCase.vendorId) : null;
-        return {
-          id: job.id,
-          testCaseId: job.testCaseId,
-          testCaseName: testCase?.name,
-          vendorType: vendor?.type,
-          vendorConfig: vendor?.config,
-          testCaseConfig: testCase?.config,
-          region: job.region,
-          status: job.status,
-          createdAt: job.createdAt,
-        };
-      }));
-
-      res.json(jobsWithDetails);
+      const jobs = await storage.getPendingEvalJobsByRegion(evalAgentToken.region);
+      res.json(jobs);
     } catch (error) {
       console.error("Error fetching jobs:", error);
       res.status(500).json({ error: "Failed to fetch jobs" });
@@ -1222,38 +980,39 @@ export async function registerRoutes(
   });
 
   // Claim a job
-  app.post("/api/worker/jobs/:jobId/claim", async (req, res) => {
+  app.post("/api/eval-agent/jobs/:jobId/claim", async (req, res) => {
     try {
       const authHeader = req.headers.authorization;
       if (!authHeader || !authHeader.startsWith("Bearer ")) {
-        return res.status(401).json({ error: "Worker token required" });
+        return res.status(401).json({ error: "Eval agent token required" });
       }
 
       const token = authHeader.slice(7);
-      const workerToken = await storage.getWorkerTokenByToken(token);
+      const tokenHash = hashToken(token);
+      const evalAgentToken = await storage.getEvalAgentTokenByHash(tokenHash);
       
-      if (!workerToken || workerToken.isRevoked) {
-        return res.status(401).json({ error: "Invalid or revoked worker token" });
+      if (!evalAgentToken || evalAgentToken.isRevoked) {
+        return res.status(401).json({ error: "Invalid or revoked eval agent token" });
       }
 
       const { jobId } = req.params;
-      const { workerId } = req.body;
+      const { agentId } = req.body;
 
-      if (!workerId) {
-        return res.status(400).json({ error: "Worker ID required" });
+      if (!agentId) {
+        return res.status(400).json({ error: "Agent ID required" });
       }
 
-      const worker = await storage.getWorker(workerId);
-      if (!worker || worker.tokenId !== workerToken.id) {
-        return res.status(403).json({ error: "Worker not found or token mismatch" });
+      const agent = await storage.getEvalAgent(agentId);
+      if (!agent || agent.tokenId !== evalAgentToken.id) {
+        return res.status(403).json({ error: "Agent not found or token mismatch" });
       }
 
-      const job = await storage.claimJob(parseInt(jobId), workerId);
+      const job = await storage.claimEvalJob(parseInt(jobId), agentId);
       if (!job) {
         return res.status(409).json({ error: "Job already claimed or not found" });
       }
 
-      await storage.updateWorker(workerId, { status: "busy" });
+      await storage.updateEvalAgent(agentId, { state: "occupied", lastJobAt: new Date() });
 
       res.json(job);
     } catch (error) {
@@ -1263,66 +1022,56 @@ export async function registerRoutes(
   });
 
   // Complete a job and submit results
-  app.post("/api/worker/jobs/:jobId/complete", async (req, res) => {
+  app.post("/api/eval-agent/jobs/:jobId/complete", async (req, res) => {
     try {
       const authHeader = req.headers.authorization;
       if (!authHeader || !authHeader.startsWith("Bearer ")) {
-        return res.status(401).json({ error: "Worker token required" });
+        return res.status(401).json({ error: "Eval agent token required" });
       }
 
       const token = authHeader.slice(7);
-      const workerToken = await storage.getWorkerTokenByToken(token);
+      const tokenHash = hashToken(token);
+      const evalAgentToken = await storage.getEvalAgentTokenByHash(tokenHash);
       
-      if (!workerToken || workerToken.isRevoked) {
-        return res.status(401).json({ error: "Invalid or revoked worker token" });
+      if (!evalAgentToken || evalAgentToken.isRevoked) {
+        return res.status(401).json({ error: "Invalid or revoked eval agent token" });
       }
 
       const { jobId } = req.params;
-      const { workerId, error: jobError, results } = req.body;
+      const { agentId, error: jobError, results } = req.body;
 
-      if (!workerId) {
-        return res.status(400).json({ error: "Worker ID required" });
+      if (!agentId) {
+        return res.status(400).json({ error: "Agent ID required" });
       }
 
-      const worker = await storage.getWorker(workerId);
-      if (!worker || worker.tokenId !== workerToken.id) {
-        return res.status(403).json({ error: "Worker not found or token mismatch" });
+      const agent = await storage.getEvalAgent(agentId);
+      if (!agent || agent.tokenId !== evalAgentToken.id) {
+        return res.status(403).json({ error: "Agent not found or token mismatch" });
       }
 
-      const job = await storage.getJob(parseInt(jobId));
-      if (!job || job.workerId !== workerId) {
-        return res.status(403).json({ error: "Job not found or not assigned to this worker" });
+      const job = await storage.getEvalJob(parseInt(jobId));
+      if (!job || job.evalAgentId !== agentId) {
+        return res.status(403).json({ error: "Job not found or not assigned to this agent" });
       }
 
-      await storage.completeJob(parseInt(jobId), jobError);
-      await storage.updateWorker(workerId, { status: "online" });
+      await storage.completeEvalJob(parseInt(jobId), jobError);
+      await storage.updateEvalAgent(agentId, { state: "idle" });
 
       if (results && !jobError) {
-        const testCase = await storage.getTestCase(job.testCaseId);
-        const vendor = testCase ? await storage.getVendor(testCase.vendorId) : null;
-        const workflow = testCase ? await storage.getWorkflow(testCase.workflowId) : null;
-
-        const regionMap: Record<string, string> = {
-          na: "North America",
-          apac: "Asia Pacific",
-          eu: "Europe",
-        };
-
-        const vendorNameMap: Record<string, string> = {
-          livekit_agent: "LiveKIT Agent",
-          agora_convoai: "Agora ConvoAI",
-        };
-
-        await storage.createBenchmarkResult({
-          provider: vendor ? vendorNameMap[vendor.type] || vendor.name : "Unknown",
-          region: regionMap[job.region] || job.region,
-          responseLatency: results.responseLatency || 0,
-          interruptLatency: results.interruptLatency || 0,
-          networkResilience: results.networkResilience || 0,
-          naturalness: results.naturalness || 0,
-          noiseReduction: results.noiseReduction || 0,
-          workflowId: workflow?.id,
-          testSetId: null,
+        const workflow = await storage.getWorkflow(job.workflowId);
+        
+        await storage.createEvalResult({
+          evalJobId: parseInt(jobId),
+          providerId: workflow?.providerId || "",
+          region: job.region,
+          responseLatencyMedian: results.responseLatencyMedian || 0,
+          responseLatencySd: results.responseLatencySd || 0,
+          interruptLatencyMedian: results.interruptLatencyMedian || 0,
+          interruptLatencySd: results.interruptLatencySd || 0,
+          networkResilience: results.networkResilience,
+          naturalness: results.naturalness,
+          noiseReduction: results.noiseReduction,
+          rawData: results.rawData || {},
         });
       }
 
@@ -1333,7 +1082,7 @@ export async function registerRoutes(
     }
   });
 
-  // Create jobs from test cases (triggered by user or scheduler)
+  // Create eval jobs from workflow (triggered by user)
   app.post("/api/workflows/:workflowId/run", requireAuth, async (req, res) => {
     try {
       const user = await getCurrentUser(req);
@@ -1342,40 +1091,122 @@ export async function registerRoutes(
       }
 
       const { workflowId } = req.params;
+      const { region, evalSetId } = req.body;
+      
       const workflow = await storage.getWorkflow(parseInt(workflowId));
       
       if (!workflow) {
         return res.status(404).json({ error: "Workflow not found" });
       }
 
-      if (workflow.ownerId !== user.id && !user.isAdmin && user.plan !== "principal") {
+      if (workflow.ownerId !== user.id && !user.isAdmin && user.plan !== "principal" && user.plan !== "fellow") {
         return res.status(403).json({ error: "Not authorized to run this workflow" });
       }
 
-      const testCases = await storage.getTestCasesByWorkflow(parseInt(workflowId));
-      const enabledTestCases = testCases.filter(tc => tc.isEnabled);
-
-      if (enabledTestCases.length === 0) {
-        return res.status(400).json({ error: "No enabled test cases in this workflow" });
+      if (!region || !["na", "apac", "eu"].includes(region)) {
+        return res.status(400).json({ error: "Valid region required (na, apac, eu)" });
       }
 
-      const createdJobs = [];
-      for (const testCase of enabledTestCases) {
-        const job = await storage.createJob({
-          testCaseId: testCase.id,
-          region: testCase.region,
-          status: "pending",
-        });
-        createdJobs.push(job);
-      }
+      const job = await storage.createEvalJob({
+        workflowId: parseInt(workflowId),
+        evalSetId: evalSetId || null,
+        region,
+        status: "pending",
+        priority: 0,
+        retryCount: 0,
+        maxRetries: 3,
+      });
 
       res.json({ 
-        message: `Created ${createdJobs.length} jobs`,
-        jobs: createdJobs,
+        message: "Job created",
+        job,
       });
     } catch (error) {
       console.error("Error running workflow:", error);
       res.status(500).json({ error: "Failed to run workflow" });
+    }
+  });
+
+  // ==================== METRICS ROUTES ====================
+
+  app.get("/api/metrics/realtime", async (req, res) => {
+    try {
+      const results = await storage.getMainlineEvalResults(50);
+      res.json(results);
+    } catch (error) {
+      console.error("Error fetching realtime metrics:", error);
+      res.status(500).json({ error: "Failed to fetch metrics" });
+    }
+  });
+
+  app.get("/api/metrics/leaderboard", async (req, res) => {
+    try {
+      const results = await storage.getMainlineEvalResults(1000);
+      
+      const providerRegionMap = new Map<string, { 
+        providerId: string;
+        region: string; 
+        responseLatencies: number[]; 
+        interruptLatencies: number[];
+      }>();
+      
+      for (const result of results) {
+        const key = `${result.providerId}-${result.region}`;
+        if (!providerRegionMap.has(key)) {
+          providerRegionMap.set(key, {
+            providerId: result.providerId,
+            region: result.region,
+            responseLatencies: [],
+            interruptLatencies: [],
+          });
+        }
+        const group = providerRegionMap.get(key)!;
+        group.responseLatencies.push(result.responseLatencyMedian);
+        group.interruptLatencies.push(result.interruptLatencyMedian);
+      }
+      
+      const avg = (arr: number[]) => arr.length > 0 ? arr.reduce((a, b) => a + b, 0) / arr.length : 0;
+      
+      const leaderboard = await Promise.all(
+        Array.from(providerRegionMap.values()).map(async (group) => {
+          const provider = await storage.getProvider(group.providerId);
+          return {
+            providerId: group.providerId,
+            providerName: provider?.name || "Unknown",
+            region: group.region,
+            responseLatency: Math.round(avg(group.responseLatencies)),
+            interruptLatency: Math.round(avg(group.interruptLatencies)),
+          };
+        })
+      );
+      
+      const sorted = leaderboard
+        .sort((a, b) => a.responseLatency - b.responseLatency)
+        .map((entry, index) => ({
+          rank: index + 1,
+          ...entry,
+        }));
+      
+      res.json(sorted);
+    } catch (error) {
+      console.error("Error fetching leaderboard:", error);
+      res.status(500).json({ error: "Failed to fetch leaderboard" });
+    }
+  });
+
+  // ==================== CONFIG ROUTES ====================
+
+  app.get("/api/config", async (req, res) => {
+    try {
+      const configs = await storage.getAllConfig();
+      const configObject: Record<string, string> = {};
+      for (const config of configs) {
+        configObject[config.key] = config.value;
+      }
+      res.json(configObject);
+    } catch (error) {
+      console.error("Error fetching config:", error);
+      res.status(500).json({ error: "Failed to fetch config" });
     }
   });
 
