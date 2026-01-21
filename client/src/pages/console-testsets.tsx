@@ -14,7 +14,7 @@ import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { Plus, FileText, Globe, Lock, Star } from "lucide-react";
 import { useState } from "react";
-import type { TestSet } from "@shared/schema";
+import type { EvalSet } from "@shared/schema";
 
 interface AuthStatus {
   user: {
@@ -36,13 +36,13 @@ export default function ConsoleTestSets() {
     queryKey: ["/api/auth/status"],
   });
 
-  const { data: testSets, isLoading } = useQuery<TestSet[]>({
-    queryKey: ["/api/test-sets"],
+  const { data: testSets, isLoading } = useQuery<EvalSet[]>({
+    queryKey: ["/api/eval-sets"],
   });
 
   const createMutation = useMutation({
     mutationFn: async () => {
-      const res = await apiRequest("POST", "/api/test-sets", {
+      const res = await apiRequest("POST", "/api/eval-sets", {
         name,
         description,
         visibility,
@@ -54,25 +54,25 @@ export default function ConsoleTestSets() {
       setName("");
       setDescription("");
       setVisibility("public");
-      queryClient.invalidateQueries({ queryKey: ["/api/test-sets"] });
-      toast({ title: "Test set created" });
+      queryClient.invalidateQueries({ queryKey: ["/api/eval-sets"] });
+      toast({ title: "Eval set created" });
     },
     onError: (error: Error) => {
-      toast({ title: "Failed to create test set", description: error.message, variant: "destructive" });
+      toast({ title: "Failed to create eval set", description: error.message, variant: "destructive" });
     },
   });
 
   const toggleMainlineMutation = useMutation({
     mutationFn: async ({ id, isMainline }: { id: number; isMainline: boolean }) => {
-      const res = await apiRequest("PATCH", `/api/test-sets/${id}/mainline`, { isMainline });
+      const res = await apiRequest("PATCH", `/api/eval-sets/${id}/mainline`, { isMainline });
       return res.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/test-sets"] });
-      toast({ title: "Test set updated" });
+      queryClient.invalidateQueries({ queryKey: ["/api/eval-sets"] });
+      toast({ title: "Eval set updated" });
     },
     onError: (error: Error) => {
-      toast({ title: "Failed to update test set", description: error.message, variant: "destructive" });
+      toast({ title: "Failed to update eval set", description: error.message, variant: "destructive" });
     },
   });
 

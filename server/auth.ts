@@ -7,7 +7,7 @@ import type { User } from "@shared/schema";
 
 declare module "express-session" {
   interface SessionData {
-    userId: string;
+    userId: number;
   }
 }
 
@@ -75,8 +75,8 @@ export async function requirePrincipal(req: Request, res: Response, next: NextFu
     return res.status(401).json({ error: "Authentication required" });
   }
   const user = await storage.getUser(req.session.userId);
-  if (!user || user.plan !== "principal") {
-    return res.status(403).json({ error: "Principal access required" });
+  if (!user || (user.plan !== "principal" && user.plan !== "fellow")) {
+    return res.status(403).json({ error: "Principal or Fellow access required" });
   }
   next();
 }
