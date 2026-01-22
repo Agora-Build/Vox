@@ -11,7 +11,7 @@
 # 6. Runs evaluation tests
 #
 # Usage:
-#   ./script/local-test.sh [command]
+#   ./script/dev-local-run.sh [command]
 #
 # Commands:
 #   start     - Start all services
@@ -431,35 +431,81 @@ show_status() {
     echo "=== Vox Local Test Status ==="
     echo ""
 
+    # Service Status
+    echo -e "${BLUE}Services:${NC}"
+
     # PostgreSQL
     if docker ps --format '{{.Names}}' | grep -q "^${DB_CONTAINER}$"; then
-        echo -e "PostgreSQL: ${GREEN}Running${NC}"
+        echo -e "  PostgreSQL:   ${GREEN}Running${NC}"
     else
-        echo -e "PostgreSQL: ${RED}Stopped${NC}"
+        echo -e "  PostgreSQL:   ${RED}Stopped${NC}"
     fi
 
     # Vox Service
     if [ -f /tmp/vox-server.pid ] && kill -0 $(cat /tmp/vox-server.pid) 2>/dev/null; then
-        echo -e "Vox Service: ${GREEN}Running${NC} (PID: $(cat /tmp/vox-server.pid))"
+        echo -e "  Vox Service:  ${GREEN}Running${NC} (PID: $(cat /tmp/vox-server.pid))"
     else
-        echo -e "Vox Service: ${RED}Stopped${NC}"
+        echo -e "  Vox Service:  ${RED}Stopped${NC}"
     fi
 
     # Eval Agent
     if [ -f /tmp/vox-eval-agent.pid ] && kill -0 $(cat /tmp/vox-eval-agent.pid) 2>/dev/null; then
-        echo -e "Eval Agent: ${GREEN}Running${NC} (PID: $(cat /tmp/vox-eval-agent.pid))"
+        echo -e "  Eval Agent:   ${GREEN}Running${NC} (PID: $(cat /tmp/vox-eval-agent.pid))"
     else
-        echo -e "Eval Agent: ${RED}Stopped${NC}"
+        echo -e "  Eval Agent:   ${RED}Stopped${NC}"
     fi
 
+    # Running Docker containers
     echo ""
-    echo "URLs:"
-    echo "  - Web UI: $SERVER_URL"
-    echo "  - API: $SERVER_URL/api"
+    echo -e "${BLUE}Running Docker Containers:${NC}"
+    local containers=$(docker ps --format '{{.ID}}\t{{.Names}}\t{{.Status}}' 2>/dev/null | grep -E "(vox|postgres)" || true)
+    if [ -n "$containers" ]; then
+        echo "  ID            NAME                STATUS"
+        echo "$containers" | while read line; do
+            echo "  $line"
+        done
+    else
+        echo "  (none)"
+    fi
+
+    # URLs and Connection Info
     echo ""
-    echo "Credentials:"
-    echo "  - Admin: admin@vox.local / admin123456"
-    echo "  - Scout: scout@vox.ai / scout123"
+    echo -e "${BLUE}Connection Info:${NC}"
+    echo "  Main App URL:  $SERVER_URL"
+    echo "  Database URI:  $DB_URL"
+
+    # Credentials
+    echo ""
+    echo -e "${BLUE}Credentials:${NC}"
+    echo "  Admin: admin@vox.local / admin123456"
+    echo "  Scout: scout@vox.ai / scout123"
+
+    # Available APIs
+    echo ""
+    echo -e "${BLUE}Available APIs:${NC}"
+    echo "  Auth:"
+    echo "    GET  $SERVER_URL/api/auth/status        - Check auth status"
+    echo "    POST $SERVER_URL/api/auth/login         - Login"
+    echo "    POST $SERVER_URL/api/auth/logout        - Logout"
+    echo "    POST $SERVER_URL/api/auth/register      - Register new user"
+    echo ""
+    echo "  Resources:"
+    echo "    GET  $SERVER_URL/api/providers          - List providers"
+    echo "    GET  $SERVER_URL/api/projects           - List projects"
+    echo "    GET  $SERVER_URL/api/workflows          - List workflows"
+    echo "    POST $SERVER_URL/api/workflows          - Create workflow"
+    echo "    POST $SERVER_URL/api/workflows/:id/run  - Run workflow"
+    echo "    GET  $SERVER_URL/api/eval-sets          - List eval sets"
+    echo "    GET  $SERVER_URL/api/eval-agents        - List eval agents"
+    echo ""
+    echo "  Metrics:"
+    echo "    GET  $SERVER_URL/api/metrics/realtime   - Real-time metrics"
+    echo "    GET  $SERVER_URL/api/metrics/leaderboard - Leaderboard data"
+    echo ""
+    echo "  Admin (requires admin auth):"
+    echo "    GET  $SERVER_URL/api/admin/users        - List users"
+    echo "    GET  $SERVER_URL/api/admin/eval-agent-tokens - List agent tokens"
+    echo "    POST $SERVER_URL/api/admin/eval-agent-tokens - Create agent token"
     echo ""
 }
 
