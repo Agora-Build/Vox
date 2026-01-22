@@ -1,24 +1,28 @@
 #!/bin/bash
 #
-# Vox Local Testing Script
+# Vox Local Development Script
 #
-# This script sets up a complete local testing environment:
-# 1. Starts PostgreSQL via Docker
-# 2. Initializes the database schema
-# 3. Starts the main Vox service
-# 4. Initializes the system (creates admin/Scout)
-# 5. Creates eval agent token and starts eval agent
-# 6. Runs evaluation tests
+# This script sets up a complete local development environment with all services:
+# - vox-postgres: PostgreSQL database (always Docker)
+# - vox-service: Main Vox web service (listening on 0.0.0.0:5000)
+# - vox-eval-agent: Eval agent
 #
 # Usage:
-#   ./script/dev-local-run.sh [command]
+#   ./script/dev-local-run.sh start        # Local process mode
+#   ./script/dev-local-run.sh docker start # Docker mode
+#
+# Modes:
+#   Local (default): vox-service and vox-eval-agent run as local processes
+#   Docker:          vox-service and vox-eval-agent run in Docker containers
 #
 # Commands:
-#   start     - Start all services
-#   stop      - Stop all services
-#   reset     - Reset database and restart
-#   test      - Run evaluation test
-#   status    - Show service status
+#   start       - Start all services (local process mode)
+#   docker start - Start all services (Docker mode)
+#   stop        - Stop all services
+#   reset       - Reset database and restart all services
+#   status      - Show service status
+#   build-agent - Build eval agent Docker image
+#   logs        - Show logs (server|agent)
 #
 
 set -e
@@ -27,10 +31,13 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 DB_CONTAINER="vox-postgres"
+SERVICE_CONTAINER="vox-service"
+EVAL_AGENT_CONTAINER="vox-eval-agent"
 DB_URL="postgresql://vox:vox123@localhost:5432/vox"
 SERVER_PORT=5000
 SERVER_URL="http://localhost:$SERVER_PORT"
 INIT_CODE="VOX-DEBUG-2024"
+EVAL_AGENT_TOKEN_FILE="/tmp/vox-eval-agent-token.txt"
 
 # Colors
 RED='\033[0;31m'
@@ -87,9 +94,10 @@ wait_for_service() {
     return 1
 }
 
-# Start PostgreSQL
+# ==================== PostgreSQL (always Docker) ====================
+
 start_postgres() {
-    log_info "Starting PostgreSQL..."
+    log_info "Starting PostgreSQL (Docker)..."
 
     cd "$PROJECT_DIR"
 
@@ -119,14 +127,14 @@ start_postgres() {
     return 1
 }
 
-# Stop PostgreSQL
 stop_postgres() {
     log_info "Stopping PostgreSQL..."
     docker stop "$DB_CONTAINER" > /dev/null 2>&1 || true
     log_success "PostgreSQL stopped"
 }
 
-# Push database schema
+# ==================== Database Operations ====================
+
 push_schema() {
     log_info "Pushing database schema..."
     cd "$PROJECT_DIR"
@@ -134,7 +142,6 @@ push_schema() {
     log_success "Database schema pushed"
 }
 
-# Seed data
 seed_data() {
     log_info "Seeding data..."
     cd "$PROJECT_DIR"
@@ -142,9 +149,10 @@ seed_data() {
     log_success "Data seeded"
 }
 
-# Start main service
-start_service() {
-    log_info "Starting Vox service..."
+# ==================== Vox Service (Local Process Mode) ====================
+
+start_service_local() {
+    log_info "Starting Vox service (local process)..."
     cd "$PROJECT_DIR"
 
     # Kill any existing process on port 5000
@@ -162,9 +170,8 @@ start_service() {
     wait_for_service "$SERVER_URL/api/auth/status" "Vox service"
 }
 
-# Stop main service
-stop_service() {
-    log_info "Stopping Vox service..."
+stop_service_local() {
+    log_info "Stopping Vox service (local)..."
     if [ -f /tmp/vox-server.pid ]; then
         kill $(cat /tmp/vox-server.pid) 2>/dev/null || true
         rm /tmp/vox-server.pid
@@ -173,7 +180,33 @@ stop_service() {
     log_success "Vox service stopped"
 }
 
-# Initialize system (create admin)
+# ==================== Vox Service (Docker Mode) ====================
+
+start_service_docker() {
+    log_info "Starting Vox service (Docker)..."
+
+    # Stop any existing container
+    docker stop $SERVICE_CONTAINER 2>/dev/null || true
+    docker rm $SERVICE_CONTAINER 2>/dev/null || true
+
+    cd "$PROJECT_DIR"
+
+    # Build and run via docker compose
+    docker compose up -d vox-service
+
+    # Wait for service to be ready
+    wait_for_service "$SERVER_URL/api/auth/status" "Vox service" 60
+}
+
+stop_service_docker() {
+    log_info "Stopping Vox service (Docker)..."
+    docker stop $SERVICE_CONTAINER 2>/dev/null || true
+    docker rm $SERVICE_CONTAINER 2>/dev/null || true
+    log_success "Vox service stopped"
+}
+
+# ==================== System Initialization ====================
+
 init_system() {
     log_info "Initializing system..."
 
@@ -205,7 +238,8 @@ init_system() {
     echo "  Admin: admin@vox.local / admin123456"
 }
 
-# Login and get session cookie
+# ==================== Auth Helpers ====================
+
 login() {
     local email=$1
     local password=$2
@@ -227,7 +261,6 @@ login() {
     echo "$cookie_jar"
 }
 
-# Create eval agent token (requires admin)
 create_eval_agent_token() {
     local cookie_jar=$1
     local name=$2
@@ -250,21 +283,56 @@ create_eval_agent_token() {
     echo "$token"
 }
 
-# Start eval agent
-start_eval_agent() {
+get_or_create_eval_agent_token() {
+    # Check if we have a saved token
+    if [ -f "$EVAL_AGENT_TOKEN_FILE" ]; then
+        local saved_token=$(cat "$EVAL_AGENT_TOKEN_FILE")
+        if [ -n "$saved_token" ]; then
+            log_info "Using saved eval agent token"
+            echo "$saved_token"
+            return 0
+        fi
+    fi
+
+    # Need to create a new token - login as admin first
+    local admin_cookies=$(login "admin@vox.local" "admin123456")
+    if [ -z "$admin_cookies" ]; then
+        log_error "Failed to login as admin"
+        return 1
+    fi
+
+    # Create new token
+    local token=$(create_eval_agent_token "$admin_cookies" "Local-Eval-Agent" "na")
+    if [ -z "$token" ]; then
+        log_error "Failed to create eval agent token"
+        return 1
+    fi
+
+    # Save token for future use
+    echo "$token" > "$EVAL_AGENT_TOKEN_FILE"
+    echo "$token"
+}
+
+# ==================== Eval Agent (Local Process Mode) ====================
+
+start_eval_agent_local() {
     local token=$1
     local name=$2
 
-    log_info "Starting eval agent: $name..."
+    log_info "Starting eval agent (local process): $name..."
 
     cd "$PROJECT_DIR"
-    npx tsx script/vox-eval-agent.ts --token "$token" --name "$name" --server "$SERVER_URL" > /tmp/vox-eval-agent.log 2>&1 &
+    npx tsx script/vox-eval-agent.ts \
+        --token "$token" \
+        --server "$SERVER_URL" \
+        --name "$name" \
+        > /tmp/vox-eval-agent.log 2>&1 &
 
     echo $! > /tmp/vox-eval-agent.pid
 
     sleep 2
 
-    if kill -0 $(cat /tmp/vox-eval-agent.pid) 2>/dev/null; then
+    if [ -f /tmp/vox-eval-agent.pid ] && kill -0 $(cat /tmp/vox-eval-agent.pid) 2>/dev/null; then
         log_success "Eval agent started (PID: $(cat /tmp/vox-eval-agent.pid))"
     else
         log_error "Eval agent failed to start"
@@ -273,20 +341,26 @@ start_eval_agent() {
     fi
 }
 
-# Stop eval agent
-stop_eval_agent() {
-    log_info "Stopping eval agent..."
+stop_eval_agent_local() {
+    log_info "Stopping eval agent (local)..."
     if [ -f /tmp/vox-eval-agent.pid ]; then
         kill $(cat /tmp/vox-eval-agent.pid) 2>/dev/null || true
         rm /tmp/vox-eval-agent.pid
     fi
-    # Also stop Docker container if running
-    docker stop vox-eval-agent 2>/dev/null || true
-    docker rm vox-eval-agent 2>/dev/null || true
     log_success "Eval agent stopped"
 }
 
-# Build eval agent Docker image
+# ==================== Eval Agent (Docker Mode) ====================
+
+ensure_eval_agent_image() {
+    if ! docker images | grep -q "vox_eval_agentd"; then
+        log_info "Eval agent Docker image not found, building..."
+        build_eval_agent_docker
+    else
+        log_info "Eval agent Docker image exists"
+    fi
+}
+
 build_eval_agent_docker() {
     log_info "Building eval agent Docker image..."
     cd "$PROJECT_DIR"
@@ -300,7 +374,6 @@ build_eval_agent_docker() {
     log_success "Docker image built: vox_eval_agentd"
 }
 
-# Start eval agent (Docker mode)
 start_eval_agent_docker() {
     local token=$1
     local name=$2
@@ -308,16 +381,12 @@ start_eval_agent_docker() {
     log_info "Starting eval agent (Docker): $name..."
 
     # Stop any existing container
-    docker stop vox-eval-agent 2>/dev/null || true
-    docker rm vox-eval-agent 2>/dev/null || true
-
-    # Get host IP for Docker to access the host network
-    # On Linux, we need to add host.docker.internal explicitly
-    local host_ip=$(ip route | grep default | awk '{print $3}')
+    docker stop $EVAL_AGENT_CONTAINER 2>/dev/null || true
+    docker rm $EVAL_AGENT_CONTAINER 2>/dev/null || true
 
     # Run Docker container with host network access
     docker run -d \
-        --name vox-eval-agent \
+        --name $EVAL_AGENT_CONTAINER \
         --add-host=host.docker.internal:host-gateway \
         -e VOX_TOKEN="$token" \
         -e VOX_SERVER="http://host.docker.internal:$SERVER_PORT" \
@@ -328,131 +397,69 @@ start_eval_agent_docker() {
 
     sleep 5
 
-    if docker ps | grep -q vox-eval-agent; then
+    if docker ps | grep -q $EVAL_AGENT_CONTAINER; then
         log_success "Eval agent started in Docker container"
     else
         log_error "Eval agent failed to start"
-        docker logs vox-eval-agent
+        docker logs $EVAL_AGENT_CONTAINER
         return 1
     fi
 }
 
-# Create workflow (as Scout)
-create_workflow() {
-    local cookie_jar=$1
-    local name=$2
-
-    log_info "Creating workflow: $name..." >&2
-
-    local response=$(curl -s -b "$cookie_jar" -X POST "$SERVER_URL/api/workflows" \
-        -H "Content-Type: application/json" \
-        -d "{
-            \"name\": \"$name\",
-            \"description\": \"LiveKit Agents evaluation workflow\",
-            \"visibility\": \"public\"
-        }")
-
-    local id=$(echo "$response" | grep -o '"id":[0-9]*' | head -1 | cut -d: -f2)
-
-    if [ -z "$id" ]; then
-        log_error "Failed to create workflow: $response" >&2
-        return 1
-    fi
-
-    log_success "Workflow created (ID: $id)" >&2
-    echo "$id"
+stop_eval_agent_docker() {
+    log_info "Stopping eval agent (Docker)..."
+    docker stop $EVAL_AGENT_CONTAINER 2>/dev/null || true
+    docker rm $EVAL_AGENT_CONTAINER 2>/dev/null || true
+    log_success "Eval agent stopped"
 }
 
-# Run workflow (create job)
-run_workflow() {
-    local cookie_jar=$1
-    local workflow_id=$2
-    local region=$3
+# ==================== Status Display ====================
 
-    log_info "Running workflow $workflow_id in region $region..." >&2
-
-    local response=$(curl -s -b "$cookie_jar" -X POST "$SERVER_URL/api/workflows/$workflow_id/run" \
-        -H "Content-Type: application/json" \
-        -d "{\"region\": \"$region\"}")
-
-    local job_id=$(echo "$response" | grep -o '"id":[0-9]*' | head -1 | cut -d: -f2)
-
-    if [ -z "$job_id" ]; then
-        log_error "Failed to run workflow: $response" >&2
-        return 1
-    fi
-
-    log_success "Job created (ID: $job_id)" >&2
-    echo "$job_id"
-}
-
-# Wait for job to complete
-wait_for_job() {
-    local cookie_jar=$1
-    local job_id=$2
-    local max_attempts=${3:-60}
-    local attempt=1
-
-    log_info "Waiting for job $job_id to complete..."
-
-    while [ $attempt -le $max_attempts ]; do
-        local response=$(curl -s -b "$cookie_jar" "$SERVER_URL/api/v1/jobs/$job_id")
-        local status=$(echo "$response" | grep -o '"status":"[^"]*"' | cut -d'"' -f4)
-
-        case "$status" in
-            "completed")
-                log_success "Job $job_id completed!"
-                return 0
-                ;;
-            "failed")
-                log_error "Job $job_id failed!"
-                return 1
-                ;;
-            "running")
-                echo -n "R"
-                ;;
-            "pending")
-                echo -n "."
-                ;;
-        esac
-
-        sleep 2
-        attempt=$((attempt + 1))
-    done
-
-    echo ""
-    log_error "Job timed out"
-    return 1
-}
-
-# Show status
 show_status() {
+    local mode=${1:-local}
+
     echo ""
-    echo "=== Vox Local Test Status ==="
+    echo "=== Vox Local Dev Status (${mode} mode) ==="
     echo ""
 
     # Service Status
     echo -e "${BLUE}Services:${NC}"
 
-    # PostgreSQL
+    # PostgreSQL (always Docker)
     if docker ps --format '{{.Names}}' | grep -q "^${DB_CONTAINER}$"; then
-        echo -e "  PostgreSQL:   ${GREEN}Running${NC}"
+        echo -e "  vox-postgres:    ${GREEN}Running${NC} (Docker)"
     else
-        echo -e "  PostgreSQL:   ${RED}Stopped${NC}"
+        echo -e "  vox-postgres:    ${RED}Stopped${NC}"
     fi
 
     # Vox Service
-    if [ -f /tmp/vox-server.pid ] && kill -0 $(cat /tmp/vox-server.pid) 2>/dev/null; then
-        echo -e "  Vox Service:  ${GREEN}Running${NC} (PID: $(cat /tmp/vox-server.pid))"
+    if [ "$mode" = "docker" ]; then
+        if docker ps --format '{{.Names}}' | grep -q "^${SERVICE_CONTAINER}$"; then
+            echo -e "  vox-service:     ${GREEN}Running${NC} (Docker)"
+        else
+            echo -e "  vox-service:     ${RED}Stopped${NC}"
+        fi
     else
-        echo -e "  Vox Service:  ${RED}Stopped${NC}"
+        if [ -f /tmp/vox-server.pid ] && kill -0 $(cat /tmp/vox-server.pid) 2>/dev/null; then
+            echo -e "  vox-service:     ${GREEN}Running${NC} (PID: $(cat /tmp/vox-server.pid))"
+        else
+            echo -e "  vox-service:     ${RED}Stopped${NC}"
+        fi
     fi
 
     # Eval Agent
-    if [ -f /tmp/vox-eval-agent.pid ] && kill -0 $(cat /tmp/vox-eval-agent.pid) 2>/dev/null; then
-        echo -e "  Eval Agent:   ${GREEN}Running${NC} (PID: $(cat /tmp/vox-eval-agent.pid))"
+    if [ "$mode" = "docker" ]; then
+        if docker ps --format '{{.Names}}' | grep -q "^${EVAL_AGENT_CONTAINER}$"; then
+            echo -e "  vox-eval-agent:  ${GREEN}Running${NC} (Docker)"
+        else
+            echo -e "  vox-eval-agent:  ${RED}Stopped${NC}"
+        fi
     else
-        echo -e "  Eval Agent:   ${RED}Stopped${NC}"
+        if [ -f /tmp/vox-eval-agent.pid ] && kill -0 $(cat /tmp/vox-eval-agent.pid) 2>/dev/null; then
+            echo -e "  vox-eval-agent:  ${GREEN}Running${NC} (PID: $(cat /tmp/vox-eval-agent.pid))"
+        else
+            echo -e "  vox-eval-agent:  ${RED}Stopped${NC}"
+        fi
     fi
 
     # Running Docker containers
@@ -509,180 +516,182 @@ show_status() {
     echo ""
 }
 
-# Full test flow (simulation mode)
-run_full_test() {
-    log_info "Starting full local test (simulation mode)..."
-    echo ""
+# ==================== Combined Start/Stop ====================
 
-    # 1. Start PostgreSQL
+do_start_local() {
+    # 1. Start PostgreSQL (Docker)
     start_postgres
 
-    # 2. Push schema
+    # 2. Push database schema
     push_schema
 
-    # 3. Start service
-    start_service
+    # 3. Start Vox service (local)
+    start_service_local
 
     # 4. Initialize system
     init_system
 
-    # 5. Seed data (creates Scout user)
+    # 5. Seed data
     seed_data
 
-    # 6. Login as admin
-    local admin_cookies=$(login "admin@vox.local" "admin123456")
+    # 6. Get or create eval agent token and start agent (local)
+    local agent_token=$(get_or_create_eval_agent_token)
+    if [ -n "$agent_token" ]; then
+        start_eval_agent_local "$agent_token" "Local-Eval-Agent" || log_warn "Eval agent failed to start, continuing..."
+    else
+        log_warn "Skipping eval agent startup (no token)"
+    fi
 
-    # 7. Create eval agent token for NA region
-    local agent_token=$(create_eval_agent_token "$admin_cookies" "NA-Test-Agent" "na")
-    log_info "Agent token: $agent_token"
-
-    # 8. Start eval agent (simulation)
-    start_eval_agent "$agent_token" "NA-Test-Agent"
-
-    # 9. Login as Scout
-    local scout_cookies=$(login "scout@vox.ai" "scout123")
-
-    # 10. Create LiveKit workflow
-    local workflow_id=$(create_workflow "$scout_cookies" "LiveKit Agents Test")
-
-    # 11. Run workflow in NA region
-    local job_id=$(run_workflow "$scout_cookies" "$workflow_id" "na")
-
-    # 12. Wait for job to complete
-    wait_for_job "$scout_cookies" "$job_id"
-
-    echo ""
-    log_success "Full test completed!"
-    echo ""
-    show_status
+    show_status "local"
 }
 
-# Full test flow with Docker eval agent (real browser tests)
-run_docker_test() {
-    log_info "Starting full local test (Docker mode with real browser)..."
-    echo ""
-
-    # 1. Build Docker image first
-    build_eval_agent_docker
-
-    # 2. Start PostgreSQL
+do_start_docker() {
+    # 1. Start PostgreSQL (Docker)
     start_postgres
 
-    # 3. Push schema
+    # 2. Push database schema
     push_schema
 
-    # 4. Start service
-    start_service
+    # 3. Start Vox service (Docker)
+    start_service_docker
 
-    # 5. Initialize system
+    # 4. Initialize system
     init_system
 
-    # 6. Seed data (creates Scout user)
+    # 5. Seed data
     seed_data
 
-    # 7. Login as admin
-    local admin_cookies=$(login "admin@vox.local" "admin123456")
+    # 6. Ensure eval agent Docker image exists
+    ensure_eval_agent_image
 
-    # 8. Create eval agent token for NA region
-    local agent_token=$(create_eval_agent_token "$admin_cookies" "NA-Test-Agent" "na")
-    log_info "Agent token: $agent_token"
+    # 7. Get or create eval agent token and start agent (Docker)
+    local agent_token=$(get_or_create_eval_agent_token)
+    if [ -n "$agent_token" ]; then
+        start_eval_agent_docker "$agent_token" "Local-Eval-Agent" || log_warn "Eval agent failed to start, continuing..."
+    else
+        log_warn "Skipping eval agent startup (no token)"
+    fi
 
-    # 9. Start eval agent (Docker mode)
-    start_eval_agent_docker "$agent_token" "NA-Test-Agent"
-
-    # 10. Login as Scout
-    local scout_cookies=$(login "scout@vox.ai" "scout123")
-
-    # 11. Create LiveKit workflow
-    local workflow_id=$(create_workflow "$scout_cookies" "LiveKit Agents Test")
-
-    # 12. Run workflow in NA region
-    local job_id=$(run_workflow "$scout_cookies" "$workflow_id" "na")
-
-    # 13. Wait for job to complete (longer timeout for real tests)
-    wait_for_job "$scout_cookies" "$job_id" 180
-
-    echo ""
-    echo "=== Docker Agent Logs ==="
-    docker logs vox-eval-agent 2>&1 | tail -50
-    echo ""
-
-    log_success "Docker test completed!"
-    echo ""
-    show_status
+    show_status "docker"
 }
 
-# Main
+do_stop() {
+    # Stop eval agent (both modes)
+    stop_eval_agent_local 2>/dev/null || true
+    stop_eval_agent_docker 2>/dev/null || true
+
+    # Stop service (both modes)
+    stop_service_local 2>/dev/null || true
+    stop_service_docker 2>/dev/null || true
+
+    # Stop PostgreSQL
+    stop_postgres
+}
+
+do_reset() {
+    local mode=${1:-local}
+
+    do_stop
+
+    # Remove database
+    docker rm -f "$DB_CONTAINER" 2>/dev/null || true
+    docker volume rm vox_vox_postgres_data 2>/dev/null || true
+    rm -f "$EVAL_AGENT_TOKEN_FILE"
+
+    # Restart
+    if [ "$mode" = "docker" ]; then
+        do_start_docker
+    else
+        do_start_local
+    fi
+}
+
+# ==================== Main ====================
+
 main() {
     check_command docker
     check_command curl
-    check_command npm
 
     case "${1:-}" in
         start)
-            start_postgres
-            push_schema
-            start_service
-            init_system
-            seed_data
-            show_status
+            check_command npm
+            do_start_local
+            ;;
+        docker)
+            case "${2:-}" in
+                start)
+                    do_start_docker
+                    ;;
+                stop)
+                    do_stop
+                    ;;
+                reset)
+                    do_reset "docker"
+                    ;;
+                status)
+                    show_status "docker"
+                    ;;
+                *)
+                    echo "Usage: $0 docker [start|stop|reset|status]"
+                    ;;
+            esac
             ;;
         stop)
-            stop_eval_agent
-            stop_service
-            stop_postgres
+            do_stop
             ;;
         reset)
-            stop_eval_agent
-            stop_service
-            docker rm -f "$DB_CONTAINER" 2>/dev/null || true
-            docker volume rm vox_vox_postgres_data 2>/dev/null || true
-            start_postgres
-            push_schema
-            start_service
-            init_system
-            seed_data
-            show_status
-            ;;
-        test)
-            run_full_test
-            ;;
-        docker-test)
-            run_docker_test
+            check_command npm
+            do_reset "local"
             ;;
         build-agent)
             build_eval_agent_docker
             ;;
         status)
-            show_status
+            show_status "local"
             ;;
         logs)
             case "${2:-server}" in
                 server)
-                    tail -f /tmp/vox-server.log
+                    if [ -f /tmp/vox-server.log ]; then
+                        tail -f /tmp/vox-server.log
+                    else
+                        docker logs -f $SERVICE_CONTAINER 2>/dev/null || echo "No logs available"
+                    fi
                     ;;
                 agent)
-                    tail -f /tmp/vox-eval-agent.log
+                    if [ -f /tmp/vox-eval-agent.log ]; then
+                        tail -f /tmp/vox-eval-agent.log
+                    else
+                        docker logs -f $EVAL_AGENT_CONTAINER 2>/dev/null || echo "No logs available"
+                    fi
                     ;;
-                docker)
-                    docker logs -f vox-eval-agent
+                *)
+                    echo "Usage: $0 logs [server|agent]"
                     ;;
             esac
             ;;
         *)
-            echo "Vox Local Testing Script"
+            echo "Vox Local Development Script"
             echo ""
             echo "Usage: $0 <command>"
             echo ""
-            echo "Commands:"
-            echo "  start       - Start all services (PostgreSQL, Vox)"
+            echo "Local Process Mode (vox-service and vox-eval-agent as local processes):"
+            echo "  start       - Start all services"
             echo "  stop        - Stop all services"
             echo "  reset       - Reset database and restart"
-            echo "  test        - Run full evaluation test (simulation mode)"
-            echo "  docker-test - Run full evaluation test (Docker mode with real browser)"
-            echo "  build-agent - Build eval agent Docker image"
+            echo ""
+            echo "Docker Mode (vox-service and vox-eval-agent in Docker):"
+            echo "  docker start  - Start all services in Docker"
+            echo "  docker stop   - Stop all services"
+            echo "  docker reset  - Reset database and restart in Docker"
+            echo "  docker status - Show status"
+            echo ""
+            echo "Common Commands:"
             echo "  status      - Show service status"
-            echo "  logs        - Show logs (server|agent|docker)"
+            echo "  build-agent - Build eval agent Docker image"
+            echo "  logs        - Show logs (server|agent)"
+            echo ""
+            echo "Note: vox-postgres always runs as a standalone Docker container."
             echo ""
             ;;
     esac
