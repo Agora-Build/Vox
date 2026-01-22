@@ -1,0 +1,3 @@
+[submodule "vox_eval_agentd/voice-agent-tester"]
+	path = vox_eval_agentd/voice-agent-tester
+	url = git@github.com:livetok-ai/voice-agent-tester.git

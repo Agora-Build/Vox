@@ -289,6 +289,12 @@ stop_eval_agent() {
 # Build eval agent Docker image
 build_eval_agent_docker() {
     log_info "Building eval agent Docker image..."
+    cd "$PROJECT_DIR"
+
+    # Initialize and update submodules (voice-agent-tester)
+    log_info "Initializing submodules..."
+    git submodule update --init --recursive
+
     cd "$PROJECT_DIR/vox_eval_agentd"
     docker build -t vox_eval_agentd .
     log_success "Docker image built: vox_eval_agentd"
