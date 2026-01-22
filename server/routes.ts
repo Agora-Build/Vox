@@ -13,9 +13,20 @@ import {
   requireAuth,
   requireAdmin,
   requirePrincipal,
+  requireOrgAdmin,
   generateApiKey,
   passport,
 } from "./auth";
+import { calculateSeatPrice, isStripeConfigured as isPricingStripeConfigured } from "./pricing";
+import {
+  isStripeConfigured,
+  createStripeCustomer,
+  createSetupIntent,
+  createPaymentIntent,
+  getPaymentMethodDetails,
+  attachPaymentMethod,
+  detachPaymentMethod,
+} from "./stripe";
 
 export async function registerRoutes(
   httpServer: Server,
@@ -28,18 +39,19 @@ export async function registerRoutes(
     try {
       const initialized = await isSystemInitialized();
       const user = await getCurrentUser(req);
-      res.json({ 
-        initialized, 
-        user: user ? { 
-          id: user.id, 
-          username: user.username, 
+      res.json({
+        initialized,
+        user: user ? {
+          id: user.id,
+          username: user.username,
           email: user.email,
-          plan: user.plan, 
+          plan: user.plan,
           isAdmin: user.isAdmin,
           isEnabled: user.isEnabled,
           emailVerified: !!user.emailVerifiedAt,
           organizationId: user.organizationId,
-        } : null 
+          isOrgAdmin: user.isOrgAdmin,
+        } : null
       });
     } catch (error) {
       console.error("Error getting auth status:", error);
@@ -1287,13 +1299,157 @@ export async function registerRoutes(
         maxRetries: 3,
       });
 
-      res.json({ 
+      res.json({
         message: "Job created",
         job,
       });
     } catch (error) {
       console.error("Error running workflow:", error);
       res.status(500).json({ error: "Failed to run workflow" });
+    }
+  });
+
+  // ==================== EVAL JOB MANAGEMENT ROUTES ====================
+
+  // List eval jobs with filters
+  app.get("/api/eval-jobs", requireAuth, async (req, res) => {
+    try {
+      const user = await getCurrentUser(req);
+      if (!user) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+
+      const { status, region, workflowId, limit, offset } = req.query;
+
+      const filters: {
+        status?: "pending" | "running" | "completed" | "failed";
+        region?: "na" | "apac" | "eu";
+        workflowId?: number;
+        limit?: number;
+        offset?: number;
+      } = {};
+
+      if (status && ["pending", "running", "completed", "failed"].includes(status as string)) {
+        filters.status = status as "pending" | "running" | "completed" | "failed";
+      }
+      if (region && ["na", "apac", "eu"].includes(region as string)) {
+        filters.region = region as "na" | "apac" | "eu";
+      }
+      if (workflowId) {
+        filters.workflowId = parseInt(workflowId as string);
+      }
+      if (limit) {
+        filters.limit = parseInt(limit as string);
+      }
+      if (offset) {
+        filters.offset = parseInt(offset as string);
+      }
+
+      const jobs = await storage.getEvalJobs(filters);
+
+      // For non-admin users, only return jobs for workflows they own or are public
+      if (!user.isAdmin) {
+        const userWorkflows = await storage.getWorkflowsByOwner(user.id);
+        const userWorkflowIds = new Set(userWorkflows.map(w => w.id));
+        const filteredJobs = jobs.filter(job => userWorkflowIds.has(job.workflowId));
+        return res.json(filteredJobs);
+      }
+
+      res.json(jobs);
+    } catch (error) {
+      console.error("Error fetching eval jobs:", error);
+      res.status(500).json({ error: "Failed to fetch eval jobs" });
+    }
+  });
+
+  // Get single eval job
+  app.get("/api/eval-jobs/:id", requireAuth, async (req, res) => {
+    try {
+      const user = await getCurrentUser(req);
+      if (!user) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+
+      const { id } = req.params;
+      const job = await storage.getEvalJob(parseInt(id));
+
+      if (!job) {
+        return res.status(404).json({ error: "Job not found" });
+      }
+
+      // Check authorization
+      if (!user.isAdmin) {
+        const workflow = await storage.getWorkflow(job.workflowId);
+        if (!workflow || workflow.ownerId !== user.id) {
+          return res.status(403).json({ error: "Not authorized to view this job" });
+        }
+      }
+
+      res.json(job);
+    } catch (error) {
+      console.error("Error fetching eval job:", error);
+      res.status(500).json({ error: "Failed to fetch eval job" });
+    }
+  });
+
+  // Cancel a pending job
+  app.delete("/api/eval-jobs/:id", requireAuth, async (req, res) => {
+    try {
+      const user = await getCurrentUser(req);
+      if (!user) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+
+      const { id } = req.params;
+      const job = await storage.getEvalJob(parseInt(id));
+
+      if (!job) {
+        return res.status(404).json({ error: "Job not found" });
+      }
+
+      // Check authorization
+      if (!user.isAdmin) {
+        const workflow = await storage.getWorkflow(job.workflowId);
+        if (!workflow || workflow.ownerId !== user.id) {
+          return res.status(403).json({ error: "Not authorized to cancel this job" });
+        }
+      }
+
+      if (job.status !== "pending") {
+        return res.status(400).json({ error: "Can only cancel pending jobs" });
+      }
+
+      const cancelledJob = await storage.cancelEvalJob(parseInt(id));
+      if (!cancelledJob) {
+        return res.status(400).json({ error: "Failed to cancel job" });
+      }
+
+      res.json({ message: "Job cancelled", job: cancelledJob });
+    } catch (error) {
+      console.error("Error cancelling eval job:", error);
+      res.status(500).json({ error: "Failed to cancel eval job" });
+    }
+  });
+
+  // Admin: Get stale running jobs
+  app.get("/api/admin/eval-jobs/stale", requireAuth, requireAdmin, async (req, res) => {
+    try {
+      const staleJobs = await storage.getStaleRunningJobs(5);
+      res.json(staleJobs);
+    } catch (error) {
+      console.error("Error fetching stale jobs:", error);
+      res.status(500).json({ error: "Failed to fetch stale jobs" });
+    }
+  });
+
+  // Admin: Force release stale jobs
+  app.post("/api/admin/eval-jobs/release-stale", requireAuth, requireAdmin, async (req, res) => {
+    try {
+      const released = await storage.releaseStaleJobs(5);
+      res.json({ message: `Released ${released} stale job(s)`, released });
+    } catch (error) {
+      console.error("Error releasing stale jobs:", error);
+      res.status(500).json({ error: "Failed to release stale jobs" });
     }
   });
 
@@ -1377,6 +1533,894 @@ export async function registerRoutes(
     } catch (error) {
       console.error("Error fetching config:", error);
       res.status(500).json({ error: "Failed to fetch config" });
+    }
+  });
+
+  // ==================== ORGANIZATION ROUTES ====================
+
+  // Create organization (user becomes admin and gets linked)
+  app.post("/api/organizations", requireAuth, async (req, res) => {
+    try {
+      const user = await getCurrentUser(req);
+      if (!user) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+
+      if (user.organizationId) {
+        return res.status(400).json({ error: "Already a member of an organization" });
+      }
+
+      const { name, address } = req.body;
+
+      if (!name) {
+        return res.status(400).json({ error: "Organization name required" });
+      }
+
+      // Create organization
+      const org = await storage.createOrganization({
+        name,
+        address,
+        verified: false,
+      });
+
+      // Create organization seat record
+      await storage.createOrganizationSeat({
+        organizationId: org.id,
+        totalSeats: 0,
+        usedSeats: 1, // Creator takes a seat
+        pricePerSeat: 600,
+        discountPercent: 0,
+      });
+
+      // Link user to organization and make them admin
+      await storage.updateUser(user.id, {
+        organizationId: org.id,
+        isOrgAdmin: true,
+      });
+
+      res.json(org);
+    } catch (error) {
+      console.error("Error creating organization:", error);
+      res.status(500).json({ error: "Failed to create organization" });
+    }
+  });
+
+  // Get organization details
+  app.get("/api/organizations/:id", requireAuth, async (req, res) => {
+    try {
+      const user = await getCurrentUser(req);
+      if (!user) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+
+      const { id } = req.params;
+      const org = await storage.getOrganization(parseInt(id));
+
+      if (!org) {
+        return res.status(404).json({ error: "Organization not found" });
+      }
+
+      // Must be member or system admin
+      if (user.organizationId !== org.id && !user.isAdmin) {
+        return res.status(403).json({ error: "Not authorized to view this organization" });
+      }
+
+      res.json(org);
+    } catch (error) {
+      console.error("Error fetching organization:", error);
+      res.status(500).json({ error: "Failed to fetch organization" });
+    }
+  });
+
+  // Update organization (org admin only)
+  app.patch("/api/organizations/:id", requireAuth, requireOrgAdmin, async (req, res) => {
+    try {
+      const user = await getCurrentUser(req);
+      if (!user) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+
+      const { id } = req.params;
+      const { name, address } = req.body;
+
+      if (user.organizationId !== parseInt(id)) {
+        return res.status(403).json({ error: "Not authorized to modify this organization" });
+      }
+
+      const updates: Record<string, unknown> = {};
+      if (name) updates.name = name;
+      if (address !== undefined) updates.address = address;
+
+      const updated = await storage.updateOrganization(parseInt(id), updates);
+      res.json(updated);
+    } catch (error) {
+      console.error("Error updating organization:", error);
+      res.status(500).json({ error: "Failed to update organization" });
+    }
+  });
+
+  // Invite user to organization
+  app.post("/api/organizations/:id/invite", requireAuth, requireOrgAdmin, async (req, res) => {
+    try {
+      const user = await getCurrentUser(req);
+      if (!user) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+
+      const { id } = req.params;
+      const { email } = req.body;
+
+      if (!email) {
+        return res.status(400).json({ error: "Email required" });
+      }
+
+      if (user.organizationId !== parseInt(id)) {
+        return res.status(403).json({ error: "Not authorized to invite to this organization" });
+      }
+
+      // Check if organization has available seats
+      const seats = await storage.getOrganizationSeat(parseInt(id));
+      if (seats && seats.usedSeats >= seats.totalSeats) {
+        return res.status(400).json({ error: "No available seats. Please purchase more seats." });
+      }
+
+      const existing = await storage.getUserByEmail(email);
+      if (existing) {
+        return res.status(400).json({ error: "Email already registered" });
+      }
+
+      const token = generateToken();
+      const tokenHash = hashToken(token);
+      const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+
+      await storage.createInviteToken(
+        email,
+        "premium", // Org members get premium
+        false, // Not org admin by default
+        tokenHash,
+        user.id,
+        expiresAt,
+        parseInt(id)
+      );
+
+      res.json({
+        message: "Invite created",
+        token,
+        expiresAt,
+      });
+    } catch (error) {
+      console.error("Error creating invite:", error);
+      res.status(500).json({ error: "Failed to create invite" });
+    }
+  });
+
+  // List organization members
+  app.get("/api/organizations/:id/members", requireAuth, async (req, res) => {
+    try {
+      const user = await getCurrentUser(req);
+      if (!user) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+
+      const { id } = req.params;
+
+      // Must be member of the organization
+      if (user.organizationId !== parseInt(id) && !user.isAdmin) {
+        return res.status(403).json({ error: "Not authorized to view members" });
+      }
+
+      const members = await storage.getUsersByOrganization(parseInt(id));
+      res.json(members.map(m => ({
+        id: m.id,
+        username: m.username,
+        email: m.email,
+        plan: m.plan,
+        isOrgAdmin: m.isOrgAdmin,
+        createdAt: m.createdAt,
+      })));
+    } catch (error) {
+      console.error("Error fetching members:", error);
+      res.status(500).json({ error: "Failed to fetch members" });
+    }
+  });
+
+  // Update member role (org admin only)
+  app.patch("/api/organizations/:id/members/:userId", requireAuth, requireOrgAdmin, async (req, res) => {
+    try {
+      const user = await getCurrentUser(req);
+      if (!user) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+
+      const { id, userId } = req.params;
+      const { isOrgAdmin } = req.body;
+
+      if (user.organizationId !== parseInt(id)) {
+        return res.status(403).json({ error: "Not authorized to modify this organization" });
+      }
+
+      const member = await storage.getUser(parseInt(userId));
+      if (!member || member.organizationId !== parseInt(id)) {
+        return res.status(404).json({ error: "Member not found in organization" });
+      }
+
+      // Cannot demote yourself
+      if (parseInt(userId) === user.id && isOrgAdmin === false) {
+        return res.status(400).json({ error: "Cannot demote yourself" });
+      }
+
+      // Check max org admins (4)
+      if (isOrgAdmin === true) {
+        const adminCount = await storage.countOrgAdmins(parseInt(id));
+        if (adminCount >= 4) {
+          return res.status(400).json({ error: "Maximum 4 organization admins allowed" });
+        }
+      }
+
+      const updated = await storage.updateUser(parseInt(userId), { isOrgAdmin });
+      res.json({
+        id: updated?.id,
+        username: updated?.username,
+        isOrgAdmin: updated?.isOrgAdmin,
+      });
+    } catch (error) {
+      console.error("Error updating member:", error);
+      res.status(500).json({ error: "Failed to update member" });
+    }
+  });
+
+  // Remove member from organization (org admin only)
+  app.delete("/api/organizations/:id/members/:userId", requireAuth, requireOrgAdmin, async (req, res) => {
+    try {
+      const user = await getCurrentUser(req);
+      if (!user) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+
+      const { id, userId } = req.params;
+
+      if (user.organizationId !== parseInt(id)) {
+        return res.status(403).json({ error: "Not authorized to modify this organization" });
+      }
+
+      const member = await storage.getUser(parseInt(userId));
+      if (!member || member.organizationId !== parseInt(id)) {
+        return res.status(404).json({ error: "Member not found in organization" });
+      }
+
+      // Cannot remove yourself
+      if (parseInt(userId) === user.id) {
+        return res.status(400).json({ error: "Cannot remove yourself. Use leave organization instead." });
+      }
+
+      // Cannot remove the only org admin
+      if (member.isOrgAdmin) {
+        const adminCount = await storage.countOrgAdmins(parseInt(id));
+        if (adminCount <= 1) {
+          return res.status(400).json({ error: "Cannot remove the only organization admin" });
+        }
+      }
+
+      await storage.removeUserFromOrganization(parseInt(userId));
+
+      // Update seat count
+      const seats = await storage.getOrganizationSeat(parseInt(id));
+      if (seats) {
+        await storage.updateOrganizationSeat(parseInt(id), {
+          usedSeats: Math.max(0, seats.usedSeats - 1),
+        });
+      }
+
+      res.json({ message: "Member removed from organization" });
+    } catch (error) {
+      console.error("Error removing member:", error);
+      res.status(500).json({ error: "Failed to remove member" });
+    }
+  });
+
+  // Leave organization
+  app.post("/api/organizations/:id/leave", requireAuth, async (req, res) => {
+    try {
+      const user = await getCurrentUser(req);
+      if (!user) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+
+      const { id } = req.params;
+
+      if (user.organizationId !== parseInt(id)) {
+        return res.status(403).json({ error: "Not a member of this organization" });
+      }
+
+      // Cannot leave if only org admin
+      if (user.isOrgAdmin) {
+        const adminCount = await storage.countOrgAdmins(parseInt(id));
+        if (adminCount <= 1) {
+          return res.status(400).json({ error: "Cannot leave as the only organization admin. Transfer admin role first." });
+        }
+      }
+
+      await storage.removeUserFromOrganization(user.id);
+
+      // Update seat count
+      const seats = await storage.getOrganizationSeat(parseInt(id));
+      if (seats) {
+        await storage.updateOrganizationSeat(parseInt(id), {
+          usedSeats: Math.max(0, seats.usedSeats - 1),
+        });
+      }
+
+      res.json({ message: "Left organization successfully" });
+    } catch (error) {
+      console.error("Error leaving organization:", error);
+      res.status(500).json({ error: "Failed to leave organization" });
+    }
+  });
+
+  // Admin: Verify/unverify organization
+  app.patch("/api/admin/organizations/:id/verify", requireAuth, requireAdmin, async (req, res) => {
+    try {
+      const { id } = req.params;
+      const { verified } = req.body;
+
+      const org = await storage.getOrganization(parseInt(id));
+      if (!org) {
+        return res.status(404).json({ error: "Organization not found" });
+      }
+
+      const updated = await storage.updateOrganization(parseInt(id), { verified });
+      res.json(updated);
+    } catch (error) {
+      console.error("Error verifying organization:", error);
+      res.status(500).json({ error: "Failed to verify organization" });
+    }
+  });
+
+  // Admin: List all organizations
+  app.get("/api/admin/organizations", requireAuth, requireAdmin, async (req, res) => {
+    try {
+      const orgs = await storage.getAllOrganizations();
+
+      // Get member counts for each org
+      const orgsWithCounts = await Promise.all(
+        orgs.map(async (org) => {
+          const memberCount = await storage.getOrganizationMemberCount(org.id);
+          const seats = await storage.getOrganizationSeat(org.id);
+          return {
+            ...org,
+            memberCount,
+            totalSeats: seats?.totalSeats || 0,
+            usedSeats: seats?.usedSeats || 0,
+          };
+        })
+      );
+
+      res.json(orgsWithCounts);
+    } catch (error) {
+      console.error("Error fetching organizations:", error);
+      res.status(500).json({ error: "Failed to fetch organizations" });
+    }
+  });
+
+  // Get current user's organization
+  app.get("/api/user/organization", requireAuth, async (req, res) => {
+    try {
+      const user = await getCurrentUser(req);
+      if (!user) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+
+      if (!user.organizationId) {
+        return res.json(null);
+      }
+
+      const org = await storage.getOrganization(user.organizationId);
+      const seats = await storage.getOrganizationSeat(user.organizationId);
+      const memberCount = await storage.getOrganizationMemberCount(user.organizationId);
+
+      res.json({
+        ...org,
+        memberCount,
+        totalSeats: seats?.totalSeats || 0,
+        usedSeats: seats?.usedSeats || 0,
+        isOrgAdmin: user.isOrgAdmin,
+      });
+    } catch (error) {
+      console.error("Error fetching user organization:", error);
+      res.status(500).json({ error: "Failed to fetch organization" });
+    }
+  });
+
+  // ==================== SEAT MANAGEMENT ROUTES ====================
+
+  // Get pricing tiers
+  app.get("/api/pricing", async (req, res) => {
+    try {
+      const pricing = await storage.getAllPricingConfig();
+      res.json(pricing.filter(p => p.name !== "Solo Premium"));
+    } catch (error) {
+      console.error("Error fetching pricing:", error);
+      res.status(500).json({ error: "Failed to fetch pricing" });
+    }
+  });
+
+  // Get organization seat info
+  app.get("/api/organizations/:id/seats", requireAuth, requireOrgAdmin, async (req, res) => {
+    try {
+      const user = await getCurrentUser(req);
+      if (!user) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+
+      const { id } = req.params;
+
+      if (user.organizationId !== parseInt(id)) {
+        return res.status(403).json({ error: "Not authorized to view seats" });
+      }
+
+      const seats = await storage.getOrganizationSeat(parseInt(id));
+      if (!seats) {
+        return res.json({
+          totalSeats: 0,
+          usedSeats: 0,
+          availableSeats: 0,
+        });
+      }
+
+      res.json({
+        totalSeats: seats.totalSeats,
+        usedSeats: seats.usedSeats,
+        availableSeats: Math.max(0, seats.totalSeats - seats.usedSeats),
+        pricePerSeat: seats.pricePerSeat,
+        discountPercent: seats.discountPercent,
+      });
+    } catch (error) {
+      console.error("Error fetching seats:", error);
+      res.status(500).json({ error: "Failed to fetch seats" });
+    }
+  });
+
+  // Calculate price for additional seats
+  app.post("/api/organizations/:id/seats/calculate", requireAuth, requireOrgAdmin, async (req, res) => {
+    try {
+      const user = await getCurrentUser(req);
+      if (!user) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+
+      const { id } = req.params;
+      const { additionalSeats } = req.body;
+
+      if (user.organizationId !== parseInt(id)) {
+        return res.status(403).json({ error: "Not authorized" });
+      }
+
+      if (!additionalSeats || additionalSeats <= 0) {
+        return res.status(400).json({ error: "Invalid number of seats" });
+      }
+
+      const seats = await storage.getOrganizationSeat(parseInt(id));
+      const currentSeats = seats?.totalSeats || 0;
+
+      const calculation = await calculateSeatPrice(currentSeats, additionalSeats);
+      if (!calculation) {
+        return res.status(500).json({ error: "Failed to calculate price" });
+      }
+
+      res.json(calculation);
+    } catch (error) {
+      console.error("Error calculating price:", error);
+      res.status(500).json({ error: "Failed to calculate price" });
+    }
+  });
+
+  // Purchase seats
+  app.post("/api/organizations/:id/seats/purchase", requireAuth, requireOrgAdmin, async (req, res) => {
+    try {
+      const user = await getCurrentUser(req);
+      if (!user) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+
+      const { id } = req.params;
+      const { additionalSeats, paymentMethodId } = req.body;
+
+      if (user.organizationId !== parseInt(id)) {
+        return res.status(403).json({ error: "Not authorized" });
+      }
+
+      if (!additionalSeats || additionalSeats <= 0) {
+        return res.status(400).json({ error: "Invalid number of seats" });
+      }
+
+      const seats = await storage.getOrganizationSeat(parseInt(id));
+      const currentSeats = seats?.totalSeats || 0;
+
+      const calculation = await calculateSeatPrice(currentSeats, additionalSeats);
+      if (!calculation) {
+        return res.status(500).json({ error: "Failed to calculate price" });
+      }
+
+      // Process payment if Stripe is configured and payment method provided
+      let paymentResult = null;
+      if (isStripeConfigured() && paymentMethodId) {
+        const paymentMethod = await storage.getPaymentMethod(paymentMethodId);
+        if (!paymentMethod || paymentMethod.organizationId !== parseInt(id)) {
+          return res.status(400).json({ error: "Invalid payment method" });
+        }
+
+        if (!paymentMethod.stripeCustomerId || !paymentMethod.stripePaymentMethodId) {
+          return res.status(400).json({ error: "Payment method not properly configured" });
+        }
+
+        paymentResult = await createPaymentIntent(
+          paymentMethod.stripeCustomerId,
+          calculation.total,
+          paymentMethod.stripePaymentMethodId,
+          `Purchase ${additionalSeats} seats for organization`
+        );
+
+        if (!paymentResult || paymentResult.status !== "succeeded") {
+          return res.status(400).json({ error: "Payment failed" });
+        }
+
+        // Record payment history
+        await storage.createPaymentHistory({
+          organizationId: parseInt(id),
+          userId: user.id,
+          amount: calculation.total,
+          status: "completed",
+          description: `Purchased ${additionalSeats} seats`,
+          stripePaymentIntentId: paymentResult.id,
+        });
+      } else if (!isStripeConfigured()) {
+        // For testing without Stripe - just record the purchase
+        await storage.createPaymentHistory({
+          organizationId: parseInt(id),
+          userId: user.id,
+          amount: calculation.total,
+          status: "completed",
+          description: `Purchased ${additionalSeats} seats (test mode)`,
+        });
+      } else {
+        return res.status(400).json({ error: "Payment method required" });
+      }
+
+      // Update seat count
+      await storage.updateOrganizationSeat(parseInt(id), {
+        totalSeats: calculation.totalSeats,
+        pricePerSeat: calculation.pricePerSeat,
+        discountPercent: calculation.discountPercent,
+      });
+
+      res.json({
+        message: "Seats purchased successfully",
+        newTotalSeats: calculation.totalSeats,
+        amountPaid: calculation.total,
+      });
+    } catch (error) {
+      console.error("Error purchasing seats:", error);
+      res.status(500).json({ error: "Failed to purchase seats" });
+    }
+  });
+
+  // ==================== PAYMENT ROUTES ====================
+
+  // Check if Stripe is enabled
+  app.get("/api/payments/stripe-status", (req, res) => {
+    res.json({ enabled: isStripeConfigured() });
+  });
+
+  // Create setup intent for adding card
+  app.post("/api/organizations/:id/payments/setup-intent", requireAuth, requireOrgAdmin, async (req, res) => {
+    try {
+      const user = await getCurrentUser(req);
+      if (!user) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+
+      const { id } = req.params;
+
+      if (user.organizationId !== parseInt(id)) {
+        return res.status(403).json({ error: "Not authorized" });
+      }
+
+      if (!isStripeConfigured()) {
+        return res.status(503).json({ error: "Stripe not configured" });
+      }
+
+      const org = await storage.getOrganization(parseInt(id));
+      if (!org) {
+        return res.status(404).json({ error: "Organization not found" });
+      }
+
+      // Check if org has a Stripe customer, if not create one
+      let existingMethod = await storage.getDefaultPaymentMethod(parseInt(id));
+      let customerId = existingMethod?.stripeCustomerId;
+
+      if (!customerId) {
+        const customer = await createStripeCustomer(
+          user.email,
+          org.name,
+          { organizationId: id }
+        );
+        if (!customer) {
+          return res.status(500).json({ error: "Failed to create Stripe customer" });
+        }
+        customerId = customer.id;
+      }
+
+      const setupIntent = await createSetupIntent(customerId);
+      if (!setupIntent) {
+        return res.status(500).json({ error: "Failed to create setup intent" });
+      }
+
+      res.json({
+        clientSecret: setupIntent.clientSecret,
+        customerId,
+      });
+    } catch (error) {
+      console.error("Error creating setup intent:", error);
+      res.status(500).json({ error: "Failed to create setup intent" });
+    }
+  });
+
+  // Save payment method
+  app.post("/api/organizations/:id/payments/methods", requireAuth, requireOrgAdmin, async (req, res) => {
+    try {
+      const user = await getCurrentUser(req);
+      if (!user) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+
+      const { id } = req.params;
+      const { stripePaymentMethodId, stripeCustomerId, setDefault } = req.body;
+
+      if (user.organizationId !== parseInt(id)) {
+        return res.status(403).json({ error: "Not authorized" });
+      }
+
+      if (!stripePaymentMethodId || !stripeCustomerId) {
+        return res.status(400).json({ error: "Payment method ID and customer ID required" });
+      }
+
+      // Attach payment method to customer
+      const attached = await attachPaymentMethod(stripePaymentMethodId, stripeCustomerId);
+      if (!attached) {
+        return res.status(500).json({ error: "Failed to attach payment method" });
+      }
+
+      // Get card details
+      const details = await getPaymentMethodDetails(stripePaymentMethodId);
+
+      const paymentMethod = await storage.createPaymentMethod({
+        organizationId: parseInt(id),
+        stripeCustomerId,
+        stripePaymentMethodId,
+        isDefault: setDefault || false,
+        lastFour: details?.lastFour,
+        expiryMonth: details?.expiryMonth,
+        expiryYear: details?.expiryYear,
+      });
+
+      if (setDefault) {
+        await storage.setDefaultPaymentMethod(parseInt(id), paymentMethod.id);
+      }
+
+      res.json({
+        id: paymentMethod.id,
+        lastFour: paymentMethod.lastFour,
+        expiryMonth: paymentMethod.expiryMonth,
+        expiryYear: paymentMethod.expiryYear,
+        isDefault: paymentMethod.isDefault,
+      });
+    } catch (error) {
+      console.error("Error saving payment method:", error);
+      res.status(500).json({ error: "Failed to save payment method" });
+    }
+  });
+
+  // List payment methods
+  app.get("/api/organizations/:id/payments/methods", requireAuth, requireOrgAdmin, async (req, res) => {
+    try {
+      const user = await getCurrentUser(req);
+      if (!user) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+
+      const { id } = req.params;
+
+      if (user.organizationId !== parseInt(id)) {
+        return res.status(403).json({ error: "Not authorized" });
+      }
+
+      const methods = await storage.getPaymentMethodsByOrganization(parseInt(id));
+      res.json(methods.map(m => ({
+        id: m.id,
+        lastFour: m.lastFour,
+        expiryMonth: m.expiryMonth,
+        expiryYear: m.expiryYear,
+        isDefault: m.isDefault,
+        createdAt: m.createdAt,
+      })));
+    } catch (error) {
+      console.error("Error fetching payment methods:", error);
+      res.status(500).json({ error: "Failed to fetch payment methods" });
+    }
+  });
+
+  // Delete payment method
+  app.delete("/api/organizations/:id/payments/methods/:methodId", requireAuth, requireOrgAdmin, async (req, res) => {
+    try {
+      const user = await getCurrentUser(req);
+      if (!user) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+
+      const { id, methodId } = req.params;
+
+      if (user.organizationId !== parseInt(id)) {
+        return res.status(403).json({ error: "Not authorized" });
+      }
+
+      const method = await storage.getPaymentMethod(parseInt(methodId));
+      if (!method || method.organizationId !== parseInt(id)) {
+        return res.status(404).json({ error: "Payment method not found" });
+      }
+
+      // Detach from Stripe
+      if (method.stripePaymentMethodId) {
+        await detachPaymentMethod(method.stripePaymentMethodId);
+      }
+
+      await storage.deletePaymentMethod(parseInt(methodId));
+      res.json({ message: "Payment method deleted" });
+    } catch (error) {
+      console.error("Error deleting payment method:", error);
+      res.status(500).json({ error: "Failed to delete payment method" });
+    }
+  });
+
+  // Get payment history
+  app.get("/api/organizations/:id/payments/history", requireAuth, requireOrgAdmin, async (req, res) => {
+    try {
+      const user = await getCurrentUser(req);
+      if (!user) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+
+      const { id } = req.params;
+
+      if (user.organizationId !== parseInt(id)) {
+        return res.status(403).json({ error: "Not authorized" });
+      }
+
+      const history = await storage.getPaymentHistoriesByOrganization(parseInt(id));
+      res.json(history);
+    } catch (error) {
+      console.error("Error fetching payment history:", error);
+      res.status(500).json({ error: "Failed to fetch payment history" });
+    }
+  });
+
+  // ==================== FUND RETURN ROUTES ====================
+
+  // Request fund return (Premium users only)
+  app.post("/api/fund-returns", requireAuth, async (req, res) => {
+    try {
+      const user = await getCurrentUser(req);
+      if (!user) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+
+      if (user.plan !== "premium") {
+        return res.status(403).json({ error: "Only Premium users can request fund returns" });
+      }
+
+      const { amount, reason } = req.body;
+
+      if (!amount || amount <= 0) {
+        return res.status(400).json({ error: "Invalid amount" });
+      }
+
+      const request = await storage.createFundReturnRequest({
+        userId: user.id,
+        amount,
+        reason,
+        status: "pending",
+      });
+
+      res.json(request);
+    } catch (error) {
+      console.error("Error creating fund return request:", error);
+      res.status(500).json({ error: "Failed to create fund return request" });
+    }
+  });
+
+  // Get user's fund return requests
+  app.get("/api/user/fund-returns", requireAuth, async (req, res) => {
+    try {
+      const user = await getCurrentUser(req);
+      if (!user) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+
+      const requests = await storage.getFundReturnRequestsByUser(user.id);
+      res.json(requests);
+    } catch (error) {
+      console.error("Error fetching fund return requests:", error);
+      res.status(500).json({ error: "Failed to fetch fund return requests" });
+    }
+  });
+
+  // Admin: List all fund return requests
+  app.get("/api/admin/fund-returns", requireAuth, requireAdmin, async (req, res) => {
+    try {
+      const { status } = req.query;
+
+      let requests;
+      if (status === "pending") {
+        requests = await storage.getPendingFundReturnRequests();
+      } else {
+        requests = await storage.getAllFundReturnRequests();
+      }
+
+      // Add user info
+      const requestsWithUsers = await Promise.all(
+        requests.map(async (request) => {
+          const user = await storage.getUser(request.userId);
+          return {
+            ...request,
+            user: user ? {
+              id: user.id,
+              username: user.username,
+              email: user.email,
+            } : null,
+          };
+        })
+      );
+
+      res.json(requestsWithUsers);
+    } catch (error) {
+      console.error("Error fetching fund return requests:", error);
+      res.status(500).json({ error: "Failed to fetch fund return requests" });
+    }
+  });
+
+  // Admin: Approve/reject fund return request
+  app.patch("/api/admin/fund-returns/:id", requireAuth, requireAdmin, async (req, res) => {
+    try {
+      const user = await getCurrentUser(req);
+      if (!user) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+
+      const { id } = req.params;
+      const { status } = req.body;
+
+      if (!status || !["approved", "rejected"].includes(status)) {
+        return res.status(400).json({ error: "Invalid status. Must be approved or rejected" });
+      }
+
+      const request = await storage.getFundReturnRequest(parseInt(id));
+      if (!request) {
+        return res.status(404).json({ error: "Fund return request not found" });
+      }
+
+      if (request.status !== "pending") {
+        return res.status(400).json({ error: "Request already processed" });
+      }
+
+      const updated = await storage.reviewFundReturnRequest(
+        parseInt(id),
+        user.id,
+        status as "approved" | "rejected"
+      );
+
+      res.json(updated);
+    } catch (error) {
+      console.error("Error reviewing fund return request:", error);
+      res.status(500).json({ error: "Failed to review fund return request" });
     }
   });
 

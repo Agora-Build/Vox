@@ -70,6 +70,7 @@ export function generateSecureToken(length: number = 32): string {
 
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 export const db = drizzle(pool);
+export { pool };
 
 export class DatabaseStorage {
   async getUser(id: number): Promise<User | undefined> {
@@ -328,11 +329,203 @@ export class DatabaseStorage {
   }
 
   async claimEvalJob(jobId: number, agentId: number): Promise<EvalJob | undefined> {
+    // Use atomic claim with SELECT FOR UPDATE SKIP LOCKED to prevent race conditions
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      // Try to lock and select the specific job
+      const selectResult = await client.query(
+        `SELECT * FROM eval_jobs
+         WHERE id = $1 AND status = 'pending'
+         FOR UPDATE SKIP LOCKED`,
+        [jobId]
+      );
+
+      if (selectResult.rows.length === 0) {
+        await client.query('ROLLBACK');
+        return undefined;
+      }
+
+      // Update the job
+      const updateResult = await client.query(
+        `UPDATE eval_jobs
+         SET eval_agent_id = $1, status = 'running', started_at = NOW(), updated_at = NOW()
+         WHERE id = $2
+         RETURNING *`,
+        [agentId, jobId]
+      );
+
+      await client.query('COMMIT');
+      return updateResult.rows[0] as EvalJob;
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  // Atomic claim for next available job in region
+  async claimNextAvailableJob(agentId: number, region: "na" | "apac" | "eu"): Promise<EvalJob | undefined> {
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      // Select and lock the next available job, skipping locked rows
+      const selectResult = await client.query(
+        `SELECT * FROM eval_jobs
+         WHERE status = 'pending' AND region = $1
+         ORDER BY priority DESC, created_at ASC
+         LIMIT 1
+         FOR UPDATE SKIP LOCKED`,
+        [region]
+      );
+
+      if (selectResult.rows.length === 0) {
+        await client.query('ROLLBACK');
+        return undefined;
+      }
+
+      const job = selectResult.rows[0];
+
+      // Update the job
+      const updateResult = await client.query(
+        `UPDATE eval_jobs
+         SET eval_agent_id = $1, status = 'running', started_at = NOW(), updated_at = NOW()
+         WHERE id = $2
+         RETURNING *`,
+        [agentId, job.id]
+      );
+
+      await client.query('COMMIT');
+      return updateResult.rows[0] as EvalJob;
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  // Release stale jobs where agent hasn't sent heartbeat
+  async releaseStaleJobs(staleThresholdMinutes: number = 5): Promise<number> {
+    const staleThreshold = new Date(Date.now() - staleThresholdMinutes * 60 * 1000);
+
+    // Find running jobs where agent last_seen_at is older than threshold
+    const result = await db.execute(sql`
+      UPDATE eval_jobs
+      SET
+        status = CASE
+          WHEN retry_count >= max_retries THEN 'failed'
+          ELSE 'pending'
+        END,
+        retry_count = retry_count + 1,
+        eval_agent_id = NULL,
+        started_at = NULL,
+        error = CASE
+          WHEN retry_count >= max_retries THEN 'Agent timeout - max retries exceeded'
+          ELSE NULL
+        END,
+        updated_at = NOW()
+      WHERE id IN (
+        SELECT ej.id FROM eval_jobs ej
+        INNER JOIN eval_agents ea ON ej.eval_agent_id = ea.id
+        WHERE ej.status = 'running'
+        AND ea.last_seen_at < ${staleThreshold}
+      )
+    `);
+
+    return (result as unknown as { rowCount: number }).rowCount || 0;
+  }
+
+  // Get all jobs with optional filters
+  async getEvalJobs(filters?: {
+    status?: "pending" | "running" | "completed" | "failed";
+    region?: "na" | "apac" | "eu";
+    workflowId?: number;
+    agentId?: number;
+    limit?: number;
+    offset?: number;
+  }): Promise<EvalJob[]> {
+    let query = db.select().from(evalJobs);
+
+    const conditions = [];
+    if (filters?.status) {
+      conditions.push(eq(evalJobs.status, filters.status));
+    }
+    if (filters?.region) {
+      conditions.push(eq(evalJobs.region, filters.region));
+    }
+    if (filters?.workflowId) {
+      conditions.push(eq(evalJobs.workflowId, filters.workflowId));
+    }
+    if (filters?.agentId) {
+      conditions.push(eq(evalJobs.evalAgentId, filters.agentId));
+    }
+
+    if (conditions.length > 0) {
+      query = query.where(and(...conditions)) as typeof query;
+    }
+
+    query = query.orderBy(desc(evalJobs.createdAt)) as typeof query;
+
+    if (filters?.limit) {
+      query = query.limit(filters.limit) as typeof query;
+    }
+    if (filters?.offset) {
+      query = query.offset(filters.offset) as typeof query;
+    }
+
+    return query;
+  }
+
+  // Cancel a pending job
+  async cancelEvalJob(jobId: number): Promise<EvalJob | undefined> {
+    const job = await this.getEvalJob(jobId);
+    if (!job || job.status !== 'pending') {
+      return undefined;
+    }
+
     const result = await db.update(evalJobs)
-      .set({ evalAgentId: agentId, status: "running", startedAt: new Date(), updatedAt: new Date() })
+      .set({
+        status: "failed",
+        error: "Cancelled by user",
+        completedAt: new Date(),
+        updatedAt: new Date()
+      })
       .where(and(eq(evalJobs.id, jobId), eq(evalJobs.status, "pending")))
       .returning();
+
     return result[0];
+  }
+
+  // Get jobs that are running but agent is offline
+  async getStaleRunningJobs(staleThresholdMinutes: number = 5): Promise<EvalJob[]> {
+    const staleThreshold = new Date(Date.now() - staleThresholdMinutes * 60 * 1000);
+
+    const result = await db.execute(sql`
+      SELECT ej.* FROM eval_jobs ej
+      INNER JOIN eval_agents ea ON ej.eval_agent_id = ea.id
+      WHERE ej.status = 'running'
+      AND ea.last_seen_at < ${staleThreshold}
+    `);
+
+    return (result as unknown as { rows: EvalJob[] }).rows || [];
+  }
+
+  // Mark offline agents
+  async markOfflineAgents(staleThresholdMinutes: number = 5): Promise<number> {
+    const staleThreshold = new Date(Date.now() - staleThresholdMinutes * 60 * 1000);
+
+    const result = await db.update(evalAgents)
+      .set({ state: "offline", updatedAt: new Date() })
+      .where(and(
+        sql`${evalAgents.lastSeenAt} < ${staleThreshold}`,
+        sql`${evalAgents.state} != 'offline'`
+      ));
+
+    return (result as unknown as { rowCount: number }).rowCount || 0;
   }
 
   async completeEvalJob(jobId: number, error?: string): Promise<EvalJob | undefined> {
@@ -579,6 +772,51 @@ export class DatabaseStorage {
       .where(eq(fundReturnRequests.id, id))
       .returning();
     return result[0];
+  }
+
+  // Organization helper methods
+  async countOrgAdmins(organizationId: number): Promise<number> {
+    const result = await db.select({ count: sql<number>`count(*)` })
+      .from(users)
+      .where(and(eq(users.organizationId, organizationId), eq(users.isOrgAdmin, true)));
+    return Number(result[0]?.count || 0);
+  }
+
+  async getOrganizationMemberCount(organizationId: number): Promise<number> {
+    const result = await db.select({ count: sql<number>`count(*)` })
+      .from(users)
+      .where(eq(users.organizationId, organizationId));
+    return Number(result[0]?.count || 0);
+  }
+
+  async removeUserFromOrganization(userId: number): Promise<User | undefined> {
+    const result = await db.update(users)
+      .set({ organizationId: null, isOrgAdmin: false, updatedAt: new Date() })
+      .where(eq(users.id, userId))
+      .returning();
+    return result[0];
+  }
+
+  async getDefaultPaymentMethod(organizationId: number): Promise<PaymentMethod | undefined> {
+    const result = await db.select()
+      .from(paymentMethods)
+      .where(and(eq(paymentMethods.organizationId, organizationId), eq(paymentMethods.isDefault, true)));
+    return result[0];
+  }
+
+  async setDefaultPaymentMethod(organizationId: number, paymentMethodId: number): Promise<void> {
+    // Clear current default
+    await db.update(paymentMethods)
+      .set({ isDefault: false })
+      .where(eq(paymentMethods.organizationId, organizationId));
+    // Set new default
+    await db.update(paymentMethods)
+      .set({ isDefault: true })
+      .where(eq(paymentMethods.id, paymentMethodId));
+  }
+
+  async getAllFundReturnRequests(): Promise<FundReturnRequest[]> {
+    return db.select().from(fundReturnRequests).orderBy(desc(fundReturnRequests.createdAt));
   }
 }
 

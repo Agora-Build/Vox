@@ -17,10 +17,9 @@ import {
 import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
-import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import { Users, Workflow, FileText, LogOut, Home, Shield, Crown, Sparkles, Zap, Server, Key } from "lucide-react";
+import { Users, Workflow, FileText, LogOut, Shield, Crown, Sparkles, Zap, Server, Key, Building2, CreditCard, Settings } from "lucide-react";
 import { ThemeToggle } from "@/components/theme-toggle";
 
 interface AuthStatus {
@@ -33,6 +32,8 @@ interface AuthStatus {
     isAdmin: boolean;
     isEnabled: boolean;
     emailVerified: boolean;
+    organizationId: number | null;
+    isOrgAdmin: boolean;
   } | null;
 }
 
@@ -125,6 +126,45 @@ export default function ConsoleLayout({ children }: ConsoleLayoutProps) {
     });
   }
 
+  // Organization section
+  const orgNavItems = [];
+
+  if (user?.organizationId) {
+    orgNavItems.push({
+      title: "Organization",
+      url: "/console/organization",
+      icon: Building2,
+      active: location === "/console/organization",
+    });
+    orgNavItems.push({
+      title: "Members",
+      url: "/console/organization/members",
+      icon: Users,
+      active: location === "/console/organization/members",
+    });
+    if (user.isOrgAdmin) {
+      orgNavItems.push({
+        title: "Billing",
+        url: "/console/organization/billing",
+        icon: CreditCard,
+        active: location === "/console/organization/billing",
+      });
+      orgNavItems.push({
+        title: "Settings",
+        url: "/console/organization/settings",
+        icon: Settings,
+        active: location === "/console/organization/settings",
+      });
+    }
+  } else {
+    orgNavItems.push({
+      title: "Create Organization",
+      url: "/console/organization/create",
+      icon: Building2,
+      active: location === "/console/organization/create",
+    });
+  }
+
   return (
     <SidebarProvider style={style as React.CSSProperties}>
       <div className="flex h-screen w-full">
@@ -143,6 +183,23 @@ export default function ConsoleLayout({ children }: ConsoleLayoutProps) {
               <SidebarGroupContent>
                 <SidebarMenu>
                   {navItems.map((item) => (
+                    <SidebarMenuItem key={item.title}>
+                      <SidebarMenuButton asChild isActive={item.active}>
+                        <Link href={item.url}>
+                          <item.icon className="h-4 w-4" />
+                          <span>{item.title}</span>
+                        </Link>
+                      </SidebarMenuButton>
+                    </SidebarMenuItem>
+                  ))}
+                </SidebarMenu>
+              </SidebarGroupContent>
+            </SidebarGroup>
+            <SidebarGroup>
+              <SidebarGroupLabel>Organization</SidebarGroupLabel>
+              <SidebarGroupContent>
+                <SidebarMenu>
+                  {orgNavItems.map((item) => (
                     <SidebarMenuItem key={item.title}>
                       <SidebarMenuButton asChild isActive={item.active}>
                         <Link href={item.url}>

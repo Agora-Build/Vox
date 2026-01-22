@@ -21,6 +21,13 @@ import ConsoleWorkflowDetail from "@/pages/console-workflow-detail";
 import ConsoleTestSets from "@/pages/console-testsets";
 import ConsoleWorkerTokens from "@/pages/console-worker-tokens";
 import ConsoleWorkers from "@/pages/console-workers";
+import ConsoleOrganization from "@/pages/console-organization";
+import ConsoleOrganizationMembers from "@/pages/console-organization-members";
+import ConsoleOrganizationBilling from "@/pages/console-organization-billing";
+import ConsoleOrganizationSettings from "@/pages/console-organization-settings";
+import ConsoleOrganizationCreate from "@/pages/console-organization-create";
+import AdminOrganizations from "@/pages/admin-organizations";
+import AdminFundReturns from "@/pages/admin-fund-returns";
 import Activate from "@/pages/activate";
 import NotFound from "@/pages/not-found";
 
@@ -34,6 +41,8 @@ interface AuthStatus {
     isAdmin: boolean;
     isEnabled: boolean;
     emailVerified: boolean;
+    organizationId: number | null;
+    isOrgAdmin: boolean;
   } | null;
 }
 
@@ -276,6 +285,314 @@ function ConsoleWorkersWrapper() {
   );
 }
 
+function ConsoleOrganizationWrapper() {
+  const [, setLocation] = useLocation();
+  const { data: authStatus, isLoading, isFetching } = useQuery<AuthStatus>({
+    queryKey: ["/api/auth/status"],
+  });
+
+  useEffect(() => {
+    if (!isLoading && !isFetching && authStatus?.initialized && !authStatus.user) {
+      setLocation("/login");
+    }
+  }, [isLoading, isFetching, authStatus, setLocation]);
+
+  if ((isLoading || isFetching) && !authStatus?.user) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="animate-pulse text-muted-foreground">Loading...</div>
+      </div>
+    );
+  }
+
+  if (!authStatus?.initialized) {
+    return <ConsoleInit />;
+  }
+
+  if (!authStatus.user) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="animate-pulse text-muted-foreground">Redirecting...</div>
+      </div>
+    );
+  }
+
+  if (!authStatus.user.organizationId) {
+    setLocation("/console/organization/create");
+    return null;
+  }
+
+  return (
+    <ConsoleLayout>
+      <ConsoleOrganization />
+    </ConsoleLayout>
+  );
+}
+
+function ConsoleOrganizationMembersWrapper() {
+  const [, setLocation] = useLocation();
+  const { data: authStatus, isLoading, isFetching } = useQuery<AuthStatus>({
+    queryKey: ["/api/auth/status"],
+  });
+
+  useEffect(() => {
+    if (!isLoading && !isFetching && authStatus?.initialized && !authStatus.user) {
+      setLocation("/login");
+    }
+  }, [isLoading, isFetching, authStatus, setLocation]);
+
+  if ((isLoading || isFetching) && !authStatus?.user) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="animate-pulse text-muted-foreground">Loading...</div>
+      </div>
+    );
+  }
+
+  if (!authStatus?.initialized) {
+    return <ConsoleInit />;
+  }
+
+  if (!authStatus.user) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="animate-pulse text-muted-foreground">Redirecting...</div>
+      </div>
+    );
+  }
+
+  if (!authStatus.user.organizationId) {
+    setLocation("/console/organization/create");
+    return null;
+  }
+
+  return (
+    <ConsoleLayout>
+      <ConsoleOrganizationMembers />
+    </ConsoleLayout>
+  );
+}
+
+function ConsoleOrganizationBillingWrapper() {
+  const [, setLocation] = useLocation();
+  const { data: authStatus, isLoading, isFetching } = useQuery<AuthStatus>({
+    queryKey: ["/api/auth/status"],
+  });
+
+  useEffect(() => {
+    if (!isLoading && !isFetching && authStatus?.initialized && !authStatus.user) {
+      setLocation("/login");
+    }
+  }, [isLoading, isFetching, authStatus, setLocation]);
+
+  if ((isLoading || isFetching) && !authStatus?.user) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="animate-pulse text-muted-foreground">Loading...</div>
+      </div>
+    );
+  }
+
+  if (!authStatus?.initialized) {
+    return <ConsoleInit />;
+  }
+
+  if (!authStatus.user) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="animate-pulse text-muted-foreground">Redirecting...</div>
+      </div>
+    );
+  }
+
+  if (!authStatus.user.organizationId || !authStatus.user.isOrgAdmin) {
+    setLocation("/console/organization");
+    return null;
+  }
+
+  return (
+    <ConsoleLayout>
+      <ConsoleOrganizationBilling />
+    </ConsoleLayout>
+  );
+}
+
+function ConsoleOrganizationSettingsWrapper() {
+  const [, setLocation] = useLocation();
+  const { data: authStatus, isLoading, isFetching } = useQuery<AuthStatus>({
+    queryKey: ["/api/auth/status"],
+  });
+
+  useEffect(() => {
+    if (!isLoading && !isFetching && authStatus?.initialized && !authStatus.user) {
+      setLocation("/login");
+    }
+  }, [isLoading, isFetching, authStatus, setLocation]);
+
+  if ((isLoading || isFetching) && !authStatus?.user) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="animate-pulse text-muted-foreground">Loading...</div>
+      </div>
+    );
+  }
+
+  if (!authStatus?.initialized) {
+    return <ConsoleInit />;
+  }
+
+  if (!authStatus.user) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="animate-pulse text-muted-foreground">Redirecting...</div>
+      </div>
+    );
+  }
+
+  if (!authStatus.user.organizationId || !authStatus.user.isOrgAdmin) {
+    setLocation("/console/organization");
+    return null;
+  }
+
+  return (
+    <ConsoleLayout>
+      <ConsoleOrganizationSettings />
+    </ConsoleLayout>
+  );
+}
+
+function ConsoleOrganizationCreateWrapper() {
+  const [, setLocation] = useLocation();
+  const { data: authStatus, isLoading, isFetching } = useQuery<AuthStatus>({
+    queryKey: ["/api/auth/status"],
+  });
+
+  useEffect(() => {
+    if (!isLoading && !isFetching && authStatus?.initialized && !authStatus.user) {
+      setLocation("/login");
+    }
+  }, [isLoading, isFetching, authStatus, setLocation]);
+
+  if ((isLoading || isFetching) && !authStatus?.user) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="animate-pulse text-muted-foreground">Loading...</div>
+      </div>
+    );
+  }
+
+  if (!authStatus?.initialized) {
+    return <ConsoleInit />;
+  }
+
+  if (!authStatus.user) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="animate-pulse text-muted-foreground">Redirecting...</div>
+      </div>
+    );
+  }
+
+  if (authStatus.user.organizationId) {
+    setLocation("/console/organization");
+    return null;
+  }
+
+  return (
+    <ConsoleLayout>
+      <ConsoleOrganizationCreate />
+    </ConsoleLayout>
+  );
+}
+
+function AdminOrganizationsWrapper() {
+  const [, setLocation] = useLocation();
+  const { data: authStatus, isLoading, isFetching } = useQuery<AuthStatus>({
+    queryKey: ["/api/auth/status"],
+  });
+
+  useEffect(() => {
+    if (!isLoading && !isFetching && authStatus?.initialized && !authStatus.user) {
+      setLocation("/admin/login");
+    }
+  }, [isLoading, isFetching, authStatus, setLocation]);
+
+  if ((isLoading || isFetching) && !authStatus?.user) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="animate-pulse text-muted-foreground">Loading...</div>
+      </div>
+    );
+  }
+
+  if (!authStatus?.initialized) {
+    return <ConsoleInit />;
+  }
+
+  if (!authStatus.user) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="animate-pulse text-muted-foreground">Redirecting...</div>
+      </div>
+    );
+  }
+
+  if (!authStatus.user.isAdmin) {
+    setLocation("/console/workflows");
+    return null;
+  }
+
+  return (
+    <ConsoleLayout>
+      <AdminOrganizations />
+    </ConsoleLayout>
+  );
+}
+
+function AdminFundReturnsWrapper() {
+  const [, setLocation] = useLocation();
+  const { data: authStatus, isLoading, isFetching } = useQuery<AuthStatus>({
+    queryKey: ["/api/auth/status"],
+  });
+
+  useEffect(() => {
+    if (!isLoading && !isFetching && authStatus?.initialized && !authStatus.user) {
+      setLocation("/admin/login");
+    }
+  }, [isLoading, isFetching, authStatus, setLocation]);
+
+  if ((isLoading || isFetching) && !authStatus?.user) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="animate-pulse text-muted-foreground">Loading...</div>
+      </div>
+    );
+  }
+
+  if (!authStatus?.initialized) {
+    return <ConsoleInit />;
+  }
+
+  if (!authStatus.user) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="animate-pulse text-muted-foreground">Redirecting...</div>
+      </div>
+    );
+  }
+
+  if (!authStatus.user.isAdmin) {
+    setLocation("/console/workflows");
+    return null;
+  }
+
+  return (
+    <ConsoleLayout>
+      <AdminFundReturns />
+    </ConsoleLayout>
+  );
+}
+
 function Router() {
   return (
     <Switch>
@@ -299,6 +616,27 @@ function Router() {
       </Route>
       <Route path="/console/worker-tokens">
         <ConsoleWorkerTokensWrapper />
+      </Route>
+      <Route path="/console/organization">
+        <ConsoleOrganizationWrapper />
+      </Route>
+      <Route path="/console/organization/members">
+        <ConsoleOrganizationMembersWrapper />
+      </Route>
+      <Route path="/console/organization/billing">
+        <ConsoleOrganizationBillingWrapper />
+      </Route>
+      <Route path="/console/organization/settings">
+        <ConsoleOrganizationSettingsWrapper />
+      </Route>
+      <Route path="/console/organization/create">
+        <ConsoleOrganizationCreateWrapper />
+      </Route>
+      <Route path="/admin/console/organizations">
+        <AdminOrganizationsWrapper />
+      </Route>
+      <Route path="/admin/console/fund-returns">
+        <AdminFundReturnsWrapper />
       </Route>
       <Route path="/admin/console" component={AdminConsolePage} />
       <Route path="/setup" component={ConsoleInit} />

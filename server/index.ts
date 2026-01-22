@@ -6,6 +6,7 @@ import session from "express-session";
 import connectPgSimple from "connect-pg-simple";
 import rateLimit from "express-rate-limit";
 import { authenticateApiKey, passport, initializeGoogleOAuth } from "./auth";
+import { storage } from "./storage";
 import pkg from "pg";
 const { Pool } = pkg;
 
@@ -157,6 +158,39 @@ app.use((req, res, next) => {
     },
     () => {
       log(`serving on port ${port}`);
+
+      // Start background worker for stale job detection and agent status
+      startBackgroundWorker();
     },
   );
 })();
+
+// Background worker for eval agent system maintenance
+function startBackgroundWorker() {
+  const STALE_THRESHOLD_MINUTES = 5;
+  const CHECK_INTERVAL_MS = 60 * 1000; // Run every minute
+
+  async function runMaintenanceTasks() {
+    try {
+      // Release stale jobs (jobs where agent hasn't sent heartbeat)
+      const releasedJobs = await storage.releaseStaleJobs(STALE_THRESHOLD_MINUTES);
+      if (releasedJobs > 0) {
+        log(`Released ${releasedJobs} stale job(s)`, "worker");
+      }
+
+      // Mark offline agents
+      const offlineAgents = await storage.markOfflineAgents(STALE_THRESHOLD_MINUTES);
+      if (offlineAgents > 0) {
+        log(`Marked ${offlineAgents} agent(s) as offline`, "worker");
+      }
+    } catch (error) {
+      console.error("Background worker error:", error);
+    }
+  }
+
+  // Run immediately on startup, then every minute
+  runMaintenanceTasks();
+  setInterval(runMaintenanceTasks, CHECK_INTERVAL_MS);
+
+  log("Background worker started (stale job detection)", "worker");
+}
