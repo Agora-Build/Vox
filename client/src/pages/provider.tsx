@@ -46,7 +46,7 @@ export default function ProviderGuide() {
             <span className="text-sm font-mono">bash</span>
           </div>
           <div className="p-4 font-mono text-sm overflow-x-auto">
-            npm install @ai-latency/benchmark-sdk
+            npm install @ai-latency/eval-sdk
           </div>
         </div>
 
@@ -56,15 +56,15 @@ export default function ProviderGuide() {
             <span className="text-sm font-mono">typescript</span>
           </div>
           <div className="p-4 font-mono text-sm overflow-x-auto">
-{`import { Benchmark } from "@ai-latency/benchmark-sdk";
+{`import { Evaluator } from "@ai-latency/eval-sdk";
 
-const benchmark = new Benchmark({
+const evaluator = new Evaluator({
   apiKey: "YOUR_API_KEY",
   endpoint: "wss://api.your-agent.com/v1/stream"
 });
 
 // Run a standardized test suite
-await benchmark.runSuite({
+await evaluator.runSuite({
   duration: 60, // seconds
   scenarios: ["support", "sales", "casual"]
 });`}

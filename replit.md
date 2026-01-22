@@ -1,8 +1,8 @@
-# Vox - AI Latency Benchmark
+# Vox - AI Latency Evaluation
 
 ## Overview
 
-Vox is a web application for benchmarking and tracking performance metrics of conversational AI products. It provides real-time monitoring dashboards, global leaderboards, and self-testing capabilities to measure response latency, interrupt latency, network resilience, naturalness, and noise reduction across multiple AI providers and regions.
+Vox is a web application for evaluating and tracking performance metrics of conversational AI products. It provides real-time monitoring dashboards, global leaderboards, and self-testing capabilities to measure response latency, interrupt latency, network resilience, naturalness, and noise reduction across multiple AI providers and regions.
 
 ## User Preferences
 
@@ -22,7 +22,7 @@ The frontend follows a page-based structure with reusable UI components. Pages i
 - **Real-time Dashboard**: Live performance metrics
 - **Leaderboard**: Global rankings by provider/region
 - **Provider Guide**: Information about AI providers
-- **Self-Test**: User-initiated benchmarks
+- **Self-Test**: User-initiated evaluations
 - **Login**: Authentication page
 - **Console**: Management dashboard with sidebar navigation
   - `/console` - User Management (admin only, redirects non-admins to workflows)
@@ -78,7 +78,7 @@ The server uses a modular structure with:
 - `activation_tokens`: Admin-generated links for users to set passwords and activate accounts
 - `workflows`: Test workflows with visibility (public/private) and mainline flag
 - `test_sets`: Test configurations with visibility and mainline flag
-- `benchmark_results`: Performance measurements with optional workflow/test set references
+- `eval_results`: Performance measurements with optional workflow/test set references
 - `system_config`: Key-value system configuration (including initialization status)
 
 ### API Routes
@@ -111,7 +111,7 @@ The server uses a modular structure with:
 - `PATCH /api/test-sets/:id/mainline`: Toggle mainline status (principal only)
 
 **Metrics** (public):
-- `GET /api/metrics/realtime`: Recent benchmark results
+- `GET /api/metrics/realtime`: Recent evaluation results
 - `GET /api/metrics/leaderboard`: Aggregated provider rankings
 - `GET /api/config`: System configuration
 

@@ -13,7 +13,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Skeleton } from "@/components/ui/skeleton";
 import { format } from "date-fns";
 
-interface BenchmarkResult {
+interface EvalResult {
   id: number;
   provider: string;
   region: string;
@@ -49,7 +49,7 @@ export default function Dashboard() {
   const [selectedRegion, setSelectedRegion] = useState<string>("all");
   const [refreshInterval, setRefreshInterval] = useState<number>(30000); // 30 seconds
 
-  const { data: metrics, isLoading: metricsLoading, refetch, isFetching } = useQuery<BenchmarkResult[]>({
+  const { data: metrics, isLoading: metricsLoading, refetch, isFetching } = useQuery<EvalResult[]>({
     queryKey: ['/api/metrics/realtime'],
     refetchInterval: refreshInterval,
   });
@@ -66,7 +66,7 @@ export default function Dashboard() {
   const combinedData = (() => {
     if (!filteredMetrics || filteredMetrics.length === 0) return [];
 
-    const timeGroups = new Map<string, { agora: BenchmarkResult | null; liveKit: BenchmarkResult | null }>();
+    const timeGroups = new Map<string, { agora: EvalResult | null; liveKit: EvalResult | null }>();
 
     for (const m of filteredMetrics) {
       const timeKey = format(new Date(m.timestamp), "HH:mm");

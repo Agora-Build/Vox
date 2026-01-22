@@ -13,7 +13,7 @@ export default function Home() {
           Track AI Performance<br />Across the World
         </h1>
         <p className="text-base sm:text-lg md:text-xl text-muted-foreground max-w-3xl mx-auto leading-relaxed px-2">
-          Automated benchmark testing for conversational AI products. Monitor respond latency, 
+          Automated evaluation testing for conversational AI products. Monitor respond latency,
           interrupt latency, network resilience, naturalness, and noise reduction across multiple regions.
         </p>
         <div className="flex flex-col sm:flex-row justify-center gap-3 sm:gap-4 pt-4 px-4 sm:px-0">
@@ -33,7 +33,7 @@ export default function Home() {
       {/* Features Grid */}
       <section className="space-y-12">
         <div className="text-center space-y-4">
-          <h2 className="text-3xl font-bold">Comprehensive Benchmarking</h2>
+          <h2 className="text-3xl font-bold">Comprehensive Evaluation</h2>
           <p className="text-muted-foreground">Everything you need to understand how AI products perform in production</p>
         </div>
         
@@ -47,7 +47,7 @@ export default function Home() {
             </CardHeader>
             <CardContent>
               <p className="text-muted-foreground">
-                Comprehensive benchmarks run automatically every 8 hours across all selected products and regions.
+                Comprehensive evaluations run automatically every 8 hours across all selected products and regions.
               </p>
             </CardContent>
           </Card>
@@ -102,7 +102,7 @@ export default function Home() {
           <Badge variant="secondary" className="px-4 py-1">Supported Products</Badge>
           <h2 className="text-3xl font-bold">Products We Test</h2>
           <p className="text-muted-foreground max-w-2xl mx-auto">
-            Currently benchmarking browser-based conversational AI products. RTC solutions coming soon.
+            Currently evaluating browser-based conversational AI products. RTC solutions coming soon.
           </p>
         </div>
 

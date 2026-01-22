@@ -105,7 +105,7 @@ export default function Leaderboard() {
         <div>
           <h1 className="text-2xl sm:text-3xl font-bold tracking-tight" data-testid="text-leaderboard-title">Global Leaderboard</h1>
           <p className="text-sm sm:text-base text-muted-foreground mt-2">
-            Comprehensive benchmarks across 5 key performance metrics.
+            Comprehensive evaluations across 5 key performance metrics.
           </p>
         </div>
         <div className="flex items-center gap-2">

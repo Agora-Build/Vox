@@ -103,7 +103,7 @@ export default function ConsoleEvalAgents() {
             Registered Eval Agents
           </CardTitle>
           <CardDescription>
-            Eval agents that have registered with the system. Agents fetch and execute benchmark jobs for their assigned region.
+            Eval agents that have registered with the system. Agents fetch and execute evaluation jobs for their assigned region.
           </CardDescription>
         </CardHeader>
         <CardContent>

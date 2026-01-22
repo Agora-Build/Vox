@@ -1,11 +1,11 @@
-# Vox - AI Latency Benchmark Platform
+# Vox - AI Latency Evaluation Platform
 
 <p align="center">
   <strong>Track AI Performance Across the World</strong>
 </p>
 
 <p align="center">
-  Automated benchmark testing for conversational AI products. Monitor response latency, interrupt latency, network resilience, naturalness, and noise reduction across multiple regions.
+  Automated evaluation testing for conversational AI products. Monitor response latency, interrupt latency, network resilience, naturalness, and noise reduction across multiple regions.
 </p>
 
 ---
@@ -13,7 +13,7 @@
 ## Features
 
 ### Automated Testing
-Comprehensive benchmarks run automatically across all selected products and regions using distributed eval agents.
+Comprehensive evaluations run automatically across all selected products and regions using distributed eval agents.
 
 ### Multi-Region Coverage
 Test from North America, Europe, and Asia-Pacific to understand regional performance characteristics.
@@ -278,7 +278,7 @@ vox/
 
 ## Eval Agent System
 
-Distributed eval agents run benchmark tests across regions:
+Distributed eval agents run evaluation tests across regions:
 
 1. Admin creates eval agent tokens with region assignments
 2. Agents register using tokens and heartbeat regularly

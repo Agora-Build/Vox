@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Vox is an AI latency benchmark platform for conversational AI products. It runs automated benchmark tests across multiple regions (NA, APAC, EU) to monitor response latency, interrupt latency, network resilience, naturalness, and noise reduction for AI voice agents.
+Vox is an AI latency evaluation platform for conversational AI products. It runs automated evaluation tests across multiple regions (NA, APAC, EU) to monitor response latency, interrupt latency, network resilience, naturalness, and noise reduction for AI voice agents.
 
 ## Development Commands
 
@@ -74,7 +74,7 @@ The entire data model is defined in `shared/schema.ts` using Drizzle ORM. All ta
 - `visibilityEnum`: `public`, `private`
 
 #### Eval Agent System (Renamed from Workers)
-The system uses distributed eval agents to run benchmark tests:
+The system uses distributed eval agents to run evaluation tests:
 1. Admin creates eval agent tokens with region assignments
 2. Eval agents register using tokens (`evalAgentTokens` table)
 3. Agents fetch jobs matching their region (`evalJobs` table with `pending` → `running` → `completed`/`failed` status)
@@ -321,6 +321,6 @@ Development dependencies:
 - First-time setup requires `INIT_CODE` to create admin user via `/api/auth/init`
 - System creates two users on init: admin (active) and Scout (needs activation)
 - Default providers seeded: "Agora ConvoAI Engine" and "LiveKit Agents" (both with `convoai` SKU)
-- The eval agent system expects external `voice-agent-tester` tool for actual benchmark execution
+- The eval agent system expects external `voice-agent-tester` tool for actual evaluation execution
   - Example: `npm start -- -a apps/livekit.yaml -s suites/appointment.yaml --headless false`
 - Architecture diagram available at `designs/vox-arch.png`

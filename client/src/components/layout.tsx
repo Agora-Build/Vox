@@ -117,7 +117,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
                 <span className="font-mono font-bold text-lg">Vox</span>
               </div>
               <p className="text-sm text-muted-foreground leading-relaxed">
-                Track and benchmark conversational AI performance across multiple regions worldwide.
+                Track and evaluate conversational AI performance across multiple regions worldwide.
               </p>
             </div>
 

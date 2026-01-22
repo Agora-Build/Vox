@@ -93,24 +93,24 @@ export default function SelfTest() {
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ["/api/workflows"] });
       setSelectedWorkflowId(data.id.toString());
-      toast({ title: "Product registered", description: "You can now run benchmarks" });
+      toast({ title: "Product registered", description: "You can now run evaluations" });
     },
     onError: (error: Error) => {
       toast({ title: "Failed to register product", description: error.message, variant: "destructive" });
     },
   });
 
-  const runBenchmarkMutation = useMutation({
+  const runEvalMutation = useMutation({
     mutationFn: async (workflowId: number) => {
       const res = await apiRequest("POST", `/api/workflows/${workflowId}/run`, { region });
       return res.json();
     },
     onSuccess: (data) => {
       setActiveJobId(data.job.id);
-      toast({ title: "Benchmark started", description: "Your test is now running" });
+      toast({ title: "Evaluation started", description: "Your test is now running" });
     },
     onError: (error: Error) => {
-      toast({ title: "Failed to start benchmark", description: error.message, variant: "destructive" });
+      toast({ title: "Failed to start evaluation", description: error.message, variant: "destructive" });
     },
   });
 
@@ -137,13 +137,13 @@ export default function SelfTest() {
     createWorkflowMutation.mutate();
   };
 
-  const handleRunBenchmark = () => {
+  const handleRunEval = () => {
     const workflowId = parseInt(selectedWorkflowId);
     if (!workflowId) {
       toast({ title: "Please select or register a product first", variant: "destructive" });
       return;
     }
-    runBenchmarkMutation.mutate(workflowId);
+    runEvalMutation.mutate(workflowId);
   };
 
   const isLoggedIn = !!authStatus?.user;
@@ -162,9 +162,9 @@ export default function SelfTest() {
   const getJobStatusLabel = (status: string) => {
     switch (status) {
       case "pending": return "Waiting for agent...";
-      case "running": return "Benchmark in progress...";
-      case "completed": return "Benchmark complete!";
-      case "failed": return "Benchmark failed";
+      case "running": return "Evaluation in progress...";
+      case "completed": return "Evaluation complete!";
+      case "failed": return "Evaluation failed";
       default: return status;
     }
   };
@@ -180,14 +180,14 @@ export default function SelfTest() {
       <div className="text-center space-y-4">
         <div className="inline-flex items-center gap-2 px-4 py-2 bg-primary/10 rounded-full text-primary font-medium">
           <Rocket className="h-4 w-4" />
-          Run Your Own Benchmark
+          Run Your Own Evaluation
         </div>
         <h1 className="text-3xl sm:text-4xl font-bold tracking-tight">
           Test Your Voice AI Product
         </h1>
         <p className="text-muted-foreground max-w-2xl mx-auto">
-          Register your ConvoAI or RTC product and run real-world benchmarks across multiple regions.
-          Compare your performance against industry standards.
+          Register your ConvoAI or RTC product and run real-world evaluations across multiple regions.
+          Measure your true performance characteristics.
         </p>
       </div>
 
@@ -196,9 +196,9 @@ export default function SelfTest() {
           <CardContent className="pt-6">
             <div className="text-center space-y-4">
               <AlertCircle className="h-12 w-12 mx-auto text-muted-foreground" />
-              <h3 className="text-lg font-semibold">Sign in to run benchmarks</h3>
+              <h3 className="text-lg font-semibold">Sign in to run evaluations</h3>
               <p className="text-muted-foreground">
-                Create a free account to register your products and run benchmarks.
+                Create a free account to register your products and run evaluations.
               </p>
               <Button asChild>
                 <Link href="/login">Sign In</Link>
@@ -216,7 +216,7 @@ export default function SelfTest() {
             <CardHeader className="relative z-10">
               <CardTitle className="flex items-center gap-2">
                 <Zap className="h-5 w-5" />
-                Configure Benchmark
+                Configure Evaluation
               </CardTitle>
               <CardDescription>
                 Set up your product for testing
@@ -319,15 +319,15 @@ export default function SelfTest() {
               <Button
                 className="w-full"
                 size="lg"
-                onClick={handleRunBenchmark}
-                disabled={runBenchmarkMutation.isPending || isJobRunning || !selectedWorkflowId}
+                onClick={handleRunEval}
+                disabled={runEvalMutation.isPending || isJobRunning || !selectedWorkflowId}
               >
-                {runBenchmarkMutation.isPending ? (
+                {runEvalMutation.isPending ? (
                   <><Loader2 className="mr-2 h-4 w-4 animate-spin" /> Starting...</>
                 ) : isJobRunning ? (
                   <><Loader2 className="mr-2 h-4 w-4 animate-spin" /> Job Running...</>
                 ) : (
-                  <><Play className="mr-2 h-4 w-4" /> Start Benchmark</>
+                  <><Play className="mr-2 h-4 w-4" /> Start Evaluation</>
                 )}
               </Button>
             </CardFooter>
@@ -336,9 +336,9 @@ export default function SelfTest() {
           {/* Status Panel */}
           <Card>
             <CardHeader>
-              <CardTitle>Benchmark Status</CardTitle>
+              <CardTitle>Evaluation Status</CardTitle>
               <CardDescription>
-                Monitor your running benchmarks
+                Monitor your running evaluations
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-6">
@@ -365,7 +365,7 @@ export default function SelfTest() {
                       <p className="text-xs text-muted-foreground text-center">
                         {activeJob.status === "pending"
                           ? "Waiting for available eval agent..."
-                          : "Running benchmark tests..."}
+                          : "Running evaluation tests..."}
                       </p>
                     </div>
                   )}
@@ -379,7 +379,7 @@ export default function SelfTest() {
                   {activeJob.status === "completed" && (
                     <div className="p-4 bg-green-500/10 border border-green-500/20 rounded-md text-center">
                       <CheckCircle className="h-8 w-8 mx-auto text-green-500 mb-2" />
-                      <p className="font-medium">Benchmark Complete!</p>
+                      <p className="font-medium">Evaluation Complete!</p>
                       <p className="text-sm text-muted-foreground">
                         View results in the Leaderboard
                       </p>
@@ -413,8 +413,8 @@ export default function SelfTest() {
               ) : (
                 <div className="text-center py-8 text-muted-foreground">
                   <Clock className="h-12 w-12 mx-auto mb-4 opacity-50" />
-                  <p>No active benchmark</p>
-                  <p className="text-sm">Configure and start a benchmark to see status here</p>
+                  <p>No active evaluation</p>
+                  <p className="text-sm">Configure and start an evaluation to see status here</p>
                 </div>
               )}
             </CardContent>
@@ -444,7 +444,7 @@ export default function SelfTest() {
           <CardContent className="pt-6">
             <h3 className="font-semibold mb-2">Compare & Improve</h3>
             <p className="text-sm text-muted-foreground">
-              See how your product stacks up against industry benchmarks.
+              See how your product measures against industry standards.
             </p>
           </CardContent>
         </Card>

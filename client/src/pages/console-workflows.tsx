@@ -86,7 +86,7 @@ export default function ConsoleWorkflows() {
       <div className="flex items-center justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold">Test Workflows</h1>
-          <p className="text-muted-foreground">Manage benchmark test workflows</p>
+          <p className="text-muted-foreground">Manage evaluation test workflows</p>
         </div>
         <Dialog open={createOpen} onOpenChange={setCreateOpen}>
           <DialogTrigger asChild>
@@ -99,7 +99,7 @@ export default function ConsoleWorkflows() {
             <DialogHeader>
               <DialogTitle>Create Workflow</DialogTitle>
               <DialogDescription>
-                Create a new test workflow for benchmarking.
+                Create a new test workflow for evaluation.
               </DialogDescription>
             </DialogHeader>
             <div className="space-y-4 py-4">
@@ -159,7 +159,7 @@ export default function ConsoleWorkflows() {
           </CardTitle>
           <CardDescription>
             {isPrincipal 
-              ? "As a principal user, you can mark workflows as mainline for the official benchmark."
+              ? "As a principal user, you can mark workflows as mainline for the official evaluation."
               : "View and manage your test workflows."
             }
           </CardDescription>

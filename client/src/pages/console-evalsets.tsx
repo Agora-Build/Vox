@@ -84,7 +84,7 @@ export default function ConsoleEvalSets() {
       <div className="flex items-center justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold">Eval Sets</h1>
-          <p className="text-muted-foreground">Manage benchmark evaluation configurations</p>
+          <p className="text-muted-foreground">Manage evaluation configurations</p>
         </div>
         <Dialog open={createOpen} onOpenChange={setCreateOpen}>
           <DialogTrigger asChild>
@@ -97,7 +97,7 @@ export default function ConsoleEvalSets() {
             <DialogHeader>
               <DialogTitle>Create Eval Set</DialogTitle>
               <DialogDescription>
-                Create a new evaluation set for benchmarking.
+                Create a new evaluation set for testing.
               </DialogDescription>
             </DialogHeader>
             <div className="space-y-4 py-4">
@@ -157,7 +157,7 @@ export default function ConsoleEvalSets() {
           </CardTitle>
           <CardDescription>
             {isPrincipal
-              ? "As a principal user, you can mark eval sets as mainline for the official benchmark."
+              ? "As a principal user, you can mark eval sets as mainline for the official evaluation."
               : "View and manage your evaluation configurations."
             }
           </CardDescription>
