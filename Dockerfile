@@ -16,5 +16,5 @@ RUN npm run build
 # Expose port
 EXPOSE 5000
 
-# Start the server
-CMD ["npm", "start"]
+# Start the server (don't use npm start which hardcodes NODE_ENV=production)
+CMD ["node", "dist/index.cjs"]

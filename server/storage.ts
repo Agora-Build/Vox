@@ -342,7 +342,7 @@ export class DatabaseStorage {
       // Try to lock and select the specific job
       const selectResult = await client.query(
         `SELECT * FROM eval_jobs
-         WHERE id = $1 AND status = 'pending'
+         WHERE id = $1 AND status = 'pending'::eval_job_status
          FOR UPDATE SKIP LOCKED`,
         [jobId]
       );
@@ -355,7 +355,7 @@ export class DatabaseStorage {
       // Update the job
       const updateResult = await client.query(
         `UPDATE eval_jobs
-         SET eval_agent_id = $1, status = 'running', started_at = NOW(), updated_at = NOW()
+         SET eval_agent_id = $1, status = 'running'::eval_job_status, started_at = NOW(), updated_at = NOW()
          WHERE id = $2
          RETURNING *`,
         [agentId, jobId]
@@ -380,7 +380,7 @@ export class DatabaseStorage {
       // Select and lock the next available job, skipping locked rows
       const selectResult = await client.query(
         `SELECT * FROM eval_jobs
-         WHERE status = 'pending' AND region = $1
+         WHERE status = 'pending'::eval_job_status AND region = $1
          ORDER BY priority DESC, created_at ASC
          LIMIT 1
          FOR UPDATE SKIP LOCKED`,
@@ -397,7 +397,7 @@ export class DatabaseStorage {
       // Update the job
       const updateResult = await client.query(
         `UPDATE eval_jobs
-         SET eval_agent_id = $1, status = 'running', started_at = NOW(), updated_at = NOW()
+         SET eval_agent_id = $1, status = 'running'::eval_job_status, started_at = NOW(), updated_at = NOW()
          WHERE id = $2
          RETURNING *`,
         [agentId, job.id]
@@ -418,12 +418,13 @@ export class DatabaseStorage {
     const staleThreshold = new Date(Date.now() - staleThresholdMinutes * 60 * 1000);
 
     // Find running jobs where agent last_seen_at is older than threshold
+    // Cast string literals to eval_job_status enum type for PostgreSQL compatibility
     const result = await db.execute(sql`
       UPDATE eval_jobs
       SET
         status = CASE
-          WHEN retry_count >= max_retries THEN 'failed'
-          ELSE 'pending'
+          WHEN retry_count >= max_retries THEN 'failed'::eval_job_status
+          ELSE 'pending'::eval_job_status
         END,
         retry_count = retry_count + 1,
         eval_agent_id = NULL,
@@ -436,7 +437,7 @@ export class DatabaseStorage {
       WHERE id IN (
         SELECT ej.id FROM eval_jobs ej
         INNER JOIN eval_agents ea ON ej.eval_agent_id = ea.id
-        WHERE ej.status = 'running'
+        WHERE ej.status = 'running'::eval_job_status
         AND ea.last_seen_at < ${staleThreshold}
       )
     `);
@@ -553,7 +554,7 @@ export class DatabaseStorage {
     const result = await db.execute(sql`
       SELECT ej.* FROM eval_jobs ej
       INNER JOIN eval_agents ea ON ej.eval_agent_id = ea.id
-      WHERE ej.status = 'running'
+      WHERE ej.status = 'running'::eval_job_status
       AND ea.last_seen_at < ${staleThreshold}
     `);
 
@@ -568,7 +569,7 @@ export class DatabaseStorage {
       .set({ state: "offline", updatedAt: new Date() })
       .where(and(
         sql`${evalAgents.lastSeenAt} < ${staleThreshold}`,
-        sql`${evalAgents.state} != 'offline'`
+        sql`${evalAgents.state} != 'offline'::eval_agent_state`
       ));
 
     return (result as unknown as { rowCount: number }).rowCount || 0;

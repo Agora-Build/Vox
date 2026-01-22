@@ -17,14 +17,16 @@ services:
       retries: 5
 
   vox-service:
+    image: vox-service:${VOX_TAG:-latest}
     build:
       context: .
       dockerfile: Dockerfile
     container_name: vox-service
     environment:
       DATABASE_URL: postgresql://vox:vox123@postgres:5432/vox
-      SESSION_SECRET: local-docker-secret-123
-      INIT_CODE: VOX-DEBUG-2024
+      SESSION_SECRET: ${SESSION_SECRET:-local-test-secret-123}
+      INIT_CODE: ${INIT_CODE:-VOX-DEBUG-2024}
+      NODE_ENV: development
       PORT: 5000
     ports:
       - "5000:5000"

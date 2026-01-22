@@ -173,15 +173,22 @@ export async function registerRoutes(
 
       req.session.userId = user.id;
 
-      res.json({ 
-        user: { 
-          id: user.id, 
-          username: user.username, 
-          email: user.email,
-          plan: user.plan, 
-          isAdmin: user.isAdmin,
-          emailVerified: !!user.emailVerifiedAt,
-        } 
+      // Explicitly save session to ensure cookie is set before response
+      req.session.save((err) => {
+        if (err) {
+          console.error("Error saving session:", err);
+          return res.status(500).json({ error: "Failed to save session" });
+        }
+        res.json({
+          user: {
+            id: user.id,
+            username: user.username,
+            email: user.email,
+            plan: user.plan,
+            isAdmin: user.isAdmin,
+            emailVerified: !!user.emailVerifiedAt,
+          }
+        });
       });
     } catch (error) {
       console.error("Error logging in:", error);

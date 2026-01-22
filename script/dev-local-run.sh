@@ -194,11 +194,19 @@ start_service_docker() {
 
     cd "$PROJECT_DIR"
 
+    # Export env vars for docker-compose (use same session secret as local mode)
+    export SESSION_SECRET="local-test-secret-123"
+    export INIT_CODE="$INIT_CODE"
+    export VOX_TAG="${VOX_TAG:-latest}"
+
     # Build and run via docker compose
-    docker compose up -d vox-service
+    docker compose up -d --build vox-service
 
     # Wait for service to be ready
     wait_for_service "$SERVER_URL/api/auth/status" "Vox service" 60
+
+    # Extra wait for session store to be ready
+    sleep 2
 }
 
 stop_service_docker() {
@@ -289,31 +297,44 @@ create_eval_agent_token() {
 get_or_create_eval_agent_token() {
     # Check if we have a saved token
     if [ -f "$EVAL_AGENT_TOKEN_FILE" ]; then
-        local saved_token=$(cat "$EVAL_AGENT_TOKEN_FILE")
+        local saved_token=$(cat "$EVAL_AGENT_TOKEN_FILE" | tr -d '\n')
         if [ -n "$saved_token" ]; then
-            log_info "Using saved eval agent token"
+            log_info "Using saved eval agent token" >&2
             echo "$saved_token"
             return 0
         fi
     fi
 
-    # Need to create a new token - login as admin first
-    local admin_cookies=$(login "admin@vox.local" "admin123456")
-    if [ -z "$admin_cookies" ]; then
-        log_error "Failed to login as admin"
-        return 1
-    fi
+    # Retry logic for token creation (handles timing issues in Docker mode)
+    local max_retries=3
+    local retry=0
 
-    # Create new token
-    local token=$(create_eval_agent_token "$admin_cookies" "Local-Eval-Agent" "na")
-    if [ -z "$token" ]; then
-        log_error "Failed to create eval agent token"
-        return 1
-    fi
+    while [ $retry -lt $max_retries ]; do
+        retry=$((retry + 1))
 
-    # Save token for future use
-    echo "$token" > "$EVAL_AGENT_TOKEN_FILE"
-    echo "$token"
+        # Login as admin
+        local admin_cookies=$(login "admin@vox.local" "admin123456")
+        if [ -z "$admin_cookies" ]; then
+            log_warn "Login attempt $retry failed, retrying..." >&2
+            sleep 2
+            continue
+        fi
+
+        # Create new token
+        local token=$(create_eval_agent_token "$admin_cookies" "Local-Eval-Agent" "na")
+        if [ -n "$token" ]; then
+            # Save token for future use (ensure no newlines)
+            echo -n "$token" > "$EVAL_AGENT_TOKEN_FILE"
+            echo "$token"
+            return 0
+        fi
+
+        log_warn "Token creation attempt $retry failed, retrying..." >&2
+        sleep 2
+    done
+
+    log_error "Failed to create eval agent token after $max_retries attempts"
+    return 1
 }
 
 # ==================== Eval Agent (Local Process Mode) ====================
