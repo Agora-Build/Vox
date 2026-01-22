@@ -222,6 +222,11 @@ export class DatabaseStorage {
     return Number(result[0]?.count || 0);
   }
 
+  async countWorkflowsByOwner(ownerId: number): Promise<number> {
+    const result = await db.select({ count: sql<number>`count(*)` }).from(workflows).where(eq(workflows.ownerId, ownerId));
+    return Number(result[0]?.count || 0);
+  }
+
   async createEvalSet(evalSet: InsertEvalSet): Promise<EvalSet> {
     const result = await db.insert(evalSets).values(evalSet).returning();
     return result[0];
@@ -445,11 +450,10 @@ export class DatabaseStorage {
     region?: "na" | "apac" | "eu";
     workflowId?: number;
     agentId?: number;
+    ownerId?: number;
     limit?: number;
     offset?: number;
   }): Promise<EvalJob[]> {
-    let query = db.select().from(evalJobs);
-
     const conditions = [];
     if (filters?.status) {
       conditions.push(eq(evalJobs.status, filters.status));
@@ -463,6 +467,48 @@ export class DatabaseStorage {
     if (filters?.agentId) {
       conditions.push(eq(evalJobs.evalAgentId, filters.agentId));
     }
+
+    // If filtering by owner, need to join with workflows
+    if (filters?.ownerId) {
+      let query = db.select({
+        id: evalJobs.id,
+        workflowId: evalJobs.workflowId,
+        evalSetId: evalJobs.evalSetId,
+        evalAgentId: evalJobs.evalAgentId,
+        status: evalJobs.status,
+        region: evalJobs.region,
+        priority: evalJobs.priority,
+        retryCount: evalJobs.retryCount,
+        maxRetries: evalJobs.maxRetries,
+        error: evalJobs.error,
+        startedAt: evalJobs.startedAt,
+        completedAt: evalJobs.completedAt,
+        createdAt: evalJobs.createdAt,
+        updatedAt: evalJobs.updatedAt,
+      })
+        .from(evalJobs)
+        .innerJoin(workflows, eq(evalJobs.workflowId, workflows.id));
+
+      conditions.push(eq(workflows.ownerId, filters.ownerId));
+
+      if (conditions.length > 0) {
+        query = query.where(and(...conditions)) as typeof query;
+      }
+
+      query = query.orderBy(desc(evalJobs.createdAt)) as typeof query;
+
+      if (filters?.limit) {
+        query = query.limit(filters.limit) as typeof query;
+      }
+      if (filters?.offset) {
+        query = query.offset(filters.offset) as typeof query;
+      }
+
+      return query;
+    }
+
+    // Simple query without join
+    let query = db.select().from(evalJobs);
 
     if (conditions.length > 0) {
       query = query.where(and(...conditions)) as typeof query;
@@ -561,6 +607,69 @@ export class DatabaseStorage {
 
   async getRecentEvalResults(limit: number = 50): Promise<EvalResult[]> {
     return db.select().from(evalResults).orderBy(desc(evalResults.createdAt)).limit(limit);
+  }
+
+  async getEvalResults(filters?: {
+    ownerId?: number;
+    workflowId?: number;
+    jobId?: number;
+    limit?: number;
+    offset?: number;
+  }): Promise<EvalResult[]> {
+    const conditions = [];
+
+    if (filters?.jobId) {
+      conditions.push(eq(evalResults.evalJobId, filters.jobId));
+    }
+
+    if (filters?.workflowId || filters?.ownerId) {
+      // Need to join with evalJobs and workflows for these filters
+      let query = db.select({
+        id: evalResults.id,
+        evalJobId: evalResults.evalJobId,
+        providerId: evalResults.providerId,
+        region: evalResults.region,
+        responseLatencyMedian: evalResults.responseLatencyMedian,
+        responseLatencySd: evalResults.responseLatencySd,
+        interruptLatencyMedian: evalResults.interruptLatencyMedian,
+        interruptLatencySd: evalResults.interruptLatencySd,
+        networkResilience: evalResults.networkResilience,
+        naturalness: evalResults.naturalness,
+        noiseReduction: evalResults.noiseReduction,
+        rawData: evalResults.rawData,
+        createdAt: evalResults.createdAt,
+      })
+        .from(evalResults)
+        .innerJoin(evalJobs, eq(evalResults.evalJobId, evalJobs.id))
+        .innerJoin(workflows, eq(evalJobs.workflowId, workflows.id));
+
+      if (filters.workflowId) {
+        conditions.push(eq(evalJobs.workflowId, filters.workflowId));
+      }
+
+      if (filters.ownerId) {
+        conditions.push(eq(workflows.ownerId, filters.ownerId));
+      }
+
+      if (conditions.length > 0) {
+        query = query.where(and(...conditions)) as typeof query;
+      }
+
+      return query
+        .orderBy(desc(evalResults.createdAt))
+        .limit(filters?.limit || 50)
+        .offset(filters?.offset || 0);
+    }
+
+    // Simple query without joins
+    let simpleQuery = db.select().from(evalResults);
+    if (conditions.length > 0) {
+      simpleQuery = simpleQuery.where(and(...conditions)) as typeof simpleQuery;
+    }
+    return simpleQuery
+      .orderBy(desc(evalResults.createdAt))
+      .limit(filters?.limit || 50)
+      .offset(filters?.offset || 0);
   }
 
   async getMainlineEvalResults(limit: number = 50): Promise<EvalResult[]> {

@@ -2,6 +2,7 @@ import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage, hashToken, generateSecureToken } from "./storage";
 import { generateProviderId } from "@shared/schema";
+import { registerApiV1Routes } from "./routes-api-v1";
 import {
   hashPassword,
   verifyPassword,
@@ -2496,6 +2497,9 @@ export async function registerRoutes(
       res.status(500).json({ error: "Failed to review fund return request" });
     }
   });
+
+  // ==================== API V1 ROUTES ====================
+  registerApiV1Routes(app);
 
   return httpServer;
 }
