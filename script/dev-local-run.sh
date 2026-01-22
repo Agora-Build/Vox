@@ -35,8 +35,10 @@ SERVICE_CONTAINER="vox-service"
 EVAL_AGENT_CONTAINER="vox-eval-agent"
 DB_URL="postgresql://vox:vox123@localhost:5432/vox"
 SERVER_PORT=5000
+# HOST can be set to machine's IP for remote access (e.g., HOST=192.168.1.100)
+HOST="${HOST:-localhost}"
 SERVER_URL="http://localhost:$SERVER_PORT"
-SERVER_URL_DISPLAY="http://0.0.0.0:$SERVER_PORT"
+SERVER_URL_DISPLAY="http://${HOST}:$SERVER_PORT"
 INIT_CODE="VOX-DEBUG-2024"
 EVAL_AGENT_TOKEN_FILE="/tmp/vox-eval-agent-token.txt"
 
@@ -692,7 +694,13 @@ main() {
             echo "  build-agent - Build eval agent Docker image"
             echo "  logs        - Show logs (server|agent)"
             echo ""
+            echo "Environment Variables:"
+            echo "  HOST        - Host/IP for display URLs (default: localhost)"
+            echo "                Set to machine's IP for remote access:"
+            echo "                  HOST=192.168.1.100 $0 start"
+            echo ""
             echo "Note: vox-postgres always runs as a standalone Docker container."
+            echo "      Server always listens on 0.0.0.0 (all interfaces)."
             echo ""
             ;;
     esac
