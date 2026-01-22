@@ -16,11 +16,12 @@ import AdminLogin from "@/pages/login-admin";
 import AdminConsolePage from "@/pages/admin-console";
 import Console from "@/pages/console";
 import ConsoleInit from "@/pages/console-init";
+import ConsoleProjects from "@/pages/console-projects";
 import ConsoleWorkflows from "@/pages/console-workflows";
 import ConsoleWorkflowDetail from "@/pages/console-workflow-detail";
-import ConsoleTestSets from "@/pages/console-testsets";
-import ConsoleWorkerTokens from "@/pages/console-worker-tokens";
-import ConsoleWorkers from "@/pages/console-workers";
+import ConsoleEvalSets from "@/pages/console-evalsets";
+import ConsoleEvalAgentTokens from "@/pages/console-eval-agent-tokens";
+import ConsoleEvalAgents from "@/pages/console-eval-agents";
 import ConsoleOrganization from "@/pages/console-organization";
 import ConsoleOrganizationMembers from "@/pages/console-organization-members";
 import ConsoleOrganizationBilling from "@/pages/console-organization-billing";
@@ -85,6 +86,45 @@ function ConsoleWrapper() {
   );
 }
 
+function ConsoleProjectsWrapper() {
+  const [, setLocation] = useLocation();
+  const { data: authStatus, isLoading, isFetching } = useQuery<AuthStatus>({
+    queryKey: ["/api/auth/status"],
+  });
+
+  useEffect(() => {
+    if (!isLoading && !isFetching && authStatus?.initialized && !authStatus.user) {
+      setLocation("/login");
+    }
+  }, [isLoading, isFetching, authStatus, setLocation]);
+
+  if ((isLoading || isFetching) && !authStatus?.user) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="animate-pulse text-muted-foreground">Loading...</div>
+      </div>
+    );
+  }
+
+  if (!authStatus?.initialized) {
+    return <ConsoleInit />;
+  }
+
+  if (!authStatus.user) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="animate-pulse text-muted-foreground">Redirecting...</div>
+      </div>
+    );
+  }
+
+  return (
+    <ConsoleLayout>
+      <ConsoleProjects />
+    </ConsoleLayout>
+  );
+}
+
 function ConsoleWorkflowsWrapper() {
   const [, setLocation] = useLocation();
   const { data: authStatus, isLoading, isFetching } = useQuery<AuthStatus>({
@@ -124,7 +164,7 @@ function ConsoleWorkflowsWrapper() {
   );
 }
 
-function ConsoleTestSetsWrapper() {
+function ConsoleEvalSetsWrapper() {
   const [, setLocation] = useLocation();
   const { data: authStatus, isLoading, isFetching } = useQuery<AuthStatus>({
     queryKey: ["/api/auth/status"],
@@ -158,7 +198,7 @@ function ConsoleTestSetsWrapper() {
 
   return (
     <ConsoleLayout>
-      <ConsoleTestSets />
+      <ConsoleEvalSets />
     </ConsoleLayout>
   );
 }
@@ -202,7 +242,7 @@ function ConsoleWorkflowDetailWrapper() {
   );
 }
 
-function ConsoleWorkerTokensWrapper() {
+function ConsoleEvalAgentTokensWrapper() {
   const [, setLocation] = useLocation();
   const { data: authStatus, isLoading, isFetching } = useQuery<AuthStatus>({
     queryKey: ["/api/auth/status"],
@@ -241,12 +281,12 @@ function ConsoleWorkerTokensWrapper() {
 
   return (
     <ConsoleLayout>
-      <ConsoleWorkerTokens />
+      <ConsoleEvalAgentTokens />
     </ConsoleLayout>
   );
 }
 
-function ConsoleWorkersWrapper() {
+function ConsoleEvalAgentsWrapper() {
   const [, setLocation] = useLocation();
   const { data: authStatus, isLoading, isFetching } = useQuery<AuthStatus>({
     queryKey: ["/api/auth/status"],
@@ -280,7 +320,7 @@ function ConsoleWorkersWrapper() {
 
   return (
     <ConsoleLayout>
-      <ConsoleWorkers />
+      <ConsoleEvalAgents />
     </ConsoleLayout>
   );
 }
@@ -602,20 +642,23 @@ function Router() {
       <Route path="/console">
         <ConsoleWrapper />
       </Route>
+      <Route path="/console/projects">
+        <ConsoleProjectsWrapper />
+      </Route>
       <Route path="/console/workflows">
         <ConsoleWorkflowsWrapper />
       </Route>
       <Route path="/console/workflows/:id">
         <ConsoleWorkflowDetailWrapper />
       </Route>
-      <Route path="/console/test-sets">
-        <ConsoleTestSetsWrapper />
+      <Route path="/console/eval-sets">
+        <ConsoleEvalSetsWrapper />
       </Route>
-      <Route path="/console/workers">
-        <ConsoleWorkersWrapper />
+      <Route path="/console/eval-agents">
+        <ConsoleEvalAgentsWrapper />
       </Route>
-      <Route path="/console/worker-tokens">
-        <ConsoleWorkerTokensWrapper />
+      <Route path="/console/eval-agent-tokens">
+        <ConsoleEvalAgentTokensWrapper />
       </Route>
       <Route path="/console/organization">
         <ConsoleOrganizationWrapper />

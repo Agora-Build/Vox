@@ -1,4 +1,4 @@
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useMutation } from "@tanstack/react-query";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -25,7 +25,7 @@ interface AuthStatus {
   } | null;
 }
 
-export default function ConsoleTestSets() {
+export default function ConsoleEvalSets() {
   const { toast } = useToast();
   const [createOpen, setCreateOpen] = useState(false);
   const [name, setName] = useState("");
@@ -36,7 +36,7 @@ export default function ConsoleTestSets() {
     queryKey: ["/api/auth/status"],
   });
 
-  const { data: testSets, isLoading } = useQuery<EvalSet[]>({
+  const { data: evalSets, isLoading } = useQuery<EvalSet[]>({
     queryKey: ["/api/eval-sets"],
   });
 
@@ -83,48 +83,48 @@ export default function ConsoleTestSets() {
     <div className="space-y-6">
       <div className="flex items-center justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold">Test Sets</h1>
-          <p className="text-muted-foreground">Manage benchmark test configurations</p>
+          <h1 className="text-2xl font-bold">Eval Sets</h1>
+          <p className="text-muted-foreground">Manage benchmark evaluation configurations</p>
         </div>
         <Dialog open={createOpen} onOpenChange={setCreateOpen}>
           <DialogTrigger asChild>
-            <Button data-testid="button-create-testset">
+            <Button data-testid="button-create-evalset">
               <Plus className="mr-2 h-4 w-4" />
-              New Test Set
+              New Eval Set
             </Button>
           </DialogTrigger>
           <DialogContent>
             <DialogHeader>
-              <DialogTitle>Create Test Set</DialogTitle>
+              <DialogTitle>Create Eval Set</DialogTitle>
               <DialogDescription>
-                Create a new test set for benchmarking.
+                Create a new evaluation set for benchmarking.
               </DialogDescription>
             </DialogHeader>
             <div className="space-y-4 py-4">
               <div className="space-y-2">
-                <Label htmlFor="testset-name">Name</Label>
+                <Label htmlFor="evalset-name">Name</Label>
                 <Input
-                  id="testset-name"
-                  placeholder="My Test Set"
+                  id="evalset-name"
+                  placeholder="My Eval Set"
                   value={name}
                   onChange={(e) => setName(e.target.value)}
-                  data-testid="input-testset-name"
+                  data-testid="input-evalset-name"
                 />
               </div>
               <div className="space-y-2">
-                <Label htmlFor="testset-description">Description</Label>
+                <Label htmlFor="evalset-description">Description</Label>
                 <Textarea
-                  id="testset-description"
-                  placeholder="Describe what this test set measures..."
+                  id="evalset-description"
+                  placeholder="Describe what this eval set measures..."
                   value={description}
                   onChange={(e) => setDescription(e.target.value)}
-                  data-testid="input-testset-description"
+                  data-testid="input-evalset-description"
                 />
               </div>
               <div className="space-y-2">
-                <Label htmlFor="testset-visibility">Visibility</Label>
+                <Label htmlFor="evalset-visibility">Visibility</Label>
                 <Select value={visibility} onValueChange={setVisibility}>
-                  <SelectTrigger data-testid="select-testset-visibility">
+                  <SelectTrigger data-testid="select-evalset-visibility">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -140,9 +140,9 @@ export default function ConsoleTestSets() {
               <Button
                 onClick={() => createMutation.mutate()}
                 disabled={createMutation.isPending || !name}
-                data-testid="button-submit-testset"
+                data-testid="button-submit-evalset"
               >
-                Create Test Set
+                Create Eval Set
               </Button>
             </DialogFooter>
           </DialogContent>
@@ -153,12 +153,12 @@ export default function ConsoleTestSets() {
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
             <FileText className="h-5 w-5" />
-            Test Sets
+            Eval Sets
           </CardTitle>
           <CardDescription>
             {isPrincipal
-              ? "As a principal user, you can mark test sets as mainline for the official benchmark."
-              : "View and manage your test configurations."
+              ? "As a principal user, you can mark eval sets as mainline for the official benchmark."
+              : "View and manage your evaluation configurations."
             }
           </CardDescription>
         </CardHeader>
@@ -169,7 +169,7 @@ export default function ConsoleTestSets() {
                 <Skeleton key={i} className="h-12 w-full" />
               ))}
             </div>
-          ) : testSets && testSets.length > 0 ? (
+          ) : evalSets && evalSets.length > 0 ? (
             <Table>
               <TableHeader>
                 <TableRow>
@@ -180,19 +180,19 @@ export default function ConsoleTestSets() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {testSets.map((testSet) => (
-                  <TableRow key={testSet.id} data-testid={`row-testset-${testSet.id}`}>
+                {evalSets.map((evalSet) => (
+                  <TableRow key={evalSet.id} data-testid={`row-evalset-${evalSet.id}`}>
                     <TableCell>
                       <div>
-                        <div className="font-medium">{testSet.name}</div>
-                        {testSet.description && (
-                          <div className="text-sm text-muted-foreground">{testSet.description}</div>
+                        <div className="font-medium">{evalSet.name}</div>
+                        {evalSet.description && (
+                          <div className="text-sm text-muted-foreground">{evalSet.description}</div>
                         )}
                       </div>
                     </TableCell>
                     <TableCell>
                       <Badge variant="outline" className="gap-1">
-                        {testSet.visibility === "public" ? (
+                        {evalSet.visibility === "public" ? (
                           <><Globe className="h-3 w-3" /> Public</>
                         ) : (
                           <><Lock className="h-3 w-3" /> Private</>
@@ -200,7 +200,7 @@ export default function ConsoleTestSets() {
                       </Badge>
                     </TableCell>
                     <TableCell>
-                      {testSet.isMainline ? (
+                      {evalSet.isMainline ? (
                         <Badge className="gap-1">
                           <Star className="h-3 w-3" /> Mainline
                         </Badge>
@@ -211,12 +211,12 @@ export default function ConsoleTestSets() {
                     {isPrincipal && (
                       <TableCell className="text-right">
                         <Switch
-                          checked={testSet.isMainline}
+                          checked={evalSet.isMainline}
                           onCheckedChange={(checked) =>
-                            toggleMainlineMutation.mutate({ id: testSet.id, isMainline: checked })
+                            toggleMainlineMutation.mutate({ id: evalSet.id, isMainline: checked })
                           }
-                          disabled={testSet.visibility === "private" && !testSet.isMainline}
-                          data-testid={`switch-mainline-${testSet.id}`}
+                          disabled={evalSet.visibility === "private" && !evalSet.isMainline}
+                          data-testid={`switch-mainline-${evalSet.id}`}
                         />
                       </TableCell>
                     )}
@@ -226,7 +226,7 @@ export default function ConsoleTestSets() {
             </Table>
           ) : (
             <div className="text-center py-8 text-muted-foreground">
-              No test sets yet. Create your first test set to get started.
+              No eval sets yet. Create your first eval set to get started.
             </div>
           )}
         </CardContent>

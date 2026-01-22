@@ -685,7 +685,16 @@ export async function registerRoutes(
         return res.status(401).json({ error: "Not authenticated" });
       }
       const projects = await storage.getProjectsByOwner(user.id);
-      res.json(projects);
+
+      // Add workflow counts
+      const projectsWithCounts = await Promise.all(
+        projects.map(async (project) => ({
+          ...project,
+          workflowCount: await storage.countWorkflowsByProject(project.id),
+        }))
+      );
+
+      res.json(projectsWithCounts);
     } catch (error) {
       console.error("Error fetching projects:", error);
       res.status(500).json({ error: "Failed to fetch projects" });
@@ -738,6 +747,70 @@ export async function registerRoutes(
     } catch (error) {
       console.error("Error fetching project:", error);
       res.status(500).json({ error: "Failed to fetch project" });
+    }
+  });
+
+  app.patch("/api/projects/:id", requireAuth, async (req, res) => {
+    try {
+      const user = await getCurrentUser(req);
+      if (!user) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+
+      const { id } = req.params;
+      const project = await storage.getProject(parseInt(id));
+
+      if (!project) {
+        return res.status(404).json({ error: "Project not found" });
+      }
+
+      if (project.ownerId !== user.id) {
+        return res.status(403).json({ error: "Not authorized to update this project" });
+      }
+
+      const { name, description } = req.body;
+
+      if (!name) {
+        return res.status(400).json({ error: "Name required" });
+      }
+
+      const updated = await storage.updateProject(parseInt(id), { name, description });
+      res.json(updated);
+    } catch (error) {
+      console.error("Error updating project:", error);
+      res.status(500).json({ error: "Failed to update project" });
+    }
+  });
+
+  app.delete("/api/projects/:id", requireAuth, async (req, res) => {
+    try {
+      const user = await getCurrentUser(req);
+      if (!user) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+
+      const { id } = req.params;
+      const project = await storage.getProject(parseInt(id));
+
+      if (!project) {
+        return res.status(404).json({ error: "Project not found" });
+      }
+
+      if (project.ownerId !== user.id) {
+        return res.status(403).json({ error: "Not authorized to delete this project" });
+      }
+
+      // Check if project has workflows
+      const workflowCount = await storage.countWorkflowsByProject(parseInt(id));
+      if (workflowCount > 0) {
+        return res.status(400).json({ error: `Cannot delete project with ${workflowCount} workflow(s). Delete workflows first.` });
+      }
+
+      await storage.deleteProject(parseInt(id));
+      res.json({ success: true });
+    } catch (error) {
+      console.error("Error deleting project:", error);
+      res.status(500).json({ error: "Failed to delete project" });
     }
   });
 

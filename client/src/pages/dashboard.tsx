@@ -1,6 +1,9 @@
+import { useState } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from "recharts";
-import { Clock, Zap, Activity } from "lucide-react";
+import { Clock, Zap, Activity, RefreshCw } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import {
   Popover,
   PopoverContent,
@@ -29,34 +32,43 @@ interface ConfigData {
 
 function calculateStats(values: number[]) {
   if (values.length === 0) return { median: 0, stdDev: 0 };
-  
+
   const sorted = [...values].sort((a, b) => a - b);
   const mid = Math.floor(sorted.length / 2);
   const median = sorted.length % 2 !== 0 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
-  
+
   const mean = values.reduce((a, b) => a + b, 0) / values.length;
   const squaredDiffs = values.map(v => Math.pow(v - mean, 2));
   const avgSquaredDiff = squaredDiffs.reduce((a, b) => a + b, 0) / values.length;
   const stdDev = Math.sqrt(avgSquaredDiff);
-  
+
   return { median: Math.round(median), stdDev: Math.round(stdDev) };
 }
 
 export default function Dashboard() {
-  const { data: metrics, isLoading: metricsLoading } = useQuery<BenchmarkResult[]>({
+  const [selectedRegion, setSelectedRegion] = useState<string>("all");
+  const [refreshInterval, setRefreshInterval] = useState<number>(30000); // 30 seconds
+
+  const { data: metrics, isLoading: metricsLoading, refetch, isFetching } = useQuery<BenchmarkResult[]>({
     queryKey: ['/api/metrics/realtime'],
+    refetchInterval: refreshInterval,
   });
 
   const { data: config } = useQuery<ConfigData>({
     queryKey: ['/api/config'],
   });
 
+  // Filter metrics by selected region
+  const filteredMetrics = metrics?.filter(m =>
+    selectedRegion === "all" || m.region.toLowerCase() === selectedRegion
+  ) || [];
+
   const combinedData = (() => {
-    if (!metrics || metrics.length === 0) return [];
-    
+    if (!filteredMetrics || filteredMetrics.length === 0) return [];
+
     const timeGroups = new Map<string, { agora: BenchmarkResult | null; liveKit: BenchmarkResult | null }>();
-    
-    for (const m of metrics) {
+
+    for (const m of filteredMetrics) {
       const timeKey = format(new Date(m.timestamp), "HH:mm");
       if (!timeGroups.has(timeKey)) {
         timeGroups.set(timeKey, { agora: null, liveKit: null });
@@ -68,7 +80,7 @@ export default function Dashboard() {
         group.liveKit = m;
       }
     }
-    
+
     return Array.from(timeGroups.entries())
       .sort((a, b) => a[0].localeCompare(b[0]))
       .map(([timestamp, group]) => ({
@@ -80,30 +92,70 @@ export default function Dashboard() {
       }));
   })();
 
-  const responseStats = calculateStats(metrics?.map(m => m.responseLatency) || []);
-  const interruptStats = calculateStats(metrics?.map(m => m.interruptLatency) || []);
+  const responseStats = calculateStats(filteredMetrics?.map(m => m.responseLatency) || []);
+  const interruptStats = calculateStats(filteredMetrics?.map(m => m.interruptLatency) || []);
   const totalTests = config?.total_tests_24h || "0";
   const testInterval = config?.test_interval_hours || "8";
 
-  const latestTestTime = metrics && metrics.length > 0 
-    ? Math.round((Date.now() - new Date(metrics[0].timestamp).getTime()) / 60000) 
+  const latestTestTime = metrics && metrics.length > 0
+    ? Math.round((Date.now() - new Date(metrics[0].timestamp).getTime()) / 60000)
     : 0;
+
+  const regionLabel = selectedRegion === "all" ? "All Regions"
+    : selectedRegion === "na" ? "North America"
+    : selectedRegion === "apac" ? "Asia Pacific"
+    : "Europe";
 
   return (
     <div className="space-y-8 animate-in fade-in duration-500">
-      <div className="flex flex-col gap-2">
-        <h1 className="text-2xl sm:text-3xl font-bold tracking-tight" data-testid="text-dashboard-title">Real-time</h1>
-        <p className="text-xs sm:text-sm text-muted-foreground flex flex-wrap items-center gap-2">
-          <span className="relative flex h-2 w-2 shrink-0">
-            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
-            <span className="relative inline-flex rounded-full h-2 w-2 bg-green-500"></span>
-          </span>
-          <span data-testid="text-system-status">System Status: Operational</span>
-          <span className="hidden sm:inline">•</span>
-          <span data-testid="text-update-interval">Updating every {testInterval} hours</span>
-          <span className="hidden sm:inline">•</span>
-          <span data-testid="text-latest-test">Latest test happened {latestTestTime} minutes ago</span>
-        </p>
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+        <div className="flex flex-col gap-2">
+          <h1 className="text-2xl sm:text-3xl font-bold tracking-tight" data-testid="text-dashboard-title">Real-time</h1>
+          <p className="text-xs sm:text-sm text-muted-foreground flex flex-wrap items-center gap-2">
+            <span className="relative flex h-2 w-2 shrink-0">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
+              <span className="relative inline-flex rounded-full h-2 w-2 bg-green-500"></span>
+            </span>
+            <span data-testid="text-system-status">System Status: Operational</span>
+            <span className="hidden sm:inline">|</span>
+            <span data-testid="text-update-interval">Updates every {testInterval} hours</span>
+            <span className="hidden sm:inline">|</span>
+            <span data-testid="text-latest-test">Latest: {latestTestTime}m ago</span>
+          </p>
+        </div>
+
+        <div className="flex items-center gap-2">
+          <Select value={selectedRegion} onValueChange={setSelectedRegion}>
+            <SelectTrigger className="w-[140px]">
+              <SelectValue placeholder="Region" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All Regions</SelectItem>
+              <SelectItem value="na">North America</SelectItem>
+              <SelectItem value="apac">Asia Pacific</SelectItem>
+              <SelectItem value="eu">Europe</SelectItem>
+            </SelectContent>
+          </Select>
+          <Select value={refreshInterval.toString()} onValueChange={(v) => setRefreshInterval(parseInt(v))}>
+            <SelectTrigger className="w-[120px]">
+              <SelectValue placeholder="Refresh" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="10000">10s</SelectItem>
+              <SelectItem value="30000">30s</SelectItem>
+              <SelectItem value="60000">1m</SelectItem>
+              <SelectItem value="300000">5m</SelectItem>
+            </SelectContent>
+          </Select>
+          <Button
+            variant="outline"
+            size="icon"
+            onClick={() => refetch()}
+            disabled={isFetching}
+          >
+            <RefreshCw className={`h-4 w-4 ${isFetching ? 'animate-spin' : ''}`} />
+          </Button>
+        </div>
       </div>
 
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
@@ -207,13 +259,22 @@ export default function Dashboard() {
             <p className="text-xs text-muted-foreground">Last 24 hours</p>
           </CardContent>
         </Card>
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between gap-2 space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">Region Filter</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold mt-2">{regionLabel}</div>
+            <p className="text-xs text-muted-foreground">{filteredMetrics.length} data points</p>
+          </CardContent>
+        </Card>
       </div>
 
       <div className="grid gap-4 md:grid-cols-2">
         <Card className="col-span-1">
           <CardHeader>
             <CardTitle>Response Latency (ms)</CardTitle>
-            <CardDescription>Time to First Audio (TTFA)</CardDescription>
+            <CardDescription>Time to First Audio (TTFA) - {regionLabel}</CardDescription>
           </CardHeader>
           <CardContent>
             <div className="h-[300px] w-full">
@@ -223,41 +284,41 @@ export default function Dashboard() {
                 <ResponsiveContainer width="100%" height="100%">
                   <LineChart data={combinedData}>
                     <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" vertical={false} />
-                    <XAxis 
-                      dataKey="timestamp" 
-                      stroke="hsl(var(--muted-foreground))" 
-                      fontSize={12} 
-                      tickLine={false} 
-                      axisLine={false} 
+                    <XAxis
+                      dataKey="timestamp"
+                      stroke="hsl(var(--muted-foreground))"
+                      fontSize={12}
+                      tickLine={false}
+                      axisLine={false}
                     />
-                    <YAxis 
-                      stroke="hsl(var(--muted-foreground))" 
-                      fontSize={12} 
-                      tickLine={false} 
-                      axisLine={false} 
-                      tickFormatter={(value) => `${value}ms`} 
+                    <YAxis
+                      stroke="hsl(var(--muted-foreground))"
+                      fontSize={12}
+                      tickLine={false}
+                      axisLine={false}
+                      tickFormatter={(value) => `${value}ms`}
                     />
-                    <Tooltip 
+                    <Tooltip
                       contentStyle={{ backgroundColor: 'hsl(var(--popover))', borderColor: 'hsl(var(--border))', borderRadius: '8px' }}
                       itemStyle={{ color: 'hsl(var(--popover-foreground))' }}
                     />
                     <Legend />
-                    <Line 
-                      type="monotone" 
-                      dataKey="agoraResponse" 
-                      name="Agora ConvoAI" 
-                      stroke="hsl(var(--chart-1))" 
-                      strokeWidth={2} 
+                    <Line
+                      type="monotone"
+                      dataKey="agoraResponse"
+                      name="Agora ConvoAI"
+                      stroke="hsl(var(--chart-1))"
+                      strokeWidth={2}
                       dot={false}
-                      activeDot={{ r: 6 }} 
+                      activeDot={{ r: 6 }}
                     />
-                    <Line 
-                      type="monotone" 
-                      dataKey="liveKitResponse" 
-                      name="LiveKIT Agent" 
-                      stroke="hsl(var(--chart-2))" 
-                      strokeWidth={2} 
-                      dot={false} 
+                    <Line
+                      type="monotone"
+                      dataKey="liveKitResponse"
+                      name="LiveKIT Agent"
+                      stroke="hsl(var(--chart-2))"
+                      strokeWidth={2}
+                      dot={false}
                       activeDot={{ r: 6 }}
                     />
                   </LineChart>
@@ -270,7 +331,7 @@ export default function Dashboard() {
         <Card className="col-span-1">
           <CardHeader>
             <CardTitle>Interrupt Latency (ms)</CardTitle>
-            <CardDescription>Time to Interrupt (TTI)</CardDescription>
+            <CardDescription>Time to Interrupt (TTI) - {regionLabel}</CardDescription>
           </CardHeader>
           <CardContent>
             <div className="h-[300px] w-full">
@@ -280,40 +341,40 @@ export default function Dashboard() {
                 <ResponsiveContainer width="100%" height="100%">
                   <LineChart data={combinedData}>
                     <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" vertical={false} />
-                    <XAxis 
-                      dataKey="timestamp" 
-                      stroke="hsl(var(--muted-foreground))" 
-                      fontSize={12} 
-                      tickLine={false} 
-                      axisLine={false} 
+                    <XAxis
+                      dataKey="timestamp"
+                      stroke="hsl(var(--muted-foreground))"
+                      fontSize={12}
+                      tickLine={false}
+                      axisLine={false}
                     />
-                    <YAxis 
-                      stroke="hsl(var(--muted-foreground))" 
-                      fontSize={12} 
-                      tickLine={false} 
-                      axisLine={false} 
-                      tickFormatter={(value) => `${value}ms`} 
+                    <YAxis
+                      stroke="hsl(var(--muted-foreground))"
+                      fontSize={12}
+                      tickLine={false}
+                      axisLine={false}
+                      tickFormatter={(value) => `${value}ms`}
                     />
-                    <Tooltip 
+                    <Tooltip
                       contentStyle={{ backgroundColor: 'hsl(var(--popover))', borderColor: 'hsl(var(--border))', borderRadius: '8px' }}
                       itemStyle={{ color: 'hsl(var(--popover-foreground))' }}
                     />
                     <Legend />
-                    <Line 
-                      type="monotone" 
-                      dataKey="agoraInterrupt" 
-                      name="Agora ConvoAI" 
-                      stroke="hsl(var(--chart-1))" 
-                      strokeWidth={2} 
+                    <Line
+                      type="monotone"
+                      dataKey="agoraInterrupt"
+                      name="Agora ConvoAI"
+                      stroke="hsl(var(--chart-1))"
+                      strokeWidth={2}
                       dot={false}
                       activeDot={{ r: 6 }}
                     />
-                    <Line 
-                      type="monotone" 
-                      dataKey="liveKitInterrupt" 
-                      name="LiveKIT Agent" 
-                      stroke="hsl(var(--chart-2))" 
-                      strokeWidth={2} 
+                    <Line
+                      type="monotone"
+                      dataKey="liveKitInterrupt"
+                      name="LiveKIT Agent"
+                      stroke="hsl(var(--chart-2))"
+                      strokeWidth={2}
                       dot={false}
                       activeDot={{ r: 6 }}
                     />

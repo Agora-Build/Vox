@@ -13,7 +13,7 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import { Plus, Key, MapPin, Copy, Check, Ban } from "lucide-react";
 import { useState } from "react";
 
-interface WorkerToken {
+interface EvalAgentToken {
   id: number;
   name: string;
   token: string;
@@ -29,7 +29,7 @@ const REGIONS = [
   { value: "eu", label: "Europe" },
 ];
 
-export default function ConsoleWorkerTokens() {
+export default function ConsoleEvalAgentTokens() {
   const { toast } = useToast();
   const [createOpen, setCreateOpen] = useState(false);
   const [name, setName] = useState("");
@@ -37,13 +37,13 @@ export default function ConsoleWorkerTokens() {
   const [newToken, setNewToken] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
 
-  const { data: tokens, isLoading } = useQuery<WorkerToken[]>({
-    queryKey: ["/api/admin/worker-tokens"],
+  const { data: tokens, isLoading } = useQuery<EvalAgentToken[]>({
+    queryKey: ["/api/admin/eval-agent-tokens"],
   });
 
   const createMutation = useMutation({
     mutationFn: async () => {
-      const res = await apiRequest("POST", "/api/admin/worker-tokens", {
+      const res = await apiRequest("POST", "/api/admin/eval-agent-tokens", {
         name,
         region,
       });
@@ -53,8 +53,8 @@ export default function ConsoleWorkerTokens() {
       setNewToken(data.token);
       setName("");
       setRegion("");
-      queryClient.invalidateQueries({ queryKey: ["/api/admin/worker-tokens"] });
-      toast({ title: "Worker token created" });
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/eval-agent-tokens"] });
+      toast({ title: "Eval agent token created" });
     },
     onError: (error: Error) => {
       toast({ title: "Failed to create token", description: error.message, variant: "destructive" });
@@ -63,11 +63,11 @@ export default function ConsoleWorkerTokens() {
 
   const revokeMutation = useMutation({
     mutationFn: async (tokenId: number) => {
-      const res = await apiRequest("POST", `/api/admin/worker-tokens/${tokenId}/revoke`);
+      const res = await apiRequest("POST", `/api/admin/eval-agent-tokens/${tokenId}/revoke`);
       return res.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/admin/worker-tokens"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/eval-agent-tokens"] });
       toast({ title: "Token revoked" });
     },
     onError: (error: Error) => {
@@ -93,8 +93,8 @@ export default function ConsoleWorkerTokens() {
     <div className="space-y-6">
       <div className="flex items-center justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold">Worker Tokens</h1>
-          <p className="text-muted-foreground">Manage tokens for worker agent registration</p>
+          <h1 className="text-2xl font-bold">Agent Tokens</h1>
+          <p className="text-muted-foreground">Manage tokens for eval agent registration</p>
         </div>
         <Dialog open={createOpen} onOpenChange={(open) => {
           if (!open) handleCloseDialog();
@@ -108,9 +108,9 @@ export default function ConsoleWorkerTokens() {
           </DialogTrigger>
           <DialogContent>
             <DialogHeader>
-              <DialogTitle>Create Worker Token</DialogTitle>
+              <DialogTitle>Create Agent Token</DialogTitle>
               <DialogDescription>
-                Create a new token for worker agent registration.
+                Create a new token for eval agent registration.
               </DialogDescription>
             </DialogHeader>
             {!newToken ? (
@@ -120,7 +120,7 @@ export default function ConsoleWorkerTokens() {
                     <Label htmlFor="token-name">Name</Label>
                     <Input
                       id="token-name"
-                      placeholder="NA Worker 1"
+                      placeholder="NA Agent 1"
                       value={name}
                       onChange={(e) => setName(e.target.value)}
                     />
@@ -154,7 +154,7 @@ export default function ConsoleWorkerTokens() {
               <>
                 <div className="space-y-4 py-4">
                   <div className="space-y-2">
-                    <Label>Worker Token</Label>
+                    <Label>Agent Token</Label>
                     <div className="flex gap-2">
                       <Input
                         value={newToken}
@@ -193,10 +193,10 @@ export default function ConsoleWorkerTokens() {
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
             <Key className="h-5 w-5" />
-            Worker Tokens
+            Eval Agent Tokens
           </CardTitle>
           <CardDescription>
-            Tokens allow worker agents to register and fetch jobs for their assigned region.
+            Tokens allow eval agents to register and fetch jobs for their assigned region.
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -241,7 +241,7 @@ export default function ConsoleWorkerTokens() {
                       )}
                     </TableCell>
                     <TableCell className="text-muted-foreground">
-                      {token.lastUsedAt 
+                      {token.lastUsedAt
                         ? new Date(token.lastUsedAt).toLocaleDateString()
                         : "Never"
                       }
@@ -265,7 +265,7 @@ export default function ConsoleWorkerTokens() {
             </Table>
           ) : (
             <div className="text-center py-8 text-muted-foreground">
-              No worker tokens yet. Create a token to allow worker agents to register.
+              No eval agent tokens yet. Create a token to allow eval agents to register.
             </div>
           )}
         </CardContent>

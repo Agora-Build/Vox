@@ -1,161 +1,454 @@
-import { useState, useEffect } from "react";
-import { Card, CardContent, CardHeader, CardTitle, CardFooter } from "@/components/ui/card";
+import { useState } from "react";
+import { useQuery, useMutation } from "@tanstack/react-query";
+import { Card, CardContent, CardHeader, CardTitle, CardFooter, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Mic, Square, Play, Loader2, BarChart2 } from "lucide-react";
-import { Progress } from "@/components/ui/progress";
-import { Slider } from "@/components/ui/slider";
+import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Badge } from "@/components/ui/badge";
+import { Progress } from "@/components/ui/progress";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Play, Loader2, XCircle, CheckCircle, Clock, AlertCircle, Rocket, Zap } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
+import { apiRequest, queryClient } from "@/lib/queryClient";
+import { Link } from "wouter";
 import generatedImage from '@assets/generated_images/abstract_digital_network_visualization_dark_blue.png';
 
+interface AuthStatus {
+  user: {
+    id: string;
+    plan: string;
+  } | null;
+}
+
+interface Provider {
+  id: string;
+  name: string;
+  sku: string;
+}
+
+interface Workflow {
+  id: number;
+  name: string;
+  providerId: string;
+}
+
+interface EvalJob {
+  id: number;
+  status: "pending" | "running" | "completed" | "failed";
+  region: string;
+  createdAt: string;
+  startedAt: string | null;
+  completedAt: string | null;
+  error: string | null;
+}
+
 export default function SelfTest() {
-  const [isTesting, setIsTesting] = useState(false);
-  const [progress, setProgress] = useState(0);
-  const [logs, setLogs] = useState<string[]>([]);
   const { toast } = useToast();
-  const [results, setResults] = useState<{latency: number, quality: number} | null>(null);
+  const [productType, setProductType] = useState<string>("convoai");
+  const [productName, setProductName] = useState("");
+  const [productUrl, setProductUrl] = useState("");
+  const [region, setRegion] = useState<string>("na");
+  const [selectedWorkflowId, setSelectedWorkflowId] = useState<string>("");
+  const [activeJobId, setActiveJobId] = useState<number | null>(null);
 
-  useEffect(() => {
-    if (isTesting) {
-      const interval = setInterval(() => {
-        setProgress(prev => {
-          if (prev >= 100) {
-            clearInterval(interval);
-            finishTest();
-            return 100;
-          }
-          return prev + 2;
-        });
-      }, 100);
+  const { data: authStatus } = useQuery<AuthStatus>({
+    queryKey: ["/api/auth/status"],
+  });
 
-      // Simulate logs
-      const logInterval = setInterval(() => {
-        const messages = [
-            "Connecting to nearest edge node...",
-            "Establishing WebRTC connection...",
-            "Sending audio packet...",
-            "Measuring VAD response...",
-            "Analyzing jitter buffer...",
-            "Calculating MOS score..."
-        ];
-        const randomMsg = messages[Math.floor(Math.random() * messages.length)];
-        setLogs(prev => [...prev.slice(-4), `[${new Date().toLocaleTimeString()}] ${randomMsg}`]);
-      }, 800);
+  const { data: providers } = useQuery<Provider[]>({
+    queryKey: ["/api/providers"],
+  });
 
-      return () => {
-        clearInterval(interval);
-        clearInterval(logInterval);
-      };
+  const { data: workflows } = useQuery<Workflow[]>({
+    queryKey: ["/api/workflows"],
+    enabled: !!authStatus?.user,
+  });
+
+  const { data: activeJob, refetch: refetchJob } = useQuery<EvalJob>({
+    queryKey: ["/api/eval-jobs", activeJobId],
+    queryFn: async () => {
+      if (!activeJobId) throw new Error("No job ID");
+      const res = await fetch(`/api/eval-jobs/${activeJobId}`);
+      if (!res.ok) throw new Error("Failed to fetch job");
+      return res.json();
+    },
+    enabled: !!activeJobId && !!authStatus?.user,
+    refetchInterval: activeJobId ? 3000 : false, // Poll every 3 seconds when job is active
+  });
+
+  const createWorkflowMutation = useMutation({
+    mutationFn: async () => {
+      const provider = providers?.find(p => p.sku === productType);
+      const res = await apiRequest("POST", "/api/workflows", {
+        name: productName,
+        description: `Self-test workflow for ${productName}`,
+        providerId: provider?.id,
+        visibility: "private",
+        config: { url: productUrl },
+      });
+      return res.json();
+    },
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/workflows"] });
+      setSelectedWorkflowId(data.id.toString());
+      toast({ title: "Product registered", description: "You can now run benchmarks" });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Failed to register product", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const runBenchmarkMutation = useMutation({
+    mutationFn: async (workflowId: number) => {
+      const res = await apiRequest("POST", `/api/workflows/${workflowId}/run`, { region });
+      return res.json();
+    },
+    onSuccess: (data) => {
+      setActiveJobId(data.job.id);
+      toast({ title: "Benchmark started", description: "Your test is now running" });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Failed to start benchmark", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const cancelJobMutation = useMutation({
+    mutationFn: async (jobId: number) => {
+      const res = await apiRequest("DELETE", `/api/eval-jobs/${jobId}`);
+      return res.json();
+    },
+    onSuccess: () => {
+      setActiveJobId(null);
+      queryClient.invalidateQueries({ queryKey: ["/api/eval-jobs"] });
+      toast({ title: "Job cancelled" });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Failed to cancel job", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const handleRegisterProduct = () => {
+    if (!productName) {
+      toast({ title: "Product name required", variant: "destructive" });
+      return;
     }
-  }, [isTesting]);
-
-  const startTest = () => {
-    setIsTesting(true);
-    setResults(null);
-    setLogs(["Starting benchmark sequence..."]);
-    setProgress(0);
+    createWorkflowMutation.mutate();
   };
 
-  const finishTest = () => {
-    setIsTesting(false);
-    setResults({
-        latency: Math.floor(Math.random() * 200) + 300,
-        quality: 4.5
-    });
-    toast({
-        title: "Benchmark Complete",
-        description: "Your local connection performance has been recorded."
-    });
+  const handleRunBenchmark = () => {
+    const workflowId = parseInt(selectedWorkflowId);
+    if (!workflowId) {
+      toast({ title: "Please select or register a product first", variant: "destructive" });
+      return;
+    }
+    runBenchmarkMutation.mutate(workflowId);
+  };
+
+  const isLoggedIn = !!authStatus?.user;
+  const isJobRunning = activeJob?.status === "pending" || activeJob?.status === "running";
+
+  const getJobStatusIcon = (status: string) => {
+    switch (status) {
+      case "pending": return <Clock className="h-5 w-5 text-yellow-500" />;
+      case "running": return <Loader2 className="h-5 w-5 text-blue-500 animate-spin" />;
+      case "completed": return <CheckCircle className="h-5 w-5 text-green-500" />;
+      case "failed": return <XCircle className="h-5 w-5 text-red-500" />;
+      default: return <AlertCircle className="h-5 w-5" />;
+    }
+  };
+
+  const getJobStatusLabel = (status: string) => {
+    switch (status) {
+      case "pending": return "Waiting for agent...";
+      case "running": return "Benchmark in progress...";
+      case "completed": return "Benchmark complete!";
+      case "failed": return "Benchmark failed";
+      default: return status;
+    }
+  };
+
+  const regionLabels: Record<string, string> = {
+    na: "North America",
+    apac: "Asia Pacific",
+    eu: "Europe",
   };
 
   return (
-    <div className="max-w-2xl mx-auto space-y-8 animate-in zoom-in-95 duration-500">
-      <div className="text-center">
-        <h1 className="text-2xl sm:text-3xl font-bold tracking-tight">Run Self-Initiated Benchmark</h1>
-        <p className="text-sm sm:text-base text-muted-foreground mt-2">Test your current connection quality against our reference agents.</p>
+    <div className="max-w-4xl mx-auto space-y-8 animate-in zoom-in-95 duration-500">
+      <div className="text-center space-y-4">
+        <div className="inline-flex items-center gap-2 px-4 py-2 bg-primary/10 rounded-full text-primary font-medium">
+          <Rocket className="h-4 w-4" />
+          Run Your Own Benchmark
+        </div>
+        <h1 className="text-3xl sm:text-4xl font-bold tracking-tight">
+          Test Your Voice AI Product
+        </h1>
+        <p className="text-muted-foreground max-w-2xl mx-auto">
+          Register your ConvoAI or RTC product and run real-world benchmarks across multiple regions.
+          Compare your performance against industry standards.
+        </p>
       </div>
 
-      <Card className="border-primary/20 shadow-lg relative overflow-hidden">
-        {/* Background decorative image with overlay */}
-        <div className="absolute inset-0 z-0 opacity-10 pointer-events-none">
-            <img src={generatedImage} className="w-full h-full object-cover" alt="" />
+      {!isLoggedIn ? (
+        <Card className="border-primary/20">
+          <CardContent className="pt-6">
+            <div className="text-center space-y-4">
+              <AlertCircle className="h-12 w-12 mx-auto text-muted-foreground" />
+              <h3 className="text-lg font-semibold">Sign in to run benchmarks</h3>
+              <p className="text-muted-foreground">
+                Create a free account to register your products and run benchmarks.
+              </p>
+              <Button asChild>
+                <Link href="/login">Sign In</Link>
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      ) : (
+        <div className="grid gap-6 lg:grid-cols-2">
+          {/* Configuration Panel */}
+          <Card className="border-primary/20 relative overflow-hidden">
+            <div className="absolute inset-0 z-0 opacity-5 pointer-events-none">
+              <img src={generatedImage} className="w-full h-full object-cover" alt="" />
+            </div>
+            <CardHeader className="relative z-10">
+              <CardTitle className="flex items-center gap-2">
+                <Zap className="h-5 w-5" />
+                Configure Benchmark
+              </CardTitle>
+              <CardDescription>
+                Set up your product for testing
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-6 relative z-10">
+              <Tabs defaultValue="new" className="w-full">
+                <TabsList className="grid w-full grid-cols-2">
+                  <TabsTrigger value="new">New Product</TabsTrigger>
+                  <TabsTrigger value="existing">Existing</TabsTrigger>
+                </TabsList>
+
+                <TabsContent value="new" className="space-y-4 mt-4">
+                  <div className="space-y-2">
+                    <Label>Product Type</Label>
+                    <Select value={productType} onValueChange={setProductType}>
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="convoai">ConvoAI Engine</SelectItem>
+                        <SelectItem value="rtc">RTC Engine</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label>Product Name</Label>
+                    <Input
+                      placeholder="My Voice AI Product"
+                      value={productName}
+                      onChange={(e) => setProductName(e.target.value)}
+                    />
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label>Product URL (optional)</Label>
+                    <Input
+                      placeholder="https://your-product.com/api"
+                      value={productUrl}
+                      onChange={(e) => setProductUrl(e.target.value)}
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      URL to your product's API endpoint for testing
+                    </p>
+                  </div>
+
+                  <Button
+                    onClick={handleRegisterProduct}
+                    disabled={createWorkflowMutation.isPending || !productName}
+                    className="w-full"
+                  >
+                    {createWorkflowMutation.isPending ? (
+                      <><Loader2 className="mr-2 h-4 w-4 animate-spin" /> Registering...</>
+                    ) : (
+                      "Register Product"
+                    )}
+                  </Button>
+                </TabsContent>
+
+                <TabsContent value="existing" className="space-y-4 mt-4">
+                  <div className="space-y-2">
+                    <Label>Select Product</Label>
+                    <Select value={selectedWorkflowId} onValueChange={setSelectedWorkflowId}>
+                      <SelectTrigger>
+                        <SelectValue placeholder="Choose a registered product" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {workflows?.map((w) => (
+                          <SelectItem key={w.id} value={w.id.toString()}>
+                            {w.name}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  {workflows?.length === 0 && (
+                    <p className="text-sm text-muted-foreground text-center py-4">
+                      No products registered yet. Create one in the "New Product" tab.
+                    </p>
+                  )}
+                </TabsContent>
+              </Tabs>
+
+              <div className="space-y-2 pt-4 border-t">
+                <Label>Target Region</Label>
+                <Select value={region} onValueChange={setRegion}>
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="na">North America</SelectItem>
+                    <SelectItem value="apac">Asia Pacific</SelectItem>
+                    <SelectItem value="eu">Europe</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </CardContent>
+            <CardFooter className="relative z-10">
+              <Button
+                className="w-full"
+                size="lg"
+                onClick={handleRunBenchmark}
+                disabled={runBenchmarkMutation.isPending || isJobRunning || !selectedWorkflowId}
+              >
+                {runBenchmarkMutation.isPending ? (
+                  <><Loader2 className="mr-2 h-4 w-4 animate-spin" /> Starting...</>
+                ) : isJobRunning ? (
+                  <><Loader2 className="mr-2 h-4 w-4 animate-spin" /> Job Running...</>
+                ) : (
+                  <><Play className="mr-2 h-4 w-4" /> Start Benchmark</>
+                )}
+              </Button>
+            </CardFooter>
+          </Card>
+
+          {/* Status Panel */}
+          <Card>
+            <CardHeader>
+              <CardTitle>Benchmark Status</CardTitle>
+              <CardDescription>
+                Monitor your running benchmarks
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-6">
+              {activeJob ? (
+                <div className="space-y-4">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-3">
+                      {getJobStatusIcon(activeJob.status)}
+                      <div>
+                        <div className="font-medium">{getJobStatusLabel(activeJob.status)}</div>
+                        <div className="text-sm text-muted-foreground">
+                          Region: {regionLabels[activeJob.region] || activeJob.region}
+                        </div>
+                      </div>
+                    </div>
+                    <Badge variant={activeJob.status === "completed" ? "default" : "secondary"}>
+                      {activeJob.status}
+                    </Badge>
+                  </div>
+
+                  {(activeJob.status === "pending" || activeJob.status === "running") && (
+                    <div className="space-y-2">
+                      <Progress value={activeJob.status === "pending" ? 10 : 60} className="h-2" />
+                      <p className="text-xs text-muted-foreground text-center">
+                        {activeJob.status === "pending"
+                          ? "Waiting for available eval agent..."
+                          : "Running benchmark tests..."}
+                      </p>
+                    </div>
+                  )}
+
+                  {activeJob.error && (
+                    <div className="p-3 bg-destructive/10 border border-destructive/20 rounded-md">
+                      <p className="text-sm text-destructive">{activeJob.error}</p>
+                    </div>
+                  )}
+
+                  {activeJob.status === "completed" && (
+                    <div className="p-4 bg-green-500/10 border border-green-500/20 rounded-md text-center">
+                      <CheckCircle className="h-8 w-8 mx-auto text-green-500 mb-2" />
+                      <p className="font-medium">Benchmark Complete!</p>
+                      <p className="text-sm text-muted-foreground">
+                        View results in the Leaderboard
+                      </p>
+                      <Button asChild variant="link" className="mt-2">
+                        <Link href="/leaderboard">View Leaderboard</Link>
+                      </Button>
+                    </div>
+                  )}
+
+                  <div className="flex gap-2">
+                    {activeJob.status === "pending" && (
+                      <Button
+                        variant="destructive"
+                        size="sm"
+                        onClick={() => cancelJobMutation.mutate(activeJob.id)}
+                        disabled={cancelJobMutation.isPending}
+                      >
+                        <XCircle className="mr-2 h-4 w-4" />
+                        Cancel
+                      </Button>
+                    )}
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => refetchJob()}
+                    >
+                      Refresh Status
+                    </Button>
+                  </div>
+                </div>
+              ) : (
+                <div className="text-center py-8 text-muted-foreground">
+                  <Clock className="h-12 w-12 mx-auto mb-4 opacity-50" />
+                  <p>No active benchmark</p>
+                  <p className="text-sm">Configure and start a benchmark to see status here</p>
+                </div>
+              )}
+            </CardContent>
+          </Card>
         </div>
-        
-        <CardHeader className="relative z-10">
-          <CardTitle>Interactive Test Session</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-6 relative z-10">
-          <div className="bg-black/40 rounded-lg p-6 min-h-[200px] font-mono text-sm text-green-400 border border-white/10 flex flex-col justify-end">
-            {logs.map((log, i) => (
-                <div key={i} className="animate-in fade-in slide-in-from-left-2">{log}</div>
-            ))}
-            {isTesting && <div className="animate-pulse">_</div>}
-            {!isTesting && logs.length === 0 && <div className="text-muted-foreground text-center self-center my-auto">Ready to start benchmark...</div>}
-          </div>
+      )}
 
-          {isTesting && (
-            <div className="space-y-2">
-                <div className="flex justify-between text-xs text-muted-foreground">
-                    <span>Progress</span>
-                    <span>{progress}%</span>
-                </div>
-                <Progress value={progress} className="h-2" />
-            </div>
-          )}
-
-          {results && (
-             <div className="grid grid-cols-2 gap-4 pt-4 animate-in fade-in slide-in-from-bottom-4">
-                <div className="bg-secondary p-4 rounded-lg text-center">
-                    <div className="text-xs text-muted-foreground uppercase tracking-wider mb-1">Response Latency</div>
-                    <div className="text-2xl font-bold font-mono text-primary">{results.latency}ms</div>
-                </div>
-                <div className="bg-secondary p-4 rounded-lg text-center">
-                    <div className="text-xs text-muted-foreground uppercase tracking-wider mb-1">Quality Score</div>
-                    <div className="text-2xl font-bold font-mono text-primary">{results.quality}/5.0</div>
-                </div>
-             </div>
-          )}
-        </CardContent>
-        <CardFooter className="flex flex-col sm:flex-row gap-3 sm:justify-between relative z-10">
-            <div className="text-xs sm:text-sm text-muted-foreground text-center sm:text-left">
-                Target: <strong>Agora ConvoAI (North America)</strong>
-            </div>
-          {!isTesting ? (
-            <Button onClick={startTest} size="lg" className="gap-2">
-                <Play className="h-4 w-4" /> Start Benchmark
-            </Button>
-          ) : (
-            <Button disabled variant="secondary" size="lg" className="gap-2">
-                <Loader2 className="h-4 w-4 animate-spin" /> Running...
-            </Button>
-          )}
-        </CardFooter>
-      </Card>
-
-      <Card>
-        <CardHeader>
-            <CardTitle>Rate your experience</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-6">
-            <div className="space-y-2">
-                <div className="flex flex-col sm:flex-row sm:justify-between gap-1">
-                    <Label>Naturalness</Label>
-                    <span className="text-xs sm:text-sm text-muted-foreground">How human-like was the interaction?</span>
-                </div>
-                <Slider defaultValue={[3]} max={5} step={1} />
-            </div>
-             <div className="space-y-2">
-                <div className="flex flex-col sm:flex-row sm:justify-between gap-1">
-                    <Label>Responsiveness</Label>
-                    <span className="text-xs sm:text-sm text-muted-foreground">Did it feel instantaneous?</span>
-                </div>
-                <Slider defaultValue={[4]} max={5} step={1} />
-            </div>
-        </CardContent>
-        <CardFooter>
-            <Button variant="outline" className="w-full">Submit Feedback</Button>
-        </CardFooter>
-      </Card>
+      {/* Info Cards */}
+      <div className="grid gap-4 md:grid-cols-3">
+        <Card>
+          <CardContent className="pt-6">
+            <h3 className="font-semibold mb-2">Real Infrastructure</h3>
+            <p className="text-sm text-muted-foreground">
+              Tests run on our distributed eval agents across NA, APAC, and EU regions.
+            </p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="pt-6">
+            <h3 className="font-semibold mb-2">Comprehensive Metrics</h3>
+            <p className="text-sm text-muted-foreground">
+              Measure response latency, interrupt latency, network resilience, and more.
+            </p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="pt-6">
+            <h3 className="font-semibold mb-2">Compare & Improve</h3>
+            <p className="text-sm text-muted-foreground">
+              See how your product stacks up against industry benchmarks.
+            </p>
+          </CardContent>
+        </Card>
+      </div>
     </div>
   );
 }

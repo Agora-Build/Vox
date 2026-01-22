@@ -19,7 +19,7 @@ import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import { Users, Workflow, FileText, LogOut, Shield, Crown, Sparkles, Zap, Server, Key, Building2, CreditCard, Settings } from "lucide-react";
+import { Users, Workflow, FileText, LogOut, Shield, Crown, Sparkles, Zap, Server, Key, Building2, CreditCard, Settings, FolderKanban } from "lucide-react";
 import { ThemeToggle } from "@/components/theme-toggle";
 
 interface AuthStatus {
@@ -97,6 +97,13 @@ export default function ConsoleLayout({ children }: ConsoleLayoutProps) {
   }
 
   navItems.push({
+    title: "Projects",
+    url: "/console/projects",
+    icon: FolderKanban,
+    active: location === "/console/projects",
+  });
+
+  navItems.push({
     title: "Workflows",
     url: "/console/workflows",
     icon: Workflow,
@@ -104,25 +111,25 @@ export default function ConsoleLayout({ children }: ConsoleLayoutProps) {
   });
 
   navItems.push({
-    title: "Test Sets",
-    url: "/console/test-sets",
+    title: "Eval Sets",
+    url: "/console/eval-sets",
     icon: FileText,
-    active: location === "/console/test-sets",
+    active: location === "/console/eval-sets",
   });
 
   navItems.push({
-    title: "Workers",
-    url: "/console/workers",
+    title: "Eval Agents",
+    url: "/console/eval-agents",
     icon: Server,
-    active: location === "/console/workers",
+    active: location === "/console/eval-agents",
   });
 
   if (user?.isAdmin) {
     navItems.push({
-      title: "Worker Tokens",
-      url: "/console/worker-tokens",
+      title: "Agent Tokens",
+      url: "/console/eval-agent-tokens",
       icon: Key,
-      active: location === "/console/worker-tokens",
+      active: location === "/console/eval-agent-tokens",
     });
   }
 
