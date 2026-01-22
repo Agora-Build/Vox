@@ -3,10 +3,21 @@ import { hashPassword } from "../server/auth";
 
 async function seedData() {
   const storage = new DatabaseStorage();
-  
-  // Create Scout user (principal)
-  const existingScout = await storage.getUserByEmail("scout@vox.ai");
-  if (!existingScout) {
+
+  // Update Scout user (created by init) to be enabled with password
+  const existingScout = await storage.getUserByUsername("Scout");
+  if (existingScout) {
+    // Update existing Scout user created by init
+    const passwordHash = await hashPassword("scout123");
+    await storage.updateUser(existingScout.id, {
+      email: "scout@vox.ai",
+      passwordHash,
+      isEnabled: true,
+      emailVerifiedAt: new Date(),
+    });
+    console.log(`Scout user updated: ID ${existingScout.id}`);
+  } else {
+    // Create Scout if not exists
     const passwordHash = await hashPassword("scout123");
     const scout = await storage.createUser({
       username: "Scout",
@@ -18,8 +29,6 @@ async function seedData() {
       emailVerifiedAt: new Date(),
     });
     console.log(`Scout user created: ID ${scout.id}`);
-  } else {
-    console.log("Scout user already exists");
   }
   
   // Create providers

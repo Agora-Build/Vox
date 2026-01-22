@@ -1,0 +1,18 @@
+{
+  "name": "vox_eval_agentd",
+  "version": "1.0.0",
+  "description": "Vox Evaluation Agent Daemon - integrates voice-agent-tester with Vox API",
+  "type": "module",
+  "main": "vox-agent-daemon.js",
+  "scripts": {
+    "start": "node vox-agent-daemon.js"
+  },
+  "dependencies": {},
+  "keywords": [
+    "vox",
+    "evaluation",
+    "voice-agent",
+    "testing"
+  ],
+  "license": "MIT"
+}

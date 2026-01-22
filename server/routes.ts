@@ -1315,20 +1315,33 @@ export async function registerRoutes(
 
       if (results && !jobError) {
         const workflow = await storage.getWorkflow(job.workflowId);
-        
-        await storage.createEvalResult({
-          evalJobId: parseInt(jobId),
-          providerId: workflow?.providerId || "",
-          region: job.region,
-          responseLatencyMedian: results.responseLatencyMedian || 0,
-          responseLatencySd: results.responseLatencySd || 0,
-          interruptLatencyMedian: results.interruptLatencyMedian || 0,
-          interruptLatencySd: results.interruptLatencySd || 0,
-          networkResilience: results.networkResilience,
-          naturalness: results.naturalness,
-          noiseReduction: results.noiseReduction,
-          rawData: results.rawData || {},
-        });
+
+        // Get providerId from workflow, or use a default provider
+        let providerId = workflow?.providerId;
+        if (!providerId) {
+          // Find a default provider (e.g., LiveKit Agents)
+          const providers = await storage.getAllProviders();
+          const defaultProvider = providers.find(p => p.name.includes("LiveKit")) || providers[0];
+          providerId = defaultProvider?.id || null;
+        }
+
+        if (providerId) {
+          await storage.createEvalResult({
+            evalJobId: parseInt(jobId),
+            providerId,
+            region: job.region,
+            responseLatencyMedian: results.responseLatencyMedian || 0,
+            responseLatencySd: results.responseLatencySd || 0,
+            interruptLatencyMedian: results.interruptLatencyMedian || 0,
+            interruptLatencySd: results.interruptLatencySd || 0,
+            networkResilience: results.networkResilience,
+            naturalness: results.naturalness,
+            noiseReduction: results.noiseReduction,
+            rawData: results.rawData || {},
+          });
+        } else {
+          console.warn("No provider found, skipping eval result creation");
+        }
       }
 
       res.json({ message: "Job completed" });

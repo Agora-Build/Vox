@@ -1,0 +1,27 @@
+# Basic Conversation Evaluation Scenario
+# Tests basic interaction with voice agent using appointment workflow
+#
+# Note: App config (livekit.yaml) already handles:
+# - Navigating to URL
+# - Clicking to start
+# - Waiting for initial agent greeting
+#
+# This scenario starts AFTER the agent has greeted the user
+tags:
+  - basic
+  - latency
+steps:
+  # User makes appointment request
+  - action: speak
+    file: hello_make_an_appointment.mp3
+  # Measure response latency
+  - action: wait_for_voice
+    metrics: elapsed_time
+  - action: wait_for_silence
+  # User provides appointment details
+  - action: speak
+    file: appointment_data.mp3
+  # Measure second response latency
+  - action: wait_for_voice
+    metrics: elapsed_time
+  - action: wait_for_silence
