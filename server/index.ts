@@ -4,6 +4,8 @@ import { serveStatic } from "./static";
 import { createServer } from "http";
 import session from "express-session";
 import connectPgSimple from "connect-pg-simple";
+import rateLimit from "express-rate-limit";
+import { authenticateApiKey, passport, initializeGoogleOAuth } from "./auth";
 import pkg from "pg";
 const { Pool } = pkg;
 
@@ -31,6 +33,16 @@ app.use(
   })
 );
 
+// Initialize Passport for OAuth
+app.use(passport.initialize());
+app.use(passport.session());
+
+// Initialize Google OAuth if credentials are configured
+const googleOAuthEnabled = initializeGoogleOAuth();
+if (googleOAuthEnabled) {
+  console.log("Google OAuth initialized successfully");
+}
+
 declare module "http" {
   interface IncomingMessage {
     rawBody: unknown;
@@ -46,6 +58,33 @@ app.use(
 );
 
 app.use(express.urlencoded({ extended: false }));
+
+// Rate limiting for API routes
+const apiLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 100, // Limit each IP to 100 requests per windowMs
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too many requests, please try again later." },
+  skip: (req) => !req.path.startsWith("/api"), // Only apply to /api routes
+});
+
+// Stricter rate limit for authentication endpoints
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 20, // Limit each IP to 20 auth requests per windowMs
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too many authentication attempts, please try again later." },
+});
+
+app.use(apiLimiter);
+app.use("/api/auth/login", authLimiter);
+app.use("/api/auth/register", authLimiter);
+app.use("/api/auth/activate", authLimiter);
+
+// API key authentication middleware (checks Bearer token for vox_live_ prefix)
+app.use(authenticateApiKey);
 
 export function log(message: string, source = "express") {
   const formattedTime = new Date().toLocaleTimeString("en-US", {

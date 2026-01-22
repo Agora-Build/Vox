@@ -405,10 +405,14 @@ export class DatabaseStorage {
   }
 
   async incrementApiKeyUsage(id: number): Promise<void> {
-    await db.update(apiKeys).set({ 
+    await db.update(apiKeys).set({
       usageCount: sql`${apiKeys.usageCount} + 1`,
-      lastUsedAt: new Date() 
+      lastUsedAt: new Date()
     }).where(eq(apiKeys.id, id));
+  }
+
+  async deleteApiKey(id: number): Promise<void> {
+    await db.delete(apiKeys).where(eq(apiKeys.id, id));
   }
 
   async getPricingConfig(id: number): Promise<PricingConfig | undefined> {

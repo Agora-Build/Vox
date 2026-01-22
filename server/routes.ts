@@ -2,17 +2,19 @@ import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage, hashToken, generateSecureToken } from "./storage";
 import { generateProviderId } from "@shared/schema";
-import { 
-  hashPassword, 
-  verifyPassword, 
-  generateToken, 
-  getInitCode, 
-  isSystemInitialized, 
+import {
+  hashPassword,
+  verifyPassword,
+  generateToken,
+  getInitCode,
+  isSystemInitialized,
   markSystemInitialized,
   getCurrentUser,
   requireAuth,
   requireAdmin,
   requirePrincipal,
+  generateApiKey,
+  passport,
 } from "./auth";
 
 export async function registerRoutes(
@@ -182,6 +184,41 @@ export async function registerRoutes(
       res.json({ message: "Logged out successfully" });
     });
   });
+
+  // ==================== GOOGLE OAUTH ROUTES ====================
+
+  // Check if Google OAuth is available
+  app.get("/api/auth/google/status", (req, res) => {
+    const enabled = !!(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET);
+    res.json({ enabled });
+  });
+
+  // Initiate Google OAuth flow
+  app.get(
+    "/api/auth/google",
+    (req, res, next) => {
+      if (!process.env.GOOGLE_CLIENT_ID || !process.env.GOOGLE_CLIENT_SECRET) {
+        return res.status(503).json({ error: "Google OAuth not configured" });
+      }
+      next();
+    },
+    passport.authenticate("google", { scope: ["profile", "email"] })
+  );
+
+  // Handle Google OAuth callback
+  app.get(
+    "/api/auth/google/callback",
+    passport.authenticate("google", { failureRedirect: "/login?error=oauth_failed" }),
+    (req, res) => {
+      // Successful authentication - set session and redirect
+      if (req.user) {
+        const user = req.user as { id: number };
+        req.session.userId = user.id;
+      }
+      // Redirect to console or home page
+      res.redirect("/console");
+    }
+  );
 
   // ==================== ADMIN USER ROUTES ====================
 
@@ -491,6 +528,139 @@ export async function registerRoutes(
     } catch (error) {
       console.error("Error creating provider:", error);
       res.status(500).json({ error: "Failed to create provider" });
+    }
+  });
+
+  // ==================== API KEY ROUTES ====================
+
+  // List user's API keys
+  app.get("/api/user/api-keys", requireAuth, async (req, res) => {
+    try {
+      const user = await getCurrentUser(req);
+      if (!user) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+
+      const keys = await storage.getApiKeysByUser(user.id);
+      // Return keys without the hash (only show metadata)
+      res.json(keys.map(k => ({
+        id: k.id,
+        name: k.name,
+        keyPrefix: k.keyPrefix,
+        usageCount: k.usageCount,
+        lastUsedAt: k.lastUsedAt,
+        expiresAt: k.expiresAt,
+        isRevoked: k.isRevoked,
+        createdAt: k.createdAt,
+      })));
+    } catch (error) {
+      console.error("Error fetching API keys:", error);
+      res.status(500).json({ error: "Failed to fetch API keys" });
+    }
+  });
+
+  // Create a new API key
+  app.post("/api/user/api-keys", requireAuth, async (req, res) => {
+    try {
+      const user = await getCurrentUser(req);
+      if (!user) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+
+      const { name, expiresInDays } = req.body;
+
+      if (!name) {
+        return res.status(400).json({ error: "Name is required" });
+      }
+
+      // Generate the API key with prefix
+      const { key, prefix } = generateApiKey();
+      const keyHash = hashToken(key);
+
+      // Calculate expiration if provided
+      let expiresAt: Date | undefined;
+      if (expiresInDays && typeof expiresInDays === "number" && expiresInDays > 0) {
+        expiresAt = new Date(Date.now() + expiresInDays * 24 * 60 * 60 * 1000);
+      }
+
+      const apiKey = await storage.createApiKey({
+        name,
+        keyHash,
+        keyPrefix: prefix,
+        createdBy: user.id,
+        isRevoked: false,
+        expiresAt,
+      });
+
+      // Return the full key only once - it cannot be retrieved again
+      res.json({
+        id: apiKey.id,
+        name: apiKey.name,
+        key, // Full key - only shown once!
+        keyPrefix: apiKey.keyPrefix,
+        expiresAt: apiKey.expiresAt,
+        createdAt: apiKey.createdAt,
+        message: "Store this key securely - it will not be shown again!",
+      });
+    } catch (error) {
+      console.error("Error creating API key:", error);
+      res.status(500).json({ error: "Failed to create API key" });
+    }
+  });
+
+  // Revoke an API key
+  app.post("/api/user/api-keys/:id/revoke", requireAuth, async (req, res) => {
+    try {
+      const user = await getCurrentUser(req);
+      if (!user) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+
+      const { id } = req.params;
+      const apiKey = await storage.getApiKey(parseInt(id));
+
+      if (!apiKey) {
+        return res.status(404).json({ error: "API key not found" });
+      }
+
+      // Users can only revoke their own keys (unless admin)
+      if (apiKey.createdBy !== user.id && !user.isAdmin) {
+        return res.status(403).json({ error: "Not authorized to revoke this key" });
+      }
+
+      await storage.revokeApiKey(parseInt(id));
+      res.json({ message: "API key revoked successfully" });
+    } catch (error) {
+      console.error("Error revoking API key:", error);
+      res.status(500).json({ error: "Failed to revoke API key" });
+    }
+  });
+
+  // Delete an API key (hard delete)
+  app.delete("/api/user/api-keys/:id", requireAuth, async (req, res) => {
+    try {
+      const user = await getCurrentUser(req);
+      if (!user) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+
+      const { id } = req.params;
+      const apiKey = await storage.getApiKey(parseInt(id));
+
+      if (!apiKey) {
+        return res.status(404).json({ error: "API key not found" });
+      }
+
+      // Users can only delete their own keys (unless admin)
+      if (apiKey.createdBy !== user.id && !user.isAdmin) {
+        return res.status(403).json({ error: "Not authorized to delete this key" });
+      }
+
+      await storage.deleteApiKey(parseInt(id));
+      res.json({ message: "API key deleted successfully" });
+    } catch (error) {
+      console.error("Error deleting API key:", error);
+      res.status(500).json({ error: "Failed to delete API key" });
     }
   });
 

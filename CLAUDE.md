@@ -37,6 +37,9 @@ Required:
 
 Optional:
 - `PORT` - Server port (default: 5000)
+- `GOOGLE_CLIENT_ID` - Google OAuth client ID (enables Google sign-in)
+- `GOOGLE_CLIENT_SECRET` - Google OAuth client secret
+- `GOOGLE_CALLBACK_URL` - OAuth callback URL (default: `/api/auth/google/callback`)
 
 ## Architecture
 
@@ -142,8 +145,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 - `requireAuth` - Middleware to protect routes (401 if not logged in)
 - `requireAdmin` - Middleware for admin-only routes
 - `requirePrincipal` - Middleware for Principal/Fellow users
+- `authenticateApiKey` - Middleware for API key auth (Bearer token with `vox_live_` prefix)
+- `requireAuthOrApiKey` - Accept either session or API key auth
 - Password hashing with bcrypt
 - Token generation utilities
+- Google OAuth via Passport.js
+
+**Rate Limiting:** API routes are rate-limited (100 req/15min general, 20 req/15min for auth endpoints)
 
 #### Data Access Layer
 `server/storage.ts` exports a singleton `DatabaseStorage` instance as `storage`:
@@ -167,6 +175,15 @@ All routes defined in `server/routes.ts`:
 - `GET /api/auth/status` - Check auth status and system initialization
 - `POST /api/auth/init` - Initialize system (first-time setup, creates admin + Scout user)
 - `POST /api/auth/login`, `/logout`, `/activate`, `/register`
+- `GET /api/auth/google` - Initiate Google OAuth flow
+- `GET /api/auth/google/callback` - Google OAuth callback
+- `GET /api/auth/google/status` - Check if Google OAuth is enabled
+
+**API Keys (`/api/user/api-keys`):** (requires auth)
+- `GET /api/user/api-keys` - List user's API keys
+- `POST /api/user/api-keys` - Create new API key (returns key once, never again)
+- `POST /api/user/api-keys/:id/revoke` - Revoke an API key
+- `DELETE /api/user/api-keys/:id` - Delete an API key
 
 **Admin (`/api/admin/*`):** (requires `requireAdmin` middleware)
 - `GET/PATCH /api/admin/users` - User management
@@ -249,9 +266,12 @@ When adding new features, write tests for critical paths like authentication, jo
 
 ## Project Roadmap
 
-The project is currently in Phase 1 (Complete). See `designs/IMPLEMENTATION_PLAN.md` for detailed roadmap including:
-- Phase 2: API key security enhancements
-- Phase 3: Google OAuth integration
+**Completed phases:**
+- Phase 1: Core system (database schema, basic routes, seed data)
+- Phase 2: API key security (prefix-based keys, rate limiting, usage tracking)
+- Phase 3: Google OAuth integration (Passport.js, account linking)
+
+**Remaining phases** (see `designs/IMPLEMENTATION_PLAN.md`):
 - Phase 4: Organization system with Stripe payments
 - Phase 5: Eval agent concurrency control with atomic job claims
 - Phase 6: Frontend polish (rename routes like `/dive`, `/run-your-own`)
@@ -280,6 +300,8 @@ Key runtime dependencies:
 - **TanStack React Query** - Server state management
 - **Zod** - Runtime validation
 - **shadcn/ui** - Component library
+- **Passport.js** - Authentication middleware (Google OAuth)
+- **express-rate-limit** - API rate limiting
 
 Development dependencies:
 - **TypeScript 5.6.3** - Type checking
