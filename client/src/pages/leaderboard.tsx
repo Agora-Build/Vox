@@ -36,7 +36,7 @@ export default function Leaderboard() {
     if (!leaderboardData) return [];
 
     // Filter by region
-    let filtered = selectedRegion === "all"
+    const filtered = selectedRegion === "all"
       ? leaderboardData
       : leaderboardData.filter(e => e.region.toLowerCase() === selectedRegion);
 

@@ -226,7 +226,7 @@ describe('Auth Utilities', () => {
 
   describe('API Key Generation', () => {
     it('should generate API key with correct prefix', () => {
-      const { key, prefix } = generateApiKey();
+      const { key } = generateApiKey();
 
       expect(key).toBeDefined();
       expect(key.startsWith('vox_live_')).toBe(true);

@@ -2209,7 +2209,7 @@ export async function registerRoutes(
       }
 
       // Check if org has a Stripe customer, if not create one
-      let existingMethod = await storage.getDefaultPaymentMethod(parseInt(id));
+      const existingMethod = await storage.getDefaultPaymentMethod(parseInt(id));
       let customerId = existingMethod?.stripeCustomerId;
 
       if (!customerId) {
