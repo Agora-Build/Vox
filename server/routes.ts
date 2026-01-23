@@ -961,6 +961,32 @@ export async function registerRoutes(
     }
   });
 
+  app.delete("/api/workflows/:id", requireAuth, async (req, res) => {
+    try {
+      const user = await getCurrentUser(req);
+      if (!user) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+
+      const { id } = req.params;
+      const workflow = await storage.getWorkflow(parseInt(id));
+
+      if (!workflow) {
+        return res.status(404).json({ error: "Workflow not found" });
+      }
+
+      if (workflow.ownerId !== user.id) {
+        return res.status(403).json({ error: "Not authorized to delete this workflow" });
+      }
+
+      await storage.deleteWorkflow(parseInt(id));
+      res.json({ success: true });
+    } catch (error) {
+      console.error("Error deleting workflow:", error);
+      res.status(500).json({ error: "Failed to delete workflow" });
+    }
+  });
+
   // ==================== EVAL SET ROUTES ====================
 
   app.get("/api/eval-sets", requireAuth, async (req, res) => {
@@ -974,6 +1000,26 @@ export async function registerRoutes(
     } catch (error) {
       console.error("Error fetching eval sets:", error);
       res.status(500).json({ error: "Failed to fetch eval sets" });
+    }
+  });
+
+  app.get("/api/eval-sets/:id", requireAuth, async (req, res) => {
+    try {
+      const user = await getCurrentUser(req);
+      if (!user) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+      const evalSet = await storage.getEvalSet(parseInt(req.params.id));
+      if (!evalSet) {
+        return res.status(404).json({ error: "Eval set not found" });
+      }
+      if (evalSet.ownerId !== user.id && evalSet.visibility !== "public") {
+        return res.status(403).json({ error: "Access denied" });
+      }
+      res.json(evalSet);
+    } catch (error) {
+      console.error("Error fetching eval set:", error);
+      res.status(500).json({ error: "Failed to fetch eval set" });
     }
   });
 
