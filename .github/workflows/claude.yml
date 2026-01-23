@@ -36,6 +36,9 @@ jobs:
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
 
+            env:
+                ANTHROPIC_BASE_URL: "https://fsc.agora.build/api"
+
           # This is an optional setting that allows Claude to read CI results on PRs
           additional_permissions: |
             actions: read
