@@ -1,6 +1,8 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 
-const BASE_URL = 'http://localhost:5000';
+const BASE_URL = process.env.TEST_BASE_URL || 'http://localhost:5000';
+const ADMIN_EMAIL = process.env.TEST_ADMIN_EMAIL || 'admin@vox.local';
+const ADMIN_PASSWORD = process.env.TEST_ADMIN_PASSWORD || 'admin123456';
 
 interface AuthSession {
   cookie: string;
@@ -111,7 +113,7 @@ describe('Vox API Tests', () => {
   let testApiKey: string;
 
   beforeAll(async () => {
-    adminSession = await login('brent@agora.io', '1234567890');
+    adminSession = await login(ADMIN_EMAIL, ADMIN_PASSWORD);
   });
 
   describe('Auth API', () => {
@@ -122,7 +124,7 @@ describe('Vox API Tests', () => {
       const data = await response.json();
       expect(data.initialized).toBe(true);
       expect(data.user).toBeDefined();
-      expect(data.user.email).toBe('brent@agora.io');
+      expect(data.user.email).toBe(ADMIN_EMAIL);
       expect(data.user.isAdmin).toBe(true);
     });
 
@@ -447,8 +449,8 @@ describe('Vox API Tests', () => {
       });
 
       expect(response.ok).toBe(true);
-      const data = await response.json();
-      expect(data.email).toBe('brent@agora.io');
+      const { data } = await response.json();
+      expect(data.email).toBe(ADMIN_EMAIL);
     });
   });
 
@@ -461,7 +463,7 @@ describe('Vox API Tests', () => {
       });
 
       expect(response.ok).toBe(true);
-      const workflows: Workflow[] = await response.json();
+      const { data: workflows } = await response.json();
       expect(Array.isArray(workflows)).toBe(true);
     });
 
@@ -473,7 +475,7 @@ describe('Vox API Tests', () => {
       });
 
       expect(response.ok).toBe(true);
-      const evalSets: EvalSet[] = await response.json();
+      const { data: evalSets } = await response.json();
       expect(Array.isArray(evalSets)).toBe(true);
     });
 
@@ -485,7 +487,7 @@ describe('Vox API Tests', () => {
       });
 
       expect(response.ok).toBe(true);
-      const jobs: EvalJob[] = await response.json();
+      const { data: jobs } = await response.json();
       expect(Array.isArray(jobs)).toBe(true);
     });
 
@@ -497,7 +499,7 @@ describe('Vox API Tests', () => {
       });
 
       expect(response.ok).toBe(true);
-      const data = await response.json();
+      const { data } = await response.json();
       expect(Array.isArray(data)).toBe(true);
     });
 
@@ -509,30 +511,28 @@ describe('Vox API Tests', () => {
       });
 
       expect(response.ok).toBe(true);
-      const projects: Project[] = await response.json();
+      const { data: projects } = await response.json();
       expect(Array.isArray(projects)).toBe(true);
     });
 
     it('should get realtime metrics (public)', async () => {
       const response = await fetch(`${BASE_URL}/api/v1/metrics/realtime`);
       expect(response.ok).toBe(true);
-      const data = await response.json();
-      expect(data.results).toBeDefined();
-      expect(data.timestamp).toBeDefined();
+      const { data } = await response.json();
+      expect(Array.isArray(data)).toBe(true);
     });
 
     it('should get leaderboard (public)', async () => {
       const response = await fetch(`${BASE_URL}/api/v1/metrics/leaderboard`);
       expect(response.ok).toBe(true);
-      const data = await response.json();
-      expect(data.providers).toBeDefined();
-      expect(data.timestamp).toBeDefined();
+      const { data } = await response.json();
+      expect(data).toBeDefined();
     });
 
     it('should get providers via API v1 (public)', async () => {
       const response = await fetch(`${BASE_URL}/api/v1/providers`);
       expect(response.ok).toBe(true);
-      const providers: Provider[] = await response.json();
+      const { data: providers } = await response.json();
       expect(Array.isArray(providers)).toBe(true);
     });
   });

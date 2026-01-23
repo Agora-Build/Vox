@@ -272,7 +272,7 @@ export const apiKeys = pgTable("api_keys", {
   id: serial("id").primaryKey(),
   name: text("name").notNull(),
   keyHash: text("key_hash").notNull().unique(),
-  keyPrefix: varchar("key_prefix", { length: 8 }).notNull(),
+  keyPrefix: varchar("key_prefix", { length: 16 }).notNull(),
   createdBy: integer("created_by").notNull().references(() => users.id),
   usageCount: integer("usage_count").default(0).notNull(),
   lastUsedAt: timestamp("last_used_at"),
