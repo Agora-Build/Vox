@@ -654,8 +654,12 @@ do_start_docker() {
     ensure_eval_agent_image
 
     # 7. Get or create eval agent token and start agent (Docker)
-    # Use direct database method to bypass HTTP API cookie issues
-    local agent_token=$(get_or_create_eval_agent_token_docker)
+    # Try HTTP API first (proper authentication flow), fallback to direct database if needed
+    local agent_token=$(get_or_create_eval_agent_token)
+    if [ -z "$agent_token" ]; then
+        log_warn "HTTP API token creation failed, trying direct database method..." >&2
+        agent_token=$(get_or_create_eval_agent_token_docker)
+    fi
     if [ -n "$agent_token" ]; then
         start_eval_agent_docker "$agent_token" "Local-Eval-Agent" || log_warn "Eval agent failed to start, continuing..."
     else

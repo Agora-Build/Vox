@@ -16,6 +16,13 @@ const httpServer = createServer(app);
 const PgSession = connectPgSimple(session);
 const sessionPool = new Pool({ connectionString: process.env.DATABASE_URL });
 
+// Determine cookie security at runtime (bracket notation prevents esbuild inlining)
+// COOKIE_SECURE: "true" = always secure, "false" = never secure, unset = auto (production only)
+const cookieSecureEnv = process.env["COOKIE_SECURE"];
+const isSecureCookie = cookieSecureEnv === "true" ? true
+  : cookieSecureEnv === "false" ? false
+  : process.env["NODE_ENV"] === "production";
+
 app.use(
   session({
     store: new PgSession({
@@ -27,7 +34,7 @@ app.use(
     resave: false,
     saveUninitialized: false,
     cookie: {
-      secure: process.env.NODE_ENV === "production",
+      secure: isSecureCookie,
       httpOnly: true,
       maxAge: 7 * 24 * 60 * 60 * 1000,
     },
