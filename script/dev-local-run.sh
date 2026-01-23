@@ -337,6 +337,71 @@ get_or_create_eval_agent_token() {
     return 1
 }
 
+# Create eval agent token directly in database (bypasses HTTP API)
+# This is used in Docker mode where session cookies don't work reliably
+create_eval_agent_token_direct() {
+    local name=$1
+    local region=$2
+
+    log_info "Creating eval agent token directly in database..." >&2
+
+    # Get admin user ID (user with email admin@vox.local)
+    local admin_id=$(docker exec -i $DB_CONTAINER psql -U vox -d vox -t -c \
+        "SELECT id FROM users WHERE email = 'admin@vox.local' LIMIT 1;" 2>/dev/null | tr -d ' \n')
+
+    if [ -z "$admin_id" ]; then
+        log_error "Admin user not found in database" >&2
+        return 1
+    fi
+
+    # Generate random 64-character hex token (32 bytes)
+    local token=$(openssl rand -hex 32)
+
+    # Hash using SHA256 (same as server/storage.ts:hashToken)
+    local token_hash=$(echo -n "$token" | sha256sum | cut -d' ' -f1)
+
+    # Insert into database (id is auto-generated SERIAL)
+    local sql="INSERT INTO eval_agent_tokens (name, region, token_hash, created_by, is_revoked, created_at)
+               VALUES ('$name', '$region', '$token_hash', $admin_id, false, NOW())
+               RETURNING id;"
+
+    local result=$(docker exec -i $DB_CONTAINER psql -U vox -d vox -t -c "$sql" 2>&1)
+
+    if echo "$result" | grep -qE "^[[:space:]]*[0-9]+"; then
+        log_success "Eval agent token created directly in database" >&2
+        echo "$token"
+        return 0
+    else
+        log_error "Failed to create token in database: $result" >&2
+        return 1
+    fi
+}
+
+# Get or create eval agent token using direct database method (for Docker mode)
+get_or_create_eval_agent_token_docker() {
+    # Check if we have a saved token
+    if [ -f "$EVAL_AGENT_TOKEN_FILE" ]; then
+        local saved_token=$(cat "$EVAL_AGENT_TOKEN_FILE" | tr -d '\n')
+        if [ -n "$saved_token" ]; then
+            log_info "Using saved eval agent token" >&2
+            echo "$saved_token"
+            return 0
+        fi
+    fi
+
+    # Create token directly in database (bypasses HTTP API cookie issues)
+    local token=$(create_eval_agent_token_direct "Local-Eval-Agent" "na")
+    if [ -n "$token" ]; then
+        # Save token for future use
+        echo -n "$token" > "$EVAL_AGENT_TOKEN_FILE"
+        echo "$token"
+        return 0
+    fi
+
+    log_error "Failed to create eval agent token"
+    return 1
+}
+
 # ==================== Eval Agent (Local Process Mode) ====================
 
 start_eval_agent_local() {
@@ -589,7 +654,8 @@ do_start_docker() {
     ensure_eval_agent_image
 
     # 7. Get or create eval agent token and start agent (Docker)
-    local agent_token=$(get_or_create_eval_agent_token)
+    # Use direct database method to bypass HTTP API cookie issues
+    local agent_token=$(get_or_create_eval_agent_token_docker)
     if [ -n "$agent_token" ]; then
         start_eval_agent_docker "$agent_token" "Local-Eval-Agent" || log_warn "Eval agent failed to start, continuing..."
     else
