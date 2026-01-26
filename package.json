@@ -12,7 +12,8 @@
     "lint": "eslint . --ext .ts,.tsx",
     "test": "vitest run",
     "test:watch": "vitest",
-    "db:push": "drizzle-kit push"
+    "db:push": "drizzle-kit push",
+    "postinstall": "git submodule update --init --recursive && cd vox_eval_agentd/voice-agent-tester && npm install"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.10.0",

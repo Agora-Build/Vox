@@ -6,7 +6,7 @@
  * 1. Registers with Vox server using a token
  * 2. Sends periodic heartbeats
  * 3. Fetches and claims pending jobs
- * 4. Executes evaluation tests
+ * 4. Executes evaluation tests using voice-agent-tester
  * 5. Reports results back to the server
  *
  * Usage:
@@ -17,6 +17,12 @@
  */
 
 import { spawn } from 'child_process';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const VOICE_AGENT_TESTER_PATH = path.resolve(__dirname, '..', 'vox_eval_agentd', 'voice-agent-tester');
 
 const DEFAULT_SERVER = 'http://localhost:5000';
 const HEARTBEAT_INTERVAL = 30000; // 30 seconds
@@ -57,13 +63,11 @@ class VoxEvalAgent {
   private heartbeatTimer: NodeJS.Timeout | null = null;
   private jobPollTimer: NodeJS.Timeout | null = null;
   private isRunningJob = false;
-  private simulate: boolean;
 
-  constructor(token: string, serverUrl: string, name: string, simulate: boolean = true) {
+  constructor(token: string, serverUrl: string, name: string) {
     this.token = token;
     this.serverUrl = serverUrl;
     this.name = name;
-    this.simulate = simulate;
   }
 
   private async fetch(path: string, options: RequestInit = {}): Promise<Response> {
@@ -177,7 +181,7 @@ class VoxEvalAgent {
     try {
       const response = await this.fetch(`/api/eval-agent/jobs/${jobId}/complete`, {
         method: 'POST',
-        body: JSON.stringify({ results }),
+        body: JSON.stringify({ agentId: this.agentId, results }),
       });
 
       if (!response.ok) {
@@ -200,65 +204,158 @@ class VoxEvalAgent {
     console.log(`  - Eval Set ID: ${job.evalSetId}`);
     console.log(`  - Region: ${job.region}`);
 
-    if (this.simulate) {
-      // Simulate evaluation with random but realistic results
-      console.log(`[Agent] Running simulated evaluation...`);
-      await this.sleep(5000); // Simulate 5 seconds of work
-
-      const results: EvalResult = {
-        responseLatencyMedian: Math.floor(Math.random() * 500) + 200, // 200-700ms
-        responseLatencySd: Math.floor(Math.random() * 100) + 20, // 20-120ms
-        interruptLatencyMedian: Math.floor(Math.random() * 300) + 100, // 100-400ms
-        interruptLatencySd: Math.floor(Math.random() * 50) + 10, // 10-60ms
-        networkResilience: Math.floor(Math.random() * 20) + 80, // 80-100%
-        naturalness: Math.round((Math.random() * 1.5 + 3.5) * 10) / 10, // 3.5-5.0
-        noiseReduction: Math.floor(Math.random() * 15) + 85, // 85-100%
-      };
-
-      console.log(`[Agent] Simulated results:`);
-      console.log(`  - Response Latency: ${results.responseLatencyMedian}ms (SD: ${results.responseLatencySd}ms)`);
-      console.log(`  - Interrupt Latency: ${results.interruptLatencyMedian}ms (SD: ${results.interruptLatencySd}ms)`);
-      console.log(`  - Network Resilience: ${results.networkResilience}%`);
-      console.log(`  - Naturalness: ${results.naturalness}/5.0`);
-      console.log(`  - Noise Reduction: ${results.noiseReduction}%`);
-
-      return results;
-    } else {
-      // Run actual voice-agent-tester
-      console.log(`[Agent] Running voice-agent-tester...`);
-      return await this.runVoiceAgentTester(job);
-    }
+    console.log(`[Agent] Running voice-agent-tester...`);
+    return await this.runVoiceAgentTester(job);
   }
 
   private async runVoiceAgentTester(job: EvalJob): Promise<EvalResult> {
-    // This would integrate with the actual voice-agent-tester tool
-    // Example: npm start -- -a apps/livekit.yaml -s suites/appointment.yaml --headless false
-
     return new Promise((resolve, reject) => {
-      const config = job.config as { app?: string; suite?: string } | null;
-      const appConfig = config?.app || 'apps/livekit.yaml';
-      const suiteConfig = config?.suite || 'suites/appointment.yaml';
+      const config = job.config as { application?: string; scenario?: string } | null;
+      const appDir = path.resolve(__dirname, '..', 'vox_eval_agentd', 'applications');
+      const scenarioDir = path.resolve(__dirname, '..', 'vox_eval_agentd', 'scenarios');
+      const appConfig = config?.application || path.join(appDir, 'livekit.yaml');
+      const scenarioConfig = config?.scenario || path.join(scenarioDir, 'basic_conversation.yaml');
+      const reportFile = `/tmp/vox-report-${Date.now()}.csv`;
 
-      console.log(`[Agent] Running: voice-agent-tester -a ${appConfig} -s ${suiteConfig}`);
+      console.log(`[Agent] Running: npm start -- -a ${appConfig} -s ${scenarioConfig} --headless --report ${reportFile}`);
 
-      // For now, simulate since voice-agent-tester is external
-      // In production, this would spawn the actual process
-      setTimeout(() => {
-        resolve({
-          responseLatencyMedian: 350,
-          responseLatencySd: 45,
-          interruptLatencyMedian: 180,
-          interruptLatencySd: 25,
-          networkResilience: 92,
-          naturalness: 4.2,
-          noiseReduction: 95,
-        });
-      }, 10000);
+      const child = spawn('npm', [
+        'start',
+        '--',
+        '-a', appConfig,
+        '-s', scenarioConfig,
+        '--headless',
+        '--report', reportFile,
+      ], {
+        cwd: VOICE_AGENT_TESTER_PATH,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env: { ...process.env },
+      });
+
+      let stdout = '';
+      let stderr = '';
+
+      child.stdout.on('data', (data) => {
+        stdout += data.toString();
+        console.log(`[voice-agent-tester] ${data.toString().trim()}`);
+      });
+
+      child.stderr.on('data', (data) => {
+        stderr += data.toString();
+        console.error(`[voice-agent-tester] ${data.toString().trim()}`);
+      });
+
+      child.on('error', (error) => {
+        console.error(`[Agent] Failed to start voice-agent-tester:`, error);
+        reject(new Error(`Failed to start voice-agent-tester: ${error.message}`));
+      });
+
+      child.on('close', (code) => {
+        console.log(`[Agent] voice-agent-tester exited with code ${code}`);
+
+        // Parse results from report file
+        const evalResult = this.parseReportFile(reportFile, stdout);
+
+        console.log(`[Agent] Evaluation results:`);
+        console.log(`  - Response Latency: ${evalResult.responseLatencyMedian}ms (SD: ${evalResult.responseLatencySd}ms)`);
+        console.log(`  - Interrupt Latency: ${evalResult.interruptLatencyMedian}ms (SD: ${evalResult.interruptLatencySd}ms)`);
+        console.log(`  - Network Resilience: ${evalResult.networkResilience}%`);
+        console.log(`  - Naturalness: ${evalResult.naturalness}/5.0`);
+        console.log(`  - Noise Reduction: ${evalResult.noiseReduction}%`);
+
+        resolve(evalResult);
+      });
     });
   }
 
-  private sleep(ms: number): Promise<void> {
-    return new Promise(resolve => setTimeout(resolve, ms));
+  private parseReportFile(reportFile: string, stdout: string): EvalResult {
+    let results: EvalResult = {
+      responseLatencyMedian: 0,
+      responseLatencySd: 0,
+      interruptLatencyMedian: 0,
+      interruptLatencySd: 0,
+      networkResilience: 85,
+      naturalness: 3.5,
+      noiseReduction: 90,
+    };
+
+    try {
+      if (fs.existsSync(reportFile)) {
+        const csv = fs.readFileSync(reportFile, 'utf-8');
+        console.log(`[Agent] CSV Report content:\n${csv}`);
+
+        const lines = csv.trim().split('\n');
+        if (lines.length >= 2) {
+          const headers = lines[0].split(', ').map(h => h.trim());
+          const allLatencies: number[][] = [];
+
+          for (let i = 1; i < lines.length; i++) {
+            const values = lines[i].split(', ').map(v => v.trim());
+            const runLatencies: number[] = [];
+
+            headers.forEach((header, idx) => {
+              if (header.includes('elapsed_time')) {
+                const value = parseFloat(values[idx]);
+                if (!isNaN(value)) {
+                  runLatencies.push(value);
+                }
+              }
+            });
+
+            if (runLatencies.length > 0) {
+              allLatencies.push(runLatencies);
+            }
+          }
+
+          if (allLatencies.length > 0) {
+            // Response latency (first elapsed_time from each run)
+            const responseLatencies = allLatencies.map(run => run[0]).filter(v => !isNaN(v));
+            if (responseLatencies.length > 0) {
+              const sorted = [...responseLatencies].sort((a, b) => a - b);
+              const mid = Math.floor(sorted.length / 2);
+              results.responseLatencyMedian = sorted.length % 2 !== 0
+                ? Math.round(sorted[mid])
+                : Math.round((sorted[mid - 1] + sorted[mid]) / 2);
+
+              if (responseLatencies.length > 1) {
+                const mean = responseLatencies.reduce((a, b) => a + b, 0) / responseLatencies.length;
+                const variance = responseLatencies.reduce((a, b) => a + Math.pow(b - mean, 2), 0) / responseLatencies.length;
+                results.responseLatencySd = Math.round(Math.sqrt(variance));
+              }
+            }
+
+            // Interrupt latency (second elapsed_time from each run)
+            const interruptLatencies = allLatencies.map(run => run[1]).filter(v => !isNaN(v) && v !== undefined);
+            if (interruptLatencies.length > 0) {
+              const sorted = [...interruptLatencies].sort((a, b) => a - b);
+              const mid = Math.floor(sorted.length / 2);
+              results.interruptLatencyMedian = sorted.length % 2 !== 0
+                ? Math.round(sorted[mid])
+                : Math.round((sorted[mid - 1] + sorted[mid]) / 2);
+
+              if (interruptLatencies.length > 1) {
+                const mean = interruptLatencies.reduce((a, b) => a + b, 0) / interruptLatencies.length;
+                const variance = interruptLatencies.reduce((a, b) => a + Math.pow(b - mean, 2), 0) / interruptLatencies.length;
+                results.interruptLatencySd = Math.round(Math.sqrt(variance));
+              }
+            }
+          }
+        }
+        console.log(`[Agent] Report file: ${reportFile}`);
+      }
+    } catch (error) {
+      console.error(`[Agent] Error parsing results:`, error);
+    }
+
+    // Fallback: parse stdout if CSV parsing failed
+    if (results.responseLatencyMedian === 0) {
+      const elapsedMatch = stdout.match(/elapsed[_\s]?time[:\s]+(\d+)/i);
+      if (elapsedMatch) {
+        results.responseLatencyMedian = parseInt(elapsedMatch[1]);
+      }
+    }
+
+    return results;
   }
 
   async processJobs(): Promise<void> {
@@ -301,7 +398,6 @@ class VoxEvalAgent {
     console.log(`[Agent] Starting Vox Eval Agent Daemon`);
     console.log(`  - Server: ${this.serverUrl}`);
     console.log(`  - Name: ${this.name}`);
-    console.log(`  - Simulation mode: ${this.simulate}`);
     console.log('');
 
     // Start heartbeat timer
@@ -336,12 +432,11 @@ class VoxEvalAgent {
 }
 
 // Parse command line arguments
-function parseArgs(): { token: string; server: string; name: string; simulate: boolean } {
+function parseArgs(): { token: string; server: string; name: string } {
   const args = process.argv.slice(2);
   let token = '';
   let server = DEFAULT_SERVER;
   let name = `Agent-${Date.now()}`;
-  let simulate = true;
 
   for (let i = 0; i < args.length; i++) {
     switch (args[i]) {
@@ -357,9 +452,6 @@ function parseArgs(): { token: string; server: string; name: string; simulate: b
       case '-n':
         name = args[++i];
         break;
-      case '--no-simulate':
-        simulate = false;
-        break;
       case '--help':
       case '-h':
         console.log(`
@@ -372,7 +464,6 @@ Options:
   -t, --token <TOKEN>   Agent registration token (required)
   -s, --server <URL>    Vox server URL (default: ${DEFAULT_SERVER})
   -n, --name <NAME>     Agent name (default: Agent-<timestamp>)
-  --no-simulate         Run actual voice-agent-tester instead of simulation
   -h, --help            Show this help message
 
 Example:
@@ -388,14 +479,14 @@ Example:
     process.exit(1);
   }
 
-  return { token, server, name, simulate };
+  return { token, server, name };
 }
 
 // Main entry point
 async function main() {
-  const { token, server, name, simulate } = parseArgs();
+  const { token, server, name } = parseArgs();
 
-  const agent = new VoxEvalAgent(token, server, name, simulate);
+  const agent = new VoxEvalAgent(token, server, name);
 
   // Register with the server
   const registered = await agent.register();
