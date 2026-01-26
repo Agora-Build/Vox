@@ -13,7 +13,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "db:push": "drizzle-kit push",
-    "postinstall": "git submodule update --init --recursive && cd vox_eval_agentd/voice-agent-tester && npm install"
+    "postinstall": "if [ -d .git ]; then git submodule update --init --recursive; fi && if [ -d vox_eval_agentd/voice-agent-tester ]; then cd vox_eval_agentd/voice-agent-tester && npm install; fi"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.10.0",
