@@ -16,12 +16,42 @@ npm run build              # Build for production
 npm start                  # Start production server
 ```
 
+### Local Development Server (Recommended)
+Use the `dev-local-run.sh` script to start a complete local environment with PostgreSQL, Vox service, and eval agent:
+
+```bash
+# Start all services (PostgreSQL in Docker, Vox service and eval agent as local processes)
+./script/dev-local-run.sh start
+
+# Start with multi-region eval agents (na, apac, eu)
+./script/dev-local-run.sh --multi-region start
+
+# Stop all services
+./script/dev-local-run.sh stop
+
+# Reset database and restart (WARNING: deletes all data)
+./script/dev-local-run.sh reset
+
+# Show status of all services
+./script/dev-local-run.sh status
+
+# View logs
+./script/dev-local-run.sh logs server    # Server logs
+./script/dev-local-run.sh logs agent     # Eval agent logs
+
+# Docker mode (all services in containers)
+./script/dev-local-run.sh docker start
+./script/dev-local-run.sh docker stop
+```
+
+**Default Credentials (after init):**
+- Admin: `admin@vox.local` / `admin123456`
+- Scout: `scout@vox.ai` / `scout123`
+
 ### Quality Checks
 ```bash
 npm run check              # TypeScript type checking
 npm run lint               # ESLint
-npm test                   # Run tests with Vitest (requires running server on port 5000)
-npm run test:watch         # Run tests in watch mode
 ```
 
 ### Database
@@ -243,18 +273,48 @@ The platform is designed to be web-first but API-ready. Future integrations incl
 
 ## Testing
 
-Test framework: **Vitest**
+### Test Frameworks
+- **Vitest** - Unit and integration tests
+- **Playwright** - End-to-end browser tests
 
-**Running tests:**
+### Running Tests
+
 ```bash
-# Tests require a running server on port 5000 with initialized database
-npm run dev &                    # Start server in background
-npm test                         # Run tests
+# Start local server first (required for integration and E2E tests)
+./script/dev-local-run.sh start
+
+# Unit and Integration Tests (Vitest)
+npm test                         # Run all tests
+npm run test:watch               # Run in watch mode
+
+# End-to-End Tests (Playwright)
+npm run test:e2e                 # Run all E2E tests (headless)
+npm run test:e2e:ui              # Run with Playwright Test UI
+npm run test:e2e:headed          # Run in headed browser mode
 ```
 
-**Test file:** `tests/api.test.ts` - Integration tests for API endpoints
+### Test Files
 
-**Important:** The test file currently uses **old terminology** (workers, test-cases, vendors) that doesn't match the refactored codebase. The tests may need updating to match current API routes (eval-agents, eval-sets, etc.).
+| File | Type | Tests | Description |
+|------|------|-------|-------------|
+| `tests/api.test.ts` | Integration | 107+ | API endpoints (auth, workflows, jobs, organizations) |
+| `tests/auth.test.ts` | Unit | 26 | Password hashing, token generation |
+| `tests/cron.test.ts` | Unit | 32 | Cron expression parsing and validation |
+| `tests/eval-agent-daemon.test.ts` | Unit | 18 | Eval agent result parsing, API communication |
+| `tests/e2e/auth.spec.ts` | E2E | 5 | Login, logout, authentication flows |
+| `tests/e2e/api.spec.ts` | E2E | 17 | Public API, protected endpoints, rate limiting |
+| `tests/e2e/public-pages.spec.ts` | E2E | 9 | Landing page, leaderboard, API docs |
+| `tests/e2e/console.spec.ts` | E2E | 9 | Console access control, admin routes |
+
+**Total: 200+ tests**
+
+### Test Coverage by Module
+
+- **Main Vox API**: Auth, workflows, jobs, eval sets, organizations, API keys
+- **Eval Agent Daemon**: Result parsing, CSV handling, API communication
+- **Auth Utilities**: Password hashing, bcrypt verification
+- **Cron Parsing**: Expression validation, next run calculation
+- **E2E**: Public pages, authentication, API endpoints, access control
 
 When adding new features, write tests for critical paths like authentication, job assignment, and payment flows.
 
@@ -281,28 +341,57 @@ When adding new features, write tests for critical paths like authentication, jo
 
 ## Project Roadmap
 
-**Completed phases:**
-- Phase 1: Core system (database schema, basic routes, seed data)
-- Phase 2: API key security (prefix-based keys, rate limiting, usage tracking)
-- Phase 3: Google OAuth integration (Passport.js, account linking)
+**All phases complete!** See `designs/IMPLEMENTATION_PLAN.md` for details.
 
-**Remaining phases** (see `designs/IMPLEMENTATION_PLAN.md`):
-- Phase 4: Organization system with Stripe payments
-- Phase 5: Eval agent concurrency control with atomic job claims
-- Phase 6: Frontend polish (rename routes like `/dive`, `/run-your-own`)
-- Phase 7: Public REST API for external integration
-- Phase 8: Comprehensive test coverage
+| Phase | Description | Status |
+|-------|-------------|--------|
+| Phase 1 | Core system (database schema, routes, seed data) | ✅ Complete |
+| Phase 2 | API key security (prefix-based keys, rate limiting) | ✅ Complete |
+| Phase 3 | Google OAuth integration (Passport.js) | ✅ Complete |
+| Phase 4 | Organization system + Stripe payments | ✅ Complete |
+| Phase 5 | Eval agent concurrency + scheduling | ✅ Complete |
+| Phase 6 | Frontend updates (dashboard, leaderboard) | ✅ Complete |
+| Phase 7 | API documentation (OpenAPI/Swagger) | ✅ Complete |
+| Phase 8 | Comprehensive tests (unit, integration, E2E) | ✅ Complete |
+
+### API Documentation
+- **Swagger UI**: `/api/docs` - Interactive API documentation
+- **OpenAPI Spec**: `/api/v1/openapi.json` - Machine-readable spec
+- **Source**: `docs/openapi.yaml` - Full OpenAPI 3.0 specification
 
 ## Important Files
 
+### Core
 - `shared/schema.ts` - Single source of truth for all data models (18 tables, 6 enums)
 - `server/routes.ts` - All API endpoints (~1200 lines, monolithic by design)
+- `server/routes-api-v1.ts` - Versioned API v1 endpoints
 - `server/storage.ts` - Database abstraction layer (DatabaseStorage class)
 - `server/auth.ts` - Authentication utilities and middleware
+- `server/stripe.ts` - Stripe payment integration
 - `client/src/App.tsx` - Route definitions and page layouts
+
+### Documentation & Design
 - `designs/IMPLEMENTATION_PLAN.md` - Detailed specs and implementation phases
 - `designs/vox-arch.png` - Low-level architecture diagram
-- `tests/api.test.ts` - API integration tests (uses old terminology, may need updates)
+- `docs/openapi.yaml` - OpenAPI 3.0 specification for API v1
+
+### Scripts
+- `script/dev-local-run.sh` - Local development environment setup
+- `script/vox-eval-agent.ts` - Standalone eval agent runner
+
+### Tests
+- `tests/api.test.ts` - API integration tests (107+ tests)
+- `tests/auth.test.ts` - Auth utilities unit tests (26 tests)
+- `tests/cron.test.ts` - Cron parsing unit tests (32 tests)
+- `tests/eval-agent-daemon.test.ts` - Eval agent daemon tests (18 tests)
+- `tests/e2e/*.spec.ts` - Playwright E2E tests (39 tests)
+- `playwright.config.ts` - Playwright configuration
+
+### Eval Agent Daemon
+- `vox_eval_agentd/vox-agent-daemon.js` - Docker-based eval agent daemon
+- `vox_eval_agentd/Dockerfile` - Eval agent Docker image
+- `vox_eval_agentd/applications/` - Application config files (YAML)
+- `vox_eval_agentd/scenarios/` - Test scenario config files (YAML)
 
 ## External Dependencies
 
@@ -321,7 +410,8 @@ Key runtime dependencies:
 Development dependencies:
 - **TypeScript 5.6.3** - Type checking
 - **ESLint** - Linting with TypeScript rules
-- **Vitest** - Testing framework
+- **Vitest** - Unit and integration testing
+- **Playwright** - End-to-end browser testing
 - **tsx** - TypeScript execution for dev server
 
 ## Deployment
