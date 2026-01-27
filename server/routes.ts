@@ -1846,7 +1846,10 @@ export async function registerRoutes(
 
   app.get("/api/metrics/realtime", async (req, res) => {
     try {
-      const results = await storage.getMainlineEvalResults(50);
+      const { hours, limit } = req.query;
+      const hoursBack = hours ? parseInt(hours as string) : undefined;
+      const limitNum = limit ? parseInt(limit as string) : 50;
+      const results = await storage.getMainlineEvalResults(limitNum, hoursBack);
       res.json(results);
     } catch (error) {
       console.error("Error fetching realtime metrics:", error);
@@ -1856,7 +1859,9 @@ export async function registerRoutes(
 
   app.get("/api/metrics/leaderboard", async (req, res) => {
     try {
-      const results = await storage.getMainlineEvalResults(1000);
+      const { hours } = req.query;
+      const hoursBack = hours ? parseInt(hours as string) : undefined;
+      const results = await storage.getMainlineEvalResults(1000, hoursBack);
       
       const providerRegionMap = new Map<string, { 
         providerId: string;

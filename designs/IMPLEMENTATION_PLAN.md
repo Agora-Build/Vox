@@ -60,7 +60,7 @@ Use the latest in following spec:
 
 #### `workflows` and `evalSets` tables with visibility (public/private, default public) and isMainline flags
 
-#### `evalSchedules` table (NEW) storing: workflowId, evalSetId, region, scheduleType(once/recurring), cronExpression, timezone, isEnabled, nextRunAt, lastRunAt, runCount, maxRuns, createdBy
+#### `evalSchedules` table storing: workflowId, evalSetId, region, scheduleType(once/recurring), cronExpression, timezone, isEnabled, nextRunAt, lastRunAt, runCount, maxRuns, createdBy
 
 #### `evalJobs` instance of the workflow and evalsets been executed, linked to scheduleId if created by scheduler
 
@@ -338,33 +338,35 @@ COMMIT;
 
 ---
 
-## Phase 6: Frontend Updates
+## Phase 6: Frontend Updates ✅ PARTIALLY COMPLETE
 
-### 6.1 Public Pages (No Auth Required)
+### 6.1 Public Pages (No Auth Required) ✅ COMPLETE
 
-#### /realtime - Real-time Dashboard
-**Current:** Basic chart implementation
-**Needed:**
-- Live updates (polling or WebSocket)
-- Provider comparison (Agora ConvoAI vs LiveKit Agent)
-- Region filtering
-- Time range selection
+#### /realtime - Real-time Dashboard ✅
+**Status:** Complete
+- ✅ Live updates (configurable polling: 10s, 30s, 1m, 5m)
+- ✅ Provider comparison (Agora ConvoAI vs LiveKit Agent)
+- ✅ Region filtering (All, NA, APAC, EU)
+- ✅ Time range selection (1h, 6h, 24h, 7d, All time)
+- ✅ Data point count display
+- ✅ Manual refresh button
 
-#### /leaderboard - Global Rankings
-**Current:** Basic table
-**Needed:**
-- Sort by different metrics
-- Region filtering
-- Provider details on click
-- Only show mainline data
+#### /leaderboard - Global Rankings ✅
+**Status:** Complete
+- ✅ Sort by all metrics (rank, response, interrupt, network, naturalness, noise)
+- ✅ Region filtering
+- ✅ Time range selection (24h, 7d, 30d, All time)
+- ✅ Provider details modal on row click
+- ✅ Only shows mainline data
 
-#### /dive - Provider Deep Dive
-**Current:** Basic provider guide
-**Needed:**
-- Detailed provider information
-- How evaluations work
-- Integration guides
-- API documentation links
+#### /dive - Provider Deep Dive ✅
+**Status:** Complete
+- ✅ Key performance metrics (6 metric cards with descriptions)
+- ✅ Test environment details (infrastructure & network simulation)
+- ✅ Evaluation workflow visualization
+- ✅ Integration SDK examples
+- ✅ API access documentation with examples
+- ✅ CTA buttons linking to workflows and quick test
 
 ### 6.2 Run Your Own (/run-your-own) - IMPORTANT ENTRY POINT
 **Current:** Simulated self-test
@@ -383,15 +385,15 @@ COMMIT;
 
 ### 6.3 Console Pages (Auth Required)
 
-#### /console/workflows
-**Current:** Basic list
-**Needed:**
-- Create/edit/delete workflows
-- Link to projects
-- Visibility toggle (public/private for Premium+)
-- Mainline toggle (Principal/Fellow only)
-- Run workflow button
-- View job history
+#### /console/workflows ✅
+**Status:** Complete
+- ✅ Create/edit/delete workflows
+- ✅ Visibility toggle (public/private for Premium+)
+- ✅ Mainline toggle (Principal/Fellow only)
+- ✅ Run workflow button with region selection
+- ✅ View job history (workflow detail page with auto-refresh)
+- ✅ Job status badges (pending, running, completed, failed)
+- ⬜ Link to projects (pending Phase 4)
 
 #### /console/eval-sets
 **Current:** Basic list (named test-sets)
@@ -566,7 +568,7 @@ GET  /api/v1/metrics/leaderboard - Leaderboard
 | Phase 3 | Google OAuth | ✅ Complete | Done |
 | Phase 4 | Organization System | ⬜ Not Started | 8-10 hours |
 | Phase 5 | Eval Agent Concurrency + Scheduling | ✅ Complete | Done |
-| Phase 6 | Frontend Updates | ⬜ Not Started | 12-15 hours |
+| Phase 6 | Frontend Updates | ✅ Mostly Complete | 4-5 hours remaining |
 | Phase 7 | API Layer | ✅ Complete (docs pending) | 2-3 hours remaining |
 | Phase 8 | Comprehensive Tests | 🔄 In Progress | 3-4 hours remaining |
 
@@ -580,15 +582,19 @@ GET  /api/v1/metrics/leaderboard - Leaderboard
 - ✅ **Eval schedule system** (one-time & recurring with cron)
 - ✅ Multi-region support with region validation
 - ✅ Complete API v1 layer
+- ✅ **Dashboard with time range selection**
+- ✅ **Leaderboard with provider details modal**
+- ✅ **Enhanced provider guide page**
+- ✅ **Workflow job history view**
 - ✅ 165+ tests (unit + integration)
 
 ### Remaining Work
 - ⬜ Organization system with Stripe payments (~8-10 hours)
-- ⬜ Frontend updates (~12-15 hours)
+- ⬜ Organization-related frontend pages (~4-5 hours, depends on Phase 4)
 - ⬜ API documentation (~2-3 hours)
 - ⬜ E2E tests (~3-4 hours)
 
-**Total Remaining: ~25-32 hours**
+**Total Remaining: ~17-22 hours**
 
 ---
 

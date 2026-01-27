@@ -7,7 +7,14 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Progress } from "@/components/ui/progress";
 import { useQuery } from "@tanstack/react-query";
 import { Skeleton } from "@/components/ui/skeleton";
-import { ArrowUpDown, ArrowUp, ArrowDown } from "lucide-react";
+import { ArrowUpDown, ArrowUp, ArrowDown, Info } from "lucide-react";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 
 interface LeaderboardEntry {
   rank: number;
@@ -27,9 +34,20 @@ export default function Leaderboard() {
   const [selectedRegion, setSelectedRegion] = useState<string>("all");
   const [sortField, setSortField] = useState<SortField>("rank");
   const [sortDirection, setSortDirection] = useState<SortDirection>("asc");
+  const [timeRange, setTimeRange] = useState<string>("168"); // 7 days default
+  const [selectedEntry, setSelectedEntry] = useState<LeaderboardEntry | null>(null);
 
   const { data: leaderboardData, isLoading } = useQuery<LeaderboardEntry[]>({
-    queryKey: ['/api/metrics/leaderboard'],
+    queryKey: ['/api/metrics/leaderboard', timeRange],
+    queryFn: async () => {
+      const params = new URLSearchParams();
+      if (timeRange !== "all") {
+        params.set("hours", timeRange);
+      }
+      const res = await fetch(`/api/metrics/leaderboard?${params}`);
+      if (!res.ok) throw new Error("Failed to fetch leaderboard");
+      return res.json();
+    },
   });
 
   const filteredAndSortedData = useMemo(() => {
@@ -99,6 +117,11 @@ export default function Leaderboard() {
     : selectedRegion === "apac" ? "Asia Pacific"
     : "Europe";
 
+  const timeRangeLabel = timeRange === "24" ? "Last 24 hours"
+    : timeRange === "168" ? "Last 7 days"
+    : timeRange === "720" ? "Last 30 days"
+    : "All time";
+
   return (
     <div className="space-y-8 animate-in slide-in-from-bottom-4 duration-500">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
@@ -108,7 +131,18 @@ export default function Leaderboard() {
             Comprehensive evaluations across 5 key performance metrics.
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <Select value={timeRange} onValueChange={setTimeRange}>
+            <SelectTrigger className="w-[130px]">
+              <SelectValue placeholder="Time range" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="24">24 hours</SelectItem>
+              <SelectItem value="168">7 days</SelectItem>
+              <SelectItem value="720">30 days</SelectItem>
+              <SelectItem value="all">All time</SelectItem>
+            </SelectContent>
+          </Select>
           <Select value={selectedRegion} onValueChange={setSelectedRegion}>
             <SelectTrigger className="w-[160px]">
               <SelectValue placeholder="Select region" />
@@ -127,7 +161,7 @@ export default function Leaderboard() {
         <CardHeader>
           <CardTitle>Performance Rankings</CardTitle>
           <CardDescription>
-            {regionLabel} - Ranked by weighted average of all metrics (mainline data only)
+            {regionLabel} • {timeRangeLabel} - Ranked by response latency (mainline data only)
           </CardDescription>
         </CardHeader>
         <CardContent className="overflow-x-auto">
@@ -213,12 +247,18 @@ export default function Leaderboard() {
               </TableHeader>
               <TableBody>
                 {filteredAndSortedData.map((entry) => (
-                  <TableRow key={`${entry.provider}-${entry.region}`} data-testid={`row-leaderboard-${entry.rank}`}>
+                  <TableRow
+                    key={`${entry.provider}-${entry.region}`}
+                    data-testid={`row-leaderboard-${entry.rank}`}
+                    className="cursor-pointer hover:bg-muted/50"
+                    onClick={() => setSelectedEntry(entry)}
+                  >
                     <TableCell className="font-medium font-mono" data-testid={`text-rank-${entry.rank}`}>#{entry.rank}</TableCell>
                     <TableCell>
                       <div className="flex items-center gap-2">
                         <span className="font-semibold" data-testid={`text-provider-${entry.rank}`}>{entry.provider}</span>
                         {entry.rank <= 2 && <Badge variant="secondary" className="text-xs">Top Tier</Badge>}
+                        <Info className="h-4 w-4 text-muted-foreground" />
                       </div>
                     </TableCell>
                     <TableCell>
@@ -273,6 +313,64 @@ export default function Leaderboard() {
           </CardContent>
         </Card>
       </div>
+
+      {/* Provider Details Dialog */}
+      <Dialog open={!!selectedEntry} onOpenChange={(open) => !open && setSelectedEntry(null)}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              {selectedEntry?.provider}
+              {selectedEntry && selectedEntry.rank <= 2 && (
+                <Badge variant="secondary">Top Tier</Badge>
+              )}
+            </DialogTitle>
+            <DialogDescription>
+              Performance metrics for {selectedEntry?.region.toUpperCase()} region
+            </DialogDescription>
+          </DialogHeader>
+          {selectedEntry && (
+            <div className="space-y-4">
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-1">
+                  <p className="text-sm text-muted-foreground">Response Latency</p>
+                  <p className="text-2xl font-bold font-mono">{selectedEntry.responseLatency}ms</p>
+                  <p className="text-xs text-muted-foreground">Time to first audio byte</p>
+                </div>
+                <div className="space-y-1">
+                  <p className="text-sm text-muted-foreground">Interrupt Latency</p>
+                  <p className="text-2xl font-bold font-mono">{selectedEntry.interruptLatency}ms</p>
+                  <p className="text-xs text-muted-foreground">Time to stop on interrupt</p>
+                </div>
+              </div>
+              <div className="space-y-3 pt-2 border-t">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm">Network Resilience</span>
+                  <div className="flex items-center gap-2">
+                    <Progress value={selectedEntry.networkResilience} className="w-24 h-2" />
+                    <span className="font-mono text-sm w-12 text-right">{selectedEntry.networkResilience}%</span>
+                  </div>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-sm">Naturalness</span>
+                  <span className="font-mono text-sm">{selectedEntry.naturalness}/5.0</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-sm">Noise Reduction</span>
+                  <div className="flex items-center gap-2">
+                    <Progress value={selectedEntry.noiseReduction} className="w-24 h-2" />
+                    <span className="font-mono text-sm w-12 text-right">{selectedEntry.noiseReduction}%</span>
+                  </div>
+                </div>
+              </div>
+              <div className="pt-2 border-t">
+                <p className="text-xs text-muted-foreground">
+                  Rank #{selectedEntry.rank} in {regionLabel} • Data from {timeRangeLabel.toLowerCase()}
+                </p>
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

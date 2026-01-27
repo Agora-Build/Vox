@@ -6,12 +6,14 @@ import { Badge } from "@/components/ui/badge";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import { ArrowLeft, Play, Settings } from "lucide-react";
+import { ArrowLeft, Play, Settings, History, Clock, CheckCircle, XCircle, Loader2, RefreshCw } from "lucide-react";
 import { useState } from "react";
-import type { Workflow as WorkflowType, Provider } from "@shared/schema";
+import type { Workflow as WorkflowType, Provider, EvalJob } from "@shared/schema";
+import { formatDistanceToNow } from "date-fns";
 
 interface AuthStatus {
   user: {
@@ -50,6 +52,17 @@ export default function ConsoleWorkflowDetail() {
     queryKey: ["/api/providers"],
   });
 
+  const { data: jobs, isLoading: jobsLoading, refetch: refetchJobs } = useQuery<EvalJob[]>({
+    queryKey: [`/api/eval-jobs`, { workflowId }],
+    queryFn: async () => {
+      const res = await fetch(`/api/eval-jobs?workflowId=${workflowId}&limit=20`);
+      if (!res.ok) throw new Error("Failed to fetch jobs");
+      return res.json();
+    },
+    enabled: workflowId > 0,
+    refetchInterval: 10000, // Auto-refresh every 10s to update running job status
+  });
+
   const runWorkflowMutation = useMutation({
     mutationFn: async () => {
       const res = await apiRequest("POST", `/api/workflows/${workflowId}/run`, {
@@ -60,6 +73,7 @@ export default function ConsoleWorkflowDetail() {
     onSuccess: (data) => {
       setRunDialogOpen(false);
       setRunRegion("");
+      refetchJobs();
       toast({ title: "Workflow started", description: `Job created: ${data.job?.id}` });
     },
     onError: (error: Error) => {
@@ -212,6 +226,86 @@ export default function ConsoleWorkflowDetail() {
             }
             return null;
           })()}
+        </CardContent>
+      </Card>
+
+      {/* Job History */}
+      <Card>
+        <CardHeader>
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <History className="h-5 w-5" />
+              <CardTitle>Job History</CardTitle>
+            </div>
+            <Button variant="ghost" size="icon" onClick={() => refetchJobs()}>
+              <RefreshCw className="h-4 w-4" />
+            </Button>
+          </div>
+          <CardDescription>
+            Recent evaluation jobs for this workflow
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          {jobsLoading ? (
+            <div className="space-y-4">
+              {[1, 2, 3].map((i) => (
+                <Skeleton key={i} className="h-12 w-full" />
+              ))}
+            </div>
+          ) : jobs && jobs.length > 0 ? (
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>ID</TableHead>
+                  <TableHead>Region</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead>Started</TableHead>
+                  <TableHead>Completed</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {jobs.map((job) => (
+                  <TableRow key={job.id}>
+                    <TableCell className="font-mono">#{job.id}</TableCell>
+                    <TableCell>
+                      <Badge variant="outline">{job.region.toUpperCase()}</Badge>
+                    </TableCell>
+                    <TableCell>
+                      <Badge
+                        variant={
+                          job.status === "completed" ? "default" :
+                          job.status === "failed" ? "destructive" :
+                          job.status === "running" ? "secondary" :
+                          "outline"
+                        }
+                        className="gap-1"
+                      >
+                        {job.status === "completed" && <CheckCircle className="h-3 w-3" />}
+                        {job.status === "failed" && <XCircle className="h-3 w-3" />}
+                        {job.status === "running" && <Loader2 className="h-3 w-3 animate-spin" />}
+                        {job.status === "pending" && <Clock className="h-3 w-3" />}
+                        {job.status}
+                      </Badge>
+                    </TableCell>
+                    <TableCell className="text-sm text-muted-foreground">
+                      {job.startedAt
+                        ? formatDistanceToNow(new Date(job.startedAt), { addSuffix: true })
+                        : "-"}
+                    </TableCell>
+                    <TableCell className="text-sm text-muted-foreground">
+                      {job.completedAt
+                        ? formatDistanceToNow(new Date(job.completedAt), { addSuffix: true })
+                        : "-"}
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          ) : (
+            <div className="text-center py-8 text-muted-foreground">
+              No jobs have been run yet. Click "Run Workflow" to start an evaluation.
+            </div>
+          )}
         </CardContent>
       </Card>
     </div>

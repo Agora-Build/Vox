@@ -60,7 +60,7 @@ import {
 import { drizzle } from "drizzle-orm/node-postgres";
 import pkg from "pg";
 const { Pool } = pkg;
-import { desc, eq, and, sql } from "drizzle-orm";
+import { desc, eq, and, sql, gte } from "drizzle-orm";
 import crypto from "crypto";
 
 export function hashToken(token: string): string {
@@ -687,12 +687,19 @@ export class DatabaseStorage {
       .offset(filters?.offset || 0);
   }
 
-  async getMainlineEvalResults(limit: number = 50): Promise<EvalResult[]> {
+  async getMainlineEvalResults(limit: number = 50, hoursBack?: number): Promise<EvalResult[]> {
+    const conditions = [eq(workflows.isMainline, true)];
+
+    if (hoursBack) {
+      const cutoff = new Date(Date.now() - hoursBack * 60 * 60 * 1000);
+      conditions.push(gte(evalResults.createdAt, cutoff));
+    }
+
     return db.select()
       .from(evalResults)
       .innerJoin(evalJobs, eq(evalResults.evalJobId, evalJobs.id))
       .innerJoin(workflows, eq(evalJobs.workflowId, workflows.id))
-      .where(eq(workflows.isMainline, true))
+      .where(and(...conditions))
       .orderBy(desc(evalResults.createdAt))
       .limit(limit)
       .then(rows => rows.map(r => r.eval_results));

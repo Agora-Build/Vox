@@ -48,9 +48,20 @@ function calculateStats(values: number[]) {
 export default function Dashboard() {
   const [selectedRegion, setSelectedRegion] = useState<string>("all");
   const [refreshInterval, setRefreshInterval] = useState<number>(30000); // 30 seconds
+  const [timeRange, setTimeRange] = useState<string>("24"); // hours
 
   const { data: metrics, isLoading: metricsLoading, refetch, isFetching } = useQuery<EvalResult[]>({
-    queryKey: ['/api/metrics/realtime'],
+    queryKey: ['/api/metrics/realtime', timeRange],
+    queryFn: async () => {
+      const params = new URLSearchParams();
+      if (timeRange !== "all") {
+        params.set("hours", timeRange);
+      }
+      params.set("limit", "200");
+      const res = await fetch(`/api/metrics/realtime?${params}`);
+      if (!res.ok) throw new Error("Failed to fetch metrics");
+      return res.json();
+    },
     refetchInterval: refreshInterval,
   });
 
@@ -106,6 +117,12 @@ export default function Dashboard() {
     : selectedRegion === "apac" ? "Asia Pacific"
     : "Europe";
 
+  const timeRangeLabel = timeRange === "1" ? "Last hour"
+    : timeRange === "6" ? "Last 6 hours"
+    : timeRange === "24" ? "Last 24 hours"
+    : timeRange === "168" ? "Last 7 days"
+    : "All time";
+
   return (
     <div className="space-y-8 animate-in fade-in duration-500">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
@@ -124,7 +141,19 @@ export default function Dashboard() {
           </p>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <Select value={timeRange} onValueChange={setTimeRange}>
+            <SelectTrigger className="w-[100px]">
+              <SelectValue placeholder="Time" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="1">1 hour</SelectItem>
+              <SelectItem value="6">6 hours</SelectItem>
+              <SelectItem value="24">24 hours</SelectItem>
+              <SelectItem value="168">7 days</SelectItem>
+              <SelectItem value="all">All time</SelectItem>
+            </SelectContent>
+          </Select>
           <Select value={selectedRegion} onValueChange={setSelectedRegion}>
             <SelectTrigger className="w-[140px]">
               <SelectValue placeholder="Region" />
@@ -137,7 +166,7 @@ export default function Dashboard() {
             </SelectContent>
           </Select>
           <Select value={refreshInterval.toString()} onValueChange={(v) => setRefreshInterval(parseInt(v))}>
-            <SelectTrigger className="w-[120px]">
+            <SelectTrigger className="w-[100px]">
               <SelectValue placeholder="Refresh" />
             </SelectTrigger>
             <SelectContent>
@@ -247,16 +276,16 @@ export default function Dashboard() {
         </Card>
         <Card>
           <CardHeader className="flex flex-row items-center justify-between gap-2 space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Total Tests Run</CardTitle>
+            <CardTitle className="text-sm font-medium">Data Points</CardTitle>
             <Activity className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
             {metricsLoading ? (
               <Skeleton className="h-8 w-20 mt-2" />
             ) : (
-              <div className="text-2xl font-bold font-mono mt-2" data-testid="text-total-tests">{parseInt(totalTests).toLocaleString()}</div>
+              <div className="text-2xl font-bold font-mono mt-2" data-testid="text-total-tests">{filteredMetrics.length.toLocaleString()}</div>
             )}
-            <p className="text-xs text-muted-foreground">Last 24 hours</p>
+            <p className="text-xs text-muted-foreground">{timeRangeLabel}</p>
           </CardContent>
         </Card>
         <Card>
