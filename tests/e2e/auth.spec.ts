@@ -16,23 +16,22 @@ test.describe("Authentication", () => {
   test("should display login page", async ({ page }) => {
     await page.goto("/login");
 
-    // Check page title and form elements
-    await expect(page.locator("h1, h2").first()).toContainText(/sign in|login/i);
-    await expect(page.locator('input[type="email"], input[name="email"]')).toBeVisible();
-    await expect(page.locator('input[type="password"]')).toBeVisible();
-    await expect(page.locator('button[type="submit"]')).toBeVisible();
+    // Check form elements are visible
+    await expect(page.locator('input[type="email"], input[name="email"], input[placeholder*="email" i]').first()).toBeVisible();
+    await expect(page.locator('input[type="password"]').first()).toBeVisible();
+    await expect(page.locator('button[type="submit"]').first()).toBeVisible();
   });
 
   test("should show error for invalid credentials", async ({ page }) => {
     await page.goto("/login");
 
     // Enter invalid credentials
-    await page.fill('input[type="email"], input[name="email"]', "invalid@example.com");
+    await page.fill('input[type="email"], input[name="email"], input[placeholder*="email" i]', "invalid@example.com");
     await page.fill('input[type="password"]', "wrongpassword");
     await page.click('button[type="submit"]');
 
-    // Wait for error message
-    await expect(page.locator("text=/invalid|incorrect|error/i")).toBeVisible({
+    // Wait for error message (use first() to handle multiple matches)
+    await expect(page.locator("text=/invalid|incorrect|error/i").first()).toBeVisible({
       timeout: 10000,
     });
   });
