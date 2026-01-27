@@ -26,8 +26,6 @@ let stripe: any = null;
 async function getStripe() {
   if (!stripe && process.env.STRIPE_SECRET_KEY) {
     try {
-      // Dynamic import - stripe module is optional
-      // @ts-expect-error - stripe may not be installed
       const Stripe = (await import("stripe")).default;
       stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
     } catch {
@@ -159,4 +157,36 @@ export async function detachPaymentMethod(paymentMethodId: string): Promise<bool
 
   await stripeClient.paymentMethods.detach(paymentMethodId);
   return true;
+}
+
+/**
+ * Verify and construct a Stripe webhook event
+ */
+export async function constructWebhookEvent(
+  payload: string | Buffer,
+  signature: string
+): Promise<{ type: string; data: { object: Record<string, unknown> } } | null> {
+  const stripeClient = await getStripe();
+  if (!stripeClient) return null;
+
+  const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
+  if (!webhookSecret) {
+    console.warn("STRIPE_WEBHOOK_SECRET not configured");
+    return null;
+  }
+
+  try {
+    const event = stripeClient.webhooks.constructEvent(payload, signature, webhookSecret);
+    return event;
+  } catch (err) {
+    console.error("Webhook signature verification failed:", err);
+    return null;
+  }
+}
+
+/**
+ * Get Stripe publishable key for frontend
+ */
+export function getStripePublishableKey(): string | null {
+  return process.env.STRIPE_PUBLISHABLE_KEY || null;
 }

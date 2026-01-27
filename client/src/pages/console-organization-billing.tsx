@@ -9,7 +9,8 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import { CreditCard, Plus, Trash2, Check } from "lucide-react";
+import { CreditCard, Plus, Trash2, Check, Loader2 } from "lucide-react";
+import { StripeCardForm } from "@/components/stripe-card-form";
 
 interface AuthStatus {
   user: {
@@ -105,9 +106,42 @@ export default function ConsoleOrganizationBilling() {
     enabled: !!orgId,
   });
 
-  const { data: stripeStatus } = useQuery<{ enabled: boolean }>({
-    queryKey: ["/api/payments/stripe-status"],
+  const { data: stripeConfig } = useQuery<{ enabled: boolean; publishableKey: string | null }>({
+    queryKey: ["/api/payments/stripe-config"],
   });
+
+  const [addCardDialogOpen, setAddCardDialogOpen] = useState(false);
+  const [setupIntentData, setSetupIntentData] = useState<{
+    clientSecret: string;
+    stripeCustomerId: string;
+  } | null>(null);
+
+  const createSetupIntentMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", `/api/organizations/${orgId}/payments/setup-intent`);
+      return res.json();
+    },
+    onSuccess: (data) => {
+      setSetupIntentData({
+        clientSecret: data.clientSecret,
+        stripeCustomerId: data.stripeCustomerId,
+      });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Failed to initialize", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const handleAddCard = () => {
+    setAddCardDialogOpen(true);
+    createSetupIntentMutation.mutate();
+  };
+
+  const handleCardAdded = () => {
+    setAddCardDialogOpen(false);
+    setSetupIntentData(null);
+    queryClient.invalidateQueries({ queryKey: ["/api/organizations", orgId, "payments", "methods"] });
+  };
 
   const calculateMutation = useMutation({
     mutationFn: async (seats: number): Promise<PriceCalculation> => {
@@ -270,7 +304,7 @@ export default function ConsoleOrganizationBilling() {
                     {calculateMutation.data && formatCurrency(calculateMutation.data.total)}.
                   </DialogDescription>
                 </DialogHeader>
-                {!stripeStatus?.enabled && (
+                {!stripeConfig?.enabled && (
                   <p className="text-sm text-yellow-600">
                     Stripe is not configured. This will be a test purchase.
                   </p>
@@ -381,8 +415,8 @@ export default function ConsoleOrganizationBilling() {
           ) : (
             <div className="text-center py-8">
               <p className="text-muted-foreground mb-4">No payment methods added</p>
-              {stripeStatus?.enabled ? (
-                <Button>
+              {stripeConfig?.enabled && stripeConfig?.publishableKey ? (
+                <Button onClick={handleAddCard}>
                   <Plus className="mr-2 h-4 w-4" />
                   Add Payment Method
                 </Button>
@@ -393,6 +427,49 @@ export default function ConsoleOrganizationBilling() {
               )}
             </div>
           )}
+
+          {/* Add Card Button when there are existing methods */}
+          {paymentMethods && paymentMethods.length > 0 && stripeConfig?.enabled && stripeConfig?.publishableKey && (
+            <div className="pt-4 border-t">
+              <Button variant="outline" onClick={handleAddCard}>
+                <Plus className="mr-2 h-4 w-4" />
+                Add Another Card
+              </Button>
+            </div>
+          )}
+
+          {/* Add Card Dialog */}
+          <Dialog open={addCardDialogOpen} onOpenChange={setAddCardDialogOpen}>
+            <DialogContent>
+              <DialogHeader>
+                <DialogTitle>Add Payment Method</DialogTitle>
+                <DialogDescription>
+                  Add a credit or debit card to your organization.
+                </DialogDescription>
+              </DialogHeader>
+              {createSetupIntentMutation.isPending ? (
+                <div className="flex items-center justify-center py-8">
+                  <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+                </div>
+              ) : setupIntentData && stripeConfig?.publishableKey ? (
+                <StripeCardForm
+                  publishableKey={stripeConfig.publishableKey}
+                  organizationId={orgId!}
+                  clientSecret={setupIntentData.clientSecret}
+                  stripeCustomerId={setupIntentData.stripeCustomerId}
+                  onSuccess={handleCardAdded}
+                  onCancel={() => {
+                    setAddCardDialogOpen(false);
+                    setSetupIntentData(null);
+                  }}
+                />
+              ) : (
+                <p className="text-center text-muted-foreground py-4">
+                  Failed to initialize payment form. Please try again.
+                </p>
+              )}
+            </DialogContent>
+          </Dialog>
         </CardContent>
       </Card>
 

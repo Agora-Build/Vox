@@ -798,6 +798,16 @@ export class DatabaseStorage {
     return db.select().from(paymentHistories).where(eq(paymentHistories.organizationId, organizationId)).orderBy(desc(paymentHistories.createdAt));
   }
 
+  async getPaymentHistoryByStripeId(stripePaymentIntentId: string): Promise<PaymentHistory | undefined> {
+    const result = await db.select().from(paymentHistories).where(eq(paymentHistories.stripePaymentIntentId, stripePaymentIntentId));
+    return result[0];
+  }
+
+  async updatePaymentHistoryStatus(id: number, status: string): Promise<PaymentHistory | undefined> {
+    const result = await db.update(paymentHistories).set({ status }).where(eq(paymentHistories.id, id)).returning();
+    return result[0];
+  }
+
   async createOrganizationSeat(seat: InsertOrganizationSeat): Promise<OrganizationSeat> {
     const result = await db.insert(organizationSeats).values(seat).returning();
     return result[0];

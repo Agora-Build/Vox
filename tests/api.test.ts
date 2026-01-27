@@ -1650,6 +1650,183 @@ describe('Vox API Tests', () => {
     });
   });
 
+  // ==================== ORGANIZATION TESTS ====================
+
+  describe('Organization Management', () => {
+    let orgSession: AuthSession;
+    let orgUserId: number;
+    let organizationId: number;
+    const orgUserEmail = `orguser-${Date.now()}@test.local`;
+    const orgUserPassword = 'orgpass123';
+
+    it('should register a new user for organization tests', async () => {
+      // Create activation token first
+      const inviteResponse = await authFetch(adminSession, `${BASE_URL}/api/admin/invite`, {
+        method: 'POST',
+        body: JSON.stringify({
+          email: orgUserEmail,
+          plan: 'premium',
+        }),
+      });
+      expect(inviteResponse.ok).toBe(true);
+      const { token } = await inviteResponse.json();
+
+      // Register the user
+      const registerResponse = await fetch(`${BASE_URL}/api/auth/register`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          username: `orguser-${Date.now()}`,
+          email: orgUserEmail,
+          password: orgUserPassword,
+          inviteToken: token,
+        }),
+      });
+      expect(registerResponse.ok).toBe(true);
+    });
+
+    it('should login as org user', async () => {
+      const response = await fetch(`${BASE_URL}/api/auth/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: orgUserEmail,
+          password: orgUserPassword,
+        }),
+      });
+      expect(response.ok).toBe(true);
+      const cookie = response.headers.get('set-cookie');
+      expect(cookie).toBeTruthy();
+      orgSession = { cookie: cookie! };
+
+      const data = await response.json();
+      orgUserId = data.user.id;
+    });
+
+    it('should create an organization', async () => {
+      const response = await authFetch(orgSession, `${BASE_URL}/api/organizations`, {
+        method: 'POST',
+        body: JSON.stringify({
+          name: 'Test Organization',
+          address: '123 Test Street',
+        }),
+      });
+      expect(response.ok).toBe(true);
+      const org = await response.json();
+      organizationId = org.id;
+      expect(org.name).toBe('Test Organization');
+    });
+
+    it('should get user organization info', async () => {
+      const response = await authFetch(orgSession, `${BASE_URL}/api/user/organization`);
+      expect(response.ok).toBe(true);
+      const org = await response.json();
+      expect(org.id).toBe(organizationId);
+      expect(org.isOrgAdmin).toBe(true);
+    });
+
+    it('should get organization details', async () => {
+      const response = await authFetch(orgSession, `${BASE_URL}/api/organizations/${organizationId}`);
+      expect(response.ok).toBe(true);
+      const org = await response.json();
+      expect(org.id).toBe(organizationId);
+      expect(org.name).toBe('Test Organization');
+    });
+
+    it('should get organization members', async () => {
+      const response = await authFetch(orgSession, `${BASE_URL}/api/organizations/${organizationId}/members`);
+      expect(response.ok).toBe(true);
+      const members = await response.json();
+      expect(Array.isArray(members)).toBe(true);
+      expect(members.length).toBe(1); // Just the creator
+      expect(members[0].isOrgAdmin).toBe(true);
+    });
+
+    it('should get organization seats info', async () => {
+      const response = await authFetch(orgSession, `${BASE_URL}/api/organizations/${organizationId}/seats`);
+      expect(response.ok).toBe(true);
+      const seats = await response.json();
+      expect(seats.totalSeats).toBe(0);
+      expect(seats.usedSeats).toBe(1); // Creator uses 1 seat
+    });
+
+    it('should calculate seat pricing', async () => {
+      const response = await authFetch(orgSession, `${BASE_URL}/api/organizations/${organizationId}/seats/calculate`, {
+        method: 'POST',
+        body: JSON.stringify({ additionalSeats: 5 }),
+      });
+      expect(response.ok).toBe(true);
+      const pricing = await response.json();
+      expect(pricing.totalSeats).toBe(5);
+      expect(pricing.pricePerSeat).toBeGreaterThan(0);
+      expect(pricing.total).toBeGreaterThan(0);
+    });
+
+    it('should purchase seats (test mode)', async () => {
+      const response = await authFetch(orgSession, `${BASE_URL}/api/organizations/${organizationId}/seats/purchase`, {
+        method: 'POST',
+        body: JSON.stringify({ additionalSeats: 3 }),
+      });
+      expect(response.ok).toBe(true);
+      const result = await response.json();
+      expect(result.newTotalSeats).toBe(3);
+    });
+
+    it('should verify seats were added', async () => {
+      const response = await authFetch(orgSession, `${BASE_URL}/api/organizations/${organizationId}/seats`);
+      expect(response.ok).toBe(true);
+      const seats = await response.json();
+      expect(seats.totalSeats).toBe(3);
+    });
+
+    it('should get payment history', async () => {
+      const response = await authFetch(orgSession, `${BASE_URL}/api/organizations/${organizationId}/payments/history`);
+      expect(response.ok).toBe(true);
+      const history = await response.json();
+      expect(Array.isArray(history)).toBe(true);
+      expect(history.length).toBeGreaterThan(0);
+      expect(history[0].status).toBe('completed');
+    });
+
+    it('should update organization', async () => {
+      expect(orgSession).toBeDefined();
+      const response = await authFetch(orgSession, `${BASE_URL}/api/organizations/${organizationId}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ name: 'Updated Organization' }),
+      });
+      expect(response.ok).toBe(true);
+      const org = await response.json();
+      expect(org.name).toBe('Updated Organization');
+    });
+
+    it('should prevent user from leaving if they are the only admin', async () => {
+      expect(orgSession).toBeDefined();
+      const response = await authFetch(orgSession, `${BASE_URL}/api/organizations/${organizationId}/leave`, {
+        method: 'POST',
+      });
+      expect(response.status).toBe(400);
+      const error = await response.json();
+      expect(error.error).toContain('admin');
+    });
+  });
+
+  describe('Stripe and Pricing Config', () => {
+    it('should get Stripe config', async () => {
+      const response = await fetch(`${BASE_URL}/api/payments/stripe-config`);
+      expect(response.ok).toBe(true);
+      const config = await response.json();
+      expect(typeof config.enabled).toBe('boolean');
+    });
+
+    it('should get pricing tiers', async () => {
+      const response = await fetch(`${BASE_URL}/api/pricing`);
+      expect(response.ok).toBe(true);
+      const pricing = await response.json();
+      expect(Array.isArray(pricing)).toBe(true);
+      expect(pricing.length).toBeGreaterThan(0);
+    });
+  });
+
   describe('Cleanup', () => {
     it('should delete eval set', async () => {
       const response = await authFetch(adminSession, `${BASE_URL}/api/eval-sets/${testEvalSetId}`, {

@@ -28,6 +28,8 @@ import {
   getPaymentMethodDetails,
   attachPaymentMethod,
   detachPaymentMethod,
+  constructWebhookEvent,
+  getStripePublishableKey,
 } from "./stripe";
 
 export async function registerRoutes(
@@ -2500,9 +2502,13 @@ export async function registerRoutes(
 
   // ==================== PAYMENT ROUTES ====================
 
-  // Check if Stripe is enabled
-  app.get("/api/payments/stripe-status", (req, res) => {
-    res.json({ enabled: isStripeConfigured() });
+  // Get Stripe configuration for frontend
+  app.get("/api/payments/stripe-config", (req, res) => {
+    const publishableKey = getStripePublishableKey();
+    res.json({
+      enabled: isStripeConfigured(),
+      publishableKey,
+    });
   });
 
   // Create setup intent for adding card
@@ -2815,6 +2821,71 @@ export async function registerRoutes(
     } catch (error) {
       console.error("Error reviewing fund return request:", error);
       res.status(500).json({ error: "Failed to review fund return request" });
+    }
+  });
+
+  // ==================== STRIPE WEBHOOK ROUTES ====================
+
+  // Stripe webhook handler - must use raw body
+  app.post("/api/webhooks/stripe", async (req, res) => {
+    try {
+      const signature = req.headers["stripe-signature"] as string;
+
+      if (!signature) {
+        return res.status(400).json({ error: "Missing stripe-signature header" });
+      }
+
+      // Get raw body from the verify callback in express.json middleware
+      const rawBody = (req as unknown as { rawBody: Buffer }).rawBody;
+
+      const event = await constructWebhookEvent(rawBody, signature);
+      if (!event) {
+        return res.status(400).json({ error: "Invalid webhook signature" });
+      }
+
+      // Handle specific event types
+      switch (event.type) {
+        case "payment_intent.succeeded": {
+          const paymentIntent = event.data.object as Record<string, unknown>;
+          console.log(`Payment succeeded: ${paymentIntent.id}`);
+
+          // Update payment history if exists
+          const existingPayment = await storage.getPaymentHistoryByStripeId(
+            paymentIntent.id as string
+          );
+          if (existingPayment) {
+            await storage.updatePaymentHistoryStatus(existingPayment.id, "completed");
+          }
+          break;
+        }
+
+        case "payment_intent.payment_failed": {
+          const paymentIntent = event.data.object as Record<string, unknown>;
+          console.log(`Payment failed: ${paymentIntent.id}`);
+
+          const existingPayment = await storage.getPaymentHistoryByStripeId(
+            paymentIntent.id as string
+          );
+          if (existingPayment) {
+            await storage.updatePaymentHistoryStatus(existingPayment.id, "failed");
+          }
+          break;
+        }
+
+        case "setup_intent.succeeded": {
+          const setupIntent = event.data.object as Record<string, unknown>;
+          console.log(`Setup intent succeeded: ${setupIntent.id}`);
+          break;
+        }
+
+        default:
+          console.log(`Unhandled event type: ${event.type}`);
+      }
+
+      res.json({ received: true });
+    } catch (error) {
+      console.error("Webhook error:", error);
+      res.status(500).json({ error: "Webhook handler failed" });
     }
   });
 
