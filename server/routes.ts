@@ -1556,6 +1556,15 @@ export async function registerRoutes(
         return res.status(403).json({ error: "Agent not found or token mismatch" });
       }
 
+      // Check that job's region matches agent's region
+      const existingJob = await storage.getEvalJob(parseInt(jobId));
+      if (!existingJob) {
+        return res.status(404).json({ error: "Job not found" });
+      }
+      if (existingJob.region !== agent.region) {
+        return res.status(403).json({ error: "Job region does not match agent region" });
+      }
+
       const job = await storage.claimEvalJob(parseInt(jobId), agentId);
       if (!job) {
         return res.status(409).json({ error: "Job already claimed or not found" });

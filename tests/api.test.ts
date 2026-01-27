@@ -899,6 +899,204 @@ describe('Vox API Tests', () => {
     });
   });
 
+  describe('Mainline and Leaderboard API', () => {
+    it('should get mainline eval results from realtime metrics', async () => {
+      const response = await fetch(`${BASE_URL}/api/metrics/realtime`);
+      expect(response.ok).toBe(true);
+      const data = await response.json();
+      expect(Array.isArray(data)).toBe(true);
+      // Mainline results should have required fields
+      if (data.length > 0) {
+        expect(data[0]).toHaveProperty('providerId');
+        expect(data[0]).toHaveProperty('region');
+        expect(data[0]).toHaveProperty('responseLatencyMedian');
+      }
+    });
+
+    it('should get leaderboard with provider rankings', async () => {
+      const response = await fetch(`${BASE_URL}/api/metrics/leaderboard`);
+      expect(response.ok).toBe(true);
+      const data = await response.json();
+      expect(Array.isArray(data)).toBe(true);
+      // Leaderboard should have rank and provider info
+      if (data.length > 0) {
+        expect(data[0]).toHaveProperty('rank');
+        expect(data[0]).toHaveProperty('providerId');
+        expect(data[0]).toHaveProperty('providerName');
+        expect(data[0]).toHaveProperty('responseLatency');
+      }
+    });
+
+    it('should get realtime metrics via API v1', async () => {
+      const response = await fetch(`${BASE_URL}/api/v1/metrics/realtime`);
+      expect(response.ok).toBe(true);
+      const { data, meta } = await response.json();
+      expect(Array.isArray(data)).toBe(true);
+      expect(meta).toHaveProperty('timestamp');
+      expect(meta).toHaveProperty('count');
+    });
+
+    it('should get leaderboard via API v1 with meta info', async () => {
+      const response = await fetch(`${BASE_URL}/api/v1/metrics/leaderboard`);
+      expect(response.ok).toBe(true);
+      const { data, meta } = await response.json();
+      expect(Array.isArray(data)).toBe(true);
+      expect(meta).toHaveProperty('timestamp');
+      expect(meta).toHaveProperty('region');
+    });
+
+    it('should filter leaderboard by region', async () => {
+      const response = await fetch(`${BASE_URL}/api/v1/metrics/leaderboard?region=na`);
+      expect(response.ok).toBe(true);
+      const { data, meta } = await response.json();
+      expect(Array.isArray(data)).toBe(true);
+      expect(meta.region).toBe('na');
+      // All results should be from NA region
+      for (const item of data) {
+        expect(item.region).toBe('na');
+      }
+    });
+  });
+
+  describe('Complete Job Flow', () => {
+    let flowWorkflowId: number;
+    let flowEvalSetId: number;
+    let flowAgentToken: string;
+    let flowAgentId: number;
+    let flowJobId: number;
+
+    it('should create workflow for job flow test', async () => {
+      const response = await authFetch(adminSession, `${BASE_URL}/api/workflows`, {
+        method: 'POST',
+        body: JSON.stringify({
+          name: 'Job Flow Test Workflow',
+          description: 'Testing complete job submission flow',
+          visibility: 'public',
+        }),
+      });
+      expect(response.ok).toBe(true);
+      const workflow = await response.json();
+      flowWorkflowId = workflow.id;
+    });
+
+    it('should create eval set for job flow test', async () => {
+      const response = await authFetch(adminSession, `${BASE_URL}/api/eval-sets`, {
+        method: 'POST',
+        body: JSON.stringify({
+          name: 'Job Flow Test Eval Set',
+          visibility: 'public',
+        }),
+      });
+      expect(response.ok).toBe(true);
+      const evalSet = await response.json();
+      flowEvalSetId = evalSet.id;
+    });
+
+    it('should create eval agent token for job flow', async () => {
+      const response = await authFetch(adminSession, `${BASE_URL}/api/admin/eval-agent-tokens`, {
+        method: 'POST',
+        body: JSON.stringify({
+          name: 'Job Flow Test Token',
+          region: 'na',
+        }),
+      });
+      expect(response.ok).toBe(true);
+      const token = await response.json();
+      flowAgentToken = token.token;
+    });
+
+    it('should register eval agent for job flow', async () => {
+      const response = await fetch(`${BASE_URL}/api/eval-agent/register`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${flowAgentToken}`,
+        },
+        body: JSON.stringify({ name: 'Job-Flow-Test-Agent' }),
+      });
+      expect(response.ok).toBe(true);
+      const agent = await response.json();
+      flowAgentId = agent.id;
+      expect(agent.region).toBe('na');
+    });
+
+    it('should create job by running workflow', async () => {
+      const response = await authFetch(adminSession, `${BASE_URL}/api/workflows/${flowWorkflowId}/run`, {
+        method: 'POST',
+        body: JSON.stringify({
+          evalSetId: flowEvalSetId,
+          region: 'na',
+        }),
+      });
+      expect(response.ok).toBe(true);
+      const result = await response.json();
+      flowJobId = result.job.id;
+      expect(result.job.status).toBe('pending');
+    });
+
+    it('should claim job as eval agent', async () => {
+      const response = await fetch(`${BASE_URL}/api/eval-agent/jobs/${flowJobId}/claim`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${flowAgentToken}`,
+        },
+        body: JSON.stringify({ agentId: flowAgentId }),
+      });
+      expect(response.ok).toBe(true);
+      const job = await response.json();
+      expect(job.status).toBe('running');
+      expect(job.evalAgentId).toBe(flowAgentId);
+    });
+
+    it('should complete job with results', async () => {
+      const response = await fetch(`${BASE_URL}/api/eval-agent/jobs/${flowJobId}/complete`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${flowAgentToken}`,
+        },
+        body: JSON.stringify({
+          agentId: flowAgentId,
+          results: {
+            responseLatencyMedian: 1200,
+            responseLatencySd: 150,
+            interruptLatencyMedian: 1100,
+            interruptLatencySd: 120,
+            networkResilience: 90,
+            naturalness: 4.0,
+            noiseReduction: 95,
+          },
+        }),
+      });
+      expect(response.ok).toBe(true);
+    });
+
+    it('should verify results were saved', async () => {
+      const response = await fetch(`${BASE_URL}/api/v1/results?jobId=${flowJobId}`, {
+        headers: { 'Authorization': `Bearer ${testApiKey}` },
+      });
+      expect(response.ok).toBe(true);
+      const { data } = await response.json();
+      expect(data.length).toBeGreaterThan(0);
+      const result = data.find((r: any) => r.evalJobId === flowJobId);
+      expect(result).toBeDefined();
+      expect(result.responseLatencyMedian).toBe(1200);
+      expect(result.naturalness).toBe(4.0);
+    });
+
+    it('should cleanup job flow test resources', async () => {
+      // Delete workflow (cascades to jobs)
+      await authFetch(adminSession, `${BASE_URL}/api/workflows/${flowWorkflowId}`, {
+        method: 'DELETE',
+      });
+      // Delete eval set
+      await authFetch(adminSession, `${BASE_URL}/api/eval-sets/${flowEvalSetId}`, {
+        method: 'DELETE',
+      });
+    });
+  });
+
   describe('Edge Cases and Error Handling', () => {
     it('should return 404 for non-existent workflow', async () => {
       const response = await authFetch(adminSession, `${BASE_URL}/api/workflows/999999`);
@@ -958,6 +1156,497 @@ describe('Vox API Tests', () => {
       });
 
       expect(response.status).toBe(400);
+    });
+  });
+
+  describe('Multi-Region Eval Agent Tests', () => {
+    let naToken: string;
+    let apacToken: string;
+    let euToken: string;
+    let naAgentId: number;
+    let apacAgentId: number;
+    let euAgentId: number;
+    let multiRegionWorkflowId: number;
+    let naJobId: number;
+    let apacJobId: number;
+    let euJobId: number;
+
+    it('should create eval agent tokens for all regions', async () => {
+      // Create NA token
+      const naResponse = await authFetch(adminSession, `${BASE_URL}/api/admin/eval-agent-tokens`, {
+        method: 'POST',
+        body: JSON.stringify({ name: 'Multi-Region-NA', region: 'na' }),
+      });
+      expect(naResponse.ok).toBe(true);
+      const naData = await naResponse.json();
+      naToken = naData.token;
+
+      // Create APAC token
+      const apacResponse = await authFetch(adminSession, `${BASE_URL}/api/admin/eval-agent-tokens`, {
+        method: 'POST',
+        body: JSON.stringify({ name: 'Multi-Region-APAC', region: 'apac' }),
+      });
+      expect(apacResponse.ok).toBe(true);
+      const apacData = await apacResponse.json();
+      apacToken = apacData.token;
+
+      // Create EU token
+      const euResponse = await authFetch(adminSession, `${BASE_URL}/api/admin/eval-agent-tokens`, {
+        method: 'POST',
+        body: JSON.stringify({ name: 'Multi-Region-EU', region: 'eu' }),
+      });
+      expect(euResponse.ok).toBe(true);
+      const euData = await euResponse.json();
+      euToken = euData.token;
+    });
+
+    it('should register eval agents for all regions', async () => {
+      // Register NA agent
+      const naResponse = await fetch(`${BASE_URL}/api/eval-agent/register`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${naToken}`,
+        },
+        body: JSON.stringify({ name: 'Test-Agent-NA' }),
+      });
+      expect(naResponse.ok).toBe(true);
+      const naAgent = await naResponse.json();
+      naAgentId = naAgent.id;
+      expect(naAgent.region).toBe('na');
+
+      // Register APAC agent
+      const apacResponse = await fetch(`${BASE_URL}/api/eval-agent/register`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apacToken}`,
+        },
+        body: JSON.stringify({ name: 'Test-Agent-APAC' }),
+      });
+      expect(apacResponse.ok).toBe(true);
+      const apacAgent = await apacResponse.json();
+      apacAgentId = apacAgent.id;
+      expect(apacAgent.region).toBe('apac');
+
+      // Register EU agent
+      const euResponse = await fetch(`${BASE_URL}/api/eval-agent/register`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${euToken}`,
+        },
+        body: JSON.stringify({ name: 'Test-Agent-EU' }),
+      });
+      expect(euResponse.ok).toBe(true);
+      const euAgent = await euResponse.json();
+      euAgentId = euAgent.id;
+      expect(euAgent.region).toBe('eu');
+    });
+
+    it('should create workflow for multi-region testing', async () => {
+      const response = await authFetch(adminSession, `${BASE_URL}/api/workflows`, {
+        method: 'POST',
+        body: JSON.stringify({
+          name: 'Multi-Region Test Workflow',
+          description: 'Testing job distribution across regions',
+          visibility: 'public',
+        }),
+      });
+      expect(response.ok).toBe(true);
+      const workflow = await response.json();
+      multiRegionWorkflowId = workflow.id;
+    });
+
+    it('should create jobs for different regions', async () => {
+      // Create NA job
+      const naResponse = await authFetch(adminSession, `${BASE_URL}/api/workflows/${multiRegionWorkflowId}/run`, {
+        method: 'POST',
+        body: JSON.stringify({ region: 'na' }),
+      });
+      expect(naResponse.ok).toBe(true);
+      const naResult = await naResponse.json();
+      naJobId = naResult.job.id;
+      expect(naResult.job.region).toBe('na');
+
+      // Create APAC job
+      const apacResponse = await authFetch(adminSession, `${BASE_URL}/api/workflows/${multiRegionWorkflowId}/run`, {
+        method: 'POST',
+        body: JSON.stringify({ region: 'apac' }),
+      });
+      expect(apacResponse.ok).toBe(true);
+      const apacResult = await apacResponse.json();
+      apacJobId = apacResult.job.id;
+      expect(apacResult.job.region).toBe('apac');
+
+      // Create EU job
+      const euResponse = await authFetch(adminSession, `${BASE_URL}/api/workflows/${multiRegionWorkflowId}/run`, {
+        method: 'POST',
+        body: JSON.stringify({ region: 'eu' }),
+      });
+      expect(euResponse.ok).toBe(true);
+      const euResult = await euResponse.json();
+      euJobId = euResult.job.id;
+      expect(euResult.job.region).toBe('eu');
+    });
+
+    it('should only show jobs matching agent region', async () => {
+      // NA agent should only see NA jobs
+      const naResponse = await fetch(`${BASE_URL}/api/eval-agent/jobs`, {
+        headers: { 'Authorization': `Bearer ${naToken}` },
+      });
+      expect(naResponse.ok).toBe(true);
+      const naJobs = await naResponse.json();
+      const naJobRegions = naJobs.map((j: any) => j.region);
+      expect(naJobRegions.every((r: string) => r === 'na')).toBe(true);
+
+      // APAC agent should only see APAC jobs
+      const apacResponse = await fetch(`${BASE_URL}/api/eval-agent/jobs`, {
+        headers: { 'Authorization': `Bearer ${apacToken}` },
+      });
+      expect(apacResponse.ok).toBe(true);
+      const apacJobs = await apacResponse.json();
+      const apacJobRegions = apacJobs.map((j: any) => j.region);
+      expect(apacJobRegions.every((r: string) => r === 'apac')).toBe(true);
+    });
+
+    it('should not allow agent to claim job from different region', async () => {
+      // NA agent tries to claim APAC job - should fail
+      const response = await fetch(`${BASE_URL}/api/eval-agent/jobs/${apacJobId}/claim`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${naToken}`,
+        },
+        body: JSON.stringify({ agentId: naAgentId }),
+      });
+      // Should fail because region mismatch
+      expect(response.ok).toBe(false);
+    });
+
+    it('should allow each agent to claim job from their region', async () => {
+      // NA agent claims NA job
+      const naResponse = await fetch(`${BASE_URL}/api/eval-agent/jobs/${naJobId}/claim`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${naToken}`,
+        },
+        body: JSON.stringify({ agentId: naAgentId }),
+      });
+      expect(naResponse.ok).toBe(true);
+      const naJob = await naResponse.json();
+      expect(naJob.status).toBe('running');
+
+      // APAC agent claims APAC job
+      const apacResponse = await fetch(`${BASE_URL}/api/eval-agent/jobs/${apacJobId}/claim`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apacToken}`,
+        },
+        body: JSON.stringify({ agentId: apacAgentId }),
+      });
+      expect(apacResponse.ok).toBe(true);
+      const apacJob = await apacResponse.json();
+      expect(apacJob.status).toBe('running');
+    });
+
+    it('should cleanup multi-region test resources', async () => {
+      // Complete jobs to cleanup
+      await fetch(`${BASE_URL}/api/eval-agent/jobs/${naJobId}/complete`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${naToken}`,
+        },
+        body: JSON.stringify({ agentId: naAgentId }),
+      });
+
+      await fetch(`${BASE_URL}/api/eval-agent/jobs/${apacJobId}/complete`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apacToken}`,
+        },
+        body: JSON.stringify({ agentId: apacAgentId }),
+      });
+
+      // Delete workflow (cascades to jobs)
+      await authFetch(adminSession, `${BASE_URL}/api/workflows/${multiRegionWorkflowId}`, {
+        method: 'DELETE',
+      });
+    });
+  });
+
+  describe('Schedule Validation Tests', () => {
+    let scheduleWorkflowId: number;
+    let scheduleEvalSetId: number;
+
+    it('should create workflow and eval set for schedule tests', async () => {
+      const wfResponse = await authFetch(adminSession, `${BASE_URL}/api/workflows`, {
+        method: 'POST',
+        body: JSON.stringify({ name: 'Schedule Test Workflow', visibility: 'public' }),
+      });
+      expect(wfResponse.ok).toBe(true);
+      const workflow = await wfResponse.json();
+      scheduleWorkflowId = workflow.id;
+
+      const esResponse = await authFetch(adminSession, `${BASE_URL}/api/eval-sets`, {
+        method: 'POST',
+        body: JSON.stringify({ name: 'Schedule Test Eval Set', visibility: 'public' }),
+      });
+      expect(esResponse.ok).toBe(true);
+      const evalSet = await esResponse.json();
+      scheduleEvalSetId = evalSet.id;
+    });
+
+    it('should reject schedule with invalid cron expression', async () => {
+      const response = await authFetch(adminSession, `${BASE_URL}/api/eval-schedules`, {
+        method: 'POST',
+        body: JSON.stringify({
+          name: 'Invalid Cron Schedule',
+          workflowId: scheduleWorkflowId,
+          evalSetId: scheduleEvalSetId,
+          region: 'na',
+          scheduleType: 'recurring',
+          cronExpression: 'invalid cron',
+        }),
+      });
+      expect(response.status).toBe(400);
+    });
+
+    it('should reject recurring schedule without cron expression', async () => {
+      const response = await authFetch(adminSession, `${BASE_URL}/api/eval-schedules`, {
+        method: 'POST',
+        body: JSON.stringify({
+          name: 'Missing Cron Schedule',
+          workflowId: scheduleWorkflowId,
+          evalSetId: scheduleEvalSetId,
+          region: 'na',
+          scheduleType: 'recurring',
+        }),
+      });
+      expect(response.status).toBe(400);
+    });
+
+    it('should create valid one-time schedule', async () => {
+      const futureDate = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 hours from now
+      const response = await authFetch(adminSession, `${BASE_URL}/api/eval-schedules`, {
+        method: 'POST',
+        body: JSON.stringify({
+          name: 'Valid One-Time Schedule',
+          workflowId: scheduleWorkflowId,
+          evalSetId: scheduleEvalSetId,
+          region: 'na',
+          scheduleType: 'once',
+          nextRunAt: futureDate.toISOString(),
+        }),
+      });
+      expect(response.ok).toBe(true);
+      const schedule = await response.json();
+      expect(schedule.scheduleType).toBe('once');
+    });
+
+    it('should create valid recurring schedule with cron', async () => {
+      const response = await authFetch(adminSession, `${BASE_URL}/api/eval-schedules`, {
+        method: 'POST',
+        body: JSON.stringify({
+          name: 'Valid Recurring Schedule',
+          workflowId: scheduleWorkflowId,
+          evalSetId: scheduleEvalSetId,
+          region: 'eu',
+          scheduleType: 'recurring',
+          cronExpression: '0 0 * * *', // Daily at midnight
+        }),
+      });
+      expect(response.ok).toBe(true);
+      const schedule = await response.json();
+      expect(schedule.scheduleType).toBe('recurring');
+      expect(schedule.cronExpression).toBe('0 0 * * *');
+    });
+
+    it('should cleanup schedule test resources', async () => {
+      await authFetch(adminSession, `${BASE_URL}/api/workflows/${scheduleWorkflowId}`, {
+        method: 'DELETE',
+      });
+      await authFetch(adminSession, `${BASE_URL}/api/eval-sets/${scheduleEvalSetId}`, {
+        method: 'DELETE',
+      });
+    });
+  });
+
+  describe('API Key Permission Tests', () => {
+    let testUserApiKey: string;
+    let testUserWorkflowId: number;
+
+    it('should create API key for permission tests', async () => {
+      const response = await authFetch(adminSession, `${BASE_URL}/api/user/api-keys`, {
+        method: 'POST',
+        body: JSON.stringify({ name: 'Permission Test Key' }),
+      });
+      expect(response.ok).toBe(true);
+      const data = await response.json();
+      testUserApiKey = data.key;
+      expect(testUserApiKey).toContain('vox_live_');
+    });
+
+    it('should allow API key to list workflows via v1 API', async () => {
+      const response = await fetch(`${BASE_URL}/api/v1/workflows`, {
+        headers: { 'Authorization': `Bearer ${testUserApiKey}` },
+      });
+      expect(response.ok).toBe(true);
+      const { data } = await response.json();
+      expect(Array.isArray(data)).toBe(true);
+    });
+
+    it('should allow API key to create workflow via v1 API', async () => {
+      const response = await fetch(`${BASE_URL}/api/v1/workflows`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${testUserApiKey}`,
+        },
+        body: JSON.stringify({
+          name: 'API Key Created Workflow',
+          description: 'Created via API key',
+          visibility: 'public',
+        }),
+      });
+      expect(response.ok).toBe(true);
+      const { data } = await response.json();
+      testUserWorkflowId = data.id;
+    });
+
+    it('should reject revoked API key', async () => {
+      // Get all API keys to find the one we just created
+      const keysResponse = await authFetch(adminSession, `${BASE_URL}/api/user/api-keys`);
+      const keys = await keysResponse.json();
+      const permTestKey = keys.find((k: any) => k.name === 'Permission Test Key');
+
+      // Revoke the key
+      await authFetch(adminSession, `${BASE_URL}/api/user/api-keys/${permTestKey.id}/revoke`, {
+        method: 'POST',
+      });
+
+      // Try to use revoked key
+      const response = await fetch(`${BASE_URL}/api/v1/workflows`, {
+        headers: { 'Authorization': `Bearer ${testUserApiKey}` },
+      });
+      expect(response.status).toBe(401);
+    });
+
+    it('should cleanup API key test resources', async () => {
+      // Delete workflow created by API key
+      if (testUserWorkflowId) {
+        await authFetch(adminSession, `${BASE_URL}/api/workflows/${testUserWorkflowId}`, {
+          method: 'DELETE',
+        });
+      }
+    });
+  });
+
+  describe('Concurrent Job Claiming Tests', () => {
+    let concurrentWorkflowId: number;
+    let concurrentJobId: number;
+    let agent1Token: string;
+    let agent2Token: string;
+    let agent1Id: number;
+    let agent2Id: number;
+
+    it('should setup agents for concurrent test', async () => {
+      // Create workflow
+      const wfResponse = await authFetch(adminSession, `${BASE_URL}/api/workflows`, {
+        method: 'POST',
+        body: JSON.stringify({ name: 'Concurrent Test Workflow', visibility: 'public' }),
+      });
+      expect(wfResponse.ok).toBe(true);
+      const workflow = await wfResponse.json();
+      concurrentWorkflowId = workflow.id;
+
+      // Create two agent tokens for same region
+      const token1Response = await authFetch(adminSession, `${BASE_URL}/api/admin/eval-agent-tokens`, {
+        method: 'POST',
+        body: JSON.stringify({ name: 'Concurrent-Agent-1', region: 'na' }),
+      });
+      expect(token1Response.ok).toBe(true);
+      const token1Data = await token1Response.json();
+      agent1Token = token1Data.token;
+
+      const token2Response = await authFetch(adminSession, `${BASE_URL}/api/admin/eval-agent-tokens`, {
+        method: 'POST',
+        body: JSON.stringify({ name: 'Concurrent-Agent-2', region: 'na' }),
+      });
+      expect(token2Response.ok).toBe(true);
+      const token2Data = await token2Response.json();
+      agent2Token = token2Data.token;
+
+      // Register agents
+      const agent1Response = await fetch(`${BASE_URL}/api/eval-agent/register`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${agent1Token}`,
+        },
+        body: JSON.stringify({ name: 'Concurrent-Agent-1' }),
+      });
+      expect(agent1Response.ok).toBe(true);
+      const agent1 = await agent1Response.json();
+      agent1Id = agent1.id;
+
+      const agent2Response = await fetch(`${BASE_URL}/api/eval-agent/register`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${agent2Token}`,
+        },
+        body: JSON.stringify({ name: 'Concurrent-Agent-2' }),
+      });
+      expect(agent2Response.ok).toBe(true);
+      const agent2 = await agent2Response.json();
+      agent2Id = agent2.id;
+
+      // Create a single job
+      const jobResponse = await authFetch(adminSession, `${BASE_URL}/api/workflows/${concurrentWorkflowId}/run`, {
+        method: 'POST',
+        body: JSON.stringify({ region: 'na' }),
+      });
+      expect(jobResponse.ok).toBe(true);
+      const jobResult = await jobResponse.json();
+      concurrentJobId = jobResult.job.id;
+    });
+
+    it('should only allow one agent to claim the same job', async () => {
+      // Both agents try to claim the same job concurrently
+      const [claim1, claim2] = await Promise.all([
+        fetch(`${BASE_URL}/api/eval-agent/jobs/${concurrentJobId}/claim`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${agent1Token}`,
+          },
+          body: JSON.stringify({ agentId: agent1Id }),
+        }),
+        fetch(`${BASE_URL}/api/eval-agent/jobs/${concurrentJobId}/claim`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${agent2Token}`,
+          },
+          body: JSON.stringify({ agentId: agent2Id }),
+        }),
+      ]);
+
+      // One should succeed (200), one should fail (409 conflict)
+      const statuses = [claim1.status, claim2.status].sort();
+      expect(statuses).toContain(200);
+      expect(statuses).toContain(409);
+    });
+
+    it('should cleanup concurrent test resources', async () => {
+      await authFetch(adminSession, `${BASE_URL}/api/workflows/${concurrentWorkflowId}`, {
+        method: 'DELETE',
+      });
     });
   });
 

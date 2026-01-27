@@ -42,6 +42,10 @@ SERVER_URL_DISPLAY="http://${HOST}:$SERVER_PORT"
 INIT_CODE="VOX-DEBUG-2024"
 EVAL_AGENT_TOKEN_FILE="/tmp/vox-eval-agent-token.txt"
 
+# Multi-region configuration
+REGIONS=("na" "apac" "eu")
+MULTI_REGION_MODE=false
+
 # Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -295,11 +299,14 @@ create_eval_agent_token() {
 }
 
 get_or_create_eval_agent_token() {
-    # Check if we have a saved token
-    if [ -f "$EVAL_AGENT_TOKEN_FILE" ]; then
-        local saved_token=$(cat "$EVAL_AGENT_TOKEN_FILE" | tr -d '\n')
+    local region=${1:-na}
+    local token_file="${EVAL_AGENT_TOKEN_FILE}-${region}"
+
+    # Check if we have a saved token for this region
+    if [ -f "$token_file" ]; then
+        local saved_token=$(cat "$token_file" | tr -d '\n')
         if [ -n "$saved_token" ]; then
-            log_info "Using saved eval agent token" >&2
+            log_info "Using saved eval agent token for region $region" >&2
             echo "$saved_token"
             return 0
         fi
@@ -321,10 +328,10 @@ get_or_create_eval_agent_token() {
         fi
 
         # Create new token
-        local token=$(create_eval_agent_token "$admin_cookies" "Local-Eval-Agent" "na")
+        local token=$(create_eval_agent_token "$admin_cookies" "Local-Eval-Agent-${region^^}" "$region")
         if [ -n "$token" ]; then
             # Save token for future use (ensure no newlines)
-            echo -n "$token" > "$EVAL_AGENT_TOKEN_FILE"
+            echo -n "$token" > "$token_file"
             echo "$token"
             return 0
         fi
@@ -379,21 +386,24 @@ create_eval_agent_token_direct() {
 
 # Get or create eval agent token using direct database method (for Docker mode)
 get_or_create_eval_agent_token_docker() {
-    # Check if we have a saved token
-    if [ -f "$EVAL_AGENT_TOKEN_FILE" ]; then
-        local saved_token=$(cat "$EVAL_AGENT_TOKEN_FILE" | tr -d '\n')
+    local region=${1:-na}
+    local token_file="${EVAL_AGENT_TOKEN_FILE}-${region}"
+
+    # Check if we have a saved token for this region
+    if [ -f "$token_file" ]; then
+        local saved_token=$(cat "$token_file" | tr -d '\n')
         if [ -n "$saved_token" ]; then
-            log_info "Using saved eval agent token" >&2
+            log_info "Using saved eval agent token for region $region" >&2
             echo "$saved_token"
             return 0
         fi
     fi
 
     # Create token directly in database (bypasses HTTP API cookie issues)
-    local token=$(create_eval_agent_token_direct "Local-Eval-Agent" "na")
+    local token=$(create_eval_agent_token_direct "Local-Eval-Agent-${region^^}" "$region")
     if [ -n "$token" ]; then
         # Save token for future use
-        echo -n "$token" > "$EVAL_AGENT_TOKEN_FILE"
+        echo -n "$token" > "$token_file"
         echo "$token"
         return 0
     fi
@@ -407,36 +417,78 @@ get_or_create_eval_agent_token_docker() {
 start_eval_agent_local() {
     local token=$1
     local name=$2
+    local region=${3:-na}
 
-    log_info "Starting eval agent (local process): $name..."
+    log_info "Starting eval agent (local process): $name ($region)..."
 
     cd "$PROJECT_DIR"
     npx tsx script/vox-eval-agent.ts \
         --token "$token" \
         --server "$SERVER_URL" \
         --name "$name" \
-        > /tmp/vox-eval-agent.log 2>&1 &
+        > /tmp/vox-eval-agent-${region}.log 2>&1 &
 
-    echo $! > /tmp/vox-eval-agent.pid
+    echo $! > /tmp/vox-eval-agent-${region}.pid
 
     sleep 2
 
-    if [ -f /tmp/vox-eval-agent.pid ] && kill -0 $(cat /tmp/vox-eval-agent.pid) 2>/dev/null; then
-        log_success "Eval agent started (PID: $(cat /tmp/vox-eval-agent.pid))"
+    if [ -f /tmp/vox-eval-agent-${region}.pid ] && kill -0 $(cat /tmp/vox-eval-agent-${region}.pid) 2>/dev/null; then
+        log_success "Eval agent $name ($region) started (PID: $(cat /tmp/vox-eval-agent-${region}.pid))"
     else
-        log_error "Eval agent failed to start"
-        cat /tmp/vox-eval-agent.log
+        log_error "Eval agent $name ($region) failed to start"
+        cat /tmp/vox-eval-agent-${region}.log
         return 1
     fi
 }
 
+# Start eval agents for all regions (multi-region mode)
+start_all_eval_agents_local() {
+    log_info "Starting eval agents for all regions (multi-region mode)..."
+
+    for region in "${REGIONS[@]}"; do
+        local agent_token=$(get_or_create_eval_agent_token "$region")
+        if [ -n "$agent_token" ]; then
+            start_eval_agent_local "$agent_token" "Local-Eval-Agent-${region^^}" "$region" || log_warn "Eval agent for $region failed to start, continuing..."
+            sleep 1  # Small delay between agent starts
+        else
+            log_warn "Skipping eval agent for $region (no token)"
+        fi
+    done
+
+    log_success "Multi-region eval agents started"
+}
+
 stop_eval_agent_local() {
-    log_info "Stopping eval agent (local)..."
-    if [ -f /tmp/vox-eval-agent.pid ]; then
-        kill $(cat /tmp/vox-eval-agent.pid) 2>/dev/null || true
-        rm /tmp/vox-eval-agent.pid
+    local region=${1:-}
+
+    if [ -n "$region" ]; then
+        # Stop specific region agent
+        log_info "Stopping eval agent (local) for region $region..."
+        if [ -f /tmp/vox-eval-agent-${region}.pid ]; then
+            kill $(cat /tmp/vox-eval-agent-${region}.pid) 2>/dev/null || true
+            rm /tmp/vox-eval-agent-${region}.pid
+        fi
+        log_success "Eval agent ($region) stopped"
+    else
+        # Stop all agents (including legacy single-agent and multi-region)
+        log_info "Stopping all eval agents (local)..."
+
+        # Stop legacy single agent
+        if [ -f /tmp/vox-eval-agent.pid ]; then
+            kill $(cat /tmp/vox-eval-agent.pid) 2>/dev/null || true
+            rm /tmp/vox-eval-agent.pid
+        fi
+
+        # Stop all region-specific agents
+        for region in "${REGIONS[@]}"; do
+            if [ -f /tmp/vox-eval-agent-${region}.pid ]; then
+                kill $(cat /tmp/vox-eval-agent-${region}.pid) 2>/dev/null || true
+                rm /tmp/vox-eval-agent-${region}.pid
+            fi
+        done
+
+        log_success "All eval agents stopped"
     fi
-    log_success "Eval agent stopped"
 }
 
 # ==================== Eval Agent (Docker Mode) ====================
@@ -466,40 +518,86 @@ build_eval_agent_docker() {
 start_eval_agent_docker() {
     local token=$1
     local name=$2
+    local region=${3:-na}
+    local container_name="${EVAL_AGENT_CONTAINER}-${region}"
 
-    log_info "Starting eval agent (Docker): $name..."
+    log_info "Starting eval agent (Docker): $name ($region)..."
 
     # Stop any existing container
-    docker stop $EVAL_AGENT_CONTAINER 2>/dev/null || true
-    docker rm $EVAL_AGENT_CONTAINER 2>/dev/null || true
+    docker stop "$container_name" 2>/dev/null || true
+    docker rm "$container_name" 2>/dev/null || true
 
     # Run Docker container with host network access
     docker run -d \
-        --name $EVAL_AGENT_CONTAINER \
+        --name "$container_name" \
         --add-host=host.docker.internal:host-gateway \
         -e VOX_TOKEN="$token" \
         -e VOX_SERVER="http://host.docker.internal:$SERVER_PORT" \
         -e VOX_AGENT_NAME="$name" \
         -e HEADLESS=true \
-        -v /tmp/vox-eval-output:/app/output \
+        -v /tmp/vox-eval-output-${region}:/app/output \
         vox_eval_agentd
 
     sleep 5
 
-    if docker ps | grep -q $EVAL_AGENT_CONTAINER; then
-        log_success "Eval agent started in Docker container"
+    if docker ps | grep -q "$container_name"; then
+        log_success "Eval agent $name ($region) started in Docker container"
     else
-        log_error "Eval agent failed to start"
-        docker logs $EVAL_AGENT_CONTAINER
+        log_error "Eval agent $name ($region) failed to start"
+        docker logs "$container_name"
         return 1
     fi
 }
 
+# Start eval agents for all regions (multi-region mode) in Docker
+start_all_eval_agents_docker() {
+    log_info "Starting eval agents for all regions in Docker (multi-region mode)..."
+
+    for region in "${REGIONS[@]}"; do
+        local agent_token=$(get_or_create_eval_agent_token "$region")
+        if [ -z "$agent_token" ]; then
+            log_warn "HTTP API token creation failed for $region, trying direct database method..." >&2
+            agent_token=$(get_or_create_eval_agent_token_docker "$region")
+        fi
+
+        if [ -n "$agent_token" ]; then
+            start_eval_agent_docker "$agent_token" "Local-Eval-Agent-${region^^}" "$region" || log_warn "Eval agent for $region failed to start, continuing..."
+            sleep 1  # Small delay between agent starts
+        else
+            log_warn "Skipping eval agent for $region (no token)"
+        fi
+    done
+
+    log_success "Multi-region eval agents started in Docker"
+}
+
 stop_eval_agent_docker() {
-    log_info "Stopping eval agent (Docker)..."
-    docker stop $EVAL_AGENT_CONTAINER 2>/dev/null || true
-    docker rm $EVAL_AGENT_CONTAINER 2>/dev/null || true
-    log_success "Eval agent stopped"
+    local region=${1:-}
+
+    if [ -n "$region" ]; then
+        # Stop specific region agent
+        local container_name="${EVAL_AGENT_CONTAINER}-${region}"
+        log_info "Stopping eval agent (Docker) for region $region..."
+        docker stop "$container_name" 2>/dev/null || true
+        docker rm "$container_name" 2>/dev/null || true
+        log_success "Eval agent ($region) stopped"
+    else
+        # Stop all agents (including legacy single-agent and multi-region)
+        log_info "Stopping all eval agents (Docker)..."
+
+        # Stop legacy single agent
+        docker stop $EVAL_AGENT_CONTAINER 2>/dev/null || true
+        docker rm $EVAL_AGENT_CONTAINER 2>/dev/null || true
+
+        # Stop all region-specific agents
+        for region in "${REGIONS[@]}"; do
+            local container_name="${EVAL_AGENT_CONTAINER}-${region}"
+            docker stop "$container_name" 2>/dev/null || true
+            docker rm "$container_name" 2>/dev/null || true
+        done
+
+        log_success "All eval agents stopped"
+    fi
 }
 
 # ==================== Status Display ====================
@@ -536,18 +634,37 @@ show_status() {
         fi
     fi
 
-    # Eval Agent
-    if [ "$mode" = "docker" ]; then
-        if docker ps --format '{{.Names}}' | grep -q "^${EVAL_AGENT_CONTAINER}$"; then
-            echo -e "  vox-eval-agent:  ${GREEN}Running${NC} (Docker)"
+    # Eval Agents (check for multi-region agents first, then legacy single agent)
+    local found_agents=false
+    for region in "${REGIONS[@]}"; do
+        if [ "$mode" = "docker" ]; then
+            local container_name="${EVAL_AGENT_CONTAINER}-${region}"
+            if docker ps --format '{{.Names}}' | grep -q "^${container_name}$"; then
+                echo -e "  vox-eval-agent-${region}:  ${GREEN}Running${NC} (Docker)"
+                found_agents=true
+            fi
         else
-            echo -e "  vox-eval-agent:  ${RED}Stopped${NC}"
+            if [ -f /tmp/vox-eval-agent-${region}.pid ] && kill -0 $(cat /tmp/vox-eval-agent-${region}.pid) 2>/dev/null; then
+                echo -e "  vox-eval-agent-${region}:  ${GREEN}Running${NC} (PID: $(cat /tmp/vox-eval-agent-${region}.pid))"
+                found_agents=true
+            fi
         fi
-    else
-        if [ -f /tmp/vox-eval-agent.pid ] && kill -0 $(cat /tmp/vox-eval-agent.pid) 2>/dev/null; then
-            echo -e "  vox-eval-agent:  ${GREEN}Running${NC} (PID: $(cat /tmp/vox-eval-agent.pid))"
+    done
+
+    # Check for legacy single agent if no multi-region agents found
+    if [ "$found_agents" = "false" ]; then
+        if [ "$mode" = "docker" ]; then
+            if docker ps --format '{{.Names}}' | grep -q "^${EVAL_AGENT_CONTAINER}$"; then
+                echo -e "  vox-eval-agent:  ${GREEN}Running${NC} (Docker)"
+            else
+                echo -e "  vox-eval-agent:  ${RED}Stopped${NC}"
+            fi
         else
-            echo -e "  vox-eval-agent:  ${RED}Stopped${NC}"
+            if [ -f /tmp/vox-eval-agent.pid ] && kill -0 $(cat /tmp/vox-eval-agent.pid) 2>/dev/null; then
+                echo -e "  vox-eval-agent:  ${GREEN}Running${NC} (PID: $(cat /tmp/vox-eval-agent.pid))"
+            else
+                echo -e "  vox-eval-agent:  ${RED}Stopped${NC}"
+            fi
         fi
     fi
 
@@ -624,11 +741,17 @@ do_start_local() {
     seed_data
 
     # 6. Get or create eval agent token and start agent (local)
-    local agent_token=$(get_or_create_eval_agent_token)
-    if [ -n "$agent_token" ]; then
-        start_eval_agent_local "$agent_token" "Local-Eval-Agent" || log_warn "Eval agent failed to start, continuing..."
+    if [ "$MULTI_REGION_MODE" = true ]; then
+        # Multi-region mode: start agents for all regions
+        start_all_eval_agents_local
     else
-        log_warn "Skipping eval agent startup (no token)"
+        # Single agent mode (default)
+        local agent_token=$(get_or_create_eval_agent_token "na")
+        if [ -n "$agent_token" ]; then
+            start_eval_agent_local "$agent_token" "Local-Eval-Agent" "na" || log_warn "Eval agent failed to start, continuing..."
+        else
+            log_warn "Skipping eval agent startup (no token)"
+        fi
     fi
 
     show_status "local"
@@ -654,16 +777,22 @@ do_start_docker() {
     ensure_eval_agent_image
 
     # 7. Get or create eval agent token and start agent (Docker)
-    # Try HTTP API first (proper authentication flow), fallback to direct database if needed
-    local agent_token=$(get_or_create_eval_agent_token)
-    if [ -z "$agent_token" ]; then
-        log_warn "HTTP API token creation failed, trying direct database method..." >&2
-        agent_token=$(get_or_create_eval_agent_token_docker)
-    fi
-    if [ -n "$agent_token" ]; then
-        start_eval_agent_docker "$agent_token" "Local-Eval-Agent" || log_warn "Eval agent failed to start, continuing..."
+    if [ "$MULTI_REGION_MODE" = true ]; then
+        # Multi-region mode: start agents for all regions
+        start_all_eval_agents_docker
     else
-        log_warn "Skipping eval agent startup (no token)"
+        # Single agent mode (default)
+        # Try HTTP API first (proper authentication flow), fallback to direct database if needed
+        local agent_token=$(get_or_create_eval_agent_token "na")
+        if [ -z "$agent_token" ]; then
+            log_warn "HTTP API token creation failed, trying direct database method..." >&2
+            agent_token=$(get_or_create_eval_agent_token_docker "na")
+        fi
+        if [ -n "$agent_token" ]; then
+            start_eval_agent_docker "$agent_token" "Local-Eval-Agent" "na" || log_warn "Eval agent failed to start, continuing..."
+        else
+            log_warn "Skipping eval agent startup (no token)"
+        fi
     fi
 
     show_status "docker"
@@ -690,7 +819,12 @@ do_reset() {
     # Remove database
     docker rm -f "$DB_CONTAINER" 2>/dev/null || true
     docker volume rm vox_vox_postgres_data 2>/dev/null || true
+
+    # Remove all token files (legacy and multi-region)
     rm -f "$EVAL_AGENT_TOKEN_FILE"
+    for region in "${REGIONS[@]}"; do
+        rm -f "${EVAL_AGENT_TOKEN_FILE}-${region}"
+    done
 
     # Restart
     if [ "$mode" = "docker" ]; then
@@ -702,9 +836,31 @@ do_reset() {
 
 # ==================== Main ====================
 
+parse_args() {
+    # Parse global options
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --multi-region)
+                MULTI_REGION_MODE=true
+                shift
+                ;;
+            *)
+                # Not an option, break to process commands
+                break
+                ;;
+        esac
+    done
+    # Return remaining args
+    echo "$@"
+}
+
 main() {
     check_command docker
     check_command curl
+
+    # Parse global options first
+    local remaining_args=$(parse_args "$@")
+    set -- $remaining_args
 
     case "${1:-}" in
         start)
@@ -726,7 +882,7 @@ main() {
                     show_status "docker"
                     ;;
                 *)
-                    echo "Usage: $0 docker [start|stop|reset|status]"
+                    echo "Usage: $0 [--multi-region] docker [start|stop|reset|status]"
                     ;;
             esac
             ;;
@@ -753,42 +909,77 @@ main() {
                     fi
                     ;;
                 agent)
-                    if [ -f /tmp/vox-eval-agent.log ]; then
-                        tail -f /tmp/vox-eval-agent.log
+                    # Show logs for all agents if multi-region, or single agent
+                    local found_log=false
+                    for region in "${REGIONS[@]}"; do
+                        if [ -f /tmp/vox-eval-agent-${region}.log ]; then
+                            echo "=== Logs for agent (${region}) ==="
+                            tail -f /tmp/vox-eval-agent-${region}.log &
+                            found_log=true
+                        fi
+                    done
+                    if [ "$found_log" = "false" ]; then
+                        if [ -f /tmp/vox-eval-agent.log ]; then
+                            tail -f /tmp/vox-eval-agent.log
+                        else
+                            docker logs -f $EVAL_AGENT_CONTAINER 2>/dev/null || echo "No logs available"
+                        fi
                     else
-                        docker logs -f $EVAL_AGENT_CONTAINER 2>/dev/null || echo "No logs available"
+                        # Wait for tail processes
+                        wait
+                    fi
+                    ;;
+                agent-na|agent-apac|agent-eu)
+                    local region="${2#agent-}"
+                    if [ -f /tmp/vox-eval-agent-${region}.log ]; then
+                        tail -f /tmp/vox-eval-agent-${region}.log
+                    else
+                        docker logs -f "${EVAL_AGENT_CONTAINER}-${region}" 2>/dev/null || echo "No logs available for ${region}"
                     fi
                     ;;
                 *)
-                    echo "Usage: $0 logs [server|agent]"
+                    echo "Usage: $0 logs [server|agent|agent-na|agent-apac|agent-eu]"
                     ;;
             esac
             ;;
         *)
             echo "Vox Local Development Script"
             echo ""
-            echo "Usage: $0 <command>"
+            echo "Usage: $0 [OPTIONS] <command>"
+            echo ""
+            echo "Options:"
+            echo "  --multi-region  Start eval agents for all regions (na, apac, eu)"
             echo ""
             echo "Local Process Mode (vox-service and vox-eval-agent as local processes):"
-            echo "  start       - Start all services"
-            echo "  stop        - Stop all services"
-            echo "  reset       - Reset database and restart"
+            echo "  start                  - Start all services (single agent)"
+            echo "  --multi-region start   - Start with agents for all regions"
+            echo "  stop                   - Stop all services"
+            echo "  reset                  - Reset database and restart"
             echo ""
             echo "Docker Mode (vox-service and vox-eval-agent in Docker):"
-            echo "  docker start  - Start all services in Docker"
-            echo "  docker stop   - Stop all services"
-            echo "  docker reset  - Reset database and restart in Docker"
-            echo "  docker status - Show status"
+            echo "  docker start           - Start all services in Docker"
+            echo "  --multi-region docker start - Start with agents for all regions"
+            echo "  docker stop            - Stop all services"
+            echo "  docker reset           - Reset database and restart in Docker"
+            echo "  docker status          - Show status"
             echo ""
             echo "Common Commands:"
-            echo "  status      - Show service status"
-            echo "  build-agent - Build eval agent Docker image"
-            echo "  logs        - Show logs (server|agent)"
+            echo "  status                 - Show service status"
+            echo "  build-agent            - Build eval agent Docker image"
+            echo "  logs [server|agent]    - Show logs"
+            echo "  logs agent-na          - Show logs for NA agent"
+            echo "  logs agent-apac        - Show logs for APAC agent"
+            echo "  logs agent-eu          - Show logs for EU agent"
             echo ""
             echo "Environment Variables:"
             echo "  HOST        - Host/IP for display URLs (default: localhost)"
             echo "                Set to machine's IP for remote access:"
             echo "                  HOST=192.168.1.100 $0 start"
+            echo ""
+            echo "Examples:"
+            echo "  $0 start                    # Start with single NA agent"
+            echo "  $0 --multi-region start     # Start with agents for all regions"
+            echo "  $0 --multi-region docker start  # Docker mode with all regions"
             echo ""
             echo "Note: vox-postgres always runs as a standalone Docker container."
             echo "      Server always listens on 0.0.0.0 (all interfaces)."

@@ -71,6 +71,16 @@ export function generateSecureToken(length: number = 32): string {
   return crypto.randomBytes(length).toString('hex');
 }
 
+// Helper to convert snake_case SQL results to camelCase for type safety
+function snakeToCamel(row: Record<string, any>): Record<string, any> {
+  const result: Record<string, any> = {};
+  for (const key in row) {
+    const camelKey = key.replace(/_([a-z])/g, (_, letter) => letter.toUpperCase());
+    result[camelKey] = row[key];
+  }
+  return result;
+}
+
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 export const db = drizzle(pool);
 export { pool };
@@ -365,7 +375,7 @@ export class DatabaseStorage {
       );
 
       await client.query('COMMIT');
-      return updateResult.rows[0] as EvalJob;
+      return snakeToCamel(updateResult.rows[0]) as EvalJob;
     } catch (error) {
       await client.query('ROLLBACK');
       throw error;
@@ -407,7 +417,7 @@ export class DatabaseStorage {
       );
 
       await client.query('COMMIT');
-      return updateResult.rows[0] as EvalJob;
+      return snakeToCamel(updateResult.rows[0]) as EvalJob;
     } catch (error) {
       await client.query('ROLLBACK');
       throw error;
