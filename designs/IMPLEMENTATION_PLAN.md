@@ -598,6 +598,47 @@ GET  /api/v1/metrics/leaderboard - Leaderboard
 
 ---
 
+## What's Next - Recommended Order
+
+### Option A: Quick Wins First (Recommended for MVP)
+1. **Phase 7: API Documentation** (~2-3 hours)
+   - Create OpenAPI/Swagger spec for `/api/v1/*` endpoints
+   - Add inline documentation
+   - Create developer guide page
+
+2. **Phase 8: E2E Tests** (~3-4 hours)
+   - Add Playwright or Cypress tests
+   - Cover critical user flows (login, create workflow, run eval)
+
+3. **Phase 4: Organization System** (~8-10 hours)
+   - Stripe integration
+   - Org creation/management
+   - Seat-based billing
+
+### Option B: Full Feature First
+1. **Phase 4: Organization System** (~8-10 hours)
+   - Required for team features
+   - Enables revenue generation
+
+2. **Phase 6.5: Org Frontend Pages** (~4-5 hours)
+   - Organization dashboard
+   - Member management
+   - Billing pages
+
+3. **Phase 7-8: Polish** (~5-7 hours)
+
+### Current System Capabilities (Ready for Use)
+- ✅ User registration/login (local + Google OAuth)
+- ✅ Workflow creation and management
+- ✅ Eval job scheduling (one-time + recurring cron)
+- ✅ Multi-region eval agent system
+- ✅ Real-time dashboard with filtering
+- ✅ Leaderboard with provider comparison
+- ✅ API key authentication for external access
+- ✅ Complete REST API v1
+
+---
+
 ## Dependencies & Prerequisites
 
 ### Environment Variables Needed
