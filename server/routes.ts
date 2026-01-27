@@ -2892,5 +2892,58 @@ export async function registerRoutes(
   // ==================== API V1 ROUTES ====================
   registerApiV1Routes(app);
 
+  // ==================== API DOCUMENTATION ====================
+  // Serve OpenAPI spec as JSON
+  app.get("/api/v1/openapi.json", async (req, res) => {
+    try {
+      const fs = await import("fs");
+      const yaml = await import("js-yaml");
+      const path = await import("path");
+
+      const specPath = path.join(process.cwd(), "docs", "openapi.yaml");
+      const specContent = fs.readFileSync(specPath, "utf-8");
+      const spec = yaml.load(specContent);
+
+      res.json(spec);
+    } catch (error) {
+      console.error("Error loading OpenAPI spec:", error);
+      res.status(500).json({ error: "Failed to load API documentation" });
+    }
+  });
+
+  // Serve Swagger UI
+  app.get("/api/docs", async (req, res) => {
+    const html = `
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Vox API Documentation</title>
+  <link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist@5.9.0/swagger-ui.css" />
+</head>
+<body>
+  <div id="swagger-ui"></div>
+  <script src="https://unpkg.com/swagger-ui-dist@5.9.0/swagger-ui-bundle.js" crossorigin></script>
+  <script>
+    window.onload = () => {
+      window.ui = SwaggerUIBundle({
+        url: '/api/v1/openapi.json',
+        dom_id: '#swagger-ui',
+        deepLinking: true,
+        presets: [
+          SwaggerUIBundle.presets.apis,
+          SwaggerUIBundle.SwaggerUIStandalonePreset
+        ],
+        layout: "BaseLayout"
+      });
+    };
+  </script>
+</body>
+</html>
+    `;
+    res.type("html").send(html);
+  });
+
   return httpServer;
 }

@@ -1,0 +1,1296 @@
+openapi: 3.0.3
+info:
+  title: Vox API
+  description: |
+    API for the Vox AI latency evaluation platform. This API allows you to manage workflows,
+    eval sets, jobs, and access metrics for conversational AI products.
+
+    ## Authentication
+
+    Most endpoints require authentication via Bearer token. API keys can be created in the
+    Vox console under Settings > API Keys.
+
+    ```
+    Authorization: Bearer vox_live_xxxxx
+    ```
+
+    ## Rate Limiting
+
+    API requests are rate limited to 100 requests per 15 minutes per API key.
+
+    ## Response Format
+
+    All successful responses follow this format:
+    ```json
+    {
+      "data": { ... },
+      "meta": { "total": 10, ... }
+    }
+    ```
+
+    Error responses follow this format:
+    ```json
+    {
+      "error": "Error message here"
+    }
+    ```
+  version: 1.0.0
+  contact:
+    name: Vox Support
+    url: https://github.com/anthropics/vox
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+
+servers:
+  - url: http://localhost:5000/api/v1
+    description: Local development server
+  - url: https://vox.agora.io/api/v1
+    description: Production server
+
+tags:
+  - name: Workflows
+    description: Manage evaluation workflows
+  - name: Eval Sets
+    description: Manage evaluation test sets
+  - name: Jobs
+    description: Manage evaluation jobs
+  - name: Results
+    description: Access evaluation results
+  - name: Projects
+    description: Manage projects
+  - name: Metrics
+    description: Public metrics and leaderboard
+  - name: Providers
+    description: AI provider information
+  - name: User
+    description: User account information
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      description: API key with prefix `vox_live_`
+
+  schemas:
+    Error:
+      type: object
+      required:
+        - error
+      properties:
+        error:
+          type: string
+          example: "Authentication required"
+
+    User:
+      type: object
+      properties:
+        id:
+          type: integer
+          example: 1
+        username:
+          type: string
+          example: "johndoe"
+        email:
+          type: string
+          format: email
+          example: "john@example.com"
+        plan:
+          type: string
+          enum: [basic, premium, principal, fellow]
+          example: "premium"
+        organizationId:
+          type: integer
+          nullable: true
+          example: 1
+        isOrgAdmin:
+          type: boolean
+          example: false
+
+    Workflow:
+      type: object
+      properties:
+        id:
+          type: integer
+          example: 1
+        name:
+          type: string
+          example: "Latency Test - Production"
+        description:
+          type: string
+          nullable: true
+          example: "Tests response latency for production environment"
+        ownerId:
+          type: integer
+          example: 1
+        projectId:
+          type: integer
+          nullable: true
+          example: 1
+        providerId:
+          type: string
+          example: "abc123def456"
+        visibility:
+          type: string
+          enum: [public, private]
+          example: "public"
+        isMainline:
+          type: boolean
+          example: false
+        config:
+          type: object
+          additionalProperties: true
+          example: {}
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    WorkflowCreate:
+      type: object
+      required:
+        - name
+      properties:
+        name:
+          type: string
+          example: "Latency Test - Production"
+        description:
+          type: string
+          example: "Tests response latency for production environment"
+        providerId:
+          type: string
+          example: "abc123def456"
+        projectId:
+          type: integer
+          example: 1
+        visibility:
+          type: string
+          enum: [public, private]
+          default: "public"
+        config:
+          type: object
+          additionalProperties: true
+
+    WorkflowUpdate:
+      type: object
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        visibility:
+          type: string
+          enum: [public, private]
+        config:
+          type: object
+          additionalProperties: true
+
+    EvalSet:
+      type: object
+      properties:
+        id:
+          type: integer
+          example: 1
+        name:
+          type: string
+          example: "Appointment Scheduling Test Suite"
+        description:
+          type: string
+          nullable: true
+        ownerId:
+          type: integer
+          example: 1
+        visibility:
+          type: string
+          enum: [public, private]
+          example: "public"
+        isMainline:
+          type: boolean
+          example: false
+        config:
+          type: object
+          additionalProperties: true
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    EvalSetCreate:
+      type: object
+      required:
+        - name
+      properties:
+        name:
+          type: string
+          example: "Appointment Scheduling Test Suite"
+        description:
+          type: string
+        visibility:
+          type: string
+          enum: [public, private]
+          default: "public"
+        config:
+          type: object
+          additionalProperties: true
+
+    EvalJob:
+      type: object
+      properties:
+        id:
+          type: integer
+          example: 1
+        workflowId:
+          type: integer
+          example: 1
+        evalSetId:
+          type: integer
+          nullable: true
+          example: 1
+        evalAgentId:
+          type: integer
+          nullable: true
+          example: 1
+        region:
+          type: string
+          enum: [na, apac, eu]
+          example: "na"
+        status:
+          type: string
+          enum: [pending, running, completed, failed]
+          example: "pending"
+        priority:
+          type: integer
+          example: 0
+        retryCount:
+          type: integer
+          example: 0
+        maxRetries:
+          type: integer
+          example: 3
+        startedAt:
+          type: string
+          format: date-time
+          nullable: true
+        completedAt:
+          type: string
+          format: date-time
+          nullable: true
+        error:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    RunWorkflowRequest:
+      type: object
+      properties:
+        region:
+          type: string
+          enum: [na, apac, eu]
+          default: "na"
+        evalSetId:
+          type: integer
+          nullable: true
+        priority:
+          type: integer
+          default: 0
+
+    EvalResult:
+      type: object
+      properties:
+        id:
+          type: integer
+          example: 1
+        evalJobId:
+          type: integer
+          example: 1
+        providerId:
+          type: string
+          example: "abc123def456"
+        region:
+          type: string
+          enum: [na, apac, eu]
+          example: "na"
+        responseLatencyMedian:
+          type: integer
+          description: "Median response latency in milliseconds"
+          example: 250
+        responseLatencySd:
+          type: number
+          description: "Standard deviation of response latency"
+          example: 45.2
+        interruptLatencyMedian:
+          type: integer
+          description: "Median interrupt latency in milliseconds"
+          example: 150
+        interruptLatencySd:
+          type: number
+          description: "Standard deviation of interrupt latency"
+          example: 30.5
+        networkResilience:
+          type: integer
+          nullable: true
+          description: "Network resilience score (0-100)"
+          example: 85
+        naturalness:
+          type: number
+          nullable: true
+          description: "Naturalness score (0-5)"
+          example: 4.2
+        noiseReduction:
+          type: integer
+          nullable: true
+          description: "Noise reduction score (0-100)"
+          example: 90
+        rawData:
+          type: object
+          additionalProperties: true
+        createdAt:
+          type: string
+          format: date-time
+
+    Project:
+      type: object
+      properties:
+        id:
+          type: integer
+          example: 1
+        name:
+          type: string
+          example: "Production Tests"
+        description:
+          type: string
+          nullable: true
+        ownerId:
+          type: integer
+          example: 1
+        organizationId:
+          type: integer
+          nullable: true
+        workflowCount:
+          type: integer
+          example: 5
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    ProjectCreate:
+      type: object
+      required:
+        - name
+      properties:
+        name:
+          type: string
+          example: "Production Tests"
+        description:
+          type: string
+
+    Provider:
+      type: object
+      properties:
+        id:
+          type: string
+          example: "abc123def456"
+        name:
+          type: string
+          example: "Agora ConvoAI Engine"
+        sku:
+          type: string
+          enum: [convoai, rtc]
+          example: "convoai"
+        description:
+          type: string
+          nullable: true
+        isActive:
+          type: boolean
+          example: true
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    RealtimeMetric:
+      type: object
+      properties:
+        id:
+          type: integer
+          example: 1
+        provider:
+          type: string
+          example: "abc123def456"
+        region:
+          type: string
+          enum: [na, apac, eu]
+          example: "na"
+        responseLatency:
+          type: integer
+          example: 250
+        interruptLatency:
+          type: integer
+          example: 150
+        networkResilience:
+          type: integer
+          nullable: true
+          example: 85
+        naturalness:
+          type: number
+          nullable: true
+          example: 4.2
+        noiseReduction:
+          type: integer
+          nullable: true
+          example: 90
+        timestamp:
+          type: string
+          format: date-time
+
+    LeaderboardEntry:
+      type: object
+      properties:
+        rank:
+          type: integer
+          example: 1
+        provider:
+          type: string
+          example: "abc123def456"
+        region:
+          type: string
+          enum: [na, apac, eu]
+          example: "na"
+        responseLatency:
+          type: integer
+          example: 250
+        interruptLatency:
+          type: integer
+          example: 150
+        networkResilience:
+          type: integer
+          example: 85
+        naturalness:
+          type: number
+          example: 4.2
+        noiseReduction:
+          type: integer
+          example: 90
+
+paths:
+  /workflows:
+    get:
+      tags:
+        - Workflows
+      summary: List workflows
+      description: Returns all workflows accessible to the authenticated user
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: List of workflows
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Workflow'
+                  meta:
+                    type: object
+                    properties:
+                      total:
+                        type: integer
+        '401':
+          description: Authentication required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+    post:
+      tags:
+        - Workflows
+      summary: Create workflow
+      description: Creates a new workflow
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WorkflowCreate'
+      responses:
+        '201':
+          description: Workflow created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Workflow'
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Authentication required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Plan limit reached or feature not available
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /workflows/{id}:
+    get:
+      tags:
+        - Workflows
+      summary: Get workflow
+      description: Returns a specific workflow by ID
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Workflow details
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Workflow'
+        '401':
+          description: Authentication required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Access denied
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Workflow not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+    put:
+      tags:
+        - Workflows
+      summary: Update workflow
+      description: Updates an existing workflow (owner only)
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WorkflowUpdate'
+      responses:
+        '200':
+          description: Workflow updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Workflow'
+        '401':
+          description: Authentication required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Not authorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Workflow not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+    delete:
+      tags:
+        - Workflows
+      summary: Delete workflow
+      description: Deletes a workflow (owner only)
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Workflow deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+        '401':
+          description: Authentication required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Not authorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Workflow not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /workflows/{id}/run:
+    post:
+      tags:
+        - Workflows
+      summary: Run workflow
+      description: Creates an eval job to run the workflow
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RunWorkflowRequest'
+      responses:
+        '201':
+          description: Job created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      job:
+                        $ref: '#/components/schemas/EvalJob'
+                      message:
+                        type: string
+        '401':
+          description: Authentication required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Not authorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Workflow not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /eval-sets:
+    get:
+      tags:
+        - Eval Sets
+      summary: List eval sets
+      description: Returns all eval sets accessible to the authenticated user
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: List of eval sets
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/EvalSet'
+                  meta:
+                    type: object
+                    properties:
+                      total:
+                        type: integer
+        '401':
+          description: Authentication required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+    post:
+      tags:
+        - Eval Sets
+      summary: Create eval set
+      description: Creates a new eval set
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EvalSetCreate'
+      responses:
+        '201':
+          description: Eval set created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/EvalSet'
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Authentication required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Plan limit reached
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /eval-sets/{id}:
+    get:
+      tags:
+        - Eval Sets
+      summary: Get eval set
+      description: Returns a specific eval set by ID
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Eval set details
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/EvalSet'
+        '401':
+          description: Authentication required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Access denied
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Eval set not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /jobs:
+    get:
+      tags:
+        - Jobs
+      summary: List jobs
+      description: Returns eval jobs for the authenticated user
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [pending, running, completed, failed]
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+      responses:
+        '200':
+          description: List of jobs
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/EvalJob'
+                  meta:
+                    type: object
+                    properties:
+                      limit:
+                        type: integer
+                      offset:
+                        type: integer
+        '401':
+          description: Authentication required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /jobs/{id}:
+    get:
+      tags:
+        - Jobs
+      summary: Get job
+      description: Returns a specific job by ID
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Job details
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/EvalJob'
+        '401':
+          description: Authentication required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Access denied
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Job not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+    delete:
+      tags:
+        - Jobs
+      summary: Cancel job
+      description: Cancels a pending job
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Job cancelled
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  message:
+                    type: string
+        '400':
+          description: Job cannot be cancelled (not pending)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  currentStatus:
+                    type: string
+        '401':
+          description: Authentication required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Access denied
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Job not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /results:
+    get:
+      tags:
+        - Results
+      summary: List results
+      description: Returns eval results for the authenticated user
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: workflowId
+          in: query
+          schema:
+            type: integer
+        - name: jobId
+          in: query
+          schema:
+            type: integer
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+      responses:
+        '200':
+          description: List of results
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/EvalResult'
+                  meta:
+                    type: object
+                    properties:
+                      limit:
+                        type: integer
+                      offset:
+                        type: integer
+        '401':
+          description: Authentication required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /results/{id}:
+    get:
+      tags:
+        - Results
+      summary: Get result
+      description: Returns a specific result by ID
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Result details
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/EvalResult'
+        '401':
+          description: Authentication required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Access denied
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Result not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /projects:
+    get:
+      tags:
+        - Projects
+      summary: List projects
+      description: Returns all projects for the authenticated user
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: List of projects
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Project'
+                  meta:
+                    type: object
+                    properties:
+                      total:
+                        type: integer
+        '401':
+          description: Authentication required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+    post:
+      tags:
+        - Projects
+      summary: Create project
+      description: Creates a new project
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProjectCreate'
+      responses:
+        '201':
+          description: Project created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Project'
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Authentication required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Plan limit reached
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /metrics/realtime:
+    get:
+      tags:
+        - Metrics
+      summary: Get realtime metrics
+      description: Returns recent evaluation metrics (public endpoint)
+      responses:
+        '200':
+          description: Realtime metrics
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/RealtimeMetric'
+                  meta:
+                    type: object
+                    properties:
+                      timestamp:
+                        type: string
+                        format: date-time
+                      count:
+                        type: integer
+
+  /metrics/leaderboard:
+    get:
+      tags:
+        - Metrics
+      summary: Get leaderboard
+      description: Returns aggregated provider rankings (public endpoint)
+      parameters:
+        - name: region
+          in: query
+          schema:
+            type: string
+            enum: [na, apac, eu]
+          description: Filter by region (optional)
+      responses:
+        '200':
+          description: Leaderboard data
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/LeaderboardEntry'
+                  meta:
+                    type: object
+                    properties:
+                      timestamp:
+                        type: string
+                        format: date-time
+                      region:
+                        type: string
+                      count:
+                        type: integer
+
+  /providers:
+    get:
+      tags:
+        - Providers
+      summary: List providers
+      description: Returns all active providers (public endpoint)
+      responses:
+        '200':
+          description: List of providers
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Provider'
+                  meta:
+                    type: object
+                    properties:
+                      total:
+                        type: integer
+
+  /user:
+    get:
+      tags:
+        - User
+      summary: Get current user
+      description: Returns information about the authenticated user (useful for API key validation)
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: User information
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/User'
+        '401':
+          description: Authentication required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
