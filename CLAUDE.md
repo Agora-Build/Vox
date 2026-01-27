@@ -26,8 +26,23 @@ npm run test:watch         # Run tests in watch mode
 
 ### Database
 ```bash
-npm run db:push            # Push schema changes to database (uses Drizzle Kit)
+# Development (direct schema sync - use with caution on existing data)
+npm run db:push            # Push schema changes directly to database
+
+# Production (migration-based - safer for existing data)
+npm run db:generate        # Generate migration files from schema changes
+npm run db:migrate         # Run pending migrations
+
+# Utilities
+npm run db:studio          # Open Drizzle Studio (database GUI)
 ```
+
+**Migration Workflow for Production:**
+1. Make schema changes in `shared/schema.ts`
+2. Run `npm run db:generate` to create migration file in `./migrations/`
+3. Review the generated SQL migration file
+4. Commit the migration file to git
+5. Deploy - run `npm run db:migrate` as post-deployment step
 
 ### Environment Variables
 Required:
