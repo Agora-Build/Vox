@@ -1,6 +1,7 @@
 import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage, hashToken, generateSecureToken } from "./storage";
+import { parseNextCronRun } from "./cron";
 import { generateProviderId } from "@shared/schema";
 import { registerApiV1Routes } from "./routes-api-v1";
 import {
@@ -1079,6 +1080,245 @@ export async function registerRoutes(
     } catch (error) {
       console.error("Error updating eval set mainline:", error);
       res.status(500).json({ error: "Failed to update eval set" });
+    }
+  });
+
+  // ==================== EVAL SCHEDULE ROUTES ====================
+
+  // List all schedules for current user
+  app.get("/api/eval-schedules", requireAuth, async (req, res) => {
+    try {
+      const user = await getCurrentUser(req);
+      if (!user) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+      const schedules = await storage.getEvalSchedulesWithWorkflow(user.id);
+      res.json(schedules);
+    } catch (error) {
+      console.error("Error fetching eval schedules:", error);
+      res.status(500).json({ error: "Failed to fetch eval schedules" });
+    }
+  });
+
+  // Get a specific schedule
+  app.get("/api/eval-schedules/:id", requireAuth, async (req, res) => {
+    try {
+      const user = await getCurrentUser(req);
+      if (!user) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+      const schedule = await storage.getEvalSchedule(parseInt(req.params.id));
+      if (!schedule) {
+        return res.status(404).json({ error: "Schedule not found" });
+      }
+      if (schedule.createdBy !== user.id && !user.isAdmin) {
+        return res.status(403).json({ error: "Access denied" });
+      }
+      res.json(schedule);
+    } catch (error) {
+      console.error("Error fetching eval schedule:", error);
+      res.status(500).json({ error: "Failed to fetch eval schedule" });
+    }
+  });
+
+  // Create a new schedule (one-time or recurring)
+  app.post("/api/eval-schedules", requireAuth, async (req, res) => {
+    try {
+      const user = await getCurrentUser(req);
+      if (!user) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+
+      const { name, workflowId, evalSetId, region, scheduleType, cronExpression, timezone, runAt, maxRuns } = req.body;
+
+      if (!name || !workflowId || !region) {
+        return res.status(400).json({ error: "Name, workflowId, and region are required" });
+      }
+
+      if (!["na", "apac", "eu"].includes(region)) {
+        return res.status(400).json({ error: "Invalid region. Must be na, apac, or eu" });
+      }
+
+      // Verify workflow exists and user owns it
+      const workflow = await storage.getWorkflow(workflowId);
+      if (!workflow) {
+        return res.status(404).json({ error: "Workflow not found" });
+      }
+      if (workflow.ownerId !== user.id && !user.isAdmin) {
+        return res.status(403).json({ error: "Access denied to workflow" });
+      }
+
+      // Verify eval set if provided
+      if (evalSetId) {
+        const evalSet = await storage.getEvalSet(evalSetId);
+        if (!evalSet) {
+          return res.status(404).json({ error: "Eval set not found" });
+        }
+        if (evalSet.ownerId !== user.id && evalSet.visibility !== "public") {
+          return res.status(403).json({ error: "Access denied to eval set" });
+        }
+      }
+
+      const type = scheduleType || "once";
+      let nextRunAt: Date | null = null;
+
+      if (type === "once") {
+        // One-time schedule: run immediately or at specified time
+        nextRunAt = runAt ? new Date(runAt) : new Date();
+      } else if (type === "recurring") {
+        // Recurring schedule: requires cron expression
+        if (!cronExpression) {
+          return res.status(400).json({ error: "cronExpression is required for recurring schedules" });
+        }
+        // Validate cron expression (basic check)
+        const cronParts = cronExpression.trim().split(/\s+/);
+        if (cronParts.length !== 5) {
+          return res.status(400).json({ error: "Invalid cron expression. Must have 5 parts: minute hour day month weekday" });
+        }
+        // Calculate first run time
+        nextRunAt = parseNextCronRun(cronExpression);
+      }
+
+      const schedule = await storage.createEvalSchedule({
+        name,
+        workflowId,
+        evalSetId: evalSetId || null,
+        region,
+        scheduleType: type,
+        cronExpression: cronExpression || null,
+        timezone: timezone || "UTC",
+        isEnabled: true,
+        nextRunAt,
+        maxRuns: maxRuns || null,
+        createdBy: user.id,
+      });
+
+      res.json(schedule);
+    } catch (error) {
+      console.error("Error creating eval schedule:", error);
+      res.status(500).json({ error: "Failed to create eval schedule" });
+    }
+  });
+
+  // Update a schedule
+  app.patch("/api/eval-schedules/:id", requireAuth, async (req, res) => {
+    try {
+      const user = await getCurrentUser(req);
+      if (!user) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+
+      const scheduleId = parseInt(req.params.id);
+      const schedule = await storage.getEvalSchedule(scheduleId);
+
+      if (!schedule) {
+        return res.status(404).json({ error: "Schedule not found" });
+      }
+      if (schedule.createdBy !== user.id && !user.isAdmin) {
+        return res.status(403).json({ error: "Access denied" });
+      }
+
+      const { name, isEnabled, cronExpression, maxRuns, nextRunAt } = req.body;
+      const updates: Record<string, unknown> = {};
+
+      if (name !== undefined) updates.name = name;
+      if (isEnabled !== undefined) updates.isEnabled = isEnabled;
+      if (maxRuns !== undefined) updates.maxRuns = maxRuns;
+
+      // If enabling a disabled schedule, recalculate next run time
+      if (isEnabled === true && !schedule.isEnabled) {
+        if (schedule.scheduleType === "recurring" && schedule.cronExpression) {
+          updates.nextRunAt = parseNextCronRun(schedule.cronExpression);
+        } else if (schedule.scheduleType === "once") {
+          updates.nextRunAt = new Date();
+        }
+      }
+
+      // Update cron expression and recalculate next run
+      if (cronExpression !== undefined && schedule.scheduleType === "recurring") {
+        const cronParts = cronExpression.trim().split(/\s+/);
+        if (cronParts.length !== 5) {
+          return res.status(400).json({ error: "Invalid cron expression" });
+        }
+        updates.cronExpression = cronExpression;
+        if (schedule.isEnabled || isEnabled === true) {
+          updates.nextRunAt = parseNextCronRun(cronExpression);
+        }
+      }
+
+      // Allow manual override of nextRunAt
+      if (nextRunAt !== undefined) {
+        updates.nextRunAt = nextRunAt ? new Date(nextRunAt) : null;
+      }
+
+      const updated = await storage.updateEvalSchedule(scheduleId, updates);
+      res.json(updated);
+    } catch (error) {
+      console.error("Error updating eval schedule:", error);
+      res.status(500).json({ error: "Failed to update eval schedule" });
+    }
+  });
+
+  // Delete a schedule
+  app.delete("/api/eval-schedules/:id", requireAuth, async (req, res) => {
+    try {
+      const user = await getCurrentUser(req);
+      if (!user) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+
+      const scheduleId = parseInt(req.params.id);
+      const schedule = await storage.getEvalSchedule(scheduleId);
+
+      if (!schedule) {
+        return res.status(404).json({ error: "Schedule not found" });
+      }
+      if (schedule.createdBy !== user.id && !user.isAdmin) {
+        return res.status(403).json({ error: "Access denied" });
+      }
+
+      await storage.deleteEvalSchedule(scheduleId);
+      res.json({ message: "Schedule deleted" });
+    } catch (error) {
+      console.error("Error deleting eval schedule:", error);
+      res.status(500).json({ error: "Failed to delete eval schedule" });
+    }
+  });
+
+  // Run a schedule immediately (creates a job now, doesn't affect the schedule's timing)
+  app.post("/api/eval-schedules/:id/run-now", requireAuth, async (req, res) => {
+    try {
+      const user = await getCurrentUser(req);
+      if (!user) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+
+      const scheduleId = parseInt(req.params.id);
+      const schedule = await storage.getEvalSchedule(scheduleId);
+
+      if (!schedule) {
+        return res.status(404).json({ error: "Schedule not found" });
+      }
+      if (schedule.createdBy !== user.id && !user.isAdmin) {
+        return res.status(403).json({ error: "Access denied" });
+      }
+
+      // Create a job immediately
+      const job = await storage.createEvalJob({
+        scheduleId: schedule.id,
+        workflowId: schedule.workflowId,
+        evalSetId: schedule.evalSetId,
+        region: schedule.region,
+        status: "pending",
+        priority: 0,
+        retryCount: 0,
+        maxRetries: 3,
+      });
+
+      res.json({ message: "Job created", job });
+    } catch (error) {
+      console.error("Error running schedule:", error);
+      res.status(500).json({ error: "Failed to run schedule" });
     }
   });
 

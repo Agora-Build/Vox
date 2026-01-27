@@ -9,6 +9,7 @@ export const regionEnum = pgEnum("region", ["na", "apac", "eu"]);
 export const providerSkuEnum = pgEnum("provider_sku", ["convoai", "rtc"]);
 export const evalAgentStateEnum = pgEnum("eval_agent_state", ["idle", "offline", "occupied"]);
 export const evalJobStatusEnum = pgEnum("eval_job_status", ["pending", "running", "completed", "failed"]);
+export const scheduleTypeEnum = pgEnum("schedule_type", ["once", "recurring"]);
 
 // Helper function to generate 12-char random ID for providers
 export function generateProviderId(): string {
@@ -205,10 +206,45 @@ export const insertEvalAgentSchema = createInsertSchema(evalAgents).omit({
 export type InsertEvalAgent = z.infer<typeof insertEvalAgentSchema>;
 export type EvalAgent = typeof evalAgents.$inferSelect;
 
+// ==================== EVAL SCHEDULES ====================
+
+export const evalSchedules = pgTable("eval_schedules", {
+  id: serial("id").primaryKey(),
+  name: text("name").notNull(),
+  workflowId: integer("workflow_id").notNull().references(() => workflows.id, { onDelete: "cascade" }),
+  evalSetId: integer("eval_set_id").references(() => evalSets.id),
+  region: regionEnum("region").notNull(),
+  scheduleType: scheduleTypeEnum("schedule_type").default("once").notNull(),
+  cronExpression: varchar("cron_expression", { length: 100 }), // e.g., "0 * * * *" for hourly
+  timezone: varchar("timezone", { length: 50 }).default("UTC").notNull(),
+  isEnabled: boolean("is_enabled").default(true).notNull(),
+  nextRunAt: timestamp("next_run_at"),
+  lastRunAt: timestamp("last_run_at"),
+  runCount: integer("run_count").default(0).notNull(),
+  maxRuns: integer("max_runs"), // null = unlimited for recurring
+  createdBy: integer("created_by").notNull().references(() => users.id),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (table) => ({
+  enabledNextRunIdx: index("eval_schedules_enabled_next_run_idx").on(table.isEnabled, table.nextRunAt),
+}));
+
+export const insertEvalScheduleSchema = createInsertSchema(evalSchedules).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+  lastRunAt: true,
+  runCount: true,
+});
+
+export type InsertEvalSchedule = z.infer<typeof insertEvalScheduleSchema>;
+export type EvalSchedule = typeof evalSchedules.$inferSelect;
+
 // ==================== EVAL JOBS ====================
 
 export const evalJobs = pgTable("eval_jobs", {
   id: serial("id").primaryKey(),
+  scheduleId: integer("schedule_id").references(() => evalSchedules.id, { onDelete: "set null" }),
   workflowId: integer("workflow_id").notNull().references(() => workflows.id, { onDelete: "cascade" }),
   evalSetId: integer("eval_set_id").references(() => evalSets.id),
   evalAgentId: integer("eval_agent_id").references(() => evalAgents.id),
@@ -225,6 +261,7 @@ export const evalJobs = pgTable("eval_jobs", {
 }, (table) => ({
   statusRegionIdx: index("eval_jobs_status_region_idx").on(table.status, table.region),
   evalAgentIdx: index("eval_jobs_eval_agent_idx").on(table.evalAgentId),
+  scheduleIdx: index("eval_jobs_schedule_idx").on(table.scheduleId),
 }));
 
 export const insertEvalJobSchema = createInsertSchema(evalJobs).omit({

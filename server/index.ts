@@ -7,6 +7,7 @@ import connectPgSimple from "connect-pg-simple";
 import rateLimit from "express-rate-limit";
 import { authenticateApiKey, passport, initializeGoogleOAuth } from "./auth";
 import { storage } from "./storage";
+import { parseNextCronRun } from "./cron";
 import pkg from "pg";
 const { Pool } = pkg;
 
@@ -195,9 +196,66 @@ function startBackgroundWorker() {
     }
   }
 
+  async function processScheduledJobs() {
+    try {
+      // Get all due schedules
+      const dueSchedules = await storage.getDueSchedules();
+
+      for (const schedule of dueSchedules) {
+        try {
+          // Create the eval job
+          const job = await storage.createEvalJob({
+            scheduleId: schedule.id,
+            workflowId: schedule.workflowId,
+            evalSetId: schedule.evalSetId,
+            region: schedule.region,
+            status: "pending",
+            priority: 0,
+            retryCount: 0,
+            maxRetries: 3,
+          });
+
+          log(`Created job ${job.id} from schedule "${schedule.name}" (${schedule.scheduleType})`, "scheduler");
+
+          // Calculate next run time
+          let nextRunAt: Date | null = null;
+
+          if (schedule.scheduleType === "recurring" && schedule.cronExpression) {
+            // Check if max runs reached
+            const newRunCount = schedule.runCount + 1;
+            if (schedule.maxRuns && newRunCount >= schedule.maxRuns) {
+              // Max runs reached, disable the schedule
+              await storage.disableSchedule(schedule.id);
+              log(`Schedule "${schedule.name}" disabled (max runs reached: ${schedule.maxRuns})`, "scheduler");
+            } else {
+              // Calculate next run time from cron expression
+              nextRunAt = parseNextCronRun(schedule.cronExpression);
+            }
+          } else {
+            // One-time schedule, disable after running
+            await storage.disableSchedule(schedule.id);
+            log(`One-time schedule "${schedule.name}" completed and disabled`, "scheduler");
+          }
+
+          // Update schedule with new run count and next run time
+          if (nextRunAt) {
+            await storage.markScheduleRun(schedule.id, nextRunAt);
+            log(`Schedule "${schedule.name}" next run at ${nextRunAt.toISOString()}`, "scheduler");
+          }
+        } catch (error) {
+          console.error(`Failed to process schedule ${schedule.id}:`, error);
+        }
+      }
+    } catch (error) {
+      console.error("Scheduler error:", error);
+    }
+  }
+
   // Run immediately on startup, then every minute
   runMaintenanceTasks();
+  processScheduledJobs();
   setInterval(runMaintenanceTasks, CHECK_INTERVAL_MS);
+  setInterval(processScheduledJobs, CHECK_INTERVAL_MS);
 
-  log("Background worker started (stale job detection)", "worker");
+  log("Background worker started (stale job detection + job scheduler)", "worker");
 }

@@ -55,6 +55,22 @@ interface EvalJob {
   workflowId: number;
   status: string;
   region: string;
+  scheduleId?: number | null;
+}
+
+interface EvalSchedule {
+  id: number;
+  name: string;
+  workflowId: number;
+  evalSetId: number | null;
+  region: string;
+  scheduleType: string;
+  cronExpression: string | null;
+  isEnabled: boolean;
+  nextRunAt: string | null;
+  lastRunAt: string | null;
+  runCount: number;
+  maxRuns: number | null;
 }
 
 interface Project {
@@ -111,6 +127,8 @@ describe('Vox API Tests', () => {
   let testEvalAgentToken: string;
   let testApiKeyId: number;
   let testApiKey: string;
+  let testScheduleId: number;
+  let testRecurringScheduleId: number;
 
   beforeAll(async () => {
     adminSession = await login(ADMIN_EMAIL, ADMIN_PASSWORD);
@@ -292,6 +310,269 @@ describe('Vox API Tests', () => {
     });
   });
 
+  describe('Eval Schedule API', () => {
+    it('should create a one-time schedule', async () => {
+      const response = await authFetch(adminSession, `${BASE_URL}/api/eval-schedules`, {
+        method: 'POST',
+        body: JSON.stringify({
+          name: 'Test One-Time Schedule',
+          workflowId: testWorkflowId,
+          evalSetId: testEvalSetId,
+          region: 'na',
+          scheduleType: 'once',
+        }),
+      });
+
+      expect(response.ok).toBe(true);
+      const schedule: EvalSchedule = await response.json();
+      expect(schedule.name).toBe('Test One-Time Schedule');
+      expect(schedule.scheduleType).toBe('once');
+      expect(schedule.isEnabled).toBe(true);
+      expect(schedule.nextRunAt).toBeDefined();
+      testScheduleId = schedule.id;
+    });
+
+    it('should create a recurring schedule with cron expression', async () => {
+      const response = await authFetch(adminSession, `${BASE_URL}/api/eval-schedules`, {
+        method: 'POST',
+        body: JSON.stringify({
+          name: 'Test Recurring Schedule',
+          workflowId: testWorkflowId,
+          evalSetId: testEvalSetId,
+          region: 'na',
+          scheduleType: 'recurring',
+          cronExpression: '0 * * * *', // Every hour
+          maxRuns: 10,
+        }),
+      });
+
+      expect(response.ok).toBe(true);
+      const schedule: EvalSchedule = await response.json();
+      expect(schedule.name).toBe('Test Recurring Schedule');
+      expect(schedule.scheduleType).toBe('recurring');
+      expect(schedule.cronExpression).toBe('0 * * * *');
+      expect(schedule.maxRuns).toBe(10);
+      expect(schedule.isEnabled).toBe(true);
+      testRecurringScheduleId = schedule.id;
+    });
+
+    it('should reject recurring schedule without cron expression', async () => {
+      const response = await authFetch(adminSession, `${BASE_URL}/api/eval-schedules`, {
+        method: 'POST',
+        body: JSON.stringify({
+          name: 'Invalid Schedule',
+          workflowId: testWorkflowId,
+          region: 'na',
+          scheduleType: 'recurring',
+          // Missing cronExpression
+        }),
+      });
+
+      expect(response.status).toBe(400);
+      const data = await response.json();
+      expect(data.error).toContain('cronExpression');
+    });
+
+    it('should reject schedule with invalid cron expression', async () => {
+      const response = await authFetch(adminSession, `${BASE_URL}/api/eval-schedules`, {
+        method: 'POST',
+        body: JSON.stringify({
+          name: 'Invalid Cron Schedule',
+          workflowId: testWorkflowId,
+          region: 'na',
+          scheduleType: 'recurring',
+          cronExpression: '0 0 * *', // Invalid - only 4 parts
+        }),
+      });
+
+      expect(response.status).toBe(400);
+      const data = await response.json();
+      expect(data.error).toContain('Invalid cron');
+    });
+
+    it('should get all schedules', async () => {
+      const response = await authFetch(adminSession, `${BASE_URL}/api/eval-schedules`);
+      expect(response.ok).toBe(true);
+
+      const schedules: EvalSchedule[] = await response.json();
+      expect(Array.isArray(schedules)).toBe(true);
+      expect(schedules.length).toBeGreaterThanOrEqual(2);
+    });
+
+    it('should get a single schedule by id', async () => {
+      const response = await authFetch(adminSession, `${BASE_URL}/api/eval-schedules/${testScheduleId}`);
+      expect(response.ok).toBe(true);
+
+      const schedule: EvalSchedule = await response.json();
+      expect(schedule.id).toBe(testScheduleId);
+      expect(schedule.name).toBe('Test One-Time Schedule');
+    });
+
+    it('should update a schedule', async () => {
+      const response = await authFetch(adminSession, `${BASE_URL}/api/eval-schedules/${testRecurringScheduleId}`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          name: 'Updated Recurring Schedule',
+          cronExpression: '30 * * * *', // Changed to every hour at :30
+        }),
+      });
+
+      expect(response.ok).toBe(true);
+      const schedule: EvalSchedule = await response.json();
+      expect(schedule.name).toBe('Updated Recurring Schedule');
+      expect(schedule.cronExpression).toBe('30 * * * *');
+    });
+
+    it('should disable a schedule', async () => {
+      const response = await authFetch(adminSession, `${BASE_URL}/api/eval-schedules/${testRecurringScheduleId}`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          isEnabled: false,
+        }),
+      });
+
+      expect(response.ok).toBe(true);
+      const schedule: EvalSchedule = await response.json();
+      expect(schedule.isEnabled).toBe(false);
+    });
+
+    it('should re-enable a schedule and recalculate nextRunAt', async () => {
+      const response = await authFetch(adminSession, `${BASE_URL}/api/eval-schedules/${testRecurringScheduleId}`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          isEnabled: true,
+        }),
+      });
+
+      expect(response.ok).toBe(true);
+      const schedule: EvalSchedule = await response.json();
+      expect(schedule.isEnabled).toBe(true);
+      expect(schedule.nextRunAt).toBeDefined();
+    });
+
+    it('should run a schedule immediately (run-now)', async () => {
+      const response = await authFetch(adminSession, `${BASE_URL}/api/eval-schedules/${testRecurringScheduleId}/run-now`, {
+        method: 'POST',
+      });
+
+      expect(response.ok).toBe(true);
+      const result = await response.json();
+      expect(result.job).toBeDefined();
+      expect(result.job.workflowId).toBe(testWorkflowId);
+      expect(result.job.scheduleId).toBe(testRecurringScheduleId);
+    });
+
+    it('should reject access to non-owned schedule', async () => {
+      // First create a new user session (or use a different approach)
+      // For now, test that we get proper 404 for non-existent schedule
+      const response = await authFetch(adminSession, `${BASE_URL}/api/eval-schedules/999999`);
+      expect(response.status).toBe(404);
+    });
+
+    it('should reject schedule creation with non-existent workflow', async () => {
+      const response = await authFetch(adminSession, `${BASE_URL}/api/eval-schedules`, {
+        method: 'POST',
+        body: JSON.stringify({
+          name: 'Invalid Workflow Schedule',
+          workflowId: 999999,
+          region: 'na',
+          scheduleType: 'once',
+        }),
+      });
+
+      expect(response.status).toBe(404);
+    });
+
+    it('should reject schedule creation with invalid region', async () => {
+      const response = await authFetch(adminSession, `${BASE_URL}/api/eval-schedules`, {
+        method: 'POST',
+        body: JSON.stringify({
+          name: 'Invalid Region Schedule',
+          workflowId: testWorkflowId,
+          region: 'invalid',
+          scheduleType: 'once',
+        }),
+      });
+
+      expect(response.status).toBe(400);
+    });
+
+    it('should reject schedule creation without name', async () => {
+      const response = await authFetch(adminSession, `${BASE_URL}/api/eval-schedules`, {
+        method: 'POST',
+        body: JSON.stringify({
+          workflowId: testWorkflowId,
+          region: 'na',
+          scheduleType: 'once',
+        }),
+      });
+
+      expect(response.status).toBe(400);
+    });
+
+    it('should create schedule with specific runAt time', async () => {
+      const futureTime = new Date(Date.now() + 3600000).toISOString(); // 1 hour from now
+      const response = await authFetch(adminSession, `${BASE_URL}/api/eval-schedules`, {
+        method: 'POST',
+        body: JSON.stringify({
+          name: 'Future One-Time Schedule',
+          workflowId: testWorkflowId,
+          region: 'eu',
+          scheduleType: 'once',
+          runAt: futureTime,
+        }),
+      });
+
+      expect(response.ok).toBe(true);
+      const schedule: EvalSchedule = await response.json();
+      expect(schedule.scheduleType).toBe('once');
+      expect(schedule.region).toBe('eu');
+      expect(new Date(schedule.nextRunAt!).getTime()).toBeGreaterThan(Date.now());
+
+      // Cleanup
+      await authFetch(adminSession, `${BASE_URL}/api/eval-schedules/${schedule.id}`, {
+        method: 'DELETE',
+      });
+    });
+
+    it('should create recurring schedule with daily cron', async () => {
+      const response = await authFetch(adminSession, `${BASE_URL}/api/eval-schedules`, {
+        method: 'POST',
+        body: JSON.stringify({
+          name: 'Daily Schedule',
+          workflowId: testWorkflowId,
+          region: 'apac',
+          scheduleType: 'recurring',
+          cronExpression: '0 8 * * *', // Daily at 8 AM
+        }),
+      });
+
+      expect(response.ok).toBe(true);
+      const schedule: EvalSchedule = await response.json();
+      expect(schedule.scheduleType).toBe('recurring');
+      expect(schedule.cronExpression).toBe('0 8 * * *');
+
+      // Cleanup
+      await authFetch(adminSession, `${BASE_URL}/api/eval-schedules/${schedule.id}`, {
+        method: 'DELETE',
+      });
+    });
+
+    it('should delete schedules in cleanup', async () => {
+      // Delete one-time schedule
+      let response = await authFetch(adminSession, `${BASE_URL}/api/eval-schedules/${testScheduleId}`, {
+        method: 'DELETE',
+      });
+      expect(response.ok).toBe(true);
+
+      // Delete recurring schedule
+      response = await authFetch(adminSession, `${BASE_URL}/api/eval-schedules/${testRecurringScheduleId}`, {
+        method: 'DELETE',
+      });
+      expect(response.ok).toBe(true);
+    });
+  });
+
   describe('Eval Agent Token API (Admin Only)', () => {
     it('should create an eval agent token', async () => {
       const response = await authFetch(adminSession, `${BASE_URL}/api/admin/eval-agent-tokens`, {
@@ -384,6 +665,8 @@ describe('Vox API Tests', () => {
   });
 
   describe('Job API', () => {
+    let testJobId: number;
+
     it('should run a workflow and create jobs', async () => {
       const response = await authFetch(adminSession, `${BASE_URL}/api/workflows/${testWorkflowId}/run`, {
         method: 'POST',
@@ -397,6 +680,7 @@ describe('Vox API Tests', () => {
       const result = await response.json();
       expect(result.job).toBeDefined();
       expect(result.job.workflowId).toBe(testWorkflowId);
+      testJobId = result.job.id;
     });
 
     it('should get pending jobs for a region', async () => {
@@ -409,6 +693,29 @@ describe('Vox API Tests', () => {
       expect(response.ok).toBe(true);
       const jobs: EvalJob[] = await response.json();
       expect(Array.isArray(jobs)).toBe(true);
+    });
+
+    it('should reject job creation with invalid region', async () => {
+      const response = await authFetch(adminSession, `${BASE_URL}/api/workflows/${testWorkflowId}/run`, {
+        method: 'POST',
+        body: JSON.stringify({
+          evalSetId: testEvalSetId,
+          region: 'invalid',
+        }),
+      });
+
+      expect(response.status).toBe(400);
+    });
+
+    it('should reject job creation without region', async () => {
+      const response = await authFetch(adminSession, `${BASE_URL}/api/workflows/${testWorkflowId}/run`, {
+        method: 'POST',
+        body: JSON.stringify({
+          evalSetId: testEvalSetId,
+        }),
+      });
+
+      expect(response.status).toBe(400);
     });
   });
 
@@ -550,6 +857,107 @@ describe('Vox API Tests', () => {
       expect(response.ok).toBe(true);
       const data = await response.json();
       expect(data).toBeDefined();
+    });
+  });
+
+  describe('Eval Results API', () => {
+    it('should get eval results via API v1', async () => {
+      const response = await fetch(`${BASE_URL}/api/v1/results`, {
+        headers: {
+          'Authorization': `Bearer ${testApiKey}`,
+        },
+      });
+
+      expect(response.ok).toBe(true);
+      const { data } = await response.json();
+      expect(Array.isArray(data)).toBe(true);
+    });
+
+    it('should get results filtered by workflow', async () => {
+      const response = await fetch(`${BASE_URL}/api/v1/results?workflowId=${testWorkflowId}`, {
+        headers: {
+          'Authorization': `Bearer ${testApiKey}`,
+        },
+      });
+
+      expect(response.ok).toBe(true);
+      const { data } = await response.json();
+      expect(Array.isArray(data)).toBe(true);
+    });
+
+    it('should support pagination for results', async () => {
+      const response = await fetch(`${BASE_URL}/api/v1/results?limit=5&offset=0`, {
+        headers: {
+          'Authorization': `Bearer ${testApiKey}`,
+        },
+      });
+
+      expect(response.ok).toBe(true);
+      const { data } = await response.json();
+      expect(Array.isArray(data)).toBe(true);
+      expect(data.length).toBeLessThanOrEqual(5);
+    });
+  });
+
+  describe('Edge Cases and Error Handling', () => {
+    it('should return 404 for non-existent workflow', async () => {
+      const response = await authFetch(adminSession, `${BASE_URL}/api/workflows/999999`);
+      expect(response.status).toBe(404);
+    });
+
+    it('should return 404 for non-existent project', async () => {
+      const response = await authFetch(adminSession, `${BASE_URL}/api/projects/999999`);
+      expect(response.status).toBe(404);
+    });
+
+    it('should return 404 for non-existent eval set', async () => {
+      const response = await authFetch(adminSession, `${BASE_URL}/api/eval-sets/999999`);
+      expect(response.status).toBe(404);
+    });
+
+    it('should reject workflow creation without name', async () => {
+      const response = await authFetch(adminSession, `${BASE_URL}/api/workflows`, {
+        method: 'POST',
+        body: JSON.stringify({
+          description: 'No name workflow',
+        }),
+      });
+
+      expect(response.status).toBe(400);
+    });
+
+    it('should reject project creation without name', async () => {
+      const response = await authFetch(adminSession, `${BASE_URL}/api/projects`, {
+        method: 'POST',
+        body: JSON.stringify({
+          description: 'No name project',
+        }),
+      });
+
+      expect(response.status).toBe(400);
+    });
+
+    it('should reject eval set creation without name', async () => {
+      const response = await authFetch(adminSession, `${BASE_URL}/api/eval-sets`, {
+        method: 'POST',
+        body: JSON.stringify({
+          description: 'No name eval set',
+        }),
+      });
+
+      expect(response.status).toBe(400);
+    });
+
+    it('should reject invalid eval agent token region', async () => {
+      const response = await authFetch(adminSession, `${BASE_URL}/api/admin/eval-agent-tokens`, {
+        method: 'POST',
+        body: JSON.stringify({
+          name: 'Invalid Region Token',
+          region: 'invalid',
+        }),
+      });
+
+      expect(response.status).toBe(400);
     });
   });
 

@@ -1,6 +1,6 @@
-import { 
-  type User, 
-  type InsertUser, 
+import {
+  type User,
+  type InsertUser,
   type Organization,
   type InsertOrganization,
   type Provider,
@@ -16,6 +16,8 @@ import {
   type InsertEvalAgentToken,
   type EvalAgent,
   type InsertEvalAgent,
+  type EvalSchedule,
+  type InsertEvalSchedule,
   type EvalJob,
   type InsertEvalJob,
   type EvalResult,
@@ -42,6 +44,7 @@ import {
   evalSets,
   evalAgentTokens,
   evalAgents,
+  evalSchedules,
   evalJobs,
   evalResults,
   apiKeys,
@@ -473,6 +476,7 @@ export class DatabaseStorage {
     if (filters?.ownerId) {
       let query = db.select({
         id: evalJobs.id,
+        scheduleId: evalJobs.scheduleId,
         workflowId: evalJobs.workflowId,
         evalSetId: evalJobs.evalSetId,
         evalAgentId: evalJobs.evalAgentId,
@@ -927,6 +931,107 @@ export class DatabaseStorage {
 
   async getAllFundReturnRequests(): Promise<FundReturnRequest[]> {
     return db.select().from(fundReturnRequests).orderBy(desc(fundReturnRequests.createdAt));
+  }
+
+  // ==================== EVAL SCHEDULES ====================
+
+  async createEvalSchedule(schedule: InsertEvalSchedule): Promise<EvalSchedule> {
+    const result = await db.insert(evalSchedules).values(schedule).returning();
+    return result[0];
+  }
+
+  async getEvalSchedule(id: number): Promise<EvalSchedule | undefined> {
+    const result = await db.select().from(evalSchedules).where(eq(evalSchedules.id, id));
+    return result[0];
+  }
+
+  async getEvalSchedulesByUser(userId: number): Promise<EvalSchedule[]> {
+    return db.select().from(evalSchedules).where(eq(evalSchedules.createdBy, userId)).orderBy(desc(evalSchedules.createdAt));
+  }
+
+  async getEvalSchedulesByWorkflow(workflowId: number): Promise<EvalSchedule[]> {
+    return db.select().from(evalSchedules).where(eq(evalSchedules.workflowId, workflowId)).orderBy(desc(evalSchedules.createdAt));
+  }
+
+  async updateEvalSchedule(id: number, data: Partial<EvalSchedule>): Promise<EvalSchedule | undefined> {
+    const result = await db.update(evalSchedules).set({ ...data, updatedAt: new Date() }).where(eq(evalSchedules.id, id)).returning();
+    return result[0];
+  }
+
+  async deleteEvalSchedule(id: number): Promise<void> {
+    await db.delete(evalSchedules).where(eq(evalSchedules.id, id));
+  }
+
+  // Get schedules that are due to run (isEnabled=true, nextRunAt <= now)
+  async getDueSchedules(): Promise<EvalSchedule[]> {
+    const now = new Date();
+    return db.select()
+      .from(evalSchedules)
+      .where(
+        and(
+          eq(evalSchedules.isEnabled, true),
+          sql`${evalSchedules.nextRunAt} <= ${now}`
+        )
+      )
+      .orderBy(evalSchedules.nextRunAt);
+  }
+
+  // Update schedule after a job is created from it
+  async markScheduleRun(scheduleId: number, nextRunAt: Date | null): Promise<EvalSchedule | undefined> {
+    const result = await db.update(evalSchedules)
+      .set({
+        lastRunAt: new Date(),
+        runCount: sql`${evalSchedules.runCount} + 1`,
+        nextRunAt: nextRunAt,
+        updatedAt: new Date(),
+      })
+      .where(eq(evalSchedules.id, scheduleId))
+      .returning();
+    return result[0];
+  }
+
+  // Disable schedule (e.g., when maxRuns reached or one-time completed)
+  async disableSchedule(scheduleId: number): Promise<void> {
+    await db.update(evalSchedules)
+      .set({ isEnabled: false, nextRunAt: null, updatedAt: new Date() })
+      .where(eq(evalSchedules.id, scheduleId));
+  }
+
+  // Get all enabled schedules for a user
+  async getActiveSchedulesByUser(userId: number): Promise<EvalSchedule[]> {
+    return db.select()
+      .from(evalSchedules)
+      .where(and(eq(evalSchedules.createdBy, userId), eq(evalSchedules.isEnabled, true)))
+      .orderBy(evalSchedules.nextRunAt);
+  }
+
+  // Get schedules with their workflow info (for listing)
+  async getEvalSchedulesWithWorkflow(userId: number): Promise<(EvalSchedule & { workflowName: string })[]> {
+    const results = await db.select({
+      id: evalSchedules.id,
+      name: evalSchedules.name,
+      workflowId: evalSchedules.workflowId,
+      evalSetId: evalSchedules.evalSetId,
+      region: evalSchedules.region,
+      scheduleType: evalSchedules.scheduleType,
+      cronExpression: evalSchedules.cronExpression,
+      timezone: evalSchedules.timezone,
+      isEnabled: evalSchedules.isEnabled,
+      nextRunAt: evalSchedules.nextRunAt,
+      lastRunAt: evalSchedules.lastRunAt,
+      runCount: evalSchedules.runCount,
+      maxRuns: evalSchedules.maxRuns,
+      createdBy: evalSchedules.createdBy,
+      createdAt: evalSchedules.createdAt,
+      updatedAt: evalSchedules.updatedAt,
+      workflowName: workflows.name,
+    })
+      .from(evalSchedules)
+      .innerJoin(workflows, eq(evalSchedules.workflowId, workflows.id))
+      .where(eq(evalSchedules.createdBy, userId))
+      .orderBy(desc(evalSchedules.createdAt));
+
+    return results;
   }
 }
 
