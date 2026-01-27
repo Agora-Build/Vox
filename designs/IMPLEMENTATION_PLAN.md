@@ -202,77 +202,60 @@ The `evalSchedules` table supports one-time and recurring job scheduling:
 
 ---
 
-## Phase 4: Organization System with Pricing
+## Phase 4: Organization System with Pricing ✅ COMPLETE
 
-### 4.1 Organization Management
-**Tasks:**
-1. Create organization endpoint
-2. First user becomes org admin automatically
-3. Org admin can invite up to 3 additional admins
-4. Org admin can invite regular members
-5. Organization verification flow (manual by system admin)
+### 4.1 Organization Management ✅
+- ✅ `POST /api/organizations` - Create organization
+- ✅ `GET /api/organizations/:id` - Get organization details
+- ✅ `PATCH /api/organizations/:id` - Update organization
+- ✅ `POST /api/organizations/:id/invite` - Invite user to org
+- ✅ `GET /api/organizations/:id/members` - List members
+- ✅ `PATCH /api/organizations/:id/members/:userId` - Update member role
+- ✅ `DELETE /api/organizations/:id/members/:userId` - Remove member
+- ✅ `POST /api/organizations/:id/leave` - Leave organization
+- ✅ First user becomes org admin automatically
+- ✅ Organization verification flow (admin verifies)
 
-**API Endpoints:**
-- `POST /api/organizations` - Create organization
-- `GET /api/organizations/:id` - Get organization details
-- `PATCH /api/organizations/:id` - Update organization
-- `POST /api/organizations/:id/invite` - Invite user to org
-- `GET /api/organizations/:id/members` - List members
-- `PATCH /api/organizations/:id/members/:userId` - Update member role
-
-### 4.2 Seat Management & Pricing
-**Pricing tiers (already in pricingConfig):**
+### 4.2 Seat Management & Pricing ✅
+**Pricing tiers (in pricingConfig):**
 - Solo Premium: $5/mo per seat
-- Org Premium: $6/mo per seat
+- Org Premium: $6/mo per seat with volume discounts:
   - 1-2 seats: no discount
   - 3-5 seats: 10% OFF
   - 6-10 seats: 15% OFF
   - 11+ seats: 25% OFF
 
-**Tasks:**
-1. Calculate seat pricing with discounts
-2. Implement seat purchase flow
-3. Track used vs total seats
-4. Enforce seat limits on user invitations
+**Implemented:**
+- ✅ `GET /api/organizations/:id/seats` - Get seat info
+- ✅ `POST /api/organizations/:id/seats/calculate` - Calculate pricing
+- ✅ `POST /api/organizations/:id/seats/purchase` - Purchase seats
+- ✅ `GET /api/pricing` - Get pricing tiers
 
-**API Endpoints:**
-- `GET /api/organizations/:id/seats` - Get seat info
-- `POST /api/organizations/:id/seats/purchase` - Purchase seats
-- `GET /api/pricing` - Get pricing tiers
+### 4.3 Stripe Integration ✅
+- ✅ Stripe SDK installed (`stripe`, `@stripe/stripe-js`, `@stripe/react-stripe-js`)
+- ✅ `GET /api/payments/stripe-config` - Get Stripe config for frontend
+- ✅ `POST /api/organizations/:id/payments/setup-intent` - Create setup intent
+- ✅ `POST /api/organizations/:id/payments/methods` - Add payment method
+- ✅ `GET /api/organizations/:id/payments/methods` - List payment methods
+- ✅ `DELETE /api/organizations/:id/payments/methods/:id` - Remove payment method
+- ✅ `GET /api/organizations/:id/payments/history` - Payment history
+- ✅ `POST /api/webhooks/stripe` - Stripe webhook handler
+- ✅ StripeCardForm component with Stripe Elements
+- ✅ Test mode support (works without Stripe credentials)
 
-### 4.3 Stripe Integration
-**Tasks:**
-1. Install Stripe SDK
-2. Create Stripe customer on org creation
-3. Implement payment method management
-4. Implement subscription/one-time payment flow
-5. Handle webhooks for payment events
-6. Record payment history
+### 4.4 Fund Return Requests ✅
+- ✅ `POST /api/fund-returns` - Request fund return
+- ✅ `GET /api/user/fund-returns` - User's requests
+- ✅ `GET /api/admin/fund-returns` - List requests (admin)
+- ✅ `PATCH /api/admin/fund-returns/:id` - Approve/reject (admin)
 
-**API Endpoints:**
-- `POST /api/payments/create-intent` - Create payment intent
-- `POST /api/payments/methods` - Add payment method
-- `GET /api/payments/methods` - List payment methods
-- `DELETE /api/payments/methods/:id` - Remove payment method
-- `POST /api/webhooks/stripe` - Stripe webhook handler
-
-### 4.4 Fund Return Requests
-**Tasks:**
-1. Premium users can request fund returns
-2. Admin reviews and approves/rejects
-3. Track request status
-
-**API Endpoints:**
-- `POST /api/fund-returns` - Request fund return
-- `GET /api/admin/fund-returns` - List requests (admin)
-- `PATCH /api/admin/fund-returns/:id` - Approve/reject (admin)
-
-**Files to modify:**
-- `server/routes.ts` - Add all organization/payment routes
-- `server/storage.ts` - Add organization/payment methods
-- `client/src/pages/` - Add organization management pages
-
-**Estimated effort:** 8-10 hours
+### 4.5 Frontend Pages ✅
+- ✅ `/console/organization` - Organization dashboard
+- ✅ `/console/organization/create` - Create organization
+- ✅ `/console/organization/members` - Member management
+- ✅ `/console/organization/billing` - Billing & seat purchase
+- ✅ `/console/organization/settings` - Organization settings
+- ✅ `/admin/console/organizations` - Admin org management
 
 ---
 
@@ -566,11 +549,11 @@ GET  /api/v1/metrics/leaderboard - Leaderboard
 | Phase 1 | Core System | ✅ Complete | - |
 | Phase 2 | Security Enhancements | ✅ Complete | Done |
 | Phase 3 | Google OAuth | ✅ Complete | Done |
-| Phase 4 | Organization System | ⬜ Not Started | 8-10 hours |
+| Phase 4 | Organization System + Stripe | ✅ Complete | Done |
 | Phase 5 | Eval Agent Concurrency + Scheduling | ✅ Complete | Done |
-| Phase 6 | Frontend Updates | ✅ Mostly Complete | 4-5 hours remaining |
+| Phase 6 | Frontend Updates | ✅ Complete | Done |
 | Phase 7 | API Layer | ✅ Complete (docs pending) | 2-3 hours remaining |
-| Phase 8 | Comprehensive Tests | 🔄 In Progress | 3-4 hours remaining |
+| Phase 8 | Comprehensive Tests | ✅ Mostly Complete | 1-2 hours remaining |
 
 ### Completed Features
 - ✅ Password security (bcrypt)
@@ -586,56 +569,45 @@ GET  /api/v1/metrics/leaderboard - Leaderboard
 - ✅ **Leaderboard with provider details modal**
 - ✅ **Enhanced provider guide page**
 - ✅ **Workflow job history view**
-- ✅ 165+ tests (unit + integration)
+- ✅ **Organization system with Stripe payments**
+- ✅ **Organization frontend pages** (dashboard, members, billing, settings)
+- ✅ **Stripe Elements card form**
+- ✅ 180+ tests (unit + integration)
 
 ### Remaining Work
-- ⬜ Organization system with Stripe payments (~8-10 hours)
-- ⬜ Organization-related frontend pages (~4-5 hours, depends on Phase 4)
 - ⬜ API documentation (~2-3 hours)
-- ⬜ E2E tests (~3-4 hours)
+- ⬜ E2E tests (~1-2 hours)
 
-**Total Remaining: ~17-22 hours**
+**Total Remaining: ~3-5 hours**
 
 ---
 
-## What's Next - Recommended Order
+## What's Next - Final Polish
 
-### Option A: Quick Wins First (Recommended for MVP)
+### Remaining Tasks (~3-5 hours total)
+
 1. **Phase 7: API Documentation** (~2-3 hours)
    - Create OpenAPI/Swagger spec for `/api/v1/*` endpoints
    - Add inline documentation
    - Create developer guide page
 
-2. **Phase 8: E2E Tests** (~3-4 hours)
+2. **Phase 8: E2E Tests** (~1-2 hours)
    - Add Playwright or Cypress tests
    - Cover critical user flows (login, create workflow, run eval)
 
-3. **Phase 4: Organization System** (~8-10 hours)
-   - Stripe integration
-   - Org creation/management
-   - Seat-based billing
-
-### Option B: Full Feature First
-1. **Phase 4: Organization System** (~8-10 hours)
-   - Required for team features
-   - Enables revenue generation
-
-2. **Phase 6.5: Org Frontend Pages** (~4-5 hours)
-   - Organization dashboard
-   - Member management
-   - Billing pages
-
-3. **Phase 7-8: Polish** (~5-7 hours)
-
-### Current System Capabilities (Ready for Use)
+### Current System Capabilities (Production Ready)
 - ✅ User registration/login (local + Google OAuth)
 - ✅ Workflow creation and management
 - ✅ Eval job scheduling (one-time + recurring cron)
 - ✅ Multi-region eval agent system
-- ✅ Real-time dashboard with filtering
+- ✅ Real-time dashboard with time range filtering
 - ✅ Leaderboard with provider comparison
 - ✅ API key authentication for external access
 - ✅ Complete REST API v1
+- ✅ **Organization system with team management**
+- ✅ **Stripe payment integration for seat purchases**
+- ✅ **Volume discount pricing**
+- ✅ **Payment method management with Stripe Elements**
 
 ---
 
