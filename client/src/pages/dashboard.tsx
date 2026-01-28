@@ -80,7 +80,10 @@ export default function Dashboard() {
     const timeGroups = new Map<string, { agora: EvalResult | null; liveKit: EvalResult | null }>();
 
     for (const m of filteredMetrics) {
-      const timeKey = format(new Date(m.timestamp), "HH:mm");
+      // Skip metrics with invalid timestamps
+      const date = new Date(m.timestamp);
+      if (isNaN(date.getTime())) continue;
+      const timeKey = format(date, "HH:mm");
       if (!timeGroups.has(timeKey)) {
         timeGroups.set(timeKey, { agora: null, liveKit: null });
       }
@@ -108,9 +111,12 @@ export default function Dashboard() {
   const totalTests = config?.total_tests_24h || "0";
   const testInterval = config?.test_interval_hours || "8";
 
-  const latestTestTime = metrics && metrics.length > 0
-    ? Math.round((Date.now() - new Date(metrics[0].timestamp).getTime()) / 60000)
-    : 0;
+  const latestTestTime = (() => {
+    if (!metrics || metrics.length === 0) return 0;
+    const date = new Date(metrics[0].timestamp);
+    if (isNaN(date.getTime())) return 0;
+    return Math.round((Date.now() - date.getTime()) / 60000);
+  })();
 
   const regionLabel = selectedRegion === "all" ? "All Regions"
     : selectedRegion === "na" ? "North America"

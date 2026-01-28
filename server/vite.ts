@@ -21,8 +21,8 @@ export async function setupVite(server: Server, app: Express) {
     customLogger: {
       ...viteLogger,
       error: (msg, options) => {
+        // Log error but don't crash the server
         viteLogger.error(msg, options);
-        process.exit(1);
       },
     },
     server: serverOptions,
