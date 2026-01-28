@@ -85,8 +85,10 @@ Team collaboration with seat-based pricing, member management, and shared workfl
    ```
 
 3. **Set up environment variables**
+
+   For local development, create a `.env.dev` file:
    ```bash
-   # Create a .env file with:
+   # .env.dev - Local development (gitignored)
    DATABASE_URL=postgresql://user:password@localhost:5432/vox
    SESSION_SECRET=your-session-secret
    INIT_CODE=your-initialization-code
@@ -95,6 +97,8 @@ Team collaboration with seat-based pricing, member management, and shared workfl
    GOOGLE_CLIENT_ID=your-google-client-id
    GOOGLE_CLIENT_SECRET=your-google-client-secret
    ```
+
+   For CI/CD, environment variables are loaded from CI secrets (no files needed).
 
 4. **Push database schema**
    ```bash
@@ -128,6 +132,23 @@ The application will be available at `http://localhost:5000`.
 | `GOOGLE_CLIENT_SECRET` | No | Google OAuth client secret |
 | `GOOGLE_CALLBACK_URL` | No | OAuth callback URL (default: /api/auth/google/callback) |
 
+### Environment & Test Data Files
+
+| Context | Environment Variables | Test Data |
+|---------|----------------------|-----------|
+| Local Dev | `.env.dev` (file, gitignored) | `tests/tests.dev.data` (file, gitignored) |
+| CI/CD | CI secrets/environment | CI secrets/environment |
+
+**Local Development:**
+- `.env.dev` - Environment variables (DATABASE_URL, GOOGLE_*, STRIPE_*, etc.)
+- `tests/tests.dev.data` - Test accounts and credentials for manual testing
+
+**CI/CD:**
+- No files needed - environment variables loaded from CI secrets
+- Test data injected via CI environment
+
+The `dev-local-run.sh` script automatically loads `.env` and `.env.dev` files.
+
 ---
 
 ## Available Scripts
@@ -140,7 +161,8 @@ The application will be available at `http://localhost:5000`.
 | `npm run check` | Run TypeScript type checking |
 | `npm run lint` | Run ESLint |
 | `npm run db:push` | Push database schema changes |
-| `npm test` | Run tests (requires running server) |
+| `npm test` | Run unit/integration tests (requires running server) |
+| `./script/full-tests-run.sh` | Run all tests (unit + E2E) |
 
 ---
 
@@ -249,6 +271,8 @@ vox/
 ├── shared/                 # Shared code between client/server
 │   └── schema.ts           # Database schema definitions
 ├── tests/                  # Test files
+│   ├── api.test.ts         # API integration tests
+│   └── tests.dev.data      # Local dev test accounts (gitignored)
 ├── designs/                # Design documents
 └── script/                 # Build scripts
 ```

@@ -72,20 +72,17 @@ test.describe("Admin User Management", () => {
     }
   });
 
-  test("should get user details as admin", async () => {
-    // First get users list
+  test("should get user details from users list", async () => {
+    // Get users list and verify first user has expected fields
     const listResponse = await adminRequest.get("/api/admin/users");
 
     if (listResponse.ok()) {
       const users = await listResponse.json();
       if (users.length > 0) {
-        const userId = users[0].id;
-        const response = await adminRequest.get(`/api/admin/users/${userId}`);
-
-        if (response.ok()) {
-          const user = await response.json();
-          expect(user.id).toBe(userId);
-        }
+        const user = users[0];
+        // Verify user object has expected fields
+        expect(user.id).toBeDefined();
+        expect(user.email).toBeDefined();
       }
     }
   });

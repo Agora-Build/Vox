@@ -1656,7 +1656,7 @@ describe('Vox API Tests', () => {
     let orgSession: AuthSession;
     let orgUserId: number;
     let organizationId: number;
-    const orgUserEmail = `orguser-${Date.now()}@test.local`;
+    const orgUserEmail = `orguser-${Date.now()}-${Math.random().toString(36).slice(2, 8)}@test.local`;
     const orgUserPassword = 'orgpass123';
 
     it('should register a new user for organization tests', async () => {
@@ -1677,9 +1677,8 @@ describe('Vox API Tests', () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           username: `orguser-${Date.now()}`,
-          email: orgUserEmail,
           password: orgUserPassword,
-          inviteToken: token,
+          token: token,
         }),
       });
       expect(registerResponse.ok).toBe(true);

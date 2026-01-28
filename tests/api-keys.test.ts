@@ -5,38 +5,39 @@ import { hashToken } from '../server/storage';
 describe('API Key Management', () => {
   describe('generateApiKey', () => {
     it('should generate key with correct prefix', () => {
-      const key = generateApiKey();
+      const { key } = generateApiKey();
 
       expect(key.startsWith('vox_live_')).toBe(true);
     });
 
     it('should generate key with sufficient length', () => {
-      const key = generateApiKey();
+      const { key } = generateApiKey();
 
-      // vox_live_ (9 chars) + 32 hex chars = 41 chars minimum
+      // vox_live_ (9 chars) + base64url chars = 41+ chars
       expect(key.length).toBeGreaterThanOrEqual(41);
     });
 
     it('should generate unique keys each time', () => {
       const keys = new Set();
       for (let i = 0; i < 100; i++) {
-        keys.add(generateApiKey());
+        keys.add(generateApiKey().key);
       }
 
       expect(keys.size).toBe(100);
     });
 
     it('should generate key with valid characters after prefix', () => {
-      const key = generateApiKey();
+      const { key } = generateApiKey();
       const suffix = key.substring(9); // Remove 'vox_live_' prefix
 
-      expect(suffix).toMatch(/^[a-f0-9]+$/);
+      // base64url uses a-z, A-Z, 0-9, -, _
+      expect(suffix).toMatch(/^[a-zA-Z0-9_-]+$/);
     });
   });
 
   describe('API Key Hashing', () => {
     it('should hash API key for storage', () => {
-      const key = generateApiKey();
+      const { key } = generateApiKey();
       const hash = hashToken(key);
 
       // Hash should be different from original key
@@ -46,14 +47,14 @@ describe('API Key Management', () => {
     });
 
     it('should produce different hashes for different keys', () => {
-      const key1 = generateApiKey();
-      const key2 = generateApiKey();
+      const { key: key1 } = generateApiKey();
+      const { key: key2 } = generateApiKey();
 
       expect(hashToken(key1)).not.toBe(hashToken(key2));
     });
 
     it('should be able to verify key by comparing hashes', () => {
-      const key = generateApiKey();
+      const { key } = generateApiKey();
       const storedHash = hashToken(key);
 
       // Simulate verification
@@ -64,11 +65,11 @@ describe('API Key Management', () => {
     });
 
     it('should reject incorrect key', () => {
-      const key = generateApiKey();
+      const { key } = generateApiKey();
       const storedHash = hashToken(key);
 
       // Simulate verification with wrong key
-      const wrongKey = generateApiKey();
+      const { key: wrongKey } = generateApiKey();
       const isValid = hashToken(wrongKey) === storedHash;
 
       expect(isValid).toBe(false);
@@ -77,7 +78,8 @@ describe('API Key Management', () => {
 
   describe('API Key Validation', () => {
     it('should validate key format', () => {
-      const validKey = 'vox_live_abc123def456ghi789jkl012';
+      // API keys use base64url encoding (a-z, A-Z, 0-9, -, _)
+      const validKey = 'vox_live_abc123DEF456ghi789JKL012mn-_op';
       const invalidKeys = [
         'invalid_key',
         'vox_test_abc123', // wrong prefix
@@ -87,7 +89,7 @@ describe('API Key Management', () => {
       ];
 
       const isValidFormat = (key: string) => {
-        return /^vox_live_[a-f0-9]{32,}$/.test(key);
+        return /^vox_live_[a-zA-Z0-9_-]{24,}$/.test(key);
       };
 
       expect(isValidFormat(validKey)).toBe(true);
@@ -113,9 +115,10 @@ describe('API Key Management', () => {
         revokedAt: Date | null;
       }
 
+      const { key } = generateApiKey();
       const mockKey: MockApiKey = {
         id: 1,
-        keyHash: hashToken(generateApiKey()),
+        keyHash: hashToken(key),
         isRevoked: false,
         revokedAt: null,
       };
@@ -129,12 +132,13 @@ describe('API Key Management', () => {
     });
 
     it('should reject revoked keys during authentication', () => {
+      const { key } = generateApiKey();
       const mockKey = {
-        keyHash: hashToken(generateApiKey()),
+        keyHash: hashToken(key),
         isRevoked: true,
       };
 
-      const isKeyValid = (key: typeof mockKey) => !key.isRevoked;
+      const isKeyValid = (k: typeof mockKey) => !k.isRevoked;
 
       expect(isKeyValid(mockKey)).toBe(false);
     });
@@ -215,13 +219,15 @@ describe('API Key Management', () => {
     });
 
     it('should support optional expiration', () => {
+      const { key: key1 } = generateApiKey();
+      const { key: key2 } = generateApiKey();
       const keyWithExpiry = {
-        keyHash: hashToken(generateApiKey()),
+        keyHash: hashToken(key1),
         expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000), // 30 days
       };
 
       const keyWithoutExpiry = {
-        keyHash: hashToken(generateApiKey()),
+        keyHash: hashToken(key2),
         expiresAt: null,
       };
 

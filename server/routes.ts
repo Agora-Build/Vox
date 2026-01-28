@@ -22,6 +22,7 @@ import {
 import { calculateSeatPrice, isStripeConfigured as isPricingStripeConfigured } from "./pricing";
 import {
   isStripeConfigured,
+  isStripeTestMode,
   createStripeCustomer,
   createSetupIntent,
   createPaymentIntent,
@@ -2469,8 +2470,8 @@ export async function registerRoutes(
           description: `Purchased ${additionalSeats} seats`,
           stripePaymentIntentId: paymentResult.id,
         });
-      } else if (!isStripeConfigured()) {
-        // For testing without Stripe - just record the purchase
+      } else if (!isStripeConfigured() || isStripeTestMode()) {
+        // For testing without Stripe or with test keys - just record the purchase
         await storage.createPaymentHistory({
           organizationId: parseInt(id),
           userId: user.id,

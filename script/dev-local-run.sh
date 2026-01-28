@@ -30,6 +30,29 @@ set -e
 # Configuration
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+
+# Load environment variables from .env file
+load_env_file() {
+    local env_file="$1"
+    if [ -f "$env_file" ]; then
+        # Export all variables from the env file
+        set -a
+        # shellcheck source=/dev/null
+        source "$env_file"
+        set +a
+        return 0
+    fi
+    return 1
+}
+
+# Load environment files (.env first, then .env.dev overrides)
+if load_env_file "$PROJECT_DIR/.env"; then
+    echo -e "\033[0;34m[INFO]\033[0m Loaded environment from .env"
+fi
+if load_env_file "$PROJECT_DIR/.env.dev"; then
+    echo -e "\033[0;34m[INFO]\033[0m Loaded environment from .env.dev"
+fi
+
 DB_CONTAINER="vox-postgres"
 SERVICE_CONTAINER="vox-service"
 EVAL_AGENT_CONTAINER="vox-eval-agent"

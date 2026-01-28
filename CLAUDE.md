@@ -277,21 +277,76 @@ The platform is designed to be web-first but API-ready. Future integrations incl
 - **Vitest** - Unit and integration tests
 - **Playwright** - End-to-end browser tests
 
+### Environment & Test Data Files
+
+**Design Pattern:**
+- **Local dev**: `*.dev` files loaded by app/service/AI
+- **CI/CD**: Environment variables from CI secrets (no files)
+
+| Context | Env Vars | Test Data |
+|---------|----------|-----------|
+| Local Dev | `.env.dev` (file) | `tests/tests.dev.data` (file) |
+| CI/CD | CI secrets/environment | CI secrets/environment |
+
+All files are gitignored. CI/CD sets environment variables directly from secrets.
+
+**For local development**, create these files:
+
+`.env.dev`:
+```bash
+# Google OAuth
+GOOGLE_CLIENT_ID=<client-id>
+GOOGLE_CLIENT_SECRET=<client-secret>
+
+# Stripe test keys
+STRIPE_PUBLISHABLE_KEY=pk_test_...
+STRIPE_SECRET_KEY=sk_test_...
+```
+
+`tests/tests.dev.data`:
+```bash
+# Vox test user credentials
+# Admin: admin@vox.local / admin123456
+# Scout: scout@vox.ai / scout123
+
+# Google OAuth testing account
+# Email: <test-email>
+# Password: <test-password>
+```
+
+The `dev-local-run.sh` script loads `.env` then `.env.dev` automatically.
+
+**Important for tests**: Copy `.env.dev` to `.env` before running tests:
+```bash
+cp .env.dev .env
+```
+
+**Stripe test mode**: When using Stripe test keys (`sk_test_*`), seat purchases work without a payment method (test mode). This allows testing the full purchase flow without actual payments.
+
 ### Running Tests
 
 ```bash
 # Start local server first (required for integration and E2E tests)
 ./script/dev-local-run.sh start
 
-# Unit and Integration Tests (Vitest)
+# Run ALL tests (unit + E2E) - recommended
+./script/full-tests-run.sh       # Runs all 626 tests
+
+# Unit and Integration Tests (Vitest) - 530 tests
 npm test                         # Run all tests
 npm run test:watch               # Run in watch mode
 
-# End-to-End Tests (Playwright)
-npm run test:e2e                 # Run all E2E tests (headless)
-npm run test:e2e:ui              # Run with Playwright Test UI
-npm run test:e2e:headed          # Run in headed browser mode
+# End-to-End Tests (Playwright) - 96 tests
+npx playwright test              # Run all E2E tests
+npx playwright test --ui         # Run with Playwright Test UI
+npx playwright test --headed     # Run in headed browser mode
 ```
+
+**Full Test Runner** (`./script/full-tests-run.sh`):
+- Loads environment from `.env` and `.env.dev` automatically
+- Verifies server is running
+- Runs unit tests (Vitest) then E2E tests (Playwright)
+- Displays test accounts and credentials summary
 
 ### Test Files
 
@@ -380,6 +435,7 @@ When adding new features, write tests for critical paths like authentication, jo
 - `script/vox-eval-agent.ts` - Standalone eval agent runner
 
 ### Tests
+- `tests/tests.dev.data` - Test accounts for local dev (gitignored)
 - `tests/api.test.ts` - API integration tests (107+ tests)
 - `tests/auth.test.ts` - Auth utilities unit tests (26 tests)
 - `tests/cron.test.ts` - Cron parsing unit tests (32 tests)

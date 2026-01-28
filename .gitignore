@@ -7,9 +7,12 @@ vite.config.ts.*
 
 # Environment files (keep .env.example)
 .env
+.env.dev
 .env.local
 .env.*.local
-.env.dev.data
+
+# Test data files (local dev only)
+tests/tests.dev.data
 
 # Playwright test output
 playwright-report/

@@ -43,6 +43,14 @@ export function isStripeConfigured(): boolean {
 }
 
 /**
+ * Check if using Stripe test keys (allows test mode purchases)
+ */
+export function isStripeTestMode(): boolean {
+  const secretKey = process.env.STRIPE_SECRET_KEY || "";
+  return secretKey.startsWith("sk_test_");
+}
+
+/**
  * Create a Stripe customer
  */
 export async function createStripeCustomer(
