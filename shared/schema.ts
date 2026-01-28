@@ -491,3 +491,14 @@ export const insertFundReturnRequestSchema = createInsertSchema(fundReturnReques
 
 export type InsertFundReturnRequest = z.infer<typeof insertFundReturnRequestSchema>;
 export type FundReturnRequest = typeof fundReturnRequests.$inferSelect;
+
+// ==================== SESSION STORE ====================
+// Used by connect-pg-simple for Express sessions
+
+export const userSessions = pgTable("user_sessions", {
+  sid: varchar("sid").primaryKey(),
+  sess: jsonb("sess").notNull(),
+  expire: timestamp("expire", { precision: 6 }).notNull(),
+}, (table) => [
+  index("IDX_user_sessions_expire").on(table.expire),
+]);

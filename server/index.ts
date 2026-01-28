@@ -14,6 +14,11 @@ const { Pool } = pkg;
 const app = express();
 const httpServer = createServer(app);
 
+// Trust proxy when behind reverse proxy (Coolify, nginx, etc.)
+if (process.env["NODE_ENV"] === "production") {
+  app.set("trust proxy", 1);
+}
+
 const PgSession = connectPgSimple(session);
 const sessionPool = new Pool({ connectionString: process.env.DATABASE_URL });
 
@@ -29,7 +34,7 @@ app.use(
     store: new PgSession({
       pool: sessionPool,
       tableName: "user_sessions",
-      createTableIfMissing: true,
+      createTableIfMissing: false, // Table created via Drizzle schema
     }),
     secret: process.env.SESSION_SECRET || "vox-dev-secret-change-in-production",
     resave: false,
