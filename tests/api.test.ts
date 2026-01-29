@@ -129,9 +129,15 @@ describe('Vox API Tests', () => {
   let testApiKey: string;
   let testScheduleId: number;
   let testRecurringScheduleId: number;
+  let testProviderId: string;
 
   beforeAll(async () => {
     adminSession = await login(ADMIN_EMAIL, ADMIN_PASSWORD);
+
+    // Fetch a valid provider ID for tests that create workflows
+    const providerResponse = await fetch(`${BASE_URL}/api/providers`);
+    const providers: Provider[] = await providerResponse.json();
+    testProviderId = providers[0].id;
   });
 
   describe('Auth API', () => {
@@ -229,6 +235,7 @@ describe('Vox API Tests', () => {
           description: 'A test workflow for API testing',
           visibility: 'public',
           projectId: testProjectId,
+          providerId: testProviderId,
         }),
       });
 
@@ -362,6 +369,7 @@ describe('Vox API Tests', () => {
         body: JSON.stringify({
           name: 'Invalid Schedule',
           workflowId: testWorkflowId,
+          evalSetId: testEvalSetId,
           region: 'na',
           scheduleType: 'recurring',
           // Missing cronExpression
@@ -379,6 +387,7 @@ describe('Vox API Tests', () => {
         body: JSON.stringify({
           name: 'Invalid Cron Schedule',
           workflowId: testWorkflowId,
+          evalSetId: testEvalSetId,
           region: 'na',
           scheduleType: 'recurring',
           cronExpression: '0 0 * *', // Invalid - only 4 parts
@@ -517,6 +526,7 @@ describe('Vox API Tests', () => {
         body: JSON.stringify({
           name: 'Future One-Time Schedule',
           workflowId: testWorkflowId,
+          evalSetId: testEvalSetId,
           region: 'eu',
           scheduleType: 'once',
           runAt: futureTime,
@@ -541,6 +551,7 @@ describe('Vox API Tests', () => {
         body: JSON.stringify({
           name: 'Daily Schedule',
           workflowId: testWorkflowId,
+          evalSetId: testEvalSetId,
           region: 'apac',
           scheduleType: 'recurring',
           cronExpression: '0 8 * * *', // Daily at 8 AM
@@ -972,6 +983,7 @@ describe('Vox API Tests', () => {
           name: 'Job Flow Test Workflow',
           description: 'Testing complete job submission flow',
           visibility: 'public',
+          providerId: testProviderId,
         }),
       });
       expect(response.ok).toBe(true);
@@ -1167,6 +1179,7 @@ describe('Vox API Tests', () => {
     let apacAgentId: number;
     let euAgentId: number;
     let multiRegionWorkflowId: number;
+    let multiRegionEvalSetId: number;
     let naJobId: number;
     let apacJobId: number;
     let euJobId: number;
@@ -1244,25 +1257,34 @@ describe('Vox API Tests', () => {
       expect(euAgent.region).toBe('eu');
     });
 
-    it('should create workflow for multi-region testing', async () => {
+    it('should create workflow and eval set for multi-region testing', async () => {
       const response = await authFetch(adminSession, `${BASE_URL}/api/workflows`, {
         method: 'POST',
         body: JSON.stringify({
           name: 'Multi-Region Test Workflow',
           description: 'Testing job distribution across regions',
           visibility: 'public',
+          providerId: testProviderId,
         }),
       });
       expect(response.ok).toBe(true);
       const workflow = await response.json();
       multiRegionWorkflowId = workflow.id;
+
+      const esResponse = await authFetch(adminSession, `${BASE_URL}/api/eval-sets`, {
+        method: 'POST',
+        body: JSON.stringify({ name: 'Multi-Region Test Eval Set', visibility: 'public' }),
+      });
+      expect(esResponse.ok).toBe(true);
+      const evalSet = await esResponse.json();
+      multiRegionEvalSetId = evalSet.id;
     });
 
     it('should create jobs for different regions', async () => {
       // Create NA job
       const naResponse = await authFetch(adminSession, `${BASE_URL}/api/workflows/${multiRegionWorkflowId}/run`, {
         method: 'POST',
-        body: JSON.stringify({ region: 'na' }),
+        body: JSON.stringify({ region: 'na', evalSetId: multiRegionEvalSetId }),
       });
       expect(naResponse.ok).toBe(true);
       const naResult = await naResponse.json();
@@ -1272,7 +1294,7 @@ describe('Vox API Tests', () => {
       // Create APAC job
       const apacResponse = await authFetch(adminSession, `${BASE_URL}/api/workflows/${multiRegionWorkflowId}/run`, {
         method: 'POST',
-        body: JSON.stringify({ region: 'apac' }),
+        body: JSON.stringify({ region: 'apac', evalSetId: multiRegionEvalSetId }),
       });
       expect(apacResponse.ok).toBe(true);
       const apacResult = await apacResponse.json();
@@ -1282,7 +1304,7 @@ describe('Vox API Tests', () => {
       // Create EU job
       const euResponse = await authFetch(adminSession, `${BASE_URL}/api/workflows/${multiRegionWorkflowId}/run`, {
         method: 'POST',
-        body: JSON.stringify({ region: 'eu' }),
+        body: JSON.stringify({ region: 'eu', evalSetId: multiRegionEvalSetId }),
       });
       expect(euResponse.ok).toBe(true);
       const euResult = await euResponse.json();
@@ -1376,6 +1398,10 @@ describe('Vox API Tests', () => {
       await authFetch(adminSession, `${BASE_URL}/api/workflows/${multiRegionWorkflowId}`, {
         method: 'DELETE',
       });
+      // Delete eval set
+      await authFetch(adminSession, `${BASE_URL}/api/eval-sets/${multiRegionEvalSetId}`, {
+        method: 'DELETE',
+      });
     });
   });
 
@@ -1386,7 +1412,7 @@ describe('Vox API Tests', () => {
     it('should create workflow and eval set for schedule tests', async () => {
       const wfResponse = await authFetch(adminSession, `${BASE_URL}/api/workflows`, {
         method: 'POST',
-        body: JSON.stringify({ name: 'Schedule Test Workflow', visibility: 'public' }),
+        body: JSON.stringify({ name: 'Schedule Test Workflow', visibility: 'public', providerId: testProviderId }),
       });
       expect(wfResponse.ok).toBe(true);
       const workflow = await wfResponse.json();
@@ -1511,6 +1537,7 @@ describe('Vox API Tests', () => {
           name: 'API Key Created Workflow',
           description: 'Created via API key',
           visibility: 'public',
+          providerId: testProviderId,
         }),
       });
       expect(response.ok).toBe(true);
@@ -1548,6 +1575,7 @@ describe('Vox API Tests', () => {
 
   describe('Concurrent Job Claiming Tests', () => {
     let concurrentWorkflowId: number;
+    let concurrentEvalSetId: number;
     let concurrentJobId: number;
     let agent1Token: string;
     let agent2Token: string;
@@ -1558,11 +1586,20 @@ describe('Vox API Tests', () => {
       // Create workflow
       const wfResponse = await authFetch(adminSession, `${BASE_URL}/api/workflows`, {
         method: 'POST',
-        body: JSON.stringify({ name: 'Concurrent Test Workflow', visibility: 'public' }),
+        body: JSON.stringify({ name: 'Concurrent Test Workflow', visibility: 'public', providerId: testProviderId }),
       });
       expect(wfResponse.ok).toBe(true);
       const workflow = await wfResponse.json();
       concurrentWorkflowId = workflow.id;
+
+      // Create eval set
+      const esResponse = await authFetch(adminSession, `${BASE_URL}/api/eval-sets`, {
+        method: 'POST',
+        body: JSON.stringify({ name: 'Concurrent Test Eval Set', visibility: 'public' }),
+      });
+      expect(esResponse.ok).toBe(true);
+      const evalSet = await esResponse.json();
+      concurrentEvalSetId = evalSet.id;
 
       // Create two agent tokens for same region
       const token1Response = await authFetch(adminSession, `${BASE_URL}/api/admin/eval-agent-tokens`, {
@@ -1609,7 +1646,7 @@ describe('Vox API Tests', () => {
       // Create a single job
       const jobResponse = await authFetch(adminSession, `${BASE_URL}/api/workflows/${concurrentWorkflowId}/run`, {
         method: 'POST',
-        body: JSON.stringify({ region: 'na' }),
+        body: JSON.stringify({ region: 'na', evalSetId: concurrentEvalSetId }),
       });
       expect(jobResponse.ok).toBe(true);
       const jobResult = await jobResponse.json();
@@ -1645,6 +1682,9 @@ describe('Vox API Tests', () => {
 
     it('should cleanup concurrent test resources', async () => {
       await authFetch(adminSession, `${BASE_URL}/api/workflows/${concurrentWorkflowId}`, {
+        method: 'DELETE',
+      });
+      await authFetch(adminSession, `${BASE_URL}/api/eval-sets/${concurrentEvalSetId}`, {
         method: 'DELETE',
       });
     });

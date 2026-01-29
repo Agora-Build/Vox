@@ -55,6 +55,14 @@ export function registerApiV1Routes(app: Express): void {
         return res.status(400).json({ error: "Name is required" });
       }
 
+      if (!providerId) {
+        return res.status(400).json({ error: "Provider required" });
+      }
+      const provider = await storage.getProvider(providerId);
+      if (!provider) {
+        return res.status(404).json({ error: "Provider not found" });
+      }
+
       // Check workflow limits
       const workflowCount = await storage.countWorkflowsByOwner(user.id);
       const maxWorkflows = user.plan === "basic" ? 50 : 200; // Total across all projects
@@ -220,10 +228,18 @@ export function registerApiV1Routes(app: Express): void {
         return res.status(403).json({ error: "Not authorized to run this workflow" });
       }
 
+      if (!evalSetId) {
+        return res.status(400).json({ error: "Eval set required" });
+      }
+      const evalSet = await storage.getEvalSet(evalSetId);
+      if (!evalSet) {
+        return res.status(404).json({ error: "Eval set not found" });
+      }
+
       // Create eval job
       const job = await storage.createEvalJob({
         workflowId: parseInt(id),
-        evalSetId: evalSetId || null,
+        evalSetId,
         region: region || "na",
         status: "pending",
         priority: priority || 0,

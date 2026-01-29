@@ -889,6 +889,14 @@ export async function registerRoutes(
         return res.status(400).json({ error: "Name required" });
       }
 
+      if (!providerId) {
+        return res.status(400).json({ error: "Provider required" });
+      }
+      const provider = await storage.getProvider(providerId);
+      if (!provider) {
+        return res.status(404).json({ error: "Provider not found" });
+      }
+
       if (visibility === "private" && user.plan === "basic") {
         return res.status(403).json({ error: "Premium plan required for private workflows" });
       }
@@ -1171,15 +1179,16 @@ export async function registerRoutes(
         return res.status(403).json({ error: "Access denied to workflow" });
       }
 
-      // Verify eval set if provided
-      if (evalSetId) {
-        const evalSet = await storage.getEvalSet(evalSetId);
-        if (!evalSet) {
-          return res.status(404).json({ error: "Eval set not found" });
-        }
-        if (evalSet.ownerId !== user.id && evalSet.visibility !== "public") {
-          return res.status(403).json({ error: "Access denied to eval set" });
-        }
+      // Verify eval set
+      if (!evalSetId) {
+        return res.status(400).json({ error: "Eval set required" });
+      }
+      const evalSet = await storage.getEvalSet(evalSetId);
+      if (!evalSet) {
+        return res.status(404).json({ error: "Eval set not found" });
+      }
+      if (evalSet.ownerId !== user.id && evalSet.visibility !== "public") {
+        return res.status(403).json({ error: "Access denied to eval set" });
       }
 
       const type = scheduleType || "once";
@@ -1205,7 +1214,7 @@ export async function registerRoutes(
       const schedule = await storage.createEvalSchedule({
         name,
         workflowId,
-        evalSetId: evalSetId || null,
+        evalSetId,
         region,
         scheduleType: type,
         cronExpression: cronExpression || null,
@@ -1651,7 +1660,7 @@ export async function registerRoutes(
           // Find a default provider (e.g., LiveKit Agents)
           const providers = await storage.getAllProviders();
           const defaultProvider = providers.find(p => p.name.includes("LiveKit")) || providers[0];
-          providerId = defaultProvider?.id || null;
+          providerId = defaultProvider?.id;
         }
 
         if (providerId) {
@@ -1705,9 +1714,17 @@ export async function registerRoutes(
         return res.status(400).json({ error: "Valid region required (na, apac, eu)" });
       }
 
+      if (!evalSetId) {
+        return res.status(400).json({ error: "Eval set required" });
+      }
+      const evalSet = await storage.getEvalSet(evalSetId);
+      if (!evalSet) {
+        return res.status(404).json({ error: "Eval set not found" });
+      }
+
       const job = await storage.createEvalJob({
         workflowId: parseInt(workflowId),
-        evalSetId: evalSetId || null,
+        evalSetId,
         region,
         status: "pending",
         priority: 0,
