@@ -19,7 +19,7 @@ import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import { Users, Workflow, FileText, LogOut, Shield, Crown, Sparkles, Zap, Server, Key, Building2, CreditCard, Settings, FolderKanban } from "lucide-react";
+import { Users, Workflow, FileText, LogOut, Shield, Gem, Sparkles, Zap, Server, Key, Building2, CreditCard, Settings, FolderKanban } from "lucide-react";
 import { ThemeToggle } from "@/components/theme-toggle";
 
 interface AuthStatus {
@@ -72,10 +72,21 @@ export default function ConsoleLayout({ children }: ConsoleLayoutProps) {
 
   const user = authStatus?.user;
 
-  const getPlanIcon = (plan: string) => {
-    switch (plan) {
-      case "principal": return <Crown className="h-3 w-3" />;
-      case "premium": return <Sparkles className="h-3 w-3" />;
+  const getRoleLabel = (user: { plan: string; isAdmin: boolean }) => {
+    if (user.isAdmin) return "Admin";
+    switch (user.plan) {
+      case "principal": return "Principal";
+      case "fellow": return "Fellow";
+      case "premium": return "Premium";
+      default: return "Basic";
+    }
+  };
+
+  const getRoleIcon = (role: string) => {
+    switch (role) {
+      case "Admin": return <Shield className="h-3 w-3" />;
+      case "Principal": return <Gem className="h-3 w-3" />;
+      case "Premium": return <Sparkles className="h-3 w-3" />;
       default: return <Zap className="h-3 w-3" />;
     }
   };
@@ -229,15 +240,15 @@ export default function ConsoleLayout({ children }: ConsoleLayoutProps) {
                 <div className="flex-1 min-w-0">
                   <div className="font-medium text-sm truncate">{user.username}</div>
                   <div className="flex items-center gap-1">
-                    <Badge variant="outline" className="text-xs gap-1">
-                      {getPlanIcon(user.plan)}
-                      {user.plan}
-                    </Badge>
-                    {user.isAdmin && (
-                      <Badge variant="secondary" className="text-xs gap-1">
-                        <Shield className="h-2 w-2" />
-                      </Badge>
-                    )}
+                    {(() => {
+                      const role = getRoleLabel(user);
+                      return (
+                        <Badge variant={user.isAdmin ? "default" : "outline"} className="text-xs gap-1">
+                          {getRoleIcon(role)}
+                          {role}
+                        </Badge>
+                      );
+                    })()}
                   </div>
                 </div>
               </div>

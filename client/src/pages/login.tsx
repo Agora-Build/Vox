@@ -64,8 +64,9 @@ export function LoginForm({ variant = "user" }: LoginFormProps) {
         return;
       }
 
-      const destination = isAdminVariant ? "/admin/console" : "/console";
-      toast({ title: isAdminVariant ? "Welcome back, Admin!" : "Welcome back!" });
+      const isAdmin = data.user?.isAdmin;
+      const destination = isAdmin ? "/admin/console" : "/console";
+      toast({ title: isAdmin ? "Welcome back, Admin!" : "Welcome back!" });
       setLocation(destination);
     },
     onError: (error: Error) => {

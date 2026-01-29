@@ -8,7 +8,7 @@ import { Switch } from "@/components/ui/switch";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
-import { Users, Shield, Crown, Sparkles, UserPlus, Link, Copy, Check } from "lucide-react";
+import { Users, Shield, Gem, Sparkles, Award, UserPlus, Link, Copy, Check, CircleDot } from "lucide-react";
 import { useState } from "react";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
@@ -39,26 +39,44 @@ interface UserData {
   createdAt: string;
 }
 
-function getPlanIcon(plan: string) {
-  switch (plan) {
-    case "principal":
-      return <Crown className="h-3 w-3" />;
-    case "premium":
-      return <Sparkles className="h-3 w-3" />;
-    default:
-      return null;
+function getUserRole(user: UserData): string {
+  if (user.isAdmin) return "Admin";
+  switch (user.plan) {
+    case "principal": return "Principal";
+    case "fellow": return "Fellow";
+    case "premium": return "Premium";
+    default: return "Basic";
   }
 }
 
-function getPlanBadgeVariant(plan: string): "default" | "secondary" | "outline" {
-  switch (plan) {
-    case "principal":
-      return "default";
-    case "premium":
-      return "secondary";
-    default:
-      return "outline";
+function getRoleIcon(role: string) {
+  switch (role) {
+    case "Admin": return <Shield className="h-3 w-3" />;
+    case "Principal": return <Gem className="h-3 w-3" />;
+    case "Fellow": return <Award className="h-3 w-3" />;
+    case "Premium": return <Sparkles className="h-3 w-3" />;
+    default: return <CircleDot className="h-3 w-3" />;
   }
+}
+
+function getRoleBadgeVariant(role: string): "default" | "secondary" | "outline" {
+  switch (role) {
+    case "Admin": return "default";
+    case "Principal": return "default";
+    case "Fellow": return "secondary";
+    case "Premium": return "secondary";
+    default: return "outline";
+  }
+}
+
+function getPaidStatus(user: UserData): { label: string; variant: "default" | "secondary" | "outline" | "destructive" } {
+  if (user.isAdmin || user.plan === "principal" || user.plan === "fellow") {
+    return { label: "\u2014", variant: "outline" };
+  }
+  if (user.plan === "premium") {
+    return { label: "Yes", variant: "default" };
+  }
+  return { label: "No", variant: "outline" };
 }
 
 export default function Console() {
@@ -212,12 +230,12 @@ export default function Console() {
         </Card>
         <Card>
           <CardHeader className="flex flex-row items-center justify-between gap-2 space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Principals</CardTitle>
-            <Crown className="h-4 w-4 text-muted-foreground" />
+            <CardTitle className="text-sm font-medium">Paid Users</CardTitle>
+            <Sparkles className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold" data-testid="text-principal-count">
-              {users?.filter(u => u.plan === "principal").length || 0}
+            <div className="text-2xl font-bold" data-testid="text-paid-count">
+              {users?.filter(u => u.plan === "premium").length || 0}
             </div>
           </CardContent>
         </Card>
@@ -265,6 +283,7 @@ export default function Console() {
                       <SelectItem value="basic">Basic</SelectItem>
                       <SelectItem value="premium">Premium</SelectItem>
                       <SelectItem value="principal">Principal</SelectItem>
+                      <SelectItem value="fellow">Fellow</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
@@ -302,65 +321,66 @@ export default function Console() {
               <TableHeader>
                 <TableRow>
                   <TableHead>User</TableHead>
-                  <TableHead>Plan</TableHead>
                   <TableHead>Role</TableHead>
+                  <TableHead>Paid</TableHead>
                   <TableHead>Status</TableHead>
                   <TableHead className="text-right">Actions</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {users?.map((user) => (
-                  <TableRow key={user.id} data-testid={`row-user-${user.id}`}>
-                    <TableCell>
-                      <div>
-                        <div className="font-medium">{user.username}</div>
-                        <div className="text-sm text-muted-foreground">{user.email}</div>
-                      </div>
-                    </TableCell>
-                    <TableCell>
-                      <Badge variant={getPlanBadgeVariant(user.plan)} className="gap-1">
-                        {getPlanIcon(user.plan)}
-                        {user.plan}
-                      </Badge>
-                    </TableCell>
-                    <TableCell>
-                      {user.isAdmin && (
-                        <Badge variant="secondary" className="gap-1">
-                          <Shield className="h-3 w-3" />
-                          Admin
+                {users?.map((user) => {
+                  const role = getUserRole(user);
+                  const paid = getPaidStatus(user);
+                  return (
+                    <TableRow key={user.id} data-testid={`row-user-${user.id}`}>
+                      <TableCell>
+                        <div>
+                          <div className="font-medium">{user.username}</div>
+                          <div className="text-sm text-muted-foreground">{user.email}</div>
+                        </div>
+                      </TableCell>
+                      <TableCell>
+                        <Badge variant={getRoleBadgeVariant(role)} className="gap-1">
+                          {getRoleIcon(role)}
+                          {role}
                         </Badge>
-                      )}
-                    </TableCell>
-                    <TableCell>
-                      <Badge variant={user.isEnabled ? "outline" : "destructive"}>
-                        {user.isEnabled ? "Active" : "Disabled"}
-                      </Badge>
-                    </TableCell>
-                    <TableCell className="text-right">
-                      <div className="flex items-center justify-end gap-2">
-                        {!user.emailVerified && (
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            onClick={() => handleOpenActivation(user)}
-                            data-testid={`button-activate-${user.id}`}
-                          >
-                            <Link className="mr-1 h-3 w-3" />
-                            Activate
-                          </Button>
-                        )}
-                        <Switch
-                          checked={user.isEnabled}
-                          onCheckedChange={(checked) => 
-                            updateUserMutation.mutate({ id: user.id, isEnabled: checked })
-                          }
-                          disabled={user.id === authStatus.user?.id}
-                          data-testid={`switch-enable-${user.id}`}
-                        />
-                      </div>
-                    </TableCell>
-                  </TableRow>
-                ))}
+                      </TableCell>
+                      <TableCell>
+                        <Badge variant={paid.variant}>
+                          {paid.label}
+                        </Badge>
+                      </TableCell>
+                      <TableCell>
+                        <Badge variant={user.isEnabled ? "outline" : "destructive"}>
+                          {user.isEnabled ? "Active" : "Disabled"}
+                        </Badge>
+                      </TableCell>
+                      <TableCell className="text-right">
+                        <div className="flex items-center justify-end gap-2">
+                          {!user.emailVerified && (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => handleOpenActivation(user)}
+                              data-testid={`button-activate-${user.id}`}
+                            >
+                              <Link className="mr-1 h-3 w-3" />
+                              Activate
+                            </Button>
+                          )}
+                          <Switch
+                            checked={user.isEnabled}
+                            onCheckedChange={(checked) =>
+                              updateUserMutation.mutate({ id: user.id, isEnabled: checked })
+                            }
+                            disabled={user.id === authStatus.user?.id}
+                            data-testid={`switch-enable-${user.id}`}
+                          />
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
               </TableBody>
             </Table>
           )}
