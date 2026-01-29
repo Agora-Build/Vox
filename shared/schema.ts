@@ -1,6 +1,7 @@
 import { pgTable, text, varchar, integer, real, timestamp, serial, boolean, pgEnum, jsonb, index } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
+import crypto from "crypto";
 
 // Enums
 export const userPlanEnum = pgEnum("user_plan", ["basic", "premium", "principal", "fellow"]);
@@ -13,12 +14,7 @@ export const scheduleTypeEnum = pgEnum("schedule_type", ["once", "recurring"]);
 
 // Helper function to generate 12-char random ID for providers
 export function generateProviderId(): string {
-  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-  let result = '';
-  for (let i = 0; i < 12; i++) {
-    result += chars.charAt(Math.floor(Math.random() * chars.length));
-  }
-  return result;
+  return crypto.randomBytes(9).toString("base64url").slice(0, 12);
 }
 
 // ==================== ORGANIZATIONS ====================

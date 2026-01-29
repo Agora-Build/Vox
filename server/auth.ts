@@ -68,9 +68,13 @@ export async function getCurrentUser(req: Request): Promise<User | undefined> {
   return storage.getUser(req.session.userId);
 }
 
-export function requireAuth(req: Request, res: Response, next: NextFunction) {
+export async function requireAuth(req: Request, res: Response, next: NextFunction) {
   if (!req.session?.userId) {
     return res.status(401).json({ error: "Authentication required" });
+  }
+  const user = await storage.getUser(req.session.userId);
+  if (!user || !user.isEnabled) {
+    return res.status(401).json({ error: "Account is disabled" });
   }
   next();
 }
@@ -110,17 +114,6 @@ export async function requireOrgAdmin(req: Request, res: Response, next: NextFun
   }
   if (!user.isOrgAdmin) {
     return res.status(403).json({ error: "Organization admin access required" });
-  }
-  next();
-}
-
-export async function requireEnabled(req: Request, res: Response, next: NextFunction) {
-  if (!req.session?.userId) {
-    return res.status(401).json({ error: "Authentication required" });
-  }
-  const user = await storage.getUser(req.session.userId);
-  if (!user || !user.isEnabled) {
-    return res.status(403).json({ error: "Account is disabled" });
   }
   next();
 }

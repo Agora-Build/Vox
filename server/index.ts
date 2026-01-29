@@ -1,4 +1,5 @@
 import express, { type Request, Response, NextFunction } from "express";
+import helmet from "helmet";
 import { registerRoutes } from "./routes";
 import { serveStatic } from "./static";
 import { createServer } from "http";
@@ -13,6 +14,9 @@ const { Pool } = pkg;
 
 const app = express();
 const httpServer = createServer(app);
+
+// Security headers (CSP disabled — Vite injects inline scripts, shadcn/ui uses inline styles)
+app.use(helmet({ contentSecurityPolicy: false }));
 
 // Trust proxy when behind reverse proxy (Coolify, nginx, etc.)
 if (process.env["NODE_ENV"] === "production") {
@@ -29,6 +33,11 @@ const isSecureCookie = cookieSecureEnv === "true" ? true
   : cookieSecureEnv === "false" ? false
   : process.env["NODE_ENV"] === "production";
 
+const sessionSecret = process.env.SESSION_SECRET;
+if (!sessionSecret && process.env["NODE_ENV"] === "production") {
+  throw new Error("SESSION_SECRET environment variable is required in production");
+}
+
 app.use(
   session({
     store: new PgSession({
@@ -36,12 +45,13 @@ app.use(
       tableName: "user_sessions",
       createTableIfMissing: false, // Table created via Drizzle schema
     }),
-    secret: process.env.SESSION_SECRET || "vox-dev-secret-change-in-production",
+    secret: sessionSecret || "vox-dev-secret-change-in-production",
     resave: false,
     saveUninitialized: false,
     cookie: {
       secure: isSecureCookie,
       httpOnly: true,
+      sameSite: "lax",
       maxAge: 7 * 24 * 60 * 60 * 1000,
     },
   })
@@ -115,6 +125,12 @@ export function log(message: string, source = "express") {
   console.log(`${formattedTime} [${source}] ${message}`);
 }
 
+const SENSITIVE_PATHS = new Set([
+  "/api/user/api-keys",
+  "/api/admin/eval-agent-tokens",
+  "/api/admin/invite",
+]);
+
 app.use((req, res, next) => {
   const start = Date.now();
   const path = req.path;
@@ -130,7 +146,9 @@ app.use((req, res, next) => {
     const duration = Date.now() - start;
     if (path.startsWith("/api")) {
       let logLine = `${req.method} ${path} ${res.statusCode} in ${duration}ms`;
-      if (capturedJsonResponse) {
+      const isSensitive = SENSITIVE_PATHS.has(path) ||
+        Array.from(SENSITIVE_PATHS).some(p => path.startsWith(p));
+      if (capturedJsonResponse && !isSensitive) {
         logLine += ` :: ${JSON.stringify(capturedJsonResponse)}`;
       }
 
@@ -149,7 +167,7 @@ app.use((req, res, next) => {
     const message = err.message || "Internal Server Error";
 
     res.status(status).json({ message });
-    throw err;
+    console.error(err);
   });
 
   // importantly only setup vite in development and after

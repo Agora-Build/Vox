@@ -77,6 +77,10 @@ export async function registerRoutes(
         return res.status(400).json({ error: "Missing required fields" });
       }
 
+      if (adminPassword.length < 8) {
+        return res.status(400).json({ error: "Password must be at least 8 characters" });
+      }
+
       const expectedCode = getInitCode();
       if (code !== expectedCode) {
         return res.status(403).json({ error: "Invalid initialization code" });
@@ -467,6 +471,10 @@ export async function registerRoutes(
         return res.status(400).json({ error: "Missing required fields" });
       }
 
+      if (password.length < 8) {
+        return res.status(400).json({ error: "Password must be at least 8 characters" });
+      }
+
       const tokenHash = hashToken(token);
       const invite = await storage.getInviteTokenByHash(tokenHash);
       if (!invite) {
@@ -750,10 +758,16 @@ export async function registerRoutes(
 
   app.get("/api/projects/:id", requireAuth, async (req, res) => {
     try {
-      const { id } = req.params;
-      const project = await storage.getProject(parseInt(id));
+      const user = await getCurrentUser(req);
+      if (!user) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+      const project = await storage.getProject(parseInt(req.params.id));
       if (!project) {
         return res.status(404).json({ error: "Project not found" });
+      }
+      if (project.ownerId !== user.id && !user.isAdmin) {
+        return res.status(403).json({ error: "Access denied" });
       }
       res.json(project);
     } catch (error) {
@@ -844,10 +858,16 @@ export async function registerRoutes(
 
   app.get("/api/workflows/:id", requireAuth, async (req, res) => {
     try {
-      const { id } = req.params;
-      const workflow = await storage.getWorkflow(parseInt(id));
+      const user = await getCurrentUser(req);
+      if (!user) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+      const workflow = await storage.getWorkflow(parseInt(req.params.id));
       if (!workflow) {
         return res.status(404).json({ error: "Workflow not found" });
+      }
+      if (workflow.ownerId !== user.id && workflow.visibility !== "public" && !user.isAdmin) {
+        return res.status(403).json({ error: "Access denied" });
       }
       res.json(workflow);
     } catch (error) {
@@ -1436,6 +1456,10 @@ export async function registerRoutes(
         return res.status(403).json({ error: "Eval agent token has been revoked" });
       }
 
+      if (evalAgentToken.expiresAt && new Date() > new Date(evalAgentToken.expiresAt)) {
+        return res.status(403).json({ error: "Eval agent token has expired" });
+      }
+
       const { name, metadata } = req.body;
       
       if (!name) {
@@ -1921,10 +1945,13 @@ export async function registerRoutes(
 
   app.get("/api/config", async (req, res) => {
     try {
+      const PUBLIC_CONFIG_KEYS = new Set(["system_initialized"]);
       const configs = await storage.getAllConfig();
       const configObject: Record<string, string> = {};
       for (const config of configs) {
-        configObject[config.key] = config.value;
+        if (PUBLIC_CONFIG_KEYS.has(config.key)) {
+          configObject[config.key] = config.value;
+        }
       }
       res.json(configObject);
     } catch (error) {
