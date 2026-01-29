@@ -17,12 +17,12 @@ interface ProtectedRouteProps {
 
 export default function ProtectedRoute({ requireAdmin, children }: ProtectedRouteProps) {
   const [, setLocation] = useLocation();
-  const { data: authStatus, isLoading } = useQuery<AuthStatus>({
+  const { data: authStatus, isLoading, isFetching } = useQuery<AuthStatus>({
     queryKey: ["/api/auth/status"],
   });
 
   useEffect(() => {
-    if (!isLoading) {
+    if (!isLoading && !isFetching) {
       if (!authStatus?.initialized) {
         return;
       }
@@ -33,10 +33,19 @@ export default function ProtectedRoute({ requireAdmin, children }: ProtectedRout
         setLocation("/console");
       }
     }
-  }, [isLoading, authStatus, requireAdmin, setLocation]);
+  }, [isLoading, isFetching, authStatus, requireAdmin, setLocation]);
 
   if (
-    isLoading ||
+    (isLoading || isFetching) && !authStatus?.user
+  ) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="animate-pulse text-muted-foreground">Loading...</div>
+      </div>
+    );
+  }
+
+  if (
     !authStatus?.initialized ||
     !authStatus.user ||
     (requireAdmin && !authStatus.user.isAdmin)

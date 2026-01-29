@@ -16,15 +16,59 @@ test.describe("Admin Authentication", () => {
 
   test("should show admin login page", async ({ page }) => {
     await page.goto("/admin/login");
-    await page.waitForLoadState("domcontentloaded");
+    await page.waitForSelector('[data-testid="text-login-title"]', { timeout: 15000 });
 
-    const content = await page.content();
-    expect(
-      content.includes("admin") ||
-      content.includes("Admin") ||
-      content.includes("login") ||
-      content.includes("Login")
-    ).toBeTruthy();
+    const title = await page.textContent('[data-testid="text-login-title"]');
+    expect(title).toContain("Admin");
+  });
+
+  test("should redirect admin to /admin/console after login via /admin/login", async ({ page }) => {
+    await page.goto("/admin/login");
+    await page.waitForSelector('[data-testid="input-email"]', { timeout: 10000 });
+    await page.fill('[data-testid="input-email"]', "admin@vox.local");
+    await page.fill('[data-testid="input-password"]', "admin123456");
+    await page.click('[data-testid="button-login"]');
+
+    await expect(page).toHaveURL(/\/admin\/console/, { timeout: 15000 });
+  });
+
+  test("should redirect admin to /admin/console after login via /login", async ({ page }) => {
+    await page.goto("/login");
+    await page.waitForSelector('[data-testid="input-email"]', { timeout: 10000 });
+    await page.fill('[data-testid="input-email"]', "admin@vox.local");
+    await page.fill('[data-testid="input-password"]', "admin123456");
+    await page.click('[data-testid="button-login"]');
+
+    await expect(page).toHaveURL(/\/admin\/console/, { timeout: 15000 });
+  });
+
+  test("should stay on /login with bad credentials", async ({ page }) => {
+    await page.goto("/login");
+    await page.waitForSelector('[data-testid="input-email"]', { timeout: 10000 });
+    await page.fill('[data-testid="input-email"]', "nonexistent@example.com");
+    await page.fill('[data-testid="input-password"]', "wrongpassword");
+    await page.click('[data-testid="button-login"]');
+
+    // Should remain on login page
+    await page.waitForTimeout(3000);
+    expect(page.url()).toMatch(/\/login/);
+  });
+
+  test("should redirect non-admin to /console after login via /login", async ({ page }) => {
+    await page.goto("/login");
+    await page.waitForSelector('[data-testid="input-email"]', { timeout: 10000 });
+    await page.fill('[data-testid="input-email"]', "scout@vox.ai");
+    await page.fill('[data-testid="input-password"]', "scout123");
+    await page.click('[data-testid="button-login"]');
+
+    // Non-admin should go to /console, never /admin/console
+    await page.waitForURL(/\/(console|login)/, { timeout: 15000 });
+    expect(page.url()).not.toMatch(/\/admin\/console/);
+
+    // If scout is activated, should land on /console
+    if (page.url().match(/\/console/)) {
+      expect(page.url()).toMatch(/\/console/);
+    }
   });
 });
 

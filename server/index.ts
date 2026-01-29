@@ -73,6 +73,9 @@ app.use(
 
 app.use(express.urlencoded({ extended: false }));
 
+// Rate limiting only applies in production
+const isProduction = process.env["NODE_ENV"] === "production";
+
 // Rate limiting for API routes
 const apiLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
@@ -80,17 +83,17 @@ const apiLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: "Too many requests, please try again later." },
-  skip: (req) => !req.path.startsWith("/api"), // Only apply to /api routes
+  skip: (req) => !isProduction || !req.path.startsWith("/api"),
 });
 
 // Stricter rate limit for authentication endpoints
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: process.env.NODE_ENV === "development" ? 1000 : 20, // Higher limit in dev for testing
+  max: 20,
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: "Too many authentication attempts, please try again later." },
-  skip: () => process.env.NODE_ENV === "test", // Skip rate limiting in test mode
+  skip: () => !isProduction,
 });
 
 app.use(apiLimiter);

@@ -182,8 +182,8 @@ test.describe("Unauthenticated Access E2E Tests", () => {
 
   test("redirects to login for console routes", async ({ page }) => {
     await page.goto("/console");
-    await page.waitForLoadState("domcontentloaded");
-    // Should either show login or redirect
+    // Wait for React to render and redirect unauthenticated user
+    await page.waitForURL(/\/(login|console)/, { timeout: 15000 });
     const url = page.url();
     expect(url.includes("login") || url.includes("console")).toBeTruthy();
   });
