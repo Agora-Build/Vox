@@ -1,13 +1,57 @@
 import { Link, useLocation } from "wouter";
-import { LayoutDashboard, Trophy, BookOpen, Activity, Zap, Menu, X, Github, Twitter, Mail } from "lucide-react";
+import { useQuery, useMutation } from "@tanstack/react-query";
+import { LayoutDashboard, Trophy, BookOpen, Activity, Zap, Menu, X, Github, Twitter, Mail, LogIn, LogOut, User } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
+import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { ThemeToggle } from "@/components/theme-toggle";
+import { useToast } from "@/hooks/use-toast";
+import { apiRequest, queryClient, getQueryFn } from "@/lib/queryClient";
+
+interface AuthStatus {
+  initialized: boolean;
+  user: {
+    id: string;
+    username: string;
+    email: string;
+    plan: string;
+    isAdmin: boolean;
+  } | null;
+}
 
 export default function Layout({ children }: { children: React.ReactNode }) {
-  const [location] = useLocation();
+  const [location, setLocation] = useLocation();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const { toast } = useToast();
+
+  const { data: authStatus } = useQuery<AuthStatus | null>({
+    queryKey: ["/api/auth/status"],
+    queryFn: getQueryFn({ on401: "returnNull" }),
+  });
+
+  const logoutMutation = useMutation({
+    mutationFn: async () => {
+      await apiRequest("POST", "/api/auth/logout");
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/auth/status"] });
+      setLocation("/");
+    },
+    onError: (error: Error) => {
+      toast({ title: "Logout failed", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const user = authStatus?.user ?? null;
 
   const navItems = [
     { href: "/", label: "Home", icon: LayoutDashboard },
@@ -53,6 +97,36 @@ export default function Layout({ children }: { children: React.ReactNode }) {
               );
             })}
             <ThemeToggle />
+            {user ? (
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="ghost" size="icon" className="rounded-full" data-testid="button-user-menu">
+                    <Avatar className="h-8 w-8">
+                      <AvatarFallback>{user.username[0].toUpperCase()}</AvatarFallback>
+                    </Avatar>
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  <DropdownMenuLabel>{user.username}</DropdownMenuLabel>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem onClick={() => setLocation("/console")}>
+                    <User className="mr-2 h-4 w-4" />
+                    Console
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem onClick={() => logoutMutation.mutate()} disabled={logoutMutation.isPending}>
+                    <LogOut className="mr-2 h-4 w-4" />
+                    Sign Out
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            ) : (
+              <Link href="/login">
+                <Button variant="ghost" size="icon" data-testid="button-sign-in">
+                  <LogIn className="h-4 w-4" />
+                </Button>
+              </Link>
+            )}
           </div>
 
           {/* Mobile Menu Button */}
@@ -73,7 +147,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
         <div
           className={cn(
             "md:hidden border-t border-border/40 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 overflow-hidden transition-all duration-300",
-            mobileMenuOpen ? "max-h-80" : "max-h-0"
+            mobileMenuOpen ? "max-h-96" : "max-h-0"
           )}
         >
           <div className="container mx-auto px-4 py-2 space-y-1">
@@ -97,6 +171,38 @@ export default function Layout({ children }: { children: React.ReactNode }) {
                 </Link>
               );
             })}
+            <div className="border-t border-border/40 pt-1 mt-1">
+              {user ? (
+                <>
+                  <Link href="/console">
+                    <div
+                      onClick={() => setMobileMenuOpen(false)}
+                      className="flex items-center gap-3 px-4 py-3 rounded-md text-sm font-medium transition-colors cursor-pointer text-muted-foreground hover:text-foreground hover:bg-secondary/50"
+                    >
+                      <User className="h-5 w-5" />
+                      <span>Console</span>
+                    </div>
+                  </Link>
+                  <div
+                    onClick={() => { setMobileMenuOpen(false); logoutMutation.mutate(); }}
+                    className="flex items-center gap-3 px-4 py-3 rounded-md text-sm font-medium transition-colors cursor-pointer text-muted-foreground hover:text-foreground hover:bg-secondary/50"
+                  >
+                    <LogOut className="h-5 w-5" />
+                    <span>Sign Out</span>
+                  </div>
+                </>
+              ) : (
+                <Link href="/login">
+                  <div
+                    onClick={() => setMobileMenuOpen(false)}
+                    className="flex items-center gap-3 px-4 py-3 rounded-md text-sm font-medium transition-colors cursor-pointer text-muted-foreground hover:text-foreground hover:bg-secondary/50"
+                  >
+                    <LogIn className="h-5 w-5" />
+                    <span>Sign In</span>
+                  </div>
+                </Link>
+              )}
+            </div>
           </div>
         </div>
       </nav>

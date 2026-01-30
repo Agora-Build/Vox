@@ -1088,6 +1088,43 @@ export async function registerRoutes(
     }
   });
 
+  app.patch("/api/eval-sets/:id", requireAuth, async (req, res) => {
+    try {
+      const user = await getCurrentUser(req);
+      if (!user) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+
+      const { id } = req.params;
+      const evalSet = await storage.getEvalSet(parseInt(id));
+
+      if (!evalSet) {
+        return res.status(404).json({ error: "Eval set not found" });
+      }
+
+      if (evalSet.ownerId !== user.id && !user.isAdmin) {
+        return res.status(403).json({ error: "Not authorized to modify this eval set" });
+      }
+
+      const { name, description, visibility } = req.body;
+      const updates: Record<string, unknown> = {};
+      if (name) updates.name = name;
+      if (description !== undefined) updates.description = description;
+      if (visibility) {
+        if (visibility === "private" && user.plan === "basic") {
+          return res.status(403).json({ error: "Premium plan required for private eval sets" });
+        }
+        updates.visibility = visibility;
+      }
+
+      const updated = await storage.updateEvalSet(parseInt(id), updates);
+      res.json(updated);
+    } catch (error) {
+      console.error("Error updating eval set:", error);
+      res.status(500).json({ error: "Failed to update eval set" });
+    }
+  });
+
   app.patch("/api/eval-sets/:id/mainline", requireAuth, requirePrincipal, async (req, res) => {
     try {
       const { id } = req.params;
