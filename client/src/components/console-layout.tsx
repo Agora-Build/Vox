@@ -19,7 +19,7 @@ import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import { Users, Workflow, FileText, LogOut, Shield, Gem, Sparkles, Zap, Server, Key, Building2, CreditCard, Settings, FolderKanban, ClipboardList } from "lucide-react";
+import { Users, Workflow, FileText, LogOut, Shield, Gem, Sparkles, Zap, Server, Building2, CreditCard, Settings, FolderKanban, ClipboardList } from "lucide-react";
 import { ThemeToggle } from "@/components/theme-toggle";
 
 interface AuthStatus {
@@ -141,15 +141,6 @@ export default function ConsoleLayout({ children }: ConsoleLayoutProps) {
     icon: Server,
     active: location === "/console/eval-agents",
   });
-
-  if (user && (user.isAdmin || user.plan !== "basic")) {
-    navItems.push({
-      title: "Agent Tokens",
-      url: "/console/eval-agent-tokens",
-      icon: Key,
-      active: location === "/console/eval-agent-tokens",
-    });
-  }
 
   // Organization section
   const orgNavItems = [];

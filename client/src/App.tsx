@@ -20,7 +20,6 @@ import ConsoleProjects from "@/pages/console-projects";
 import ConsoleWorkflows from "@/pages/console-workflows";
 import ConsoleWorkflowDetail from "@/pages/console-workflow-detail";
 import ConsoleEvalSets from "@/pages/console-evalsets";
-import ConsoleEvalAgentTokens from "@/pages/console-eval-agent-tokens";
 import ConsoleEvalJobs from "@/pages/console-eval-jobs";
 import ConsoleEvalAgents from "@/pages/console-eval-agents";
 import ConsoleOrganization from "@/pages/console-organization";
@@ -278,51 +277,6 @@ function ConsoleEvalJobsWrapper() {
   return (
     <ConsoleLayout>
       <ConsoleEvalJobs />
-    </ConsoleLayout>
-  );
-}
-
-function ConsoleEvalAgentTokensWrapper() {
-  const [, setLocation] = useLocation();
-  const { data: authStatus, isLoading, isFetching } = useQuery<AuthStatus>({
-    queryKey: ["/api/auth/status"],
-  });
-
-  useEffect(() => {
-    if (!isLoading && !isFetching && authStatus?.initialized && !authStatus.user) {
-      setLocation("/login");
-    }
-  }, [isLoading, isFetching, authStatus, setLocation]);
-
-  if ((isLoading || isFetching) && !authStatus?.user) {
-    return (
-      <div className="min-h-screen flex items-center justify-center">
-        <div className="animate-pulse text-muted-foreground">Loading...</div>
-      </div>
-    );
-  }
-
-  if (!authStatus?.initialized) {
-    return <ConsoleInit />;
-  }
-
-  if (!authStatus.user) {
-    return (
-      <div className="min-h-screen flex items-center justify-center">
-        <div className="animate-pulse text-muted-foreground">Redirecting...</div>
-      </div>
-    );
-  }
-
-  // Basic users cannot access agent tokens
-  if (authStatus.user.plan === "basic" && !authStatus.user.isAdmin) {
-    setLocation("/console/workflows");
-    return null;
-  }
-
-  return (
-    <ConsoleLayout>
-      <ConsoleEvalAgentTokens />
     </ConsoleLayout>
   );
 }
@@ -700,9 +654,6 @@ function Router() {
       </Route>
       <Route path="/console/eval-agents">
         <ConsoleEvalAgentsWrapper />
-      </Route>
-      <Route path="/console/eval-agent-tokens">
-        <ConsoleEvalAgentTokensWrapper />
       </Route>
       <Route path="/console/organization">
         <ConsoleOrganizationWrapper />

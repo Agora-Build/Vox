@@ -12,10 +12,10 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import { Plus, Workflow, Globe, Lock, Star, StarOff, ChevronRight } from "lucide-react";
+import { Plus, Workflow, Globe, Lock, Star, StarOff, ChevronRight, Pencil, FolderKanban } from "lucide-react";
 import { useState } from "react";
 import { useLocation } from "wouter";
-import type { Workflow as WorkflowType, Provider } from "@shared/schema";
+import type { Workflow as WorkflowType, Provider, Project } from "@shared/schema";
 
 interface AuthStatus {
   user: {
@@ -35,6 +35,14 @@ export default function ConsoleWorkflows() {
   const [visibility, setVisibility] = useState("public");
   const [providerId, setProviderId] = useState("");
 
+  // Edit dialog state
+  const [editOpen, setEditOpen] = useState(false);
+  const [editWorkflow, setEditWorkflow] = useState<WorkflowType | null>(null);
+  const [editName, setEditName] = useState("");
+  const [editDescription, setEditDescription] = useState("");
+  const [editVisibility, setEditVisibility] = useState("");
+  const [editProjectId, setEditProjectId] = useState("");
+
   const { data: authStatus } = useQuery<AuthStatus>({
     queryKey: ["/api/auth/status"],
   });
@@ -45,6 +53,10 @@ export default function ConsoleWorkflows() {
 
   const { data: providers } = useQuery<Provider[]>({
     queryKey: ["/api/providers"],
+  });
+
+  const { data: projects } = useQuery<Project[]>({
+    queryKey: ["/api/projects"],
   });
 
   const createMutation = useMutation({
@@ -71,6 +83,28 @@ export default function ConsoleWorkflows() {
     },
   });
 
+  const editMutation = useMutation({
+    mutationFn: async () => {
+      if (!editWorkflow) return;
+      const body: Record<string, unknown> = {};
+      if (editName !== editWorkflow.name) body.name = editName;
+      if (editDescription !== (editWorkflow.description || "")) body.description = editDescription;
+      if (editVisibility !== editWorkflow.visibility) body.visibility = editVisibility;
+      if (editProjectId && !editWorkflow.projectId) body.projectId = parseInt(editProjectId);
+      const res = await apiRequest("PATCH", `/api/workflows/${editWorkflow.id}`, body);
+      return res.json();
+    },
+    onSuccess: () => {
+      setEditOpen(false);
+      setEditWorkflow(null);
+      queryClient.invalidateQueries({ queryKey: ["/api/workflows"] });
+      toast({ title: "Workflow updated" });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Failed to update workflow", description: error.message, variant: "destructive" });
+    },
+  });
+
   const toggleMainlineMutation = useMutation({
     mutationFn: async ({ id, isMainline }: { id: number; isMainline: boolean }) => {
       const res = await apiRequest("PATCH", `/api/workflows/${id}/mainline`, { isMainline });
@@ -84,6 +118,15 @@ export default function ConsoleWorkflows() {
       toast({ title: "Failed to update workflow", description: error.message, variant: "destructive" });
     },
   });
+
+  const openEditDialog = (workflow: WorkflowType) => {
+    setEditWorkflow(workflow);
+    setEditName(workflow.name);
+    setEditDescription(workflow.description || "");
+    setEditVisibility(workflow.visibility);
+    setEditProjectId(workflow.projectId?.toString() || "");
+    setEditOpen(true);
+  };
 
   const isPrincipal = authStatus?.user?.plan === "principal";
   const canCreatePrivate = authStatus?.user?.plan !== "basic";
@@ -173,6 +216,96 @@ export default function ConsoleWorkflows() {
         </Dialog>
       </div>
 
+      {/* Edit Workflow Dialog */}
+      <Dialog open={editOpen} onOpenChange={(open) => {
+        if (!open) {
+          setEditOpen(false);
+          setEditWorkflow(null);
+        }
+      }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Edit Workflow</DialogTitle>
+            <DialogDescription>
+              Update workflow details. Project assignment is permanent once set.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            <div className="space-y-2">
+              <Label htmlFor="edit-workflow-name">Name</Label>
+              <Input
+                id="edit-workflow-name"
+                value={editName}
+                onChange={(e) => setEditName(e.target.value)}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="edit-workflow-description">Description</Label>
+              <Textarea
+                id="edit-workflow-description"
+                value={editDescription}
+                onChange={(e) => setEditDescription(e.target.value)}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="edit-workflow-visibility">Visibility</Label>
+              <Select value={editVisibility} onValueChange={setEditVisibility}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="public">Public</SelectItem>
+                  <SelectItem value="private" disabled={!canCreatePrivate}>
+                    Private {!canCreatePrivate && "(Premium required)"}
+                  </SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="edit-workflow-project">Project</Label>
+              {editWorkflow?.projectId ? (
+                <div className="flex items-center gap-2 p-2 border rounded-md bg-muted/50">
+                  <FolderKanban className="h-4 w-4 text-muted-foreground" />
+                  <span className="text-sm">
+                    {projects?.find(p => p.id === editWorkflow.projectId)?.name || `Project #${editWorkflow.projectId}`}
+                  </span>
+                  <Badge variant="secondary" className="ml-auto text-xs">Locked</Badge>
+                </div>
+              ) : (
+                <Select value={editProjectId} onValueChange={setEditProjectId}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Select a project (optional)" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {projects?.map((p) => (
+                      <SelectItem key={p.id} value={p.id.toString()}>
+                        {p.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )}
+              {!editWorkflow?.projectId && (
+                <p className="text-xs text-muted-foreground">
+                  Once attached to a project, this cannot be changed.
+                </p>
+              )}
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => { setEditOpen(false); setEditWorkflow(null); }}>
+              Cancel
+            </Button>
+            <Button
+              onClick={() => editMutation.mutate()}
+              disabled={editMutation.isPending || !editName}
+            >
+              Save Changes
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
@@ -180,7 +313,7 @@ export default function ConsoleWorkflows() {
             Workflows
           </CardTitle>
           <CardDescription>
-            {isPrincipal 
+            {isPrincipal
               ? "As a principal user, you can mark workflows as mainline for the official evaluation."
               : "View and manage your test workflows."
             }
@@ -198,15 +331,17 @@ export default function ConsoleWorkflows() {
               <TableHeader>
                 <TableRow>
                   <TableHead>Name</TableHead>
+                  <TableHead>Project</TableHead>
                   <TableHead>Visibility</TableHead>
                   <TableHead>Status</TableHead>
-                  {isPrincipal && <TableHead className="text-right">Mainline</TableHead>}
+                  {isPrincipal && <TableHead>Mainline</TableHead>}
+                  <TableHead className="text-right">Actions</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {workflows.map((workflow) => (
-                  <TableRow 
-                    key={workflow.id} 
+                  <TableRow
+                    key={workflow.id}
                     data-testid={`row-workflow-${workflow.id}`}
                     className="cursor-pointer hover:bg-muted/50"
                     onClick={() => setLocation(`/console/workflows/${workflow.id}`)}
@@ -221,6 +356,16 @@ export default function ConsoleWorkflows() {
                         </div>
                         <ChevronRight className="h-4 w-4 text-muted-foreground" />
                       </div>
+                    </TableCell>
+                    <TableCell>
+                      {workflow.projectId ? (
+                        <Badge variant="outline" className="gap-1">
+                          <FolderKanban className="h-3 w-3" />
+                          {projects?.find(p => p.id === workflow.projectId)?.name || `#${workflow.projectId}`}
+                        </Badge>
+                      ) : (
+                        <span className="text-sm text-muted-foreground">--</span>
+                      )}
                     </TableCell>
                     <TableCell>
                       <Badge variant="outline" className="gap-1">
@@ -241,17 +386,30 @@ export default function ConsoleWorkflows() {
                       )}
                     </TableCell>
                     {isPrincipal && (
-                      <TableCell className="text-right">
+                      <TableCell>
                         <Switch
                           checked={workflow.isMainline}
-                          onCheckedChange={(checked) =>
-                            toggleMainlineMutation.mutate({ id: workflow.id, isMainline: checked })
-                          }
+                          onCheckedChange={(checked) => {
+                            toggleMainlineMutation.mutate({ id: workflow.id, isMainline: checked });
+                          }}
                           disabled={workflow.visibility === "private" && !workflow.isMainline}
                           data-testid={`switch-mainline-${workflow.id}`}
+                          onClick={(e) => e.stopPropagation()}
                         />
                       </TableCell>
                     )}
+                    <TableCell className="text-right">
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          openEditDialog(workflow);
+                        }}
+                      >
+                        <Pencil className="h-4 w-4" />
+                      </Button>
+                    </TableCell>
                   </TableRow>
                 ))}
               </TableBody>

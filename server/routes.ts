@@ -947,7 +947,7 @@ export async function registerRoutes(
         return res.status(403).json({ error: "Not authorized to modify this workflow" });
       }
 
-      const { name, description, visibility, config } = req.body;
+      const { name, description, visibility, config, projectId } = req.body;
       const updates: Record<string, unknown> = {};
       if (name) updates.name = name;
       if (description !== undefined) updates.description = description;
@@ -957,6 +957,19 @@ export async function registerRoutes(
           return res.status(403).json({ error: "Premium plan required for private workflows" });
         }
         updates.visibility = visibility;
+      }
+      if (projectId !== undefined) {
+        if (workflow.projectId) {
+          return res.status(400).json({ error: "Workflow is already attached to a project and cannot be reassigned" });
+        }
+        const project = await storage.getProject(projectId);
+        if (!project) {
+          return res.status(404).json({ error: "Project not found" });
+        }
+        if (project.ownerId !== user.id && !user.isAdmin) {
+          return res.status(403).json({ error: "Not authorized to attach to this project" });
+        }
+        updates.projectId = projectId;
       }
 
       const updated = await storage.updateWorkflow(parseInt(id), updates);
