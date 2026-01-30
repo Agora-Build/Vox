@@ -390,7 +390,7 @@ export default function ConsoleEvalAgents() {
                         </div>
                         <div className="p-3 bg-muted rounded-md">
                           <p className="text-sm font-medium mb-2">Usage:</p>
-                          <code className="text-xs">./vox_agent --up --token={newToken}</code>
+                          <code className="text-xs">./vox_eval_agentd --up --token={newToken}</code>
                         </div>
                       </div>
                       <DialogFooter>

@@ -71,6 +71,10 @@ export function generateSecureToken(length: number = 32): string {
   return crypto.randomBytes(length).toString('hex');
 }
 
+export function generateEvalAgentToken(): string {
+  return "ev" + crypto.randomBytes(15).toString('hex');
+}
+
 // Helper to convert snake_case SQL results to camelCase for type safety
 function snakeToCamel(row: Record<string, any>): Record<string, any> {
   const result: Record<string, any> = {};

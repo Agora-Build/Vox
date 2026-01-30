@@ -1,6 +1,6 @@
 import type { Express } from "express";
 import { createServer, type Server } from "http";
-import { storage, hashToken, generateSecureToken } from "./storage";
+import { storage, hashToken, generateSecureToken, generateEvalAgentToken } from "./storage";
 import { parseNextCronRun } from "./cron";
 import { generateProviderId } from "@shared/schema";
 import { registerApiV1Routes } from "./routes-api-v1";
@@ -1463,7 +1463,7 @@ export async function registerRoutes(
         return res.status(400).json({ error: "Invalid visibility. Must be public or private" });
       }
 
-      const token = generateSecureToken();
+      const token = generateEvalAgentToken();
       const tokenHash = hashToken(token);
 
       const evalAgentToken = await storage.createEvalAgentToken({
@@ -1558,7 +1558,7 @@ export async function registerRoutes(
         return res.status(400).json({ error: "Invalid visibility. Must be public or private" });
       }
 
-      const token = generateSecureToken();
+      const token = generateEvalAgentToken();
       const tokenHash = hashToken(token);
 
       const evalAgentToken = await storage.createEvalAgentToken({
