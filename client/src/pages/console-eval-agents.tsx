@@ -361,7 +361,7 @@ export default function ConsoleEvalAgents() {
                           onClick={() => createMutation.mutate()}
                           disabled={createMutation.isPending || !name || !region}
                         >
-                          Create Token
+                          Create Agent
                         </Button>
                       </DialogFooter>
                     </>
