@@ -302,7 +302,7 @@ export default function ConsoleEvalAgents() {
                 </DialogTrigger>
                 <DialogContent>
                   <DialogHeader>
-                    <DialogTitle>Create Agent Token</DialogTitle>
+                    <DialogTitle>Create Agent</DialogTitle>
                     <DialogDescription>
                       {isAdmin
                         ? "Create a new token for eval agent registration."
