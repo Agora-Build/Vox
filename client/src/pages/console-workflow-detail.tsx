@@ -12,7 +12,7 @@ import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { ArrowLeft, Play, Settings, History, Clock, CheckCircle, XCircle, Loader2, RefreshCw } from "lucide-react";
 import { useState } from "react";
-import type { Workflow as WorkflowType, Provider, EvalJob } from "@shared/schema";
+import type { Workflow as WorkflowType, Provider, EvalJob, EvalSet } from "@shared/schema";
 import { formatDistanceToNow } from "date-fns";
 
 interface AuthStatus {
@@ -38,6 +38,7 @@ export default function ConsoleWorkflowDetail() {
 
   const [runDialogOpen, setRunDialogOpen] = useState(false);
   const [runRegion, setRunRegion] = useState("");
+  const [runEvalSetId, setRunEvalSetId] = useState("");
 
   const { data: authStatus } = useQuery<AuthStatus>({
     queryKey: ["/api/auth/status"],
@@ -50,6 +51,10 @@ export default function ConsoleWorkflowDetail() {
 
   const { data: providers } = useQuery<Provider[]>({
     queryKey: ["/api/providers"],
+  });
+
+  const { data: evalSets } = useQuery<EvalSet[]>({
+    queryKey: ["/api/eval-sets"],
   });
 
   const { data: jobs, isLoading: jobsLoading, refetch: refetchJobs } = useQuery<EvalJob[]>({
@@ -67,12 +72,14 @@ export default function ConsoleWorkflowDetail() {
     mutationFn: async () => {
       const res = await apiRequest("POST", `/api/workflows/${workflowId}/run`, {
         region: runRegion,
+        evalSetId: parseInt(runEvalSetId),
       });
       return res.json();
     },
     onSuccess: (data) => {
       setRunDialogOpen(false);
       setRunRegion("");
+      setRunEvalSetId("");
       refetchJobs();
       toast({ title: "Workflow started", description: `Job created: ${data.job?.id}` });
     },
@@ -153,11 +160,26 @@ export default function ConsoleWorkflowDetail() {
                   </SelectContent>
                 </Select>
               </div>
+              <div className="space-y-2">
+                <Label htmlFor="run-eval-set">Eval Set</Label>
+                <Select value={runEvalSetId} onValueChange={setRunEvalSetId}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Select eval set" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {evalSets?.map((es) => (
+                      <SelectItem key={es.id} value={String(es.id)}>
+                        {es.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
             </div>
             <DialogFooter>
               <Button
                 onClick={() => runWorkflowMutation.mutate()}
-                disabled={runWorkflowMutation.isPending || !runRegion}
+                disabled={runWorkflowMutation.isPending || !runRegion || !runEvalSetId}
               >
                 Run Evaluation
               </Button>
