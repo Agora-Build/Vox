@@ -15,7 +15,7 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import { Plus, Workflow, Globe, Lock, Star, StarOff, ChevronRight } from "lucide-react";
 import { useState } from "react";
 import { useLocation } from "wouter";
-import type { Workflow as WorkflowType } from "@shared/schema";
+import type { Workflow as WorkflowType, Provider } from "@shared/schema";
 
 interface AuthStatus {
   user: {
@@ -33,6 +33,7 @@ export default function ConsoleWorkflows() {
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [visibility, setVisibility] = useState("public");
+  const [providerId, setProviderId] = useState("");
 
   const { data: authStatus } = useQuery<AuthStatus>({
     queryKey: ["/api/auth/status"],
@@ -42,12 +43,17 @@ export default function ConsoleWorkflows() {
     queryKey: ["/api/workflows"],
   });
 
+  const { data: providers } = useQuery<Provider[]>({
+    queryKey: ["/api/providers"],
+  });
+
   const createMutation = useMutation({
     mutationFn: async () => {
       const res = await apiRequest("POST", "/api/workflows", {
         name,
         description,
         visibility,
+        providerId,
       });
       return res.json();
     },
@@ -56,6 +62,7 @@ export default function ConsoleWorkflows() {
       setName("");
       setDescription("");
       setVisibility("public");
+      setProviderId("");
       queryClient.invalidateQueries({ queryKey: ["/api/workflows"] });
       toast({ title: "Workflow created" });
     },
@@ -124,6 +131,21 @@ export default function ConsoleWorkflows() {
                 />
               </div>
               <div className="space-y-2">
+                <Label htmlFor="workflow-provider">Provider</Label>
+                <Select value={providerId} onValueChange={setProviderId}>
+                  <SelectTrigger data-testid="select-workflow-provider">
+                    <SelectValue placeholder="Select a provider" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {providers?.map((p) => (
+                      <SelectItem key={p.id} value={p.id}>
+                        {p.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-2">
                 <Label htmlFor="workflow-visibility">Visibility</Label>
                 <Select value={visibility} onValueChange={setVisibility}>
                   <SelectTrigger data-testid="select-workflow-visibility">
@@ -141,7 +163,7 @@ export default function ConsoleWorkflows() {
             <DialogFooter>
               <Button
                 onClick={() => createMutation.mutate()}
-                disabled={createMutation.isPending || !name}
+                disabled={createMutation.isPending || !name || !providerId}
                 data-testid="button-submit-workflow"
               >
                 Create Workflow
