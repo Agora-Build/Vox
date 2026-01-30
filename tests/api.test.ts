@@ -39,6 +39,7 @@ interface EvalAgentToken {
   id: number;
   name: string;
   region: string;
+  visibility: string;
   token?: string;
   isRevoked: boolean;
 }
@@ -1863,6 +1864,287 @@ describe('Vox API Tests', () => {
       const pricing = await response.json();
       expect(Array.isArray(pricing)).toBe(true);
       expect(pricing.length).toBeGreaterThan(0);
+    });
+  });
+
+  describe('User-Facing Eval Agent Token API', () => {
+    let basicSession: AuthSession;
+    let premiumSession: AuthSession;
+    let premiumTokenId: number;
+    const basicEmail = `basic-token-${Date.now()}-${Math.random().toString(36).slice(2, 8)}@test.local`;
+    const premiumEmail = `premium-token-${Date.now()}-${Math.random().toString(36).slice(2, 8)}@test.local`;
+    const testPassword = 'testpass123';
+
+    // Create basic and premium users for token tests
+    it('should create a basic test user via invite', async () => {
+      const inviteRes = await authFetch(adminSession, `${BASE_URL}/api/admin/invite`, {
+        method: 'POST',
+        body: JSON.stringify({ email: basicEmail, plan: 'basic' }),
+      });
+      expect(inviteRes.ok).toBe(true);
+      const { token } = await inviteRes.json();
+
+      const regRes = await fetch(`${BASE_URL}/api/auth/register`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: `basic-${Date.now()}`, password: testPassword, token }),
+      });
+      expect(regRes.ok).toBe(true);
+    });
+
+    it('should create a premium test user via invite', async () => {
+      const inviteRes = await authFetch(adminSession, `${BASE_URL}/api/admin/invite`, {
+        method: 'POST',
+        body: JSON.stringify({ email: premiumEmail, plan: 'premium' }),
+      });
+      expect(inviteRes.ok).toBe(true);
+      const { token } = await inviteRes.json();
+
+      const regRes = await fetch(`${BASE_URL}/api/auth/register`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: `premium-${Date.now()}`, password: testPassword, token }),
+      });
+      expect(regRes.ok).toBe(true);
+    });
+
+    it('should login as basic user', async () => {
+      basicSession = await login(basicEmail, testPassword);
+      expect(basicSession.cookie).toBeTruthy();
+    });
+
+    it('should login as premium user', async () => {
+      premiumSession = await login(premiumEmail, testPassword);
+      expect(premiumSession.cookie).toBeTruthy();
+    });
+
+    // Basic user cannot create tokens
+    it('should reject token creation for basic users (403)', async () => {
+      const response = await authFetch(basicSession, `${BASE_URL}/api/eval-agent-tokens`, {
+        method: 'POST',
+        body: JSON.stringify({ name: 'Basic Token', region: 'na' }),
+      });
+      expect(response.status).toBe(403);
+    });
+
+    // Basic user can still list tokens (empty list)
+    it('should return empty token list for basic user', async () => {
+      const response = await authFetch(basicSession, `${BASE_URL}/api/eval-agent-tokens`);
+      expect(response.ok).toBe(true);
+      const tokens = await response.json();
+      expect(Array.isArray(tokens)).toBe(true);
+      expect(tokens.length).toBe(0);
+    });
+
+    // Premium user can create private tokens
+    it('should allow premium user to create a private token', async () => {
+      const response = await authFetch(premiumSession, `${BASE_URL}/api/eval-agent-tokens`, {
+        method: 'POST',
+        body: JSON.stringify({ name: 'Premium Private Token', region: 'na' }),
+      });
+      expect(response.ok).toBe(true);
+      const data = await response.json();
+      expect(data.token).toBeDefined();
+      expect(data.visibility).toBe('private');
+      expect(data.region).toBe('na');
+      premiumTokenId = data.id;
+    });
+
+    // Premium user cannot create public tokens (forced private)
+    it('should force private visibility for premium user even if public requested', async () => {
+      const response = await authFetch(premiumSession, `${BASE_URL}/api/eval-agent-tokens`, {
+        method: 'POST',
+        body: JSON.stringify({ name: 'Premium Public Attempt', region: 'eu', visibility: 'public' }),
+      });
+      expect(response.ok).toBe(true);
+      const data = await response.json();
+      expect(data.visibility).toBe('private');
+    });
+
+    // Premium user sees only own tokens
+    it('should return only own tokens for premium user', async () => {
+      const response = await authFetch(premiumSession, `${BASE_URL}/api/eval-agent-tokens`);
+      expect(response.ok).toBe(true);
+      const tokens = await response.json();
+      expect(Array.isArray(tokens)).toBe(true);
+      expect(tokens.length).toBe(2); // the two we just created
+      for (const t of tokens) {
+        expect(t.visibility).toBe('private');
+      }
+    });
+
+    // Admin sees all tokens (including premium user's)
+    it('should return all tokens for admin including other users tokens', async () => {
+      const response = await authFetch(adminSession, `${BASE_URL}/api/eval-agent-tokens`);
+      expect(response.ok).toBe(true);
+      const tokens = await response.json();
+      expect(Array.isArray(tokens)).toBe(true);
+      // Should include the premium user's tokens plus any existing admin tokens
+      expect(tokens.length).toBeGreaterThanOrEqual(2);
+    });
+
+    // Admin can create public tokens
+    it('should allow admin to create a public token', async () => {
+      const response = await authFetch(adminSession, `${BASE_URL}/api/eval-agent-tokens`, {
+        method: 'POST',
+        body: JSON.stringify({ name: 'Admin Public Token', region: 'apac', visibility: 'public' }),
+      });
+      expect(response.ok).toBe(true);
+      const data = await response.json();
+      expect(data.visibility).toBe('public');
+    });
+
+    // Admin can create private tokens
+    it('should allow admin to create a private token', async () => {
+      const response = await authFetch(adminSession, `${BASE_URL}/api/eval-agent-tokens`, {
+        method: 'POST',
+        body: JSON.stringify({ name: 'Admin Private Token', region: 'na', visibility: 'private' }),
+      });
+      expect(response.ok).toBe(true);
+      const data = await response.json();
+      expect(data.visibility).toBe('private');
+    });
+
+    // Admin defaults to public if visibility omitted
+    it('should default to public visibility for admin when not specified', async () => {
+      const response = await authFetch(adminSession, `${BASE_URL}/api/eval-agent-tokens`, {
+        method: 'POST',
+        body: JSON.stringify({ name: 'Admin Default Token', region: 'eu' }),
+      });
+      expect(response.ok).toBe(true);
+      const data = await response.json();
+      expect(data.visibility).toBe('public');
+    });
+
+    // Premium user can revoke own token
+    it('should allow premium user to revoke own token', async () => {
+      const response = await authFetch(premiumSession, `${BASE_URL}/api/eval-agent-tokens/${premiumTokenId}/revoke`, {
+        method: 'POST',
+      });
+      expect(response.ok).toBe(true);
+    });
+
+    // Non-owner cannot revoke someone else's token
+    it('should reject revocation by non-owner non-admin', async () => {
+      // Get an admin token ID
+      const listResponse = await authFetch(adminSession, `${BASE_URL}/api/eval-agent-tokens`);
+      const tokens = await listResponse.json();
+      const adminToken = tokens.find((t: EvalAgentToken) => !t.isRevoked && t.visibility === 'public');
+      if (adminToken) {
+        const response = await authFetch(premiumSession, `${BASE_URL}/api/eval-agent-tokens/${adminToken.id}/revoke`, {
+          method: 'POST',
+        });
+        expect(response.status).toBe(403);
+      }
+    });
+
+    // Token creation with invalid region
+    it('should reject token creation with invalid region', async () => {
+      const response = await authFetch(premiumSession, `${BASE_URL}/api/eval-agent-tokens`, {
+        method: 'POST',
+        body: JSON.stringify({ name: 'Bad Region', region: 'invalid' }),
+      });
+      expect(response.status).toBe(400);
+    });
+
+    // Token creation with missing name
+    it('should reject token creation with missing name', async () => {
+      const response = await authFetch(premiumSession, `${BASE_URL}/api/eval-agent-tokens`, {
+        method: 'POST',
+        body: JSON.stringify({ region: 'na' }),
+      });
+      expect(response.status).toBe(400);
+    });
+
+    // Token creation with missing region
+    it('should reject token creation with missing region', async () => {
+      const response = await authFetch(premiumSession, `${BASE_URL}/api/eval-agent-tokens`, {
+        method: 'POST',
+        body: JSON.stringify({ name: 'No Region' }),
+      });
+      expect(response.status).toBe(400);
+    });
+
+    // Revoking non-existent token
+    it('should return 404 when revoking non-existent token', async () => {
+      const response = await authFetch(adminSession, `${BASE_URL}/api/eval-agent-tokens/999999/revoke`, {
+        method: 'POST',
+      });
+      expect(response.status).toBe(404);
+    });
+
+    // Unauthenticated access
+    it('should reject unauthenticated access to token list', async () => {
+      const response = await fetch(`${BASE_URL}/api/eval-agent-tokens`);
+      expect(response.status).toBe(401);
+    });
+
+    it('should reject unauthenticated token creation', async () => {
+      const response = await fetch(`${BASE_URL}/api/eval-agent-tokens`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Unauth Token', region: 'na' }),
+      });
+      expect(response.status).toBe(401);
+    });
+  });
+
+  describe('Community and My Evals Metrics API', () => {
+    it('should get community metrics (public)', async () => {
+      const response = await fetch(`${BASE_URL}/api/metrics/community`);
+      expect(response.ok).toBe(true);
+      const data = await response.json();
+      expect(Array.isArray(data)).toBe(true);
+    });
+
+    it('should get community metrics with time filter', async () => {
+      const response = await fetch(`${BASE_URL}/api/metrics/community?hours=24&limit=10`);
+      expect(response.ok).toBe(true);
+      const data = await response.json();
+      expect(Array.isArray(data)).toBe(true);
+      expect(data.length).toBeLessThanOrEqual(10);
+    });
+
+    it('should reject unauthenticated access to my-evals', async () => {
+      const response = await fetch(`${BASE_URL}/api/metrics/my-evals`);
+      expect(response.status).toBe(401);
+    });
+
+    it('should get my-evals metrics when authenticated', async () => {
+      const response = await authFetch(adminSession, `${BASE_URL}/api/metrics/my-evals`);
+      expect(response.ok).toBe(true);
+      const data = await response.json();
+      expect(Array.isArray(data)).toBe(true);
+    });
+
+    it('should get my-evals metrics with time filter', async () => {
+      const response = await authFetch(adminSession, `${BASE_URL}/api/metrics/my-evals?hours=24&limit=5`);
+      expect(response.ok).toBe(true);
+      const data = await response.json();
+      expect(Array.isArray(data)).toBe(true);
+      expect(data.length).toBeLessThanOrEqual(5);
+    });
+
+    it('should get realtime (mainline) metrics with time filter', async () => {
+      const response = await fetch(`${BASE_URL}/api/metrics/realtime?hours=1&limit=10`);
+      expect(response.ok).toBe(true);
+      const data = await response.json();
+      expect(Array.isArray(data)).toBe(true);
+      expect(data.length).toBeLessThanOrEqual(10);
+    });
+  });
+
+  describe('Eval Agent Visibility API', () => {
+    it('should include visibility field in eval agents list', async () => {
+      const response = await fetch(`${BASE_URL}/api/eval-agents`);
+      expect(response.ok).toBe(true);
+      const agents = await response.json();
+      expect(Array.isArray(agents)).toBe(true);
+      // Each agent should have a visibility field from its token
+      for (const agent of agents) {
+        expect(agent.visibility).toBeDefined();
+        expect(['public', 'private']).toContain(agent.visibility);
+      }
     });
   });
 

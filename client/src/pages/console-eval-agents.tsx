@@ -3,13 +3,14 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Server, MapPin, Activity, Clock } from "lucide-react";
+import { Server, MapPin, Activity, Clock, Eye, EyeOff } from "lucide-react";
 
 interface EvalAgent {
   id: number;
   name: string;
   region: string;
   state: "idle" | "offline" | "occupied";
+  visibility: "public" | "private";
   lastHeartbeat: string | null;
   createdAt: string;
 }
@@ -119,6 +120,7 @@ export default function ConsoleEvalAgents() {
                 <TableRow>
                   <TableHead>Name</TableHead>
                   <TableHead>Region</TableHead>
+                  <TableHead>Visibility</TableHead>
                   <TableHead>State</TableHead>
                   <TableHead>Last Seen</TableHead>
                   <TableHead>Registered</TableHead>
@@ -132,6 +134,12 @@ export default function ConsoleEvalAgents() {
                       <Badge variant="secondary" className="gap-1">
                         <MapPin className="h-3 w-3" />
                         {REGIONS.find(r => r.value === agent.region)?.label || agent.region}
+                      </Badge>
+                    </TableCell>
+                    <TableCell>
+                      <Badge variant={agent.visibility === "public" ? "outline" : "secondary"} className="gap-1">
+                        {agent.visibility === "public" ? <Eye className="h-3 w-3" /> : <EyeOff className="h-3 w-3" />}
+                        {agent.visibility === "public" ? "Public" : "Private"}
                       </Badge>
                     </TableCell>
                     <TableCell>

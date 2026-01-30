@@ -314,7 +314,8 @@ function ConsoleEvalAgentTokensWrapper() {
     );
   }
 
-  if (!authStatus.user.isAdmin) {
+  // Basic users cannot access agent tokens
+  if (authStatus.user.plan === "basic" && !authStatus.user.isAdmin) {
     setLocation("/console/workflows");
     return null;
   }

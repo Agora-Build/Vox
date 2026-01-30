@@ -60,7 +60,13 @@ tags:
   - name: Projects
     description: Manage projects
   - name: Metrics
-    description: Public metrics and leaderboard
+    description: >
+      Public and private metrics across three tiers: Mainline (official benchmarks),
+      Community (public non-mainline results), and My Evals (user's private results).
+  - name: Eval Agent Tokens
+    description: >
+      Manage eval agent tokens. Admin users can create public or private tokens.
+      Premium/Principal/Fellow users can create private tokens only. Basic users cannot create tokens.
   - name: Providers
     description: AI provider information
   - name: User
@@ -82,6 +88,31 @@ components:
         error:
           type: string
           example: "Authentication required"
+
+    EvalAgentToken:
+      type: object
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        region:
+          type: string
+          enum: [na, apac, eu]
+        visibility:
+          type: string
+          enum: [public, private]
+        isRevoked:
+          type: boolean
+        lastUsedAt:
+          type: string
+          format: date-time
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+        createdBy:
+          type: integer
 
     User:
       type: object
@@ -1187,11 +1218,26 @@ paths:
     get:
       tags:
         - Metrics
-      summary: Get realtime metrics
-      description: Returns recent evaluation metrics (public endpoint)
+      summary: Get mainline metrics
+      description: >
+        Returns recent evaluation metrics for the Mainline tier (public endpoint).
+        Only includes results where the workflow is public+mainline, the eval set is
+        public+mainline, and the agent token is public.
+      parameters:
+        - name: hours
+          in: query
+          schema:
+            type: integer
+          description: Number of hours to look back (optional)
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+          description: Maximum number of results to return
       responses:
         '200':
-          description: Realtime metrics
+          description: Mainline realtime metrics
           content:
             application/json:
               schema:
@@ -1209,6 +1255,172 @@ paths:
                         format: date-time
                       count:
                         type: integer
+
+  /metrics/community:
+    get:
+      tags:
+        - Metrics
+      summary: Get community metrics
+      description: >
+        Returns recent evaluation metrics for the Community tier (public endpoint).
+        Includes results where the workflow and eval set are both public, but the
+        result is NOT fully mainline (at least one of workflow.isMainline, evalSet.isMainline,
+        or token.visibility is not mainline/public).
+      parameters:
+        - name: hours
+          in: query
+          schema:
+            type: integer
+          description: Number of hours to look back (optional)
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+          description: Maximum number of results to return
+      responses:
+        '200':
+          description: Community metrics
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/RealtimeMetric'
+
+  /metrics/my-evals:
+    get:
+      tags:
+        - Metrics
+      summary: Get user's private eval metrics
+      description: >
+        Returns evaluation metrics for the My Evals tier (requires authentication).
+        Includes results where the workflow or eval set is private and owned by the
+        requesting user.
+      security:
+        - cookieAuth: []
+      parameters:
+        - name: hours
+          in: query
+          schema:
+            type: integer
+          description: Number of hours to look back (optional)
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+          description: Maximum number of results to return
+      responses:
+        '200':
+          description: User's private eval metrics
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/RealtimeMetric'
+        '401':
+          description: Not authenticated
+
+  /eval-agent-tokens:
+    get:
+      tags:
+        - Eval Agent Tokens
+      summary: List eval agent tokens
+      description: >
+        Returns eval agent tokens. Admin users see all tokens; non-admin users see
+        only their own tokens.
+      security:
+        - cookieAuth: []
+      responses:
+        '200':
+          description: List of eval agent tokens
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/EvalAgentToken'
+        '401':
+          description: Not authenticated
+    post:
+      tags:
+        - Eval Agent Tokens
+      summary: Create eval agent token
+      description: >
+        Creates a new eval agent token. Basic users get 403. Premium/Principal/Fellow
+        users can only create private tokens. Admin users can create public or private tokens.
+      security:
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - name
+                - region
+              properties:
+                name:
+                  type: string
+                  description: Display name for the token
+                region:
+                  type: string
+                  enum: [na, apac, eu]
+                  description: Region assignment
+                visibility:
+                  type: string
+                  enum: [public, private]
+                  default: public
+                  description: Token visibility (admin only; non-admin always private)
+      responses:
+        '200':
+          description: Token created (token value shown once)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: integer
+                  name:
+                    type: string
+                  token:
+                    type: string
+                    description: The raw token value (only shown once)
+                  region:
+                    type: string
+                  visibility:
+                    type: string
+                  createdAt:
+                    type: string
+                    format: date-time
+        '403':
+          description: Basic users cannot create tokens
+
+  /eval-agent-tokens/{id}/revoke:
+    post:
+      tags:
+        - Eval Agent Tokens
+      summary: Revoke eval agent token
+      description: Revokes a token. Owner or admin can revoke.
+      security:
+        - cookieAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Token revoked
+        '403':
+          description: Not authorized to revoke this token
+        '404':
+          description: Token not found
 
   /metrics/leaderboard:
     get:

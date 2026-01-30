@@ -10,14 +10,26 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import { Plus, Key, MapPin, Copy, Check, Ban } from "lucide-react";
+import { Plus, Key, MapPin, Copy, Check, Ban, Eye, EyeOff } from "lucide-react";
 import { useState } from "react";
+
+interface AuthStatus {
+  initialized: boolean;
+  user: {
+    id: string;
+    username: string;
+    email: string;
+    plan: string;
+    isAdmin: boolean;
+  } | null;
+}
 
 interface EvalAgentToken {
   id: number;
   name: string;
   token: string;
   region: string;
+  visibility: "public" | "private";
   isRevoked: boolean;
   lastUsedAt: string | null;
   createdAt: string;
@@ -34,26 +46,36 @@ export default function ConsoleEvalAgentTokens() {
   const [createOpen, setCreateOpen] = useState(false);
   const [name, setName] = useState("");
   const [region, setRegion] = useState("");
+  const [visibility, setVisibility] = useState<string>("public");
   const [newToken, setNewToken] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
 
+  const { data: authStatus } = useQuery<AuthStatus>({
+    queryKey: ["/api/auth/status"],
+  });
+
+  const isAdmin = authStatus?.user?.isAdmin || false;
+
+  // Use the user-facing endpoint (returns all for admin, own for non-admin)
   const { data: tokens, isLoading } = useQuery<EvalAgentToken[]>({
-    queryKey: ["/api/admin/eval-agent-tokens"],
+    queryKey: ["/api/eval-agent-tokens"],
   });
 
   const createMutation = useMutation({
     mutationFn: async () => {
-      const res = await apiRequest("POST", "/api/admin/eval-agent-tokens", {
-        name,
-        region,
-      });
+      const body: Record<string, string> = { name, region };
+      if (isAdmin) {
+        body.visibility = visibility;
+      }
+      const res = await apiRequest("POST", "/api/eval-agent-tokens", body);
       return res.json();
     },
     onSuccess: (data) => {
       setNewToken(data.token);
       setName("");
       setRegion("");
-      queryClient.invalidateQueries({ queryKey: ["/api/admin/eval-agent-tokens"] });
+      setVisibility("public");
+      queryClient.invalidateQueries({ queryKey: ["/api/eval-agent-tokens"] });
       toast({ title: "Eval agent token created" });
     },
     onError: (error: Error) => {
@@ -63,11 +85,11 @@ export default function ConsoleEvalAgentTokens() {
 
   const revokeMutation = useMutation({
     mutationFn: async (tokenId: number) => {
-      const res = await apiRequest("POST", `/api/admin/eval-agent-tokens/${tokenId}/revoke`);
+      const res = await apiRequest("POST", `/api/eval-agent-tokens/${tokenId}/revoke`);
       return res.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/admin/eval-agent-tokens"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/eval-agent-tokens"] });
       toast({ title: "Token revoked" });
     },
     onError: (error: Error) => {
@@ -94,7 +116,11 @@ export default function ConsoleEvalAgentTokens() {
       <div className="flex items-center justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold">Agent Tokens</h1>
-          <p className="text-muted-foreground">Manage tokens for eval agent registration</p>
+          <p className="text-muted-foreground">
+            {isAdmin
+              ? "Manage tokens for eval agent registration"
+              : "Manage your private eval agent tokens"}
+          </p>
         </div>
         <Dialog open={createOpen} onOpenChange={(open) => {
           if (!open) handleCloseDialog();
@@ -110,7 +136,9 @@ export default function ConsoleEvalAgentTokens() {
             <DialogHeader>
               <DialogTitle>Create Agent Token</DialogTitle>
               <DialogDescription>
-                Create a new token for eval agent registration.
+                {isAdmin
+                  ? "Create a new token for eval agent registration."
+                  : "Create a private token for your eval agent. Private tokens produce results visible only in your evals."}
               </DialogDescription>
             </DialogHeader>
             {!newToken ? (
@@ -140,6 +168,25 @@ export default function ConsoleEvalAgentTokens() {
                       </SelectContent>
                     </Select>
                   </div>
+                  {isAdmin && (
+                    <div className="space-y-2">
+                      <Label htmlFor="token-visibility">Visibility</Label>
+                      <Select value={visibility} onValueChange={setVisibility}>
+                        <SelectTrigger>
+                          <SelectValue placeholder="Select visibility" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="public">Public</SelectItem>
+                          <SelectItem value="private">Private</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  )}
+                  {!isAdmin && (
+                    <p className="text-xs text-muted-foreground">
+                      Non-admin tokens are always private.
+                    </p>
+                  )}
                 </div>
                 <DialogFooter>
                   <Button
@@ -193,7 +240,7 @@ export default function ConsoleEvalAgentTokens() {
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
             <Key className="h-5 w-5" />
-            Eval Agent Tokens
+            {isAdmin ? "All Eval Agent Tokens" : "Your Eval Agent Tokens"}
           </CardTitle>
           <CardDescription>
             Tokens allow eval agents to register and fetch jobs for their assigned region.
@@ -212,7 +259,7 @@ export default function ConsoleEvalAgentTokens() {
                 <TableRow>
                   <TableHead>Name</TableHead>
                   <TableHead>Region</TableHead>
-                  <TableHead>Token</TableHead>
+                  <TableHead>Visibility</TableHead>
                   <TableHead>Status</TableHead>
                   <TableHead>Last Used</TableHead>
                   <TableHead className="text-right">Actions</TableHead>
@@ -229,9 +276,10 @@ export default function ConsoleEvalAgentTokens() {
                       </Badge>
                     </TableCell>
                     <TableCell>
-                      <code className="text-xs bg-muted px-2 py-1 rounded">
-                        {token.token}
-                      </code>
+                      <Badge variant={token.visibility === "public" ? "outline" : "secondary"} className="gap-1">
+                        {token.visibility === "public" ? <Eye className="h-3 w-3" /> : <EyeOff className="h-3 w-3" />}
+                        {token.visibility === "public" ? "Public" : "Private"}
+                      </Badge>
                     </TableCell>
                     <TableCell>
                       {token.isRevoked ? (

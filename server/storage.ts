@@ -60,7 +60,7 @@ import {
 import { drizzle } from "drizzle-orm/node-postgres";
 import pkg from "pg";
 const { Pool } = pkg;
-import { desc, eq, and, sql, gte } from "drizzle-orm";
+import { desc, eq, and, or, not, sql, gte } from "drizzle-orm";
 import crypto from "crypto";
 
 export function hashToken(token: string): string {
@@ -286,6 +286,10 @@ export class DatabaseStorage {
     return db.select().from(evalAgentTokens).orderBy(desc(evalAgentTokens.createdAt));
   }
 
+  async getEvalAgentTokensByUser(userId: number): Promise<EvalAgentToken[]> {
+    return db.select().from(evalAgentTokens).where(eq(evalAgentTokens.createdBy, userId)).orderBy(desc(evalAgentTokens.createdAt));
+  }
+
   async revokeEvalAgentToken(id: number): Promise<void> {
     await db.update(evalAgentTokens).set({ isRevoked: true }).where(eq(evalAgentTokens.id, id));
   }
@@ -310,6 +314,26 @@ export class DatabaseStorage {
 
   async getAllEvalAgents(): Promise<EvalAgent[]> {
     return db.select().from(evalAgents).orderBy(desc(evalAgents.createdAt));
+  }
+
+  async getEvalAgentsWithTokenVisibility(): Promise<(EvalAgent & { tokenVisibility: string })[]> {
+    const results = await db.select({
+      id: evalAgents.id,
+      name: evalAgents.name,
+      tokenId: evalAgents.tokenId,
+      region: evalAgents.region,
+      state: evalAgents.state,
+      lastSeenAt: evalAgents.lastSeenAt,
+      lastJobAt: evalAgents.lastJobAt,
+      metadata: evalAgents.metadata,
+      createdAt: evalAgents.createdAt,
+      updatedAt: evalAgents.updatedAt,
+      tokenVisibility: evalAgentTokens.visibility,
+    })
+      .from(evalAgents)
+      .innerJoin(evalAgentTokens, eq(evalAgents.tokenId, evalAgentTokens.id))
+      .orderBy(desc(evalAgents.createdAt));
+    return results as (EvalAgent & { tokenVisibility: string })[];
   }
 
   async updateEvalAgent(id: number, data: Partial<EvalAgent>): Promise<EvalAgent | undefined> {
@@ -688,7 +712,13 @@ export class DatabaseStorage {
   }
 
   async getMainlineEvalResults(limit: number = 50, hoursBack?: number): Promise<EvalResult[]> {
-    const conditions = [eq(workflows.isMainline, true)];
+    const conditions = [
+      eq(workflows.isMainline, true),
+      eq(workflows.visibility, "public"),
+      eq(evalSets.isMainline, true),
+      eq(evalSets.visibility, "public"),
+      eq(evalAgentTokens.visibility, "public"),
+    ];
 
     if (hoursBack) {
       const cutoff = new Date(Date.now() - hoursBack * 60 * 60 * 1000);
@@ -699,6 +729,63 @@ export class DatabaseStorage {
       .from(evalResults)
       .innerJoin(evalJobs, eq(evalResults.evalJobId, evalJobs.id))
       .innerJoin(workflows, eq(evalJobs.workflowId, workflows.id))
+      .innerJoin(evalSets, eq(evalJobs.evalSetId, evalSets.id))
+      .innerJoin(evalAgents, eq(evalJobs.evalAgentId, evalAgents.id))
+      .innerJoin(evalAgentTokens, eq(evalAgents.tokenId, evalAgentTokens.id))
+      .where(and(...conditions))
+      .orderBy(desc(evalResults.createdAt))
+      .limit(limit)
+      .then(rows => rows.map(r => r.eval_results));
+  }
+
+  async getCommunityEvalResults(limit: number = 50, hoursBack?: number): Promise<EvalResult[]> {
+    const conditions = [
+      eq(workflows.visibility, "public"),
+      eq(evalSets.visibility, "public"),
+      // Exclude fully mainline results (at least one of the three is not mainline/public)
+      not(and(
+        eq(workflows.isMainline, true),
+        eq(evalSets.isMainline, true),
+        eq(evalAgentTokens.visibility, "public"),
+      )!),
+    ];
+
+    if (hoursBack) {
+      const cutoff = new Date(Date.now() - hoursBack * 60 * 60 * 1000);
+      conditions.push(gte(evalResults.createdAt, cutoff));
+    }
+
+    return db.select()
+      .from(evalResults)
+      .innerJoin(evalJobs, eq(evalResults.evalJobId, evalJobs.id))
+      .innerJoin(workflows, eq(evalJobs.workflowId, workflows.id))
+      .innerJoin(evalSets, eq(evalJobs.evalSetId, evalSets.id))
+      .innerJoin(evalAgents, eq(evalJobs.evalAgentId, evalAgents.id))
+      .innerJoin(evalAgentTokens, eq(evalAgents.tokenId, evalAgentTokens.id))
+      .where(and(...conditions))
+      .orderBy(desc(evalResults.createdAt))
+      .limit(limit)
+      .then(rows => rows.map(r => r.eval_results));
+  }
+
+  async getMyEvalResults(userId: number, limit: number = 50, hoursBack?: number): Promise<EvalResult[]> {
+    const conditions = [
+      or(
+        and(eq(workflows.visibility, "private"), eq(workflows.ownerId, userId)),
+        and(eq(evalSets.visibility, "private"), eq(evalSets.ownerId, userId)),
+      ),
+    ];
+
+    if (hoursBack) {
+      const cutoff = new Date(Date.now() - hoursBack * 60 * 60 * 1000);
+      conditions.push(gte(evalResults.createdAt, cutoff));
+    }
+
+    return db.select()
+      .from(evalResults)
+      .innerJoin(evalJobs, eq(evalResults.evalJobId, evalJobs.id))
+      .innerJoin(workflows, eq(evalJobs.workflowId, workflows.id))
+      .innerJoin(evalSets, eq(evalJobs.evalSetId, evalSets.id))
       .where(and(...conditions))
       .orderBy(desc(evalResults.createdAt))
       .limit(limit)

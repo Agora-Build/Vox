@@ -160,6 +160,7 @@ export const evalAgentTokens = pgTable("eval_agent_tokens", {
   name: text("name").notNull(),
   tokenHash: text("token_hash").notNull().unique(),
   region: regionEnum("region").notNull(),
+  visibility: visibilityEnum("visibility").default("public").notNull(),
   createdBy: integer("created_by").notNull().references(() => users.id),
   isRevoked: boolean("is_revoked").default(false).notNull(),
   expiresAt: timestamp("expires_at"),

@@ -120,17 +120,23 @@ The entire data model is defined in `shared/schema.ts` using Drizzle ORM. All ta
 
 #### Eval Agent System (Renamed from Workers)
 The system uses distributed eval agents to run evaluation tests:
-1. Admin creates eval agent tokens with region assignments
-2. Eval agents register using tokens (`evalAgentTokens` table)
+1. Admin or non-basic users create eval agent tokens with region assignments (admin can set public/private visibility; non-admin tokens are always private)
+2. Eval agents register using tokens (`evalAgentTokens` table, which includes a `visibility` column)
 3. Agents fetch jobs matching their region (`evalJobs` table with `pending` → `running` → `completed`/`failed` status)
 4. Agents execute tests using external `voice-agent-tester` tool and report results to `evalResults` table
 5. Results are linked to `workflows` and `evalSets` via foreign keys
+
+**3-Tier Eval Classification:**
+Results are classified into tiers based on the visibility/mainline flags of the workflow, eval set, and agent token:
+- **Mainline**: workflow is public+mainline AND eval set is public+mainline AND agent token is public → shown on `/api/metrics/realtime`
+- **Community**: workflow and eval set are both public, but NOT fully mainline → shown on `/api/metrics/community`
+- **My Evals**: workflow or eval set is private, visible only to the owner → shown on `/api/metrics/my-evals` (requires auth)
 
 **Important:** The codebase recently underwent a refactor where "workers" were renamed to "eval agents" and "testSets" to "evalSets". Some UI text may still reference old terminology.
 
 #### User & Organization System
 - **User Plans:** `basic` (free), `premium` (paid), `principal` (Scout, internal), `fellow` (external prestige)
-- **Admin Flag:** `isAdmin` for system management (only admins can create eval agent tokens, verify orgs, approve fund returns)
+- **Admin Flag:** `isAdmin` for system management (admins can create public/private eval agent tokens, verify orgs, approve fund returns; non-basic users can create private tokens)
 - **Organizations:** Users can create/join organizations for team collaboration
   - First user becomes org admin
   - Orgs can purchase Premium seats with volume discounts (stored in `pricingConfig`)
@@ -230,10 +236,15 @@ All routes defined in `server/routes.ts`:
 - `POST /api/user/api-keys/:id/revoke` - Revoke an API key
 - `DELETE /api/user/api-keys/:id` - Delete an API key
 
+**Eval Agent Tokens (`/api/eval-agent-tokens`):** (requires auth, non-basic users)
+- `GET /api/eval-agent-tokens` - List tokens (admin sees all, non-admin sees own)
+- `POST /api/eval-agent-tokens` - Create token (admin: public/private; non-admin: private only; basic: 403)
+- `POST /api/eval-agent-tokens/:id/revoke` - Revoke token (owner or admin)
+
 **Admin (`/api/admin/*`):** (requires `requireAdmin` middleware)
 - `GET/PATCH /api/admin/users` - User management
 - `POST /api/admin/invite` - Create invite tokens
-- `GET/POST /api/admin/eval-agent-tokens` - Manage eval agent tokens
+- `GET/POST /api/admin/eval-agent-tokens` - Manage eval agent tokens (legacy admin-only endpoints)
 - `POST /api/admin/eval-agent-tokens/:id/revoke`
 
 **Resources:**
@@ -252,8 +263,10 @@ All routes defined in `server/routes.ts`:
 - `POST /api/eval-agent/jobs/:jobId/complete` - Complete job with results
 
 **Public:**
-- `GET /api/eval-agents` - List all agents (public)
-- `GET /api/metrics/realtime` - Real-time metrics
+- `GET /api/eval-agents` - List all agents with token visibility (public)
+- `GET /api/metrics/realtime` - Mainline metrics (public)
+- `GET /api/metrics/community` - Community metrics (public)
+- `GET /api/metrics/my-evals` - User's private eval metrics (requires auth)
 - `GET /api/metrics/leaderboard` - Aggregated leaderboard
 - `GET /api/config` - System config
 

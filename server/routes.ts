@@ -1391,6 +1391,118 @@ export async function registerRoutes(
     }
   });
 
+  // ==================== EVAL AGENT TOKEN ROUTES (User-facing) ====================
+
+  app.get("/api/eval-agent-tokens", requireAuth, async (req, res) => {
+    try {
+      const user = await getCurrentUser(req);
+      if (!user) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+
+      // Admin sees all tokens, non-admin sees only their own
+      const tokens = user.isAdmin
+        ? await storage.getAllEvalAgentTokens()
+        : await storage.getEvalAgentTokensByUser(user.id);
+
+      res.json(tokens.map(t => ({
+        id: t.id,
+        name: t.name,
+        region: t.region,
+        visibility: t.visibility,
+        isRevoked: t.isRevoked,
+        lastUsedAt: t.lastUsedAt,
+        createdAt: t.createdAt,
+        createdBy: t.createdBy,
+      })));
+    } catch (error) {
+      console.error("Error fetching eval agent tokens:", error);
+      res.status(500).json({ error: "Failed to fetch eval agent tokens" });
+    }
+  });
+
+  app.post("/api/eval-agent-tokens", requireAuth, async (req, res) => {
+    try {
+      const user = await getCurrentUser(req);
+      if (!user) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+
+      // Basic users cannot create tokens
+      if (user.plan === "basic" && !user.isAdmin) {
+        return res.status(403).json({ error: "Premium or higher plan required to create eval agent tokens" });
+      }
+
+      const { name, region, visibility } = req.body;
+
+      if (!name || !region) {
+        return res.status(400).json({ error: "Name and region required" });
+      }
+
+      if (!["na", "apac", "eu"].includes(region)) {
+        return res.status(400).json({ error: "Invalid region. Must be na, apac, or eu" });
+      }
+
+      // Non-admin users can only create private tokens
+      const tokenVisibility = user.isAdmin ? (visibility || "public") : "private";
+
+      if (tokenVisibility !== "public" && tokenVisibility !== "private") {
+        return res.status(400).json({ error: "Invalid visibility. Must be public or private" });
+      }
+
+      const token = generateSecureToken();
+      const tokenHash = hashToken(token);
+
+      const evalAgentToken = await storage.createEvalAgentToken({
+        name,
+        tokenHash,
+        region,
+        visibility: tokenVisibility,
+        createdBy: user.id,
+        isRevoked: false,
+      });
+
+      res.json({
+        id: evalAgentToken.id,
+        name: evalAgentToken.name,
+        token,
+        region: evalAgentToken.region,
+        visibility: evalAgentToken.visibility,
+        createdAt: evalAgentToken.createdAt,
+      });
+    } catch (error) {
+      console.error("Error creating eval agent token:", error);
+      res.status(500).json({ error: "Failed to create eval agent token" });
+    }
+  });
+
+  app.post("/api/eval-agent-tokens/:id/revoke", requireAuth, async (req, res) => {
+    try {
+      const user = await getCurrentUser(req);
+      if (!user) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+
+      const { id } = req.params;
+      const token = await storage.getEvalAgentToken(parseInt(id));
+
+      if (!token) {
+        return res.status(404).json({ error: "Token not found" });
+      }
+
+      // Only owner or admin can revoke
+      if (token.createdBy !== user.id && !user.isAdmin) {
+        return res.status(403).json({ error: "Not authorized to revoke this token" });
+      }
+
+      await storage.revokeEvalAgentToken(parseInt(id));
+      res.json({ message: "Eval agent token revoked" });
+    } catch (error) {
+      console.error("Error revoking eval agent token:", error);
+      res.status(500).json({ error: "Failed to revoke eval agent token" });
+    }
+  });
+
   // ==================== EVAL AGENT TOKEN ROUTES (Admin only) ====================
 
   app.get("/api/admin/eval-agent-tokens", requireAuth, requireAdmin, async (req, res) => {
@@ -1400,6 +1512,7 @@ export async function registerRoutes(
         id: t.id,
         name: t.name,
         region: t.region,
+        visibility: t.visibility,
         isRevoked: t.isRevoked,
         lastUsedAt: t.lastUsedAt,
         createdAt: t.createdAt,
@@ -1417,8 +1530,8 @@ export async function registerRoutes(
         return res.status(401).json({ error: "Not authenticated" });
       }
 
-      const { name, region } = req.body;
-      
+      const { name, region, visibility } = req.body;
+
       if (!name || !region) {
         return res.status(400).json({ error: "Name and region required" });
       }
@@ -1427,13 +1540,19 @@ export async function registerRoutes(
         return res.status(400).json({ error: "Invalid region. Must be na, apac, or eu" });
       }
 
+      const tokenVisibility = visibility || "public";
+      if (tokenVisibility !== "public" && tokenVisibility !== "private") {
+        return res.status(400).json({ error: "Invalid visibility. Must be public or private" });
+      }
+
       const token = generateSecureToken();
       const tokenHash = hashToken(token);
-      
+
       const evalAgentToken = await storage.createEvalAgentToken({
         name,
         tokenHash,
         region,
+        visibility: tokenVisibility,
         createdBy: user.id,
         isRevoked: false,
       });
@@ -1443,6 +1562,7 @@ export async function registerRoutes(
         name: evalAgentToken.name,
         token,
         region: evalAgentToken.region,
+        visibility: evalAgentToken.visibility,
         createdAt: evalAgentToken.createdAt,
       });
     } catch (error) {
@@ -1466,7 +1586,7 @@ export async function registerRoutes(
 
   app.get("/api/eval-agents", async (req, res) => {
     try {
-      const agents = await storage.getAllEvalAgents();
+      const agents = await storage.getEvalAgentsWithTokenVisibility();
       res.json(agents.map(a => ({
         id: a.id,
         name: a.name,
@@ -1475,6 +1595,7 @@ export async function registerRoutes(
         lastSeenAt: a.lastSeenAt,
         lastJobAt: a.lastJobAt,
         createdAt: a.createdAt,
+        visibility: a.tokenVisibility,
       })));
     } catch (error) {
       console.error("Error fetching eval agents:", error);
@@ -1935,6 +2056,36 @@ export async function registerRoutes(
     } catch (error) {
       console.error("Error fetching realtime metrics:", error);
       res.status(500).json({ error: "Failed to fetch metrics" });
+    }
+  });
+
+  app.get("/api/metrics/community", async (req, res) => {
+    try {
+      const { hours, limit } = req.query;
+      const hoursBack = hours ? parseInt(hours as string) : undefined;
+      const limitNum = limit ? parseInt(limit as string) : 50;
+      const results = await storage.getCommunityEvalResults(limitNum, hoursBack);
+      res.json(results);
+    } catch (error) {
+      console.error("Error fetching community metrics:", error);
+      res.status(500).json({ error: "Failed to fetch community metrics" });
+    }
+  });
+
+  app.get("/api/metrics/my-evals", requireAuth, async (req, res) => {
+    try {
+      const user = await getCurrentUser(req);
+      if (!user) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+      const { hours, limit } = req.query;
+      const hoursBack = hours ? parseInt(hours as string) : undefined;
+      const limitNum = limit ? parseInt(limit as string) : 50;
+      const results = await storage.getMyEvalResults(user.id, limitNum, hoursBack);
+      res.json(results);
+    } catch (error) {
+      console.error("Error fetching my eval metrics:", error);
+      res.status(500).json({ error: "Failed to fetch my eval metrics" });
     }
   });
 

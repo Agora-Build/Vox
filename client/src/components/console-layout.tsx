@@ -142,7 +142,7 @@ export default function ConsoleLayout({ children }: ConsoleLayoutProps) {
     active: location === "/console/eval-agents",
   });
 
-  if (user?.isAdmin) {
+  if (user && (user.isAdmin || user.plan !== "basic")) {
     navItems.push({
       title: "Agent Tokens",
       url: "/console/eval-agent-tokens",
