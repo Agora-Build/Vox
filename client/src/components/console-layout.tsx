@@ -19,7 +19,7 @@ import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import { Users, Workflow, FileText, LogOut, Shield, Gem, Sparkles, Zap, Server, Key, Building2, CreditCard, Settings, FolderKanban } from "lucide-react";
+import { Users, Workflow, FileText, LogOut, Shield, Gem, Sparkles, Zap, Server, Key, Building2, CreditCard, Settings, FolderKanban, ClipboardList } from "lucide-react";
 import { ThemeToggle } from "@/components/theme-toggle";
 
 interface AuthStatus {
@@ -126,6 +126,13 @@ export default function ConsoleLayout({ children }: ConsoleLayoutProps) {
     url: "/console/eval-sets",
     icon: FileText,
     active: location === "/console/eval-sets",
+  });
+
+  navItems.push({
+    title: "Eval Jobs",
+    url: "/console/eval-jobs",
+    icon: ClipboardList,
+    active: location === "/console/eval-jobs",
   });
 
   navItems.push({

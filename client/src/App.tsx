@@ -21,6 +21,7 @@ import ConsoleWorkflows from "@/pages/console-workflows";
 import ConsoleWorkflowDetail from "@/pages/console-workflow-detail";
 import ConsoleEvalSets from "@/pages/console-evalsets";
 import ConsoleEvalAgentTokens from "@/pages/console-eval-agent-tokens";
+import ConsoleEvalJobs from "@/pages/console-eval-jobs";
 import ConsoleEvalAgents from "@/pages/console-eval-agents";
 import ConsoleOrganization from "@/pages/console-organization";
 import ConsoleOrganizationMembers from "@/pages/console-organization-members";
@@ -238,6 +239,45 @@ function ConsoleWorkflowDetailWrapper() {
   return (
     <ConsoleLayout>
       <ConsoleWorkflowDetail />
+    </ConsoleLayout>
+  );
+}
+
+function ConsoleEvalJobsWrapper() {
+  const [, setLocation] = useLocation();
+  const { data: authStatus, isLoading, isFetching } = useQuery<AuthStatus>({
+    queryKey: ["/api/auth/status"],
+  });
+
+  useEffect(() => {
+    if (!isLoading && !isFetching && authStatus?.initialized && !authStatus.user) {
+      setLocation("/login");
+    }
+  }, [isLoading, isFetching, authStatus, setLocation]);
+
+  if ((isLoading || isFetching) && !authStatus?.user) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="animate-pulse text-muted-foreground">Loading...</div>
+      </div>
+    );
+  }
+
+  if (!authStatus?.initialized) {
+    return <ConsoleInit />;
+  }
+
+  if (!authStatus.user) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="animate-pulse text-muted-foreground">Redirecting...</div>
+      </div>
+    );
+  }
+
+  return (
+    <ConsoleLayout>
+      <ConsoleEvalJobs />
     </ConsoleLayout>
   );
 }
@@ -653,6 +693,9 @@ function Router() {
       </Route>
       <Route path="/console/eval-sets">
         <ConsoleEvalSetsWrapper />
+      </Route>
+      <Route path="/console/eval-jobs">
+        <ConsoleEvalJobsWrapper />
       </Route>
       <Route path="/console/eval-agents">
         <ConsoleEvalAgentsWrapper />
