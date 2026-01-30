@@ -352,7 +352,7 @@ export default function ConsoleEvalAgents() {
                         )}
                         {!isAdmin && (
                           <p className="text-xs text-muted-foreground">
-                            Non-admin tokens are always private.
+                            Non-admin created agents are always private.
                           </p>
                         )}
                       </div>
