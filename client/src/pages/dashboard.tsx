@@ -74,9 +74,10 @@ function buildCombinedData(filteredMetrics: EvalResult[]) {
       timeGroups.set(timeKey, { agora: null, liveKit: null });
     }
     const group = timeGroups.get(timeKey)!;
-    if (m.provider === "Agora ConvoAI" && !group.agora) {
+    const providerLower = m.provider.toLowerCase();
+    if (providerLower.includes("agora") && !group.agora) {
       group.agora = m;
-    } else if (m.provider === "LiveKIT Agent" && !group.liveKit) {
+    } else if (providerLower.includes("livekit") && !group.liveKit) {
       group.liveKit = m;
     }
   }
