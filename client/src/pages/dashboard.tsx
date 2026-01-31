@@ -41,6 +41,11 @@ interface ConfigData {
   total_tests_24h?: string;
 }
 
+interface HealthData {
+  status: "operational" | "degraded" | "down";
+  agents: { total: number; online: number; offline: number };
+}
+
 function calculateStats(values: number[]) {
   if (values.length === 0) return { median: 0, stdDev: 0 };
 
@@ -334,6 +339,11 @@ export default function Dashboard() {
     queryKey: ['/api/config'],
   });
 
+  const { data: health } = useQuery<HealthData>({
+    queryKey: ['/api/health'],
+    refetchInterval: 30000,
+  });
+
   const testInterval = config?.test_interval_hours || "8";
 
   const currentMetrics = activeTab === "mainline" ? mainlineMetrics
@@ -373,9 +383,27 @@ export default function Dashboard() {
           <h1 className="text-2xl sm:text-3xl font-bold tracking-tight" data-testid="text-dashboard-title">Real-time</h1>
           <p className="text-xs sm:text-sm text-muted-foreground flex flex-wrap items-center gap-2">
             <span className="relative flex h-2 w-2 shrink-0">
-              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
-              <span className="relative inline-flex rounded-full h-2 w-2 bg-green-500"></span>
+              {health?.status === "operational" ? (
+                <>
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
+                  <span className="relative inline-flex rounded-full h-2 w-2 bg-green-500"></span>
+                </>
+              ) : health?.status === "degraded" ? (
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-yellow-500"></span>
+              ) : health?.status === "down" ? (
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-red-500"></span>
+              ) : (
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-gray-400"></span>
+              )}
             </span>
+            <span data-testid="text-system-status">
+              {health?.status === "operational" ? "System Status: Operational"
+                : health?.status === "degraded" ? "System Status: Degraded"
+                : health?.status === "down" ? "System Status: Down"
+                : "System Status: Checking..."}
+              {health?.agents && ` (${health.agents.online}/${health.agents.total} agents online)`}
+            </span>
+            <span className="text-muted-foreground/50">|</span>
             <span data-testid="text-latest-test">Latest: {latestTestTime}m ago</span>
           </p>
         </div>

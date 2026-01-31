@@ -2198,6 +2198,37 @@ export async function registerRoutes(
     }
   });
 
+  // ==================== HEALTH ROUTES ====================
+
+  app.get("/api/health", async (_req, res) => {
+    try {
+      const agents = await storage.getAllEvalAgents();
+      const online = agents.filter(a => a.state !== "offline");
+      const total = agents.length;
+      const onlineCount = online.length;
+
+      // Operational: at least one agent is online
+      // Degraded: agents exist but all offline
+      // Down: no agents registered at all
+      let status: "operational" | "degraded" | "down";
+      if (onlineCount > 0) {
+        status = "operational";
+      } else if (total > 0) {
+        status = "degraded";
+      } else {
+        status = "degraded";
+      }
+
+      res.json({
+        status,
+        agents: { total, online: onlineCount, offline: total - onlineCount },
+      });
+    } catch (error) {
+      console.error("Error checking health:", error);
+      res.status(500).json({ status: "down", agents: { total: 0, online: 0, offline: 0 } });
+    }
+  });
+
   // ==================== ORGANIZATION ROUTES ====================
 
   // Create organization (user becomes admin and gets linked)
