@@ -376,10 +376,6 @@ export default function Dashboard() {
               <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
               <span className="relative inline-flex rounded-full h-2 w-2 bg-green-500"></span>
             </span>
-            <span data-testid="text-system-status">System Status: Operational</span>
-            <span className="hidden sm:inline">|</span>
-            <span data-testid="text-update-interval">Updates every {testInterval} hours</span>
-            <span className="hidden sm:inline">|</span>
             <span data-testid="text-latest-test">Latest: {latestTestTime}m ago</span>
           </p>
         </div>
