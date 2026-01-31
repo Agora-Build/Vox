@@ -18,7 +18,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // Configuration from environment
 const VOX_SERVER = process.env.VOX_SERVER || 'http://localhost:5000';
-const VOX_TOKEN = process.env.VOX_TOKEN;
+const AGENT_TOKEN = process.env.AGENT_TOKEN;
 const VOX_AGENT_NAME = process.env.VOX_AGENT_NAME || `eval-agent-${Date.now()}`;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const HEADLESS = process.env.HEADLESS !== 'false';
@@ -42,7 +42,7 @@ class VoxEvalAgentDaemon {
       ...options,
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${VOX_TOKEN}`,
+        'Authorization': `Bearer ${AGENT_TOKEN}`,
         ...options.headers,
       },
     });
@@ -413,8 +413,8 @@ class VoxEvalAgentDaemon {
 
 // Main
 async function main() {
-  if (!VOX_TOKEN) {
-    console.error('[Daemon] Error: VOX_TOKEN environment variable is required');
+  if (!AGENT_TOKEN) {
+    console.error('[Daemon] Error: AGENT_TOKEN environment variable is required');
     process.exit(1);
   }
 

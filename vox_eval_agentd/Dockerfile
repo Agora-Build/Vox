@@ -7,7 +7,7 @@
 #   docker build -t vox_eval_agentd .
 #
 # Run:
-#   docker run -e VOX_TOKEN=xxx -e VOX_SERVER=http://host.docker.internal:5000 vox_eval_agentd
+#   docker run -e AGENT_TOKEN=xxx -e VOX_SERVER=http://host.docker.internal:5000 vox_eval_agentd
 
 FROM node:20-slim
 

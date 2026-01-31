@@ -395,7 +395,7 @@ export default function ConsoleEvalAgents() {
                           </div>
                           <div>
                             <p className="text-sm font-medium mb-1">Docker:</p>
-                            <code className="text-xs break-all">docker run -e VOX_TOKEN={newToken} -e VOX_SERVER=http://localhost:5000 ghcr.io/agora-build/vox-eval-agentd</code>
+                            <code className="text-xs break-all">docker run -e AGENT_TOKEN={newToken} -e VOX_SERVER={window.location.origin} ghcr.io/agora-build/vox-eval-agentd</code>
                           </div>
                         </div>
                       </div>

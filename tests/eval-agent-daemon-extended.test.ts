@@ -14,10 +14,10 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 describe("Eval Agent Daemon - Configuration", () => {
   describe("Environment Variables", () => {
-    it("should require VOX_TOKEN", () => {
+    it("should require AGENT_TOKEN", () => {
       const validateConfig = (token: string | undefined) => {
         if (!token) {
-          return { valid: false, error: "VOX_TOKEN environment variable is required" };
+          return { valid: false, error: "AGENT_TOKEN environment variable is required" };
         }
         return { valid: true };
       };

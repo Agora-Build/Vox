@@ -554,7 +554,7 @@ start_eval_agent_docker() {
     docker run -d \
         --name "$container_name" \
         --add-host=host.docker.internal:host-gateway \
-        -e VOX_TOKEN="$token" \
+        -e AGENT_TOKEN="$token" \
         -e VOX_SERVER="http://host.docker.internal:$SERVER_PORT" \
         -e VOX_AGENT_NAME="$name" \
         -e HEADLESS=true \
