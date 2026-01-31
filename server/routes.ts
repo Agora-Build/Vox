@@ -2059,13 +2059,33 @@ export async function registerRoutes(
 
   // ==================== METRICS ROUTES ====================
 
+  // Helper to transform DB eval results into the format the dashboard expects
+  async function formatMetricsResults(results: Awaited<ReturnType<typeof storage.getMainlineEvalResults>>) {
+    const providerCache = new Map<string, string>();
+    const allProviders = await storage.getAllProviders();
+    for (const p of allProviders) {
+      providerCache.set(p.id, p.name);
+    }
+    return results.map(r => ({
+      id: r.id,
+      provider: providerCache.get(r.providerId) || r.providerId,
+      region: r.region,
+      responseLatency: r.responseLatencyMedian,
+      interruptLatency: r.interruptLatencyMedian,
+      networkResilience: r.networkResilience || 0,
+      naturalness: r.naturalness || 0,
+      noiseReduction: r.noiseReduction || 0,
+      timestamp: r.createdAt,
+    }));
+  }
+
   app.get("/api/metrics/realtime", async (req, res) => {
     try {
       const { hours, limit } = req.query;
       const hoursBack = hours ? parseInt(hours as string) : undefined;
       const limitNum = limit ? parseInt(limit as string) : 50;
       const results = await storage.getMainlineEvalResults(limitNum, hoursBack);
-      res.json(results);
+      res.json(await formatMetricsResults(results));
     } catch (error) {
       console.error("Error fetching realtime metrics:", error);
       res.status(500).json({ error: "Failed to fetch metrics" });
@@ -2078,7 +2098,7 @@ export async function registerRoutes(
       const hoursBack = hours ? parseInt(hours as string) : undefined;
       const limitNum = limit ? parseInt(limit as string) : 50;
       const results = await storage.getCommunityEvalResults(limitNum, hoursBack);
-      res.json(results);
+      res.json(await formatMetricsResults(results));
     } catch (error) {
       console.error("Error fetching community metrics:", error);
       res.status(500).json({ error: "Failed to fetch community metrics" });
@@ -2095,7 +2115,7 @@ export async function registerRoutes(
       const hoursBack = hours ? parseInt(hours as string) : undefined;
       const limitNum = limit ? parseInt(limit as string) : 50;
       const results = await storage.getMyEvalResults(user.id, limitNum, hoursBack);
-      res.json(results);
+      res.json(await formatMetricsResults(results));
     } catch (error) {
       console.error("Error fetching my eval metrics:", error);
       res.status(500).json({ error: "Failed to fetch my eval metrics" });
