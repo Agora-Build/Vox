@@ -388,9 +388,15 @@ export default function ConsoleEvalAgents() {
                             Copy this token now. It won't be shown again.
                           </p>
                         </div>
-                        <div className="p-3 bg-muted rounded-md">
-                          <p className="text-sm font-medium mb-2">Usage:</p>
-                          <code className="text-xs">./vox_eval_agentd --up --token={newToken}</code>
+                        <div className="p-3 bg-muted rounded-md space-y-3">
+                          <div>
+                            <p className="text-sm font-medium mb-1">Single process:</p>
+                            <code className="text-xs break-all">./vox_eval_agentd --up --token={newToken}</code>
+                          </div>
+                          <div>
+                            <p className="text-sm font-medium mb-1">Docker:</p>
+                            <code className="text-xs break-all">docker run -e VOX_TOKEN={newToken} -e VOX_SERVER=http://localhost:5000 ghcr.io/agora-build/vox-eval-agentd</code>
+                          </div>
                         </div>
                       </div>
                       <DialogFooter>
