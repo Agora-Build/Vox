@@ -110,8 +110,8 @@ export default function Home() {
           <Card className="relative overflow-hidden">
             <CardHeader>
               <Mic className="h-8 w-8 mb-4 text-primary" />
-              <CardTitle className="text-lg">Agora ConvoAI</CardTitle>
-              <CardDescription>ConvoAI Engine</CardDescription>
+              <CardTitle className="text-lg">Agora ConvoAI Engine</CardTitle>
+              <CardDescription>Agora's Conversational AI Engine</CardDescription>
             </CardHeader>
             <CardContent>
               <Badge variant="outline" className="text-emerald-500 border-emerald-500/20 bg-emerald-500/10">Active</Badge>
@@ -121,8 +121,8 @@ export default function Home() {
           <Card className="relative overflow-hidden">
             <CardHeader>
               <Bot className="h-8 w-8 mb-4 text-primary" />
-              <CardTitle className="text-lg">LiveKIT Agent</CardTitle>
-              <CardDescription>LiveKit</CardDescription>
+              <CardTitle className="text-lg">LiveKit Agents</CardTitle>
+              <CardDescription>LiveKit's Real-time Communication Agents</CardDescription>
             </CardHeader>
             <CardContent>
               <Badge variant="outline" className="text-emerald-500 border-emerald-500/20 bg-emerald-500/10">Active</Badge>

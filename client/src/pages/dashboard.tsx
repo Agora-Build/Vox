@@ -243,8 +243,8 @@ function MetricsSection({ metrics, isLoading, selectedRegion, timeRangeLabel, re
                     <YAxis stroke="hsl(var(--muted-foreground))" fontSize={12} tickLine={false} axisLine={false} tickFormatter={(value) => `${value}ms`} />
                     <Tooltip contentStyle={{ backgroundColor: 'hsl(var(--popover))', borderColor: 'hsl(var(--border))', borderRadius: '8px' }} itemStyle={{ color: 'hsl(var(--popover-foreground))' }} />
                     <Legend />
-                    <Line type="monotone" dataKey="agoraResponse" name="Agora ConvoAI" stroke="hsl(var(--chart-1))" strokeWidth={2} dot={false} activeDot={{ r: 6 }} />
-                    <Line type="monotone" dataKey="liveKitResponse" name="LiveKIT Agent" stroke="hsl(var(--chart-2))" strokeWidth={2} dot={false} activeDot={{ r: 6 }} />
+                    <Line type="monotone" dataKey="agoraResponse" name="Agora ConvoAI Engine" stroke="hsl(var(--chart-1))" strokeWidth={2} dot={false} activeDot={{ r: 6 }} />
+                    <Line type="monotone" dataKey="liveKitResponse" name="LiveKit Agents" stroke="hsl(var(--chart-2))" strokeWidth={2} dot={false} activeDot={{ r: 6 }} />
                   </LineChart>
                 </ResponsiveContainer>
               )}
@@ -269,8 +269,8 @@ function MetricsSection({ metrics, isLoading, selectedRegion, timeRangeLabel, re
                     <YAxis stroke="hsl(var(--muted-foreground))" fontSize={12} tickLine={false} axisLine={false} tickFormatter={(value) => `${value}ms`} />
                     <Tooltip contentStyle={{ backgroundColor: 'hsl(var(--popover))', borderColor: 'hsl(var(--border))', borderRadius: '8px' }} itemStyle={{ color: 'hsl(var(--popover-foreground))' }} />
                     <Legend />
-                    <Line type="monotone" dataKey="agoraInterrupt" name="Agora ConvoAI" stroke="hsl(var(--chart-1))" strokeWidth={2} dot={false} activeDot={{ r: 6 }} />
-                    <Line type="monotone" dataKey="liveKitInterrupt" name="LiveKIT Agent" stroke="hsl(var(--chart-2))" strokeWidth={2} dot={false} activeDot={{ r: 6 }} />
+                    <Line type="monotone" dataKey="agoraInterrupt" name="Agora ConvoAI Engine" stroke="hsl(var(--chart-1))" strokeWidth={2} dot={false} activeDot={{ r: 6 }} />
+                    <Line type="monotone" dataKey="liveKitInterrupt" name="LiveKit Agents" stroke="hsl(var(--chart-2))" strokeWidth={2} dot={false} activeDot={{ r: 6 }} />
                   </LineChart>
                 </ResponsiveContainer>
               )}

@@ -2,7 +2,7 @@ import { addHours, subHours, format } from "date-fns";
 
 export interface MetricPoint {
   timestamp: string;
-  provider: "Agora ConvoAI" | "LiveKIT Agent";
+  provider: "Agora ConvoAI Engine" | "LiveKit Agents";
   responseLatency: number; // ms
   interruptLatency: number; // ms
 }
@@ -31,15 +31,15 @@ const generateLiveMetrics = (): MetricPoint[] => {
     // Interrupt Latency: MED ~480ms
     data.push({
       timestamp: format(time, "HH:mm"),
-      provider: "Agora ConvoAI",
+      provider: "Agora ConvoAI Engine",
       responseLatency: 1200 + (Math.random() - 0.5) * 360, // 1200 +/- 180 (approx SD range)
       interruptLatency: 480 + (Math.random() - 0.5) * 400, // 480 +/- 200 (approx SD range)
     });
 
-    // LiveKIT Mock Data
+    // LiveKit Agents Mock Data
     data.push({
       timestamp: format(time, "HH:mm"),
-      provider: "LiveKIT Agent",
+      provider: "LiveKit Agents",
       responseLatency: 1250 + (Math.random() - 0.5) * 400,
       interruptLatency: 520 + (Math.random() - 0.5) * 450,
     });
@@ -52,7 +52,7 @@ export const liveMetrics = generateLiveMetrics();
 export const leaderboardData: LeaderboardEntry[] = [
   {
     rank: 1,
-    provider: "Agora ConvoAI",
+    provider: "Agora ConvoAI Engine",
     region: "North America (East)",
     responseLatency: 1180,
     interruptLatency: 450,
@@ -62,7 +62,7 @@ export const leaderboardData: LeaderboardEntry[] = [
   },
   {
     rank: 2,
-    provider: "LiveKIT Agent",
+    provider: "LiveKit Agents",
     region: "North America (East)",
     responseLatency: 1220,
     interruptLatency: 490,
@@ -72,7 +72,7 @@ export const leaderboardData: LeaderboardEntry[] = [
   },
   {
     rank: 3,
-    provider: "Agora ConvoAI",
+    provider: "Agora ConvoAI Engine",
     region: "Europe (Frankfurt)",
     responseLatency: 1250,
     interruptLatency: 510,
@@ -82,7 +82,7 @@ export const leaderboardData: LeaderboardEntry[] = [
   },
   {
     rank: 4,
-    provider: "LiveKIT Agent",
+    provider: "LiveKit Agents",
     region: "Europe (Frankfurt)",
     responseLatency: 1300,
     interruptLatency: 540,
@@ -92,7 +92,7 @@ export const leaderboardData: LeaderboardEntry[] = [
   },
   {
     rank: 5,
-    provider: "Agora ConvoAI",
+    provider: "Agora ConvoAI Engine",
     region: "Asia (Singapore)",
     responseLatency: 1350,
     interruptLatency: 580,
@@ -102,7 +102,7 @@ export const leaderboardData: LeaderboardEntry[] = [
   },
   {
     rank: 6,
-    provider: "LiveKIT Agent",
+    provider: "LiveKit Agents",
     region: "Asia (Singapore)",
     responseLatency: 1420,
     interruptLatency: 620,
