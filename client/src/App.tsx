@@ -1,7 +1,7 @@
 import { Switch, Route, useLocation } from "wouter";
 import { queryClient } from "./lib/queryClient";
 import { QueryClientProvider, useQuery } from "@tanstack/react-query";
-import { useEffect } from "react";
+import { useEffect, lazy, Suspense } from "react";
 import { Toaster } from "@/components/ui/toaster";
 import { ThemeProvider } from "@/components/theme-provider";
 import Layout from "@/components/layout";
@@ -31,6 +31,8 @@ import AdminOrganizations from "@/pages/admin-organizations";
 import AdminFundReturns from "@/pages/admin-fund-returns";
 import Activate from "@/pages/activate";
 import NotFound from "@/pages/not-found";
+
+const DevStylePanel = lazy(() => import("@/components/dev-style-panel"));
 
 interface AuthStatus {
   initialized: boolean;
@@ -764,6 +766,11 @@ function App() {
       <ThemeProvider>
         <AppGuard />
         <Toaster />
+        {import.meta.env.DEV && (
+          <Suspense fallback={null}>
+            <DevStylePanel />
+          </Suspense>
+        )}
       </ThemeProvider>
     </QueryClientProvider>
   );
