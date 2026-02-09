@@ -32,7 +32,9 @@ import AdminFundReturns from "@/pages/admin-fund-returns";
 import Activate from "@/pages/activate";
 import NotFound from "@/pages/not-found";
 
-const DevStylePanel = lazy(() => import("@/components/dev-style-panel"));
+const ChiselPanel = import.meta.env.DEV
+  ? lazy(() => import("@agora-build/chisel-dev/react").then(m => ({ default: m.ChiselPanel })))
+  : () => null;
 
 interface AuthStatus {
   initialized: boolean;
@@ -768,7 +770,7 @@ function App() {
         <Toaster />
         {import.meta.env.DEV && (
           <Suspense fallback={null}>
-            <DevStylePanel />
+            <ChiselPanel apiPrefix="/api/dev" />
           </Suspense>
         )}
       </ThemeProvider>
