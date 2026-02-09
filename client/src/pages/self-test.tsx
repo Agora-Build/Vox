@@ -9,7 +9,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Play, Loader2, XCircle, CheckCircle, Clock, AlertCircle, Rocket, Zap } from "lucide-react";
+import { Play, Loader2, XCircle, CheckCircle, Clock, AlertCircle, Rocket } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { Link } from "wouter";
@@ -215,7 +215,7 @@ export default function SelfTest() {
             </div>
             <CardHeader className="relative z-10">
               <CardTitle className="flex items-center gap-2">
-                <Zap className="h-5 w-5" />
+                <Rocket className="h-5 w-5" />
                 Configure Evaluation
               </CardTitle>
               <CardDescription>
