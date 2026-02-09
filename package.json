@@ -22,6 +22,7 @@
     "postinstall": "if [ -d .git ]; then git submodule update --init --recursive; fi && if [ -d vox_eval_agentd/voice-agent-tester ]; then cd vox_eval_agentd/voice-agent-tester && npm install; fi"
   },
   "dependencies": {
+    "@agora-build/chisel-dev": "^0.2.0",
     "@hookform/resolvers": "^3.10.0",
     "@jridgewell/trace-mapping": "^0.3.25",
     "@neondatabase/serverless": "^1.0.2",
@@ -95,7 +96,6 @@
     "wouter": "^3.3.5",
     "ws": "^8.18.0",
     "zod": "^3.25.76",
-    "@agora-build/chisel-dev": "^0.1.1",
     "zod-validation-error": "^3.4.0"
   },
   "devDependencies": {
