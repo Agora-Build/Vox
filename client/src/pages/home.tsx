@@ -2,7 +2,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Link } from "wouter";
-import { ArrowRight, Clock, Globe, Zap, Activity, Mic, Bot, Settings, Radio } from "lucide-react";
+import { ArrowRight, Clock, Globe, Rocket, Activity, Mic, Bot, Settings, Radio } from "lucide-react";
 
 export default function Home() {
   return (
@@ -69,7 +69,7 @@ export default function Home() {
           <Card className="bg-card/50 backdrop-blur-sm border-primary/10 hover:border-primary/20 transition-colors">
             <CardHeader>
               <div className="w-12 h-12 rounded-lg bg-amber-500/10 flex items-center justify-center mb-4">
-                <Zap className="h-6 w-6 text-amber-500" />
+                <Rocket className="h-6 w-6 text-amber-500" />
               </div>
               <CardTitle>Real-Time Updates</CardTitle>
             </CardHeader>
@@ -164,7 +164,7 @@ export default function Home() {
           <Card>
             <CardHeader>
               <div className="flex items-center gap-2 mb-2">
-                <Zap className="h-5 w-5 text-amber-500" />
+                <Rocket className="h-5 w-5 text-amber-500" />
                 <h3 className="font-bold">Response Latency</h3>
               </div>
               <p className="text-sm text-muted-foreground">Time for AI to generate initial response</p>

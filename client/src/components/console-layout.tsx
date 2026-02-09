@@ -19,7 +19,7 @@ import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import { Users, Workflow, FileText, LogOut, Shield, Gem, Sparkles, Zap, Server, Building2, CreditCard, Settings, FolderKanban, ClipboardList } from "lucide-react";
+import { Users, Workflow, FileText, LogOut, Shield, Gem, Sparkles, Rocket, Server, Building2, CreditCard, Settings, FolderKanban, ClipboardList } from "lucide-react";
 import { ThemeToggle } from "@/components/theme-toggle";
 
 interface AuthStatus {
@@ -87,7 +87,7 @@ export default function ConsoleLayout({ children }: ConsoleLayoutProps) {
       case "Admin": return <Shield className="h-3 w-3" />;
       case "Principal": return <Gem className="h-3 w-3" />;
       case "Premium": return <Sparkles className="h-3 w-3" />;
-      default: return <Zap className="h-3 w-3" />;
+      default: return <Rocket className="h-3 w-3" />;
     }
   };
 

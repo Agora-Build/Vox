@@ -1,6 +1,6 @@
 import { Link, useLocation } from "wouter";
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { LayoutDashboard, Trophy, BookOpen, Activity, Zap, Menu, X, Github, Twitter, Mail, LogIn, LogOut, User } from "lucide-react";
+import { LayoutDashboard, Trophy, BookOpen, Activity, Rocket, Menu, X, Github, Twitter, Mail, LogIn, LogOut, User } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
@@ -58,7 +58,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
     { href: "/realtime", label: "Real-time", icon: Activity },
     { href: "/leaderboard", label: "Leaderboard", icon: Trophy },
     { href: "/dive", label: "Deep Dive", icon: BookOpen },
-    { href: "/run-your-own", label: "Run Test", icon: Zap },
+    { href: "/run-your-own", label: "Run Your Own", icon: Rocket },
   ];
 
   return (
@@ -243,7 +243,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
                 </li>
                 <li>
                   <Link href="/run-your-own" className="text-sm hover:text-foreground transition-colors text-muted-foreground" data-testid="link-footer-test">
-                    Run Test
+                    Run Your Own
                   </Link>
                 </li>
               </ul>

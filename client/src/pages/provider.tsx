@@ -1,7 +1,7 @@
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { ArrowRight, Code, Terminal, Clock, Zap, Wifi, Mic, Volume2, Globe, Server, Shield } from "lucide-react";
+import { ArrowRight, Code, Terminal, Clock, Rocket, Wifi, Mic, Volume2, Globe, Server, Shield } from "lucide-react";
 import { Link } from "wouter";
 
 export default function ProviderGuide() {
@@ -30,7 +30,7 @@ export default function ProviderGuide() {
           <Card>
             <CardHeader className="pb-2">
               <CardTitle className="text-base flex items-center gap-2">
-                <Zap className="h-4 w-4 text-yellow-500" />
+                <Rocket className="h-4 w-4 text-yellow-500" />
                 Interrupt Latency
               </CardTitle>
             </CardHeader>

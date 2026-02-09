@@ -3,7 +3,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from "recharts";
-import { Clock, Zap, Activity, RefreshCw, Lock } from "lucide-react";
+import { Clock, Rocket, Activity, RefreshCw, Lock } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Popover,
@@ -163,7 +163,7 @@ function MetricsSection({ metrics, isLoading, selectedRegion, timeRangeLabel, re
             <div className="flex items-center gap-2">
               <Popover>
                 <PopoverTrigger asChild>
-                  <Zap className="h-4 w-4 text-muted-foreground cursor-pointer hover:text-foreground transition-colors" />
+                  <Rocket className="h-4 w-4 text-muted-foreground cursor-pointer hover:text-foreground transition-colors" />
                 </PopoverTrigger>
                 <PopoverContent className="w-80">
                   <div className="space-y-2">
