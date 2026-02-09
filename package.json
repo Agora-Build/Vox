@@ -95,7 +95,7 @@
     "wouter": "^3.3.5",
     "ws": "^8.18.0",
     "zod": "^3.25.76",
-    "@agora-build/chisel-dev": "file:../chisel",
+    "@agora-build/chisel-dev": "^0.1.1",
     "zod-validation-error": "^3.4.0"
   },
   "devDependencies": {
