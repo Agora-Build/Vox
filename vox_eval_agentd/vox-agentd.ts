@@ -549,27 +549,33 @@ class VoxEvalAgentDaemon {
       throw new Error('job.config.scenario is required');
     }
 
-    if (framework !== 'aeval' && !config.app) {
-      throw new Error('job.config.app is required for voice-agent-tester');
-    }
-
     const tempFiles: (string | null)[] = [];
 
     try {
       let results: EvalResult;
 
-      if (framework === 'aeval') {
-        const scenarioConfig = this.writeTempYaml(config.scenario, 'vox-scenario')!;
-        tempFiles.push(scenarioConfig);
-        results = await this.runAeval(scenarioConfig);
-      } else {
-        const appConfig = this.writeTempYaml(config.app!, 'vox-app')!;
-        tempFiles.push(appConfig);
+      switch (framework) {
+        case 'aeval': {
+          const scenarioConfig = this.writeTempYaml(config.scenario, 'vox-scenario')!;
+          tempFiles.push(scenarioConfig);
+          results = await this.runAeval(scenarioConfig);
+          break;
+        }
+        case 'voice-agent-tester': {
+          if (!config.app) {
+            throw new Error('job.config.app is required for voice-agent-tester');
+          }
+          const appConfig = this.writeTempYaml(config.app, 'vox-app')!;
+          tempFiles.push(appConfig);
 
-        const scenarioConfig = this.writeTempYaml(config.scenario, 'vox-scenario')!;
-        tempFiles.push(scenarioConfig);
+          const scenarioConfig = this.writeTempYaml(config.scenario, 'vox-scenario')!;
+          tempFiles.push(scenarioConfig);
 
-        results = await this.runVoiceAgentTester(appConfig, scenarioConfig);
+          results = await this.runVoiceAgentTester(appConfig, scenarioConfig);
+          break;
+        }
+        default:
+          throw new Error(`Unsupported eval framework: '${framework}'. Supported: aeval, voice-agent-tester`);
       }
 
       console.log(`[Daemon] Job ${job.id} results:`, results);
