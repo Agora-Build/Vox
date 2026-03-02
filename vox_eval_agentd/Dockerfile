@@ -77,7 +77,6 @@ RUN npm install
 
 # Environment variables (will be overridden at runtime)
 ENV VOX_SERVER=http://localhost:5000
-ENV VOX_AGENT_NAME="eval-agent"
 ENV HEADLESS=true
 ENV EVAL_FRAMEWORK=aeval
 

@@ -447,7 +447,7 @@ class VoxEvalAgent {
   start(): void {
     console.log(`[Agent] Starting Vox Eval Agent Daemon`);
     console.log(`  - Server: ${this.serverUrl}`);
-    console.log(`  - Name: ${this.name}`);
+    console.log(`  - Name: ${this.name || '(inherits from token)'}`);
     console.log('');
 
     // Start heartbeat timer
@@ -486,7 +486,7 @@ function parseArgs(): { token: string; server: string; name: string } {
   const args = process.argv.slice(2);
   let token = '';
   let server = DEFAULT_SERVER;
-  let name = `Agent-${Date.now()}`;
+  let name = '';
 
   for (let i = 0; i < args.length; i++) {
     switch (args[i]) {
@@ -513,7 +513,7 @@ Usage:
 Options:
   -t, --token <TOKEN>   Agent registration token (required)
   -s, --server <URL>    Vox server URL (default: ${DEFAULT_SERVER})
-  -n, --name <NAME>     Agent name (default: Agent-<timestamp>)
+  -n, --name <NAME>     Agent name (default: inherits from token)
   -h, --help            Show this help message
 
 Example:

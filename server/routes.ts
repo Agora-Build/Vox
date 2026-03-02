@@ -1734,15 +1734,14 @@ export async function registerRoutes(
       }
 
       const { name, metadata } = req.body;
-      
-      if (!name) {
-        return res.status(400).json({ error: "Agent name required" });
-      }
+
+      // Use agent-provided name, or fall back to the token's name
+      const agentName = name || evalAgentToken.name;
 
       await storage.updateEvalAgentTokenLastUsed(evalAgentToken.id);
 
       const agent = await storage.createEvalAgent({
-        name,
+        name: agentName,
         tokenId: evalAgentToken.id,
         region: evalAgentToken.region,
         state: "idle",

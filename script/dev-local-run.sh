@@ -498,7 +498,6 @@ start_eval_agent_local() {
     npx tsx script/vox-eval-agent.ts \
         --token "$token" \
         --server "$SERVER_URL" \
-        --name "$name" \
         > /tmp/vox-eval-agent-${region}.log 2>&1 &
 
     echo $! > /tmp/vox-eval-agent-${region}.pid

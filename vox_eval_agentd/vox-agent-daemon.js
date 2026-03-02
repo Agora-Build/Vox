@@ -24,7 +24,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // Configuration from environment
 const VOX_SERVER = process.env.VOX_SERVER || 'http://localhost:5000';
 const AGENT_TOKEN = process.env.AGENT_TOKEN;
-const VOX_AGENT_NAME = process.env.VOX_AGENT_NAME || `eval-agent-${Date.now()}`;
+const VOX_AGENT_NAME = process.env.VOX_AGENT_NAME || '';
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const HEADLESS = process.env.HEADLESS !== 'false';
 const EVAL_FRAMEWORK = process.env.EVAL_FRAMEWORK || 'aeval';
@@ -610,7 +610,7 @@ class VoxEvalAgentDaemon {
   start() {
     console.log(`[Daemon] Starting vox_eval_agentd`);
     console.log(`  - Server: ${VOX_SERVER}`);
-    console.log(`  - Agent Name: ${VOX_AGENT_NAME}`);
+    console.log(`  - Agent Name: ${VOX_AGENT_NAME || '(inherits from token)'}`);
     console.log(`  - Headless: ${HEADLESS}`);
     console.log(`  - Eval Framework: ${EVAL_FRAMEWORK}`);
     console.log('');
