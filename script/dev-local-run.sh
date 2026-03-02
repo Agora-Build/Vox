@@ -22,6 +22,7 @@
 #   reset       - Reset database and restart all services
 #   status      - Show service status
 #   build-agent - Build eval agent Docker image
+#   smoke-test  - Run eval agent smoke tests (aeval, submodules, daemon syntax)
 #   logs        - Show logs (server|agent)
 #
 
@@ -485,6 +486,56 @@ ensure_aeval_binary() {
     fi
 }
 
+# ==================== Smoke Tests ====================
+
+smoke_test_agent() {
+    local failed=0
+
+    log_info "Running eval agent smoke tests..."
+
+    # Check aeval binary
+    if command -v aeval &> /dev/null; then
+        if aeval --version > /dev/null 2>&1; then
+            log_success "aeval: OK ($(aeval --version 2>&1 | head -1))"
+        else
+            log_error "aeval: FAILED (binary exists but crashed)"
+            failed=1
+        fi
+    else
+        log_warn "aeval: not installed (skip)"
+    fi
+
+    # Check submodules
+    if [ -d "$PROJECT_DIR/vox_eval_agentd/aeval-data/examples" ]; then
+        log_success "aeval-data submodule: OK"
+    else
+        log_error "aeval-data submodule: MISSING (run: git submodule update --init --recursive)"
+        failed=1
+    fi
+
+    if [ -d "$PROJECT_DIR/vox_eval_agentd/voice-agent-tester/src" ]; then
+        log_success "voice-agent-tester submodule: OK"
+    else
+        log_error "voice-agent-tester submodule: MISSING (run: git submodule update --init --recursive)"
+        failed=1
+    fi
+
+    # Check daemon script syntax (TS — use esbuild transform to validate)
+    if node -e "require('esbuild').transformSync(require('fs').readFileSync('$PROJECT_DIR/vox_eval_agentd/vox-agentd.ts','utf8'),{loader:'ts'})" 2>/dev/null; then
+        log_success "daemon syntax: OK"
+    else
+        log_error "daemon syntax: FAILED (vox-agentd.ts has syntax errors)"
+        failed=1
+    fi
+
+    if [ $failed -ne 0 ]; then
+        log_error "Some smoke tests failed"
+        return 1
+    fi
+
+    log_success "All smoke tests passed"
+}
+
 # ==================== Eval Agent (Local Process Mode) ====================
 
 start_eval_agent_local() {
@@ -495,7 +546,7 @@ start_eval_agent_local() {
     log_info "Starting eval agent (local process): $name ($region)..."
 
     cd "$PROJECT_DIR"
-    npx tsx script/vox-eval-agent.ts \
+    npx tsx vox_eval_agentd/vox-agentd.ts \
         --token "$token" \
         --server "$SERVER_URL" \
         > /tmp/vox-eval-agent-${region}.log 2>&1 &
@@ -585,6 +636,20 @@ build_eval_agent_docker() {
     cd "$PROJECT_DIR/vox_eval_agentd"
     docker build -t vox_eval_agentd .
     log_success "Docker image built: vox_eval_agentd"
+
+    log_info "Running Docker image smoke tests..."
+    if docker run --rm vox_eval_agentd bash -c "
+        node --version &&
+        aeval --version &&
+        cd /app/voice-agent-tester &&
+        node -e \"require('puppeteer').executablePath()\" &&
+        node --check /app/vox-agentd.js
+    "; then
+        log_success "Docker smoke tests passed"
+    else
+        log_error "Docker smoke tests FAILED"
+        return 1
+    fi
 }
 
 start_eval_agent_docker() {
@@ -801,6 +866,9 @@ do_start_local() {
     ensure_submodules
     ensure_aeval_binary
 
+    # 1b. Run smoke tests
+    smoke_test_agent || log_warn "Smoke tests had failures (continuing startup)"
+
     # 2. Start PostgreSQL (Docker)
     start_postgres
 
@@ -972,6 +1040,10 @@ main() {
         build-agent)
             build_eval_agent_docker
             ;;
+        smoke-test)
+            ensure_submodules
+            smoke_test_agent
+            ;;
         status)
             show_status "local"
             ;;
@@ -1042,6 +1114,7 @@ main() {
             echo "Common Commands:"
             echo "  status                 - Show service status"
             echo "  build-agent            - Build eval agent Docker image"
+            echo "  smoke-test             - Run eval agent smoke tests"
             echo "  logs [server|agent]    - Show logs"
             echo "  logs agent-na          - Show logs for NA agent"
             echo "  logs agent-apac        - Show logs for APAC agent"

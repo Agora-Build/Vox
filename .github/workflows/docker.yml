@@ -114,7 +114,28 @@ jobs:
             type=sha,prefix=
             type=raw,value=latest
 
-      - name: Build and push
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./vox_eval_agentd
+          load: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+      - name: Smoke test eval agent image
+        run: |
+          IMAGE_TAG=$(echo '${{ steps.meta.outputs.tags }}' | head -n1)
+          docker run --rm "$IMAGE_TAG" bash -c "
+            echo '=== Node ===' && node --version &&
+            echo '=== aeval ===' && aeval --version &&
+            echo '=== Chrome ===' && cd /app/voice-agent-tester &&
+              node -e \"const p=require('puppeteer'); const b=p.executablePath();
+              require('child_process').execSync(b+' --version --no-sandbox',{stdio:'inherit'})\" &&
+            echo '=== Daemon syntax ===' && node --check /app/vox-agentd.js &&
+            echo 'All smoke tests passed'
+          "
+
+      - name: Push image
         uses: docker/build-push-action@v6
         with:
           context: ./vox_eval_agentd

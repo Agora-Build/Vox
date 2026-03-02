@@ -1,16 +1,30 @@
-#!/usr/bin/env node
+#!/usr/bin/env npx tsx
 /**
- * vox_eval_agentd - Vox Evaluation Agent Daemon
+ * vox-agentd - Vox Evaluation Agent Daemon
  *
- * Integrates aeval / voice-agent-tester with Vox API to:
- * 1. Register with Vox server
- * 2. Fetch and claim pending jobs
- * 3. Execute the selected eval framework for each job
- * 4. Parse results and report back to Vox
+ * A standalone process that:
+ * 1. Registers with Vox server using a token
+ * 2. Sends periodic heartbeats
+ * 3. Fetches and claims pending jobs
+ * 4. Executes evaluation tests using aeval or voice-agent-tester
+ * 5. Reports results back to the server
  *
- * Set EVAL_FRAMEWORK env var to choose:
- *   "aeval"                (default) — single-binary eval with JSON metrics
- *   "voice-agent-tester"   — Node/Puppeteer eval with CSV report
+ * Supports two eval frameworks:
+ *   "aeval"                (default) - single-binary eval with JSON metrics
+ *   "voice-agent-tester"   - Node/Puppeteer eval with CSV report
+ *
+ * Config resolution (CLI args take precedence over env vars):
+ *   token     = --token  || AGENT_TOKEN
+ *   server    = --server || VOX_SERVER || 'http://localhost:5000'
+ *   name      = --name   || VOX_AGENT_NAME || ''
+ *   framework = EVAL_FRAMEWORK || 'aeval'
+ *   headless  = HEADLESS !== 'false'  (default true)
+ *
+ * Usage:
+ *   npx tsx vox_eval_agentd/vox-agentd.ts --token <TOKEN> [--server <URL>] [--name <NAME>]
+ *
+ * Docker:
+ *   node vox-agentd.js  (compiled by esbuild, configured via env vars)
  */
 
 import { spawn } from 'child_process';
@@ -21,47 +35,107 @@ import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-// Configuration from environment
-const VOX_SERVER = process.env.VOX_SERVER || 'http://localhost:5000';
-const AGENT_TOKEN = process.env.AGENT_TOKEN;
-const VOX_AGENT_NAME = process.env.VOX_AGENT_NAME || '';
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-const HEADLESS = process.env.HEADLESS !== 'false';
-const EVAL_FRAMEWORK = process.env.EVAL_FRAMEWORK || 'aeval';
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
+interface EvalAgent {
+  id: number;
+  name: string;
+  region: string;
+  state: string;
+}
+
+interface EvalJob {
+  id: number;
+  workflowId: number;
+  evalSetId: number | null;
+  region: string;
+  status: string;
+  config: Record<string, unknown> | null;
+}
+
+interface EvalResult {
+  responseLatencyMedian: number;
+  responseLatencySd: number;
+  interruptLatencyMedian: number;
+  interruptLatencySd: number;
+  networkResilience: number;
+  naturalness: number;
+  noiseReduction: number;
+}
+
+// ---------------------------------------------------------------------------
+// Config
+// ---------------------------------------------------------------------------
+
+interface DaemonConfig {
+  token: string;
+  serverUrl: string;
+  name: string;
+  framework: string;
+  headless: boolean;
+}
 
 const HEARTBEAT_INTERVAL = 30000; // 30 seconds
-const JOB_POLL_INTERVAL = 10000; // 10 seconds
-const VOICE_AGENT_TESTER_PATH = path.join(__dirname, 'voice-agent-tester');
-const AEVAL_DATA_PATH = path.join(__dirname, 'aeval-data');
+const JOB_POLL_INTERVAL = 10000;  // 10 seconds
+
+const VOICE_AGENT_TESTER_PATH = path.resolve(__dirname, 'voice-agent-tester');
+const AEVAL_DATA_PATH = path.resolve(__dirname, 'aeval-data');
+
+const RESULT_DEFAULTS: EvalResult = {
+  responseLatencyMedian: 0,
+  responseLatencySd: 0,
+  interruptLatencyMedian: 0,
+  interruptLatencySd: 0,
+  networkResilience: 85,
+  naturalness: 3.5,
+  noiseReduction: 90,
+};
+
+// ---------------------------------------------------------------------------
+// Daemon class
+// ---------------------------------------------------------------------------
 
 class VoxEvalAgentDaemon {
-  constructor() {
-    this.agentId = null;
-    this.region = null;
-    this.isRunningJob = false;
-    this.heartbeatTimer = null;
-    this.jobPollTimer = null;
+  private config: DaemonConfig;
+  private agentId: number | null = null;
+  private region: string | null = null;
+  private heartbeatTimer: NodeJS.Timeout | null = null;
+  private jobPollTimer: NodeJS.Timeout | null = null;
+  private isRunningJob = false;
+
+  constructor(config: DaemonConfig) {
+    this.config = config;
   }
 
-  async fetch(urlPath, options = {}) {
-    const url = `${VOX_SERVER}${urlPath}`;
+  // -------------------------------------------------------------------------
+  // HTTP helpers
+  // -------------------------------------------------------------------------
+
+  private async fetch(urlPath: string, options: RequestInit = {}): Promise<Response> {
+    const url = `${this.config.serverUrl}${urlPath}`;
     return fetch(url, {
       ...options,
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${AGENT_TOKEN}`,
+        'Authorization': `Bearer ${this.config.token}`,
         ...options.headers,
       },
     });
   }
 
-  async register() {
-    console.log(`[Daemon] Registering with Vox server: ${VOX_SERVER}`);
+  // -------------------------------------------------------------------------
+  // Registration & heartbeat
+  // -------------------------------------------------------------------------
+
+  async register(): Promise<boolean> {
+    console.log(`[Daemon] Registering with Vox server: ${this.config.serverUrl}`);
 
     try {
       const response = await this.fetch('/api/eval-agent/register', {
         method: 'POST',
-        body: JSON.stringify({ name: VOX_AGENT_NAME }),
+        body: JSON.stringify({ name: this.config.name }),
       });
 
       if (!response.ok) {
@@ -70,7 +144,7 @@ class VoxEvalAgentDaemon {
         return false;
       }
 
-      const agent = await response.json();
+      const agent: EvalAgent = await response.json();
       this.agentId = agent.id;
       this.region = agent.region;
 
@@ -80,13 +154,14 @@ class VoxEvalAgentDaemon {
       console.log(`  - Region: ${agent.region}`);
 
       return true;
-    } catch (error) {
-      console.error(`[Daemon] Registration error:`, error.message);
+    } catch (error: unknown) {
+      const msg = error instanceof Error ? error.message : String(error);
+      console.error(`[Daemon] Registration error:`, msg);
       return false;
     }
   }
 
-  async sendHeartbeat() {
+  async sendHeartbeat(): Promise<void> {
     if (!this.agentId) return;
 
     try {
@@ -101,25 +176,31 @@ class VoxEvalAgentDaemon {
       if (response.ok) {
         console.log(`[Daemon] Heartbeat sent (state: ${this.isRunningJob ? 'occupied' : 'idle'})`);
       }
-    } catch (error) {
-      console.error(`[Daemon] Heartbeat error:`, error.message);
+    } catch (error: unknown) {
+      const msg = error instanceof Error ? error.message : String(error);
+      console.error(`[Daemon] Heartbeat error:`, msg);
     }
   }
 
-  async fetchJobs() {
+  // -------------------------------------------------------------------------
+  // Job queue
+  // -------------------------------------------------------------------------
+
+  async fetchJobs(): Promise<EvalJob[]> {
     if (!this.region) return [];
 
     try {
       const response = await this.fetch(`/api/eval-agent/jobs?region=${this.region}`);
       if (!response.ok) return [];
       return await response.json();
-    } catch (error) {
-      console.error(`[Daemon] Error fetching jobs:`, error.message);
+    } catch (error: unknown) {
+      const msg = error instanceof Error ? error.message : String(error);
+      console.error(`[Daemon] Error fetching jobs:`, msg);
       return [];
     }
   }
 
-  async claimJob(jobId) {
+  async claimJob(jobId: number): Promise<boolean> {
     try {
       const response = await this.fetch(`/api/eval-agent/jobs/${jobId}/claim`, {
         method: 'POST',
@@ -133,13 +214,14 @@ class VoxEvalAgentDaemon {
 
       console.log(`[Daemon] Claimed job ${jobId}`);
       return true;
-    } catch (error) {
-      console.error(`[Daemon] Error claiming job:`, error.message);
+    } catch (error: unknown) {
+      const msg = error instanceof Error ? error.message : String(error);
+      console.error(`[Daemon] Error claiming job:`, msg);
       return false;
     }
   }
 
-  async completeJob(jobId, results) {
+  async completeJob(jobId: number, results: EvalResult): Promise<boolean> {
     try {
       console.log(`[Daemon] Completing job ${jobId}...`);
       const response = await this.fetch(`/api/eval-agent/jobs/${jobId}/complete`, {
@@ -155,21 +237,22 @@ class VoxEvalAgentDaemon {
         console.error(`[Daemon] Failed to complete job ${jobId}: ${response.status} - ${error}`);
         return false;
       }
-    } catch (error) {
-      console.error(`[Daemon] Error completing job:`, error.message);
+    } catch (error: unknown) {
+      const msg = error instanceof Error ? error.message : String(error);
+      console.error(`[Daemon] Error completing job:`, msg);
       return false;
     }
   }
 
-  // ---------------------------------------------------------------------------
+  // -------------------------------------------------------------------------
   // aeval framework
-  // ---------------------------------------------------------------------------
+  // -------------------------------------------------------------------------
 
-  runAeval(scenarioConfig) {
+  private runAeval(scenarioConfig: string): Promise<EvalResult> {
     return new Promise((resolve, reject) => {
       const args = ['run', scenarioConfig];
 
-      if (!HEADLESS) {
+      if (!this.config.headless) {
         args.push('--headful');
       }
 
@@ -197,10 +280,8 @@ class VoxEvalAgentDaemon {
       proc.on('close', (code) => {
         console.log(`[Daemon] aeval exited with code ${code}`);
 
-        // Determine the output directory from the scenario config
         const outputDir = this.resolveAevalOutputDir(scenarioConfig);
         const results = this.parseAevalResults(outputDir, stdout);
-
         resolve(results);
       });
 
@@ -214,7 +295,7 @@ class VoxEvalAgentDaemon {
    * Resolve the output directory that aeval writes metrics.json to.
    * Convention: output lands in <aeval-data>/output/<scenario-basename-without-ext>/
    */
-  resolveAevalOutputDir(scenarioConfig) {
+  private resolveAevalOutputDir(scenarioConfig: string): string {
     const scenarioBasename = path.basename(scenarioConfig, path.extname(scenarioConfig));
     return path.join(AEVAL_DATA_PATH, 'output', scenarioBasename);
   }
@@ -222,24 +303,13 @@ class VoxEvalAgentDaemon {
   /**
    * Parse aeval's metrics.json output into the Vox result schema.
    */
-  parseAevalResults(outputDir, stdout) {
-    const defaults = {
-      responseLatencyMedian: 0,
-      responseLatencySd: 0,
-      interruptLatencyMedian: 0,
-      interruptLatencySd: 0,
-      networkResilience: 85,
-      naturalness: 3.5,
-      noiseReduction: 90,
-    };
-
+  private parseAevalResults(outputDir: string, stdout: string): EvalResult {
     const metricsFile = path.join(outputDir, 'metrics.json');
 
     try {
       if (!fs.existsSync(metricsFile)) {
         console.log(`[Daemon] aeval metrics file not found: ${metricsFile}`);
-        // Fallback: try to extract latency from stdout
-        return this.parseAevalStdout(stdout, defaults);
+        return this.parseAevalStdout(stdout);
       }
 
       const raw = fs.readFileSync(metricsFile, 'utf-8');
@@ -247,13 +317,10 @@ class VoxEvalAgentDaemon {
 
       const metrics = JSON.parse(raw);
 
-      // Walk the JSON structure — aeval outputs vary but commonly include:
-      //   response_latency.median_ms, response_latency.stddev_ms
-      //   interrupt_latency.median_ms, interrupt_latency.stddev_ms
       const rl = metrics.response_latency || metrics.responseLatency || {};
       const il = metrics.interrupt_latency || metrics.interruptLatency || {};
 
-      const results = { ...defaults };
+      const results: EvalResult = { ...RESULT_DEFAULTS };
 
       if (rl.median_ms != null) results.responseLatencyMedian = Math.round(rl.median_ms);
       else if (rl.median != null) results.responseLatencyMedian = Math.round(rl.median);
@@ -269,24 +336,24 @@ class VoxEvalAgentDaemon {
       else if (il.stddev != null) results.interruptLatencySd = Math.round(il.stddev);
       else if (il.sd != null) results.interruptLatencySd = Math.round(il.sd);
 
-      // Optional top-level overrides
       if (metrics.network_resilience != null) results.networkResilience = metrics.network_resilience;
       if (metrics.naturalness != null) results.naturalness = metrics.naturalness;
       if (metrics.noise_reduction != null) results.noiseReduction = metrics.noise_reduction;
 
       console.log(`[Daemon] Parsed aeval results:`, results);
       return results;
-    } catch (error) {
-      console.error(`[Daemon] Error parsing aeval metrics:`, error.message);
-      return this.parseAevalStdout(stdout, defaults);
+    } catch (error: unknown) {
+      const msg = error instanceof Error ? error.message : String(error);
+      console.error(`[Daemon] Error parsing aeval metrics:`, msg);
+      return this.parseAevalStdout(stdout);
     }
   }
 
   /**
    * Fallback: try to extract latency numbers from aeval stdout when metrics.json is missing.
    */
-  parseAevalStdout(stdout, defaults) {
-    const results = { ...defaults };
+  private parseAevalStdout(stdout: string): EvalResult {
+    const results: EvalResult = { ...RESULT_DEFAULTS };
 
     const medianMatch = stdout.match(/median[:\s]+(\d+)/i);
     if (medianMatch) {
@@ -297,13 +364,13 @@ class VoxEvalAgentDaemon {
     return results;
   }
 
-  // ---------------------------------------------------------------------------
+  // -------------------------------------------------------------------------
   // voice-agent-tester framework
-  // ---------------------------------------------------------------------------
+  // -------------------------------------------------------------------------
 
-  runVoiceAgentTester(appConfig, scenarioConfig) {
+  private runVoiceAgentTester(appConfig: string, scenarioConfig: string): Promise<EvalResult> {
     return new Promise((resolve, reject) => {
-      const reportFile = `/tmp/vox-report-${Date.now()}.csv`;
+      const reportFile = `/tmp/vox-report-${Date.now()}-${Math.random().toString(36).slice(2)}.csv`;
 
       const args = [
         'start',
@@ -311,17 +378,14 @@ class VoxEvalAgentDaemon {
         '-a', appConfig,
         '-s', scenarioConfig,
         '--report', reportFile,
-        '--headless', HEADLESS.toString(),
+        '--headless', this.config.headless.toString(),
       ];
 
       console.log(`[Daemon] Running: npm ${args.join(' ')}`);
 
       const proc = spawn('npm', args, {
         cwd: VOICE_AGENT_TESTER_PATH,
-        env: {
-          ...process.env,
-          OPENAI_API_KEY: OPENAI_API_KEY,
-        },
+        env: { ...process.env },
         stdio: ['ignore', 'pipe', 'pipe'],
       });
 
@@ -340,16 +404,8 @@ class VoxEvalAgentDaemon {
 
       proc.on('close', (code) => {
         console.log(`[Daemon] voice-agent-tester exited with code ${code}`);
-
-        // Parse results from report file
-        let results = this.parseVATResults(reportFile, stdout);
-
-        if (code === 0) {
-          resolve(results);
-        } else {
-          // Return partial results even on failure
-          resolve(results);
-        }
+        const results = this.parseVATResults(reportFile, stdout);
+        resolve(results);
       });
 
       proc.on('error', (error) => {
@@ -358,19 +414,9 @@ class VoxEvalAgentDaemon {
     });
   }
 
-  parseVATResults(reportFile, stdout) {
-    // Default results
-    let results = {
-      responseLatencyMedian: 0,
-      responseLatencySd: 0,
-      interruptLatencyMedian: 0,
-      interruptLatencySd: 0,
-      networkResilience: 85,
-      naturalness: 3.5,
-      noiseReduction: 90,
-    };
+  private parseVATResults(reportFile: string, stdout: string): EvalResult {
+    const results: EvalResult = { ...RESULT_DEFAULTS };
 
-    // Try to parse CSV report
     try {
       if (fs.existsSync(reportFile)) {
         const csv = fs.readFileSync(reportFile, 'utf-8');
@@ -379,15 +425,12 @@ class VoxEvalAgentDaemon {
         const lines = csv.trim().split('\n');
 
         if (lines.length >= 2) {
-          // CSV is comma-space separated
           const headers = lines[0].split(', ').map(h => h.trim());
-
-          // Collect all elapsed_time values from all runs
-          const allLatencies = [];
+          const allLatencies: number[][] = [];
 
           for (let i = 1; i < lines.length; i++) {
             const values = lines[i].split(', ').map(v => v.trim());
-            const runLatencies = [];
+            const runLatencies: number[] = [];
 
             headers.forEach((header, idx) => {
               if (header.includes('elapsed_time')) {
@@ -406,18 +449,16 @@ class VoxEvalAgentDaemon {
           console.log(`[Daemon] Parsed latencies:`, allLatencies);
 
           if (allLatencies.length > 0) {
-            // Get first elapsed_time from each run (response latency)
+            // Response latency (first elapsed_time from each run)
             const responseLatencies = allLatencies.map(run => run[0]).filter(v => !isNaN(v));
 
             if (responseLatencies.length > 0) {
-              // Calculate median
               const sorted = [...responseLatencies].sort((a, b) => a - b);
               const mid = Math.floor(sorted.length / 2);
               results.responseLatencyMedian = sorted.length % 2 !== 0
                 ? Math.round(sorted[mid])
                 : Math.round((sorted[mid - 1] + sorted[mid]) / 2);
 
-              // Calculate standard deviation
               if (responseLatencies.length > 1) {
                 const mean = responseLatencies.reduce((a, b) => a + b, 0) / responseLatencies.length;
                 const variance = responseLatencies.reduce((a, b) => a + Math.pow(b - mean, 2), 0) / responseLatencies.length;
@@ -425,7 +466,7 @@ class VoxEvalAgentDaemon {
               }
             }
 
-            // Get second elapsed_time from each run (interrupt latency)
+            // Interrupt latency (second elapsed_time from each run)
             const interruptLatencies = allLatencies.map(run => run[1]).filter(v => !isNaN(v) && v !== undefined);
 
             if (interruptLatencies.length > 0) {
@@ -444,24 +485,22 @@ class VoxEvalAgentDaemon {
           }
         }
 
-        // Keep report file for debugging (optional - comment out in production)
-        // fs.unlinkSync(reportFile);
         console.log(`[Daemon] Report file kept at: ${reportFile}`);
       } else {
         console.log(`[Daemon] Report file not found: ${reportFile}`);
       }
-    } catch (error) {
-      console.error(`[Daemon] Error parsing results:`, error.message);
+    } catch (error: unknown) {
+      const msg = error instanceof Error ? error.message : String(error);
+      console.error(`[Daemon] Error parsing results:`, msg);
     }
 
-    // Parse stdout for additional metrics if CSV parsing failed
+    // Fallback: parse stdout if CSV parsing failed
     if (results.responseLatencyMedian === 0) {
       const elapsedMatch = stdout.match(/elapsed[_\s]?time[:\s]+(\d+)/i);
       if (elapsedMatch) {
         results.responseLatencyMedian = parseInt(elapsedMatch[1]);
       }
 
-      // Try to parse metrics summary from stdout
       const avgMatch = stdout.match(/Average:\s*(\d+)/);
       if (avgMatch) {
         results.responseLatencyMedian = parseInt(avgMatch[1]);
@@ -472,15 +511,11 @@ class VoxEvalAgentDaemon {
     return results;
   }
 
-  // ---------------------------------------------------------------------------
-  // Job execution
-  // ---------------------------------------------------------------------------
+  // -------------------------------------------------------------------------
+  // Temp file helpers
+  // -------------------------------------------------------------------------
 
-  /**
-   * Write YAML content to a temp file and return the path.
-   * Returns null if content is empty/falsy.
-   */
-  writeTempYaml(content, prefix = 'vox-config') {
+  private writeTempYaml(content: string, prefix = 'vox-config'): string | null {
     if (!content) return null;
     const tmpFile = path.join(os.tmpdir(), `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}.yaml`);
     fs.writeFileSync(tmpFile, content, 'utf-8');
@@ -488,53 +523,54 @@ class VoxEvalAgentDaemon {
     return tmpFile;
   }
 
-  /**
-   * Clean up temp files, ignoring errors.
-   */
-  cleanupTempFiles(...files) {
+  private cleanupTempFiles(...files: (string | null)[]): void {
     for (const f of files) {
       if (!f) continue;
       try { fs.unlinkSync(f); } catch { /* ignore */ }
     }
   }
 
-  async executeJob(job) {
+  // -------------------------------------------------------------------------
+  // Job execution
+  // -------------------------------------------------------------------------
+
+  async executeJob(job: EvalJob): Promise<EvalResult> {
     console.log(`[Daemon] Executing job ${job.id}`);
     console.log(`  - Workflow ID: ${job.workflowId}`);
     console.log(`  - Region: ${job.region}`);
 
-    const config = job.config || {};
+    const config = (job.config || {}) as { framework?: string; app?: string; scenario?: string };
 
-    // Per-job framework override, falling back to env var default
-    const framework = config.framework || EVAL_FRAMEWORK;
+    // Per-job framework override, falling back to daemon default
+    const framework = config.framework || this.config.framework;
     console.log(`  - Framework: ${framework}`);
 
-    const tempFiles = [];
+    const tempFiles: (string | null)[] = [];
 
     try {
-      let results;
+      let results: EvalResult;
 
       if (framework === 'aeval') {
-        let scenarioConfig;
+        let scenarioConfig: string;
         if (config.scenario) {
-          scenarioConfig = this.writeTempYaml(config.scenario, 'vox-scenario');
+          scenarioConfig = this.writeTempYaml(config.scenario, 'vox-scenario')!;
           tempFiles.push(scenarioConfig);
         } else {
           scenarioConfig = path.join('examples', 'response', 'response_R00_en.yaml');
         }
         results = await this.runAeval(scenarioConfig);
       } else {
-        let appConfig;
+        let appConfig: string;
         if (config.app) {
-          appConfig = this.writeTempYaml(config.app, 'vox-app');
+          appConfig = this.writeTempYaml(config.app, 'vox-app')!;
           tempFiles.push(appConfig);
         } else {
           appConfig = path.join(__dirname, 'applications', 'livekit.yaml');
         }
 
-        let scenarioConfig;
+        let scenarioConfig: string;
         if (config.scenario) {
-          scenarioConfig = this.writeTempYaml(config.scenario, 'vox-scenario');
+          scenarioConfig = this.writeTempYaml(config.scenario, 'vox-scenario')!;
           tempFiles.push(scenarioConfig);
         } else {
           scenarioConfig = path.join(__dirname, 'scenarios', 'basic_conversation.yaml');
@@ -545,10 +581,10 @@ class VoxEvalAgentDaemon {
 
       console.log(`[Daemon] Job ${job.id} results:`, results);
       return results;
-    } catch (error) {
-      console.error(`[Daemon] Job ${job.id} failed:`, error.message);
+    } catch (error: unknown) {
+      const msg = error instanceof Error ? error.message : String(error);
+      console.error(`[Daemon] Job ${job.id} failed:`, msg);
 
-      // Return minimal results on failure
       return {
         responseLatencyMedian: 0,
         responseLatencySd: 0,
@@ -563,31 +599,29 @@ class VoxEvalAgentDaemon {
     }
   }
 
-  async processJobs() {
-    if (this.isRunningJob) {
-      return;
-    }
+  // -------------------------------------------------------------------------
+  // Job processing loop
+  // -------------------------------------------------------------------------
+
+  async processJobs(): Promise<void> {
+    if (this.isRunningJob) return;
 
     const jobs = await this.fetchJobs();
-    if (jobs.length === 0) {
-      return;
-    }
+    if (jobs.length === 0) return;
 
     console.log(`[Daemon] Found ${jobs.length} pending job(s)`);
 
     const job = jobs[0];
     const claimed = await this.claimJob(job.id);
-    if (!claimed) {
-      return;
-    }
+    if (!claimed) return;
 
     this.isRunningJob = true;
     try {
       const results = await this.executeJob(job);
       await this.completeJob(job.id, results);
-    } catch (error) {
-      console.error(`[Daemon] Job execution error:`, error.message);
-      // Report failure back to server so the job doesn't stay stuck in "running"
+    } catch (error: unknown) {
+      const msg = error instanceof Error ? error.message : String(error);
+      console.error(`[Daemon] Job execution error:`, msg);
       try {
         await this.completeJob(job.id, {
           responseLatencyMedian: 0,
@@ -597,30 +631,32 @@ class VoxEvalAgentDaemon {
           networkResilience: 0,
           naturalness: 0,
           noiseReduction: 0,
-          error: error.message,
         });
-      } catch (reportError) {
-        console.error(`[Daemon] Failed to report job error:`, reportError.message);
+      } catch (reportError: unknown) {
+        const reportMsg = reportError instanceof Error ? reportError.message : String(reportError);
+        console.error(`[Daemon] Failed to report job error:`, reportMsg);
       }
     } finally {
       this.isRunningJob = false;
     }
   }
 
-  start() {
+  // -------------------------------------------------------------------------
+  // Lifecycle
+  // -------------------------------------------------------------------------
+
+  start(): void {
     console.log(`[Daemon] Starting vox_eval_agentd`);
-    console.log(`  - Server: ${VOX_SERVER}`);
-    console.log(`  - Agent Name: ${VOX_AGENT_NAME || '(inherits from token)'}`);
-    console.log(`  - Headless: ${HEADLESS}`);
-    console.log(`  - Eval Framework: ${EVAL_FRAMEWORK}`);
+    console.log(`  - Server: ${this.config.serverUrl}`);
+    console.log(`  - Agent Name: ${this.config.name || '(inherits from token)'}`);
+    console.log(`  - Headless: ${this.config.headless}`);
+    console.log(`  - Eval Framework: ${this.config.framework}`);
     console.log('');
 
-    // Start heartbeat
     this.heartbeatTimer = setInterval(() => {
       this.sendHeartbeat();
     }, HEARTBEAT_INTERVAL);
 
-    // Start job polling
     this.jobPollTimer = setInterval(() => {
       this.processJobs();
     }, JOB_POLL_INTERVAL);
@@ -631,32 +667,94 @@ class VoxEvalAgentDaemon {
     console.log(`[Daemon] Agent daemon started. Press Ctrl+C to stop.`);
   }
 
-  stop() {
+  stop(): void {
     console.log(`[Daemon] Stopping...`);
     if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
     if (this.jobPollTimer) clearInterval(this.jobPollTimer);
   }
 }
 
-// Main
-async function main() {
-  if (!AGENT_TOKEN) {
-    console.error('[Daemon] Error: AGENT_TOKEN environment variable is required');
+// ---------------------------------------------------------------------------
+// CLI argument parsing
+// ---------------------------------------------------------------------------
+
+function parseArgs(): DaemonConfig {
+  const args = process.argv.slice(2);
+
+  let token = process.env.AGENT_TOKEN || '';
+  let serverUrl = process.env.VOX_SERVER || 'http://localhost:5000';
+  let name = process.env.VOX_AGENT_NAME || '';
+  const framework = process.env.EVAL_FRAMEWORK || 'aeval';
+  const headless = process.env.HEADLESS !== 'false';
+
+  for (let i = 0; i < args.length; i++) {
+    switch (args[i]) {
+      case '--token':
+      case '-t':
+        token = args[++i];
+        break;
+      case '--server':
+      case '-s':
+        serverUrl = args[++i];
+        break;
+      case '--name':
+      case '-n':
+        name = args[++i];
+        break;
+      case '--help':
+      case '-h':
+        console.log(`
+Vox Evaluation Agent Daemon
+
+Usage:
+  npx tsx vox_eval_agentd/vox-agentd.ts --token <TOKEN> [options]
+
+Options:
+  -t, --token <TOKEN>   Agent registration token (required, or set AGENT_TOKEN)
+  -s, --server <URL>    Vox server URL (default: \${VOX_SERVER || 'http://localhost:5000'})
+  -n, --name <NAME>     Agent name (default: inherits from token)
+  -h, --help            Show this help message
+
+Environment Variables:
+  AGENT_TOKEN           Agent registration token (fallback if --token not given)
+  VOX_SERVER            Vox server URL (fallback if --server not given)
+  VOX_AGENT_NAME        Agent name (fallback if --name not given)
+  EVAL_FRAMEWORK        Default framework: 'aeval' or 'voice-agent-tester' (default: aeval)
+  HEADLESS              Run browser in headless mode (default: true)
+
+Example:
+  npx tsx vox_eval_agentd/vox-agentd.ts --token vox_agent_xxx --name "NA-Agent-1"
+`);
+        process.exit(0);
+    }
+  }
+
+  if (!token) {
+    console.error('[Daemon] Error: --token or AGENT_TOKEN is required');
+    console.error('Run with --help for usage information');
     process.exit(1);
   }
 
-  console.log(`[Daemon] Eval framework: ${EVAL_FRAMEWORK}`);
+  return { token, serverUrl, name, framework, headless };
+}
 
-  const daemon = new VoxEvalAgentDaemon();
+// ---------------------------------------------------------------------------
+// Main
+// ---------------------------------------------------------------------------
 
-  // Register
+async function main() {
+  const config = parseArgs();
+
+  console.log(`[Daemon] Eval framework: ${config.framework}`);
+
+  const daemon = new VoxEvalAgentDaemon(config);
+
   const registered = await daemon.register();
   if (!registered) {
     console.error('[Daemon] Failed to register, exiting');
     process.exit(1);
   }
 
-  // Handle shutdown
   process.on('SIGINT', () => {
     daemon.stop();
     process.exit(0);
@@ -667,7 +765,6 @@ async function main() {
     process.exit(0);
   });
 
-  // Start
   daemon.start();
 }
 

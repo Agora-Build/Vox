@@ -9,7 +9,7 @@ Vox Server (API)
     |
     |  Register / Heartbeat / Claim / Complete
     v
-vox-agent-daemon.js
+vox-agentd.ts  (compiled to vox-agentd.js for Docker)
     |
     |-- aeval (default)              Single binary, JSON metrics output
     |-- voice-agent-tester           Node/Puppeteer, CSV report output
@@ -62,8 +62,9 @@ job.config = {
 
 ```
 vox_eval_agentd/
-  vox-agent-daemon.js    # Main daemon (Docker entrypoint)
-  package.json           # Daemon metadata
+  vox-agentd.ts          # Main daemon source (TypeScript)
+  vox-agentd.js          # Compiled daemon (built by esbuild, Docker entrypoint)
+  package.json           # Daemon metadata + esbuild build script
   Dockerfile             # Production Docker image
   aeval-data/            # Git submodule: Agora-Build/aeval (config, examples, corpus)
   voice-agent-tester/    # Git submodule: livetok-ai/voice-agent-tester
@@ -108,10 +109,10 @@ The Dockerfile:
 # The script automatically:
 # 1. Initializes git submodules (aeval-data + voice-agent-tester)
 # 2. Downloads aeval binary if not installed
-# 3. Starts the local daemon (script/vox-eval-agent.ts)
+# 3. Starts the daemon via: npx tsx vox_eval_agentd/vox-agentd.ts --token <TOKEN>
 ```
 
-The local daemon (`script/vox-eval-agent.ts`) mirrors `vox-agent-daemon.js` but runs as a TypeScript process with `tsx`.
+Both Docker and local development use the same source file (`vox-agentd.ts`). Docker compiles it to JS with esbuild; local dev runs it directly with `tsx`.
 
 ### Build aeval Binary Separately
 

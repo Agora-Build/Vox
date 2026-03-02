@@ -86,11 +86,15 @@ WORKDIR /app
 COPY applications/ /app/applications/
 COPY scenarios/ /app/scenarios/
 COPY assets/ /app/assets/
-COPY vox-agent-daemon.js /app/
+COPY vox-agentd.ts /app/
 COPY package.json /app/
 
-# Install daemon dependencies (none currently, but keep for future)
+# Install daemon dependencies (esbuild for TS compilation)
 RUN npm install
+
+# Compile daemon TS → JS
+RUN npx esbuild vox-agentd.ts --bundle --platform=node --format=esm --outfile=vox-agentd.js \
+    --external:child_process --external:fs --external:os --external:path --external:url
 
 # Environment variables (will be overridden at runtime)
 ENV VOX_SERVER=http://localhost:5000
@@ -101,4 +105,4 @@ ENV EVAL_FRAMEWORK=aeval
 VOLUME /app/output
 
 # Run the daemon
-CMD ["node", "vox-agent-daemon.js"]
+CMD ["node", "vox-agentd.js"]

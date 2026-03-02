@@ -1,13 +1,17 @@
 {
   "name": "vox_eval_agentd",
   "version": "1.0.0",
-  "description": "Vox Evaluation Agent Daemon - integrates voice-agent-tester with Vox API",
+  "description": "Vox Evaluation Agent Daemon - integrates aeval and voice-agent-tester with Vox API",
   "type": "module",
-  "main": "vox-agent-daemon.js",
+  "main": "vox-agentd.js",
   "scripts": {
-    "start": "node vox-agent-daemon.js"
+    "build": "esbuild vox-agentd.ts --bundle --platform=node --format=esm --outfile=vox-agentd.js --external:child_process --external:fs --external:os --external:path --external:url",
+    "start": "node vox-agentd.js"
   },
   "dependencies": {},
+  "devDependencies": {
+    "esbuild": "^0.24.0"
+  },
   "keywords": [
     "vox",
     "evaluation",

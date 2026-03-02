@@ -11,6 +11,7 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import request from "supertest";
 import { createServer } from "http";
 import express from "express";
+import { execSync } from "child_process";
 import path from "path";
 import fs from "fs";
 import os from "os";
@@ -751,5 +752,26 @@ describe("Eval Agent Daemon - Job Flow Integration", () => {
 
     // All steps should be completed
     expect(Object.values(jobLifecycle).every((v) => v)).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Daemon script validation (smoke tests that run in Vitest)
+// ---------------------------------------------------------------------------
+
+describe("Eval Agent Daemon - Script Validation", () => {
+  const projectRoot = path.resolve(__dirname, "..");
+  const daemonTsPath = path.join(projectRoot, "vox_eval_agentd", "vox-agentd.ts");
+
+  it("vox-agentd.ts should exist", () => {
+    expect(fs.existsSync(daemonTsPath)).toBe(true);
+  });
+
+  it("vox-agentd.ts should compile without errors", () => {
+    // Use esbuild to parse/transform without executing (the script runs main() on import)
+    execSync(
+      `node -e "require('esbuild').transformSync(require('fs').readFileSync('${daemonTsPath}','utf8'),{loader:'ts'})"`,
+      { stdio: "pipe", timeout: 15000, cwd: projectRoot },
+    );
   });
 });

@@ -445,7 +445,6 @@ When adding new features, write tests for critical paths like authentication, jo
 
 ### Scripts
 - `script/dev-local-run.sh` - Local development environment setup
-- `script/vox-eval-agent.ts` - Standalone eval agent runner
 
 ### Tests
 - `tests/tests.dev.data` - Test accounts for local dev (gitignored)
@@ -457,8 +456,8 @@ When adding new features, write tests for critical paths like authentication, jo
 - `playwright.config.ts` - Playwright configuration
 
 ### Eval Agent Daemon
-- `vox_eval_agentd/vox-agent-daemon.js` - Docker-based eval agent daemon
-- `vox_eval_agentd/Dockerfile` - Eval agent Docker image
+- `vox_eval_agentd/vox-agentd.ts` - Eval agent daemon (single source for Docker & local dev)
+- `vox_eval_agentd/Dockerfile` - Eval agent Docker image (compiles TS via esbuild)
 - `vox_eval_agentd/applications/` - Application config files (YAML)
 - `vox_eval_agentd/scenarios/` - Test scenario config files (YAML)
 
