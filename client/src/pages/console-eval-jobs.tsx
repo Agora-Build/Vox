@@ -7,7 +7,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { ClipboardList, CheckCircle, XCircle, Loader2, Clock, RefreshCw } from "lucide-react";
 import { useState } from "react";
-import { formatDistanceToNow } from "date-fns";
+import { format } from "date-fns";
 import type { EvalJob, Workflow as WorkflowType } from "@shared/schema";
 
 const STATUSES = [
@@ -177,16 +177,16 @@ export default function ConsoleEvalJobs() {
                         </Badge>
                       </TableCell>
                       <TableCell className="text-sm text-muted-foreground">
-                        {formatDistanceToNow(new Date(job.createdAt), { addSuffix: true })}
+                        {format(new Date(job.createdAt), "yyyy-MM-dd HH:mm:ss")}
                       </TableCell>
                       <TableCell className="text-sm text-muted-foreground">
                         {job.startedAt
-                          ? formatDistanceToNow(new Date(job.startedAt), { addSuffix: true })
+                          ? format(new Date(job.startedAt), "yyyy-MM-dd HH:mm:ss")
                           : "-"}
                       </TableCell>
                       <TableCell className="text-sm text-muted-foreground">
                         {job.completedAt
-                          ? formatDistanceToNow(new Date(job.completedAt), { addSuffix: true })
+                          ? format(new Date(job.completedAt), "yyyy-MM-dd HH:mm:ss")
                           : "-"}
                       </TableCell>
                     </TableRow>

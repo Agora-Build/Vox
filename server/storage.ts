@@ -75,6 +75,41 @@ export function generateEvalAgentToken(): string {
   return "ev" + crypto.randomBytes(15).toString('hex');
 }
 
+const MAX_CONFIG_SIZE = 100_000; // 100KB
+
+export function validateEvalConfig(config: unknown): { valid: boolean; error?: string } {
+  if (config === null || config === undefined) {
+    return { valid: true };
+  }
+  if (typeof config !== "object" || Array.isArray(config)) {
+    return { valid: false, error: "Config must be an object" };
+  }
+  const c = config as Record<string, unknown>;
+  if (c.framework !== undefined && c.framework !== "aeval" && c.framework !== "voice-agent-tester") {
+    return { valid: false, error: "Framework must be 'aeval' or 'voice-agent-tester'" };
+  }
+  if (c.app !== undefined && typeof c.app !== "string") {
+    return { valid: false, error: "Config app must be a string" };
+  }
+  if (c.scenario !== undefined && typeof c.scenario !== "string") {
+    return { valid: false, error: "Config scenario must be a string" };
+  }
+  if (JSON.stringify(config).length > MAX_CONFIG_SIZE) {
+    return { valid: false, error: "Config too large (max 100KB)" };
+  }
+  return { valid: true };
+}
+
+export function mergeEvalConfig(
+  workflowConfig: unknown,
+  evalSetConfig: unknown,
+): Record<string, unknown> {
+  return {
+    ...((workflowConfig as Record<string, unknown>) || {}),
+    ...((evalSetConfig as Record<string, unknown>) || {}),
+  };
+}
+
 // Helper to convert snake_case SQL results to camelCase for type safety
 function snakeToCamel(row: Record<string, any>): Record<string, any> {
   const result: Record<string, any> = {};
@@ -523,6 +558,7 @@ export class DatabaseStorage {
         priority: evalJobs.priority,
         retryCount: evalJobs.retryCount,
         maxRetries: evalJobs.maxRetries,
+        config: evalJobs.config,
         error: evalJobs.error,
         startedAt: evalJobs.startedAt,
         completedAt: evalJobs.completedAt,

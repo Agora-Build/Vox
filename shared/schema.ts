@@ -250,6 +250,7 @@ export const evalJobs = pgTable("eval_jobs", {
   priority: integer("priority").default(0).notNull(),
   retryCount: integer("retry_count").default(0).notNull(),
   maxRetries: integer("max_retries").default(3).notNull(),
+  config: jsonb("config").default({}).notNull(),
   startedAt: timestamp("started_at"),
   completedAt: timestamp("completed_at"),
   error: text("error"),

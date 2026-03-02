@@ -13,9 +13,30 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import { Plus, FileText, Globe, Lock, Star, Play, Pencil } from "lucide-react";
+import { Plus, FileText, Globe, Lock, Star, Play, Pencil, Copy } from "lucide-react";
 import { useState } from "react";
 import type { EvalSet, Workflow as WorkflowType } from "@shared/schema";
+
+const SCENARIO_PRESETS: Record<string, string> = {
+  "appointment-vat": `tags:
+  - default
+steps:
+  - action: wait_for_voice
+  - action: wait_for_silence
+  - action: speak
+    file: hello_make_an_appointment.mp3
+  - action: wait_for_voice
+    metrics: elapsed_time
+  - action: wait_for_silence
+  - action: speak
+    file: appointment_data.mp3
+  - action: wait_for_voice
+    metrics: elapsed_time`,
+  "response-latency-aeval": `# aeval response latency scenario
+# Place your aeval scenario YAML here
+# See aeval documentation for schema details`,
+  custom: "",
+};
 
 interface AuthStatus {
   user: {
@@ -40,6 +61,8 @@ export default function ConsoleEvalSets() {
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [visibility, setVisibility] = useState("public");
+  const [scenarioPreset, setScenarioPreset] = useState("custom");
+  const [scenarioYaml, setScenarioYaml] = useState("");
 
   // Run dialog state
   const [runOpen, setRunOpen] = useState(false);
@@ -56,6 +79,7 @@ export default function ConsoleEvalSets() {
   const [editName, setEditName] = useState("");
   const [editDescription, setEditDescription] = useState("");
   const [editVisibility, setEditVisibility] = useState("public");
+  const [editScenarioYaml, setEditScenarioYaml] = useState("");
 
   const { data: authStatus } = useQuery<AuthStatus>({
     queryKey: ["/api/auth/status"],
@@ -71,10 +95,13 @@ export default function ConsoleEvalSets() {
 
   const createMutation = useMutation({
     mutationFn: async () => {
+      const config: Record<string, string> = {};
+      if (scenarioYaml) config.scenario = scenarioYaml;
       const res = await apiRequest("POST", "/api/eval-sets", {
         name,
         description,
         visibility,
+        config,
       });
       return res.json();
     },
@@ -83,6 +110,8 @@ export default function ConsoleEvalSets() {
       setName("");
       setDescription("");
       setVisibility("public");
+      setScenarioPreset("custom");
+      setScenarioYaml("");
       queryClient.invalidateQueries({ queryKey: ["/api/eval-sets"] });
       toast({ title: "Eval set created" });
     },
@@ -145,10 +174,13 @@ export default function ConsoleEvalSets() {
 
   const editMutation = useMutation({
     mutationFn: async () => {
+      const config: Record<string, string> = {};
+      if (editScenarioYaml) config.scenario = editScenarioYaml;
       const res = await apiRequest("PATCH", `/api/eval-sets/${editEvalSet!.id}`, {
         name: editName,
         description: editDescription,
         visibility: editVisibility,
+        config,
       });
       return res.json();
     },
@@ -165,6 +197,20 @@ export default function ConsoleEvalSets() {
 
   const isPrincipal = authStatus?.user?.plan === "principal";
   const canCreatePrivate = authStatus?.user?.plan !== "basic";
+
+  const cloneMutation = useMutation({
+    mutationFn: async (id: number) => {
+      const res = await apiRequest("POST", `/api/eval-sets/${id}/clone`, {});
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/eval-sets"] });
+      toast({ title: "Eval set cloned" });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Failed to clone eval set", description: error.message, variant: "destructive" });
+    },
+  });
 
   function openRunDialog(evalSet: EvalSet) {
     setRunEvalSet(evalSet);
@@ -187,10 +233,12 @@ export default function ConsoleEvalSets() {
   }
 
   function openEditDialog(evalSet: EvalSet) {
+    const cfg = (evalSet.config || {}) as Record<string, string>;
     setEditEvalSet(evalSet);
     setEditName(evalSet.name);
     setEditDescription(evalSet.description || "");
     setEditVisibility(evalSet.visibility);
+    setEditScenarioYaml(cfg.scenario || "");
     setEditOpen(true);
   }
 
@@ -260,6 +308,37 @@ export default function ConsoleEvalSets() {
                     </SelectItem>
                   </SelectContent>
                 </Select>
+              </div>
+              <div className="space-y-2">
+                <Label>Scenario Preset</Label>
+                <Select
+                  value={scenarioPreset}
+                  onValueChange={(v) => {
+                    setScenarioPreset(v);
+                    if (SCENARIO_PRESETS[v] !== undefined) {
+                      setScenarioYaml(SCENARIO_PRESETS[v]);
+                    }
+                  }}
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="appointment-vat">Appointment (VAT)</SelectItem>
+                    <SelectItem value="response-latency-aeval">Response Latency (aeval)</SelectItem>
+                    <SelectItem value="custom">Custom</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-2">
+                <Label>Scenario (YAML)</Label>
+                <Textarea
+                  className="font-mono text-sm min-h-[160px]"
+                  placeholder="steps:&#10;  - action: speak&#10;    file: hello.mp3&#10;  - action: wait_for_voice&#10;    metrics: elapsed_time"
+                  value={scenarioYaml}
+                  onChange={(e) => setScenarioYaml(e.target.value)}
+                  data-testid="textarea-evalset-scenario"
+                />
               </div>
             </div>
             <DialogFooter>
@@ -349,14 +428,26 @@ export default function ConsoleEvalSets() {
                     )}
                     <TableCell className="text-right">
                       <div className="flex items-center justify-end gap-1">
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          onClick={() => openEditDialog(evalSet)}
-                          data-testid={`button-edit-evalset-${evalSet.id}`}
-                        >
-                          <Pencil className="h-4 w-4" />
-                        </Button>
+                        {String(evalSet.ownerId) === authStatus?.user?.id ? (
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            onClick={() => openEditDialog(evalSet)}
+                            data-testid={`button-edit-evalset-${evalSet.id}`}
+                          >
+                            <Pencil className="h-4 w-4" />
+                          </Button>
+                        ) : evalSet.visibility === "public" ? (
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            onClick={() => cloneMutation.mutate(evalSet.id)}
+                            disabled={cloneMutation.isPending}
+                            data-testid={`button-clone-evalset-${evalSet.id}`}
+                          >
+                            <Copy className="h-4 w-4" />
+                          </Button>
+                        ) : null}
                         <Button
                           variant="ghost"
                           size="icon"
@@ -524,6 +615,15 @@ export default function ConsoleEvalSets() {
                   </SelectItem>
                 </SelectContent>
               </Select>
+            </div>
+            <div className="space-y-2">
+              <Label>Scenario (YAML)</Label>
+              <Textarea
+                className="font-mono text-sm min-h-[160px]"
+                placeholder="steps:&#10;  - action: speak&#10;    file: hello.mp3&#10;  - action: wait_for_voice&#10;    metrics: elapsed_time"
+                value={editScenarioYaml}
+                onChange={(e) => setEditScenarioYaml(e.target.value)}
+              />
             </div>
           </div>
           <DialogFooter>

@@ -15,6 +15,7 @@
 
 import { spawn } from 'child_process';
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
@@ -91,11 +92,14 @@ class VoxEvalAgentDaemon {
     try {
       const response = await this.fetch('/api/eval-agent/heartbeat', {
         method: 'POST',
-        body: JSON.stringify({ agentId: this.agentId }),
+        body: JSON.stringify({
+          agentId: this.agentId,
+          state: this.isRunningJob ? 'occupied' : 'idle',
+        }),
       });
 
       if (response.ok) {
-        console.log(`[Daemon] Heartbeat sent`);
+        console.log(`[Daemon] Heartbeat sent (state: ${this.isRunningJob ? 'occupied' : 'idle'})`);
       }
     } catch (error) {
       console.error(`[Daemon] Heartbeat error:`, error.message);
@@ -472,6 +476,28 @@ class VoxEvalAgentDaemon {
   // Job execution
   // ---------------------------------------------------------------------------
 
+  /**
+   * Write YAML content to a temp file and return the path.
+   * Returns null if content is empty/falsy.
+   */
+  writeTempYaml(content, prefix = 'vox-config') {
+    if (!content) return null;
+    const tmpFile = path.join(os.tmpdir(), `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}.yaml`);
+    fs.writeFileSync(tmpFile, content, 'utf-8');
+    console.log(`[Daemon] Wrote temp YAML: ${tmpFile}`);
+    return tmpFile;
+  }
+
+  /**
+   * Clean up temp files, ignoring errors.
+   */
+  cleanupTempFiles(...files) {
+    for (const f of files) {
+      if (!f) continue;
+      try { fs.unlinkSync(f); } catch { /* ignore */ }
+    }
+  }
+
   async executeJob(job) {
     console.log(`[Daemon] Executing job ${job.id}`);
     console.log(`  - Workflow ID: ${job.workflowId}`);
@@ -483,16 +509,37 @@ class VoxEvalAgentDaemon {
     const framework = config.framework || EVAL_FRAMEWORK;
     console.log(`  - Framework: ${framework}`);
 
+    const tempFiles = [];
+
     try {
       let results;
 
       if (framework === 'aeval') {
-        const scenarioConfig = config.scenario ||
-          path.join('examples', 'response', 'response_R00_en.yaml');
+        let scenarioConfig;
+        if (config.scenario) {
+          scenarioConfig = this.writeTempYaml(config.scenario, 'vox-scenario');
+          tempFiles.push(scenarioConfig);
+        } else {
+          scenarioConfig = path.join('examples', 'response', 'response_R00_en.yaml');
+        }
         results = await this.runAeval(scenarioConfig);
       } else {
-        const appConfig = config.application || path.join(__dirname, 'applications', 'livekit.yaml');
-        const scenarioConfig = config.scenario || path.join(__dirname, 'scenarios', 'basic_conversation.yaml');
+        let appConfig;
+        if (config.app) {
+          appConfig = this.writeTempYaml(config.app, 'vox-app');
+          tempFiles.push(appConfig);
+        } else {
+          appConfig = path.join(__dirname, 'applications', 'livekit.yaml');
+        }
+
+        let scenarioConfig;
+        if (config.scenario) {
+          scenarioConfig = this.writeTempYaml(config.scenario, 'vox-scenario');
+          tempFiles.push(scenarioConfig);
+        } else {
+          scenarioConfig = path.join(__dirname, 'scenarios', 'basic_conversation.yaml');
+        }
+
         results = await this.runVoiceAgentTester(appConfig, scenarioConfig);
       }
 
@@ -511,6 +558,8 @@ class VoxEvalAgentDaemon {
         naturalness: 0,
         noiseReduction: 0,
       };
+    } finally {
+      this.cleanupTempFiles(...tempFiles);
     }
   }
 
@@ -538,6 +587,21 @@ class VoxEvalAgentDaemon {
       await this.completeJob(job.id, results);
     } catch (error) {
       console.error(`[Daemon] Job execution error:`, error.message);
+      // Report failure back to server so the job doesn't stay stuck in "running"
+      try {
+        await this.completeJob(job.id, {
+          responseLatencyMedian: 0,
+          responseLatencySd: 0,
+          interruptLatencyMedian: 0,
+          interruptLatencySd: 0,
+          networkResilience: 0,
+          naturalness: 0,
+          noiseReduction: 0,
+          error: error.message,
+        });
+      } catch (reportError) {
+        console.error(`[Daemon] Failed to report job error:`, reportError.message);
+      }
     } finally {
       this.isRunningJob = false;
     }

@@ -18,6 +18,7 @@
 
 import { spawn } from 'child_process';
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
@@ -120,7 +121,10 @@ class VoxEvalAgent {
     try {
       const response = await this.fetch('/api/eval-agent/heartbeat', {
         method: 'POST',
-        body: JSON.stringify({ agentId: this.agentId }),
+        body: JSON.stringify({
+          agentId: this.agentId,
+          state: this.isRunningJob ? 'occupied' : 'idle',
+        }),
       });
 
       if (!response.ok) {
@@ -128,7 +132,7 @@ class VoxEvalAgent {
         return false;
       }
 
-      console.log(`[Agent] Heartbeat sent at ${new Date().toISOString()}`);
+      console.log(`[Agent] Heartbeat sent (state: ${this.isRunningJob ? 'occupied' : 'idle'})`);
       return true;
     } catch (error) {
       console.error(`[Agent] Heartbeat error:`, error);
@@ -208,14 +212,44 @@ class VoxEvalAgent {
     return await this.runVoiceAgentTester(job);
   }
 
+  private writeTempYaml(content: string, prefix = 'vox-config'): string | null {
+    if (!content) return null;
+    const tmpFile = path.join(os.tmpdir(), `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}.yaml`);
+    fs.writeFileSync(tmpFile, content, 'utf-8');
+    return tmpFile;
+  }
+
+  private cleanupTempFiles(...files: (string | null)[]) {
+    for (const f of files) {
+      if (!f) continue;
+      try { fs.unlinkSync(f); } catch { /* ignore */ }
+    }
+  }
+
   private async runVoiceAgentTester(job: EvalJob): Promise<EvalResult> {
     return new Promise((resolve, reject) => {
-      const config = job.config as { application?: string; scenario?: string } | null;
+      const config = job.config as { framework?: string; app?: string; scenario?: string } | null;
       const appDir = path.resolve(__dirname, '..', 'vox_eval_agentd', 'applications');
       const scenarioDir = path.resolve(__dirname, '..', 'vox_eval_agentd', 'scenarios');
-      const appConfig = config?.application || path.join(appDir, 'livekit.yaml');
-      const scenarioConfig = config?.scenario || path.join(scenarioDir, 'basic_conversation.yaml');
-      const reportFile = `/tmp/vox-report-${Date.now()}.csv`;
+
+      // Write YAML content to temp files when config provides content strings
+      const tempFiles: (string | null)[] = [];
+      let appConfig: string;
+      if (config?.app) {
+        appConfig = this.writeTempYaml(config.app, 'vox-app')!;
+        tempFiles.push(appConfig);
+      } else {
+        appConfig = path.join(appDir, 'livekit.yaml');
+      }
+      let scenarioConfig: string;
+      if (config?.scenario) {
+        scenarioConfig = this.writeTempYaml(config.scenario, 'vox-scenario')!;
+        tempFiles.push(scenarioConfig);
+      } else {
+        scenarioConfig = path.join(scenarioDir, 'basic_conversation.yaml');
+      }
+
+      const reportFile = `/tmp/vox-report-${Date.now()}-${Math.random().toString(36).slice(2)}.csv`;
 
       console.log(`[Agent] Running: npm start -- -a ${appConfig} -s ${scenarioConfig} --headless --report ${reportFile}`);
 
@@ -247,6 +281,7 @@ class VoxEvalAgent {
 
       child.on('error', (error) => {
         console.error(`[Agent] Failed to start voice-agent-tester:`, error);
+        this.cleanupTempFiles(...tempFiles);
         reject(new Error(`Failed to start voice-agent-tester: ${error.message}`));
       });
 
@@ -263,6 +298,7 @@ class VoxEvalAgent {
         console.log(`  - Naturalness: ${evalResult.naturalness}/5.0`);
         console.log(`  - Noise Reduction: ${evalResult.noiseReduction}%`);
 
+        this.cleanupTempFiles(...tempFiles);
         resolve(evalResult);
       });
     });
@@ -389,6 +425,20 @@ class VoxEvalAgent {
       await this.completeJob(job.id, results);
     } catch (error) {
       console.error(`[Agent] Evaluation failed:`, error);
+      // Report failure back to server so the job doesn't stay stuck in "running"
+      try {
+        await this.completeJob(job.id, {
+          responseLatencyMedian: 0,
+          responseLatencySd: 0,
+          interruptLatencyMedian: 0,
+          interruptLatencySd: 0,
+          networkResilience: 0,
+          naturalness: 0,
+          noiseReduction: 0,
+        });
+      } catch (reportError) {
+        console.error(`[Agent] Failed to report job error:`, reportError);
+      }
     } finally {
       this.isRunningJob = false;
     }

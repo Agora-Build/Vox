@@ -12,10 +12,24 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import { Plus, Workflow, Globe, Lock, Star, StarOff, ChevronRight, Pencil, FolderKanban } from "lucide-react";
+import { Plus, Workflow, Globe, Lock, Star, StarOff, ChevronRight, Pencil, FolderKanban, Copy } from "lucide-react";
 import { useState } from "react";
 import { useLocation } from "wouter";
 import type { Workflow as WorkflowType, Provider, Project } from "@shared/schema";
+
+const APP_CONFIG_PRESETS: Record<string, string> = {
+  "livekit-playground": `url: "https://livekit.io/"
+steps:
+  - action: wait
+    selector: "xpath///button[contains(., 'Talk to LiveKit Agent')]"
+  - action: sleep
+    time: 5000
+  - action: click
+    selector: "xpath///button[contains(., 'Talk to LiveKit Agent')]"
+  - action: wait_for_voice
+  - action: wait_for_silence`,
+  custom: "",
+};
 
 interface AuthStatus {
   user: {
@@ -34,6 +48,9 @@ export default function ConsoleWorkflows() {
   const [description, setDescription] = useState("");
   const [visibility, setVisibility] = useState("public");
   const [providerId, setProviderId] = useState("");
+  const [framework, setFramework] = useState("aeval");
+  const [appConfigPreset, setAppConfigPreset] = useState("custom");
+  const [appConfigYaml, setAppConfigYaml] = useState("");
 
   // Edit dialog state
   const [editOpen, setEditOpen] = useState(false);
@@ -42,6 +59,8 @@ export default function ConsoleWorkflows() {
   const [editDescription, setEditDescription] = useState("");
   const [editVisibility, setEditVisibility] = useState("");
   const [editProjectId, setEditProjectId] = useState("");
+  const [editFramework, setEditFramework] = useState("aeval");
+  const [editAppConfigYaml, setEditAppConfigYaml] = useState("");
 
   const { data: authStatus } = useQuery<AuthStatus>({
     queryKey: ["/api/auth/status"],
@@ -61,11 +80,16 @@ export default function ConsoleWorkflows() {
 
   const createMutation = useMutation({
     mutationFn: async () => {
+      const config: Record<string, string> = { framework };
+      if (framework === "voice-agent-tester" && appConfigYaml) {
+        config.app = appConfigYaml;
+      }
       const res = await apiRequest("POST", "/api/workflows", {
         name,
         description,
         visibility,
         providerId,
+        config,
       });
       return res.json();
     },
@@ -75,6 +99,9 @@ export default function ConsoleWorkflows() {
       setDescription("");
       setVisibility("public");
       setProviderId("");
+      setFramework("aeval");
+      setAppConfigPreset("custom");
+      setAppConfigYaml("");
       queryClient.invalidateQueries({ queryKey: ["/api/workflows"] });
       toast({ title: "Workflow created" });
     },
@@ -91,6 +118,11 @@ export default function ConsoleWorkflows() {
       if (editDescription !== (editWorkflow.description || "")) body.description = editDescription;
       if (editVisibility !== editWorkflow.visibility) body.visibility = editVisibility;
       if (editProjectId && !editWorkflow.projectId) body.projectId = parseInt(editProjectId);
+      const config: Record<string, string> = { framework: editFramework };
+      if (editFramework === "voice-agent-tester" && editAppConfigYaml) {
+        config.app = editAppConfigYaml;
+      }
+      body.config = config;
       const res = await apiRequest("PATCH", `/api/workflows/${editWorkflow.id}`, body);
       return res.json();
     },
@@ -119,12 +151,29 @@ export default function ConsoleWorkflows() {
     },
   });
 
+  const cloneMutation = useMutation({
+    mutationFn: async (id: number) => {
+      const res = await apiRequest("POST", `/api/workflows/${id}/clone`, {});
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/workflows"] });
+      toast({ title: "Workflow cloned" });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Failed to clone workflow", description: error.message, variant: "destructive" });
+    },
+  });
+
   const openEditDialog = (workflow: WorkflowType) => {
+    const cfg = (workflow.config || {}) as Record<string, string>;
     setEditWorkflow(workflow);
     setEditName(workflow.name);
     setEditDescription(workflow.description || "");
     setEditVisibility(workflow.visibility);
     setEditProjectId(workflow.projectId?.toString() || "");
+    setEditFramework(cfg.framework || "aeval");
+    setEditAppConfigYaml(cfg.app || "");
     setEditOpen(true);
   };
 
@@ -202,6 +251,52 @@ export default function ConsoleWorkflows() {
                   </SelectContent>
                 </Select>
               </div>
+              <div className="space-y-2">
+                <Label>Eval Framework</Label>
+                <Select value={framework} onValueChange={setFramework}>
+                  <SelectTrigger data-testid="select-workflow-framework">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="aeval">aeval</SelectItem>
+                    <SelectItem value="voice-agent-tester">voice-agent-tester</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              {framework === "voice-agent-tester" && (
+                <>
+                  <div className="space-y-2">
+                    <Label>App Config Preset</Label>
+                    <Select
+                      value={appConfigPreset}
+                      onValueChange={(v) => {
+                        setAppConfigPreset(v);
+                        if (APP_CONFIG_PRESETS[v] !== undefined) {
+                          setAppConfigYaml(APP_CONFIG_PRESETS[v]);
+                        }
+                      }}
+                    >
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="livekit-playground">LiveKit Playground</SelectItem>
+                        <SelectItem value="custom">Custom</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-2">
+                    <Label>App Config (YAML)</Label>
+                    <Textarea
+                      className="font-mono text-sm min-h-[160px]"
+                      placeholder="url: &quot;https://...&quot;&#10;steps:&#10;  - action: wait&#10;    selector: ..."
+                      value={appConfigYaml}
+                      onChange={(e) => setAppConfigYaml(e.target.value)}
+                      data-testid="textarea-workflow-app-config"
+                    />
+                  </div>
+                </>
+              )}
             </div>
             <DialogFooter>
               <Button
@@ -261,6 +356,29 @@ export default function ConsoleWorkflows() {
                 </SelectContent>
               </Select>
             </div>
+            <div className="space-y-2">
+              <Label>Eval Framework</Label>
+              <Select value={editFramework} onValueChange={setEditFramework}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="aeval">aeval</SelectItem>
+                  <SelectItem value="voice-agent-tester">voice-agent-tester</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            {editFramework === "voice-agent-tester" && (
+              <div className="space-y-2">
+                <Label>App Config (YAML)</Label>
+                <Textarea
+                  className="font-mono text-sm min-h-[160px]"
+                  placeholder="url: &quot;https://...&quot;&#10;steps:&#10;  - action: wait&#10;    selector: ..."
+                  value={editAppConfigYaml}
+                  onChange={(e) => setEditAppConfigYaml(e.target.value)}
+                />
+              </div>
+            )}
             <div className="space-y-2">
               <Label htmlFor="edit-workflow-project">Project</Label>
               {editWorkflow?.projectId ? (
@@ -399,16 +517,32 @@ export default function ConsoleWorkflows() {
                       </TableCell>
                     )}
                     <TableCell className="text-right">
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          openEditDialog(workflow);
-                        }}
-                      >
-                        <Pencil className="h-4 w-4" />
-                      </Button>
+                      <div className="flex items-center justify-end gap-1">
+                        {String(workflow.ownerId) === authStatus?.user?.id ? (
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              openEditDialog(workflow);
+                            }}
+                          >
+                            <Pencil className="h-4 w-4" />
+                          </Button>
+                        ) : workflow.visibility === "public" ? (
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              cloneMutation.mutate(workflow.id);
+                            }}
+                            disabled={cloneMutation.isPending}
+                          >
+                            <Copy className="h-4 w-4" />
+                          </Button>
+                        ) : null}
+                      </div>
                     </TableCell>
                   </TableRow>
                 ))}

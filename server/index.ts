@@ -7,7 +7,7 @@ import session from "express-session";
 import connectPgSimple from "connect-pg-simple";
 import rateLimit from "express-rate-limit";
 import { authenticateApiKey, passport, initializeGoogleOAuth } from "./auth";
-import { storage } from "./storage";
+import { storage, mergeEvalConfig } from "./storage";
 import { parseNextCronRun } from "./cron";
 import pkg from "pg";
 const { Pool } = pkg;
@@ -75,6 +75,7 @@ declare module "http" {
 
 app.use(
   express.json({
+    limit: "50mb",
     verify: (req, _res, buf) => {
       req.rawBody = buf;
     },
@@ -230,12 +231,21 @@ function startBackgroundWorker() {
 
       for (const schedule of dueSchedules) {
         try {
+          // Fetch workflow + evalSet to merge configs
+          const workflow = await storage.getWorkflow(schedule.workflowId);
+          if (!workflow) {
+            log(`Schedule "${schedule.name}" references deleted workflow ${schedule.workflowId}, skipping`, "scheduler");
+            continue;
+          }
+          const evalSet = await storage.getEvalSet(schedule.evalSetId);
+
           // Create the eval job
           const job = await storage.createEvalJob({
             scheduleId: schedule.id,
             workflowId: schedule.workflowId,
             evalSetId: schedule.evalSetId,
             region: schedule.region,
+            config: mergeEvalConfig(workflow.config, evalSet?.config),
             status: "pending",
             priority: 0,
             retryCount: 0,

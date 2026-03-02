@@ -1,6 +1,6 @@
 import type { Express } from "express";
 import { createServer, type Server } from "http";
-import { storage, hashToken, generateSecureToken, generateEvalAgentToken } from "./storage";
+import { storage, hashToken, generateSecureToken, generateEvalAgentToken, mergeEvalConfig, validateEvalConfig } from "./storage";
 import { parseNextCronRun } from "./cron";
 import { generateProviderId } from "@shared/schema";
 import { registerApiV1Routes } from "./routes-api-v1";
@@ -883,8 +883,8 @@ export async function registerRoutes(
         return res.status(401).json({ error: "Not authenticated" });
       }
 
-      const { name, description, projectId, providerId, visibility } = req.body;
-      
+      const { name, description, projectId, providerId, visibility, config } = req.body;
+
       if (!name) {
         return res.status(400).json({ error: "Name required" });
       }
@@ -897,6 +897,11 @@ export async function registerRoutes(
         return res.status(404).json({ error: "Provider not found" });
       }
 
+      if (config) {
+        const v = validateEvalConfig(config);
+        if (!v.valid) return res.status(400).json({ error: v.error });
+      }
+
       if (visibility === "private" && user.plan === "basic") {
         return res.status(403).json({ error: "Premium plan required for private workflows" });
       }
@@ -905,7 +910,7 @@ export async function registerRoutes(
       if (projectId) {
         const workflowCount = await storage.countWorkflowsByProject(projectId);
         const maxWorkflows = user.plan === "basic" ? 10 : 20;
-        
+
         if (workflowCount >= maxWorkflows) {
           return res.status(403).json({ error: `Maximum ${maxWorkflows} workflows per project allowed for ${user.plan} plan` });
         }
@@ -919,7 +924,7 @@ export async function registerRoutes(
         providerId,
         visibility: visibility || "public",
         isMainline: false,
-        config: {},
+        config: config || {},
       });
 
       res.json(workflow);
@@ -948,6 +953,10 @@ export async function registerRoutes(
       }
 
       const { name, description, visibility, config, projectId } = req.body;
+      if (config) {
+        const v = validateEvalConfig(config);
+        if (!v.valid) return res.status(400).json({ error: v.error });
+      }
       const updates: Record<string, unknown> = {};
       if (name) updates.name = name;
       if (description !== undefined) updates.description = description;
@@ -1032,6 +1041,40 @@ export async function registerRoutes(
     }
   });
 
+  // Clone a public workflow
+  app.post("/api/workflows/:id/clone", requireAuth, async (req, res) => {
+    try {
+      const user = await getCurrentUser(req);
+      if (!user) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+
+      const source = await storage.getWorkflow(parseInt(req.params.id));
+      if (!source) {
+        return res.status(404).json({ error: "Workflow not found" });
+      }
+
+      if (source.visibility !== "public" && source.ownerId !== user.id && !user.isAdmin) {
+        return res.status(403).json({ error: "Can only clone public workflows" });
+      }
+
+      const cloned = await storage.createWorkflow({
+        name: `Clone of ${source.name}`,
+        description: source.description,
+        ownerId: user.id,
+        providerId: source.providerId,
+        visibility: "public",
+        isMainline: false,
+        config: source.config || {},
+      });
+
+      res.json(cloned);
+    } catch (error) {
+      console.error("Error cloning workflow:", error);
+      res.status(500).json({ error: "Failed to clone workflow" });
+    }
+  });
+
   // ==================== EVAL SET ROUTES ====================
 
   app.get("/api/eval-sets", requireAuth, async (req, res) => {
@@ -1076,9 +1119,14 @@ export async function registerRoutes(
       }
 
       const { name, description, visibility, config } = req.body;
-      
+
       if (!name) {
         return res.status(400).json({ error: "Name required" });
+      }
+
+      if (config) {
+        const v = validateEvalConfig(config);
+        if (!v.valid) return res.status(400).json({ error: v.error });
       }
 
       if (visibility === "private" && user.plan === "basic") {
@@ -1119,10 +1167,15 @@ export async function registerRoutes(
         return res.status(403).json({ error: "Not authorized to modify this eval set" });
       }
 
-      const { name, description, visibility } = req.body;
+      const { name, description, visibility, config } = req.body;
+      if (config !== undefined && config !== null) {
+        const v = validateEvalConfig(config);
+        if (!v.valid) return res.status(400).json({ error: v.error });
+      }
       const updates: Record<string, unknown> = {};
       if (name) updates.name = name;
       if (description !== undefined) updates.description = description;
+      if (config !== undefined) updates.config = config || {};
       if (visibility) {
         if (visibility === "private" && user.plan === "basic") {
           return res.status(403).json({ error: "Premium plan required for private eval sets" });
@@ -1161,6 +1214,39 @@ export async function registerRoutes(
     } catch (error) {
       console.error("Error updating eval set mainline:", error);
       res.status(500).json({ error: "Failed to update eval set" });
+    }
+  });
+
+  // Clone a public eval set
+  app.post("/api/eval-sets/:id/clone", requireAuth, async (req, res) => {
+    try {
+      const user = await getCurrentUser(req);
+      if (!user) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+
+      const source = await storage.getEvalSet(parseInt(req.params.id));
+      if (!source) {
+        return res.status(404).json({ error: "Eval set not found" });
+      }
+
+      if (source.visibility !== "public" && source.ownerId !== user.id && !user.isAdmin) {
+        return res.status(403).json({ error: "Can only clone public eval sets" });
+      }
+
+      const cloned = await storage.createEvalSet({
+        name: `Clone of ${source.name}`,
+        description: source.description,
+        ownerId: user.id,
+        visibility: "public",
+        isMainline: false,
+        config: source.config || {},
+      });
+
+      res.json(cloned);
+    } catch (error) {
+      console.error("Error cloning eval set:", error);
+      res.status(500).json({ error: "Failed to clone eval set" });
     }
   });
 
@@ -1385,12 +1471,19 @@ export async function registerRoutes(
         return res.status(403).json({ error: "Access denied" });
       }
 
-      // Create a job immediately
+      // Merge workflow + evalSet configs
+      const workflow = await storage.getWorkflow(schedule.workflowId);
+      if (!workflow) {
+        return res.status(404).json({ error: "Schedule references a deleted workflow" });
+      }
+      const evalSet = await storage.getEvalSet(schedule.evalSetId);
+
       const job = await storage.createEvalJob({
         scheduleId: schedule.id,
         workflowId: schedule.workflowId,
         evalSetId: schedule.evalSetId,
         region: schedule.region,
+        config: mergeEvalConfig(workflow.config, evalSet?.config),
         status: "pending",
         priority: 0,
         retryCount: 0,
@@ -1897,6 +1990,7 @@ export async function registerRoutes(
         workflowId: parseInt(workflowId),
         evalSetId,
         region,
+        config: mergeEvalConfig(workflow.config, evalSet.config),
         status: "pending",
         priority: 0,
         retryCount: 0,

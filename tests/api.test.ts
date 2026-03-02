@@ -16,6 +16,7 @@ interface Workflow {
   projectId: number | null;
   visibility: string;
   isMainline: boolean;
+  config: Record<string, unknown>;
 }
 
 interface EvalSet {
@@ -25,6 +26,7 @@ interface EvalSet {
   ownerId: number;
   visibility: string;
   isMainline: boolean;
+  config: Record<string, unknown>;
 }
 
 interface Provider {
@@ -57,6 +59,7 @@ interface EvalJob {
   status: string;
   region: string;
   scheduleId?: number | null;
+  config?: Record<string, unknown>;
 }
 
 interface EvalSchedule {
@@ -919,9 +922,9 @@ describe('Vox API Tests', () => {
       expect(Array.isArray(data)).toBe(true);
       // Mainline results should have required fields
       if (data.length > 0) {
-        expect(data[0]).toHaveProperty('providerId');
+        expect(data[0]).toHaveProperty('provider');
         expect(data[0]).toHaveProperty('region');
-        expect(data[0]).toHaveProperty('responseLatencyMedian');
+        expect(data[0]).toHaveProperty('responseLatency');
       }
     });
 
@@ -2195,6 +2198,587 @@ describe('Vox API Tests', () => {
       });
 
       expect(response.ok).toBe(true);
+    });
+  });
+
+  // ==================== EVAL FRAMEWORK CONFIG TESTS ====================
+
+  describe('Workflow Config (Framework + App Config)', () => {
+    let configWorkflowId: number;
+
+    it('should create a workflow with aeval framework config', async () => {
+      const response = await authFetch(adminSession, `${BASE_URL}/api/workflows`, {
+        method: 'POST',
+        body: JSON.stringify({
+          name: 'Config Test Workflow (aeval)',
+          description: 'Workflow with aeval framework config',
+          visibility: 'public',
+          providerId: testProviderId,
+          config: { framework: 'aeval' },
+        }),
+      });
+
+      expect(response.ok).toBe(true);
+      const workflow: Workflow = await response.json();
+      expect(workflow.name).toBe('Config Test Workflow (aeval)');
+      expect(workflow.config).toEqual({ framework: 'aeval' });
+      configWorkflowId = workflow.id;
+    });
+
+    it('should create a workflow with voice-agent-tester framework and app YAML', async () => {
+      const appYaml = 'url: "https://example.com"\nsteps:\n  - action: wait\n    selector: "#start"';
+      const response = await authFetch(adminSession, `${BASE_URL}/api/workflows`, {
+        method: 'POST',
+        body: JSON.stringify({
+          name: 'Config Test Workflow (VAT)',
+          description: 'Workflow with VAT framework config',
+          visibility: 'public',
+          providerId: testProviderId,
+          config: { framework: 'voice-agent-tester', app: appYaml },
+        }),
+      });
+
+      expect(response.ok).toBe(true);
+      const workflow: Workflow = await response.json();
+      expect(workflow.config).toEqual({ framework: 'voice-agent-tester', app: appYaml });
+    });
+
+    it('should update workflow config via PATCH', async () => {
+      const newAppYaml = 'url: "https://updated.com"\nsteps:\n  - action: click\n    selector: "#btn"';
+      const response = await authFetch(adminSession, `${BASE_URL}/api/workflows/${configWorkflowId}`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          config: { framework: 'voice-agent-tester', app: newAppYaml },
+        }),
+      });
+
+      expect(response.ok).toBe(true);
+      const workflow: Workflow = await response.json();
+      expect(workflow.config).toEqual({ framework: 'voice-agent-tester', app: newAppYaml });
+    });
+
+    it('should persist config when only updating other fields', async () => {
+      const response = await authFetch(adminSession, `${BASE_URL}/api/workflows/${configWorkflowId}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ description: 'New description only' }),
+      });
+
+      expect(response.ok).toBe(true);
+      const workflow: Workflow = await response.json();
+      expect(workflow.description).toBe('New description only');
+      // config should remain from previous update
+      expect((workflow.config as Record<string, unknown>).framework).toBe('voice-agent-tester');
+    });
+
+    it('should default config to empty object when not provided', async () => {
+      const response = await authFetch(adminSession, `${BASE_URL}/api/workflows`, {
+        method: 'POST',
+        body: JSON.stringify({
+          name: 'No Config Workflow',
+          visibility: 'public',
+          providerId: testProviderId,
+        }),
+      });
+
+      expect(response.ok).toBe(true);
+      const workflow: Workflow = await response.json();
+      expect(workflow.config).toEqual({});
+    });
+  });
+
+  describe('Eval Set Config (Scenario)', () => {
+    let configEvalSetId: number;
+
+    it('should create an eval set with scenario config', async () => {
+      const scenarioYaml = 'steps:\n  - action: speak\n    file: hello.mp3\n  - action: wait_for_voice\n    metrics: elapsed_time';
+      const response = await authFetch(adminSession, `${BASE_URL}/api/eval-sets`, {
+        method: 'POST',
+        body: JSON.stringify({
+          name: 'Config Test Eval Set',
+          description: 'Eval set with scenario YAML',
+          visibility: 'public',
+          config: { scenario: scenarioYaml },
+        }),
+      });
+
+      expect(response.ok).toBe(true);
+      const evalSet: EvalSet = await response.json();
+      expect(evalSet.name).toBe('Config Test Eval Set');
+      expect(evalSet.config).toEqual({ scenario: scenarioYaml });
+      configEvalSetId = evalSet.id;
+    });
+
+    it('should update eval set config via PATCH', async () => {
+      const newScenarioYaml = 'steps:\n  - action: speak\n    file: goodbye.mp3';
+      const response = await authFetch(adminSession, `${BASE_URL}/api/eval-sets/${configEvalSetId}`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          config: { scenario: newScenarioYaml },
+        }),
+      });
+
+      expect(response.ok).toBe(true);
+      const evalSet: EvalSet = await response.json();
+      expect(evalSet.config).toEqual({ scenario: newScenarioYaml });
+    });
+
+    it('should preserve config when updating other fields', async () => {
+      const response = await authFetch(adminSession, `${BASE_URL}/api/eval-sets/${configEvalSetId}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ name: 'Renamed Eval Set' }),
+      });
+
+      expect(response.ok).toBe(true);
+      const evalSet: EvalSet = await response.json();
+      expect(evalSet.name).toBe('Renamed Eval Set');
+      expect((evalSet.config as Record<string, unknown>).scenario).toBeDefined();
+    });
+  });
+
+  describe('Job Config Merging', () => {
+    let mergeWorkflowId: number;
+    let mergeEvalSetId: number;
+
+    beforeAll(async () => {
+      // Create workflow with framework + app config
+      const wfRes = await authFetch(adminSession, `${BASE_URL}/api/workflows`, {
+        method: 'POST',
+        body: JSON.stringify({
+          name: 'Merge Test Workflow',
+          visibility: 'public',
+          providerId: testProviderId,
+          config: { framework: 'voice-agent-tester', app: 'url: "https://merge-test.com"' },
+        }),
+      });
+      const wf: Workflow = await wfRes.json();
+      mergeWorkflowId = wf.id;
+
+      // Create eval set with scenario config
+      const esRes = await authFetch(adminSession, `${BASE_URL}/api/eval-sets`, {
+        method: 'POST',
+        body: JSON.stringify({
+          name: 'Merge Test Eval Set',
+          visibility: 'public',
+          config: { scenario: 'steps:\n  - action: speak\n    file: test.mp3' },
+        }),
+      });
+      const es: EvalSet = await esRes.json();
+      mergeEvalSetId = es.id;
+    });
+
+    it('should merge workflow config and eval set config into job config', async () => {
+      const response = await authFetch(adminSession, `${BASE_URL}/api/workflows/${mergeWorkflowId}/run`, {
+        method: 'POST',
+        body: JSON.stringify({
+          evalSetId: mergeEvalSetId,
+          region: 'na',
+        }),
+      });
+
+      expect(response.ok).toBe(true);
+      const result = await response.json();
+      expect(result.job).toBeDefined();
+      expect(result.job.config).toBeDefined();
+
+      const jobConfig = result.job.config as Record<string, unknown>;
+      // Workflow config fields
+      expect(jobConfig.framework).toBe('voice-agent-tester');
+      expect(jobConfig.app).toBe('url: "https://merge-test.com"');
+      // Eval set config fields (merged)
+      expect(jobConfig.scenario).toBe('steps:\n  - action: speak\n    file: test.mp3');
+    });
+
+    it('should produce empty config when both workflow and eval set have no config', async () => {
+      // Create a workflow with no config
+      const wfRes = await authFetch(adminSession, `${BASE_URL}/api/workflows`, {
+        method: 'POST',
+        body: JSON.stringify({
+          name: 'Empty Config Workflow',
+          visibility: 'public',
+          providerId: testProviderId,
+        }),
+      });
+      const wf: Workflow = await wfRes.json();
+
+      // Create an eval set with no config
+      const esRes = await authFetch(adminSession, `${BASE_URL}/api/eval-sets`, {
+        method: 'POST',
+        body: JSON.stringify({
+          name: 'Empty Config Eval Set',
+          visibility: 'public',
+        }),
+      });
+      const es: EvalSet = await esRes.json();
+
+      const response = await authFetch(adminSession, `${BASE_URL}/api/workflows/${wf.id}/run`, {
+        method: 'POST',
+        body: JSON.stringify({
+          evalSetId: es.id,
+          region: 'na',
+        }),
+      });
+
+      expect(response.ok).toBe(true);
+      const result = await response.json();
+      expect(result.job.config).toEqual({});
+    });
+
+    it('should let eval set scenario override workflow scenario field if both set', async () => {
+      // Workflow has a scenario field too (edge case)
+      const wfRes = await authFetch(adminSession, `${BASE_URL}/api/workflows`, {
+        method: 'POST',
+        body: JSON.stringify({
+          name: 'Override Test Workflow',
+          visibility: 'public',
+          providerId: testProviderId,
+          config: { framework: 'aeval', scenario: 'old-scenario' },
+        }),
+      });
+      const wf: Workflow = await wfRes.json();
+
+      const esRes = await authFetch(adminSession, `${BASE_URL}/api/eval-sets`, {
+        method: 'POST',
+        body: JSON.stringify({
+          name: 'Override Test Eval Set',
+          visibility: 'public',
+          config: { scenario: 'new-scenario' },
+        }),
+      });
+      const es: EvalSet = await esRes.json();
+
+      const response = await authFetch(adminSession, `${BASE_URL}/api/workflows/${wf.id}/run`, {
+        method: 'POST',
+        body: JSON.stringify({
+          evalSetId: es.id,
+          region: 'na',
+        }),
+      });
+
+      expect(response.ok).toBe(true);
+      const result = await response.json();
+      // Eval set config is spread last, so its scenario wins
+      expect(result.job.config.scenario).toBe('new-scenario');
+      expect(result.job.config.framework).toBe('aeval');
+    });
+  });
+
+  describe('Workflow Clone', () => {
+    let sourceWorkflowId: number;
+
+    beforeAll(async () => {
+      const response = await authFetch(adminSession, `${BASE_URL}/api/workflows`, {
+        method: 'POST',
+        body: JSON.stringify({
+          name: 'Clone Source Workflow',
+          description: 'Original workflow to clone',
+          visibility: 'public',
+          providerId: testProviderId,
+          config: { framework: 'voice-agent-tester', app: 'url: "https://clone-me.com"' },
+        }),
+      });
+      const wf: Workflow = await response.json();
+      sourceWorkflowId = wf.id;
+    });
+
+    it('should clone a public workflow', async () => {
+      const response = await authFetch(adminSession, `${BASE_URL}/api/workflows/${sourceWorkflowId}/clone`, {
+        method: 'POST',
+      });
+
+      expect(response.ok).toBe(true);
+      const cloned: Workflow = await response.json();
+      expect(cloned.name).toBe('Clone of Clone Source Workflow');
+      expect(cloned.config).toEqual({ framework: 'voice-agent-tester', app: 'url: "https://clone-me.com"' });
+      expect(cloned.visibility).toBe('public');
+      expect(cloned.isMainline).toBe(false);
+      expect(cloned.id).not.toBe(sourceWorkflowId);
+    });
+
+    it('should return 404 for non-existent workflow clone', async () => {
+      const response = await authFetch(adminSession, `${BASE_URL}/api/workflows/999999/clone`, {
+        method: 'POST',
+      });
+      expect(response.status).toBe(404);
+    });
+  });
+
+  describe('Eval Set Clone', () => {
+    let sourceEvalSetId: number;
+
+    beforeAll(async () => {
+      const response = await authFetch(adminSession, `${BASE_URL}/api/eval-sets`, {
+        method: 'POST',
+        body: JSON.stringify({
+          name: 'Clone Source Eval Set',
+          description: 'Original eval set to clone',
+          visibility: 'public',
+          config: { scenario: 'steps:\n  - action: speak\n    file: clone.mp3' },
+        }),
+      });
+      const es: EvalSet = await response.json();
+      sourceEvalSetId = es.id;
+    });
+
+    it('should clone a public eval set', async () => {
+      const response = await authFetch(adminSession, `${BASE_URL}/api/eval-sets/${sourceEvalSetId}/clone`, {
+        method: 'POST',
+      });
+
+      expect(response.ok).toBe(true);
+      const cloned: EvalSet = await response.json();
+      expect(cloned.name).toBe('Clone of Clone Source Eval Set');
+      expect(cloned.config).toEqual({ scenario: 'steps:\n  - action: speak\n    file: clone.mp3' });
+      expect(cloned.visibility).toBe('public');
+      expect(cloned.isMainline).toBe(false);
+      expect(cloned.id).not.toBe(sourceEvalSetId);
+    });
+
+    it('should return 404 for non-existent eval set clone', async () => {
+      const response = await authFetch(adminSession, `${BASE_URL}/api/eval-sets/999999/clone`, {
+        method: 'POST',
+      });
+      expect(response.status).toBe(404);
+    });
+  });
+
+  describe('Config Validation', () => {
+    it('should reject workflow with invalid framework', async () => {
+      const response = await authFetch(adminSession, `${BASE_URL}/api/workflows`, {
+        method: 'POST',
+        body: JSON.stringify({
+          name: 'Invalid Framework Workflow',
+          visibility: 'public',
+          providerId: testProviderId,
+          config: { framework: 'nonexistent-framework' },
+        }),
+      });
+
+      expect(response.status).toBe(400);
+      const error = await response.json();
+      expect(error.error).toContain('Framework');
+    });
+
+    it('should reject workflow with oversized config', async () => {
+      const bigYaml = 'x'.repeat(101_000); // > 100KB
+      const response = await authFetch(adminSession, `${BASE_URL}/api/workflows`, {
+        method: 'POST',
+        body: JSON.stringify({
+          name: 'Big Config Workflow',
+          visibility: 'public',
+          providerId: testProviderId,
+          config: { framework: 'aeval', app: bigYaml },
+        }),
+      });
+
+      expect(response.status).toBe(400);
+      const error = await response.json();
+      expect(error.error).toContain('too large');
+    });
+
+    it('should reject eval set with non-string scenario', async () => {
+      const response = await authFetch(adminSession, `${BASE_URL}/api/eval-sets`, {
+        method: 'POST',
+        body: JSON.stringify({
+          name: 'Bad Scenario Eval Set',
+          visibility: 'public',
+          config: { scenario: 12345 },
+        }),
+      });
+
+      expect(response.status).toBe(400);
+      const error = await response.json();
+      expect(error.error).toContain('scenario');
+    });
+
+    it('should normalize config: null to empty object on eval set PATCH', async () => {
+      // First create an eval set with config
+      const createRes = await authFetch(adminSession, `${BASE_URL}/api/eval-sets`, {
+        method: 'POST',
+        body: JSON.stringify({
+          name: 'Null Config Test Eval Set',
+          visibility: 'public',
+          config: { scenario: 'steps:\n  - action: speak' },
+        }),
+      });
+      expect(createRes.ok).toBe(true);
+      const evalSet: EvalSet = await createRes.json();
+
+      // PATCH with config: null
+      const patchRes = await authFetch(adminSession, `${BASE_URL}/api/eval-sets/${evalSet.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ config: null }),
+      });
+
+      expect(patchRes.ok).toBe(true);
+      const updated: EvalSet = await patchRes.json();
+      expect(updated.config).toEqual({});
+    });
+  });
+
+  describe('Run-Now Config Merging', () => {
+    it('should merge workflow + eval set config when running schedule immediately', async () => {
+      // Create workflow with config
+      const wfRes = await authFetch(adminSession, `${BASE_URL}/api/workflows`, {
+        method: 'POST',
+        body: JSON.stringify({
+          name: 'RunNow Config Workflow',
+          visibility: 'public',
+          providerId: testProviderId,
+          config: { framework: 'voice-agent-tester', app: 'url: "https://runnow.com"' },
+        }),
+      });
+      expect(wfRes.ok).toBe(true);
+      const wf: Workflow = await wfRes.json();
+
+      // Create eval set with config
+      const esRes = await authFetch(adminSession, `${BASE_URL}/api/eval-sets`, {
+        method: 'POST',
+        body: JSON.stringify({
+          name: 'RunNow Config Eval Set',
+          visibility: 'public',
+          config: { scenario: 'steps:\n  - action: speak\n    file: runnow.mp3' },
+        }),
+      });
+      expect(esRes.ok).toBe(true);
+      const es: EvalSet = await esRes.json();
+
+      // Create a schedule
+      const schedRes = await authFetch(adminSession, `${BASE_URL}/api/eval-schedules`, {
+        method: 'POST',
+        body: JSON.stringify({
+          name: 'RunNow Config Schedule',
+          workflowId: wf.id,
+          evalSetId: es.id,
+          region: 'na',
+          scheduleType: 'once',
+        }),
+      });
+      expect(schedRes.ok).toBe(true);
+      const sched: EvalSchedule = await schedRes.json();
+
+      // Run now
+      const runRes = await authFetch(adminSession, `${BASE_URL}/api/eval-schedules/${sched.id}/run-now`, {
+        method: 'POST',
+      });
+      expect(runRes.ok).toBe(true);
+      const result = await runRes.json();
+
+      // Verify merged config
+      expect(result.job.config).toBeDefined();
+      const jobConfig = result.job.config as Record<string, unknown>;
+      expect(jobConfig.framework).toBe('voice-agent-tester');
+      expect(jobConfig.app).toBe('url: "https://runnow.com"');
+      expect(jobConfig.scenario).toBe('steps:\n  - action: speak\n    file: runnow.mp3');
+    });
+  });
+
+  describe('Clone Authorization', () => {
+    let cloneSourceWorkflowId: number;
+    let cloneSourceEvalSetId: number;
+
+    beforeAll(async () => {
+      // Create source items
+      const wfRes = await authFetch(adminSession, `${BASE_URL}/api/workflows`, {
+        method: 'POST',
+        body: JSON.stringify({
+          name: 'Auth Clone Source Workflow',
+          visibility: 'public',
+          providerId: testProviderId,
+          config: { framework: 'aeval' },
+        }),
+      });
+      const wf: Workflow = await wfRes.json();
+      cloneSourceWorkflowId = wf.id;
+
+      const esRes = await authFetch(adminSession, `${BASE_URL}/api/eval-sets`, {
+        method: 'POST',
+        body: JSON.stringify({
+          name: 'Auth Clone Source Eval Set',
+          visibility: 'public',
+          config: { scenario: 'test' },
+        }),
+      });
+      const es: EvalSet = await esRes.json();
+      cloneSourceEvalSetId = es.id;
+    });
+
+    it('should reject workflow clone without authentication', async () => {
+      const response = await fetch(`${BASE_URL}/api/workflows/${cloneSourceWorkflowId}/clone`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      });
+      expect(response.status).toBe(401);
+    });
+
+    it('should reject eval set clone without authentication', async () => {
+      const response = await fetch(`${BASE_URL}/api/eval-sets/${cloneSourceEvalSetId}/clone`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      });
+      expect(response.status).toBe(401);
+    });
+  });
+
+  describe('Apple-to-Apple Comparison Flow', () => {
+    it('should run the same eval set against two different workflows', async () => {
+      // Create a shared eval set (the "apple" test)
+      const esRes = await authFetch(adminSession, `${BASE_URL}/api/eval-sets`, {
+        method: 'POST',
+        body: JSON.stringify({
+          name: 'Shared Appointment Test',
+          visibility: 'public',
+          config: { scenario: 'steps:\n  - action: speak\n    file: hello.mp3\n  - action: wait_for_voice\n    metrics: elapsed_time' },
+        }),
+      });
+      expect(esRes.ok).toBe(true);
+      const evalSet: EvalSet = await esRes.json();
+
+      // Create two workflows for different providers
+      const wf1Res = await authFetch(adminSession, `${BASE_URL}/api/workflows`, {
+        method: 'POST',
+        body: JSON.stringify({
+          name: 'Provider A Workflow',
+          visibility: 'public',
+          providerId: testProviderId,
+          config: { framework: 'voice-agent-tester', app: 'url: "https://provider-a.com"' },
+        }),
+      });
+      expect(wf1Res.ok).toBe(true);
+      const wf1: Workflow = await wf1Res.json();
+
+      const wf2Res = await authFetch(adminSession, `${BASE_URL}/api/workflows`, {
+        method: 'POST',
+        body: JSON.stringify({
+          name: 'Provider B Workflow',
+          visibility: 'public',
+          providerId: testProviderId,
+          config: { framework: 'voice-agent-tester', app: 'url: "https://provider-b.com"' },
+        }),
+      });
+      expect(wf2Res.ok).toBe(true);
+      const wf2: Workflow = await wf2Res.json();
+
+      // Run same eval set against both workflows
+      const job1Res = await authFetch(adminSession, `${BASE_URL}/api/workflows/${wf1.id}/run`, {
+        method: 'POST',
+        body: JSON.stringify({ evalSetId: evalSet.id, region: 'na' }),
+      });
+      expect(job1Res.ok).toBe(true);
+      const job1 = await job1Res.json();
+
+      const job2Res = await authFetch(adminSession, `${BASE_URL}/api/workflows/${wf2.id}/run`, {
+        method: 'POST',
+        body: JSON.stringify({ evalSetId: evalSet.id, region: 'na' }),
+      });
+      expect(job2Res.ok).toBe(true);
+      const job2 = await job2Res.json();
+
+      // Both jobs share same scenario but different app configs
+      expect(job1.job.config.scenario).toBe(job2.job.config.scenario);
+      expect(job1.job.config.app).toBe('url: "https://provider-a.com"');
+      expect(job2.job.config.app).toBe('url: "https://provider-b.com"');
+      expect(job1.job.config.framework).toBe('voice-agent-tester');
+      expect(job2.job.config.framework).toBe('voice-agent-tester');
     });
   });
 });
