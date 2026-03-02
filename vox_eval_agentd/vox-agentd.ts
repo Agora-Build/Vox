@@ -545,36 +545,29 @@ class VoxEvalAgentDaemon {
     const framework = config.framework || this.config.framework;
     console.log(`  - Framework: ${framework}`);
 
+    if (!config.scenario) {
+      throw new Error('job.config.scenario is required');
+    }
+
+    if (framework !== 'aeval' && !config.app) {
+      throw new Error('job.config.app is required for voice-agent-tester');
+    }
+
     const tempFiles: (string | null)[] = [];
 
     try {
       let results: EvalResult;
 
       if (framework === 'aeval') {
-        let scenarioConfig: string;
-        if (config.scenario) {
-          scenarioConfig = this.writeTempYaml(config.scenario, 'vox-scenario')!;
-          tempFiles.push(scenarioConfig);
-        } else {
-          scenarioConfig = path.join('examples', 'response', 'response_R00_en.yaml');
-        }
+        const scenarioConfig = this.writeTempYaml(config.scenario, 'vox-scenario')!;
+        tempFiles.push(scenarioConfig);
         results = await this.runAeval(scenarioConfig);
       } else {
-        let appConfig: string;
-        if (config.app) {
-          appConfig = this.writeTempYaml(config.app, 'vox-app')!;
-          tempFiles.push(appConfig);
-        } else {
-          appConfig = path.join(__dirname, 'applications', 'livekit.yaml');
-        }
+        const appConfig = this.writeTempYaml(config.app!, 'vox-app')!;
+        tempFiles.push(appConfig);
 
-        let scenarioConfig: string;
-        if (config.scenario) {
-          scenarioConfig = this.writeTempYaml(config.scenario, 'vox-scenario')!;
-          tempFiles.push(scenarioConfig);
-        } else {
-          scenarioConfig = path.join(__dirname, 'scenarios', 'basic_conversation.yaml');
-        }
+        const scenarioConfig = this.writeTempYaml(config.scenario, 'vox-scenario')!;
+        tempFiles.push(scenarioConfig);
 
         results = await this.runVoiceAgentTester(appConfig, scenarioConfig);
       }
