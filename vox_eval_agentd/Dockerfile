@@ -4,6 +4,7 @@
 # integration for running automated voice agent evaluations.
 #
 # Base: Ubuntu 24.04 (GLIBC 2.39) — required by aeval's bundled Python runtime.
+# Chromium: Puppeteer downloads its own (Ubuntu 24.04 only offers snap Chromium).
 #
 # Build:
 #   docker build -t vox_eval_agentd .
@@ -16,7 +17,7 @@ FROM ubuntu:24.04
 # Prevent interactive prompts during apt install
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install Node.js 20, Chromium, and dependencies
+# Install Node.js 20 and Chromium system dependencies (Puppeteer downloads its own binary)
 RUN apt-get update && apt-get install -y \
     curl \
     ca-certificates \
@@ -28,7 +29,6 @@ RUN apt-get update && apt-get install -y \
        > /etc/apt/sources.list.d/nodesource.list \
     && apt-get update && apt-get install -y \
     nodejs \
-    chromium-browser \
     fonts-ipafont-gothic \
     fonts-wqy-zenhei \
     fonts-thai-tlwg \
@@ -42,20 +42,24 @@ RUN apt-get update && apt-get install -y \
     libxkbcommon0 \
     libgbm1 \
     libasound2t64 \
+    libxdamage1 \
+    libxrandr2 \
+    libxcomposite1 \
+    libxfixes3 \
+    libcups2t64 \
+    libpango-1.0-0 \
+    libcairo2 \
+    libatspi2.0-0t64 \
     wget \
     --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
-
-# Set Puppeteer to use system Chromium
-ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
-ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium-browser
 
 WORKDIR /app
 
 # --- aeval framework ---
 # Download aeval binary from GitHub Release (multi-platform)
 ARG TARGETARCH
-ARG AEVAL_VERSION=latest
+ARG AEVAL_VERSION=v0.1.0
 RUN ARCH=$(case "${TARGETARCH}" in arm64) echo "arm64" ;; *) echo "x86_64" ;; esac) && \
     if [ "${AEVAL_VERSION}" = "latest" ]; then \
       DOWNLOAD_URL="https://github.com/Agora-Build/aeval/releases/latest/download/aeval-linux-${ARCH}"; \
@@ -73,9 +77,9 @@ COPY aeval-data/ /app/aeval-data/
 # Copy voice-agent-tester from build context
 COPY voice-agent-tester/ /app/voice-agent-tester/
 
-# Install voice-agent-tester dependencies
+# Install voice-agent-tester dependencies and Puppeteer's Chrome
 WORKDIR /app/voice-agent-tester
-RUN npm install
+RUN npm install && npx puppeteer browsers install chrome
 
 # Copy vox integration files
 WORKDIR /app
