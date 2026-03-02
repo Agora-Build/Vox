@@ -3,17 +3,32 @@
 # A Docker image that combines aeval and voice-agent-tester with Vox API
 # integration for running automated voice agent evaluations.
 #
+# Base: Ubuntu 24.04 (GLIBC 2.39) — required by aeval's bundled Python runtime.
+#
 # Build:
 #   docker build -t vox_eval_agentd .
 #
 # Run:
 #   docker run -e AGENT_TOKEN=xxx -e VOX_SERVER=http://host.docker.internal:5000 vox_eval_agentd
 
-FROM node:20-slim
+FROM ubuntu:24.04
 
-# Install Chrome dependencies and ca-certificates
+# Prevent interactive prompts during apt install
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install Node.js 20, Chromium, and dependencies
 RUN apt-get update && apt-get install -y \
-    chromium \
+    curl \
+    ca-certificates \
+    gnupg \
+    && mkdir -p /etc/apt/keyrings \
+    && curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
+       | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg \
+    && echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_20.x nodistro main" \
+       > /etc/apt/sources.list.d/nodesource.list \
+    && apt-get update && apt-get install -y \
+    nodejs \
+    chromium-browser \
     fonts-ipafont-gothic \
     fonts-wqy-zenhei \
     fonts-thai-tlwg \
@@ -26,16 +41,14 @@ RUN apt-get update && apt-get install -y \
     libdrm2 \
     libxkbcommon0 \
     libgbm1 \
-    libasound2 \
+    libasound2t64 \
     wget \
-    curl \
-    ca-certificates \
     --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Set Puppeteer to use system Chromium
 ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
-ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
+ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium-browser
 
 WORKDIR /app
 
