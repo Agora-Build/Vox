@@ -4,12 +4,53 @@ on:
   push:
     branches:
       - main
+    paths:
+      - 'Dockerfile'
+      - 'server/**'
+      - 'client/**'
+      - 'shared/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'tsconfig.json'
+      - 'vite.config.ts'
+      - 'drizzle.config.ts'
+      - 'vox_eval_agentd/**'
+      - '.github/workflows/docker.yml'
 
 env:
   REGISTRY: ghcr.io
 
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      vox-service: ${{ steps.filter.outputs.vox-service }}
+      vox-eval-agentd: ${{ steps.filter.outputs.vox-eval-agentd }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Detect changed paths
+        uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            vox-service:
+              - 'Dockerfile'
+              - 'server/**'
+              - 'client/**'
+              - 'shared/**'
+              - 'package.json'
+              - 'package-lock.json'
+              - 'tsconfig.json'
+              - 'vite.config.ts'
+              - 'drizzle.config.ts'
+            vox-eval-agentd:
+              - 'vox_eval_agentd/**'
+
   build-vox-service:
+    needs: changes
+    if: needs.changes.outputs.vox-service == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -44,6 +85,8 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
 
   build-vox-eval-agentd:
+    needs: changes
+    if: needs.changes.outputs.vox-eval-agentd == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
