@@ -10,7 +10,7 @@ import Home from "@/pages/home";
 import Dashboard from "@/pages/dashboard";
 import Leaderboard from "@/pages/leaderboard";
 import ProviderGuide from "@/pages/provider";
-import SelfTest from "@/pages/self-test";
+import SelfTest from "@/pages/run-your-own";
 import Login from "@/pages/login";
 import AdminLogin from "@/pages/login-admin";
 import AdminConsolePage from "@/pages/admin-console";

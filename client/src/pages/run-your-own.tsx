@@ -51,6 +51,7 @@ export default function SelfTest() {
   const [productUrl, setProductUrl] = useState("");
   const [region, setRegion] = useState<string>("na");
   const [selectedWorkflowId, setSelectedWorkflowId] = useState<string>("");
+  const [selectedEvalSetId, setSelectedEvalSetId] = useState<string>("");
   const [activeJobId, setActiveJobId] = useState<number | null>(null);
 
   const { data: authStatus } = useQuery<AuthStatus>({
@@ -63,6 +64,11 @@ export default function SelfTest() {
 
   const { data: workflows } = useQuery<Workflow[]>({
     queryKey: ["/api/workflows"],
+    enabled: !!authStatus?.user,
+  });
+
+  const { data: evalSets } = useQuery<{ id: number; name: string }[]>({
+    queryKey: ["/api/eval-sets"],
     enabled: !!authStatus?.user,
   });
 
@@ -102,7 +108,10 @@ export default function SelfTest() {
 
   const runEvalMutation = useMutation({
     mutationFn: async (workflowId: number) => {
-      const res = await apiRequest("POST", `/api/workflows/${workflowId}/run`, { region });
+      const res = await apiRequest("POST", `/api/workflows/${workflowId}/run`, {
+        region,
+        evalSetId: parseInt(selectedEvalSetId),
+      });
       return res.json();
     },
     onSuccess: (data) => {
@@ -301,18 +310,41 @@ export default function SelfTest() {
                 </TabsContent>
               </Tabs>
 
-              <div className="space-y-2 pt-4 border-t">
-                <Label>Target Region</Label>
-                <Select value={region} onValueChange={setRegion}>
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="na">North America</SelectItem>
-                    <SelectItem value="apac">Asia Pacific</SelectItem>
-                    <SelectItem value="eu">Europe</SelectItem>
-                  </SelectContent>
-                </Select>
+              <div className="space-y-4 pt-4 border-t">
+                <div className="space-y-2">
+                  <Label>Eval Set</Label>
+                  <Select value={selectedEvalSetId} onValueChange={setSelectedEvalSetId}>
+                    <SelectTrigger>
+                      <SelectValue placeholder="Select eval set" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {evalSets?.map((es) => (
+                        <SelectItem key={es.id} value={es.id.toString()}>
+                          {es.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  {evalSets?.length === 0 && (
+                    <p className="text-xs text-muted-foreground">
+                      No eval sets available. Create one in the Console.
+                    </p>
+                  )}
+                </div>
+
+                <div className="space-y-2">
+                  <Label>Target Region</Label>
+                  <Select value={region} onValueChange={setRegion}>
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="na">North America</SelectItem>
+                      <SelectItem value="apac">Asia Pacific</SelectItem>
+                      <SelectItem value="eu">Europe</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
               </div>
             </CardContent>
             <CardFooter className="relative z-10">
@@ -320,7 +352,7 @@ export default function SelfTest() {
                 className="w-full"
                 size="lg"
                 onClick={handleRunEval}
-                disabled={runEvalMutation.isPending || isJobRunning || !selectedWorkflowId}
+                disabled={runEvalMutation.isPending || isJobRunning || !selectedWorkflowId || !selectedEvalSetId}
               >
                 {runEvalMutation.isPending ? (
                   <><Loader2 className="mr-2 h-4 w-4 animate-spin" /> Starting...</>
