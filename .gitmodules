@@ -1,3 +1,6 @@
 [submodule "vox_eval_agentd/voice-agent-tester"]
 	path = vox_eval_agentd/voice-agent-tester
 	url = https://github.com/livetok-ai/voice-agent-tester.git
+[submodule "vox_eval_agentd/aeval-data"]
+	path = vox_eval_agentd/aeval-data
+	url = https://github.com/Agora-Build/aeval.git

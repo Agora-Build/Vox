@@ -435,6 +435,56 @@ get_or_create_eval_agent_token_docker() {
     return 1
 }
 
+# ==================== Submodules & aeval Binary ====================
+
+ensure_submodules() {
+    log_info "Initializing git submodules..."
+    cd "$PROJECT_DIR"
+    git submodule update --init --recursive
+    log_success "Submodules ready"
+}
+
+ensure_aeval_binary() {
+    if command -v aeval &> /dev/null; then
+        log_info "aeval binary found: $(which aeval)"
+        return 0
+    fi
+
+    # Check common install locations
+    if [ -x "/usr/local/bin/aeval" ]; then
+        log_info "aeval binary found: /usr/local/bin/aeval"
+        return 0
+    fi
+
+    log_info "aeval binary not found, downloading..."
+
+    # Detect platform and architecture
+    local os=$(uname -s | tr '[:upper:]' '[:lower:]')
+    local arch=$(uname -m)
+    case "$arch" in
+        x86_64|amd64) arch="x86_64" ;;
+        aarch64|arm64) arch="arm64" ;;
+        *) log_error "Unsupported architecture: $arch"; return 1 ;;
+    esac
+
+    # Map OS to release naming
+    case "$os" in
+        darwin) os="macos" ;;
+        linux) os="linux" ;;
+        *) log_error "Unsupported OS: $os"; return 1 ;;
+    esac
+
+    local download_url="https://github.com/Agora-Build/aeval/releases/latest/download/aeval-${os}-${arch}"
+    local install_path="/usr/local/bin/aeval"
+
+    log_info "Downloading aeval from ${download_url}"
+    if sudo curl -fSL -o "$install_path" "$download_url" && sudo chmod +x "$install_path"; then
+        log_success "aeval installed to $install_path"
+    else
+        log_warn "Failed to download aeval (may need manual install). Local agent will fall back to voice-agent-tester."
+    fi
+}
+
 # ==================== Eval Agent (Local Process Mode) ====================
 
 start_eval_agent_local() {
@@ -748,22 +798,26 @@ show_status() {
 # ==================== Combined Start/Stop ====================
 
 do_start_local() {
-    # 1. Start PostgreSQL (Docker)
+    # 1. Initialize submodules and aeval binary
+    ensure_submodules
+    ensure_aeval_binary
+
+    # 2. Start PostgreSQL (Docker)
     start_postgres
 
-    # 2. Push database schema
+    # 3. Push database schema
     push_schema
 
-    # 3. Start Vox service (local)
+    # 4. Start Vox service (local)
     start_service_local
 
-    # 4. Initialize system
+    # 5. Initialize system
     init_system
 
-    # 5. Seed data
+    # 6. Seed data
     seed_data
 
-    # 6. Get or create eval agent token and start agent (local)
+    # 7. Get or create eval agent token and start agent (local)
     if [ "$MULTI_REGION_MODE" = true ]; then
         # Multi-region mode: start agents for all regions
         start_all_eval_agents_local

@@ -11,7 +11,7 @@
 
 FROM node:20-slim
 
-# Install Chrome dependencies, ca-certificates, and git (needed for aeval runtime data)
+# Install Chrome dependencies and ca-certificates
 RUN apt-get update && apt-get install -y \
     chromium \
     fonts-ipafont-gothic \
@@ -30,7 +30,6 @@ RUN apt-get update && apt-get install -y \
     wget \
     curl \
     ca-certificates \
-    git \
     --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
@@ -54,9 +53,8 @@ RUN ARCH=$(case "${TARGETARCH}" in arm64) echo "arm64" ;; *) echo "x86_64" ;; es
     curl -fSL -o /usr/local/bin/aeval "${DOWNLOAD_URL}" && \
     chmod +x /usr/local/bin/aeval
 
-# Clone aeval repo (shallow) for runtime data: config/, examples/, corpus/
-RUN git clone --depth 1 https://github.com/Agora-Build/aeval.git /app/aeval-data && \
-    rm -rf /app/aeval-data/.git
+# Copy aeval runtime data from submodule: config/, examples/, corpus/
+COPY aeval-data/ /app/aeval-data/
 
 # --- voice-agent-tester framework ---
 # Copy voice-agent-tester from build context
