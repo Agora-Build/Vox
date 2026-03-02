@@ -244,6 +244,29 @@ class VoxEvalAgentDaemon {
     }
   }
 
+  async failJob(jobId: number, reason: string): Promise<boolean> {
+    try {
+      console.log(`[Daemon] Failing job ${jobId}: ${reason}`);
+      const response = await this.fetch(`/api/eval-agent/jobs/${jobId}/complete`, {
+        method: 'POST',
+        body: JSON.stringify({ agentId: this.agentId, error: reason }),
+      });
+
+      if (response.ok) {
+        console.log(`[Daemon] Job ${jobId} marked as failed`);
+        return true;
+      } else {
+        const error = await response.text();
+        console.error(`[Daemon] Failed to report job failure ${jobId}: ${response.status} - ${error}`);
+        return false;
+      }
+    } catch (error: unknown) {
+      const msg = error instanceof Error ? error.message : String(error);
+      console.error(`[Daemon] Error reporting job failure:`, msg);
+      return false;
+    }
+  }
+
   // -------------------------------------------------------------------------
   // aeval framework
   // -------------------------------------------------------------------------
@@ -622,18 +645,10 @@ class VoxEvalAgentDaemon {
       const msg = error instanceof Error ? error.message : String(error);
       console.error(`[Daemon] Job execution error:`, msg);
       try {
-        await this.completeJob(job.id, {
-          responseLatencyMedian: 0,
-          responseLatencySd: 0,
-          interruptLatencyMedian: 0,
-          interruptLatencySd: 0,
-          networkResilience: 0,
-          naturalness: 0,
-          noiseReduction: 0,
-        });
+        await this.failJob(job.id, msg);
       } catch (reportError: unknown) {
         const reportMsg = reportError instanceof Error ? reportError.message : String(reportError);
-        console.error(`[Daemon] Failed to report job error:`, reportMsg);
+        console.error(`[Daemon] Failed to report job failure:`, reportMsg);
       }
     } finally {
       this.isRunningJob = false;
