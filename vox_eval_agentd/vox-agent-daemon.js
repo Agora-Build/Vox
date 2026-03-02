@@ -2,11 +2,15 @@
 /**
  * vox_eval_agentd - Vox Evaluation Agent Daemon
  *
- * Integrates voice-agent-tester with Vox API to:
+ * Integrates aeval / voice-agent-tester with Vox API to:
  * 1. Register with Vox server
  * 2. Fetch and claim pending jobs
- * 3. Execute voice-agent-tester for each job
+ * 3. Execute the selected eval framework for each job
  * 4. Parse results and report back to Vox
+ *
+ * Set EVAL_FRAMEWORK env var to choose:
+ *   "aeval"                (default) — single-binary eval with JSON metrics
+ *   "voice-agent-tester"   — Node/Puppeteer eval with CSV report
  */
 
 import { spawn } from 'child_process';
@@ -22,10 +26,12 @@ const AGENT_TOKEN = process.env.AGENT_TOKEN;
 const VOX_AGENT_NAME = process.env.VOX_AGENT_NAME || `eval-agent-${Date.now()}`;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const HEADLESS = process.env.HEADLESS !== 'false';
+const EVAL_FRAMEWORK = process.env.EVAL_FRAMEWORK || 'aeval';
 
 const HEARTBEAT_INTERVAL = 30000; // 30 seconds
 const JOB_POLL_INTERVAL = 10000; // 10 seconds
 const VOICE_AGENT_TESTER_PATH = path.join(__dirname, 'voice-agent-tester');
+const AEVAL_DATA_PATH = path.join(__dirname, 'aeval-data');
 
 class VoxEvalAgentDaemon {
   constructor() {
@@ -151,6 +157,146 @@ class VoxEvalAgentDaemon {
     }
   }
 
+  // ---------------------------------------------------------------------------
+  // aeval framework
+  // ---------------------------------------------------------------------------
+
+  runAeval(scenarioConfig) {
+    return new Promise((resolve, reject) => {
+      const args = ['run', scenarioConfig];
+
+      if (!HEADLESS) {
+        args.push('--headful');
+      }
+
+      console.log(`[Daemon] Running: aeval ${args.join(' ')}`);
+
+      const proc = spawn('aeval', args, {
+        cwd: AEVAL_DATA_PATH,
+        env: { ...process.env },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+
+      let stdout = '';
+      let stderr = '';
+
+      proc.stdout.on('data', (data) => {
+        stdout += data.toString();
+        console.log(`[aeval] ${data.toString().trim()}`);
+      });
+
+      proc.stderr.on('data', (data) => {
+        stderr += data.toString();
+        console.error(`[aeval] ${data.toString().trim()}`);
+      });
+
+      proc.on('close', (code) => {
+        console.log(`[Daemon] aeval exited with code ${code}`);
+
+        // Determine the output directory from the scenario config
+        const outputDir = this.resolveAevalOutputDir(scenarioConfig);
+        const results = this.parseAevalResults(outputDir, stdout);
+
+        resolve(results);
+      });
+
+      proc.on('error', (error) => {
+        reject(error);
+      });
+    });
+  }
+
+  /**
+   * Resolve the output directory that aeval writes metrics.json to.
+   * Convention: output lands in <aeval-data>/output/<scenario-basename-without-ext>/
+   */
+  resolveAevalOutputDir(scenarioConfig) {
+    const scenarioBasename = path.basename(scenarioConfig, path.extname(scenarioConfig));
+    return path.join(AEVAL_DATA_PATH, 'output', scenarioBasename);
+  }
+
+  /**
+   * Parse aeval's metrics.json output into the Vox result schema.
+   */
+  parseAevalResults(outputDir, stdout) {
+    const defaults = {
+      responseLatencyMedian: 0,
+      responseLatencySd: 0,
+      interruptLatencyMedian: 0,
+      interruptLatencySd: 0,
+      networkResilience: 85,
+      naturalness: 3.5,
+      noiseReduction: 90,
+    };
+
+    const metricsFile = path.join(outputDir, 'metrics.json');
+
+    try {
+      if (!fs.existsSync(metricsFile)) {
+        console.log(`[Daemon] aeval metrics file not found: ${metricsFile}`);
+        // Fallback: try to extract latency from stdout
+        return this.parseAevalStdout(stdout, defaults);
+      }
+
+      const raw = fs.readFileSync(metricsFile, 'utf-8');
+      console.log(`[Daemon] aeval metrics.json:\n${raw}`);
+
+      const metrics = JSON.parse(raw);
+
+      // Walk the JSON structure — aeval outputs vary but commonly include:
+      //   response_latency.median_ms, response_latency.stddev_ms
+      //   interrupt_latency.median_ms, interrupt_latency.stddev_ms
+      const rl = metrics.response_latency || metrics.responseLatency || {};
+      const il = metrics.interrupt_latency || metrics.interruptLatency || {};
+
+      const results = { ...defaults };
+
+      if (rl.median_ms != null) results.responseLatencyMedian = Math.round(rl.median_ms);
+      else if (rl.median != null) results.responseLatencyMedian = Math.round(rl.median);
+
+      if (rl.stddev_ms != null) results.responseLatencySd = Math.round(rl.stddev_ms);
+      else if (rl.stddev != null) results.responseLatencySd = Math.round(rl.stddev);
+      else if (rl.sd != null) results.responseLatencySd = Math.round(rl.sd);
+
+      if (il.median_ms != null) results.interruptLatencyMedian = Math.round(il.median_ms);
+      else if (il.median != null) results.interruptLatencyMedian = Math.round(il.median);
+
+      if (il.stddev_ms != null) results.interruptLatencySd = Math.round(il.stddev_ms);
+      else if (il.stddev != null) results.interruptLatencySd = Math.round(il.stddev);
+      else if (il.sd != null) results.interruptLatencySd = Math.round(il.sd);
+
+      // Optional top-level overrides
+      if (metrics.network_resilience != null) results.networkResilience = metrics.network_resilience;
+      if (metrics.naturalness != null) results.naturalness = metrics.naturalness;
+      if (metrics.noise_reduction != null) results.noiseReduction = metrics.noise_reduction;
+
+      console.log(`[Daemon] Parsed aeval results:`, results);
+      return results;
+    } catch (error) {
+      console.error(`[Daemon] Error parsing aeval metrics:`, error.message);
+      return this.parseAevalStdout(stdout, defaults);
+    }
+  }
+
+  /**
+   * Fallback: try to extract latency numbers from aeval stdout when metrics.json is missing.
+   */
+  parseAevalStdout(stdout, defaults) {
+    const results = { ...defaults };
+
+    const medianMatch = stdout.match(/median[:\s]+(\d+)/i);
+    if (medianMatch) {
+      results.responseLatencyMedian = parseInt(medianMatch[1]);
+    }
+
+    console.log(`[Daemon] Parsed aeval results (from stdout fallback):`, results);
+    return results;
+  }
+
+  // ---------------------------------------------------------------------------
+  // voice-agent-tester framework
+  // ---------------------------------------------------------------------------
+
   runVoiceAgentTester(appConfig, scenarioConfig) {
     return new Promise((resolve, reject) => {
       const reportFile = `/tmp/vox-report-${Date.now()}.csv`;
@@ -192,7 +338,7 @@ class VoxEvalAgentDaemon {
         console.log(`[Daemon] voice-agent-tester exited with code ${code}`);
 
         // Parse results from report file
-        let results = this.parseResults(reportFile, stdout);
+        let results = this.parseVATResults(reportFile, stdout);
 
         if (code === 0) {
           resolve(results);
@@ -208,7 +354,7 @@ class VoxEvalAgentDaemon {
     });
   }
 
-  parseResults(reportFile, stdout) {
+  parseVATResults(reportFile, stdout) {
     // Default results
     let results = {
       responseLatencyMedian: 0,
@@ -322,18 +468,34 @@ class VoxEvalAgentDaemon {
     return results;
   }
 
+  // ---------------------------------------------------------------------------
+  // Job execution
+  // ---------------------------------------------------------------------------
+
   async executeJob(job) {
     console.log(`[Daemon] Executing job ${job.id}`);
     console.log(`  - Workflow ID: ${job.workflowId}`);
     console.log(`  - Region: ${job.region}`);
 
-    // Determine application and scenario configs
     const config = job.config || {};
-    const appConfig = config.application || path.join(__dirname, 'applications', 'livekit.yaml');
-    const scenarioConfig = config.scenario || path.join(__dirname, 'scenarios', 'basic_conversation.yaml');
+
+    // Per-job framework override, falling back to env var default
+    const framework = config.framework || EVAL_FRAMEWORK;
+    console.log(`  - Framework: ${framework}`);
 
     try {
-      const results = await this.runVoiceAgentTester(appConfig, scenarioConfig);
+      let results;
+
+      if (framework === 'aeval') {
+        const scenarioConfig = config.scenario ||
+          path.join('examples', 'response', 'response_R00_en.yaml');
+        results = await this.runAeval(scenarioConfig);
+      } else {
+        const appConfig = config.application || path.join(__dirname, 'applications', 'livekit.yaml');
+        const scenarioConfig = config.scenario || path.join(__dirname, 'scenarios', 'basic_conversation.yaml');
+        results = await this.runVoiceAgentTester(appConfig, scenarioConfig);
+      }
+
       console.log(`[Daemon] Job ${job.id} results:`, results);
       return results;
     } catch (error) {
@@ -386,6 +548,7 @@ class VoxEvalAgentDaemon {
     console.log(`  - Server: ${VOX_SERVER}`);
     console.log(`  - Agent Name: ${VOX_AGENT_NAME}`);
     console.log(`  - Headless: ${HEADLESS}`);
+    console.log(`  - Eval Framework: ${EVAL_FRAMEWORK}`);
     console.log('');
 
     // Start heartbeat
@@ -417,6 +580,8 @@ async function main() {
     console.error('[Daemon] Error: AGENT_TOKEN environment variable is required');
     process.exit(1);
   }
+
+  console.log(`[Daemon] Eval framework: ${EVAL_FRAMEWORK}`);
 
   const daemon = new VoxEvalAgentDaemon();
 

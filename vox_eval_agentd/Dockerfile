@@ -1,7 +1,7 @@
 # vox_eval_agentd - Vox Evaluation Agent Daemon
 #
-# A Docker image that combines voice-agent-tester with Vox API integration
-# for running automated voice agent evaluations.
+# A Docker image that combines aeval and voice-agent-tester with Vox API
+# integration for running automated voice agent evaluations.
 #
 # Build:
 #   docker build -t vox_eval_agentd .
@@ -11,7 +11,7 @@
 
 FROM node:20-slim
 
-# Install Chrome dependencies and ca-certificates
+# Install Chrome dependencies, ca-certificates, and git (needed for aeval runtime data)
 RUN apt-get update && apt-get install -y \
     chromium \
     fonts-ipafont-gothic \
@@ -30,6 +30,7 @@ RUN apt-get update && apt-get install -y \
     wget \
     curl \
     ca-certificates \
+    git \
     --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
@@ -39,6 +40,25 @@ ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
 
 WORKDIR /app
 
+# --- aeval framework ---
+# Download aeval binary from GitHub Release (multi-platform)
+ARG TARGETARCH
+ARG AEVAL_VERSION=latest
+RUN ARCH=$(case "${TARGETARCH}" in arm64) echo "arm64" ;; *) echo "x86_64" ;; esac) && \
+    if [ "${AEVAL_VERSION}" = "latest" ]; then \
+      DOWNLOAD_URL="https://github.com/Agora-Build/aeval/releases/latest/download/aeval-linux-${ARCH}"; \
+    else \
+      DOWNLOAD_URL="https://github.com/Agora-Build/aeval/releases/download/${AEVAL_VERSION}/aeval-linux-${ARCH}"; \
+    fi && \
+    echo "Downloading aeval from ${DOWNLOAD_URL}" && \
+    curl -fSL -o /usr/local/bin/aeval "${DOWNLOAD_URL}" && \
+    chmod +x /usr/local/bin/aeval
+
+# Clone aeval repo (shallow) for runtime data: config/, examples/, corpus/
+RUN git clone --depth 1 https://github.com/Agora-Build/aeval.git /app/aeval-data && \
+    rm -rf /app/aeval-data/.git
+
+# --- voice-agent-tester framework ---
 # Copy voice-agent-tester from build context
 COPY voice-agent-tester/ /app/voice-agent-tester/
 
@@ -61,6 +81,7 @@ RUN npm install
 ENV VOX_SERVER=http://localhost:5000
 ENV VOX_AGENT_NAME="eval-agent"
 ENV HEADLESS=true
+ENV EVAL_FRAMEWORK=aeval
 
 # Output directory for recordings
 VOLUME /app/output

@@ -11,6 +11,9 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import request from "supertest";
 import { createServer } from "http";
 import express from "express";
+import path from "path";
+import fs from "fs";
+import os from "os";
 
 // Mock the parseResults function logic for testing
 function parseResults(csvContent: string): {
@@ -401,6 +404,310 @@ describe("Eval Agent Daemon - API Communication", () => {
       .send({ agentId: registeredAgentId });
 
     expect(res.status).toBe(400);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// aeval result parsing (mirrors daemon's parseAevalResults / parseAevalStdout)
+// ---------------------------------------------------------------------------
+
+interface EvalResults {
+  responseLatencyMedian: number;
+  responseLatencySd: number;
+  interruptLatencyMedian: number;
+  interruptLatencySd: number;
+  networkResilience: number;
+  naturalness: number;
+  noiseReduction: number;
+}
+
+const AEVAL_DEFAULTS: EvalResults = {
+  responseLatencyMedian: 0,
+  responseLatencySd: 0,
+  interruptLatencyMedian: 0,
+  interruptLatencySd: 0,
+  networkResilience: 85,
+  naturalness: 3.5,
+  noiseReduction: 90,
+};
+
+/** Mirror of daemon's parseAevalResults — works on raw JSON string instead of reading a file */
+function parseAevalMetricsJson(jsonContent: string): EvalResults {
+  const results = { ...AEVAL_DEFAULTS };
+
+  const metrics = JSON.parse(jsonContent);
+
+  const rl = metrics.response_latency || metrics.responseLatency || {};
+  const il = metrics.interrupt_latency || metrics.interruptLatency || {};
+
+  if (rl.median_ms != null) results.responseLatencyMedian = Math.round(rl.median_ms);
+  else if (rl.median != null) results.responseLatencyMedian = Math.round(rl.median);
+
+  if (rl.stddev_ms != null) results.responseLatencySd = Math.round(rl.stddev_ms);
+  else if (rl.stddev != null) results.responseLatencySd = Math.round(rl.stddev);
+  else if (rl.sd != null) results.responseLatencySd = Math.round(rl.sd);
+
+  if (il.median_ms != null) results.interruptLatencyMedian = Math.round(il.median_ms);
+  else if (il.median != null) results.interruptLatencyMedian = Math.round(il.median);
+
+  if (il.stddev_ms != null) results.interruptLatencySd = Math.round(il.stddev_ms);
+  else if (il.stddev != null) results.interruptLatencySd = Math.round(il.stddev);
+  else if (il.sd != null) results.interruptLatencySd = Math.round(il.sd);
+
+  if (metrics.network_resilience != null) results.networkResilience = metrics.network_resilience;
+  if (metrics.naturalness != null) results.naturalness = metrics.naturalness;
+  if (metrics.noise_reduction != null) results.noiseReduction = metrics.noise_reduction;
+
+  return results;
+}
+
+/** Mirror of daemon's parseAevalStdout */
+function parseAevalStdout(stdout: string): EvalResults {
+  const results = { ...AEVAL_DEFAULTS };
+
+  const medianMatch = stdout.match(/median[:\s]+(\d+)/i);
+  if (medianMatch) {
+    results.responseLatencyMedian = parseInt(medianMatch[1]);
+  }
+
+  return results;
+}
+
+/** Mirror of daemon's resolveAevalOutputDir */
+function resolveAevalOutputDir(aevalDataPath: string, scenarioConfig: string): string {
+  const scenarioBasename = path.basename(scenarioConfig, path.extname(scenarioConfig));
+  return path.join(aevalDataPath, "output", scenarioBasename);
+}
+
+/** Mirror of daemon's framework-selection logic from executeJob */
+function selectFramework(
+  jobConfigFramework: string | undefined,
+  envFramework: string,
+): string {
+  return jobConfigFramework || envFramework;
+}
+
+// ---------------------------------------------------------------------------
+// aeval tests
+// ---------------------------------------------------------------------------
+
+describe("Eval Agent Daemon - aeval Metrics JSON Parsing", () => {
+  it("should parse metrics with median_ms / stddev_ms keys", () => {
+    const json = JSON.stringify({
+      response_latency: { median_ms: 420.7, stddev_ms: 55.3 },
+      interrupt_latency: { median_ms: 180.2, stddev_ms: 22.8 },
+    });
+    const results = parseAevalMetricsJson(json);
+    expect(results.responseLatencyMedian).toBe(421);
+    expect(results.responseLatencySd).toBe(55);
+    expect(results.interruptLatencyMedian).toBe(180);
+    expect(results.interruptLatencySd).toBe(23);
+  });
+
+  it("should parse metrics with median / stddev keys (no _ms suffix)", () => {
+    const json = JSON.stringify({
+      response_latency: { median: 350, stddev: 40 },
+      interrupt_latency: { median: 120, stddev: 15 },
+    });
+    const results = parseAevalMetricsJson(json);
+    expect(results.responseLatencyMedian).toBe(350);
+    expect(results.responseLatencySd).toBe(40);
+    expect(results.interruptLatencyMedian).toBe(120);
+    expect(results.interruptLatencySd).toBe(15);
+  });
+
+  it("should parse metrics with sd key as alias for stddev", () => {
+    const json = JSON.stringify({
+      response_latency: { median: 300, sd: 28 },
+      interrupt_latency: { median: 90, sd: 12 },
+    });
+    const results = parseAevalMetricsJson(json);
+    expect(results.responseLatencySd).toBe(28);
+    expect(results.interruptLatencySd).toBe(12);
+  });
+
+  it("should prefer median_ms over median when both present", () => {
+    const json = JSON.stringify({
+      response_latency: { median_ms: 500, median: 9999 },
+    });
+    const results = parseAevalMetricsJson(json);
+    expect(results.responseLatencyMedian).toBe(500);
+  });
+
+  it("should handle camelCase key variants (responseLatency)", () => {
+    const json = JSON.stringify({
+      responseLatency: { median_ms: 275 },
+      interruptLatency: { median_ms: 130 },
+    });
+    const results = parseAevalMetricsJson(json);
+    expect(results.responseLatencyMedian).toBe(275);
+    expect(results.interruptLatencyMedian).toBe(130);
+  });
+
+  it("should return defaults when response_latency and interrupt_latency are missing", () => {
+    const json = JSON.stringify({ some_other_key: 42 });
+    const results = parseAevalMetricsJson(json);
+    expect(results.responseLatencyMedian).toBe(0);
+    expect(results.responseLatencySd).toBe(0);
+    expect(results.interruptLatencyMedian).toBe(0);
+    expect(results.interruptLatencySd).toBe(0);
+    expect(results.networkResilience).toBe(85);
+    expect(results.naturalness).toBe(3.5);
+    expect(results.noiseReduction).toBe(90);
+  });
+
+  it("should pick up optional top-level overrides", () => {
+    const json = JSON.stringify({
+      response_latency: { median_ms: 100 },
+      network_resilience: 72,
+      naturalness: 4.1,
+      noise_reduction: 88,
+    });
+    const results = parseAevalMetricsJson(json);
+    expect(results.networkResilience).toBe(72);
+    expect(results.naturalness).toBe(4.1);
+    expect(results.noiseReduction).toBe(88);
+  });
+
+  it("should round fractional latency values", () => {
+    const json = JSON.stringify({
+      response_latency: { median_ms: 333.7, stddev_ms: 44.4 },
+      interrupt_latency: { median_ms: 111.1, stddev_ms: 9.9 },
+    });
+    const results = parseAevalMetricsJson(json);
+    expect(results.responseLatencyMedian).toBe(334);
+    expect(results.responseLatencySd).toBe(44);
+    expect(results.interruptLatencyMedian).toBe(111);
+    expect(results.interruptLatencySd).toBe(10);
+  });
+
+  it("should handle only response_latency without interrupt_latency", () => {
+    const json = JSON.stringify({
+      response_latency: { median_ms: 500, stddev_ms: 60 },
+    });
+    const results = parseAevalMetricsJson(json);
+    expect(results.responseLatencyMedian).toBe(500);
+    expect(results.responseLatencySd).toBe(60);
+    expect(results.interruptLatencyMedian).toBe(0);
+    expect(results.interruptLatencySd).toBe(0);
+  });
+
+  it("should throw on invalid JSON", () => {
+    expect(() => parseAevalMetricsJson("not json at all")).toThrow();
+  });
+});
+
+describe("Eval Agent Daemon - aeval Stdout Fallback Parsing", () => {
+  it("should extract median from stdout line", () => {
+    const stdout = `[aeval] Starting eval...\n[aeval] median: 480\n[aeval] Done.`;
+    const results = parseAevalStdout(stdout);
+    expect(results.responseLatencyMedian).toBe(480);
+  });
+
+  it("should handle case-insensitive match", () => {
+    const stdout = `Median: 320`;
+    const results = parseAevalStdout(stdout);
+    expect(results.responseLatencyMedian).toBe(320);
+  });
+
+  it("should return defaults when no median found in stdout", () => {
+    const stdout = `[aeval] some random output with no numbers we care about`;
+    const results = parseAevalStdout(stdout);
+    expect(results.responseLatencyMedian).toBe(0);
+    expect(results.networkResilience).toBe(85);
+  });
+
+  it("should return defaults for empty stdout", () => {
+    const results = parseAevalStdout("");
+    expect(results.responseLatencyMedian).toBe(0);
+  });
+});
+
+describe("Eval Agent Daemon - aeval Output Directory Resolution", () => {
+  it("should resolve output dir from yaml scenario path", () => {
+    const dir = resolveAevalOutputDir(
+      "/app/aeval-data",
+      "examples/response/response_R00_en.yaml",
+    );
+    expect(dir).toBe("/app/aeval-data/output/response_R00_en");
+  });
+
+  it("should strip .yml extension too", () => {
+    const dir = resolveAevalOutputDir(
+      "/app/aeval-data",
+      "scenarios/latency_test.yml",
+    );
+    expect(dir).toBe("/app/aeval-data/output/latency_test");
+  });
+
+  it("should handle flat filename without directory", () => {
+    const dir = resolveAevalOutputDir("/app/aeval-data", "basic.yaml");
+    expect(dir).toBe("/app/aeval-data/output/basic");
+  });
+
+  it("should handle deeply nested scenario paths", () => {
+    const dir = resolveAevalOutputDir(
+      "/app/aeval-data",
+      "a/b/c/d/my_scenario.yaml",
+    );
+    expect(dir).toBe("/app/aeval-data/output/my_scenario");
+  });
+});
+
+describe("Eval Agent Daemon - Framework Selection", () => {
+  it("should default to aeval when env is aeval and no job override", () => {
+    expect(selectFramework(undefined, "aeval")).toBe("aeval");
+  });
+
+  it("should default to voice-agent-tester when env says so", () => {
+    expect(selectFramework(undefined, "voice-agent-tester")).toBe("voice-agent-tester");
+  });
+
+  it("should prefer job-level framework over env default", () => {
+    expect(selectFramework("voice-agent-tester", "aeval")).toBe("voice-agent-tester");
+    expect(selectFramework("aeval", "voice-agent-tester")).toBe("aeval");
+  });
+
+  it("should fall back to env when job framework is empty string", () => {
+    expect(selectFramework("", "aeval")).toBe("aeval");
+  });
+});
+
+describe("Eval Agent Daemon - aeval File-Based Parsing (temp dir)", () => {
+  let tmpDir: string;
+
+  beforeAll(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vox-aeval-test-"));
+  });
+
+  afterAll(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("should read and parse a real metrics.json file", () => {
+    const outputDir = path.join(tmpDir, "run1");
+    fs.mkdirSync(outputDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(outputDir, "metrics.json"),
+      JSON.stringify({
+        response_latency: { median_ms: 512, stddev_ms: 38 },
+        interrupt_latency: { median_ms: 200, stddev_ms: 15 },
+      }),
+    );
+
+    const raw = fs.readFileSync(path.join(outputDir, "metrics.json"), "utf-8");
+    const results = parseAevalMetricsJson(raw);
+    expect(results.responseLatencyMedian).toBe(512);
+    expect(results.responseLatencySd).toBe(38);
+    expect(results.interruptLatencyMedian).toBe(200);
+    expect(results.interruptLatencySd).toBe(15);
+  });
+
+  it("should detect missing metrics.json gracefully", () => {
+    const missingDir = path.join(tmpDir, "does-not-exist");
+    const metricsPath = path.join(missingDir, "metrics.json");
+    expect(fs.existsSync(metricsPath)).toBe(false);
+    // Daemon would fall back to stdout parsing — just verify the file check works
   });
 });
 

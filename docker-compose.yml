@@ -35,5 +35,17 @@ services:
       postgres:
         condition: service_healthy
 
+  # eval-agent:
+  #   build:
+  #     context: vox_eval_agentd
+  #   container_name: vox-eval-agent
+  #   environment:
+  #     AGENT_TOKEN: <token>
+  #     VOX_SERVER: http://vox-service:5000
+  #     EVAL_FRAMEWORK: aeval   # or "voice-agent-tester"
+  #   depends_on:
+  #     vox-service:
+  #       condition: service_started
+
 volumes:
   vox_postgres_data:
