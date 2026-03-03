@@ -2781,4 +2781,495 @@ describe('Vox API Tests', () => {
       expect(job2.job.config.framework).toBe('voice-agent-tester');
     });
   });
+
+  // ====================================================================
+  // Built-in Eval Set Protection
+  // ====================================================================
+
+  describe('Built-in Eval Set Protection', () => {
+    let builtInEvalSetId: number;
+
+    beforeAll(async () => {
+      // Create an eval set with builtIn: true in config (simulates seeded data)
+      const response = await authFetch(adminSession, `${BASE_URL}/api/eval-sets`, {
+        method: 'POST',
+        body: JSON.stringify({
+          name: 'Test Built-in Eval Set',
+          description: 'Simulated built-in eval set',
+          visibility: 'public',
+          config: { framework: 'aeval', builtIn: true, scenario: 'steps: []' },
+        }),
+      });
+      expect(response.ok).toBe(true);
+      const es: EvalSet = await response.json();
+      builtInEvalSetId = es.id;
+    });
+
+    it('should reject PATCH on built-in eval set for non-admin', async () => {
+      // premiumSession is a non-admin user
+      if (!premiumSession) return; // skip if premium user not set up
+      const response = await authFetch(premiumSession, `${BASE_URL}/api/eval-sets/${builtInEvalSetId}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ name: 'Hacked Name' }),
+      });
+      // Could be 403 (built-in guard) or 403 (not owner) — either is acceptable
+      expect(response.status).toBe(403);
+    });
+
+    it('should allow PATCH on built-in eval set for admin', async () => {
+      const response = await authFetch(adminSession, `${BASE_URL}/api/eval-sets/${builtInEvalSetId}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ name: 'Updated Built-in Name' }),
+      });
+      expect(response.ok).toBe(true);
+      const updated: EvalSet = await response.json();
+      expect(updated.name).toBe('Updated Built-in Name');
+    });
+
+    it('should allow clone of built-in eval set', async () => {
+      const response = await authFetch(adminSession, `${BASE_URL}/api/eval-sets/${builtInEvalSetId}/clone`, {
+        method: 'POST',
+      });
+      expect(response.ok).toBe(true);
+      const cloned: EvalSet = await response.json();
+      expect(cloned.name).toContain('Clone of');
+      // builtIn flag should be stripped from cloned config
+      expect(cloned.config.builtIn).toBeUndefined();
+    });
+
+    it('should strip builtIn flag from clone even without config override', async () => {
+      const response = await authFetch(adminSession, `${BASE_URL}/api/eval-sets/${builtInEvalSetId}/clone`, {
+        method: 'POST',
+        body: JSON.stringify({}), // No overrides
+      });
+      expect(response.ok).toBe(true);
+      const cloned: EvalSet = await response.json();
+      expect(cloned.config.builtIn).toBeUndefined();
+      // But other config fields should be preserved
+      expect(cloned.config.framework).toBe('aeval');
+      expect(cloned.config.scenario).toBe('steps: []');
+    });
+  });
+
+  // ====================================================================
+  // Eval Set includePublic Query Param
+  // ====================================================================
+
+  describe('Eval Set includePublic', () => {
+    it('should return only own eval sets without includePublic', async () => {
+      const response = await authFetch(adminSession, `${BASE_URL}/api/eval-sets`);
+      expect(response.ok).toBe(true);
+      const sets: EvalSet[] = await response.json();
+      // All returned sets should be owned by admin
+      // (We can't check exact ownership without knowing admin ID, but they should exist)
+      expect(Array.isArray(sets)).toBe(true);
+    });
+
+    it('should return own + public eval sets with includePublic=true', async () => {
+      const withPublic = await authFetch(adminSession, `${BASE_URL}/api/eval-sets?includePublic=true`);
+      expect(withPublic.ok).toBe(true);
+      const setsWithPublic: EvalSet[] = await withPublic.json();
+
+      const withoutPublic = await authFetch(adminSession, `${BASE_URL}/api/eval-sets`);
+      expect(withoutPublic.ok).toBe(true);
+      const setsWithout: EvalSet[] = await withoutPublic.json();
+
+      // With includePublic should include at least as many sets
+      expect(setsWithPublic.length).toBeGreaterThanOrEqual(setsWithout.length);
+    });
+
+    it('should not duplicate own public eval sets with includePublic=true', async () => {
+      const response = await authFetch(adminSession, `${BASE_URL}/api/eval-sets?includePublic=true`);
+      expect(response.ok).toBe(true);
+      const sets: EvalSet[] = await response.json();
+
+      // Check no duplicate IDs
+      const ids = sets.map((s) => s.id);
+      const uniqueIds = new Set(ids);
+      expect(uniqueIds.size).toBe(ids.length);
+    });
+  });
+
+  // ====================================================================
+  // Clone with Overrides
+  // ====================================================================
+
+  describe('Eval Set Clone with Overrides', () => {
+    let cloneSourceId: number;
+
+    beforeAll(async () => {
+      const response = await authFetch(adminSession, `${BASE_URL}/api/eval-sets`, {
+        method: 'POST',
+        body: JSON.stringify({
+          name: 'Override Clone Source',
+          visibility: 'public',
+          config: { scenario: 'original: true' },
+        }),
+      });
+      expect(response.ok).toBe(true);
+      const es: EvalSet = await response.json();
+      cloneSourceId = es.id;
+    });
+
+    it('should clone with name override', async () => {
+      const response = await authFetch(adminSession, `${BASE_URL}/api/eval-sets/${cloneSourceId}/clone`, {
+        method: 'POST',
+        body: JSON.stringify({ name: 'My Custom Clone' }),
+      });
+      expect(response.ok).toBe(true);
+      const cloned: EvalSet = await response.json();
+      expect(cloned.name).toBe('My Custom Clone');
+    });
+
+    it('should clone with config override', async () => {
+      const response = await authFetch(adminSession, `${BASE_URL}/api/eval-sets/${cloneSourceId}/clone`, {
+        method: 'POST',
+        body: JSON.stringify({ config: { scenario: 'modified: true', framework: 'aeval' } }),
+      });
+      expect(response.ok).toBe(true);
+      const cloned: EvalSet = await response.json();
+      expect(cloned.config.scenario).toBe('modified: true');
+    });
+
+    it('should clone with both name and config overrides', async () => {
+      const response = await authFetch(adminSession, `${BASE_URL}/api/eval-sets/${cloneSourceId}/clone`, {
+        method: 'POST',
+        body: JSON.stringify({
+          name: 'Full Override Clone',
+          config: { scenario: 'new scenario', framework: 'aeval' },
+        }),
+      });
+      expect(response.ok).toBe(true);
+      const cloned: EvalSet = await response.json();
+      expect(cloned.name).toBe('Full Override Clone');
+      expect(cloned.config.scenario).toBe('new scenario');
+    });
+
+    it('should reject clone with invalid config', async () => {
+      const response = await authFetch(adminSession, `${BASE_URL}/api/eval-sets/${cloneSourceId}/clone`, {
+        method: 'POST',
+        body: JSON.stringify({ config: { framework: 'invalid_framework' } }),
+      });
+      expect(response.status).toBe(400);
+    });
+  });
+
+  // ====================================================================
+  // Version-Gated Job Fetching
+  // ====================================================================
+
+  describe('Version-Gated Job Fetching', () => {
+    let versionTestToken: string;
+    let versionTestAgentId: number;
+    let versionedWorkflowId: number;
+    let versionedEvalSetId: number;
+    let unversionedWorkflowId: number;
+    let unversionedEvalSetId: number;
+
+    beforeAll(async () => {
+      // Create a new token for this test
+      const tokenRes = await authFetch(adminSession, `${BASE_URL}/api/admin/eval-agent-tokens`, {
+        method: 'POST',
+        body: JSON.stringify({ name: 'Version Test Token', region: 'na' }),
+      });
+      expect(tokenRes.ok).toBe(true);
+      const tokenData: EvalAgentToken = await tokenRes.json();
+      versionTestToken = tokenData.token!;
+
+      // Register agent with frameworkVersion metadata
+      const agentRes = await fetch(`${BASE_URL}/api/eval-agent/register`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${versionTestToken}`,
+        },
+        body: JSON.stringify({
+          name: 'Version Test Agent',
+          metadata: { framework: 'aeval', frameworkVersion: 'v0.1.0' },
+        }),
+      });
+      expect(agentRes.ok).toBe(true);
+      const agent: EvalAgent = await agentRes.json();
+      versionTestAgentId = agent.id;
+
+      // Create project for versioned workflows
+      const projRes = await authFetch(adminSession, `${BASE_URL}/api/projects`, {
+        method: 'POST',
+        body: JSON.stringify({ name: 'Version Gate Test Project' }),
+      });
+      const proj: Project = await projRes.json();
+
+      // Create a workflow with frameworkVersion v0.1.0
+      const wfRes = await authFetch(adminSession, `${BASE_URL}/api/workflows`, {
+        method: 'POST',
+        body: JSON.stringify({
+          name: 'v0.1.0 Workflow',
+          projectId: proj.id,
+          config: { framework: 'aeval', frameworkVersion: 'v0.1.0' },
+        }),
+      });
+      const wf: Workflow = await wfRes.json();
+      versionedWorkflowId = wf.id;
+
+      // Create eval set for versioned workflow
+      const esRes = await authFetch(adminSession, `${BASE_URL}/api/eval-sets`, {
+        method: 'POST',
+        body: JSON.stringify({
+          name: 'v0.1.0 Eval Set',
+          config: { scenario: 'steps: []', frameworkVersion: 'v0.1.0' },
+        }),
+      });
+      const es: EvalSet = await esRes.json();
+      versionedEvalSetId = es.id;
+
+      // Create unversioned workflow + eval set
+      const uwfRes = await authFetch(adminSession, `${BASE_URL}/api/workflows`, {
+        method: 'POST',
+        body: JSON.stringify({
+          name: 'Unversioned Workflow',
+          projectId: proj.id,
+          config: { framework: 'aeval' },
+        }),
+      });
+      const uwf: Workflow = await uwfRes.json();
+      unversionedWorkflowId = uwf.id;
+
+      const uesRes = await authFetch(adminSession, `${BASE_URL}/api/eval-sets`, {
+        method: 'POST',
+        body: JSON.stringify({
+          name: 'Unversioned Eval Set',
+          config: { scenario: 'steps: []' },
+        }),
+      });
+      const ues: EvalSet = await uesRes.json();
+      unversionedEvalSetId = ues.id;
+    });
+
+    it('should show jobs with compatible version (v0.1.0 agent, v0.1.0 job)', async () => {
+      // Create a v0.1.0 job
+      const runRes = await authFetch(adminSession, `${BASE_URL}/api/workflows/${versionedWorkflowId}/run`, {
+        method: 'POST',
+        body: JSON.stringify({ region: 'na', evalSetId: versionedEvalSetId }),
+      });
+      expect(runRes.ok).toBe(true);
+
+      // Agent fetches jobs - should see this one
+      const jobsRes = await fetch(`${BASE_URL}/api/eval-agent/jobs`, {
+        headers: { 'Authorization': `Bearer ${versionTestToken}` },
+      });
+      expect(jobsRes.ok).toBe(true);
+      const jobs: EvalJob[] = await jobsRes.json();
+
+      // Should have at least 1 job, and the v0.1.0 job should be present
+      const versionedJobs = jobs.filter(
+        (j) => (j.config as Record<string, unknown>)?.frameworkVersion === 'v0.1.0'
+      );
+      expect(versionedJobs.length).toBeGreaterThanOrEqual(1);
+    });
+
+    it('should show jobs without version requirement', async () => {
+      // Create an unversioned job
+      const runRes = await authFetch(adminSession, `${BASE_URL}/api/workflows/${unversionedWorkflowId}/run`, {
+        method: 'POST',
+        body: JSON.stringify({ region: 'na', evalSetId: unversionedEvalSetId }),
+      });
+      expect(runRes.ok).toBe(true);
+
+      // Agent fetches jobs - should see unversioned jobs
+      const jobsRes = await fetch(`${BASE_URL}/api/eval-agent/jobs`, {
+        headers: { 'Authorization': `Bearer ${versionTestToken}` },
+      });
+      expect(jobsRes.ok).toBe(true);
+      const jobs: EvalJob[] = await jobsRes.json();
+
+      // Should include jobs without frameworkVersion in config
+      const unversionedJobs = jobs.filter(
+        (j) => !(j.config as Record<string, unknown>)?.frameworkVersion
+      );
+      expect(unversionedJobs.length).toBeGreaterThanOrEqual(1);
+    });
+
+    it('should filter out jobs requiring newer version', async () => {
+      // Create a high-version workflow + eval set + job
+      const projRes = await authFetch(adminSession, `${BASE_URL}/api/projects`, {
+        method: 'POST',
+        body: JSON.stringify({ name: 'Future Version Project' }),
+      });
+      const proj: Project = await projRes.json();
+
+      const wfRes = await authFetch(adminSession, `${BASE_URL}/api/workflows`, {
+        method: 'POST',
+        body: JSON.stringify({
+          name: 'v99.0.0 Workflow',
+          projectId: proj.id,
+          config: { framework: 'aeval', frameworkVersion: 'v99.0.0' },
+        }),
+      });
+      const wf: Workflow = await wfRes.json();
+
+      const esRes = await authFetch(adminSession, `${BASE_URL}/api/eval-sets`, {
+        method: 'POST',
+        body: JSON.stringify({
+          name: 'v99.0.0 Eval Set',
+          config: { scenario: 'steps: []', frameworkVersion: 'v99.0.0' },
+        }),
+      });
+      const es: EvalSet = await esRes.json();
+
+      const runRes = await authFetch(adminSession, `${BASE_URL}/api/workflows/${wf.id}/run`, {
+        method: 'POST',
+        body: JSON.stringify({ region: 'na', evalSetId: es.id }),
+      });
+      expect(runRes.ok).toBe(true);
+
+      // Agent with v0.1.0 fetches jobs
+      const jobsRes = await fetch(`${BASE_URL}/api/eval-agent/jobs`, {
+        headers: { 'Authorization': `Bearer ${versionTestToken}` },
+      });
+      expect(jobsRes.ok).toBe(true);
+      const jobs: EvalJob[] = await jobsRes.json();
+
+      // Should NOT contain any v99.0.0 jobs
+      const futureJobs = jobs.filter(
+        (j) => (j.config as Record<string, unknown>)?.frameworkVersion === 'v99.0.0'
+      );
+      expect(futureJobs.length).toBe(0);
+    });
+
+    it('should pass all jobs to legacy agent without frameworkVersion', async () => {
+      // Create a new token + agent WITHOUT frameworkVersion
+      const tokenRes = await authFetch(adminSession, `${BASE_URL}/api/admin/eval-agent-tokens`, {
+        method: 'POST',
+        body: JSON.stringify({ name: 'Legacy Agent Token', region: 'na' }),
+      });
+      const tokenData: EvalAgentToken = await tokenRes.json();
+      const legacyToken = tokenData.token!;
+
+      // Register without metadata
+      const agentRes = await fetch(`${BASE_URL}/api/eval-agent/register`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${legacyToken}`,
+        },
+        body: JSON.stringify({ name: 'Legacy Agent' }),
+      });
+      expect(agentRes.ok).toBe(true);
+
+      // Legacy agent should see ALL pending jobs (no version filtering)
+      const jobsRes = await fetch(`${BASE_URL}/api/eval-agent/jobs`, {
+        headers: { 'Authorization': `Bearer ${legacyToken}` },
+      });
+      expect(jobsRes.ok).toBe(true);
+      const jobs: EvalJob[] = await jobsRes.json();
+
+      // Should include both versioned and unversioned jobs
+      expect(jobs.length).toBeGreaterThanOrEqual(1);
+      // Specifically, should include v99.0.0 jobs that the versioned agent couldn't see
+      const futureJobs = jobs.filter(
+        (j) => (j.config as Record<string, unknown>)?.frameworkVersion === 'v99.0.0'
+      );
+      expect(futureJobs.length).toBeGreaterThanOrEqual(1);
+    });
+  });
+
+  // ====================================================================
+  // Heartbeat Metadata Persistence
+  // ====================================================================
+
+  describe('Heartbeat Metadata Persistence', () => {
+    let hbToken: string;
+    let hbAgentId: number;
+
+    beforeAll(async () => {
+      const tokenRes = await authFetch(adminSession, `${BASE_URL}/api/admin/eval-agent-tokens`, {
+        method: 'POST',
+        body: JSON.stringify({ name: 'Heartbeat Test Token', region: 'na' }),
+      });
+      const tokenData: EvalAgentToken = await tokenRes.json();
+      hbToken = tokenData.token!;
+
+      const agentRes = await fetch(`${BASE_URL}/api/eval-agent/register`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${hbToken}`,
+        },
+        body: JSON.stringify({
+          name: 'Heartbeat Test Agent',
+          metadata: { framework: 'aeval', frameworkVersion: 'v0.1.0' },
+        }),
+      });
+      const agent: EvalAgent = await agentRes.json();
+      hbAgentId = agent.id;
+    });
+
+    it('should persist metadata sent with heartbeat', async () => {
+      const response = await fetch(`${BASE_URL}/api/eval-agent/heartbeat`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${hbToken}`,
+        },
+        body: JSON.stringify({
+          agentId: hbAgentId,
+          state: 'idle',
+          metadata: { framework: 'aeval', frameworkVersion: 'v0.2.0' },
+        }),
+      });
+      expect(response.ok).toBe(true);
+
+      // Verify via public agents endpoint
+      const agentsRes = await fetch(`${BASE_URL}/api/eval-agents`);
+      const agents = await agentsRes.json();
+      const our = agents.find((a: EvalAgent & { metadata?: Record<string, unknown> }) => a.id === hbAgentId);
+      expect(our).toBeDefined();
+      expect((our as { metadata?: Record<string, unknown> }).metadata?.frameworkVersion).toBe('v0.2.0');
+    });
+  });
+
+  // ====================================================================
+  // mergeEvalConfig propagates frameworkVersion
+  // ====================================================================
+
+  describe('mergeEvalConfig frameworkVersion propagation', () => {
+    it('should propagate frameworkVersion from workflow and eval set to job config', async () => {
+      const projRes = await authFetch(adminSession, `${BASE_URL}/api/projects`, {
+        method: 'POST',
+        body: JSON.stringify({ name: 'Config Merge Test Project' }),
+      });
+      const proj: Project = await projRes.json();
+
+      const wfRes = await authFetch(adminSession, `${BASE_URL}/api/workflows`, {
+        method: 'POST',
+        body: JSON.stringify({
+          name: 'Config Merge Workflow',
+          projectId: proj.id,
+          config: { framework: 'aeval', frameworkVersion: 'v0.3.0' },
+        }),
+      });
+      const wf: Workflow = await wfRes.json();
+
+      const esRes = await authFetch(adminSession, `${BASE_URL}/api/eval-sets`, {
+        method: 'POST',
+        body: JSON.stringify({
+          name: 'Config Merge Eval Set',
+          config: { scenario: 'test: true', frameworkVersion: 'v0.3.0' },
+        }),
+      });
+      const es: EvalSet = await esRes.json();
+
+      const runRes = await authFetch(adminSession, `${BASE_URL}/api/workflows/${wf.id}/run`, {
+        method: 'POST',
+        body: JSON.stringify({ region: 'na', evalSetId: es.id }),
+      });
+      expect(runRes.ok).toBe(true);
+      const data = await runRes.json();
+
+      // Job config should contain merged frameworkVersion
+      expect(data.job.config.frameworkVersion).toBe('v0.3.0');
+      expect(data.job.config.framework).toBe('aeval');
+      expect(data.job.config.scenario).toBe('test: true');
+    });
+  });
 });

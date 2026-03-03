@@ -351,6 +351,10 @@ export class DatabaseStorage {
     return db.select().from(evalAgents).where(eq(evalAgents.region, region)).orderBy(desc(evalAgents.createdAt));
   }
 
+  async getEvalAgentsByTokenId(tokenId: number): Promise<EvalAgent[]> {
+    return db.select().from(evalAgents).where(eq(evalAgents.tokenId, tokenId)).orderBy(desc(evalAgents.createdAt)).limit(1);
+  }
+
   async getAllEvalAgents(): Promise<EvalAgent[]> {
     return db.select().from(evalAgents).orderBy(desc(evalAgents.createdAt));
   }

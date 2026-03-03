@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle, CardFooter, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -9,7 +9,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Play, Loader2, XCircle, CheckCircle, Clock, AlertCircle, Rocket } from "lucide-react";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
+import { Play, Loader2, XCircle, CheckCircle, Clock, AlertCircle, Rocket, Eye } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { Link } from "wouter";
@@ -20,6 +21,7 @@ interface AuthStatus {
     id: string;
     plan: string;
   } | null;
+  initialized?: boolean;
 }
 
 interface Provider {
@@ -44,6 +46,14 @@ interface EvalJob {
   error: string | null;
 }
 
+interface EvalSetFull {
+  id: number;
+  name: string;
+  ownerId: number;
+  config: { scenario?: string; framework?: string; builtIn?: boolean; frameworkVersion?: string; [key: string]: unknown };
+  visibility: string;
+}
+
 export default function SelfTest() {
   const { toast } = useToast();
   const [productType, setProductType] = useState<string>("convoai");
@@ -53,6 +63,10 @@ export default function SelfTest() {
   const [selectedWorkflowId, setSelectedWorkflowId] = useState<string>("");
   const [selectedEvalSetId, setSelectedEvalSetId] = useState<string>("");
   const [activeJobId, setActiveJobId] = useState<number | null>(null);
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const [previewEvalSet, setPreviewEvalSet] = useState<EvalSetFull | null>(null);
+  const [previewYaml, setPreviewYaml] = useState("");
+  const [previewName, setPreviewName] = useState("");
 
   const { data: authStatus } = useQuery<AuthStatus>({
     queryKey: ["/api/auth/status"],
@@ -67,8 +81,13 @@ export default function SelfTest() {
     enabled: !!authStatus?.user,
   });
 
-  const { data: evalSets } = useQuery<{ id: number; name: string }[]>({
-    queryKey: ["/api/eval-sets"],
+  const { data: evalSets } = useQuery<EvalSetFull[]>({
+    queryKey: ["/api/eval-sets", { includePublic: true }],
+    queryFn: async () => {
+      const res = await fetch("/api/eval-sets?includePublic=true");
+      if (!res.ok) throw new Error("Failed to fetch eval sets");
+      return res.json();
+    },
     enabled: !!authStatus?.user,
   });
 
@@ -83,6 +102,14 @@ export default function SelfTest() {
     enabled: !!activeJobId && !!authStatus?.user,
     refetchInterval: activeJobId ? 3000 : false, // Poll every 3 seconds when job is active
   });
+
+  // Computed ownership/builtIn check for preview dialog
+  const { isBuiltIn, canEditInPlace } = useMemo(() => {
+    const userId = authStatus?.user?.id ? parseInt(authStatus.user.id) : 0;
+    const isOwn = previewEvalSet?.ownerId === userId;
+    const builtIn = previewEvalSet?.config?.builtIn === true;
+    return { isOwn, isBuiltIn: builtIn, canEditInPlace: isOwn && !builtIn };
+  }, [previewEvalSet, authStatus?.user?.id]);
 
   const createWorkflowMutation = useMutation({
     mutationFn: async () => {
@@ -137,6 +164,66 @@ export default function SelfTest() {
       toast({ title: "Failed to cancel job", description: error.message, variant: "destructive" });
     },
   });
+
+  // Save eval set in-place (own, non-built-in)
+  const saveEvalSetMutation = useMutation({
+    mutationFn: async ({ id, name, config }: { id: number; name: string; config: Record<string, unknown> }) => {
+      const res = await apiRequest("PATCH", `/api/eval-sets/${id}`, { name, config });
+      return res.json();
+    },
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/eval-sets"] });
+      setSelectedEvalSetId(data.id.toString());
+      setPreviewOpen(false);
+      toast({ title: "Eval set saved" });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Failed to save eval set", description: error.message, variant: "destructive" });
+    },
+  });
+
+  // Clone eval set with overrides (not own or built-in)
+  const cloneEvalSetMutation = useMutation({
+    mutationFn: async ({ id, name, config }: { id: number; name: string; config: Record<string, unknown> }) => {
+      const res = await apiRequest("POST", `/api/eval-sets/${id}/clone`, { name, config });
+      return res.json();
+    },
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/eval-sets"] });
+      setSelectedEvalSetId(data.id.toString());
+      setPreviewOpen(false);
+      toast({ title: "Eval set cloned and saved" });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Failed to clone eval set", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const handleOpenPreview = () => {
+    if (!selectedEvalSetId || !evalSets) return;
+    const es = evalSets.find((s) => s.id === parseInt(selectedEvalSetId));
+    if (!es) return;
+    setPreviewEvalSet(es);
+    setPreviewName(es.name);
+    setPreviewYaml(es.config?.scenario || "");
+    setPreviewOpen(true);
+  };
+
+  const handlePreviewSave = () => {
+    if (!previewEvalSet) return;
+
+    const newConfig = { ...previewEvalSet.config, scenario: previewYaml };
+    // Remove builtIn flag from clones
+    if (!canEditInPlace) {
+      delete newConfig.builtIn;
+    }
+
+    if (canEditInPlace) {
+      saveEvalSetMutation.mutate({ id: previewEvalSet.id, name: previewName, config: newConfig });
+    } else {
+      cloneEvalSetMutation.mutate({ id: previewEvalSet.id, name: previewName, config: newConfig });
+    }
+  };
 
   const handleRegisterProduct = () => {
     if (!productName) {
@@ -313,18 +400,29 @@ export default function SelfTest() {
               <div className="space-y-4 pt-4 border-t">
                 <div className="space-y-2">
                   <Label>Eval Set</Label>
-                  <Select value={selectedEvalSetId} onValueChange={setSelectedEvalSetId}>
-                    <SelectTrigger>
-                      <SelectValue placeholder="Select eval set" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {evalSets?.map((es) => (
-                        <SelectItem key={es.id} value={es.id.toString()}>
-                          {es.name}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                  <div className="flex gap-2">
+                    <Select value={selectedEvalSetId} onValueChange={setSelectedEvalSetId}>
+                      <SelectTrigger className="flex-1">
+                        <SelectValue placeholder="Select eval set" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {evalSets?.map((es) => (
+                          <SelectItem key={es.id} value={es.id.toString()}>
+                            {es.name}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <Button
+                      variant="outline"
+                      size="icon"
+                      disabled={!selectedEvalSetId}
+                      onClick={handleOpenPreview}
+                      title="Preview / edit eval set"
+                    >
+                      <Eye className="h-4 w-4" />
+                    </Button>
+                  </div>
                   {evalSets?.length === 0 && (
                     <p className="text-xs text-muted-foreground">
                       No eval sets available. Create one in the Console.
@@ -481,6 +579,58 @@ export default function SelfTest() {
           </CardContent>
         </Card>
       </div>
+
+      {/* Eval Set Preview / Edit Dialog */}
+      <Dialog open={previewOpen} onOpenChange={setPreviewOpen}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>Eval Set Preview</DialogTitle>
+            <DialogDescription>
+              {canEditInPlace
+                ? "Edit the eval set name and scenario YAML below."
+                : isBuiltIn
+                  ? "This is a built-in eval set. Edit and save as your own clone."
+                  : "This eval set belongs to another user. Edit and save as your own clone."}
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <Label>Name</Label>
+              <Input
+                value={previewName}
+                onChange={(e) => setPreviewName(e.target.value)}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label>Scenario YAML</Label>
+              <Textarea
+                className="font-mono text-sm min-h-[200px]"
+                value={previewYaml}
+                onChange={(e) => setPreviewYaml(e.target.value)}
+              />
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setPreviewOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              onClick={handlePreviewSave}
+              disabled={saveEvalSetMutation.isPending || cloneEvalSetMutation.isPending || !previewName}
+            >
+              {saveEvalSetMutation.isPending || cloneEvalSetMutation.isPending ? (
+                <><Loader2 className="mr-2 h-4 w-4 animate-spin" /> Saving...</>
+              ) : canEditInPlace ? (
+                "Save"
+              ) : (
+                "Clone & Save"
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

@@ -104,9 +104,49 @@ class VoxEvalAgentDaemon {
   private heartbeatTimer: NodeJS.Timeout | null = null;
   private jobPollTimer: NodeJS.Timeout | null = null;
   private isRunningJob = false;
+  private aevalVersion: string = "unknown";
 
   constructor(config: DaemonConfig) {
     this.config = config;
+  }
+
+  // -------------------------------------------------------------------------
+  // Version detection
+  // -------------------------------------------------------------------------
+
+  /**
+   * Detect the installed aeval version by running `aeval --version`.
+   * Falls back to "unknown" if the command fails.
+   */
+  async detectAevalVersion(): Promise<string> {
+    try {
+      const proc = spawn('aeval', ['--version'], {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        timeout: 5000,
+      });
+
+      let stdout = '';
+      proc.stdout.on('data', (data) => { stdout += data.toString(); });
+
+      const code = await new Promise<number | null>((resolve) => {
+        proc.on('close', resolve);
+        proc.on('error', () => resolve(null));
+      });
+
+      if (code === 0 && stdout.trim()) {
+        // Expected format: "aeval v0.1.0" or just "v0.1.0"
+        const match = stdout.match(/v[\d.]+/);
+        if (match) {
+          this.aevalVersion = match[0];
+          return this.aevalVersion;
+        }
+      }
+    } catch {
+      // ignore — fall through to "unknown"
+    }
+
+    this.aevalVersion = "unknown";
+    return this.aevalVersion;
   }
 
   // -------------------------------------------------------------------------
@@ -133,9 +173,16 @@ class VoxEvalAgentDaemon {
     console.log(`[Daemon] Registering with Vox server: ${this.config.serverUrl}`);
 
     try {
+      const metadata: Record<string, string> = {
+        framework: this.config.framework,
+      };
+      if (this.aevalVersion !== "unknown") {
+        metadata.frameworkVersion = this.aevalVersion;
+      }
+
       const response = await this.fetch('/api/eval-agent/register', {
         method: 'POST',
-        body: JSON.stringify({ name: this.config.name }),
+        body: JSON.stringify({ name: this.config.name, metadata }),
       });
 
       if (!response.ok) {
@@ -165,11 +212,19 @@ class VoxEvalAgentDaemon {
     if (!this.agentId) return;
 
     try {
+      const metadata: Record<string, string> = {
+        framework: this.config.framework,
+      };
+      if (this.aevalVersion !== "unknown") {
+        metadata.frameworkVersion = this.aevalVersion;
+      }
+
       const response = await this.fetch('/api/eval-agent/heartbeat', {
         method: 'POST',
         body: JSON.stringify({
           agentId: this.agentId,
           state: this.isRunningJob ? 'occupied' : 'idle',
+          metadata,
         }),
       });
 
@@ -762,6 +817,12 @@ async function main() {
   console.log(`[Daemon] Eval framework: ${config.framework}`);
 
   const daemon = new VoxEvalAgentDaemon(config);
+
+  // Detect aeval version before registration so it can be sent as metadata
+  if (config.framework === 'aeval') {
+    const ver = await daemon.detectAevalVersion();
+    console.log(`[Daemon] Detected aeval version: ${ver}`);
+  }
 
   const registered = await daemon.register();
   if (!registered) {

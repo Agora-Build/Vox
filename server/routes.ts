@@ -2,6 +2,7 @@ import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage, hashToken, generateSecureToken, generateEvalAgentToken, mergeEvalConfig, validateEvalConfig } from "./storage";
 import { parseNextCronRun } from "./cron";
+import { seedAevalVersion, compareVersions } from "./aeval-seed";
 import { generateProviderId } from "@shared/schema";
 import { registerApiV1Routes } from "./routes-api-v1";
 import {
@@ -1083,8 +1084,18 @@ export async function registerRoutes(
       if (!user) {
         return res.status(401).json({ error: "Not authenticated" });
       }
-      const evalSets = await storage.getEvalSetsByOwner(user.id);
-      res.json(evalSets);
+
+      const ownSets = await storage.getEvalSetsByOwner(user.id);
+
+      if (req.query.includePublic === "true") {
+        const publicSets = await storage.getPublicEvalSets();
+        // Merge, deduplicating by id (own sets take priority)
+        const ownIds = new Set(ownSets.map((s) => s.id));
+        const merged = [...ownSets, ...publicSets.filter((s) => !ownIds.has(s.id))];
+        return res.json(merged);
+      }
+
+      res.json(ownSets);
     } catch (error) {
       console.error("Error fetching eval sets:", error);
       res.status(500).json({ error: "Failed to fetch eval sets" });
@@ -1167,6 +1178,11 @@ export async function registerRoutes(
         return res.status(403).json({ error: "Not authorized to modify this eval set" });
       }
 
+      // Built-in eval sets are immutable (clone instead)
+      if ((evalSet.config as Record<string, unknown>)?.builtIn === true && !user.isAdmin) {
+        return res.status(403).json({ error: "Built-in eval sets cannot be edited. Use clone instead." });
+      }
+
       const { name, description, visibility, config } = req.body;
       if (config !== undefined && config !== null) {
         const v = validateEvalConfig(config);
@@ -1217,7 +1233,7 @@ export async function registerRoutes(
     }
   });
 
-  // Clone a public eval set
+  // Clone a public eval set (with optional name/config overrides)
   app.post("/api/eval-sets/:id/clone", requireAuth, async (req, res) => {
     try {
       const user = await getCurrentUser(req);
@@ -1234,13 +1250,24 @@ export async function registerRoutes(
         return res.status(403).json({ error: "Can only clone public eval sets" });
       }
 
+      const { name, config } = req.body || {};
+
+      if (config) {
+        const v = validateEvalConfig(config);
+        if (!v.valid) return res.status(400).json({ error: v.error });
+      }
+
+      // Strip builtIn flag from cloned config so clones are always editable
+      const cloneConfig = { ...(config || source.config || {}) };
+      delete (cloneConfig as Record<string, unknown>).builtIn;
+
       const cloned = await storage.createEvalSet({
-        name: `Clone of ${source.name}`,
+        name: name || `Clone of ${source.name}`,
         description: source.description,
         ownerId: user.id,
-        visibility: "public",
+        visibility: user.plan === "basic" ? "public" : "private",
         isMainline: false,
-        config: source.config || {},
+        config: cloneConfig,
       });
 
       res.json(cloned);
@@ -1750,6 +1777,13 @@ export async function registerRoutes(
 
       await storage.updateEvalAgentHeartbeat(agent.id);
 
+      // Fire-and-forget: seed built-in data if daemon reports a new aeval version
+      if (metadata?.frameworkVersion && metadata?.framework === 'aeval') {
+        seedAevalVersion(metadata.frameworkVersion).catch((err) =>
+          console.error("[aeval-seed] Seed from register error:", err),
+        );
+      }
+
       res.json({
         id: agent.id,
         name: agent.name,
@@ -1778,8 +1812,8 @@ export async function registerRoutes(
         return res.status(401).json({ error: "Invalid or revoked eval agent token" });
       }
 
-      const { agentId, state } = req.body;
-      
+      const { agentId, state, metadata } = req.body;
+
       if (!agentId) {
         return res.status(400).json({ error: "Agent ID required" });
       }
@@ -1790,8 +1824,16 @@ export async function registerRoutes(
       }
 
       await storage.updateEvalAgentHeartbeat(agentId);
+
+      const updates: Record<string, unknown> = {};
       if (state && ["idle", "offline", "occupied"].includes(state)) {
-        await storage.updateEvalAgent(agentId, { state });
+        updates.state = state;
+      }
+      if (metadata && typeof metadata === "object") {
+        updates.metadata = metadata;
+      }
+      if (Object.keys(updates).length > 0) {
+        await storage.updateEvalAgent(agentId, updates);
       }
 
       res.json({ message: "Heartbeat received" });
@@ -1819,7 +1861,22 @@ export async function registerRoutes(
         return res.status(401).json({ error: "Invalid or revoked eval agent token" });
       }
 
-      const jobs = await storage.getPendingEvalJobsByRegion(evalAgentToken.region);
+      let jobs = await storage.getPendingEvalJobsByRegion(evalAgentToken.region);
+
+      // Version-gate: if the requesting agent has a frameworkVersion, filter out
+      // jobs whose config requires a newer version than the agent supports.
+      const agents = await storage.getEvalAgentsByTokenId(evalAgentToken.id);
+      const latestAgent = agents[0]; // sorted by createdAt desc
+      const agentVersion = (latestAgent?.metadata as Record<string, unknown>)?.frameworkVersion as string | undefined;
+
+      if (agentVersion) {
+        jobs = jobs.filter((job) => {
+          const jobVersion = (job.config as Record<string, unknown>)?.frameworkVersion as string | undefined;
+          if (!jobVersion) return true; // jobs without version pass through
+          return compareVersions(jobVersion, agentVersion) <= 0;
+        });
+      }
+
       res.json(jobs);
     } catch (error) {
       console.error("Error fetching jobs:", error);

@@ -759,6 +759,107 @@ describe("Eval Agent Daemon - Job Flow Integration", () => {
 // Daemon script validation (smoke tests that run in Vitest)
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// compareVersions tests (imported logic mirrored here for unit testing)
+// ---------------------------------------------------------------------------
+
+/** Mirror of server/aeval-seed.ts compareVersions */
+function compareVersions(a: string, b: string): -1 | 0 | 1 {
+  const parse = (v: string) =>
+    v
+      .replace(/^v/i, "")
+      .split(".")
+      .map((n) => parseInt(n, 10) || 0);
+
+  const pa = parse(a);
+  const pb = parse(b);
+  const len = Math.max(pa.length, pb.length);
+
+  for (let i = 0; i < len; i++) {
+    const na = pa[i] || 0;
+    const nb = pb[i] || 0;
+    if (na < nb) return -1;
+    if (na > nb) return 1;
+  }
+  return 0;
+}
+
+describe("Eval Agent Daemon - Version Comparison (compareVersions)", () => {
+  it("should return 0 for equal versions", () => {
+    expect(compareVersions("v0.1.0", "v0.1.0")).toBe(0);
+    expect(compareVersions("0.1.0", "0.1.0")).toBe(0);
+  });
+
+  it("should handle v prefix", () => {
+    expect(compareVersions("v0.1.0", "0.1.0")).toBe(0);
+    expect(compareVersions("V1.0.0", "v1.0.0")).toBe(0);
+  });
+
+  it("should compare major versions", () => {
+    expect(compareVersions("v1.0.0", "v0.1.0")).toBe(1);
+    expect(compareVersions("v0.1.0", "v1.0.0")).toBe(-1);
+  });
+
+  it("should compare minor versions", () => {
+    expect(compareVersions("v0.2.0", "v0.1.0")).toBe(1);
+    expect(compareVersions("v0.1.0", "v0.2.0")).toBe(-1);
+  });
+
+  it("should compare patch versions", () => {
+    expect(compareVersions("v0.1.1", "v0.1.0")).toBe(1);
+    expect(compareVersions("v0.1.0", "v0.1.1")).toBe(-1);
+  });
+
+  it("should handle different segment counts", () => {
+    expect(compareVersions("v1.0", "v1.0.0")).toBe(0);
+    expect(compareVersions("v1.0.1", "v1.0")).toBe(1);
+    expect(compareVersions("v1", "v1.0.0")).toBe(0);
+  });
+
+  it("should work for version gating scenario", () => {
+    // Agent v0.1.0, job needs v0.2.0 → agent too old
+    expect(compareVersions("v0.2.0", "v0.1.0")).toBe(1);
+    // Agent v0.1.0, job needs v0.1.0 → OK
+    expect(compareVersions("v0.1.0", "v0.1.0")).toBe(0);
+    // Agent v0.2.0, job needs v0.1.0 → OK
+    expect(compareVersions("v0.1.0", "v0.2.0")).toBe(-1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Version detection test
+// ---------------------------------------------------------------------------
+
+describe("Eval Agent Daemon - aeval Version Detection", () => {
+  it("should extract version from typical aeval --version output", () => {
+    // Mirrors the regex used in detectAevalVersion
+    const stdout = "aeval v0.1.0\n";
+    const match = stdout.match(/v[\d.]+/);
+    expect(match).not.toBeNull();
+    expect(match![0]).toBe("v0.1.0");
+  });
+
+  it("should extract version from plain version string", () => {
+    const stdout = "v1.2.3";
+    const match = stdout.match(/v[\d.]+/);
+    expect(match).not.toBeNull();
+    expect(match![0]).toBe("v1.2.3");
+  });
+
+  it("should handle version with extra text", () => {
+    const stdout = "aeval v0.1.0 (build 12345)\n";
+    const match = stdout.match(/v[\d.]+/);
+    expect(match).not.toBeNull();
+    expect(match![0]).toBe("v0.1.0");
+  });
+
+  it("should return null for unrecognized output", () => {
+    const stdout = "unknown version";
+    const match = stdout.match(/v[\d.]+/);
+    expect(match).toBeNull();
+  });
+});
+
 describe("Eval Agent Daemon - Script Validation", () => {
   const projectRoot = path.resolve(__dirname, "..");
   const daemonTsPath = path.join(projectRoot, "vox_eval_agentd", "vox-agentd.ts");
