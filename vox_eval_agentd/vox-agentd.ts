@@ -364,8 +364,9 @@ class VoxEvalAgentDaemon {
           return;
         }
 
-        const outputDir = this.resolveAevalOutputDir(scenarioConfig);
-        const results = this.parseAevalResults(outputDir, stdout);
+        const allOutput = stdout + stderr;
+        const outputDir = this.resolveAevalOutputDir(scenarioConfig, allOutput);
+        const results = this.parseAevalResults(outputDir, allOutput);
         resolve(results);
       });
 
@@ -376,28 +377,68 @@ class VoxEvalAgentDaemon {
   }
 
   /**
-   * Resolve the output directory that aeval writes metrics.json to.
-   * Convention: output lands in <aeval-data>/output/<scenario-basename-without-ext>/
+   * Resolve the aeval session output directory.
+   * aeval writes to: output/<scenario-basename>/<session-id>/
+   * We find the most recent session directory, or parse it from stdout.
    */
-  private resolveAevalOutputDir(scenarioConfig: string): string {
+  private resolveAevalOutputDir(scenarioConfig: string, stdout: string): string {
     const scenarioBasename = path.basename(scenarioConfig, path.extname(scenarioConfig));
-    return path.join(AEVAL_DATA_PATH, 'output', scenarioBasename);
+    const scenarioDir = path.join(AEVAL_DATA_PATH, 'output', scenarioBasename);
+
+    // Try to extract session directory from stdout: "Session directory: output/.../<session-id>"
+    const sessionMatch = stdout.match(/Session directory:\s*(.+)/);
+    if (sessionMatch) {
+      const sessionPath = sessionMatch[1].trim();
+      // Could be relative (output/...) or absolute
+      const resolved = path.isAbsolute(sessionPath)
+        ? sessionPath
+        : path.join(AEVAL_DATA_PATH, sessionPath);
+      if (fs.existsSync(resolved)) {
+        console.log(`[Daemon] Resolved aeval session dir from stdout: ${resolved}`);
+        return resolved;
+      }
+    }
+
+    // Fallback: find the most recent session directory (sorted by name = timestamp)
+    if (fs.existsSync(scenarioDir)) {
+      const entries = fs.readdirSync(scenarioDir)
+        .filter((e) => fs.statSync(path.join(scenarioDir, e)).isDirectory())
+        .sort()
+        .reverse();
+      if (entries.length > 0) {
+        const sessionDir = path.join(scenarioDir, entries[0]);
+        console.log(`[Daemon] Resolved aeval session dir (latest): ${sessionDir}`);
+        return sessionDir;
+      }
+    }
+
+    // Last resort: return the scenario-level directory
+    return scenarioDir;
   }
 
   /**
-   * Parse aeval's metrics.json output into the Vox result schema.
+   * Parse aeval's report.json / metrics.json output into the Vox result schema.
+   * aeval writes results to <session-dir>/report.json or <session-dir>/metrics.json
    */
   private parseAevalResults(outputDir: string, stdout: string): EvalResult {
-    const metricsFile = path.join(outputDir, 'metrics.json');
+    // Try report.json first (aeval's primary output), then metrics.json
+    let metricsFile = path.join(outputDir, 'report.json');
+    if (!fs.existsSync(metricsFile)) {
+      metricsFile = path.join(outputDir, 'metrics.json');
+    }
+    // Also check inside analysis/ subdirectory
+    if (!fs.existsSync(metricsFile)) {
+      metricsFile = path.join(outputDir, 'analysis', 'metrics.json');
+    }
 
     try {
       if (!fs.existsSync(metricsFile)) {
-        console.log(`[Daemon] aeval metrics file not found: ${metricsFile}`);
+        console.log(`[Daemon] aeval metrics file not found in: ${outputDir}`);
         return this.parseAevalStdout(stdout);
       }
 
       const raw = fs.readFileSync(metricsFile, 'utf-8');
-      console.log(`[Daemon] aeval metrics.json:\n${raw}`);
+      console.log(`[Daemon] aeval results (${path.basename(metricsFile)}):\n${raw.slice(0, 2000)}`);
 
       const metrics = JSON.parse(raw);
 
