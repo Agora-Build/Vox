@@ -417,34 +417,64 @@ class VoxEvalAgentDaemon {
   }
 
   /**
-   * Parse aeval's report.json / metrics.json output into the Vox result schema.
-   * aeval writes results to <session-dir>/report.json or <session-dir>/metrics.json
+   * Parse aeval's output into Vox result schema.
+   *
+   * Search order:
+   *   1. metrics.json  — json_exporter analysis output (has computed latencies)
+   *   2. report.json   — session report (may contain step execution timing)
+   *   3. stdout        — extract timing from step execution logs
    */
   private parseAevalResults(outputDir: string, stdout: string): EvalResult {
-    // Try report.json first (aeval's primary output), then metrics.json
-    let metricsFile = path.join(outputDir, 'report.json');
-    if (!fs.existsSync(metricsFile)) {
-      metricsFile = path.join(outputDir, 'metrics.json');
-    }
-    // Also check inside analysis/ subdirectory
-    if (!fs.existsSync(metricsFile)) {
-      metricsFile = path.join(outputDir, 'analysis', 'metrics.json');
+    // List session dir contents for debugging
+    if (fs.existsSync(outputDir)) {
+      try {
+        const files = fs.readdirSync(outputDir);
+        console.log(`[Daemon] Session dir contents: ${files.join(', ')}`);
+      } catch { /* ignore */ }
     }
 
-    try {
-      if (!fs.existsSync(metricsFile)) {
-        console.log(`[Daemon] aeval metrics file not found in: ${outputDir}`);
-        return this.parseAevalStdout(stdout);
+    // Priority 1: metrics.json — the analysis pipeline's computed output
+    for (const candidate of [
+      path.join(outputDir, 'metrics.json'),
+      path.join(outputDir, 'analysis', 'metrics.json'),
+    ]) {
+      if (fs.existsSync(candidate)) {
+        const results = this.tryParseMetricsJson(candidate);
+        if (results && (results.responseLatencyMedian > 0 || results.interruptLatencyMedian > 0)) {
+          console.log(`[Daemon] Parsed aeval results (${path.basename(candidate)}):`, results);
+          return results;
+        }
       }
+    }
 
-      const raw = fs.readFileSync(metricsFile, 'utf-8');
-      console.log(`[Daemon] aeval results (${path.basename(metricsFile)}):\n${raw.slice(0, 2000)}`);
+    // Priority 2: report.json — session report with step execution data
+    const reportJson = path.join(outputDir, 'report.json');
+    if (fs.existsSync(reportJson)) {
+      const results = this.tryParseReportJson(reportJson);
+      if (results && (results.responseLatencyMedian > 0 || results.interruptLatencyMedian > 0)) {
+        console.log(`[Daemon] Parsed aeval results (report.json step timing):`, results);
+        return results;
+      }
+    }
 
+    // Priority 3: stdout — extract timing from step execution logs
+    console.warn(`[Daemon] No metrics in output files — falling back to stdout parsing`);
+    console.warn(`[Daemon] (This likely means aeval's analysis pipeline failed)`);
+    return this.parseAevalStdout(stdout);
+  }
+
+  /**
+   * Parse metrics.json (json_exporter output) — has computed latency metrics.
+   */
+  private tryParseMetricsJson(filePath: string): EvalResult | null {
+    try {
+      const raw = fs.readFileSync(filePath, 'utf-8');
+      console.log(`[Daemon] Reading ${path.basename(filePath)} (${raw.length} bytes)`);
       const metrics = JSON.parse(raw);
+      console.log(`[Daemon] ${path.basename(filePath)} top-level keys: ${Object.keys(metrics).join(', ')}`);
 
       const rl = metrics.response_latency || metrics.responseLatency || {};
       const il = metrics.interrupt_latency || metrics.interruptLatency || {};
-
       const results: EvalResult = { ...RESULT_DEFAULTS };
 
       if (rl.median_ms != null) results.responseLatencyMedian = Math.round(rl.median_ms);
@@ -465,27 +495,232 @@ class VoxEvalAgentDaemon {
       if (metrics.naturalness != null) results.naturalness = metrics.naturalness;
       if (metrics.noise_reduction != null) results.noiseReduction = metrics.noise_reduction;
 
-      console.log(`[Daemon] Parsed aeval results:`, results);
       return results;
     } catch (error: unknown) {
       const msg = error instanceof Error ? error.message : String(error);
-      console.error(`[Daemon] Error parsing aeval metrics:`, msg);
-      return this.parseAevalStdout(stdout);
+      console.error(`[Daemon] Error parsing ${path.basename(filePath)}:`, msg);
+      return null;
     }
   }
 
   /**
-   * Fallback: try to extract latency numbers from aeval stdout when metrics.json is missing.
+   * Parse report.json (session report) — may contain step execution results with timing.
+   * Searches for latency data in nested structures: metrics, analysis, results, steps.
+   */
+  private tryParseReportJson(filePath: string): EvalResult | null {
+    try {
+      const raw = fs.readFileSync(filePath, 'utf-8');
+      console.log(`[Daemon] Reading report.json (${raw.length} bytes)`);
+      const data = JSON.parse(raw);
+      const topKeys = Object.keys(data);
+      console.log(`[Daemon] report.json top-level keys: ${topKeys.join(', ')}`);
+
+      // Try direct metrics (if report.json IS the metrics output)
+      const direct = this.tryParseMetricsJson(filePath);
+      if (direct && (direct.responseLatencyMedian > 0 || direct.interruptLatencyMedian > 0)) {
+        return direct;
+      }
+
+      // Try nested paths where metrics might live
+      for (const key of ['metrics', 'analysis', 'results', 'summary']) {
+        if (data[key] && typeof data[key] === 'object') {
+          console.log(`[Daemon] Checking report.json.${key} keys: ${Object.keys(data[key]).join(', ')}`);
+          const nested = data[key];
+          const rl = nested.response_latency || nested.responseLatency || {};
+          const il = nested.interrupt_latency || nested.interruptLatency || {};
+          if (rl.median_ms != null || rl.median != null || il.median_ms != null || il.median != null) {
+            const results: EvalResult = { ...RESULT_DEFAULTS };
+            if (rl.median_ms != null) results.responseLatencyMedian = Math.round(rl.median_ms);
+            else if (rl.median != null) results.responseLatencyMedian = Math.round(rl.median);
+            if (il.median_ms != null) results.interruptLatencyMedian = Math.round(il.median_ms);
+            else if (il.median != null) results.interruptLatencyMedian = Math.round(il.median);
+            return results;
+          }
+        }
+      }
+
+      // Try to extract latencies from step execution results
+      // aeval may record step results with timing (wait_for_speech duration = latency)
+      const stepResults = data.step_results || data.steps_results || data.execution?.steps;
+      if (Array.isArray(stepResults)) {
+        return this.extractLatenciesFromStepResults(stepResults);
+      }
+
+      // Deep-scan: look for any array of objects with duration/latency/elapsed fields
+      for (const key of topKeys) {
+        const val = data[key];
+        if (Array.isArray(val) && val.length > 0 && typeof val[0] === 'object') {
+          const sample = val[0];
+          if (sample.duration_ms != null || sample.latency_ms != null || sample.elapsed_ms != null) {
+            console.log(`[Daemon] Found timing array at report.json.${key} (${val.length} items)`);
+            return this.extractLatenciesFromStepResults(val);
+          }
+        }
+      }
+
+      return null;
+    } catch (error: unknown) {
+      const msg = error instanceof Error ? error.message : String(error);
+      console.error(`[Daemon] Error parsing report.json:`, msg);
+      return null;
+    }
+  }
+
+  /**
+   * Extract latencies from an array of step execution results.
+   * Each step result may have duration_ms, latency_ms, or elapsed_ms fields.
+   */
+  private extractLatenciesFromStepResults(steps: Record<string, unknown>[]): EvalResult | null {
+    const responseTimes: number[] = [];
+    const interruptTimes: number[] = [];
+
+    for (const step of steps) {
+      const type = (step.type || step.step_type || '') as string;
+      const duration = (step.duration_ms ?? step.latency_ms ?? step.elapsed_ms) as number | undefined;
+
+      if (duration == null || typeof duration !== 'number') continue;
+
+      if (type.includes('wait_for_speech')) {
+        // Heuristic: steps in interrupt phases have "interrupt" context
+        const desc = ((step.description || '') as string).toLowerCase();
+        if (desc.includes('interrupt') || desc.includes('recover')) {
+          interruptTimes.push(duration);
+        } else {
+          responseTimes.push(duration);
+        }
+      }
+    }
+
+    if (responseTimes.length === 0 && interruptTimes.length === 0) return null;
+
+    console.log(`[Daemon] Step timing — response samples: ${responseTimes.length}, interrupt samples: ${interruptTimes.length}`);
+    return this.computeLatencyStats(responseTimes, interruptTimes);
+  }
+
+  /**
+   * Compute median and stddev from latency samples.
+   */
+  private computeLatencyStats(responseTimes: number[], interruptTimes: number[]): EvalResult {
+    const results: EvalResult = { ...RESULT_DEFAULTS };
+
+    const median = (arr: number[]) => {
+      if (arr.length === 0) return 0;
+      const sorted = [...arr].sort((a, b) => a - b);
+      const mid = Math.floor(sorted.length / 2);
+      return sorted.length % 2 !== 0 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+    };
+    const stddev = (arr: number[]) => {
+      if (arr.length < 2) return 0;
+      const mean = arr.reduce((a, b) => a + b, 0) / arr.length;
+      return Math.sqrt(arr.reduce((a, b) => a + (b - mean) ** 2, 0) / arr.length);
+    };
+
+    if (responseTimes.length > 0) {
+      results.responseLatencyMedian = Math.round(median(responseTimes));
+      results.responseLatencySd = Math.round(stddev(responseTimes));
+    }
+    if (interruptTimes.length > 0) {
+      results.interruptLatencyMedian = Math.round(median(interruptTimes));
+      results.interruptLatencySd = Math.round(stddev(interruptTimes));
+    }
+
+    return results;
+  }
+
+  /**
+   * Fallback: extract latencies from aeval stdout by parsing timestamped log lines.
+   *
+   * aeval logs structured lines like:
+   *   2026-03-03 12:13:44.362 | INFO     | Audio playback completed
+   *   2026-03-03 12:14:01.910 | INFO     | Complete speech detected successfully
+   *   2026-03-03 12:15:01.110 | INFO     | Speech start detected
+   *   2026-03-03 12:14:51.126 | INFO     | Phase 1 (response latency) completed.
+   *   2026-03-03 12:15:42.271 | INFO     | Phase 2 (interrupt handling) completed.
+   *
+   * Response latency = time from "Audio playback completed" to next speech detection.
+   * We track phases via "Phase N (...) completed." markers.
    */
   private parseAevalStdout(stdout: string): EvalResult {
     const results: EvalResult = { ...RESULT_DEFAULTS };
 
-    const medianMatch = stdout.match(/median[:\s]+(\d+)/i);
-    if (medianMatch) {
-      results.responseLatencyMedian = parseInt(medianMatch[1]);
+    // Parse timestamped events from log lines
+    // Format: "YYYY-MM-DD HH:MM:SS.mmm | LEVEL | message"
+    const tsRegex = /(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3})\s*\|\s*\w+\s*\|\s*(.+)/g;
+
+    interface LogEvent { ts: number; msg: string }
+    const events: LogEvent[] = [];
+
+    let match;
+    while ((match = tsRegex.exec(stdout)) !== null) {
+      const ts = new Date(match[1].replace(' ', 'T') + 'Z').getTime();
+      if (!isNaN(ts)) {
+        events.push({ ts, msg: match[2].trim() });
+      }
     }
 
-    console.log(`[Daemon] Parsed aeval results (from stdout fallback):`, results);
+    if (events.length === 0) {
+      console.warn(`[Daemon] No timestamped log events found in stdout — results will be zeroed`);
+      return results;
+    }
+
+    console.log(`[Daemon] Parsed ${events.length} timestamped events from stdout`);
+
+    // Walk events: pair "Audio playback completed" → next speech detection
+    // Track current phase via phase markers
+    const responseTimes: number[] = [];
+    const interruptTimes: number[] = [];
+    let currentPhase = 'response'; // default phase until we see a phase marker
+    let lastPlaybackTs: number | null = null;
+    let pendingInterrupt = false; // set when we detect interrupt-phase audio plays
+
+    for (const evt of events) {
+      const msg = evt.msg;
+
+      // Phase completion markers — "Phase N (...) completed." means that phase JUST ENDED.
+      // Switch to the NEXT phase's category.
+      if (/Phase \d+.*response.*completed|Phase \d+.*latency.*completed/i.test(msg)) {
+        currentPhase = 'interrupt'; // after response phase → interrupt comes next
+      } else if (/Phase \d+.*interrupt.*completed/i.test(msg)) {
+        currentPhase = 'response'; // after interrupt phase → context recall / response
+      }
+
+      // Track audio playback completion
+      if (msg === 'Audio playback completed') {
+        lastPlaybackTs = evt.ts;
+        pendingInterrupt = currentPhase === 'interrupt';
+        continue;
+      }
+
+      // Speech detection events (pair with last playback)
+      if (lastPlaybackTs != null) {
+        const isSpeechEvent =
+          msg.includes('Complete speech detected') ||
+          msg.includes('Speech start detected');
+
+        if (isSpeechEvent) {
+          const delta = evt.ts - lastPlaybackTs;
+          // Sanity: 100ms < latency < 120s
+          if (delta > 100 && delta < 120000) {
+            if (pendingInterrupt) {
+              interruptTimes.push(delta);
+            } else {
+              responseTimes.push(delta);
+            }
+          }
+          lastPlaybackTs = null;
+        }
+      }
+    }
+
+    if (responseTimes.length > 0 || interruptTimes.length > 0) {
+      const computed = this.computeLatencyStats(responseTimes, interruptTimes);
+      Object.assign(results, computed);
+      console.log(`[Daemon] Parsed from stdout timestamps — response: [${responseTimes.map(t => t + 'ms').join(', ')}], interrupt: [${interruptTimes.map(t => t + 'ms').join(', ')}]`);
+    } else {
+      console.warn(`[Daemon] No playback→speech pairs found in stdout — results will be zeroed`);
+    }
+
+    console.log(`[Daemon] Final aeval results (stdout fallback):`, results);
     return results;
   }
 

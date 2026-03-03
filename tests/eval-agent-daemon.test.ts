@@ -462,16 +462,135 @@ function parseAevalMetricsJson(jsonContent: string): EvalResults {
   return results;
 }
 
-/** Mirror of daemon's parseAevalStdout */
-function parseAevalStdout(stdout: string): EvalResults {
+/**
+ * Mirror of daemon's computeLatencyStats
+ */
+function computeLatencyStats(responseTimes: number[], interruptTimes: number[]): EvalResults {
   const results = { ...AEVAL_DEFAULTS };
 
-  const medianMatch = stdout.match(/median[:\s]+(\d+)/i);
-  if (medianMatch) {
-    results.responseLatencyMedian = parseInt(medianMatch[1]);
+  const median = (arr: number[]) => {
+    if (arr.length === 0) return 0;
+    const sorted = [...arr].sort((a, b) => a - b);
+    const mid = Math.floor(sorted.length / 2);
+    return sorted.length % 2 !== 0 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+  };
+  const stddev = (arr: number[]) => {
+    if (arr.length < 2) return 0;
+    const mean = arr.reduce((a, b) => a + b, 0) / arr.length;
+    return Math.sqrt(arr.reduce((a, b) => a + (b - mean) ** 2, 0) / arr.length);
+  };
+
+  if (responseTimes.length > 0) {
+    results.responseLatencyMedian = Math.round(median(responseTimes));
+    results.responseLatencySd = Math.round(stddev(responseTimes));
+  }
+  if (interruptTimes.length > 0) {
+    results.interruptLatencyMedian = Math.round(median(interruptTimes));
+    results.interruptLatencySd = Math.round(stddev(interruptTimes));
   }
 
   return results;
+}
+
+/**
+ * Mirror of daemon's parseAevalStdout — timestamp-based log parser.
+ *
+ * Parses aeval's structured log lines:
+ *   "YYYY-MM-DD HH:MM:SS.mmm | LEVEL | message"
+ * and computes latencies from "Audio playback completed" → speech detection deltas.
+ */
+function parseAevalStdout(stdout: string): EvalResults {
+  const results = { ...AEVAL_DEFAULTS };
+
+  const tsRegex = /(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3})\s*\|\s*\w+\s*\|\s*(.+)/g;
+
+  interface LogEvent { ts: number; msg: string }
+  const events: LogEvent[] = [];
+
+  let match;
+  while ((match = tsRegex.exec(stdout)) !== null) {
+    const ts = new Date(match[1].replace(' ', 'T') + 'Z').getTime();
+    if (!isNaN(ts)) {
+      events.push({ ts, msg: match[2].trim() });
+    }
+  }
+
+  if (events.length === 0) return results;
+
+  const responseTimes: number[] = [];
+  const interruptTimes: number[] = [];
+  let currentPhase = 'response';
+  let lastPlaybackTs: number | null = null;
+  let pendingInterrupt = false;
+
+  for (const evt of events) {
+    const msg = evt.msg;
+
+    // Phase completion markers — switch to the NEXT phase's category
+    if (/Phase \d+.*response.*completed|Phase \d+.*latency.*completed/i.test(msg)) {
+      currentPhase = 'interrupt'; // after response → interrupt comes next
+    } else if (/Phase \d+.*interrupt.*completed/i.test(msg)) {
+      currentPhase = 'response'; // after interrupt → context recall / response
+    }
+
+    if (msg === 'Audio playback completed') {
+      lastPlaybackTs = evt.ts;
+      pendingInterrupt = currentPhase === 'interrupt';
+      continue;
+    }
+
+    if (lastPlaybackTs != null) {
+      const isSpeechEvent =
+        msg.includes('Complete speech detected') ||
+        msg.includes('Speech start detected');
+
+      if (isSpeechEvent) {
+        const delta = evt.ts - lastPlaybackTs;
+        if (delta > 100 && delta < 120000) {
+          if (pendingInterrupt) {
+            interruptTimes.push(delta);
+          } else {
+            responseTimes.push(delta);
+          }
+        }
+        lastPlaybackTs = null;
+      }
+    }
+  }
+
+  if (responseTimes.length > 0 || interruptTimes.length > 0) {
+    const computed = computeLatencyStats(responseTimes, interruptTimes);
+    Object.assign(results, computed);
+  }
+
+  return results;
+}
+
+/**
+ * Mirror of daemon's extractLatenciesFromStepResults
+ */
+function extractLatenciesFromStepResults(steps: Record<string, unknown>[]): EvalResults | null {
+  const responseTimes: number[] = [];
+  const interruptTimes: number[] = [];
+
+  for (const step of steps) {
+    const type = (step.type || step.step_type || '') as string;
+    const duration = (step.duration_ms ?? step.latency_ms ?? step.elapsed_ms) as number | undefined;
+
+    if (duration == null || typeof duration !== 'number') continue;
+
+    if (type.includes('wait_for_speech')) {
+      const desc = ((step.description || '') as string).toLowerCase();
+      if (desc.includes('interrupt') || desc.includes('recover')) {
+        interruptTimes.push(duration);
+      } else {
+        responseTimes.push(duration);
+      }
+    }
+  }
+
+  if (responseTimes.length === 0 && interruptTimes.length === 0) return null;
+  return computeLatencyStats(responseTimes, interruptTimes);
 }
 
 /** Mirror of daemon's resolveAevalOutputDir */
@@ -598,29 +717,235 @@ describe("Eval Agent Daemon - aeval Metrics JSON Parsing", () => {
   });
 });
 
-describe("Eval Agent Daemon - aeval Stdout Fallback Parsing", () => {
-  it("should extract median from stdout line", () => {
-    const stdout = `[aeval] Starting eval...\n[aeval] median: 480\n[aeval] Done.`;
-    const results = parseAevalStdout(stdout);
-    expect(results.responseLatencyMedian).toBe(480);
+describe("Eval Agent Daemon - aeval Stdout Timestamp Parsing", () => {
+  it("should return defaults for empty stdout", () => {
+    const results = parseAevalStdout("");
+    expect(results.responseLatencyMedian).toBe(0);
   });
 
-  it("should handle case-insensitive match", () => {
-    const stdout = `Median: 320`;
-    const results = parseAevalStdout(stdout);
-    expect(results.responseLatencyMedian).toBe(320);
-  });
-
-  it("should return defaults when no median found in stdout", () => {
-    const stdout = `[aeval] some random output with no numbers we care about`;
+  it("should return defaults for non-timestamped output", () => {
+    const stdout = `[aeval] some random output with no timestamps`;
     const results = parseAevalStdout(stdout);
     expect(results.responseLatencyMedian).toBe(0);
     expect(results.networkResilience).toBe(85);
   });
 
-  it("should return defaults for empty stdout", () => {
-    const results = parseAevalStdout("");
+  it("should parse response latency from playback→speech pairs", () => {
+    // Simulate: play question, then speech detected 2s later
+    const stdout = [
+      "2026-03-03 12:00:00.000 | INFO     | Audio playback completed",
+      "2026-03-03 12:00:02.000 | INFO     | Complete speech detected successfully",
+    ].join("\n");
+    const results = parseAevalStdout(stdout);
+    expect(results.responseLatencyMedian).toBe(2000);
+  });
+
+  it("should parse multiple response latency samples", () => {
+    const stdout = [
+      "2026-03-03 12:00:00.000 | INFO     | Audio playback completed",
+      "2026-03-03 12:00:01.500 | INFO     | Complete speech detected successfully",
+      "2026-03-03 12:00:10.000 | INFO     | Audio playback completed",
+      "2026-03-03 12:00:12.000 | INFO     | Complete speech detected successfully",
+      "2026-03-03 12:00:20.000 | INFO     | Audio playback completed",
+      "2026-03-03 12:00:21.000 | INFO     | Complete speech detected successfully",
+    ].join("\n");
+    const results = parseAevalStdout(stdout);
+    // Samples: [1500, 2000, 1000] → median = 1500
+    expect(results.responseLatencyMedian).toBe(1500);
+    expect(results.responseLatencySd).toBeGreaterThan(0);
+  });
+
+  it("should separate interrupt phase from response phase", () => {
+    const stdout = [
+      // Phase 1: response
+      "2026-03-03 12:00:00.000 | INFO     | Audio playback completed",
+      "2026-03-03 12:00:01.200 | INFO     | Complete speech detected successfully",
+      "2026-03-03 12:00:05.000 | INFO     | Phase 1 (response latency) completed.",
+      // Phase 2: interrupt
+      "2026-03-03 12:00:10.000 | INFO     | Audio playback completed",
+      "2026-03-03 12:00:13.000 | INFO     | Complete speech detected successfully",
+    ].join("\n");
+    const results = parseAevalStdout(stdout);
+    expect(results.responseLatencyMedian).toBe(1200);
+    expect(results.interruptLatencyMedian).toBe(3000);
+  });
+
+  it("should handle Speech start detected events", () => {
+    const stdout = [
+      "2026-03-03 12:00:00.000 | INFO     | Audio playback completed",
+      "2026-03-03 12:00:00.800 | INFO     | Speech start detected",
+    ].join("\n");
+    const results = parseAevalStdout(stdout);
+    expect(results.responseLatencyMedian).toBe(800);
+  });
+
+  it("should parse real aeval output (from Docker logs)", () => {
+    // Extracted from actual aeval v0.1.1 Docker run
+    const stdout = [
+      "2026-03-03 12:13:44.362 | INFO     | Audio playback completed",
+      "2026-03-03 12:14:01.910 | INFO     | Complete speech detected successfully",
+      "2026-03-03 12:14:08.942 | INFO     | Audio playback completed",
+      "2026-03-03 12:14:25.821 | INFO     | Complete speech detected successfully",
+      "2026-03-03 12:14:32.234 | INFO     | Audio playback completed",
+      "2026-03-03 12:14:51.126 | INFO     | Complete speech detected successfully",
+      "2026-03-03 12:14:51.126 | INFO     | Phase 1 (response latency) completed.",
+      // Phase 2 interrupt
+      "2026-03-03 12:14:56.693 | INFO     | Audio playback completed",
+      "2026-03-03 12:15:01.110 | INFO     | Speech start detected",
+      "2026-03-03 12:15:02.261 | INFO     | Audio playback completed",
+      "2026-03-03 12:15:15.167 | INFO     | Complete speech detected successfully",
+      "2026-03-03 12:15:22.191 | INFO     | Audio playback completed",
+      "2026-03-03 12:15:27.462 | INFO     | Speech start detected",
+      "2026-03-03 12:15:28.301 | INFO     | Audio playback completed",
+      "2026-03-03 12:15:42.271 | INFO     | Complete speech detected successfully",
+      "2026-03-03 12:15:42.271 | INFO     | Phase 2 (interrupt handling) completed.",
+      // Phase 3 context recall
+      "2026-03-03 12:15:48.691 | INFO     | Audio playback completed",
+      "2026-03-03 12:16:07.798 | INFO     | Complete speech detected successfully",
+      "2026-03-03 12:16:07.798 | INFO     | Phase 3 (context recall) completed.",
+    ].join("\n");
+
+    const results = parseAevalStdout(stdout);
+
+    // Phase 1 response: [17548, 16879, 18892]ms
+    // Phase 3 context recall: [19107]ms (counts as response)
+    // Combined response: [16879, 17548, 18892, 19107] → median = (17548+18892)/2 = 18220
+    expect(results.responseLatencyMedian).toBeGreaterThan(16000);
+    expect(results.responseLatencyMedian).toBeLessThan(20000);
+    expect(results.responseLatencySd).toBeGreaterThan(0);
+
+    // Phase 2 interrupt: [4417, 12906, 5271, 13970]ms → median = (5271+12906)/2 = 9089
+    expect(results.interruptLatencyMedian).toBeGreaterThan(4000);
+    expect(results.interruptLatencyMedian).toBeLessThan(14000);
+  });
+
+  it("should skip deltas under 100ms (noise)", () => {
+    const stdout = [
+      "2026-03-03 12:00:00.000 | INFO     | Audio playback completed",
+      "2026-03-03 12:00:00.050 | INFO     | Complete speech detected successfully",
+    ].join("\n");
+    const results = parseAevalStdout(stdout);
+    expect(results.responseLatencyMedian).toBe(0); // 50ms filtered out
+  });
+
+  it("should skip deltas over 120s (timeout)", () => {
+    const stdout = [
+      "2026-03-03 12:00:00.000 | INFO     | Audio playback completed",
+      "2026-03-03 12:03:00.000 | INFO     | Complete speech detected successfully",
+    ].join("\n");
+    const results = parseAevalStdout(stdout);
+    expect(results.responseLatencyMedian).toBe(0); // 180s filtered out
+  });
+
+  it("should handle context recall phase as response (not interrupt)", () => {
+    const stdout = [
+      "2026-03-03 12:00:00.000 | INFO     | Phase 2 (interrupt handling) completed.",
+      // Phase 3 - context recall
+      "2026-03-03 12:00:05.000 | INFO     | Audio playback completed",
+      "2026-03-03 12:00:07.500 | INFO     | Complete speech detected successfully",
+      "2026-03-03 12:00:07.500 | INFO     | Phase 3 (context recall) completed.",
+    ].join("\n");
+    const results = parseAevalStdout(stdout);
+    // Context recall should count as response, not interrupt
+    expect(results.responseLatencyMedian).toBe(2500);
+    expect(results.interruptLatencyMedian).toBe(0);
+  });
+});
+
+describe("Eval Agent Daemon - Step Result Extraction", () => {
+  it("should extract response latencies from wait_for_speech steps", () => {
+    const steps = [
+      { type: "audio.wait_for_speech", description: "Wait for agent response", duration_ms: 1200 },
+      { type: "audio.wait_for_speech", description: "Wait for agent response", duration_ms: 950 },
+      { type: "audio.wait_for_speech", description: "Wait for agent response", duration_ms: 1100 },
+    ];
+    const results = extractLatenciesFromStepResults(steps);
+    expect(results).not.toBeNull();
+    expect(results!.responseLatencyMedian).toBe(1100); // median of [950, 1100, 1200]
+  });
+
+  it("should separate interrupt steps from response steps", () => {
+    const steps = [
+      { type: "audio.wait_for_speech", description: "Wait for agent response", duration_ms: 1200 },
+      { type: "audio.wait_for_speech", description: "Wait for agent to recover from interrupt", duration_ms: 450 },
+    ];
+    const results = extractLatenciesFromStepResults(steps);
+    expect(results).not.toBeNull();
+    expect(results!.responseLatencyMedian).toBe(1200);
+    expect(results!.interruptLatencyMedian).toBe(450);
+  });
+
+  it("should handle latency_ms and elapsed_ms field variants", () => {
+    const steps = [
+      { type: "audio.wait_for_speech", description: "Response", latency_ms: 800 },
+      { type: "audio.wait_for_speech", description: "Response", elapsed_ms: 900 },
+    ];
+    const results = extractLatenciesFromStepResults(steps);
+    expect(results).not.toBeNull();
+    expect(results!.responseLatencyMedian).toBe(850); // median of [800, 900]
+  });
+
+  it("should handle step_type field variant", () => {
+    const steps = [
+      { step_type: "audio.wait_for_speech", description: "Response", duration_ms: 1000 },
+    ];
+    const results = extractLatenciesFromStepResults(steps);
+    expect(results).not.toBeNull();
+    expect(results!.responseLatencyMedian).toBe(1000);
+  });
+
+  it("should return null when no wait_for_speech steps have timing", () => {
+    const steps = [
+      { type: "audio.play", description: "Play question", duration_ms: 3000 },
+      { type: "platform.setup", description: "Setup", duration_ms: 500 },
+    ];
+    const results = extractLatenciesFromStepResults(steps);
+    expect(results).toBeNull();
+  });
+
+  it("should skip steps without duration", () => {
+    const steps = [
+      { type: "audio.wait_for_speech", description: "Response" },
+      { type: "audio.wait_for_speech", description: "Response", duration_ms: 1100 },
+    ];
+    const results = extractLatenciesFromStepResults(steps);
+    expect(results).not.toBeNull();
+    expect(results!.responseLatencyMedian).toBe(1100);
+  });
+});
+
+describe("Eval Agent Daemon - computeLatencyStats", () => {
+  it("should compute median and stddev for response times", () => {
+    const results = computeLatencyStats([200, 300, 400], []);
+    expect(results.responseLatencyMedian).toBe(300);
+    expect(results.responseLatencySd).toBeGreaterThan(0);
+    expect(results.interruptLatencyMedian).toBe(0);
+  });
+
+  it("should compute median and stddev for interrupt times", () => {
+    const results = computeLatencyStats([], [100, 150, 200]);
     expect(results.responseLatencyMedian).toBe(0);
+    expect(results.interruptLatencyMedian).toBe(150);
+    expect(results.interruptLatencySd).toBeGreaterThan(0);
+  });
+
+  it("should handle single sample (no stddev)", () => {
+    const results = computeLatencyStats([500], []);
+    expect(results.responseLatencyMedian).toBe(500);
+    expect(results.responseLatencySd).toBe(0);
+  });
+
+  it("should handle empty arrays", () => {
+    const results = computeLatencyStats([], []);
+    expect(results.responseLatencyMedian).toBe(0);
+    expect(results.interruptLatencyMedian).toBe(0);
+  });
+
+  it("should keep default values for non-latency fields", () => {
+    const results = computeLatencyStats([1000], []);
+    expect(results.networkResilience).toBe(85);
+    expect(results.naturalness).toBe(3.5);
+    expect(results.noiseReduction).toBe(90);
   });
 });
 
