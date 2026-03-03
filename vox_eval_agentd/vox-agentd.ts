@@ -359,6 +359,11 @@ class VoxEvalAgentDaemon {
       proc.on('close', (code) => {
         console.log(`[Daemon] aeval exited with code ${code}`);
 
+        if (code !== 0) {
+          reject(new Error(`aeval exited with code ${code}: ${stderr.trim().split('\n').pop() || 'unknown error'}`));
+          return;
+        }
+
         const outputDir = this.resolveAevalOutputDir(scenarioConfig);
         const results = this.parseAevalResults(outputDir, stdout);
         resolve(results);
@@ -660,18 +665,8 @@ class VoxEvalAgentDaemon {
       console.log(`[Daemon] Job ${job.id} results:`, results);
       return results;
     } catch (error: unknown) {
-      const msg = error instanceof Error ? error.message : String(error);
-      console.error(`[Daemon] Job ${job.id} failed:`, msg);
-
-      return {
-        responseLatencyMedian: 0,
-        responseLatencySd: 0,
-        interruptLatencyMedian: 0,
-        interruptLatencySd: 0,
-        networkResilience: 0,
-        naturalness: 0,
-        noiseReduction: 0,
-      };
+      // Re-throw so processJobs can report the job as failed (not completed)
+      throw error;
     } finally {
       this.cleanupTempFiles(...tempFiles);
     }

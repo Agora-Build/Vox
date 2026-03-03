@@ -70,6 +70,15 @@ RUN ARCH=$(case "${TARGETARCH}" in arm64) echo "arm64" ;; *) echo "x86_64" ;; es
     curl -fSL -o /usr/local/bin/aeval "${DOWNLOAD_URL}" && \
     chmod +x /usr/local/bin/aeval
 
+# Install Playwright Chromium for aeval (Python Playwright 1.57.x = chromium-1200)
+# aeval is a bundled Python binary that expects browsers at /root/.cache/ms-playwright/
+RUN apt-get update && apt-get install -y python3-pip --no-install-recommends \
+    && pip3 install --break-system-packages playwright==1.57.0 \
+    && playwright install chromium \
+    && pip3 uninstall -y playwright --break-system-packages \
+    && apt-get purge -y python3-pip && apt-get autoremove -y \
+    && rm -rf /var/lib/apt/lists/*
+
 # Copy aeval runtime data from submodule: config/, examples/, corpus/
 COPY aeval-data/ /app/aeval-data/
 

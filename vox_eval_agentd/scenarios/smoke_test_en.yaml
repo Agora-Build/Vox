@@ -1,0 +1,100 @@
+---
+name: smoke_test_en
+description: Quick smoke test - response + interrupt + context recall (English)
+analysis:
+  preset: config/analysis_presets/default.yaml
+  report:
+    template: default.html.jinja2
+    thresholds:
+      timeout_threshold_ms: 15000
+      min_response_rate: 0.8
+      max_avg_latency_ms: 2000
+      max_timeout_count: 1
+      max_ai_interrupt_count: 1
+params:
+  output_dir: temp/output
+steps:
+  # ------------------------------------------------------------------
+  # Setup: Connect to platform and wait for greeting
+  # ------------------------------------------------------------------
+  - type: platform.setup
+    platform_id: livekit
+    params:
+      mode: public
+  - type: audio.start_recording
+  - type: platform.enter
+    params:
+      tone_name: ''
+
+  - type: audio.wait_for_speech
+    timeout_ms: 30000
+    silence_duration_ms: 1500
+    description: Wait for agent greeting
+
+  # ------------------------------------------------------------------
+  # Phase 1: Response latency — ask 3 questions, measure response time
+  # ------------------------------------------------------------------
+  - type: control.for_each
+    corpus_set: three_questions_en
+    steps:
+      - type: audio.play
+        corpus_id: ${item}
+        description: Play question (response latency test)
+      - type: audio.wait_for_speech
+        end_timeout_ms: 45000
+        silence_duration_ms: 1000
+        description: Wait for full agent response
+
+  - type: control.log
+    message: Phase 1 (response latency) completed.
+
+  # ------------------------------------------------------------------
+  # Phase 2: Interrupt handling — ask then interrupt with short phrase
+  # ------------------------------------------------------------------
+  - type: control.for_each
+    items:
+      - question_id: en_question1
+        material_id: en_Short05Wordswav1
+      - question_id: en_question2
+        material_id: en_Short05Wordswav2
+    steps:
+      - type: audio.play
+        corpus_id: ${item.question_id}
+        description: Play question before interrupt
+      - type: audio.wait_for_speech_start
+        timeout_ms: 15000
+        wait_after_start_ms: 2000
+        description: Wait for agent to start, then 2s before interrupting
+      - type: audio.play
+        corpus_id: ${item.material_id}
+        description: Play short phrase as interrupt
+      - type: audio.wait_for_speech
+        end_timeout_ms: 40000
+        silence_duration_ms: 1000
+        description: Wait for agent to recover from interrupt
+
+  - type: control.log
+    message: Phase 2 (interrupt handling) completed.
+
+  # ------------------------------------------------------------------
+  # Phase 3: Context recall — ask a follow-up referencing earlier topic
+  # ------------------------------------------------------------------
+  - type: audio.play
+    corpus_id: en_question3
+    description: Ask a new question to test context recall
+
+  - type: audio.wait_for_speech
+    end_timeout_ms: 45000
+    silence_duration_ms: 1500
+    description: Wait for agent response (context recall)
+
+  - type: control.log
+    message: Phase 3 (context recall) completed.
+
+  # ------------------------------------------------------------------
+  # Teardown
+  # ------------------------------------------------------------------
+  - type: control.log
+    message: Smoke test (en) completed.
+  - type: audio.stop_recording
+  - type: platform.exit
