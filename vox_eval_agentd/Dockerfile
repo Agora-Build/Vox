@@ -59,7 +59,7 @@ WORKDIR /app
 # --- aeval framework ---
 # Download aeval binary from GitHub Release (multi-platform)
 ARG TARGETARCH
-ARG AEVAL_VERSION=v0.1.0
+ARG AEVAL_VERSION=v0.1.1
 RUN ARCH=$(case "${TARGETARCH}" in arm64) echo "arm64" ;; *) echo "x86_64" ;; esac) && \
     if [ "${AEVAL_VERSION}" = "latest" ]; then \
       DOWNLOAD_URL="https://github.com/Agora-Build/aeval/releases/latest/download/aeval-linux-${ARCH}"; \
