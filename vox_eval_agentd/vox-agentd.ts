@@ -125,17 +125,18 @@ class VoxEvalAgentDaemon {
         timeout: 5000,
       });
 
-      let stdout = '';
-      proc.stdout.on('data', (data) => { stdout += data.toString(); });
+      let output = '';
+      proc.stdout.on('data', (data) => { output += data.toString(); });
+      proc.stderr.on('data', (data) => { output += data.toString(); });
 
       const code = await new Promise<number | null>((resolve) => {
         proc.on('close', resolve);
         proc.on('error', () => resolve(null));
       });
 
-      if (code === 0 && stdout.trim()) {
+      if (code === 0 && output.trim()) {
         // Expected format: "aeval v0.1.0" or just "v0.1.0"
-        const match = stdout.match(/v[\d.]+/);
+        const match = output.match(/v[\d.]+/);
         if (match) {
           this.aevalVersion = match[0];
           return this.aevalVersion;
