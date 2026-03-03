@@ -135,10 +135,10 @@ class VoxEvalAgentDaemon {
       });
 
       if (code === 0 && output.trim()) {
-        // Expected format: "aeval v0.1.0" or just "v0.1.0"
-        const match = output.match(/v[\d.]+/);
+        // Expected formats: "aeval 0.1.1", "aeval v0.1.0", "v0.1.0"
+        const match = output.match(/v?(\d+\.\d+\.\d+)/);
         if (match) {
-          this.aevalVersion = match[0];
+          this.aevalVersion = `v${match[1]}`;
           return this.aevalVersion;
         }
       }

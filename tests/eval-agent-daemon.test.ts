@@ -831,32 +831,34 @@ describe("Eval Agent Daemon - Version Comparison (compareVersions)", () => {
 // ---------------------------------------------------------------------------
 
 describe("Eval Agent Daemon - aeval Version Detection", () => {
-  it("should extract version from typical aeval --version output", () => {
-    // Mirrors the regex used in detectAevalVersion
-    const stdout = "aeval v0.1.0\n";
-    const match = stdout.match(/v[\d.]+/);
-    expect(match).not.toBeNull();
-    expect(match![0]).toBe("v0.1.0");
+  // Mirrors the regex used in detectAevalVersion: /v?(\d+\.\d+\.\d+)/
+  // Always normalizes to "v" prefix
+  const parseVersion = (output: string): string | null => {
+    const match = output.match(/v?(\d+\.\d+\.\d+)/);
+    return match ? `v${match[1]}` : null;
+  };
+
+  it("should extract version from 'aeval 0.1.1' (no v prefix)", () => {
+    expect(parseVersion("aeval 0.1.1\n")).toBe("v0.1.1");
+  });
+
+  it("should extract version from 'aeval v0.1.0' (with v prefix)", () => {
+    expect(parseVersion("aeval v0.1.0\n")).toBe("v0.1.0");
   });
 
   it("should extract version from plain version string", () => {
-    const stdout = "v1.2.3";
-    const match = stdout.match(/v[\d.]+/);
-    expect(match).not.toBeNull();
-    expect(match![0]).toBe("v1.2.3");
+    expect(parseVersion("v1.2.3")).toBe("v1.2.3");
+    expect(parseVersion("1.2.3")).toBe("v1.2.3");
   });
 
   it("should handle version with extra text", () => {
-    const stdout = "aeval v0.1.0 (build 12345)\n";
-    const match = stdout.match(/v[\d.]+/);
-    expect(match).not.toBeNull();
-    expect(match![0]).toBe("v0.1.0");
+    expect(parseVersion("aeval v0.1.0 (build 12345)\n")).toBe("v0.1.0");
+    expect(parseVersion("aeval 0.1.1 (build 12345)\n")).toBe("v0.1.1");
   });
 
   it("should return null for unrecognized output", () => {
-    const stdout = "unknown version";
-    const match = stdout.match(/v[\d.]+/);
-    expect(match).toBeNull();
+    expect(parseVersion("unknown version")).toBeNull();
+    expect(parseVersion("")).toBeNull();
   });
 });
 
