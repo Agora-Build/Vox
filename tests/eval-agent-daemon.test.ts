@@ -438,11 +438,13 @@ function parseAevalMetricsJson(jsonContent: string): EvalResults {
 
   const metrics = JSON.parse(jsonContent);
 
-  const rl = metrics.response_latency || metrics.responseLatency || {};
-  const il = metrics.interrupt_latency || metrics.interruptLatency || {};
+  const rl = metrics.response_latency || metrics.responseLatency || metrics.response_metrics || {};
+  const il = metrics.interrupt_latency || metrics.interruptLatency || metrics.interruption_metrics || {};
 
   if (rl.median_ms != null) results.responseLatencyMedian = Math.round(rl.median_ms);
   else if (rl.median != null) results.responseLatencyMedian = Math.round(rl.median);
+  else if (rl.avg_latency_ms != null) results.responseLatencyMedian = Math.round(rl.avg_latency_ms);
+  else if (rl.average_ms != null) results.responseLatencyMedian = Math.round(rl.average_ms);
 
   if (rl.stddev_ms != null) results.responseLatencySd = Math.round(rl.stddev_ms);
   else if (rl.stddev != null) results.responseLatencySd = Math.round(rl.stddev);
@@ -450,6 +452,8 @@ function parseAevalMetricsJson(jsonContent: string): EvalResults {
 
   if (il.median_ms != null) results.interruptLatencyMedian = Math.round(il.median_ms);
   else if (il.median != null) results.interruptLatencyMedian = Math.round(il.median);
+  else if (il.avg_latency_ms != null) results.interruptLatencyMedian = Math.round(il.avg_latency_ms);
+  else if (il.average_ms != null) results.interruptLatencyMedian = Math.round(il.average_ms);
 
   if (il.stddev_ms != null) results.interruptLatencySd = Math.round(il.stddev_ms);
   else if (il.stddev != null) results.interruptLatencySd = Math.round(il.stddev);
@@ -458,6 +462,15 @@ function parseAevalMetricsJson(jsonContent: string): EvalResults {
   if (metrics.network_resilience != null) results.networkResilience = metrics.network_resilience;
   if (metrics.naturalness != null) results.naturalness = metrics.naturalness;
   if (metrics.noise_reduction != null) results.noiseReduction = metrics.noise_reduction;
+
+  // Try aggregated_summary as fallback
+  const agg = metrics.aggregated_summary || {};
+  if (results.responseLatencyMedian === 0 && agg.avg_response_latency_ms != null) {
+    results.responseLatencyMedian = Math.round(agg.avg_response_latency_ms);
+  }
+  if (results.interruptLatencyMedian === 0 && agg.avg_interrupt_latency_ms != null) {
+    results.interruptLatencyMedian = Math.round(agg.avg_interrupt_latency_ms);
+  }
 
   return results;
 }
@@ -662,6 +675,41 @@ describe("Eval Agent Daemon - aeval Metrics JSON Parsing", () => {
     const results = parseAevalMetricsJson(json);
     expect(results.responseLatencyMedian).toBe(275);
     expect(results.interruptLatencyMedian).toBe(130);
+  });
+
+  it("should parse aeval v0.1.1 format (response_metrics / interruption_metrics)", () => {
+    const json = JSON.stringify({
+      session_metadata: {},
+      response_metrics: { median_ms: 850, stddev_ms: 120 },
+      interruption_metrics: { median_ms: 420, stddev_ms: 55 },
+      aggregated_summary: {},
+    });
+    const results = parseAevalMetricsJson(json);
+    expect(results.responseLatencyMedian).toBe(850);
+    expect(results.responseLatencySd).toBe(120);
+    expect(results.interruptLatencyMedian).toBe(420);
+    expect(results.interruptLatencySd).toBe(55);
+  });
+
+  it("should fall back to aggregated_summary when metrics sections have no latency", () => {
+    const json = JSON.stringify({
+      response_metrics: { response_count: 5 },
+      interruption_metrics: { interrupt_count: 2 },
+      aggregated_summary: { avg_response_latency_ms: 1200, avg_interrupt_latency_ms: 600 },
+    });
+    const results = parseAevalMetricsJson(json);
+    expect(results.responseLatencyMedian).toBe(1200);
+    expect(results.interruptLatencyMedian).toBe(600);
+  });
+
+  it("should parse avg_latency_ms key variant", () => {
+    const json = JSON.stringify({
+      response_metrics: { avg_latency_ms: 900 },
+      interruption_metrics: { avg_latency_ms: 350 },
+    });
+    const results = parseAevalMetricsJson(json);
+    expect(results.responseLatencyMedian).toBe(900);
+    expect(results.interruptLatencyMedian).toBe(350);
   });
 
   it("should return defaults when response_latency and interrupt_latency are missing", () => {

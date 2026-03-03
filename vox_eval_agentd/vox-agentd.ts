@@ -473,12 +473,19 @@ class VoxEvalAgentDaemon {
       const metrics = JSON.parse(raw);
       console.log(`[Daemon] ${path.basename(filePath)} top-level keys: ${Object.keys(metrics).join(', ')}`);
 
-      const rl = metrics.response_latency || metrics.responseLatency || {};
-      const il = metrics.interrupt_latency || metrics.interruptLatency || {};
+      const rl = metrics.response_latency || metrics.responseLatency || metrics.response_metrics || {};
+      const il = metrics.interrupt_latency || metrics.interruptLatency || metrics.interruption_metrics || {};
       const results: EvalResult = { ...RESULT_DEFAULTS };
 
+      // Log nested keys for debugging (first deployment will reveal the exact structure)
+      if (Object.keys(rl).length > 0) console.log(`[Daemon] Response metrics keys: ${Object.keys(rl).join(', ')}`);
+      if (Object.keys(il).length > 0) console.log(`[Daemon] Interrupt metrics keys: ${Object.keys(il).join(', ')}`);
+
+      // Try all known key variants for response latency
       if (rl.median_ms != null) results.responseLatencyMedian = Math.round(rl.median_ms);
       else if (rl.median != null) results.responseLatencyMedian = Math.round(rl.median);
+      else if (rl.avg_latency_ms != null) results.responseLatencyMedian = Math.round(rl.avg_latency_ms);
+      else if (rl.average_ms != null) results.responseLatencyMedian = Math.round(rl.average_ms);
 
       if (rl.stddev_ms != null) results.responseLatencySd = Math.round(rl.stddev_ms);
       else if (rl.stddev != null) results.responseLatencySd = Math.round(rl.stddev);
@@ -486,6 +493,8 @@ class VoxEvalAgentDaemon {
 
       if (il.median_ms != null) results.interruptLatencyMedian = Math.round(il.median_ms);
       else if (il.median != null) results.interruptLatencyMedian = Math.round(il.median);
+      else if (il.avg_latency_ms != null) results.interruptLatencyMedian = Math.round(il.avg_latency_ms);
+      else if (il.average_ms != null) results.interruptLatencyMedian = Math.round(il.average_ms);
 
       if (il.stddev_ms != null) results.interruptLatencySd = Math.round(il.stddev_ms);
       else if (il.stddev != null) results.interruptLatencySd = Math.round(il.stddev);
@@ -494,6 +503,15 @@ class VoxEvalAgentDaemon {
       if (metrics.network_resilience != null) results.networkResilience = metrics.network_resilience;
       if (metrics.naturalness != null) results.naturalness = metrics.naturalness;
       if (metrics.noise_reduction != null) results.noiseReduction = metrics.noise_reduction;
+
+      // Try aggregated_summary as fallback source
+      const agg = metrics.aggregated_summary || {};
+      if (results.responseLatencyMedian === 0 && agg.avg_response_latency_ms != null) {
+        results.responseLatencyMedian = Math.round(agg.avg_response_latency_ms);
+      }
+      if (results.interruptLatencyMedian === 0 && agg.avg_interrupt_latency_ms != null) {
+        results.interruptLatencyMedian = Math.round(agg.avg_interrupt_latency_ms);
+      }
 
       return results;
     } catch (error: unknown) {
