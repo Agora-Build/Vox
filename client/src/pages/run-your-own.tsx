@@ -144,7 +144,7 @@ export default function SelfTest() {
     },
     onSuccess: (data) => {
       setActiveJobId(data.job.id);
-      toast({ title: "Evaluation started", description: "Your test is now running" });
+      toast({ title: "Evaluation started", description: "Your evaluation tests is now running" });
     },
     onError: (error: Error) => {
       toast({ title: "Failed to start evaluation", description: error.message, variant: "destructive" });
