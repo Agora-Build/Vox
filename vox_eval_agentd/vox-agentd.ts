@@ -465,6 +465,25 @@ class VoxEvalAgentDaemon {
 
   /**
    * Parse metrics.json (json_exporter output) — has computed latency metrics.
+   *
+   * aeval v0.1.x outputs this structure:
+   *   {
+   *     "response_metrics": {
+   *       "latency": {
+   *         "summary": { "avg_latency_ms": N, "p50_latency_ms": N, ... },
+   *         "turn_level": [...]
+   *       }
+   *     },
+   *     "interruption_metrics": {
+   *       "latency": { "summary": { "avg_reaction_time_ms": N, ... } },
+   *       "post_interruption_latency": { "summary": { "avg_latency_ms": N } }
+   *     },
+   *     "aggregated_summary": {
+   *       "avg_response_latency_ms": N,
+   *       "avg_interruption_reaction_ms": N,
+   *       "avg_post_interruption_latency_ms": N
+   *     }
+   *   }
    */
   private tryParseMetricsJson(filePath: string): EvalResult | null {
     try {
@@ -473,45 +492,65 @@ class VoxEvalAgentDaemon {
       const metrics = JSON.parse(raw);
       console.log(`[Daemon] ${path.basename(filePath)} top-level keys: ${Object.keys(metrics).join(', ')}`);
 
-      const rl = metrics.response_latency || metrics.responseLatency || metrics.response_metrics || {};
-      const il = metrics.interrupt_latency || metrics.interruptLatency || metrics.interruption_metrics || {};
       const results: EvalResult = { ...RESULT_DEFAULTS };
 
-      // Log nested keys for debugging (first deployment will reveal the exact structure)
-      if (Object.keys(rl).length > 0) console.log(`[Daemon] Response metrics keys: ${Object.keys(rl).join(', ')}`);
-      if (Object.keys(il).length > 0) console.log(`[Daemon] Interrupt metrics keys: ${Object.keys(il).join(', ')}`);
+      // --- Primary: aggregated_summary (flat, most reliable) ---
+      const agg = metrics.aggregated_summary;
+      if (agg && typeof agg === 'object') {
+        console.log(`[Daemon] aggregated_summary keys: ${Object.keys(agg).join(', ')}`);
+        if (agg.avg_response_latency_ms != null) {
+          results.responseLatencyMedian = Math.round(agg.avg_response_latency_ms);
+        }
+        if (agg.avg_interruption_reaction_ms != null) {
+          results.interruptLatencyMedian = Math.round(agg.avg_interruption_reaction_ms);
+        }
+      }
 
-      // Try all known key variants for response latency
-      if (rl.median_ms != null) results.responseLatencyMedian = Math.round(rl.median_ms);
-      else if (rl.median != null) results.responseLatencyMedian = Math.round(rl.median);
-      else if (rl.avg_latency_ms != null) results.responseLatencyMedian = Math.round(rl.avg_latency_ms);
-      else if (rl.average_ms != null) results.responseLatencyMedian = Math.round(rl.average_ms);
+      // --- Secondary: nested response_metrics.latency.summary (has p50, stddev) ---
+      const rlSummary = metrics.response_metrics?.latency?.summary;
+      if (rlSummary && typeof rlSummary === 'object') {
+        console.log(`[Daemon] response_metrics.latency.summary keys: ${Object.keys(rlSummary).join(', ')}`);
+        // Prefer p50 (median) over avg for the "median" field
+        if (rlSummary.p50_latency_ms != null) {
+          results.responseLatencyMedian = Math.round(rlSummary.p50_latency_ms);
+        } else if (results.responseLatencyMedian === 0 && rlSummary.avg_latency_ms != null) {
+          results.responseLatencyMedian = Math.round(rlSummary.avg_latency_ms);
+        }
+        // Compute stddev from min/max/count if not directly available
+        if (rlSummary.p95_latency_ms != null && rlSummary.p50_latency_ms != null) {
+          // Rough approximation: sd ≈ (p95 - p50) / 1.645
+          results.responseLatencySd = Math.round(
+            Math.abs(rlSummary.p95_latency_ms - rlSummary.p50_latency_ms) / 1.645
+          );
+        }
+      }
 
-      if (rl.stddev_ms != null) results.responseLatencySd = Math.round(rl.stddev_ms);
-      else if (rl.stddev != null) results.responseLatencySd = Math.round(rl.stddev);
-      else if (rl.sd != null) results.responseLatencySd = Math.round(rl.sd);
+      // --- Secondary: nested interruption_metrics.latency.summary ---
+      const ilSummary = metrics.interruption_metrics?.latency?.summary;
+      if (ilSummary && typeof ilSummary === 'object') {
+        console.log(`[Daemon] interruption_metrics.latency.summary keys: ${Object.keys(ilSummary).join(', ')}`);
+        if (ilSummary.p50_reaction_time_ms != null) {
+          results.interruptLatencyMedian = Math.round(ilSummary.p50_reaction_time_ms);
+        } else if (results.interruptLatencyMedian === 0 && ilSummary.avg_reaction_time_ms != null) {
+          results.interruptLatencyMedian = Math.round(ilSummary.avg_reaction_time_ms);
+        }
+      }
 
-      if (il.median_ms != null) results.interruptLatencyMedian = Math.round(il.median_ms);
-      else if (il.median != null) results.interruptLatencyMedian = Math.round(il.median);
-      else if (il.avg_latency_ms != null) results.interruptLatencyMedian = Math.round(il.avg_latency_ms);
-      else if (il.average_ms != null) results.interruptLatencyMedian = Math.round(il.average_ms);
-
-      if (il.stddev_ms != null) results.interruptLatencySd = Math.round(il.stddev_ms);
-      else if (il.stddev != null) results.interruptLatencySd = Math.round(il.stddev);
-      else if (il.sd != null) results.interruptLatencySd = Math.round(il.sd);
+      // --- Fallback: flat keys directly on metrics (future-proofing) ---
+      if (results.responseLatencyMedian === 0) {
+        const rl = metrics.response_latency || metrics.responseLatency || {};
+        if (rl.median_ms != null) results.responseLatencyMedian = Math.round(rl.median_ms);
+        else if (rl.avg_latency_ms != null) results.responseLatencyMedian = Math.round(rl.avg_latency_ms);
+      }
+      if (results.interruptLatencyMedian === 0) {
+        const il = metrics.interrupt_latency || metrics.interruptLatency || {};
+        if (il.median_ms != null) results.interruptLatencyMedian = Math.round(il.median_ms);
+        else if (il.avg_latency_ms != null) results.interruptLatencyMedian = Math.round(il.avg_latency_ms);
+      }
 
       if (metrics.network_resilience != null) results.networkResilience = metrics.network_resilience;
       if (metrics.naturalness != null) results.naturalness = metrics.naturalness;
       if (metrics.noise_reduction != null) results.noiseReduction = metrics.noise_reduction;
-
-      // Try aggregated_summary as fallback source
-      const agg = metrics.aggregated_summary || {};
-      if (results.responseLatencyMedian === 0 && agg.avg_response_latency_ms != null) {
-        results.responseLatencyMedian = Math.round(agg.avg_response_latency_ms);
-      }
-      if (results.interruptLatencyMedian === 0 && agg.avg_interrupt_latency_ms != null) {
-        results.interruptLatencyMedian = Math.round(agg.avg_interrupt_latency_ms);
-      }
 
       return results;
     } catch (error: unknown) {

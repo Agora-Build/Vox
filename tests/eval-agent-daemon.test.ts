@@ -432,45 +432,70 @@ const AEVAL_DEFAULTS: EvalResults = {
   noiseReduction: 90,
 };
 
-/** Mirror of daemon's parseAevalResults — works on raw JSON string instead of reading a file */
+/**
+ * Mirror of daemon's tryParseMetricsJson — works on raw JSON string instead of reading a file.
+ *
+ * aeval v0.1.x outputs nested structure:
+ *   response_metrics.latency.summary.{p50_latency_ms, avg_latency_ms}
+ *   interruption_metrics.latency.summary.{p50_reaction_time_ms, avg_reaction_time_ms}
+ *   aggregated_summary.{avg_response_latency_ms, avg_interruption_reaction_ms}
+ */
 function parseAevalMetricsJson(jsonContent: string): EvalResults {
   const results = { ...AEVAL_DEFAULTS };
 
   const metrics = JSON.parse(jsonContent);
 
-  const rl = metrics.response_latency || metrics.responseLatency || metrics.response_metrics || {};
-  const il = metrics.interrupt_latency || metrics.interruptLatency || metrics.interruption_metrics || {};
+  // Primary: aggregated_summary (flat, most reliable)
+  const agg = metrics.aggregated_summary;
+  if (agg && typeof agg === 'object') {
+    if (agg.avg_response_latency_ms != null) {
+      results.responseLatencyMedian = Math.round(agg.avg_response_latency_ms);
+    }
+    if (agg.avg_interruption_reaction_ms != null) {
+      results.interruptLatencyMedian = Math.round(agg.avg_interruption_reaction_ms);
+    }
+  }
 
-  if (rl.median_ms != null) results.responseLatencyMedian = Math.round(rl.median_ms);
-  else if (rl.median != null) results.responseLatencyMedian = Math.round(rl.median);
-  else if (rl.avg_latency_ms != null) results.responseLatencyMedian = Math.round(rl.avg_latency_ms);
-  else if (rl.average_ms != null) results.responseLatencyMedian = Math.round(rl.average_ms);
+  // Secondary: nested response_metrics.latency.summary (has p50, stddev)
+  const rlSummary = metrics.response_metrics?.latency?.summary;
+  if (rlSummary && typeof rlSummary === 'object') {
+    if (rlSummary.p50_latency_ms != null) {
+      results.responseLatencyMedian = Math.round(rlSummary.p50_latency_ms);
+    } else if (results.responseLatencyMedian === 0 && rlSummary.avg_latency_ms != null) {
+      results.responseLatencyMedian = Math.round(rlSummary.avg_latency_ms);
+    }
+    if (rlSummary.p95_latency_ms != null && rlSummary.p50_latency_ms != null) {
+      results.responseLatencySd = Math.round(
+        Math.abs(rlSummary.p95_latency_ms - rlSummary.p50_latency_ms) / 1.645
+      );
+    }
+  }
 
-  if (rl.stddev_ms != null) results.responseLatencySd = Math.round(rl.stddev_ms);
-  else if (rl.stddev != null) results.responseLatencySd = Math.round(rl.stddev);
-  else if (rl.sd != null) results.responseLatencySd = Math.round(rl.sd);
+  // Secondary: nested interruption_metrics.latency.summary
+  const ilSummary = metrics.interruption_metrics?.latency?.summary;
+  if (ilSummary && typeof ilSummary === 'object') {
+    if (ilSummary.p50_reaction_time_ms != null) {
+      results.interruptLatencyMedian = Math.round(ilSummary.p50_reaction_time_ms);
+    } else if (results.interruptLatencyMedian === 0 && ilSummary.avg_reaction_time_ms != null) {
+      results.interruptLatencyMedian = Math.round(ilSummary.avg_reaction_time_ms);
+    }
+  }
 
-  if (il.median_ms != null) results.interruptLatencyMedian = Math.round(il.median_ms);
-  else if (il.median != null) results.interruptLatencyMedian = Math.round(il.median);
-  else if (il.avg_latency_ms != null) results.interruptLatencyMedian = Math.round(il.avg_latency_ms);
-  else if (il.average_ms != null) results.interruptLatencyMedian = Math.round(il.average_ms);
-
-  if (il.stddev_ms != null) results.interruptLatencySd = Math.round(il.stddev_ms);
-  else if (il.stddev != null) results.interruptLatencySd = Math.round(il.stddev);
-  else if (il.sd != null) results.interruptLatencySd = Math.round(il.sd);
+  // Fallback: flat keys directly on metrics (future-proofing)
+  if (results.responseLatencyMedian === 0) {
+    const rl = metrics.response_latency || metrics.responseLatency || {};
+    if (rl.median_ms != null) results.responseLatencyMedian = Math.round(rl.median_ms);
+    else if (rl.avg_latency_ms != null) results.responseLatencyMedian = Math.round(rl.avg_latency_ms);
+  }
+  if (results.interruptLatencyMedian === 0) {
+    const il = metrics.interrupt_latency || metrics.interruptLatency || {};
+    if (il.median_ms != null) results.interruptLatencyMedian = Math.round(il.median_ms);
+    else if (il.avg_latency_ms != null) results.interruptLatencyMedian = Math.round(il.avg_latency_ms);
+  }
 
   if (metrics.network_resilience != null) results.networkResilience = metrics.network_resilience;
   if (metrics.naturalness != null) results.naturalness = metrics.naturalness;
   if (metrics.noise_reduction != null) results.noiseReduction = metrics.noise_reduction;
-
-  // Try aggregated_summary as fallback
-  const agg = metrics.aggregated_summary || {};
-  if (results.responseLatencyMedian === 0 && agg.avg_response_latency_ms != null) {
-    results.responseLatencyMedian = Math.round(agg.avg_response_latency_ms);
-  }
-  if (results.interruptLatencyMedian === 0 && agg.avg_interrupt_latency_ms != null) {
-    results.interruptLatencyMedian = Math.round(agg.avg_interrupt_latency_ms);
-  }
 
   return results;
 }
@@ -625,91 +650,141 @@ function selectFramework(
 // ---------------------------------------------------------------------------
 
 describe("Eval Agent Daemon - aeval Metrics JSON Parsing", () => {
-  it("should parse metrics with median_ms / stddev_ms keys", () => {
+  it("should parse flat response_latency.median_ms fallback", () => {
     const json = JSON.stringify({
-      response_latency: { median_ms: 420.7, stddev_ms: 55.3 },
-      interrupt_latency: { median_ms: 180.2, stddev_ms: 22.8 },
+      response_latency: { median_ms: 420.7 },
+      interrupt_latency: { median_ms: 180.2 },
     });
     const results = parseAevalMetricsJson(json);
     expect(results.responseLatencyMedian).toBe(421);
-    expect(results.responseLatencySd).toBe(55);
     expect(results.interruptLatencyMedian).toBe(180);
-    expect(results.interruptLatencySd).toBe(23);
   });
 
-  it("should parse metrics with median / stddev keys (no _ms suffix)", () => {
+  it("should parse flat response_latency.avg_latency_ms fallback", () => {
     const json = JSON.stringify({
-      response_latency: { median: 350, stddev: 40 },
-      interrupt_latency: { median: 120, stddev: 15 },
+      response_latency: { avg_latency_ms: 350 },
+      interrupt_latency: { avg_latency_ms: 120 },
     });
     const results = parseAevalMetricsJson(json);
     expect(results.responseLatencyMedian).toBe(350);
-    expect(results.responseLatencySd).toBe(40);
     expect(results.interruptLatencyMedian).toBe(120);
-    expect(results.interruptLatencySd).toBe(15);
   });
 
-  it("should parse metrics with sd key as alias for stddev", () => {
+  it("should compute stddev from p95 and p50", () => {
     const json = JSON.stringify({
-      response_latency: { median: 300, sd: 28 },
-      interrupt_latency: { median: 90, sd: 12 },
+      response_metrics: {
+        latency: {
+          summary: { p50_latency_ms: 300, p95_latency_ms: 500 },
+        },
+      },
     });
     const results = parseAevalMetricsJson(json);
-    expect(results.responseLatencySd).toBe(28);
-    expect(results.interruptLatencySd).toBe(12);
+    expect(results.responseLatencyMedian).toBe(300);
+    // sd ≈ (500 - 300) / 1.645 ≈ 122
+    expect(results.responseLatencySd).toBe(Math.round(200 / 1.645));
   });
 
-  it("should prefer median_ms over median when both present", () => {
+  it("should prefer p50 from nested summary over aggregated avg", () => {
+    // When both nested p50 and aggregated avg exist, p50 wins
     const json = JSON.stringify({
-      response_latency: { median_ms: 500, median: 9999 },
+      response_metrics: {
+        latency: { summary: { p50_latency_ms: 500 } },
+      },
+      aggregated_summary: { avg_response_latency_ms: 600 },
     });
     const results = parseAevalMetricsJson(json);
     expect(results.responseLatencyMedian).toBe(500);
   });
 
-  it("should handle camelCase key variants (responseLatency)", () => {
+  it("should parse real aeval v0.1.x nested structure", () => {
+    // Exact structure from a real aeval run
     const json = JSON.stringify({
-      responseLatency: { median_ms: 275 },
-      interruptLatency: { median_ms: 130 },
+      session_metadata: { total_turns: 2 },
+      response_metrics: {
+        latency: {
+          summary: {
+            total_valid_turns: 1,
+            avg_latency_ms: 1890,
+            min_latency_ms: 1890,
+            max_latency_ms: 1890,
+            p50_latency_ms: 1890,
+            p95_latency_ms: 1890,
+            negative_latency_count: 0,
+          },
+          turn_level: [{ turn_index: 1, latency_ms: 1890 }],
+        },
+      },
+      interruption_metrics: {
+        latency: {
+          summary: {
+            total_interruptions: 0,
+            avg_reaction_time_ms: null,
+            p50_reaction_time_ms: null,
+          },
+        },
+        post_interruption_latency: { summary: { avg_latency_ms: null } },
+      },
+      aggregated_summary: {
+        avg_response_latency_ms: 1890,
+        avg_interruption_reaction_ms: null,
+        avg_post_interruption_latency_ms: null,
+      },
     });
     const results = parseAevalMetricsJson(json);
-    expect(results.responseLatencyMedian).toBe(275);
-    expect(results.interruptLatencyMedian).toBe(130);
+    expect(results.responseLatencyMedian).toBe(1890);
+    expect(results.interruptLatencyMedian).toBe(0); // no interruptions
   });
 
-  it("should parse aeval v0.1.1 format (response_metrics / interruption_metrics)", () => {
+  it("should prefer p50 from nested summary over aggregated_summary avg", () => {
     const json = JSON.stringify({
-      session_metadata: {},
-      response_metrics: { median_ms: 850, stddev_ms: 120 },
-      interruption_metrics: { median_ms: 420, stddev_ms: 55 },
-      aggregated_summary: {},
+      response_metrics: {
+        latency: {
+          summary: { p50_latency_ms: 850, p95_latency_ms: 1200, avg_latency_ms: 900 },
+        },
+      },
+      aggregated_summary: { avg_response_latency_ms: 900 },
     });
     const results = parseAevalMetricsJson(json);
+    // p50 should win over aggregated avg
     expect(results.responseLatencyMedian).toBe(850);
-    expect(results.responseLatencySd).toBe(120);
-    expect(results.interruptLatencyMedian).toBe(420);
-    expect(results.interruptLatencySd).toBe(55);
+    // sd approximated from (p95 - p50) / 1.645
+    expect(results.responseLatencySd).toBe(Math.round((1200 - 850) / 1.645));
   });
 
-  it("should fall back to aggregated_summary when metrics sections have no latency", () => {
+  it("should fall back to aggregated_summary when nested summary missing", () => {
     const json = JSON.stringify({
       response_metrics: { response_count: 5 },
       interruption_metrics: { interrupt_count: 2 },
-      aggregated_summary: { avg_response_latency_ms: 1200, avg_interrupt_latency_ms: 600 },
+      aggregated_summary: { avg_response_latency_ms: 1200, avg_interruption_reaction_ms: 600 },
     });
     const results = parseAevalMetricsJson(json);
     expect(results.responseLatencyMedian).toBe(1200);
     expect(results.interruptLatencyMedian).toBe(600);
   });
 
-  it("should parse avg_latency_ms key variant", () => {
+  it("should parse interruption reaction time from nested summary", () => {
     const json = JSON.stringify({
-      response_metrics: { avg_latency_ms: 900 },
-      interruption_metrics: { avg_latency_ms: 350 },
+      interruption_metrics: {
+        latency: {
+          summary: {
+            total_interruptions: 3,
+            avg_reaction_time_ms: 420,
+            p50_reaction_time_ms: 380,
+          },
+        },
+      },
     });
     const results = parseAevalMetricsJson(json);
-    expect(results.responseLatencyMedian).toBe(900);
-    expect(results.interruptLatencyMedian).toBe(350);
+    expect(results.interruptLatencyMedian).toBe(380); // p50 preferred
+  });
+
+  it("should handle camelCase key variants as fallback (responseLatency)", () => {
+    const json = JSON.stringify({
+      responseLatency: { median_ms: 275 },
+    });
+    const results = parseAevalMetricsJson(json);
+    // Falls through to flat key fallback (responseLatency accepted)
+    expect(results.responseLatencyMedian).toBe(275);
   });
 
   it("should return defaults when response_latency and interrupt_latency are missing", () => {
@@ -739,23 +814,25 @@ describe("Eval Agent Daemon - aeval Metrics JSON Parsing", () => {
 
   it("should round fractional latency values", () => {
     const json = JSON.stringify({
-      response_latency: { median_ms: 333.7, stddev_ms: 44.4 },
-      interrupt_latency: { median_ms: 111.1, stddev_ms: 9.9 },
+      aggregated_summary: {
+        avg_response_latency_ms: 333.7,
+        avg_interruption_reaction_ms: 111.1,
+      },
     });
     const results = parseAevalMetricsJson(json);
     expect(results.responseLatencyMedian).toBe(334);
-    expect(results.responseLatencySd).toBe(44);
     expect(results.interruptLatencyMedian).toBe(111);
-    expect(results.interruptLatencySd).toBe(10);
   });
 
-  it("should handle only response_latency without interrupt_latency", () => {
+  it("should handle only response metrics without interruption metrics", () => {
     const json = JSON.stringify({
-      response_latency: { median_ms: 500, stddev_ms: 60 },
+      response_metrics: {
+        latency: { summary: { p50_latency_ms: 500, p95_latency_ms: 600 } },
+      },
     });
     const results = parseAevalMetricsJson(json);
     expect(results.responseLatencyMedian).toBe(500);
-    expect(results.responseLatencySd).toBe(60);
+    expect(results.responseLatencySd).toBe(Math.round(100 / 1.645));
     expect(results.interruptLatencyMedian).toBe(0);
     expect(results.interruptLatencySd).toBe(0);
   });
@@ -1064,17 +1141,25 @@ describe("Eval Agent Daemon - aeval File-Based Parsing (temp dir)", () => {
     fs.writeFileSync(
       path.join(outputDir, "metrics.json"),
       JSON.stringify({
-        response_latency: { median_ms: 512, stddev_ms: 38 },
-        interrupt_latency: { median_ms: 200, stddev_ms: 15 },
+        response_metrics: {
+          latency: {
+            summary: { p50_latency_ms: 512, p95_latency_ms: 600, avg_latency_ms: 530 },
+          },
+        },
+        interruption_metrics: {
+          latency: {
+            summary: { p50_reaction_time_ms: 200, avg_reaction_time_ms: 210 },
+          },
+        },
+        aggregated_summary: { avg_response_latency_ms: 530, avg_interruption_reaction_ms: 210 },
       }),
     );
 
     const raw = fs.readFileSync(path.join(outputDir, "metrics.json"), "utf-8");
     const results = parseAevalMetricsJson(raw);
-    expect(results.responseLatencyMedian).toBe(512);
-    expect(results.responseLatencySd).toBe(38);
-    expect(results.interruptLatencyMedian).toBe(200);
-    expect(results.interruptLatencySd).toBe(15);
+    expect(results.responseLatencyMedian).toBe(512); // p50 preferred
+    expect(results.responseLatencySd).toBe(Math.round((600 - 512) / 1.645));
+    expect(results.interruptLatencyMedian).toBe(200); // p50 preferred
   });
 
   it("should detect missing metrics.json gracefully", () => {
