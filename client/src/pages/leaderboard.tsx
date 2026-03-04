@@ -144,9 +144,9 @@ export default function Leaderboard() {
                   <div className="text-sm space-y-1">
                     <div className="flex justify-between"><span>Response Latency</span><span className="font-mono text-muted-foreground">30%</span></div>
                     <div className="flex justify-between"><span>Interrupt Latency</span><span className="font-mono text-muted-foreground">25%</span></div>
-                    <div className="flex justify-between"><span>Noise Reduction</span><span className="font-mono text-muted-foreground">20%</span></div>
-                    <div className="flex justify-between"><span>Network Resilience</span><span className="font-mono text-muted-foreground">15%</span></div>
-                    <div className="flex justify-between"><span>Naturalness</span><span className="font-mono text-muted-foreground">10%</span></div>
+                    <div className="flex justify-between"><span className="text-muted-foreground">Noise Reduction (coming soon)</span><span className="font-mono text-muted-foreground">20%</span></div>
+                    <div className="flex justify-between"><span className="text-muted-foreground">Network Resilience (coming soon)</span><span className="font-mono text-muted-foreground">15%</span></div>
+                    <div className="flex justify-between"><span className="text-muted-foreground">Naturalness (coming soon)</span><span className="font-mono text-muted-foreground">10%</span></div>
                   </div>
                   <div className="text-xs text-muted-foreground border-t pt-2 space-y-1">
                     <p>Each metric is normalized to 0-1 using min-max scaling across all entries. Lower-is-better metrics (latencies) are inverted. The composite score is the weighted sum, ranked highest-first.</p>

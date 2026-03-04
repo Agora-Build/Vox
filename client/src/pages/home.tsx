@@ -199,11 +199,32 @@ export default function Home() {
             </CardContent>
           </Card>
 
-          <Card>
+          <Card className="opacity-60">
+            <CardHeader>
+              <div className="flex items-center gap-2 mb-2">
+                <Mic className="h-5 w-5 text-purple-500" />
+                <h3 className="font-bold">Noise Reduction</h3>
+                <Badge variant="outline" className="text-xs">Coming Soon</Badge>
+              </div>
+              <p className="text-sm text-muted-foreground">Ability to filter background noise while preserving voice clarity</p>
+            </CardHeader>
+            <CardContent className="space-y-4">
+               <div>
+                  <div className="text-xs uppercase text-muted-foreground font-bold">Unit</div>
+                  <div className="font-mono">percentage (%)</div>
+               </div>
+               <div className="pt-2">
+                 <Badge className="bg-emerald-500 hover:bg-emerald-600">Higher is better</Badge>
+               </div>
+            </CardContent>
+          </Card>
+
+          <Card className="opacity-60">
             <CardHeader>
               <div className="flex items-center gap-2 mb-2">
                 <Globe className="h-5 w-5 text-blue-500" />
                 <h3 className="font-bold">Network Resilience</h3>
+                <Badge variant="outline" className="text-xs">Coming Soon</Badge>
               </div>
               <p className="text-sm text-muted-foreground">Stability under varying network conditions</p>
             </CardHeader>
@@ -211,6 +232,26 @@ export default function Home() {
                <div>
                   <div className="text-xs uppercase text-muted-foreground font-bold">Unit</div>
                   <div className="font-mono">percentage (%)</div>
+               </div>
+               <div className="pt-2">
+                 <Badge className="bg-emerald-500 hover:bg-emerald-600">Higher is better</Badge>
+               </div>
+            </CardContent>
+          </Card>
+
+          <Card className="opacity-60">
+            <CardHeader>
+              <div className="flex items-center gap-2 mb-2">
+                <Bot className="h-5 w-5 text-green-500" />
+                <h3 className="font-bold">Naturalness</h3>
+                <Badge variant="outline" className="text-xs">Coming Soon</Badge>
+              </div>
+              <p className="text-sm text-muted-foreground">How human-like and natural the AI voice sounds</p>
+            </CardHeader>
+            <CardContent className="space-y-4">
+               <div>
+                  <div className="text-xs uppercase text-muted-foreground font-bold">Unit</div>
+                  <div className="font-mono">score (0-10)</div>
                </div>
                <div className="pt-2">
                  <Badge className="bg-emerald-500 hover:bg-emerald-600">Higher is better</Badge>
