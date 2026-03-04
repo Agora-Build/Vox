@@ -492,12 +492,24 @@ class VoxEvalAgentDaemon {
       const metrics = JSON.parse(raw);
       console.log(`[Daemon] ${path.basename(filePath)} top-level keys: ${Object.keys(metrics).join(', ')}`);
 
+      // --- Log raw aeval values ---
+      const rlSummary = metrics.response_metrics?.latency?.summary;
+      const rlTurns = metrics.response_metrics?.latency?.turn_level;
+      const ilSummary = metrics.interruption_metrics?.latency?.summary;
+      const ilTurns = metrics.interruption_metrics?.latency?.turn_level;
+      const agg = metrics.aggregated_summary;
+
+      console.log(`[Daemon] Raw aeval values:`);
+      if (rlSummary) console.log(`[Daemon]   response_metrics.latency.summary: ${JSON.stringify(rlSummary)}`);
+      if (rlTurns) console.log(`[Daemon]   response_metrics.latency.turn_level: ${JSON.stringify(rlTurns)}`);
+      if (ilSummary) console.log(`[Daemon]   interruption_metrics.latency.summary: ${JSON.stringify(ilSummary)}`);
+      if (ilTurns) console.log(`[Daemon]   interruption_metrics.latency.turn_level: ${JSON.stringify(ilTurns)}`);
+      if (agg) console.log(`[Daemon]   aggregated_summary: ${JSON.stringify(agg)}`);
+
       const results: EvalResult = { ...RESULT_DEFAULTS };
 
       // --- Primary: aggregated_summary (flat, most reliable) ---
-      const agg = metrics.aggregated_summary;
       if (agg && typeof agg === 'object') {
-        console.log(`[Daemon] aggregated_summary keys: ${Object.keys(agg).join(', ')}`);
         if (agg.avg_response_latency_ms != null) {
           results.responseLatencyMedian = Math.round(agg.avg_response_latency_ms);
         }
@@ -506,33 +518,43 @@ class VoxEvalAgentDaemon {
         }
       }
 
-      // --- Secondary: nested response_metrics.latency.summary (has p50, stddev) ---
-      const rlSummary = metrics.response_metrics?.latency?.summary;
+      // --- Secondary: nested response_metrics.latency.summary (has p50) ---
       if (rlSummary && typeof rlSummary === 'object') {
-        console.log(`[Daemon] response_metrics.latency.summary keys: ${Object.keys(rlSummary).join(', ')}`);
-        // Prefer p50 (median) over avg for the "median" field
         if (rlSummary.p50_latency_ms != null) {
           results.responseLatencyMedian = Math.round(rlSummary.p50_latency_ms);
         } else if (results.responseLatencyMedian === 0 && rlSummary.avg_latency_ms != null) {
           results.responseLatencyMedian = Math.round(rlSummary.avg_latency_ms);
         }
-        // Compute stddev from min/max/count if not directly available
-        if (rlSummary.p95_latency_ms != null && rlSummary.p50_latency_ms != null) {
-          // Rough approximation: sd ≈ (p95 - p50) / 1.645
+      }
+
+      // Compute SD from turn-level data (actual stddev, not approximation)
+      if (Array.isArray(rlTurns) && rlTurns.length >= 2) {
+        const vals = rlTurns.map((t: Record<string, unknown>) => t.latency_ms as number).filter((v: number) => v != null && v >= 0);
+        if (vals.length >= 2) {
+          const mean = vals.reduce((a: number, b: number) => a + b, 0) / vals.length;
           results.responseLatencySd = Math.round(
-            Math.abs(rlSummary.p95_latency_ms - rlSummary.p50_latency_ms) / 1.645
+            Math.sqrt(vals.reduce((a: number, b: number) => a + (b - mean) ** 2, 0) / vals.length)
           );
         }
       }
 
       // --- Secondary: nested interruption_metrics.latency.summary ---
-      const ilSummary = metrics.interruption_metrics?.latency?.summary;
       if (ilSummary && typeof ilSummary === 'object') {
-        console.log(`[Daemon] interruption_metrics.latency.summary keys: ${Object.keys(ilSummary).join(', ')}`);
         if (ilSummary.p50_reaction_time_ms != null) {
           results.interruptLatencyMedian = Math.round(ilSummary.p50_reaction_time_ms);
         } else if (results.interruptLatencyMedian === 0 && ilSummary.avg_reaction_time_ms != null) {
           results.interruptLatencyMedian = Math.round(ilSummary.avg_reaction_time_ms);
+        }
+      }
+
+      // Compute interrupt SD from turn-level data
+      if (Array.isArray(ilTurns) && ilTurns.length >= 2) {
+        const vals = ilTurns.map((t: Record<string, unknown>) => (t.reaction_time_ms ?? t.latency_ms) as number).filter((v: number) => v != null && v >= 0);
+        if (vals.length >= 2) {
+          const mean = vals.reduce((a: number, b: number) => a + b, 0) / vals.length;
+          results.interruptLatencySd = Math.round(
+            Math.sqrt(vals.reduce((a: number, b: number) => a + (b - mean) ** 2, 0) / vals.length)
+          );
         }
       }
 
