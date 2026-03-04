@@ -164,7 +164,7 @@ export default function Home() {
           <Card>
             <CardHeader>
               <div className="flex items-center gap-2 mb-2">
-                <Rocket className="h-5 w-5 text-amber-500" />
+                <Clock className="h-5 w-5 text-amber-500" />
                 <h3 className="font-bold">Response Latency</h3>
               </div>
               <p className="text-sm text-muted-foreground">Time for AI to generate initial response</p>
