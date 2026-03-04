@@ -276,10 +276,10 @@ export default function SelfTest() {
     }
   };
 
-  const getJobStatusLabel = (status: string) => {
+  const getJobStatusLabel = (status: string, jobId?: number) => {
     switch (status) {
       case "pending": return "Waiting for agent...";
-      case "running": return "Evaluation in progress...";
+      case "running": return `Evaluation #${jobId} in progress...`;
       case "completed": return "Evaluation complete!";
       case "failed": return "Evaluation failed";
       default: return status;
@@ -499,7 +499,7 @@ export default function SelfTest() {
                     <div className="flex items-center gap-3">
                       {getJobStatusIcon(activeJob.status)}
                       <div>
-                        <div className="font-medium">{getJobStatusLabel(activeJob.status)}</div>
+                        <div className="font-medium">{getJobStatusLabel(activeJob.status, activeJob.id)}</div>
                         <div className="text-sm text-muted-foreground">
                           Region: {regionLabels[activeJob.region] || activeJob.region}
                         </div>
