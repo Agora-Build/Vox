@@ -2303,14 +2303,18 @@ export async function registerRoutes(
       const { hours } = req.query;
       const hoursBack = hours ? parseInt(hours as string) : undefined;
       const results = await storage.getMainlineEvalResults(1000, hoursBack);
-      
-      const providerRegionMap = new Map<string, { 
+
+      // Group results by (provider, region)
+      const providerRegionMap = new Map<string, {
         providerId: string;
-        region: string; 
-        responseLatencies: number[]; 
+        region: string;
+        responseLatencies: number[];
         interruptLatencies: number[];
+        networkResiliences: number[];
+        naturalnesses: number[];
+        noiseReductions: number[];
       }>();
-      
+
       for (const result of results) {
         const key = `${result.providerId}-${result.region}`;
         if (!providerRegionMap.has(key)) {
@@ -2319,35 +2323,94 @@ export async function registerRoutes(
             region: result.region,
             responseLatencies: [],
             interruptLatencies: [],
+            networkResiliences: [],
+            naturalnesses: [],
+            noiseReductions: [],
           });
         }
         const group = providerRegionMap.get(key)!;
         group.responseLatencies.push(result.responseLatencyMedian);
         group.interruptLatencies.push(result.interruptLatencyMedian);
+        if (result.networkResilience != null) group.networkResiliences.push(result.networkResilience);
+        if (result.naturalness != null) group.naturalnesses.push(result.naturalness);
+        if (result.noiseReduction != null) group.noiseReductions.push(result.noiseReduction);
       }
-      
+
       const avg = (arr: number[]) => arr.length > 0 ? arr.reduce((a, b) => a + b, 0) / arr.length : 0;
-      
-      const leaderboard = await Promise.all(
+
+      // Aggregate metrics per group
+      const entries = await Promise.all(
         Array.from(providerRegionMap.values()).map(async (group) => {
           const provider = await storage.getProvider(group.providerId);
           return {
             providerId: group.providerId,
-            providerName: provider?.name || "Unknown",
+            provider: provider?.name || "Unknown",
             region: group.region,
             responseLatency: Math.round(avg(group.responseLatencies)),
             interruptLatency: Math.round(avg(group.interruptLatencies)),
+            networkResilience: Math.round(avg(group.networkResiliences)),
+            naturalness: Math.round(avg(group.naturalnesses) * 10) / 10,
+            noiseReduction: Math.round(avg(group.noiseReductions)),
           };
         })
       );
-      
-      const sorted = leaderboard
-        .sort((a, b) => a.responseLatency - b.responseLatency)
-        .map((entry, index) => ({
-          rank: index + 1,
-          ...entry,
-        }));
-      
+
+      if (entries.length === 0) {
+        return res.json([]);
+      }
+
+      // Min-max normalization + weighted composite score
+      // Weights: response 30%, interrupt 25%, noise 20%, network 15%, naturalness 10%
+      const weights = {
+        responseLatency:  { w: 0.30, lowerIsBetter: true },
+        interruptLatency: { w: 0.25, lowerIsBetter: true },
+        noiseReduction:   { w: 0.20, lowerIsBetter: false },
+        networkResilience:{ w: 0.15, lowerIsBetter: false },
+        naturalness:      { w: 0.10, lowerIsBetter: false },
+      } as const;
+
+      type MetricKey = keyof typeof weights;
+      const metricKeys = Object.keys(weights) as MetricKey[];
+
+      // Compute min/max for each metric
+      const ranges: Record<string, { min: number; max: number }> = {};
+      for (const key of metricKeys) {
+        const values = entries.map(e => e[key]);
+        ranges[key] = { min: Math.min(...values), max: Math.max(...values) };
+      }
+
+      // Normalize and compute composite score
+      const scored = entries.map(entry => {
+        let composite = 0;
+        let totalWeight = 0;
+
+        for (const key of metricKeys) {
+          const { min, max } = ranges[key];
+          const { w, lowerIsBetter } = weights[key];
+
+          if (min === max) {
+            // All entries have the same value — full score
+            composite += w;
+            totalWeight += w;
+          } else {
+            const normalized = lowerIsBetter
+              ? (max - entry[key]) / (max - min)
+              : (entry[key] - min) / (max - min);
+            composite += w * normalized;
+            totalWeight += w;
+          }
+        }
+
+        // Redistribute if some weights were skipped (shouldn't happen but safety)
+        const score = totalWeight > 0 ? composite / totalWeight : 0;
+        return { ...entry, compositeScore: Math.round(score * 1000) / 1000 };
+      });
+
+      // Rank by composite score descending (highest = best)
+      const sorted = scored
+        .sort((a, b) => b.compositeScore - a.compositeScore)
+        .map((entry, index) => ({ rank: index + 1, ...entry }));
+
       res.json(sorted);
     } catch (error) {
       console.error("Error fetching leaderboard:", error);

@@ -7,6 +7,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Progress } from "@/components/ui/progress";
 import { useQuery } from "@tanstack/react-query";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { ArrowUpDown, ArrowUp, ArrowDown, Info } from "lucide-react";
 import {
   Dialog,
@@ -25,6 +26,7 @@ interface LeaderboardEntry {
   networkResilience: number;
   naturalness: number;
   noiseReduction: number;
+  compositeScore: number;
 }
 
 type SortField = "rank" | "responseLatency" | "interruptLatency" | "networkResilience" | "naturalness" | "noiseReduction";
@@ -126,9 +128,34 @@ export default function Leaderboard() {
     <div className="space-y-8 animate-in slide-in-from-bottom-4 duration-500">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
         <div>
-          <h1 className="text-2xl sm:text-3xl font-bold tracking-tight" data-testid="text-leaderboard-title">Global Leaderboard</h1>
+          <div className="flex items-center gap-2">
+            <h1 className="text-2xl sm:text-3xl font-bold tracking-tight" data-testid="text-leaderboard-title">Global Leaderboard</h1>
+            <Popover>
+              <PopoverTrigger asChild>
+                <Info className="h-5 w-5 text-muted-foreground cursor-pointer hover:text-foreground transition-colors shrink-0" />
+              </PopoverTrigger>
+              <PopoverContent className="w-96" align="start">
+                <div className="space-y-3">
+                  <h4 className="font-semibold leading-none">Ranking Algorithm</h4>
+                  <p className="text-sm text-muted-foreground">
+                    Rankings are computed using a <strong>normalized weighted composite score</strong> across 5 metrics:
+                  </p>
+                  <div className="text-sm space-y-1">
+                    <div className="flex justify-between"><span>Response Latency</span><span className="font-mono text-muted-foreground">30%</span></div>
+                    <div className="flex justify-between"><span>Interrupt Latency</span><span className="font-mono text-muted-foreground">25%</span></div>
+                    <div className="flex justify-between"><span>Noise Reduction</span><span className="font-mono text-muted-foreground">20%</span></div>
+                    <div className="flex justify-between"><span>Network Resilience</span><span className="font-mono text-muted-foreground">15%</span></div>
+                    <div className="flex justify-between"><span>Naturalness</span><span className="font-mono text-muted-foreground">10%</span></div>
+                  </div>
+                  <div className="text-xs text-muted-foreground border-t pt-2 space-y-1">
+                    <p>Each metric is normalized to 0-1 using min-max scaling across all entries. Lower-is-better metrics (latencies) are inverted. The composite score is the weighted sum, ranked highest-first.</p>
+                  </div>
+                </div>
+              </PopoverContent>
+            </Popover>
+          </div>
           <p className="text-sm sm:text-base text-muted-foreground mt-2">
-            Comprehensive evaluations across 5 key performance metrics.
+            Ranked by weighted composite score across 5 performance metrics.
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -161,7 +188,7 @@ export default function Leaderboard() {
         <CardHeader>
           <CardTitle>Performance Rankings</CardTitle>
           <CardDescription>
-            {regionLabel} • {timeRangeLabel} - Ranked by response latency (mainline data only)
+            {regionLabel} • {timeRangeLabel} - Ranked by composite score (mainline data only)
           </CardDescription>
         </CardHeader>
         <CardContent className="overflow-x-auto">
@@ -362,7 +389,11 @@ export default function Leaderboard() {
                   </div>
                 </div>
               </div>
-              <div className="pt-2 border-t">
+              <div className="pt-2 border-t space-y-1">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm font-medium">Composite Score</span>
+                  <span className="font-mono text-sm font-bold">{(selectedEntry.compositeScore * 100).toFixed(1)}%</span>
+                </div>
                 <p className="text-xs text-muted-foreground">
                   Rank #{selectedEntry.rank} in {regionLabel} • Data from {timeRangeLabel.toLowerCase()}
                 </p>
