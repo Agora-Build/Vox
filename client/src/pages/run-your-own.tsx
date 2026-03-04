@@ -34,6 +34,7 @@ interface Workflow {
   id: number;
   name: string;
   providerId: string;
+  visibility: string;
 }
 
 interface EvalJob {
@@ -506,18 +507,22 @@ export default function SelfTest() {
                     </div>
                   )}
 
-                  {activeJob.status === "completed" && (
-                    <div className="p-4 bg-green-500/10 border border-green-500/20 rounded-md text-center">
-                      <CheckCircle className="h-8 w-8 mx-auto text-green-500 mb-2" />
-                      <p className="font-medium">Evaluation Complete!</p>
-                      <p className="text-sm text-muted-foreground">
-                        View results in the Leaderboard
-                      </p>
-                      <Button asChild variant="link" className="mt-2">
-                        <Link href="/leaderboard">View Leaderboard</Link>
-                      </Button>
-                    </div>
-                  )}
+                  {activeJob.status === "completed" && (() => {
+                    const wf = workflows?.find(w => w.id === parseInt(selectedWorkflowId));
+                    const tab = wf?.visibility === "private" ? "my-evals" : "community";
+                    return (
+                      <div className="p-4 bg-green-500/10 border border-green-500/20 rounded-md text-center">
+                        <CheckCircle className="h-8 w-8 mx-auto text-green-500 mb-2" />
+                        <p className="font-medium">Evaluation Complete!</p>
+                        <p className="text-sm text-muted-foreground">
+                          View results on the Real-time dashboard
+                        </p>
+                        <Button asChild variant="link" className="mt-2">
+                          <Link href={`/realtime?tab=${tab}`}>View Real-time Dashboard</Link>
+                        </Button>
+                      </div>
+                    );
+                  })()}
 
                   <div className="flex gap-2">
                     {activeJob.status === "pending" && (

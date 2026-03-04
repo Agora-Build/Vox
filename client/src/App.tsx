@@ -7,7 +7,7 @@ import { ThemeProvider } from "@/components/theme-provider";
 import Layout from "@/components/layout";
 import ConsoleLayout from "@/components/console-layout";
 import Home from "@/pages/home";
-import Dashboard from "@/pages/dashboard";
+import Dashboard from "@/pages/realtime";
 import Leaderboard from "@/pages/leaderboard";
 import ProviderGuide from "@/pages/provider";
 import SelfTest from "@/pages/run-your-own";

@@ -286,7 +286,10 @@ export default function Dashboard() {
   const [selectedRegion, setSelectedRegion] = useState<string>("all");
   const [refreshInterval, setRefreshInterval] = useState<number>(30000);
   const [timeRange, setTimeRange] = useState<string>("24");
-  const [activeTab, setActiveTab] = useState<string>("mainline");
+  const initialTab = new URLSearchParams(window.location.search).get("tab");
+  const [activeTab, setActiveTab] = useState<string>(
+    initialTab && ["mainline", "community", "my-evals"].includes(initialTab) ? initialTab : "mainline"
+  );
 
   const { data: authStatus } = useQuery<AuthStatus>({
     queryKey: ["/api/auth/status"],
