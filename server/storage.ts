@@ -402,7 +402,7 @@ export class DatabaseStorage {
     return result[0];
   }
 
-  async getPendingEvalJobsByRegion(region: "na" | "apac" | "eu"): Promise<EvalJob[]> {
+  async getPendingEvalJobsByRegion(region: "na" | "apac" | "eu" | "sa"): Promise<EvalJob[]> {
     return db.select().from(evalJobs).where(
       and(eq(evalJobs.region, region), eq(evalJobs.status, "pending"))
     ).orderBy(desc(evalJobs.priority), evalJobs.createdAt);
@@ -532,7 +532,7 @@ export class DatabaseStorage {
   // Get all jobs with optional filters
   async getEvalJobs(filters?: {
     status?: "pending" | "running" | "completed" | "failed";
-    region?: "na" | "apac" | "eu";
+    region?: "na" | "apac" | "eu" | "sa";
     workflowId?: number;
     agentId?: number;
     ownerId?: number;

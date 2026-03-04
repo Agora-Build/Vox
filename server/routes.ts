@@ -1355,8 +1355,8 @@ export async function registerRoutes(
         return res.status(400).json({ error: "Name, workflowId, and region are required" });
       }
 
-      if (!["na", "apac", "eu"].includes(region)) {
-        return res.status(400).json({ error: "Invalid region. Must be na, apac, or eu" });
+      if (!["na", "apac", "eu", "sa"].includes(region)) {
+        return res.status(400).json({ error: "Invalid region. Must be na, apac, eu, or sa" });
       }
 
       // Verify workflow exists and user owns it
@@ -1598,8 +1598,8 @@ export async function registerRoutes(
         return res.status(400).json({ error: "Name and region required" });
       }
 
-      if (!["na", "apac", "eu"].includes(region)) {
-        return res.status(400).json({ error: "Invalid region. Must be na, apac, or eu" });
+      if (!["na", "apac", "eu", "sa"].includes(region)) {
+        return res.status(400).json({ error: "Invalid region. Must be na, apac, eu, or sa" });
       }
 
       // Non-admin users can only create private tokens
@@ -1695,8 +1695,8 @@ export async function registerRoutes(
         return res.status(400).json({ error: "Name and region required" });
       }
 
-      if (!["na", "apac", "eu"].includes(region)) {
-        return res.status(400).json({ error: "Invalid region. Must be na, apac, or eu" });
+      if (!["na", "apac", "eu", "sa"].includes(region)) {
+        return res.status(400).json({ error: "Invalid region. Must be na, apac, eu, or sa" });
       }
 
       const tokenVisibility = visibility || "public";
@@ -2056,8 +2056,8 @@ export async function registerRoutes(
         return res.status(403).json({ error: "Not authorized to run this workflow" });
       }
 
-      if (!region || !["na", "apac", "eu"].includes(region)) {
-        return res.status(400).json({ error: "Valid region required (na, apac, eu)" });
+      if (!region || !["na", "apac", "eu", "sa"].includes(region)) {
+        return res.status(400).json({ error: "Valid region required (na, apac, eu, sa)" });
       }
 
       if (!evalSetId) {
@@ -2103,7 +2103,7 @@ export async function registerRoutes(
 
       const filters: {
         status?: "pending" | "running" | "completed" | "failed";
-        region?: "na" | "apac" | "eu";
+        region?: "na" | "apac" | "eu" | "sa";
         workflowId?: number;
         limit?: number;
         offset?: number;
@@ -2112,8 +2112,8 @@ export async function registerRoutes(
       if (status && ["pending", "running", "completed", "failed"].includes(status as string)) {
         filters.status = status as "pending" | "running" | "completed" | "failed";
       }
-      if (region && ["na", "apac", "eu"].includes(region as string)) {
-        filters.region = region as "na" | "apac" | "eu";
+      if (region && ["na", "apac", "eu", "sa"].includes(region as string)) {
+        filters.region = region as "na" | "apac" | "eu" | "sa";
       }
       if (workflowId) {
         filters.workflowId = parseInt(workflowId as string);

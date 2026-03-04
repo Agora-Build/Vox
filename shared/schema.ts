@@ -6,7 +6,7 @@ import crypto from "crypto";
 // Enums
 export const userPlanEnum = pgEnum("user_plan", ["basic", "premium", "principal", "fellow"]);
 export const visibilityEnum = pgEnum("visibility", ["public", "private"]);
-export const regionEnum = pgEnum("region", ["na", "apac", "eu"]);
+export const regionEnum = pgEnum("region", ["na", "apac", "eu", "sa"]);
 export const providerSkuEnum = pgEnum("provider_sku", ["convoai", "rtc"]);
 export const evalAgentStateEnum = pgEnum("eval_agent_state", ["idle", "offline", "occupied"]);
 export const evalJobStatusEnum = pgEnum("eval_job_status", ["pending", "running", "completed", "failed"]);

@@ -67,7 +67,7 @@ INIT_CODE="VOX-DEBUG-2024"
 EVAL_AGENT_TOKEN_FILE="/tmp/vox-eval-agent-token.txt"
 
 # Multi-region configuration
-REGIONS=("na" "apac" "eu")
+REGIONS=("na" "apac" "eu" "sa")
 MULTI_REGION_MODE=false
 
 # Colors

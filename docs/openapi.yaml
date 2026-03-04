@@ -98,7 +98,7 @@ components:
           type: string
         region:
           type: string
-          enum: [na, apac, eu]
+          enum: [na, apac, eu, sa]
         visibility:
           type: string
           enum: [public, private]
@@ -288,7 +288,7 @@ components:
           example: 1
         region:
           type: string
-          enum: [na, apac, eu]
+          enum: [na, apac, eu, sa]
           example: "na"
         status:
           type: string
@@ -326,7 +326,7 @@ components:
       properties:
         region:
           type: string
-          enum: [na, apac, eu]
+          enum: [na, apac, eu, sa]
           default: "na"
         evalSetId:
           type: integer
@@ -349,7 +349,7 @@ components:
           example: "abc123def456"
         region:
           type: string
-          enum: [na, apac, eu]
+          enum: [na, apac, eu, sa]
           example: "na"
         responseLatencyMedian:
           type: integer
@@ -465,7 +465,7 @@ components:
           example: "abc123def456"
         region:
           type: string
-          enum: [na, apac, eu]
+          enum: [na, apac, eu, sa]
           example: "na"
         responseLatency:
           type: integer
@@ -500,7 +500,7 @@ components:
           example: "abc123def456"
         region:
           type: string
-          enum: [na, apac, eu]
+          enum: [na, apac, eu, sa]
           example: "na"
         responseLatency:
           type: integer
@@ -1368,7 +1368,7 @@ paths:
                   description: Display name for the token
                 region:
                   type: string
-                  enum: [na, apac, eu]
+                  enum: [na, apac, eu, sa]
                   description: Region assignment
                 visibility:
                   type: string
@@ -1433,7 +1433,7 @@ paths:
           in: query
           schema:
             type: string
-            enum: [na, apac, eu]
+            enum: [na, apac, eu, sa]
           description: Filter by region (optional)
       responses:
         '200':

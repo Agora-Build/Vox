@@ -39,6 +39,7 @@ const REGIONS = [
   { value: "na", label: "North America" },
   { value: "apac", label: "Asia Pacific" },
   { value: "eu", label: "Europe" },
+  { value: "sa", label: "South America" },
 ];
 
 export default function ConsoleEvalAgentTokens() {

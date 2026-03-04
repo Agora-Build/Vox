@@ -117,6 +117,7 @@ export default function Leaderboard() {
   const regionLabel = selectedRegion === "all" ? "All Regions"
     : selectedRegion === "na" ? "North America"
     : selectedRegion === "apac" ? "Asia Pacific"
+    : selectedRegion === "sa" ? "South America"
     : "Europe";
 
   const timeRangeLabel = timeRange === "24" ? "Last 24 hours"
@@ -179,6 +180,7 @@ export default function Leaderboard() {
               <SelectItem value="na">North America</SelectItem>
               <SelectItem value="apac">Asia Pacific</SelectItem>
               <SelectItem value="eu">Europe</SelectItem>
+              <SelectItem value="sa">South America</SelectItem>
             </SelectContent>
           </Select>
         </div>

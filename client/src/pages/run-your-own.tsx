@@ -270,6 +270,7 @@ export default function SelfTest() {
     na: "North America",
     apac: "Asia Pacific",
     eu: "Europe",
+    sa: "South America",
   };
 
   return (
@@ -441,6 +442,7 @@ export default function SelfTest() {
                       <SelectItem value="na">North America</SelectItem>
                       <SelectItem value="apac">Asia Pacific</SelectItem>
                       <SelectItem value="eu">Europe</SelectItem>
+                      <SelectItem value="sa">South America</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
