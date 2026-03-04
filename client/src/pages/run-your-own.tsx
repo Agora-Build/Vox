@@ -92,6 +92,26 @@ export default function SelfTest() {
     enabled: !!authStatus?.user,
   });
 
+  // Restore active job on page load (survives refresh)
+  useQuery<EvalJob[]>({
+    queryKey: ["/api/eval-jobs/active-check"],
+    queryFn: async () => {
+      const [pendingRes, runningRes] = await Promise.all([
+        fetch("/api/eval-jobs?status=pending&limit=1"),
+        fetch("/api/eval-jobs?status=running&limit=1"),
+      ]);
+      const pending: EvalJob[] = pendingRes.ok ? await pendingRes.json() : [];
+      const running: EvalJob[] = runningRes.ok ? await runningRes.json() : [];
+      const active = [...running, ...pending];
+      if (active.length > 0 && !activeJobId) {
+        setActiveJobId(active[0].id);
+      }
+      return active;
+    },
+    enabled: !!authStatus?.user && !activeJobId,
+    staleTime: Infinity, // Only run once per mount
+  });
+
   const { data: activeJob, refetch: refetchJob } = useQuery<EvalJob>({
     queryKey: ["/api/eval-jobs", activeJobId],
     queryFn: async () => {
