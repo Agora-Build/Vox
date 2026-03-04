@@ -467,6 +467,23 @@ Two eval frameworks are supported:
 - **aeval** (default) — single-binary Python evaluator with JSON metrics output
 - **voice-agent-tester** — Node/Puppeteer evaluator with CSV report output
 
+#### System Dependencies (aeval framework)
+aeval requires two system packages for its audio analysis pipeline:
+- **`libsndfile1`** — C library for reading audio files (WAV, FLAC, OGG). Used by PySoundFile in energy VAD and librosa in STT/Whisper.
+- **`ffmpeg`** — Required for decoding WebM/Opus recordings. Browser recordings are saved as `.webm`; libsndfile can't decode this format, so librosa falls back to audioread which needs ffmpeg.
+
+Without these, energy VAD and STT both fail with `NoBackendError` — VAD falls back to events-only (losing interrupt detection), and STT produces an empty transcript.
+
+```bash
+# Ubuntu/Debian (including Docker)
+sudo apt install libsndfile1 ffmpeg
+
+# macOS
+brew install libsndfile ffmpeg
+```
+
+The Dockerfile already includes both. For local dev, install them on your host machine.
+
 #### Latency Metrics Calculation (aeval framework)
 aeval runs a scenario (e.g. `smoke_test_en.yaml`), records audio, and runs an analysis pipeline that produces `metrics.json`. The daemon reads this file and maps it to Vox's `evalResults` schema:
 
