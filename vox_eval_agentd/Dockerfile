@@ -50,6 +50,7 @@ RUN apt-get update && apt-get install -y \
     libpango-1.0-0 \
     libcairo2 \
     libatspi2.0-0t64 \
+    libsndfile1 \
     wget \
     --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
