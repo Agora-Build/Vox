@@ -41,7 +41,7 @@ steps:
 
 interface AuthStatus {
   user: {
-    id: string;
+    id: number;
     username: string;
     plan: string;
     isAdmin: boolean;
@@ -449,7 +449,7 @@ export default function ConsoleEvalSets() {
                     )}
                     <TableCell className="text-right">
                       <div className="flex items-center justify-end gap-1">
-                        {String(evalSet.ownerId) === authStatus?.user?.id ? (
+                        {String(evalSet.ownerId) === String(authStatus?.user?.id) ? (
                           <>
                             <Button
                               variant="ghost"

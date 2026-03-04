@@ -33,7 +33,7 @@ steps:
 
 interface AuthStatus {
   user: {
-    id: string;
+    id: number;
     username: string;
     plan: string;
     isAdmin: boolean;
@@ -518,7 +518,7 @@ export default function ConsoleWorkflows() {
                     )}
                     <TableCell className="text-right">
                       <div className="flex items-center justify-end gap-1">
-                        {String(workflow.ownerId) === authStatus?.user?.id ? (
+                        {String(workflow.ownerId) === String(authStatus?.user?.id) ? (
                           <Button
                             size="sm"
                             variant="ghost"
