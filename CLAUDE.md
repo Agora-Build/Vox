@@ -368,7 +368,7 @@ npx playwright test --headed     # Run in headed browser mode
 | `tests/api.test.ts` | Integration | 107+ | API endpoints (auth, workflows, jobs, organizations) |
 | `tests/auth.test.ts` | Unit | 26 | Password hashing, token generation |
 | `tests/cron.test.ts` | Unit | 32 | Cron expression parsing and validation |
-| `tests/eval-agent-daemon.test.ts` | Unit | 18 | Eval agent result parsing, API communication |
+| `tests/eval-agent-daemon.test.ts` | Unit | 86 | Eval agent result parsing, metrics calculation, API communication |
 | `tests/e2e/auth.spec.ts` | E2E | 5 | Login, logout, authentication flows |
 | `tests/e2e/api.spec.ts` | E2E | 17 | Public API, protected endpoints, rate limiting |
 | `tests/e2e/public-pages.spec.ts` | E2E | 9 | Landing page, leaderboard, API docs |
@@ -458,8 +458,41 @@ When adding new features, write tests for critical paths like authentication, jo
 ### Eval Agent Daemon
 - `vox_eval_agentd/vox-agentd.ts` - Eval agent daemon (single source for Docker & local dev)
 - `vox_eval_agentd/Dockerfile` - Eval agent Docker image (compiles TS via esbuild)
+- `vox_eval_agentd/aeval-data/` - aeval runtime data (git submodule: corpus, config, examples)
 - `vox_eval_agentd/applications/` - Application config files (YAML)
 - `vox_eval_agentd/scenarios/` - Test scenario config files (YAML)
+
+#### Eval Frameworks
+Two eval frameworks are supported:
+- **aeval** (default) — single-binary Python evaluator with JSON metrics output
+- **voice-agent-tester** — Node/Puppeteer evaluator with CSV report output
+
+#### Latency Metrics Calculation (aeval framework)
+aeval runs a scenario (e.g. `smoke_test_en.yaml`), records audio, and runs an analysis pipeline that produces `metrics.json`. The daemon reads this file and maps it to Vox's `evalResults` schema:
+
+**`responseLatencyMedian`** — Response latency median (milliseconds):
+- **Source**: Computed from `response_metrics.latency.turn_level[].latency_ms` array
+- **What it measures**: Time from when the user finishes speaking to when the AI agent starts responding (first-byte latency)
+- **Formula**: True median — sort values, take middle element (odd count) or average of two middle elements (even count)
+- **Fallback chain**: turn_level median → `summary.p50_latency_ms` → `aggregated_summary.avg_response_latency_ms`
+- **Negative latencies** (overlapping speech) are filtered out before calculation
+
+**`responseLatencySd`** — Response latency standard deviation (milliseconds):
+- **Source**: Computed from `response_metrics.latency.turn_level[].latency_ms` array
+- **Formula**: Population standard deviation: `SD = sqrt( Σ(xi - mean)² / n )`
+  - `xi` = latency of each turn, `mean` = average of all turns, `n` = number of turns
+- **Requires**: At least 2 valid turn-level samples; if < 2: SD = 0
+
+**`interruptLatencyMedian`** — Interrupt reaction time median (milliseconds):
+- **Source**: Computed from `interruption_metrics.latency.turn_level[].reaction_time_ms` array
+- **What it measures**: Time for the agent to stop speaking after being interrupted
+- **Fallback chain**: turn_level median → `summary.p50_reaction_time_ms` → `aggregated_summary.avg_interruption_reaction_ms`
+
+**`interruptLatencySd`** — Interrupt latency standard deviation (milliseconds):
+- **Source**: Computed from `interruption_metrics.latency.turn_level[].reaction_time_ms`
+- **Formula**: Same population SD formula as response latency
+
+**Job failure policy**: If aeval exits with non-zero code (e.g. target agent timeout), the job is marked as failed. Partial results are not reported to avoid polluting metrics with statistically unreliable data.
 
 ## External Dependencies
 
@@ -494,6 +527,7 @@ Development dependencies:
 - First-time setup requires `INIT_CODE` to create admin user via `/api/auth/init`
 - System creates two users on init: admin (active) and Scout (needs activation)
 - Default providers seeded: "Agora ConvoAI Engine" and "LiveKit Agents" (both with `convoai` SKU)
-- The eval agent system expects external `voice-agent-tester` tool for actual evaluation execution
-  - Example: `npm start -- -a apps/livekit.yaml -s suites/appointment.yaml --headless false`
+- The eval agent daemon supports two frameworks: `aeval` (default, binary) and `voice-agent-tester` (Node/Puppeteer)
+  - aeval: `aeval run scenario.yaml` — produces `metrics.json` with latency data
+  - voice-agent-tester: `npm start -- -a apps/livekit.yaml -s suites/appointment.yaml --headless false` — produces CSV report
 - Architecture diagram available at `designs/vox-arch.png`

@@ -508,53 +508,59 @@ class VoxEvalAgentDaemon {
 
       const results: EvalResult = { ...RESULT_DEFAULTS };
 
-      // --- Primary: aggregated_summary (flat, most reliable) ---
-      if (agg && typeof agg === 'object') {
+      // Helper: compute median from array of numbers
+      const median = (arr: number[]) => {
+        if (arr.length === 0) return 0;
+        const sorted = [...arr].sort((a, b) => a - b);
+        const mid = Math.floor(sorted.length / 2);
+        return sorted.length % 2 !== 0 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+      };
+
+      // Helper: compute population SD from array of numbers
+      const sd = (arr: number[]) => {
+        if (arr.length < 2) return 0;
+        const mean = arr.reduce((a, b) => a + b, 0) / arr.length;
+        return Math.sqrt(arr.reduce((sum, v) => sum + (v - mean) ** 2, 0) / arr.length);
+      };
+
+      // --- Primary: compute median & SD from turn-level data (ground truth) ---
+      if (Array.isArray(rlTurns) && rlTurns.length > 0) {
+        const vals = rlTurns.map((t: Record<string, unknown>) => t.latency_ms as number).filter((v: number) => v != null && v >= 0);
+        if (vals.length > 0) {
+          results.responseLatencyMedian = Math.round(median(vals));
+          results.responseLatencySd = Math.round(sd(vals));
+        }
+      }
+
+      if (Array.isArray(ilTurns) && ilTurns.length > 0) {
+        const vals = ilTurns.map((t: Record<string, unknown>) => (t.reaction_time_ms ?? t.latency_ms) as number).filter((v: number) => v != null && v >= 0);
+        if (vals.length > 0) {
+          results.interruptLatencyMedian = Math.round(median(vals));
+          results.interruptLatencySd = Math.round(sd(vals));
+        }
+      }
+
+      // --- Fallback: p50 from summary (if turn_level missing) ---
+      if (results.responseLatencyMedian === 0 && rlSummary && typeof rlSummary === 'object') {
+        if (rlSummary.p50_latency_ms != null) {
+          results.responseLatencyMedian = Math.round(rlSummary.p50_latency_ms);
+        }
+      }
+      if (results.interruptLatencyMedian === 0 && ilSummary && typeof ilSummary === 'object') {
+        if (ilSummary.p50_reaction_time_ms != null) {
+          results.interruptLatencyMedian = Math.round(ilSummary.p50_reaction_time_ms);
+        }
+      }
+
+      // --- Last resort: aggregated_summary avg (better than 0) ---
+      if (results.responseLatencyMedian === 0 && agg && typeof agg === 'object') {
         if (agg.avg_response_latency_ms != null) {
           results.responseLatencyMedian = Math.round(agg.avg_response_latency_ms);
         }
+      }
+      if (results.interruptLatencyMedian === 0 && agg && typeof agg === 'object') {
         if (agg.avg_interruption_reaction_ms != null) {
           results.interruptLatencyMedian = Math.round(agg.avg_interruption_reaction_ms);
-        }
-      }
-
-      // --- Secondary: nested response_metrics.latency.summary (has p50) ---
-      if (rlSummary && typeof rlSummary === 'object') {
-        if (rlSummary.p50_latency_ms != null) {
-          results.responseLatencyMedian = Math.round(rlSummary.p50_latency_ms);
-        } else if (results.responseLatencyMedian === 0 && rlSummary.avg_latency_ms != null) {
-          results.responseLatencyMedian = Math.round(rlSummary.avg_latency_ms);
-        }
-      }
-
-      // Compute SD from turn-level data (actual stddev, not approximation)
-      if (Array.isArray(rlTurns) && rlTurns.length >= 2) {
-        const vals = rlTurns.map((t: Record<string, unknown>) => t.latency_ms as number).filter((v: number) => v != null && v >= 0);
-        if (vals.length >= 2) {
-          const mean = vals.reduce((a: number, b: number) => a + b, 0) / vals.length;
-          results.responseLatencySd = Math.round(
-            Math.sqrt(vals.reduce((a: number, b: number) => a + (b - mean) ** 2, 0) / vals.length)
-          );
-        }
-      }
-
-      // --- Secondary: nested interruption_metrics.latency.summary ---
-      if (ilSummary && typeof ilSummary === 'object') {
-        if (ilSummary.p50_reaction_time_ms != null) {
-          results.interruptLatencyMedian = Math.round(ilSummary.p50_reaction_time_ms);
-        } else if (results.interruptLatencyMedian === 0 && ilSummary.avg_reaction_time_ms != null) {
-          results.interruptLatencyMedian = Math.round(ilSummary.avg_reaction_time_ms);
-        }
-      }
-
-      // Compute interrupt SD from turn-level data
-      if (Array.isArray(ilTurns) && ilTurns.length >= 2) {
-        const vals = ilTurns.map((t: Record<string, unknown>) => (t.reaction_time_ms ?? t.latency_ms) as number).filter((v: number) => v != null && v >= 0);
-        if (vals.length >= 2) {
-          const mean = vals.reduce((a: number, b: number) => a + b, 0) / vals.length;
-          results.interruptLatencySd = Math.round(
-            Math.sqrt(vals.reduce((a: number, b: number) => a + (b - mean) ** 2, 0) / vals.length)
-          );
         }
       }
 

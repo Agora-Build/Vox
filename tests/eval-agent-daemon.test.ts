@@ -445,58 +445,62 @@ function parseAevalMetricsJson(jsonContent: string): EvalResults {
 
   const metrics = JSON.parse(jsonContent);
 
-  // Primary: aggregated_summary (flat, most reliable)
+  const calcMedian = (arr: number[]) => {
+    if (arr.length === 0) return 0;
+    const sorted = [...arr].sort((a, b) => a - b);
+    const mid = Math.floor(sorted.length / 2);
+    return sorted.length % 2 !== 0 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+  };
+  const calcSd = (arr: number[]) => {
+    if (arr.length < 2) return 0;
+    const mean = arr.reduce((a, b) => a + b, 0) / arr.length;
+    return Math.sqrt(arr.reduce((sum, v) => sum + (v - mean) ** 2, 0) / arr.length);
+  };
+
+  const rlTurns = metrics.response_metrics?.latency?.turn_level;
+  const ilTurns = metrics.interruption_metrics?.latency?.turn_level;
+  const rlSummary = metrics.response_metrics?.latency?.summary;
+  const ilSummary = metrics.interruption_metrics?.latency?.summary;
   const agg = metrics.aggregated_summary;
-  if (agg && typeof agg === 'object') {
+
+  // Primary: compute median & SD from turn-level data (ground truth)
+  if (Array.isArray(rlTurns) && rlTurns.length > 0) {
+    const vals = rlTurns.map((t: Record<string, unknown>) => t.latency_ms as number).filter((v: number) => v != null && v >= 0);
+    if (vals.length > 0) {
+      results.responseLatencyMedian = Math.round(calcMedian(vals));
+      results.responseLatencySd = Math.round(calcSd(vals));
+    }
+  }
+
+  if (Array.isArray(ilTurns) && ilTurns.length > 0) {
+    const vals = ilTurns.map((t: Record<string, unknown>) => (t.reaction_time_ms ?? t.latency_ms) as number).filter((v: number) => v != null && v >= 0);
+    if (vals.length > 0) {
+      results.interruptLatencyMedian = Math.round(calcMedian(vals));
+      results.interruptLatencySd = Math.round(calcSd(vals));
+    }
+  }
+
+  // Fallback: p50 from summary (if turn_level missing)
+  if (results.responseLatencyMedian === 0 && rlSummary && typeof rlSummary === 'object') {
+    if (rlSummary.p50_latency_ms != null) {
+      results.responseLatencyMedian = Math.round(rlSummary.p50_latency_ms);
+    }
+  }
+  if (results.interruptLatencyMedian === 0 && ilSummary && typeof ilSummary === 'object') {
+    if (ilSummary.p50_reaction_time_ms != null) {
+      results.interruptLatencyMedian = Math.round(ilSummary.p50_reaction_time_ms);
+    }
+  }
+
+  // Last resort: aggregated_summary avg (better than 0)
+  if (results.responseLatencyMedian === 0 && agg && typeof agg === 'object') {
     if (agg.avg_response_latency_ms != null) {
       results.responseLatencyMedian = Math.round(agg.avg_response_latency_ms);
     }
+  }
+  if (results.interruptLatencyMedian === 0 && agg && typeof agg === 'object') {
     if (agg.avg_interruption_reaction_ms != null) {
       results.interruptLatencyMedian = Math.round(agg.avg_interruption_reaction_ms);
-    }
-  }
-
-  // Secondary: nested response_metrics.latency.summary (has p50)
-  const rlSummary = metrics.response_metrics?.latency?.summary;
-  if (rlSummary && typeof rlSummary === 'object') {
-    if (rlSummary.p50_latency_ms != null) {
-      results.responseLatencyMedian = Math.round(rlSummary.p50_latency_ms);
-    } else if (results.responseLatencyMedian === 0 && rlSummary.avg_latency_ms != null) {
-      results.responseLatencyMedian = Math.round(rlSummary.avg_latency_ms);
-    }
-  }
-
-  // Compute SD from turn-level data (actual stddev)
-  const rlTurns = metrics.response_metrics?.latency?.turn_level;
-  if (Array.isArray(rlTurns) && rlTurns.length >= 2) {
-    const vals = rlTurns.map((t: Record<string, unknown>) => t.latency_ms as number).filter((v: number) => v != null && v >= 0);
-    if (vals.length >= 2) {
-      const mean = vals.reduce((a: number, b: number) => a + b, 0) / vals.length;
-      results.responseLatencySd = Math.round(
-        Math.sqrt(vals.reduce((a: number, b: number) => a + (b - mean) ** 2, 0) / vals.length)
-      );
-    }
-  }
-
-  // Secondary: nested interruption_metrics.latency.summary
-  const ilSummary = metrics.interruption_metrics?.latency?.summary;
-  if (ilSummary && typeof ilSummary === 'object') {
-    if (ilSummary.p50_reaction_time_ms != null) {
-      results.interruptLatencyMedian = Math.round(ilSummary.p50_reaction_time_ms);
-    } else if (results.interruptLatencyMedian === 0 && ilSummary.avg_reaction_time_ms != null) {
-      results.interruptLatencyMedian = Math.round(ilSummary.avg_reaction_time_ms);
-    }
-  }
-
-  // Compute interrupt SD from turn-level data
-  const ilTurns = metrics.interruption_metrics?.latency?.turn_level;
-  if (Array.isArray(ilTurns) && ilTurns.length >= 2) {
-    const vals = ilTurns.map((t: Record<string, unknown>) => (t.reaction_time_ms ?? t.latency_ms) as number).filter((v: number) => v != null && v >= 0);
-    if (vals.length >= 2) {
-      const mean = vals.reduce((a: number, b: number) => a + b, 0) / vals.length;
-      results.interruptLatencySd = Math.round(
-        Math.sqrt(vals.reduce((a: number, b: number) => a + (b - mean) ** 2, 0) / vals.length)
-      );
     }
   }
 
@@ -710,8 +714,7 @@ describe("Eval Agent Daemon - aeval Metrics JSON Parsing", () => {
     expect(results.responseLatencySd).toBe(Math.round(sd));
   });
 
-  it("should prefer p50 from nested summary over aggregated avg", () => {
-    // When both nested p50 and aggregated avg exist, p50 wins
+  it("should fall back to p50 from summary when turn_level missing", () => {
     const json = JSON.stringify({
       response_metrics: {
         latency: { summary: { p50_latency_ms: 500 } },
@@ -719,6 +722,7 @@ describe("Eval Agent Daemon - aeval Metrics JSON Parsing", () => {
       aggregated_summary: { avg_response_latency_ms: 600 },
     });
     const results = parseAevalMetricsJson(json);
+    // No turn_level → falls back to p50 (500), not avg (600)
     expect(results.responseLatencyMedian).toBe(500);
   });
 
@@ -761,7 +765,7 @@ describe("Eval Agent Daemon - aeval Metrics JSON Parsing", () => {
     expect(results.interruptLatencyMedian).toBe(0); // no interruptions
   });
 
-  it("should prefer p50 from nested summary over aggregated_summary avg", () => {
+  it("should compute median from turn_level, not use aggregated avg", () => {
     const json = JSON.stringify({
       response_metrics: {
         latency: {
@@ -776,9 +780,9 @@ describe("Eval Agent Daemon - aeval Metrics JSON Parsing", () => {
       aggregated_summary: { avg_response_latency_ms: 900 },
     });
     const results = parseAevalMetricsJson(json);
-    // p50 should win over aggregated avg
+    // Median from turn_level [800, 850, 1050] → sorted → middle = 850 (not avg 900)
     expect(results.responseLatencyMedian).toBe(850);
-    // actual sd from turn-level: mean=900, sd=sqrt(((800-900)^2+(850-900)^2+(1050-900)^2)/3)
+    // SD from turn_level: mean=900, sd=sqrt(((800-900)^2+(850-900)^2+(1050-900)^2)/3)
     const mean = 900;
     const sd = Math.sqrt(((800-mean)**2 + (850-mean)**2 + (1050-mean)**2) / 3);
     expect(results.responseLatencySd).toBe(Math.round(sd));
@@ -875,6 +879,256 @@ describe("Eval Agent Daemon - aeval Metrics JSON Parsing", () => {
 
   it("should throw on invalid JSON", () => {
     expect(() => parseAevalMetricsJson("not json at all")).toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Practical / realistic metrics.json tests
+// ---------------------------------------------------------------------------
+
+describe("Eval Agent Daemon - Practical Metrics Parsing", () => {
+  // Helper: compute expected median (p50)
+  function expectedMedian(arr: number[]): number {
+    const sorted = [...arr].sort((a, b) => a - b);
+    const mid = Math.floor(sorted.length / 2);
+    return sorted.length % 2 !== 0 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+  }
+
+  // Helper: compute expected population SD
+  function expectedSd(arr: number[]): number {
+    if (arr.length < 2) return 0;
+    const mean = arr.reduce((a, b) => a + b, 0) / arr.length;
+    return Math.sqrt(arr.reduce((sum, v) => sum + (v - mean) ** 2, 0) / arr.length);
+  }
+
+  it("smoke test: 3 response turns, no interrupts (typical successful run)", () => {
+    // Simulates a full smoke_test_en run where all 3 questions got answers
+    const responseTimes = [1450, 1890, 1620];
+    const json = JSON.stringify({
+      session_metadata: { total_turns: 4 },
+      response_metrics: {
+        latency: {
+          summary: {
+            total_valid_turns: 3,
+            avg_latency_ms: 1653,
+            min_latency_ms: 1450,
+            max_latency_ms: 1890,
+            p50_latency_ms: 1620,
+            p95_latency_ms: 1890,
+            negative_latency_count: 0,
+          },
+          turn_level: [
+            { turn_index: 1, latency_ms: 1450 },
+            { turn_index: 2, latency_ms: 1890 },
+            { turn_index: 3, latency_ms: 1620 },
+          ],
+        },
+      },
+      interruption_metrics: {
+        latency: {
+          summary: { total_interruptions: 0, avg_reaction_time_ms: null, p50_reaction_time_ms: null },
+          turn_level: [],
+        },
+        post_interruption_latency: { summary: { avg_latency_ms: null } },
+      },
+      aggregated_summary: {
+        avg_response_latency_ms: 1653,
+        avg_interruption_reaction_ms: null,
+        avg_post_interruption_latency_ms: null,
+      },
+    });
+
+    const results = parseAevalMetricsJson(json);
+
+    // Median: computed from turn_level [1450, 1890, 1620] → sorted [1450, 1620, 1890] → middle = 1620
+    expect(results.responseLatencyMedian).toBe(Math.round(expectedMedian(responseTimes)));
+
+    // SD: computed from turn_level [1450, 1890, 1620]
+    // mean = (1450+1890+1620)/3 = 1653.33
+    // SD = sqrt(((1450-1653.33)^2 + (1890-1653.33)^2 + (1620-1653.33)^2) / 3)
+    expect(results.responseLatencySd).toBe(Math.round(expectedSd(responseTimes)));
+
+    // No interrupts
+    expect(results.interruptLatencyMedian).toBe(0);
+    expect(results.interruptLatencySd).toBe(0);
+  });
+
+  it("full test: 3 responses + 2 interrupts (all phases completed)", () => {
+    const responseTimes = [980, 1200, 1100];
+    const interruptTimes = [450, 380];
+    const json = JSON.stringify({
+      session_metadata: { total_turns: 8 },
+      response_metrics: {
+        latency: {
+          summary: {
+            total_valid_turns: 3,
+            avg_latency_ms: 1093,
+            p50_latency_ms: 1100,
+            p95_latency_ms: 1200,
+          },
+          turn_level: [
+            { turn_index: 1, latency_ms: 980 },
+            { turn_index: 3, latency_ms: 1200 },
+            { turn_index: 5, latency_ms: 1100 },
+          ],
+        },
+      },
+      interruption_metrics: {
+        latency: {
+          summary: {
+            total_interruptions: 2,
+            avg_reaction_time_ms: 415,
+            p50_reaction_time_ms: 415,
+          },
+          turn_level: [
+            { turn_index: 2, reaction_time_ms: 450 },
+            { turn_index: 4, reaction_time_ms: 380 },
+          ],
+        },
+      },
+      aggregated_summary: {
+        avg_response_latency_ms: 1093,
+        avg_interruption_reaction_ms: 415,
+      },
+    });
+
+    const results = parseAevalMetricsJson(json);
+
+    expect(results.responseLatencyMedian).toBe(1100);
+    expect(results.responseLatencySd).toBe(Math.round(expectedSd(responseTimes)));
+
+    expect(results.interruptLatencyMedian).toBe(415);
+    expect(results.interruptLatencySd).toBe(Math.round(expectedSd(interruptTimes)));
+  });
+
+  it("single turn: 1 response, SD = 0 (not enough samples)", () => {
+    const json = JSON.stringify({
+      response_metrics: {
+        latency: {
+          summary: { total_valid_turns: 1, avg_latency_ms: 2100, p50_latency_ms: 2100 },
+          turn_level: [{ turn_index: 1, latency_ms: 2100 }],
+        },
+      },
+      aggregated_summary: { avg_response_latency_ms: 2100 },
+    });
+
+    const results = parseAevalMetricsJson(json);
+    expect(results.responseLatencyMedian).toBe(2100);
+    expect(results.responseLatencySd).toBe(0); // 1 sample → SD=0
+  });
+
+  it("high variance: fast and slow responses mixed", () => {
+    const responseTimes = [500, 3200, 800, 2900, 600];
+    const mean = responseTimes.reduce((a, b) => a + b, 0) / responseTimes.length;
+    const json = JSON.stringify({
+      response_metrics: {
+        latency: {
+          summary: { p50_latency_ms: 800, avg_latency_ms: mean },
+          turn_level: responseTimes.map((ms, i) => ({ turn_index: i + 1, latency_ms: ms })),
+        },
+      },
+      aggregated_summary: { avg_response_latency_ms: mean },
+    });
+
+    const results = parseAevalMetricsJson(json);
+    expect(results.responseLatencyMedian).toBe(800);
+    expect(results.responseLatencySd).toBe(Math.round(expectedSd(responseTimes)));
+    // Verify SD is large (high variance scenario)
+    expect(results.responseLatencySd).toBeGreaterThan(1000);
+  });
+
+  it("low variance: consistent agent responses", () => {
+    const responseTimes = [1010, 990, 1005, 995, 1000];
+    const json = JSON.stringify({
+      response_metrics: {
+        latency: {
+          summary: { p50_latency_ms: 1000, avg_latency_ms: 1000 },
+          turn_level: responseTimes.map((ms, i) => ({ turn_index: i + 1, latency_ms: ms })),
+        },
+      },
+      aggregated_summary: { avg_response_latency_ms: 1000 },
+    });
+
+    const results = parseAevalMetricsJson(json);
+    expect(results.responseLatencyMedian).toBe(1000);
+    expect(results.responseLatencySd).toBe(Math.round(expectedSd(responseTimes)));
+    // Verify SD is small (consistent responses)
+    expect(results.responseLatencySd).toBeLessThan(10);
+  });
+
+  it("even number of turns: median is average of two middle values (aeval p50)", () => {
+    const turnLatencies = [900, 1100, 1200, 1500];
+    const json = JSON.stringify({
+      response_metrics: {
+        latency: {
+          summary: { p50_latency_ms: 1150 },
+          turn_level: turnLatencies.map((ms, i) => ({ turn_index: i + 1, latency_ms: ms })),
+        },
+      },
+    });
+
+    const results = parseAevalMetricsJson(json);
+    // 4 values → sorted [900, 1100, 1200, 1500] → median = (1100+1200)/2 = 1150
+    expect(results.responseLatencyMedian).toBe(Math.round(expectedMedian(turnLatencies)));
+    expect(results.responseLatencyMedian).toBe(1150);
+  });
+
+  it("negative latency turns are filtered from SD calculation", () => {
+    // aeval may report negative latency for overlapping speech
+    const json = JSON.stringify({
+      response_metrics: {
+        latency: {
+          summary: { p50_latency_ms: 1000, negative_latency_count: 1 },
+          turn_level: [
+            { turn_index: 1, latency_ms: -200 },
+            { turn_index: 2, latency_ms: 900 },
+            { turn_index: 3, latency_ms: 1100 },
+          ],
+        },
+      },
+    });
+
+    const results = parseAevalMetricsJson(json);
+    expect(results.responseLatencyMedian).toBe(1000);
+    // SD from only valid turns [900, 1100], mean=1000
+    // SD = sqrt(((900-1000)^2 + (1100-1000)^2) / 2) = 100
+    expect(results.responseLatencySd).toBe(100);
+  });
+
+  it("no turn_level data: SD stays at default 0", () => {
+    // metrics.json with summary only, no turn_level array
+    const json = JSON.stringify({
+      response_metrics: {
+        latency: {
+          summary: { p50_latency_ms: 1500, avg_latency_ms: 1500 },
+        },
+      },
+      aggregated_summary: { avg_response_latency_ms: 1500 },
+    });
+
+    const results = parseAevalMetricsJson(json);
+    expect(results.responseLatencyMedian).toBe(1500);
+    expect(results.responseLatencySd).toBe(0); // no turn_level → can't compute
+  });
+
+  it("null values in aggregated_summary are ignored", () => {
+    const json = JSON.stringify({
+      response_metrics: {
+        latency: {
+          summary: { p50_latency_ms: 1800 },
+          turn_level: [{ turn_index: 1, latency_ms: 1800 }],
+        },
+      },
+      aggregated_summary: {
+        avg_response_latency_ms: 1800,
+        avg_interruption_reaction_ms: null,
+        avg_post_interruption_latency_ms: null,
+      },
+    });
+
+    const results = parseAevalMetricsJson(json);
+    expect(results.responseLatencyMedian).toBe(1800);
+    expect(results.interruptLatencyMedian).toBe(0); // null → stays default
   });
 });
 
@@ -1198,12 +1452,14 @@ describe("Eval Agent Daemon - aeval File-Based Parsing (temp dir)", () => {
 
     const raw = fs.readFileSync(path.join(outputDir, "metrics.json"), "utf-8");
     const results = parseAevalMetricsJson(raw);
-    expect(results.responseLatencyMedian).toBe(512); // p50 preferred
-    // actual SD from turn_level: mean=530, sd=sqrt(((480-530)^2+(512-530)^2+(598-530)^2)/3)
+    // Median from turn_level [480, 512, 598] → sorted → middle = 512
+    expect(results.responseLatencyMedian).toBe(512);
+    // SD from turn_level: mean=(480+512+598)/3=530
     const mean = 530;
     const sd = Math.sqrt(((480-mean)**2 + (512-mean)**2 + (598-mean)**2) / 3);
     expect(results.responseLatencySd).toBe(Math.round(sd));
-    expect(results.interruptLatencyMedian).toBe(200); // p50 preferred
+    // No interrupt turn_level → falls back to p50 from summary
+    expect(results.interruptLatencyMedian).toBe(200);
   });
 
   it("should detect missing metrics.json gracefully", () => {
