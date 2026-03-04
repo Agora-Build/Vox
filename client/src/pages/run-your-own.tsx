@@ -300,7 +300,7 @@ export default function SelfTest() {
           Run Your Own Evaluation
         </div>
         <h1 className="text-3xl sm:text-4xl font-bold tracking-tight">
-          Test Your Voice AI Product
+          Test Your Voice Product
         </h1>
         <p className="text-muted-foreground max-w-2xl mx-auto">
           Register your ConvoAI or RTC product and run real-world evaluations across multiple regions.
