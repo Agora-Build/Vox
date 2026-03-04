@@ -359,13 +359,23 @@ class VoxEvalAgentDaemon {
       proc.on('close', (code) => {
         console.log(`[Daemon] aeval exited with code ${code}`);
 
+        const allOutput = stdout + stderr;
+        const outputDir = this.resolveAevalOutputDir(scenarioConfig, allOutput);
+
         if (code !== 0) {
-          reject(new Error(`aeval exited with code ${code}: ${stderr.trim().split('\n').pop() || 'unknown error'}`));
+          // aeval exits with code 1 for partial failures (some tests failed/errored).
+          // The analysis pipeline may still have produced valid metrics — try to parse them.
+          console.warn(`[Daemon] aeval exited with non-zero code ${code}, attempting to parse partial results...`);
+          const results = this.parseAevalResults(outputDir, allOutput);
+          if (results.responseLatencyMedian > 0 || results.interruptLatencyMedian > 0) {
+            console.log(`[Daemon] Partial results recovered despite non-zero exit code`);
+            resolve(results);
+          } else {
+            reject(new Error(`aeval exited with code ${code}: ${stderr.trim().split('\n').pop() || 'unknown error'}`));
+          }
           return;
         }
 
-        const allOutput = stdout + stderr;
-        const outputDir = this.resolveAevalOutputDir(scenarioConfig, allOutput);
         const results = this.parseAevalResults(outputDir, allOutput);
         resolve(results);
       });
