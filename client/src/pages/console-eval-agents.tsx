@@ -12,6 +12,7 @@ import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { Server, MapPin, Activity, Clock, Eye, EyeOff, Plus, Key, Copy, Check, Ban, Lock } from "lucide-react";
 import { useState } from "react";
+import { formatSmartTimestamp } from "@/lib/utils";
 
 interface AuthStatus {
   initialized: boolean;
@@ -30,7 +31,7 @@ interface EvalAgent {
   region: string;
   state: "idle" | "offline" | "occupied";
   visibility: "public" | "private";
-  lastHeartbeat: string | null;
+  lastSeenAt: string | null;
   createdAt: string;
 }
 
@@ -63,21 +64,9 @@ function getStateBadge(state: string) {
   }
 }
 
-function formatLastSeen(lastHeartbeat: string | null) {
-  if (!lastHeartbeat) return "Never";
-
-  const date = new Date(lastHeartbeat);
-  const now = new Date();
-  const diffMs = now.getTime() - date.getTime();
-  const diffMins = Math.floor(diffMs / 60000);
-
-  if (diffMins < 1) return "Just now";
-  if (diffMins < 60) return `${diffMins}m ago`;
-
-  const diffHours = Math.floor(diffMins / 60);
-  if (diffHours < 24) return `${diffHours}h ago`;
-
-  return date.toLocaleDateString();
+function formatLastSeen(lastSeen: string | null) {
+  if (!lastSeen) return "Never";
+  return formatSmartTimestamp(lastSeen);
 }
 
 export default function ConsoleEvalAgents() {
@@ -250,7 +239,7 @@ export default function ConsoleEvalAgents() {
                     <TableCell className="text-muted-foreground">
                       <div className="flex items-center gap-1">
                         <Clock className="h-3 w-3" />
-                        {formatLastSeen(agent.lastHeartbeat)}
+                        {formatLastSeen(agent.lastSeenAt)}
                       </div>
                     </TableCell>
                     <TableCell className="text-muted-foreground">

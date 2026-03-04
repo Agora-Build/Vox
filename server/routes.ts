@@ -1277,6 +1277,32 @@ export async function registerRoutes(
     }
   });
 
+  // Delete eval set (owner or admin, blocked if jobs reference it)
+  app.delete("/api/eval-sets/:id", requireAuth, async (req, res) => {
+    try {
+      const user = await getCurrentUser(req);
+      if (!user) return res.status(401).json({ error: "Not authenticated" });
+
+      const evalSet = await storage.getEvalSet(parseInt(req.params.id));
+      if (!evalSet) return res.status(404).json({ error: "Eval set not found" });
+
+      if (evalSet.ownerId !== user.id && !user.isAdmin) {
+        return res.status(403).json({ error: "Not authorized" });
+      }
+
+      const jobs = await storage.getEvalJobsByEvalSetId(evalSet.id);
+      if (jobs.length > 0) {
+        return res.status(400).json({ error: `Cannot delete: ${jobs.length} job(s) reference this eval set` });
+      }
+
+      await storage.deleteEvalSet(evalSet.id);
+      res.json({ message: "Eval set deleted" });
+    } catch (error) {
+      console.error("Error deleting eval set:", error);
+      res.status(500).json({ error: "Failed to delete eval set" });
+    }
+  });
+
   // ==================== EVAL SCHEDULE ROUTES ====================
 
   // List all schedules for current user

@@ -69,7 +69,7 @@ function buildCombinedData(filteredMetrics: EvalResult[]) {
   for (const m of filteredMetrics) {
     const date = new Date(m.timestamp);
     if (isNaN(date.getTime())) continue;
-    const timeKey = format(date, "HH:mm");
+    const timeKey = format(date, "MM/dd HH:mm");
     if (!timeGroups.has(timeKey)) {
       timeGroups.set(timeKey, { agora: null, liveKit: null });
     }

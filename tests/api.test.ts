@@ -1129,6 +1129,20 @@ describe('Vox API Tests', () => {
       expect(response.status).toBe(404);
     });
 
+    it('should return 404 when deleting non-existent eval set', async () => {
+      const response = await authFetch(adminSession, `${BASE_URL}/api/eval-sets/999999`, {
+        method: 'DELETE',
+      });
+      expect(response.status).toBe(404);
+    });
+
+    it('should reject unauthenticated eval set delete', async () => {
+      const response = await fetch(`${BASE_URL}/api/eval-sets/${testEvalSetId}`, {
+        method: 'DELETE',
+      });
+      expect(response.status).toBe(401);
+    });
+
     it('should reject workflow creation without name', async () => {
       const response = await authFetch(adminSession, `${BASE_URL}/api/workflows`, {
         method: 'POST',

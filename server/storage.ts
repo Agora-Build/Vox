@@ -306,6 +306,10 @@ export class DatabaseStorage {
     await db.delete(evalSets).where(eq(evalSets.id, id));
   }
 
+  async getEvalJobsByEvalSetId(evalSetId: number): Promise<EvalJob[]> {
+    return db.select().from(evalJobs).where(eq(evalJobs.evalSetId, evalSetId));
+  }
+
   async createEvalAgentToken(token: InsertEvalAgentToken): Promise<EvalAgentToken> {
     const result = await db.insert(evalAgentTokens).values(token).returning();
     return result[0];

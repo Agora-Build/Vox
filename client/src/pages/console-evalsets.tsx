@@ -11,9 +11,10 @@ import { Switch } from "@/components/ui/switch";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import { Plus, FileText, Globe, Lock, Star, Play, Pencil, Copy } from "lucide-react";
+import { Plus, FileText, Globe, Lock, Star, Play, Pencil, Copy, Trash2 } from "lucide-react";
 import { useState } from "react";
 import type { EvalSet, Workflow as WorkflowType } from "@shared/schema";
 
@@ -80,6 +81,10 @@ export default function ConsoleEvalSets() {
   const [editDescription, setEditDescription] = useState("");
   const [editVisibility, setEditVisibility] = useState("public");
   const [editScenarioYaml, setEditScenarioYaml] = useState("");
+
+  // Delete dialog state
+  const [deleteTarget, setDeleteTarget] = useState<EvalSet | null>(null);
+  const [deleteConfirmName, setDeleteConfirmName] = useState("");
 
   const { data: authStatus } = useQuery<AuthStatus>({
     queryKey: ["/api/auth/status"],
@@ -192,6 +197,22 @@ export default function ConsoleEvalSets() {
     },
     onError: (error: Error) => {
       toast({ title: "Failed to update eval set", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: async (id: number) => {
+      const res = await apiRequest("DELETE", `/api/eval-sets/${id}`);
+      return res.json();
+    },
+    onSuccess: () => {
+      setDeleteTarget(null);
+      setDeleteConfirmName("");
+      queryClient.invalidateQueries({ queryKey: ["/api/eval-sets"] });
+      toast({ title: "Eval set deleted" });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Failed to delete eval set", description: error.message, variant: "destructive" });
     },
   });
 
@@ -429,14 +450,24 @@ export default function ConsoleEvalSets() {
                     <TableCell className="text-right">
                       <div className="flex items-center justify-end gap-1">
                         {String(evalSet.ownerId) === authStatus?.user?.id ? (
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            onClick={() => openEditDialog(evalSet)}
-                            data-testid={`button-edit-evalset-${evalSet.id}`}
-                          >
-                            <Pencil className="h-4 w-4" />
-                          </Button>
+                          <>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              onClick={() => openEditDialog(evalSet)}
+                              data-testid={`button-edit-evalset-${evalSet.id}`}
+                            >
+                              <Pencil className="h-4 w-4" />
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              onClick={() => { setDeleteTarget(evalSet); setDeleteConfirmName(""); }}
+                              data-testid={`button-delete-evalset-${evalSet.id}`}
+                            >
+                              <Trash2 className="h-4 w-4 text-destructive" />
+                            </Button>
+                          </>
                         ) : evalSet.visibility === "public" ? (
                           <Button
                             variant="ghost"
@@ -640,6 +671,41 @@ export default function ConsoleEvalSets() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Delete Eval Set Confirmation Dialog */}
+      <AlertDialog open={!!deleteTarget} onOpenChange={(open) => { if (!open) { setDeleteTarget(null); setDeleteConfirmName(""); } }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete Eval Set</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will permanently delete <span className="font-semibold text-foreground">{deleteTarget?.name}</span>. This action cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <div className="space-y-2 py-2">
+            <Label htmlFor="delete-confirm-name">
+              Type <span className="font-mono font-semibold">{deleteTarget?.name}</span> to confirm
+            </Label>
+            <Input
+              id="delete-confirm-name"
+              value={deleteConfirmName}
+              onChange={(e) => setDeleteConfirmName(e.target.value)}
+              placeholder={deleteTarget?.name}
+              data-testid="input-delete-confirm-name"
+            />
+          </div>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              disabled={deleteConfirmName !== deleteTarget?.name || deleteMutation.isPending}
+              onClick={() => deleteTarget && deleteMutation.mutate(deleteTarget.id)}
+              data-testid="button-confirm-delete-evalset"
+            >
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

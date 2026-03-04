@@ -13,7 +13,7 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import { ArrowLeft, Play, Settings, History, Clock, CheckCircle, XCircle, Loader2, RefreshCw } from "lucide-react";
 import { useState } from "react";
 import type { Workflow as WorkflowType, Provider, EvalJob, EvalSet } from "@shared/schema";
-import { formatDistanceToNow } from "date-fns";
+import { formatSmartTimestamp } from "@/lib/utils";
 
 interface AuthStatus {
   user: {
@@ -310,14 +310,10 @@ export default function ConsoleWorkflowDetail() {
                       </Badge>
                     </TableCell>
                     <TableCell className="text-sm text-muted-foreground">
-                      {job.startedAt
-                        ? formatDistanceToNow(new Date(job.startedAt), { addSuffix: true })
-                        : "-"}
+                      {job.startedAt ? formatSmartTimestamp(job.startedAt) : "-"}
                     </TableCell>
                     <TableCell className="text-sm text-muted-foreground">
-                      {job.completedAt
-                        ? formatDistanceToNow(new Date(job.completedAt), { addSuffix: true })
-                        : "-"}
+                      {job.completedAt ? formatSmartTimestamp(job.completedAt) : "-"}
                     </TableCell>
                   </TableRow>
                 ))}

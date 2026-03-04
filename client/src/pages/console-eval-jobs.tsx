@@ -7,7 +7,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { ClipboardList, CheckCircle, XCircle, Loader2, Clock, RefreshCw } from "lucide-react";
 import { useState } from "react";
-import { format } from "date-fns";
+import { formatSmartTimestamp } from "@/lib/utils";
 import type { EvalJob, Workflow as WorkflowType } from "@shared/schema";
 
 const STATUSES = [
@@ -177,17 +177,13 @@ export default function ConsoleEvalJobs() {
                         </Badge>
                       </TableCell>
                       <TableCell className="text-sm text-muted-foreground">
-                        {format(new Date(job.createdAt), "yyyy-MM-dd HH:mm:ss")}
+                        {formatSmartTimestamp(job.createdAt)}
                       </TableCell>
                       <TableCell className="text-sm text-muted-foreground">
-                        {job.startedAt
-                          ? format(new Date(job.startedAt), "yyyy-MM-dd HH:mm:ss")
-                          : "-"}
+                        {job.startedAt ? formatSmartTimestamp(job.startedAt) : "-"}
                       </TableCell>
                       <TableCell className="text-sm text-muted-foreground">
-                        {job.completedAt
-                          ? format(new Date(job.completedAt), "yyyy-MM-dd HH:mm:ss")
-                          : "-"}
+                        {job.completedAt ? formatSmartTimestamp(job.completedAt) : "-"}
                       </TableCell>
                     </TableRow>
                   );
