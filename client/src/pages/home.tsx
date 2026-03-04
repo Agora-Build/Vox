@@ -10,7 +10,7 @@ export default function Home() {
       {/* Hero Section */}
       <section className="text-center space-y-6 pt-6 md:pt-10">
         <h1 className="text-3xl sm:text-5xl md:text-7xl font-bold tracking-tight bg-gradient-to-br from-foreground to-muted-foreground bg-clip-text text-transparent">
-          Track AI Performance<br />Across the World
+          Track Your Products Experience<br />Across the World
         </h1>
         <p className="text-base sm:text-lg md:text-xl text-muted-foreground max-w-3xl mx-auto leading-relaxed px-2">
           Automated evaluation testing for conversational AI products. Monitor respond latency,
