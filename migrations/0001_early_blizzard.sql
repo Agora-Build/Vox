@@ -1,1 +1,0 @@
-ALTER TABLE "eval_jobs" ADD COLUMN "config" jsonb DEFAULT '{}'::jsonb NOT NULL;

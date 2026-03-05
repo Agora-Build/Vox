@@ -1,1 +1,0 @@
-ALTER TYPE "public"."region" ADD VALUE 'sa';

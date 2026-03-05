@@ -7,11 +7,9 @@ import session from "express-session";
 import connectPgSimple from "connect-pg-simple";
 import rateLimit from "express-rate-limit";
 import { authenticateApiKey, passport, initializeGoogleOAuth } from "./auth";
-import { storage, mergeEvalConfig, db } from "./storage";
+import { storage, mergeEvalConfig, db, pool } from "./storage";
 import { parseNextCronRun } from "./cron";
 import { seedFromLocalAevalData } from "./aeval-seed";
-import { migrate } from "drizzle-orm/node-postgres/migrator";
-import { sql } from "drizzle-orm";
 import pkg from "pg";
 const { Pool } = pkg;
 
@@ -168,45 +166,13 @@ app.use((req, res, next) => {
 });
 
 (async () => {
-  // Run database migrations before starting the server
+  // Sync database schema on startup using drizzle-kit push (idempotent, diff-based)
   try {
-    // Bootstrap: drizzle-orm stores migrations in the "drizzle" schema.
-    // If the journal is empty (db was originally set up via `push`),
-    // seed it so `migrate()` only runs new migrations.
-    await db.execute(sql`CREATE SCHEMA IF NOT EXISTS "drizzle"`);
-    await db.execute(sql`
-      CREATE TABLE IF NOT EXISTS "drizzle"."__drizzle_migrations" (
-        id serial PRIMARY KEY,
-        hash text NOT NULL,
-        created_at bigint
-      )
-    `);
-    const entryCount = await db.execute(sql`
-      SELECT COUNT(*)::int AS count FROM "drizzle"."__drizzle_migrations"
-    `);
-    if (entryCount.rows[0].count === 0) {
-      log("Bootstrapping migration journal for existing database...", "db");
-      // SHA-256 hashes of migration SQL content (same algorithm as drizzle-orm)
-      const appliedMigrations = [
-        { hash: 'f2e2bc2c071c23bdf21ba681850342fead80c052ef19217138b9ba98216ef5a7', ts: 1769780184946 },
-        { hash: '2b9c74db709137a27df249c0643621a09743f8a1be25811a036f2c7bff945a6d', ts: 1772447610696 },
-        { hash: 'f1bf4ce5c45b3c127d24c1751aafb3bb57b58190504f5fd617cddd98dd7497a9', ts: 1772659460001 },
-        { hash: '92bd5d5eee56d59180c934da13be92c6cc114f9350e26e2127d81825b68a0cdf', ts: 1772705734078 },
-        { hash: 'f60a259d3b9a3e243210f04ecb56e025e1def48b3f303a55ce9ead8f711e917d', ts: 1772706626845 },
-      ];
-      for (const m of appliedMigrations) {
-        await db.execute(sql`
-          INSERT INTO "drizzle"."__drizzle_migrations" (hash, created_at)
-          VALUES (${m.hash}, ${m.ts})
-        `);
-      }
-      log("Migration journal bootstrapped with 5 existing migrations", "db");
-    }
-
-    await migrate(db, { migrationsFolder: "./migrations" });
-    log("Database migrations up to date", "db");
+    const { execSync } = await import("child_process");
+    execSync("npx drizzle-kit push --force", { stdio: "inherit" });
+    log("Database schema synced", "db");
   } catch (err) {
-    console.error("Failed to run database migrations:", err);
+    console.error("Failed to sync database schema:", err);
     process.exit(1);
   }
 
