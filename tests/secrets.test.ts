@@ -7,24 +7,42 @@ import crypto from 'crypto';
 
 const TEST_KEY_HEX = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
 
+const CIPHER_VERSION = 'v1';
+
 function encryptValue(plaintext: string, keyHex: string): string {
   const key = Buffer.from(keyHex, 'hex');
   const iv = crypto.randomBytes(12);
   const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
   const encrypted = Buffer.concat([cipher.update(plaintext, 'utf8'), cipher.final()]);
   const authTag = cipher.getAuthTag();
-  return `${iv.toString('base64')}:${authTag.toString('base64')}:${encrypted.toString('base64')}`;
+  return `${CIPHER_VERSION}:${iv.toString('base64')}:${authTag.toString('base64')}:${encrypted.toString('base64')}`;
 }
 
 function decryptValue(stored: string, keyHex: string): string {
+  const parts = stored.split(':');
+  let ivB64: string, tagB64: string, dataB64: string;
+  if (parts[0] === 'v1') {
+    [, ivB64, tagB64, dataB64] = parts;
+  } else {
+    [ivB64, tagB64, dataB64] = parts;
+  }
   const key = Buffer.from(keyHex, 'hex');
-  const [ivB64, tagB64, dataB64] = stored.split(':');
   const iv = Buffer.from(ivB64, 'base64');
   const authTag = Buffer.from(tagB64, 'base64');
   const encrypted = Buffer.from(dataB64, 'base64');
   const decipher = crypto.createDecipheriv('aes-256-gcm', key, iv);
   decipher.setAuthTag(authTag);
   return decipher.update(encrypted) + decipher.final('utf8');
+}
+
+// Legacy format (no version prefix) for backward compatibility testing
+function encryptValueLegacy(plaintext: string, keyHex: string): string {
+  const key = Buffer.from(keyHex, 'hex');
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
+  const encrypted = Buffer.concat([cipher.update(plaintext, 'utf8'), cipher.final()]);
+  const authTag = cipher.getAuthTag();
+  return `${iv.toString('base64')}:${authTag.toString('base64')}:${encrypted.toString('base64')}`;
 }
 
 describe('Secrets - Encryption', () => {
@@ -73,23 +91,27 @@ describe('Secrets - Encryption', () => {
   it('should fail on tampered ciphertext', () => {
     const encrypted = encryptValue('secret', TEST_KEY_HEX);
     const parts = encrypted.split(':');
-    // Tamper with the ciphertext portion
-    const tampered = parts[0] + ':' + parts[1] + ':' + 'AAAA' + parts[2].slice(4);
+    // Tamper with the data portion (last part)
+    const tampered = parts.slice(0, -1).join(':') + ':' + 'AAAA' + parts[parts.length - 1].slice(4);
     expect(() => decryptValue(tampered, TEST_KEY_HEX)).toThrow();
   });
 
-  it('should produce format iv:tag:data with 3 base64 parts', () => {
+  it('should produce versioned format v1:iv:tag:data with 4 parts', () => {
     const encrypted = encryptValue('test', TEST_KEY_HEX);
     const parts = encrypted.split(':');
-    expect(parts).toHaveLength(3);
-    // All parts should be valid base64
-    for (const p of parts) {
-      expect(() => Buffer.from(p, 'base64')).not.toThrow();
-    }
-    // IV should be 12 bytes (16 base64 chars)
-    expect(Buffer.from(parts[0], 'base64')).toHaveLength(12);
+    expect(parts).toHaveLength(4);
+    expect(parts[0]).toBe('v1');
+    // IV should be 12 bytes
+    expect(Buffer.from(parts[1], 'base64')).toHaveLength(12);
     // Auth tag should be 16 bytes
-    expect(Buffer.from(parts[1], 'base64')).toHaveLength(16);
+    expect(Buffer.from(parts[2], 'base64')).toHaveLength(16);
+  });
+
+  it('should decrypt legacy unversioned format (backward compat)', () => {
+    const plaintext = 'legacy-secret-value';
+    const legacy = encryptValueLegacy(plaintext, TEST_KEY_HEX);
+    expect(legacy.split(':')).toHaveLength(3); // no version prefix
+    expect(decryptValue(legacy, TEST_KEY_HEX)).toBe(plaintext);
   });
 });
 
@@ -380,5 +402,162 @@ describe('Secrets API', () => {
     for (const name of ['TEST_SECRET_A', 'TEST_SECRET_B']) {
       await authFetch(adminSession, `${BASE_URL}/api/secrets/${name}`, { method: 'DELETE' });
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Integration tests: Agent secrets endpoint (requires running server)
+// ---------------------------------------------------------------------------
+
+describe('Secrets - Agent Endpoint', () => {
+  let adminSession: AuthSession;
+  let serverAvailable = false;
+  let agentToken = '';
+  let agentId = 0;
+  let workflowId = 0;
+  let jobId = 0;
+  let encryptionAvailable = false;
+
+  beforeAll(async () => {
+    try {
+      const res = await fetch(`${BASE_URL}/api/auth/status`);
+      serverAvailable = res.ok;
+      if (!serverAvailable) return;
+
+      adminSession = await login(ADMIN_EMAIL, ADMIN_PASSWORD);
+
+      // Create a secret to test with
+      const secretRes = await authFetch(adminSession, `${BASE_URL}/api/secrets`, {
+        method: 'POST',
+        body: JSON.stringify({ name: 'AGENT_TEST_SECRET', value: 'agent-test-value' }),
+      });
+      encryptionAvailable = secretRes.ok;
+
+      // Create an eval agent token
+      const tokenRes = await authFetch(adminSession, `${BASE_URL}/api/admin/eval-agent-tokens`, {
+        method: 'POST',
+        body: JSON.stringify({ name: 'Secrets Test Token', region: 'na' }),
+      });
+      if (tokenRes.ok) {
+        const tokenData = await tokenRes.json();
+        agentToken = tokenData.token;
+      }
+
+      // Register an agent
+      if (agentToken) {
+        const regRes = await fetch(`${BASE_URL}/api/eval-agent/register`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${agentToken}` },
+          body: JSON.stringify({ name: 'Secrets Test Agent' }),
+        });
+        if (regRes.ok) {
+          const agent = await regRes.json();
+          agentId = agent.id;
+        }
+      }
+
+      // Get a workflow to create a job from
+      const wfRes = await authFetch(adminSession, `${BASE_URL}/api/workflows`);
+      if (wfRes.ok) {
+        const workflows = await wfRes.json();
+        if (workflows.length > 0) {
+          workflowId = workflows[0].id;
+        }
+      }
+
+      // Create and claim a job
+      if (workflowId && agentToken && agentId) {
+        const runRes = await authFetch(adminSession, `${BASE_URL}/api/workflows/${workflowId}/run`, {
+          method: 'POST',
+          body: JSON.stringify({ region: 'na' }),
+        });
+        if (runRes.ok) {
+          const runData = await runRes.json();
+          jobId = runData.jobs?.[0]?.id || runData.id || 0;
+        }
+
+        // If direct job ID wasn't returned, fetch pending jobs
+        if (!jobId) {
+          const jobsRes = await fetch(`${BASE_URL}/api/eval-agent/jobs?region=na`, {
+            headers: { 'Authorization': `Bearer ${agentToken}` },
+          });
+          if (jobsRes.ok) {
+            const jobs = await jobsRes.json();
+            if (jobs.length > 0) {
+              jobId = jobs[0].id;
+            }
+          }
+        }
+
+        // Claim the job
+        if (jobId) {
+          await fetch(`${BASE_URL}/api/eval-agent/jobs/${jobId}/claim`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${agentToken}` },
+            body: JSON.stringify({ agentId }),
+          });
+        }
+      }
+    } catch {
+      serverAvailable = false;
+    }
+  });
+
+  it('should require Bearer token', async () => {
+    if (!serverAvailable || !jobId) return;
+    const res = await fetch(`${BASE_URL}/api/eval-agent/jobs/${jobId}/secrets`);
+    expect(res.status).toBe(401);
+  });
+
+  it('should reject invalid token', async () => {
+    if (!serverAvailable || !jobId) return;
+    const res = await fetch(`${BASE_URL}/api/eval-agent/jobs/${jobId}/secrets`, {
+      headers: { 'Authorization': 'Bearer invalid-token-12345' },
+    });
+    expect(res.status).toBe(401);
+  });
+
+  it('should reject non-existent job', async () => {
+    if (!serverAvailable || !agentToken) return;
+    const res = await fetch(`${BASE_URL}/api/eval-agent/jobs/999999/secrets`, {
+      headers: { 'Authorization': `Bearer ${agentToken}` },
+    });
+    expect(res.status).toBe(404);
+  });
+
+  it('should return decrypted secrets for a claimed running job', async () => {
+    if (!serverAvailable || !jobId || !agentToken || !encryptionAvailable) return;
+    const res = await fetch(`${BASE_URL}/api/eval-agent/jobs/${jobId}/secrets`, {
+      headers: { 'Authorization': `Bearer ${agentToken}` },
+    });
+    expect(res.ok).toBe(true);
+    const secrets = await res.json();
+    expect(typeof secrets).toBe('object');
+    expect(secrets.AGENT_TEST_SECRET).toBe('agent-test-value');
+  });
+
+  it('should reject secrets for completed job (status guard)', async () => {
+    if (!serverAvailable || !jobId || !agentToken) return;
+
+    // Complete the job first
+    await fetch(`${BASE_URL}/api/eval-agent/jobs/${jobId}/complete`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${agentToken}` },
+      body: JSON.stringify({ agentId, error: 'test completion for secrets guard' }),
+    });
+
+    // Now try to fetch secrets — should be rejected
+    const res = await fetch(`${BASE_URL}/api/eval-agent/jobs/${jobId}/secrets`, {
+      headers: { 'Authorization': `Bearer ${agentToken}` },
+    });
+    expect(res.status).toBe(403);
+    const data = await res.json();
+    expect(data.error).toContain('running');
+  });
+
+  // Cleanup
+  it('cleanup: delete test secret and agent token', async () => {
+    if (!serverAvailable) return;
+    await authFetch(adminSession, `${BASE_URL}/api/secrets/AGENT_TEST_SECRET`, { method: 'DELETE' });
   });
 });

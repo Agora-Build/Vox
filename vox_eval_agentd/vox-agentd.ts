@@ -1001,7 +1001,7 @@ class VoxEvalAgentDaemon {
   private writeTempYaml(content: string, prefix = 'vox-config'): string | null {
     if (!content) return null;
     const tmpFile = path.join(os.tmpdir(), `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}.yaml`);
-    fs.writeFileSync(tmpFile, content, 'utf-8');
+    fs.writeFileSync(tmpFile, content, { encoding: 'utf-8', mode: 0o600 });
     console.log(`[Daemon] Wrote temp YAML: ${tmpFile}`);
     return tmpFile;
   }

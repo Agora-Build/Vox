@@ -1584,15 +1584,26 @@ export async function registerRoutes(
       if (!value || typeof value !== "string") {
         return res.status(400).json({ error: "Secret value is required" });
       }
-      if (!/^[A-Z][A-Z0-9_]*$/.test(name.trim())) {
+      const trimmedName = name.trim();
+      if (!/^[A-Z][A-Z0-9_]*$/.test(trimmedName)) {
         return res.status(400).json({ error: "Secret name must be uppercase letters, digits, and underscores (e.g., AGORA_EMAIL)" });
+      }
+      if (trimmedName.length > 256) {
+        return res.status(400).json({ error: "Secret name too long (max 256 characters)" });
       }
       if (value.length > 10000) {
         return res.status(400).json({ error: "Secret value too large (max 10KB)" });
       }
 
+      // Per-user limit: check if this is a new secret (not an upsert of existing)
+      const existing = await storage.getSecretsByUserId(user.id);
+      const isUpdate = existing.some(s => s.name === trimmedName);
+      if (!isUpdate && existing.length >= 50) {
+        return res.status(400).json({ error: "Maximum of 50 secrets per user" });
+      }
+
       const encrypted = encryptValue(value);
-      const secret = await storage.createOrUpdateSecret(user.id, name.trim(), encrypted);
+      const secret = await storage.createOrUpdateSecret(user.id, trimmedName, encrypted);
       res.json({ id: secret.id, name: secret.name, createdAt: secret.createdAt, updatedAt: secret.updatedAt });
     } catch (error) {
       console.error("Error creating secret:", error);
@@ -2125,6 +2136,11 @@ export async function registerRoutes(
       const job = await storage.getEvalJob(parseInt(jobId));
       if (!job) {
         return res.status(404).json({ error: "Job not found" });
+      }
+
+      // Only allow secrets access for actively running jobs
+      if (job.status !== "running") {
+        return res.status(403).json({ error: "Secrets only available for running jobs" });
       }
 
       // Verify the job is claimed by an agent belonging to this token

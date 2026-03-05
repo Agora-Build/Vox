@@ -80,12 +80,19 @@ export function generateEvalAgentToken(): string {
 
 // AES-256-GCM encryption for secrets
 // CREDENTIAL_ENCRYPTION_KEY must be a 32-byte hex string (64 hex chars)
+// Ciphertext format: v1:iv:authTag:data (versioned for future key rotation)
+
+const CIPHER_VERSION = "v1";
+let _cachedKey: Buffer | null = null;
+
 function getEncryptionKey(): Buffer {
+  if (_cachedKey) return _cachedKey;
   const keyHex = process.env.CREDENTIAL_ENCRYPTION_KEY;
-  if (!keyHex || keyHex.length !== 64) {
-    throw new Error("CREDENTIAL_ENCRYPTION_KEY must be set to a 64-char hex string (32 bytes)");
+  if (!keyHex || !/^[0-9a-f]{64}$/i.test(keyHex)) {
+    throw new Error("CREDENTIAL_ENCRYPTION_KEY must be a valid 64-char hex string (32 bytes)");
   }
-  return Buffer.from(keyHex, "hex");
+  _cachedKey = Buffer.from(keyHex, "hex");
+  return _cachedKey;
 }
 
 export function encryptValue(plaintext: string): string {
@@ -94,13 +101,20 @@ export function encryptValue(plaintext: string): string {
   const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
   const encrypted = Buffer.concat([cipher.update(plaintext, "utf8"), cipher.final()]);
   const authTag = cipher.getAuthTag();
-  // Store as: iv:authTag:ciphertext (all base64)
-  return `${iv.toString("base64")}:${authTag.toString("base64")}:${encrypted.toString("base64")}`;
+  return `${CIPHER_VERSION}:${iv.toString("base64")}:${authTag.toString("base64")}:${encrypted.toString("base64")}`;
 }
 
 export function decryptValue(stored: string): string {
+  const parts = stored.split(":");
+  // Support versioned format (v1:iv:tag:data) and legacy unversioned (iv:tag:data)
+  let ivB64: string, tagB64: string, dataB64: string;
+  if (parts[0] === "v1") {
+    [, ivB64, tagB64, dataB64] = parts;
+  } else {
+    // Legacy format: iv:tag:data (no version prefix)
+    [ivB64, tagB64, dataB64] = parts;
+  }
   const key = getEncryptionKey();
-  const [ivB64, tagB64, dataB64] = stored.split(":");
   const iv = Buffer.from(ivB64, "base64");
   const authTag = Buffer.from(tagB64, "base64");
   const encrypted = Buffer.from(dataB64, "base64");
