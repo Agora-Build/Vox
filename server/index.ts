@@ -170,17 +170,19 @@ app.use((req, res, next) => {
 (async () => {
   // Run database migrations before starting the server
   try {
-    // Bootstrap: if the journal table is empty or missing (db was set up via `push`),
+    // Bootstrap: drizzle-orm stores migrations in the "drizzle" schema.
+    // If the journal is empty (db was originally set up via `push`),
     // seed it so `migrate()` only runs new migrations.
+    await db.execute(sql`CREATE SCHEMA IF NOT EXISTS "drizzle"`);
     await db.execute(sql`
-      CREATE TABLE IF NOT EXISTS "__drizzle_migrations" (
+      CREATE TABLE IF NOT EXISTS "drizzle"."__drizzle_migrations" (
         id serial PRIMARY KEY,
         hash text NOT NULL,
         created_at bigint
       )
     `);
     const entryCount = await db.execute(sql`
-      SELECT COUNT(*)::int AS count FROM "__drizzle_migrations"
+      SELECT COUNT(*)::int AS count FROM "drizzle"."__drizzle_migrations"
     `);
     if (entryCount.rows[0].count === 0) {
       log("Bootstrapping migration journal for existing database...", "db");
@@ -194,7 +196,7 @@ app.use((req, res, next) => {
       ];
       for (const m of appliedMigrations) {
         await db.execute(sql`
-          INSERT INTO "__drizzle_migrations" (hash, created_at)
+          INSERT INTO "drizzle"."__drizzle_migrations" (hash, created_at)
           VALUES (${m.hash}, ${m.ts})
         `);
       }
