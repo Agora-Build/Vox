@@ -768,14 +768,14 @@ function Router() {
 
 function AppGuard() {
   const [location, setLocation] = useLocation();
-  const { data: authStatus, isLoading, isFetching } = useQuery<AuthStatus>({
+  const { data: authStatus, isLoading, isFetching, isError } = useQuery<AuthStatus>({
     queryKey: ["/api/auth/status"],
   });
 
   const isQuerySettled = !isLoading && !isFetching;
 
   useEffect(() => {
-    if (!isQuerySettled) return;
+    if (!isQuerySettled || isError) return;
 
     if (!authStatus?.initialized) {
       if (location === "/setup") return;
@@ -783,15 +783,33 @@ function AppGuard() {
         setLocation("/not-found");
       }
     }
-  }, [isQuerySettled, authStatus, location, setLocation]);
+  }, [isQuerySettled, isError, authStatus, location, setLocation]);
 
   useEffect(() => {
-    if (!isQuerySettled) return;
+    if (!isQuerySettled || isError) return;
 
     if (authStatus?.initialized && location === "/setup") {
       setLocation("/");
     }
-  }, [isQuerySettled, authStatus, location, setLocation]);
+  }, [isQuerySettled, isError, authStatus, location, setLocation]);
+
+  // Server error — show error state instead of treating as "not initialized"
+  if (isQuerySettled && isError) {
+    return (
+      <Layout>
+        <div className="min-h-[60vh] flex flex-col items-center justify-center gap-4">
+          <h1 className="text-2xl font-bold">Service Unavailable</h1>
+          <p className="text-muted-foreground">Unable to connect to the server. Please try again later.</p>
+          <button
+            className="px-4 py-2 rounded-md bg-primary text-primary-foreground hover:bg-primary/90"
+            onClick={() => window.location.reload()}
+          >
+            Retry
+          </button>
+        </div>
+      </Layout>
+    );
+  }
 
   // System not yet initialized — only allow /setup, show 404 for everything else
   if (isQuerySettled && !authStatus?.initialized) {

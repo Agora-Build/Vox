@@ -16,5 +16,5 @@ RUN npm run build
 # Expose port
 EXPOSE 5000
 
-# Start the server (don't use npm start which hardcodes NODE_ENV=production)
-CMD ["node", "dist/index.cjs"]
+# Run migrations then start the server
+CMD ["sh", "-c", "npx drizzle-kit migrate && node dist/index.cjs"]
