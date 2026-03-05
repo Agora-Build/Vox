@@ -184,12 +184,13 @@ app.use((req, res, next) => {
     `);
     if (entryCount.rows[0].count === 0) {
       log("Bootstrapping migration journal for existing database...", "db");
+      // SHA-256 hashes of migration SQL content (same algorithm as drizzle-orm)
       const appliedMigrations = [
-        { hash: '0000_fair_susan_delgado', ts: 1769780184946 },
-        { hash: '0001_early_blizzard', ts: 1772447610696 },
-        { hash: '0002_green_fallen_one', ts: 1772659460001 },
-        { hash: '0003_lonely_namor', ts: 1772705734078 },
-        { hash: '0004_nappy_green_goblin', ts: 1772706626845 },
+        { hash: 'f2e2bc2c071c23bdf21ba681850342fead80c052ef19217138b9ba98216ef5a7', ts: 1769780184946 },
+        { hash: '2b9c74db709137a27df249c0643621a09743f8a1be25811a036f2c7bff945a6d', ts: 1772447610696 },
+        { hash: 'f1bf4ce5c45b3c127d24c1751aafb3bb57b58190504f5fd617cddd98dd7497a9', ts: 1772659460001 },
+        { hash: '92bd5d5eee56d59180c934da13be92c6cc114f9350e26e2127d81825b68a0cdf', ts: 1772705734078 },
+        { hash: 'f60a259d3b9a3e243210f04ecb56e025e1def48b3f303a55ce9ead8f711e917d', ts: 1772706626845 },
       ];
       for (const m of appliedMigrations) {
         await db.execute(sql`
