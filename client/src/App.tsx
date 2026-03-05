@@ -752,8 +752,16 @@ function Router() {
           <SelfTest />
         </Layout>
       </Route>
-      <Route path="/not-found" component={NotFound} />
-      <Route component={NotFound} />
+      <Route path="/not-found">
+        <Layout>
+          <NotFound />
+        </Layout>
+      </Route>
+      <Route>
+        <Layout>
+          <NotFound />
+        </Layout>
+      </Route>
     </Switch>
   );
 }
@@ -801,7 +809,7 @@ function AppGuard() {
       return <ConsoleInit />;
     }
 
-    return <NotFound />;
+    return <Layout><NotFound /></Layout>;
   }
 
   return <Router />;
