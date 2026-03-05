@@ -19,6 +19,10 @@ import {
   requireOrgAdmin,
   generateApiKey,
   passport,
+  getGithubOAuthUrl,
+  exchangeGithubCode,
+  getGithubProfile,
+  findOrCreateGithubUser,
 } from "./auth";
 import { calculateSeatPrice, isStripeConfigured as isPricingStripeConfigured } from "./pricing";
 import {
@@ -250,6 +254,7 @@ export async function registerRoutes(
   );
 
   // ==================== GITHUB OAUTH ROUTES ====================
+  // Uses manual code-exchange so the callback URL is a frontend page.
 
   // Check if GitHub OAuth is available
   app.get("/api/auth/github/status", (req, res) => {
@@ -257,32 +262,44 @@ export async function registerRoutes(
     res.json({ enabled });
   });
 
-  // Initiate GitHub OAuth flow
-  app.get(
-    "/api/auth/github",
-    (req, res, next) => {
-      if (!process.env.GITHUB_CLIENT_ID || !process.env.GITHUB_CLIENT_SECRET) {
-        return res.status(503).json({ error: "GitHub OAuth not configured" });
-      }
-      next();
-    },
-    passport.authenticate("github", { scope: ["user:email"] })
-  );
-
-  // Handle GitHub OAuth callback
-  app.get(
-    "/api/auth/github/callback",
-    passport.authenticate("github", { failureRedirect: "/login?error=github_oauth_failed" }),
-    (req, res) => {
-      // Successful authentication - set session and redirect
-      if (req.user) {
-        const user = req.user as { id: number };
-        req.session.userId = user.id;
-      }
-      // Redirect to console or home page
-      res.redirect("/console");
+  // Initiate GitHub OAuth flow — generate state, redirect to GitHub
+  app.get("/api/auth/github", (req, res) => {
+    if (!process.env.GITHUB_CLIENT_ID || !process.env.GITHUB_CLIENT_SECRET) {
+      return res.status(503).json({ error: "GitHub OAuth not configured" });
     }
-  );
+    const state = generateToken();
+    req.session.githubOAuthState = state;
+    const origin = `${req.protocol}://${req.get("host")}`;
+    res.redirect(getGithubOAuthUrl(state, origin));
+  });
+
+  // Exchange code for user session — called by the frontend callback page
+  app.post("/api/auth/github/callback", async (req, res) => {
+    try {
+      const { code, state } = req.body;
+      if (!code || !state) {
+        return res.status(400).json({ error: "Missing code or state" });
+      }
+
+      // Validate state to prevent CSRF
+      if (state !== req.session.githubOAuthState) {
+        return res.status(403).json({ error: "Invalid OAuth state" });
+      }
+      delete req.session.githubOAuthState;
+
+      // Exchange code → access token → profile → user
+      const accessToken = await exchangeGithubCode(code);
+      const profile = await getGithubProfile(accessToken);
+      const user = await findOrCreateGithubUser(profile.id, profile.email);
+
+      // Set session
+      req.session.userId = user.id;
+      res.json({ user: { id: user.id, username: user.username, email: user.email, isAdmin: user.isAdmin } });
+    } catch (error: any) {
+      console.error("GitHub OAuth callback error:", error);
+      res.status(401).json({ error: error.message || "GitHub authentication failed" });
+    }
+  });
 
   // ==================== ADMIN USER ROUTES ====================
 

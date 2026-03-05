@@ -4,7 +4,7 @@ import crypto from "crypto";
 import session from "express-session";
 import passport from "passport";
 import { Strategy as GoogleStrategy, Profile } from "passport-google-oauth20";
-import { Strategy as GitHubStrategy, Profile as GitHubProfile } from "passport-github2";
+// passport-github2 not used — GitHub OAuth uses manual code exchange for frontend callback page
 import { storage, hashToken } from "./storage";
 import type { User as SchemaUser } from "@shared/schema";
 
@@ -14,6 +14,7 @@ export type User = SchemaUser;
 declare module "express-session" {
   interface SessionData {
     userId: number;
+    githubOAuthState?: string;
   }
 }
 
@@ -297,83 +298,119 @@ export function initializeGoogleOAuth(): boolean {
 
 // ==================== GITHUB OAUTH ====================
 
-export function initializeGithubOAuth(): boolean {
-  const clientID = process.env.GITHUB_CLIENT_ID;
-  const clientSecret = process.env.GITHUB_CLIENT_SECRET;
-  const callbackURL = process.env.GITHUB_CALLBACK_URL || "/api/auth/github/callback";
+// GitHub OAuth uses a manual code-exchange flow so the callback URL can be
+// a frontend page (required by GitHub OAuth App settings).
+// Flow: frontend page receives ?code=&state= → POSTs to /api/auth/github/callback → backend exchanges code.
 
-  if (!clientID || !clientSecret) {
-    console.warn("GitHub OAuth not configured: GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET required");
-    return false;
+interface GitHubTokenResponse {
+  access_token: string;
+  token_type: string;
+  scope: string;
+  error?: string;
+  error_description?: string;
+}
+
+interface GitHubUser {
+  id: number;
+  login: string;
+  email: string | null;
+}
+
+interface GitHubEmail {
+  email: string;
+  primary: boolean;
+  verified: boolean;
+}
+
+export function getGithubOAuthUrl(state: string, origin: string): string {
+  const clientId = process.env.GITHUB_CLIENT_ID!;
+  // GITHUB_CALLBACK_URL can be absolute (https://…) or a path (/auth/github/callback).
+  // GitHub requires an absolute redirect_uri.
+  const configured = process.env.GITHUB_CALLBACK_URL || "/auth/github/callback";
+  const callbackUrl = configured.startsWith("http") ? configured : `${origin}${configured}`;
+  const params = new URLSearchParams({
+    client_id: clientId,
+    redirect_uri: callbackUrl,
+    scope: "user:email",
+    state,
+  });
+  return `https://github.com/login/oauth/authorize?${params}`;
+}
+
+export async function exchangeGithubCode(code: string): Promise<string> {
+  const res = await fetch("https://github.com/login/oauth/access_token", {
+    method: "POST",
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
+    body: JSON.stringify({
+      client_id: process.env.GITHUB_CLIENT_ID,
+      client_secret: process.env.GITHUB_CLIENT_SECRET,
+      code,
+    }),
+  });
+  const data = (await res.json()) as GitHubTokenResponse;
+  if (data.error || !data.access_token) {
+    throw new Error(data.error_description || data.error || "Failed to exchange GitHub code");
+  }
+  return data.access_token;
+}
+
+export async function getGithubProfile(accessToken: string): Promise<{ id: string; email: string }> {
+  // Fetch user profile
+  const userRes = await fetch("https://api.github.com/user", {
+    headers: { Authorization: `Bearer ${accessToken}`, Accept: "application/json" },
+  });
+  if (!userRes.ok) throw new Error("Failed to fetch GitHub user profile");
+  const user = (await userRes.json()) as GitHubUser;
+
+  // If email is public, use it; otherwise fetch from /user/emails
+  let email = user.email;
+  if (!email) {
+    const emailsRes = await fetch("https://api.github.com/user/emails", {
+      headers: { Authorization: `Bearer ${accessToken}`, Accept: "application/json" },
+    });
+    if (emailsRes.ok) {
+      const emails = (await emailsRes.json()) as GitHubEmail[];
+      const primary = emails.find((e) => e.primary && e.verified);
+      email = primary?.email || emails.find((e) => e.verified)?.email || null;
+    }
   }
 
-  passport.use(
-    new GitHubStrategy(
-      {
-        clientID,
-        clientSecret,
-        callbackURL,
-        scope: ["user:email"],
-      },
-      async (
-        accessToken: string,
-        refreshToken: string,
-        profile: GitHubProfile,
-        done: (error: Error | null, user?: User | false) => void
-      ) => {
-        try {
-          const email = profile.emails?.[0]?.value;
-          if (!email) {
-            return done(new Error("No email found in GitHub profile"));
-          }
+  if (!email) throw new Error("No email found in GitHub profile");
+  return { id: String(user.id), email };
+}
 
-          // Check if user already exists with this GitHub ID
-          let user = await storage.getUserByGithubId(profile.id);
-          if (user) {
-            if (!user.isEnabled) {
-              return done(new Error("Account is disabled"));
-            }
-            return done(null, user);
-          }
+export async function findOrCreateGithubUser(githubId: string, email: string): Promise<User> {
+  // 1. Check by GitHub ID
+  let user = await storage.getUserByGithubId(githubId);
+  if (user) {
+    if (!user.isEnabled) throw new Error("Account is disabled");
+    return user;
+  }
 
-          // Check if user exists with this email
-          user = await storage.getUserByEmail(email);
-          if (user) {
-            // Link GitHub account to existing user
-            if (user.githubId && user.githubId !== profile.id) {
-              return done(new Error("Email already linked to different GitHub account"));
-            }
-            if (!user.isEnabled) {
-              return done(new Error("Account is disabled"));
-            }
-            // Link GitHub ID to existing account
-            const updated = await storage.updateUser(user.id, {
-              githubId: profile.id,
-              emailVerifiedAt: user.emailVerifiedAt || new Date(),
-            });
-            return done(null, updated || user);
-          }
+  // 2. Check by email — link GitHub ID to existing account
+  user = await storage.getUserByEmail(email);
+  if (user) {
+    if (user.githubId && user.githubId !== githubId) {
+      throw new Error("Email already linked to different GitHub account");
+    }
+    if (!user.isEnabled) throw new Error("Account is disabled");
+    const updated = await storage.updateUser(user.id, {
+      githubId,
+      emailVerifiedAt: user.emailVerifiedAt || new Date(),
+    });
+    return updated || user;
+  }
 
-          // Create new user with GitHub account
-          const username = email.split("@")[0] + "_" + crypto.randomBytes(4).toString("hex");
-          const newUser = await storage.createUser({
-            username,
-            email,
-            passwordHash: null,
-            plan: "basic",
-            isAdmin: false,
-            isEnabled: true,
-            emailVerifiedAt: new Date(),
-            githubId: profile.id,
-          });
-
-          done(null, newUser);
-        } catch (error) {
-          done(error as Error);
-        }
-      }
-    )
-  );
-
-  return true;
+  // 3. Create new user
+  const username = email.split("@")[0] + "_" + crypto.randomBytes(4).toString("hex");
+  return storage.createUser({
+    username,
+    email,
+    passwordHash: null,
+    plan: "basic",
+    isAdmin: false,
+    isEnabled: true,
+    emailVerifiedAt: new Date(),
+    githubId,
+  });
 }

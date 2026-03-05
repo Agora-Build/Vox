@@ -6,7 +6,7 @@ import { createServer } from "http";
 import session from "express-session";
 import connectPgSimple from "connect-pg-simple";
 import rateLimit from "express-rate-limit";
-import { authenticateApiKey, passport, initializeGoogleOAuth, initializeGithubOAuth } from "./auth";
+import { authenticateApiKey, passport, initializeGoogleOAuth } from "./auth";
 import { storage, mergeEvalConfig } from "./storage";
 import { parseNextCronRun } from "./cron";
 import { seedFromLocalAevalData } from "./aeval-seed";
@@ -68,11 +68,6 @@ if (googleOAuthEnabled) {
   console.log("Google OAuth initialized successfully");
 }
 
-// Initialize GitHub OAuth if credentials are configured
-const githubOAuthEnabled = initializeGithubOAuth();
-if (githubOAuthEnabled) {
-  console.log("GitHub OAuth initialized successfully");
-}
 
 declare module "http" {
   interface IncomingMessage {

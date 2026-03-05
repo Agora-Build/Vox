@@ -31,6 +31,7 @@ import ConsoleOrganizationCreate from "@/pages/console-organization-create";
 import AdminOrganizations from "@/pages/admin-organizations";
 import AdminFundReturns from "@/pages/admin-fund-returns";
 import Activate from "@/pages/activate";
+import AuthGithubCallback from "@/pages/auth-github-callback";
 import NotFound from "@/pages/not-found";
 
 const ChiselPanel = import.meta.env.DEV
@@ -678,6 +679,7 @@ function Router() {
       <Route path="/login" component={Login} />
       <Route path="/admin/login" component={AdminLogin} />
       <Route path="/activate/:token" component={Activate} />
+      <Route path="/auth/github/callback" component={AuthGithubCallback} />
       <Route path="/console">
         <ConsoleWrapper />
       </Route>
