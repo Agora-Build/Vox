@@ -359,24 +359,12 @@ class VoxEvalAgentDaemon {
       proc.on('close', (code) => {
         console.log(`[Daemon] aeval exited with code ${code}`);
 
-        const allOutput = stdout + stderr;
-
         if (code !== 0) {
-          // aeval may exit non-zero due to warnings (e.g. HuggingFace/transformers)
-          // even when the analysis pipeline completed successfully.
-          // Try to salvage results if metrics.json exists.
-          const outputDir = this.resolveAevalOutputDir(scenarioConfig, allOutput);
-          const metricsPath = path.join(outputDir, 'analysis', 'metrics.json');
-          if (fs.existsSync(metricsPath)) {
-            console.log(`[Daemon] aeval exited with code ${code} but metrics.json exists — treating as success`);
-            const results = this.parseAevalResults(outputDir, allOutput);
-            resolve(results);
-            return;
-          }
           reject(new Error(`aeval exited with code ${code}: ${stderr.trim().split('\n').pop() || 'unknown error'}`));
           return;
         }
 
+        const allOutput = stdout + stderr;
         const outputDir = this.resolveAevalOutputDir(scenarioConfig, allOutput);
         const results = this.parseAevalResults(outputDir, allOutput);
         resolve(results);
