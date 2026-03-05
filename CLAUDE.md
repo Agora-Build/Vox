@@ -86,6 +86,9 @@ Optional:
 - `GOOGLE_CLIENT_ID` - Google OAuth client ID (enables Google sign-in)
 - `GOOGLE_CLIENT_SECRET` - Google OAuth client secret
 - `GOOGLE_CALLBACK_URL` - OAuth callback URL (default: `/api/auth/google/callback`)
+- `GITHUB_CLIENT_ID` - GitHub OAuth client ID (enables GitHub sign-in)
+- `GITHUB_CLIENT_SECRET` - GitHub OAuth client secret
+- `GITHUB_CALLBACK_URL` - OAuth callback URL (default: `/api/auth/github/callback`)
 
 ## Architecture
 

@@ -51,6 +51,7 @@ export const users = pgTable("users", {
   organizationId: integer("organization_id").references(() => organizations.id),
   isOrgAdmin: boolean("is_org_admin").default(false).notNull(),
   googleId: text("google_id").unique(),
+  githubId: text("github_id").unique(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });

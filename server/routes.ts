@@ -249,6 +249,41 @@ export async function registerRoutes(
     }
   );
 
+  // ==================== GITHUB OAUTH ROUTES ====================
+
+  // Check if GitHub OAuth is available
+  app.get("/api/auth/github/status", (req, res) => {
+    const enabled = !!(process.env.GITHUB_CLIENT_ID && process.env.GITHUB_CLIENT_SECRET);
+    res.json({ enabled });
+  });
+
+  // Initiate GitHub OAuth flow
+  app.get(
+    "/api/auth/github",
+    (req, res, next) => {
+      if (!process.env.GITHUB_CLIENT_ID || !process.env.GITHUB_CLIENT_SECRET) {
+        return res.status(503).json({ error: "GitHub OAuth not configured" });
+      }
+      next();
+    },
+    passport.authenticate("github", { scope: ["user:email"] })
+  );
+
+  // Handle GitHub OAuth callback
+  app.get(
+    "/api/auth/github/callback",
+    passport.authenticate("github", { failureRedirect: "/login?error=github_oauth_failed" }),
+    (req, res) => {
+      // Successful authentication - set session and redirect
+      if (req.user) {
+        const user = req.user as { id: number };
+        req.session.userId = user.id;
+      }
+      // Redirect to console or home page
+      res.redirect("/console");
+    }
+  );
+
   // ==================== ADMIN USER ROUTES ====================
 
   app.get("/api/admin/users", requireAuth, requireAdmin, async (req, res) => {

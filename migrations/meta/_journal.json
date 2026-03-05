@@ -29,6 +29,13 @@
       "when": 1772705734078,
       "tag": "0003_lonely_namor",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1772706626845,
+      "tag": "0004_nappy_green_goblin",
+      "breakpoints": true
     }
   ]
 }

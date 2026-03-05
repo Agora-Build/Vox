@@ -4,6 +4,7 @@ import crypto from "crypto";
 import session from "express-session";
 import passport from "passport";
 import { Strategy as GoogleStrategy, Profile } from "passport-google-oauth20";
+import { Strategy as GitHubStrategy, Profile as GitHubProfile } from "passport-github2";
 import { storage, hashToken } from "./storage";
 import type { User as SchemaUser } from "@shared/schema";
 
@@ -281,6 +282,89 @@ export function initializeGoogleOAuth(): boolean {
             isEnabled: true,
             emailVerifiedAt: new Date(),
             googleId: profile.id,
+          });
+
+          done(null, newUser);
+        } catch (error) {
+          done(error as Error);
+        }
+      }
+    )
+  );
+
+  return true;
+}
+
+// ==================== GITHUB OAUTH ====================
+
+export function initializeGithubOAuth(): boolean {
+  const clientID = process.env.GITHUB_CLIENT_ID;
+  const clientSecret = process.env.GITHUB_CLIENT_SECRET;
+  const callbackURL = process.env.GITHUB_CALLBACK_URL || "/api/auth/github/callback";
+
+  if (!clientID || !clientSecret) {
+    console.warn("GitHub OAuth not configured: GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET required");
+    return false;
+  }
+
+  passport.use(
+    new GitHubStrategy(
+      {
+        clientID,
+        clientSecret,
+        callbackURL,
+        scope: ["user:email"],
+      },
+      async (
+        accessToken: string,
+        refreshToken: string,
+        profile: GitHubProfile,
+        done: (error: Error | null, user?: User | false) => void
+      ) => {
+        try {
+          const email = profile.emails?.[0]?.value;
+          if (!email) {
+            return done(new Error("No email found in GitHub profile"));
+          }
+
+          // Check if user already exists with this GitHub ID
+          let user = await storage.getUserByGithubId(profile.id);
+          if (user) {
+            if (!user.isEnabled) {
+              return done(new Error("Account is disabled"));
+            }
+            return done(null, user);
+          }
+
+          // Check if user exists with this email
+          user = await storage.getUserByEmail(email);
+          if (user) {
+            // Link GitHub account to existing user
+            if (user.githubId && user.githubId !== profile.id) {
+              return done(new Error("Email already linked to different GitHub account"));
+            }
+            if (!user.isEnabled) {
+              return done(new Error("Account is disabled"));
+            }
+            // Link GitHub ID to existing account
+            const updated = await storage.updateUser(user.id, {
+              githubId: profile.id,
+              emailVerifiedAt: user.emailVerifiedAt || new Date(),
+            });
+            return done(null, updated || user);
+          }
+
+          // Create new user with GitHub account
+          const username = email.split("@")[0] + "_" + crypto.randomBytes(4).toString("hex");
+          const newUser = await storage.createUser({
+            username,
+            email,
+            passwordHash: null,
+            plan: "basic",
+            isAdmin: false,
+            isEnabled: true,
+            emailVerifiedAt: new Date(),
+            githubId: profile.id,
           });
 
           done(null, newUser);
