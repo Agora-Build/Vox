@@ -24,6 +24,27 @@ interface AuthStatus {
   } | null;
 }
 
+function toYaml(obj: unknown, indent = 0): string {
+  const pad = "  ".repeat(indent);
+  if (obj === null || obj === undefined) return "null";
+  if (typeof obj === "string") return obj.includes("\n") ? `|\n${obj.split("\n").map(l => pad + "  " + l).join("\n")}` : `"${obj}"`;
+  if (typeof obj !== "object") return String(obj);
+  if (Array.isArray(obj)) {
+    return obj.map(item => {
+      const val = toYaml(item, indent + 1);
+      const isComplex = typeof item === "object" && item !== null;
+      return isComplex ? `${pad}- ${val.trimStart()}` : `${pad}- ${val}`;
+    }).join("\n");
+  }
+  const entries = Object.entries(obj as Record<string, unknown>);
+  return entries.map(([key, val]) => {
+    if (typeof val === "object" && val !== null) {
+      return `${pad}${key}:\n${toYaml(val, indent + 1)}`;
+    }
+    return `${pad}${key}: ${toYaml(val, indent)}`;
+  }).join("\n");
+}
+
 const REGIONS = [
   { value: "na", label: "North America" },
   { value: "apac", label: "Asia Pacific" },
@@ -233,16 +254,24 @@ export default function ConsoleWorkflowDetail() {
                 {new Date(workflow.createdAt).toLocaleDateString()}
               </div>
             </div>
+            <div>
+              <Label className="text-muted-foreground">Framework</Label>
+              <div className="mt-1">
+                <Badge variant="outline">
+                  {(workflow.config as Record<string, unknown> | null)?.framework as string || "aeval"}
+                </Badge>
+              </div>
+            </div>
           </div>
-          
+
           {(() => {
             const config = workflow.config as Record<string, unknown> | null;
-            if (config && typeof config === 'object' && Object.keys(config).length > 0) {
+            if (config?.app && typeof config.app === 'object') {
               return (
                 <div>
-                  <Label className="text-muted-foreground">Configuration</Label>
-                  <pre className="mt-1 p-3 bg-muted rounded-md text-sm overflow-auto">
-                    {JSON.stringify(config, null, 2)}
+                  <Label className="text-muted-foreground">App Config</Label>
+                  <pre className="mt-1 p-3 bg-muted rounded-md text-sm font-mono overflow-auto">
+                    {toYaml(config.app as Record<string, unknown>)}
                   </pre>
                 </div>
               );
