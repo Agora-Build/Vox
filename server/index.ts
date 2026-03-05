@@ -89,6 +89,9 @@ app.use(express.urlencoded({ extended: false }));
 // Rate limiting only applies in production
 const isProduction = process.env["NODE_ENV"] === "production";
 
+// Paths exempt from rate limiting (lightweight read-only checks)
+const rateLimitExempt = new Set(["/api/auth/status", "/api/auth/google/status", "/api/auth/github/status"]);
+
 // Rate limiting for API routes
 const apiLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
@@ -96,7 +99,7 @@ const apiLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: "Too many requests, please try again later." },
-  skip: (req) => !isProduction || !req.path.startsWith("/api"),
+  skip: (req) => !isProduction || !req.path.startsWith("/api") || rateLimitExempt.has(req.path),
 });
 
 // Stricter rate limit for authentication endpoints
