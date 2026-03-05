@@ -772,46 +772,37 @@ function AppGuard() {
     queryKey: ["/api/auth/status"],
   });
 
+  const isQuerySettled = !isLoading && !isFetching;
+
   useEffect(() => {
-    if (isLoading || isFetching) {
-      return;
-    }
+    if (!isQuerySettled) return;
 
     if (!authStatus?.initialized) {
       if (location === "/setup") return;
-
       if (location !== "/not-found") {
         setLocation("/not-found");
       }
     }
-  }, [isLoading, isFetching, authStatus, location, setLocation]);
+  }, [isQuerySettled, authStatus, location, setLocation]);
 
   useEffect(() => {
-    if (isLoading || isFetching) {
-      return;
-    }
+    if (!isQuerySettled) return;
 
     if (authStatus?.initialized && location === "/setup") {
       setLocation("/");
     }
-  }, [isLoading, isFetching, authStatus, location, setLocation]);
+  }, [isQuerySettled, authStatus, location, setLocation]);
 
-  if ((isLoading || isFetching) && !authStatus) {
-    return (
-      <div className="min-h-screen flex items-center justify-center">
-        <div className="animate-pulse text-muted-foreground">Loading...</div>
-      </div>
-    );
-  }
-
-  if (!authStatus?.initialized) {
+  // System not yet initialized — only allow /setup, show 404 for everything else
+  if (isQuerySettled && !authStatus?.initialized) {
     if (location === "/setup") {
       return <ConsoleInit />;
     }
-
     return <Layout><NotFound /></Layout>;
   }
 
+  // Render the router immediately — public pages don't need auth,
+  // and console pages have their own auth guards in their wrappers.
   return <Router />;
 }
 
