@@ -170,24 +170,20 @@ app.use((req, res, next) => {
 (async () => {
   // Run database migrations before starting the server
   try {
-    // Bootstrap: if the journal table doesn't exist yet (db was set up via `push`),
-    // create it and mark all existing migrations as applied so `migrate()` only runs new ones.
-    const journalCheck = await db.execute(sql`
-      SELECT EXISTS (
-        SELECT 1 FROM information_schema.tables
-        WHERE table_name = '__drizzle_migrations'
-      ) AS exists
+    // Bootstrap: if the journal table is empty or missing (db was set up via `push`),
+    // seed it so `migrate()` only runs new migrations.
+    await db.execute(sql`
+      CREATE TABLE IF NOT EXISTS "__drizzle_migrations" (
+        id serial PRIMARY KEY,
+        hash text NOT NULL,
+        created_at bigint
+      )
     `);
-    if (!journalCheck.rows[0].exists) {
+    const entryCount = await db.execute(sql`
+      SELECT COUNT(*)::int AS count FROM "__drizzle_migrations"
+    `);
+    if (entryCount.rows[0].count === 0) {
       log("Bootstrapping migration journal for existing database...", "db");
-      await db.execute(sql`
-        CREATE TABLE IF NOT EXISTS "__drizzle_migrations" (
-          id serial PRIMARY KEY,
-          hash text NOT NULL,
-          created_at bigint
-        )
-      `);
-      // Mark migrations 0000-0004 as already applied (they were applied via db:push)
       const appliedMigrations = [
         { hash: '0000_fair_susan_delgado', ts: 1769780184946 },
         { hash: '0001_early_blizzard', ts: 1772447610696 },
