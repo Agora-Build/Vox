@@ -36,6 +36,8 @@ import {
   type InsertSystemConfig,
   type FundReturnRequest,
   type InsertFundReturnRequest,
+  type Secret,
+  type InsertSecret,
   users,
   organizations,
   providers,
@@ -56,6 +58,7 @@ import {
   inviteTokens,
   systemConfig,
   fundReturnRequests,
+  secrets,
 } from "@shared/schema";
 import { drizzle } from "drizzle-orm/node-postgres";
 import pkg from "pg";
@@ -73,6 +76,37 @@ export function generateSecureToken(length: number = 32): string {
 
 export function generateEvalAgentToken(): string {
   return "ev" + crypto.randomBytes(15).toString('hex');
+}
+
+// AES-256-GCM encryption for secrets
+// CREDENTIAL_ENCRYPTION_KEY must be a 32-byte hex string (64 hex chars)
+function getEncryptionKey(): Buffer {
+  const keyHex = process.env.CREDENTIAL_ENCRYPTION_KEY;
+  if (!keyHex || keyHex.length !== 64) {
+    throw new Error("CREDENTIAL_ENCRYPTION_KEY must be set to a 64-char hex string (32 bytes)");
+  }
+  return Buffer.from(keyHex, "hex");
+}
+
+export function encryptValue(plaintext: string): string {
+  const key = getEncryptionKey();
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
+  const encrypted = Buffer.concat([cipher.update(plaintext, "utf8"), cipher.final()]);
+  const authTag = cipher.getAuthTag();
+  // Store as: iv:authTag:ciphertext (all base64)
+  return `${iv.toString("base64")}:${authTag.toString("base64")}:${encrypted.toString("base64")}`;
+}
+
+export function decryptValue(stored: string): string {
+  const key = getEncryptionKey();
+  const [ivB64, tagB64, dataB64] = stored.split(":");
+  const iv = Buffer.from(ivB64, "base64");
+  const authTag = Buffer.from(tagB64, "base64");
+  const encrypted = Buffer.from(dataB64, "base64");
+  const decipher = crypto.createDecipheriv("aes-256-gcm", key, iv);
+  decipher.setAuthTag(authTag);
+  return decipher.update(encrypted) + decipher.final("utf8");
 }
 
 const MAX_CONFIG_SIZE = 100_000; // 100KB
@@ -1194,6 +1228,42 @@ export class DatabaseStorage {
       .orderBy(desc(evalSchedules.createdAt));
 
     return results;
+  }
+
+  // ==================== SECRETS ====================
+
+  async createOrUpdateSecret(userId: number, name: string, encryptedValue: string): Promise<Secret> {
+    const existing = await db.select().from(secrets)
+      .where(and(eq(secrets.userId, userId), eq(secrets.name, name)));
+    if (existing[0]) {
+      const result = await db.update(secrets)
+        .set({ encryptedValue, updatedAt: new Date() })
+        .where(eq(secrets.id, existing[0].id))
+        .returning();
+      return result[0];
+    }
+    const result = await db.insert(secrets).values({ userId, name, encryptedValue }).returning();
+    return result[0];
+  }
+
+  async getSecretsByUserId(userId: number): Promise<Secret[]> {
+    return db.select().from(secrets).where(eq(secrets.userId, userId)).orderBy(desc(secrets.createdAt));
+  }
+
+  async deleteSecret(userId: number, name: string): Promise<boolean> {
+    const result = await db.delete(secrets)
+      .where(and(eq(secrets.userId, userId), eq(secrets.name, name)))
+      .returning();
+    return result.length > 0;
+  }
+
+  async getSecretsForJob(jobId: number): Promise<Secret[]> {
+    // Find the workflow owner for this job, then return their secrets
+    const job = await this.getEvalJob(jobId);
+    if (!job) return [];
+    const workflow = await this.getWorkflow(job.workflowId);
+    if (!workflow) return [];
+    return this.getSecretsByUserId(workflow.ownerId);
   }
 }
 

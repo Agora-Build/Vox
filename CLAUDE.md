@@ -81,6 +81,7 @@ Required:
 - `INIT_CODE` - System initialization code (used during first-time setup)
 
 Optional:
+- `CREDENTIAL_ENCRYPTION_KEY` - 32-byte hex key (64 hex chars) for AES-256-GCM secret encryption. Required for the secrets feature. Generate with: `openssl rand -hex 32`
 - `PORT` - Server port (default: 5000)
 - `GOOGLE_CLIENT_ID` - Google OAuth client ID (enables Google sign-in)
 - `GOOGLE_CLIENT_SECRET` - Google OAuth client secret

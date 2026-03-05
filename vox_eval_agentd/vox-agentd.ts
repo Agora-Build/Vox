@@ -324,6 +324,44 @@ class VoxEvalAgentDaemon {
   }
 
   // -------------------------------------------------------------------------
+  // Secrets
+  // -------------------------------------------------------------------------
+
+  async fetchSecrets(jobId: number): Promise<Record<string, string>> {
+    try {
+      const response = await this.fetch(`/api/eval-agent/jobs/${jobId}/secrets`);
+      if (!response.ok) {
+        if (response.status === 500) {
+          console.warn(`[Daemon] Server encryption not configured — skipping secrets`);
+          return {};
+        }
+        console.warn(`[Daemon] Failed to fetch secrets for job ${jobId}: ${response.status}`);
+        return {};
+      }
+      const secrets: Record<string, string> = await response.json();
+      const count = Object.keys(secrets).length;
+      if (count > 0) {
+        console.log(`[Daemon] Fetched ${count} secret(s) for job ${jobId}`);
+      }
+      return secrets;
+    } catch (error: unknown) {
+      const msg = error instanceof Error ? error.message : String(error);
+      console.warn(`[Daemon] Error fetching secrets:`, msg);
+      return {};
+    }
+  }
+
+  private resolveSecrets(content: string, secrets: Record<string, string>): string {
+    return content.replace(/\$\{secrets\.([A-Z][A-Z0-9_]*)\}/g, (_match, key) => {
+      if (key in secrets) {
+        return secrets[key];
+      }
+      console.warn(`[Daemon] Secret placeholder \${secrets.${key}} not found — leaving as-is`);
+      return _match;
+    });
+  }
+
+  // -------------------------------------------------------------------------
   // aeval framework
   // -------------------------------------------------------------------------
 
@@ -994,6 +1032,17 @@ class VoxEvalAgentDaemon {
       throw new Error('job.config.scenario is required');
     }
 
+    // Fetch secrets for this job and resolve ${secrets.*} placeholders
+    const jobSecrets = await this.fetchSecrets(job.id);
+    let scenario = config.scenario;
+    let app = config.app;
+    if (Object.keys(jobSecrets).length > 0) {
+      scenario = this.resolveSecrets(scenario, jobSecrets);
+      if (app) {
+        app = this.resolveSecrets(app, jobSecrets);
+      }
+    }
+
     const tempFiles: (string | null)[] = [];
 
     try {
@@ -1001,19 +1050,19 @@ class VoxEvalAgentDaemon {
 
       switch (framework) {
         case 'aeval': {
-          const scenarioConfig = this.writeTempYaml(config.scenario, 'vox-scenario')!;
+          const scenarioConfig = this.writeTempYaml(scenario, 'vox-scenario')!;
           tempFiles.push(scenarioConfig);
           results = await this.runAeval(scenarioConfig);
           break;
         }
         case 'voice-agent-tester': {
-          if (!config.app) {
+          if (!app) {
             throw new Error('job.config.app is required for voice-agent-tester');
           }
-          const appConfig = this.writeTempYaml(config.app, 'vox-app')!;
+          const appConfig = this.writeTempYaml(app, 'vox-app')!;
           tempFiles.push(appConfig);
 
-          const scenarioConfig = this.writeTempYaml(config.scenario, 'vox-scenario')!;
+          const scenarioConfig = this.writeTempYaml(scenario, 'vox-scenario')!;
           tempFiles.push(scenarioConfig);
 
           results = await this.runVoiceAgentTester(appConfig, scenarioConfig);

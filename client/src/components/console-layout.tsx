@@ -19,7 +19,7 @@ import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import { Users, Workflow, FileText, LogOut, Shield, Gem, Sparkles, Rocket, Server, Building2, CreditCard, Settings, FolderKanban, ClipboardList } from "lucide-react";
+import { Users, Workflow, FileText, LogOut, Shield, Gem, Sparkles, Rocket, Server, Building2, CreditCard, Settings, FolderKanban, ClipboardList, KeyRound } from "lucide-react";
 import { ThemeToggle } from "@/components/theme-toggle";
 
 interface AuthStatus {
@@ -140,6 +140,13 @@ export default function ConsoleLayout({ children }: ConsoleLayoutProps) {
     url: "/console/eval-agents",
     icon: Server,
     active: location === "/console/eval-agents",
+  });
+
+  navItems.push({
+    title: "Secrets",
+    url: "/console/secrets",
+    icon: KeyRound,
+    active: location === "/console/secrets",
   });
 
   // Organization section

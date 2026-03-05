@@ -1,4 +1,4 @@
-import { pgTable, text, varchar, integer, real, timestamp, serial, boolean, pgEnum, jsonb, index } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, integer, real, timestamp, serial, boolean, pgEnum, jsonb, index, uniqueIndex } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 import crypto from "crypto";
@@ -489,6 +489,28 @@ export const insertFundReturnRequestSchema = createInsertSchema(fundReturnReques
 
 export type InsertFundReturnRequest = z.infer<typeof insertFundReturnRequestSchema>;
 export type FundReturnRequest = typeof fundReturnRequests.$inferSelect;
+
+// ==================== SECRETS ====================
+
+export const secrets = pgTable("secrets", {
+  id: serial("id").primaryKey(),
+  userId: integer("user_id").notNull().references(() => users.id),
+  name: text("name").notNull(),
+  encryptedValue: text("encrypted_value").notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (table) => ({
+  userNameIdx: uniqueIndex("secrets_user_name_idx").on(table.userId, table.name),
+}));
+
+export const insertSecretSchema = createInsertSchema(secrets).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export type InsertSecret = z.infer<typeof insertSecretSchema>;
+export type Secret = typeof secrets.$inferSelect;
 
 // ==================== SESSION STORE ====================
 // Used by connect-pg-simple for Express sessions

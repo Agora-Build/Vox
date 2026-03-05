@@ -1,6 +1,6 @@
 import type { Express } from "express";
 import { createServer, type Server } from "http";
-import { storage, hashToken, generateSecureToken, generateEvalAgentToken, mergeEvalConfig, validateEvalConfig } from "./storage";
+import { storage, hashToken, generateSecureToken, generateEvalAgentToken, mergeEvalConfig, validateEvalConfig, encryptValue, decryptValue } from "./storage";
 import { parseNextCronRun } from "./cron";
 import { seedAevalVersion, compareVersions } from "./aeval-seed";
 import { generateProviderId } from "@shared/schema";
@@ -1550,6 +1550,76 @@ export async function registerRoutes(
     }
   });
 
+  // ==================== SECRETS ROUTES ====================
+
+  // List user's secrets (names + timestamps only, never values)
+  app.get("/api/secrets", requireAuth, async (req, res) => {
+    try {
+      const user = await getCurrentUser(req);
+      if (!user) return res.status(401).json({ error: "Not authenticated" });
+
+      const userSecrets = await storage.getSecretsByUserId(user.id);
+      res.json(userSecrets.map(s => ({
+        id: s.id,
+        name: s.name,
+        createdAt: s.createdAt,
+        updatedAt: s.updatedAt,
+      })));
+    } catch (error) {
+      console.error("Error listing secrets:", error);
+      res.status(500).json({ error: "Failed to list secrets" });
+    }
+  });
+
+  // Create or update a secret (upsert by name)
+  app.post("/api/secrets", requireAuth, async (req, res) => {
+    try {
+      const user = await getCurrentUser(req);
+      if (!user) return res.status(401).json({ error: "Not authenticated" });
+
+      const { name, value } = req.body;
+      if (!name || typeof name !== "string" || !name.trim()) {
+        return res.status(400).json({ error: "Secret name is required" });
+      }
+      if (!value || typeof value !== "string") {
+        return res.status(400).json({ error: "Secret value is required" });
+      }
+      if (!/^[A-Z][A-Z0-9_]*$/.test(name.trim())) {
+        return res.status(400).json({ error: "Secret name must be uppercase letters, digits, and underscores (e.g., AGORA_EMAIL)" });
+      }
+      if (value.length > 10000) {
+        return res.status(400).json({ error: "Secret value too large (max 10KB)" });
+      }
+
+      const encrypted = encryptValue(value);
+      const secret = await storage.createOrUpdateSecret(user.id, name.trim(), encrypted);
+      res.json({ id: secret.id, name: secret.name, createdAt: secret.createdAt, updatedAt: secret.updatedAt });
+    } catch (error) {
+      console.error("Error creating secret:", error);
+      if (error instanceof Error && error.message.includes("CREDENTIAL_ENCRYPTION_KEY")) {
+        return res.status(500).json({ error: "Server encryption not configured" });
+      }
+      res.status(500).json({ error: "Failed to create secret" });
+    }
+  });
+
+  // Delete a secret by name
+  app.delete("/api/secrets/:name", requireAuth, async (req, res) => {
+    try {
+      const user = await getCurrentUser(req);
+      if (!user) return res.status(401).json({ error: "Not authenticated" });
+
+      const deleted = await storage.deleteSecret(user.id, req.params.name);
+      if (!deleted) {
+        return res.status(404).json({ error: "Secret not found" });
+      }
+      res.json({ message: "Secret deleted" });
+    } catch (error) {
+      console.error("Error deleting secret:", error);
+      res.status(500).json({ error: "Failed to delete secret" });
+    }
+  });
+
   // ==================== EVAL AGENT TOKEN ROUTES (User-facing) ====================
 
   app.get("/api/eval-agent-tokens", requireAuth, async (req, res) => {
@@ -2032,6 +2102,58 @@ export async function registerRoutes(
     } catch (error) {
       console.error("Error completing job:", error);
       res.status(500).json({ error: "Failed to complete job" });
+    }
+  });
+
+  // Get decrypted secrets for a claimed job (eval agent Bearer auth)
+  app.get("/api/eval-agent/jobs/:jobId/secrets", async (req, res) => {
+    try {
+      const authHeader = req.headers.authorization;
+      if (!authHeader || !authHeader.startsWith("Bearer ")) {
+        return res.status(401).json({ error: "Eval agent token required" });
+      }
+
+      const token = authHeader.slice(7);
+      const tokenHash = hashToken(token);
+      const evalAgentToken = await storage.getEvalAgentTokenByHash(tokenHash);
+
+      if (!evalAgentToken || evalAgentToken.isRevoked) {
+        return res.status(401).json({ error: "Invalid or revoked eval agent token" });
+      }
+
+      const { jobId } = req.params;
+      const job = await storage.getEvalJob(parseInt(jobId));
+      if (!job) {
+        return res.status(404).json({ error: "Job not found" });
+      }
+
+      // Verify the job is claimed by an agent belonging to this token
+      if (!job.evalAgentId) {
+        return res.status(403).json({ error: "Job not yet claimed" });
+      }
+      const agent = await storage.getEvalAgent(job.evalAgentId);
+      if (!agent || agent.tokenId !== evalAgentToken.id) {
+        return res.status(403).json({ error: "Job not assigned to your agent" });
+      }
+
+      // Get workflow owner's secrets
+      const userSecrets = await storage.getSecretsForJob(parseInt(jobId));
+      const decrypted: Record<string, string> = {};
+      for (const s of userSecrets) {
+        try {
+          decrypted[s.name] = decryptValue(s.encryptedValue);
+        } catch {
+          console.error(`[Secrets] Failed to decrypt secret ${s.name} for job ${jobId}`);
+        }
+      }
+
+      res.json(decrypted);
+    } catch (error) {
+      console.error("Error fetching job secrets:", error);
+      if (error instanceof Error && error.message.includes("CREDENTIAL_ENCRYPTION_KEY")) {
+        return res.status(500).json({ error: "Server encryption not configured" });
+      }
+      res.status(500).json({ error: "Failed to fetch secrets" });
     }
   });
 

@@ -64,6 +64,8 @@ HOST="${HOST:-localhost}"
 SERVER_URL="http://localhost:$SERVER_PORT"
 SERVER_URL_DISPLAY="http://${HOST}:$SERVER_PORT"
 INIT_CODE="VOX-DEBUG-2024"
+# 32-byte hex key for AES-256-GCM secret encryption (deterministic for local dev)
+CREDENTIAL_ENCRYPTION_KEY="0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 EVAL_AGENT_TOKEN_FILE="/tmp/vox-eval-agent-token.txt"
 
 # Multi-region configuration
@@ -193,6 +195,7 @@ start_service_local() {
     DATABASE_URL="$DB_URL" \
     SESSION_SECRET="local-test-secret-123" \
     INIT_CODE="$INIT_CODE" \
+    CREDENTIAL_ENCRYPTION_KEY="$CREDENTIAL_ENCRYPTION_KEY" \
     npm run dev > /tmp/vox-server.log 2>&1 &
 
     echo $! > /tmp/vox-server.pid
@@ -225,6 +228,7 @@ start_service_docker() {
     # Export env vars for docker-compose (use same session secret as local mode)
     export SESSION_SECRET="local-test-secret-123"
     export INIT_CODE="$INIT_CODE"
+    export CREDENTIAL_ENCRYPTION_KEY="$CREDENTIAL_ENCRYPTION_KEY"
     export VOX_TAG="${VOX_TAG:-latest}"
 
     # Build and run via docker compose
