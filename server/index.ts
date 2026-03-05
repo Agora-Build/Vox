@@ -7,9 +7,11 @@ import session from "express-session";
 import connectPgSimple from "connect-pg-simple";
 import rateLimit from "express-rate-limit";
 import { authenticateApiKey, passport, initializeGoogleOAuth } from "./auth";
-import { storage, mergeEvalConfig } from "./storage";
+import { storage, mergeEvalConfig, db } from "./storage";
 import { parseNextCronRun } from "./cron";
 import { seedFromLocalAevalData } from "./aeval-seed";
+import { migrate } from "drizzle-orm/node-postgres/migrator";
+import { sql } from "drizzle-orm";
 import pkg from "pg";
 const { Pool } = pkg;
 
@@ -166,6 +168,49 @@ app.use((req, res, next) => {
 });
 
 (async () => {
+  // Run database migrations before starting the server
+  try {
+    // Bootstrap: if the journal table doesn't exist yet (db was set up via `push`),
+    // create it and mark all existing migrations as applied so `migrate()` only runs new ones.
+    const journalCheck = await db.execute(sql`
+      SELECT EXISTS (
+        SELECT 1 FROM information_schema.tables
+        WHERE table_name = '__drizzle_migrations'
+      ) AS exists
+    `);
+    if (!journalCheck.rows[0].exists) {
+      log("Bootstrapping migration journal for existing database...", "db");
+      await db.execute(sql`
+        CREATE TABLE IF NOT EXISTS "__drizzle_migrations" (
+          id serial PRIMARY KEY,
+          hash text NOT NULL,
+          created_at bigint
+        )
+      `);
+      // Mark migrations 0000-0004 as already applied (they were applied via db:push)
+      const appliedMigrations = [
+        { hash: '0000_fair_susan_delgado', ts: 1769780184946 },
+        { hash: '0001_early_blizzard', ts: 1772447610696 },
+        { hash: '0002_green_fallen_one', ts: 1772659460001 },
+        { hash: '0003_lonely_namor', ts: 1772705734078 },
+        { hash: '0004_nappy_green_goblin', ts: 1772706626845 },
+      ];
+      for (const m of appliedMigrations) {
+        await db.execute(sql`
+          INSERT INTO "__drizzle_migrations" (hash, created_at)
+          VALUES (${m.hash}, ${m.ts})
+        `);
+      }
+      log("Migration journal bootstrapped with 5 existing migrations", "db");
+    }
+
+    await migrate(db, { migrationsFolder: "./migrations" });
+    log("Database migrations up to date", "db");
+  } catch (err) {
+    console.error("Failed to run database migrations:", err);
+    process.exit(1);
+  }
+
   await registerRoutes(httpServer, app);
 
   app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
