@@ -1878,8 +1878,14 @@ export async function registerRoutes(
 
   app.get("/api/eval-agents", async (req, res) => {
     try {
+      const user = await getCurrentUser(req);
       const agents = await storage.getEvalAgentsWithTokenVisibility();
-      res.json(agents.map(a => ({
+      // Public agents visible to all; private agents only visible to their owner or admins
+      const visible = agents.filter(a =>
+        a.tokenVisibility === "public" ||
+        (user && (user.id === a.tokenCreatedBy || user.isAdmin))
+      );
+      res.json(visible.map(a => ({
         id: a.id,
         name: a.name,
         region: a.region,

@@ -416,7 +416,7 @@ export class DatabaseStorage {
     return db.select().from(evalAgents).orderBy(desc(evalAgents.createdAt));
   }
 
-  async getEvalAgentsWithTokenVisibility(): Promise<(EvalAgent & { tokenVisibility: string })[]> {
+  async getEvalAgentsWithTokenVisibility(): Promise<(EvalAgent & { tokenVisibility: string; tokenCreatedBy: number })[]> {
     const results = await db.select({
       id: evalAgents.id,
       name: evalAgents.name,
@@ -429,11 +429,12 @@ export class DatabaseStorage {
       createdAt: evalAgents.createdAt,
       updatedAt: evalAgents.updatedAt,
       tokenVisibility: evalAgentTokens.visibility,
+      tokenCreatedBy: evalAgentTokens.createdBy,
     })
       .from(evalAgents)
       .innerJoin(evalAgentTokens, eq(evalAgents.tokenId, evalAgentTokens.id))
       .orderBy(desc(evalAgents.createdAt));
-    return results as (EvalAgent & { tokenVisibility: string })[];
+    return results as (EvalAgent & { tokenVisibility: string; tokenCreatedBy: number })[];
   }
 
   async updateEvalAgent(id: number, data: Partial<EvalAgent>): Promise<EvalAgent | undefined> {
