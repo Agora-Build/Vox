@@ -19,11 +19,9 @@ export default function Home() {
         <div className="flex flex-col sm:flex-row justify-center gap-3 sm:gap-4 pt-4 px-4 sm:px-0">
           <Link href="/realtime">
             <Button size="lg" className="gap-2 w-full sm:w-auto bg-gradient-to-r from-primary to-indigo-500 hover:from-primary/90 hover:to-indigo-500/90 shadow-lg shadow-primary/25 transition-all hover:shadow-xl hover:shadow-primary/30">
-              <span className="relative flex h-2.5 w-2.5">
-                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
-                <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-green-400"></span>
+              <span className="inline-block bg-[length:200%_100%] bg-clip-text text-transparent animate-[shimmer_2.5s_ease-in-out_infinite] bg-gradient-to-r from-white via-white/60 via-50% to-white">
+                Explore Real-time Dashboard
               </span>
-              Explore Real-time Dashboard
               <ArrowRight className="h-4 w-4" />
             </Button>
           </Link>

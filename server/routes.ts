@@ -2343,8 +2343,12 @@ export async function registerRoutes(
       // For non-admin users, only return jobs for workflows they own or are public
       if (!user.isAdmin) {
         const userWorkflows = await storage.getWorkflowsByOwner(user.id);
-        const userWorkflowIds = new Set(userWorkflows.map(w => w.id));
-        const filteredJobs = jobs.filter(job => userWorkflowIds.has(job.workflowId));
+        const publicWorkflows = await storage.getPublicWorkflows();
+        const allowedIds = new Set([
+          ...userWorkflows.map(w => w.id),
+          ...publicWorkflows.map(w => w.id),
+        ]);
+        const filteredJobs = jobs.filter(job => allowedIds.has(job.workflowId));
         return res.json(filteredJobs);
       }
 
@@ -2370,10 +2374,10 @@ export async function registerRoutes(
         return res.status(404).json({ error: "Job not found" });
       }
 
-      // Check authorization
+      // Check authorization: owner, admin, or public workflow
       if (!user.isAdmin) {
         const workflow = await storage.getWorkflow(job.workflowId);
-        if (!workflow || workflow.ownerId !== user.id) {
+        if (!workflow || (workflow.ownerId !== user.id && workflow.visibility !== "public")) {
           return res.status(403).json({ error: "Not authorized to view this job" });
         }
       }

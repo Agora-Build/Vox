@@ -166,3 +166,9 @@
                     linear-gradient(to bottom, hsl(var(--border) / 0.1) 1px, transparent 1px);
 }
 
+/* Shimmer text sweep — Claude Code style */
+@keyframes shimmer {
+  0%   { background-position: 200% center; }
+  100% { background-position: -200% center; }
+}
+
