@@ -61,7 +61,7 @@ export default function ConsoleEvalJobs() {
   });
 
   const { data: workflows } = useQuery<WorkflowType[]>({
-    queryKey: ["/api/workflows"],
+    queryKey: ["/api/workflows?includePublic=true"],
   });
 
   const workflowMap = new Map(workflows?.map((w) => [w.id, w.name]) ?? []);

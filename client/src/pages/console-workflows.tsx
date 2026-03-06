@@ -67,7 +67,7 @@ export default function ConsoleWorkflows() {
   });
 
   const { data: workflows, isLoading } = useQuery<WorkflowType[]>({
-    queryKey: ["/api/workflows"],
+    queryKey: ["/api/workflows?includePublic=true"],
   });
 
   const { data: providers } = useQuery<Provider[]>({
@@ -179,6 +179,7 @@ export default function ConsoleWorkflows() {
 
   const isPrincipal = authStatus?.user?.plan === "principal";
   const canCreatePrivate = authStatus?.user?.plan !== "basic";
+  const hasProjects = projects && projects.length > 0;
 
   return (
     <div className="space-y-6">
@@ -449,7 +450,7 @@ export default function ConsoleWorkflows() {
               <TableHeader>
                 <TableRow>
                   <TableHead>Name</TableHead>
-                  <TableHead>Project</TableHead>
+                  {hasProjects && <TableHead>Project</TableHead>}
                   <TableHead>Visibility</TableHead>
                   <TableHead>Status</TableHead>
                   {isPrincipal && <TableHead>Mainline</TableHead>}
@@ -475,16 +476,18 @@ export default function ConsoleWorkflows() {
                         <ChevronRight className="h-4 w-4 text-muted-foreground" />
                       </div>
                     </TableCell>
-                    <TableCell>
-                      {workflow.projectId ? (
-                        <Badge variant="outline" className="gap-1">
-                          <FolderKanban className="h-3 w-3" />
-                          {projects?.find(p => p.id === workflow.projectId)?.name || `#${workflow.projectId}`}
-                        </Badge>
-                      ) : (
-                        <span className="text-sm text-muted-foreground">--</span>
-                      )}
-                    </TableCell>
+                    {hasProjects && (
+                      <TableCell>
+                        {workflow.projectId ? (
+                          <Badge variant="outline" className="gap-1">
+                            <FolderKanban className="h-3 w-3" />
+                            {projects?.find(p => p.id === workflow.projectId)?.name || `#${workflow.projectId}`}
+                          </Badge>
+                        ) : (
+                          <span className="text-sm text-muted-foreground">--</span>
+                        )}
+                      </TableCell>
+                    )}
                     <TableCell>
                       <Badge variant="outline" className="gap-1">
                         {workflow.visibility === "public" ? (

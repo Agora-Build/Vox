@@ -76,7 +76,7 @@ export default function ConsoleWorkflowDetail() {
   });
 
   const { data: evalSets } = useQuery<EvalSet[]>({
-    queryKey: ["/api/eval-sets"],
+    queryKey: ["/api/eval-sets?includePublic=true"],
   });
 
   const { data: jobs, isLoading: jobsLoading, refetch: refetchJobs } = useQuery<EvalJob[]>({

@@ -446,6 +446,16 @@ export class DatabaseStorage {
     await db.update(evalAgents).set({ lastSeenAt: new Date(), state: "idle", updatedAt: new Date() }).where(eq(evalAgents.id, id));
   }
 
+  async countTodayJobsByOwner(ownerId: number): Promise<number> {
+    const startOfDay = new Date();
+    startOfDay.setHours(0, 0, 0, 0);
+    const result = await db.select({ count: sql<number>`count(*)::int` })
+      .from(evalJobs)
+      .innerJoin(workflows, eq(evalJobs.workflowId, workflows.id))
+      .where(and(eq(workflows.ownerId, ownerId), gte(evalJobs.createdAt, startOfDay)));
+    return result[0]?.count ?? 0;
+  }
+
   async createEvalJob(job: InsertEvalJob): Promise<EvalJob> {
     const result = await db.insert(evalJobs).values(job).returning();
     return result[0];

@@ -92,11 +92,11 @@ export default function ConsoleEvalSets() {
   });
 
   const { data: evalSets, isLoading } = useQuery<EvalSet[]>({
-    queryKey: ["/api/eval-sets"],
+    queryKey: ["/api/eval-sets?includePublic=true"],
   });
 
   const { data: workflows } = useQuery<WorkflowType[]>({
-    queryKey: ["/api/workflows"],
+    queryKey: ["/api/workflows?includePublic=true"],
   });
 
   const createMutation = useMutation({

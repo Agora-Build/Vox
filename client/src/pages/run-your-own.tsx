@@ -57,9 +57,9 @@ interface EvalSetFull {
 
 export default function SelfTest() {
   const { toast } = useToast();
-  const [productType, setProductType] = useState<string>("convoai");
-  const [productName, setProductName] = useState("");
-  const [productUrl, setProductUrl] = useState("");
+  const [workflowType, setWorkflowType] = useState<string>("convoai");
+  const [workflowName, setWorkflowName] = useState("");
+  const [workflowUrl, setWorkflowUrl] = useState("");
   const [region, setRegion] = useState<string>("na");
   const [selectedWorkflowId, setSelectedWorkflowId] = useState<string>("");
   const [selectedEvalSetId, setSelectedEvalSetId] = useState<string>("");
@@ -78,7 +78,7 @@ export default function SelfTest() {
   });
 
   const { data: workflows } = useQuery<Workflow[]>({
-    queryKey: ["/api/workflows"],
+    queryKey: ["/api/workflows?includePublic=true"],
     enabled: !!authStatus?.user,
   });
 
@@ -114,23 +114,23 @@ export default function SelfTest() {
 
   const createWorkflowMutation = useMutation({
     mutationFn: async () => {
-      const provider = providers?.find(p => p.sku === productType);
+      const provider = providers?.find(p => p.sku === workflowType);
       const res = await apiRequest("POST", "/api/workflows", {
-        name: productName,
-        description: `Self-test workflow for ${productName}`,
+        name: workflowName,
+        description: workflowUrl ? workflowUrl : undefined,
         providerId: provider?.id,
-        visibility: "private",
-        config: { url: productUrl },
+        visibility: "public",
+        config: { url: workflowUrl },
       });
       return res.json();
     },
     onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: ["/api/workflows"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/workflows?includePublic=true"] });
       setSelectedWorkflowId(data.id.toString());
-      toast({ title: "Product registered", description: "You can now run evaluations" });
+      toast({ title: "Workflow created", description: "You can now run evaluations" });
     },
     onError: (error: Error) => {
-      toast({ title: "Failed to register product", description: error.message, variant: "destructive" });
+      toast({ title: "Failed to create workflow", description: error.message, variant: "destructive" });
     },
   });
 
@@ -226,9 +226,9 @@ export default function SelfTest() {
     }
   };
 
-  const handleRegisterProduct = () => {
-    if (!productName) {
-      toast({ title: "Product name required", variant: "destructive" });
+  const handleCreateWorkflow = () => {
+    if (!workflowName) {
+      toast({ title: "Workflow name required", variant: "destructive" });
       return;
     }
     createWorkflowMutation.mutate();
@@ -237,7 +237,7 @@ export default function SelfTest() {
   const handleRunEval = () => {
     const workflowId = parseInt(selectedWorkflowId);
     if (!workflowId) {
-      toast({ title: "Please select or register a product first", variant: "destructive" });
+      toast({ title: "Please select or create a workflow first", variant: "destructive" });
       return;
     }
     runEvalMutation.mutate(workflowId);
@@ -281,10 +281,10 @@ export default function SelfTest() {
           Run Your Own Evaluation
         </div>
         <h1 className="text-3xl sm:text-4xl font-bold tracking-tight">
-          Test Your Voice Product
+          Run Your Own Evaluation
         </h1>
         <p className="text-muted-foreground max-w-2xl mx-auto">
-          Register your ConvoAI or RTC product and run real-world evaluations across multiple regions.
+          Select an existing workflow or create a new one, then run real-world evaluations across multiple regions.
           Measure your true performance characteristics.
         </p>
       </div>
@@ -317,20 +317,45 @@ export default function SelfTest() {
                 Configure Evaluation
               </CardTitle>
               <CardDescription>
-                Set up your product for testing
+                Select a workflow and run an evaluation
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-6 relative z-10">
-              <Tabs defaultValue="new" className="w-full">
+              <Tabs defaultValue="existing" className="w-full">
                 <TabsList className="grid w-full grid-cols-2">
-                  <TabsTrigger value="new">New Product</TabsTrigger>
-                  <TabsTrigger value="existing">Existing</TabsTrigger>
+                  <TabsTrigger value="existing">Select Workflow</TabsTrigger>
+                  <TabsTrigger value="new">Create New</TabsTrigger>
                 </TabsList>
+
+                <TabsContent value="existing" className="space-y-4 mt-4">
+                  {workflows && workflows.length > 0 ? (
+                    <div className="space-y-2">
+                      <Label>Workflow</Label>
+                      <Select value={selectedWorkflowId} onValueChange={setSelectedWorkflowId}>
+                        <SelectTrigger>
+                          <SelectValue placeholder="Choose a workflow" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {workflows.map((w) => (
+                            <SelectItem key={w.id} value={w.id.toString()}>
+                              {w.name}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  ) : (
+                    <div className="text-center py-6 text-muted-foreground space-y-2">
+                      <p className="text-sm">No workflows available yet.</p>
+                      <p className="text-xs">Switch to the "Create New" tab to create your first workflow.</p>
+                    </div>
+                  )}
+                </TabsContent>
 
                 <TabsContent value="new" className="space-y-4 mt-4">
                   <div className="space-y-2">
-                    <Label>Product Type</Label>
-                    <Select value={productType} onValueChange={setProductType}>
+                    <Label>Provider Type</Label>
+                    <Select value={workflowType} onValueChange={setWorkflowType}>
                       <SelectTrigger>
                         <SelectValue />
                       </SelectTrigger>
@@ -342,60 +367,37 @@ export default function SelfTest() {
                   </div>
 
                   <div className="space-y-2">
-                    <Label>Product Name</Label>
+                    <Label>Workflow Name</Label>
                     <Input
-                      placeholder="My Voice AI Product"
-                      value={productName}
-                      onChange={(e) => setProductName(e.target.value)}
+                      placeholder="My Voice AI Workflow"
+                      value={workflowName}
+                      onChange={(e) => setWorkflowName(e.target.value)}
                     />
                   </div>
 
                   <div className="space-y-2">
-                    <Label>Product URL (optional)</Label>
+                    <Label>URL (optional)</Label>
                     <Input
-                      placeholder="https://your-product.com/api"
-                      value={productUrl}
-                      onChange={(e) => setProductUrl(e.target.value)}
+                      placeholder="https://your-product.com"
+                      value={workflowUrl}
+                      onChange={(e) => setWorkflowUrl(e.target.value)}
                     />
                     <p className="text-xs text-muted-foreground">
-                      URL to your product's API endpoint for testing
+                      URL of the product to evaluate
                     </p>
                   </div>
 
                   <Button
-                    onClick={handleRegisterProduct}
-                    disabled={createWorkflowMutation.isPending || !productName}
+                    onClick={handleCreateWorkflow}
+                    disabled={createWorkflowMutation.isPending || !workflowName}
                     className="w-full"
                   >
                     {createWorkflowMutation.isPending ? (
-                      <><Loader2 className="mr-2 h-4 w-4 animate-spin" /> Registering...</>
+                      <><Loader2 className="mr-2 h-4 w-4 animate-spin" /> Creating...</>
                     ) : (
-                      "Register Product"
+                      "Create Workflow"
                     )}
                   </Button>
-                </TabsContent>
-
-                <TabsContent value="existing" className="space-y-4 mt-4">
-                  <div className="space-y-2">
-                    <Label>Select Product</Label>
-                    <Select value={selectedWorkflowId} onValueChange={setSelectedWorkflowId}>
-                      <SelectTrigger>
-                        <SelectValue placeholder="Choose a registered product" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {workflows?.map((w) => (
-                          <SelectItem key={w.id} value={w.id.toString()}>
-                            {w.name}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  {workflows?.length === 0 && (
-                    <p className="text-sm text-muted-foreground text-center py-4">
-                      No products registered yet. Create one in the "New Product" tab.
-                    </p>
-                  )}
                 </TabsContent>
               </Tabs>
 

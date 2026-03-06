@@ -901,8 +901,16 @@ export async function registerRoutes(
       if (!user) {
         return res.status(401).json({ error: "Not authenticated" });
       }
-      const workflows = await storage.getWorkflowsByOwner(user.id);
-      res.json(workflows);
+      const ownWorkflows = await storage.getWorkflowsByOwner(user.id);
+
+      if (req.query.includePublic === "true") {
+        const publicWorkflows = await storage.getPublicWorkflows();
+        const ownIds = new Set(ownWorkflows.map((w) => w.id));
+        const merged = [...ownWorkflows, ...publicWorkflows.filter((w) => !ownIds.has(w.id))];
+        return res.json(merged);
+      }
+
+      res.json(ownWorkflows);
     } catch (error) {
       console.error("Error fetching workflows:", error);
       res.status(500).json({ error: "Failed to fetch workflows" });
@@ -2248,8 +2256,17 @@ export async function registerRoutes(
         return res.status(404).json({ error: "Workflow not found" });
       }
 
-      if (workflow.ownerId !== user.id && !user.isAdmin && user.plan !== "principal" && user.plan !== "fellow") {
+      // Public workflows can be run by anyone; private workflows only by owner/admin/principal/fellow
+      if (workflow.visibility === "private" && workflow.ownerId !== user.id && !user.isAdmin && user.plan !== "principal" && user.plan !== "fellow") {
         return res.status(403).json({ error: "Not authorized to run this workflow" });
+      }
+
+      // Daily job limit for basic users
+      if (user.plan === "basic") {
+        const todayCount = await storage.countTodayJobsByOwner(user.id);
+        if (todayCount >= 80) {
+          return res.status(429).json({ error: "Daily limit of 80 eval jobs reached. Upgrade to Premium for unlimited runs." });
+        }
       }
 
       if (!region || !["na", "apac", "eu", "sa"].includes(region)) {
