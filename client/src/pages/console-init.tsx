@@ -113,7 +113,7 @@ export default function ConsoleInit() {
                   <Input
                     id="email"
                     type="email"
-                    placeholder="admin@example.com"
+                    placeholder="admin@agora.build"
                     value={adminEmail}
                     onChange={(e) => setAdminEmail(e.target.value)}
                     required

@@ -111,7 +111,7 @@ export function LoginForm({ variant = "user" }: LoginFormProps) {
               <Input
                 id="email"
                 type="email"
-                placeholder={isAdminVariant ? "admin@example.com" : "you@example.com"}
+                placeholder={isAdminVariant ? "admin@agora.build" : "john@agora.build"}
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 required
