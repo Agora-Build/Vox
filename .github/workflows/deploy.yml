@@ -12,4 +12,5 @@ jobs:
       - name: Trigger Webhook
         run: |
           curl -X POST "${{ secrets.COOLIFY_WEBHOOK_URL }}" \
-          -H "Content-Type: application/json"
+          -H "Content-Type: application/json" \
+          -H "Authorization: Bearer ${{ secrets.COOLIFY_TOKEN }}"
