@@ -18,8 +18,13 @@ export default function Home() {
         </p>
         <div className="flex flex-col sm:flex-row justify-center gap-3 sm:gap-4 pt-4 px-4 sm:px-0">
           <Link href="/realtime">
-            <Button size="lg" className="gap-2 w-full sm:w-auto">
-              <Activity className="h-5 w-5" /> View Real-Time Data
+            <Button size="lg" className="gap-2 w-full sm:w-auto bg-gradient-to-r from-primary to-indigo-500 hover:from-primary/90 hover:to-indigo-500/90 shadow-lg shadow-primary/25 transition-all hover:shadow-xl hover:shadow-primary/30">
+              <span className="relative flex h-2.5 w-2.5">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
+                <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-green-400"></span>
+              </span>
+              Explore Real-time Dashboard
+              <ArrowRight className="h-4 w-4" />
             </Button>
           </Link>
           <Link href="/leaderboard">
