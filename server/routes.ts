@@ -1638,7 +1638,7 @@ export async function registerRoutes(
       }
       const trimmedName = name.trim();
       if (!/^[A-Z][A-Z0-9_]*$/.test(trimmedName)) {
-        return res.status(400).json({ error: "Secret name must be uppercase letters, digits, and underscores (e.g., AGORA_EMAIL)" });
+        return res.status(400).json({ error: "Secret name must be uppercase letters, digits, and underscores (e.g., YOUR_EMAIL)" });
       }
       if (trimmedName.length > 256) {
         return res.status(400).json({ error: "Secret name too long (max 256 characters)" });

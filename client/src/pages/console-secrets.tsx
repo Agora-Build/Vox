@@ -101,7 +101,7 @@ export default function ConsoleSecrets() {
                     <Label htmlFor="secret-name">Name</Label>
                     <Input
                       id="secret-name"
-                      placeholder="AGORA_EMAIL"
+                      placeholder="YOUR_EMAIL"
                       value={name}
                       onChange={(e) => setName(e.target.value.toUpperCase().replace(/[^A-Z0-9_]/g, ""))}
                       className="font-mono"
@@ -183,17 +183,17 @@ export default function ConsoleSecrets() {
 
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">Usage in Scenarios</CardTitle>
+          <CardTitle className="text-base">How to use it</CardTitle>
         </CardHeader>
         <CardContent>
           <pre className="text-sm bg-muted p-4 rounded-md overflow-x-auto">{`- type: platform.setup
   platform_id: agora
   params:
     mode: account
-    email: \${secrets.AGORA_EMAIL}
-    password: \${secrets.AGORA_PASSWORD}`}</pre>
+    email: \${secrets.YOUR_EMAIL}
+    password: \${secrets.YOUR_PASSWORD}`}</pre>
           <p className="text-xs text-muted-foreground mt-2">
-            The eval agent resolves <code>{"${secrets.*}"}</code> placeholders before running the scenario.
+            The eval agent resolves <code>{"${secrets.*}"}</code> placeholders before running the eval jobs.
             Secret values are never stored in job configs or logs.
           </p>
         </CardContent>

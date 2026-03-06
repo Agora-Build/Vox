@@ -21,8 +21,8 @@ steps:
     platform_id: agora
     params:
       mode: account
-      email: ${secrets.AGORA_EMAIL}
-      password: ${secrets.AGORA_PASSWORD}
+      email: ${secrets.YOUR_EMAIL}
+      password: ${secrets.YOUR_PASSWORD}
   - type: audio.start_recording
   - type: platform.enter
     params:

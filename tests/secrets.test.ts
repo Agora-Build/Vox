@@ -120,7 +120,7 @@ describe('Secrets - Encryption', () => {
 // ---------------------------------------------------------------------------
 
 describe('Secrets - Name Validation', () => {
-  const validNames = ['AGORA_EMAIL', 'MY_SECRET_123', 'A', 'API_KEY_V2', 'X1'];
+  const validNames = ['YOUR_EMAIL', 'MY_SECRET_123', 'A', 'API_KEY_V2', 'X1'];
   const invalidNames = ['agora_email', 'my-secret', '123_START', '_LEADING', 'has space', 'lower', ''];
 
   it('should accept valid secret names', () => {
@@ -153,8 +153,8 @@ function resolveSecrets(content: string, secrets: Record<string, string>): strin
 
 describe('Secrets - Placeholder Resolution', () => {
   it('should replace known placeholders', () => {
-    const yaml = 'email: ${secrets.AGORA_EMAIL}\npassword: ${secrets.AGORA_PASSWORD}';
-    const secrets = { AGORA_EMAIL: 'test@example.com', AGORA_PASSWORD: 'p@ss123' };
+    const yaml = 'email: ${secrets.YOUR_EMAIL}\npassword: ${secrets.YOUR_PASSWORD}';
+    const secrets = { YOUR_EMAIL: 'test@example.com', YOUR_PASSWORD: 'p@ss123' };
     const resolved = resolveSecrets(yaml, secrets);
     expect(resolved).toBe('email: test@example.com\npassword: p@ss123');
   });
