@@ -264,6 +264,7 @@ function startBackgroundWorker() {
             scheduleId: schedule.id,
             workflowId: schedule.workflowId,
             evalSetId: schedule.evalSetId,
+            createdBy: schedule.createdBy,
             region: schedule.region,
             config: mergeEvalConfig(workflow.config, evalSet?.config),
             status: "pending",

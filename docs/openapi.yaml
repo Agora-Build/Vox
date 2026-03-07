@@ -126,7 +126,7 @@ components:
         email:
           type: string
           format: email
-          example: "john@example.com"
+          example: "john@agora.build"
         plan:
           type: string
           enum: [basic, premium, principal, fellow]

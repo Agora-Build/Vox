@@ -267,7 +267,7 @@ export default function Console() {
                   <Input
                     id="invite-email"
                     type="email"
-                    placeholder="user@example.com"
+                    placeholder="user@agora.build"
                     value={inviteEmail}
                     onChange={(e) => setInviteEmail(e.target.value)}
                     data-testid="input-invite-email"
@@ -403,7 +403,7 @@ export default function Console() {
                   <Input
                     id="activation-email"
                     type="email"
-                    placeholder="user@example.com"
+                    placeholder="user@agora.build"
                     value={activationEmail}
                     onChange={(e) => setActivationEmail(e.target.value)}
                     data-testid="input-activation-email"

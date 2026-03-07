@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle, CardFooter, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -63,7 +63,10 @@ export default function SelfTest() {
   const [region, setRegion] = useState<string>("na");
   const [selectedWorkflowId, setSelectedWorkflowId] = useState<string>("");
   const [selectedEvalSetId, setSelectedEvalSetId] = useState<string>("");
-  const [activeJobId, setActiveJobId] = useState<number | null>(null);
+  const [activeJobId, setActiveJobId] = useState<number | null>(() => {
+    const saved = sessionStorage.getItem("runYourOwn_activeJobId");
+    return saved ? parseInt(saved) : null;
+  });
   const [previewOpen, setPreviewOpen] = useState(false);
   const [previewEvalSet, setPreviewEvalSet] = useState<EvalSetFull | null>(null);
   const [previewYaml, setPreviewYaml] = useState("");
@@ -103,6 +106,22 @@ export default function SelfTest() {
     enabled: !!activeJobId && !!authStatus?.user,
     refetchInterval: activeJobId ? 3000 : false, // Poll every 3 seconds when job is active
   });
+
+  // Persist activeJobId to sessionStorage so it survives page reloads
+  useEffect(() => {
+    if (activeJobId) {
+      sessionStorage.setItem("runYourOwn_activeJobId", activeJobId.toString());
+    } else {
+      sessionStorage.removeItem("runYourOwn_activeJobId");
+    }
+  }, [activeJobId]);
+
+  // Clear from sessionStorage when job reaches terminal state
+  useEffect(() => {
+    if (activeJob && (activeJob.status === "completed" || activeJob.status === "failed")) {
+      sessionStorage.removeItem("runYourOwn_activeJobId");
+    }
+  }, [activeJob?.status]);
 
   // Computed ownership/builtIn check for preview dialog
   const { isBuiltIn, canEditInPlace } = useMemo(() => {
@@ -511,22 +530,18 @@ export default function SelfTest() {
                     </div>
                   )}
 
-                  {activeJob.status === "completed" && (() => {
-                    const wf = workflows?.find(w => w.id === parseInt(selectedWorkflowId));
-                    const tab = wf?.visibility === "private" ? "my-evals" : "community";
-                    return (
-                      <div className="p-4 bg-green-500/10 border border-green-500/20 rounded-md text-center">
-                        <CheckCircle className="h-8 w-8 mx-auto text-green-500 mb-2" />
-                        <p className="font-medium">Evaluation Complete!</p>
-                        <p className="text-sm text-muted-foreground">
-                          View results on the Real-time dashboard
-                        </p>
-                        <Button asChild variant="link" className="mt-2">
-                          <Link href={`/realtime?tab=${tab}`}>View Real-time Dashboard</Link>
-                        </Button>
-                      </div>
-                    );
-                  })()}
+                  {activeJob.status === "completed" && (
+                    <div className="p-4 bg-green-500/10 border border-green-500/20 rounded-md text-center">
+                      <CheckCircle className="h-8 w-8 mx-auto text-green-500 mb-2" />
+                      <p className="font-medium">Evaluation Complete!</p>
+                      <p className="text-sm text-muted-foreground">
+                        View results on the Real-time dashboard
+                      </p>
+                      <Button asChild variant="link" className="mt-2">
+                        <Link href="/realtime?tab=community">View Real-time Dashboard</Link>
+                      </Button>
+                    </div>
+                  )}
 
                   <div className="flex gap-2">
                     {activeJob.status === "pending" && (

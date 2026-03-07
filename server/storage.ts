@@ -63,7 +63,7 @@ import {
 import { drizzle } from "drizzle-orm/node-postgres";
 import pkg from "pg";
 const { Pool } = pkg;
-import { desc, eq, and, or, not, sql, gte } from "drizzle-orm";
+import { desc, eq, and, or, not, sql, gte, inArray } from "drizzle-orm";
 import crypto from "crypto";
 
 export function hashToken(token: string): string {
@@ -625,6 +625,7 @@ export class DatabaseStorage {
         workflowId: evalJobs.workflowId,
         evalSetId: evalJobs.evalSetId,
         evalAgentId: evalJobs.evalAgentId,
+        createdBy: evalJobs.createdBy,
         status: evalJobs.status,
         region: evalJobs.region,
         priority: evalJobs.priority,
@@ -830,6 +831,8 @@ export class DatabaseStorage {
       eq(evalSets.isMainline, true),
       eq(evalSets.visibility, "public"),
       eq(evalAgentTokens.visibility, "public"),
+      // Only principal/fellow users' jobs qualify as mainline
+      inArray(users.plan, ["principal", "fellow"]),
     ];
 
     if (hoursBack) {
@@ -840,6 +843,7 @@ export class DatabaseStorage {
     return db.select()
       .from(evalResults)
       .innerJoin(evalJobs, eq(evalResults.evalJobId, evalJobs.id))
+      .innerJoin(users, eq(evalJobs.createdBy, users.id))
       .innerJoin(workflows, eq(evalJobs.workflowId, workflows.id))
       .innerJoin(evalSets, eq(evalJobs.evalSetId, evalSets.id))
       .innerJoin(evalAgents, eq(evalJobs.evalAgentId, evalAgents.id))
@@ -854,12 +858,13 @@ export class DatabaseStorage {
     const conditions = [
       eq(workflows.visibility, "public"),
       eq(evalSets.visibility, "public"),
-      // Exclude fully mainline results (at least one of the three is not mainline/public)
-      not(and(
-        eq(workflows.isMainline, true),
-        eq(evalSets.isMainline, true),
-        eq(evalAgentTokens.visibility, "public"),
-      )!),
+      // Exclude fully mainline results (all 4 conditions must be true to be mainline)
+      or(
+        not(eq(workflows.isMainline, true)),
+        not(eq(evalSets.isMainline, true)),
+        sql`${evalAgentTokens.visibility} IS NULL OR ${evalAgentTokens.visibility} != 'public'`,
+        sql`${users.plan} IS NULL OR ${users.plan} NOT IN ('principal', 'fellow')`,
+      ),
     ];
 
     if (hoursBack) {
@@ -872,8 +877,9 @@ export class DatabaseStorage {
       .innerJoin(evalJobs, eq(evalResults.evalJobId, evalJobs.id))
       .innerJoin(workflows, eq(evalJobs.workflowId, workflows.id))
       .innerJoin(evalSets, eq(evalJobs.evalSetId, evalSets.id))
-      .innerJoin(evalAgents, eq(evalJobs.evalAgentId, evalAgents.id))
-      .innerJoin(evalAgentTokens, eq(evalAgents.tokenId, evalAgentTokens.id))
+      .leftJoin(users, eq(evalJobs.createdBy, users.id))
+      .leftJoin(evalAgents, eq(evalJobs.evalAgentId, evalAgents.id))
+      .leftJoin(evalAgentTokens, eq(evalAgents.tokenId, evalAgentTokens.id))
       .where(and(...conditions))
       .orderBy(desc(evalResults.createdAt))
       .limit(limit)

@@ -246,6 +246,7 @@ export const evalJobs = pgTable("eval_jobs", {
   workflowId: integer("workflow_id").notNull().references(() => workflows.id, { onDelete: "cascade" }),
   evalSetId: integer("eval_set_id").notNull().references(() => evalSets.id),
   evalAgentId: integer("eval_agent_id").references(() => evalAgents.id),
+  createdBy: integer("created_by").references(() => users.id),
   region: regionEnum("region").notNull(),
   status: evalJobStatusEnum("status").default("pending").notNull(),
   priority: integer("priority").default(0).notNull(),

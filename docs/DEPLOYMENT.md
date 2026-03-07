@@ -91,7 +91,7 @@ curl -X POST https://your-domain.com/api/auth/init \
   -H "Content-Type: application/json" \
   -d '{
     "code": "<your INIT_CODE>",
-    "adminEmail": "admin@example.com",
+    "adminEmail": "admin@agora.build",
     "adminPassword": "a-strong-password",
     "adminUsername": "admin"
   }'

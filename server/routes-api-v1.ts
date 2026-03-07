@@ -240,6 +240,7 @@ export function registerApiV1Routes(app: Express): void {
       const job = await storage.createEvalJob({
         workflowId: parseInt(id),
         evalSetId,
+        createdBy: user.id,
         region: region || "na",
         status: "pending",
         priority: priority || 0,

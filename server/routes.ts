@@ -1595,6 +1595,7 @@ export async function registerRoutes(
         scheduleId: schedule.id,
         workflowId: schedule.workflowId,
         evalSetId: schedule.evalSetId,
+        createdBy: user.id,
         region: schedule.region,
         config: mergeEvalConfig(workflow.config, evalSet?.config),
         status: "pending",
@@ -2141,7 +2142,6 @@ export async function registerRoutes(
         return res.status(403).json({ error: "Job not found or not assigned to this agent" });
       }
 
-      await storage.completeEvalJob(parseInt(jobId), jobError);
       await storage.updateEvalAgent(agentId, { state: "idle" });
 
       if (results && !jobError) {
@@ -2157,24 +2157,33 @@ export async function registerRoutes(
         }
 
         if (providerId) {
-          await storage.createEvalResult({
-            evalJobId: parseInt(jobId),
-            providerId,
-            region: job.region,
-            responseLatencyMedian: results.responseLatencyMedian || 0,
-            responseLatencySd: results.responseLatencySd || 0,
-            interruptLatencyMedian: results.interruptLatencyMedian || 0,
-            interruptLatencySd: results.interruptLatencySd || 0,
-            networkResilience: results.networkResilience,
-            naturalness: results.naturalness,
-            noiseReduction: results.noiseReduction,
-            rawData: results.rawData || {},
-          });
+          try {
+            await storage.createEvalResult({
+              evalJobId: parseInt(jobId),
+              providerId,
+              region: job.region,
+              responseLatencyMedian: results.responseLatencyMedian || 0,
+              responseLatencySd: results.responseLatencySd || 0,
+              interruptLatencyMedian: results.interruptLatencyMedian || 0,
+              interruptLatencySd: results.interruptLatencySd || 0,
+              networkResilience: results.networkResilience,
+              naturalness: results.naturalness,
+              noiseReduction: results.noiseReduction,
+              rawData: results.rawData || {},
+            });
+          } catch (resultError) {
+            console.error(`Failed to create eval result for job ${jobId}:`, resultError);
+            // Mark job as failed since results couldn't be saved
+            await storage.completeEvalJob(parseInt(jobId), "Failed to save eval results");
+            return res.status(500).json({ error: "Failed to save eval results" });
+          }
         } else {
-          console.warn("No provider found, skipping eval result creation");
+          console.warn(`No provider found for job ${jobId}, skipping eval result creation`);
         }
       }
 
+      // Mark job as completed (or failed if jobError was provided)
+      await storage.completeEvalJob(parseInt(jobId), jobError);
       res.json({ message: "Job completed" });
     } catch (error) {
       console.error("Error completing job:", error);
@@ -2284,6 +2293,7 @@ export async function registerRoutes(
       const job = await storage.createEvalJob({
         workflowId: parseInt(workflowId),
         evalSetId,
+        createdBy: user.id,
         region,
         config: mergeEvalConfig(workflow.config, evalSet.config),
         status: "pending",
