@@ -5,10 +5,12 @@ import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { ClipboardList, CheckCircle, XCircle, Loader2, Clock, RefreshCw } from "lucide-react";
+import { ClipboardList, CheckCircle, XCircle, Loader2, Clock, RefreshCw, CalendarClock, MousePointerClick } from "lucide-react";
 import { useState } from "react";
 import { formatSmartTimestamp } from "@/lib/utils";
 import type { EvalJob, Workflow as WorkflowType } from "@shared/schema";
+
+type EnrichedEvalJob = EvalJob & { creatorName?: string | null; type?: "manual" | "scheduled" };
 
 const STATUSES = [
   { value: "all", label: "All Statuses" },
@@ -50,7 +52,7 @@ export default function ConsoleEvalJobs() {
 
   const url = buildJobsUrl({ status: statusFilter, region: regionFilter, workflowId: workflowFilter });
 
-  const { data: jobs, isLoading, refetch } = useQuery<EvalJob[]>({
+  const { data: jobs, isLoading, refetch } = useQuery<EnrichedEvalJob[]>({
     queryKey: [url],
     queryFn: async () => {
       const res = await fetch(url, { credentials: "include" });
@@ -151,10 +153,11 @@ export default function ConsoleEvalJobs() {
                 <TableRow>
                   <TableHead>ID</TableHead>
                   <TableHead>Workflow</TableHead>
+                  <TableHead>Creator</TableHead>
+                  <TableHead>Type</TableHead>
                   <TableHead>Region</TableHead>
                   <TableHead>Status</TableHead>
                   <TableHead>Created</TableHead>
-                  <TableHead>Started</TableHead>
                   <TableHead>Completed</TableHead>
                 </TableRow>
               </TableHeader>
@@ -168,6 +171,22 @@ export default function ConsoleEvalJobs() {
                       <TableCell className="font-medium">
                         {workflowMap.get(job.workflowId) ?? `Workflow #${job.workflowId}`}
                       </TableCell>
+                      <TableCell className="text-sm text-muted-foreground">
+                        {job.creatorName || "-"}
+                      </TableCell>
+                      <TableCell>
+                        {job.type === "scheduled" ? (
+                          <Badge variant="outline" className="gap-1">
+                            <CalendarClock className="h-3 w-3" />
+                            scheduled
+                          </Badge>
+                        ) : (
+                          <Badge variant="outline" className="gap-1">
+                            <MousePointerClick className="h-3 w-3" />
+                            manual
+                          </Badge>
+                        )}
+                      </TableCell>
                       <TableCell>
                         <Badge variant="outline">{job.region.toUpperCase()}</Badge>
                       </TableCell>
@@ -179,9 +198,6 @@ export default function ConsoleEvalJobs() {
                       </TableCell>
                       <TableCell className="text-sm text-muted-foreground">
                         {formatSmartTimestamp(job.createdAt)}
-                      </TableCell>
-                      <TableCell className="text-sm text-muted-foreground">
-                        {job.startedAt ? formatSmartTimestamp(job.startedAt) : "-"}
                       </TableCell>
                       <TableCell className="text-sm text-muted-foreground">
                         {job.completedAt ? formatSmartTimestamp(job.completedAt) : "-"}

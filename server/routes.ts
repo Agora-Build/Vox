@@ -2351,6 +2351,7 @@ export async function registerRoutes(
       const jobs = await storage.getEvalJobs(filters);
 
       // For non-admin users, only return jobs for workflows they own or are public
+      let visibleJobs = jobs;
       if (!user.isAdmin) {
         const userWorkflows = await storage.getWorkflowsByOwner(user.id);
         const publicWorkflows = await storage.getPublicWorkflows();
@@ -2358,11 +2359,24 @@ export async function registerRoutes(
           ...userWorkflows.map(w => w.id),
           ...publicWorkflows.map(w => w.id),
         ]);
-        const filteredJobs = jobs.filter(job => allowedIds.has(job.workflowId));
-        return res.json(filteredJobs);
+        visibleJobs = jobs.filter(job => allowedIds.has(job.workflowId));
       }
 
-      res.json(jobs);
+      // Enrich with creator username
+      const creatorIds = Array.from(new Set(visibleJobs.map(j => j.createdBy).filter((id): id is number => id != null)));
+      const creatorMap = new Map<number, string>();
+      for (const id of creatorIds) {
+        const u = await storage.getUser(id);
+        if (u) creatorMap.set(id, u.username);
+      }
+
+      const enriched = visibleJobs.map(job => ({
+        ...job,
+        creatorName: job.createdBy ? creatorMap.get(job.createdBy) || null : null,
+        type: job.scheduleId ? "scheduled" : "manual",
+      }));
+
+      res.json(enriched);
     } catch (error) {
       console.error("Error fetching eval jobs:", error);
       res.status(500).json({ error: "Failed to fetch eval jobs" });

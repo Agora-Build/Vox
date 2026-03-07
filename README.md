@@ -1,4 +1,4 @@
-# Vox - AI Latency Evaluation Platform
+# Vox - AI Agent Experience Evaluation Platform
 
 <p align="center">
   <strong>Track AI Performance Across the World</strong>
