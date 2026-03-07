@@ -19,7 +19,7 @@ export default function Home() {
         <div className="flex flex-col sm:flex-row justify-center gap-3 sm:gap-4 pt-4 px-4 sm:px-0">
           <Link href="/realtime">
             <Button size="lg" className="gap-2 w-full sm:w-auto bg-gradient-to-r from-primary to-indigo-500 hover:from-primary/90 hover:to-indigo-500/90 shadow-lg shadow-primary/25 transition-all hover:shadow-xl hover:shadow-primary/30">
-              <span className="inline-block bg-[length:200%_100%] bg-clip-text text-transparent animate-[shimmer_2.5s_ease-in-out_infinite] bg-gradient-to-r from-white via-white/60 via-50% to-white">
+              <span className="inline-block bg-[length:300%_100%] bg-clip-text text-transparent animate-[shimmer_3s_ease-in-out_infinite] bg-gradient-to-r from-white/70 via-white via-50% to-white/70">
                 Explore Real-time Dashboard
               </span>
               <ArrowRight className="h-4 w-4" />
@@ -27,7 +27,7 @@ export default function Home() {
           </Link>
           <Link href="/leaderboard">
             <Button variant="outline" size="lg" className="gap-2 w-full sm:w-auto">
-              <ArrowRight className="h-5 w-5" /> Check Leaderboard
+              Check Leaderboard <ArrowRight className="h-5 w-5" />
             </Button>
           </Link>
         </div>
