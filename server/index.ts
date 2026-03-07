@@ -176,6 +176,19 @@ app.use((req, res, next) => {
     process.exit(1);
   }
 
+  // Ensure new columns exist (fallback for drizzle-kit edge cases)
+  try {
+    const { default: pg } = await import("pg");
+    const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
+    await pool.query(`
+      ALTER TABLE eval_jobs ADD COLUMN IF NOT EXISTS created_by INTEGER REFERENCES users(id)
+    `);
+    await pool.end();
+  } catch (err) {
+    // Column already exists or other non-fatal issue
+    console.warn("Schema fallback check:", err);
+  }
+
   await registerRoutes(httpServer, app);
 
   app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
