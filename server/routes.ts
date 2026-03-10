@@ -1,6 +1,6 @@
 import type { Express } from "express";
 import { createServer, type Server } from "http";
-import { storage, hashToken, generateSecureToken, generateEvalAgentToken, mergeEvalConfig, validateEvalConfig, encryptValue, decryptValue } from "./storage";
+import { storage, hashToken, generateSecureToken, generateEvalAgentToken, mergeEvalConfig, validateEvalConfig, encryptValue, decryptValue, isEncryptionConfigured } from "./storage";
 import { parseNextCronRun } from "./cron";
 import { seedAevalVersion, compareVersions } from "./aeval-seed";
 import { generateProviderId } from "@shared/schema";
@@ -1619,13 +1619,21 @@ export async function registerRoutes(
       const user = await getCurrentUser(req);
       if (!user) return res.status(401).json({ error: "Not authenticated" });
 
+      const encrypted = isEncryptionConfigured();
+      if (!encrypted) {
+        return res.json({ encryptionConfigured: false, secrets: [] });
+      }
+
       const userSecrets = await storage.getSecretsByUserId(user.id);
-      res.json(userSecrets.map(s => ({
-        id: s.id,
-        name: s.name,
-        createdAt: s.createdAt,
-        updatedAt: s.updatedAt,
-      })));
+      res.json({
+        encryptionConfigured: true,
+        secrets: userSecrets.map(s => ({
+          id: s.id,
+          name: s.name,
+          createdAt: s.createdAt,
+          updatedAt: s.updatedAt,
+        })),
+      });
     } catch (error) {
       console.error("Error listing secrets:", error);
       res.status(500).json({ error: "Failed to list secrets" });
@@ -2229,12 +2237,13 @@ export async function registerRoutes(
 
       // Get workflow owner's secrets
       const userSecrets = await storage.getSecretsForJob(parseInt(jobId));
+      console.log(`[Secrets] Job ${jobId}: found ${userSecrets.length} secret(s) for workflow owner`);
       const decrypted: Record<string, string> = {};
       for (const s of userSecrets) {
         try {
           decrypted[s.name] = decryptValue(s.encryptedValue);
-        } catch {
-          console.error(`[Secrets] Failed to decrypt secret ${s.name} for job ${jobId}`);
+        } catch (err) {
+          console.error(`[Secrets] Failed to decrypt secret ${s.name} for job ${jobId}:`, err instanceof Error ? err.message : err);
         }
       }
 

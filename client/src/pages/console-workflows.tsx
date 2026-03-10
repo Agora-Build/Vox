@@ -102,7 +102,7 @@ export default function ConsoleWorkflows() {
       setFramework("aeval");
       setAppConfigPreset("custom");
       setAppConfigYaml("");
-      queryClient.invalidateQueries({ queryKey: ["/api/workflows"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/workflows?includePublic=true"] });
       toast({ title: "Workflow created" });
     },
     onError: (error: Error) => {
@@ -129,7 +129,7 @@ export default function ConsoleWorkflows() {
     onSuccess: () => {
       setEditOpen(false);
       setEditWorkflow(null);
-      queryClient.invalidateQueries({ queryKey: ["/api/workflows"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/workflows?includePublic=true"] });
       toast({ title: "Workflow updated" });
     },
     onError: (error: Error) => {
@@ -143,7 +143,7 @@ export default function ConsoleWorkflows() {
       return res.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/workflows"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/workflows?includePublic=true"] });
       toast({ title: "Workflow updated" });
     },
     onError: (error: Error) => {
@@ -157,7 +157,7 @@ export default function ConsoleWorkflows() {
       return res.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/workflows"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/workflows?includePublic=true"] });
       toast({ title: "Workflow cloned" });
     },
     onError: (error: Error) => {

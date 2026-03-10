@@ -95,6 +95,11 @@ function getEncryptionKey(): Buffer {
   return _cachedKey;
 }
 
+export function isEncryptionConfigured(): boolean {
+  const keyHex = process.env.CREDENTIAL_ENCRYPTION_KEY;
+  return !!keyHex && /^[0-9a-f]{64}$/i.test(keyHex);
+}
+
 export function encryptValue(plaintext: string): string {
   const key = getEncryptionKey();
   const iv = crypto.randomBytes(12);
@@ -1296,9 +1301,10 @@ export class DatabaseStorage {
   async getSecretsForJob(jobId: number): Promise<Secret[]> {
     // Find the workflow owner for this job, then return their secrets
     const job = await this.getEvalJob(jobId);
-    if (!job) return [];
+    if (!job) { console.log(`[Secrets] getSecretsForJob: job ${jobId} not found`); return []; }
     const workflow = await this.getWorkflow(job.workflowId);
-    if (!workflow) return [];
+    if (!workflow) { console.log(`[Secrets] getSecretsForJob: workflow ${job.workflowId} not found`); return []; }
+    console.log(`[Secrets] getSecretsForJob: job ${jobId} → workflow ${workflow.id} → owner ${workflow.ownerId}`);
     return this.getSecretsByUserId(workflow.ownerId);
   }
 }

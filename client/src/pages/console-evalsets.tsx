@@ -118,7 +118,7 @@ export default function ConsoleEvalSets() {
       setVisibility("public");
       setScenarioPreset("custom");
       setScenarioYaml("");
-      queryClient.invalidateQueries({ queryKey: ["/api/eval-sets"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/eval-sets?includePublic=true"] });
       toast({ title: "Eval set created" });
     },
     onError: (error: Error) => {
@@ -132,7 +132,7 @@ export default function ConsoleEvalSets() {
       return res.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/eval-sets"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/eval-sets?includePublic=true"] });
       toast({ title: "Eval set updated" });
     },
     onError: (error: Error) => {
@@ -193,7 +193,7 @@ export default function ConsoleEvalSets() {
     onSuccess: () => {
       setEditOpen(false);
       setEditEvalSet(null);
-      queryClient.invalidateQueries({ queryKey: ["/api/eval-sets"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/eval-sets?includePublic=true"] });
       toast({ title: "Eval set updated" });
     },
     onError: (error: Error) => {
@@ -209,7 +209,7 @@ export default function ConsoleEvalSets() {
     onSuccess: () => {
       setDeleteTarget(null);
       setDeleteConfirmName("");
-      queryClient.invalidateQueries({ queryKey: ["/api/eval-sets"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/eval-sets?includePublic=true"] });
       toast({ title: "Eval set deleted" });
     },
     onError: (error: Error) => {
@@ -226,7 +226,7 @@ export default function ConsoleEvalSets() {
       return res.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/eval-sets"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/eval-sets?includePublic=true"] });
       toast({ title: "Eval set cloned" });
     },
     onError: (error: Error) => {

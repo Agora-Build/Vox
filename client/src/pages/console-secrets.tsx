@@ -8,9 +8,10 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import { KeyRound, Plus, Trash2 } from "lucide-react";
+import { KeyRound, Plus, Trash2, ShieldAlert } from "lucide-react";
 import { useState } from "react";
 import { formatSmartTimestamp } from "@/lib/utils";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 
 interface SecretEntry {
   id: number;
@@ -19,15 +20,23 @@ interface SecretEntry {
   updatedAt: string;
 }
 
+interface SecretsResponse {
+  encryptionConfigured: boolean;
+  secrets: SecretEntry[];
+}
+
 export default function ConsoleSecrets() {
   const { toast } = useToast();
   const [createOpen, setCreateOpen] = useState(false);
   const [name, setName] = useState("");
   const [value, setValue] = useState("");
 
-  const { data: secrets, isLoading } = useQuery<SecretEntry[]>({
+  const { data: response, isLoading } = useQuery<SecretsResponse>({
     queryKey: ["/api/secrets"],
   });
+
+  const encryptionConfigured = response?.encryptionConfigured ?? true;
+  const secrets = response?.secrets;
 
   const createMutation = useMutation({
     mutationFn: async () => {
@@ -70,6 +79,17 @@ export default function ConsoleSecrets() {
         </p>
       </div>
 
+      {!encryptionConfigured && (
+        <Alert variant="destructive">
+          <ShieldAlert className="h-4 w-4" />
+          <AlertTitle>Encryption not configured</AlertTitle>
+          <AlertDescription>
+            The server does not have <code className="text-xs bg-muted px-1 py-0.5 rounded">CREDENTIAL_ENCRYPTION_KEY</code> set.
+            Secrets cannot be created or decrypted until an admin configures this environment variable.
+          </AlertDescription>
+        </Alert>
+      )}
+
       <Card>
         <CardHeader>
           <div className="flex items-center justify-between gap-4">
@@ -84,7 +104,7 @@ export default function ConsoleSecrets() {
             </div>
             <Dialog open={createOpen} onOpenChange={setCreateOpen}>
               <DialogTrigger asChild>
-                <Button>
+                <Button disabled={!encryptionConfigured}>
                   <Plus className="mr-2 h-4 w-4" />
                   Add Secret
                 </Button>
