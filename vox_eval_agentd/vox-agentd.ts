@@ -354,8 +354,15 @@ class VoxEvalAgentDaemon {
   private resolveSecrets(content: string, secrets: Record<string, string>): string {
     return content.replace(/\$\{secrets\.([A-Z][A-Z0-9_]*)\}/g, (_match, key) => {
       if (key in secrets) {
-        // Always double-quote to avoid YAML parsing issues with special chars
-        return `"${secrets[key].replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+        // Always double-quote and escape for valid YAML
+        const escaped = secrets[key]
+          .replace(/\\/g, '\\\\')
+          .replace(/"/g, '\\"')
+          .replace(/\n/g, '\\n')
+          .replace(/\r/g, '\\r')
+          .replace(/\t/g, '\\t')
+          .replace(/\0/g, '\\0');
+        return `"${escaped}"`;
       }
       console.warn(`[Daemon] Secret placeholder \${secrets.${key}} not found — leaving as-is`);
       return _match;

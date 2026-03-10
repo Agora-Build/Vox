@@ -145,18 +145,25 @@ describe('Secrets - Name Validation', () => {
 function resolveSecrets(content: string, secrets: Record<string, string>): string {
   return content.replace(/\$\{secrets\.([A-Z][A-Z0-9_]*)\}/g, (_match, key) => {
     if (key in secrets) {
-      return secrets[key];
+      const escaped = secrets[key]
+        .replace(/\\/g, '\\\\')
+        .replace(/"/g, '\\"')
+        .replace(/\n/g, '\\n')
+        .replace(/\r/g, '\\r')
+        .replace(/\t/g, '\\t')
+        .replace(/\0/g, '\\0');
+      return `"${escaped}"`;
     }
     return _match;
   });
 }
 
 describe('Secrets - Placeholder Resolution', () => {
-  it('should replace known placeholders', () => {
+  it('should replace known placeholders with quoted values', () => {
     const yaml = 'email: ${secrets.YOUR_EMAIL}\npassword: ${secrets.YOUR_PASSWORD}';
     const secrets = { YOUR_EMAIL: 'test@example.com', YOUR_PASSWORD: 'p@ss123' };
     const resolved = resolveSecrets(yaml, secrets);
-    expect(resolved).toBe('email: test@example.com\npassword: p@ss123');
+    expect(resolved).toBe('email: "test@example.com"\npassword: "p@ss123"');
   });
 
   it('should leave unknown placeholders intact', () => {
@@ -174,7 +181,7 @@ describe('Secrets - Placeholder Resolution', () => {
   it('should handle multiple occurrences of same secret', () => {
     const yaml = 'a: ${secrets.KEY}\nb: ${secrets.KEY}';
     const resolved = resolveSecrets(yaml, { KEY: 'val' });
-    expect(resolved).toBe('a: val\nb: val');
+    expect(resolved).toBe('a: "val"\nb: "val"');
   });
 
   it('should handle empty secrets map', () => {
@@ -189,10 +196,86 @@ describe('Secrets - Placeholder Resolution', () => {
     expect(resolved).toBe(yaml);
   });
 
-  it('should handle special characters in secret values', () => {
+  it('should quote email addresses with @ safely', () => {
+    const yaml = '      email: ${secrets.AGORA_CONSOLE_EMAIL}';
+    const resolved = resolveSecrets(yaml, { AGORA_CONSOLE_EMAIL: 'user@agora.io' });
+    expect(resolved).toBe('      email: "user@agora.io"');
+  });
+
+  it('should escape double quotes in passwords', () => {
+    const yaml = 'password: ${secrets.PASS}';
+    const resolved = resolveSecrets(yaml, { PASS: 'he said "hello"' });
+    expect(resolved).toBe('password: "he said \\"hello\\""');
+  });
+
+  it('should escape backslashes in values', () => {
+    const yaml = 'path: ${secrets.WIN_PATH}';
+    const resolved = resolveSecrets(yaml, { WIN_PATH: 'C:\\Users\\admin' });
+    expect(resolved).toBe('path: "C:\\\\Users\\\\admin"');
+  });
+
+  it('should escape newlines and tabs in values', () => {
+    const yaml = 'token: ${secrets.MULTILINE_TOKEN}';
+    const resolved = resolveSecrets(yaml, { MULTILINE_TOKEN: 'line1\nline2\tend' });
+    expect(resolved).toBe('token: "line1\\nline2\\tend"');
+  });
+
+  it('should escape carriage returns', () => {
+    const yaml = 'val: ${secrets.CR_VAL}';
+    const resolved = resolveSecrets(yaml, { CR_VAL: 'a\r\nb' });
+    expect(resolved).toBe('val: "a\\r\\nb"');
+  });
+
+  it('should handle special characters in passwords', () => {
     const yaml = 'password: ${secrets.PASS}';
     const resolved = resolveSecrets(yaml, { PASS: 'p@$$w0rd!#&"<>' });
-    expect(resolved).toBe('password: p@$$w0rd!#&"<>');
+    expect(resolved).toBe('password: "p@$$w0rd!#&\\"<>"');
+  });
+
+  it('should handle YAML-unsafe characters: colon, hash, brackets', () => {
+    const yaml = 'api_key: ${secrets.API_KEY}';
+    const resolved = resolveSecrets(yaml, { API_KEY: 'sk-live:abc#123[test]' });
+    expect(resolved).toBe('api_key: "sk-live:abc#123[test]"');
+  });
+
+  it('should handle empty string secret', () => {
+    const yaml = 'val: ${secrets.EMPTY}';
+    const resolved = resolveSecrets(yaml, { EMPTY: '' });
+    expect(resolved).toBe('val: ""');
+  });
+
+  it('should handle realistic platform.setup block', () => {
+    const yaml = `  - type: platform.setup
+    platform_id: agora
+    params:
+      mode: account
+      email: \${secrets.AGORA_CONSOLE_EMAIL}
+      password: \${secrets.AGORA_CONSOLE_PASSWORD}`;
+    const resolved = resolveSecrets(yaml, {
+      AGORA_CONSOLE_EMAIL: 'dev@agora.io',
+      AGORA_CONSOLE_PASSWORD: 'S3cur3!P@ss#2026',
+    });
+    expect(resolved).toContain('email: "dev@agora.io"');
+    expect(resolved).toContain('password: "S3cur3!P@ss#2026"');
+  });
+
+  it('resolved YAML should be parseable', () => {
+    const yaml = `name: test
+params:
+  email: \${secrets.EMAIL}
+  password: \${secrets.PASS}
+  token: \${secrets.TOKEN}`;
+    const resolved = resolveSecrets(yaml, {
+      EMAIL: 'user@example.com',
+      PASS: 'p@ss:"word"',
+      TOKEN: 'abc123-def_456',
+    });
+    // Verify it parses as valid YAML
+    const { load: parse } = require('js-yaml');
+    const parsed = parse(resolved);
+    expect(parsed.params.email).toBe('user@example.com');
+    expect(parsed.params.password).toBe('p@ss:"word"');
+    expect(parsed.params.token).toBe('abc123-def_456');
   });
 });
 
