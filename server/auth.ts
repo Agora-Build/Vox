@@ -380,9 +380,12 @@ export async function getGithubProfile(accessToken: string): Promise<{ id: strin
 }
 
 export async function findOrCreateGithubUser(githubId: string, email: string): Promise<User> {
+  console.log(`[GitHub OAuth] Finding/creating user: githubId=${githubId}, email=${email}`);
+
   // 1. Check by GitHub ID
   let user = await storage.getUserByGithubId(githubId);
   if (user) {
+    console.log(`[GitHub OAuth] Matched by githubId → user ${user.id} (${user.username})`);
     if (!user.isEnabled) throw new Error("Account is disabled");
     return user;
   }
@@ -390,6 +393,7 @@ export async function findOrCreateGithubUser(githubId: string, email: string): P
   // 2. Check by email — link GitHub ID to existing account
   user = await storage.getUserByEmail(email);
   if (user) {
+    console.log(`[GitHub OAuth] Matched by email → user ${user.id} (${user.username}), existing githubId=${user.githubId || "none"}`);
     if (user.githubId && user.githubId !== githubId) {
       throw new Error("Email already linked to different GitHub account");
     }

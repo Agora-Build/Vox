@@ -267,6 +267,8 @@ export async function registerRoutes(
     if (!process.env.GITHUB_CLIENT_ID || !process.env.GITHUB_CLIENT_SECRET) {
       return res.status(503).json({ error: "GitHub OAuth not configured" });
     }
+    // Clear any existing session so a new GitHub account doesn't inherit the old login
+    delete req.session.userId;
     const state = generateToken();
     req.session.githubOAuthState = state;
     const origin = `${req.protocol}://${req.get("host")}`;
