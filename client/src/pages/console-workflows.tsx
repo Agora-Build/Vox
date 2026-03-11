@@ -12,7 +12,8 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import { Plus, Workflow, Globe, Lock, Star, StarOff, ChevronRight, Pencil, FolderKanban, Copy } from "lucide-react";
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
+import { Plus, Workflow, Globe, Lock, Star, StarOff, ChevronRight, Pencil, FolderKanban, Copy, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { useLocation } from "wouter";
 import type { Workflow as WorkflowType, Provider, Project } from "@shared/schema";
@@ -162,6 +163,26 @@ export default function ConsoleWorkflows() {
     },
     onError: (error: Error) => {
       toast({ title: "Failed to clone workflow", description: error.message, variant: "destructive" });
+    },
+  });
+
+  // Delete dialog state
+  const [deleteTarget, setDeleteTarget] = useState<WorkflowType | null>(null);
+  const [deleteConfirmName, setDeleteConfirmName] = useState("");
+
+  const deleteMutation = useMutation({
+    mutationFn: async (id: number) => {
+      const res = await apiRequest("DELETE", `/api/workflows/${id}`);
+      return res.json();
+    },
+    onSuccess: () => {
+      setDeleteTarget(null);
+      setDeleteConfirmName("");
+      queryClient.invalidateQueries({ queryKey: ["/api/workflows?includePublic=true"] });
+      toast({ title: "Workflow deleted" });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Failed to delete workflow", description: error.message, variant: "destructive" });
     },
   });
 
@@ -522,16 +543,29 @@ export default function ConsoleWorkflows() {
                     <TableCell className="text-right">
                       <div className="flex items-center justify-end gap-1">
                         {String(workflow.ownerId) === String(authStatus?.user?.id) ? (
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              openEditDialog(workflow);
-                            }}
-                          >
-                            <Pencil className="h-4 w-4" />
-                          </Button>
+                          <>
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                openEditDialog(workflow);
+                              }}
+                            >
+                              <Pencil className="h-4 w-4" />
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setDeleteTarget(workflow);
+                                setDeleteConfirmName("");
+                              }}
+                            >
+                              <Trash2 className="h-4 w-4 text-destructive" />
+                            </Button>
+                          </>
                         ) : workflow.visibility === "public" ? (
                           <Button
                             size="sm"
@@ -558,6 +592,39 @@ export default function ConsoleWorkflows() {
           )}
         </CardContent>
       </Card>
+
+      {/* Delete Workflow Confirmation Dialog */}
+      <AlertDialog open={!!deleteTarget} onOpenChange={(open) => { if (!open) { setDeleteTarget(null); setDeleteConfirmName(""); } }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete Workflow</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will permanently delete <span className="font-semibold text-foreground">{deleteTarget?.name}</span>. This action cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <div className="space-y-2 py-2">
+            <Label htmlFor="delete-confirm-name">
+              Type <span className="font-mono font-semibold">{deleteTarget?.name}</span> to confirm
+            </Label>
+            <Input
+              id="delete-confirm-name"
+              value={deleteConfirmName}
+              onChange={(e) => setDeleteConfirmName(e.target.value)}
+              placeholder={deleteTarget?.name}
+            />
+          </div>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              disabled={deleteConfirmName !== deleteTarget?.name || deleteMutation.isPending}
+              onClick={() => deleteTarget && deleteMutation.mutate(deleteTarget.id)}
+            >
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
