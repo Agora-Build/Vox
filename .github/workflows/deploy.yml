@@ -10,7 +10,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Trigger Webhook
+        env:
+          COOLIFY_WEBHOOK_URL: ${{ secrets.COOLIFY_WEBHOOK_URL }}
+          COOLIFY_TOKEN: ${{ secrets.COOLIFY_TOKEN }}
         run: |
-          curl -X POST "${{ secrets.COOLIFY_WEBHOOK_URL }}" \
-          -H "Content-Type: application/json" \
-          -H "Authorization: Bearer ${{ secrets.COOLIFY_TOKEN }}"
+          : "${COOLIFY_WEBHOOK_URL:?missing COOLIFY_WEBHOOK_URL}"
+          : "${COOLIFY_TOKEN:?missing COOLIFY_TOKEN}"
+
+          curl --fail-with-body --silent --show-error
+               -X POST "$COOLIFY_WEBHOOK_URL"
+               -H "Content-Type: application/json"
+               -H "Authorization: Bearer $COOLIFY_TOKEN"
