@@ -10,7 +10,10 @@ export const regionEnum = pgEnum("region", ["na", "apac", "eu", "sa"]);
 export const providerSkuEnum = pgEnum("provider_sku", ["convoai", "rtc"]);
 export const evalAgentStateEnum = pgEnum("eval_agent_state", ["idle", "offline", "occupied"]);
 export const evalJobStatusEnum = pgEnum("eval_job_status", ["pending", "running", "completed", "failed"]);
+export const clashStatusEnum = pgEnum("clash_status", ["pending", "starting", "live", "completed", "failed"]);
 export const scheduleTypeEnum = pgEnum("schedule_type", ["once", "recurring"]);
+export const clashEventStatusEnum = pgEnum("clash_event_status", ["upcoming", "live", "completed", "cancelled"]);
+export const clashRunnerStateEnum = pgEnum("clash_runner_state", ["idle", "assigned", "running", "draining"]);
 
 // Helper function to generate 12-char random ID for providers
 export function generateProviderId(): string {
@@ -513,6 +516,206 @@ export const insertSecretSchema = createInsertSchema(secrets).omit({
 
 export type InsertSecret = z.infer<typeof insertSecretSchema>;
 export type Secret = typeof secrets.$inferSelect;
+
+// ==================== CLASH AGENT PROFILES ====================
+
+export const clashAgentProfiles = pgTable("clash_agent_profiles", {
+  id: serial("id").primaryKey(),
+  name: text("name").notNull(),
+  ownerId: integer("owner_id").notNull().references(() => users.id),
+  providerId: varchar("provider_id", { length: 12 }).references(() => providers.id),
+  agentUrl: text("agent_url").notNull(),
+  setupSteps: jsonb("setup_steps").default([]).notNull(),
+  visibility: visibilityEnum("visibility").default("private").notNull(),
+  adapterType: text("adapter_type").default("browser").notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+export const insertClashAgentProfileSchema = createInsertSchema(clashAgentProfiles).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export type InsertClashAgentProfile = z.infer<typeof insertClashAgentProfileSchema>;
+export type ClashAgentProfile = typeof clashAgentProfiles.$inferSelect;
+
+// ==================== CLASH EVENTS ====================
+
+export const clashEvents = pgTable("clash_events", {
+  id: serial("id").primaryKey(),
+  name: text("name").notNull(),
+  description: text("description"),
+  createdBy: integer("created_by").notNull().references(() => users.id),
+  region: regionEnum("region").notNull(),
+  status: clashEventStatusEnum("status").default("upcoming").notNull(),
+  visibility: visibilityEnum("visibility").default("public").notNull(),
+  scheduledAt: timestamp("scheduled_at"),
+  agoraChannelName: text("agora_channel_name"),
+  moderatorAgentId: text("moderator_agent_id"),
+  startedAt: timestamp("started_at"),
+  completedAt: timestamp("completed_at"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+}, (table) => ({
+  statusIdx: index("clash_events_status_idx").on(table.status),
+}));
+
+export const insertClashEventSchema = createInsertSchema(clashEvents).omit({
+  id: true, createdAt: true, startedAt: true, completedAt: true,
+});
+export type InsertClashEvent = z.infer<typeof insertClashEventSchema>;
+export type ClashEvent = typeof clashEvents.$inferSelect;
+
+// ==================== CLASH MATCHES ====================
+
+export const clashMatches = pgTable("clash_matches", {
+  id: serial("id").primaryKey(),
+  eventId: integer("event_id").notNull().references(() => clashEvents.id, { onDelete: "cascade" }),
+  matchOrder: integer("match_order").default(1).notNull(),
+  agentAProfileId: integer("agent_a_profile_id").notNull().references(() => clashAgentProfiles.id),
+  agentBProfileId: integer("agent_b_profile_id").notNull().references(() => clashAgentProfiles.id),
+  status: clashStatusEnum("status").default("pending").notNull(),
+  topic: text("topic").notNull(),
+  maxDurationSeconds: integer("max_duration_seconds").default(300).notNull(),
+  winnerId: integer("winner_id").references(() => clashAgentProfiles.id),
+  runnerId: text("runner_id"),
+  recordingUrl: text("recording_url"),
+  durationSeconds: integer("duration_seconds"),
+  config: jsonb("config").default({}).notNull(),
+  startedAt: timestamp("started_at"),
+  completedAt: timestamp("completed_at"),
+  error: text("error"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+}, (table) => ({
+  statusIdx: index("clash_matches_status_idx").on(table.status),
+  eventIdx: index("clash_matches_event_idx").on(table.eventId),
+}));
+
+export const insertClashMatchSchema = createInsertSchema(clashMatches).omit({
+  id: true,
+  createdAt: true,
+  startedAt: true,
+  completedAt: true,
+  winnerId: true,
+});
+
+export type InsertClashMatch = z.infer<typeof insertClashMatchSchema>;
+export type ClashMatch = typeof clashMatches.$inferSelect;
+
+// ==================== CLASH RESULTS ====================
+
+export const clashResults = pgTable("clash_results", {
+  id: serial("id").primaryKey(),
+  clashMatchId: integer("clash_match_id").notNull().references(() => clashMatches.id, { onDelete: "cascade" }),
+  agentProfileId: integer("agent_profile_id").notNull().references(() => clashAgentProfiles.id),
+  providerId: varchar("provider_id", { length: 12 }).references(() => providers.id),
+  responseLatencyMedian: integer("response_latency_median"),
+  responseLatencySd: real("response_latency_sd"),
+  interruptLatencyMedian: integer("interrupt_latency_median"),
+  interruptLatencySd: real("interrupt_latency_sd"),
+  ttftMedian: integer("ttft_median"),
+  turnCount: integer("turn_count"),
+  overlapPercent: real("overlap_percent"),
+  rawData: jsonb("raw_data").default({}),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+export const insertClashResultSchema = createInsertSchema(clashResults).omit({
+  id: true,
+  createdAt: true,
+});
+
+export type InsertClashResult = z.infer<typeof insertClashResultSchema>;
+export type ClashResult = typeof clashResults.$inferSelect;
+
+// ==================== CLASH ELO RATINGS ====================
+
+export const clashEloRatings = pgTable("clash_elo_ratings", {
+  id: serial("id").primaryKey(),
+  agentProfileId: integer("agent_profile_id").notNull().references(() => clashAgentProfiles.id).unique(),
+  rating: integer("rating").default(1500).notNull(),
+  matchCount: integer("match_count").default(0).notNull(),
+  winCount: integer("win_count").default(0).notNull(),
+  lossCount: integer("loss_count").default(0).notNull(),
+  drawCount: integer("draw_count").default(0).notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+export type ClashEloRating = typeof clashEloRatings.$inferSelect;
+
+// ==================== CLASH RUNNER TOKENS ====================
+
+export const clashRunnerTokens = pgTable("clash_runner_tokens", {
+  id: serial("id").primaryKey(),
+  clashMatchId: integer("clash_match_id").notNull().references(() => clashMatches.id),
+  tokenHash: text("token_hash").notNull().unique(),
+  expiresAt: timestamp("expires_at").notNull(),
+  usedAt: timestamp("used_at"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+export type ClashRunnerToken = typeof clashRunnerTokens.$inferSelect;
+
+// ==================== CLASH RUNNER POOL ====================
+
+export const clashRunnerPool = pgTable("clash_runner_pool", {
+  id: serial("id").primaryKey(),
+  runnerId: text("runner_id").notNull().unique(),
+  tokenHash: text("token_hash").notNull().unique(),
+  region: regionEnum("region").notNull(),
+  state: clashRunnerStateEnum("state").default("idle").notNull(),
+  currentMatchId: integer("current_match_id").references(() => clashMatches.id),
+  lastHeartbeatAt: timestamp("last_heartbeat_at"),
+  metadata: jsonb("metadata").default({}),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+}, (table) => ({
+  stateIdx: index("clash_runner_pool_state_idx").on(table.state),
+}));
+export type ClashRunner = typeof clashRunnerPool.$inferSelect;
+
+// ==================== CLASH TRANSCRIPTS ====================
+
+export const clashTranscripts = pgTable("clash_transcripts", {
+  id: serial("id").primaryKey(),
+  clashMatchId: integer("clash_match_id").notNull().references(() => clashMatches.id, { onDelete: "cascade" }),
+  speakerLabel: text("speaker_label").notNull(),
+  text: text("text").notNull(),
+  startMs: integer("start_ms").notNull(),
+  endMs: integer("end_ms"),
+  confidence: real("confidence"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+}, (table) => ({
+  matchIdx: index("clash_transcripts_match_idx").on(table.clashMatchId),
+}));
+export type ClashTranscript = typeof clashTranscripts.$inferSelect;
+
+// ==================== CLASH SCHEDULES ====================
+
+export const clashSchedules = pgTable("clash_schedules", {
+  id: serial("id").primaryKey(),
+  eventName: text("event_name").notNull(),
+  createdBy: integer("created_by").notNull().references(() => users.id),
+  matchups: jsonb("matchups").notNull(),
+  region: regionEnum("region").notNull(),
+  maxDurationSeconds: integer("max_duration_seconds").default(300).notNull(),
+  scheduledAt: timestamp("scheduled_at"),
+  cronExpression: varchar("cron_expression", { length: 100 }),
+  isEnabled: boolean("is_enabled").default(true).notNull(),
+  lastRunAt: timestamp("last_run_at"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+}, (table) => ({
+  enabledIdx: index("clash_schedules_enabled_idx").on(table.isEnabled),
+}));
+
+export const insertClashScheduleSchema = createInsertSchema(clashSchedules).omit({
+  id: true,
+  createdAt: true,
+  lastRunAt: true,
+});
+
+export type InsertClashSchedule = z.infer<typeof insertClashScheduleSchema>;
+export type ClashSchedule = typeof clashSchedules.$inferSelect;
 
 // ==================== SESSION STORE ====================
 // Used by connect-pg-simple for Express sessions
