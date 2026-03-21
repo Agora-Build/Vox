@@ -23,6 +23,10 @@ import ConsoleEvalSets from "@/pages/console-evalsets";
 import ConsoleEvalJobs from "@/pages/console-eval-jobs";
 import ConsoleEvalAgents from "@/pages/console-eval-agents";
 import ConsoleSecrets from "@/pages/console-secrets";
+import ConsoleClash from "@/pages/console-clash";
+import Clash from "@/pages/clash";
+import ClashDetail from "@/pages/clash-detail";
+import ClashEvent from "@/pages/clash-event";
 import ConsoleOrganization from "@/pages/console-organization";
 import ConsoleOrganizationMembers from "@/pages/console-organization-members";
 import ConsoleOrganizationBilling from "@/pages/console-organization-billing";
@@ -361,6 +365,45 @@ function ConsoleSecretsWrapper() {
   return (
     <ConsoleLayout>
       <ConsoleSecrets />
+    </ConsoleLayout>
+  );
+}
+
+function ConsoleClashWrapper() {
+  const [, setLocation] = useLocation();
+  const { data: authStatus, isLoading, isFetching } = useQuery<AuthStatus>({
+    queryKey: ["/api/auth/status"],
+  });
+
+  useEffect(() => {
+    if (!isLoading && !isFetching && authStatus?.initialized && !authStatus.user) {
+      setLocation("/login");
+    }
+  }, [isLoading, isFetching, authStatus, setLocation]);
+
+  if ((isLoading || isFetching) && !authStatus?.user) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="animate-pulse text-muted-foreground">Loading...</div>
+      </div>
+    );
+  }
+
+  if (!authStatus?.initialized) {
+    return <ConsoleInit />;
+  }
+
+  if (!authStatus.user) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="animate-pulse text-muted-foreground">Redirecting...</div>
+      </div>
+    );
+  }
+
+  return (
+    <ConsoleLayout>
+      <ConsoleClash />
     </ConsoleLayout>
   );
 }
@@ -704,6 +747,9 @@ function Router() {
       <Route path="/console/secrets">
         <ConsoleSecretsWrapper />
       </Route>
+      <Route path="/console/clash">
+        <ConsoleClashWrapper />
+      </Route>
       <Route path="/console/organization">
         <ConsoleOrganizationWrapper />
       </Route>
@@ -750,6 +796,21 @@ function Router() {
       <Route path="/run-your-own">
         <Layout>
           <SelfTest />
+        </Layout>
+      </Route>
+      <Route path="/clash/event/:id">
+        <Layout>
+          <ClashEvent />
+        </Layout>
+      </Route>
+      <Route path="/clash/:id">
+        <Layout>
+          <ClashDetail />
+        </Layout>
+      </Route>
+      <Route path="/clash">
+        <Layout>
+          <Clash />
         </Layout>
       </Route>
       <Route path="/not-found">
