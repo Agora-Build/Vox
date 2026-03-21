@@ -10,6 +10,7 @@ import { authenticateApiKey, passport, initializeGoogleOAuth } from "./auth";
 import { storage, mergeEvalConfig, db, pool } from "./storage";
 import { parseNextCronRun } from "./cron";
 import { seedFromLocalAevalData } from "./aeval-seed";
+import { setupClashWebSocket } from "./clash-ws";
 import pkg from "pg";
 const { Pool } = pkg;
 
@@ -178,6 +179,7 @@ app.use((req, res, next) => {
 
 
   await registerRoutes(httpServer, app);
+  setupClashWebSocket(httpServer);
 
   app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
     const status = err.status || err.statusCode || 500;
