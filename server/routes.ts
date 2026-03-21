@@ -26,6 +26,20 @@ import {
 } from "./auth";
 import { calculateSeatPrice, isStripeConfigured as isPricingStripeConfigured } from "./pricing";
 import {
+  isAgoraConfigured,
+  isModeratorConfigured,
+  generateRtcToken,
+  generateChannelName,
+  generateEventChannelName,
+  startModerator,
+  stopModerator,
+  updateModeratorPrompt,
+  buildAnnouncementPrompt,
+  buildBriefingPrompt,
+  buildStartPrompt,
+  buildEndPrompt,
+} from "./agora";
+import {
   isStripeConfigured,
   isStripeTestMode,
   createStripeCustomer,
@@ -37,6 +51,70 @@ import {
   constructWebhookEvent,
   getStripePublishableKey,
 } from "./stripe";
+
+// Elo rating calculation for Clash matches
+// Lower latency = better. Compare median response latency to determine winner.
+async function updateClashEloRatings(
+  agentAId: number,
+  agentBId: number,
+  metricsA: { responseLatencyMedian?: number | null; turnCount?: number | null },
+  metricsB: { responseLatencyMedian?: number | null; turnCount?: number | null },
+) {
+  const K = 32; // Standard Elo K-factor
+
+  const ratingA = await storage.getClashEloRating(agentAId);
+  const ratingB = await storage.getClashEloRating(agentBId);
+  const ra = ratingA?.rating ?? 1500;
+  const rb = ratingB?.rating ?? 1500;
+
+  // Expected scores
+  const ea = 1 / (1 + Math.pow(10, (rb - ra) / 400));
+  const eb = 1 / (1 + Math.pow(10, (ra - rb) / 400));
+
+  // Determine outcome: lower latency wins, draw if within 10%
+  let sa: number, sb: number;
+  let aWin = 0, aLoss = 0, aDraw = 0;
+  let bWin = 0, bLoss = 0, bDraw = 0;
+
+  const latA = metricsA.responseLatencyMedian;
+  const latB = metricsB.responseLatencyMedian;
+
+  if (latA != null && latB != null && latA > 0 && latB > 0) {
+    const ratio = latA / latB;
+    if (ratio < 0.9) {
+      // A wins (lower latency)
+      sa = 1; sb = 0; aWin = 1; bLoss = 1;
+    } else if (ratio > 1.1) {
+      // B wins
+      sa = 0; sb = 1; aLoss = 1; bWin = 1;
+    } else {
+      // Draw
+      sa = 0.5; sb = 0.5; aDraw = 1; bDraw = 1;
+    }
+  } else {
+    // Can't determine, draw
+    sa = 0.5; sb = 0.5; aDraw = 1; bDraw = 1;
+  }
+
+  const newRa = Math.round(ra + K * (sa - ea));
+  const newRb = Math.round(rb + K * (sb - eb));
+
+  await storage.upsertClashEloRating(agentAId, {
+    rating: newRa,
+    matchCount: (ratingA?.matchCount ?? 0) + 1,
+    winCount: (ratingA?.winCount ?? 0) + aWin,
+    lossCount: (ratingA?.lossCount ?? 0) + aLoss,
+    drawCount: (ratingA?.drawCount ?? 0) + aDraw,
+  });
+
+  await storage.upsertClashEloRating(agentBId, {
+    rating: newRb,
+    matchCount: (ratingB?.matchCount ?? 0) + 1,
+    winCount: (ratingB?.winCount ?? 0) + bWin,
+    lossCount: (ratingB?.lossCount ?? 0) + bLoss,
+    drawCount: (ratingB?.drawCount ?? 0) + bDraw,
+  });
+}
 
 export async function registerRoutes(
   httpServer: Server,
@@ -3686,6 +3764,959 @@ export async function registerRoutes(
       extensions: [".tsx", ".ts", ".jsx", ".js"],
     });
   }
+
+  // ==================== CLASH API ROUTES ====================
+
+  // --- Console APIs (requireAuth) ---
+
+  // List user's agent profiles (+ public profiles they can challenge)
+  app.get("/api/clash/profiles", requireAuth, async (req, res) => {
+    try {
+      const user = await getCurrentUser(req);
+      if (!user) return res.status(401).json({ error: "Not authenticated" });
+      const ownProfiles = await storage.getClashAgentProfilesByOwner(user.id);
+      const publicProfiles = await storage.getPublicClashAgentProfiles();
+      // Deduplicate: own profiles + public profiles not owned by user
+      const publicOthers = publicProfiles.filter(p => p.ownerId !== user.id);
+      res.json({ ownProfiles, publicProfiles: publicOthers });
+    } catch (error) {
+      console.error("Error listing clash profiles:", error);
+      res.status(500).json({ error: "Failed to list profiles" });
+    }
+  });
+
+  // Create agent profile
+  app.post("/api/clash/profiles", requireAuth, async (req, res) => {
+    try {
+      const user = await getCurrentUser(req);
+      if (!user) return res.status(401).json({ error: "Not authenticated" });
+
+      const { name, agentUrl, providerId, setupSteps, visibility } = req.body;
+      if (!name || !agentUrl) {
+        return res.status(400).json({ error: "Name and agentUrl are required" });
+      }
+
+      // Only premium+ can create public profiles
+      const vis = (visibility === "public" && user.plan !== "basic") ? "public" : "private";
+
+      const profile = await storage.createClashAgentProfile({
+        name,
+        agentUrl,
+        ownerId: user.id,
+        providerId: providerId || null,
+        setupSteps: setupSteps || [],
+        visibility: vis,
+      });
+      res.status(201).json(profile);
+    } catch (error) {
+      console.error("Error creating clash profile:", error);
+      res.status(500).json({ error: "Failed to create profile" });
+    }
+  });
+
+  // Update agent profile
+  app.patch("/api/clash/profiles/:id", requireAuth, async (req, res) => {
+    try {
+      const user = await getCurrentUser(req);
+      if (!user) return res.status(401).json({ error: "Not authenticated" });
+      const profileId = parseInt(req.params.id);
+
+      const existing = await storage.getClashAgentProfile(profileId);
+      if (!existing) return res.status(404).json({ error: "Profile not found" });
+      if (existing.ownerId !== user.id && !user.isAdmin) {
+        return res.status(403).json({ error: "Not authorized" });
+      }
+
+      const { name, agentUrl, providerId, setupSteps, visibility } = req.body;
+      const updates: any = {};
+      if (name !== undefined) updates.name = name;
+      if (agentUrl !== undefined) updates.agentUrl = agentUrl;
+      if (providerId !== undefined) updates.providerId = providerId;
+      if (setupSteps !== undefined) updates.setupSteps = setupSteps;
+      if (visibility !== undefined) {
+        updates.visibility = (visibility === "public" && user.plan !== "basic") ? "public" : "private";
+      }
+
+      const updated = await storage.updateClashAgentProfile(profileId, updates);
+      res.json(updated);
+    } catch (error) {
+      console.error("Error updating clash profile:", error);
+      res.status(500).json({ error: "Failed to update profile" });
+    }
+  });
+
+  // Delete agent profile
+  app.delete("/api/clash/profiles/:id", requireAuth, async (req, res) => {
+    try {
+      const user = await getCurrentUser(req);
+      if (!user) return res.status(401).json({ error: "Not authenticated" });
+      const profileId = parseInt(req.params.id);
+
+      const existing = await storage.getClashAgentProfile(profileId);
+      if (!existing) return res.status(404).json({ error: "Profile not found" });
+      if (existing.ownerId !== user.id && !user.isAdmin) {
+        return res.status(403).json({ error: "Not authorized" });
+      }
+
+      await storage.deleteClashAgentProfile(profileId);
+      res.json({ success: true });
+    } catch (error) {
+      console.error("Error deleting clash profile:", error);
+      res.status(500).json({ error: "Failed to delete profile" });
+    }
+  });
+
+  // ==================== CLASH EVENTS (v2) ====================
+
+  // List user's events
+  app.get("/api/clash/events", requireAuth, async (req, res) => {
+    try {
+      const user = await getCurrentUser(req);
+      if (!user) return res.status(401).json({ error: "Not authenticated" });
+      const events = await storage.getClashEventsByUser(user.id);
+      res.json(events);
+    } catch (error) {
+      console.error("Error listing clash events:", error);
+      res.status(500).json({ error: "Failed to list events" });
+    }
+  });
+
+  // Create event with matchups array
+  app.post("/api/clash/events", requireAuth, async (req, res) => {
+    try {
+      const user = await getCurrentUser(req);
+      if (!user) return res.status(401).json({ error: "Not authenticated" });
+
+      const { name, description, region, visibility, scheduledAt, matchups } = req.body;
+      if (!name || !region || !matchups || !Array.isArray(matchups) || matchups.length === 0) {
+        return res.status(400).json({ error: "name, region, and matchups array are required" });
+      }
+
+      // Validate all matchups
+      for (let i = 0; i < matchups.length; i++) {
+        const m = matchups[i];
+        if (!m.agentAProfileId || !m.agentBProfileId || !m.topic) {
+          return res.status(400).json({ error: `matchup[${i}]: agentAProfileId, agentBProfileId, and topic are required` });
+        }
+        if (m.agentAProfileId === m.agentBProfileId) {
+          return res.status(400).json({ error: `matchup[${i}]: Cannot clash an agent against itself` });
+        }
+        const profileA = await storage.getClashAgentProfile(m.agentAProfileId);
+        const profileB = await storage.getClashAgentProfile(m.agentBProfileId);
+        if (!profileA || !profileB) {
+          return res.status(404).json({ error: `matchup[${i}]: One or both agent profiles not found` });
+        }
+        const aAccessible = profileA.ownerId === user.id || profileA.visibility === "public";
+        const bAccessible = profileB.ownerId === user.id || profileB.visibility === "public";
+        if (!aAccessible || !bAccessible) {
+          return res.status(403).json({ error: `matchup[${i}]: Cannot access one or both agent profiles` });
+        }
+      }
+
+      // Create the event
+      const event = await storage.createClashEvent({
+        name,
+        description: description || null,
+        createdBy: user.id,
+        region,
+        status: "upcoming",
+        visibility: visibility || "public",
+        scheduledAt: scheduledAt ? new Date(scheduledAt) : null,
+        agoraChannelName: null,
+        moderatorAgentId: null,
+      });
+
+      // Set Agora channel name for the event
+      if (isAgoraConfigured()) {
+        const channelName = generateEventChannelName(event.id);
+        await storage.updateClashEvent(event.id, { agoraChannelName: channelName });
+      }
+
+      // Create match rows for each matchup
+      const matches = [];
+      for (let i = 0; i < matchups.length; i++) {
+        const m = matchups[i];
+        const match = await storage.createClashMatch({
+          eventId: event.id,
+          matchOrder: i + 1,
+          agentAProfileId: m.agentAProfileId,
+          agentBProfileId: m.agentBProfileId,
+          topic: m.topic,
+          maxDurationSeconds: m.maxDurationSeconds || 300,
+          config: {},
+          status: "pending",
+          runnerId: null,
+          recordingUrl: null,
+          durationSeconds: null,
+          error: null,
+        });
+        matches.push(match);
+      }
+
+      const updatedEvent = await storage.getClashEvent(event.id);
+      res.status(201).json({ ...updatedEvent, matches });
+    } catch (error) {
+      console.error("Error creating clash event:", error);
+      res.status(500).json({ error: "Failed to create event" });
+    }
+  });
+
+  // Event detail + matches (public)
+  app.get("/api/clash/events/:id", async (req, res) => {
+    try {
+      const eventId = parseInt(req.params.id);
+      const event = await storage.getClashEvent(eventId);
+      if (!event) return res.status(404).json({ error: "Event not found" });
+
+      const matches = await storage.getClashMatchesByEvent(eventId);
+      // Enrich matches with agent profile names
+      const enrichedMatches = await Promise.all(matches.map(async (m) => {
+        const profileA = await storage.getClashAgentProfile(m.agentAProfileId);
+        const profileB = await storage.getClashAgentProfile(m.agentBProfileId);
+        return {
+          ...m,
+          agentAName: profileA?.name || "Unknown",
+          agentBName: profileB?.name || "Unknown",
+        };
+      }));
+
+      res.json({ ...event, matches: enrichedMatches });
+    } catch (error) {
+      console.error("Error getting clash event:", error);
+      res.status(500).json({ error: "Failed to get event" });
+    }
+  });
+
+  // Start event manually
+  app.post("/api/clash/events/:id/start", requireAuth, async (req, res) => {
+    try {
+      const user = await getCurrentUser(req);
+      if (!user) return res.status(401).json({ error: "Not authenticated" });
+      const eventId = parseInt(req.params.id);
+
+      const event = await storage.getClashEvent(eventId);
+      if (!event) return res.status(404).json({ error: "Event not found" });
+      if (event.createdBy !== user.id && !user.isAdmin) {
+        return res.status(403).json({ error: "Not authorized" });
+      }
+      if (event.status !== "upcoming") {
+        return res.status(400).json({ error: "Can only start upcoming events" });
+      }
+
+      const updated = await storage.updateClashEvent(eventId, {
+        status: "live",
+        startedAt: new Date(),
+      });
+      res.json(updated);
+    } catch (error) {
+      console.error("Error starting clash event:", error);
+      res.status(500).json({ error: "Failed to start event" });
+    }
+  });
+
+  // Cancel event
+  app.post("/api/clash/events/:id/cancel", requireAuth, async (req, res) => {
+    try {
+      const user = await getCurrentUser(req);
+      if (!user) return res.status(401).json({ error: "Not authenticated" });
+      const eventId = parseInt(req.params.id);
+
+      const event = await storage.getClashEvent(eventId);
+      if (!event) return res.status(404).json({ error: "Event not found" });
+      if (event.createdBy !== user.id && !user.isAdmin) {
+        return res.status(403).json({ error: "Not authorized" });
+      }
+      if (event.status === "completed" || event.status === "cancelled") {
+        return res.status(400).json({ error: "Event is already finished" });
+      }
+
+      const updated = await storage.updateClashEvent(eventId, {
+        status: "cancelled",
+        completedAt: new Date(),
+      });
+      res.json(updated);
+    } catch (error) {
+      console.error("Error cancelling clash event:", error);
+      res.status(500).json({ error: "Failed to cancel event" });
+    }
+  });
+
+  // ==================== CLASH RUNNER POOL (v2) ====================
+
+  // Runner joins pool
+  app.post("/api/clash-runner/register", async (req, res) => {
+    try {
+      const authHeader = req.headers.authorization;
+      if (!authHeader || !authHeader.startsWith("Bearer ")) {
+        return res.status(401).json({ error: "Bearer token required" });
+      }
+      const token = authHeader.slice(7);
+      const tokenHash = hashToken(token);
+
+      const { runnerId, region } = req.body;
+      if (!runnerId || !region) {
+        return res.status(400).json({ error: "runnerId and region are required" });
+      }
+
+      const runner = await storage.registerClashRunner({ runnerId, tokenHash, region });
+      res.json({ id: runner.id, state: runner.state });
+    } catch (error) {
+      console.error("Error registering clash runner:", error);
+      res.status(500).json({ error: "Failed to register runner" });
+    }
+  });
+
+  // Runner heartbeat
+  app.post("/api/clash-runner/heartbeat", async (req, res) => {
+    try {
+      const authHeader = req.headers.authorization;
+      if (!authHeader || !authHeader.startsWith("Bearer ")) {
+        return res.status(401).json({ error: "Bearer token required" });
+      }
+      const token = authHeader.slice(7);
+      const tokenHash = hashToken(token);
+
+      const runner = await storage.getClashRunnerByTokenHash(tokenHash);
+      if (!runner) return res.status(401).json({ error: "Unknown runner" });
+
+      await storage.updateClashRunner(runner.id, { lastHeartbeatAt: new Date() });
+      res.json({ state: runner.state, currentMatchId: runner.currentMatchId });
+    } catch (error) {
+      console.error("Error in clash runner heartbeat:", error);
+      res.status(500).json({ error: "Failed to process heartbeat" });
+    }
+  });
+
+  // Get assigned match config + secrets
+  app.get("/api/clash-runner/assignment", async (req, res) => {
+    try {
+      const authHeader = req.headers.authorization;
+      if (!authHeader || !authHeader.startsWith("Bearer ")) {
+        return res.status(401).json({ error: "Bearer token required" });
+      }
+      const token = authHeader.slice(7);
+      const tokenHash = hashToken(token);
+
+      const runner = await storage.getClashRunnerByTokenHash(tokenHash);
+      if (!runner) return res.status(401).json({ error: "Unknown runner" });
+
+      if (runner.state !== "assigned" || !runner.currentMatchId) {
+        return res.json({ assigned: false });
+      }
+
+      const match = await storage.getClashMatch(runner.currentMatchId);
+      if (!match) return res.json({ assigned: false });
+
+      const event = await storage.getClashEvent(match.eventId);
+      if (!event) return res.json({ assigned: false });
+
+      const profileA = await storage.getClashAgentProfile(match.agentAProfileId);
+      const profileB = await storage.getClashAgentProfile(match.agentBProfileId);
+      if (!profileA || !profileB) {
+        return res.status(500).json({ error: "Agent profile(s) missing" });
+      }
+
+      // Decrypt secrets for event owner
+      const userSecrets = await storage.getSecretsForClashMatch(match.id);
+      const decryptedSecrets: Record<string, string> = {};
+      for (const s of userSecrets) {
+        try {
+          decryptedSecrets[s.name] = decryptValue(s.encryptedValue);
+        } catch {
+          // Skip secrets that fail to decrypt
+        }
+      }
+
+      // Build Agora config if configured
+      let agora: { appId: string; channelName: string; broadcasterToken: string; broadcasterUid: number } | undefined;
+      const channelName = event.agoraChannelName;
+      if (isAgoraConfigured() && channelName) {
+        const broadcasterUid = 1000 + match.id;
+        agora = {
+          appId: process.env.AGORA_APP_ID!,
+          channelName,
+          broadcasterToken: generateRtcToken(channelName, broadcasterUid, "publisher"),
+          broadcasterUid,
+        };
+      }
+
+      // Transition: runner → running, match → starting
+      await storage.updateClashRunner(runner.id, { state: "running" });
+      await storage.updateClashMatch(match.id, { status: "starting", runnerId: runner.runnerId });
+
+      res.json({
+        assigned: true,
+        match: {
+          id: match.id,
+          topic: match.topic,
+          region: event.region,
+          maxDurationSeconds: match.maxDurationSeconds,
+          config: match.config,
+        },
+        event: {
+          id: event.id,
+          name: event.name,
+          region: event.region,
+        },
+        agentA: {
+          id: profileA.id,
+          name: profileA.name,
+          agentUrl: profileA.agentUrl,
+          setupSteps: profileA.setupSteps,
+        },
+        agentB: {
+          id: profileB.id,
+          name: profileB.name,
+          agentUrl: profileB.agentUrl,
+          setupSteps: profileB.setupSteps,
+        },
+        secrets: decryptedSecrets,
+        agora,
+      });
+    } catch (error) {
+      console.error("Error getting clash runner assignment:", error);
+      res.status(500).json({ error: "Failed to get assignment" });
+    }
+  });
+
+  // Runner reports results and returns to idle
+  app.post("/api/clash-runner/complete", async (req, res) => {
+    try {
+      const authHeader = req.headers.authorization;
+      if (!authHeader || !authHeader.startsWith("Bearer ")) {
+        return res.status(401).json({ error: "Bearer token required" });
+      }
+      const token = authHeader.slice(7);
+      const tokenHash = hashToken(token);
+
+      const runner = await storage.getClashRunnerByTokenHash(tokenHash);
+      if (!runner) return res.status(401).json({ error: "Unknown runner" });
+
+      const { matchId, metricsA, metricsB, recordingUrl, durationSeconds, error: matchError } = req.body;
+      if (!matchId) return res.status(400).json({ error: "matchId required" });
+
+      const match = await storage.getClashMatch(matchId);
+      if (!match) return res.status(404).json({ error: "Match not found" });
+
+      const profileA = await storage.getClashAgentProfile(match.agentAProfileId);
+      const profileB = await storage.getClashAgentProfile(match.agentBProfileId);
+
+      // Store results for each agent
+      if (metricsA) {
+        await storage.createClashResult({
+          clashMatchId: matchId,
+          agentProfileId: match.agentAProfileId,
+          providerId: profileA?.providerId || null,
+          ...metricsA,
+        });
+      }
+      if (metricsB) {
+        await storage.createClashResult({
+          clashMatchId: matchId,
+          agentProfileId: match.agentBProfileId,
+          providerId: profileB?.providerId || null,
+          ...metricsB,
+        });
+      }
+
+      // Determine winner
+      let winnerId: number | null = null;
+      if (!matchError && metricsA && metricsB) {
+        const latA = metricsA.responseLatencyMedian;
+        const latB = metricsB.responseLatencyMedian;
+        if (latA != null && latB != null && latA > 0 && latB > 0) {
+          const ratio = latA / latB;
+          if (ratio < 0.9) {
+            winnerId = match.agentAProfileId;
+          } else if (ratio > 1.1) {
+            winnerId = match.agentBProfileId;
+          }
+          // else draw: winnerId stays null
+        }
+      }
+
+      // Update match as completed
+      await storage.updateClashMatch(matchId, {
+        status: matchError ? "failed" : "completed",
+        completedAt: new Date(),
+        recordingUrl: recordingUrl || null,
+        durationSeconds: durationSeconds || null,
+        error: matchError || null,
+        winnerId,
+      });
+
+      // Calculate Elo ratings if completed successfully with metrics
+      if (!matchError && metricsA && metricsB) {
+        await updateClashEloRatings(match.agentAProfileId, match.agentBProfileId, metricsA, metricsB);
+      }
+
+      // Return runner to idle
+      await storage.updateClashRunner(runner.id, { state: "idle", currentMatchId: null });
+
+      // Check if event has more pending matches; if all done, complete event
+      const eventMatches = await storage.getClashMatchesByEvent(match.eventId);
+      const allDone = eventMatches.every(m => m.status === "completed" || m.status === "failed");
+      if (allDone) {
+        await storage.updateClashEvent(match.eventId, {
+          status: "completed",
+          completedAt: new Date(),
+        });
+      }
+
+      res.json({ success: true });
+    } catch (error) {
+      console.error("Error in clash runner complete:", error);
+      res.status(500).json({ error: "Failed to complete match" });
+    }
+  });
+
+  // ==================== CLASH PUBLIC FEED & MATCH DETAIL ====================
+
+  // Public feed: live + upcoming + recent events
+  app.get("/api/clash/feed", async (req, res) => {
+    try {
+      const events = await storage.getClashEventFeed();
+      res.json(events);
+    } catch (error) {
+      console.error("Error getting clash feed:", error);
+      res.status(500).json({ error: "Failed to get feed" });
+    }
+  });
+
+  // Match detail + results
+  app.get("/api/clash/matches/:id", async (req, res) => {
+    try {
+      const matchId = parseInt(req.params.id);
+      const match = await storage.getClashMatch(matchId);
+      if (!match) return res.status(404).json({ error: "Match not found" });
+
+      const profileA = await storage.getClashAgentProfile(match.agentAProfileId);
+      const profileB = await storage.getClashAgentProfile(match.agentBProfileId);
+      const results = await storage.getClashResultsByMatch(matchId);
+
+      res.json({
+        ...match,
+        agentA: profileA ? { id: profileA.id, name: profileA.name, providerId: profileA.providerId } : null,
+        agentB: profileB ? { id: profileB.id, name: profileB.name, providerId: profileB.providerId } : null,
+        results,
+      });
+    } catch (error) {
+      console.error("Error getting clash match detail:", error);
+      res.status(500).json({ error: "Failed to get match" });
+    }
+  });
+
+  // Agora RTC token for spectator (uses event's agoraChannelName)
+  app.get("/api/clash/matches/:id/stream-info", async (req, res) => {
+    try {
+      const matchId = parseInt(req.params.id);
+      const match = await storage.getClashMatch(matchId);
+      if (!match) return res.status(404).json({ error: "Match not found" });
+      if (match.status !== "live" && match.status !== "starting") {
+        return res.status(400).json({ error: "Match is not live" });
+      }
+
+      // Look up event's agoraChannelName
+      const event = await storage.getClashEvent(match.eventId);
+      const channelName = event?.agoraChannelName || null;
+
+      if (isAgoraConfigured() && channelName) {
+        const spectatorUid = Math.floor(Math.random() * 100000) + 2000;
+        const spectatorToken = generateRtcToken(channelName, spectatorUid, "audience");
+        return res.json({
+          appId: process.env.AGORA_APP_ID,
+          channelId: channelName,
+          token: spectatorToken,
+          uid: spectatorUid,
+        });
+      }
+
+      // Fallback: no Agora configured
+      res.json({
+        channelId: channelName,
+        matchId: match.id,
+        topic: match.topic,
+      });
+    } catch (error) {
+      console.error("Error getting stream info:", error);
+      res.status(500).json({ error: "Failed to get stream info" });
+    }
+  });
+
+  // Transcript for match
+  app.get("/api/clash/matches/:id/transcript", async (req, res) => {
+    try {
+      const matchId = parseInt(req.params.id);
+      const transcript = await storage.getClashTranscriptsByMatch(matchId);
+      res.json(transcript);
+    } catch (error) {
+      console.error("Error getting clash transcript:", error);
+      res.status(500).json({ error: "Failed to get transcript" });
+    }
+  });
+
+  // Clash leaderboard (Elo rankings)
+  app.get("/api/clash/leaderboard", async (req, res) => {
+    try {
+      const leaderboard = await storage.getClashLeaderboard();
+      res.json(leaderboard);
+    } catch (error) {
+      console.error("Error getting clash leaderboard:", error);
+      res.status(500).json({ error: "Failed to get leaderboard" });
+    }
+  });
+
+  // --- Moderator Lifecycle (runner-to-server callbacks) ---
+
+  app.post("/api/clash/moderator/start", async (req, res) => {
+    try {
+      const authHeader = req.headers.authorization;
+      if (!authHeader || !authHeader.startsWith("Bearer ")) {
+        return res.status(401).json({ error: "Runner token required" });
+      }
+      const { matchId, phase } = req.body;
+      if (!matchId) return res.status(400).json({ error: "matchId required" });
+
+      if (!isModeratorConfigured()) {
+        return res.json({ success: true, moderatorAvailable: false });
+      }
+
+      const match = await storage.getClashMatch(matchId);
+      if (!match) return res.status(404).json({ error: "Match not found" });
+
+      const event = await storage.getClashEvent(match.eventId);
+      if (!event) return res.status(404).json({ error: "Event not found" });
+
+      const profileA = await storage.getClashAgentProfile(match.agentAProfileId);
+      const profileB = await storage.getClashAgentProfile(match.agentBProfileId);
+      if (!profileA || !profileB) return res.status(500).json({ error: "Agent profile(s) missing" });
+
+      const channelName = event.agoraChannelName || generateEventChannelName(event.id);
+      const modUid = 500 + match.id;
+      const modToken = generateRtcToken(channelName, modUid, "publisher");
+
+      const prompt = buildAnnouncementPrompt(
+        profileA.name,
+        profileB.name,
+        match.topic,
+        match.maxDurationSeconds,
+      );
+
+      const agentId = await startModerator({
+        channelName,
+        token: modToken,
+        uid: String(modUid),
+        systemPrompt: prompt.systemPrompt,
+        greetingMessage: prompt.greetingMessage,
+      });
+
+      await storage.updateClashEvent(event.id, {
+        moderatorAgentId: agentId,
+        agoraChannelName: channelName,
+      });
+
+      res.json({ success: true, agentId, moderatorAvailable: true });
+    } catch (error) {
+      console.error("Error starting moderator:", error);
+      res.status(500).json({ error: "Failed to start moderator" });
+    }
+  });
+
+  app.post("/api/clash/moderator/announce", async (req, res) => {
+    try {
+      const authHeader = req.headers.authorization;
+      if (!authHeader || !authHeader.startsWith("Bearer ")) {
+        return res.status(401).json({ error: "Runner token required" });
+      }
+      const { matchId, phase } = req.body;
+      if (!matchId || !phase) return res.status(400).json({ error: "matchId and phase required" });
+
+      const match = await storage.getClashMatch(matchId);
+      if (!match) return res.json({ success: true, skipped: true });
+
+      const event = await storage.getClashEvent(match.eventId);
+      if (!event || !event.moderatorAgentId) {
+        return res.json({ success: true, skipped: true });
+      }
+
+      const profileA = await storage.getClashAgentProfile(match.agentAProfileId);
+      const profileB = await storage.getClashAgentProfile(match.agentBProfileId);
+      if (!profileA || !profileB) return res.status(500).json({ error: "Agent profile(s) missing" });
+
+      let prompt: { systemPrompt: string; greetingMessage: string };
+      switch (phase) {
+        case "brief_a":
+          prompt = buildBriefingPrompt(profileA.name, profileB.name, match.topic);
+          break;
+        case "brief_b":
+          prompt = buildBriefingPrompt(profileB.name, profileA.name, match.topic);
+          break;
+        case "start":
+          prompt = buildStartPrompt();
+          break;
+        case "end":
+          prompt = buildEndPrompt("The debate has concluded.");
+          break;
+        default:
+          return res.status(400).json({ error: `Unknown phase: ${phase}` });
+      }
+
+      await updateModeratorPrompt(event.moderatorAgentId, prompt.systemPrompt, prompt.greetingMessage);
+      res.json({ success: true });
+    } catch (error) {
+      console.error("Error updating moderator:", error);
+      res.status(500).json({ error: "Failed to update moderator" });
+    }
+  });
+
+  app.post("/api/clash/moderator/stop", async (req, res) => {
+    try {
+      const authHeader = req.headers.authorization;
+      if (!authHeader || !authHeader.startsWith("Bearer ")) {
+        return res.status(401).json({ error: "Runner token required" });
+      }
+      const { matchId } = req.body;
+      if (!matchId) return res.status(400).json({ error: "matchId required" });
+
+      const match = await storage.getClashMatch(matchId);
+      if (!match) return res.json({ success: true });
+
+      const event = await storage.getClashEvent(match.eventId);
+      if (!event || !event.moderatorAgentId) {
+        return res.json({ success: true });
+      }
+
+      await stopModerator(event.moderatorAgentId);
+      await storage.updateClashEvent(event.id, { moderatorAgentId: null });
+      res.json({ success: true });
+    } catch (error) {
+      console.error("Error stopping moderator:", error);
+      res.status(500).json({ error: "Failed to stop moderator" });
+    }
+  });
+
+  // --- Clash Schedules (Scout/Principal users) ---
+
+  app.get("/api/clash/schedules", requireAuth, async (req, res) => {
+    try {
+      const user = await getCurrentUser(req);
+      if (!user) return res.status(401).json({ error: "Not authenticated" });
+      const schedules = await storage.getClashSchedulesByUser(user.id);
+      res.json(schedules);
+    } catch (error) {
+      console.error("Error listing clash schedules:", error);
+      res.status(500).json({ error: "Failed to list schedules" });
+    }
+  });
+
+  app.post("/api/clash/schedules", requirePrincipal, async (req, res) => {
+    try {
+      const user = await getCurrentUser(req);
+      if (!user) return res.status(401).json({ error: "Not authenticated" });
+
+      const { eventName, region, matchups, maxDurationSeconds, scheduledAt, cronExpression } = req.body;
+      if (!eventName || !region || !matchups || !Array.isArray(matchups) || matchups.length === 0) {
+        return res.status(400).json({ error: "eventName, region, and matchups array are required" });
+      }
+
+      // Validate cron if provided
+      if (cronExpression) {
+        const nextRun = parseNextCronRun(cronExpression);
+        if (!nextRun) {
+          return res.status(400).json({ error: "Invalid cron expression" });
+        }
+      }
+
+      const schedule = await storage.createClashSchedule({
+        eventName,
+        createdBy: user.id,
+        matchups,
+        region,
+        maxDurationSeconds: maxDurationSeconds || 300,
+        scheduledAt: scheduledAt ? new Date(scheduledAt) : null,
+        cronExpression: cronExpression || null,
+        isEnabled: true,
+      });
+
+      res.status(201).json(schedule);
+    } catch (error) {
+      console.error("Error creating clash schedule:", error);
+      res.status(500).json({ error: "Failed to create schedule" });
+    }
+  });
+
+  app.patch("/api/clash/schedules/:id", requireAuth, async (req, res) => {
+    try {
+      const user = await getCurrentUser(req);
+      if (!user) return res.status(401).json({ error: "Not authenticated" });
+      const scheduleId = parseInt(req.params.id);
+
+      const schedule = await storage.getClashSchedule(scheduleId);
+      if (!schedule) return res.status(404).json({ error: "Schedule not found" });
+      if (schedule.createdBy !== user.id && !user.isAdmin) {
+        return res.status(403).json({ error: "Not authorized" });
+      }
+
+      const { eventName, isEnabled, scheduledAt, cronExpression, matchups, maxDurationSeconds } = req.body;
+      const updates: Record<string, unknown> = {};
+      if (eventName !== undefined) updates.eventName = eventName;
+      if (isEnabled !== undefined) updates.isEnabled = isEnabled;
+      if (scheduledAt !== undefined) updates.scheduledAt = scheduledAt ? new Date(scheduledAt) : null;
+      if (cronExpression !== undefined) {
+        if (cronExpression) {
+          const nextRun = parseNextCronRun(cronExpression);
+          if (!nextRun) return res.status(400).json({ error: "Invalid cron expression" });
+        }
+        updates.cronExpression = cronExpression || null;
+      }
+      if (matchups !== undefined) updates.matchups = matchups;
+      if (maxDurationSeconds !== undefined) updates.maxDurationSeconds = maxDurationSeconds;
+
+      const updated = await storage.updateClashSchedule(scheduleId, updates as any);
+      res.json(updated);
+    } catch (error) {
+      console.error("Error updating clash schedule:", error);
+      res.status(500).json({ error: "Failed to update schedule" });
+    }
+  });
+
+  app.delete("/api/clash/schedules/:id", requireAuth, async (req, res) => {
+    try {
+      const user = await getCurrentUser(req);
+      if (!user) return res.status(401).json({ error: "Not authenticated" });
+      const scheduleId = parseInt(req.params.id);
+
+      const schedule = await storage.getClashSchedule(scheduleId);
+      if (!schedule) return res.status(404).json({ error: "Schedule not found" });
+      if (schedule.createdBy !== user.id && !user.isAdmin) {
+        return res.status(403).json({ error: "Not authorized" });
+      }
+
+      await storage.deleteClashSchedule(scheduleId);
+      res.json({ success: true });
+    } catch (error) {
+      console.error("Error deleting clash schedule:", error);
+      res.status(500).json({ error: "Failed to delete schedule" });
+    }
+  });
+
+  // --- Match Scheduler: assign pending matches to idle runners (every 10s) ---
+  setInterval(async () => {
+    try {
+      // Mark stale runners as draining
+      await storage.markStaleRunnersDraining();
+
+      // Check live events for pending matches to assign
+      const liveEvents = await storage.getClashEventsByStatus("live");
+      for (const event of liveEvents) {
+        try {
+          const matches = await storage.getClashMatchesByEvent(event.id);
+
+          // Skip if there's already a live or starting match
+          const hasActive = matches.some(m => m.status === "live" || m.status === "starting");
+          if (hasActive) continue;
+
+          // Find the next pending match
+          const pending = matches.find(m => m.status === "pending");
+          if (!pending) continue;
+
+          // Find an idle runner in the event's region
+          const runner = await storage.getIdleClashRunner(event.region);
+          if (!runner) continue;
+
+          // Assign the match to the runner
+          await storage.updateClashRunner(runner.id, {
+            state: "assigned",
+            currentMatchId: pending.id,
+          });
+
+          console.log(`[ClashMatchScheduler] Assigned match #${pending.id} to runner ${runner.runnerId}`);
+        } catch (err) {
+          console.error(`[ClashMatchScheduler] Error processing event ${event.id}:`, err);
+        }
+      }
+    } catch (err) {
+      console.error("[ClashMatchScheduler] Error:", err);
+    }
+  }, 10_000);
+
+  // --- Schedule Cron: create events from due schedules (every 60s) ---
+  setInterval(async () => {
+    try {
+      const dueSchedules = await storage.getDueClashSchedules();
+      for (const schedule of dueSchedules) {
+        try {
+          const matchupsData = schedule.matchups as Array<{
+            agentAProfileId: number;
+            agentBProfileId: number;
+            topic: string;
+            maxDurationSeconds?: number;
+          }>;
+
+          // Create event
+          const event = await storage.createClashEvent({
+            name: schedule.eventName,
+            description: null,
+            createdBy: schedule.createdBy,
+            region: schedule.region,
+            status: "live",
+            visibility: "public",
+            scheduledAt: null,
+            agoraChannelName: null,
+            moderatorAgentId: null,
+          });
+
+          // Set Agora channel name for event
+          if (isAgoraConfigured()) {
+            const channelName = generateEventChannelName(event.id);
+            await storage.updateClashEvent(event.id, { agoraChannelName: channelName, startedAt: new Date() });
+          } else {
+            await storage.updateClashEvent(event.id, { startedAt: new Date() });
+          }
+
+          // Create match rows from matchups
+          for (let i = 0; i < matchupsData.length; i++) {
+            const m = matchupsData[i];
+            await storage.createClashMatch({
+              eventId: event.id,
+              matchOrder: i + 1,
+              agentAProfileId: m.agentAProfileId,
+              agentBProfileId: m.agentBProfileId,
+              topic: m.topic || "Freestyle debate",
+              maxDurationSeconds: m.maxDurationSeconds || schedule.maxDurationSeconds,
+              config: {},
+              status: "pending",
+              runnerId: null,
+              recordingUrl: null,
+              durationSeconds: null,
+              error: null,
+            });
+          }
+
+          // Update schedule: set lastRunAt, handle one-time vs recurring
+          if (schedule.cronExpression) {
+            const nextRun = parseNextCronRun(schedule.cronExpression);
+            await storage.updateClashSchedule(schedule.id, {
+              lastRunAt: new Date(),
+              scheduledAt: nextRun || null,
+            } as any);
+          } else {
+            // One-time schedule: disable after running
+            await storage.updateClashSchedule(schedule.id, {
+              lastRunAt: new Date(),
+              isEnabled: false,
+            } as any);
+          }
+
+          console.log(`[ClashScheduler] Created event #${event.id} from schedule "${schedule.eventName}"`);
+        } catch (err) {
+          console.error(`[ClashScheduler] Error processing schedule ${schedule.id}:`, err);
+        }
+      }
+    } catch (err) {
+      console.error("[ClashScheduler] Error checking schedules:", err);
+    }
+  }, 60_000);
 
   // ==================== API V1 ROUTES ====================
   registerApiV1Routes(app);
