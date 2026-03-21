@@ -38,6 +38,19 @@ import {
   type InsertFundReturnRequest,
   type Secret,
   type InsertSecret,
+  type ClashAgentProfile,
+  type InsertClashAgentProfile,
+  type ClashMatch,
+  type InsertClashMatch,
+  type ClashResult,
+  type InsertClashResult,
+  type ClashEloRating,
+  type ClashEvent,
+  type InsertClashEvent,
+  type ClashRunner,
+  type ClashTranscript,
+  type ClashSchedule,
+  type InsertClashSchedule,
   users,
   organizations,
   providers,
@@ -59,6 +72,14 @@ import {
   systemConfig,
   fundReturnRequests,
   secrets,
+  clashAgentProfiles,
+  clashMatches,
+  clashResults,
+  clashEloRatings,
+  clashEvents,
+  clashRunnerPool,
+  clashTranscripts,
+  clashSchedules,
 } from "@shared/schema";
 import { drizzle } from "drizzle-orm/node-postgres";
 import pkg from "pg";
@@ -1306,6 +1327,280 @@ export class DatabaseStorage {
     if (!workflow) { console.log(`[Secrets] getSecretsForJob: workflow ${job.workflowId} not found`); return []; }
     console.log(`[Secrets] getSecretsForJob: job ${jobId} → workflow ${workflow.id} → owner ${workflow.ownerId}`);
     return this.getSecretsByUserId(workflow.ownerId);
+  }
+
+  // ==================== CLASH AGENT PROFILES ====================
+
+  async getClashAgentProfile(id: number): Promise<ClashAgentProfile | undefined> {
+    const result = await db.select().from(clashAgentProfiles).where(eq(clashAgentProfiles.id, id));
+    return result[0];
+  }
+
+  async getClashAgentProfilesByOwner(ownerId: number): Promise<ClashAgentProfile[]> {
+    return db.select().from(clashAgentProfiles)
+      .where(eq(clashAgentProfiles.ownerId, ownerId))
+      .orderBy(desc(clashAgentProfiles.createdAt));
+  }
+
+  async getPublicClashAgentProfiles(): Promise<ClashAgentProfile[]> {
+    return db.select().from(clashAgentProfiles)
+      .where(eq(clashAgentProfiles.visibility, "public"))
+      .orderBy(desc(clashAgentProfiles.createdAt));
+  }
+
+  async createClashAgentProfile(data: InsertClashAgentProfile): Promise<ClashAgentProfile> {
+    const result = await db.insert(clashAgentProfiles).values(data).returning();
+    return result[0];
+  }
+
+  async updateClashAgentProfile(id: number, data: Partial<InsertClashAgentProfile>): Promise<ClashAgentProfile | undefined> {
+    const result = await db.update(clashAgentProfiles)
+      .set({ ...data, updatedAt: new Date() })
+      .where(eq(clashAgentProfiles.id, id))
+      .returning();
+    return result[0];
+  }
+
+  async deleteClashAgentProfile(id: number): Promise<boolean> {
+    const result = await db.delete(clashAgentProfiles).where(eq(clashAgentProfiles.id, id)).returning();
+    return result.length > 0;
+  }
+
+  // ==================== CLASH EVENTS ====================
+
+  async getClashEvent(id: number): Promise<ClashEvent | undefined> {
+    const result = await db.select().from(clashEvents).where(eq(clashEvents.id, id));
+    return result[0];
+  }
+
+  async getClashEventsByUser(userId: number): Promise<ClashEvent[]> {
+    return db.select().from(clashEvents)
+      .where(eq(clashEvents.createdBy, userId))
+      .orderBy(desc(clashEvents.createdAt));
+  }
+
+  async getClashEventsByStatus(status: string): Promise<ClashEvent[]> {
+    return db.select().from(clashEvents)
+      .where(eq(clashEvents.status, status as any))
+      .orderBy(desc(clashEvents.createdAt));
+  }
+
+  async getClashEventFeed(): Promise<ClashEvent[]> {
+    return db.select().from(clashEvents)
+      .where(or(
+        eq(clashEvents.status, "live"),
+        eq(clashEvents.status, "upcoming"),
+        eq(clashEvents.status, "completed"),
+      ))
+      .orderBy(desc(clashEvents.createdAt))
+      .limit(50);
+  }
+
+  async createClashEvent(data: InsertClashEvent): Promise<ClashEvent> {
+    const result = await db.insert(clashEvents).values(data).returning();
+    return result[0];
+  }
+
+  async updateClashEvent(id: number, data: Partial<ClashEvent>): Promise<ClashEvent | undefined> {
+    const result = await db.update(clashEvents).set(data).where(eq(clashEvents.id, id)).returning();
+    return result[0];
+  }
+
+  // ==================== CLASH MATCHES ====================
+
+  async getClashMatch(id: number): Promise<ClashMatch | undefined> {
+    const result = await db.select().from(clashMatches).where(eq(clashMatches.id, id));
+    return result[0];
+  }
+
+  async getClashMatchesByEvent(eventId: number): Promise<ClashMatch[]> {
+    return db.select().from(clashMatches)
+      .where(eq(clashMatches.eventId, eventId))
+      .orderBy(clashMatches.matchOrder);
+  }
+
+  async getClashMatchesByStatus(status: string): Promise<ClashMatch[]> {
+    return db.select().from(clashMatches)
+      .where(eq(clashMatches.status, status as any))
+      .orderBy(desc(clashMatches.createdAt));
+  }
+
+  async createClashMatch(data: InsertClashMatch): Promise<ClashMatch> {
+    const result = await db.insert(clashMatches).values(data).returning();
+    return result[0];
+  }
+
+  async updateClashMatch(id: number, data: Partial<ClashMatch>): Promise<ClashMatch | undefined> {
+    const result = await db.update(clashMatches)
+      .set(data)
+      .where(eq(clashMatches.id, id))
+      .returning();
+    return result[0];
+  }
+
+  // ==================== CLASH RESULTS ====================
+
+  async getClashResultsByMatch(matchId: number): Promise<ClashResult[]> {
+    return db.select().from(clashResults)
+      .where(eq(clashResults.clashMatchId, matchId));
+  }
+
+  async createClashResult(data: InsertClashResult): Promise<ClashResult> {
+    const result = await db.insert(clashResults).values(data).returning();
+    return result[0];
+  }
+
+  // ==================== CLASH ELO RATINGS ====================
+
+  async getClashEloRating(agentProfileId: number): Promise<ClashEloRating | undefined> {
+    const result = await db.select().from(clashEloRatings)
+      .where(eq(clashEloRatings.agentProfileId, agentProfileId));
+    return result[0];
+  }
+
+  async getClashLeaderboard(limit: number = 50): Promise<(ClashEloRating & { profileName: string; providerName: string | null })[]> {
+    const result = await db.select({
+      id: clashEloRatings.id,
+      agentProfileId: clashEloRatings.agentProfileId,
+      rating: clashEloRatings.rating,
+      matchCount: clashEloRatings.matchCount,
+      winCount: clashEloRatings.winCount,
+      lossCount: clashEloRatings.lossCount,
+      drawCount: clashEloRatings.drawCount,
+      updatedAt: clashEloRatings.updatedAt,
+      profileName: clashAgentProfiles.name,
+      providerName: providers.name,
+    })
+    .from(clashEloRatings)
+    .innerJoin(clashAgentProfiles, eq(clashEloRatings.agentProfileId, clashAgentProfiles.id))
+    .leftJoin(providers, eq(clashAgentProfiles.providerId, providers.id))
+    .where(eq(clashAgentProfiles.visibility, "public"))
+    .orderBy(desc(clashEloRatings.rating))
+    .limit(limit);
+    return result;
+  }
+
+  async upsertClashEloRating(agentProfileId: number, updates: { rating: number; matchCount: number; winCount: number; lossCount: number; drawCount: number }): Promise<ClashEloRating> {
+    const existing = await this.getClashEloRating(agentProfileId);
+    if (existing) {
+      const result = await db.update(clashEloRatings)
+        .set({ ...updates, updatedAt: new Date() })
+        .where(eq(clashEloRatings.agentProfileId, agentProfileId))
+        .returning();
+      return result[0];
+    }
+    const result = await db.insert(clashEloRatings)
+      .values({ agentProfileId, ...updates })
+      .returning();
+    return result[0];
+  }
+
+  // ==================== CLASH RUNNER POOL ====================
+
+  async getClashRunner(id: number): Promise<ClashRunner | undefined> {
+    const result = await db.select().from(clashRunnerPool).where(eq(clashRunnerPool.id, id));
+    return result[0];
+  }
+
+  async getClashRunnerByTokenHash(tokenHash: string): Promise<ClashRunner | undefined> {
+    const result = await db.select().from(clashRunnerPool).where(eq(clashRunnerPool.tokenHash, tokenHash));
+    return result[0];
+  }
+
+  async getIdleClashRunner(region: string): Promise<ClashRunner | undefined> {
+    const result = await db.select().from(clashRunnerPool)
+      .where(and(eq(clashRunnerPool.state, "idle"), eq(clashRunnerPool.region, region as any)))
+      .limit(1);
+    return result[0];
+  }
+
+  async registerClashRunner(data: { runnerId: string; tokenHash: string; region: string }): Promise<ClashRunner> {
+    const existing = await db.select().from(clashRunnerPool).where(eq(clashRunnerPool.runnerId, data.runnerId));
+    if (existing[0]) {
+      const result = await db.update(clashRunnerPool)
+        .set({ tokenHash: data.tokenHash, state: "idle", lastHeartbeatAt: new Date(), currentMatchId: null })
+        .where(eq(clashRunnerPool.runnerId, data.runnerId)).returning();
+      return result[0];
+    }
+    const result = await db.insert(clashRunnerPool).values({ ...data, region: data.region as any, state: "idle", lastHeartbeatAt: new Date() }).returning();
+    return result[0];
+  }
+
+  async updateClashRunner(id: number, data: Partial<ClashRunner>): Promise<ClashRunner | undefined> {
+    const result = await db.update(clashRunnerPool).set(data).where(eq(clashRunnerPool.id, id)).returning();
+    return result[0];
+  }
+
+  async markStaleRunnersDraining(staleThresholdMs: number = 45000): Promise<number> {
+    const cutoff = new Date(Date.now() - staleThresholdMs);
+    const result = await db.update(clashRunnerPool)
+      .set({ state: "draining" })
+      .where(and(not(eq(clashRunnerPool.state, "draining")), sql`${clashRunnerPool.lastHeartbeatAt} < ${cutoff}`))
+      .returning();
+    return result.length;
+  }
+
+  async getSecretsForClashMatch(matchId: number): Promise<Secret[]> {
+    const match = await this.getClashMatch(matchId);
+    if (!match) return [];
+    const event = await this.getClashEvent(match.eventId);
+    if (!event) return [];
+    return this.getSecretsByUserId(event.createdBy);
+  }
+
+  // ==================== CLASH TRANSCRIPTS ====================
+
+  async createClashTranscript(data: { clashMatchId: number; speakerLabel: string; text: string; startMs: number; endMs?: number; confidence?: number }): Promise<ClashTranscript> {
+    const result = await db.insert(clashTranscripts).values(data).returning();
+    return result[0];
+  }
+
+  async getClashTranscriptsByMatch(matchId: number): Promise<ClashTranscript[]> {
+    return db.select().from(clashTranscripts)
+      .where(eq(clashTranscripts.clashMatchId, matchId))
+      .orderBy(clashTranscripts.startMs);
+  }
+
+  // ==================== CLASH SCHEDULES ====================
+
+  async getClashSchedule(id: number): Promise<ClashSchedule | undefined> {
+    const result = await db.select().from(clashSchedules).where(eq(clashSchedules.id, id));
+    return result[0];
+  }
+
+  async getClashSchedulesByUser(userId: number): Promise<ClashSchedule[]> {
+    return db.select().from(clashSchedules)
+      .where(eq(clashSchedules.createdBy, userId))
+      .orderBy(desc(clashSchedules.createdAt));
+  }
+
+  async createClashSchedule(data: InsertClashSchedule): Promise<ClashSchedule> {
+    const result = await db.insert(clashSchedules).values(data).returning();
+    return result[0];
+  }
+
+  async updateClashSchedule(id: number, data: Partial<InsertClashSchedule>): Promise<ClashSchedule | undefined> {
+    const result = await db.update(clashSchedules)
+      .set({ ...data })
+      .where(eq(clashSchedules.id, id))
+      .returning();
+    return result[0];
+  }
+
+  async deleteClashSchedule(id: number): Promise<boolean> {
+    const result = await db.delete(clashSchedules).where(eq(clashSchedules.id, id)).returning();
+    return result.length > 0;
+  }
+
+  async getDueClashSchedules(): Promise<ClashSchedule[]> {
+    return db.select().from(clashSchedules)
+      .where(
+        and(
+          eq(clashSchedules.isEnabled, true),
+          sql`${clashSchedules.scheduledAt} IS NOT NULL`,
+          sql`${clashSchedules.scheduledAt} <= NOW()`
+        )
+      );
   }
 }
 
