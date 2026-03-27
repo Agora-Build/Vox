@@ -11,7 +11,8 @@
  */
 
 import { createRequire } from "module";
-const _require = createRequire(import.meta.url);
+// import.meta.url is undefined when bundled to CJS (production); fall back to cwd
+const _require = createRequire(import.meta.url ?? `file://${process.cwd()}/`);
 const { RtcTokenBuilder, RtcRole } = _require("agora-token");
 
 // ---------------------------------------------------------------------------
