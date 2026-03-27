@@ -17,3 +17,4 @@ tests/tests.dev.data
 # Playwright test output
 playwright-report/
 test-results/
+.superpowers/

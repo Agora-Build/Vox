@@ -10,7 +10,9 @@
  *   AGORA_CONVOAI_TTS_VENDOR, AGORA_CONVOAI_TTS_KEY, AGORA_CONVOAI_TTS_REGION
  */
 
-import { RtcTokenBuilder, RtcRole } from "agora-token";
+import { createRequire } from "module";
+const _require = createRequire(import.meta.url);
+const { RtcTokenBuilder, RtcRole } = _require("agora-token");
 
 // ---------------------------------------------------------------------------
 // Config helpers
