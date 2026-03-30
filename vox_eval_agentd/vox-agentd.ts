@@ -1129,7 +1129,10 @@ class VoxEvalAgentDaemon {
   // -------------------------------------------------------------------------
 
   start(): void {
+    const buildTag = process.env.BUILD_TAG || 'dev';
+    const buildDate = process.env.BUILD_DATE || 'unknown';
     console.log(`[Daemon] Starting vox_eval_agentd`);
+    console.log(`  - Build: ${buildTag} (${buildDate})`);
     console.log(`  - Server: ${this.config.serverUrl}`);
     console.log(`  - Agent Name: ${this.config.name || '(inherits from token)'}`);
     console.log(`  - Headless: ${this.config.headless}`);

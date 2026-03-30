@@ -107,6 +107,12 @@ RUN npm install
 RUN npx esbuild vox-agentd.ts --bundle --platform=node --format=esm --outfile=vox-agentd.js \
     --external:child_process --external:fs --external:os --external:path --external:url
 
+# Build metadata (injected at build time via --build-arg)
+ARG BUILD_TAG=dev
+ARG BUILD_DATE=unknown
+ENV BUILD_TAG=${BUILD_TAG}
+ENV BUILD_DATE=${BUILD_DATE}
+
 # Environment variables (will be overridden at runtime)
 ENV VOX_SERVER=http://localhost:5000
 ENV HEADLESS=true

@@ -121,6 +121,9 @@ jobs:
           load: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            BUILD_TAG=${{ github.ref_name }}
+            BUILD_DATE=${{ github.event.head_commit.timestamp }}
 
       - name: Smoke test eval agent image
         run: |
@@ -142,3 +145,6 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            BUILD_TAG=${{ github.ref_name }}
+            BUILD_DATE=${{ github.event.head_commit.timestamp }}
