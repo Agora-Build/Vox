@@ -579,7 +579,7 @@ class VoxEvalAgentDaemon {
       }
 
       if (Array.isArray(ilTurns) && ilTurns.length > 0) {
-        const vals = ilTurns.map((t: Record<string, unknown>) => (t.reaction_time_ms ?? t.latency_ms) as number).filter((v: number) => v != null && v >= 0);
+        const vals = ilTurns.map((t: Record<string, unknown>) => (t.reaction_time_ms ?? t.reaction_time_ms_diagnostic ?? t.interrupt_action_ms ?? t.latency_ms) as number).filter((v: number) => v != null && v >= 0);
         if (vals.length > 0) {
           results.interruptLatencyMedian = Math.round(median(vals));
           results.interruptLatencySd = Math.round(sd(vals));
