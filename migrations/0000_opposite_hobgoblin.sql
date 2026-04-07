@@ -1,14 +1,11 @@
-DO $$ BEGIN CREATE TYPE "public"."clash_event_status" AS ENUM('upcoming', 'live', 'completed', 'cancelled'); EXCEPTION WHEN duplicate_object THEN null; END $$;--> statement-breakpoint
-DO $$ BEGIN CREATE TYPE "public"."clash_runner_state" AS ENUM('idle', 'assigned', 'running', 'draining'); EXCEPTION WHEN duplicate_object THEN null; END $$;--> statement-breakpoint
-DO $$ BEGIN CREATE TYPE "public"."clash_status" AS ENUM('pending', 'starting', 'live', 'completed', 'failed'); EXCEPTION WHEN duplicate_object THEN null; END $$;--> statement-breakpoint
-DO $$ BEGIN CREATE TYPE "public"."eval_agent_state" AS ENUM('idle', 'offline', 'occupied'); EXCEPTION WHEN duplicate_object THEN null; END $$;--> statement-breakpoint
-DO $$ BEGIN CREATE TYPE "public"."eval_job_status" AS ENUM('pending', 'running', 'completed', 'failed'); EXCEPTION WHEN duplicate_object THEN null; END $$;--> statement-breakpoint
-DO $$ BEGIN CREATE TYPE "public"."provider_sku" AS ENUM('convoai', 'rtc'); EXCEPTION WHEN duplicate_object THEN null; END $$;--> statement-breakpoint
-DO $$ BEGIN CREATE TYPE "public"."region" AS ENUM('na', 'apac', 'eu', 'sa'); EXCEPTION WHEN duplicate_object THEN null; END $$;--> statement-breakpoint
-DO $$ BEGIN CREATE TYPE "public"."schedule_type" AS ENUM('once', 'recurring'); EXCEPTION WHEN duplicate_object THEN null; END $$;--> statement-breakpoint
-DO $$ BEGIN CREATE TYPE "public"."user_plan" AS ENUM('basic', 'premium', 'principal', 'fellow'); EXCEPTION WHEN duplicate_object THEN null; END $$;--> statement-breakpoint
-DO $$ BEGIN CREATE TYPE "public"."visibility" AS ENUM('public', 'private'); EXCEPTION WHEN duplicate_object THEN null; END $$;--> statement-breakpoint
-CREATE TABLE IF NOT EXISTS "activation_tokens" (
+CREATE TYPE "public"."eval_agent_state" AS ENUM('idle', 'offline', 'occupied');--> statement-breakpoint
+CREATE TYPE "public"."eval_job_status" AS ENUM('pending', 'running', 'completed', 'failed');--> statement-breakpoint
+CREATE TYPE "public"."provider_sku" AS ENUM('convoai', 'rtc');--> statement-breakpoint
+CREATE TYPE "public"."region" AS ENUM('na', 'apac', 'eu', 'sa');--> statement-breakpoint
+CREATE TYPE "public"."schedule_type" AS ENUM('once', 'recurring');--> statement-breakpoint
+CREATE TYPE "public"."user_plan" AS ENUM('basic', 'premium', 'principal', 'fellow');--> statement-breakpoint
+CREATE TYPE "public"."visibility" AS ENUM('public', 'private');--> statement-breakpoint
+CREATE TABLE "activation_tokens" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"user_id" integer NOT NULL,
 	"token_hash" text NOT NULL,
@@ -18,7 +15,7 @@ CREATE TABLE IF NOT EXISTS "activation_tokens" (
 	CONSTRAINT "activation_tokens_token_hash_unique" UNIQUE("token_hash")
 );
 --> statement-breakpoint
-CREATE TABLE IF NOT EXISTS "api_keys" (
+CREATE TABLE "api_keys" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"name" text NOT NULL,
 	"key_hash" text NOT NULL,
@@ -32,145 +29,7 @@ CREATE TABLE IF NOT EXISTS "api_keys" (
 	CONSTRAINT "api_keys_key_hash_unique" UNIQUE("key_hash")
 );
 --> statement-breakpoint
-CREATE TABLE IF NOT EXISTS "clash_agent_profiles" (
-	"id" serial PRIMARY KEY NOT NULL,
-	"name" text NOT NULL,
-	"owner_id" integer NOT NULL,
-	"provider_id" varchar(12),
-	"agent_url" text NOT NULL,
-	"setup_steps" jsonb DEFAULT '[]'::jsonb NOT NULL,
-	"visibility" "visibility" DEFAULT 'private' NOT NULL,
-	"adapter_type" text DEFAULT 'browser' NOT NULL,
-	"created_at" timestamp DEFAULT now() NOT NULL,
-	"updated_at" timestamp DEFAULT now() NOT NULL
-);
---> statement-breakpoint
-CREATE TABLE IF NOT EXISTS "clash_elo_ratings" (
-	"id" serial PRIMARY KEY NOT NULL,
-	"agent_profile_id" integer NOT NULL,
-	"rating" integer DEFAULT 1500 NOT NULL,
-	"match_count" integer DEFAULT 0 NOT NULL,
-	"win_count" integer DEFAULT 0 NOT NULL,
-	"loss_count" integer DEFAULT 0 NOT NULL,
-	"draw_count" integer DEFAULT 0 NOT NULL,
-	"updated_at" timestamp DEFAULT now() NOT NULL,
-	CONSTRAINT "clash_elo_ratings_agent_profile_id_unique" UNIQUE("agent_profile_id")
-);
---> statement-breakpoint
-CREATE TABLE IF NOT EXISTS "clash_events" (
-	"id" serial PRIMARY KEY NOT NULL,
-	"name" text NOT NULL,
-	"description" text,
-	"created_by" integer NOT NULL,
-	"region" "region" NOT NULL,
-	"status" "clash_event_status" DEFAULT 'upcoming' NOT NULL,
-	"visibility" "visibility" DEFAULT 'public' NOT NULL,
-	"scheduled_at" timestamp,
-	"agora_channel_name" text,
-	"moderator_agent_id" text,
-	"started_at" timestamp,
-	"completed_at" timestamp,
-	"created_at" timestamp DEFAULT now() NOT NULL
-);
---> statement-breakpoint
-CREATE TABLE IF NOT EXISTS "clash_matches" (
-	"id" serial PRIMARY KEY NOT NULL,
-	"event_id" integer NOT NULL,
-	"match_order" integer DEFAULT 1 NOT NULL,
-	"agent_a_profile_id" integer NOT NULL,
-	"agent_b_profile_id" integer NOT NULL,
-	"status" "clash_status" DEFAULT 'pending' NOT NULL,
-	"topic" text NOT NULL,
-	"max_duration_seconds" integer DEFAULT 300 NOT NULL,
-	"winner_id" integer,
-	"runner_id" text,
-	"recording_url" text,
-	"duration_seconds" integer,
-	"config" jsonb DEFAULT '{}'::jsonb NOT NULL,
-	"started_at" timestamp,
-	"completed_at" timestamp,
-	"error" text,
-	"created_at" timestamp DEFAULT now() NOT NULL
-);
---> statement-breakpoint
-CREATE TABLE IF NOT EXISTS "clash_results" (
-	"id" serial PRIMARY KEY NOT NULL,
-	"clash_match_id" integer NOT NULL,
-	"agent_profile_id" integer NOT NULL,
-	"provider_id" varchar(12),
-	"response_latency_median" integer,
-	"response_latency_sd" real,
-	"interrupt_latency_median" integer,
-	"interrupt_latency_sd" real,
-	"ttft_median" integer,
-	"turn_count" integer,
-	"overlap_percent" real,
-	"raw_data" jsonb DEFAULT '{}'::jsonb,
-	"created_at" timestamp DEFAULT now() NOT NULL
-);
---> statement-breakpoint
-CREATE TABLE IF NOT EXISTS "clash_runner_issued_tokens" (
-	"id" serial PRIMARY KEY NOT NULL,
-	"name" text NOT NULL,
-	"token_hash" text NOT NULL,
-	"region" "region" NOT NULL,
-	"created_by" integer NOT NULL,
-	"is_revoked" boolean DEFAULT false NOT NULL,
-	"last_used_at" timestamp,
-	"created_at" timestamp DEFAULT now() NOT NULL,
-	CONSTRAINT "clash_runner_issued_tokens_token_hash_unique" UNIQUE("token_hash")
-);
---> statement-breakpoint
-CREATE TABLE IF NOT EXISTS "clash_runner_pool" (
-	"id" serial PRIMARY KEY NOT NULL,
-	"runner_id" text NOT NULL,
-	"token_hash" text NOT NULL,
-	"region" "region" NOT NULL,
-	"state" "clash_runner_state" DEFAULT 'idle' NOT NULL,
-	"current_match_id" integer,
-	"last_heartbeat_at" timestamp,
-	"metadata" jsonb DEFAULT '{}'::jsonb,
-	"created_at" timestamp DEFAULT now() NOT NULL,
-	CONSTRAINT "clash_runner_pool_runner_id_unique" UNIQUE("runner_id"),
-	CONSTRAINT "clash_runner_pool_token_hash_unique" UNIQUE("token_hash")
-);
---> statement-breakpoint
-CREATE TABLE IF NOT EXISTS "clash_runner_tokens" (
-	"id" serial PRIMARY KEY NOT NULL,
-	"clash_match_id" integer NOT NULL,
-	"token_hash" text NOT NULL,
-	"expires_at" timestamp NOT NULL,
-	"used_at" timestamp,
-	"created_at" timestamp DEFAULT now() NOT NULL,
-	CONSTRAINT "clash_runner_tokens_token_hash_unique" UNIQUE("token_hash")
-);
---> statement-breakpoint
-CREATE TABLE IF NOT EXISTS "clash_schedules" (
-	"id" serial PRIMARY KEY NOT NULL,
-	"event_name" text NOT NULL,
-	"created_by" integer NOT NULL,
-	"matchups" jsonb NOT NULL,
-	"region" "region" NOT NULL,
-	"max_duration_seconds" integer DEFAULT 300 NOT NULL,
-	"scheduled_at" timestamp,
-	"cron_expression" varchar(100),
-	"is_enabled" boolean DEFAULT true NOT NULL,
-	"last_run_at" timestamp,
-	"created_at" timestamp DEFAULT now() NOT NULL
-);
---> statement-breakpoint
-CREATE TABLE IF NOT EXISTS "clash_transcripts" (
-	"id" serial PRIMARY KEY NOT NULL,
-	"clash_match_id" integer NOT NULL,
-	"speaker_label" text NOT NULL,
-	"text" text NOT NULL,
-	"start_ms" integer NOT NULL,
-	"end_ms" integer,
-	"confidence" real,
-	"created_at" timestamp DEFAULT now() NOT NULL
-);
---> statement-breakpoint
-CREATE TABLE IF NOT EXISTS "eval_agent_tokens" (
+CREATE TABLE "eval_agent_tokens" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"name" text NOT NULL,
 	"token_hash" text NOT NULL,
@@ -184,7 +43,7 @@ CREATE TABLE IF NOT EXISTS "eval_agent_tokens" (
 	CONSTRAINT "eval_agent_tokens_token_hash_unique" UNIQUE("token_hash")
 );
 --> statement-breakpoint
-CREATE TABLE IF NOT EXISTS "eval_agents" (
+CREATE TABLE "eval_agents" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"name" text NOT NULL,
 	"token_id" integer NOT NULL,
@@ -197,7 +56,7 @@ CREATE TABLE IF NOT EXISTS "eval_agents" (
 	"updated_at" timestamp DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE IF NOT EXISTS "eval_jobs" (
+CREATE TABLE "eval_jobs" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"schedule_id" integer,
 	"workflow_id" integer NOT NULL,
@@ -217,7 +76,7 @@ CREATE TABLE IF NOT EXISTS "eval_jobs" (
 	"updated_at" timestamp DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE IF NOT EXISTS "eval_results" (
+CREATE TABLE "eval_results" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"eval_job_id" integer NOT NULL,
 	"provider_id" varchar(12) NOT NULL,
@@ -233,7 +92,7 @@ CREATE TABLE IF NOT EXISTS "eval_results" (
 	"created_at" timestamp DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE IF NOT EXISTS "eval_schedules" (
+CREATE TABLE "eval_schedules" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"name" text NOT NULL,
 	"workflow_id" integer NOT NULL,
@@ -252,7 +111,7 @@ CREATE TABLE IF NOT EXISTS "eval_schedules" (
 	"updated_at" timestamp DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE IF NOT EXISTS "eval_sets" (
+CREATE TABLE "eval_sets" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"name" text NOT NULL,
 	"description" text,
@@ -264,7 +123,7 @@ CREATE TABLE IF NOT EXISTS "eval_sets" (
 	"updated_at" timestamp DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE IF NOT EXISTS "fund_return_requests" (
+CREATE TABLE "fund_return_requests" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"user_id" integer NOT NULL,
 	"amount" integer NOT NULL,
@@ -275,7 +134,7 @@ CREATE TABLE IF NOT EXISTS "fund_return_requests" (
 	"created_at" timestamp DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE IF NOT EXISTS "invite_tokens" (
+CREATE TABLE "invite_tokens" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"email" text NOT NULL,
 	"plan" "user_plan" DEFAULT 'basic' NOT NULL,
@@ -289,7 +148,7 @@ CREATE TABLE IF NOT EXISTS "invite_tokens" (
 	CONSTRAINT "invite_tokens_token_hash_unique" UNIQUE("token_hash")
 );
 --> statement-breakpoint
-CREATE TABLE IF NOT EXISTS "organization_seats" (
+CREATE TABLE "organization_seats" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"organization_id" integer NOT NULL,
 	"total_seats" integer DEFAULT 0 NOT NULL,
@@ -302,7 +161,7 @@ CREATE TABLE IF NOT EXISTS "organization_seats" (
 	"updated_at" timestamp DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE IF NOT EXISTS "organizations" (
+CREATE TABLE "organizations" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"name" text NOT NULL,
 	"address" text,
@@ -311,7 +170,7 @@ CREATE TABLE IF NOT EXISTS "organizations" (
 	"updated_at" timestamp DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE IF NOT EXISTS "payment_histories" (
+CREATE TABLE "payment_histories" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"user_id" integer,
 	"organization_id" integer,
@@ -325,7 +184,7 @@ CREATE TABLE IF NOT EXISTS "payment_histories" (
 	"created_at" timestamp DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE IF NOT EXISTS "payment_methods" (
+CREATE TABLE "payment_methods" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"user_id" integer,
 	"organization_id" integer,
@@ -340,7 +199,7 @@ CREATE TABLE IF NOT EXISTS "payment_methods" (
 	"updated_at" timestamp DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE IF NOT EXISTS "pricing_config" (
+CREATE TABLE "pricing_config" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"name" text NOT NULL,
 	"price_per_seat" integer NOT NULL,
@@ -352,7 +211,7 @@ CREATE TABLE IF NOT EXISTS "pricing_config" (
 	"updated_at" timestamp DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE IF NOT EXISTS "projects" (
+CREATE TABLE "projects" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"name" text NOT NULL,
 	"description" text,
@@ -362,7 +221,7 @@ CREATE TABLE IF NOT EXISTS "projects" (
 	"updated_at" timestamp DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE IF NOT EXISTS "providers" (
+CREATE TABLE "providers" (
 	"id" varchar(12) PRIMARY KEY NOT NULL,
 	"name" text NOT NULL,
 	"sku" "provider_sku" NOT NULL,
@@ -372,7 +231,7 @@ CREATE TABLE IF NOT EXISTS "providers" (
 	"updated_at" timestamp DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE IF NOT EXISTS "secrets" (
+CREATE TABLE "secrets" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"user_id" integer NOT NULL,
 	"name" text NOT NULL,
@@ -381,20 +240,20 @@ CREATE TABLE IF NOT EXISTS "secrets" (
 	"updated_at" timestamp DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE IF NOT EXISTS "system_config" (
+CREATE TABLE "system_config" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"key" text NOT NULL,
 	"value" text NOT NULL,
 	CONSTRAINT "system_config_key_unique" UNIQUE("key")
 );
 --> statement-breakpoint
-CREATE TABLE IF NOT EXISTS "user_sessions" (
+CREATE TABLE "user_sessions" (
 	"sid" varchar PRIMARY KEY NOT NULL,
 	"sess" jsonb NOT NULL,
 	"expire" timestamp (6) NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE IF NOT EXISTS "users" (
+CREATE TABLE "users" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"username" text NOT NULL,
 	"email" text NOT NULL,
@@ -415,7 +274,7 @@ CREATE TABLE IF NOT EXISTS "users" (
 	CONSTRAINT "users_github_id_unique" UNIQUE("github_id")
 );
 --> statement-breakpoint
-CREATE TABLE IF NOT EXISTS "workflows" (
+CREATE TABLE "workflows" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"name" text NOT NULL,
 	"description" text,
@@ -429,63 +288,40 @@ CREATE TABLE IF NOT EXISTS "workflows" (
 	"updated_at" timestamp DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-DO $$ BEGIN ALTER TABLE "activation_tokens" ADD CONSTRAINT "activation_tokens_user_id_users_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action; EXCEPTION WHEN duplicate_object THEN null; END $$;--> statement-breakpoint
-DO $$ BEGIN ALTER TABLE "api_keys" ADD CONSTRAINT "api_keys_created_by_users_id_fk" FOREIGN KEY ("created_by") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action; EXCEPTION WHEN duplicate_object THEN null; END $$;--> statement-breakpoint
-DO $$ BEGIN ALTER TABLE "clash_agent_profiles" ADD CONSTRAINT "clash_agent_profiles_owner_id_users_id_fk" FOREIGN KEY ("owner_id") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action; EXCEPTION WHEN duplicate_object THEN null; END $$;--> statement-breakpoint
-DO $$ BEGIN ALTER TABLE "clash_agent_profiles" ADD CONSTRAINT "clash_agent_profiles_provider_id_providers_id_fk" FOREIGN KEY ("provider_id") REFERENCES "public"."providers"("id") ON DELETE no action ON UPDATE no action; EXCEPTION WHEN duplicate_object THEN null; END $$;--> statement-breakpoint
-DO $$ BEGIN ALTER TABLE "clash_elo_ratings" ADD CONSTRAINT "clash_elo_ratings_agent_profile_id_clash_agent_profiles_id_fk" FOREIGN KEY ("agent_profile_id") REFERENCES "public"."clash_agent_profiles"("id") ON DELETE no action ON UPDATE no action; EXCEPTION WHEN duplicate_object THEN null; END $$;--> statement-breakpoint
-DO $$ BEGIN ALTER TABLE "clash_events" ADD CONSTRAINT "clash_events_created_by_users_id_fk" FOREIGN KEY ("created_by") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action; EXCEPTION WHEN duplicate_object THEN null; END $$;--> statement-breakpoint
-DO $$ BEGIN ALTER TABLE "clash_matches" ADD CONSTRAINT "clash_matches_event_id_clash_events_id_fk" FOREIGN KEY ("event_id") REFERENCES "public"."clash_events"("id") ON DELETE cascade ON UPDATE no action; EXCEPTION WHEN duplicate_object THEN null; END $$;--> statement-breakpoint
-DO $$ BEGIN ALTER TABLE "clash_matches" ADD CONSTRAINT "clash_matches_agent_a_profile_id_clash_agent_profiles_id_fk" FOREIGN KEY ("agent_a_profile_id") REFERENCES "public"."clash_agent_profiles"("id") ON DELETE no action ON UPDATE no action; EXCEPTION WHEN duplicate_object THEN null; END $$;--> statement-breakpoint
-DO $$ BEGIN ALTER TABLE "clash_matches" ADD CONSTRAINT "clash_matches_agent_b_profile_id_clash_agent_profiles_id_fk" FOREIGN KEY ("agent_b_profile_id") REFERENCES "public"."clash_agent_profiles"("id") ON DELETE no action ON UPDATE no action; EXCEPTION WHEN duplicate_object THEN null; END $$;--> statement-breakpoint
-DO $$ BEGIN ALTER TABLE "clash_matches" ADD CONSTRAINT "clash_matches_winner_id_clash_agent_profiles_id_fk" FOREIGN KEY ("winner_id") REFERENCES "public"."clash_agent_profiles"("id") ON DELETE no action ON UPDATE no action; EXCEPTION WHEN duplicate_object THEN null; END $$;--> statement-breakpoint
-DO $$ BEGIN ALTER TABLE "clash_results" ADD CONSTRAINT "clash_results_clash_match_id_clash_matches_id_fk" FOREIGN KEY ("clash_match_id") REFERENCES "public"."clash_matches"("id") ON DELETE cascade ON UPDATE no action; EXCEPTION WHEN duplicate_object THEN null; END $$;--> statement-breakpoint
-DO $$ BEGIN ALTER TABLE "clash_results" ADD CONSTRAINT "clash_results_agent_profile_id_clash_agent_profiles_id_fk" FOREIGN KEY ("agent_profile_id") REFERENCES "public"."clash_agent_profiles"("id") ON DELETE no action ON UPDATE no action; EXCEPTION WHEN duplicate_object THEN null; END $$;--> statement-breakpoint
-DO $$ BEGIN ALTER TABLE "clash_results" ADD CONSTRAINT "clash_results_provider_id_providers_id_fk" FOREIGN KEY ("provider_id") REFERENCES "public"."providers"("id") ON DELETE no action ON UPDATE no action; EXCEPTION WHEN duplicate_object THEN null; END $$;--> statement-breakpoint
-DO $$ BEGIN ALTER TABLE "clash_runner_issued_tokens" ADD CONSTRAINT "clash_runner_issued_tokens_created_by_users_id_fk" FOREIGN KEY ("created_by") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action; EXCEPTION WHEN duplicate_object THEN null; END $$;--> statement-breakpoint
-DO $$ BEGIN ALTER TABLE "clash_runner_pool" ADD CONSTRAINT "clash_runner_pool_current_match_id_clash_matches_id_fk" FOREIGN KEY ("current_match_id") REFERENCES "public"."clash_matches"("id") ON DELETE no action ON UPDATE no action; EXCEPTION WHEN duplicate_object THEN null; END $$;--> statement-breakpoint
-DO $$ BEGIN ALTER TABLE "clash_runner_tokens" ADD CONSTRAINT "clash_runner_tokens_clash_match_id_clash_matches_id_fk" FOREIGN KEY ("clash_match_id") REFERENCES "public"."clash_matches"("id") ON DELETE no action ON UPDATE no action; EXCEPTION WHEN duplicate_object THEN null; END $$;--> statement-breakpoint
-DO $$ BEGIN ALTER TABLE "clash_schedules" ADD CONSTRAINT "clash_schedules_created_by_users_id_fk" FOREIGN KEY ("created_by") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action; EXCEPTION WHEN duplicate_object THEN null; END $$;--> statement-breakpoint
-DO $$ BEGIN ALTER TABLE "clash_transcripts" ADD CONSTRAINT "clash_transcripts_clash_match_id_clash_matches_id_fk" FOREIGN KEY ("clash_match_id") REFERENCES "public"."clash_matches"("id") ON DELETE cascade ON UPDATE no action; EXCEPTION WHEN duplicate_object THEN null; END $$;--> statement-breakpoint
-DO $$ BEGIN ALTER TABLE "eval_agent_tokens" ADD CONSTRAINT "eval_agent_tokens_created_by_users_id_fk" FOREIGN KEY ("created_by") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action; EXCEPTION WHEN duplicate_object THEN null; END $$;--> statement-breakpoint
-DO $$ BEGIN ALTER TABLE "eval_agents" ADD CONSTRAINT "eval_agents_token_id_eval_agent_tokens_id_fk" FOREIGN KEY ("token_id") REFERENCES "public"."eval_agent_tokens"("id") ON DELETE no action ON UPDATE no action; EXCEPTION WHEN duplicate_object THEN null; END $$;--> statement-breakpoint
-DO $$ BEGIN ALTER TABLE "eval_jobs" ADD CONSTRAINT "eval_jobs_schedule_id_eval_schedules_id_fk" FOREIGN KEY ("schedule_id") REFERENCES "public"."eval_schedules"("id") ON DELETE set null ON UPDATE no action; EXCEPTION WHEN duplicate_object THEN null; END $$;--> statement-breakpoint
-DO $$ BEGIN ALTER TABLE "eval_jobs" ADD CONSTRAINT "eval_jobs_workflow_id_workflows_id_fk" FOREIGN KEY ("workflow_id") REFERENCES "public"."workflows"("id") ON DELETE cascade ON UPDATE no action; EXCEPTION WHEN duplicate_object THEN null; END $$;--> statement-breakpoint
-DO $$ BEGIN ALTER TABLE "eval_jobs" ADD CONSTRAINT "eval_jobs_eval_set_id_eval_sets_id_fk" FOREIGN KEY ("eval_set_id") REFERENCES "public"."eval_sets"("id") ON DELETE no action ON UPDATE no action; EXCEPTION WHEN duplicate_object THEN null; END $$;--> statement-breakpoint
-DO $$ BEGIN ALTER TABLE "eval_jobs" ADD CONSTRAINT "eval_jobs_eval_agent_id_eval_agents_id_fk" FOREIGN KEY ("eval_agent_id") REFERENCES "public"."eval_agents"("id") ON DELETE no action ON UPDATE no action; EXCEPTION WHEN duplicate_object THEN null; END $$;--> statement-breakpoint
-DO $$ BEGIN ALTER TABLE "eval_jobs" ADD CONSTRAINT "eval_jobs_created_by_users_id_fk" FOREIGN KEY ("created_by") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action; EXCEPTION WHEN duplicate_object THEN null; END $$;--> statement-breakpoint
-DO $$ BEGIN ALTER TABLE "eval_results" ADD CONSTRAINT "eval_results_eval_job_id_eval_jobs_id_fk" FOREIGN KEY ("eval_job_id") REFERENCES "public"."eval_jobs"("id") ON DELETE cascade ON UPDATE no action; EXCEPTION WHEN duplicate_object THEN null; END $$;--> statement-breakpoint
-DO $$ BEGIN ALTER TABLE "eval_results" ADD CONSTRAINT "eval_results_provider_id_providers_id_fk" FOREIGN KEY ("provider_id") REFERENCES "public"."providers"("id") ON DELETE no action ON UPDATE no action; EXCEPTION WHEN duplicate_object THEN null; END $$;--> statement-breakpoint
-DO $$ BEGIN ALTER TABLE "eval_schedules" ADD CONSTRAINT "eval_schedules_workflow_id_workflows_id_fk" FOREIGN KEY ("workflow_id") REFERENCES "public"."workflows"("id") ON DELETE cascade ON UPDATE no action; EXCEPTION WHEN duplicate_object THEN null; END $$;--> statement-breakpoint
-DO $$ BEGIN ALTER TABLE "eval_schedules" ADD CONSTRAINT "eval_schedules_eval_set_id_eval_sets_id_fk" FOREIGN KEY ("eval_set_id") REFERENCES "public"."eval_sets"("id") ON DELETE no action ON UPDATE no action; EXCEPTION WHEN duplicate_object THEN null; END $$;--> statement-breakpoint
-DO $$ BEGIN ALTER TABLE "eval_schedules" ADD CONSTRAINT "eval_schedules_created_by_users_id_fk" FOREIGN KEY ("created_by") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action; EXCEPTION WHEN duplicate_object THEN null; END $$;--> statement-breakpoint
-DO $$ BEGIN ALTER TABLE "eval_sets" ADD CONSTRAINT "eval_sets_owner_id_users_id_fk" FOREIGN KEY ("owner_id") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action; EXCEPTION WHEN duplicate_object THEN null; END $$;--> statement-breakpoint
-DO $$ BEGIN ALTER TABLE "fund_return_requests" ADD CONSTRAINT "fund_return_requests_user_id_users_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action; EXCEPTION WHEN duplicate_object THEN null; END $$;--> statement-breakpoint
-DO $$ BEGIN ALTER TABLE "fund_return_requests" ADD CONSTRAINT "fund_return_requests_reviewed_by_users_id_fk" FOREIGN KEY ("reviewed_by") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action; EXCEPTION WHEN duplicate_object THEN null; END $$;--> statement-breakpoint
-DO $$ BEGIN ALTER TABLE "invite_tokens" ADD CONSTRAINT "invite_tokens_organization_id_organizations_id_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organizations"("id") ON DELETE no action ON UPDATE no action; EXCEPTION WHEN duplicate_object THEN null; END $$;--> statement-breakpoint
-DO $$ BEGIN ALTER TABLE "invite_tokens" ADD CONSTRAINT "invite_tokens_created_by_users_id_fk" FOREIGN KEY ("created_by") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action; EXCEPTION WHEN duplicate_object THEN null; END $$;--> statement-breakpoint
-DO $$ BEGIN ALTER TABLE "organization_seats" ADD CONSTRAINT "organization_seats_organization_id_organizations_id_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organizations"("id") ON DELETE cascade ON UPDATE no action; EXCEPTION WHEN duplicate_object THEN null; END $$;--> statement-breakpoint
-DO $$ BEGIN ALTER TABLE "payment_histories" ADD CONSTRAINT "payment_histories_user_id_users_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action; EXCEPTION WHEN duplicate_object THEN null; END $$;--> statement-breakpoint
-DO $$ BEGIN ALTER TABLE "payment_histories" ADD CONSTRAINT "payment_histories_organization_id_organizations_id_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organizations"("id") ON DELETE no action ON UPDATE no action; EXCEPTION WHEN duplicate_object THEN null; END $$;--> statement-breakpoint
-DO $$ BEGIN ALTER TABLE "payment_methods" ADD CONSTRAINT "payment_methods_user_id_users_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action; EXCEPTION WHEN duplicate_object THEN null; END $$;--> statement-breakpoint
-DO $$ BEGIN ALTER TABLE "payment_methods" ADD CONSTRAINT "payment_methods_organization_id_organizations_id_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organizations"("id") ON DELETE no action ON UPDATE no action; EXCEPTION WHEN duplicate_object THEN null; END $$;--> statement-breakpoint
-DO $$ BEGIN ALTER TABLE "projects" ADD CONSTRAINT "projects_owner_id_users_id_fk" FOREIGN KEY ("owner_id") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action; EXCEPTION WHEN duplicate_object THEN null; END $$;--> statement-breakpoint
-DO $$ BEGIN ALTER TABLE "projects" ADD CONSTRAINT "projects_organization_id_organizations_id_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organizations"("id") ON DELETE no action ON UPDATE no action; EXCEPTION WHEN duplicate_object THEN null; END $$;--> statement-breakpoint
-DO $$ BEGIN ALTER TABLE "secrets" ADD CONSTRAINT "secrets_user_id_users_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action; EXCEPTION WHEN duplicate_object THEN null; END $$;--> statement-breakpoint
-DO $$ BEGIN ALTER TABLE "users" ADD CONSTRAINT "users_organization_id_organizations_id_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organizations"("id") ON DELETE no action ON UPDATE no action; EXCEPTION WHEN duplicate_object THEN null; END $$;--> statement-breakpoint
-DO $$ BEGIN ALTER TABLE "workflows" ADD CONSTRAINT "workflows_owner_id_users_id_fk" FOREIGN KEY ("owner_id") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action; EXCEPTION WHEN duplicate_object THEN null; END $$;--> statement-breakpoint
-DO $$ BEGIN ALTER TABLE "workflows" ADD CONSTRAINT "workflows_project_id_projects_id_fk" FOREIGN KEY ("project_id") REFERENCES "public"."projects"("id") ON DELETE cascade ON UPDATE no action; EXCEPTION WHEN duplicate_object THEN null; END $$;--> statement-breakpoint
-DO $$ BEGIN ALTER TABLE "workflows" ADD CONSTRAINT "workflows_provider_id_providers_id_fk" FOREIGN KEY ("provider_id") REFERENCES "public"."providers"("id") ON DELETE no action ON UPDATE no action; EXCEPTION WHEN duplicate_object THEN null; END $$;--> statement-breakpoint
-CREATE INDEX IF NOT EXISTS "clash_events_status_idx" ON "clash_events" USING btree ("status");--> statement-breakpoint
-CREATE INDEX IF NOT EXISTS "clash_matches_status_idx" ON "clash_matches" USING btree ("status");--> statement-breakpoint
-CREATE INDEX IF NOT EXISTS "clash_matches_event_idx" ON "clash_matches" USING btree ("event_id");--> statement-breakpoint
-CREATE INDEX IF NOT EXISTS "clash_runner_pool_state_idx" ON "clash_runner_pool" USING btree ("state");--> statement-breakpoint
-CREATE INDEX IF NOT EXISTS "clash_schedules_enabled_idx" ON "clash_schedules" USING btree ("is_enabled");--> statement-breakpoint
-CREATE INDEX IF NOT EXISTS "clash_transcripts_match_idx" ON "clash_transcripts" USING btree ("clash_match_id");--> statement-breakpoint
-CREATE INDEX IF NOT EXISTS "eval_jobs_status_region_idx" ON "eval_jobs" USING btree ("status","region");--> statement-breakpoint
-CREATE INDEX IF NOT EXISTS "eval_jobs_eval_agent_idx" ON "eval_jobs" USING btree ("eval_agent_id");--> statement-breakpoint
-CREATE INDEX IF NOT EXISTS "eval_jobs_schedule_idx" ON "eval_jobs" USING btree ("schedule_id");--> statement-breakpoint
-CREATE INDEX IF NOT EXISTS "eval_results_provider_region_idx" ON "eval_results" USING btree ("provider_id","region");--> statement-breakpoint
-CREATE INDEX IF NOT EXISTS "eval_schedules_enabled_next_run_idx" ON "eval_schedules" USING btree ("is_enabled","next_run_at");--> statement-breakpoint
-CREATE UNIQUE INDEX "secrets_user_name_idx" ON "secrets" USING btree ("user_id","name");--> statement-breakpoint
-CREATE INDEX IF NOT EXISTS "IDX_user_sessions_expire" ON "user_sessions" USING btree ("expire");
+ALTER TABLE "activation_tokens" ADD CONSTRAINT "activation_tokens_user_id_users_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "api_keys" ADD CONSTRAINT "api_keys_created_by_users_id_fk" FOREIGN KEY ("created_by") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "eval_agent_tokens" ADD CONSTRAINT "eval_agent_tokens_created_by_users_id_fk" FOREIGN KEY ("created_by") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "eval_agents" ADD CONSTRAINT "eval_agents_token_id_eval_agent_tokens_id_fk" FOREIGN KEY ("token_id") REFERENCES "public"."eval_agent_tokens"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "eval_jobs" ADD CONSTRAINT "eval_jobs_schedule_id_eval_schedules_id_fk" FOREIGN KEY ("schedule_id") REFERENCES "public"."eval_schedules"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "eval_jobs" ADD CONSTRAINT "eval_jobs_workflow_id_workflows_id_fk" FOREIGN KEY ("workflow_id") REFERENCES "public"."workflows"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "eval_jobs" ADD CONSTRAINT "eval_jobs_eval_set_id_eval_sets_id_fk" FOREIGN KEY ("eval_set_id") REFERENCES "public"."eval_sets"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "eval_jobs" ADD CONSTRAINT "eval_jobs_eval_agent_id_eval_agents_id_fk" FOREIGN KEY ("eval_agent_id") REFERENCES "public"."eval_agents"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "eval_jobs" ADD CONSTRAINT "eval_jobs_created_by_users_id_fk" FOREIGN KEY ("created_by") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "eval_results" ADD CONSTRAINT "eval_results_eval_job_id_eval_jobs_id_fk" FOREIGN KEY ("eval_job_id") REFERENCES "public"."eval_jobs"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "eval_results" ADD CONSTRAINT "eval_results_provider_id_providers_id_fk" FOREIGN KEY ("provider_id") REFERENCES "public"."providers"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "eval_schedules" ADD CONSTRAINT "eval_schedules_workflow_id_workflows_id_fk" FOREIGN KEY ("workflow_id") REFERENCES "public"."workflows"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "eval_schedules" ADD CONSTRAINT "eval_schedules_eval_set_id_eval_sets_id_fk" FOREIGN KEY ("eval_set_id") REFERENCES "public"."eval_sets"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "eval_schedules" ADD CONSTRAINT "eval_schedules_created_by_users_id_fk" FOREIGN KEY ("created_by") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "eval_sets" ADD CONSTRAINT "eval_sets_owner_id_users_id_fk" FOREIGN KEY ("owner_id") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "fund_return_requests" ADD CONSTRAINT "fund_return_requests_user_id_users_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "fund_return_requests" ADD CONSTRAINT "fund_return_requests_reviewed_by_users_id_fk" FOREIGN KEY ("reviewed_by") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "invite_tokens" ADD CONSTRAINT "invite_tokens_organization_id_organizations_id_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organizations"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "invite_tokens" ADD CONSTRAINT "invite_tokens_created_by_users_id_fk" FOREIGN KEY ("created_by") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "organization_seats" ADD CONSTRAINT "organization_seats_organization_id_organizations_id_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organizations"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "payment_histories" ADD CONSTRAINT "payment_histories_user_id_users_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "payment_histories" ADD CONSTRAINT "payment_histories_organization_id_organizations_id_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organizations"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "payment_methods" ADD CONSTRAINT "payment_methods_user_id_users_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "payment_methods" ADD CONSTRAINT "payment_methods_organization_id_organizations_id_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organizations"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "projects" ADD CONSTRAINT "projects_owner_id_users_id_fk" FOREIGN KEY ("owner_id") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "projects" ADD CONSTRAINT "projects_organization_id_organizations_id_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organizations"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "secrets" ADD CONSTRAINT "secrets_user_id_users_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "users" ADD CONSTRAINT "users_organization_id_organizations_id_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organizations"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "workflows" ADD CONSTRAINT "workflows_owner_id_users_id_fk" FOREIGN KEY ("owner_id") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "workflows" ADD CONSTRAINT "workflows_project_id_projects_id_fk" FOREIGN KEY ("project_id") REFERENCES "public"."projects"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "workflows" ADD CONSTRAINT "workflows_provider_id_providers_id_fk" FOREIGN KEY ("provider_id") REFERENCES "public"."providers"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+CREATE INDEX "eval_jobs_status_region_idx" ON "eval_jobs" USING btree ("status","region");--> statement-breakpoint
+CREATE INDEX "eval_jobs_eval_agent_idx" ON "eval_jobs" USING btree ("eval_agent_id");--> statement-breakpoint
+CREATE INDEX "eval_jobs_schedule_idx" ON "eval_jobs" USING btree ("schedule_id");--> statement-breakpoint
+CREATE INDEX "eval_results_provider_region_idx" ON "eval_results" USING btree ("provider_id","region");--> statement-breakpoint
+CREATE INDEX "eval_schedules_enabled_next_run_idx" ON "eval_schedules" USING btree ("is_enabled","next_run_at");--> statement-breakpoint
+CREATE UNIQUE INDEX "secrets_user_name_idx" ON "secrets" USING btree ("user_id","name");

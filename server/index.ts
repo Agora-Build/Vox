@@ -167,8 +167,33 @@ app.use((req, res, next) => {
 });
 
 (async () => {
-  // Run pending Drizzle migrations on startup (safe, idempotent, migration-file-based)
+  // Run pending Drizzle migrations on startup
   try {
+    // Bootstrap: if this is an existing database that was never managed by drizzle
+    // (users table exists but __drizzle_migrations is empty), mark migration 0000 as
+    // already applied so drizzle skips it and only runs new migrations (0001+).
+    const { rows: usersExists } = await pool.query(
+      `SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'users' LIMIT 1`
+    );
+    if (usersExists.length > 0) {
+      await pool.query(`CREATE SCHEMA IF NOT EXISTS drizzle`);
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS drizzle."__drizzle_migrations" (
+          id SERIAL PRIMARY KEY, hash text NOT NULL, created_at bigint
+        )
+      `);
+      const { rows: migrationRows } = await pool.query(
+        `SELECT 1 FROM drizzle."__drizzle_migrations" LIMIT 1`
+      );
+      if (migrationRows.length === 0) {
+        await pool.query(
+          `INSERT INTO drizzle."__drizzle_migrations" (hash, created_at) VALUES ($1, $2)`,
+          ["0000_opposite_hobgoblin", 1775597495926]
+        );
+        log("Existing database detected — baseline migration marked as applied", "db");
+      }
+    }
+
     const { migrate } = await import("drizzle-orm/node-postgres/migrator");
     await migrate(db, { migrationsFolder: "./migrations" });
     log("Database migrations applied", "db");
