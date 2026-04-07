@@ -1,3 +1,21 @@
+// seed-data.ts — LOCAL DEVELOPMENT ONLY
+//
+// Purpose: convenience setup for local dev after a fresh DB reset.
+// Called automatically by: ./script/dev-local-run.sh (start + reset commands)
+//
+// NOT needed for production. /api/auth/init already handles:
+//   - Admin user creation
+//   - Scout user creation (disabled, no password)
+//   - Both default providers (Agora ConvoAI Engine, LiveKit Agents)
+//   - All 5 pricing config tiers
+//
+// What this script adds on top of init (local dev only):
+//   - Enables Scout account + sets known password (scout123) + email (scout@vox.ai)
+//   - Creates Scout's mainline LiveKit evaluation workflow + eval set + schedule
+//
+// Do not add production bootstrap logic here. If you need data in production,
+// either add it to /api/auth/init or run a one-off migration.
+
 import { DatabaseStorage } from "../server/storage";
 import { hashPassword } from "../server/auth";
 
