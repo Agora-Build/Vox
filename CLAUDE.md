@@ -72,13 +72,17 @@ npm run db:studio          # Open Drizzle Studio (database GUI)
 **RULE — Every `shared/schema.ts` change must include a migration:**
 1. Change `shared/schema.ts`
 2. `DATABASE_URL=... npm run db:generate` → creates file in `migrations/`
-3. Review the generated SQL
+3. Review the generated SQL — confirm it only changes what you intended
 4. Commit migration file in the same commit as the schema change
 5. Push → migrations apply automatically on next app startup
 
 **Never use `db:push` or `drizzle-kit push --force` in production** — it diffs the live schema and can silently drop columns.
 
-**Migrations run automatically on startup** via `drizzle-orm`'s `migrate()` in `server/index.ts`. No Coolify post-deploy command needed. See `docs/DEPLOYMENT.md` § Database Migrations for full details.
+**Migrations run automatically on startup** via `drizzle-orm`'s `migrate()` in `server/index.ts`. No Coolify post-deploy command needed.
+
+**Keep migration SQL clean** — plain `CREATE TABLE`, `ALTER TABLE`, etc. No `IF NOT EXISTS` or `DO ... EXCEPTION` tricks. Each migration is a precise change that runs exactly once on a DB that doesn't have it yet.
+
+**Adopting an existing DB** (one-time, when first introducing drizzle migrations): manually insert the baseline migration record in `drizzle.__drizzle_migrations` via Coolify terminal. See `docs/DEPLOYMENT.md` § Adopting an existing database.
 
 **seed-data.ts is local dev only** — called by `dev-local-run.sh` to activate Scout and create the mainline workflow. Production bootstrap (providers, pricing, users) is handled by `/api/auth/init`.
 

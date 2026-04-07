@@ -105,9 +105,7 @@ Vox uses **Drizzle ORM** with file-based migrations. SQL files live in `migratio
 
 #### How it works
 
-`server/index.ts` calls `drizzle-orm`'s built-in `migrate()` on every startup before accepting traffic. It reads `migrations/` and applies any pending SQL files. Already-applied migrations are tracked in a `drizzle/__migrations` table and skipped.
-
-**Do not add `npx drizzle-kit migrate` as a Coolify post-deploy command** — that's redundant with the startup migration and `drizzle-kit` is a devDependency that may not work correctly in all deployment environments.
+`server/index.ts` calls `drizzle-orm`'s built-in `migrate()` on every startup before accepting traffic. It reads `migrations/` and applies any pending SQL files. Applied migrations are tracked in `drizzle.__drizzle_migrations` and skipped on subsequent startups.
 
 **Do not use `drizzle-kit push --force` in production** — it diffs the live schema and may silently drop columns.
 
@@ -119,10 +117,10 @@ Every time you modify `shared/schema.ts`:
 # 1. Generate a new migration file (local DB must be running)
 DATABASE_URL="postgresql://vox:vox123@localhost:5432/vox" npm run db:generate
 
-# 2. Review the generated SQL
+# 2. Review the generated SQL — make sure it only changes what you intended
 git diff migrations/
 
-# 3. Commit migration alongside the schema change
+# 3. Commit migration alongside the schema change (same commit)
 git add shared/schema.ts migrations/
 git commit -m "feat: add <description>"
 
@@ -130,11 +128,23 @@ git commit -m "feat: add <description>"
 git push origin main
 ```
 
-Migration SQL must be idempotent for the initial/bootstrap migration:
-- `CREATE TABLE IF NOT EXISTS`
-- `CREATE TYPE` wrapped in `DO $$ BEGIN ... EXCEPTION WHEN duplicate_object THEN null; END $$`
-- `ALTER TABLE ADD CONSTRAINT` wrapped in the same `DO ... EXCEPTION` block
-- `CREATE INDEX IF NOT EXISTS`
+Keep migration SQL clean and straightforward — plain `CREATE TABLE`, `ALTER TABLE`, etc. Do not use `IF NOT EXISTS`, `DO ... EXCEPTION`, or other idempotency tricks in normal migrations. Each migration should be a precise, surgical change.
+
+#### Adopting an existing database (one-time setup)
+
+If you're adding drizzle migrations to a database that was previously managed without them, run this **once** in the Coolify terminal to establish the baseline — then drizzle will only apply new migrations going forward:
+
+```sql
+CREATE SCHEMA IF NOT EXISTS drizzle;
+CREATE TABLE IF NOT EXISTS drizzle."__drizzle_migrations" (
+  id SERIAL PRIMARY KEY, hash text NOT NULL, created_at bigint
+);
+-- Insert baseline record so drizzle skips migration 0000 (schema already exists)
+INSERT INTO drizzle."__drizzle_migrations" (hash, created_at)
+VALUES ('0000_opposite_hobgoblin', 1775597495926);
+```
+
+After this, redeploy — the app will only run new migrations (0001+).
 
 #### Local development
 
