@@ -103,15 +103,9 @@ This creates the admin user and a Scout user (which needs separate activation). 
 
 Vox uses **Drizzle ORM** with file-based migrations. Migration SQL files live in `migrations/` and are committed to git.
 
-#### Coolify post-deploy command
+#### Automatic on startup
 
-In Coolify, under your application's **Post-deployment** settings, add:
-
-```
-DATABASE_URL=<your-url> npx drizzle-kit migrate
-```
-
-This runs once after each deploy and applies any pending migrations. It is idempotent — already-applied migrations are skipped.
+Migrations run automatically when the app starts — no Coolify post-deploy command needed. On each startup, `drizzle-orm`'s built-in `migrate()` reads `migrations/` and applies any pending SQL files (idempotent — already-applied migrations are skipped).
 
 > **Do not use `npx drizzle-kit push --force` in production.** It diffs the live schema against the Drizzle model and may drop columns or indexes without warning.
 
@@ -130,7 +124,7 @@ git diff migrations/
 git add shared/schema.ts migrations/
 git commit -m "feat: add <table/column description>"
 
-# 4. Deploy — Coolify post-deploy command runs drizzle-kit migrate automatically
+# 4. Deploy — migrations apply automatically on next startup
 git push origin main
 ```
 
@@ -146,7 +140,7 @@ DATABASE_URL="postgresql://vox:vox123@localhost:5432/vox" npm run db:migrate
 
 #### Emergency: manual migration on production
 
-If Coolify post-deploy command is not configured or a migration needs to be applied immediately:
+If a migration needs to be applied immediately without restarting the app:
 
 ```bash
 # In Coolify → application → terminal (or via SSH):

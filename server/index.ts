@@ -167,13 +167,13 @@ app.use((req, res, next) => {
 });
 
 (async () => {
-  // Sync database schema on startup using drizzle-kit push (idempotent, diff-based)
+  // Run pending Drizzle migrations on startup (safe, idempotent, migration-file-based)
   try {
-    const { execSync } = await import("child_process");
-    execSync("npx drizzle-kit push --force", { stdio: "inherit" });
-    log("Database schema synced", "db");
+    const { migrate } = await import("drizzle-orm/node-postgres/migrator");
+    await migrate(db, { migrationsFolder: "./migrations" });
+    log("Database migrations applied", "db");
   } catch (err) {
-    console.error("Failed to sync database schema:", err);
+    console.error("Failed to run database migrations:", err);
     process.exit(1);
   }
 
