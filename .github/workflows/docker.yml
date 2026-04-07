@@ -26,6 +26,7 @@ jobs:
     outputs:
       vox-service: ${{ steps.filter.outputs.vox-service }}
       vox-eval-agentd: ${{ steps.filter.outputs.vox-eval-agentd }}
+      vox-clash-runner: ${{ steps.filter.outputs.vox-clash-runner }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -47,6 +48,8 @@ jobs:
               - 'drizzle.config.ts'
             vox-eval-agentd:
               - 'vox_eval_agentd/**'
+            vox-clash-runner:
+              - 'vox_clash_runner/**'
 
   build-vox-service:
     needs: changes
@@ -142,6 +145,66 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: ./vox_eval_agentd
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            BUILD_TAG=${{ github.ref_name }}
+            BUILD_DATE=${{ github.event.head_commit.timestamp }}
+
+  build-vox-clash-runner:
+    needs: changes
+    if: needs.changes.outputs.vox-clash-runner == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ github.repository_owner }}/vox-clash-runner
+          tags: |
+            type=sha,prefix=
+            type=raw,value=latest
+
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./vox_clash_runner
+          load: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            BUILD_TAG=${{ github.ref_name }}
+            BUILD_DATE=${{ github.event.head_commit.timestamp }}
+
+      - name: Smoke test clash runner image
+        run: |
+          IMAGE_TAG=$(echo '${{ steps.meta.outputs.tags }}' | head -n1)
+          docker run --rm "$IMAGE_TAG" bash -c "
+            echo '=== Node ===' && node --version &&
+            echo '=== Chromium ===' && node -e \"const {chromium}=require('playwright-core'); console.log('playwright-core ok')\" &&
+            echo '=== Runner syntax ===' && node --check /app/clash-runner.js &&
+            echo 'All smoke tests passed'
+          "
+
+      - name: Push image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./vox_clash_runner
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}

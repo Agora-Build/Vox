@@ -72,6 +72,12 @@ RUN npx esbuild clash-runner.ts --bundle --platform=node --format=esm --outfile=
 # Make PipeWire setup script executable
 RUN chmod +x /app/audio/pipewire-setup.sh
 
+# Build metadata (injected at build time via --build-arg)
+ARG BUILD_TAG=dev
+ARG BUILD_DATE=unknown
+ENV BUILD_TAG=${BUILD_TAG}
+ENV BUILD_DATE=${BUILD_DATE}
+
 ENV VOX_SERVER=http://localhost:5000
 ENV RUNNER_REGION=na
 
