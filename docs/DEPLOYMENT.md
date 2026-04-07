@@ -101,17 +101,56 @@ This creates the admin user and a Scout user (which needs separate activation). 
 
 ### 6. Database Migrations
 
-On first deploy, push the schema to the database. You can either:
+Vox uses **Drizzle ORM** with file-based migrations. Migration SQL files live in `migrations/` and are committed to git.
 
-- **SSH into the container** and run `npm run db:push`
-- **Add a pre-start script** in Coolify that runs `npx drizzle-kit push` before the app starts
+#### Coolify post-deploy command
 
-For subsequent schema changes, use migrations:
+In Coolify, under your application's **Post-deployment** settings, add:
+
+```
+DATABASE_URL=<your-url> npx drizzle-kit migrate
+```
+
+This runs once after each deploy and applies any pending migrations. It is idempotent — already-applied migrations are skipped.
+
+> **Do not use `npx drizzle-kit push --force` in production.** It diffs the live schema against the Drizzle model and may drop columns or indexes without warning.
+
+#### Developer workflow for schema changes
+
+Every time you modify `shared/schema.ts`:
 
 ```bash
-npm run db:generate   # Generate migration files locally
-# Commit the migration file to git
-npm run db:migrate    # Run on the server after deploy
+# 1. Generate a new migration file (needs a live DB for diffing)
+DATABASE_URL="postgresql://vox:vox123@localhost:5432/vox" npm run db:generate
+
+# 2. Review the generated SQL in migrations/
+git diff migrations/
+
+# 3. Commit the migration alongside the schema change
+git add shared/schema.ts migrations/
+git commit -m "feat: add <table/column description>"
+
+# 4. Deploy — Coolify post-deploy command runs drizzle-kit migrate automatically
+git push origin main
+```
+
+#### Local development
+
+```bash
+# Apply migrations to local DB
+DATABASE_URL="postgresql://vox:vox123@localhost:5432/vox" npm run db:migrate
+
+# Or use dev-local-run.sh which handles schema sync automatically:
+./script/dev-local-run.sh reset   # wipes data + pushes schema + seeds
+```
+
+#### Emergency: manual migration on production
+
+If Coolify post-deploy command is not configured or a migration needs to be applied immediately:
+
+```bash
+# In Coolify → application → terminal (or via SSH):
+DATABASE_URL=<prod-url> npx drizzle-kit migrate
 ```
 
 ## Other Platforms
