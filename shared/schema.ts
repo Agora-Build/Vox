@@ -657,6 +657,30 @@ export const clashRunnerTokens = pgTable("clash_runner_tokens", {
 
 export type ClashRunnerToken = typeof clashRunnerTokens.$inferSelect;
 
+// ==================== CLASH RUNNER ISSUED TOKENS ====================
+// Long-lived tokens issued by admin for runner authentication.
+// Runners present these tokens to /api/clash-runner/register.
+
+export const clashRunnerIssuedTokens = pgTable("clash_runner_issued_tokens", {
+  id: serial("id").primaryKey(),
+  name: text("name").notNull(),
+  tokenHash: text("token_hash").notNull().unique(),
+  region: regionEnum("region").notNull(),
+  createdBy: integer("created_by").notNull().references(() => users.id),
+  isRevoked: boolean("is_revoked").default(false).notNull(),
+  lastUsedAt: timestamp("last_used_at"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+export const insertClashRunnerIssuedTokenSchema = createInsertSchema(clashRunnerIssuedTokens).omit({
+  id: true,
+  createdAt: true,
+  lastUsedAt: true,
+});
+
+export type InsertClashRunnerIssuedToken = z.infer<typeof insertClashRunnerIssuedTokenSchema>;
+export type ClashRunnerIssuedToken = typeof clashRunnerIssuedTokens.$inferSelect;
+
 // ==================== CLASH RUNNER POOL ====================
 
 export const clashRunnerPool = pgTable("clash_runner_pool", {

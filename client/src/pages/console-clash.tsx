@@ -13,7 +13,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { Switch } from "@/components/ui/switch";
-import { Swords, Plus, Trash2, Play, X, Calendar } from "lucide-react";
+import { Swords, Plus, Trash2, Play, X, Calendar, Copy, Check, Server } from "lucide-react";
 import { useState } from "react";
 import { formatSmartTimestamp } from "@/lib/utils";
 
@@ -128,6 +128,54 @@ export default function ConsoleClash() {
   const { data: schedules, isLoading: loadingSchedules } = useQuery<ClashSchedule[]>({
     queryKey: ["/api/clash/schedules"],
     enabled: !!isScout,
+  });
+
+  const isAdmin = authStatus?.user?.isAdmin === true;
+
+  // Runner token state
+  const [createRunnerTokenOpen, setCreateRunnerTokenOpen] = useState(false);
+  const [newRunnerToken, setNewRunnerToken] = useState<string | null>(null);
+  const [runnerTokenName, setRunnerTokenName] = useState("");
+  const [runnerTokenRegion, setRunnerTokenRegion] = useState("na");
+  const [copiedToken, setCopiedToken] = useState(false);
+
+  const { data: runnerTokens, isLoading: loadingRunnerTokens } = useQuery<
+    { id: number; name: string; region: string; isRevoked: boolean; lastUsedAt: string | null; createdAt: string }[]
+  >({
+    queryKey: ["/api/admin/clash-runner-tokens"],
+    enabled: isAdmin,
+  });
+
+  const createRunnerTokenMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", "/api/admin/clash-runner-tokens", {
+        name: runnerTokenName,
+        region: runnerTokenRegion,
+      });
+      return res.json();
+    },
+    onSuccess: (data) => {
+      setNewRunnerToken(data.token);
+      setRunnerTokenName("");
+      setRunnerTokenRegion("na");
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/clash-runner-tokens"] });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Failed to create token", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const revokeRunnerTokenMutation = useMutation({
+    mutationFn: async (id: number) => {
+      await apiRequest("POST", `/api/admin/clash-runner-tokens/${id}/revoke`);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/clash-runner-tokens"] });
+      toast({ title: "Runner token revoked" });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Failed to revoke token", description: error.message, variant: "destructive" });
+    },
   });
 
   const allProfiles = [
@@ -349,6 +397,7 @@ export default function ConsoleClash() {
           <TabsTrigger value="profiles">Agent Profiles</TabsTrigger>
           <TabsTrigger value="events">Events</TabsTrigger>
           {isScout && <TabsTrigger value="schedules">Schedules</TabsTrigger>}
+          {isAdmin && <TabsTrigger value="runner-tokens">Runner Tokens</TabsTrigger>}
         </TabsList>
 
         {/* Agent Profiles Tab */}
@@ -886,6 +935,116 @@ export default function ConsoleClash() {
                 ) : (
                   <div className="text-center py-8 text-muted-foreground">
                     No schedules yet. Create one to automate recurring clashes.
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          </TabsContent>
+        )}
+
+        {/* Runner Tokens Tab (admin only) */}
+        {isAdmin && (
+          <TabsContent value="runner-tokens">
+            <Card>
+              <CardHeader>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <CardTitle className="flex items-center gap-2"><Server className="h-4 w-4" />Runner Tokens</CardTitle>
+                    <CardDescription>Issue tokens for vox-clash-runner deployments. Each runner needs a token to register.</CardDescription>
+                  </div>
+                  <Dialog open={createRunnerTokenOpen} onOpenChange={(open) => { setCreateRunnerTokenOpen(open); if (!open) setNewRunnerToken(null); }}>
+                    <DialogTrigger asChild>
+                      <Button size="sm"><Plus className="h-4 w-4 mr-1" />New Token</Button>
+                    </DialogTrigger>
+                    <DialogContent>
+                      <DialogHeader>
+                        <DialogTitle>Create Runner Token</DialogTitle>
+                        <DialogDescription>Issue a token for a clash runner deployment. The token is shown once — copy it before closing.</DialogDescription>
+                      </DialogHeader>
+                      {newRunnerToken ? (
+                        <div className="space-y-4">
+                          <p className="text-sm text-muted-foreground">Token created. Copy it now — it won't be shown again.</p>
+                          <div className="flex items-center gap-2">
+                            <code className="flex-1 bg-muted px-3 py-2 rounded text-xs font-mono break-all">{newRunnerToken}</code>
+                            <Button variant="outline" size="icon" onClick={() => { navigator.clipboard.writeText(newRunnerToken); setCopiedToken(true); setTimeout(() => setCopiedToken(false), 2000); }}>
+                              {copiedToken ? <Check className="h-4 w-4 text-green-500" /> : <Copy className="h-4 w-4" />}
+                            </Button>
+                          </div>
+                          <p className="text-xs text-muted-foreground">Use as: <code>RUNNER_TOKEN={"<token>"}</code> env var on the runner container.</p>
+                          <DialogFooter>
+                            <Button onClick={() => { setCreateRunnerTokenOpen(false); setNewRunnerToken(null); }}>Done</Button>
+                          </DialogFooter>
+                        </div>
+                      ) : (
+                        <div className="space-y-4">
+                          <div className="space-y-2">
+                            <Label>Name</Label>
+                            <Input placeholder="e.g. NA Runner 1" value={runnerTokenName} onChange={(e) => setRunnerTokenName(e.target.value)} />
+                          </div>
+                          <div className="space-y-2">
+                            <Label>Region</Label>
+                            <Select value={runnerTokenRegion} onValueChange={setRunnerTokenRegion}>
+                              <SelectTrigger><SelectValue /></SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="na">NA</SelectItem>
+                                <SelectItem value="apac">APAC</SelectItem>
+                                <SelectItem value="eu">EU</SelectItem>
+                              </SelectContent>
+                            </Select>
+                          </div>
+                          <DialogFooter>
+                            <Button variant="outline" onClick={() => setCreateRunnerTokenOpen(false)}>Cancel</Button>
+                            <Button onClick={() => createRunnerTokenMutation.mutate()} disabled={!runnerTokenName || createRunnerTokenMutation.isPending}>
+                              {createRunnerTokenMutation.isPending ? "Creating..." : "Create Token"}
+                            </Button>
+                          </DialogFooter>
+                        </div>
+                      )}
+                    </DialogContent>
+                  </Dialog>
+                </div>
+              </CardHeader>
+              <CardContent>
+                {loadingRunnerTokens ? (
+                  <Skeleton className="h-24 w-full" />
+                ) : runnerTokens && runnerTokens.length > 0 ? (
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Name</TableHead>
+                        <TableHead>Region</TableHead>
+                        <TableHead>Status</TableHead>
+                        <TableHead>Last Used</TableHead>
+                        <TableHead>Created</TableHead>
+                        <TableHead />
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {runnerTokens.map((t) => (
+                        <TableRow key={t.id}>
+                          <TableCell className="font-medium">{t.name}</TableCell>
+                          <TableCell><Badge variant="outline">{t.region.toUpperCase()}</Badge></TableCell>
+                          <TableCell>
+                            <Badge className={t.isRevoked ? "bg-muted text-muted-foreground" : "bg-green-500/10 text-green-500"}>
+                              {t.isRevoked ? "Revoked" : "Active"}
+                            </Badge>
+                          </TableCell>
+                          <TableCell className="text-muted-foreground text-sm">{t.lastUsedAt ? formatSmartTimestamp(t.lastUsedAt) : "Never"}</TableCell>
+                          <TableCell className="text-muted-foreground text-sm">{formatSmartTimestamp(t.createdAt)}</TableCell>
+                          <TableCell>
+                            {!t.isRevoked && (
+                              <Button variant="ghost" size="sm" className="text-destructive hover:text-destructive" onClick={() => revokeRunnerTokenMutation.mutate(t.id)} disabled={revokeRunnerTokenMutation.isPending}>
+                                <X className="h-4 w-4 mr-1" />Revoke
+                              </Button>
+                            )}
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                ) : (
+                  <div className="text-center text-muted-foreground py-8 text-sm">
+                    No runner tokens yet. Create one to deploy a clash runner.
                   </div>
                 )}
               </CardContent>

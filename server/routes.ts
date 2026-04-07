@@ -4041,9 +4041,68 @@ export async function registerRoutes(
     }
   });
 
+  // ==================== CLASH RUNNER ISSUED TOKENS (admin) ====================
+
+  // List all clash runner issued tokens
+  app.get("/api/admin/clash-runner-tokens", requireAuth, requireAdmin, async (req, res) => {
+    try {
+      const tokens = await storage.getAllClashRunnerIssuedTokens();
+      res.json(tokens.map(t => ({
+        id: t.id,
+        name: t.name,
+        region: t.region,
+        isRevoked: t.isRevoked,
+        lastUsedAt: t.lastUsedAt,
+        createdAt: t.createdAt,
+      })));
+    } catch (error) {
+      console.error("Error fetching clash runner tokens:", error);
+      res.status(500).json({ error: "Failed to fetch clash runner tokens" });
+    }
+  });
+
+  // Create clash runner token (admin only)
+  app.post("/api/admin/clash-runner-tokens", requireAuth, requireAdmin, async (req, res) => {
+    try {
+      const user = await getCurrentUser(req);
+      if (!user) return res.status(401).json({ error: "Not authenticated" });
+
+      const { name, region } = req.body;
+      if (!name || !region) return res.status(400).json({ error: "Name and region required" });
+      if (!["na", "apac", "eu"].includes(region)) return res.status(400).json({ error: "Invalid region" });
+
+      const token = "cr" + generateSecureToken(15);
+      const tokenHash = hashToken(token);
+
+      const issued = await storage.createClashRunnerIssuedToken({
+        name,
+        tokenHash,
+        region,
+        createdBy: user.id,
+        isRevoked: false,
+      });
+
+      res.json({ id: issued.id, name: issued.name, token, region: issued.region, createdAt: issued.createdAt });
+    } catch (error) {
+      console.error("Error creating clash runner token:", error);
+      res.status(500).json({ error: "Failed to create clash runner token" });
+    }
+  });
+
+  // Revoke clash runner token (admin only)
+  app.post("/api/admin/clash-runner-tokens/:id/revoke", requireAuth, requireAdmin, async (req, res) => {
+    try {
+      await storage.revokeClashRunnerIssuedToken(parseInt(req.params.id));
+      res.json({ message: "Clash runner token revoked" });
+    } catch (error) {
+      console.error("Error revoking clash runner token:", error);
+      res.status(500).json({ error: "Failed to revoke clash runner token" });
+    }
+  });
+
   // ==================== CLASH RUNNER POOL (v2) ====================
 
-  // Runner joins pool
+  // Runner joins pool — validates against admin-issued tokens
   app.post("/api/clash-runner/register", async (req, res) => {
     try {
       const authHeader = req.headers.authorization;
@@ -4053,13 +4112,17 @@ export async function registerRoutes(
       const token = authHeader.slice(7);
       const tokenHash = hashToken(token);
 
-      const { runnerId, region } = req.body;
-      if (!runnerId || !region) {
-        return res.status(400).json({ error: "runnerId and region are required" });
+      const issuedToken = await storage.getClashRunnerIssuedTokenByHash(tokenHash);
+      if (!issuedToken || issuedToken.isRevoked) {
+        return res.status(401).json({ error: "Invalid or revoked runner token" });
       }
 
-      const runner = await storage.registerClashRunner({ runnerId, tokenHash, region });
-      res.json({ id: runner.id, state: runner.state });
+      const { runnerId } = req.body;
+      if (!runnerId) return res.status(400).json({ error: "runnerId is required" });
+
+      const runner = await storage.registerClashRunner({ runnerId, tokenHash, region: issuedToken.region });
+      await storage.updateClashRunnerIssuedTokenLastUsed(issuedToken.id);
+      res.json({ id: runner.id, state: runner.state, region: runner.region });
     } catch (error) {
       console.error("Error registering clash runner:", error);
       res.status(500).json({ error: "Failed to register runner" });

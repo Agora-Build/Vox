@@ -51,6 +51,8 @@ import {
   type ClashTranscript,
   type ClashSchedule,
   type InsertClashSchedule,
+  type ClashRunnerIssuedToken,
+  type InsertClashRunnerIssuedToken,
   users,
   organizations,
   providers,
@@ -78,6 +80,7 @@ import {
   clashEloRatings,
   clashEvents,
   clashRunnerPool,
+  clashRunnerIssuedTokens,
   clashTranscripts,
   clashSchedules,
 } from "@shared/schema";
@@ -1538,6 +1541,30 @@ export class DatabaseStorage {
       .where(and(not(eq(clashRunnerPool.state, "draining")), sql`${clashRunnerPool.lastHeartbeatAt} < ${cutoff}`))
       .returning();
     return result.length;
+  }
+
+  // ==================== CLASH RUNNER ISSUED TOKENS ====================
+
+  async createClashRunnerIssuedToken(token: InsertClashRunnerIssuedToken): Promise<ClashRunnerIssuedToken> {
+    const result = await db.insert(clashRunnerIssuedTokens).values(token).returning();
+    return result[0];
+  }
+
+  async getAllClashRunnerIssuedTokens(): Promise<ClashRunnerIssuedToken[]> {
+    return db.select().from(clashRunnerIssuedTokens).orderBy(desc(clashRunnerIssuedTokens.createdAt));
+  }
+
+  async getClashRunnerIssuedTokenByHash(tokenHash: string): Promise<ClashRunnerIssuedToken | undefined> {
+    const result = await db.select().from(clashRunnerIssuedTokens).where(eq(clashRunnerIssuedTokens.tokenHash, tokenHash));
+    return result[0];
+  }
+
+  async revokeClashRunnerIssuedToken(id: number): Promise<void> {
+    await db.update(clashRunnerIssuedTokens).set({ isRevoked: true }).where(eq(clashRunnerIssuedTokens.id, id));
+  }
+
+  async updateClashRunnerIssuedTokenLastUsed(id: number): Promise<void> {
+    await db.update(clashRunnerIssuedTokens).set({ lastUsedAt: new Date() }).where(eq(clashRunnerIssuedTokens.id, id));
   }
 
   async getSecretsForClashMatch(matchId: number): Promise<Secret[]> {
