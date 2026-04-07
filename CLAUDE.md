@@ -56,23 +56,31 @@ npm run lint               # ESLint
 
 ### Database
 ```bash
-# Development (direct schema sync - use with caution on existing data)
-npm run db:push            # Push schema changes directly to database
+# Local dev only — direct schema sync, never use in production
+DATABASE_URL="postgresql://vox:vox123@localhost:5432/vox" npm run db:push
 
-# Production (migration-based - safer for existing data)
-npm run db:generate        # Generate migration files from schema changes
-npm run db:migrate         # Run pending migrations
+# Generate migration from schema changes (run this after every shared/schema.ts change)
+DATABASE_URL="postgresql://vox:vox123@localhost:5432/vox" npm run db:generate
+
+# Apply pending migrations
+DATABASE_URL="postgresql://vox:vox123@localhost:5432/vox" npm run db:migrate
 
 # Utilities
 npm run db:studio          # Open Drizzle Studio (database GUI)
 ```
 
-**Migration Workflow for Production:**
-1. Make schema changes in `shared/schema.ts`
-2. Run `npm run db:generate` to create migration file in `./migrations/`
-3. Review the generated SQL migration file
-4. Commit the migration file to git
-5. Deploy - run `npm run db:migrate` as post-deployment step
+**RULE — Every `shared/schema.ts` change must include a migration:**
+1. Change `shared/schema.ts`
+2. `DATABASE_URL=... npm run db:generate` → creates file in `migrations/`
+3. Review the generated SQL
+4. Commit migration file in the same commit as the schema change
+5. Push → Coolify post-deploy command (`npx drizzle-kit migrate`) applies it automatically
+
+**Never use `db:push` or `drizzle-kit push --force` in production** — it diffs the live schema and can silently drop columns.
+
+**Coolify post-deploy command:** `npx drizzle-kit migrate` (configured in Coolify dashboard). See `docs/DEPLOYMENT.md` § Database Migrations for full details.
+
+**seed-data.ts is local dev only** — called by `dev-local-run.sh` to activate Scout and create the mainline workflow. Production bootstrap (providers, pricing, users) is handled by `/api/auth/init`.
 
 ### Environment Variables
 Required:
