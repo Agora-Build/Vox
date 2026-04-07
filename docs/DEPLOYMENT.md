@@ -101,32 +101,40 @@ This creates the admin user and a Scout user (which needs separate activation). 
 
 ### 6. Database Migrations
 
-Vox uses **Drizzle ORM** with file-based migrations. Migration SQL files live in `migrations/` and are committed to git.
+Vox uses **Drizzle ORM** with file-based migrations. SQL files live in `migrations/` and are committed to git.
 
-#### Automatic on startup
+#### How it works
 
-Migrations run automatically when the app starts — no Coolify post-deploy command needed. On each startup, `drizzle-orm`'s built-in `migrate()` reads `migrations/` and applies any pending SQL files (idempotent — already-applied migrations are skipped).
+`server/index.ts` calls `drizzle-orm`'s built-in `migrate()` on every startup before accepting traffic. It reads `migrations/` and applies any pending SQL files. Already-applied migrations are tracked in a `drizzle/__migrations` table and skipped.
 
-> **Do not use `npx drizzle-kit push --force` in production.** It diffs the live schema against the Drizzle model and may drop columns or indexes without warning.
+**Do not add `npx drizzle-kit migrate` as a Coolify post-deploy command** — that's redundant with the startup migration and `drizzle-kit` is a devDependency that may not work correctly in all deployment environments.
+
+**Do not use `drizzle-kit push --force` in production** — it diffs the live schema and may silently drop columns.
 
 #### Developer workflow for schema changes
 
 Every time you modify `shared/schema.ts`:
 
 ```bash
-# 1. Generate a new migration file (needs a live DB for diffing)
+# 1. Generate a new migration file (local DB must be running)
 DATABASE_URL="postgresql://vox:vox123@localhost:5432/vox" npm run db:generate
 
-# 2. Review the generated SQL in migrations/
+# 2. Review the generated SQL
 git diff migrations/
 
-# 3. Commit the migration alongside the schema change
+# 3. Commit migration alongside the schema change
 git add shared/schema.ts migrations/
-git commit -m "feat: add <table/column description>"
+git commit -m "feat: add <description>"
 
-# 4. Deploy — migrations apply automatically on next startup
+# 4. Push — migration runs automatically on next app startup
 git push origin main
 ```
+
+Migration SQL must be idempotent for the initial/bootstrap migration:
+- `CREATE TABLE IF NOT EXISTS`
+- `CREATE TYPE` wrapped in `DO $$ BEGIN ... EXCEPTION WHEN duplicate_object THEN null; END $$`
+- `ALTER TABLE ADD CONSTRAINT` wrapped in the same `DO ... EXCEPTION` block
+- `CREATE INDEX IF NOT EXISTS`
 
 #### Local development
 
@@ -134,16 +142,14 @@ git push origin main
 # Apply migrations to local DB
 DATABASE_URL="postgresql://vox:vox123@localhost:5432/vox" npm run db:migrate
 
-# Or use dev-local-run.sh which handles schema sync automatically:
-./script/dev-local-run.sh reset   # wipes data + pushes schema + seeds
+# Full reset (wipe + re-apply schema + seed)
+./script/dev-local-run.sh reset
 ```
 
-#### Emergency: manual migration on production
-
-If a migration needs to be applied immediately without restarting the app:
+#### Emergency: apply migration without restarting
 
 ```bash
-# In Coolify → application → terminal (or via SSH):
+# Coolify → application → terminal:
 DATABASE_URL=<prod-url> npx drizzle-kit migrate
 ```
 
