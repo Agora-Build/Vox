@@ -16,5 +16,5 @@ RUN npm run build
 # Expose port
 EXPOSE 5000
 
-# Start the server (migrations run automatically on startup)
-CMD ["node", "dist/index.cjs"]
+# Run migrations then start the server
+CMD ["sh", "-c", "node dist/migrate.cjs && node dist/index.cjs"]
