@@ -130,21 +130,9 @@ git push origin main
 
 Keep migration SQL clean and straightforward — plain `CREATE TABLE`, `ALTER TABLE`, etc. Do not use `IF NOT EXISTS`, `DO ... EXCEPTION`, or other idempotency tricks in normal migrations. Each migration should be a precise, surgical change.
 
-#### Adopting an existing database (one-time setup)
+#### Existing databases
 
-If you're adding drizzle migrations to a database that was previously managed without them, run this **once** in the Coolify terminal to establish the baseline — then drizzle will only apply new migrations going forward:
-
-```sql
-CREATE SCHEMA IF NOT EXISTS drizzle;
-CREATE TABLE IF NOT EXISTS drizzle."__drizzle_migrations" (
-  id SERIAL PRIMARY KEY, hash text NOT NULL, created_at bigint
-);
--- Insert baseline record so drizzle skips migration 0000 (schema already exists)
-INSERT INTO drizzle."__drizzle_migrations" (hash, created_at)
-VALUES ('0000_opposite_hobgoblin', 1775597495926);
-```
-
-After this, redeploy — the app will only run new migrations (0001+).
+The startup code automatically handles databases that were not previously managed by drizzle. On first startup it detects whether the database already has the original schema (`users` table exists) but no drizzle migration history, and marks migration 0000 as already applied. Only new migrations (0001+) then run. No manual steps needed.
 
 #### Local development
 

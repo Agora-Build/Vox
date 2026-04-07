@@ -80,9 +80,9 @@ npm run db:studio          # Open Drizzle Studio (database GUI)
 
 **Migrations run automatically on startup** via `drizzle-orm`'s `migrate()` in `server/index.ts`. No Coolify post-deploy command needed.
 
-**Keep migration SQL clean** — plain `CREATE TABLE`, `ALTER TABLE`, etc. No `IF NOT EXISTS` or `DO ... EXCEPTION` tricks. Each migration is a precise change that runs exactly once on a DB that doesn't have it yet.
+**Keep migration SQL clean** — plain `CREATE TABLE`, `ALTER TABLE`, etc. No `IF NOT EXISTS` or `DO ... EXCEPTION` tricks. Each migration runs exactly once on a DB that doesn't have it yet.
 
-**Adopting an existing DB** (one-time, when first introducing drizzle migrations): manually insert the baseline migration record in `drizzle.__drizzle_migrations` via Coolify terminal. See `docs/DEPLOYMENT.md` § Adopting an existing database.
+**Existing databases are handled automatically** — startup code in `server/index.ts` detects databases with existing schema but no drizzle migration history, marks migration 0000 as applied, and only runs new migrations. No manual steps needed.
 
 **seed-data.ts is local dev only** — called by `dev-local-run.sh` to activate Scout and create the mainline workflow. Production bootstrap (providers, pricing, users) is handled by `/api/auth/init`.
 
