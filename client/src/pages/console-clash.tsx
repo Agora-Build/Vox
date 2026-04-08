@@ -102,7 +102,7 @@ export default function ConsoleClash() {
 
   // Event form state
   const [eventName, setEventName] = useState("");
-  const [eventRegion, setEventRegion] = useState("na");
+  const [eventRegion, setEventRegion] = useState("");
   const [eventScheduledAt, setEventScheduledAt] = useState("");
   const [eventMatchups, setEventMatchups] = useState<MatchupRow[]>([
     { agentAProfileId: "", agentBProfileId: "", topic: "" },
@@ -113,7 +113,7 @@ export default function ConsoleClash() {
   const [scheduleMatchups, setScheduleMatchups] = useState<MatchupRow[]>([
     { agentAProfileId: "", agentBProfileId: "", topic: "" },
   ]);
-  const [scheduleRegion, setScheduleRegion] = useState("na");
+  const [scheduleRegion, setScheduleRegion] = useState("");
   const [scheduleDuration, setScheduleDuration] = useState("300");
   const [scheduleAt, setScheduleAt] = useState("");
   const [scheduleCron, setScheduleCron] = useState("");
@@ -147,7 +147,7 @@ export default function ConsoleClash() {
   const [createRunnerTokenOpen, setCreateRunnerTokenOpen] = useState(false);
   const [newRunnerToken, setNewRunnerToken] = useState<string | null>(null);
   const [runnerTokenName, setRunnerTokenName] = useState("");
-  const [runnerTokenRegion, setRunnerTokenRegion] = useState("na");
+  const [runnerTokenRegion, setRunnerTokenRegion] = useState("");
   const [copiedToken, setCopiedToken] = useState(false);
 
   const { data: runnerTokens, isLoading: loadingRunnerTokens } = useQuery<
@@ -601,7 +601,7 @@ export default function ConsoleClash() {
                         <div className="space-y-2">
                           <Label>Region</Label>
                           <Select value={eventRegion} onValueChange={setEventRegion}>
-                            <SelectTrigger><SelectValue /></SelectTrigger>
+                            <SelectTrigger><SelectValue placeholder="Select region" /></SelectTrigger>
                             <SelectContent>
                               {REGIONS.map(r => <SelectItem key={r.value} value={r.value}>{r.label}</SelectItem>)}
                             </SelectContent>
@@ -678,6 +678,7 @@ export default function ConsoleClash() {
                         onClick={() => createEventMutation.mutate()}
                         disabled={
                           createEventMutation.isPending ||
+                          !eventRegion ||
                           !eventMatchupsValid ||
                           (!eventName && !(eventMatchups.length === 1 && eventMatchups[0].agentAProfileId && eventMatchups[0].agentBProfileId))
                         }
@@ -857,7 +858,7 @@ export default function ConsoleClash() {
                           <div className="space-y-2">
                             <Label>Region</Label>
                             <Select value={scheduleRegion} onValueChange={setScheduleRegion}>
-                              <SelectTrigger><SelectValue /></SelectTrigger>
+                              <SelectTrigger><SelectValue placeholder="Select region" /></SelectTrigger>
                               <SelectContent>
                                 {REGIONS.map(r => <SelectItem key={r.value} value={r.value}>{r.label}</SelectItem>)}
                               </SelectContent>
@@ -882,7 +883,7 @@ export default function ConsoleClash() {
                       <DialogFooter>
                         <Button
                           onClick={() => createScheduleMutation.mutate()}
-                          disabled={createScheduleMutation.isPending || !scheduleName || !scheduleMatchupsValid || (!scheduleAt && !scheduleCron)}
+                          disabled={createScheduleMutation.isPending || !scheduleName || !scheduleRegion || !scheduleMatchupsValid || (!scheduleAt && !scheduleCron)}
                         >
                           Create Schedule
                         </Button>
@@ -1103,7 +1104,7 @@ export default function ConsoleClash() {
                             <div className="space-y-2">
                               <Label>Region</Label>
                               <Select value={runnerTokenRegion} onValueChange={setRunnerTokenRegion}>
-                                <SelectTrigger><SelectValue /></SelectTrigger>
+                                <SelectTrigger><SelectValue placeholder="Select region" /></SelectTrigger>
                                 <SelectContent>
                                   {REGIONS.map(r => <SelectItem key={r.value} value={r.value}>{r.label}</SelectItem>)}
                                 </SelectContent>
@@ -1111,7 +1112,7 @@ export default function ConsoleClash() {
                             </div>
                             <DialogFooter>
                               <Button variant="outline" onClick={() => setCreateRunnerTokenOpen(false)}>Cancel</Button>
-                              <Button onClick={() => createRunnerTokenMutation.mutate()} disabled={!runnerTokenName || createRunnerTokenMutation.isPending}>
+                              <Button onClick={() => createRunnerTokenMutation.mutate()} disabled={!runnerTokenName || !runnerTokenRegion || createRunnerTokenMutation.isPending}>
                                 {createRunnerTokenMutation.isPending ? "Creating..." : "Create Runner"}
                               </Button>
                             </DialogFooter>
