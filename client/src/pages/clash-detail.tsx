@@ -4,7 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Swords, Radio, Clock, BarChart3 } from "lucide-react";
-import { formatSmartTimestamp } from "@/lib/utils";
+import { formatSmartTimestamp, formatRegion } from "@/lib/utils";
 import AgoraSpectator from "@/components/agora-spectator";
 
 interface ClashResult {
@@ -134,7 +134,7 @@ export default function ClashDetail() {
             {match.status === "live" && <Radio className="h-3 w-3 mr-1 animate-pulse" />}
             {match.status.toUpperCase()}
           </Badge>
-          <span className="text-sm text-muted-foreground">{match.region.toUpperCase()}</span>
+          <span className="text-sm text-muted-foreground">{formatRegion(match.region)}</span>
           <span className="text-sm text-muted-foreground">{formatSmartTimestamp(match.createdAt)}</span>
         </div>
         <h1 className="text-2xl font-bold flex items-center gap-3">
@@ -253,7 +253,7 @@ export default function ClashDetail() {
             </div>
             <div>
               <dt className="text-muted-foreground">Region</dt>
-              <dd className="font-medium">{match.region.toUpperCase()}</dd>
+              <dd className="font-medium">{formatRegion(match.region)}</dd>
             </div>
             {match.startedAt && (
               <div>

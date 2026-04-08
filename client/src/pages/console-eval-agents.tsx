@@ -12,7 +12,7 @@ import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { Server, MapPin, Activity, Clock, Eye, EyeOff, Plus, Key, Copy, Check, Ban, Lock } from "lucide-react";
 import { useState } from "react";
-import { formatSmartTimestamp } from "@/lib/utils";
+import { formatSmartTimestamp, formatRegion } from "@/lib/utils";
 
 interface AuthStatus {
   initialized: boolean;
@@ -225,7 +225,7 @@ export default function ConsoleEvalAgents() {
                     <TableCell>
                       <Badge variant="secondary" className="gap-1">
                         <MapPin className="h-3 w-3" />
-                        {REGIONS.find(r => r.value === agent.region)?.label || agent.region}
+                        {formatRegion(agent.region)}
                       </Badge>
                     </TableCell>
                     <TableCell>
@@ -431,7 +431,7 @@ export default function ConsoleEvalAgents() {
                     <TableCell>
                       <Badge variant="secondary" className="gap-1">
                         <MapPin className="h-3 w-3" />
-                        {REGIONS.find(r => r.value === token.region)?.label || token.region}
+                        {formatRegion(token.region)}
                       </Badge>
                     </TableCell>
                     <TableCell>

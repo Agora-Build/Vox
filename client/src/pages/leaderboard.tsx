@@ -1,4 +1,5 @@
 import { useState, useMemo } from "react";
+import { formatRegion } from "@/lib/utils";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -114,11 +115,7 @@ export default function Leaderboard() {
       : <ArrowDown className="h-4 w-4 ml-1" />;
   };
 
-  const regionLabel = selectedRegion === "all" ? "All Regions"
-    : selectedRegion === "na" ? "North America"
-    : selectedRegion === "apac" ? "Asia Pacific"
-    : selectedRegion === "sa" ? "South America"
-    : "Europe";
+  const regionLabel = selectedRegion === "all" ? "All Regions" : formatRegion(selectedRegion);
 
   const timeRangeLabel = timeRange === "24" ? "Last 24 hours"
     : timeRange === "168" ? "Last 7 days"
@@ -354,7 +351,7 @@ export default function Leaderboard() {
               )}
             </DialogTitle>
             <DialogDescription>
-              Performance metrics for {selectedEntry?.region.toUpperCase()} region
+              Performance metrics for {selectedEntry ? formatRegion(selectedEntry.region) : ""} region
             </DialogDescription>
           </DialogHeader>
           {selectedEntry && (

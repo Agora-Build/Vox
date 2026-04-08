@@ -7,7 +7,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { ClipboardList, CheckCircle, XCircle, Loader2, Clock, RefreshCw, CalendarClock, MousePointerClick } from "lucide-react";
 import { useState } from "react";
-import { formatSmartTimestamp } from "@/lib/utils";
+import { formatSmartTimestamp, formatRegion } from "@/lib/utils";
 import type { EvalJob, Workflow as WorkflowType } from "@shared/schema";
 
 type EnrichedEvalJob = EvalJob & { creatorName?: string | null; type?: "manual" | "scheduled" };
@@ -188,7 +188,7 @@ export default function ConsoleEvalJobs() {
                         )}
                       </TableCell>
                       <TableCell>
-                        <Badge variant="outline">{job.region.toUpperCase()}</Badge>
+                        <Badge variant="outline">{formatRegion(job.region)}</Badge>
                       </TableCell>
                       <TableCell>
                         <Badge variant={cfg.variant} className="gap-1">

@@ -1,4 +1,5 @@
 import { useState, useMemo, useEffect } from "react";
+import { formatRegion } from "@/lib/utils";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle, CardFooter, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -285,12 +286,6 @@ export default function SelfTest() {
     }
   };
 
-  const regionLabels: Record<string, string> = {
-    na: "North America",
-    apac: "Asia Pacific",
-    eu: "Europe",
-    sa: "South America",
-  };
 
   return (
     <div className="max-w-4xl mx-auto space-y-8 animate-in zoom-in-95 duration-500">
@@ -504,7 +499,7 @@ export default function SelfTest() {
                       <div>
                         <div className="font-medium">{getJobStatusLabel(activeJob.status, activeJob.id)}</div>
                         <div className="text-sm text-muted-foreground">
-                          Region: {regionLabels[activeJob.region] || activeJob.region}
+                          Region: {formatRegion(activeJob.region)}
                         </div>
                       </div>
                     </div>

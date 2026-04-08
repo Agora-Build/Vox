@@ -4,7 +4,7 @@ import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Link } from "wouter";
 import { Swords, Radio, Clock, Trophy, Headphones, Calendar } from "lucide-react";
-import { formatSmartTimestamp } from "@/lib/utils";
+import { formatSmartTimestamp, formatRegion } from "@/lib/utils";
 
 interface ClashEvent {
   id: number;
@@ -92,7 +92,7 @@ export default function Clash() {
                         <span className="inline-block h-2 w-2 rounded-full bg-green-500 animate-pulse" />
                         <Badge className={statusColors.live}>LIVE</Badge>
                       </div>
-                      <Badge variant="outline">{event.region.toUpperCase()}</Badge>
+                      <Badge variant="outline">{formatRegion(event.region)}</Badge>
                     </div>
                     <div className="text-lg font-medium">{event.name}</div>
                     {event.description && (
@@ -138,7 +138,7 @@ export default function Clash() {
                         <span className="font-medium">{event.name}</span>
                       </div>
                       <div className="flex items-center gap-3 text-sm text-muted-foreground">
-                        <Badge variant="outline">{event.region.toUpperCase()}</Badge>
+                        <Badge variant="outline">{formatRegion(event.region)}</Badge>
                         {event.scheduledAt && (
                           <span>{formatSmartTimestamp(event.scheduledAt)}</span>
                         )}
@@ -224,7 +224,7 @@ export default function Clash() {
                         <span className="font-medium">{event.name}</span>
                       </div>
                       <div className="flex items-center gap-3 text-sm text-muted-foreground">
-                        <Badge variant="outline">{event.region.toUpperCase()}</Badge>
+                        <Badge variant="outline">{formatRegion(event.region)}</Badge>
                         {event.completedAt && (
                           <span>{formatSmartTimestamp(event.completedAt)}</span>
                         )}

@@ -12,6 +12,17 @@ export function cn(...inputs: ClassValue[]) {
  * 1–8 hours: "X hours ago"
  * >= 8 hours: "2026-03-04 09:00:42"
  */
+const REGION_LABELS: Record<string, string> = {
+  na: "North America",
+  apac: "Asia Pacific",
+  eu: "Europe",
+  sa: "South America",
+};
+
+export function formatRegion(region: string): string {
+  return REGION_LABELS[region.toLowerCase()] ?? region;
+}
+
 export function formatSmartTimestamp(dateStr: string | Date): string {
   const date = dateStr instanceof Date ? dateStr : new Date(dateStr);
   const now = new Date();

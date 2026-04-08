@@ -13,7 +13,7 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import { ArrowLeft, Play, Settings, History, Clock, CheckCircle, XCircle, Loader2, RefreshCw } from "lucide-react";
 import { useState } from "react";
 import type { Workflow as WorkflowType, Provider, EvalJob, EvalSet } from "@shared/schema";
-import { formatSmartTimestamp } from "@/lib/utils";
+import { formatSmartTimestamp, formatRegion } from "@/lib/utils";
 
 interface AuthStatus {
   user: {
@@ -320,7 +320,7 @@ export default function ConsoleWorkflowDetail() {
                   <TableRow key={job.id}>
                     <TableCell className="font-mono">#{job.id}</TableCell>
                     <TableCell>
-                      <Badge variant="outline">{job.region.toUpperCase()}</Badge>
+                      <Badge variant="outline">{formatRegion(job.region)}</Badge>
                     </TableCell>
                     <TableCell>
                       <Badge

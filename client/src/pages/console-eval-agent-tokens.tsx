@@ -1,4 +1,5 @@
 import { useQuery, useMutation } from "@tanstack/react-query";
+import { formatRegion } from "@/lib/utils";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -273,7 +274,7 @@ export default function ConsoleEvalAgentTokens() {
                     <TableCell>
                       <Badge variant="secondary" className="gap-1">
                         <MapPin className="h-3 w-3" />
-                        {REGIONS.find(r => r.value === token.region)?.label || token.region}
+                        {formatRegion(token.region)}
                       </Badge>
                     </TableCell>
                     <TableCell>
