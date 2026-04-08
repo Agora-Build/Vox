@@ -143,17 +143,17 @@ export default function ConsoleLayout({ children }: ConsoleLayoutProps) {
   });
 
   navItems.push({
-    title: "Secrets",
-    url: "/console/secrets",
-    icon: KeyRound,
-    active: location === "/console/secrets",
-  });
-
-  navItems.push({
     title: "Clash",
     url: "/console/clash",
     icon: Swords,
     active: location === "/console/clash",
+  });
+
+  navItems.push({
+    title: "Secrets",
+    url: "/console/secrets",
+    icon: KeyRound,
+    active: location === "/console/secrets",
   });
 
 
