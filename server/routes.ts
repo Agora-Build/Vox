@@ -2029,13 +2029,22 @@ export async function registerRoutes(
 
       await storage.updateEvalAgentTokenLastUsed(evalAgentToken.id);
 
-      const agent = await storage.createEvalAgent({
-        name: agentName,
-        tokenId: evalAgentToken.id,
-        region: evalAgentToken.region,
-        state: "idle",
-        metadata: metadata || {},
-      });
+      // Upsert: reuse existing agent row for this token instead of creating duplicates on restart
+      const existing = await storage.getEvalAgentsByTokenId(evalAgentToken.id);
+      let agent;
+      if (existing.length > 0) {
+        agent = existing[0];
+        await storage.updateEvalAgent(agent.id, { name: agentName, state: "idle", metadata: metadata || {} });
+        agent = { ...agent, name: agentName, state: "idle" as const, metadata: metadata || {} };
+      } else {
+        agent = await storage.createEvalAgent({
+          name: agentName,
+          tokenId: evalAgentToken.id,
+          region: evalAgentToken.region,
+          state: "idle",
+          metadata: metadata || {},
+        });
+      }
 
       await storage.updateEvalAgentHeartbeat(agent.id);
 
