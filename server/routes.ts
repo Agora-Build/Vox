@@ -4100,8 +4100,12 @@ export async function registerRoutes(
     }
   });
 
-  // List all registered clash runners (admin only)
-  app.get("/api/admin/clash-runners", requireAuth, requireAdmin, async (req, res) => {
+  // List all registered clash runners (admin + principal/fellow)
+  app.get("/api/admin/clash-runners", requireAuth, async (req, res) => {
+    const user = await getCurrentUser(req);
+    if (!user) return res.status(401).json({ error: "Not authenticated" });
+    const isScout = user.isAdmin || user.plan === "principal" || user.plan === "fellow";
+    if (!isScout) return res.status(403).json({ error: "Not authorized" });
     try {
       const runners = await storage.getAllClashRunners();
       res.json(runners.map(r => ({
