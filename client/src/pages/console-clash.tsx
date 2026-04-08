@@ -1082,12 +1082,12 @@ export default function ConsoleClash() {
                               </div>
                               <div className="p-3 bg-muted rounded-md space-y-3">
                                 <div>
-                                  <p className="text-sm font-medium mb-1">Docker:</p>
-                                  <code className="text-xs break-all">{`docker run -e RUNNER_TOKEN=${newRunnerToken} -e VOX_SERVER=${window.location.origin} -e RUNNER_REGION=${runnerTokenRegion} vox-clash-runner`}</code>
+                                  <p className="text-sm font-medium mb-1">Single process:</p>
+                                  <code className="text-xs break-all">{`RUNNER_TOKEN=${newRunnerToken} VOX_SERVER=${window.location.origin} RUNNER_REGION=${runnerTokenRegion} node clash-runner.js`}</code>
                                 </div>
                                 <div>
-                                  <p className="text-sm font-medium mb-1">Raw process:</p>
-                                  <code className="text-xs break-all">{`RUNNER_TOKEN=${newRunnerToken} VOX_SERVER=${window.location.origin} RUNNER_REGION=${runnerTokenRegion} node clash-runner.js`}</code>
+                                  <p className="text-sm font-medium mb-1">Docker:</p>
+                                  <code className="text-xs break-all">{`docker run -e RUNNER_TOKEN=${newRunnerToken} -e VOX_SERVER=${window.location.origin} -e RUNNER_REGION=${runnerTokenRegion} vox-clash-runner`}</code>
                                 </div>
                               </div>
                             </div>
