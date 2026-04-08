@@ -1113,7 +1113,7 @@ export default function ConsoleClash() {
                             <DialogFooter>
                               <Button variant="outline" onClick={() => setCreateRunnerTokenOpen(false)}>Cancel</Button>
                               <Button onClick={() => createRunnerTokenMutation.mutate()} disabled={!runnerTokenName || createRunnerTokenMutation.isPending}>
-                                {createRunnerTokenMutation.isPending ? "Creating..." : "Create Token"}
+                                {createRunnerTokenMutation.isPending ? "Creating..." : "Create Runner"}
                               </Button>
                             </DialogFooter>
                           </div>
