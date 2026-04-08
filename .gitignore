@@ -18,3 +18,6 @@ tests/tests.dev.data
 playwright-report/
 test-results/
 .superpowers/
+.chisel/
+docs/superpowers/
+dots-break.png
