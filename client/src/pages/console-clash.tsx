@@ -1047,12 +1047,12 @@ export default function ConsoleClash() {
                 <CardHeader>
                   <div className="flex items-center justify-between">
                     <div>
-                      <CardTitle className="flex items-center gap-2">Runner Tokens</CardTitle>
+                      <CardTitle className="flex items-center gap-2">Create Runner</CardTitle>
                       <CardDescription>Issue tokens for vox-clash-runner deployments. Each runner needs a token to register.</CardDescription>
                     </div>
                     <Dialog open={createRunnerTokenOpen} onOpenChange={(open) => { setCreateRunnerTokenOpen(open); if (!open) setNewRunnerToken(null); }}>
                       <DialogTrigger asChild>
-                        <Button size="sm"><Plus className="h-4 w-4 mr-1" />New Token</Button>
+                        <Button size="sm"><Plus className="h-4 w-4 mr-1" />New Runner</Button>
                       </DialogTrigger>
                       <DialogContent>
                         <DialogHeader>
