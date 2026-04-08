@@ -7,7 +7,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { ClipboardList, CheckCircle, XCircle, Loader2, Clock, RefreshCw, CalendarClock, MousePointerClick } from "lucide-react";
 import { useState } from "react";
-import { formatSmartTimestamp, formatRegion } from "@/lib/utils";
+import { formatSmartTimestamp, formatRegion, REGIONS } from "@/lib/utils";
 import type { EvalJob, Workflow as WorkflowType } from "@shared/schema";
 
 type EnrichedEvalJob = EvalJob & { creatorName?: string | null; type?: "manual" | "scheduled" };
@@ -18,14 +18,6 @@ const STATUSES = [
   { value: "running", label: "Running" },
   { value: "completed", label: "Completed" },
   { value: "failed", label: "Failed" },
-];
-
-const REGIONS = [
-  { value: "all", label: "All Regions" },
-  { value: "na", label: "North America" },
-  { value: "apac", label: "Asia Pacific" },
-  { value: "eu", label: "Europe" },
-  { value: "sa", label: "South America" },
 ];
 
 function buildJobsUrl(filters: { status: string; region: string; workflowId: string }) {

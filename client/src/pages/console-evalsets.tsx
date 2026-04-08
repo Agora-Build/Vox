@@ -1,4 +1,5 @@
 import { useQuery, useMutation } from "@tanstack/react-query";
+import { REGIONS } from "@/lib/utils";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -48,12 +49,6 @@ interface AuthStatus {
   } | null;
 }
 
-const REGIONS = [
-  { value: "na", label: "North America" },
-  { value: "apac", label: "Asia Pacific" },
-  { value: "eu", label: "Europe" },
-  { value: "sa", label: "South America" },
-];
 
 export default function ConsoleEvalSets() {
   const { toast } = useToast();

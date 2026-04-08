@@ -12,7 +12,7 @@ import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { Server, MapPin, Activity, Clock, Eye, EyeOff, Plus, Key, Copy, Check, Ban, Lock } from "lucide-react";
 import { useState } from "react";
-import { formatSmartTimestamp, formatRegion } from "@/lib/utils";
+import { formatSmartTimestamp, formatRegion, REGIONS } from "@/lib/utils";
 
 interface AuthStatus {
   initialized: boolean;
@@ -46,12 +46,6 @@ interface EvalAgentToken {
   createdAt: string;
 }
 
-const REGIONS = [
-  { value: "na", label: "North America" },
-  { value: "apac", label: "Asia Pacific" },
-  { value: "eu", label: "Europe" },
-  { value: "sa", label: "South America" },
-];
 
 function getStateBadge(state: string) {
   switch (state) {

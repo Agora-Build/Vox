@@ -16,7 +16,7 @@ import { Switch } from "@/components/ui/switch";
 import { Swords, Plus, Trash2, Play, X, Calendar, Copy, Check, Server } from "lucide-react";
 import { useState } from "react";
 import { useLocation, useSearch } from "wouter";
-import { formatSmartTimestamp, formatRegion } from "@/lib/utils";
+import { formatSmartTimestamp, formatRegion, REGIONS } from "@/lib/utils";
 
 interface ClashAgentProfile {
   id: number;
@@ -603,9 +603,7 @@ export default function ConsoleClash() {
                           <Select value={eventRegion} onValueChange={setEventRegion}>
                             <SelectTrigger><SelectValue /></SelectTrigger>
                             <SelectContent>
-                              <SelectItem value="na">North America</SelectItem>
-                              <SelectItem value="apac">Asia Pacific</SelectItem>
-                              <SelectItem value="eu">Europe</SelectItem>
+                              {REGIONS.map(r => <SelectItem key={r.value} value={r.value}>{r.label}</SelectItem>)}
                             </SelectContent>
                           </Select>
                         </div>
@@ -861,9 +859,7 @@ export default function ConsoleClash() {
                             <Select value={scheduleRegion} onValueChange={setScheduleRegion}>
                               <SelectTrigger><SelectValue /></SelectTrigger>
                               <SelectContent>
-                                <SelectItem value="na">North America</SelectItem>
-                                <SelectItem value="apac">Asia Pacific</SelectItem>
-                                <SelectItem value="eu">Europe</SelectItem>
+                                {REGIONS.map(r => <SelectItem key={r.value} value={r.value}>{r.label}</SelectItem>)}
                               </SelectContent>
                             </Select>
                           </div>
@@ -1109,9 +1105,7 @@ export default function ConsoleClash() {
                               <Select value={runnerTokenRegion} onValueChange={setRunnerTokenRegion}>
                                 <SelectTrigger><SelectValue /></SelectTrigger>
                                 <SelectContent>
-                                  <SelectItem value="na">North America</SelectItem>
-                                  <SelectItem value="apac">Asia Pacific</SelectItem>
-                                  <SelectItem value="eu">Europe</SelectItem>
+                                  {REGIONS.map(r => <SelectItem key={r.value} value={r.value}>{r.label}</SelectItem>)}
                                 </SelectContent>
                               </Select>
                             </div>
