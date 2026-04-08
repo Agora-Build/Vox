@@ -4100,6 +4100,25 @@ export async function registerRoutes(
     }
   });
 
+  // List all registered clash runners (admin only)
+  app.get("/api/admin/clash-runners", requireAuth, requireAdmin, async (req, res) => {
+    try {
+      const runners = await storage.getAllClashRunners();
+      res.json(runners.map(r => ({
+        id: r.id,
+        runnerId: r.runnerId,
+        region: r.region,
+        state: r.state,
+        currentMatchId: r.currentMatchId,
+        lastHeartbeatAt: r.lastHeartbeatAt,
+        createdAt: r.createdAt,
+      })));
+    } catch (error) {
+      console.error("Error listing clash runners:", error);
+      res.status(500).json({ error: "Failed to list clash runners" });
+    }
+  });
+
   // ==================== CLASH RUNNER POOL (v2) ====================
 
   // Runner joins pool — validates against admin-issued tokens

@@ -1534,6 +1534,10 @@ export class DatabaseStorage {
     return result[0];
   }
 
+  async getAllClashRunners(): Promise<ClashRunner[]> {
+    return db.select().from(clashRunnerPool).orderBy(desc(clashRunnerPool.createdAt));
+  }
+
   async markStaleRunnersDraining(staleThresholdMs: number = 45000): Promise<number> {
     const cutoff = new Date(Date.now() - staleThresholdMs);
     const result = await db.update(clashRunnerPool)
