@@ -79,7 +79,7 @@ ENV BUILD_TAG=${BUILD_TAG}
 ENV BUILD_DATE=${BUILD_DATE}
 
 ENV VOX_SERVER=http://localhost:5000
-ENV RUNNER_REGION=na
+ENV XDG_RUNTIME_DIR=/tmp/pipewire-run
 
 VOLUME /app/output
 

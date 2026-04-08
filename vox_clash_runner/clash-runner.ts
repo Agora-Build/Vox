@@ -23,7 +23,6 @@ import { crossWireAudio, startObserver, computeMetrics } from "./audio/observer.
 
 const VOX_SERVER = process.env.VOX_SERVER || "http://localhost:5000";
 const RUNNER_TOKEN = process.env.RUNNER_TOKEN;
-const RUNNER_REGION = process.env.RUNNER_REGION || "na";
 const OUTPUT_DIR = process.env.OUTPUT_DIR || "/app/output";
 
 if (!RUNNER_TOKEN) {
@@ -74,7 +73,6 @@ async function main() {
   console.log("[ClashRunner] Registering...");
   const reg = await apiCall("POST", "/api/clash-runner/register", {
     runnerId: process.env.HOSTNAME || "local",
-    region: RUNNER_REGION,
   });
   console.log(`[ClashRunner] Registered as runner #${reg.id}, state: ${reg.state}`);
 

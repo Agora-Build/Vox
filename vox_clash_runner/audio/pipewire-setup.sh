@@ -7,6 +7,11 @@
 
 set -euo pipefail
 
+# PipeWire requires a runtime directory for its socket
+export XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/tmp/pipewire-run}
+mkdir -p "$XDG_RUNTIME_DIR"
+chmod 700 "$XDG_RUNTIME_DIR"
+
 echo "[PipeWire] Starting PipeWire and WirePlumber..."
 
 # Start PipeWire (runs in background)
