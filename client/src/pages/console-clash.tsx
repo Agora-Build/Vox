@@ -15,7 +15,7 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import { Switch } from "@/components/ui/switch";
 import { Swords, Plus, Trash2, Play, X, Calendar, Copy, Check, Server } from "lucide-react";
 import { useState } from "react";
-import { useLocation } from "wouter";
+import { useLocation, useSearch } from "wouter";
 import { formatSmartTimestamp } from "@/lib/utils";
 
 interface ClashAgentProfile {
@@ -81,9 +81,9 @@ const VALID_TABS = ["profiles", "events", "schedules", "runners"];
 
 export default function ConsoleClash() {
   const { toast } = useToast();
-  const [location, setLocation] = useLocation();
-  const searchParams = new URLSearchParams(location.includes("?") ? location.split("?")[1] : "");
-  const tabParam = searchParams.get("tab");
+  const [, setLocation] = useLocation();
+  const search = useSearch();
+  const tabParam = new URLSearchParams(search).get("tab");
   const activeTab = tabParam && VALID_TABS.includes(tabParam) ? tabParam : "profiles";
 
   const setTab = (tab: string) => {
