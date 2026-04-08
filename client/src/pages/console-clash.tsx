@@ -1065,7 +1065,7 @@ export default function ConsoleClash() {
                       <DialogContent>
                         <DialogHeader>
                           <DialogTitle>Launch the Runner</DialogTitle>
-                          <DialogDescription>Create a token and use it to start a clash runner. The token is shown once — copy it before closing.</DialogDescription>
+                          <DialogDescription>Create a new token for clash runner registration.</DialogDescription>
                         </DialogHeader>
                         {newRunnerToken ? (
                           <>
