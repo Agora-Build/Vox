@@ -603,9 +603,9 @@ export default function ConsoleClash() {
                           <Select value={eventRegion} onValueChange={setEventRegion}>
                             <SelectTrigger><SelectValue /></SelectTrigger>
                             <SelectContent>
-                              <SelectItem value="na">NA</SelectItem>
-                              <SelectItem value="apac">APAC</SelectItem>
-                              <SelectItem value="eu">EU</SelectItem>
+                              <SelectItem value="na">North America</SelectItem>
+                              <SelectItem value="apac">Asia Pacific</SelectItem>
+                              <SelectItem value="eu">Europe</SelectItem>
                             </SelectContent>
                           </Select>
                         </div>
@@ -861,9 +861,9 @@ export default function ConsoleClash() {
                             <Select value={scheduleRegion} onValueChange={setScheduleRegion}>
                               <SelectTrigger><SelectValue /></SelectTrigger>
                               <SelectContent>
-                                <SelectItem value="na">NA</SelectItem>
-                                <SelectItem value="apac">APAC</SelectItem>
-                                <SelectItem value="eu">EU</SelectItem>
+                                <SelectItem value="na">North America</SelectItem>
+                                <SelectItem value="apac">Asia Pacific</SelectItem>
+                                <SelectItem value="eu">Europe</SelectItem>
                               </SelectContent>
                             </Select>
                           </div>
@@ -1109,9 +1109,9 @@ export default function ConsoleClash() {
                               <Select value={runnerTokenRegion} onValueChange={setRunnerTokenRegion}>
                                 <SelectTrigger><SelectValue /></SelectTrigger>
                                 <SelectContent>
-                                  <SelectItem value="na">NA</SelectItem>
-                                  <SelectItem value="apac">APAC</SelectItem>
-                                  <SelectItem value="eu">EU</SelectItem>
+                                  <SelectItem value="na">North America</SelectItem>
+                                  <SelectItem value="apac">Asia Pacific</SelectItem>
+                                  <SelectItem value="eu">Europe</SelectItem>
                                 </SelectContent>
                               </Select>
                             </div>
