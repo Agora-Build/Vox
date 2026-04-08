@@ -156,14 +156,6 @@ export default function ConsoleLayout({ children }: ConsoleLayoutProps) {
     active: location === "/console/clash",
   });
 
-  if (user?.isAdmin) {
-    navItems.push({
-      title: "Clash Runners",
-      url: "/console/clash-runners",
-      icon: Server,
-      active: location === "/console/clash-runners",
-    });
-  }
 
   // Organization section
   const orgNavItems = [];

@@ -24,7 +24,6 @@ import ConsoleEvalJobs from "@/pages/console-eval-jobs";
 import ConsoleEvalAgents from "@/pages/console-eval-agents";
 import ConsoleSecrets from "@/pages/console-secrets";
 import ConsoleClash from "@/pages/console-clash";
-import ConsoleClashRunners from "@/pages/console-clash-runners";
 import Clash from "@/pages/clash";
 import ClashDetail from "@/pages/clash-detail";
 import ClashEvent from "@/pages/clash-event";
@@ -409,45 +408,6 @@ function ConsoleClashWrapper() {
   );
 }
 
-function ConsoleClashRunnersWrapper() {
-  const [, setLocation] = useLocation();
-  const { data: authStatus, isLoading, isFetching } = useQuery<AuthStatus>({
-    queryKey: ["/api/auth/status"],
-  });
-
-  useEffect(() => {
-    if (!isLoading && !isFetching && authStatus?.initialized && !authStatus.user) {
-      setLocation("/login");
-    }
-  }, [isLoading, isFetching, authStatus, setLocation]);
-
-  if ((isLoading || isFetching) && !authStatus?.user) {
-    return (
-      <div className="min-h-screen flex items-center justify-center">
-        <div className="animate-pulse text-muted-foreground">Loading...</div>
-      </div>
-    );
-  }
-
-  if (!authStatus?.initialized) {
-    return <ConsoleInit />;
-  }
-
-  if (!authStatus.user) {
-    return (
-      <div className="min-h-screen flex items-center justify-center">
-        <div className="animate-pulse text-muted-foreground">Redirecting...</div>
-      </div>
-    );
-  }
-
-  return (
-    <ConsoleLayout>
-      <ConsoleClashRunners />
-    </ConsoleLayout>
-  );
-}
-
 function ConsoleOrganizationWrapper() {
   const [, setLocation] = useLocation();
   const { data: authStatus, isLoading, isFetching } = useQuery<AuthStatus>({
@@ -789,9 +749,6 @@ function Router() {
       </Route>
       <Route path="/console/clash">
         <ConsoleClashWrapper />
-      </Route>
-      <Route path="/console/clash-runners">
-        <ConsoleClashRunnersWrapper />
       </Route>
       <Route path="/console/organization">
         <ConsoleOrganizationWrapper />
