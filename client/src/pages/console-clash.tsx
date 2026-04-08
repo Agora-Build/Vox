@@ -1054,21 +1054,30 @@ export default function ConsoleClash() {
                       <DialogTrigger asChild>
                         <Button size="sm"><Plus className="h-4 w-4 mr-1" />New Runner</Button>
                       </DialogTrigger>
-                      <DialogContent>
+                      <DialogContent className="max-w-2xl">
                         <DialogHeader>
-                          <DialogTitle>Create Runner Token</DialogTitle>
-                          <DialogDescription>Issue a token for a clash runner deployment. The token is shown once — copy it before closing.</DialogDescription>
+                          <DialogTitle>Launch the Runner</DialogTitle>
+                          <DialogDescription>Create a token and use it to start a clash runner. The token is shown once — copy it before closing.</DialogDescription>
                         </DialogHeader>
                         {newRunnerToken ? (
                           <div className="space-y-4">
-                            <p className="text-sm text-muted-foreground">Token created. Copy it now — it won't be shown again.</p>
-                            <div className="flex items-center gap-2">
-                              <code className="flex-1 bg-muted px-3 py-2 rounded text-xs font-mono break-all">{newRunnerToken}</code>
-                              <Button variant="outline" size="icon" onClick={() => { navigator.clipboard.writeText(newRunnerToken); setCopiedToken(true); setTimeout(() => setCopiedToken(false), 2000); }}>
-                                {copiedToken ? <Check className="h-4 w-4 text-green-500" /> : <Copy className="h-4 w-4" />}
-                              </Button>
+                            <div className="space-y-1">
+                              <Label className="text-xs text-muted-foreground">Token (copy now — won't be shown again)</Label>
+                              <div className="flex items-center gap-2">
+                                <code className="flex-1 bg-muted px-3 py-2 rounded text-xs font-mono break-all">{newRunnerToken}</code>
+                                <Button variant="outline" size="icon" onClick={() => { navigator.clipboard.writeText(newRunnerToken); setCopiedToken(true); setTimeout(() => setCopiedToken(false), 2000); }}>
+                                  {copiedToken ? <Check className="h-4 w-4 text-green-500" /> : <Copy className="h-4 w-4" />}
+                                </Button>
+                              </div>
                             </div>
-                            <p className="text-xs text-muted-foreground">Use as: <code>RUNNER_TOKEN={"<token>"}</code> env var on the runner container.</p>
+                            <div className="space-y-3">
+                              <p className="text-sm font-medium">Docker</p>
+                              <pre className="bg-muted rounded p-3 text-xs font-mono whitespace-pre-wrap break-all">{`docker run -e RUNNER_TOKEN=${newRunnerToken} -e VOX_SERVER=${window.location.origin} -e RUNNER_REGION=${runnerTokenRegion} vox-clash-runner`}</pre>
+                            </div>
+                            <div className="space-y-3">
+                              <p className="text-sm font-medium">Raw process</p>
+                              <pre className="bg-muted rounded p-3 text-xs font-mono whitespace-pre-wrap break-all">{`RUNNER_TOKEN=${newRunnerToken} VOX_SERVER=${window.location.origin} RUNNER_REGION=${runnerTokenRegion} node clash-runner.js`}</pre>
+                            </div>
                             <DialogFooter>
                               <Button onClick={() => { setCreateRunnerTokenOpen(false); setNewRunnerToken(null); }}>Done</Button>
                             </DialogFooter>
