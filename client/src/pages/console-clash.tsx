@@ -1065,34 +1065,39 @@ export default function ConsoleClash() {
                       <DialogTrigger asChild>
                         <Button size="sm"><Plus className="h-4 w-4 mr-1" />New Runner</Button>
                       </DialogTrigger>
-                      <DialogContent className="max-w-2xl">
+                      <DialogContent>
                         <DialogHeader>
                           <DialogTitle>Launch the Runner</DialogTitle>
                           <DialogDescription>Create a token and use it to start a clash runner. The token is shown once — copy it before closing.</DialogDescription>
                         </DialogHeader>
                         {newRunnerToken ? (
-                          <div className="space-y-4">
-                            <div className="space-y-1">
-                              <Label className="text-xs text-muted-foreground">Token (copy now — won't be shown again)</Label>
-                              <div className="flex items-center gap-2">
-                                <code className="flex-1 bg-muted px-3 py-2 rounded text-xs font-mono break-all">{newRunnerToken}</code>
-                                <Button variant="outline" size="icon" onClick={() => { navigator.clipboard.writeText(newRunnerToken); setCopiedToken(true); setTimeout(() => setCopiedToken(false), 2000); }}>
-                                  {copiedToken ? <Check className="h-4 w-4 text-green-500" /> : <Copy className="h-4 w-4" />}
-                                </Button>
+                          <>
+                            <div className="space-y-4 py-4">
+                              <div className="space-y-2">
+                                <Label>Runner Token</Label>
+                                <div className="flex gap-2">
+                                  <Input value={newRunnerToken} readOnly className="font-mono text-sm" />
+                                  <Button size="icon" variant="outline" onClick={() => { navigator.clipboard.writeText(newRunnerToken); setCopiedToken(true); setTimeout(() => setCopiedToken(false), 2000); }}>
+                                    {copiedToken ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
+                                  </Button>
+                                </div>
+                                <p className="text-xs text-muted-foreground">Copy this token now. It won't be shown again.</p>
+                              </div>
+                              <div className="p-3 bg-muted rounded-md space-y-3">
+                                <div>
+                                  <p className="text-sm font-medium mb-1">Docker:</p>
+                                  <code className="text-xs break-all">{`docker run -e RUNNER_TOKEN=${newRunnerToken} -e VOX_SERVER=${window.location.origin} -e RUNNER_REGION=${runnerTokenRegion} vox-clash-runner`}</code>
+                                </div>
+                                <div>
+                                  <p className="text-sm font-medium mb-1">Raw process:</p>
+                                  <code className="text-xs break-all">{`RUNNER_TOKEN=${newRunnerToken} VOX_SERVER=${window.location.origin} RUNNER_REGION=${runnerTokenRegion} node clash-runner.js`}</code>
+                                </div>
                               </div>
                             </div>
-                            <div className="space-y-3">
-                              <p className="text-sm font-medium">Docker</p>
-                              <pre className="bg-muted rounded p-3 text-xs font-mono whitespace-pre-wrap break-all">{`docker run -e RUNNER_TOKEN=${newRunnerToken} -e VOX_SERVER=${window.location.origin} -e RUNNER_REGION=${runnerTokenRegion} vox-clash-runner`}</pre>
-                            </div>
-                            <div className="space-y-3">
-                              <p className="text-sm font-medium">Raw process</p>
-                              <pre className="bg-muted rounded p-3 text-xs font-mono whitespace-pre-wrap break-all">{`RUNNER_TOKEN=${newRunnerToken} VOX_SERVER=${window.location.origin} RUNNER_REGION=${runnerTokenRegion} node clash-runner.js`}</pre>
-                            </div>
                             <DialogFooter>
-                              <Button onClick={() => { setCreateRunnerTokenOpen(false); setNewRunnerToken(null); }}>Done</Button>
+                              <Button variant="outline" onClick={() => { setCreateRunnerTokenOpen(false); setNewRunnerToken(null); }}>Done</Button>
                             </DialogFooter>
-                          </div>
+                          </>
                         ) : (
                           <div className="space-y-4">
                             <div className="space-y-2">
