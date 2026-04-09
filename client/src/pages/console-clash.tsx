@@ -13,7 +13,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { Switch } from "@/components/ui/switch";
-import { Swords, Plus, Trash2, Play, X, Calendar, Copy, Check, Server } from "lucide-react";
+import { Swords, Plus, Trash2, Play, X, Calendar, Copy, Check, Server, Pencil, Eye } from "lucide-react";
 import { useState } from "react";
 import { useLocation, useSearch } from "wouter";
 import { formatSmartTimestamp, formatRegion, REGIONS } from "@/lib/utils";
@@ -99,6 +99,15 @@ export default function ConsoleClash() {
   const [profileProvider, setProfileProvider] = useState("");
   const [profileSteps, setProfileSteps] = useState("[]");
   const [profileVisibility, setProfileVisibility] = useState("private");
+
+  // Edit profile state
+  const [editProfileOpen, setEditProfileOpen] = useState(false);
+  const [editProfileId, setEditProfileId] = useState<number | null>(null);
+  const [editProfileName, setEditProfileName] = useState("");
+  const [editProfileUrl, setEditProfileUrl] = useState("");
+  const [editProfileProvider, setEditProfileProvider] = useState("");
+  const [editProfileSteps, setEditProfileSteps] = useState("[]");
+  const [editProfileVisibility, setEditProfileVisibility] = useState("private");
 
   // Event form state
   const [eventName, setEventName] = useState("");
@@ -253,6 +262,44 @@ export default function ConsoleClash() {
       toast({ title: "Failed to delete", description: error.message, variant: "destructive" });
     },
   });
+
+  const editProfileMutation = useMutation({
+    mutationFn: async () => {
+      if (!editProfileId) throw new Error("No profile selected");
+      let steps: unknown[];
+      try {
+        steps = JSON.parse(editProfileSteps);
+      } catch {
+        throw new Error("Setup steps must be valid JSON");
+      }
+      const res = await apiRequest("PATCH", `/api/clash/profiles/${editProfileId}`, {
+        name: editProfileName,
+        agentUrl: editProfileUrl,
+        providerId: editProfileProvider || null,
+        setupSteps: steps,
+        visibility: editProfileVisibility,
+      });
+      return res.json();
+    },
+    onSuccess: () => {
+      setEditProfileOpen(false);
+      queryClient.invalidateQueries({ queryKey: ["/api/clash/profiles"] });
+      toast({ title: "Profile updated" });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Failed to update profile", description: error.message, variant: "destructive" });
+    },
+  });
+
+  function openEditProfile(profile: ClashAgentProfile) {
+    setEditProfileId(profile.id);
+    setEditProfileName(profile.name);
+    setEditProfileUrl(profile.agentUrl);
+    setEditProfileProvider(profile.providerId || "");
+    setEditProfileSteps(JSON.stringify(profile.setupSteps, null, 2));
+    setEditProfileVisibility(profile.visibility);
+    setEditProfileOpen(true);
+  }
 
   const createEventMutation = useMutation({
     mutationFn: async () => {
@@ -529,7 +576,14 @@ export default function ConsoleClash() {
                           </Badge>
                         </TableCell>
                         <TableCell className="text-muted-foreground">{formatSmartTimestamp(profile.createdAt)}</TableCell>
-                        <TableCell className="text-right">
+                        <TableCell className="text-right space-x-1">
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            onClick={() => openEditProfile(profile)}
+                          >
+                            <Pencil className="h-4 w-4" />
+                          </Button>
                           <Button
                             size="sm"
                             variant="ghost"
@@ -550,6 +604,69 @@ export default function ConsoleClash() {
               )}
             </CardContent>
           </Card>
+
+          {/* Edit Profile Dialog */}
+          <Dialog open={editProfileOpen} onOpenChange={setEditProfileOpen}>
+            <DialogContent className="max-w-lg">
+              <DialogHeader>
+                <DialogTitle>Edit Agent Profile</DialogTitle>
+                <DialogDescription>Update your agent profile configuration.</DialogDescription>
+              </DialogHeader>
+              <div className="space-y-4 py-4">
+                <div className="space-y-2">
+                  <Label htmlFor="edit-profile-name">Name</Label>
+                  <Input id="edit-profile-name" value={editProfileName} onChange={(e) => setEditProfileName(e.target.value)} />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="edit-profile-url">Agent URL</Label>
+                  <Input id="edit-profile-url" value={editProfileUrl} onChange={(e) => setEditProfileUrl(e.target.value)} />
+                </div>
+                <div className="space-y-2">
+                  <Label>Provider (optional)</Label>
+                  <Select value={editProfileProvider} onValueChange={setEditProfileProvider}>
+                    <SelectTrigger><SelectValue placeholder="Select provider" /></SelectTrigger>
+                    <SelectContent>
+                      {providers?.map((p) => (
+                        <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-2">
+                  <Label>Visibility</Label>
+                  <Select value={editProfileVisibility} onValueChange={setEditProfileVisibility}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="private">Private</SelectItem>
+                      <SelectItem value="public">Public</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="edit-profile-steps">Setup Steps (JSON)</Label>
+                  <Textarea
+                    id="edit-profile-steps"
+                    className="font-mono text-xs"
+                    rows={8}
+                    value={editProfileSteps}
+                    onChange={(e) => setEditProfileSteps(e.target.value)}
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Browser automation steps. Use <code className="bg-muted px-1 rounded">{"${secrets.KEY}"}</code> for credentials.
+                  </p>
+                </div>
+              </div>
+              <DialogFooter>
+                <Button variant="outline" onClick={() => setEditProfileOpen(false)}>Cancel</Button>
+                <Button
+                  onClick={() => editProfileMutation.mutate()}
+                  disabled={editProfileMutation.isPending || !editProfileName || !editProfileUrl}
+                >
+                  {editProfileMutation.isPending ? "Saving..." : "Save Changes"}
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
         </TabsContent>
 
         {/* Events Tab */}
@@ -722,6 +839,14 @@ export default function ConsoleClash() {
                         </TableCell>
                         <TableCell className="text-muted-foreground">{formatSmartTimestamp(event.createdAt)}</TableCell>
                         <TableCell className="text-right flex items-center justify-end gap-1">
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            onClick={() => setLocation(`/clash/event/${event.id}`)}
+                          >
+                            <Eye className="h-4 w-4 mr-1" />
+                            View
+                          </Button>
                           {event.status === "upcoming" && (
                             <Button
                               size="sm"
