@@ -1,5 +1,5 @@
 // broadcaster.ts — Publishes per-agent audio to an Agora RTC channel using the
-// native C++ agora-broadcaster binary. Spawns two parec|agora-broadcaster pairs,
+// native C++ agora-broadcaster binary. Spawns two pw-cat|agora-broadcaster pairs,
 // one for each agent, so spectators (and future avatar systems) receive
 // individual audio tracks with separate UIDs.
 
@@ -21,7 +21,7 @@ export interface BroadcastHandle {
 const BROADCASTER_BIN = process.env.BROADCASTER_BIN || "/app/agora-broadcaster";
 
 interface AgentBroadcast {
-  parec: ChildProcess;
+  capture: ChildProcess;
   broadcaster: ChildProcess;
   label: string;
 }
@@ -33,7 +33,7 @@ function spawnAgentBroadcaster(
   uid: number,
   label: string,
 ): AgentBroadcast {
-  const parec = spawn("pw-cat", [
+  const capture = spawn("pw-cat", [
     "--record",
     `--target=${device}`,
     "--format=s16",
@@ -51,11 +51,11 @@ function spawnAgentBroadcaster(
     "--numOfChannels", "1",
   ]);
 
-  parec.stdout.pipe(broadcaster.stdin);
+  capture.stdout.pipe(broadcaster.stdin);
 
-  parec.stderr?.on("data", (d: Buffer) => {
+  capture.stderr?.on("data", (d: Buffer) => {
     const msg = d.toString().trim();
-    if (msg) console.error(`[parec:${label}] ${msg}`);
+    if (msg) console.error(`[pw-cat:${label}] ${msg}`);
   });
   broadcaster.stderr?.on("data", (d: Buffer) => {
     const msg = d.toString().trim();
@@ -68,7 +68,7 @@ function spawnAgentBroadcaster(
     }
   });
 
-  return { parec, broadcaster, label };
+  return { capture, broadcaster, label };
 }
 
 function killAgent(agent: AgentBroadcast): Promise<void> {
@@ -76,13 +76,13 @@ function killAgent(agent: AgentBroadcast): Promise<void> {
     let closed = 0;
     const onClose = () => { if (++closed >= 2) resolve(); };
     agent.broadcaster.on("close", onClose);
-    agent.parec.on("close", onClose);
+    agent.capture.on("close", onClose);
     agent.broadcaster.kill("SIGTERM");
-    agent.parec.kill("SIGTERM");
+    agent.capture.kill("SIGTERM");
     // Force kill after 3s if still alive
     setTimeout(() => {
       agent.broadcaster.kill("SIGKILL");
-      agent.parec.kill("SIGKILL");
+      agent.capture.kill("SIGKILL");
     }, 3000);
   });
 }

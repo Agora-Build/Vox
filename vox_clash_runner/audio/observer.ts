@@ -55,7 +55,7 @@ export function crossWireAudio(): void {
  * Agent A (Virtual_Sink_A.monitor) → left channel
  * Agent B (Virtual_Sink_B.monitor) → right channel
  *
- * Uses parec (PulseAudio/PipeWire client) to capture monitor streams,
+ * Uses pw-cat (native PipeWire) to capture monitor streams,
  * then sox to merge into stereo.
  */
 export function startRecording(outputDir: string): {

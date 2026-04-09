@@ -27,9 +27,7 @@ RUN apt-get update && apt-get install -y \
     && apt-get update && apt-get install -y \
     nodejs \
     pipewire \
-    pipewire-pulse \
     wireplumber \
-    pulseaudio-utils \
     pipewire-audio-client-libraries \
     fonts-ipafont-gothic \
     fonts-wqy-zenhei \

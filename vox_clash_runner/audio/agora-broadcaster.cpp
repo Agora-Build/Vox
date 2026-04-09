@@ -1,10 +1,10 @@
 // agora-broadcaster.cpp — Lightweight audio broadcaster using Agora Server Gateway SDK.
 //
-// Reads raw PCM audio from stdin (piped from parec) and publishes it to an
-// Agora RTC channel. Replaces the previous headless Chrome broadcaster.
+// Reads raw PCM audio from stdin (piped from pw-cat) and publishes it to an
+// Agora RTC channel.
 //
 // Usage:
-//   parec --device=Virtual_Sink_A.monitor --format=s16le --rate=16000 --channels=1 --file-format=raw \
+//   pw-cat --record --target=Virtual_Sink_A.monitor --format=s16 --rate=16000 --channels=1 - \
 //     | agora-broadcaster --appId <id> --token <token> --channelId <channel> --userId <uid>
 //
 // Exits on SIGTERM, SIGINT, or stdin EOF.
