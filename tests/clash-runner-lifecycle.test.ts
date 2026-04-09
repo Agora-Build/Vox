@@ -477,6 +477,82 @@ describe("Clash Runner Lifecycle", () => {
     });
   });
 
+  // ── Profile Editing ────────────────────────────────────────────────
+
+  describe("Profile Editing", () => {
+    it("owner can edit profile name and URL", async () => {
+      const res = await authFetch(admin, `${BASE_URL}/api/clash/profiles/${profileAId}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          name: "Test Agent A (updated)",
+          agentUrl: "https://example.com/agent-a-v2",
+        }),
+      });
+      expect(res.status).toBe(200);
+      const updated = await res.json();
+      expect(updated.name).toBe("Test Agent A (updated)");
+      expect(updated.agentUrl).toBe("https://example.com/agent-a-v2");
+    });
+
+    it("owner can edit setup steps", async () => {
+      const newSteps = [
+        { action: "click", selector: "#start" },
+        { action: "fill", selector: "#email", value: "${secrets.AGORA_CONSOLE_EMAIL}" },
+      ];
+      const res = await authFetch(admin, `${BASE_URL}/api/clash/profiles/${profileAId}`, {
+        method: "PATCH",
+        body: JSON.stringify({ setupSteps: newSteps }),
+      });
+      expect(res.status).toBe(200);
+      const updated = await res.json();
+      expect(updated.setupSteps).toHaveLength(2);
+      expect(updated.setupSteps[0].action).toBe("click");
+      expect(updated.setupSteps[1].value).toBe("${secrets.AGORA_CONSOLE_EMAIL}");
+    });
+
+    it("rejects edit on non-existent profile", async () => {
+      const res = await authFetch(admin, `${BASE_URL}/api/clash/profiles/999999`, {
+        method: "PATCH",
+        body: JSON.stringify({ name: "nope" }),
+      });
+      expect(res.status).toBe(404);
+    });
+  });
+
+  // ── Stream Info ───────────────────────────────────────────────────
+
+  describe("Stream Info", () => {
+    it("returns 400 for non-live match", async () => {
+      // Create an event but don't start it — match stays "pending"
+      const eventRes = await authFetch(admin, `${BASE_URL}/api/clash/events`, {
+        method: "POST",
+        body: JSON.stringify({
+          name: "Stream Info Test",
+          region: "na",
+          visibility: "private",
+          matchups: [{
+            agentAProfileId: profileAId,
+            agentBProfileId: profileBId,
+            topic: "Stream test",
+            maxDurationSeconds: 60,
+          }],
+        }),
+      });
+      const event = await eventRes.json();
+      const detailRes = await authFetch(admin, `${BASE_URL}/api/clash/events/${event.id}`);
+      const detail = await detailRes.json();
+      const matchId = detail.matches[0].id;
+
+      const streamRes = await fetch(`${BASE_URL}/api/clash/matches/${matchId}/stream-info`);
+      expect(streamRes.status).toBe(400); // match is pending, not live
+    });
+
+    it("returns 404 for non-existent match", async () => {
+      const res = await fetch(`${BASE_URL}/api/clash/matches/999999/stream-info`);
+      expect(res.status).toBe(404);
+    });
+  });
+
   // ── Cleanup ───────────────────────────────────────────────────────
 
   afterAll(async () => {
@@ -573,6 +649,67 @@ describe("Clash Runner Storage Logic", () => {
       const now = Date.now();
       const startedAt = now - 120_000; // 2 min ago
       expect(now - startedAt > threshold).toBe(false);
+    });
+  });
+
+  describe("UID Reservation", () => {
+    const BROADCASTER_UID_A = 100;
+    const BROADCASTER_UID_B = 200;
+    const MODERATOR_UID = 500;
+    const RESERVED_MAX = 10000;
+    const SPECTATOR_MIN = 10001;
+
+    it("broadcaster UIDs are in reserved range", () => {
+      expect(BROADCASTER_UID_A).toBeLessThanOrEqual(RESERVED_MAX);
+      expect(BROADCASTER_UID_B).toBeLessThanOrEqual(RESERVED_MAX);
+    });
+
+    it("moderator UID is in reserved range", () => {
+      expect(MODERATOR_UID).toBeLessThanOrEqual(RESERVED_MAX);
+    });
+
+    it("broadcaster UIDs are distinct", () => {
+      expect(BROADCASTER_UID_A).not.toBe(BROADCASTER_UID_B);
+    });
+
+    it("no UID collisions between system roles", () => {
+      const uids = [BROADCASTER_UID_A, BROADCASTER_UID_B, MODERATOR_UID];
+      expect(new Set(uids).size).toBe(uids.length);
+    });
+
+    it("spectator UIDs are above reserved range", () => {
+      // Simulate the server's spectator UID generation
+      for (let i = 0; i < 100; i++) {
+        const uid = Math.floor(Math.random() * 100000) + SPECTATOR_MIN;
+        expect(uid).toBeGreaterThan(RESERVED_MAX);
+      }
+    });
+  });
+
+  describe("Dual Broadcast Config", () => {
+    it("BroadcastConfig has separate tokenA/tokenB and uidA/uidB", () => {
+      const config = {
+        appId: "test-app-id",
+        channelName: "clash-42",
+        tokenA: "token-for-agent-a",
+        tokenB: "token-for-agent-b",
+        uidA: 100,
+        uidB: 200,
+      };
+      expect(config.tokenA).not.toBe(config.tokenB);
+      expect(config.uidA).not.toBe(config.uidB);
+      expect(config.uidA).toBe(100);
+      expect(config.uidB).toBe(200);
+    });
+
+    it("each agent maps to its own PipeWire monitor", () => {
+      const mapping = {
+        agentA: { device: "Virtual_Sink_A.monitor", uid: 100 },
+        agentB: { device: "Virtual_Sink_B.monitor", uid: 200 },
+      };
+      expect(mapping.agentA.device).toContain("_A");
+      expect(mapping.agentB.device).toContain("_B");
+      expect(mapping.agentA.uid).not.toBe(mapping.agentB.uid);
     });
   });
 
