@@ -4458,8 +4458,11 @@ export async function registerRoutes(
       const channelName = event?.agoraChannelName || null;
 
       if (isAgoraConfigured() && channelName) {
-        // UIDs <= 10,000 reserved for internal system use
-        const spectatorUid = Math.floor(Math.random() * 100000) + 10001;
+        // Stable spectator UID: same user + same match = same UID across refreshes
+        // Derived from IP + matchId hash, range 10,001–110,000
+        const clientIp = req.ip || req.headers["x-forwarded-for"] || "anonymous";
+        const uidHash = hashToken(`spectator:${clientIp}:${matchId}`);
+        const spectatorUid = (parseInt(uidHash.slice(0, 8), 16) % 100000) + 10001;
         const spectatorToken = generateRtcToken(channelName, spectatorUid, "audience");
         return res.json({
           appId: process.env.AGORA_APP_ID,
