@@ -4245,9 +4245,8 @@ export async function registerRoutes(
         };
       }
 
-      // Transition: runner → running, match → starting
+      // Transition runner → running (match already set to "starting" by scheduler)
       await storage.updateClashRunner(runner.id, { state: "running" });
-      await storage.updateClashMatch(match.id, { status: "starting", runnerId: runner.runnerId, startedAt: new Date() });
 
       res.json({
         assigned: true,
@@ -4769,7 +4768,13 @@ export async function registerRoutes(
           const runner = await storage.getIdleClashRunner(event.region);
           if (!runner) continue;
 
-          // Assign the match to the runner
+          // Assign match to runner atomically — mark both in one scheduler tick
+          // so the next tick sees the match as "starting" and won't double-assign
+          await storage.updateClashMatch(pending.id, {
+            status: "starting",
+            runnerId: runner.runnerId,
+            startedAt: new Date(),
+          });
           await storage.updateClashRunner(runner.id, {
             state: "assigned",
             currentMatchId: pending.id,
