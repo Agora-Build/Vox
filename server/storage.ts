@@ -1518,11 +1518,12 @@ export class DatabaseStorage {
   }
 
   async registerClashRunner(data: { runnerId: string; tokenHash: string; region: string }): Promise<ClashRunner> {
-    const existing = await db.select().from(clashRunnerPool).where(eq(clashRunnerPool.runnerId, data.runnerId));
+    // Upsert on tokenHash — one token = one runner slot; runnerId updates on restart
+    const existing = await db.select().from(clashRunnerPool).where(eq(clashRunnerPool.tokenHash, data.tokenHash));
     if (existing[0]) {
       const result = await db.update(clashRunnerPool)
-        .set({ tokenHash: data.tokenHash, state: "idle", lastHeartbeatAt: new Date(), currentMatchId: null })
-        .where(eq(clashRunnerPool.runnerId, data.runnerId)).returning();
+        .set({ runnerId: data.runnerId, state: "idle", lastHeartbeatAt: new Date(), currentMatchId: null })
+        .where(eq(clashRunnerPool.tokenHash, data.tokenHash)).returning();
       return result[0];
     }
     const result = await db.insert(clashRunnerPool).values({ ...data, region: data.region as any, state: "idle", lastHeartbeatAt: new Date() }).returning();
