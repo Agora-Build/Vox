@@ -4,6 +4,7 @@ import { storage, hashToken, generateSecureToken, generateEvalAgentToken, mergeE
 import { parseNextCronRun } from "./cron";
 import { seedAevalVersion, compareVersions } from "./aeval-seed";
 import { generateProviderId } from "@shared/schema";
+import { SECRET_NAME_PATTERN } from "@shared/secrets";
 import { registerApiV1Routes } from "./routes-api-v1";
 import {
   hashPassword,
@@ -1734,7 +1735,7 @@ export async function registerRoutes(
         return res.status(400).json({ error: "Secret value is required" });
       }
       const trimmedName = name.trim();
-      if (!/^[A-Z][A-Z0-9_]*$/.test(trimmedName)) {
+      if (!SECRET_NAME_PATTERN.test(trimmedName)) {
         return res.status(400).json({ error: "Secret name must be uppercase letters, digits, and underscores (e.g., YOUR_EMAIL)" });
       }
       if (trimmedName.length > 256) {

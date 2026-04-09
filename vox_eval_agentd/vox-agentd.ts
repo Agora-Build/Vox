@@ -351,8 +351,11 @@ class VoxEvalAgentDaemon {
     }
   }
 
+  // Regex must match shared/secrets.ts SECRET_PLACEHOLDER_REGEX — keep aligned.
+  private static readonly SECRET_PLACEHOLDER_REGEX = /\$\{secrets\.([A-Z][A-Z0-9_]*)\}/g;
+
   private resolveSecrets(content: string, secrets: Record<string, string>): string {
-    return content.replace(/\$\{secrets\.([A-Z][A-Z0-9_]*)\}/g, (_match, key) => {
+    return content.replace(VoxAgentDaemon.SECRET_PLACEHOLDER_REGEX, (_match, key) => {
       if (key in secrets) {
         // Always double-quote and escape for valid YAML
         const escaped = secrets[key]

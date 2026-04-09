@@ -25,13 +25,16 @@ export interface BrowserAgent {
 
 /**
  * Resolve ${secrets.KEY} placeholders in setup step values.
+ * Regex must match shared/secrets.ts SECRET_PLACEHOLDER_REGEX — keep aligned.
  */
+const SECRET_PLACEHOLDER_REGEX = /\$\{secrets\.([A-Z][A-Z0-9_]*)\}/g;
+
 function resolveSecrets(steps: SetupStep[], secrets: Record<string, string>): SetupStep[] {
   const secretKeys = Object.keys(secrets);
   console.log(`[BrowserAgent] Resolving secrets (${secretKeys.length} available: ${secretKeys.join(", ")})`);
   return steps.map((step) => {
     if (!step.value) return step;
-    const resolved = step.value.replace(/\$\{secrets\.([A-Z][A-Z0-9_]*)\}/g, (match, key) => {
+    const resolved = step.value.replace(SECRET_PLACEHOLDER_REGEX, (match, key) => {
       const val = secrets[key];
       if (val !== undefined) {
         console.log(`[BrowserAgent]   Resolved \${secrets.${key}} (${val.length} chars)`);

@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import crypto from 'crypto';
+import { SECRET_NAME_PATTERN, SECRET_PLACEHOLDER_REGEX } from '@shared/secrets';
 
 // ---------------------------------------------------------------------------
 // Unit tests: AES-256-GCM encryption (mirrors server/storage.ts)
@@ -124,16 +125,14 @@ describe('Secrets - Name Validation', () => {
   const invalidNames = ['agora_email', 'my-secret', '123_START', '_LEADING', 'has space', 'lower', ''];
 
   it('should accept valid secret names', () => {
-    const regex = /^[A-Z][A-Z0-9_]*$/;
     for (const name of validNames) {
-      expect(regex.test(name), `Expected "${name}" to be valid`).toBe(true);
+      expect(SECRET_NAME_PATTERN.test(name), `Expected "${name}" to be valid`).toBe(true);
     }
   });
 
   it('should reject invalid secret names', () => {
-    const regex = /^[A-Z][A-Z0-9_]*$/;
     for (const name of invalidNames) {
-      expect(regex.test(name), `Expected "${name}" to be invalid`).toBe(false);
+      expect(SECRET_NAME_PATTERN.test(name), `Expected "${name}" to be invalid`).toBe(false);
     }
   });
 });
@@ -143,7 +142,7 @@ describe('Secrets - Name Validation', () => {
 // ---------------------------------------------------------------------------
 
 function resolveSecrets(content: string, secrets: Record<string, string>): string {
-  return content.replace(/\$\{secrets\.([A-Z][A-Z0-9_]*)\}/g, (_match, key) => {
+  return content.replace(SECRET_PLACEHOLDER_REGEX, (_match, key) => {
     if (key in secrets) {
       const escaped = secrets[key]
         .replace(/\\/g, '\\\\')
