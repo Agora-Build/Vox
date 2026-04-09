@@ -27,10 +27,18 @@ export interface BrowserAgent {
  * Resolve ${secrets.KEY} placeholders in setup step values.
  */
 function resolveSecrets(steps: SetupStep[], secrets: Record<string, string>): SetupStep[] {
+  const secretKeys = Object.keys(secrets);
+  console.log(`[BrowserAgent] Resolving secrets (${secretKeys.length} available: ${secretKeys.join(", ")})`);
   return steps.map((step) => {
     if (!step.value) return step;
-    const resolved = step.value.replace(/\$\{secrets\.([A-Z0-9_]+)\}/g, (_, key) => {
-      return secrets[key] ?? `\${secrets.${key}}`;
+    const resolved = step.value.replace(/\$\{secrets\.(\w+)\}/g, (match, key) => {
+      const val = secrets[key];
+      if (val !== undefined) {
+        console.log(`[BrowserAgent]   Resolved \${secrets.${key}} (${val.length} chars)`);
+        return val;
+      }
+      console.warn(`[BrowserAgent]   WARNING: \${secrets.${key}} not found in secrets`);
+      return match;
     });
     return { ...step, value: resolved };
   });
