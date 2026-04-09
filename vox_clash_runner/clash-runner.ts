@@ -109,7 +109,6 @@ async function executeMatch(config: any) {
   const matchId = config.match.id;
 
   try {
-    // Fetch secrets for this match (on-demand, not bundled in assignment)
     console.log("[ClashRunner] Fetching secrets...");
     let secrets: Record<string, string> = {};
     try {
@@ -119,15 +118,11 @@ async function executeMatch(config: any) {
       console.warn("[ClashRunner] Failed to fetch secrets — proceeding without:", err instanceof Error ? err.message : err);
     }
 
-    // Moderator announcement
     try {
       await apiCall("POST", "/api/clash/moderator/start", { matchId, phase: "announce" });
       await sleep(8000);
-    } catch {
-      // Moderator optional
-    }
+    } catch {}
 
-    // Launch Browser A
     console.log("[ClashRunner] Launching Browser A...");
     agentA = await launchBrowserAgent(
       config.agentA,
@@ -136,15 +131,11 @@ async function executeMatch(config: any) {
       secrets,
     );
 
-    // Brief Agent A via moderator
     try {
       await apiCall("POST", "/api/clash/moderator/announce", { matchId, phase: "brief_a" });
       await sleep(5000);
-    } catch {
-      // Moderator optional
-    }
+    } catch {}
 
-    // Launch Browser B
     console.log("[ClashRunner] Launching Browser B...");
     agentB = await launchBrowserAgent(
       config.agentB,
@@ -153,20 +144,15 @@ async function executeMatch(config: any) {
       secrets,
     );
 
-    // Brief Agent B via moderator
     try {
       await apiCall("POST", "/api/clash/moderator/announce", { matchId, phase: "brief_b" });
       await sleep(5000);
-    } catch {
-      // Moderator optional
-    }
+    } catch {}
 
-    // Cross-wire audio
     console.log("[ClashRunner] Cross-wiring audio...");
     await sleep(2000);
     crossWireAudio();
 
-    // Start observer (recording + broadcast)
     const outputDir = path.join(OUTPUT_DIR, `clash-${matchId}`);
     observer = await startObserver(
       outputDir,
@@ -182,14 +168,11 @@ async function executeMatch(config: any) {
         : undefined,
     );
 
-    // Moderator "begin!"
     try {
       await apiCall("POST", "/api/clash/moderator/announce", { matchId, phase: "start" });
-    } catch {
-      // Moderator optional
-    }
+    } catch {}
 
-    // Open WebSocket for live metrics
+
     try {
       const wsUrl = VOX_SERVER.replace(/^http/, "ws") + `/ws/clash-runner/${matchId}`;
       metricsWs = new WebSocket(wsUrl, {
@@ -208,7 +191,6 @@ async function executeMatch(config: any) {
     console.log(`[ClashRunner] Match #${matchId} live for ${config.match.maxDurationSeconds}s`);
     await sleep(config.match.maxDurationSeconds * 1000);
 
-    // Stop observer and close browsers
     console.log("[ClashRunner] Match time expired. Stopping...");
     const recordingPath = await observer.stopAll();
     observer = null;
@@ -223,19 +205,15 @@ async function executeMatch(config: any) {
     await closeBrowserAgent(agentB);
     agentB = null;
 
-    // Compute metrics
     const { metricsA, metricsB } = computeMetrics(recordingPath, config.match.maxDurationSeconds);
 
-    // Moderator end
     try {
       await apiCall("POST", "/api/clash/moderator/announce", { matchId, phase: "end" });
       await sleep(5000);
       await apiCall("POST", "/api/clash/moderator/stop", { matchId });
-    } catch {
-      // Moderator optional
-    }
+    } catch {}
 
-    // Report complete
+
     await apiCall("POST", "/api/clash-runner/complete", {
       matchId,
       metricsA,
@@ -246,7 +224,6 @@ async function executeMatch(config: any) {
   } catch (err) {
     console.error("[ClashRunner] Match error:", err);
 
-    // Clean up
     if (observer) {
       try { await observer.stopAll(); } catch {}
     }
@@ -256,10 +233,9 @@ async function executeMatch(config: any) {
     if (agentA) await closeBrowserAgent(agentA);
     if (agentB) await closeBrowserAgent(agentB);
 
-    // Stop moderator on error
     try { await apiCall("POST", "/api/clash/moderator/stop", { matchId }); } catch {}
 
-    // Report failure
+
     try {
       await apiCall("POST", "/api/clash-runner/complete", {
         matchId,
