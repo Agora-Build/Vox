@@ -4237,7 +4237,7 @@ export async function registerRoutes(
 
       // Transition: runner → running, match → starting
       await storage.updateClashRunner(runner.id, { state: "running" });
-      await storage.updateClashMatch(match.id, { status: "starting", runnerId: runner.runnerId });
+      await storage.updateClashMatch(match.id, { status: "starting", runnerId: runner.runnerId, startedAt: new Date() });
 
       res.json({
         assigned: true,
@@ -4698,8 +4698,14 @@ export async function registerRoutes(
   // --- Match Scheduler: assign pending matches to idle runners (every 10s) ---
   setInterval(async () => {
     try {
-      // Mark stale runners as draining
+      // Mark stale runners as draining (no heartbeat for >45s)
       await storage.markStaleRunnersDraining();
+
+      // Clean up runners that have been draining for >1 hour
+      await storage.removeStaleRunners(3600_000);
+
+      // Fail matches stuck in "starting" for >5 minutes (runner likely crashed)
+      await storage.failStuckMatches(300_000);
 
       // Check live events for pending matches to assign
       const liveEvents = await storage.getClashEventsByStatus("live");

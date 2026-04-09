@@ -1548,6 +1548,29 @@ export class DatabaseStorage {
     return result.length;
   }
 
+  async removeStaleRunners(drainingThresholdMs: number = 3600_000): Promise<number> {
+    const cutoff = new Date(Date.now() - drainingThresholdMs);
+    const result = await db.delete(clashRunnerPool)
+      .where(and(eq(clashRunnerPool.state, "draining"), sql`${clashRunnerPool.lastHeartbeatAt} < ${cutoff}`))
+      .returning();
+    return result.length;
+  }
+
+  async failStuckMatches(stuckThresholdMs: number = 300_000): Promise<number> {
+    const cutoff = new Date(Date.now() - stuckThresholdMs);
+    const result = await db.update(clashMatches)
+      .set({ status: "failed", error: "Match timed out — runner did not complete", completedAt: new Date() })
+      .where(and(eq(clashMatches.status, "starting"), sql`${clashMatches.startedAt} < ${cutoff}`))
+      .returning();
+    // Reset any runners stuck on these matches
+    for (const match of result) {
+      await db.update(clashRunnerPool)
+        .set({ state: "idle", currentMatchId: null })
+        .where(eq(clashRunnerPool.currentMatchId, match.id));
+    }
+    return result.length;
+  }
+
   // ==================== CLASH RUNNER ISSUED TOKENS ====================
 
   async createClashRunnerIssuedToken(token: InsertClashRunnerIssuedToken): Promise<ClashRunnerIssuedToken> {
