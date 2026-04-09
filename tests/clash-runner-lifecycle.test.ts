@@ -470,12 +470,10 @@ describe("Clash Runner Lifecycle", () => {
     });
 
     it("revoked token cannot heartbeat", async () => {
-      // The runner was already registered, so heartbeat checks the pool, not the token
-      // But the registration would have failed, so this is a secondary check
       const res = await bearerFetch(runnerToken, "POST", "/api/clash-runner/heartbeat");
-      // Heartbeat uses getClashRunnerByTokenHash which doesn't check revocation
-      // This is expected — heartbeat validates the pool entry, not the issued token
-      expect(res.status).toBe(200);
+      expect(res.status).toBe(401);
+      const data = await res.json();
+      expect(data.error).toMatch(/revoked/i);
     });
   });
 

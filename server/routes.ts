@@ -4162,18 +4162,37 @@ export async function registerRoutes(
     }
   });
 
+  // Shared auth helper: validate Bearer token, check revocation, return runner
+  async function authenticateClashRunner(req: any, res: any): Promise<Awaited<ReturnType<typeof storage.getClashRunnerByTokenHash>> | null> {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith("Bearer ")) {
+      res.status(401).json({ error: "Bearer token required" });
+      return null;
+    }
+    const token = authHeader.slice(7);
+    const tokenHash = hashToken(token);
+
+    // Check issued token is valid and not revoked
+    const issuedToken = await storage.getClashRunnerIssuedTokenByHash(tokenHash);
+    if (!issuedToken || issuedToken.isRevoked) {
+      res.status(401).json({ error: "Invalid or revoked runner token" });
+      return null;
+    }
+
+    // Look up the registered runner
+    const runner = await storage.getClashRunnerByTokenHash(tokenHash);
+    if (!runner) {
+      res.status(401).json({ error: "Unknown runner — register first" });
+      return null;
+    }
+    return runner;
+  }
+
   // Runner heartbeat
   app.post("/api/clash-runner/heartbeat", async (req, res) => {
     try {
-      const authHeader = req.headers.authorization;
-      if (!authHeader || !authHeader.startsWith("Bearer ")) {
-        return res.status(401).json({ error: "Bearer token required" });
-      }
-      const token = authHeader.slice(7);
-      const tokenHash = hashToken(token);
-
-      const runner = await storage.getClashRunnerByTokenHash(tokenHash);
-      if (!runner) return res.status(401).json({ error: "Unknown runner" });
+      const runner = await authenticateClashRunner(req, res);
+      if (!runner) return;
 
       await storage.updateClashRunner(runner.id, { lastHeartbeatAt: new Date() });
       res.json({ state: runner.state, currentMatchId: runner.currentMatchId });
@@ -4183,18 +4202,11 @@ export async function registerRoutes(
     }
   });
 
-  // Get assigned match config + secrets
+  // Get assigned match config
   app.get("/api/clash-runner/assignment", async (req, res) => {
     try {
-      const authHeader = req.headers.authorization;
-      if (!authHeader || !authHeader.startsWith("Bearer ")) {
-        return res.status(401).json({ error: "Bearer token required" });
-      }
-      const token = authHeader.slice(7);
-      const tokenHash = hashToken(token);
-
-      const runner = await storage.getClashRunnerByTokenHash(tokenHash);
-      if (!runner) return res.status(401).json({ error: "Unknown runner" });
+      const runner = await authenticateClashRunner(req, res);
+      if (!runner) return;
 
       if (runner.state !== "assigned" || !runner.currentMatchId) {
         return res.json({ assigned: false });
@@ -4266,15 +4278,8 @@ export async function registerRoutes(
   // Fetch decrypted secrets for an active match (runner Bearer auth)
   app.get("/api/clash-runner/secrets", async (req, res) => {
     try {
-      const authHeader = req.headers.authorization;
-      if (!authHeader || !authHeader.startsWith("Bearer ")) {
-        return res.status(401).json({ error: "Bearer token required" });
-      }
-      const token = authHeader.slice(7);
-      const tokenHash = hashToken(token);
-
-      const runner = await storage.getClashRunnerByTokenHash(tokenHash);
-      if (!runner) return res.status(401).json({ error: "Unknown runner" });
+      const runner = await authenticateClashRunner(req, res);
+      if (!runner) return;
 
       const matchId = parseInt(req.query.matchId as string);
       if (!matchId) return res.status(400).json({ error: "matchId query parameter required" });
@@ -4314,15 +4319,8 @@ export async function registerRoutes(
   // Runner reports results and returns to idle
   app.post("/api/clash-runner/complete", async (req, res) => {
     try {
-      const authHeader = req.headers.authorization;
-      if (!authHeader || !authHeader.startsWith("Bearer ")) {
-        return res.status(401).json({ error: "Bearer token required" });
-      }
-      const token = authHeader.slice(7);
-      const tokenHash = hashToken(token);
-
-      const runner = await storage.getClashRunnerByTokenHash(tokenHash);
-      if (!runner) return res.status(401).json({ error: "Unknown runner" });
+      const runner = await authenticateClashRunner(req, res);
+      if (!runner) return;
 
       const { matchId, metricsA, metricsB, recordingUrl, durationSeconds, error: matchError } = req.body;
       if (!matchId) return res.status(400).json({ error: "matchId required" });
