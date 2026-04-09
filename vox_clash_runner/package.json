@@ -4,10 +4,11 @@
   "type": "module",
   "description": "Clash Runner - orchestrates head-to-head AI agent voice duels",
   "scripts": {
-    "build": "npx esbuild clash-runner.ts --bundle --platform=node --format=esm --outfile=clash-runner.js --external:playwright-core --external:child_process --external:fs --external:os --external:path --external:url"
+    "build": "npx esbuild clash-runner.ts --bundle --platform=node --format=esm --outfile=clash-runner.js --external:playwright-core --external:ws --external:child_process --external:fs --external:os --external:path --external:url"
   },
   "dependencies": {
     "playwright-core": "^1.57.0",
+    "ws": "^8.18.0",
     "esbuild": "^0.24.0"
   }
 }

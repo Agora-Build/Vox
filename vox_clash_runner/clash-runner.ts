@@ -18,6 +18,7 @@
 
 import { execSync } from "child_process";
 import * as path from "path";
+import WebSocket from "ws";
 import { launchBrowserAgent, closeBrowserAgent, type AgentConfig, type BrowserAgent } from "./browser-agent.js";
 import { crossWireAudio, startObserver, computeMetrics } from "./audio/observer.js";
 
