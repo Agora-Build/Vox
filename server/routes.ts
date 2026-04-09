@@ -4225,15 +4225,23 @@ export async function registerRoutes(
       }
 
       // Build Agora config if configured
-      let agora: { appId: string; channelName: string; broadcasterToken: string; broadcasterUid: number } | undefined;
+      // UIDs <= 10,000 reserved for internal system use (broadcasters, moderators)
+      const BROADCASTER_UID_A = 100;  // Agent A audio
+      const BROADCASTER_UID_B = 200;  // Agent B audio
+      let agora: {
+        appId: string; channelName: string;
+        broadcasterTokenA: string; broadcasterTokenB: string;
+        broadcasterUidA: number; broadcasterUidB: number;
+      } | undefined;
       const channelName = event.agoraChannelName;
       if (isAgoraConfigured() && channelName) {
-        const broadcasterUid = 1000 + match.id;
         agora = {
           appId: process.env.AGORA_APP_ID!,
           channelName,
-          broadcasterToken: generateRtcToken(channelName, broadcasterUid, "publisher"),
-          broadcasterUid,
+          broadcasterTokenA: generateRtcToken(channelName, BROADCASTER_UID_A, "publisher"),
+          broadcasterTokenB: generateRtcToken(channelName, BROADCASTER_UID_B, "publisher"),
+          broadcasterUidA: BROADCASTER_UID_A,
+          broadcasterUidB: BROADCASTER_UID_B,
         };
       }
 
@@ -4451,7 +4459,8 @@ export async function registerRoutes(
       const channelName = event?.agoraChannelName || null;
 
       if (isAgoraConfigured() && channelName) {
-        const spectatorUid = Math.floor(Math.random() * 100000) + 2000;
+        // UIDs <= 10,000 reserved for internal system use
+        const spectatorUid = Math.floor(Math.random() * 100000) + 10001;
         const spectatorToken = generateRtcToken(channelName, spectatorUid, "audience");
         return res.json({
           appId: process.env.AGORA_APP_ID,
@@ -4522,7 +4531,7 @@ export async function registerRoutes(
       if (!profileA || !profileB) return res.status(500).json({ error: "Agent profile(s) missing" });
 
       const channelName = event.agoraChannelName || generateEventChannelName(event.id);
-      const modUid = 500 + match.id;
+      const modUid = 500;  // Fixed moderator UID (reserved range <= 10,000)
       const modToken = generateRtcToken(channelName, modUid, "publisher");
 
       const prompt = buildAnnouncementPrompt(

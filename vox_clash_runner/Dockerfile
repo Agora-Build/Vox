@@ -51,10 +51,17 @@ RUN apt-get update && apt-get install -y \
     libcairo2 \
     libatspi2.0-0t64 \
     sox \
+    g++ \
     --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
+
+# Download and extract Agora Server Gateway SDK
+RUN curl -fsSL https://download.agora.io/rtsasdk/release/Agora-RTC-x86_64-linux-gnu-v4.4.32-20250425_144419-675648.tgz \
+    -o /tmp/agora-sdk.tgz \
+    && tar xzf /tmp/agora-sdk.tgz -C /opt \
+    && rm /tmp/agora-sdk.tgz
 
 # Install Playwright Chromium
 RUN npx playwright install --with-deps chromium
@@ -66,9 +73,24 @@ RUN npm install
 COPY audio/ /app/audio/
 COPY *.ts /app/
 
+# Compile agora-broadcaster (C++ native Agora audio publisher)
+RUN g++ -std=c++17 -O2 \
+    -I/opt/agora_rtc_sdk/agora_sdk/include \
+    -I/opt/agora_rtc_sdk/example \
+    -L/opt/agora_rtc_sdk/agora_sdk \
+    -o /app/agora-broadcaster \
+    /app/audio/agora-broadcaster.cpp \
+    /opt/agora_rtc_sdk/example/common/sample_common.cpp \
+    /opt/agora_rtc_sdk/example/common/sample_event.cpp \
+    /opt/agora_rtc_sdk/example/common/helper.cpp \
+    /opt/agora_rtc_sdk/example/common/opt_parser.cpp \
+    /opt/agora_rtc_sdk/example/common/sample_connection_observer.cpp \
+    -lagora_rtc_sdk -lpthread \
+    -Wl,-rpath=/opt/agora_rtc_sdk/agora_sdk
+
 # Compile TS → JS
 RUN npx esbuild clash-runner.ts --bundle --platform=node --format=esm --outfile=clash-runner.js \
-    --external:playwright-core --external:child_process --external:fs --external:os --external:path --external:url
+    --external:playwright-core --external:ws --external:child_process --external:fs --external:os --external:path --external:url
 
 # Make PipeWire setup script executable
 RUN chmod +x /app/audio/pipewire-setup.sh
@@ -82,6 +104,7 @@ ENV BUILD_DATE=${BUILD_DATE}
 ENV VOX_SERVER=http://localhost:5000
 ENV XDG_RUNTIME_DIR=/tmp/pipewire-run
 ENV PIPEWIRE_RUNTIME_DIR=/tmp/pipewire-run
+ENV LD_LIBRARY_PATH=/opt/agora_rtc_sdk/agora_sdk
 
 VOLUME /app/output
 

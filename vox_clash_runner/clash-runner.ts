@@ -173,9 +173,11 @@ async function executeMatch(config: any) {
       config.agora
         ? {
             appId: config.agora.appId,
-            token: config.agora.broadcasterToken,
             channelName: config.agora.channelName,
-            uid: config.agora.broadcasterUid,
+            tokenA: config.agora.broadcasterTokenA,
+            tokenB: config.agora.broadcasterTokenB,
+            uidA: config.agora.broadcasterUidA,
+            uidB: config.agora.broadcasterUidB,
           }
         : undefined,
     );

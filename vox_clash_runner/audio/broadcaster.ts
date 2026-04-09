@@ -1,74 +1,127 @@
-// broadcaster.ts — 3rd headless Chromium browser that captures the Mixed_Sink
-// monitor stream and publishes it to an Agora RTC channel for spectators.
+// broadcaster.ts — Publishes per-agent audio to an Agora RTC channel using the
+// native C++ agora-broadcaster binary. Spawns two parec|agora-broadcaster pairs,
+// one for each agent, so spectators (and future avatar systems) receive
+// individual audio tracks with separate UIDs.
 
-import { chromium, type Browser, type Page } from "playwright-core";
-import * as path from "path";
-import * as fs from "fs";
+import { spawn, type ChildProcess } from "child_process";
 
 export interface BroadcastConfig {
   appId: string;
-  token: string;
   channelName: string;
-  uid: number;
+  tokenA: string;   // RTC token for Agent A (uid 100)
+  tokenB: string;   // RTC token for Agent B (uid 200)
+  uidA: number;      // 100
+  uidB: number;      // 200
 }
 
 export interface BroadcastHandle {
   stop: () => Promise<void>;
 }
 
+const BROADCASTER_BIN = process.env.BROADCASTER_BIN || "/app/agora-broadcaster";
+
+interface AgentBroadcast {
+  parec: ChildProcess;
+  broadcaster: ChildProcess;
+  label: string;
+}
+
+function spawnAgentBroadcaster(
+  device: string,
+  config: BroadcastConfig,
+  token: string,
+  uid: number,
+  label: string,
+): AgentBroadcast {
+  const parec = spawn("parec", [
+    `--device=${device}`,
+    "--format=s16le",
+    "--rate=16000",
+    "--channels=1",
+    "--file-format=raw",
+  ]);
+
+  const broadcaster = spawn(BROADCASTER_BIN, [
+    "--appId", config.appId,
+    "--token", token,
+    "--channelId", config.channelName,
+    "--userId", String(uid),
+    "--sampleRate", "16000",
+    "--numOfChannels", "1",
+  ]);
+
+  parec.stdout.pipe(broadcaster.stdin);
+
+  parec.stderr?.on("data", (d: Buffer) => {
+    const msg = d.toString().trim();
+    if (msg) console.error(`[parec:${label}] ${msg}`);
+  });
+  broadcaster.stderr?.on("data", (d: Buffer) => {
+    const msg = d.toString().trim();
+    if (msg) console.error(`[agora-broadcaster:${label}] ${msg}`);
+  });
+
+  broadcaster.on("exit", (code) => {
+    if (code !== null && code !== 0) {
+      console.error(`[Broadcaster] ${label} exited with code ${code}`);
+    }
+  });
+
+  return { parec, broadcaster, label };
+}
+
+function killAgent(agent: AgentBroadcast): Promise<void> {
+  return new Promise((resolve) => {
+    let closed = 0;
+    const onClose = () => { if (++closed >= 2) resolve(); };
+    agent.broadcaster.on("close", onClose);
+    agent.parec.on("close", onClose);
+    agent.broadcaster.kill("SIGTERM");
+    agent.parec.kill("SIGTERM");
+    // Force kill after 3s if still alive
+    setTimeout(() => {
+      agent.broadcaster.kill("SIGKILL");
+      agent.parec.kill("SIGKILL");
+    }, 3000);
+  });
+}
+
 /**
- * Launch a headless Chromium browser that loads broadcast.html,
- * captures audio from PipeWire's Mixed_Sink, and publishes
- * to the Agora RTC spectator channel.
+ * Start broadcasting both agents' audio to the Agora spectator channel.
+ * Each agent publishes on its own UID so spectators hear both, and future
+ * avatar systems can subscribe to individual agent audio.
  */
 export async function startBroadcast(config: BroadcastConfig): Promise<BroadcastHandle> {
-  const htmlPath = path.join(__dirname, "broadcast.html");
-  if (!fs.existsSync(htmlPath)) {
-    throw new Error(`broadcast.html not found at ${htmlPath}`);
-  }
+  console.log(`[Broadcaster] Starting dual-agent broadcast to channel ${config.channelName}`);
+  console.log(`[Broadcaster]   Agent A: uid=${config.uidA} → Virtual_Sink_A.monitor`);
+  console.log(`[Broadcaster]   Agent B: uid=${config.uidB} → Virtual_Sink_B.monitor`);
 
-  const browser: Browser = await chromium.launch({
-    headless: true,
-    args: [
-      "--no-sandbox",
-      "--use-fake-ui-for-media-stream",
-      "--autoplay-policy=no-user-gesture-required",
-      // Route this browser's mic capture to Mixed_Sink
-      "--alsa-output-device=Mixed_Sink",
-    ],
+  const agentA = spawnAgentBroadcaster(
+    "Virtual_Sink_A.monitor", config, config.tokenA, config.uidA, "AgentA",
+  );
+  const agentB = spawnAgentBroadcaster(
+    "Virtual_Sink_B.monitor", config, config.tokenB, config.uidB, "AgentB",
+  );
+
+  // Brief startup check — if either broadcaster crashes immediately, report it
+  await new Promise<void>((resolve, reject) => {
+    const timeout = setTimeout(resolve, 3000);
+    const onExit = (label: string) => (code: number | null) => {
+      if (code !== null && code !== 0) {
+        clearTimeout(timeout);
+        reject(new Error(`${label} broadcaster failed to start (exit code ${code})`));
+      }
+    };
+    agentA.broadcaster.on("exit", onExit("Agent A"));
+    agentB.broadcaster.on("exit", onExit("Agent B"));
   });
 
-  const context = await browser.newContext({
-    permissions: ["microphone"],
-  });
-
-  const page: Page = await context.newPage();
-  await page.goto(`file://${htmlPath}`);
-
-  // Call the broadcast start function exposed in the HTML page
-  const result = await page.evaluate(async (cfg) => {
-    // @ts-ignore — function is defined in broadcast.html
-    return await window.startBroadcast(cfg);
-  }, config);
-
-  if (!result?.success) {
-    await browser.close();
-    throw new Error(`Broadcast failed to start: ${result?.error || "unknown error"}`);
-  }
-
-  console.log(`[Broadcaster] Publishing to channel ${config.channelName} as uid ${config.uid}`);
+  console.log("[Broadcaster] Both agents publishing audio");
 
   return {
     stop: async () => {
-      try {
-        await page.evaluate(async () => {
-          // @ts-ignore
-          await window.stopBroadcast();
-        });
-      } catch {
-        // Page may already be closed
-      }
-      await browser.close().catch(() => {});
+      console.log("[Broadcaster] Stopping...");
+      await Promise.all([killAgent(agentA), killAgent(agentB)]);
       console.log("[Broadcaster] Stopped");
     },
   };
