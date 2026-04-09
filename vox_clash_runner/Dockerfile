@@ -27,6 +27,7 @@ RUN apt-get update && apt-get install -y \
     && apt-get update && apt-get install -y \
     nodejs \
     pipewire \
+    pipewire-pulse \
     wireplumber \
     pipewire-audio-client-libraries \
     fonts-ipafont-gothic \

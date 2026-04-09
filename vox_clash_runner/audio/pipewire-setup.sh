@@ -18,6 +18,11 @@ pipewire &
 PIPEWIRE_PID=$!
 sleep 1
 
+# PipeWire-Pulse bridge — Chromium uses PulseAudio for audio I/O
+pipewire-pulse &
+PULSE_PID=$!
+sleep 0.5
+
 echo "[PipeWire] Creating virtual sinks..."
 
 pw-cli create-node adapter \
@@ -47,6 +52,7 @@ pw-link Virtual_Sink_A:monitor_FL Mixed_Sink:input_FL 2>/dev/null || true
 pw-link Virtual_Sink_B:monitor_FL Mixed_Sink:input_FR 2>/dev/null || true
 
 echo "[PipeWire] Virtual sinks created (A, B, Mixed). Cross-wiring will happen after browsers connect."
-echo "[PipeWire] PID: pipewire=$PIPEWIRE_PID"
+echo "[PipeWire] PID: pipewire=$PIPEWIRE_PID, pulse=$PULSE_PID"
 
 echo "$PIPEWIRE_PID" > /tmp/pipewire.pid
+echo "$PULSE_PID" > /tmp/pipewire-pulse.pid
