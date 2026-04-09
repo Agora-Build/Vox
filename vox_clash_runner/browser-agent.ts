@@ -31,7 +31,7 @@ function resolveSecrets(steps: SetupStep[], secrets: Record<string, string>): Se
   console.log(`[BrowserAgent] Resolving secrets (${secretKeys.length} available: ${secretKeys.join(", ")})`);
   return steps.map((step) => {
     if (!step.value) return step;
-    const resolved = step.value.replace(/\$\{secrets\.(\w+)\}/g, (match, key) => {
+    const resolved = step.value.replace(/\$\{secrets\.([A-Z][A-Z0-9_]*)\}/g, (match, key) => {
       const val = secrets[key];
       if (val !== undefined) {
         console.log(`[BrowserAgent]   Resolved \${secrets.${key}} (${val.length} chars)`);
