@@ -95,7 +95,13 @@ export async function launchBrowserAgent(
       case "fill":
         if (step.selector && step.value !== undefined) {
           await page.waitForSelector(step.selector, { timeout });
-          await page.fill(step.selector, step.value);
+          // Clear existing value first, then type keystroke-by-keystroke.
+          // page.fill() doesn't work reliably with React controlled inputs
+          // because it sets value directly without firing per-key events.
+          const el = page.locator(step.selector);
+          await el.click();
+          await el.press("Control+a");
+          await el.pressSequentially(step.value, { delay: 20 });
         }
         break;
       case "wait":
