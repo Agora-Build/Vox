@@ -29,6 +29,7 @@ RUN apt-get update && apt-get install -y \
     pipewire \
     pipewire-pulse \
     wireplumber \
+    pulseaudio-utils \
     pipewire-audio-client-libraries \
     fonts-ipafont-gothic \
     fonts-wqy-zenhei \
