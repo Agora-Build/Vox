@@ -24,14 +24,8 @@ wireplumber &
 WIREPLUMBER_PID=$!
 sleep 1
 
-# Start PipeWire-Pulse (PulseAudio compatibility — required by parec)
-pipewire-pulse &
-PULSE_PID=$!
-sleep 0.5
-
 echo "[PipeWire] Creating virtual sinks..."
 
-# Create Virtual_Sink_A (Agent A's audio output)
 pw-cli create-node adapter \
   factory.name=support.null-audio-sink \
   node.name=Virtual_Sink_A \
@@ -39,7 +33,6 @@ pw-cli create-node adapter \
   audio.position="FL,FR" \
   object.linger=true
 
-# Create Virtual_Sink_B (Agent B's audio output)
 pw-cli create-node adapter \
   factory.name=support.null-audio-sink \
   node.name=Virtual_Sink_B \
@@ -47,8 +40,6 @@ pw-cli create-node adapter \
   audio.position="FL,FR" \
   object.linger=true
 
-# Create Mixed_Sink (captures both agents for RTC broadcast)
-# Agent A → left channel, Agent B → right channel
 pw-cli create-node adapter \
   factory.name=support.null-audio-sink \
   node.name=Mixed_Sink \
@@ -58,9 +49,13 @@ pw-cli create-node adapter \
 
 sleep 0.5
 
-# Link both agent monitors into Mixed_Sink for the broadcaster
 pw-link Virtual_Sink_A:monitor_FL Mixed_Sink:input_FL 2>/dev/null || true
 pw-link Virtual_Sink_B:monitor_FL Mixed_Sink:input_FR 2>/dev/null || true
+
+# Start PipeWire-Pulse AFTER sinks exist so parec can see the monitors
+pipewire-pulse &
+PULSE_PID=$!
+sleep 0.5
 
 echo "[PipeWire] Virtual sinks created (A, B, Mixed). Cross-wiring will happen after browsers connect."
 echo "[PipeWire] PID: pipewire=$PIPEWIRE_PID, wireplumber=$WIREPLUMBER_PID, pulse=$PULSE_PID"
