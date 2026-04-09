@@ -190,6 +190,25 @@ describe("Clash Runner Lifecycle", () => {
     });
   });
 
+  // ── Secrets Endpoint ───────────────────────────────────────────────
+
+  describe("Secrets Endpoint", () => {
+    it("rejects secrets request when runner is idle (no active match)", async () => {
+      const res = await bearerFetch(runnerToken, "GET", "/api/clash-runner/secrets?matchId=999");
+      expect(res.status).toBe(403);
+    });
+
+    it("rejects secrets request without matchId", async () => {
+      const res = await bearerFetch(runnerToken, "GET", "/api/clash-runner/secrets");
+      expect(res.status).toBe(400);
+    });
+
+    it("rejects secrets request with invalid token", async () => {
+      const res = await bearerFetch("cr_bad", "GET", "/api/clash-runner/secrets?matchId=1");
+      expect(res.status).toBe(401);
+    });
+  });
+
   // ── Runner Listing (admin + scout) ────────────────────────────────
 
   describe("Runner Listing", () => {

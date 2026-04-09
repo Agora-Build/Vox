@@ -4211,17 +4211,6 @@ export async function registerRoutes(
         return res.status(500).json({ error: "Agent profile(s) missing" });
       }
 
-      // Decrypt secrets for event owner
-      const userSecrets = await storage.getSecretsForClashMatch(match.id);
-      const decryptedSecrets: Record<string, string> = {};
-      for (const s of userSecrets) {
-        try {
-          decryptedSecrets[s.name] = decryptValue(s.encryptedValue);
-        } catch {
-          // Skip secrets that fail to decrypt
-        }
-      }
-
       // Build Agora config if configured
       let agora: { appId: string; channelName: string; broadcasterToken: string; broadcasterUid: number } | undefined;
       const channelName = event.agoraChannelName;
@@ -4265,12 +4254,59 @@ export async function registerRoutes(
           agentUrl: profileB.agentUrl,
           setupSteps: profileB.setupSteps,
         },
-        secrets: decryptedSecrets,
         agora,
       });
     } catch (error) {
       console.error("Error getting clash runner assignment:", error);
       res.status(500).json({ error: "Failed to get assignment" });
+    }
+  });
+
+  // Fetch decrypted secrets for an active match (runner Bearer auth)
+  app.get("/api/clash-runner/secrets", async (req, res) => {
+    try {
+      const authHeader = req.headers.authorization;
+      if (!authHeader || !authHeader.startsWith("Bearer ")) {
+        return res.status(401).json({ error: "Bearer token required" });
+      }
+      const token = authHeader.slice(7);
+      const tokenHash = hashToken(token);
+
+      const runner = await storage.getClashRunnerByTokenHash(tokenHash);
+      if (!runner) return res.status(401).json({ error: "Unknown runner" });
+
+      const matchId = parseInt(req.query.matchId as string);
+      if (!matchId) return res.status(400).json({ error: "matchId query parameter required" });
+
+      // Verify the runner is actively running this match
+      if (runner.state !== "running" || runner.currentMatchId !== matchId) {
+        return res.status(403).json({ error: "Secrets only available for your active match" });
+      }
+
+      const match = await storage.getClashMatch(matchId);
+      if (!match) return res.status(404).json({ error: "Match not found" });
+
+      const event = await storage.getClashEvent(match.eventId);
+      if (!event) return res.status(404).json({ error: "Event not found" });
+
+      // Fetch and decrypt event owner's secrets
+      const userSecrets = await storage.getSecretsByUserId(event.createdBy);
+      const decrypted: Record<string, string> = {};
+      let decryptErrors = 0;
+      for (const s of userSecrets) {
+        try {
+          decrypted[s.name] = decryptValue(s.encryptedValue);
+        } catch {
+          decryptErrors++;
+        }
+      }
+
+      console.log(`[ClashSecrets] Runner ${runner.runnerId} fetched secrets for match #${matchId} (event #${event.id}, owner #${event.createdBy}): ${Object.keys(decrypted).length} decrypted, ${decryptErrors} failed`);
+
+      res.json(decrypted);
+    } catch (error) {
+      console.error("Error fetching clash runner secrets:", error);
+      res.status(500).json({ error: "Failed to fetch secrets" });
     }
   });
 

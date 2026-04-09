@@ -1595,14 +1595,6 @@ export class DatabaseStorage {
     await db.update(clashRunnerIssuedTokens).set({ lastUsedAt: new Date() }).where(eq(clashRunnerIssuedTokens.id, id));
   }
 
-  async getSecretsForClashMatch(matchId: number): Promise<Secret[]> {
-    const match = await this.getClashMatch(matchId);
-    if (!match) return [];
-    const event = await this.getClashEvent(match.eventId);
-    if (!event) return [];
-    return this.getSecretsByUserId(event.createdBy);
-  }
-
   // ==================== CLASH TRANSCRIPTS ====================
 
   async createClashTranscript(data: { clashMatchId: number; speakerLabel: string; text: string; startMs: number; endMs?: number; confidence?: number }): Promise<ClashTranscript> {

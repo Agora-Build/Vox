@@ -108,6 +108,16 @@ async function executeMatch(config: any) {
   const matchId = config.match.id;
 
   try {
+    // Fetch secrets for this match (on-demand, not bundled in assignment)
+    console.log("[ClashRunner] Fetching secrets...");
+    let secrets: Record<string, string> = {};
+    try {
+      secrets = await apiCall("GET", `/api/clash-runner/secrets?matchId=${matchId}`);
+      console.log(`[ClashRunner] Got ${Object.keys(secrets).length} secret(s)`);
+    } catch (err) {
+      console.warn("[ClashRunner] Failed to fetch secrets — proceeding without:", err instanceof Error ? err.message : err);
+    }
+
     // Moderator announcement
     try {
       await apiCall("POST", "/api/clash/moderator/start", { matchId, phase: "announce" });
@@ -122,7 +132,7 @@ async function executeMatch(config: any) {
       config.agentA,
       "Virtual_Sink_A",
       "Virtual_Sink_B.monitor",
-      config.secrets,
+      secrets,
     );
 
     // Brief Agent A via moderator
@@ -139,7 +149,7 @@ async function executeMatch(config: any) {
       config.agentB,
       "Virtual_Sink_B",
       "Virtual_Sink_A.monitor",
-      config.secrets,
+      secrets,
     );
 
     // Brief Agent B via moderator
