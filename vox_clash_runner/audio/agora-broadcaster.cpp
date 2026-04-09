@@ -19,6 +19,7 @@
 #include <chrono>
 #include <thread>
 
+#include "AgoraBase.h"
 #include "IAgoraService.h"
 #include "NGIAgoraAudioTrack.h"
 #include "NGIAgoraLocalUser.h"
@@ -93,6 +94,9 @@ int main(int argc, char* argv[]) {
   std::signal(SIGQUIT, signalHandler);
 
   // --- Initialize Agora Service ---
+  int buildNum = 0;
+  const char* sdkVersion = getAgoraSdkVersion(&buildNum);
+  AG_LOG(INFO, "Agora SDK version: %s, build: %d", sdkVersion, buildNum);
   AG_LOG(INFO, "Initializing Agora service (appId=%.8s...)", opts.appId.c_str());
   agora::base::IAgoraService* service = createAndInitAgoraService(
       false,  // enableAudioDevice — we push PCM manually
