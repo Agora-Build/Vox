@@ -1521,10 +1521,13 @@ export class DatabaseStorage {
     // Upsert on tokenHash — one token = one runner slot; runnerId updates on restart
     const existing = await db.select().from(clashRunnerPool).where(eq(clashRunnerPool.tokenHash, data.tokenHash));
     if (existing[0]) {
-      // Reset any orphaned match from the previous runner (crashed/restarted)
-      if (existing[0].currentMatchId) {
+      // Reset orphaned match only if it still belongs to THIS runner's old runnerId.
+      // With multiple runners, another runner may have already claimed the match.
+      if (existing[0].currentMatchId && existing[0].runnerId) {
         const orphanedMatch = await this.getClashMatch(existing[0].currentMatchId);
-        if (orphanedMatch && (orphanedMatch.status === "starting" || orphanedMatch.status === "live")) {
+        if (orphanedMatch
+            && (orphanedMatch.status === "starting" || orphanedMatch.status === "live")
+            && orphanedMatch.runnerId === existing[0].runnerId) {
           await db.update(clashMatches)
             .set({ status: "pending", runnerId: null, startedAt: null })
             .where(eq(clashMatches.id, existing[0].currentMatchId));
