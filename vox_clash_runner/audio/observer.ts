@@ -71,23 +71,25 @@ export function startRecording(outputDir: string): {
   let procB: ChildProcess | null = null;
 
   try {
-    procA = spawn("parec", [
-      "--device=Virtual_Sink_A.monitor",
-      "--format=s16le",
+    const recAFd = fs.openSync(recA, "w");
+    procA = spawn("pw-cat", [
+      "--record",
+      "--target=Virtual_Sink_A.monitor",
+      "--format=s16",
       "--rate=16000",
       "--channels=1",
-      "--file-format=raw",
-      recA,
-    ]);
+      "-",
+    ], { stdio: ["ignore", recAFd, "pipe"] });
 
-    procB = spawn("parec", [
-      "--device=Virtual_Sink_B.monitor",
-      "--format=s16le",
+    const recBFd = fs.openSync(recB, "w");
+    procB = spawn("pw-cat", [
+      "--record",
+      "--target=Virtual_Sink_B.monitor",
+      "--format=s16",
       "--rate=16000",
       "--channels=1",
-      "--file-format=raw",
-      recB,
-    ]);
+      "-",
+    ], { stdio: ["ignore", recBFd, "pipe"] });
   } catch (err) {
     console.error("[Observer] Failed to start recording:", err);
   }

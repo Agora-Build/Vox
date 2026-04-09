@@ -33,12 +33,13 @@ function spawnAgentBroadcaster(
   uid: number,
   label: string,
 ): AgentBroadcast {
-  const parec = spawn("parec", [
-    `--device=${device}`,
-    "--format=s16le",
+  const parec = spawn("pw-cat", [
+    "--record",
+    `--target=${device}`,
+    "--format=s16",
     "--rate=16000",
     "--channels=1",
-    "--file-format=raw",
+    "-",
   ]);
 
   const broadcaster = spawn(BROADCASTER_BIN, [
