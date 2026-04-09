@@ -4458,10 +4458,10 @@ export async function registerRoutes(
       const channelName = event?.agoraChannelName || null;
 
       if (isAgoraConfigured() && channelName) {
-        // Stable spectator UID: same user + same match = same UID across refreshes
-        // Derived from IP + matchId hash, range 10,001–110,000
-        const clientIp = req.ip || req.headers["x-forwarded-for"] || "anonymous";
-        const uidHash = hashToken(`spectator:${clientIp}:${matchId}`);
+        // Stable spectator UID: derived from user ID (logged in) or IP (anonymous)
+        const user = await getCurrentUser(req);
+        const identity = user ? `user:${user.id}` : `ip:${req.ip || req.headers["x-forwarded-for"] || "anon"}`;
+        const uidHash = hashToken(`spectator:${identity}:${matchId}`);
         const spectatorUid = (parseInt(uidHash.slice(0, 8), 16) % 100000) + 10001;
         const spectatorToken = generateRtcToken(channelName, spectatorUid, "audience");
         return res.json({
