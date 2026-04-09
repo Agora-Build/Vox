@@ -12,16 +12,10 @@ export XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/tmp/pipewire-run}
 mkdir -p "$XDG_RUNTIME_DIR"
 chmod 700 "$XDG_RUNTIME_DIR"
 
-echo "[PipeWire] Starting PipeWire and WirePlumber..."
+echo "[PipeWire] Starting PipeWire..."
 
-# Start PipeWire (runs in background)
 pipewire &
 PIPEWIRE_PID=$!
-sleep 0.5
-
-# Start WirePlumber (session manager)
-wireplumber &
-WIREPLUMBER_PID=$!
 sleep 1
 
 echo "[PipeWire] Creating virtual sinks..."
@@ -53,7 +47,6 @@ pw-link Virtual_Sink_A:monitor_FL Mixed_Sink:input_FL 2>/dev/null || true
 pw-link Virtual_Sink_B:monitor_FL Mixed_Sink:input_FR 2>/dev/null || true
 
 echo "[PipeWire] Virtual sinks created (A, B, Mixed). Cross-wiring will happen after browsers connect."
-echo "[PipeWire] PID: pipewire=$PIPEWIRE_PID, wireplumber=$WIREPLUMBER_PID"
+echo "[PipeWire] PID: pipewire=$PIPEWIRE_PID"
 
 echo "$PIPEWIRE_PID" > /tmp/pipewire.pid
-echo "$WIREPLUMBER_PID" > /tmp/wireplumber.pid
