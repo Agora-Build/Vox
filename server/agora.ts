@@ -50,10 +50,14 @@ interface ConvoAIConfig {
 function getConvoAIConfig(): ConvoAIConfig {
   let raw = process.env.AGORA_CONVOAI_CONFIG;
   if (!raw) throw new Error("Missing AGORA_CONVOAI_CONFIG env var");
-  // Strip surrounding quotes if Coolify/Docker wraps the value
   raw = raw.trim();
+  // Coolify/Docker may wrap in quotes and/or escape inner quotes
   if ((raw.startsWith('"') && raw.endsWith('"')) || (raw.startsWith("'") && raw.endsWith("'"))) {
     raw = raw.slice(1, -1);
+  }
+  // Unescape \" → " (double-escaped by shell/Docker env handling)
+  if (raw.includes('\\"')) {
+    raw = raw.replace(/\\"/g, '"');
   }
   try {
     return JSON.parse(raw);
