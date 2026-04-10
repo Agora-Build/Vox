@@ -4228,10 +4228,12 @@ export async function registerRoutes(
       // UIDs <= 10,000 reserved for internal system use (broadcasters, moderators)
       const BROADCASTER_UID_A = 100;  // Agent A audio
       const BROADCASTER_UID_B = 200;  // Agent B audio
+      const RECEIVER_UID = 300;       // RTC audio → PipeWire (moderator voice to agents)
       let agora: {
         appId: string; channelName: string;
         broadcasterTokenA: string; broadcasterTokenB: string;
         broadcasterUidA: number; broadcasterUidB: number;
+        receiverToken: string; receiverUid: number;
       } | undefined;
       const channelName = event.agoraChannelName;
       if (isAgoraConfigured() && channelName) {
@@ -4242,6 +4244,8 @@ export async function registerRoutes(
           broadcasterTokenB: generateRtcToken(channelName, BROADCASTER_UID_B, "publisher"),
           broadcasterUidA: BROADCASTER_UID_A,
           broadcasterUidB: BROADCASTER_UID_B,
+          receiverToken: generateRtcToken(channelName, RECEIVER_UID, "audience"),
+          receiverUid: RECEIVER_UID,
         };
       }
 

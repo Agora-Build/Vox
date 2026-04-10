@@ -8,10 +8,12 @@ import { spawn, type ChildProcess } from "child_process";
 export interface BroadcastConfig {
   appId: string;
   channelName: string;
-  tokenA: string;   // RTC token for Agent A (uid 100)
-  tokenB: string;   // RTC token for Agent B (uid 200)
-  uidA: number;      // 100
-  uidB: number;      // 200
+  tokenA: string;      // RTC token for Agent A publisher (uid 100)
+  tokenB: string;      // RTC token for Agent B publisher (uid 200)
+  uidA: number;         // 100
+  uidB: number;         // 200
+  receiverToken: string; // RTC token for receiver (uid 300, audience)
+  receiverUid: number;   // 300
 }
 
 export interface BroadcastHandle {
@@ -19,6 +21,7 @@ export interface BroadcastHandle {
 }
 
 const BROADCASTER_BIN = process.env.BROADCASTER_BIN || "/app/agora-broadcaster";
+const RECEIVER_BIN = process.env.RECEIVER_BIN || "/app/agora-receiver";
 
 interface AgentBroadcast {
   capture: ChildProcess;
@@ -117,12 +120,58 @@ export async function startBroadcast(config: BroadcastConfig): Promise<Broadcast
     agentB.broadcaster.on("exit", onExit("Agent B"));
   });
 
-  console.log("[Broadcaster] Both agents publishing audio");
+  // Spawn RTC receiver: subscribes to channel audio (moderator + agents),
+  // pipes PCM into both virtual sinks so agent browsers hear everything
+  console.log(`[Broadcaster] Starting RTC receiver: uid=${config.receiverUid} → both sinks`);
+  const receiver = spawn(RECEIVER_BIN, [
+    "--appId", config.appId,
+    "--token", config.receiverToken,
+    "--channelId", config.channelName,
+    "--userId", String(config.receiverUid),
+    "--sampleRate", "16000",
+    "--numOfChannels", "1",
+  ]);
+
+  // Pipe received audio to both agent sinks
+  const pacatA = spawn("pacat", [
+    "-d", "Virtual_Sink_A", "--format=s16le", "--rate=16000", "--channels=1",
+  ]);
+  const pacatB = spawn("pacat", [
+    "-d", "Virtual_Sink_B", "--format=s16le", "--rate=16000", "--channels=1",
+  ]);
+
+  receiver.stdout.on("data", (chunk: Buffer) => {
+    pacatA.stdin.write(chunk);
+    pacatB.stdin.write(chunk);
+  });
+
+  receiver.stderr?.on("data", (d: Buffer) => {
+    const msg = d.toString().trim();
+    if (msg) console.error(`[agora-receiver] ${msg}`);
+  });
+  receiver.on("exit", (code) => {
+    if (code !== null && code !== 0) {
+      console.error(`[Broadcaster] Receiver exited with code ${code}`);
+    }
+    pacatA.stdin.end();
+    pacatB.stdin.end();
+  });
+
+  console.log("[Broadcaster] Both agents publishing + receiver active");
 
   return {
     stop: async () => {
       console.log("[Broadcaster] Stopping...");
+      receiver.kill("SIGTERM");
+      pacatA.kill("SIGTERM");
+      pacatB.kill("SIGTERM");
       await Promise.all([killAgent(agentA), killAgent(agentB)]);
+      // Force kill receiver processes after 3s
+      setTimeout(() => {
+        receiver.kill("SIGKILL");
+        pacatA.kill("SIGKILL");
+        pacatB.kill("SIGKILL");
+      }, 3000);
       console.log("[Broadcaster] Stopped");
     },
   };

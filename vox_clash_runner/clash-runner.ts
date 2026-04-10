@@ -183,6 +183,8 @@ async function executeMatch(config: any) {
             tokenB: config.agora.broadcasterTokenB,
             uidA: config.agora.broadcasterUidA,
             uidB: config.agora.broadcasterUidB,
+            receiverToken: config.agora.receiverToken,
+            receiverUid: config.agora.receiverUid,
           }
         : undefined,
     );

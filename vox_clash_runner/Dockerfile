@@ -75,18 +75,36 @@ RUN npm install
 COPY audio/ /app/audio/
 COPY *.ts /app/
 
-# Compile agora-broadcaster (C++ native Agora audio publisher)
+# Common SDK source files for C++ builds
+ENV AGORA_COMMON="/opt/agora_rtc_sdk/example/common"
+
+# Compile agora-broadcaster (publishes PCM to Agora channel)
 RUN g++ -std=c++17 -O2 \
     -I/opt/agora_rtc_sdk/agora_sdk/include \
     -I/opt/agora_rtc_sdk/example \
     -L/opt/agora_rtc_sdk/agora_sdk \
     -o /app/agora-broadcaster \
     /app/audio/agora-broadcaster.cpp \
-    /opt/agora_rtc_sdk/example/common/sample_common.cpp \
-    /opt/agora_rtc_sdk/example/common/sample_event.cpp \
-    /opt/agora_rtc_sdk/example/common/helper.cpp \
-    /opt/agora_rtc_sdk/example/common/opt_parser.cpp \
-    /opt/agora_rtc_sdk/example/common/sample_connection_observer.cpp \
+    $AGORA_COMMON/sample_common.cpp $AGORA_COMMON/sample_event.cpp \
+    $AGORA_COMMON/helper.cpp $AGORA_COMMON/opt_parser.cpp \
+    $AGORA_COMMON/sample_connection_observer.cpp \
+    -lagora_rtc_sdk -lpthread \
+    -Wl,-rpath=/opt/agora_rtc_sdk/agora_sdk
+
+# Patch SDK sample: add missing #include <string> for sample_local_user_observer
+RUN sed -i '1i #include <string>' /opt/agora_rtc_sdk/example/common/sample_local_user_observer.cpp
+
+# Compile agora-receiver (subscribes to Agora channel, writes PCM to stdout)
+RUN g++ -std=c++17 -O2 \
+    -I/opt/agora_rtc_sdk/agora_sdk/include \
+    -I/opt/agora_rtc_sdk/example \
+    -L/opt/agora_rtc_sdk/agora_sdk \
+    -o /app/agora-receiver \
+    /app/audio/agora-receiver.cpp \
+    $AGORA_COMMON/sample_common.cpp $AGORA_COMMON/sample_event.cpp \
+    $AGORA_COMMON/helper.cpp $AGORA_COMMON/opt_parser.cpp \
+    $AGORA_COMMON/sample_connection_observer.cpp \
+    $AGORA_COMMON/sample_local_user_observer.cpp \
     -lagora_rtc_sdk -lpthread \
     -Wl,-rpath=/opt/agora_rtc_sdk/agora_sdk
 
