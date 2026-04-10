@@ -131,9 +131,12 @@ async function executeMatch(config: any) {
     }
 
     try {
-      await apiCall("POST", "/api/clash/moderator/start", { matchId, phase: "announce" });
-      await sleep(8000);
-    } catch {}
+      const modResult = await apiCall("POST", "/api/clash/moderator/start", { matchId, phase: "announce" });
+      console.log("[ClashRunner] Moderator:", modResult);
+      if (modResult.moderatorAvailable) await sleep(8000);
+    } catch (err) {
+      console.warn("[ClashRunner] Moderator start failed:", err instanceof Error ? err.message : err);
+    }
 
     console.log("[ClashRunner] Launching Browser A...");
     agentA = await launchBrowserAgent(
@@ -146,7 +149,9 @@ async function executeMatch(config: any) {
     try {
       await apiCall("POST", "/api/clash/moderator/announce", { matchId, phase: "brief_a" });
       await sleep(5000);
-    } catch {}
+    } catch (err) {
+      console.warn("[ClashRunner] Moderator brief_a failed:", err instanceof Error ? err.message : err);
+    }
 
     console.log("[ClashRunner] Launching Browser B...");
     agentB = await launchBrowserAgent(
@@ -159,7 +164,9 @@ async function executeMatch(config: any) {
     try {
       await apiCall("POST", "/api/clash/moderator/announce", { matchId, phase: "brief_b" });
       await sleep(5000);
-    } catch {}
+    } catch (err) {
+      console.warn("[ClashRunner] Moderator brief_b failed:", err instanceof Error ? err.message : err);
+    }
 
     console.log("[ClashRunner] Cross-wiring audio...");
     await sleep(2000);
@@ -182,7 +189,9 @@ async function executeMatch(config: any) {
 
     try {
       await apiCall("POST", "/api/clash/moderator/announce", { matchId, phase: "start" });
-    } catch {}
+    } catch (err) {
+      console.warn("[ClashRunner] Moderator start announce failed:", err instanceof Error ? err.message : err);
+    }
 
 
     try {
@@ -223,7 +232,9 @@ async function executeMatch(config: any) {
       await apiCall("POST", "/api/clash/moderator/announce", { matchId, phase: "end" });
       await sleep(5000);
       await apiCall("POST", "/api/clash/moderator/stop", { matchId });
-    } catch {}
+    } catch (err) {
+      console.warn("[ClashRunner] Moderator end/stop failed:", err instanceof Error ? err.message : err);
+    }
 
 
     await apiCall("POST", "/api/clash-runner/complete", {
