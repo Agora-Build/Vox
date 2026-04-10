@@ -174,51 +174,47 @@ describe("Agora Integration", () => {
       expect(greetingMessage).toContain("wrap");
     });
 
-    it("should construct valid Basic auth header", () => {
-      const key = "test_customer_key";
-      const secret = "test_customer_secret";
-      const header = "Basic " + Buffer.from(`${key}:${secret}`).toString("base64");
+    it("should construct valid Basic auth header from config", () => {
+      const config = { customer_key: "test_key", customer_secret: "test_secret" };
+      const header = "Basic " + Buffer.from(`${config.customer_key}:${config.customer_secret}`).toString("base64");
       expect(header).toMatch(/^Basic [A-Za-z0-9+/=]+$/);
 
-      // Verify round-trip
       const decoded = Buffer.from(header.slice(6), "base64").toString();
-      expect(decoded).toBe(`${key}:${secret}`);
+      expect(decoded).toBe("test_key:test_secret");
     });
 
-    it("should build ConvoAI join payload with LLM + TTS + ASR", () => {
+    it("should merge AGORA_CONVOAI_CONFIG with runtime values", () => {
+      // Simulates what startModerator does: take config from env, merge with prompt
+      const config = {
+        customer_key: "key",
+        customer_secret: "secret",
+        llm: { url: "https://api.groq.com/openai/v1/chat/completions", api_key: "gsk_...", params: { model: "openai/gpt-oss-120b" } },
+        tts: { vendor: "minimax", params: { key: "eyJ...", group_id: "196...", model: "speech-02-turbo" } },
+        asr: { language: "en-US", vendor: "ares", params: {} },
+      };
+
       const payload = {
         name: "clash-moderator",
         properties: {
-          channel: {
-            channel_name: "clash-event-42",
-            token: "test-token",
-            uid: "500",
-          },
+          channel: { channel_name: "clash-event-42", token: "test-token", uid: "500" },
           llm: {
-            url: "https://api.openai.com/v1/chat/completions",
-            api_key: "sk-test",
-            system_messages: [
-              { role: "system", content: "You are the moderator." },
-            ],
+            ...config.llm,
+            system_messages: [{ role: "system", content: "You are the moderator." }],
             greeting_message: "Welcome!",
             max_tokens: 256,
           },
-          tts: {
-            vendor: "microsoft",
-            params: { key: "tts-key", region: "eastus" },
-          },
-          asr: {
-            language: "en-US",
-            vendor: "ares",
-            params: {},
-          },
+          tts: config.tts,
+          asr: config.asr,
         },
       };
 
       expect(payload.name).toBe("clash-moderator");
       expect(payload.properties.channel.uid).toBe("500");
+      expect(payload.properties.llm.url).toContain("groq.com");
+      expect((payload.properties.llm as any).params.model).toBe("openai/gpt-oss-120b");
       expect(payload.properties.llm.system_messages).toHaveLength(1);
-      expect(payload.properties.tts.vendor).toBe("microsoft");
+      expect(payload.properties.llm.greeting_message).toBe("Welcome!");
+      expect(payload.properties.tts.vendor).toBe("minimax");
       expect(payload.properties.asr.vendor).toBe("ares");
     });
 
@@ -398,12 +394,12 @@ describe("Agora Integration", () => {
       expect(check("", "cert")).toBe(false);
     });
 
-    it("isModeratorConfigured should require Agora + ConvoAI credentials", () => {
-      const check = (appId?: string, cert?: string, customerKey?: string, customerSecret?: string, llmUrl?: string, llmKey?: string) =>
-        !!(appId && cert && customerKey && customerSecret && llmUrl && llmKey);
-      expect(check("id", "cert", "key", "secret", "url", "apikey")).toBe(true);
-      expect(check("id", "cert", "key", "secret", undefined, "apikey")).toBe(false);
-      expect(check(undefined, "cert", "key", "secret", "url", "apikey")).toBe(false);
+    it("isModeratorConfigured should require Agora + AGORA_CONVOAI_CONFIG", () => {
+      const check = (appId?: string, cert?: string, config?: string) =>
+        !!(appId && cert && config);
+      expect(check("id", "cert", '{"customer_key":"k"}')).toBe(true);
+      expect(check("id", "cert", undefined)).toBe(false);
+      expect(check(undefined, "cert", '{"customer_key":"k"}')).toBe(false);
     });
   });
 });

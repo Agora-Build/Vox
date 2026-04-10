@@ -4,10 +4,15 @@
  * Required env vars for RTC:
  *   AGORA_APP_ID, AGORA_APP_CERTIFICATE
  *
- * Required env vars for ConvoAI moderator:
- *   AGORA_CUSTOMER_KEY, AGORA_CUSTOMER_SECRET
- *   AGORA_CONVOAI_LLM_URL, AGORA_CONVOAI_LLM_API_KEY
- *   AGORA_CONVOAI_TTS_VENDOR, AGORA_CONVOAI_TTS_KEY, AGORA_CONVOAI_TTS_REGION
+ * Required env var for ConvoAI moderator:
+ *   AGORA_CONVOAI_CONFIG — JSON string with full moderator config:
+ *   {
+ *     "customer_key": "...",
+ *     "customer_secret": "...",
+ *     "llm": { "url": "...", "api_key": "...", "params": { "model": "..." } },
+ *     "tts": { "vendor": "minimax", "params": { ... } },
+ *     "asr": { "language": "en-US", "vendor": "ares", "params": {} }
+ *   }
  */
 
 import { createRequire } from "module";
@@ -30,12 +35,21 @@ export function isAgoraConfigured(): boolean {
 }
 
 export function isModeratorConfigured(): boolean {
-  return isAgoraConfigured() && !!(
-    process.env.AGORA_CUSTOMER_KEY &&
-    process.env.AGORA_CUSTOMER_SECRET &&
-    process.env.AGORA_CONVOAI_LLM_URL &&
-    process.env.AGORA_CONVOAI_LLM_API_KEY
-  );
+  return isAgoraConfigured() && !!process.env.AGORA_CONVOAI_CONFIG;
+}
+
+interface ConvoAIConfig {
+  customer_key: string;
+  customer_secret: string;
+  llm: Record<string, unknown>;
+  tts: Record<string, unknown>;
+  asr?: Record<string, unknown>;
+}
+
+function getConvoAIConfig(): ConvoAIConfig {
+  const raw = process.env.AGORA_CONVOAI_CONFIG;
+  if (!raw) throw new Error("Missing AGORA_CONVOAI_CONFIG env var");
+  return JSON.parse(raw);
 }
 
 // ---------------------------------------------------------------------------
@@ -93,17 +107,24 @@ interface ConvoAIJoinResponse {
 }
 
 function getBasicAuthHeader(): string {
-  const key = getEnv("AGORA_CUSTOMER_KEY");
-  const secret = getEnv("AGORA_CUSTOMER_SECRET");
-  return "Basic " + Buffer.from(`${key}:${secret}`).toString("base64");
+  const cfg = getConvoAIConfig();
+  return "Basic " + Buffer.from(`${cfg.customer_key}:${cfg.customer_secret}`).toString("base64");
 }
 
 export async function startModerator(opts: StartModeratorOptions): Promise<string> {
   const appId = getEnv("AGORA_APP_ID");
   const url = `${CONVOAI_BASE_URL}/${appId}/agents`;
+  const cfg = getConvoAIConfig();
 
-  const ttsVendor = process.env.AGORA_CONVOAI_TTS_VENDOR || "microsoft";
-  const ttsRegion = process.env.AGORA_CONVOAI_TTS_REGION || "eastus";
+  // Merge config with runtime values (channel, system prompt, greeting)
+  const llm = {
+    ...cfg.llm,
+    system_messages: [
+      { role: "system", content: opts.systemPrompt },
+    ],
+    greeting_message: opts.greetingMessage,
+    max_tokens: 256,
+  };
 
   const payload = {
     name: "clash-moderator",
@@ -113,27 +134,9 @@ export async function startModerator(opts: StartModeratorOptions): Promise<strin
         token: opts.token,
         uid: opts.uid,
       },
-      llm: {
-        url: getEnv("AGORA_CONVOAI_LLM_URL"),
-        api_key: getEnv("AGORA_CONVOAI_LLM_API_KEY"),
-        system_messages: [
-          { role: "system", content: opts.systemPrompt },
-        ],
-        greeting_message: opts.greetingMessage,
-        max_tokens: 256,
-      },
-      tts: {
-        vendor: ttsVendor,
-        params: {
-          key: process.env.AGORA_CONVOAI_TTS_KEY || "",
-          region: ttsRegion,
-        },
-      },
-      asr: {
-        language: "en-US",
-        vendor: "ares",
-        params: {},
-      },
+      llm,
+      tts: cfg.tts,
+      asr: cfg.asr || { language: "en-US", vendor: "ares", params: {} },
     },
   };
 
@@ -169,36 +172,6 @@ export async function stopModerator(agentId: string): Promise<void> {
   if (!response.ok && response.status !== 404) {
     const text = await response.text();
     throw new Error(`ConvoAI stop moderator failed (${response.status}): ${text}`);
-  }
-}
-
-export async function updateModeratorPrompt(agentId: string, systemPrompt: string, greetingMessage?: string): Promise<void> {
-  const appId = getEnv("AGORA_APP_ID");
-  const url = `${CONVOAI_BASE_URL}/${appId}/agents/${agentId}`;
-
-  const payload: Record<string, unknown> = {
-    properties: {
-      llm: {
-        system_messages: [
-          { role: "system", content: systemPrompt },
-        ],
-        ...(greetingMessage ? { greeting_message: greetingMessage } : {}),
-      },
-    },
-  };
-
-  const response = await fetch(url, {
-    method: "PATCH",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: getBasicAuthHeader(),
-    },
-    body: JSON.stringify(payload),
-  });
-
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(`ConvoAI update moderator failed (${response.status}): ${text}`);
   }
 }
 
