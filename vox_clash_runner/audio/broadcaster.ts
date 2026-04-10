@@ -29,6 +29,15 @@ export interface BroadcastHandle {
 const BROADCASTER_BIN = process.env.BROADCASTER_BIN || "/app/agora-broadcaster";
 const RECEIVER_BIN = process.env.RECEIVER_BIN || "/app/agora-receiver";
 
+const SAMPLE_RATE = 16000;
+const CHANNELS = 1;
+const FORMAT = "s16le";
+const FORMAT_LABEL = `${SAMPLE_RATE}hz_${CHANNELS}ch_${FORMAT}`;
+
+function debugPath(name: string): string {
+  return `/app/output/debug_${name}_${FORMAT_LABEL}.raw`;
+}
+
 interface AgentBroadcast {
   capture: ChildProcess;
   broadcaster: ChildProcess;
@@ -44,9 +53,9 @@ function spawnAgentBroadcaster(
 ): AgentBroadcast {
   const capture = spawn("parec", [
     `--device=${device}`,
-    "--format=s16le",
-    "--rate=16000",
-    "--channels=1",
+    `--format=${FORMAT}`,
+    `--rate=${SAMPLE_RATE}`,
+    `--channels=${CHANNELS}`,
     "--raw",
     "--latency-msec=50",
   ]);
@@ -56,13 +65,13 @@ function spawnAgentBroadcaster(
     "--token", token,
     "--channelId", config.channelName,
     "--userId", String(uid),
-    "--sampleRate", "16000",
-    "--numOfChannels", "1",
+    "--sampleRate", String(SAMPLE_RATE),
+    "--numOfChannels", String(CHANNELS),
   ]);
 
   if (DEBUG) {
     const suffix = label === "AgentA" ? "agent_a_out" : "agent_b_out";
-    const dumpPath = `/app/output/debug_${suffix}_16000hz_1ch_s16le.raw`;
+    const dumpPath = debugPath(suffix);
     const dumpStream = fs.createWriteStream(dumpPath);
     capture.stdout.on("data", (chunk: Buffer) => {
       broadcaster.stdin.write(chunk);
@@ -146,17 +155,17 @@ export async function startBroadcast(config: BroadcastConfig): Promise<Broadcast
     "--token", config.receiverToken,
     "--channelId", config.channelName,
     "--userId", String(config.receiverUid),
-    "--filterUid", "500",  // Only pipe moderator audio to agents (avoid feedback loop)
-    "--sampleRate", "16000",
-    "--numOfChannels", "1",
+    "--filterUid", "500",
+    "--sampleRate", String(SAMPLE_RATE),
+    "--numOfChannels", String(CHANNELS),
   ]);
 
   // Pipe received audio to both agent sinks
   const pacatA = spawn("pacat", [
-    "-d", "Virtual_Sink_A", "--format=s16le", "--rate=16000", "--channels=1",
+    "-d", "Virtual_Sink_A", `--format=${FORMAT}`, `--rate=${SAMPLE_RATE}`, `--channels=${CHANNELS}`,
   ]);
   const pacatB = spawn("pacat", [
-    "-d", "Virtual_Sink_B", "--format=s16le", "--rate=16000", "--channels=1",
+    "-d", "Virtual_Sink_B", `--format=${FORMAT}`, `--rate=${SAMPLE_RATE}`, `--channels=${CHANNELS}`,
   ]);
 
   // Suppress EPIPE errors during shutdown (pacat killed before receiver stops writing)
@@ -167,20 +176,19 @@ export async function startBroadcast(config: BroadcastConfig): Promise<Broadcast
   let agentAInDump: ChildProcess | null = null;
   let agentBInDump: ChildProcess | null = null;
   if (DEBUG) {
-    const modPath = "/app/output/debug_moderator_out_16000hz_1ch_s16le.raw";
+    const modPath = debugPath("moderator_out");
     receiverDump = fs.createWriteStream(modPath);
     console.log(`[DEBUG] Dumping moderator RTC audio → ${modPath}`);
 
-    // Dump what each agent's mic actually hears (sink monitor = loopback + moderator)
-    const aInPath = "/app/output/debug_agent_a_in_16000hz_1ch_s16le.raw";
+    const aInPath = debugPath("agent_a_in");
     agentAInDump = spawn("parec", [
-      "-d", "Virtual_Sink_A.monitor", "--format=s16le", "--rate=16000", "--channels=1", "--raw",
+      "-d", "Virtual_Sink_A.monitor", `--format=${FORMAT}`, `--rate=${SAMPLE_RATE}`, `--channels=${CHANNELS}`, "--raw",
     ], { stdio: ["ignore", fs.openSync(aInPath, "w"), "ignore"] });
     console.log(`[DEBUG] Dumping Agent A mic input → ${aInPath}`);
 
-    const bInPath = "/app/output/debug_agent_b_in_16000hz_1ch_s16le.raw";
+    const bInPath = debugPath("agent_b_in");
     agentBInDump = spawn("parec", [
-      "-d", "Virtual_Sink_B.monitor", "--format=s16le", "--rate=16000", "--channels=1", "--raw",
+      "-d", "Virtual_Sink_B.monitor", `--format=${FORMAT}`, `--rate=${SAMPLE_RATE}`, `--channels=${CHANNELS}`, "--raw",
     ], { stdio: ["ignore", fs.openSync(bInPath, "w"), "ignore"] });
     console.log(`[DEBUG] Dumping Agent B mic input → ${bInPath}`);
   }
@@ -210,14 +218,14 @@ export async function startBroadcast(config: BroadcastConfig): Promise<Broadcast
 
   console.log("[Broadcaster] Both agents publishing + receiver active");
   if (DEBUG) {
-    console.log("[DEBUG] Audio debug dumps enabled (s16le, 16000Hz, mono):");
-    console.log("[DEBUG]   debug_moderator_out_16000hz_1ch_s16le.raw  — moderator voice from RTC");
-    console.log("[DEBUG]   debug_agent_a_in_16000hz_1ch_s16le.raw     — what Agent A mic hears");
-    console.log("[DEBUG]   debug_agent_b_in_16000hz_1ch_s16le.raw     — what Agent B mic hears");
-    console.log("[DEBUG]   debug_agent_a_out_16000hz_1ch_s16le.raw    — what Agent A speaks");
-    console.log("[DEBUG]   debug_agent_b_out_16000hz_1ch_s16le.raw    — what Agent B speaks");
-    console.log("[DEBUG] Play:    ffplay -f s16le -ar 16000 -ac 1 <file>");
-    console.log("[DEBUG] Convert: ffmpeg -f s16le -ar 16000 -ac 1 -i <file> <file>.wav");
+    console.log(`[DEBUG] Audio debug dumps enabled (${FORMAT}, ${SAMPLE_RATE}Hz, ${CHANNELS}ch):`);
+    console.log(`[DEBUG]   ${debugPath("moderator_out")}  — moderator voice from RTC`);
+    console.log(`[DEBUG]   ${debugPath("agent_a_in")}     — what Agent A mic hears`);
+    console.log(`[DEBUG]   ${debugPath("agent_b_in")}     — what Agent B mic hears`);
+    console.log(`[DEBUG]   ${debugPath("agent_a_out")}    — what Agent A speaks`);
+    console.log(`[DEBUG]   ${debugPath("agent_b_out")}    — what Agent B speaks`);
+    console.log(`[DEBUG] Play:    ffplay -f ${FORMAT} -ar ${SAMPLE_RATE} -ac ${CHANNELS} <file>`);
+    console.log(`[DEBUG] Convert: ffmpeg -f ${FORMAT} -ar ${SAMPLE_RATE} -ac ${CHANNELS} -i <file> <file>.wav`);
   }
 
   return {
