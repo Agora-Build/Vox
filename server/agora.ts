@@ -197,6 +197,30 @@ export async function updateModeratorPrompt(agentId: string, systemPrompt: strin
   }
 }
 
+export async function speakModerator(
+  agentId: string,
+  text: string,
+  priority: "INTERRUPT" | "APPEND" | "IGNORE" = "INTERRUPT",
+  interruptable: boolean = false,
+): Promise<void> {
+  const appId = getEnv("AGORA_APP_ID");
+  const url = `https://api.agora.io/api/conversational-ai-agent/v2/projects/${appId}/agents/${agentId}/speak`;
+
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: getBasicAuthHeader(),
+    },
+    body: JSON.stringify({ text, priority, interruptable }),
+  });
+
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(`ConvoAI speak failed (${response.status}): ${body}`);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Moderator prompt templates
 // ---------------------------------------------------------------------------

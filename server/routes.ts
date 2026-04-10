@@ -34,7 +34,7 @@ import {
   generateEventChannelName,
   startModerator,
   stopModerator,
-  updateModeratorPrompt,
+  speakModerator,
   buildAnnouncementPrompt,
   buildBriefingPrompt,
   buildStartPrompt,
@@ -4602,11 +4602,11 @@ export async function registerRoutes(
           return res.status(400).json({ error: `Unknown phase: ${phase}` });
       }
 
-      await updateModeratorPrompt(event.moderatorAgentId, prompt.systemPrompt, prompt.greetingMessage);
+      await speakModerator(event.moderatorAgentId, prompt.greetingMessage, "INTERRUPT", false);
       res.json({ success: true });
     } catch (error) {
-      console.error("Error updating moderator:", error);
-      res.status(500).json({ error: "Failed to update moderator" });
+      console.error("Error in moderator speak:", error);
+      res.status(500).json({ error: "Failed to speak" });
     }
   });
 
