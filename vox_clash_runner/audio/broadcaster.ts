@@ -61,14 +61,15 @@ function spawnAgentBroadcaster(
   ]);
 
   if (DEBUG) {
-    const dumpPath = `/app/output/debug_capture_${label}.raw`;
+    const suffix = label === "AgentA" ? "agent_a_out" : "agent_b_out";
+    const dumpPath = `/app/output/debug_${suffix}.raw`;
     const dumpStream = fs.createWriteStream(dumpPath);
     capture.stdout.on("data", (chunk: Buffer) => {
       broadcaster.stdin.write(chunk);
       dumpStream.write(chunk);
     });
     capture.stdout.on("end", () => dumpStream.end());
-    console.log(`[DEBUG] Dumping ${label} capture audio → ${dumpPath}`);
+    console.log(`[DEBUG] Dumping ${label} output audio → ${dumpPath}`);
   } else {
     capture.stdout.pipe(broadcaster.stdin);
   }
@@ -163,10 +164,25 @@ export async function startBroadcast(config: BroadcastConfig): Promise<Broadcast
   pacatB.stdin.on("error", () => {});
 
   let receiverDump: fs.WriteStream | null = null;
+  let agentAInDump: ChildProcess | null = null;
+  let agentBInDump: ChildProcess | null = null;
   if (DEBUG) {
-    const dumpPath = "/app/output/debug_receiver_moderator.raw";
-    receiverDump = fs.createWriteStream(dumpPath);
-    console.log(`[DEBUG] Dumping receiver audio → ${dumpPath}`);
+    const modPath = "/app/output/debug_moderator_out.raw";
+    receiverDump = fs.createWriteStream(modPath);
+    console.log(`[DEBUG] Dumping moderator RTC audio → ${modPath}`);
+
+    // Dump what each agent's mic actually hears (sink monitor = loopback + moderator)
+    const aInPath = "/app/output/debug_agent_a_in.raw";
+    agentAInDump = spawn("parec", [
+      "-d", "Virtual_Sink_A.monitor", "--format=s16le", "--rate=16000", "--channels=1", "--raw",
+    ], { stdio: ["ignore", fs.openSync(aInPath, "w"), "ignore"] });
+    console.log(`[DEBUG] Dumping Agent A mic input → ${aInPath}`);
+
+    const bInPath = "/app/output/debug_agent_b_in.raw";
+    agentBInDump = spawn("parec", [
+      "-d", "Virtual_Sink_B.monitor", "--format=s16le", "--rate=16000", "--channels=1", "--raw",
+    ], { stdio: ["ignore", fs.openSync(bInPath, "w"), "ignore"] });
+    console.log(`[DEBUG] Dumping Agent B mic input → ${bInPath}`);
   }
 
   receiver.stdout.on("data", (chunk: Buffer) => {
@@ -188,6 +204,8 @@ export async function startBroadcast(config: BroadcastConfig): Promise<Broadcast
     pacatA.stdin.end();
     pacatB.stdin.end();
     receiverDump?.end();
+    agentAInDump?.kill("SIGTERM");
+    agentBInDump?.kill("SIGTERM");
   });
 
   console.log("[Broadcaster] Both agents publishing + receiver active");
@@ -198,13 +216,19 @@ export async function startBroadcast(config: BroadcastConfig): Promise<Broadcast
       receiver.kill("SIGTERM");
       pacatA.kill("SIGTERM");
       pacatB.kill("SIGTERM");
+      agentAInDump?.kill("SIGTERM");
+      agentBInDump?.kill("SIGTERM");
+      receiverDump?.end();
       await Promise.all([killAgent(agentA), killAgent(agentB)]);
-      // Force kill receiver processes after 3s
       setTimeout(() => {
         receiver.kill("SIGKILL");
         pacatA.kill("SIGKILL");
         pacatB.kill("SIGKILL");
       }, 3000);
+      if (DEBUG) {
+        console.log("[DEBUG] Audio dumps saved to /app/output/debug_*.raw");
+        console.log("[DEBUG] Play: ffplay -f s16le -ar 16000 -ac 1 <file>");
+      }
       console.log("[Broadcaster] Stopped");
     },
   };
