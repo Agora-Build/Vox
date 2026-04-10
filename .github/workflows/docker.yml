@@ -16,6 +16,7 @@ on:
       - 'drizzle.config.ts'
       - 'vox_eval_agentd/**'
       - 'vox_clash_runner/**'
+      - '.dockerignore'
       - '.github/workflows/docker.yml'
 
 env:
