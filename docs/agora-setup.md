@@ -88,3 +88,40 @@ Base URL: `https://api.agora.io/api/conversational-ai-agent/v2/projects/{appId}`
 | Speak (TTS) | POST | `/agents/{agentId}/speak` |
 
 Auth: Basic (base64 of `AGORA_CUSTOMER_ID:AGORA_CUSTOMER_SECRET`)
+
+## Testing Audio Pipeline
+
+The clash runner includes an audio pipeline integration test that verifies the full PipeWire stack inside the Docker container.
+
+### Run the test
+
+```bash
+# Build the image
+docker build -t vox-clash-runner-test ./vox_clash_runner
+
+# Run the audio pipeline test (12 checks, ~20s)
+docker run --rm vox-clash-runner-test bash /app/audio/test-audio-pipeline.sh
+```
+
+### What it verifies
+
+| Test | Description |
+|------|-------------|
+| D-Bus socket | Session bus exists for WirePlumber |
+| PipeWire running | Core audio server process alive |
+| PipeWire-Pulse running | PulseAudio bridge for Chromium |
+| Sink visibility | Virtual_Sink_A/B visible via pactl |
+| Monitor sources | .monitor sources available for capture |
+| Playback | pacat can write audio to sinks |
+| Capture | parec captures 64KB from monitor in 2s |
+| Cross-wire | Loopback routes A→B (64KB captured) |
+| agora-broadcaster | C++ publisher binary runs |
+| agora-receiver | C++ subscriber binary runs |
+
+### Run Agora E2E tests (requires credentials)
+
+```bash
+# Requires .env.dev with AGORA_APP_ID, AGORA_APP_CERTIFICATE,
+# AGORA_CUSTOMER_ID, AGORA_CUSTOMER_SECRET, AGORA_CONVOAI_CONFIG
+npx vitest run tests/agora-e2e.test.ts
+```
