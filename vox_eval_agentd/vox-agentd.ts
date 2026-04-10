@@ -1134,11 +1134,8 @@ class VoxEvalAgentDaemon {
   start(): void {
     const buildTag = process.env.BUILD_TAG || 'dev';
     const buildDate = process.env.BUILD_DATE || 'unknown';
-    const aevalDataCommit = process.env.AEVAL_DATA_COMMIT || 'unknown';
-    const aevalDataDate = process.env.AEVAL_DATA_DATE || 'unknown';
     console.log(`[Daemon] Starting vox_eval_agentd`);
     console.log(`  - Build: ${buildTag} (${buildDate})`);
-    console.log(`  - aeval-data: ${aevalDataCommit} (${aevalDataDate})`);
     console.log(`  - Server: ${this.config.serverUrl}`);
     console.log(`  - Agent Name: ${this.config.name || '(inherits from token)'}`);
     console.log(`  - Headless: ${this.config.headless}`);
@@ -1244,7 +1241,9 @@ async function main() {
   // Detect aeval version before registration so it can be sent as metadata
   if (config.framework === 'aeval') {
     const ver = await daemon.detectAevalVersion();
-    console.log(`[Daemon] Detected aeval version: ${ver}`);
+    const aevalDataCommit = process.env.AEVAL_DATA_COMMIT || 'unknown';
+    const aevalDataDate = process.env.AEVAL_DATA_DATE || 'unknown';
+    console.log(`[Daemon] Detected aeval version: ${ver}, data: ${aevalDataCommit} (${aevalDataDate})`);
   }
 
   const registered = await daemon.register();
