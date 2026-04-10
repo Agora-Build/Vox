@@ -174,20 +174,19 @@ describe("Agora Integration", () => {
       expect(greetingMessage).toContain("wrap");
     });
 
-    it("should construct valid Basic auth header from config", () => {
-      const config = { customer_key: "test_key", customer_secret: "test_secret" };
-      const header = "Basic " + Buffer.from(`${config.customer_key}:${config.customer_secret}`).toString("base64");
+    it("should construct valid Basic auth header from env vars", () => {
+      const key = "test_customer_key";
+      const secret = "test_customer_secret";
+      const header = "Basic " + Buffer.from(`${key}:${secret}`).toString("base64");
       expect(header).toMatch(/^Basic [A-Za-z0-9+/=]+$/);
 
       const decoded = Buffer.from(header.slice(6), "base64").toString();
-      expect(decoded).toBe("test_key:test_secret");
+      expect(decoded).toBe(`${key}:${secret}`);
     });
 
     it("should merge AGORA_CONVOAI_CONFIG with runtime values", () => {
       // Simulates what startModerator does: take config from env, merge with prompt
       const config = {
-        customer_key: "key",
-        customer_secret: "secret",
         llm: { url: "https://api.groq.com/openai/v1/chat/completions", api_key: "gsk_...", params: { model: "openai/gpt-oss-120b" } },
         tts: { vendor: "minimax", params: { key: "eyJ...", group_id: "196...", model: "speech-02-turbo" } },
         asr: { language: "en-US", vendor: "ares", params: {} },
@@ -394,12 +393,13 @@ describe("Agora Integration", () => {
       expect(check("", "cert")).toBe(false);
     });
 
-    it("isModeratorConfigured should require Agora + AGORA_CONVOAI_CONFIG", () => {
-      const check = (appId?: string, cert?: string, config?: string) =>
-        !!(appId && cert && config);
-      expect(check("id", "cert", '{"customer_key":"k"}')).toBe(true);
-      expect(check("id", "cert", undefined)).toBe(false);
-      expect(check(undefined, "cert", '{"customer_key":"k"}')).toBe(false);
+    it("isModeratorConfigured should require Agora + customer keys + config", () => {
+      const check = (appId?: string, cert?: string, custKey?: string, custSecret?: string, config?: string) =>
+        !!(appId && cert && custKey && custSecret && config);
+      expect(check("id", "cert", "key", "secret", '{"llm":{}}')).toBe(true);
+      expect(check("id", "cert", "key", "secret", undefined)).toBe(false);
+      expect(check("id", "cert", undefined, "secret", '{"llm":{}}')).toBe(false);
+      expect(check(undefined, "cert", "key", "secret", '{"llm":{}}')).toBe(false);
     });
   });
 });

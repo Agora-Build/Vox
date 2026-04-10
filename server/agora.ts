@@ -4,11 +4,10 @@
  * Required env vars for RTC:
  *   AGORA_APP_ID, AGORA_APP_CERTIFICATE
  *
- * Required env var for ConvoAI moderator:
- *   AGORA_CONVOAI_CONFIG — JSON string with full moderator config:
+ * Required env vars for ConvoAI:
+ *   AGORA_CUSTOMER_KEY, AGORA_CUSTOMER_SECRET — Agora REST API credentials
+ *   AGORA_CONVOAI_CONFIG — JSON string with LLM/TTS/ASR config:
  *   {
- *     "customer_key": "...",
- *     "customer_secret": "...",
  *     "llm": { "url": "...", "api_key": "...", "params": { "model": "..." } },
  *     "tts": { "vendor": "minimax", "params": { ... } },
  *     "asr": { "language": "en-US", "vendor": "ares", "params": {} }
@@ -35,12 +34,14 @@ export function isAgoraConfigured(): boolean {
 }
 
 export function isModeratorConfigured(): boolean {
-  return isAgoraConfigured() && !!process.env.AGORA_CONVOAI_CONFIG;
+  return isAgoraConfigured() && !!(
+    process.env.AGORA_CUSTOMER_KEY &&
+    process.env.AGORA_CUSTOMER_SECRET &&
+    process.env.AGORA_CONVOAI_CONFIG
+  );
 }
 
 interface ConvoAIConfig {
-  customer_key: string;
-  customer_secret: string;
   llm: Record<string, unknown>;
   tts: Record<string, unknown>;
   asr?: Record<string, unknown>;
@@ -107,8 +108,9 @@ interface ConvoAIJoinResponse {
 }
 
 function getBasicAuthHeader(): string {
-  const cfg = getConvoAIConfig();
-  return "Basic " + Buffer.from(`${cfg.customer_key}:${cfg.customer_secret}`).toString("base64");
+  const key = getEnv("AGORA_CUSTOMER_KEY");
+  const secret = getEnv("AGORA_CUSTOMER_SECRET");
+  return "Basic " + Buffer.from(`${key}:${secret}`).toString("base64");
 }
 
 export async function startModerator(opts: StartModeratorOptions): Promise<string> {
