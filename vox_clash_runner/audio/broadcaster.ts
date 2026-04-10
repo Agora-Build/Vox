@@ -209,6 +209,16 @@ export async function startBroadcast(config: BroadcastConfig): Promise<Broadcast
   });
 
   console.log("[Broadcaster] Both agents publishing + receiver active");
+  if (DEBUG) {
+    console.log("[DEBUG] Audio debug dumps enabled. Files will be at /app/output/debug_*.raw");
+    console.log("[DEBUG]   debug_moderator_out.raw  — moderator voice from RTC");
+    console.log("[DEBUG]   debug_agent_a_in.raw      — what Agent A mic hears");
+    console.log("[DEBUG]   debug_agent_b_in.raw      — what Agent B mic hears");
+    console.log("[DEBUG]   debug_agent_a_out.raw     — what Agent A speaks");
+    console.log("[DEBUG]   debug_agent_b_out.raw     — what Agent B speaks");
+    console.log("[DEBUG] Play:    ffplay -f s16le -ar 16000 -ac 1 <file>.raw");
+    console.log("[DEBUG] Convert: ffmpeg -f s16le -ar 16000 -ac 1 -i <file>.raw <file>.wav");
+  }
 
   return {
     stop: async () => {
@@ -227,7 +237,8 @@ export async function startBroadcast(config: BroadcastConfig): Promise<Broadcast
       }, 3000);
       if (DEBUG) {
         console.log("[DEBUG] Audio dumps saved to /app/output/debug_*.raw");
-        console.log("[DEBUG] Play: ffplay -f s16le -ar 16000 -ac 1 <file>");
+        console.log("[DEBUG] Play:    ffplay -f s16le -ar 16000 -ac 1 <file>.raw");
+        console.log("[DEBUG] Convert: ffmpeg -f s16le -ar 16000 -ac 1 -i <file>.raw <file>.wav");
       }
       console.log("[Broadcaster] Stopped");
     },
