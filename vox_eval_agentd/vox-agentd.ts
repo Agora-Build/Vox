@@ -1134,8 +1134,11 @@ class VoxEvalAgentDaemon {
   start(): void {
     const buildTag = process.env.BUILD_TAG || 'dev';
     const buildDate = process.env.BUILD_DATE || 'unknown';
+    const aevalDataCommit = process.env.AEVAL_DATA_COMMIT || 'unknown';
+    const aevalDataDate = process.env.AEVAL_DATA_DATE || 'unknown';
     console.log(`[Daemon] Starting vox_eval_agentd`);
     console.log(`  - Build: ${buildTag} (${buildDate})`);
+    console.log(`  - aeval-data: ${aevalDataCommit} (${aevalDataDate})`);
     console.log(`  - Server: ${this.config.serverUrl}`);
     console.log(`  - Agent Name: ${this.config.name || '(inherits from token)'}`);
     console.log(`  - Headless: ${this.config.headless}`);

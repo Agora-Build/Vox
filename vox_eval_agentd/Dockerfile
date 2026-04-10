@@ -110,8 +110,12 @@ RUN npx esbuild vox-agentd.ts --bundle --platform=node --format=esm --outfile=vo
 # Build metadata (injected at build time via --build-arg)
 ARG BUILD_TAG=dev
 ARG BUILD_DATE=unknown
+ARG AEVAL_DATA_COMMIT=unknown
+ARG AEVAL_DATA_DATE=unknown
 ENV BUILD_TAG=${BUILD_TAG}
 ENV BUILD_DATE=${BUILD_DATE}
+ENV AEVAL_DATA_COMMIT=${AEVAL_DATA_COMMIT}
+ENV AEVAL_DATA_DATE=${AEVAL_DATA_DATE}
 
 # Environment variables (will be overridden at runtime)
 ENV VOX_SERVER=http://localhost:5000

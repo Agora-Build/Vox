@@ -103,12 +103,15 @@ jobs:
           submodules: recursive
 
       - name: Sync aeval-data submodule to AEVAL_VERSION tag
+        id: aeval
         run: |
           AEVAL_VERSION=$(grep 'ARG AEVAL_VERSION=' vox_eval_agentd/Dockerfile | cut -d= -f2)
           echo "AEVAL_VERSION=${AEVAL_VERSION}"
           cd vox_eval_agentd/aeval-data
           git fetch origin tag "${AEVAL_VERSION}" --no-tags
           git checkout "${AEVAL_VERSION}"
+          echo "commit=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+          echo "date=$(git log -1 --format=%ci)" >> "$GITHUB_OUTPUT"
           echo "aeval-data synced to ${AEVAL_VERSION} ($(git rev-parse --short HEAD))"
 
       - name: Log in to GitHub Container Registry
@@ -137,6 +140,8 @@ jobs:
           build-args: |
             BUILD_TAG=${{ github.ref_name }}
             BUILD_DATE=${{ github.event.head_commit.timestamp }}
+            AEVAL_DATA_COMMIT=${{ steps.aeval.outputs.commit }}
+            AEVAL_DATA_DATE=${{ steps.aeval.outputs.date }}
 
       - name: Smoke test eval agent image
         run: |
@@ -161,6 +166,8 @@ jobs:
           build-args: |
             BUILD_TAG=${{ github.ref_name }}
             BUILD_DATE=${{ github.event.head_commit.timestamp }}
+            AEVAL_DATA_COMMIT=${{ steps.aeval.outputs.commit }}
+            AEVAL_DATA_DATE=${{ steps.aeval.outputs.date }}
 
   build-vox-clash-runner:
     needs: changes
