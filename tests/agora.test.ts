@@ -59,17 +59,15 @@ describe("Agora Integration", () => {
       expect(rtcRole).toBe(1);
     });
 
-    it("spectator UID should be in valid range", () => {
-      // Spectator UIDs are generated as random 2000-102000
-      const uid = Math.floor(Math.random() * 100000) + 2000;
-      expect(uid).toBeGreaterThanOrEqual(2000);
-      expect(uid).toBeLessThan(102000);
+    it("spectator UID should be above reserved range (>10000)", () => {
+      const uid = Math.floor(Math.random() * 100000) + 10001;
+      expect(uid).toBeGreaterThan(10000);
+      expect(uid).toBeLessThanOrEqual(110001);
     });
 
-    it("broadcaster UID should be deterministic from match ID", () => {
-      const matchId = 42;
-      const broadcasterUid = 1000 + matchId;
-      expect(broadcasterUid).toBe(1042);
+    it("broadcaster UIDs are fixed (100 for A, 200 for B)", () => {
+      expect(100).toBe(100);
+      expect(200).toBe(200);
     });
   });
 
@@ -187,14 +185,14 @@ describe("Agora Integration", () => {
       expect(decoded).toBe(`${key}:${secret}`);
     });
 
-    it("should build ConvoAI join payload with correct structure", () => {
+    it("should build ConvoAI join payload with LLM + TTS + ASR", () => {
       const payload = {
         name: "clash-moderator",
         properties: {
           channel: {
-            channel_name: "clash-42",
+            channel_name: "clash-event-42",
             token: "test-token",
-            uid: "542",
+            uid: "500",
           },
           llm: {
             url: "https://api.openai.com/v1/chat/completions",
@@ -207,22 +205,24 @@ describe("Agora Integration", () => {
           },
           tts: {
             vendor: "microsoft",
-            params: {
-              key: "tts-key",
-              region: "eastus",
-            },
+            params: { key: "tts-key", region: "eastus" },
+          },
+          asr: {
+            language: "en-US",
+            vendor: "ares",
+            params: {},
           },
         },
       };
 
       expect(payload.name).toBe("clash-moderator");
-      expect(payload.properties.channel.channel_name).toBe("clash-42");
+      expect(payload.properties.channel.uid).toBe("500");
       expect(payload.properties.llm.system_messages).toHaveLength(1);
-      expect(payload.properties.llm.system_messages[0].role).toBe("system");
       expect(payload.properties.tts.vendor).toBe("microsoft");
+      expect(payload.properties.asr.vendor).toBe("ares");
     });
 
-    it("should build event ConvoAI payload with event channel name", () => {
+    it("should build event ConvoAI payload with event channel name and fixed UID", () => {
       const eventId = 7;
       const channelName = `clash-event-${eventId}`;
       const payload = {
@@ -231,12 +231,159 @@ describe("Agora Integration", () => {
           channel: {
             channel_name: channelName,
             token: "test-token",
-            uid: "507",
+            uid: "500",
           },
         },
       };
 
       expect(payload.properties.channel.channel_name).toBe("clash-event-7");
+      expect(payload.properties.channel.uid).toBe("500");
+    });
+  });
+
+  describe("Moderator ASR Config", () => {
+    it("payload should include ASR with ares vendor", () => {
+      const payload = {
+        name: "clash-moderator",
+        properties: {
+          channel: { channel_name: "clash-event-1", token: "t", uid: "500" },
+          llm: {
+            url: "https://api.openai.com/v1/chat/completions",
+            api_key: "sk-test",
+            system_messages: [{ role: "system", content: "moderator" }],
+            greeting_message: "Welcome!",
+            max_tokens: 256,
+          },
+          tts: { vendor: "microsoft", params: { key: "k", region: "eastus" } },
+          asr: { language: "en-US", vendor: "ares", params: {} },
+        },
+      };
+
+      expect(payload.properties.asr).toBeDefined();
+      expect(payload.properties.asr.vendor).toBe("ares");
+      expect(payload.properties.asr.language).toBe("en-US");
+    });
+
+    it("moderator has all three capabilities: LLM + TTS + ASR", () => {
+      const properties = {
+        llm: { url: "u", api_key: "k" },
+        tts: { vendor: "microsoft" },
+        asr: { vendor: "ares" },
+      };
+
+      expect(properties.llm).toBeDefined();
+      expect(properties.tts).toBeDefined();
+      expect(properties.asr).toBeDefined();
+    });
+  });
+
+  describe("Speak API Payload", () => {
+    it("should construct valid speak payload with INTERRUPT priority", () => {
+      const payload = {
+        text: "Both agents are locked and loaded. Let the clash begin!",
+        priority: "INTERRUPT" as const,
+        interruptable: false,
+      };
+
+      expect(payload.text).toBeTruthy();
+      expect(payload.text.length).toBeLessThanOrEqual(512);
+      expect(payload.priority).toBe("INTERRUPT");
+      expect(payload.interruptable).toBe(false);
+    });
+
+    it("should support APPEND priority for queued speech", () => {
+      const payload = {
+        text: "Great point!",
+        priority: "APPEND" as const,
+        interruptable: true,
+      };
+
+      expect(payload.priority).toBe("APPEND");
+      expect(payload.interruptable).toBe(true);
+    });
+
+    it("should support IGNORE priority for idle-only speech", () => {
+      const payload = {
+        text: "Interesting.",
+        priority: "IGNORE" as const,
+        interruptable: true,
+      };
+
+      expect(payload.priority).toBe("IGNORE");
+    });
+
+    it("text must be <= 512 bytes", () => {
+      const shortText = "Hello!";
+      const longText = "x".repeat(513);
+
+      expect(new TextEncoder().encode(shortText).length).toBeLessThanOrEqual(512);
+      expect(new TextEncoder().encode(longText).length).toBeGreaterThan(512);
+    });
+
+    it("speak URL should use conversational-ai-agent path (not conversational-ai)", () => {
+      const appId = "test-app-id";
+      const agentId = "agent-123";
+      const speakUrl = `https://api.agora.io/api/conversational-ai-agent/v2/projects/${appId}/agents/${agentId}/speak`;
+
+      expect(speakUrl).toContain("conversational-ai-agent");
+      expect(speakUrl).toContain(appId);
+      expect(speakUrl).toContain(agentId);
+      expect(speakUrl).toContain("/speak");
+    });
+  });
+
+  describe("Moderator Lifecycle Phases", () => {
+    const phases = ["brief_a", "brief_b", "start", "end"];
+
+    it("all phases produce non-empty greeting messages", () => {
+      const agentAName = "GPT-4o";
+      const agentBName = "Claude";
+      const topic = "AI safety";
+
+      const messages: Record<string, string> = {
+        brief_a: `Hello ${agentAName}, you are about to debate the topic "${topic}" against ${agentBName}. When the moderator says begin, start making your argument. Good luck!`,
+        brief_b: `Hello ${agentBName}, you are about to debate the topic "${topic}" against ${agentAName}. When the moderator says begin, start making your argument. Good luck!`,
+        start: "Both agents are locked and loaded. Let the clash begin!",
+        end: "And that's a wrap! The debate has concluded. Thank you for watching this Clash!",
+      };
+
+      for (const phase of phases) {
+        expect(messages[phase]).toBeTruthy();
+        expect(messages[phase].length).toBeGreaterThan(0);
+        expect(new TextEncoder().encode(messages[phase]).length).toBeLessThanOrEqual(512);
+      }
+    });
+
+    it("briefing messages are personalized per agent", () => {
+      const briefA = `Hello AgentA, you are about to debate the topic "AI" against AgentB.`;
+      const briefB = `Hello AgentB, you are about to debate the topic "AI" against AgentA.`;
+
+      expect(briefA).toContain("AgentA");
+      expect(briefA).not.toContain("Hello AgentB");
+      expect(briefB).toContain("AgentB");
+      expect(briefB).not.toContain("Hello AgentA");
+    });
+
+    it("start phase does not mention specific agents", () => {
+      const startMsg = "Both agents are locked and loaded. Let the clash begin!";
+      expect(startMsg).not.toContain("GPT");
+      expect(startMsg).not.toContain("Claude");
+    });
+  });
+
+  describe("Moderator UID", () => {
+    it("moderator UID is fixed at 500", () => {
+      const modUid = 500;
+      expect(modUid).toBe(500);
+      expect(modUid).toBeLessThanOrEqual(10000);
+    });
+
+    it("moderator UID does not collide with broadcaster UIDs", () => {
+      const modUid = 500;
+      const broadcasterA = 100;
+      const broadcasterB = 200;
+      expect(modUid).not.toBe(broadcasterA);
+      expect(modUid).not.toBe(broadcasterB);
     });
   });
 

@@ -452,6 +452,111 @@ describe("Clash Runner Lifecycle", () => {
     });
   });
 
+  // ── Moderator Endpoints ────────────────────────────────────────────
+
+  describe("Moderator Endpoints", () => {
+    it("moderator/start returns moderatorAvailable:false when not configured", async () => {
+      // Without AGORA_CUSTOMER_KEY etc., moderator is unavailable
+      const eventRes = await authFetch(admin, `${BASE_URL}/api/clash/events`, {
+        method: "POST",
+        body: JSON.stringify({
+          name: "Moderator Test Event",
+          region: "na",
+          visibility: "private",
+          matchups: [{
+            agentAProfileId: profileAId,
+            agentBProfileId: profileBId,
+            topic: "Test moderator",
+            maxDurationSeconds: 60,
+          }],
+        }),
+      });
+      const event = await eventRes.json();
+      await authFetch(admin, `${BASE_URL}/api/clash/events/${event.id}/start`, { method: "POST" });
+      const detail = await (await authFetch(admin, `${BASE_URL}/api/clash/events/${event.id}`)).json();
+      const matchId = detail.matches[0].id;
+
+      const res = await bearerFetch(runnerToken, "POST", "/api/clash/moderator/start", {
+        matchId,
+        phase: "announce",
+      });
+      // Should succeed but indicate moderator is not available
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.success).toBe(true);
+      expect(data.moderatorAvailable).toBe(false);
+
+      // Clean up
+      await bearerFetch(runnerToken, "POST", "/api/clash-runner/complete", {
+        matchId, error: "test cleanup",
+      });
+    });
+
+    it("moderator/announce skips when no moderator agent", async () => {
+      const res = await bearerFetch(runnerToken, "POST", "/api/clash/moderator/announce", {
+        matchId: 999999,
+        phase: "start",
+      });
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.skipped).toBe(true);
+    });
+
+    it("moderator/announce skips when event has no moderator agent", async () => {
+      // Create event without moderator — announce should skip gracefully
+      const eventRes = await authFetch(admin, `${BASE_URL}/api/clash/events`, {
+        method: "POST",
+        body: JSON.stringify({
+          name: "Phase Test",
+          region: "na",
+          visibility: "private",
+          matchups: [{
+            agentAProfileId: profileAId,
+            agentBProfileId: profileBId,
+            topic: "Phase test",
+            maxDurationSeconds: 60,
+          }],
+        }),
+      });
+      const event = await eventRes.json();
+      const detail = await (await authFetch(admin, `${BASE_URL}/api/clash/events/${event.id}`)).json();
+      const matchId = detail.matches[0].id;
+
+      const res = await bearerFetch(runnerToken, "POST", "/api/clash/moderator/announce", {
+        matchId,
+        phase: "start",
+      });
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.skipped).toBe(true);
+    });
+
+    it("moderator/stop succeeds even without active moderator", async () => {
+      const res = await bearerFetch(runnerToken, "POST", "/api/clash/moderator/stop", {
+        matchId: 999999,
+      });
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.success).toBe(true);
+    });
+
+    it("moderator endpoints require Bearer token", async () => {
+      const endpoints = [
+        { path: "/api/clash/moderator/start", body: { matchId: 1 } },
+        { path: "/api/clash/moderator/announce", body: { matchId: 1, phase: "start" } },
+        { path: "/api/clash/moderator/stop", body: { matchId: 1 } },
+      ];
+      for (const ep of endpoints) {
+        const res = await fetch(`${BASE_URL}${ep.path}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(ep.body),
+        });
+        expect(res.status).toBe(401);
+      }
+    });
+  });
+
   // ── Token Revocation ──────────────────────────────────────────────
 
   describe("Token Revocation", () => {
