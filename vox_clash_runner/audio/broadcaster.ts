@@ -4,6 +4,12 @@
 // individual audio tracks with separate UIDs.
 
 import { spawn, type ChildProcess } from "child_process";
+import * as fs from "fs";
+
+const DEBUG = !!process.env.LOCAL_DEBUG;
+if (DEBUG) {
+  try { fs.mkdirSync("/app/output", { recursive: true }); } catch {}
+}
 
 export interface BroadcastConfig {
   appId: string;
@@ -54,7 +60,18 @@ function spawnAgentBroadcaster(
     "--numOfChannels", "1",
   ]);
 
-  capture.stdout.pipe(broadcaster.stdin);
+  if (DEBUG) {
+    const dumpPath = `/app/output/debug_capture_${label}.raw`;
+    const dumpStream = fs.createWriteStream(dumpPath);
+    capture.stdout.on("data", (chunk: Buffer) => {
+      broadcaster.stdin.write(chunk);
+      dumpStream.write(chunk);
+    });
+    capture.stdout.on("end", () => dumpStream.end());
+    console.log(`[DEBUG] Dumping ${label} capture audio → ${dumpPath}`);
+  } else {
+    capture.stdout.pipe(broadcaster.stdin);
+  }
 
   capture.stderr?.on("data", (d: Buffer) => {
     const msg = d.toString().trim();
@@ -145,10 +162,18 @@ export async function startBroadcast(config: BroadcastConfig): Promise<Broadcast
   pacatA.stdin.on("error", () => {});
   pacatB.stdin.on("error", () => {});
 
+  let receiverDump: fs.WriteStream | null = null;
+  if (DEBUG) {
+    const dumpPath = "/app/output/debug_receiver_moderator.raw";
+    receiverDump = fs.createWriteStream(dumpPath);
+    console.log(`[DEBUG] Dumping receiver audio → ${dumpPath}`);
+  }
+
   receiver.stdout.on("data", (chunk: Buffer) => {
     try {
       pacatA.stdin.write(chunk);
       pacatB.stdin.write(chunk);
+      receiverDump?.write(chunk);
     } catch {}
   });
 
@@ -162,6 +187,7 @@ export async function startBroadcast(config: BroadcastConfig): Promise<Broadcast
     }
     pacatA.stdin.end();
     pacatB.stdin.end();
+    receiverDump?.end();
   });
 
   console.log("[Broadcaster] Both agents publishing + receiver active");
