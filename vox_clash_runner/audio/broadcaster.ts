@@ -62,7 +62,7 @@ function spawnAgentBroadcaster(
 
   if (DEBUG) {
     const suffix = label === "AgentA" ? "agent_a_out" : "agent_b_out";
-    const dumpPath = `/app/output/debug_${suffix}.raw`;
+    const dumpPath = `/app/output/debug_${suffix}_16000hz_1ch_s16le.raw`;
     const dumpStream = fs.createWriteStream(dumpPath);
     capture.stdout.on("data", (chunk: Buffer) => {
       broadcaster.stdin.write(chunk);
@@ -167,18 +167,18 @@ export async function startBroadcast(config: BroadcastConfig): Promise<Broadcast
   let agentAInDump: ChildProcess | null = null;
   let agentBInDump: ChildProcess | null = null;
   if (DEBUG) {
-    const modPath = "/app/output/debug_moderator_out.raw";
+    const modPath = "/app/output/debug_moderator_out_16000hz_1ch_s16le.raw";
     receiverDump = fs.createWriteStream(modPath);
     console.log(`[DEBUG] Dumping moderator RTC audio → ${modPath}`);
 
     // Dump what each agent's mic actually hears (sink monitor = loopback + moderator)
-    const aInPath = "/app/output/debug_agent_a_in.raw";
+    const aInPath = "/app/output/debug_agent_a_in_16000hz_1ch_s16le.raw";
     agentAInDump = spawn("parec", [
       "-d", "Virtual_Sink_A.monitor", "--format=s16le", "--rate=16000", "--channels=1", "--raw",
     ], { stdio: ["ignore", fs.openSync(aInPath, "w"), "ignore"] });
     console.log(`[DEBUG] Dumping Agent A mic input → ${aInPath}`);
 
-    const bInPath = "/app/output/debug_agent_b_in.raw";
+    const bInPath = "/app/output/debug_agent_b_in_16000hz_1ch_s16le.raw";
     agentBInDump = spawn("parec", [
       "-d", "Virtual_Sink_B.monitor", "--format=s16le", "--rate=16000", "--channels=1", "--raw",
     ], { stdio: ["ignore", fs.openSync(bInPath, "w"), "ignore"] });
@@ -210,14 +210,14 @@ export async function startBroadcast(config: BroadcastConfig): Promise<Broadcast
 
   console.log("[Broadcaster] Both agents publishing + receiver active");
   if (DEBUG) {
-    console.log("[DEBUG] Audio debug dumps enabled. Files will be at /app/output/debug_*.raw");
-    console.log("[DEBUG]   debug_moderator_out.raw  — moderator voice from RTC");
-    console.log("[DEBUG]   debug_agent_a_in.raw      — what Agent A mic hears");
-    console.log("[DEBUG]   debug_agent_b_in.raw      — what Agent B mic hears");
-    console.log("[DEBUG]   debug_agent_a_out.raw     — what Agent A speaks");
-    console.log("[DEBUG]   debug_agent_b_out.raw     — what Agent B speaks");
-    console.log("[DEBUG] Play:    ffplay -f s16le -ar 16000 -ac 1 <file>.raw");
-    console.log("[DEBUG] Convert: ffmpeg -f s16le -ar 16000 -ac 1 -i <file>.raw <file>.wav");
+    console.log("[DEBUG] Audio debug dumps enabled (s16le, 16000Hz, mono):");
+    console.log("[DEBUG]   debug_moderator_out_16000hz_1ch_s16le.raw  — moderator voice from RTC");
+    console.log("[DEBUG]   debug_agent_a_in_16000hz_1ch_s16le.raw     — what Agent A mic hears");
+    console.log("[DEBUG]   debug_agent_b_in_16000hz_1ch_s16le.raw     — what Agent B mic hears");
+    console.log("[DEBUG]   debug_agent_a_out_16000hz_1ch_s16le.raw    — what Agent A speaks");
+    console.log("[DEBUG]   debug_agent_b_out_16000hz_1ch_s16le.raw    — what Agent B speaks");
+    console.log("[DEBUG] Play:    ffplay -f s16le -ar 16000 -ac 1 <file>");
+    console.log("[DEBUG] Convert: ffmpeg -f s16le -ar 16000 -ac 1 -i <file> <file>.wav");
   }
 
   return {
