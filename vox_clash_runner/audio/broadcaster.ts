@@ -1,5 +1,5 @@
 // broadcaster.ts — Publishes per-agent audio to an Agora RTC channel using the
-// native C++ agora-broadcaster binary. Spawns two pw-cat|agora-broadcaster pairs,
+// native C++ agora-broadcaster binary. Spawns two parec|agora-broadcaster pairs,
 // one for each agent, so spectators (and future avatar systems) receive
 // individual audio tracks with separate UIDs.
 
@@ -33,13 +33,13 @@ function spawnAgentBroadcaster(
   uid: number,
   label: string,
 ): AgentBroadcast {
-  const capture = spawn("pw-cat", [
-    "--record",
-    `--target=${device}`,
-    "--format=s16",
+  const capture = spawn("parec", [
+    `--device=${device}`,
+    "--format=s16le",
     "--rate=16000",
     "--channels=1",
-    "-",
+    "--raw",
+    "--latency-msec=50",
   ]);
 
   const broadcaster = spawn(BROADCASTER_BIN, [
@@ -55,7 +55,7 @@ function spawnAgentBroadcaster(
 
   capture.stderr?.on("data", (d: Buffer) => {
     const msg = d.toString().trim();
-    if (msg) console.error(`[pw-cat:${label}] ${msg}`);
+    if (msg) console.error(`[parec:${label}] ${msg}`);
   });
   broadcaster.stderr?.on("data", (d: Buffer) => {
     const msg = d.toString().trim();

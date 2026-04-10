@@ -17,6 +17,7 @@
 // 6. Return to step 4 (poll for next assignment)
 
 import { execSync } from "child_process";
+import * as fs from "fs";
 import * as path from "path";
 import WebSocket from "ws";
 import { launchBrowserAgent, closeBrowserAgent, type AgentConfig, type BrowserAgent } from "./browser-agent.js";
@@ -69,6 +70,17 @@ async function main() {
   // Step 1: Setup PipeWire (once at container boot)
   console.log("[ClashRunner] Setting up PipeWire...");
   execSync("bash /app/audio/pipewire-setup.sh", { stdio: "inherit" });
+
+  // Import DBUS_SESSION_BUS_ADDRESS from setup script (needed by browsers + parec)
+  try {
+    const envFile = fs.readFileSync("/tmp/pipewire-env.sh", "utf-8");
+    const match = envFile.match(/DBUS_SESSION_BUS_ADDRESS=(.+)/);
+    if (match) {
+      process.env.DBUS_SESSION_BUS_ADDRESS = match[1];
+      console.log(`[ClashRunner] DBUS_SESSION_BUS_ADDRESS=${match[1]}`);
+    }
+  } catch {}
+
 
   // Step 2: Register with Vox server
   console.log("[ClashRunner] Registering...");

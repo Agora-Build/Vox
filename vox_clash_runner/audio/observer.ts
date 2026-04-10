@@ -32,18 +32,12 @@ export interface ObserverResult {
  * This is called after both browsers have connected and claimed their sinks.
  */
 export function crossWireAudio(): void {
-  console.log("[Observer] Cross-wiring PipeWire audio...");
+  console.log("[Observer] Cross-wiring audio via PulseAudio loopback...");
   try {
-    execSync("pw-dump", { encoding: "utf-8" });
-    console.log("[Observer] PipeWire nodes available. Cross-wiring with pw-link...");
-
-    try {
-      execSync("pw-link Virtual_Sink_A:monitor_FL Virtual_Sink_B:input_FL 2>/dev/null || true");
-      execSync("pw-link Virtual_Sink_A:monitor_FR Virtual_Sink_B:input_FR 2>/dev/null || true");
-      execSync("pw-link Virtual_Sink_B:monitor_FL Virtual_Sink_A:input_FL 2>/dev/null || true");
-      execSync("pw-link Virtual_Sink_B:monitor_FR Virtual_Sink_A:input_FR 2>/dev/null || true");
-    } catch {}
-
+    // A's output → B's mic: loopback from Virtual_Sink_A.monitor to Virtual_Sink_B
+    execSync("pactl load-module module-loopback source=Virtual_Sink_A.monitor sink=Virtual_Sink_B latency_msec=20");
+    // B's output → A's mic: loopback from Virtual_Sink_B.monitor to Virtual_Sink_A
+    execSync("pactl load-module module-loopback source=Virtual_Sink_B.monitor sink=Virtual_Sink_A latency_msec=20");
     console.log("[Observer] Cross-wiring complete");
   } catch (err) {
     console.error("[Observer] Failed to cross-wire:", err);
@@ -55,7 +49,7 @@ export function crossWireAudio(): void {
  * Agent A (Virtual_Sink_A.monitor) → left channel
  * Agent B (Virtual_Sink_B.monitor) → right channel
  *
- * Uses pw-cat (native PipeWire) to capture monitor streams,
+ * Uses parec (PulseAudio via PipeWire) to capture monitor streams,
  * then sox to merge into stereo.
  */
 export function startRecording(outputDir: string): {
@@ -71,25 +65,25 @@ export function startRecording(outputDir: string): {
   let procB: ChildProcess | null = null;
 
   try {
-    const recAFd = fs.openSync(recA, "w");
-    procA = spawn("pw-cat", [
-      "--record",
-      "--target=Virtual_Sink_A.monitor",
-      "--format=s16",
+    procA = spawn("parec", [
+      "--device=Virtual_Sink_A.monitor",
+      "--format=s16le",
       "--rate=16000",
       "--channels=1",
-      "-",
-    ], { stdio: ["ignore", recAFd, "pipe"] });
+      "--file-format=raw",
+      "--latency-msec=50",
+      recA,
+    ]);
 
-    const recBFd = fs.openSync(recB, "w");
-    procB = spawn("pw-cat", [
-      "--record",
-      "--target=Virtual_Sink_B.monitor",
-      "--format=s16",
+    procB = spawn("parec", [
+      "--device=Virtual_Sink_B.monitor",
+      "--format=s16le",
       "--rate=16000",
       "--channels=1",
-      "-",
-    ], { stdio: ["ignore", recBFd, "pipe"] });
+      "--file-format=raw",
+      "--latency-msec=50",
+      recB,
+    ]);
   } catch (err) {
     console.error("[Observer] Failed to start recording:", err);
   }

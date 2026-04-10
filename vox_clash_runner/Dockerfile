@@ -26,9 +26,12 @@ RUN apt-get update && apt-get install -y \
        > /etc/apt/sources.list.d/nodesource.list \
     && apt-get update && apt-get install -y \
     nodejs \
+    dbus \
     pipewire \
     pipewire-pulse \
     wireplumber \
+    pulseaudio-utils \
+    libspa-0.2-modules \
     pipewire-audio-client-libraries \
     fonts-ipafont-gothic \
     fonts-wqy-zenhei \

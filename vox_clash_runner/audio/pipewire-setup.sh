@@ -1,58 +1,54 @@
 #!/bin/bash
-# PipeWire setup for Clash Runner
-# Creates two virtual null sinks for cross-routing audio between browsers.
+# PipeWire setup for Clash Runner (headless container)
 #
-# Virtual_Sink_A: Browser A's audio output → .monitor feeds Browser B's mic
-# Virtual_Sink_B: Browser B's audio output → .monitor feeds Browser A's mic
+# Audio stack: dbus -> PipeWire -> WirePlumber -> PipeWire-Pulse
+# Sinks created via pactl (PulseAudio API) so Chromium can route audio via PULSE_SINK.
+#
+# Virtual_Sink_A: Browser A audio output -> .monitor feeds Browser B's mic
+# Virtual_Sink_B: Browser B audio output -> .monitor feeds Browser A's mic
 
 set -euo pipefail
 
-# PipeWire requires a runtime directory for its socket
 export XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/tmp/pipewire-run}
 mkdir -p "$XDG_RUNTIME_DIR"
 chmod 700 "$XDG_RUNTIME_DIR"
 
-echo "[PipeWire] Starting PipeWire..."
+echo "[PipeWire] Starting audio stack..."
+
+# D-Bus session bus — required by WirePlumber to drive the audio graph
+dbus-daemon --session --address=unix:path=$XDG_RUNTIME_DIR/bus --nofork --nopidfile &
+DBUS_PID=$!
+export DBUS_SESSION_BUS_ADDRESS=unix:path=$XDG_RUNTIME_DIR/bus
+sleep 0.3
 
 pipewire &
 PIPEWIRE_PID=$!
+sleep 0.5
+
+wireplumber &
+WIREPLUMBER_PID=$!
 sleep 1
 
-# PipeWire-Pulse bridge — Chromium uses PulseAudio for audio I/O
 pipewire-pulse &
 PULSE_PID=$!
 sleep 0.5
 
 echo "[PipeWire] Creating virtual sinks..."
 
-pw-cli create-node adapter \
-  factory.name=support.null-audio-sink \
-  node.name=Virtual_Sink_A \
-  media.class=Audio/Sink \
-  audio.position="FL,FR" \
-  object.linger=true
+pactl load-module module-null-sink sink_name=Virtual_Sink_A sink_properties=device.description=VirtualSinkA
+pactl load-module module-null-sink sink_name=Virtual_Sink_B sink_properties=device.description=VirtualSinkB
 
-pw-cli create-node adapter \
-  factory.name=support.null-audio-sink \
-  node.name=Virtual_Sink_B \
-  media.class=Audio/Sink \
-  audio.position="FL,FR" \
-  object.linger=true
+sleep 0.3
 
-pw-cli create-node adapter \
-  factory.name=support.null-audio-sink \
-  node.name=Mixed_Sink \
-  media.class=Audio/Sink \
-  audio.position="FL,FR" \
-  object.linger=true
+echo "[PipeWire] Sinks:"
+pactl list sinks short
 
-sleep 0.5
+echo "[PipeWire] PID: dbus=$DBUS_PID, pipewire=$PIPEWIRE_PID, wireplumber=$WIREPLUMBER_PID, pulse=$PULSE_PID"
 
-pw-link Virtual_Sink_A:monitor_FL Mixed_Sink:input_FL 2>/dev/null || true
-pw-link Virtual_Sink_B:monitor_FL Mixed_Sink:input_FR 2>/dev/null || true
-
-echo "[PipeWire] Virtual sinks created (A, B, Mixed). Cross-wiring will happen after browsers connect."
-echo "[PipeWire] PID: pipewire=$PIPEWIRE_PID, pulse=$PULSE_PID"
-
+echo "$DBUS_PID" > /tmp/dbus.pid
 echo "$PIPEWIRE_PID" > /tmp/pipewire.pid
+echo "$WIREPLUMBER_PID" > /tmp/wireplumber.pid
 echo "$PULSE_PID" > /tmp/pipewire-pulse.pid
+
+# Export DBUS address so child processes (browsers, parec) inherit it
+echo "export DBUS_SESSION_BUS_ADDRESS=$DBUS_SESSION_BUS_ADDRESS" > /tmp/pipewire-env.sh
