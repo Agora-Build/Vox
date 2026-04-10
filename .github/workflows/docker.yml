@@ -102,6 +102,15 @@ jobs:
         with:
           submodules: recursive
 
+      - name: Sync aeval-data submodule to AEVAL_VERSION tag
+        run: |
+          AEVAL_VERSION=$(grep 'ARG AEVAL_VERSION=' vox_eval_agentd/Dockerfile | cut -d= -f2)
+          echo "AEVAL_VERSION=${AEVAL_VERSION}"
+          cd vox_eval_agentd/aeval-data
+          git fetch origin tag "${AEVAL_VERSION}" --no-tags
+          git checkout "${AEVAL_VERSION}"
+          echo "aeval-data synced to ${AEVAL_VERSION} ($(git rev-parse --short HEAD))"
+
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
         with:
