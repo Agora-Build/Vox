@@ -5,7 +5,7 @@
  *   AGORA_APP_ID, AGORA_APP_CERTIFICATE
  *
  * Required env vars for ConvoAI:
- *   AGORA_CUSTOMER_KEY, AGORA_CUSTOMER_SECRET — Agora REST API credentials
+ *   AGORA_CUSTOMER_ID, AGORA_CUSTOMER_SECRET — Agora REST API credentials
  *   AGORA_CONVOAI_CONFIG — JSON string with LLM/TTS/ASR config:
  *   {
  *     "llm": { "url": "...", "api_key": "...", "params": { "model": "..." } },
@@ -35,7 +35,7 @@ export function isAgoraConfigured(): boolean {
 
 export function isModeratorConfigured(): boolean {
   return isAgoraConfigured() && !!(
-    process.env.AGORA_CUSTOMER_KEY &&
+    process.env.AGORA_CUSTOMER_ID &&
     process.env.AGORA_CUSTOMER_SECRET &&
     process.env.AGORA_CONVOAI_CONFIG
   );
@@ -108,7 +108,7 @@ interface ConvoAIJoinResponse {
 }
 
 function getBasicAuthHeader(): string {
-  const key = getEnv("AGORA_CUSTOMER_KEY");
+  const key = getEnv("AGORA_CUSTOMER_ID");
   const secret = getEnv("AGORA_CUSTOMER_SECRET");
   return "Basic " + Buffer.from(`${key}:${secret}`).toString("base64");
 }

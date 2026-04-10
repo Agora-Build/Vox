@@ -456,7 +456,7 @@ describe("Clash Runner Lifecycle", () => {
 
   describe("Moderator Endpoints", () => {
     it("moderator/start returns moderatorAvailable:false when not configured", async () => {
-      // Without AGORA_CUSTOMER_KEY etc., moderator is unavailable
+      // Without AGORA_CUSTOMER_ID etc., moderator is unavailable
       const eventRes = await authFetch(admin, `${BASE_URL}/api/clash/events`, {
         method: "POST",
         body: JSON.stringify({
