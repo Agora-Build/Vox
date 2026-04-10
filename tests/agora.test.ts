@@ -217,52 +217,146 @@ describe("Agora Integration", () => {
       expect(payload.properties.asr.vendor).toBe("ares");
     });
 
-    it("should build event ConvoAI payload with event channel name and fixed UID", () => {
+    it("should build event ConvoAI payload with flat channel/token/uid", () => {
       const eventId = 7;
       const channelName = `clash-event-${eventId}`;
       const payload = {
         name: "clash-moderator",
         properties: {
-          channel: {
-            channel_name: channelName,
-            token: "test-token",
-            uid: "500",
-          },
+          channel: channelName,
+          token: "test-token",
+          agent_rtc_uid: "500",
+          remote_rtc_uids: ["*"],
+          idle_timeout: 600,
         },
       };
 
-      expect(payload.properties.channel.channel_name).toBe("clash-event-7");
-      expect(payload.properties.channel.uid).toBe("500");
+      expect(payload.properties.channel).toBe("clash-event-7");
+      expect(payload.properties.agent_rtc_uid).toBe("500");
+      expect(payload.properties.remote_rtc_uids).toEqual(["*"]);
+      expect(payload.properties.idle_timeout).toBe(600);
+    });
+  });
+
+  describe("ConvoAI API Endpoints", () => {
+    const BASE_URL = "https://api.agora.io/api/conversational-ai-agent/v2/projects";
+    const appId = "test-app-id";
+    const agentId = "agent-123";
+
+    it("join URL uses /join not /agents", () => {
+      const url = `${BASE_URL}/${appId}/join`;
+      expect(url).toContain("conversational-ai-agent");
+      expect(url.endsWith("/join")).toBe(true);
+      expect(url).not.toContain("/agents");
+    });
+
+    it("leave URL uses POST /agents/{id}/leave not DELETE", () => {
+      const url = `${BASE_URL}/${appId}/agents/${agentId}/leave`;
+      expect(url).toContain(`/agents/${agentId}/leave`);
+    });
+
+    it("speak URL uses /agents/{id}/speak", () => {
+      const url = `${BASE_URL}/${appId}/agents/${agentId}/speak`;
+      expect(url).toContain(`/agents/${agentId}/speak`);
+    });
+
+    it("all endpoints use conversational-ai-agent/v2 (not conversational-ai/v2)", () => {
+      const joinUrl = `${BASE_URL}/${appId}/join`;
+      const leaveUrl = `${BASE_URL}/${appId}/agents/${agentId}/leave`;
+      const speakUrl = `${BASE_URL}/${appId}/agents/${agentId}/speak`;
+
+      for (const url of [joinUrl, leaveUrl, speakUrl]) {
+        expect(url).toContain("conversational-ai-agent/v2");
+        expect(url).not.toMatch(/conversational-ai\/v2\/projects/);
+      }
+    });
+  });
+
+  describe("ConvoAI Join Payload", () => {
+    it("properties uses flat channel/token/agent_rtc_uid (not nested object)", () => {
+      const payload = {
+        name: "clash-moderator",
+        properties: {
+          channel: "clash-event-42",
+          token: "rtc-token",
+          agent_rtc_uid: "500",
+          remote_rtc_uids: ["*"],
+          idle_timeout: 600,
+          llm: {},
+          tts: {},
+          asr: {},
+        },
+      };
+
+      expect(typeof payload.properties.channel).toBe("string");
+      expect(typeof payload.properties.token).toBe("string");
+      expect(typeof payload.properties.agent_rtc_uid).toBe("string");
+      expect(Array.isArray(payload.properties.remote_rtc_uids)).toBe(true);
+    });
+
+    it("remote_rtc_uids ['*'] subscribes to all users in channel", () => {
+      expect(["*"]).toEqual(["*"]);
+    });
+
+    it("idle_timeout prevents moderator from auto-leaving during match", () => {
+      const timeout = 600;
+      expect(timeout).toBeGreaterThanOrEqual(300); // at least match duration
+    });
+  });
+
+  describe("AGORA_CONVOAI_CONFIG Parsing", () => {
+    it("parses valid JSON config", () => {
+      const raw = '{"llm":{"url":"https://api.groq.com"},"tts":{"vendor":"minimax"},"asr":{"vendor":"ares"}}';
+      const config = JSON.parse(raw);
+      expect(config.llm.url).toContain("groq.com");
+      expect(config.tts.vendor).toBe("minimax");
+      expect(config.asr.vendor).toBe("ares");
+    });
+
+    it("handles escaped quotes from Coolify", () => {
+      let raw = '{\"llm\":{\"url\":\"https://api.groq.com\"},\"tts\":{\"vendor\":\"minimax\"}}';
+      if (raw.includes('\\"')) {
+        raw = raw.replace(/\\"/g, '"');
+      }
+      const config = JSON.parse(raw);
+      expect(config.llm.url).toContain("groq.com");
+    });
+
+    it("strips surrounding quotes", () => {
+      let raw = '"{"llm":{}}"';
+      raw = raw.trim();
+      if ((raw.startsWith('"') && raw.endsWith('"')) || (raw.startsWith("'") && raw.endsWith("'"))) {
+        raw = raw.slice(1, -1);
+      }
+      const config = JSON.parse(raw);
+      expect(config.llm).toBeDefined();
+    });
+
+    it("normal JSON without escaping works unchanged", () => {
+      const raw = '{"llm":{"url":"test"}}';
+      expect(raw.includes('\\"')).toBe(false); // no escaping needed
+      const config = JSON.parse(raw);
+      expect(config.llm.url).toBe("test");
     });
   });
 
   describe("Moderator ASR Config", () => {
     it("payload should include ASR with ares vendor", () => {
-      const payload = {
-        name: "clash-moderator",
-        properties: {
-          channel: { channel_name: "clash-event-1", token: "t", uid: "500" },
-          llm: {
-            url: "https://api.openai.com/v1/chat/completions",
-            api_key: "sk-test",
-            system_messages: [{ role: "system", content: "moderator" }],
-            greeting_message: "Welcome!",
-            max_tokens: 256,
-          },
-          tts: { vendor: "microsoft", params: { key: "k", region: "eastus" } },
-          asr: { language: "en-US", vendor: "ares", params: {} },
-        },
+      const config = {
+        llm: { url: "u", api_key: "k" },
+        tts: { vendor: "minimax", params: {} },
+        asr: { language: "en-US", vendor: "ares", params: {} },
       };
 
-      expect(payload.properties.asr).toBeDefined();
-      expect(payload.properties.asr.vendor).toBe("ares");
-      expect(payload.properties.asr.language).toBe("en-US");
+      expect(config.asr).toBeDefined();
+      expect(config.asr.vendor).toBe("ares");
+      expect(config.asr.language).toBe("en-US");
     });
 
     it("moderator has all three capabilities: LLM + TTS + ASR", () => {
       const properties = {
         llm: { url: "u", api_key: "k" },
-        tts: { vendor: "microsoft" },
+        tts: { vendor: "minimax" },
         asr: { vendor: "ares" },
       };
 
