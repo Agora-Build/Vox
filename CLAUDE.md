@@ -358,14 +358,19 @@ cp .env.dev .env
 # Start local server first (required for integration and E2E tests)
 ./script/dev-local-run.sh start
 
-# Run ALL tests (unit + E2E) - recommended
-./script/full-tests-run.sh       # Runs all 626 tests
+# Run ALL tests (unit + audio + E2E) - recommended
+./script/full-tests-run.sh       # Runs all tests
 
-# Unit and Integration Tests (Vitest) - 530 tests
+# Unit and Integration Tests (Vitest)
 npm test                         # Run all tests
 npm run test:watch               # Run in watch mode
 
-# End-to-End Tests (Playwright) - 96 tests
+# Clash Runner Audio Pipeline Test (Docker)
+./script/full-tests-run.sh audio                    # Via test runner
+docker build -t vox-clash-runner-test ./vox_clash_runner  # Or manually
+docker run --rm vox-clash-runner-test bash /app/audio/test-audio-pipeline.sh
+
+# End-to-End Tests (Playwright)
 npx playwright test              # Run all E2E tests
 npx playwright test --ui         # Run with Playwright Test UI
 npx playwright test --headed     # Run in headed browser mode
@@ -374,7 +379,7 @@ npx playwright test --headed     # Run in headed browser mode
 **Full Test Runner** (`./script/full-tests-run.sh`):
 - Loads environment from `.env` and `.env.dev` automatically
 - Verifies server is running
-- Runs unit tests (Vitest) then E2E tests (Playwright)
+- Runs unit tests (Vitest), audio pipeline (Docker), then E2E tests (Playwright)
 - Displays test accounts and credentials summary
 
 ### Test Files
@@ -385,12 +390,18 @@ npx playwright test --headed     # Run in headed browser mode
 | `tests/auth.test.ts` | Unit | 26 | Password hashing, token generation |
 | `tests/cron.test.ts` | Unit | 32 | Cron expression parsing and validation |
 | `tests/eval-agent-daemon.test.ts` | Unit | 86 | Eval agent result parsing, metrics calculation, API communication |
+| `tests/agora.test.ts` | Unit | 45 | Agora token gen, ConvoAI payload, UID reservation |
+| `tests/agora-e2e.test.ts` | E2E | 13 | Real ConvoAI API: start/speak/stop (requires .env.dev credentials) |
+| `tests/clash-runner.test.ts` | Unit | 44 | Runner logic, secret resolution, Elo calculation |
+| `tests/clash-runner-lifecycle.test.ts` | Integration | 60 | Full runner lifecycle: tokens, registration, matches, moderator |
+| `tests/clash-v2.test.ts` | Unit | 45 | WebSocket hub, cron, Agora prompts |
+| `vox_clash_runner/audio/test-audio-pipeline.sh` | Docker | 12 | PipeWire stack, sinks, capture, cross-wire, C++ binaries |
 | `tests/e2e/auth.spec.ts` | E2E | 5 | Login, logout, authentication flows |
 | `tests/e2e/api.spec.ts` | E2E | 17 | Public API, protected endpoints, rate limiting |
 | `tests/e2e/public-pages.spec.ts` | E2E | 9 | Landing page, leaderboard, API docs |
 | `tests/e2e/console.spec.ts` | E2E | 9 | Console access control, admin routes |
 
-**Total: 200+ tests**
+**Total: 400+ tests**
 
 ### Test Coverage by Module
 

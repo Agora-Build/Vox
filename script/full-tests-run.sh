@@ -53,8 +53,9 @@ Vox Full Test Runner
 Usage: $0 [command] [options]
 
 Commands:
-  (none)    Run all tests (unit + E2E)
+  (none)    Run all tests (unit + audio + E2E)
   unit      Run only unit/integration tests (Vitest)
+  audio     Run only clash runner audio pipeline test (Docker)
   e2e       Run only E2E tests (Playwright)
   help      Show this help message
 
@@ -124,6 +125,27 @@ verify_env() {
         log_info "Using Stripe test keys (test mode enabled)"
     elif [[ -n "$STRIPE_SECRET_KEY" ]]; then
         log_warn "Using Stripe live keys - be careful!"
+    fi
+}
+
+# Run clash runner audio pipeline test (Docker)
+run_audio_tests() {
+    log_info "Running clash runner audio pipeline test (Docker)..."
+    cd "$PROJECT_DIR"
+
+    log_info "Building clash runner Docker image..."
+    if ! docker build -t vox-clash-runner-test ./vox_clash_runner > /dev/null 2>&1; then
+        log_error "Failed to build clash runner Docker image"
+        return 1
+    fi
+    log_success "Docker image built"
+
+    if docker run --rm vox-clash-runner-test bash /app/audio/test-audio-pipeline.sh; then
+        log_success "Audio pipeline tests passed!"
+        return 0
+    else
+        log_error "Audio pipeline tests failed!"
+        return 1
     fi
 }
 
@@ -233,17 +255,23 @@ main() {
 
     # Run tests based on command
     local unit_result=0
+    local audio_result=0
     local e2e_result=0
 
     case "$command" in
         unit)
             run_unit_tests || unit_result=$?
             ;;
+        audio)
+            run_audio_tests || audio_result=$?
+            ;;
         e2e)
             run_e2e_tests $verbose || e2e_result=$?
             ;;
         all|*)
             run_unit_tests || unit_result=$?
+            echo ""
+            run_audio_tests || audio_result=$?
             echo ""
             run_e2e_tests $verbose || e2e_result=$?
             ;;
@@ -257,9 +285,17 @@ main() {
 
     if [ "$command" = "unit" ] || [ "$command" = "all" ]; then
         if [ $unit_result -eq 0 ]; then
-            echo -e "  Unit/Integration: ${GREEN}PASSED${NC}"
+            echo -e "  Unit/Integration:  ${GREEN}PASSED${NC}"
         else
-            echo -e "  Unit/Integration: ${RED}FAILED${NC}"
+            echo -e "  Unit/Integration:  ${RED}FAILED${NC}"
+        fi
+    fi
+
+    if [ "$command" = "audio" ] || [ "$command" = "all" ]; then
+        if [ $audio_result -eq 0 ]; then
+            echo -e "  Audio Pipeline:    ${GREEN}PASSED${NC}"
+        else
+            echo -e "  Audio Pipeline:    ${RED}FAILED${NC}"
         fi
     fi
 
@@ -275,7 +311,7 @@ main() {
     echo ""
 
     # Exit with failure if any tests failed
-    if [ $unit_result -ne 0 ] || [ $e2e_result -ne 0 ]; then
+    if [ $unit_result -ne 0 ] || [ $audio_result -ne 0 ] || [ $e2e_result -ne 0 ]; then
         exit 1
     fi
 
