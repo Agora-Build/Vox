@@ -140,9 +140,15 @@ export async function startBroadcast(config: BroadcastConfig): Promise<Broadcast
     "-d", "Virtual_Sink_B", "--format=s16le", "--rate=16000", "--channels=1",
   ]);
 
+  // Suppress EPIPE errors during shutdown (pacat killed before receiver stops writing)
+  pacatA.stdin.on("error", () => {});
+  pacatB.stdin.on("error", () => {});
+
   receiver.stdout.on("data", (chunk: Buffer) => {
-    pacatA.stdin.write(chunk);
-    pacatB.stdin.write(chunk);
+    try {
+      pacatA.stdin.write(chunk);
+      pacatB.stdin.write(chunk);
+    } catch {}
   });
 
   receiver.stderr?.on("data", (d: Buffer) => {
