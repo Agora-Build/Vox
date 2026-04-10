@@ -105,7 +105,7 @@ export function generateEventChannelName(eventId: number): string {
 // ConvoAI Moderator lifecycle
 // ---------------------------------------------------------------------------
 
-const CONVOAI_BASE_URL = "https://api.agora.io/api/conversational-ai/v2/projects";
+const CONVOAI_BASE_URL = "https://api.agora.io/api/conversational-ai-agent/v2/projects";
 
 interface StartModeratorOptions {
   channelName: string;
@@ -129,7 +129,7 @@ function getBasicAuthHeader(): string {
 
 export async function startModerator(opts: StartModeratorOptions): Promise<string> {
   const appId = getEnv("AGORA_APP_ID");
-  const url = `${CONVOAI_BASE_URL}/${appId}/agents`;
+  const url = `${CONVOAI_BASE_URL}/${appId}/join`;
   const cfg = getConvoAIConfig();
 
   // Merge config with runtime values (channel, system prompt, greeting)
@@ -145,11 +145,11 @@ export async function startModerator(opts: StartModeratorOptions): Promise<strin
   const payload = {
     name: "clash-moderator",
     properties: {
-      channel: {
-        channel_name: opts.channelName,
-        token: opts.token,
-        uid: opts.uid,
-      },
+      channel: opts.channelName,
+      token: opts.token,
+      agent_rtc_uid: opts.uid,
+      remote_rtc_uids: ["*"],
+      idle_timeout: 600,
       llm,
       tts: cfg.tts,
       asr: cfg.asr || { language: "en-US", vendor: "ares", params: {} },
@@ -176,13 +176,15 @@ export async function startModerator(opts: StartModeratorOptions): Promise<strin
 
 export async function stopModerator(agentId: string): Promise<void> {
   const appId = getEnv("AGORA_APP_ID");
-  const url = `${CONVOAI_BASE_URL}/${appId}/agents/${agentId}`;
+  const url = `${CONVOAI_BASE_URL}/${appId}/agents/${agentId}/leave`;
 
   const response = await fetch(url, {
-    method: "DELETE",
+    method: "POST",
     headers: {
+      "Content-Type": "application/json",
       Authorization: getBasicAuthHeader(),
     },
+    body: JSON.stringify({}),
   });
 
   if (!response.ok && response.status !== 404) {
