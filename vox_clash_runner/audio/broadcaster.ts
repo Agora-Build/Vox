@@ -128,6 +128,7 @@ export async function startBroadcast(config: BroadcastConfig): Promise<Broadcast
     "--token", config.receiverToken,
     "--channelId", config.channelName,
     "--userId", String(config.receiverUid),
+    "--filterUid", "500",  // Only pipe moderator audio to agents (avoid feedback loop)
     "--sampleRate", "16000",
     "--numOfChannels", "1",
   ]);

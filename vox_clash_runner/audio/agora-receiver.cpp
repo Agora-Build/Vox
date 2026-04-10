@@ -43,6 +43,7 @@ struct Options {
   std::string token;
   std::string channelId;
   std::string userId;
+  std::string filterUid;  // Only output audio from this UID (empty = all)
   int sampleRate = DEFAULT_SAMPLE_RATE;
   int numOfChannels = DEFAULT_NUM_OF_CHANNELS;
 };
@@ -54,15 +55,21 @@ static void signalHandler(int sigNo) {
   g_running = false;
 }
 
-// Audio frame observer: writes received PCM to stdout
+// Audio frame observer: writes received PCM to stdout, filtered by UID
 class StdoutPcmObserver : public agora::media::IAudioFrameObserverBase {
  public:
-  StdoutPcmObserver() : frameCount_(0) {}
+  StdoutPcmObserver(const std::string& filterUid = "")
+      : frameCount_(0), filterUid_(filterUid) {}
 
   bool onPlaybackAudioFrameBeforeMixing(
       const char* channelId,
       agora::media::base::user_id_t userId,
       AudioFrame& audioFrame) override {
+    // If filter is set, only output audio from that specific user
+    if (!filterUid_.empty() && std::string(userId) != filterUid_) {
+      return true;
+    }
+
     size_t writeBytes =
         audioFrame.samplesPerChannel * audioFrame.channels * sizeof(int16_t);
     if (fwrite(audioFrame.buffer, 1, writeBytes, stdout) != writeBytes) {
@@ -72,7 +79,8 @@ class StdoutPcmObserver : public agora::media::IAudioFrameObserverBase {
     fflush(stdout);
     frameCount_++;
     if (frameCount_ % 1000 == 0) {
-      AG_LOG(INFO, "Received %lu audio frames from channel", frameCount_);
+      AG_LOG(INFO, "Received %lu audio frames from user %s (%lu total)",
+             frameCount_, userId, frameCount_);
     }
     return true;
   }
@@ -89,6 +97,7 @@ class StdoutPcmObserver : public agora::media::IAudioFrameObserverBase {
 
  private:
   uint64_t frameCount_;
+  std::string filterUid_;
 };
 
 
@@ -100,6 +109,7 @@ int main(int argc, char* argv[]) {
   optParser.add_long_opt("token", &opts.token, "Agora RTC token / must");
   optParser.add_long_opt("channelId", &opts.channelId, "Channel name / must");
   optParser.add_long_opt("userId", &opts.userId, "User ID / must");
+  optParser.add_long_opt("filterUid", &opts.filterUid, "Only output audio from this UID (default: all)");
   optParser.add_long_opt("sampleRate", &opts.sampleRate, "PCM sample rate (default 16000)");
   optParser.add_long_opt("numOfChannels", &opts.numOfChannels, "Number of channels (default 1)");
 
@@ -154,7 +164,10 @@ int main(int argc, char* argv[]) {
   auto localUserObserver =
       std::make_shared<SampleLocalUserObserver>(connection->getLocalUser());
 
-  auto pcmObserver = std::make_shared<StdoutPcmObserver>();
+  auto pcmObserver = std::make_shared<StdoutPcmObserver>(opts.filterUid);
+  if (!opts.filterUid.empty()) {
+    AG_LOG(INFO, "Filtering audio to UID: %s only", opts.filterUid.c_str());
+  }
   if (connection->getLocalUser()->setPlaybackAudioFrameBeforeMixingParameters(
           opts.numOfChannels, opts.sampleRate)) {
     AG_LOG(ERROR, "Failed to set audio frame parameters");
