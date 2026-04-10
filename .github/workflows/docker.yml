@@ -50,8 +50,12 @@ jobs:
               - 'drizzle.config.ts'
             vox-eval-agentd:
               - 'vox_eval_agentd/**'
+              - 'shared/**'
+              - '.dockerignore'
             vox-clash-runner:
               - 'vox_clash_runner/**'
+              - 'shared/**'
+              - '.dockerignore'
 
   build-vox-service:
     needs: changes
