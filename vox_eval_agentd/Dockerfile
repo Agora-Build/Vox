@@ -82,11 +82,10 @@ RUN apt-get update && apt-get install -y python3-pip --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy aeval runtime data from submodule: config/, examples/, corpus/
-COPY aeval-data/ /app/aeval-data/
+COPY vox_eval_agentd/aeval-data/ /app/aeval-data/
 
 # --- voice-agent-tester framework ---
-# Copy voice-agent-tester from build context
-COPY voice-agent-tester/ /app/voice-agent-tester/
+COPY vox_eval_agentd/voice-agent-tester/ /app/voice-agent-tester/
 
 # Install voice-agent-tester dependencies and Puppeteer's Chrome
 WORKDIR /app/voice-agent-tester
@@ -94,11 +93,12 @@ RUN npm install && npx puppeteer browsers install chrome
 
 # Copy vox integration files
 WORKDIR /app
-COPY applications/ /app/applications/
-COPY scenarios/ /app/scenarios/
-COPY assets/ /app/assets/
-COPY vox-agentd.ts /app/
-COPY package.json /app/
+COPY vox_eval_agentd/applications/ /app/applications/
+COPY vox_eval_agentd/scenarios/ /app/scenarios/
+COPY vox_eval_agentd/assets/ /app/assets/
+COPY vox_eval_agentd/vox-agentd.ts /app/
+COPY vox_eval_agentd/package.json /app/
+COPY shared/secrets.ts /shared/secrets.ts
 
 # Install daemon dependencies (esbuild for TS compilation)
 RUN npm install

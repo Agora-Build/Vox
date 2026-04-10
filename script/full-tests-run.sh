@@ -134,7 +134,7 @@ run_audio_tests() {
     cd "$PROJECT_DIR"
 
     log_info "Building clash runner Docker image..."
-    if ! docker build -t vox-clash-runner-test ./vox_clash_runner > /dev/null 2>&1; then
+    if ! docker build -f vox_clash_runner/Dockerfile -t vox-clash-runner-test . > /dev/null 2>&1; then
         log_error "Failed to build clash runner Docker image"
         return 1
     fi

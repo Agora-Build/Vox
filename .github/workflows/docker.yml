@@ -133,7 +133,8 @@ jobs:
       - name: Build image
         uses: docker/build-push-action@v6
         with:
-          context: ./vox_eval_agentd
+          context: .
+          file: ./vox_eval_agentd/Dockerfile
           load: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
@@ -159,7 +160,8 @@ jobs:
       - name: Push image
         uses: docker/build-push-action@v6
         with:
-          context: ./vox_eval_agentd
+          context: .
+          file: ./vox_eval_agentd/Dockerfile
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
@@ -200,7 +202,8 @@ jobs:
       - name: Build image
         uses: docker/build-push-action@v6
         with:
-          context: ./vox_clash_runner
+          context: .
+          file: ./vox_clash_runner/Dockerfile
           load: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
@@ -221,7 +224,8 @@ jobs:
       - name: Push image
         uses: docker/build-push-action@v6
         with:
-          context: ./vox_clash_runner
+          context: .
+          file: ./vox_clash_runner/Dockerfile
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}

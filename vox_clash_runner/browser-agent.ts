@@ -2,6 +2,7 @@
 // and executes setup steps to start the voice session.
 
 import { chromium, type Browser, type Page } from "playwright-core";
+import { SECRET_PLACEHOLDER_REGEX } from "../shared/secrets";
 
 export interface SetupStep {
   action: "click" | "fill" | "wait" | "select" | "press";
@@ -22,12 +23,6 @@ export interface BrowserAgent {
   page: Page;
   agentConfig: AgentConfig;
 }
-
-/**
- * Resolve ${secrets.KEY} placeholders in setup step values.
- * Regex must match shared/secrets.ts SECRET_PLACEHOLDER_REGEX — keep aligned.
- */
-const SECRET_PLACEHOLDER_REGEX = /\$\{secrets\.([A-Z][A-Z0-9_]*)\}/g;
 
 function resolveSecrets(steps: SetupStep[], secrets: Record<string, string>): SetupStep[] {
   const secretKeys = Object.keys(secrets);

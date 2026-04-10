@@ -4,8 +4,8 @@
 # a different AI agent's web URL. PipeWire cross-routes audio so the agents
 # hear each other. An observer records the conversation and computes metrics.
 #
-# Build:
-#   docker build -t vox_clash_runner .
+# Build (from repo root):
+#   docker build -f vox_clash_runner/Dockerfile -t vox_clash_runner .
 #
 # Run:
 #   docker run -e RUNNER_TOKEN=xxx -e VOX_SERVER=http://host.docker.internal:5000 vox_clash_runner
@@ -69,11 +69,12 @@ RUN curl -fsSL https://download.agora.io/rtsasdk/release/Agora-RTC-x86_64-linux-
 RUN npx playwright install --with-deps chromium
 
 # Copy application files
-COPY package.json /app/
+COPY vox_clash_runner/package.json /app/
 RUN npm install
 
-COPY audio/ /app/audio/
-COPY *.ts /app/
+COPY vox_clash_runner/audio/ /app/audio/
+COPY vox_clash_runner/*.ts /app/
+COPY shared/secrets.ts /shared/secrets.ts
 
 # Common SDK source files for C++ builds
 ENV AGORA_COMMON="/opt/agora_rtc_sdk/example/common"
