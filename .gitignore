@@ -8,6 +8,7 @@ vite.config.ts.*
 # Environment files (keep .env.example)
 .env
 .env.dev
+.env.tests
 .env.local
 .env.*.local
 
