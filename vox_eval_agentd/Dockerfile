@@ -6,8 +6,8 @@
 # Base: Ubuntu 24.04 (GLIBC 2.39) — required by aeval's bundled Python runtime.
 # Chromium: Puppeteer downloads its own (Ubuntu 24.04 only offers snap Chromium).
 #
-# Build:
-#   docker build -t vox_eval_agentd .
+# Build (from repo root):
+#   docker build -f vox_eval_agentd/Dockerfile -t vox_eval_agentd .
 #
 # Run:
 #   docker run -e AGENT_TOKEN=xxx -e VOX_SERVER=http://host.docker.internal:5000 vox_eval_agentd
