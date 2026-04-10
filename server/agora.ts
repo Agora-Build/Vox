@@ -51,10 +51,16 @@ function getConvoAIConfig(): ConvoAIConfig {
   let raw = process.env.AGORA_CONVOAI_CONFIG;
   if (!raw) throw new Error("Missing AGORA_CONVOAI_CONFIG env var");
   // Strip surrounding quotes if Coolify/Docker wraps the value
+  raw = raw.trim();
   if ((raw.startsWith('"') && raw.endsWith('"')) || (raw.startsWith("'") && raw.endsWith("'"))) {
     raw = raw.slice(1, -1);
   }
-  return JSON.parse(raw);
+  try {
+    return JSON.parse(raw);
+  } catch (err) {
+    console.error(`[Agora] AGORA_CONVOAI_CONFIG parse error. First 50 chars: "${raw.slice(0, 50)}..." Length: ${raw.length}`);
+    throw err;
+  }
 }
 
 // ---------------------------------------------------------------------------

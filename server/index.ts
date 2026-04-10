@@ -136,6 +136,10 @@ const SENSITIVE_PATHS = new Set([
   "/api/user/api-keys",
   "/api/admin/eval-agent-tokens",
   "/api/admin/invite",
+  "/api/secrets",
+  "/api/eval-agent/jobs",       // /jobs/:id/secrets matched by startsWith
+  "/api/clash-runner/secrets",
+  "/api/admin/clash-runner-tokens",
 ]);
 
 app.use((req, res, next) => {
