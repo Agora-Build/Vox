@@ -129,6 +129,11 @@ export async function startModerator(opts: StartModeratorOptions): Promise<strin
           region: ttsRegion,
         },
       },
+      asr: {
+        language: "en-US",
+        vendor: "ares",
+        params: {},
+      },
     },
   };
 
