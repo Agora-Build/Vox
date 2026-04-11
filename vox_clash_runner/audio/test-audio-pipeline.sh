@@ -122,9 +122,29 @@ else
   fail "Cross-wire captured only ${CROSSWIRE_SIZE} bytes (expected >1000)"
 fi
 
-# --- 6. Verify C++ binaries ---
+# --- 6. Test piped raw PCM playback (simulates receiver → pacat --raw → monitor) ---
 echo ""
-echo "[6/6] Checking C++ binaries..."
+echo "[6/7] Testing piped raw PCM (sustained stdin → pacat --raw → parec)..."
+
+# Sustained producer via pipe (matches Node.js receiver → pacat pattern)
+timeout 10 pacat -d Virtual_Sink_A --format=s16le --rate=16000 --channels=1 --raw < /dev/zero &
+PIPE_PROD=$!
+sleep 4
+
+timeout 3 parec -d Virtual_Sink_A.monitor --format=s16le --rate=16000 --channels=1 --raw 2>/dev/null > /tmp/pipe_test.raw || true
+
+kill $PIPE_PROD 2>/dev/null; wait $PIPE_PROD 2>/dev/null || true
+PIPE_SIZE=$(wc -c < /tmp/pipe_test.raw 2>/dev/null || echo 0)
+
+if [ "$PIPE_SIZE" -gt 1000 ]; then
+  pass "Piped raw PCM with --raw: ${PIPE_SIZE} bytes (receiver→pacat pattern works)"
+else
+  fail "Piped raw PCM with --raw: only ${PIPE_SIZE} bytes (receiver→pacat pattern broken)"
+fi
+
+# --- 7. Verify C++ binaries ---
+echo ""
+echo "[7/7] Checking C++ binaries..."
 
 BCAST_OUT=$(/app/agora-broadcaster 2>&1 || true)
 if echo "$BCAST_OUT" | grep -qi "appid"; then

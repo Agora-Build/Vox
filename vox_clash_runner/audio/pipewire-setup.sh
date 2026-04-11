@@ -15,16 +15,6 @@ chmod 700 "$XDG_RUNTIME_DIR"
 
 echo "[PipeWire] Starting audio stack..."
 
-# Increase PipeWire buffers to handle many concurrent streams (browsers + captures + loopbacks)
-mkdir -p /etc/pipewire/pipewire.conf.d
-cat > /etc/pipewire/pipewire.conf.d/10-clash-runner.conf << 'PWCONF'
-context.properties = {
-    default.clock.quantum = 2048
-    default.clock.min-quantum = 1024
-    default.clock.max-quantum = 8192
-}
-PWCONF
-
 # D-Bus session bus — required by WirePlumber to drive the audio graph
 dbus-daemon --session --address=unix:path=$XDG_RUNTIME_DIR/bus --nofork --nopidfile &
 DBUS_PID=$!
