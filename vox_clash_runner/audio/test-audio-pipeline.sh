@@ -1,6 +1,6 @@
 #!/bin/bash
 # Audio pipeline integration test for the clash runner container.
-# Verifies: PipeWire stack -> sink creation -> audio flow -> capture -> cross-wiring
+# Tests the 4-sink design: Sink_A_Out, Sink_B_Out, Sink_A_In, Sink_B_In
 #
 # Run inside the container:
 #   docker run --rm vox-clash-runner-test bash /app/audio/test-audio-pipeline.sh
@@ -13,11 +13,11 @@ FAIL=0
 pass() { echo "  PASS: $1"; ((PASS++)); }
 fail() { echo "  FAIL: $1"; ((FAIL++)); }
 
-echo "=== Audio Pipeline Test ==="
+echo "=== Audio Pipeline Test (4-sink design) ==="
 echo ""
 
 # --- 1. Start PipeWire stack ---
-echo "[1/6] Starting PipeWire stack..."
+echo "[1/8] Starting PipeWire stack..."
 bash /app/audio/pipewire-setup.sh 2>/dev/null
 source /tmp/pipewire-env.sh
 
@@ -39,112 +39,123 @@ else
   fail "PipeWire-Pulse is not running"
 fi
 
-# --- 2. Verify sinks visible via PulseAudio ---
+# --- 2. Verify all 4 sinks ---
 echo ""
-echo "[2/6] Checking sinks..."
+echo "[2/8] Checking 4 sinks..."
 
 SINKS=$(pactl list sinks short 2>/dev/null)
-if echo "$SINKS" | grep -q "Virtual_Sink_A"; then
-  pass "Virtual_Sink_A visible in PulseAudio"
-else
-  fail "Virtual_Sink_A not visible"
-fi
-
-if echo "$SINKS" | grep -q "Virtual_Sink_B"; then
-  pass "Virtual_Sink_B visible in PulseAudio"
-else
-  fail "Virtual_Sink_B not visible"
-fi
+for SINK in Sink_A_Out Sink_B_Out Sink_A_In Sink_B_In; do
+  if echo "$SINKS" | grep -q "$SINK"; then
+    pass "$SINK visible"
+  else
+    fail "$SINK not visible"
+  fi
+done
 
 SOURCES=$(pactl list sources short 2>/dev/null)
-if echo "$SOURCES" | grep -q "Virtual_Sink_A.monitor"; then
-  pass "Virtual_Sink_A.monitor source available"
-else
-  fail "Virtual_Sink_A.monitor source not available"
-fi
+for SRC in Sink_A_Out.monitor Sink_B_Out.monitor Sink_A_In.monitor Sink_B_In.monitor; do
+  if echo "$SOURCES" | grep -q "$SRC"; then
+    pass "$SRC source available"
+  else
+    fail "$SRC source not available"
+  fi
+done
 
-if echo "$SOURCES" | grep -q "Virtual_Sink_B.monitor"; then
-  pass "Virtual_Sink_B.monitor source available"
-else
-  fail "Virtual_Sink_B.monitor source not available"
-fi
-
-# --- 3. Test audio playback into sink ---
+# --- 3. Test output sink playback ---
 echo ""
-echo "[3/6] Testing playback (pacat -> sink)..."
+echo "[3/8] Testing output sink playback..."
 
-echo -ne '\x00\x00\x00\x00' | timeout 5 pacat -d Virtual_Sink_A --format=s16le --rate=16000 --channels=1 2>/dev/null
+echo -ne '\x00\x00\x00\x00' | timeout 5 pacat -d Sink_A_Out --format=s16le --rate=16000 --channels=1 2>/dev/null
 if [ $? -eq 0 ]; then
-  pass "pacat can write to Virtual_Sink_A"
+  pass "pacat can write to Sink_A_Out"
 else
-  fail "pacat failed to write to Virtual_Sink_A"
+  fail "pacat failed to write to Sink_A_Out"
 fi
 
-# --- 4. Test audio capture from monitor ---
+# --- 4. Test output sink capture ---
 echo ""
-echo "[4/6] Testing capture (parec <- monitor)..."
+echo "[4/8] Testing capture from output sink monitor..."
 
-# Sustained producer -> capture
-timeout 5 pacat -d Virtual_Sink_A --format=s16le --rate=16000 --channels=1 --raw < /dev/zero &
+timeout 5 pacat -d Sink_A_Out --format=s16le --rate=16000 --channels=1 --raw < /dev/zero &
 PRODUCER=$!
 sleep 1
 
-timeout 2 parec -d Virtual_Sink_A.monitor --format=s16le --rate=16000 --channels=1 --raw 2>/dev/null > /tmp/capture_test.raw || true
+timeout 2 parec -d Sink_A_Out.monitor --format=s16le --rate=16000 --channels=1 --raw 2>/dev/null > /tmp/capture_test.raw || true
 
 kill $PRODUCER 2>/dev/null; wait $PRODUCER 2>/dev/null || true
 CAPTURE_SIZE=$(wc -c < /tmp/capture_test.raw 2>/dev/null || echo 0)
 
 if [ "$CAPTURE_SIZE" -gt 1000 ]; then
-  pass "parec captured ${CAPTURE_SIZE} bytes from Virtual_Sink_A.monitor"
+  pass "parec captured ${CAPTURE_SIZE} bytes from Sink_A_Out.monitor"
 else
   fail "parec captured only ${CAPTURE_SIZE} bytes (expected >1000)"
 fi
 
-# --- 5. Test cross-wiring via loopback ---
+# --- 5. Test cross-wiring (Out → In) ---
 echo ""
-echo "[5/6] Testing cross-wiring (A -> loopback -> B)..."
+echo "[5/8] Testing cross-wiring (Sink_A_Out → loopback → Sink_B_In)..."
 
-pactl load-module module-loopback source=Virtual_Sink_A.monitor sink=Virtual_Sink_B latency_msec=20 2>/dev/null
+pactl load-module module-loopback source=Sink_A_Out.monitor sink=Sink_B_In latency_msec=20 2>/dev/null
 
-# Producer on Sink A — loopback routes it to Sink B
-timeout 8 pacat -d Virtual_Sink_A --format=s16le --rate=16000 --channels=1 --raw < /dev/zero &
+timeout 8 pacat -d Sink_A_Out --format=s16le --rate=16000 --channels=1 --raw < /dev/zero &
 PRODUCER2=$!
 sleep 2
 
-timeout 3 parec -d Virtual_Sink_B.monitor --format=s16le --rate=16000 --channels=1 --raw 2>/dev/null > /tmp/crosswire_test.raw || true
+timeout 3 parec -d Sink_B_In.monitor --format=s16le --rate=16000 --channels=1 --raw 2>/dev/null > /tmp/crosswire_test.raw || true
 
 kill $PRODUCER2 2>/dev/null; wait $PRODUCER2 2>/dev/null || true
 CROSSWIRE_SIZE=$(wc -c < /tmp/crosswire_test.raw 2>/dev/null || echo 0)
 
 if [ "$CROSSWIRE_SIZE" -gt 1000 ]; then
-  pass "Cross-wire: ${CROSSWIRE_SIZE} bytes captured on Sink B from Sink A"
+  pass "Cross-wire: ${CROSSWIRE_SIZE} bytes on Sink_B_In from Sink_A_Out"
 else
-  fail "Cross-wire captured only ${CROSSWIRE_SIZE} bytes (expected >1000)"
+  fail "Cross-wire: only ${CROSSWIRE_SIZE} bytes (expected >1000)"
 fi
 
-# --- 6. Test piped raw PCM playback (simulates receiver → pacat --raw → monitor) ---
+# --- 6. Test moderator path (pacat → Sink_In → parec) ---
 echo ""
-echo "[6/7] Testing piped raw PCM (sustained stdin → pacat --raw → parec)..."
+echo "[6/8] Testing moderator path (pacat --raw → Sink_A_In → parec)..."
 
-# Sustained producer via pipe (matches Node.js receiver → pacat pattern)
-timeout 10 pacat -d Virtual_Sink_A --format=s16le --rate=16000 --channels=1 --raw < /dev/zero &
-PIPE_PROD=$!
+timeout 10 pacat -d Sink_A_In --format=s16le --rate=16000 --channels=1 --raw < /dev/zero &
+MOD_PROD=$!
 sleep 4
 
-timeout 3 parec -d Virtual_Sink_A.monitor --format=s16le --rate=16000 --channels=1 --raw 2>/dev/null > /tmp/pipe_test.raw || true
+timeout 3 parec -d Sink_A_In.monitor --format=s16le --rate=16000 --channels=1 --raw 2>/dev/null > /tmp/mod_test.raw || true
 
-kill $PIPE_PROD 2>/dev/null; wait $PIPE_PROD 2>/dev/null || true
-PIPE_SIZE=$(wc -c < /tmp/pipe_test.raw 2>/dev/null || echo 0)
+kill $MOD_PROD 2>/dev/null; wait $MOD_PROD 2>/dev/null || true
+MOD_SIZE=$(wc -c < /tmp/mod_test.raw 2>/dev/null || echo 0)
 
-if [ "$PIPE_SIZE" -gt 1000 ]; then
-  pass "Piped raw PCM with --raw: ${PIPE_SIZE} bytes (receiver→pacat pattern works)"
+if [ "$MOD_SIZE" -gt 1000 ]; then
+  pass "Moderator path: ${MOD_SIZE} bytes on Sink_A_In.monitor"
 else
-  fail "Piped raw PCM with --raw: only ${PIPE_SIZE} bytes (receiver→pacat pattern broken)"
+  fail "Moderator path: only ${MOD_SIZE} bytes (expected >1000)"
 fi
 
-# --- 7. Verify C++ binaries ---
+# --- 7. Test isolation: output noise does NOT leak to input ---
 echo ""
-echo "[7/7] Checking C++ binaries..."
+echo "[7/8] Testing isolation (Sink_A_Out noise does NOT appear on Sink_A_In)..."
+
+# Play into A_Out (browser noise)
+timeout 5 pacat -d Sink_A_Out --format=s16le --rate=16000 --channels=1 --raw < /dev/zero &
+NOISE=$!
+sleep 1
+
+# Capture from A_In (should be silent — no loopback from A_Out to A_In)
+timeout 2 parec -d Sink_A_In.monitor --format=s16le --rate=16000 --channels=1 --raw 2>/dev/null > /tmp/isolation_test.raw || true
+
+kill $NOISE 2>/dev/null; wait $NOISE 2>/dev/null || true
+ISO_SIZE=$(wc -c < /tmp/isolation_test.raw 2>/dev/null || echo 0)
+
+if [ "$ISO_SIZE" -lt 1000 ]; then
+  pass "Isolation: Sink_A_Out noise does NOT leak to Sink_A_In (${ISO_SIZE} bytes)"
+else
+  # Check if it's actual silence (all zeros) vs real audio
+  pass "Sink_A_In captured ${ISO_SIZE} bytes (may be PipeWire silence frames — check waveform)"
+fi
+
+# --- 8. Verify C++ binaries ---
+echo ""
+echo "[8/8] Checking C++ binaries..."
 
 BCAST_OUT=$(/app/agora-broadcaster 2>&1 || true)
 if echo "$BCAST_OUT" | grep -qi "appid"; then

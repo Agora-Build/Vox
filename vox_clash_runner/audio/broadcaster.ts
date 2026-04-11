@@ -113,14 +113,14 @@ function killAgent(agent: AgentBroadcast): Promise<void> {
  */
 export async function startBroadcast(config: BroadcastConfig): Promise<BroadcastHandle> {
   console.log(`[Broadcaster] Starting dual-agent broadcast to channel ${config.channelName}`);
-  console.log(`[Broadcaster]   Agent A: uid=${config.uidA} → Virtual_Sink_A.monitor`);
-  console.log(`[Broadcaster]   Agent B: uid=${config.uidB} → Virtual_Sink_B.monitor`);
+  console.log(`[Broadcaster]   Agent A: uid=${config.uidA} → Sink_A_Out.monitor`);
+  console.log(`[Broadcaster]   Agent B: uid=${config.uidB} → Sink_B_Out.monitor`);
 
   const agentA = spawnAgentBroadcaster(
-    "Virtual_Sink_A.monitor", config, config.tokenA, config.uidA, "AgentA",
+    "Sink_A_Out.monitor", config, config.tokenA, config.uidA, "AgentA",
   );
   const agentB = spawnAgentBroadcaster(
-    "Virtual_Sink_B.monitor", config, config.tokenB, config.uidB, "AgentB",
+    "Sink_B_Out.monitor", config, config.tokenB, config.uidB, "AgentB",
   );
 
   // Brief startup check — if either broadcaster crashes immediately, report it
@@ -150,8 +150,8 @@ export async function startBroadcast(config: BroadcastConfig): Promise<Broadcast
   ]);
 
   // Pipe received audio to both agent sinks
-  const pacatA = spawn("pacat", pacatArgs("Virtual_Sink_A"));
-  const pacatB = spawn("pacat", pacatArgs("Virtual_Sink_B"));
+  const pacatA = spawn("pacat", pacatArgs("Sink_A_In"));
+  const pacatB = spawn("pacat", pacatArgs("Sink_B_In"));
 
   // Suppress EPIPE errors during shutdown (pacat killed before receiver stops writing)
   pacatA.stdin.on("error", () => {});
@@ -166,12 +166,12 @@ export async function startBroadcast(config: BroadcastConfig): Promise<Broadcast
     console.log(`[DEBUG] Dumping moderator RTC audio → ${modPath}`);
 
     const aInPath = debugPath("agent_a_in");
-    agentAInDump = spawn("parec", parecArgs("Virtual_Sink_A.monitor"),
+    agentAInDump = spawn("parec", parecArgs("Sink_A_In.monitor"),
       { stdio: ["ignore", fs.openSync(aInPath, "w"), "ignore"] });
     console.log(`[DEBUG] Dumping Agent A mic input → ${aInPath}`);
 
     const bInPath = debugPath("agent_b_in");
-    agentBInDump = spawn("parec", parecArgs("Virtual_Sink_B.monitor"),
+    agentBInDump = spawn("parec", parecArgs("Sink_B_In.monitor"),
       { stdio: ["ignore", fs.openSync(bInPath, "w"), "ignore"] });
     console.log(`[DEBUG] Dumping Agent B mic input → ${bInPath}`);
   }

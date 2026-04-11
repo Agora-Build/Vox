@@ -35,10 +35,10 @@ export interface ObserverResult {
 export function crossWireAudio(): void {
   console.log("[Observer] Cross-wiring audio via PulseAudio loopback...");
   try {
-    // A's output → B's mic: loopback from Virtual_Sink_A.monitor to Virtual_Sink_B
-    execSync("pactl load-module module-loopback source=Virtual_Sink_A.monitor sink=Virtual_Sink_B latency_msec=20");
-    // B's output → A's mic: loopback from Virtual_Sink_B.monitor to Virtual_Sink_A
-    execSync("pactl load-module module-loopback source=Virtual_Sink_B.monitor sink=Virtual_Sink_A latency_msec=20");
+    // A's output → B's input: B hears what A speaks
+    execSync("pactl load-module module-loopback source=Sink_A_Out.monitor sink=Sink_B_In latency_msec=20");
+    // B's output → A's input: A hears what B speaks
+    execSync("pactl load-module module-loopback source=Sink_B_Out.monitor sink=Sink_A_In latency_msec=20");
     console.log("[Observer] Cross-wiring complete");
   } catch (err) {
     console.error("[Observer] Failed to cross-wire:", err);
@@ -67,7 +67,7 @@ export function startRecording(outputDir: string): {
 
   try {
     procA = spawn("parec", [
-      "--device=Virtual_Sink_A.monitor",
+      "--device=Sink_A_Out.monitor",
       "--format=s16le",
       `--rate=${SAMPLE_RATE}`,
       `--channels=${CHANNELS}`,
@@ -77,7 +77,7 @@ export function startRecording(outputDir: string): {
     ]);
 
     procB = spawn("parec", [
-      "--device=Virtual_Sink_B.monitor",
+      "--device=Sink_B_Out.monitor",
       "--format=s16le",
       `--rate=${SAMPLE_RATE}`,
       `--channels=${CHANNELS}`,

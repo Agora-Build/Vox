@@ -141,8 +141,8 @@ async function executeMatch(config: any) {
     console.log("[ClashRunner] Launching Browser A...");
     agentA = await launchBrowserAgent(
       config.agentA,
-      "Virtual_Sink_A",
-      "Virtual_Sink_B.monitor",
+      "Sink_A_Out",
+      "Sink_A_In.monitor",
       secrets,
     );
 
@@ -156,8 +156,8 @@ async function executeMatch(config: any) {
     console.log("[ClashRunner] Launching Browser B...");
     agentB = await launchBrowserAgent(
       config.agentB,
-      "Virtual_Sink_B",
-      "Virtual_Sink_A.monitor",
+      "Sink_B_Out",
+      "Sink_B_In.monitor",
       secrets,
     );
 
