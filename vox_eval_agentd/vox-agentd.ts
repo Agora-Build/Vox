@@ -32,6 +32,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { SECRET_PLACEHOLDER_REGEX } from '../shared/secrets';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -351,9 +352,8 @@ class VoxEvalAgentDaemon {
     }
   }
 
-  // Regex must match shared/secrets.ts SECRET_PLACEHOLDER_REGEX — keep aligned.
   private resolveSecrets(content: string, secrets: Record<string, string>): string {
-    return content.replace(/\$\{secrets\.([A-Z][A-Z0-9_]*)\}/g, (_match, key) => {
+    return content.replace(SECRET_PLACEHOLDER_REGEX, (_match, key) => {
       if (key in secrets) {
         // Always double-quote and escape for valid YAML
         const escaped = secrets[key]
