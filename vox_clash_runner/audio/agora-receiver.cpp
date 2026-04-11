@@ -35,7 +35,7 @@
 #include "common/sample_local_user_observer.h"
 
 #define DEFAULT_CONNECT_TIMEOUT_MS (5000)
-#define DEFAULT_SAMPLE_RATE (48000)
+#define DEFAULT_SAMPLE_RATE (16000)
 #define DEFAULT_NUM_OF_CHANNELS (1)
 
 struct Options {

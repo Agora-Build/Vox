@@ -2,7 +2,7 @@
 // All audio capture, playback, broadcasting, and debug dumps use these values.
 // Change here → changes everywhere.
 
-export const SAMPLE_RATE = 48000;
+export const SAMPLE_RATE = 16000;
 export const CHANNELS = 1;
 export const FORMAT = "s16le";       // PulseAudio format string
 export const BYTES_PER_SAMPLE = 2;   // s16le = 2 bytes
