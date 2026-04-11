@@ -5,6 +5,7 @@ import { execSync, spawn, type ChildProcess } from "child_process";
 import * as fs from "fs";
 import * as path from "path";
 import { startBroadcast, type BroadcastConfig, type BroadcastHandle } from "./broadcaster.js";
+import { SAMPLE_RATE, CHANNELS, SOX_RAW_ARGS } from "./config.js";
 
 export interface ObserverMetrics {
   responseLatencyMedian: number | null;
@@ -68,8 +69,8 @@ export function startRecording(outputDir: string): {
     procA = spawn("parec", [
       "--device=Virtual_Sink_A.monitor",
       "--format=s16le",
-      "--rate=48000",
-      "--channels=1",
+      `--rate=${SAMPLE_RATE}`,
+      `--channels=${CHANNELS}`,
       "--file-format=raw",
       "--latency-msec=50",
       recA,
@@ -78,8 +79,8 @@ export function startRecording(outputDir: string): {
     procB = spawn("parec", [
       "--device=Virtual_Sink_B.monitor",
       "--format=s16le",
-      "--rate=48000",
-      "--channels=1",
+      `--rate=${SAMPLE_RATE}`,
+      `--channels=${CHANNELS}`,
       "--file-format=raw",
       "--latency-msec=50",
       recB,
@@ -98,10 +99,7 @@ export function startRecording(outputDir: string): {
 
         if (fs.existsSync(recA) && fs.existsSync(recB)) {
           execSync(
-            `sox -M ` +
-            `-r 48000 -e signed -b 16 -c 1 ${recA} ` +
-            `-r 48000 -e signed -b 16 -c 1 ${recB} ` +
-            `${stereoOut}`
+            `sox -M ${SOX_RAW_ARGS} ${recA} ${SOX_RAW_ARGS} ${recB} ${stereoOut}`
           );
           fs.unlinkSync(recA);
           fs.unlinkSync(recB);

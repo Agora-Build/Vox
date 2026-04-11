@@ -5,6 +5,7 @@
 
 import { spawn, type ChildProcess } from "child_process";
 import * as fs from "fs";
+import { SAMPLE_RATE, CHANNELS, FORMAT, FORMAT_LABEL, parecArgs, pacatArgs } from "./config.js";
 
 const DEBUG = !!process.env.LOCAL_DEBUG;
 if (DEBUG) {
@@ -29,13 +30,6 @@ export interface BroadcastHandle {
 const BROADCASTER_BIN = process.env.BROADCASTER_BIN || "/app/agora-broadcaster";
 const RECEIVER_BIN = process.env.RECEIVER_BIN || "/app/agora-receiver";
 
-// Must match PipeWire sink format (pactl shows: float32le 2ch 48000Hz)
-// parec/pacat handle conversion between sink native format and our format
-const SAMPLE_RATE = 48000;
-const CHANNELS = 1;
-const FORMAT = "s16le";
-const FORMAT_LABEL = `${SAMPLE_RATE}hz_${CHANNELS}ch_${FORMAT}`;
-
 function debugPath(name: string): string {
   return `/app/output/debug_${name}_${FORMAT_LABEL}.raw`;
 }
@@ -53,14 +47,7 @@ function spawnAgentBroadcaster(
   uid: number,
   label: string,
 ): AgentBroadcast {
-  const capture = spawn("parec", [
-    `--device=${device}`,
-    `--format=${FORMAT}`,
-    `--rate=${SAMPLE_RATE}`,
-    `--channels=${CHANNELS}`,
-    "--raw",
-    "--latency-msec=50",
-  ]);
+  const capture = spawn("parec", [...parecArgs(device), "--latency-msec=50"]);
 
   const broadcaster = spawn(BROADCASTER_BIN, [
     "--appId", config.appId,
@@ -163,12 +150,8 @@ export async function startBroadcast(config: BroadcastConfig): Promise<Broadcast
   ]);
 
   // Pipe received audio to both agent sinks
-  const pacatA = spawn("pacat", [
-    "-d", "Virtual_Sink_A", `--format=${FORMAT}`, `--rate=${SAMPLE_RATE}`, `--channels=${CHANNELS}`, "--raw",
-  ]);
-  const pacatB = spawn("pacat", [
-    "-d", "Virtual_Sink_B", `--format=${FORMAT}`, `--rate=${SAMPLE_RATE}`, `--channels=${CHANNELS}`, "--raw",
-  ]);
+  const pacatA = spawn("pacat", pacatArgs("Virtual_Sink_A"));
+  const pacatB = spawn("pacat", pacatArgs("Virtual_Sink_B"));
 
   // Suppress EPIPE errors during shutdown (pacat killed before receiver stops writing)
   pacatA.stdin.on("error", () => {});
@@ -183,15 +166,13 @@ export async function startBroadcast(config: BroadcastConfig): Promise<Broadcast
     console.log(`[DEBUG] Dumping moderator RTC audio → ${modPath}`);
 
     const aInPath = debugPath("agent_a_in");
-    agentAInDump = spawn("parec", [
-      "-d", "Virtual_Sink_A.monitor", `--format=${FORMAT}`, `--rate=${SAMPLE_RATE}`, `--channels=${CHANNELS}`, "--raw",
-    ], { stdio: ["ignore", fs.openSync(aInPath, "w"), "ignore"] });
+    agentAInDump = spawn("parec", parecArgs("Virtual_Sink_A.monitor"),
+      { stdio: ["ignore", fs.openSync(aInPath, "w"), "ignore"] });
     console.log(`[DEBUG] Dumping Agent A mic input → ${aInPath}`);
 
     const bInPath = debugPath("agent_b_in");
-    agentBInDump = spawn("parec", [
-      "-d", "Virtual_Sink_B.monitor", `--format=${FORMAT}`, `--rate=${SAMPLE_RATE}`, `--channels=${CHANNELS}`, "--raw",
-    ], { stdio: ["ignore", fs.openSync(bInPath, "w"), "ignore"] });
+    agentBInDump = spawn("parec", parecArgs("Virtual_Sink_B.monitor"),
+      { stdio: ["ignore", fs.openSync(bInPath, "w"), "ignore"] });
     console.log(`[DEBUG] Dumping Agent B mic input → ${bInPath}`);
   }
 
