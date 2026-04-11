@@ -16,6 +16,7 @@
 #include <sstream>
 #include <string>
 #include <unistd.h>
+#include <cerrno>
 #include <atomic>
 #include <mutex>
 
@@ -58,8 +59,8 @@ static void signalHandler(int sigNo) {
 // Audio frame observer: writes received PCM to stdout, filtered by UID
 class StdoutPcmObserver : public agora::media::IAudioFrameObserverBase {
  public:
-  StdoutPcmObserver(const std::string& filterUid = "")
-      : frameCount_(0), filterUid_(filterUid) {}
+  StdoutPcmObserver(int pcmFd, const std::string& filterUid = "")
+      : pcmFd_(pcmFd), frameCount_(0), filterUid_(filterUid) {}
 
   bool onPlaybackAudioFrameBeforeMixing(
       const char* channelId,
@@ -89,11 +90,16 @@ class StdoutPcmObserver : public agora::media::IAudioFrameObserverBase {
     // Use actual frame size from SDK (not assumed s16le)
     size_t writeBytes =
         audioFrame.samplesPerChannel * audioFrame.channels * (int)audioFrame.bytesPerSample;
-    if (fwrite(audioFrame.buffer, 1, writeBytes, stdout) != writeBytes) {
-      AG_LOG(ERROR, "Failed to write PCM to stdout");
-      return false;
+    // Write to saved PCM fd (not stdout — stdout is redirected to stderr for SDK logs)
+    size_t written = 0;
+    while (written < writeBytes) {
+      ssize_t n = write(pcmFd_, reinterpret_cast<const uint8_t*>(audioFrame.buffer) + written, writeBytes - written);
+      if (n <= 0) {
+        AG_LOG(ERROR, "Failed to write PCM (errno=%d)", errno);
+        return false;
+      }
+      written += n;
     }
-    fflush(stdout);
     frameCount_++;
     if (frameCount_ % 1000 == 0) {
       AG_LOG(INFO, "Received %lu audio frames from user %s (%lu total)",
@@ -113,6 +119,7 @@ class StdoutPcmObserver : public agora::media::IAudioFrameObserverBase {
   AudioParams getMixedAudioParams() override { return AudioParams(); }
 
  private:
+  int pcmFd_;
   uint64_t frameCount_;
   std::string filterUid_;
 };
@@ -145,6 +152,11 @@ int main(int argc, char* argv[]) {
   std::signal(SIGTERM, signalHandler);
   std::signal(SIGINT, signalHandler);
   std::signal(SIGQUIT, signalHandler);
+
+  // Save stdout for PCM output, redirect stdout to stderr so SDK init
+  // messages don't corrupt the PCM stream
+  int pcmFd = dup(STDOUT_FILENO);
+  dup2(STDERR_FILENO, STDOUT_FILENO);
 
   // --- Initialize Agora Service ---
   int buildNum = 0;
@@ -181,7 +193,7 @@ int main(int argc, char* argv[]) {
   auto localUserObserver =
       std::make_shared<SampleLocalUserObserver>(connection->getLocalUser());
 
-  auto pcmObserver = std::make_shared<StdoutPcmObserver>(opts.filterUid);
+  auto pcmObserver = std::make_shared<StdoutPcmObserver>(pcmFd, opts.filterUid);
   if (!opts.filterUid.empty()) {
     AG_LOG(INFO, "Filtering audio to UID: %s only", opts.filterUid.c_str());
   }
