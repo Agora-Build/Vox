@@ -70,11 +70,20 @@ class StdoutPcmObserver : public agora::media::IAudioFrameObserverBase {
       return true;
     }
 
-    // Log actual audio format on first frame
+    // Log actual audio format and first samples on first frame
     if (frameCount_ == 0) {
-      AG_LOG(INFO, "First audio frame from %s: rate=%d, channels=%d, bytesPerSample=%d, samplesPerChannel=%d",
+      AG_LOG(INFO, "First audio frame from %s: rate=%d, channels=%d, bytesPerSample=%d, samplesPerChannel=%d, type=%d",
              userId, audioFrame.samplesPerSec, audioFrame.channels,
-             (int)audioFrame.bytesPerSample, audioFrame.samplesPerChannel);
+             (int)audioFrame.bytesPerSample, audioFrame.samplesPerChannel, (int)audioFrame.type);
+      // Dump first 10 samples as signed int16
+      const int16_t* samples = reinterpret_cast<const int16_t*>(audioFrame.buffer);
+      int n = audioFrame.samplesPerChannel < 10 ? audioFrame.samplesPerChannel : 10;
+      char hex[256] = {0};
+      int pos = 0;
+      for (int i = 0; i < n && pos < 240; i++) {
+        pos += snprintf(hex + pos, sizeof(hex) - pos, "%d ", samples[i]);
+      }
+      AG_LOG(INFO, "First %d samples (s16): %s", n, hex);
     }
 
     // Use actual frame size from SDK (not assumed s16le)
