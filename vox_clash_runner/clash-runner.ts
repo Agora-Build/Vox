@@ -130,14 +130,7 @@ async function executeMatch(config: any) {
       console.warn("[ClashRunner] Failed to fetch secrets — proceeding without:", err instanceof Error ? err.message : err);
     }
 
-    try {
-      const modResult = await apiCall("POST", "/api/clash/moderator/start", { matchId, phase: "announce" });
-      console.log("[ClashRunner] Moderator:", modResult);
-      if (modResult.moderatorAvailable) await sleep(8000);
-    } catch (err) {
-      console.warn("[ClashRunner] Moderator start failed:", err instanceof Error ? err.message : err);
-    }
-
+    // Step 1: Launch both browsers FIRST (so they're listening when audio arrives)
     console.log("[ClashRunner] Launching Browser A...");
     agentA = await launchBrowserAgent(
       config.agentA,
@@ -145,13 +138,6 @@ async function executeMatch(config: any) {
       "Sink_A_In.monitor",
       secrets,
     );
-
-    try {
-      await apiCall("POST", "/api/clash/moderator/announce", { matchId, phase: "brief_a" });
-      await sleep(5000);
-    } catch (err) {
-      console.warn("[ClashRunner] Moderator brief_a failed:", err instanceof Error ? err.message : err);
-    }
 
     console.log("[ClashRunner] Launching Browser B...");
     agentB = await launchBrowserAgent(
@@ -161,17 +147,12 @@ async function executeMatch(config: any) {
       secrets,
     );
 
-    try {
-      await apiCall("POST", "/api/clash/moderator/announce", { matchId, phase: "brief_b" });
-      await sleep(5000);
-    } catch (err) {
-      console.warn("[ClashRunner] Moderator brief_b failed:", err instanceof Error ? err.message : err);
-    }
-
+    // Step 2: Cross-wire audio so agents hear each other
     console.log("[ClashRunner] Cross-wiring audio...");
     await sleep(2000);
     crossWireAudio();
 
+    // Step 3: Start observer (receiver + broadcaster) — audio pipeline ready
     const outputDir = path.join(OUTPUT_DIR, `clash-${matchId}`);
     observer = await startObserver(
       outputDir,
@@ -188,7 +169,34 @@ async function executeMatch(config: any) {
           }
         : undefined,
     );
+    // Give receiver time to connect to RTC channel
+    await sleep(3000);
 
+    // Step 4: NOW start the moderator — browsers are listening, receiver is piping
+    try {
+      const modResult = await apiCall("POST", "/api/clash/moderator/start", { matchId, phase: "announce" });
+      console.log("[ClashRunner] Moderator:", modResult);
+      if (modResult.moderatorAvailable) await sleep(8000);
+    } catch (err) {
+      console.warn("[ClashRunner] Moderator start failed:", err instanceof Error ? err.message : err);
+    }
+
+    // Step 5: Brief each agent individually
+    try {
+      await apiCall("POST", "/api/clash/moderator/announce", { matchId, phase: "brief_a" });
+      await sleep(5000);
+    } catch (err) {
+      console.warn("[ClashRunner] Moderator brief_a failed:", err instanceof Error ? err.message : err);
+    }
+
+    try {
+      await apiCall("POST", "/api/clash/moderator/announce", { matchId, phase: "brief_b" });
+      await sleep(5000);
+    } catch (err) {
+      console.warn("[ClashRunner] Moderator brief_b failed:", err instanceof Error ? err.message : err);
+    }
+
+    // Step 6: Begin!
     try {
       await apiCall("POST", "/api/clash/moderator/announce", { matchId, phase: "start" });
     } catch (err) {
