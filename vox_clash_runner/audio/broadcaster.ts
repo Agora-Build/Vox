@@ -29,7 +29,9 @@ export interface BroadcastHandle {
 const BROADCASTER_BIN = process.env.BROADCASTER_BIN || "/app/agora-broadcaster";
 const RECEIVER_BIN = process.env.RECEIVER_BIN || "/app/agora-receiver";
 
-const SAMPLE_RATE = 16000;
+// Must match PipeWire sink format (pactl shows: float32le 2ch 48000Hz)
+// parec/pacat handle conversion between sink native format and our format
+const SAMPLE_RATE = 48000;
 const CHANNELS = 1;
 const FORMAT = "s16le";
 const FORMAT_LABEL = `${SAMPLE_RATE}hz_${CHANNELS}ch_${FORMAT}`;

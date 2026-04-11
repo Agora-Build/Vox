@@ -68,7 +68,7 @@ export function startRecording(outputDir: string): {
     procA = spawn("parec", [
       "--device=Virtual_Sink_A.monitor",
       "--format=s16le",
-      "--rate=16000",
+      "--rate=48000",
       "--channels=1",
       "--file-format=raw",
       "--latency-msec=50",
@@ -78,7 +78,7 @@ export function startRecording(outputDir: string): {
     procB = spawn("parec", [
       "--device=Virtual_Sink_B.monitor",
       "--format=s16le",
-      "--rate=16000",
+      "--rate=48000",
       "--channels=1",
       "--file-format=raw",
       "--latency-msec=50",
@@ -99,8 +99,8 @@ export function startRecording(outputDir: string): {
         if (fs.existsSync(recA) && fs.existsSync(recB)) {
           execSync(
             `sox -M ` +
-            `-r 16000 -e signed -b 16 -c 1 ${recA} ` +
-            `-r 16000 -e signed -b 16 -c 1 ${recB} ` +
+            `-r 48000 -e signed -b 16 -c 1 ${recA} ` +
+            `-r 48000 -e signed -b 16 -c 1 ${recB} ` +
             `${stereoOut}`
           );
           fs.unlinkSync(recA);

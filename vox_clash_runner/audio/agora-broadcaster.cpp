@@ -33,7 +33,7 @@
 #include "common/sample_connection_observer.h"
 
 #define DEFAULT_CONNECT_TIMEOUT_MS (5000)
-#define DEFAULT_SAMPLE_RATE (16000)
+#define DEFAULT_SAMPLE_RATE (48000)
 #define DEFAULT_NUM_OF_CHANNELS (1)
 #define FRAME_DURATION_MS (10)
 

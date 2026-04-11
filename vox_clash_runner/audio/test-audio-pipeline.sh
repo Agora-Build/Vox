@@ -73,7 +73,7 @@ fi
 echo ""
 echo "[3/6] Testing playback (pacat -> sink)..."
 
-echo -ne '\x00\x00\x00\x00' | timeout 5 pacat -d Virtual_Sink_A --format=s16le --rate=16000 --channels=1 2>/dev/null
+echo -ne '\x00\x00\x00\x00' | timeout 5 pacat -d Virtual_Sink_A --format=s16le --rate=48000 --channels=1 2>/dev/null
 if [ $? -eq 0 ]; then
   pass "pacat can write to Virtual_Sink_A"
 else
@@ -85,11 +85,11 @@ echo ""
 echo "[4/6] Testing capture (parec <- monitor)..."
 
 # Sustained producer -> capture
-timeout 5 pacat -d Virtual_Sink_A --format=s16le --rate=16000 --channels=1 --raw < /dev/zero &
+timeout 5 pacat -d Virtual_Sink_A --format=s16le --rate=48000 --channels=1 --raw < /dev/zero &
 PRODUCER=$!
 sleep 1
 
-timeout 2 parec -d Virtual_Sink_A.monitor --format=s16le --rate=16000 --channels=1 --raw 2>/dev/null > /tmp/capture_test.raw || true
+timeout 2 parec -d Virtual_Sink_A.monitor --format=s16le --rate=48000 --channels=1 --raw 2>/dev/null > /tmp/capture_test.raw || true
 
 kill $PRODUCER 2>/dev/null; wait $PRODUCER 2>/dev/null || true
 CAPTURE_SIZE=$(wc -c < /tmp/capture_test.raw 2>/dev/null || echo 0)
@@ -107,11 +107,11 @@ echo "[5/6] Testing cross-wiring (A -> loopback -> B)..."
 pactl load-module module-loopback source=Virtual_Sink_A.monitor sink=Virtual_Sink_B latency_msec=20 2>/dev/null
 
 # Producer on Sink A — loopback routes it to Sink B
-timeout 8 pacat -d Virtual_Sink_A --format=s16le --rate=16000 --channels=1 --raw < /dev/zero &
+timeout 8 pacat -d Virtual_Sink_A --format=s16le --rate=48000 --channels=1 --raw < /dev/zero &
 PRODUCER2=$!
 sleep 2
 
-timeout 3 parec -d Virtual_Sink_B.monitor --format=s16le --rate=16000 --channels=1 --raw 2>/dev/null > /tmp/crosswire_test.raw || true
+timeout 3 parec -d Virtual_Sink_B.monitor --format=s16le --rate=48000 --channels=1 --raw 2>/dev/null > /tmp/crosswire_test.raw || true
 
 kill $PRODUCER2 2>/dev/null; wait $PRODUCER2 2>/dev/null || true
 CROSSWIRE_SIZE=$(wc -c < /tmp/crosswire_test.raw 2>/dev/null || echo 0)
@@ -127,11 +127,11 @@ echo ""
 echo "[6/7] Testing piped raw PCM (sustained stdin → pacat --raw → parec)..."
 
 # Sustained producer via pipe (matches Node.js receiver → pacat pattern)
-timeout 10 pacat -d Virtual_Sink_A --format=s16le --rate=16000 --channels=1 --raw < /dev/zero &
+timeout 10 pacat -d Virtual_Sink_A --format=s16le --rate=48000 --channels=1 --raw < /dev/zero &
 PIPE_PROD=$!
 sleep 4
 
-timeout 3 parec -d Virtual_Sink_A.monitor --format=s16le --rate=16000 --channels=1 --raw 2>/dev/null > /tmp/pipe_test.raw || true
+timeout 3 parec -d Virtual_Sink_A.monitor --format=s16le --rate=48000 --channels=1 --raw 2>/dev/null > /tmp/pipe_test.raw || true
 
 kill $PIPE_PROD 2>/dev/null; wait $PIPE_PROD 2>/dev/null || true
 PIPE_SIZE=$(wc -c < /tmp/pipe_test.raw 2>/dev/null || echo 0)
