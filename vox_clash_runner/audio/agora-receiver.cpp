@@ -70,8 +70,16 @@ class StdoutPcmObserver : public agora::media::IAudioFrameObserverBase {
       return true;
     }
 
+    // Log actual audio format on first frame
+    if (frameCount_ == 0) {
+      AG_LOG(INFO, "First audio frame from %s: rate=%d, channels=%d, bytesPerSample=%d, samplesPerChannel=%d",
+             userId, audioFrame.samplesPerSec, audioFrame.channels,
+             (int)audioFrame.bytesPerSample, audioFrame.samplesPerChannel);
+    }
+
+    // Use actual frame size from SDK (not assumed s16le)
     size_t writeBytes =
-        audioFrame.samplesPerChannel * audioFrame.channels * sizeof(int16_t);
+        audioFrame.samplesPerChannel * audioFrame.channels * (int)audioFrame.bytesPerSample;
     if (fwrite(audioFrame.buffer, 1, writeBytes, stdout) != writeBytes) {
       AG_LOG(ERROR, "Failed to write PCM to stdout");
       return false;
