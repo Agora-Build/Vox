@@ -224,8 +224,8 @@ export async function startBroadcast(config: BroadcastConfig): Promise<Broadcast
     console.log(`[DEBUG]   ${debugPath("agent_b_in")}     — what Agent B mic hears`);
     console.log(`[DEBUG]   ${debugPath("agent_a_out")}    — what Agent A speaks`);
     console.log(`[DEBUG]   ${debugPath("agent_b_out")}    — what Agent B speaks`);
-    console.log(`[DEBUG] Play:    ffplay -f ${FORMAT} -ar ${SAMPLE_RATE} -ac ${CHANNELS} <file>`);
-    console.log(`[DEBUG] Convert: ffmpeg -f ${FORMAT} -ar ${SAMPLE_RATE} -ac ${CHANNELS} -i <file> <file>.wav`);
+    console.log(`[DEBUG] Play:    ffplay -f ${FORMAT} -ar ${SAMPLE_RATE} -ch_layout mono <file>`);
+    console.log(`[DEBUG] Convert: ffmpeg -f ${FORMAT} -ar ${SAMPLE_RATE} -ch_layout mono -i <file> <file>.wav`);
   }
 
   return {
