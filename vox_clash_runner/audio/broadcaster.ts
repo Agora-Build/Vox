@@ -162,10 +162,10 @@ export async function startBroadcast(config: BroadcastConfig): Promise<Broadcast
 
   // Pipe received audio to both agent sinks
   const pacatA = spawn("pacat", [
-    "-d", "Virtual_Sink_A", `--format=${FORMAT}`, `--rate=${SAMPLE_RATE}`, `--channels=${CHANNELS}`,
+    "-d", "Virtual_Sink_A", `--format=${FORMAT}`, `--rate=${SAMPLE_RATE}`, `--channels=${CHANNELS}`, "--raw",
   ]);
   const pacatB = spawn("pacat", [
-    "-d", "Virtual_Sink_B", `--format=${FORMAT}`, `--rate=${SAMPLE_RATE}`, `--channels=${CHANNELS}`,
+    "-d", "Virtual_Sink_B", `--format=${FORMAT}`, `--rate=${SAMPLE_RATE}`, `--channels=${CHANNELS}`, "--raw",
   ]);
 
   // Suppress EPIPE errors during shutdown (pacat killed before receiver stops writing)
