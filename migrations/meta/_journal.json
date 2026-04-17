@@ -15,6 +15,13 @@
       "when": 1775952000000,
       "tag": "0001_clash_tables",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1776454535079,
+      "tag": "0002_spotty_longshot",
+      "breakpoints": true
     }
   ]
 }

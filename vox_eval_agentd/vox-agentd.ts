@@ -59,8 +59,10 @@ interface EvalJob {
 interface EvalResult {
   responseLatencyMedian: number;
   responseLatencySd: number;
+  responseLatencyP95: number;
   interruptLatencyMedian: number;
   interruptLatencySd: number;
+  interruptLatencyP95: number;
   networkResilience: number;
   naturalness: number;
   noiseReduction: number;
@@ -87,8 +89,10 @@ const AEVAL_DATA_PATH = path.resolve(__dirname, 'aeval-data');
 const RESULT_DEFAULTS: EvalResult = {
   responseLatencyMedian: 0,
   responseLatencySd: 0,
+  responseLatencyP95: 0,
   interruptLatencyMedian: 0,
   interruptLatencySd: 0,
+  interruptLatencyP95: 0,
   networkResilience: 85,
   naturalness: 3.5,
   noiseReduction: 90,
@@ -570,12 +574,21 @@ class VoxEvalAgentDaemon {
         return Math.sqrt(arr.reduce((sum, v) => sum + (v - mean) ** 2, 0) / arr.length);
       };
 
+      // Helper: compute 95th percentile from array of numbers
+      const p95 = (arr: number[]) => {
+        if (arr.length === 0) return 0;
+        const sorted = [...arr].sort((a, b) => a - b);
+        const idx = Math.ceil(sorted.length * 0.95) - 1;
+        return sorted[Math.max(0, idx)];
+      };
+
       // --- Primary: compute median & SD from turn-level data (ground truth) ---
       if (Array.isArray(rlTurns) && rlTurns.length > 0) {
         const vals = rlTurns.map((t: Record<string, unknown>) => t.latency_ms as number).filter((v: number) => v != null && v >= 0);
         if (vals.length > 0) {
           results.responseLatencyMedian = Math.round(median(vals));
           results.responseLatencySd = Math.round(sd(vals));
+          results.responseLatencyP95 = Math.round(p95(vals));
         }
       }
 
@@ -584,18 +597,29 @@ class VoxEvalAgentDaemon {
         if (vals.length > 0) {
           results.interruptLatencyMedian = Math.round(median(vals));
           results.interruptLatencySd = Math.round(sd(vals));
+          results.interruptLatencyP95 = Math.round(p95(vals));
         }
       }
 
-      // --- Fallback: p50 from summary (if turn_level missing) ---
+      // --- Fallback: p50/p95 from summary (if turn_level missing) ---
       if (results.responseLatencyMedian === 0 && rlSummary && typeof rlSummary === 'object') {
         if (rlSummary.p50_latency_ms != null) {
           results.responseLatencyMedian = Math.round(rlSummary.p50_latency_ms);
         }
       }
+      if (results.responseLatencyP95 === 0 && rlSummary && typeof rlSummary === 'object') {
+        if (rlSummary.p95_latency_ms != null) {
+          results.responseLatencyP95 = Math.round(rlSummary.p95_latency_ms);
+        }
+      }
       if (results.interruptLatencyMedian === 0 && ilSummary && typeof ilSummary === 'object') {
         if (ilSummary.p50_reaction_time_ms != null) {
           results.interruptLatencyMedian = Math.round(ilSummary.p50_reaction_time_ms);
+        }
+      }
+      if (results.interruptLatencyP95 === 0 && ilSummary && typeof ilSummary === 'object') {
+        if (ilSummary.p95_reaction_time_ms != null) {
+          results.interruptLatencyP95 = Math.round(ilSummary.p95_reaction_time_ms);
         }
       }
 
@@ -730,7 +754,7 @@ class VoxEvalAgentDaemon {
   }
 
   /**
-   * Compute median and stddev from latency samples.
+   * Compute median, stddev, and p95 from latency samples.
    */
   private computeLatencyStats(responseTimes: number[], interruptTimes: number[]): EvalResult {
     const results: EvalResult = { ...RESULT_DEFAULTS };
@@ -746,14 +770,22 @@ class VoxEvalAgentDaemon {
       const mean = arr.reduce((a, b) => a + b, 0) / arr.length;
       return Math.sqrt(arr.reduce((a, b) => a + (b - mean) ** 2, 0) / arr.length);
     };
+    const p95 = (arr: number[]) => {
+      if (arr.length === 0) return 0;
+      const sorted = [...arr].sort((a, b) => a - b);
+      const idx = Math.ceil(sorted.length * 0.95) - 1;
+      return sorted[Math.max(0, idx)];
+    };
 
     if (responseTimes.length > 0) {
       results.responseLatencyMedian = Math.round(median(responseTimes));
       results.responseLatencySd = Math.round(stddev(responseTimes));
+      results.responseLatencyP95 = Math.round(p95(responseTimes));
     }
     if (interruptTimes.length > 0) {
       results.interruptLatencyMedian = Math.round(median(interruptTimes));
       results.interruptLatencySd = Math.round(stddev(interruptTimes));
+      results.interruptLatencyP95 = Math.round(p95(interruptTimes));
     }
 
     return results;

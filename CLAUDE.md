@@ -78,7 +78,7 @@ npm run db:studio          # Open Drizzle Studio (database GUI)
 
 **Never use `db:push` or `drizzle-kit push --force` in production** — it diffs the live schema and can silently drop columns.
 
-**Migrations run automatically on startup** via `drizzle-orm`'s `migrate()` in `server/index.ts`. No Coolify post-deploy command needed.
+**Migrations run automatically on startup** via a custom version-based runner in `server/migrate.ts` (NOT drizzle-orm's `migrate()`). The `npm start` script runs `node dist/migrate.cjs` before starting the app. **Every new migration file must be registered** in the `MIGRATIONS` array in `server/migrate.ts` — an unregistered SQL file will never be applied.
 
 **Keep migration SQL clean** — plain `CREATE TABLE`, `ALTER TABLE`, etc. No `IF NOT EXISTS` or `DO ... EXCEPTION` tricks. Each migration runs exactly once on a DB that doesn't have it yet.
 

@@ -1,6 +1,6 @@
 {
-  "id": "6d76def4-6242-4cdb-a092-e8c75eb402a9",
-  "prevId": "1f316a49-e4ef-4c20-b0da-109c3f7adb62",
+  "id": "311020f9-97af-4db5-ad8f-962399a1d0ca",
+  "prevId": "6d76def4-6242-4cdb-a092-e8c75eb402a9",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -750,6 +750,18 @@
         "interrupt_latency_sd": {
           "name": "interrupt_latency_sd",
           "type": "real",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "response_latency_p95": {
+          "name": "response_latency_p95",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "interrupt_latency_p95": {
+          "name": "interrupt_latency_p95",
+          "type": "integer",
           "primaryKey": false,
           "notNull": false
         },
@@ -1799,6 +1811,18 @@
         "interrupt_latency_sd": {
           "name": "interrupt_latency_sd",
           "type": "real",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "response_latency_p95": {
+          "name": "response_latency_p95",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "interrupt_latency_p95": {
+          "name": "interrupt_latency_p95",
+          "type": "integer",
           "primaryKey": false,
           "notNull": true
         },

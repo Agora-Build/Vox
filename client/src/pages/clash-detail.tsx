@@ -12,8 +12,10 @@ interface ClashResult {
   agentProfileId: number;
   responseLatencyMedian: number | null;
   responseLatencySd: number | null;
+  responseLatencyP95: number | null;
   interruptLatencyMedian: number | null;
   interruptLatencySd: number | null;
+  interruptLatencyP95: number | null;
   ttftMedian: number | null;
   turnCount: number | null;
   overlapPercent: number | null;
@@ -203,9 +205,23 @@ export default function ClashDetail() {
               lowerIsBetter
             />
             <MetricBar
+              label="Response Latency (P95)"
+              valueA={resultA?.responseLatencyP95 ?? null}
+              valueB={resultB?.responseLatencyP95 ?? null}
+              unit="ms"
+              lowerIsBetter
+            />
+            <MetricBar
               label="Interrupt Latency (median)"
               valueA={resultA?.interruptLatencyMedian ?? null}
               valueB={resultB?.interruptLatencyMedian ?? null}
+              unit="ms"
+              lowerIsBetter
+            />
+            <MetricBar
+              label="Interrupt Latency (P95)"
+              valueA={resultA?.interruptLatencyP95 ?? null}
+              valueB={resultB?.interruptLatencyP95 ?? null}
               unit="ms"
               lowerIsBetter
             />

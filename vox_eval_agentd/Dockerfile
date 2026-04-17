@@ -122,7 +122,13 @@ ENV VOX_SERVER=http://localhost:5000
 ENV HEADLESS=true
 ENV EVAL_FRAMEWORK=aeval
 
-# Output directory for recordings
+# Unified output directory. Both frameworks write to their own subdir by
+# default (aeval → /app/aeval-data/output, VAT → /app/voice-agent-tester/output);
+# symlink both to /app/output so sessions always land in one place regardless
+# of framework choice at runtime.
+RUN mkdir -p /app/output \
+ && ln -sfn /app/output /app/aeval-data/output \
+ && ln -sfn /app/output /app/voice-agent-tester/output
 VOLUME /app/output
 
 # Run the daemon

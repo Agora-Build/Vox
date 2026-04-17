@@ -2262,8 +2262,10 @@ export async function registerRoutes(
               region: job.region,
               responseLatencyMedian: results.responseLatencyMedian || 0,
               responseLatencySd: results.responseLatencySd || 0,
+              responseLatencyP95: results.responseLatencyP95 || 0,
               interruptLatencyMedian: results.interruptLatencyMedian || 0,
               interruptLatencySd: results.interruptLatencySd || 0,
+              interruptLatencyP95: results.interruptLatencyP95 || 0,
               networkResilience: results.networkResilience,
               naturalness: results.naturalness,
               noiseReduction: results.noiseReduction,
@@ -2587,7 +2589,11 @@ export async function registerRoutes(
       provider: providerCache.get(r.providerId) || r.providerId,
       region: r.region,
       responseLatency: r.responseLatencyMedian,
+      responseLatencySd: r.responseLatencySd,
+      responseLatencyP95: r.responseLatencyP95,
       interruptLatency: r.interruptLatencyMedian,
+      interruptLatencySd: r.interruptLatencySd,
+      interruptLatencyP95: r.interruptLatencyP95,
       networkResilience: r.networkResilience || 0,
       naturalness: r.naturalness || 0,
       noiseReduction: r.noiseReduction || 0,
@@ -2649,7 +2655,9 @@ export async function registerRoutes(
         providerId: string;
         region: string;
         responseLatencies: number[];
+        responseLatenciesP95: number[];
         interruptLatencies: number[];
+        interruptLatenciesP95: number[];
         networkResiliences: number[];
         naturalnesses: number[];
         noiseReductions: number[];
@@ -2662,7 +2670,9 @@ export async function registerRoutes(
             providerId: result.providerId,
             region: result.region,
             responseLatencies: [],
+            responseLatenciesP95: [],
             interruptLatencies: [],
+            interruptLatenciesP95: [],
             networkResiliences: [],
             naturalnesses: [],
             noiseReductions: [],
@@ -2670,7 +2680,9 @@ export async function registerRoutes(
         }
         const group = providerRegionMap.get(key)!;
         group.responseLatencies.push(result.responseLatencyMedian);
+        group.responseLatenciesP95.push(result.responseLatencyP95);
         group.interruptLatencies.push(result.interruptLatencyMedian);
+        group.interruptLatenciesP95.push(result.interruptLatencyP95);
         if (result.networkResilience != null) group.networkResiliences.push(result.networkResilience);
         if (result.naturalness != null) group.naturalnesses.push(result.naturalness);
         if (result.noiseReduction != null) group.noiseReductions.push(result.noiseReduction);
@@ -2687,7 +2699,9 @@ export async function registerRoutes(
             provider: provider?.name || "Unknown",
             region: group.region,
             responseLatency: Math.round(avg(group.responseLatencies)),
+            responseLatencyP95: Math.round(avg(group.responseLatenciesP95)),
             interruptLatency: Math.round(avg(group.interruptLatencies)),
+            interruptLatencyP95: Math.round(avg(group.interruptLatenciesP95)),
             networkResilience: Math.round(avg(group.networkResiliences)),
             naturalness: Math.round(avg(group.naturalnesses) * 10) / 10,
             noiseReduction: Math.round(avg(group.noiseReductions)),

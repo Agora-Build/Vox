@@ -415,8 +415,10 @@ describe("Eval Agent Daemon - API Communication", () => {
 interface EvalResults {
   responseLatencyMedian: number;
   responseLatencySd: number;
+  responseLatencyP95: number;
   interruptLatencyMedian: number;
   interruptLatencySd: number;
+  interruptLatencyP95: number;
   networkResilience: number;
   naturalness: number;
   noiseReduction: number;
@@ -425,8 +427,10 @@ interface EvalResults {
 const AEVAL_DEFAULTS: EvalResults = {
   responseLatencyMedian: 0,
   responseLatencySd: 0,
+  responseLatencyP95: 0,
   interruptLatencyMedian: 0,
   interruptLatencySd: 0,
+  interruptLatencyP95: 0,
   networkResilience: 85,
   naturalness: 3.5,
   noiseReduction: 90,
@@ -456,6 +460,12 @@ function parseAevalMetricsJson(jsonContent: string): EvalResults {
     const mean = arr.reduce((a, b) => a + b, 0) / arr.length;
     return Math.sqrt(arr.reduce((sum, v) => sum + (v - mean) ** 2, 0) / arr.length);
   };
+  const calcP95 = (arr: number[]) => {
+    if (arr.length === 0) return 0;
+    const sorted = [...arr].sort((a, b) => a - b);
+    const idx = Math.ceil(sorted.length * 0.95) - 1;
+    return sorted[Math.max(0, idx)];
+  };
 
   const rlTurns = metrics.response_metrics?.latency?.turn_level;
   const ilTurns = metrics.interruption_metrics?.latency?.turn_level;
@@ -469,6 +479,7 @@ function parseAevalMetricsJson(jsonContent: string): EvalResults {
     if (vals.length > 0) {
       results.responseLatencyMedian = Math.round(calcMedian(vals));
       results.responseLatencySd = Math.round(calcSd(vals));
+      results.responseLatencyP95 = Math.round(calcP95(vals));
     }
   }
 
@@ -477,18 +488,29 @@ function parseAevalMetricsJson(jsonContent: string): EvalResults {
     if (vals.length > 0) {
       results.interruptLatencyMedian = Math.round(calcMedian(vals));
       results.interruptLatencySd = Math.round(calcSd(vals));
+      results.interruptLatencyP95 = Math.round(calcP95(vals));
     }
   }
 
-  // Fallback: p50 from summary (if turn_level missing)
+  // Fallback: p50/p95 from summary (if turn_level missing)
   if (results.responseLatencyMedian === 0 && rlSummary && typeof rlSummary === 'object') {
     if (rlSummary.p50_latency_ms != null) {
       results.responseLatencyMedian = Math.round(rlSummary.p50_latency_ms);
     }
   }
+  if (results.responseLatencyP95 === 0 && rlSummary && typeof rlSummary === 'object') {
+    if (rlSummary.p95_latency_ms != null) {
+      results.responseLatencyP95 = Math.round(rlSummary.p95_latency_ms);
+    }
+  }
   if (results.interruptLatencyMedian === 0 && ilSummary && typeof ilSummary === 'object') {
     if (ilSummary.p50_reaction_time_ms != null) {
       results.interruptLatencyMedian = Math.round(ilSummary.p50_reaction_time_ms);
+    }
+  }
+  if (results.interruptLatencyP95 === 0 && ilSummary && typeof ilSummary === 'object') {
+    if (ilSummary.p95_reaction_time_ms != null) {
+      results.interruptLatencyP95 = Math.round(ilSummary.p95_reaction_time_ms);
     }
   }
 
@@ -540,14 +562,22 @@ function computeLatencyStats(responseTimes: number[], interruptTimes: number[]):
     const mean = arr.reduce((a, b) => a + b, 0) / arr.length;
     return Math.sqrt(arr.reduce((a, b) => a + (b - mean) ** 2, 0) / arr.length);
   };
+  const p95 = (arr: number[]) => {
+    if (arr.length === 0) return 0;
+    const sorted = [...arr].sort((a, b) => a - b);
+    const idx = Math.ceil(sorted.length * 0.95) - 1;
+    return sorted[Math.max(0, idx)];
+  };
 
   if (responseTimes.length > 0) {
     results.responseLatencyMedian = Math.round(median(responseTimes));
     results.responseLatencySd = Math.round(stddev(responseTimes));
+    results.responseLatencyP95 = Math.round(p95(responseTimes));
   }
   if (interruptTimes.length > 0) {
     results.interruptLatencyMedian = Math.round(median(interruptTimes));
     results.interruptLatencySd = Math.round(stddev(interruptTimes));
+    results.interruptLatencyP95 = Math.round(p95(interruptTimes));
   }
 
   return results;
@@ -712,6 +742,8 @@ describe("Eval Agent Daemon - aeval Metrics JSON Parsing", () => {
     const mean = 300;
     const sd = Math.sqrt(((200-mean)**2 + (300-mean)**2 + (400-mean)**2) / 3);
     expect(results.responseLatencySd).toBe(Math.round(sd));
+    // p95 of [200, 300, 400]: ceil(3 * 0.95) - 1 = 2 → sorted[2] = 400
+    expect(results.responseLatencyP95).toBe(400);
   });
 
   it("should fall back to p50 from summary when turn_level missing", () => {
@@ -724,6 +756,17 @@ describe("Eval Agent Daemon - aeval Metrics JSON Parsing", () => {
     const results = parseAevalMetricsJson(json);
     // No turn_level → falls back to p50 (500), not avg (600)
     expect(results.responseLatencyMedian).toBe(500);
+  });
+
+  it("should fall back to p95 from summary when turn_level missing", () => {
+    const json = JSON.stringify({
+      response_metrics: {
+        latency: { summary: { p50_latency_ms: 500, p95_latency_ms: 1200 } },
+      },
+    });
+    const results = parseAevalMetricsJson(json);
+    expect(results.responseLatencyMedian).toBe(500);
+    expect(results.responseLatencyP95).toBe(1200);
   });
 
   it("should parse real aeval v0.1.x nested structure", () => {
@@ -762,7 +805,9 @@ describe("Eval Agent Daemon - aeval Metrics JSON Parsing", () => {
     });
     const results = parseAevalMetricsJson(json);
     expect(results.responseLatencyMedian).toBe(1890);
+    expect(results.responseLatencyP95).toBe(1890); // single turn: p95 = value
     expect(results.interruptLatencyMedian).toBe(0); // no interruptions
+    expect(results.interruptLatencyP95).toBe(0);
   });
 
   it("should compute median from turn_level, not use aggregated avg", () => {
@@ -1330,30 +1375,43 @@ describe("Eval Agent Daemon - Step Result Extraction", () => {
 });
 
 describe("Eval Agent Daemon - computeLatencyStats", () => {
-  it("should compute median and stddev for response times", () => {
+  it("should compute median, stddev, and p95 for response times", () => {
     const results = computeLatencyStats([200, 300, 400], []);
     expect(results.responseLatencyMedian).toBe(300);
     expect(results.responseLatencySd).toBeGreaterThan(0);
+    expect(results.responseLatencyP95).toBe(400); // ceil(3*0.95)-1 = 2 → sorted[2]
     expect(results.interruptLatencyMedian).toBe(0);
   });
 
-  it("should compute median and stddev for interrupt times", () => {
+  it("should compute median, stddev, and p95 for interrupt times", () => {
     const results = computeLatencyStats([], [100, 150, 200]);
     expect(results.responseLatencyMedian).toBe(0);
     expect(results.interruptLatencyMedian).toBe(150);
     expect(results.interruptLatencySd).toBeGreaterThan(0);
+    expect(results.interruptLatencyP95).toBe(200);
   });
 
-  it("should handle single sample (no stddev)", () => {
+  it("should handle single sample (no stddev, p95 = value)", () => {
     const results = computeLatencyStats([500], []);
     expect(results.responseLatencyMedian).toBe(500);
     expect(results.responseLatencySd).toBe(0);
+    expect(results.responseLatencyP95).toBe(500);
   });
 
   it("should handle empty arrays", () => {
     const results = computeLatencyStats([], []);
     expect(results.responseLatencyMedian).toBe(0);
+    expect(results.responseLatencyP95).toBe(0);
     expect(results.interruptLatencyMedian).toBe(0);
+    expect(results.interruptLatencyP95).toBe(0);
+  });
+
+  it("should compute p95 correctly with 20 samples", () => {
+    // 20 values: 100, 200, ..., 2000
+    const times = Array.from({ length: 20 }, (_, i) => (i + 1) * 100);
+    const results = computeLatencyStats(times, []);
+    // p95 index: ceil(20 * 0.95) - 1 = ceil(19) - 1 = 18 → sorted[18] = 1900
+    expect(results.responseLatencyP95).toBe(1900);
   });
 
   it("should keep default values for non-latency fields", () => {

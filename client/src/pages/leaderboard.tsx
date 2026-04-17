@@ -23,7 +23,9 @@ interface LeaderboardEntry {
   provider: string;
   region: string;
   responseLatency: number;
+  responseLatencyP95: number;
   interruptLatency: number;
+  interruptLatencyP95: number;
   networkResilience: number;
   naturalness: number;
   noiseReduction: number;
@@ -292,8 +294,14 @@ export default function Leaderboard() {
                         {entry.region}
                       </Badge>
                     </TableCell>
-                    <TableCell className="text-right font-mono" data-testid={`text-response-${entry.rank}`}>{entry.responseLatency}</TableCell>
-                    <TableCell className="text-right font-mono" data-testid={`text-interrupt-${entry.rank}`}>{entry.interruptLatency}</TableCell>
+                    <TableCell className="text-right font-mono" data-testid={`text-response-${entry.rank}`}>
+                      <div>{entry.responseLatency}</div>
+                      <div className="text-xs text-muted-foreground">P95: {entry.responseLatencyP95}</div>
+                    </TableCell>
+                    <TableCell className="text-right font-mono" data-testid={`text-interrupt-${entry.rank}`}>
+                      <div>{entry.interruptLatency}</div>
+                      <div className="text-xs text-muted-foreground">P95: {entry.interruptLatencyP95}</div>
+                    </TableCell>
                     <TableCell className="text-right w-[150px]">
                       <div className="flex items-center justify-end gap-2">
                         <span className="font-mono text-xs" data-testid={`text-network-${entry.rank}`}>{entry.networkResilience}%</span>
@@ -360,11 +368,13 @@ export default function Leaderboard() {
                 <div className="space-y-1">
                   <p className="text-sm text-muted-foreground">Response Latency</p>
                   <p className="text-2xl font-bold font-mono">{selectedEntry.responseLatency}ms</p>
+                  <p className="text-sm font-mono text-muted-foreground">P95: {selectedEntry.responseLatencyP95}ms</p>
                   <p className="text-xs text-muted-foreground">Time to first audio byte</p>
                 </div>
                 <div className="space-y-1">
                   <p className="text-sm text-muted-foreground">Interrupt Latency</p>
                   <p className="text-2xl font-bold font-mono">{selectedEntry.interruptLatency}ms</p>
+                  <p className="text-sm font-mono text-muted-foreground">P95: {selectedEntry.interruptLatencyP95}ms</p>
                   <p className="text-xs text-muted-foreground">Time to stop on interrupt</p>
                 </div>
               </div>

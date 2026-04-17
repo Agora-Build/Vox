@@ -19,7 +19,11 @@ interface EvalResult {
   provider: string;
   region: string;
   responseLatency: number;
+  responseLatencySd: number;
+  responseLatencyP95: number;
   interruptLatency: number;
+  interruptLatencySd: number;
+  interruptLatencyP95: number;
   networkResilience: number;
   naturalness: number;
   noiseReduction: number;
@@ -46,20 +50,7 @@ interface HealthData {
   agents: { total: number; online: number; offline: number };
 }
 
-function calculateStats(values: number[]) {
-  if (values.length === 0) return { median: 0, stdDev: 0 };
 
-  const sorted = [...values].sort((a, b) => a - b);
-  const mid = Math.floor(sorted.length / 2);
-  const median = sorted.length % 2 !== 0 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
-
-  const mean = values.reduce((a, b) => a + b, 0) / values.length;
-  const squaredDiffs = values.map(v => Math.pow(v - mean, 2));
-  const avgSquaredDiff = squaredDiffs.reduce((a, b) => a + b, 0) / values.length;
-  const stdDev = Math.sqrt(avgSquaredDiff);
-
-  return { median: Math.round(median), stdDev: Math.round(stdDev) };
-}
 
 function buildCombinedData(filteredMetrics: EvalResult[]) {
   if (!filteredMetrics || filteredMetrics.length === 0) return [];
@@ -108,8 +99,9 @@ function MetricsSection({ metrics, isLoading, selectedRegion, timeRangeLabel, re
   ) || [];
 
   const combinedData = buildCombinedData(filteredMetrics);
-  const responseStats = calculateStats(filteredMetrics.map(m => m.responseLatency));
-  const interruptStats = calculateStats(filteredMetrics.map(m => m.interruptLatency));
+
+  // Show latest single test result (metrics are ordered by createdAt DESC)
+  const latest = filteredMetrics[0] ?? null;
 
   return (
     <>
@@ -131,6 +123,7 @@ function MetricsSection({ metrics, isLoading, selectedRegion, timeRangeLabel, re
                     <div className="text-xs text-muted-foreground space-y-1 pt-2 border-t">
                       <p><strong>MED (Median):</strong> The middle value separating the higher half from the lower half of data samples.</p>
                       <p><strong>SD (Standard Deviation):</strong> A measure of the amount of variation or dispersion of the latency values.</p>
+                      <p><strong>P95 (95th Percentile):</strong> 95% of latency samples fall below this value.</p>
                     </div>
                   </div>
                 </PopoverContent>
@@ -142,16 +135,21 @@ function MetricsSection({ metrics, isLoading, selectedRegion, timeRangeLabel, re
               <>
                 <Skeleton className="h-8 w-24" />
                 <Skeleton className="h-6 w-16" />
+                <Skeleton className="h-6 w-16" />
               </>
             ) : (
               <>
                 <div className="flex justify-between items-baseline">
                   <span className="text-sm text-muted-foreground font-mono">MED</span>
-                  <span className="text-2xl font-bold font-mono" data-testid={`${testIdPrefix}text-response-median`}>{responseStats.median.toLocaleString()}ms</span>
+                  <span className="text-2xl font-bold font-mono" data-testid={`${testIdPrefix}text-response-median`}>{(latest?.responseLatency ?? 0).toLocaleString()}ms</span>
                 </div>
                 <div className="flex justify-between items-baseline">
                   <span className="text-sm text-muted-foreground font-mono">SD</span>
-                  <span className="text-lg font-mono text-muted-foreground" data-testid={`${testIdPrefix}text-response-stddev`}>{responseStats.stdDev}ms</span>
+                  <span className="text-lg font-mono text-muted-foreground" data-testid={`${testIdPrefix}text-response-stddev`}>{Math.round(latest?.responseLatencySd ?? 0)}ms</span>
+                </div>
+                <div className="flex justify-between items-baseline">
+                  <span className="text-sm text-muted-foreground font-mono">P95</span>
+                  <span className="text-lg font-mono text-muted-foreground" data-testid={`${testIdPrefix}text-response-p95`}>{(latest?.responseLatencyP95 ?? 0).toLocaleString()}ms</span>
                 </div>
               </>
             )}
@@ -174,6 +172,7 @@ function MetricsSection({ metrics, isLoading, selectedRegion, timeRangeLabel, re
                     <div className="text-xs text-muted-foreground space-y-1 pt-2 border-t">
                       <p><strong>MED (Median):</strong> The middle value separating the higher half from the lower half of data samples.</p>
                       <p><strong>SD (Standard Deviation):</strong> A measure of the amount of variation or dispersion of the latency values.</p>
+                      <p><strong>P95 (95th Percentile):</strong> 95% of latency samples fall below this value.</p>
                     </div>
                   </div>
                 </PopoverContent>
@@ -185,16 +184,21 @@ function MetricsSection({ metrics, isLoading, selectedRegion, timeRangeLabel, re
               <>
                 <Skeleton className="h-8 w-24" />
                 <Skeleton className="h-6 w-16" />
+                <Skeleton className="h-6 w-16" />
               </>
             ) : (
               <>
                 <div className="flex justify-between items-baseline">
                   <span className="text-sm text-muted-foreground font-mono">MED</span>
-                  <span className="text-2xl font-bold font-mono" data-testid={`${testIdPrefix}text-interrupt-median`}>{interruptStats.median.toLocaleString()}ms</span>
+                  <span className="text-2xl font-bold font-mono" data-testid={`${testIdPrefix}text-interrupt-median`}>{(latest?.interruptLatency ?? 0).toLocaleString()}ms</span>
                 </div>
                 <div className="flex justify-between items-baseline">
                   <span className="text-sm text-muted-foreground font-mono">SD</span>
-                  <span className="text-lg font-mono text-muted-foreground" data-testid={`${testIdPrefix}text-interrupt-stddev`}>{interruptStats.stdDev}ms</span>
+                  <span className="text-lg font-mono text-muted-foreground" data-testid={`${testIdPrefix}text-interrupt-stddev`}>{Math.round(latest?.interruptLatencySd ?? 0)}ms</span>
+                </div>
+                <div className="flex justify-between items-baseline">
+                  <span className="text-sm text-muted-foreground font-mono">P95</span>
+                  <span className="text-lg font-mono text-muted-foreground" data-testid={`${testIdPrefix}text-interrupt-p95`}>{(latest?.interruptLatencyP95 ?? 0).toLocaleString()}ms</span>
                 </div>
               </>
             )}
