@@ -73,15 +73,40 @@ function buildCombinedData(filteredMetrics: EvalResult[]) {
     }
   }
 
-  return Array.from(timeGroups.entries())
-    .sort((a, b) => a[0].localeCompare(b[0]))
-    .map(([timestamp, group]) => ({
+  const sorted = Array.from(timeGroups.entries())
+    .sort((a, b) => a[0].localeCompare(b[0]));
+
+  const GAP_MS = 60 * 60 * 1000; // 1 hour
+  const result: Array<{
+    timestamp: string;
+    agoraResponse?: number;
+    agoraInterrupt?: number;
+    liveKitResponse?: number;
+    liveKitInterrupt?: number;
+  }> = [];
+
+  for (let i = 0; i < sorted.length; i++) {
+    const [timestamp, group] = sorted[i];
+
+    // Insert a null-gap marker if consecutive points are more than 1 hour apart
+    if (i > 0) {
+      const prev = new Date(sorted[i - 1][0]).getTime();
+      const curr = new Date(timestamp).getTime();
+      if (!isNaN(prev) && !isNaN(curr) && curr - prev > GAP_MS) {
+        result.push({ timestamp: "" });
+      }
+    }
+
+    result.push({
       timestamp,
       agoraResponse: group.agora?.responseLatency,
       agoraInterrupt: group.agora?.interruptLatency,
       liveKitResponse: group.liveKit?.responseLatency,
       liveKitInterrupt: group.liveKit?.interruptLatency,
-    }));
+    });
+  }
+
+  return result;
 }
 
 interface MetricsSectionProps {
@@ -247,8 +272,8 @@ function MetricsSection({ metrics, isLoading, selectedRegion, timeRangeLabel, re
                     <YAxis stroke="hsl(var(--muted-foreground))" fontSize={12} tickLine={false} axisLine={false} tickFormatter={(value) => `${value}ms`} />
                     <Tooltip contentStyle={{ backgroundColor: 'hsl(var(--popover))', borderColor: 'hsl(var(--border))', borderRadius: '8px' }} itemStyle={{ color: 'hsl(var(--popover-foreground))' }} />
                     <Legend />
-                    <Line type="monotone" dataKey="agoraResponse" name="Agora ConvoAI Engine" stroke="hsl(var(--chart-1))" strokeWidth={2} dot={{ r: 3 }} activeDot={{ r: 6 }} connectNulls />
-                    <Line type="monotone" dataKey="liveKitResponse" name="LiveKit Agents" stroke="hsl(var(--chart-2))" strokeWidth={2} dot={{ r: 3 }} activeDot={{ r: 6 }} connectNulls />
+                    <Line type="monotone" dataKey="agoraResponse" name="Agora ConvoAI Engine" stroke="hsl(var(--chart-1))" strokeWidth={2} dot={{ r: 3 }} activeDot={{ r: 6 }} />
+                    <Line type="monotone" dataKey="liveKitResponse" name="LiveKit Agents" stroke="hsl(var(--chart-2))" strokeWidth={2} dot={{ r: 3 }} activeDot={{ r: 6 }} />
                   </LineChart>
                 </ResponsiveContainer>
               )}
@@ -273,8 +298,8 @@ function MetricsSection({ metrics, isLoading, selectedRegion, timeRangeLabel, re
                     <YAxis stroke="hsl(var(--muted-foreground))" fontSize={12} tickLine={false} axisLine={false} tickFormatter={(value) => `${value}ms`} />
                     <Tooltip contentStyle={{ backgroundColor: 'hsl(var(--popover))', borderColor: 'hsl(var(--border))', borderRadius: '8px' }} itemStyle={{ color: 'hsl(var(--popover-foreground))' }} />
                     <Legend />
-                    <Line type="monotone" dataKey="agoraInterrupt" name="Agora ConvoAI Engine" stroke="hsl(var(--chart-1))" strokeWidth={2} dot={{ r: 3 }} activeDot={{ r: 6 }} connectNulls />
-                    <Line type="monotone" dataKey="liveKitInterrupt" name="LiveKit Agents" stroke="hsl(var(--chart-2))" strokeWidth={2} dot={{ r: 3 }} activeDot={{ r: 6 }} connectNulls />
+                    <Line type="monotone" dataKey="agoraInterrupt" name="Agora ConvoAI Engine" stroke="hsl(var(--chart-1))" strokeWidth={2} dot={{ r: 3 }} activeDot={{ r: 6 }} />
+                    <Line type="monotone" dataKey="liveKitInterrupt" name="LiveKit Agents" stroke="hsl(var(--chart-2))" strokeWidth={2} dot={{ r: 3 }} activeDot={{ r: 6 }} />
                   </LineChart>
                 </ResponsiveContainer>
               )}
@@ -306,7 +331,7 @@ export default function Dashboard() {
     queryFn: async () => {
       const params = new URLSearchParams();
       if (timeRange !== "all") params.set("hours", timeRange);
-      params.set("limit", "200");
+      params.set("limit", timeRange === "all" ? "500" : "200");
       const res = await fetch(`/api/metrics/realtime?${params}`);
       if (!res.ok) throw new Error("Failed to fetch metrics");
       return res.json();
@@ -320,7 +345,7 @@ export default function Dashboard() {
     queryFn: async () => {
       const params = new URLSearchParams();
       if (timeRange !== "all") params.set("hours", timeRange);
-      params.set("limit", "200");
+      params.set("limit", timeRange === "all" ? "500" : "200");
       const res = await fetch(`/api/metrics/community?${params}`);
       if (!res.ok) throw new Error("Failed to fetch community metrics");
       return res.json();
@@ -334,7 +359,7 @@ export default function Dashboard() {
     queryFn: async () => {
       const params = new URLSearchParams();
       if (timeRange !== "all") params.set("hours", timeRange);
-      params.set("limit", "200");
+      params.set("limit", timeRange === "all" ? "500" : "200");
       const res = await fetch(`/api/metrics/my-evals?${params}`);
       if (!res.ok) throw new Error("Failed to fetch my eval metrics");
       return res.json();
