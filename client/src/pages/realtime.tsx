@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useMemo, useRef, useCallback } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -52,17 +52,27 @@ interface HealthData {
 
 
 
-function buildCombinedData(filteredMetrics: EvalResult[]) {
+interface CombinedRow {
+  timestamp: string;
+  rawTime: number;
+  agoraResponse?: number;
+  agoraInterrupt?: number;
+  liveKitResponse?: number;
+  liveKitInterrupt?: number;
+  [key: string]: string | number | undefined;
+}
+
+function buildCombinedData(filteredMetrics: EvalResult[]): CombinedRow[] {
   if (!filteredMetrics || filteredMetrics.length === 0) return [];
 
-  const timeGroups = new Map<string, { agora: EvalResult | null; liveKit: EvalResult | null }>();
+  const timeGroups = new Map<string, { rawTime: number; agora: EvalResult | null; liveKit: EvalResult | null }>();
 
   for (const m of filteredMetrics) {
     const date = new Date(m.timestamp);
     if (isNaN(date.getTime())) continue;
     const timeKey = format(date, "MM/dd HH:mm");
     if (!timeGroups.has(timeKey)) {
-      timeGroups.set(timeKey, { agora: null, liveKit: null });
+      timeGroups.set(timeKey, { rawTime: date.getTime(), agora: null, liveKit: null });
     }
     const group = timeGroups.get(timeKey)!;
     const providerLower = m.provider.toLowerCase();
@@ -73,40 +83,284 @@ function buildCombinedData(filteredMetrics: EvalResult[]) {
     }
   }
 
-  const sorted = Array.from(timeGroups.entries())
-    .sort((a, b) => a[0].localeCompare(b[0]));
-
-  const GAP_MS = 60 * 60 * 1000; // 1 hour
-  const result: Array<{
-    timestamp: string;
-    agoraResponse?: number;
-    agoraInterrupt?: number;
-    liveKitResponse?: number;
-    liveKitInterrupt?: number;
-  }> = [];
-
-  for (let i = 0; i < sorted.length; i++) {
-    const [timestamp, group] = sorted[i];
-
-    // Insert a null-gap marker if consecutive points are more than 1 hour apart
-    if (i > 0) {
-      const prev = new Date(sorted[i - 1][0]).getTime();
-      const curr = new Date(timestamp).getTime();
-      if (!isNaN(prev) && !isNaN(curr) && curr - prev > GAP_MS) {
-        result.push({ timestamp: "" });
-      }
-    }
-
-    result.push({
+  return Array.from(timeGroups.entries())
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([timestamp, group]) => ({
       timestamp,
+      rawTime: group.rawTime,
       agoraResponse: group.agora?.responseLatency,
       agoraInterrupt: group.agora?.interruptLatency,
       liveKitResponse: group.liveKit?.responseLatency,
       liveKitInterrupt: group.liveKit?.interruptLatency,
-    });
+    }));
+}
+
+const GAP_MS = 2 * 60 * 60 * 1000; // 2 hours
+
+interface SegmentLineInfo {
+  segKey: string;
+  name: string;
+  stroke: string;
+  showLegend: boolean;
+  /** Indices of data points that have values in this segment */
+  dataIndices: number[];
+}
+
+/**
+ * Pre-compute segmented data: splits each provider's series at 2h gaps.
+ * Returns a new data array with segment keys baked in, plus line descriptors.
+ */
+function buildSegmentedData(
+  data: CombinedRow[],
+  providers: Array<{ dataKey: string; name: string; stroke: string }>,
+): { rows: CombinedRow[]; lines: SegmentLineInfo[] } {
+  // Deep-copy rows so we don't mutate the original
+  const rows = data.map(r => ({ ...r }));
+  const lines: SegmentLineInfo[] = [];
+
+  for (const { dataKey, name, stroke } of providers) {
+    // Find segments: groups of consecutive points within GAP_MS
+    const segments: Array<{ start: number; end: number }> = [];
+    let segStart = -1;
+    let lastIdx = -1;
+
+    for (let i = 0; i < rows.length; i++) {
+      if (rows[i][dataKey] != null) {
+        if (segStart === -1) {
+          segStart = i;
+        } else if (lastIdx >= 0 && rows[i].rawTime - rows[lastIdx].rawTime > GAP_MS) {
+          segments.push({ start: segStart, end: lastIdx });
+          segStart = i;
+        }
+        lastIdx = i;
+      }
+    }
+    if (segStart >= 0 && lastIdx >= 0) {
+      segments.push({ start: segStart, end: lastIdx });
+    }
+
+    // Bake segment keys into rows
+    for (let si = 0; si < segments.length; si++) {
+      const seg = segments[si];
+      const segKey = `${dataKey}_s${si}`;
+      const dataIndices: number[] = [];
+      for (let i = 0; i < rows.length; i++) {
+        const val = (i >= seg.start && i <= seg.end) ? rows[i][dataKey] : undefined;
+        rows[i][segKey] = val;
+        if (val != null) dataIndices.push(i);
+      }
+      lines.push({ segKey, name, stroke, showLegend: si === 0, dataIndices });
+    }
   }
 
-  return result;
+  return { rows, lines };
+}
+
+const DEFAULT_WINDOW = 100;
+const MIN_WINDOW = 10;
+
+function useChartZoom(totalLength: number) {
+  const [range, setRange] = useState<{ start: number; end: number } | null>(null);
+
+  // Default: show last DEFAULT_WINDOW points
+  const start = range?.start ?? Math.max(0, totalLength - DEFAULT_WINDOW);
+  const end = range?.end ?? totalLength;
+  const windowSize = end - start;
+  const isShowingAll = start === 0 && end >= totalLength;
+
+  const zoom = useCallback((delta: number, anchorRatio: number) => {
+    setRange(prev => {
+      const s = prev?.start ?? Math.max(0, totalLength - DEFAULT_WINDOW);
+      const e = prev?.end ?? totalLength;
+      const ws = e - s;
+
+      // delta > 0 = zoom out, delta < 0 = zoom in
+      const factor = delta > 0 ? 1.2 : 0.8;
+      let newWs = Math.round(ws * factor);
+      newWs = Math.max(MIN_WINDOW, Math.min(totalLength, newWs));
+
+      const anchor = s + ws * anchorRatio;
+      let newStart = Math.round(anchor - newWs * anchorRatio);
+      let newEnd = newStart + newWs;
+
+      if (newStart < 0) { newStart = 0; newEnd = newWs; }
+      if (newEnd > totalLength) { newEnd = totalLength; newStart = Math.max(0, newEnd - newWs); }
+
+      return { start: newStart, end: newEnd };
+    });
+  }, [totalLength]);
+
+  const pan = useCallback((deltaPoints: number) => {
+    setRange(prev => {
+      const s = prev?.start ?? Math.max(0, totalLength - DEFAULT_WINDOW);
+      const e = prev?.end ?? totalLength;
+      const ws = e - s;
+
+      let newStart = s + deltaPoints;
+      let newEnd = e + deltaPoints;
+
+      if (newStart < 0) { newStart = 0; newEnd = ws; }
+      if (newEnd > totalLength) { newEnd = totalLength; newStart = Math.max(0, newEnd - ws); }
+
+      return { start: newStart, end: newEnd };
+    });
+  }, [totalLength]);
+
+  // Reset when data changes significantly (e.g., new time range selected)
+  const prevLenRef = useRef(totalLength);
+  if (Math.abs(totalLength - prevLenRef.current) > 5) {
+    prevLenRef.current = totalLength;
+    if (range) setRange(null); // reset to default
+  }
+  prevLenRef.current = totalLength;
+
+  return { start, end, windowSize, isShowingAll, zoom, pan };
+}
+
+function ZoomableChart({ children, totalLength, zoomState }: {
+  children: React.ReactNode;
+  totalLength: number;
+  zoomState: ReturnType<typeof useChartZoom>;
+}) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const dragRef = useRef<{ startX: number; startY: number; isDragging: boolean }>({ startX: 0, startY: 0, isDragging: false });
+  const pinchRef = useRef<{ dist: number } | null>(null);
+
+  const getTouchDist = (touches: React.TouchList) => {
+    if (touches.length < 2) return 0;
+    const dx = touches[1].clientX - touches[0].clientX;
+    const dy = touches[1].clientY - touches[0].clientY;
+    return Math.sqrt(dx * dx + dy * dy);
+  };
+
+  const getAnchorRatio = (clientX: number) => {
+    const rect = containerRef.current?.getBoundingClientRect();
+    if (!rect) return 0.5;
+    return Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+  };
+
+  const handleWheel = useCallback((e: React.WheelEvent) => {
+    e.preventDefault();
+    const anchor = getAnchorRatio(e.clientX);
+    zoomState.zoom(e.deltaY, anchor);
+  }, [zoomState]);
+
+  const handlePointerDown = useCallback((e: React.PointerEvent) => {
+    if (e.pointerType === "touch") return; // handled by touch events
+    dragRef.current = { startX: e.clientX, startY: e.clientY, isDragging: false };
+    containerRef.current?.setPointerCapture(e.pointerId);
+  }, []);
+
+  const handlePointerMove = useCallback((e: React.PointerEvent) => {
+    if (e.pointerType === "touch") return;
+    if (!dragRef.current.startX && !dragRef.current.isDragging) return;
+    const dx = e.clientX - dragRef.current.startX;
+    if (Math.abs(dx) > 3) dragRef.current.isDragging = true;
+    if (!dragRef.current.isDragging) return;
+
+    const rect = containerRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const pointsPerPx = zoomState.windowSize / rect.width;
+    const deltaPoints = Math.round(-dx * pointsPerPx);
+    if (deltaPoints !== 0) {
+      zoomState.pan(deltaPoints);
+      dragRef.current.startX = e.clientX;
+    }
+  }, [zoomState]);
+
+  const handlePointerUp = useCallback((e: React.PointerEvent) => {
+    if (e.pointerType === "touch") return;
+    dragRef.current = { startX: 0, startY: 0, isDragging: false };
+  }, []);
+
+  // Touch: single-finger drag = pan, two-finger pinch = zoom
+  const touchStartRef = useRef<{ x: number } | null>(null);
+
+  const handleTouchStart = useCallback((e: React.TouchEvent) => {
+    if (e.touches.length === 2) {
+      pinchRef.current = { dist: getTouchDist(e.touches) };
+    } else if (e.touches.length === 1) {
+      touchStartRef.current = { x: e.touches[0].clientX };
+    }
+  }, []);
+
+  const handleTouchMove = useCallback((e: React.TouchEvent) => {
+    if (e.touches.length === 2 && pinchRef.current) {
+      e.preventDefault();
+      const newDist = getTouchDist(e.touches);
+      const delta = pinchRef.current.dist - newDist; // pinch in = zoom in (negative delta)
+      const midX = (e.touches[0].clientX + e.touches[1].clientX) / 2;
+      const anchor = getAnchorRatio(midX);
+      if (Math.abs(delta) > 5) {
+        zoomState.zoom(delta, anchor);
+        pinchRef.current.dist = newDist;
+      }
+    } else if (e.touches.length === 1 && touchStartRef.current) {
+      const dx = e.touches[0].clientX - touchStartRef.current.x;
+      const rect = containerRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      const pointsPerPx = zoomState.windowSize / rect.width;
+      const deltaPoints = Math.round(-dx * pointsPerPx);
+      if (deltaPoints !== 0) {
+        zoomState.pan(deltaPoints);
+        touchStartRef.current.x = e.touches[0].clientX;
+      }
+    }
+  }, [zoomState]);
+
+  const handleTouchEnd = useCallback(() => {
+    pinchRef.current = null;
+    touchStartRef.current = null;
+  }, []);
+
+  return (
+    <div className="relative">
+      <div
+        ref={containerRef}
+        style={{ touchAction: "none", cursor: "grab" }}
+        onWheel={handleWheel}
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={handlePointerUp}
+        onTouchStart={handleTouchStart}
+        onTouchMove={handleTouchMove}
+        onTouchEnd={handleTouchEnd}
+      >
+        {children}
+      </div>
+      {zoomState.isShowingAll && totalLength > 0 && (
+        <div className="text-center text-xs text-muted-foreground mt-1">
+          Showing all {totalLength} data points
+        </div>
+      )}
+      {!zoomState.isShowingAll && totalLength > 0 && (
+        <div className="text-center text-xs text-muted-foreground mt-1">
+          {zoomState.windowSize} of {totalLength} points — scroll to zoom, drag to pan
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Render dot only at start/end of segment or isolated single points */
+function makeEndpointDot(dataIndices: number[], stroke: string) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return (props: any) => {
+    const { cx, cy, index } = props;
+    if (cx == null || cy == null) return <g />;
+    const first = dataIndices[0];
+    const last = dataIndices[dataIndices.length - 1];
+    const isSingle = dataIndices.length === 1;
+    const isEndpoint = index === first || index === last;
+    if (!isEndpoint && !isSingle) return <g />;
+    return (
+      <g>
+        <circle cx={cx} cy={cy} r={6} fill={stroke} opacity={0.3} />
+        <circle cx={cx} cy={cy} r={4} fill={stroke} />
+        <circle cx={cx} cy={cy} r={2} fill="white" />
+      </g>
+    );
+  };
 }
 
 interface MetricsSectionProps {
@@ -127,6 +381,21 @@ function MetricsSection({ metrics, isLoading, selectedRegion, timeRangeLabel, re
 
   // Show latest single test result (metrics are ordered by createdAt DESC)
   const latest = filteredMetrics[0] ?? null;
+
+  // Zoom/pan state — shared across both charts so they stay in sync
+  const chartZoom = useChartZoom(combinedData.length);
+  const visibleData = useMemo(() => combinedData.slice(chartZoom.start, chartZoom.end), [combinedData, chartZoom.start, chartZoom.end]);
+
+  // Pre-compute segmented chart data (breaks lines at 2h gaps)
+  const responseChart = useMemo(() => buildSegmentedData(visibleData, [
+    { dataKey: "agoraResponse", name: "Agora ConvoAI Engine", stroke: "hsl(var(--chart-1))" },
+    { dataKey: "liveKitResponse", name: "LiveKit Agents", stroke: "hsl(var(--chart-2))" },
+  ]), [visibleData]);
+
+  const interruptChart = useMemo(() => buildSegmentedData(visibleData, [
+    { dataKey: "agoraInterrupt", name: "Agora ConvoAI Engine", stroke: "hsl(var(--chart-1))" },
+    { dataKey: "liveKitInterrupt", name: "LiveKit Agents", stroke: "hsl(var(--chart-2))" },
+  ]), [visibleData]);
 
   return (
     <>
@@ -261,23 +530,26 @@ function MetricsSection({ metrics, isLoading, selectedRegion, timeRangeLabel, re
             <CardDescription>Time to First Audio (TTFA) - {regionLabel}</CardDescription>
           </CardHeader>
           <CardContent>
-            <div className="h-[300px] w-full">
-              {isLoading ? (
-                <Skeleton className="h-full w-full" />
-              ) : (
-                <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={combinedData}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" vertical={false} />
-                    <XAxis dataKey="timestamp" stroke="hsl(var(--muted-foreground))" fontSize={12} tickLine={false} axisLine={false} />
-                    <YAxis stroke="hsl(var(--muted-foreground))" fontSize={12} tickLine={false} axisLine={false} tickFormatter={(value) => `${value}ms`} />
-                    <Tooltip contentStyle={{ backgroundColor: 'hsl(var(--popover))', borderColor: 'hsl(var(--border))', borderRadius: '8px' }} itemStyle={{ color: 'hsl(var(--popover-foreground))' }} />
-                    <Legend />
-                    <Line type="monotone" dataKey="agoraResponse" name="Agora ConvoAI Engine" stroke="hsl(var(--chart-1))" strokeWidth={2} dot={{ r: 3 }} activeDot={{ r: 6 }} />
-                    <Line type="monotone" dataKey="liveKitResponse" name="LiveKit Agents" stroke="hsl(var(--chart-2))" strokeWidth={2} dot={{ r: 3 }} activeDot={{ r: 6 }} />
-                  </LineChart>
-                </ResponsiveContainer>
-              )}
-            </div>
+            <ZoomableChart totalLength={combinedData.length} zoomState={chartZoom}>
+              <div className="h-[300px] w-full">
+                {isLoading ? (
+                  <Skeleton className="h-full w-full" />
+                ) : (
+                  <ResponsiveContainer width="100%" height="100%">
+                    <LineChart data={responseChart.rows}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" vertical={false} />
+                      <XAxis dataKey="timestamp" stroke="hsl(var(--muted-foreground))" fontSize={12} tickLine={false} axisLine={false} />
+                      <YAxis stroke="hsl(var(--muted-foreground))" fontSize={12} tickLine={false} axisLine={false} tickFormatter={(value) => `${value}ms`} />
+                      <Tooltip contentStyle={{ backgroundColor: 'hsl(var(--popover))', borderColor: 'hsl(var(--border))', borderRadius: '8px' }} itemStyle={{ color: 'hsl(var(--popover-foreground))' }} />
+                      <Legend />
+                      {responseChart.lines.map(l => (
+                        <Line key={l.segKey} type="monotone" dataKey={l.segKey} name={l.name} stroke={l.stroke} strokeWidth={2} dot={makeEndpointDot(l.dataIndices, l.stroke)} activeDot={{ r: 6 }} connectNulls legendType={l.showLegend ? "line" : "none"} />
+                      ))}
+                    </LineChart>
+                  </ResponsiveContainer>
+                )}
+              </div>
+            </ZoomableChart>
           </CardContent>
         </Card>
 
@@ -287,23 +559,26 @@ function MetricsSection({ metrics, isLoading, selectedRegion, timeRangeLabel, re
             <CardDescription>Time to Interrupt (TTI) - {regionLabel}</CardDescription>
           </CardHeader>
           <CardContent>
-            <div className="h-[300px] w-full">
-              {isLoading ? (
-                <Skeleton className="h-full w-full" />
-              ) : (
-                <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={combinedData}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" vertical={false} />
-                    <XAxis dataKey="timestamp" stroke="hsl(var(--muted-foreground))" fontSize={12} tickLine={false} axisLine={false} />
-                    <YAxis stroke="hsl(var(--muted-foreground))" fontSize={12} tickLine={false} axisLine={false} tickFormatter={(value) => `${value}ms`} />
-                    <Tooltip contentStyle={{ backgroundColor: 'hsl(var(--popover))', borderColor: 'hsl(var(--border))', borderRadius: '8px' }} itemStyle={{ color: 'hsl(var(--popover-foreground))' }} />
-                    <Legend />
-                    <Line type="monotone" dataKey="agoraInterrupt" name="Agora ConvoAI Engine" stroke="hsl(var(--chart-1))" strokeWidth={2} dot={{ r: 3 }} activeDot={{ r: 6 }} />
-                    <Line type="monotone" dataKey="liveKitInterrupt" name="LiveKit Agents" stroke="hsl(var(--chart-2))" strokeWidth={2} dot={{ r: 3 }} activeDot={{ r: 6 }} />
-                  </LineChart>
-                </ResponsiveContainer>
-              )}
-            </div>
+            <ZoomableChart totalLength={combinedData.length} zoomState={chartZoom}>
+              <div className="h-[300px] w-full">
+                {isLoading ? (
+                  <Skeleton className="h-full w-full" />
+                ) : (
+                  <ResponsiveContainer width="100%" height="100%">
+                    <LineChart data={interruptChart.rows}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" vertical={false} />
+                      <XAxis dataKey="timestamp" stroke="hsl(var(--muted-foreground))" fontSize={12} tickLine={false} axisLine={false} />
+                      <YAxis stroke="hsl(var(--muted-foreground))" fontSize={12} tickLine={false} axisLine={false} tickFormatter={(value) => `${value}ms`} />
+                      <Tooltip contentStyle={{ backgroundColor: 'hsl(var(--popover))', borderColor: 'hsl(var(--border))', borderRadius: '8px' }} itemStyle={{ color: 'hsl(var(--popover-foreground))' }} />
+                      <Legend />
+                      {interruptChart.lines.map(l => (
+                        <Line key={l.segKey} type="monotone" dataKey={l.segKey} name={l.name} stroke={l.stroke} strokeWidth={2} dot={makeEndpointDot(l.dataIndices, l.stroke)} activeDot={{ r: 6 }} connectNulls legendType={l.showLegend ? "line" : "none"} />
+                      ))}
+                    </LineChart>
+                  </ResponsiveContainer>
+                )}
+              </div>
+            </ZoomableChart>
           </CardContent>
         </Card>
       </div>
@@ -331,7 +606,7 @@ export default function Dashboard() {
     queryFn: async () => {
       const params = new URLSearchParams();
       if (timeRange !== "all") params.set("hours", timeRange);
-      params.set("limit", timeRange === "all" ? "500" : "200");
+      params.set("limit", timeRange === "all" ? "2000" : "200");
       const res = await fetch(`/api/metrics/realtime?${params}`);
       if (!res.ok) throw new Error("Failed to fetch metrics");
       return res.json();
@@ -345,7 +620,7 @@ export default function Dashboard() {
     queryFn: async () => {
       const params = new URLSearchParams();
       if (timeRange !== "all") params.set("hours", timeRange);
-      params.set("limit", timeRange === "all" ? "500" : "200");
+      params.set("limit", timeRange === "all" ? "2000" : "200");
       const res = await fetch(`/api/metrics/community?${params}`);
       if (!res.ok) throw new Error("Failed to fetch community metrics");
       return res.json();
@@ -359,7 +634,7 @@ export default function Dashboard() {
     queryFn: async () => {
       const params = new URLSearchParams();
       if (timeRange !== "all") params.set("hours", timeRange);
-      params.set("limit", timeRange === "all" ? "500" : "200");
+      params.set("limit", timeRange === "all" ? "2000" : "200");
       const res = await fetch(`/api/metrics/my-evals?${params}`);
       if (!res.ok) throw new Error("Failed to fetch my eval metrics");
       return res.json();
