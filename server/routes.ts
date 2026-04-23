@@ -1453,7 +1453,9 @@ export async function registerRoutes(
       if (!user) {
         return res.status(401).json({ error: "Not authenticated" });
       }
-      const schedules = await storage.getEvalSchedulesWithWorkflow(user.id);
+      const schedules = user.isAdmin
+        ? await storage.getAllEvalSchedulesWithWorkflow()
+        : await storage.getEvalSchedulesWithWorkflow(user.id);
       res.json(schedules);
     } catch (error) {
       console.error("Error fetching eval schedules:", error);

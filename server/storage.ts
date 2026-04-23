@@ -1269,8 +1269,8 @@ export class DatabaseStorage {
   }
 
   // Get schedules with their workflow info (for listing)
-  async getEvalSchedulesWithWorkflow(userId: number): Promise<(EvalSchedule & { workflowName: string })[]> {
-    const results = await db.select({
+  private buildScheduleQuery() {
+    return {
       id: evalSchedules.id,
       name: evalSchedules.name,
       workflowId: evalSchedules.workflowId,
@@ -1288,13 +1288,25 @@ export class DatabaseStorage {
       createdAt: evalSchedules.createdAt,
       updatedAt: evalSchedules.updatedAt,
       workflowName: workflows.name,
-    })
+      creatorName: users.username,
+    };
+  }
+
+  async getEvalSchedulesWithWorkflow(userId: number): Promise<(EvalSchedule & { workflowName: string; creatorName: string })[]> {
+    return db.select(this.buildScheduleQuery())
       .from(evalSchedules)
       .innerJoin(workflows, eq(evalSchedules.workflowId, workflows.id))
+      .innerJoin(users, eq(evalSchedules.createdBy, users.id))
       .where(eq(evalSchedules.createdBy, userId))
       .orderBy(desc(evalSchedules.createdAt));
+  }
 
-    return results;
+  async getAllEvalSchedulesWithWorkflow(): Promise<(EvalSchedule & { workflowName: string; creatorName: string })[]> {
+    return db.select(this.buildScheduleQuery())
+      .from(evalSchedules)
+      .innerJoin(workflows, eq(evalSchedules.workflowId, workflows.id))
+      .innerJoin(users, eq(evalSchedules.createdBy, users.id))
+      .orderBy(desc(evalSchedules.createdAt));
   }
 
   // ==================== SECRETS ====================
