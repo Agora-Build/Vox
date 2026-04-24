@@ -156,6 +156,13 @@ export default function ConsoleLayout({ children }: ConsoleLayoutProps) {
     active: location === "/console/secrets",
   });
 
+  navItems.push({
+    title: "API Keys",
+    url: "/console/api-keys",
+    icon: KeyRound,
+    active: location === "/console/api-keys",
+  });
+
 
   // Organization section
   const orgNavItems = [];

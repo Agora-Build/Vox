@@ -465,7 +465,7 @@ export default function SelfTest() {
                 </div>
               </div>
             </CardContent>
-            <CardFooter className="relative z-10 flex-col gap-3">
+            <CardFooter className="relative z-10 flex-col items-stretch gap-3">
               <Button
                 className="w-full"
                 size="lg"
@@ -482,11 +482,11 @@ export default function SelfTest() {
               </Button>
               <button
                 type="button"
-                className="text-xs text-muted-foreground hover:text-foreground transition-colors flex items-center gap-1"
+                className="text-xs text-muted-foreground hover:text-foreground transition-colors inline-flex items-center gap-1.5 self-start group"
                 onClick={() => setShowApiSection(!showApiSection)}
               >
                 <Terminal className="h-3 w-3" />
-                Run evals through APIs
+                <span className="underline underline-offset-2 decoration-muted-foreground/40 group-hover:decoration-foreground/60">Run evals through APIs</span>
                 {showApiSection ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
               </button>
             </CardFooter>
@@ -503,15 +503,15 @@ export default function SelfTest() {
                     <span className="text-xs font-mono">bash</span>
                   </div>
                   <div className="p-3 font-mono text-xs overflow-x-auto whitespace-pre text-muted-foreground">
-{`# Get evaluation results
-curl -H "Authorization: Bearer vox_live_xxx" \\
-  ${window.location.origin}/api/v1/results
-
-# Run a workflow
+{`# Run a workflow
 curl -X POST -H "Authorization: Bearer vox_live_xxx" \\
   -H "Content-Type: application/json" \\
   -d '{"region": "na"}' \\
-  ${window.location.origin}/api/v1/workflows/1/run`}
+  ${window.location.origin}/api/v1/workflows/1/run
+
+# Get evaluation results
+curl -H "Authorization: Bearer vox_live_xxx" \\
+  ${window.location.origin}/api/v1/results`}
                   </div>
                 </div>
                 <Link href="/console/api-keys">
