@@ -55,44 +55,81 @@ interface HealthData {
 interface CombinedRow {
   timestamp: string;
   rawTime: number;
-  agoraResponse?: number;
-  agoraInterrupt?: number;
-  liveKitResponse?: number;
-  liveKitInterrupt?: number;
   [key: string]: string | number | undefined;
 }
 
-function buildCombinedData(filteredMetrics: EvalResult[]): CombinedRow[] {
-  if (!filteredMetrics || filteredMetrics.length === 0) return [];
+// Stable chart colors for providers (cycles if > 5 providers)
+const CHART_COLORS = [
+  "hsl(var(--chart-1))",
+  "hsl(var(--chart-2))",
+  "hsl(var(--chart-3))",
+  "hsl(var(--chart-4))",
+  "hsl(var(--chart-5))",
+];
 
-  const timeGroups = new Map<string, { rawTime: number; agora: EvalResult | null; liveKit: EvalResult | null }>();
+/** Convert provider name to a safe key prefix: "Agora ConvoAI Engine" → "agora_convoai_engine" */
+function providerKey(name: string): string {
+  return name.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
+}
+
+interface ChartProviders {
+  data: CombinedRow[];
+  providers: Array<{ key: string; name: string; stroke: string }>;
+}
+
+function buildCombinedData(filteredMetrics: EvalResult[]): ChartProviders {
+  if (!filteredMetrics || filteredMetrics.length === 0) return { data: [], providers: [] };
+
+  // Discover providers in stable order (first appearance)
+  const providerNames: string[] = [];
+  const seen = new Set<string>();
+  for (const m of filteredMetrics) {
+    if (!seen.has(m.provider)) {
+      seen.add(m.provider);
+      providerNames.push(m.provider);
+    }
+  }
+  // Sort alphabetically for consistent color assignment
+  providerNames.sort();
+
+  const providers = providerNames.map((name, i) => ({
+    key: providerKey(name),
+    name,
+    stroke: CHART_COLORS[i % CHART_COLORS.length],
+  }));
+
+  const keyMap = new Map(providers.map(p => [p.name, p.key]));
+
+  // Group by timestamp, one slot per provider
+  const timeGroups = new Map<string, { rawTime: number; values: Map<string, EvalResult> }>();
 
   for (const m of filteredMetrics) {
     const date = new Date(m.timestamp);
     if (isNaN(date.getTime())) continue;
     const timeKey = format(date, "MM/dd HH:mm");
     if (!timeGroups.has(timeKey)) {
-      timeGroups.set(timeKey, { rawTime: date.getTime(), agora: null, liveKit: null });
+      timeGroups.set(timeKey, { rawTime: date.getTime(), values: new Map() });
     }
     const group = timeGroups.get(timeKey)!;
-    const providerLower = m.provider.toLowerCase();
-    if (providerLower.includes("agora") && !group.agora) {
-      group.agora = m;
-    } else if (providerLower.includes("livekit") && !group.liveKit) {
-      group.liveKit = m;
+    const pk = keyMap.get(m.provider);
+    if (pk && !group.values.has(pk)) {
+      group.values.set(pk, m);
     }
   }
 
-  return Array.from(timeGroups.entries())
+  const data = Array.from(timeGroups.entries())
     .sort((a, b) => a[0].localeCompare(b[0]))
-    .map(([timestamp, group]) => ({
-      timestamp,
-      rawTime: group.rawTime,
-      agoraResponse: group.agora?.responseLatency,
-      agoraInterrupt: group.agora?.interruptLatency,
-      liveKitResponse: group.liveKit?.responseLatency,
-      liveKitInterrupt: group.liveKit?.interruptLatency,
-    }));
+    .map(([timestamp, group]) => {
+      const row: CombinedRow = { timestamp, rawTime: group.rawTime };
+      for (const p of providers) {
+        const m = group.values.get(p.key);
+        row[`${p.key}_response`] = m?.responseLatency;
+        row[`${p.key}_interrupt`] = m?.interruptLatency;
+      }
+      return row;
+    });
+
+  return { data, providers };
 }
 
 const GAP_MS = 2 * 60 * 60 * 1000; // 2 hours
@@ -377,7 +414,7 @@ function MetricsSection({ metrics, isLoading, selectedRegion, timeRangeLabel, re
     selectedRegion === "all" || m.region.toLowerCase() === selectedRegion
   ) || [];
 
-  const combinedData = buildCombinedData(filteredMetrics);
+  const { data: combinedData, providers } = useMemo(() => buildCombinedData(filteredMetrics), [filteredMetrics]);
 
   // Show latest single test result (metrics are ordered by createdAt DESC)
   const latest = filteredMetrics[0] ?? null;
@@ -387,15 +424,11 @@ function MetricsSection({ metrics, isLoading, selectedRegion, timeRangeLabel, re
   const visibleData = useMemo(() => combinedData.slice(chartZoom.start, chartZoom.end), [combinedData, chartZoom.start, chartZoom.end]);
 
   // Pre-compute segmented chart data (breaks lines at 2h gaps)
-  const responseChart = useMemo(() => buildSegmentedData(visibleData, [
-    { dataKey: "agoraResponse", name: "Agora ConvoAI Engine", stroke: "hsl(var(--chart-1))" },
-    { dataKey: "liveKitResponse", name: "LiveKit Agents", stroke: "hsl(var(--chart-2))" },
-  ]), [visibleData]);
+  const responseProviders = useMemo(() => providers.map(p => ({ dataKey: `${p.key}_response`, name: p.name, stroke: p.stroke })), [providers]);
+  const interruptProviders = useMemo(() => providers.map(p => ({ dataKey: `${p.key}_interrupt`, name: p.name, stroke: p.stroke })), [providers]);
 
-  const interruptChart = useMemo(() => buildSegmentedData(visibleData, [
-    { dataKey: "agoraInterrupt", name: "Agora ConvoAI Engine", stroke: "hsl(var(--chart-1))" },
-    { dataKey: "liveKitInterrupt", name: "LiveKit Agents", stroke: "hsl(var(--chart-2))" },
-  ]), [visibleData]);
+  const responseChart = useMemo(() => buildSegmentedData(visibleData, responseProviders), [visibleData, responseProviders]);
+  const interruptChart = useMemo(() => buildSegmentedData(visibleData, interruptProviders), [visibleData, interruptProviders]);
 
   return (
     <>
