@@ -25,6 +25,7 @@ const MIGRATIONS: Array<{ version: number; description: string; file: string | n
   { version: 1, description: "baseline — original schema", file: "0000_opposite_hobgoblin.sql" },
   { version: 2, description: "clash tables",               file: "0001_clash_tables.sql" },
   { version: 3, description: "p95 latency columns",        file: "0002_spotty_longshot.sql" },
+  { version: 4, description: "ElevenLabs Agents provider", file: "0003_add_elevenlabs_provider.sql" },
 ];
 
 const TARGET_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version;

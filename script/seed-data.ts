@@ -6,7 +6,7 @@
 // NOT needed for production. /api/auth/init already handles:
 //   - Admin user creation
 //   - Scout user creation (disabled, no password)
-//   - Both default providers (Agora ConvoAI Engine, LiveKit Agents)
+//   - All default providers (Agora ConvoAI Engine, LiveKit Agents, ElevenLabs Agents)
 //   - All 5 pricing config tiers
 //
 // What this script adds on top of init (local dev only):
@@ -67,6 +67,12 @@ async function seedData() {
       sku: "convoai",
     });
     console.log(`Provider created: ${livekitProvider.name} (ID: ${livekitProvider.id})`);
+
+    const elevenProvider = await storage.createProvider({
+      name: "ElevenLabs Agents",
+      sku: "convoai",
+    });
+    console.log(`Provider created: ${elevenProvider.name} (ID: ${elevenProvider.id})`);
   } else {
     console.log(`Providers already exist: ${providers.length} found`);
   }
