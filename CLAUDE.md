@@ -512,7 +512,7 @@ brew install libsndfile ffmpeg
 The Dockerfile already includes both. For local dev, install them on your host machine.
 
 #### Latency Metrics Calculation (aeval framework)
-aeval runs a scenario (e.g. `smoke_test_en.yaml`), records audio, and runs an analysis pipeline that produces `metrics.json`. The daemon reads this file and maps it to Vox's `evalResults` schema:
+aeval runs a scenario (e.g. `smoke_test_en_livekit.yaml`), records audio, and runs an analysis pipeline that produces `metrics.json`. The daemon reads this file and maps it to Vox's `evalResults` schema:
 
 **`responseLatencyMedian`** — Response latency median (milliseconds):
 - **Source**: Computed from `response_metrics.latency.turn_level[].latency_ms` array
