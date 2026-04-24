@@ -291,7 +291,7 @@ export default function Leaderboard() {
                     </TableCell>
                     <TableCell>
                       <Badge variant="outline" className="text-muted-foreground" data-testid={`text-region-${entry.rank}`}>
-                        {entry.region}
+                        {formatRegion(entry.region)}
                       </Badge>
                     </TableCell>
                     <TableCell className="text-right font-mono" data-testid={`text-response-${entry.rank}`}>

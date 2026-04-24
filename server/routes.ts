@@ -2594,6 +2594,7 @@ export async function registerRoutes(
     }
     return results.map(r => ({
       id: r.id,
+      providerId: r.providerId,
       provider: providerCache.get(r.providerId) || r.providerId,
       region: r.region,
       responseLatency: r.responseLatencyMedian,

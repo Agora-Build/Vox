@@ -1,4 +1,4 @@
-import { useState, useMemo, useRef, useCallback } from "react";
+import { useState, useMemo, useRef, useCallback, useEffect } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -16,6 +16,7 @@ import { format } from "date-fns";
 
 interface EvalResult {
   id: number;
+  providerId: string;
   provider: string;
   region: string;
   responseLatency: number;
@@ -58,14 +59,23 @@ interface CombinedRow {
   [key: string]: string | number | undefined;
 }
 
-// Stable chart colors for providers (cycles if > 5 providers)
-const CHART_COLORS = [
-  "hsl(var(--chart-1))",
-  "hsl(var(--chart-2))",
-  "hsl(var(--chart-3))",
-  "hsl(var(--chart-4))",
-  "hsl(var(--chart-5))",
+// Curated palette — easy on the eyes, distinct from each other
+const PALETTE = [
+  "#3b82f6", // blue
+  "#f97316", // orange
+  "#22c55e", // green
+  "#a855f7", // purple (softer)
+  "#ef4444", // red
 ];
+
+// Hash providerId to a stable palette index
+function providerColor(providerId: string): string {
+  let hash = 0;
+  for (let i = 0; i < providerId.length; i++) {
+    hash = ((hash << 5) - hash + providerId.charCodeAt(i)) | 0;
+  }
+  return PALETTE[((hash % PALETTE.length) + PALETTE.length) % PALETTE.length];
+}
 
 /** Convert provider name to a safe key prefix: "Agora ConvoAI Engine" → "agora_convoai_engine" */
 function providerKey(name: string): string {
@@ -80,25 +90,23 @@ interface ChartProviders {
 function buildCombinedData(filteredMetrics: EvalResult[]): ChartProviders {
   if (!filteredMetrics || filteredMetrics.length === 0) return { data: [], providers: [] };
 
-  // Discover providers in stable order (first appearance)
-  const providerNames: string[] = [];
-  const seen = new Set<string>();
+  // Discover providers — keyed by providerId for stable color
+  const providerInfo = new Map<string, { id: string; name: string }>();
   for (const m of filteredMetrics) {
-    if (!seen.has(m.provider)) {
-      seen.add(m.provider);
-      providerNames.push(m.provider);
+    if (!providerInfo.has(m.providerId)) {
+      providerInfo.set(m.providerId, { id: m.providerId, name: m.provider });
     }
   }
-  // Sort alphabetically for consistent color assignment
-  providerNames.sort();
 
-  const providers = providerNames.map((name, i) => ({
-    key: providerKey(name),
-    name,
-    stroke: CHART_COLORS[i % CHART_COLORS.length],
-  }));
+  const providers = Array.from(providerInfo.values())
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .map(({ id, name }) => ({
+      key: providerKey(name),
+      name,
+      stroke: providerColor(id),
+    }));
 
-  const keyMap = new Map(providers.map(p => [p.name, p.key]));
+  const nameToKey = new Map(providers.map(p => [p.name, p.key]));
 
   // Group by timestamp, one slot per provider
   const timeGroups = new Map<string, { rawTime: number; values: Map<string, EvalResult> }>();
@@ -111,7 +119,7 @@ function buildCombinedData(filteredMetrics: EvalResult[]): ChartProviders {
       timeGroups.set(timeKey, { rawTime: date.getTime(), values: new Map() });
     }
     const group = timeGroups.get(timeKey)!;
-    const pk = keyMap.get(m.provider);
+    const pk = nameToKey.get(m.provider);
     if (pk && !group.values.has(pk)) {
       group.values.set(pk, m);
     }
@@ -276,10 +284,17 @@ function ZoomableChart({ children, totalLength, zoomState }: {
     return Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
   };
 
-  const handleWheel = useCallback((e: React.WheelEvent) => {
-    e.preventDefault();
-    const anchor = getAnchorRatio(e.clientX);
-    zoomState.zoom(e.deltaY, anchor);
+  // Attach wheel listener as non-passive so preventDefault() works
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      const anchor = getAnchorRatio(e.clientX);
+      zoomState.zoom(e.deltaY, anchor);
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
   }, [zoomState]);
 
   const handlePointerDown = useCallback((e: React.PointerEvent) => {
@@ -354,8 +369,7 @@ function ZoomableChart({ children, totalLength, zoomState }: {
     <div className="relative">
       <div
         ref={containerRef}
-        style={{ touchAction: "none", cursor: "grab" }}
-        onWheel={handleWheel}
+        style={{ touchAction: "none", cursor: "grab", userSelect: "none" }}
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerUp}

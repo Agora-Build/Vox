@@ -13,6 +13,7 @@ import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ClipboardList, CheckCircle, XCircle, Loader2, Clock, RefreshCw, CalendarClock, MousePointerClick, MoreHorizontal, Pause, Play, Pencil, Trash2, Zap } from "lucide-react";
 import { useState } from "react";
+import { useLocation, useSearch } from "wouter";
 import { formatSmartTimestamp, formatRegion, REGIONS } from "@/lib/utils";
 import { format } from "date-fns";
 import type { EvalJob, EvalSchedule, Workflow as WorkflowType } from "@shared/schema";
@@ -445,7 +446,18 @@ function JobsTab() {
   );
 }
 
+const VALID_TABS = ["schedules", "jobs"];
+
 export default function ConsoleEvalJobs() {
+  const [, setLocation] = useLocation();
+  const search = useSearch();
+  const tabParam = new URLSearchParams(search).get("tab");
+  const activeTab = tabParam && VALID_TABS.includes(tabParam) ? tabParam : "schedules";
+
+  const setTab = (tab: string) => {
+    setLocation(`/console/eval-jobs?tab=${tab}`);
+  };
+
   return (
     <div className="space-y-6">
       <div>
@@ -453,7 +465,7 @@ export default function ConsoleEvalJobs() {
         <p className="text-muted-foreground">Manage schedules and monitor job execution</p>
       </div>
 
-      <Tabs defaultValue="schedules">
+      <Tabs value={activeTab} onValueChange={setTab}>
         <TabsList>
           <TabsTrigger value="schedules">
             <CalendarClock className="h-4 w-4 mr-2" />

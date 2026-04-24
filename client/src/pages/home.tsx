@@ -2,7 +2,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Link } from "wouter";
-import { ArrowRight, Clock, Globe, Rocket, Activity, Mic, Bot, Settings, Radio } from "lucide-react";
+import { ArrowRight, Clock, Globe, Rocket, Activity, Mic, Bot, AudioLines, Settings, Radio } from "lucide-react";
 
 export default function Home() {
   return (
@@ -132,14 +132,14 @@ export default function Home() {
             </CardContent>
           </Card>
 
-          <Card className="relative overflow-hidden opacity-75">
+          <Card className="relative overflow-hidden">
             <CardHeader>
-              <Settings className="h-8 w-8 mb-4 text-muted-foreground" />
-              <CardTitle className="text-lg">Custom ConvoAI</CardTitle>
-              <CardDescription>Custom Solutions</CardDescription>
+              <AudioLines className="h-8 w-8 mb-4 text-primary" />
+              <CardTitle className="text-lg">ElevenLabs Agents</CardTitle>
+              <CardDescription>ElevenLabs Conversational AI Agents</CardDescription>
             </CardHeader>
             <CardContent>
-              <Badge variant="secondary">Coming Soon</Badge>
+              <Badge variant="outline" className="text-emerald-500 border-emerald-500/20 bg-emerald-500/10">Active</Badge>
             </CardContent>
           </Card>
 
