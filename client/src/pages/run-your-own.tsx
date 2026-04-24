@@ -11,7 +11,7 @@ import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
-import { Play, Loader2, XCircle, CheckCircle, Clock, AlertCircle, Rocket, Eye } from "lucide-react";
+import { Play, Loader2, XCircle, CheckCircle, Clock, AlertCircle, Rocket, Eye, Terminal, ArrowRight, ChevronDown, ChevronUp } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { Link } from "wouter";
@@ -68,6 +68,7 @@ export default function SelfTest() {
     const saved = sessionStorage.getItem("runYourOwn_activeJobId");
     return saved ? parseInt(saved) : null;
   });
+  const [showApiSection, setShowApiSection] = useState(false);
   const [previewOpen, setPreviewOpen] = useState(false);
   const [previewEvalSet, setPreviewEvalSet] = useState<EvalSetFull | null>(null);
   const [previewYaml, setPreviewYaml] = useState("");
@@ -464,7 +465,7 @@ export default function SelfTest() {
                 </div>
               </div>
             </CardContent>
-            <CardFooter className="relative z-10">
+            <CardFooter className="relative z-10 flex-col gap-3">
               <Button
                 className="w-full"
                 size="lg"
@@ -479,7 +480,47 @@ export default function SelfTest() {
                   <><Play className="mr-2 h-4 w-4" /> Start Evaluation</>
                 )}
               </Button>
+              <button
+                type="button"
+                className="text-xs text-muted-foreground hover:text-foreground transition-colors flex items-center gap-1"
+                onClick={() => setShowApiSection(!showApiSection)}
+              >
+                <Terminal className="h-3 w-3" />
+                Run evals through APIs
+                {showApiSection ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
+              </button>
             </CardFooter>
+
+            {showApiSection && (
+              <div className="border-t px-6 pb-6 pt-4 space-y-4">
+                <div>
+                  <h4 className="text-sm font-medium">REST API</h4>
+                  <p className="text-xs text-muted-foreground">Programmatic access to evaluation results and job management</p>
+                </div>
+                <div className="bg-muted/50 border rounded-lg overflow-hidden">
+                  <div className="bg-muted px-3 py-1.5 border-b flex items-center gap-2">
+                    <Terminal className="h-3 w-3" />
+                    <span className="text-xs font-mono">bash</span>
+                  </div>
+                  <div className="p-3 font-mono text-xs overflow-x-auto whitespace-pre text-muted-foreground">
+{`# Get evaluation results
+curl -H "Authorization: Bearer vox_live_xxx" \\
+  ${window.location.origin}/api/v1/results
+
+# Run a workflow
+curl -X POST -H "Authorization: Bearer vox_live_xxx" \\
+  -H "Content-Type: application/json" \\
+  -d '{"region": "na"}' \\
+  ${window.location.origin}/api/v1/workflows/1/run`}
+                  </div>
+                </div>
+                <Link href="/console/api-keys">
+                  <Button variant="outline" size="sm" className="gap-1.5 text-xs">
+                    Manage API Keys <ArrowRight className="h-3 w-3" />
+                  </Button>
+                </Link>
+              </div>
+            )}
           </Card>
 
           {/* Status Panel */}
@@ -577,7 +618,7 @@ export default function SelfTest() {
           <CardContent className="pt-6">
             <h3 className="font-semibold mb-2">Real Infrastructure</h3>
             <p className="text-sm text-muted-foreground">
-              Tests run on our distributed eval agents across NA, APAC, and EU regions.
+              Tests run on our distributed eval agents across North America, Asia Pacific, Europe, and South America.
             </p>
           </CardContent>
         </Card>
