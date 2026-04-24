@@ -14,6 +14,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ClipboardList, CheckCircle, XCircle, Loader2, Clock, RefreshCw, CalendarClock, MousePointerClick, MoreHorizontal, Pause, Play, Pencil, Trash2, Zap } from "lucide-react";
 import { useState } from "react";
 import { formatSmartTimestamp, formatRegion, REGIONS } from "@/lib/utils";
+import { format } from "date-fns";
 import type { EvalJob, EvalSchedule, Workflow as WorkflowType } from "@shared/schema";
 
 type EnrichedSchedule = EvalSchedule & { workflowName: string; creatorName: string };
@@ -180,7 +181,7 @@ function ScheduledJobsBlock() {
                       </Badge>
                     </TableCell>
                     <TableCell className="text-sm text-muted-foreground">
-                      {s.nextRunAt ? formatSmartTimestamp(s.nextRunAt) : "-"}
+                      {s.nextRunAt ? format(new Date(s.nextRunAt), "MM/dd HH:mm") : "-"}
                     </TableCell>
                     <TableCell className="text-sm text-muted-foreground">
                       {s.lastRunAt ? formatSmartTimestamp(s.lastRunAt) : "-"}
