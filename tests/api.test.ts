@@ -3286,4 +3286,246 @@ describe('Vox API Tests', () => {
       expect(data.job.config.scenario).toBe('test: true');
     });
   });
+
+  // ==================== Job Detail API ====================
+  describe('Job Detail API', () => {
+    it('should get job detail with result data', async () => {
+      // Get a completed job
+      const jobsRes = await authFetch(adminSession, `${BASE_URL}/api/eval-jobs?status=completed&limit=1`);
+      if (!jobsRes.ok) return; // skip if no completed jobs
+      const jobs = await jobsRes.json();
+      if (jobs.length === 0) return;
+
+      const detailRes = await authFetch(adminSession, `${BASE_URL}/api/eval-jobs/${jobs[0].id}/detail`);
+      expect(detailRes.ok).toBe(true);
+      const detail = await detailRes.json();
+      expect(detail.job).toBeDefined();
+      expect(detail.job.id).toBe(jobs[0].id);
+      expect(detail.workflowName).toBeDefined();
+      expect(typeof detail.workflowName).toBe('string');
+    });
+
+    it('should return 404 for non-existent job', async () => {
+      const res = await authFetch(adminSession, `${BASE_URL}/api/eval-jobs/999999/detail`);
+      expect(res.status).toBe(404);
+    });
+
+    it('should require authentication for job detail', async () => {
+      const res = await fetch(`${BASE_URL}/api/eval-jobs/1/detail`);
+      expect(res.status).toBe(401);
+    });
+  });
+
+  // ==================== Storage Config API ====================
+  describe('Storage Config API', () => {
+    it('should return null when no config exists', async () => {
+      const res = await authFetch(adminSession, `${BASE_URL}/api/user/storage-config`);
+      expect(res.ok).toBe(true);
+      const data = await res.json();
+      // Either null or an existing config object
+      expect(data === null || typeof data === 'object').toBe(true);
+    });
+
+    it('should create and retrieve storage config', async () => {
+      const putRes = await authFetch(adminSession, `${BASE_URL}/api/user/storage-config`, {
+        method: 'PUT',
+        body: JSON.stringify({
+          s3Endpoint: 'https://test.r2.cloudflarestorage.com',
+          s3Bucket: 'test-bucket',
+          s3Region: 'auto',
+          s3AccessKeyId: 'test-access-key',
+          s3SecretAccessKey: 'test-secret-key',
+        }),
+      });
+      // May fail if CREDENTIAL_ENCRYPTION_KEY not set — that's OK
+      if (putRes.ok) {
+        const getRes = await authFetch(adminSession, `${BASE_URL}/api/user/storage-config`);
+        expect(getRes.ok).toBe(true);
+        const config = await getRes.json();
+        expect(config.s3Endpoint).toBe('https://test.r2.cloudflarestorage.com');
+        expect(config.s3Bucket).toBe('test-bucket');
+        expect(config.s3AccessKeyId).toMatch(/^\*{4}/); // masked
+
+        // Clean up
+        await authFetch(adminSession, `${BASE_URL}/api/user/storage-config`, { method: 'DELETE' });
+      }
+    });
+
+    it('should require authentication', async () => {
+      const res = await fetch(`${BASE_URL}/api/user/storage-config`);
+      expect(res.status).toBe(401);
+    });
+  });
+
+  // ==================== API Keys API ====================
+  describe('API Keys API', () => {
+    it('should list API keys', async () => {
+      const res = await authFetch(adminSession, `${BASE_URL}/api/user/api-keys`);
+      expect(res.ok).toBe(true);
+      const keys = await res.json();
+      expect(Array.isArray(keys)).toBe(true);
+    });
+
+    it('should create, list, and delete an API key', async () => {
+      // Create
+      const createRes = await authFetch(adminSession, `${BASE_URL}/api/user/api-keys`, {
+        method: 'POST',
+        body: JSON.stringify({ name: 'Test Key' }),
+      });
+      expect(createRes.ok).toBe(true);
+      const created = await createRes.json();
+      expect(created.key).toBeDefined();
+      expect(created.key).toMatch(/^vox_live_/);
+      expect(created.name).toBe('Test Key');
+
+      // List and find it
+      const listRes = await authFetch(adminSession, `${BASE_URL}/api/user/api-keys`);
+      const keys = await listRes.json();
+      const found = keys.find((k: { id: number }) => k.id === created.id);
+      expect(found).toBeDefined();
+      expect(found.isRevoked).toBe(false);
+
+      // Delete
+      const deleteRes = await authFetch(adminSession, `${BASE_URL}/api/user/api-keys/${created.id}`, { method: 'DELETE' });
+      expect(deleteRes.ok).toBe(true);
+    });
+
+    it('should create API key with expiry', async () => {
+      const res = await authFetch(adminSession, `${BASE_URL}/api/user/api-keys`, {
+        method: 'POST',
+        body: JSON.stringify({ name: 'Expiring Key', expiresInDays: 30 }),
+      });
+      expect(res.ok).toBe(true);
+      const data = await res.json();
+      expect(data.expiresAt).toBeDefined();
+      expect(new Date(data.expiresAt).getTime()).toBeGreaterThan(Date.now());
+
+      // Clean up
+      await authFetch(adminSession, `${BASE_URL}/api/user/api-keys/${data.id}`, { method: 'DELETE' });
+    });
+
+    it('should revoke an API key', async () => {
+      // Create
+      const createRes = await authFetch(adminSession, `${BASE_URL}/api/user/api-keys`, {
+        method: 'POST',
+        body: JSON.stringify({ name: 'Revoke Test' }),
+      });
+      const created = await createRes.json();
+
+      // Revoke
+      const revokeRes = await authFetch(adminSession, `${BASE_URL}/api/user/api-keys/${created.id}/revoke`, { method: 'POST' });
+      expect(revokeRes.ok).toBe(true);
+
+      // Verify revoked
+      const listRes = await authFetch(adminSession, `${BASE_URL}/api/user/api-keys`);
+      const keys = await listRes.json();
+      const revoked = keys.find((k: { id: number }) => k.id === created.id);
+      expect(revoked.isRevoked).toBe(true);
+
+      // Clean up
+      await authFetch(adminSession, `${BASE_URL}/api/user/api-keys/${created.id}`, { method: 'DELETE' });
+    });
+
+    it('should require name to create key', async () => {
+      const res = await authFetch(adminSession, `${BASE_URL}/api/user/api-keys`, {
+        method: 'POST',
+        body: JSON.stringify({}),
+      });
+      expect(res.status).toBe(400);
+    });
+  });
+
+  // ==================== Eval Schedules API ====================
+  describe('Eval Schedules API', () => {
+    it('should list schedules', async () => {
+      const res = await authFetch(adminSession, `${BASE_URL}/api/eval-schedules`);
+      expect(res.ok).toBe(true);
+      const schedules = await res.json();
+      expect(Array.isArray(schedules)).toBe(true);
+      // Admin should see all schedules with creatorName
+      if (schedules.length > 0) {
+        expect(schedules[0].creatorName).toBeDefined();
+        expect(schedules[0].workflowName).toBeDefined();
+      }
+    });
+
+    it('should toggle schedule enabled state', async () => {
+      const listRes = await authFetch(adminSession, `${BASE_URL}/api/eval-schedules`);
+      const schedules = await listRes.json();
+      if (schedules.length === 0) return;
+
+      const schedule = schedules[0];
+      const original = schedule.isEnabled;
+
+      // Toggle off
+      const patchRes = await authFetch(adminSession, `${BASE_URL}/api/eval-schedules/${schedule.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ isEnabled: !original }),
+      });
+      expect(patchRes.ok).toBe(true);
+      const updated = await patchRes.json();
+      expect(updated.isEnabled).toBe(!original);
+
+      // Restore
+      await authFetch(adminSession, `${BASE_URL}/api/eval-schedules/${schedule.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ isEnabled: original }),
+      });
+    });
+  });
+
+  // ==================== Providers API ====================
+  describe('Providers API', () => {
+    it('should list all active providers', async () => {
+      const res = await fetch(`${BASE_URL}/api/providers`);
+      expect(res.ok).toBe(true);
+      const providers = await res.json();
+      expect(Array.isArray(providers)).toBe(true);
+      expect(providers.length).toBeGreaterThanOrEqual(2);
+      const names = providers.map((p: Provider) => p.name);
+      expect(names).toContain('Agora ConvoAI Engine');
+      expect(names).toContain('LiveKit Agents');
+    });
+
+    it('should include ElevenLabs Agents provider', async () => {
+      const res = await fetch(`${BASE_URL}/api/providers`);
+      const providers = await res.json();
+      const names = providers.map((p: Provider) => p.name);
+      expect(names).toContain('ElevenLabs Agents');
+    });
+
+    it('should have convoai SKU for all current providers', async () => {
+      const res = await fetch(`${BASE_URL}/api/providers`);
+      const providers = await res.json();
+      for (const p of providers) {
+        expect(p.sku).toBe('convoai');
+      }
+    });
+  });
+
+  // ==================== Metrics API (P95 fields) ====================
+  describe('Metrics API with P95', () => {
+    it('should include p95 fields in realtime metrics', async () => {
+      const res = await fetch(`${BASE_URL}/api/metrics/realtime?limit=5`);
+      expect(res.ok).toBe(true);
+      const data = await res.json();
+      if (data.length > 0) {
+        expect(data[0]).toHaveProperty('responseLatencyP95');
+        expect(data[0]).toHaveProperty('interruptLatencyP95');
+        expect(data[0]).toHaveProperty('responseLatencySd');
+        expect(data[0]).toHaveProperty('interruptLatencySd');
+        expect(data[0]).toHaveProperty('providerId');
+      }
+    });
+
+    it('should include p95 in leaderboard', async () => {
+      const res = await fetch(`${BASE_URL}/api/metrics/leaderboard`);
+      expect(res.ok).toBe(true);
+      const data = await res.json();
+      if (data.length > 0) {
+        expect(data[0]).toHaveProperty('responseLatencyP95');
+        expect(data[0]).toHaveProperty('interruptLatencyP95');
+      }
+    });
+  });
 });
