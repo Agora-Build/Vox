@@ -820,6 +820,8 @@ export class DatabaseStorage {
         naturalness: evalResults.naturalness,
         noiseReduction: evalResults.noiseReduction,
         rawData: evalResults.rawData,
+        artifactUrl: evalResults.artifactUrl,
+        artifactFiles: evalResults.artifactFiles,
         createdAt: evalResults.createdAt,
       })
         .from(evalResults)

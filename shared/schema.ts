@@ -295,6 +295,8 @@ export const evalResults = pgTable("eval_results", {
   naturalness: real("naturalness"),
   noiseReduction: integer("noise_reduction"),
   rawData: jsonb("raw_data").default({}),
+  artifactUrl: text("artifact_url"),
+  artifactFiles: jsonb("artifact_files"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 }, (table) => ({
   providerRegionIdx: index("eval_results_provider_region_idx").on(table.providerId, table.region),
@@ -307,6 +309,29 @@ export const insertEvalResultSchema = createInsertSchema(evalResults).omit({
 
 export type InsertEvalResult = z.infer<typeof insertEvalResultSchema>;
 export type EvalResult = typeof evalResults.$inferSelect;
+
+// ==================== USER STORAGE CONFIG ====================
+
+export const userStorageConfig = pgTable("user_storage_config", {
+  id: serial("id").primaryKey(),
+  userId: integer("user_id").notNull().references(() => users.id).unique(),
+  s3Endpoint: text("s3_endpoint").notNull(),
+  s3Bucket: text("s3_bucket").notNull(),
+  s3Region: varchar("s3_region", { length: 50 }).default("auto").notNull(),
+  s3AccessKeyId: text("s3_access_key_id").notNull(),
+  s3SecretAccessKey: text("s3_secret_access_key").notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+export const insertUserStorageConfigSchema = createInsertSchema(userStorageConfig).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export type InsertUserStorageConfig = z.infer<typeof insertUserStorageConfigSchema>;
+export type UserStorageConfig = typeof userStorageConfig.$inferSelect;
 
 // ==================== API KEYS ====================
 
