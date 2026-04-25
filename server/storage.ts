@@ -53,6 +53,8 @@ import {
   type InsertClashSchedule,
   type ClashRunnerIssuedToken,
   type InsertClashRunnerIssuedToken,
+  type UserStorageConfig,
+  type InsertUserStorageConfig,
   users,
   organizations,
   providers,
@@ -83,6 +85,7 @@ import {
   clashRunnerIssuedTokens,
   clashTranscripts,
   clashSchedules,
+  userStorageConfig,
 } from "@shared/schema";
 import { drizzle } from "drizzle-orm/node-postgres";
 import pkg from "pg";
@@ -1677,6 +1680,38 @@ export class DatabaseStorage {
           sql`${clashSchedules.scheduledAt} <= NOW()`
         )
       );
+  }
+
+  // ==================== USER STORAGE CONFIG ====================
+
+  async getUserStorageConfig(userId: number): Promise<UserStorageConfig | undefined> {
+    const result = await db.select().from(userStorageConfig).where(eq(userStorageConfig.userId, userId));
+    return result[0];
+  }
+
+  async upsertUserStorageConfig(userId: number, data: Omit<InsertUserStorageConfig, 'userId'>): Promise<UserStorageConfig> {
+    const existing = await this.getUserStorageConfig(userId);
+    if (existing) {
+      const result = await db.update(userStorageConfig)
+        .set({ ...data, updatedAt: new Date() })
+        .where(eq(userStorageConfig.userId, userId))
+        .returning();
+      return result[0];
+    }
+    const result = await db.insert(userStorageConfig).values({ ...data, userId }).returning();
+    return result[0];
+  }
+
+  async deleteUserStorageConfig(userId: number): Promise<void> {
+    await db.delete(userStorageConfig).where(eq(userStorageConfig.userId, userId));
+  }
+
+  // ==================== EVAL RESULT ARTIFACTS ====================
+
+  async updateEvalResultArtifacts(evalJobId: number, artifactUrl: string, artifactFiles: unknown): Promise<void> {
+    await db.update(evalResults)
+      .set({ artifactUrl, artifactFiles })
+      .where(eq(evalResults.evalJobId, evalJobId));
   }
 }
 

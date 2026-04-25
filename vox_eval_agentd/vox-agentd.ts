@@ -102,6 +102,42 @@ const RESULT_DEFAULTS: EvalResult = {
 // Daemon class
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// S3 Upload Types
+// ---------------------------------------------------------------------------
+
+interface UploadTask {
+  jobId: number;
+  outputDir: string;
+  scenarioName: string;
+}
+
+interface S3Config {
+  endpoint: string;
+  bucket: string;
+  region: string;
+  accessKeyId: string;
+  secretAccessKey: string;
+}
+
+// System-default S3 config from env vars
+function getSystemS3Config(): S3Config | null {
+  const endpoint = process.env.S3_ENDPOINT;
+  const bucket = process.env.S3_BUCKET;
+  const accessKeyId = process.env.S3_ACCESS_KEY_ID;
+  const secretAccessKey = process.env.S3_SECRET_ACCESS_KEY;
+
+  if (!endpoint || !bucket || !accessKeyId || !secretAccessKey) return null;
+
+  return {
+    endpoint,
+    bucket,
+    region: process.env.S3_REGION || 'auto',
+    accessKeyId,
+    secretAccessKey,
+  };
+}
+
 class VoxEvalAgentDaemon {
   private config: DaemonConfig;
   private agentId: number | null = null;
@@ -110,6 +146,9 @@ class VoxEvalAgentDaemon {
   private jobPollTimer: NodeJS.Timeout | null = null;
   private isRunningJob = false;
   private aevalVersion: string = "unknown";
+  private uploadQueue: UploadTask[] = [];
+  private s3Warned = false;
+  private lastOutputDir: string | null = null;
 
   constructor(config: DaemonConfig) {
     this.config = config;
@@ -417,6 +456,7 @@ class VoxEvalAgentDaemon {
 
         const allOutput = stdout + stderr;
         const outputDir = this.resolveAevalOutputDir(scenarioConfig, allOutput);
+        this.lastOutputDir = outputDir;
         const results = this.parseAevalResults(outputDir, allOutput);
         resolve(results);
       });
@@ -1055,6 +1095,166 @@ class VoxEvalAgentDaemon {
   }
 
   // -------------------------------------------------------------------------
+  // S3 Artifact Upload (runs when daemon is idle)
+  // -------------------------------------------------------------------------
+
+  private queueUpload(task: UploadTask): void {
+    this.uploadQueue.push(task);
+    console.log(`[Daemon] Queued artifact upload for job ${task.jobId} (queue: ${this.uploadQueue.length})`);
+  }
+
+  private async getS3ConfigForJob(jobId: number): Promise<S3Config | null> {
+    // Try per-user config from Vox server
+    try {
+      const response = await fetch(`${this.config.serverUrl}/api/eval-agent/jobs/${jobId}/storage-config`, {
+        headers: { 'Authorization': `Bearer ${this.config.token}` },
+      });
+      if (response.ok) {
+        const data = await response.json();
+        if (data.source === 'user') {
+          return {
+            endpoint: data.s3Endpoint,
+            bucket: data.s3Bucket,
+            region: data.s3Region,
+            accessKeyId: data.s3AccessKeyId,
+            secretAccessKey: data.s3SecretAccessKey,
+          };
+        }
+      }
+    } catch (e) {
+      console.warn(`[Daemon] Failed to fetch per-user storage config for job ${jobId}`);
+    }
+
+    // Fall back to system defaults
+    return getSystemS3Config();
+  }
+
+  private async processUploadQueue(): Promise<void> {
+    if (this.uploadQueue.length === 0) return;
+
+    const task = this.uploadQueue.shift()!;
+    const s3Config = await this.getS3ConfigForJob(task.jobId);
+
+    if (!s3Config) {
+      if (!this.s3Warned) {
+        console.warn('[Daemon] S3 not configured — artifact upload disabled. Set S3_ENDPOINT, S3_BUCKET, S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY to enable.');
+        this.s3Warned = true;
+      }
+      return;
+    }
+
+    if (!fs.existsSync(task.outputDir)) {
+      console.warn(`[Daemon] Output dir not found for job ${task.jobId}: ${task.outputDir}`);
+      return;
+    }
+
+    try {
+      console.log(`[Daemon] Uploading artifacts for job ${task.jobId}...`);
+
+      // Dynamic import to avoid crash if SDK not installed
+      const { S3Client, PutObjectCommand } = await import('@aws-sdk/client-s3');
+
+      const client = new S3Client({
+        endpoint: s3Config.endpoint,
+        region: s3Config.region,
+        credentials: {
+          accessKeyId: s3Config.accessKeyId,
+          secretAccessKey: s3Config.secretAccessKey,
+        },
+        forcePathStyle: true,
+      });
+
+      const prefix = `jobs/${task.jobId}`;
+      const uploadedFiles: Array<{ name: string; url: string; size: number; contentType: string }> = [];
+
+      // Upload individual files
+      const filesToUpload = ['metrics.json', 'report.json', 'recording.webm'];
+      for (const fileName of filesToUpload) {
+        // Search in session dir and analysis subdir
+        const candidates = [
+          path.join(task.outputDir, fileName),
+          path.join(task.outputDir, 'analysis', fileName),
+        ];
+        for (const filePath of candidates) {
+          if (fs.existsSync(filePath)) {
+            const body = fs.readFileSync(filePath);
+            const key = `${prefix}/${fileName}`;
+            const contentType = fileName.endsWith('.json') ? 'application/json'
+              : fileName.endsWith('.webm') ? 'audio/webm'
+              : 'application/octet-stream';
+
+            await client.send(new PutObjectCommand({
+              Bucket: s3Config.bucket,
+              Key: key,
+              Body: body,
+              ContentType: contentType,
+            }));
+
+            const url = `${s3Config.endpoint}/${s3Config.bucket}/${key}`;
+            uploadedFiles.push({ name: fileName, url, size: body.length, contentType });
+            console.log(`[Daemon] Uploaded ${fileName} (${body.length} bytes)`);
+            break; // found this file, skip other candidates
+          }
+        }
+      }
+
+      // Create zip of entire output dir
+      const zipPath = path.join(os.tmpdir(), `vox-artifacts-${task.jobId}.zip`);
+      await this.createZip(task.outputDir, zipPath);
+
+      if (fs.existsSync(zipPath)) {
+        const zipBody = fs.readFileSync(zipPath);
+        const zipKey = `${prefix}/artifacts.zip`;
+        await client.send(new PutObjectCommand({
+          Bucket: s3Config.bucket,
+          Key: zipKey,
+          Body: zipBody,
+          ContentType: 'application/zip',
+        }));
+
+        const zipUrl = `${s3Config.endpoint}/${s3Config.bucket}/${zipKey}`;
+        console.log(`[Daemon] Uploaded artifacts.zip (${zipBody.length} bytes)`);
+
+        // Report to Vox
+        try {
+          await fetch(`${this.config.serverUrl}/api/eval-agent/jobs/${task.jobId}/artifacts`, {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${this.config.token}`,
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ zipUrl, files: uploadedFiles }),
+          });
+          console.log(`[Daemon] Artifact URLs stored for job ${task.jobId}`);
+        } catch (e) {
+          console.error(`[Daemon] Failed to report artifacts for job ${task.jobId}`);
+        }
+
+        // Clean up zip
+        try { fs.unlinkSync(zipPath); } catch { /* ignore */ }
+      }
+
+      console.log(`[Daemon] Artifact upload complete for job ${task.jobId} (${uploadedFiles.length} files)`);
+    } catch (error: unknown) {
+      const msg = error instanceof Error ? error.message : String(error);
+      console.error(`[Daemon] Artifact upload failed for job ${task.jobId}:`, msg);
+      // Don't re-queue — failed uploads are lost (could add retry later)
+    }
+  }
+
+  private createZip(sourceDir: string, outputPath: string): Promise<void> {
+    return new Promise((resolve, reject) => {
+      // Use system zip command (available in Docker image)
+      const proc = spawn('zip', ['-r', '-q', outputPath, '.'], { cwd: sourceDir });
+      proc.on('close', (code) => {
+        if (code === 0) resolve();
+        else reject(new Error(`zip exited with code ${code}`));
+      });
+      proc.on('error', reject);
+    });
+  }
+
+  // -------------------------------------------------------------------------
   // Job execution
   // -------------------------------------------------------------------------
 
@@ -1131,7 +1331,14 @@ class VoxEvalAgentDaemon {
     if (this.isRunningJob) return;
 
     const jobs = await this.fetchJobs();
-    if (jobs.length === 0) return;
+
+    // When idle, process upload queue
+    if (jobs.length === 0) {
+      if (this.uploadQueue.length > 0) {
+        await this.processUploadQueue();
+      }
+      return;
+    }
 
     console.log(`[Daemon] Found ${jobs.length} pending job(s)`);
 
@@ -1140,6 +1347,7 @@ class VoxEvalAgentDaemon {
     if (!claimed) return;
 
     this.isRunningJob = true;
+    this.lastOutputDir = null;
     try {
       const results = await this.executeJob(job);
       await this.completeJob(job.id, results);
@@ -1153,6 +1361,14 @@ class VoxEvalAgentDaemon {
         console.error(`[Daemon] Failed to report job failure:`, reportMsg);
       }
     } finally {
+      // Queue artifact upload (whether job succeeded or failed)
+      if (this.lastOutputDir) {
+        this.queueUpload({
+          jobId: job.id,
+          outputDir: this.lastOutputDir,
+          scenarioName: (job.config as Record<string, string>)?.scenario?.slice(0, 50) || 'unknown',
+        });
+      }
       this.isRunningJob = false;
     }
   }
@@ -1170,6 +1386,8 @@ class VoxEvalAgentDaemon {
     console.log(`  - Agent Name: ${this.config.name || '(inherits from token)'}`);
     console.log(`  - Headless: ${this.config.headless}`);
     console.log(`  - Eval Framework: ${this.config.framework}`);
+    const s3 = getSystemS3Config();
+    console.log(`  - S3 Artifacts: ${s3 ? `${s3.endpoint}/${s3.bucket}` : 'disabled (env vars not set)'}`);
     console.log('');
 
     this.heartbeatTimer = setInterval(() => {

@@ -19,7 +19,7 @@ import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import { Users, Workflow, FileText, LogOut, Shield, Gem, Sparkles, Rocket, Server, Building2, CreditCard, Settings, FolderKanban, ClipboardList, KeyRound, Swords } from "lucide-react";
+import { Users, Workflow, FileText, LogOut, Shield, Gem, Sparkles, Rocket, Server, Building2, CreditCard, Settings, FolderKanban, ClipboardList, KeyRound, Swords, HardDrive } from "lucide-react";
 import { ThemeToggle } from "@/components/theme-toggle";
 
 interface AuthStatus {
@@ -163,6 +163,14 @@ export default function ConsoleLayout({ children }: ConsoleLayoutProps) {
     active: location === "/console/api-keys",
   });
 
+  if (user?.plan !== "basic") {
+    navItems.push({
+      title: "Storage",
+      url: "/console/storage-settings",
+      icon: HardDrive,
+      active: location === "/console/storage-settings",
+    });
+  }
 
   // Organization section
   const orgNavItems = [];

@@ -836,6 +836,74 @@ export async function registerRoutes(
     }
   });
 
+  // ==================== USER STORAGE CONFIG ROUTES ====================
+
+  app.get("/api/user/storage-config", requireAuth, async (req, res) => {
+    try {
+      const user = await getCurrentUser(req);
+      if (!user) return res.status(401).json({ error: "Not authenticated" });
+
+      const config = await storage.getUserStorageConfig(user.id);
+      if (!config) return res.json(null);
+
+      // Mask sensitive keys
+      res.json({
+        id: config.id,
+        s3Endpoint: config.s3Endpoint,
+        s3Bucket: config.s3Bucket,
+        s3Region: config.s3Region,
+        s3AccessKeyId: "****" + decryptValue(config.s3AccessKeyId).slice(-4),
+        createdAt: config.createdAt,
+        updatedAt: config.updatedAt,
+      });
+    } catch (error) {
+      console.error("Error fetching storage config:", error);
+      res.status(500).json({ error: "Failed to fetch storage config" });
+    }
+  });
+
+  app.put("/api/user/storage-config", requireAuth, async (req, res) => {
+    try {
+      const user = await getCurrentUser(req);
+      if (!user) return res.status(401).json({ error: "Not authenticated" });
+
+      if (user.plan === "basic") {
+        return res.status(403).json({ error: "Premium or higher plan required" });
+      }
+
+      const { s3Endpoint, s3Bucket, s3Region, s3AccessKeyId, s3SecretAccessKey } = req.body;
+      if (!s3Endpoint || !s3Bucket || !s3AccessKeyId || !s3SecretAccessKey) {
+        return res.status(400).json({ error: "s3Endpoint, s3Bucket, s3AccessKeyId, and s3SecretAccessKey are required" });
+      }
+
+      const config = await storage.upsertUserStorageConfig(user.id, {
+        s3Endpoint,
+        s3Bucket,
+        s3Region: s3Region || "auto",
+        s3AccessKeyId: encryptValue(s3AccessKeyId),
+        s3SecretAccessKey: encryptValue(s3SecretAccessKey),
+      });
+
+      res.json({ message: "Storage config saved", id: config.id });
+    } catch (error) {
+      console.error("Error saving storage config:", error);
+      res.status(500).json({ error: "Failed to save storage config" });
+    }
+  });
+
+  app.delete("/api/user/storage-config", requireAuth, async (req, res) => {
+    try {
+      const user = await getCurrentUser(req);
+      if (!user) return res.status(401).json({ error: "Not authenticated" });
+
+      await storage.deleteUserStorageConfig(user.id);
+      res.json({ message: "Storage config removed" });
+    } catch (error) {
+      console.error("Error removing storage config:", error);
+      res.status(500).json({ error: "Failed to remove storage config" });
+    }
+  });
+
   // ==================== PROJECT ROUTES ====================
 
   app.get("/api/projects", requireAuth, async (req, res) => {
@@ -2299,6 +2367,83 @@ export async function registerRoutes(
     }
   });
 
+  // Store artifact URLs for a completed job (eval agent Bearer auth)
+  app.post("/api/eval-agent/jobs/:jobId/artifacts", async (req, res) => {
+    try {
+      const authHeader = req.headers.authorization;
+      if (!authHeader || !authHeader.startsWith("Bearer ")) {
+        return res.status(401).json({ error: "Eval agent token required" });
+      }
+
+      const token = authHeader.slice(7);
+      const tokenHash = hashToken(token);
+      const evalAgentToken = await storage.getEvalAgentTokenByHash(tokenHash);
+
+      if (!evalAgentToken || evalAgentToken.isRevoked) {
+        return res.status(401).json({ error: "Invalid or revoked token" });
+      }
+
+      const jobId = parseInt(req.params.jobId);
+      const { zipUrl, files } = req.body;
+
+      if (!zipUrl) {
+        return res.status(400).json({ error: "zipUrl is required" });
+      }
+
+      await storage.updateEvalResultArtifacts(jobId, zipUrl, files || []);
+      res.json({ message: "Artifacts stored" });
+    } catch (error) {
+      console.error("Error storing artifacts:", error);
+      res.status(500).json({ error: "Failed to store artifacts" });
+    }
+  });
+
+  // Get S3 storage config for a job (eval agent Bearer auth)
+  // Returns per-user config if available, otherwise system defaults
+  app.get("/api/eval-agent/jobs/:jobId/storage-config", async (req, res) => {
+    try {
+      const authHeader = req.headers.authorization;
+      if (!authHeader || !authHeader.startsWith("Bearer ")) {
+        return res.status(401).json({ error: "Eval agent token required" });
+      }
+
+      const token = authHeader.slice(7);
+      const tokenHash = hashToken(token);
+      const evalAgentToken = await storage.getEvalAgentTokenByHash(tokenHash);
+
+      if (!evalAgentToken || evalAgentToken.isRevoked) {
+        return res.status(401).json({ error: "Invalid or revoked token" });
+      }
+
+      const jobId = parseInt(req.params.jobId);
+      const job = await storage.getEvalJob(jobId);
+      if (!job) {
+        return res.status(404).json({ error: "Job not found" });
+      }
+
+      // Check if job creator has custom storage config
+      if (job.createdBy) {
+        const userConfig = await storage.getUserStorageConfig(job.createdBy);
+        if (userConfig) {
+          return res.json({
+            source: "user",
+            s3Endpoint: userConfig.s3Endpoint,
+            s3Bucket: userConfig.s3Bucket,
+            s3Region: userConfig.s3Region,
+            s3AccessKeyId: decryptValue(userConfig.s3AccessKeyId),
+            s3SecretAccessKey: decryptValue(userConfig.s3SecretAccessKey),
+          });
+        }
+      }
+
+      // Fall back to system defaults (env vars on daemon side)
+      res.json({ source: "system" });
+    } catch (error) {
+      console.error("Error getting storage config:", error);
+      res.status(500).json({ error: "Failed to get storage config" });
+    }
+  });
+
   // Get decrypted secrets for a claimed job (eval agent Bearer auth)
   app.get("/api/eval-agent/jobs/:jobId/secrets", async (req, res) => {
     try {
@@ -2519,6 +2664,51 @@ export async function registerRoutes(
     } catch (error) {
       console.error("Error fetching eval job:", error);
       res.status(500).json({ error: "Failed to fetch eval job" });
+    }
+  });
+
+  // Get job detail with eval results and artifacts
+  app.get("/api/eval-jobs/:id/detail", requireAuth, async (req, res) => {
+    try {
+      const user = await getCurrentUser(req);
+      if (!user) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+
+      const jobId = parseInt(req.params.id);
+      const job = await storage.getEvalJob(jobId);
+
+      if (!job) {
+        return res.status(404).json({ error: "Job not found" });
+      }
+
+      // Check authorization: owner, admin, or public workflow
+      if (!user.isAdmin) {
+        const workflow = await storage.getWorkflow(job.workflowId);
+        if (!workflow || (workflow.ownerId !== user.id && workflow.visibility !== "public")) {
+          return res.status(403).json({ error: "Not authorized to view this job" });
+        }
+      }
+
+      // Get eval results for this job
+      const results = await storage.getEvalResultsByJob(jobId);
+      const result = results[0] ?? null;
+
+      // Get workflow name
+      const workflow = await storage.getWorkflow(job.workflowId);
+
+      // Get creator name
+      const creator = job.createdBy ? await storage.getUser(job.createdBy) : null;
+
+      res.json({
+        job,
+        result,
+        workflowName: workflow?.name ?? `Workflow #${job.workflowId}`,
+        creatorName: creator?.username ?? null,
+      });
+    } catch (error) {
+      console.error("Error fetching job detail:", error);
+      res.status(500).json({ error: "Failed to fetch job detail" });
     }
   });
 

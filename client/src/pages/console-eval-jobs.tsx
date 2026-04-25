@@ -13,7 +13,7 @@ import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ClipboardList, CheckCircle, XCircle, Loader2, Clock, RefreshCw, CalendarClock, MousePointerClick, MoreHorizontal, Pause, Play, Pencil, Trash2, Zap } from "lucide-react";
 import { useState } from "react";
-import { useLocation, useSearch } from "wouter";
+import { useLocation, useSearch, Link } from "wouter";
 import { formatSmartTimestamp, formatRegion, REGIONS } from "@/lib/utils";
 import { format } from "date-fns";
 import type { EvalJob, EvalSchedule, Workflow as WorkflowType } from "@shared/schema";
@@ -393,7 +393,11 @@ function JobsTab() {
                   const StatusIcon = cfg.icon;
                   return (
                     <TableRow key={job.id} data-testid={`row-job-${job.id}`}>
-                      <TableCell className="font-mono">#{job.id}</TableCell>
+                      <TableCell className="font-mono">
+                        <Link href={`/console/eval-jobs/${job.id}`}>
+                          <span className="text-primary hover:underline cursor-pointer">#{job.id}</span>
+                        </Link>
+                      </TableCell>
                       <TableCell className="font-medium">
                         {workflowMap.get(job.workflowId) ?? `Workflow #${job.workflowId}`}
                       </TableCell>

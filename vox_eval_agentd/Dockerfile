@@ -53,6 +53,7 @@ RUN apt-get update && apt-get install -y \
     libsndfile1 \
     ffmpeg \
     wget \
+    zip \
     --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
@@ -105,7 +106,8 @@ RUN npm install
 
 # Compile daemon TS → JS
 RUN npx esbuild vox-agentd.ts --bundle --platform=node --format=esm --outfile=vox-agentd.js \
-    --external:child_process --external:fs --external:os --external:path --external:url
+    --external:child_process --external:fs --external:os --external:path --external:url \
+    --external:@aws-sdk/client-s3
 
 # Build metadata (injected at build time via --build-arg)
 ARG BUILD_TAG=dev
