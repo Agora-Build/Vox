@@ -6,6 +6,7 @@ import { seedAevalVersion, compareVersions } from "./aeval-seed";
 import { generateProviderId } from "@shared/schema";
 import { SECRET_NAME_PATTERN } from "@shared/secrets";
 import { registerApiV1Routes } from "./routes-api-v1";
+import { generateSignedUrlForUser } from "./s3";
 import {
   hashPassword,
   verifyPassword,
@@ -2700,9 +2701,33 @@ export async function registerRoutes(
       // Get creator name
       const creator = job.createdBy ? await storage.getUser(job.createdBy) : null;
 
+      // Sign artifact URLs if available
+      let signedArtifactUrl: string | null = null;
+      let signedFiles: Array<{ name: string; url: string; size: number; contentType: string }> = [];
+
+      if (result?.artifactUrl || (result?.artifactFiles as unknown[])?.length) {
+        const ownerId = job.createdBy ?? user.id;
+
+        if (result.artifactUrl) {
+          signedArtifactUrl = await generateSignedUrlForUser(ownerId, result.artifactUrl as string);
+        }
+
+        const files = (result.artifactFiles ?? []) as Array<{ name: string; url: string; size: number; contentType: string }>;
+        signedFiles = await Promise.all(
+          files.map(async (f) => ({
+            ...f,
+            url: (await generateSignedUrlForUser(ownerId, f.url)) ?? f.url,
+          }))
+        );
+      }
+
       res.json({
         job,
-        result,
+        result: result ? {
+          ...result,
+          artifactUrl: signedArtifactUrl,
+          artifactFiles: signedFiles.length > 0 ? signedFiles : result.artifactFiles,
+        } : null,
         workflowName: workflow?.name ?? `Workflow #${job.workflowId}`,
         creatorName: creator?.username ?? null,
       });

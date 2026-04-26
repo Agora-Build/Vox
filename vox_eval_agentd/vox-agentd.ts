@@ -1190,8 +1190,7 @@ class VoxEvalAgentDaemon {
               ContentType: contentType,
             }));
 
-            const url = `${s3Config.endpoint}/${s3Config.bucket}/${key}`;
-            uploadedFiles.push({ name: fileName, url, size: body.length, contentType });
+            uploadedFiles.push({ name: fileName, url: key, size: body.length, contentType });
             console.log(`[Daemon] Uploaded ${fileName} (${body.length} bytes)`);
             break; // found this file, skip other candidates
           }
@@ -1212,7 +1211,7 @@ class VoxEvalAgentDaemon {
           ContentType: 'application/zip',
         }));
 
-        const zipUrl = `${s3Config.endpoint}/${s3Config.bucket}/${zipKey}`;
+        const zipUrl = zipKey;
         console.log(`[Daemon] Uploaded artifacts.zip (${zipBody.length} bytes)`);
 
         // Report to Vox
