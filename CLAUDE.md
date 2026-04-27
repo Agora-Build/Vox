@@ -472,6 +472,7 @@ When adding new features, write tests for critical paths like authentication, jo
 
 ### Scripts
 - `scripts/dev-local-run.sh` - Local development environment setup
+- `scripts/vox-upgrade.sh` - Upgrade eval agent / clash runner containers (reads tokens from .env)
 
 ### Tests
 - `tests/tests.dev.data` - Test accounts for local dev (gitignored)

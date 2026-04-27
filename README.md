@@ -192,6 +192,24 @@ Vox uses a custom version-based migration runner (`server/migrate.ts`), not driz
 | `./scripts/full-tests-run.sh` | Run all tests (unit + audio + E2E) |
 | `./scripts/dev-local-run.sh start` | Start local dev environment |
 | `./scripts/dev-local-run.sh --multi-region start` | Start with agents for all regions |
+| `./scripts/vox-upgrade.sh` | Upgrade eval agent and/or clash runner containers |
+
+### Upgrading Eval Agents / Clash Runners
+
+```bash
+# Create .env with tokens on your server
+cat > .env << 'EOF'
+AGENT_TOKEN=your-eval-agent-token
+RUNNER_TOKEN=your-clash-runner-token
+VOX_SERVER=https://vox.agora.build
+EOF
+
+# Run upgrade — pulls latest images, restarts only if new version available
+./scripts/vox-upgrade.sh           # uses .env in current directory
+./scripts/vox-upgrade.sh /path/.env  # uses specified env file
+```
+
+The script reads `AGENT_TOKEN` and/or `RUNNER_TOKEN` from the env file. Only the containers with tokens present are upgraded. If the running container already has the latest image, it's skipped.
 
 ---
 
