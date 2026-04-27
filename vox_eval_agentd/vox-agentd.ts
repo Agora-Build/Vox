@@ -463,14 +463,18 @@ class VoxEvalAgentDaemon {
       proc.on('close', (code) => {
         console.log(`[Daemon] aeval exited with code ${code}`);
 
+        // Always resolve output dir (artifacts exist even on failure)
+        const allOutput = stdout + stderr;
+        try {
+          this.lastOutputDir = this.resolveAevalOutputDir(scenarioConfig, allOutput);
+        } catch { /* best effort */ }
+
         if (code !== 0) {
           reject(new Error(`aeval exited with code ${code}: ${stderr.trim().split('\n').pop() || 'unknown error'}`));
           return;
         }
 
-        const allOutput = stdout + stderr;
-        const outputDir = this.resolveAevalOutputDir(scenarioConfig, allOutput);
-        this.lastOutputDir = outputDir;
+        const outputDir = this.lastOutputDir!;
         const results = this.parseAevalResults(outputDir, allOutput);
         resolve(results);
       });

@@ -2391,6 +2391,31 @@ export async function registerRoutes(
         return res.status(400).json({ error: "zipUrl is required" });
       }
 
+      // Ensure an eval result row exists (failed jobs may not have one)
+      const existing = await storage.getEvalResultsByJob(jobId);
+      if (existing.length === 0) {
+        const job = await storage.getEvalJob(jobId);
+        if (job) {
+          const workflow = await storage.getWorkflow(job.workflowId);
+          const providers = await storage.getAllProviders();
+          const providerId = workflow?.providerId || providers[0]?.id;
+          if (providerId) {
+            await storage.createEvalResult({
+              evalJobId: jobId,
+              providerId,
+              region: job.region,
+              responseLatencyMedian: 0,
+              responseLatencySd: 0,
+              responseLatencyP95: 0,
+              interruptLatencyMedian: 0,
+              interruptLatencySd: 0,
+              interruptLatencyP95: 0,
+              artifactStatus: 'uploaded',
+            });
+          }
+        }
+      }
+
       await storage.updateEvalResultArtifacts(jobId, zipUrl, files || []);
       res.json({ message: "Artifacts stored" });
     } catch (error) {
