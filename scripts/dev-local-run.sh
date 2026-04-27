@@ -8,8 +8,8 @@
 # - vox-eval-agent: Eval agent
 #
 # Usage:
-#   ./script/dev-local-run.sh start        # Local process mode
-#   ./script/dev-local-run.sh docker start # Docker mode
+#   ./scripts/dev-local-run.sh start        # Local process mode
+#   ./scripts/dev-local-run.sh docker start # Docker mode
 #
 # Modes:
 #   Local (default): vox-service and vox-eval-agent run as local processes
@@ -178,7 +178,7 @@ push_schema() {
 seed_data() {
     log_info "Seeding data..."
     cd "$PROJECT_DIR"
-    DATABASE_URL="$DB_URL" npx tsx script/seed-data.ts
+    DATABASE_URL="$DB_URL" npx tsx scripts/seed-data.ts
     log_success "Data seeded"
 }
 

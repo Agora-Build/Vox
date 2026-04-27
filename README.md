@@ -89,10 +89,10 @@ cd Vox
 npm install
 
 # Start all services (PostgreSQL + Vox server + eval agent)
-./script/dev-local-run.sh start
+./scripts/dev-local-run.sh start
 
 # Multi-region eval agents
-./script/dev-local-run.sh --multi-region start
+./scripts/dev-local-run.sh --multi-region start
 ```
 
 **Default Credentials (after init):**
@@ -189,9 +189,9 @@ Vox uses a custom version-based migration runner (`server/migrate.ts`), not driz
 | `npm run db:generate` | Generate migration from schema changes |
 | `npm run db:push` | Push schema to local database (dev only) |
 | `npm test` | Run unit/integration tests |
-| `./script/full-tests-run.sh` | Run all tests (unit + audio + E2E) |
-| `./script/dev-local-run.sh start` | Start local dev environment |
-| `./script/dev-local-run.sh --multi-region start` | Start with agents for all regions |
+| `./scripts/full-tests-run.sh` | Run all tests (unit + audio + E2E) |
+| `./scripts/dev-local-run.sh start` | Start local dev environment |
+| `./scripts/dev-local-run.sh --multi-region start` | Start with agents for all regions |
 
 ---
 
@@ -296,7 +296,7 @@ vox/
 ├── vox_clash_runner/       # Clash match runner
 ├── migrations/             # SQL migration files
 ├── tests/                  # Test files (420+ tests)
-└── script/                 # Build and dev scripts
+└── scripts/                 # Build and dev scripts
 ```
 
 ---

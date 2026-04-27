@@ -141,7 +141,7 @@ The startup code automatically handles databases that were not previously manage
 DATABASE_URL="postgresql://vox:vox123@localhost:5432/vox" npm run db:migrate
 
 # Full reset (wipe + re-apply schema + seed)
-./script/dev-local-run.sh reset
+./scripts/dev-local-run.sh reset
 ```
 
 #### Emergency: apply migration without restarting

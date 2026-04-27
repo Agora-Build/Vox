@@ -7,7 +7,7 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 // a running Vox server: token creation → registration → heartbeat →
 // match assignment → completion → Elo updates.
 //
-// Requires: local dev server running (./script/dev-local-run.sh start)
+// Requires: local dev server running (./scripts/dev-local-run.sh start)
 // =====================================================================
 
 const BASE_URL = process.env.TEST_BASE_URL || "http://localhost:5000";

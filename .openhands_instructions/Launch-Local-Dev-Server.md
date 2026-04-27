@@ -6,13 +6,13 @@ Use the `dev-local-run.sh` script to start a complete local development environm
 
 ```bash
 # Start all services (PostgreSQL in Docker, Vox service and eval agent as local processes)
-./script/dev-local-run.sh start
+./scripts/dev-local-run.sh start
 
 # Stop all services
-./script/dev-local-run.sh stop
+./scripts/dev-local-run.sh stop
 
 # Show status
-./script/dev-local-run.sh status
+./scripts/dev-local-run.sh status
 ```
 
 The script automatically loads environment from `.env` and `.env.dev` files.

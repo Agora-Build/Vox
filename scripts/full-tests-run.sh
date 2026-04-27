@@ -4,10 +4,10 @@
 # Runs all tests (unit, integration, E2E) with proper environment setup
 #
 # Usage:
-#   ./script/full-tests-run.sh           # Run all tests
-#   ./script/full-tests-run.sh unit      # Run only unit/integration tests
-#   ./script/full-tests-run.sh e2e       # Run only E2E tests
-#   ./script/full-tests-run.sh --help    # Show help
+#   ./scripts/full-tests-run.sh           # Run all tests
+#   ./scripts/full-tests-run.sh unit      # Run only unit/integration tests
+#   ./scripts/full-tests-run.sh e2e       # Run only E2E tests
+#   ./scripts/full-tests-run.sh --help    # Show help
 
 set -e
 
@@ -241,7 +241,7 @@ main() {
         log_info "Checking if server is running..."
         if ! check_server; then
             log_error "Server not running on http://localhost:5000"
-            log_info "Start the server with: ./script/dev-local-run.sh start"
+            log_info "Start the server with: ./scripts/dev-local-run.sh start"
             exit 1
         fi
         log_success "Server is running"

@@ -131,10 +131,10 @@ docker run \
 
 ```bash
 # From project root — starts everything including eval agent
-./script/dev-local-run.sh start
+./scripts/dev-local-run.sh start
 
 # Multi-region (NA + APAC + EU agents)
-./script/dev-local-run.sh --multi-region start
+./scripts/dev-local-run.sh --multi-region start
 ```
 
 Both Docker and local dev use the same source file (`vox-agentd.ts`). Docker compiles it to JS with esbuild; local dev runs it directly with `tsx`.

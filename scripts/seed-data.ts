@@ -1,7 +1,7 @@
 // seed-data.ts — LOCAL DEVELOPMENT ONLY
 //
 // Purpose: convenience setup for local dev after a fresh DB reset.
-// Called automatically by: ./script/dev-local-run.sh (start + reset commands)
+// Called automatically by: ./scripts/dev-local-run.sh (start + reset commands)
 //
 // NOT needed for production. /api/auth/init already handles:
 //   - Admin user creation

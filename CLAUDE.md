@@ -21,27 +21,27 @@ Use the `dev-local-run.sh` script to start a complete local environment with Pos
 
 ```bash
 # Start all services (PostgreSQL in Docker, Vox service and eval agent as local processes)
-./script/dev-local-run.sh start
+./scripts/dev-local-run.sh start
 
 # Start with multi-region eval agents (na, apac, eu)
-./script/dev-local-run.sh --multi-region start
+./scripts/dev-local-run.sh --multi-region start
 
 # Stop all services
-./script/dev-local-run.sh stop
+./scripts/dev-local-run.sh stop
 
 # Reset database and restart (WARNING: deletes all data)
-./script/dev-local-run.sh reset
+./scripts/dev-local-run.sh reset
 
 # Show status of all services
-./script/dev-local-run.sh status
+./scripts/dev-local-run.sh status
 
 # View logs
-./script/dev-local-run.sh logs server    # Server logs
-./script/dev-local-run.sh logs agent     # Eval agent logs
+./scripts/dev-local-run.sh logs server    # Server logs
+./scripts/dev-local-run.sh logs agent     # Eval agent logs
 
 # Docker mode (all services in containers)
-./script/dev-local-run.sh docker start
-./script/dev-local-run.sh docker stop
+./scripts/dev-local-run.sh docker start
+./scripts/dev-local-run.sh docker stop
 ```
 
 **Default Credentials (after init):**
@@ -110,7 +110,7 @@ Optional:
 - **server/** - Express backend (Node.js + TypeScript)
 - **shared/** - Shared types and database schema (Drizzle ORM)
 - **tests/** - Test files (Vitest)
-- **script/** - Build scripts
+- **scripts/** - Build scripts
 
 ### Key Architectural Patterns
 
@@ -356,17 +356,17 @@ cp .env.dev .env
 
 ```bash
 # Start local server first (required for integration and E2E tests)
-./script/dev-local-run.sh start
+./scripts/dev-local-run.sh start
 
 # Run ALL tests (unit + audio + E2E) - recommended
-./script/full-tests-run.sh       # Runs all tests
+./scripts/full-tests-run.sh       # Runs all tests
 
 # Unit and Integration Tests (Vitest)
 npm test                         # Run all tests
 npm run test:watch               # Run in watch mode
 
 # Clash Runner Audio Pipeline Test (Docker)
-./script/full-tests-run.sh audio                    # Via test runner
+./scripts/full-tests-run.sh audio                    # Via test runner
 docker build -t vox-clash-runner-test ./vox_clash_runner  # Or manually
 docker run --rm vox-clash-runner-test bash /app/audio/test-audio-pipeline.sh
 
@@ -376,7 +376,7 @@ npx playwright test --ui         # Run with Playwright Test UI
 npx playwright test --headed     # Run in headed browser mode
 ```
 
-**Full Test Runner** (`./script/full-tests-run.sh`):
+**Full Test Runner** (`./scripts/full-tests-run.sh`):
 - Loads environment from `.env` and `.env.dev` automatically
 - Verifies server is running
 - Runs unit tests (Vitest), audio pipeline (Docker), then E2E tests (Playwright)
@@ -471,7 +471,7 @@ When adding new features, write tests for critical paths like authentication, jo
 - `docs/openapi.yaml` - OpenAPI 3.0 specification for API v1
 
 ### Scripts
-- `script/dev-local-run.sh` - Local development environment setup
+- `scripts/dev-local-run.sh` - Local development environment setup
 
 ### Tests
 - `tests/tests.dev.data` - Test accounts for local dev (gitignored)
