@@ -16,13 +16,19 @@
 Comprehensive evaluations run automatically across all selected products and regions using distributed eval agents.
 
 ### Multi-Region Coverage
-Test from North America, Europe, and Asia-Pacific to understand regional performance characteristics.
+Test from North America, Asia Pacific, Europe, and South America to understand regional performance characteristics.
 
 ### Real-Time Dashboard
-Live data dashboard showing the latest metrics and performance trends as tests complete.
+Live data dashboard with interactive zoom/pan charts, per-provider line segments with 2h gap detection, and latest test metrics (MED/SD/P95).
 
 ### Global Leaderboard
-Compare provider performance across regions with sortable rankings and detailed metrics.
+Compare provider performance across regions with sortable rankings, P95 latency columns, and composite scoring.
+
+### Job Detail & Artifacts
+View detailed per-job metrics, turn-level latency data, play back recorded audio, and download full artifact bundles from S3-compatible storage.
+
+### Schedule Management
+Create and manage recurring evaluation schedules with cron expressions. Pause, resume, edit, run-now, and delete from the console.
 
 ### Organization Support
 Team collaboration with seat-based pricing, member management, and shared workflows.
@@ -42,6 +48,7 @@ Team collaboration with seat-based pricing, member management, and shared workfl
 |---------|----------|-----|
 | Agora ConvoAI Engine | Agora | convoai |
 | LiveKit Agents | LiveKit | convoai |
+| ElevenLabs Agents | ElevenLabs | convoai |
 | Custom Products | User-defined | convoai/rtc |
 
 ---
@@ -54,14 +61,15 @@ Team collaboration with seat-based pricing, member management, and shared workfl
 - **Tailwind CSS** with shadcn/ui component library
 - **Wouter** for lightweight client-side routing
 - **TanStack React Query** for server state management
-- **Recharts** for data visualization
+- **Recharts** for data visualization (with custom zoom/pan)
 
 ### Backend
 - **Node.js** with Express
 - **TypeScript** with ESM modules
 - **Drizzle ORM** with PostgreSQL
-- **Passport.js** for OAuth (Google)
+- **Passport.js** for OAuth (Google, GitHub)
 - **express-rate-limit** for API protection
+- **@aws-sdk/client-s3** for S3-compatible artifact storage
 
 ---
 
@@ -70,84 +78,102 @@ Team collaboration with seat-based pricing, member management, and shared workfl
 ### Prerequisites
 - Node.js 18+
 - PostgreSQL database
+- Docker (for local dev PostgreSQL and eval agents)
 
-### Installation
+### Quick Start (Recommended)
 
-1. **Clone the repository**
+```bash
+# Clone and install
+git clone https://github.com/Agora-Build/Vox.git
+cd Vox
+npm install
+
+# Start all services (PostgreSQL + Vox server + eval agent)
+./script/dev-local-run.sh start
+
+# Multi-region eval agents
+./script/dev-local-run.sh --multi-region start
+```
+
+**Default Credentials (after init):**
+- Admin: `admin@vox.local` / `admin123456`
+- Scout: `scout@vox.ai` / `scout123`
+
+### Manual Setup
+
+1. **Set up environment variables** — create `.env.dev`:
    ```bash
-   git clone https://github.com/guohai/vox.git
-   cd vox
-   ```
-
-2. **Install dependencies**
-   ```bash
-   npm install
-   ```
-
-3. **Set up environment variables**
-
-   For local development, create a `.env.dev` file:
-   ```bash
-   # .env.dev - Local development (gitignored)
    DATABASE_URL=postgresql://user:password@localhost:5432/vox
    SESSION_SECRET=your-session-secret
    INIT_CODE=your-initialization-code
-
-   # Optional - Google OAuth
-   GOOGLE_CLIENT_ID=your-google-client-id
-   GOOGLE_CLIENT_SECRET=your-google-client-secret
    ```
 
-   For CI/CD, environment variables are loaded from CI secrets (no files needed).
-
-4. **Push database schema**
+2. **Push database schema**
    ```bash
-   npm run db:push
+   DATABASE_URL=... npm run db:push
    ```
 
-5. **Start development server**
+3. **Start development server**
    ```bash
    npm run dev
    ```
 
 The application will be available at `http://localhost:5000`.
 
-### First-Time Setup
-
-1. Navigate to `/setup` to initialize the system
-2. Enter your `INIT_CODE` to create the admin user
-3. The system will also create a Scout user (needs activation via email token)
-
 ---
 
 ## Environment Variables
 
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `DATABASE_URL` | Yes | PostgreSQL connection string |
-| `SESSION_SECRET` | Yes | Session encryption key |
-| `INIT_CODE` | Yes | System initialization code |
-| `PORT` | No | Server port (default: 5000) |
-| `GOOGLE_CLIENT_ID` | No | Google OAuth client ID |
-| `GOOGLE_CLIENT_SECRET` | No | Google OAuth client secret |
-| `GOOGLE_CALLBACK_URL` | No | OAuth callback URL (default: /api/auth/google/callback) |
+### Server (Required)
 
-### Environment & Test Data Files
+| Variable | Description |
+|----------|-------------|
+| `DATABASE_URL` | PostgreSQL connection string |
+| `SESSION_SECRET` | Session encryption key |
+| `INIT_CODE` | System initialization code |
 
-| Context | Environment Variables | Test Data |
-|---------|----------------------|-----------|
-| Local Dev | `.env.dev` (file, gitignored) | `tests/tests.dev.data` (file, gitignored) |
+### Server (Optional)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PORT` | `5000` | Server port |
+| `CREDENTIAL_ENCRYPTION_KEY` | - | 32-byte hex key for AES-256-GCM secret encryption. Generate: `openssl rand -hex 32` |
+| `GOOGLE_CLIENT_ID` | - | Google OAuth client ID |
+| `GOOGLE_CLIENT_SECRET` | - | Google OAuth client secret |
+| `GITHUB_CLIENT_ID` | - | GitHub OAuth client ID |
+| `GITHUB_CLIENT_SECRET` | - | GitHub OAuth client secret |
+
+### S3-Compatible Storage (Server only)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `S3_ENDPOINT` | - | S3/R2 endpoint (e.g., `https://<account>.r2.cloudflarestorage.com`) |
+| `S3_BUCKET` | - | Bucket name |
+| `S3_ACCESS_KEY_ID` | - | Access key |
+| `S3_SECRET_ACCESS_KEY` | - | Secret key |
+| `S3_REGION` | `auto` | Region (`auto` for Cloudflare R2) |
+
+Set these on the Vox server only. The daemon reads S3 config from the server via API — no S3 env vars needed on the daemon. If not set, artifact upload is disabled and Vox still works normally. Premium+ users can override with their own S3 config via Console > Storage Settings.
+
+### Environment Files
+
+| Context | Env Vars | Test Data |
+|---------|----------|-----------|
+| Local Dev | `.env.dev` (gitignored) | `tests/tests.dev.data` (gitignored) |
 | CI/CD | CI secrets/environment | CI secrets/environment |
 
-**Local Development:**
-- `.env.dev` - Environment variables (DATABASE_URL, GOOGLE_*, STRIPE_*, etc.)
-- `tests/tests.dev.data` - Test accounts and credentials for manual testing
+The `dev-local-run.sh` script automatically loads `.env` and `.env.dev`.
 
-**CI/CD:**
-- No files needed - environment variables loaded from CI secrets
-- Test data injected via CI environment
+---
 
-The `dev-local-run.sh` script automatically loads `.env` and `.env.dev` files.
+## Database Migrations
+
+Vox uses a custom version-based migration runner (`server/migrate.ts`), not drizzle-orm's `migrate()`. The `npm start` script runs `node dist/migrate.cjs` before starting the app.
+
+**Every schema change requires 3 files committed together:**
+1. Edit `shared/schema.ts`
+2. `DATABASE_URL=... npm run db:generate` — creates SQL file in `migrations/`
+3. Append to `MIGRATIONS` array in `server/migrate.ts`
 
 ---
 
@@ -157,12 +183,15 @@ The `dev-local-run.sh` script automatically loads `.env` and `.env.dev` files.
 |---------|-------------|
 | `npm run dev` | Start development server |
 | `npm run build` | Build for production |
-| `npm start` | Start production server |
-| `npm run check` | Run TypeScript type checking |
-| `npm run lint` | Run ESLint |
-| `npm run db:push` | Push database schema changes |
-| `npm test` | Run unit/integration tests (requires running server) |
-| `./script/full-tests-run.sh` | Run all tests (unit + E2E) |
+| `npm start` | Run migrations + start production server |
+| `npm run check` | TypeScript type checking |
+| `npm run lint` | ESLint |
+| `npm run db:generate` | Generate migration from schema changes |
+| `npm run db:push` | Push schema to local database (dev only) |
+| `npm test` | Run unit/integration tests |
+| `./script/full-tests-run.sh` | Run all tests (unit + audio + E2E) |
+| `./script/dev-local-run.sh start` | Start local dev environment |
+| `./script/dev-local-run.sh --multi-region start` | Start with agents for all regions |
 
 ---
 
@@ -170,82 +199,78 @@ The `dev-local-run.sh` script automatically loads `.env` and `.env.dev` files.
 
 ### Authentication
 
-All authenticated API endpoints accept either:
-- **Session authentication** - Cookie-based sessions from web login
-- **API Key authentication** - Bearer token with `vox_live_` prefix
+All authenticated endpoints accept either:
+- **Session authentication** — Cookie-based sessions from web login
+- **API Key authentication** — Bearer token with `vox_live_` prefix
 
 ```bash
-# API Key usage
 curl -H "Authorization: Bearer vox_live_xxxxxxxxxxxx" \
   https://your-domain.com/api/v1/workflows
 ```
 
 ### API v1 Endpoints
 
-#### User
 | Endpoint | Auth | Description |
 |----------|------|-------------|
 | `GET /api/v1/user` | Required | Get current user info |
-
-#### Workflows
-| Endpoint | Auth | Description |
-|----------|------|-------------|
-| `GET /api/v1/workflows` | Required | List user's workflows |
+| `GET /api/v1/workflows` | Required | List workflows |
 | `POST /api/v1/workflows` | Required | Create workflow |
-| `GET /api/v1/workflows/:id` | Required | Get workflow details |
-| `PUT /api/v1/workflows/:id` | Required | Update workflow |
-| `DELETE /api/v1/workflows/:id` | Required | Delete workflow |
 | `POST /api/v1/workflows/:id/run` | Required | Run workflow (create job) |
-
-#### Eval Sets
-| Endpoint | Auth | Description |
-|----------|------|-------------|
-| `GET /api/v1/eval-sets` | Required | List user's eval sets |
-| `POST /api/v1/eval-sets` | Required | Create eval set |
-| `GET /api/v1/eval-sets/:id` | Required | Get eval set details |
-
-#### Jobs
-| Endpoint | Auth | Description |
-|----------|------|-------------|
-| `GET /api/v1/jobs` | Required | List user's jobs |
+| `GET /api/v1/eval-sets` | Required | List eval sets |
+| `GET /api/v1/jobs` | Required | List jobs |
 | `GET /api/v1/jobs/:id` | Required | Get job status |
-| `DELETE /api/v1/jobs/:id` | Required | Cancel pending job |
-
-#### Results
-| Endpoint | Auth | Description |
-|----------|------|-------------|
-| `GET /api/v1/results` | Required | List user's results |
+| `GET /api/v1/results` | Required | List results with P95 metrics |
 | `GET /api/v1/results/:id` | Required | Get result details |
-
-#### Projects
-| Endpoint | Auth | Description |
-|----------|------|-------------|
-| `GET /api/v1/projects` | Required | List user's projects |
-| `POST /api/v1/projects` | Required | Create project |
-
-#### Public Endpoints
-| Endpoint | Auth | Description |
-|----------|------|-------------|
-| `GET /api/v1/metrics/realtime` | None | Real-time metrics |
-| `GET /api/v1/metrics/leaderboard` | None | Leaderboard data |
+| `GET /api/v1/projects` | Required | List projects |
 | `GET /api/v1/providers` | None | List all providers |
+| `GET /api/v1/metrics/realtime` | None | Real-time metrics (MED/SD/P95) |
+| `GET /api/v1/metrics/leaderboard` | None | Leaderboard data (with P95) |
+
+Full interactive documentation: `/api/docs` (Swagger UI)
 
 ---
 
 ## User Plans
 
-| Plan | Features |
-|------|----------|
-| **Basic** | 5 projects, 10 workflows each, public only |
-| **Premium** | 20 projects, 20 workflows each, private allowed |
-| **Principal** | Scout internal users, can mark mainline |
-| **Fellow** | External prestige, can mark mainline |
+| Plan | Projects | Workflows | Private | Storage Override | API Requests |
+|------|----------|-----------|---------|-----------------|--------------|
+| **Basic** | 5 | 10/project | No | No | 200/mo |
+| **Premium** | 20 | 20/project | Yes | Yes | 1,000/mo |
+| **Principal** | 20 | 20/project | Yes | Yes | 5,000/mo |
+| **Fellow** | 20 | 20/project | Yes | Yes | 5,000/mo |
 
-### Organization Limits
-- 100 projects max
-- 20 workflows per project
-- Max 4 org admins
-- Volume seat pricing (10-25% discounts)
+---
+
+## Console Pages
+
+| Path | Description |
+|------|-------------|
+| `/console/projects` | Manage projects |
+| `/console/workflows` | Manage workflows |
+| `/console/eval-sets` | Manage eval sets |
+| `/console/eval-jobs` | Schedules tab + Jobs tab (with URL persistence) |
+| `/console/eval-jobs/:id` | Job detail: metrics, turn data, audio player, downloads |
+| `/console/eval-agents` | View eval agents |
+| `/console/secrets` | Manage encrypted secrets |
+| `/console/api-keys` | Create/revoke/delete API keys |
+| `/console/storage-settings` | S3 storage override (Premium+) |
+| `/console/clash` | Clash arena (profiles, events, schedules, runners) |
+| `/console/organization` | Organization management |
+
+---
+
+## Eval Agent System
+
+Distributed eval agents run evaluation tests across regions:
+
+1. Admin or non-basic users create eval agent tokens with region assignments
+2. Agents register using tokens and heartbeat regularly
+3. Agents claim pending jobs atomically (no race conditions)
+4. Agents execute tests via aeval or voice-agent-tester
+5. Results reported with MED, SD, and P95 latency metrics
+6. Artifacts (recordings, logs, metrics) uploaded to S3 when idle
+
+Multiple agents in the same region compete for jobs — first to claim wins. See [vox_eval_agentd/README.md](vox_eval_agentd/README.md).
 
 ---
 
@@ -254,65 +279,40 @@ curl -H "Authorization: Bearer vox_live_xxxxxxxxxxxx" \
 ```
 vox/
 ├── client/                 # Frontend React application
-│   ├── src/
-│   │   ├── components/     # Reusable UI components
-│   │   ├── hooks/          # Custom React hooks
-│   │   ├── lib/            # Utilities and helpers
-│   │   └── pages/          # Page components
-│   └── public/             # Static assets
+│   └── src/
+│       ├── components/     # UI components (shadcn/ui)
+│       ├── pages/          # Page components
+│       └── lib/            # Utilities
 ├── server/                 # Backend Express server
-│   ├── index.ts            # Server entry point
+│   ├── index.ts            # Entry point
 │   ├── routes.ts           # Main API routes
-│   ├── routes-api-v1.ts    # Versioned public API routes
+│   ├── routes-api-v1.ts    # Versioned public API
 │   ├── storage.ts          # Data access layer
-│   ├── auth.ts             # Authentication utilities
-│   ├── pricing.ts          # Seat pricing calculations
-│   └── stripe.ts           # Stripe integration (optional)
-├── shared/                 # Shared code between client/server
-│   └── schema.ts           # Database schema definitions
-├── tests/                  # Test files
-│   ├── api.test.ts         # API integration tests
-│   └── tests.dev.data      # Local dev test accounts (gitignored)
-├── designs/                # Design documents
-└── script/                 # Build scripts
+│   ├── auth.ts             # Authentication
+│   ├── s3.ts               # S3 signed URL generation
+│   └── migrate.ts          # Migration runner
+├── shared/schema.ts        # Database schema (single source of truth)
+├── vox_eval_agentd/        # Evaluation agent daemon
+├── vox_clash_runner/       # Clash match runner
+├── migrations/             # SQL migration files
+├── tests/                  # Test files (420+ tests)
+└── script/                 # Build and dev scripts
 ```
 
 ---
 
-## Console Pages
+## Tests
 
-### User Console (`/console`)
-- `/console/projects` - Manage projects
-- `/console/workflows` - Manage workflows
-- `/console/eval-sets` - Manage eval sets
-- `/console/eval-agents` - View eval agents
-- `/console/eval-agent-tokens` - Manage agent tokens (admin)
-- `/console/organization` - Organization dashboard
-- `/console/organization/members` - Member management
-- `/console/organization/billing` - Billing and seats
-- `/console/organization/settings` - Organization settings
-
-### Admin Console (`/admin/console`)
-- User management
-- Organization verification
-- Fund return requests
-- System configuration
-
----
-
-## Eval Agent System
-
-Distributed eval agents run evaluation tests across regions:
-
-1. Admin creates eval agent tokens with region assignments
-2. Agents register using tokens and heartbeat regularly
-3. Agents claim pending jobs atomically (no race conditions)
-4. Results reported back with detailed metrics
-
-Background worker handles:
-- Stale job detection and release (5 minute threshold)
-- Offline agent marking
-- Job retry logic
+| File | Type | Tests | Description |
+|------|------|-------|-------------|
+| `tests/api.test.ts` | Integration | 210+ | API endpoints, P95, storage config, API keys, schedules |
+| `tests/eval-agent-daemon.test.ts` | Unit | 88 | Daemon parsing, MED/SD/P95, framework selection |
+| `tests/s3.test.ts` | Integration | 11 | S3/R2 upload, signed URLs, storage config |
+| `tests/auth.test.ts` | Unit | 26 | Password hashing, token generation |
+| `tests/cron.test.ts` | Unit | 32 | Cron expression parsing |
+| `tests/agora.test.ts` | Unit | 45 | Agora token gen, ConvoAI payload |
+| `tests/clash-runner.test.ts` | Unit | 44 | Clash runner logic, Elo calculation |
+| `tests/e2e/*.spec.ts` | E2E | 40 | Playwright browser tests |
 
 ---
 

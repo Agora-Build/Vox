@@ -110,7 +110,10 @@ interface UploadTask {
   jobId: number;
   outputDir: string;
   scenarioName: string;
+  retries: number;
 }
+
+const MAX_UPLOAD_RETRIES = 2;
 
 interface S3Config {
   endpoint: string;
@@ -1108,6 +1111,7 @@ class VoxEvalAgentDaemon {
     try {
       const response = await fetch(`${this.config.serverUrl}/api/eval-agent/jobs/${jobId}/storage-config`, {
         headers: { 'Authorization': `Bearer ${this.config.token}` },
+        signal: AbortSignal.timeout(10000),
       });
       if (response.ok) {
         const data = await response.json();
@@ -1137,7 +1141,7 @@ class VoxEvalAgentDaemon {
 
     if (!s3Config) {
       if (!this.s3Warned) {
-        console.warn('[Daemon] S3 not configured — artifact upload disabled. Set S3_ENDPOINT, S3_BUCKET, S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY to enable.');
+        console.warn('[Daemon] S3 not configured — artifact upload disabled. Configure S3 on the Vox server to enable.');
         this.s3Warned = true;
       }
       return;
@@ -1223,6 +1227,7 @@ class VoxEvalAgentDaemon {
               'Content-Type': 'application/json',
             },
             body: JSON.stringify({ zipUrl, files: uploadedFiles }),
+            signal: AbortSignal.timeout(15000),
           });
           console.log(`[Daemon] Artifact URLs stored for job ${task.jobId}`);
         } catch (e) {
@@ -1236,20 +1241,32 @@ class VoxEvalAgentDaemon {
       console.log(`[Daemon] Artifact upload complete for job ${task.jobId} (${uploadedFiles.length} files)`);
     } catch (error: unknown) {
       const msg = error instanceof Error ? error.message : String(error);
-      console.error(`[Daemon] Artifact upload failed for job ${task.jobId}:`, msg);
-      // Don't re-queue — failed uploads are lost (could add retry later)
+      console.error(`[Daemon] Artifact upload failed for job ${task.jobId} (attempt ${task.retries + 1}):`, msg);
+      if (task.retries < MAX_UPLOAD_RETRIES) {
+        this.uploadQueue.push({ ...task, retries: task.retries + 1 });
+        console.log(`[Daemon] Re-queued job ${task.jobId} for retry (${task.retries + 1}/${MAX_UPLOAD_RETRIES})`);
+      } else {
+        console.warn(`[Daemon] Giving up on artifact upload for job ${task.jobId} after ${MAX_UPLOAD_RETRIES + 1} attempts`);
+      }
     }
   }
 
   private createZip(sourceDir: string, outputPath: string): Promise<void> {
     return new Promise((resolve, reject) => {
-      // Use system zip command (available in Docker image)
       const proc = spawn('zip', ['-r', '-q', outputPath, '.'], { cwd: sourceDir });
+      const timeout = setTimeout(() => {
+        proc.kill();
+        reject(new Error('zip timed out after 120s'));
+      }, 120000);
       proc.on('close', (code) => {
+        clearTimeout(timeout);
         if (code === 0) resolve();
         else reject(new Error(`zip exited with code ${code}`));
       });
-      proc.on('error', reject);
+      proc.on('error', (err) => {
+        clearTimeout(timeout);
+        reject(err);
+      });
     });
   }
 
@@ -1331,10 +1348,15 @@ class VoxEvalAgentDaemon {
 
     const jobs = await this.fetchJobs();
 
-    // When idle, process upload queue
+    // When idle, process upload queue (never crashes — errors are caught)
     if (jobs.length === 0) {
       if (this.uploadQueue.length > 0) {
-        await this.processUploadQueue();
+        try {
+          await this.processUploadQueue();
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          console.error(`[Daemon] Upload queue error (non-fatal):`, msg);
+        }
       }
       return;
     }
@@ -1366,6 +1388,7 @@ class VoxEvalAgentDaemon {
           jobId: job.id,
           outputDir: this.lastOutputDir,
           scenarioName: (job.config as Record<string, string>)?.scenario?.slice(0, 50) || 'unknown',
+          retries: 0,
         });
       }
       this.isRunningJob = false;
@@ -1385,8 +1408,7 @@ class VoxEvalAgentDaemon {
     console.log(`  - Agent Name: ${this.config.name || '(inherits from token)'}`);
     console.log(`  - Headless: ${this.config.headless}`);
     console.log(`  - Eval Framework: ${this.config.framework}`);
-    const s3 = getSystemS3Config();
-    console.log(`  - S3 Artifacts: ${s3 ? `${s3.endpoint}/${s3.bucket}` : 'disabled (env vars not set)'}`);
+    console.log(`  - S3 Artifacts: resolved per-job from Vox server`);
     console.log('');
 
     this.heartbeatTimer = setInterval(() => {
