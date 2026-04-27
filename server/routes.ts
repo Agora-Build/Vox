@@ -2399,6 +2399,64 @@ export async function registerRoutes(
     }
   });
 
+  // Update artifact upload status (eval agent Bearer auth)
+  app.patch("/api/eval-agent/jobs/:jobId/artifact-status", async (req, res) => {
+    try {
+      const authHeader = req.headers.authorization;
+      if (!authHeader || !authHeader.startsWith("Bearer ")) {
+        return res.status(401).json({ error: "Eval agent token required" });
+      }
+
+      const token = authHeader.slice(7);
+      const tokenHash = hashToken(token);
+      const evalAgentToken = await storage.getEvalAgentTokenByHash(tokenHash);
+
+      if (!evalAgentToken || evalAgentToken.isRevoked) {
+        return res.status(401).json({ error: "Invalid or revoked token" });
+      }
+
+      const jobId = parseInt(req.params.jobId);
+      const { status } = req.body;
+
+      if (!status || !['pending', 'uploading', 'uploaded', 'failed'].includes(status)) {
+        return res.status(400).json({ error: "Invalid status. Must be: pending, uploading, uploaded, failed" });
+      }
+
+      await storage.updateEvalResultArtifactStatus(jobId, status);
+      res.json({ message: "Status updated" });
+    } catch (error) {
+      console.error("Error updating artifact status:", error);
+      res.status(500).json({ error: "Failed to update artifact status" });
+    }
+  });
+
+  // Reset stuck uploading artifacts to failed (eval agent Bearer auth, called on startup)
+  app.post("/api/eval-agent/artifacts/reset-stuck", async (req, res) => {
+    try {
+      const authHeader = req.headers.authorization;
+      if (!authHeader || !authHeader.startsWith("Bearer ")) {
+        return res.status(401).json({ error: "Eval agent token required" });
+      }
+
+      const token = authHeader.slice(7);
+      const tokenHash = hashToken(token);
+      const evalAgentToken = await storage.getEvalAgentTokenByHash(tokenHash);
+
+      if (!evalAgentToken || evalAgentToken.isRevoked) {
+        return res.status(401).json({ error: "Invalid or revoked token" });
+      }
+
+      const count = await storage.resetStuckArtifactUploads();
+      if (count > 0) {
+        console.log(`[Artifacts] Reset ${count} stuck uploading artifact(s) to failed`);
+      }
+      res.json({ message: "OK", reset: count });
+    } catch (error) {
+      console.error("Error resetting stuck artifacts:", error);
+      res.status(500).json({ error: "Failed to reset" });
+    }
+  });
+
   // Get S3 storage config for a job (eval agent Bearer auth)
   // Returns per-user config if available, otherwise system defaults
   app.get("/api/eval-agent/jobs/:jobId/storage-config", async (req, res) => {
@@ -2734,6 +2792,40 @@ export async function registerRoutes(
     } catch (error) {
       console.error("Error fetching job detail:", error);
       res.status(500).json({ error: "Failed to fetch job detail" });
+    }
+  });
+
+  // Request re-upload of artifacts for a failed job (creator or admin only)
+  app.post("/api/eval-jobs/:id/reupload", requireAuth, async (req, res) => {
+    try {
+      const user = await getCurrentUser(req);
+      if (!user) return res.status(401).json({ error: "Not authenticated" });
+
+      const jobId = parseInt(req.params.id);
+      const job = await storage.getEvalJob(jobId);
+      if (!job) return res.status(404).json({ error: "Job not found" });
+
+      // Authorization: job creator, schedule creator, or admin
+      let authorized = user.isAdmin || job.createdBy === user.id;
+      if (!authorized && job.scheduleId) {
+        const schedule = await storage.getEvalSchedule(job.scheduleId);
+        if (schedule && schedule.createdBy === user.id) authorized = true;
+      }
+      if (!authorized) return res.status(403).json({ error: "Not authorized" });
+
+      // Only allow re-upload of failed artifacts
+      const results = await storage.getEvalResultsByJob(jobId);
+      const result = results[0];
+      if (!result) return res.status(404).json({ error: "No result found for this job" });
+      if (result.artifactStatus === 'uploaded') return res.status(400).json({ error: "Artifacts already uploaded" });
+      if (result.artifactStatus === 'uploading') return res.status(409).json({ error: "Upload already in progress" });
+      if (result.artifactStatus === 'pending') return res.status(409).json({ error: "Upload already pending" });
+
+      await storage.updateEvalResultArtifactStatus(jobId, 'pending');
+      res.json({ message: "Re-upload queued. The eval agent will retry on its next idle cycle." });
+    } catch (error) {
+      console.error("Error requesting re-upload:", error);
+      res.status(500).json({ error: "Failed to request re-upload" });
     }
   });
 

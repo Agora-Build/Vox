@@ -27,6 +27,7 @@ const MIGRATIONS: Array<{ version: number; description: string; file: string | n
   { version: 3, description: "p95 latency columns",        file: "0002_spotty_longshot.sql" },
   { version: 4, description: "ElevenLabs Agents provider", file: "0003_add_elevenlabs_provider.sql" },
   { version: 5, description: "artifact storage + user storage config", file: "0004_artifact_storage.sql" },
+  { version: 6, description: "artifact upload status", file: "0005_artifact_status.sql" },
 ];
 
 const TARGET_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version;

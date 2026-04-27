@@ -114,6 +114,7 @@ interface UploadTask {
 }
 
 const MAX_UPLOAD_RETRIES = 2;
+const MAX_UPLOAD_QUEUE_SIZE = 50;
 
 interface S3Config {
   endpoint: string;
@@ -150,6 +151,7 @@ class VoxEvalAgentDaemon {
   private isRunningJob = false;
   private aevalVersion: string = "unknown";
   private uploadQueue: UploadTask[] = [];
+  private isUploading = false;
   private s3Warned = false;
   private lastOutputDir: string | null = null;
 
@@ -247,6 +249,15 @@ class VoxEvalAgentDaemon {
       console.log(`  - Agent ID: ${agent.id}`);
       console.log(`  - Name: ${agent.name}`);
       console.log(`  - Region: ${agent.region}`);
+
+      // Reset any artifact uploads stuck in 'uploading' from a previous run
+      try {
+        const resetRes = await this.fetch('/api/eval-agent/artifacts/reset-stuck', { method: 'POST' });
+        if (resetRes.ok) {
+          const { reset } = await resetRes.json();
+          if (reset > 0) console.log(`[Daemon] Reset ${reset} stuck artifact upload(s) to failed`);
+        }
+      } catch { /* non-fatal */ }
 
       return true;
     } catch (error: unknown) {
@@ -1101,7 +1112,23 @@ class VoxEvalAgentDaemon {
   // S3 Artifact Upload (runs when daemon is idle)
   // -------------------------------------------------------------------------
 
+  private async updateArtifactStatus(jobId: number, status: string): Promise<void> {
+    try {
+      await fetch(`${this.config.serverUrl}/api/eval-agent/jobs/${jobId}/artifact-status`, {
+        method: 'PATCH',
+        headers: { 'Authorization': `Bearer ${this.config.token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status }),
+        signal: AbortSignal.timeout(10000),
+      });
+    } catch { /* non-fatal */ }
+  }
+
   private queueUpload(task: UploadTask): void {
+    if (this.uploadQueue.length >= MAX_UPLOAD_QUEUE_SIZE) {
+      console.warn(`[Daemon] Upload queue full (${MAX_UPLOAD_QUEUE_SIZE}), dropping oldest task`);
+      const dropped = this.uploadQueue.shift()!;
+      this.updateArtifactStatus(dropped.jobId, 'failed');
+    }
     this.uploadQueue.push(task);
     console.log(`[Daemon] Queued artifact upload for job ${task.jobId} (queue: ${this.uploadQueue.length})`);
   }
@@ -1134,9 +1161,19 @@ class VoxEvalAgentDaemon {
   }
 
   private async processUploadQueue(): Promise<void> {
-    if (this.uploadQueue.length === 0) return;
+    if (this.uploadQueue.length === 0 || this.isUploading) return;
 
+    this.isUploading = true;
     const task = this.uploadQueue.shift()!;
+
+    try {
+      await this._processUploadTask(task);
+    } finally {
+      this.isUploading = false;
+    }
+  }
+
+  private async _processUploadTask(task: UploadTask): Promise<void> {
     const s3Config = await this.getS3ConfigForJob(task.jobId);
 
     if (!s3Config) {
@@ -1144,16 +1181,24 @@ class VoxEvalAgentDaemon {
         console.warn('[Daemon] S3 not configured — artifact upload disabled. Configure S3 on the Vox server to enable.');
         this.s3Warned = true;
       }
+      // Re-queue if this was a transient server failure (not permanent "not configured")
+      if (task.retries < MAX_UPLOAD_RETRIES) {
+        this.uploadQueue.push({ ...task, retries: task.retries + 1 });
+      }
       return;
     }
 
     if (!fs.existsSync(task.outputDir)) {
-      console.warn(`[Daemon] Output dir not found for job ${task.jobId}: ${task.outputDir}`);
+      console.warn(`[Daemon] Output dir not found for job ${task.jobId}: ${task.outputDir} — files may have been lost after restart`);
+      await this.updateArtifactStatus(task.jobId, 'failed');
       return;
     }
 
     try {
       console.log(`[Daemon] Uploading artifacts for job ${task.jobId}...`);
+
+      // Mark status as uploading
+      await this.updateArtifactStatus(task.jobId, 'uploading');
 
       // Dynamic import to avoid crash if SDK not installed
       const { S3Client, PutObjectCommand } = await import('@aws-sdk/client-s3');
@@ -1238,6 +1283,8 @@ class VoxEvalAgentDaemon {
         try { fs.unlinkSync(zipPath); } catch { /* ignore */ }
       }
 
+      // Mark as uploaded (even if the POST to Vox failed — files are in S3)
+      await this.updateArtifactStatus(task.jobId, 'uploaded');
       console.log(`[Daemon] Artifact upload complete for job ${task.jobId} (${uploadedFiles.length} files)`);
     } catch (error: unknown) {
       const msg = error instanceof Error ? error.message : String(error);
@@ -1247,6 +1294,7 @@ class VoxEvalAgentDaemon {
         console.log(`[Daemon] Re-queued job ${task.jobId} for retry (${task.retries + 1}/${MAX_UPLOAD_RETRIES})`);
       } else {
         console.warn(`[Daemon] Giving up on artifact upload for job ${task.jobId} after ${MAX_UPLOAD_RETRIES + 1} attempts`);
+        await this.updateArtifactStatus(task.jobId, 'failed');
       }
     }
   }

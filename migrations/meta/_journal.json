@@ -29,6 +29,13 @@
       "when": 1777075573962,
       "tag": "0003_left_blonde_phantom",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1777312181488,
+      "tag": "0004_windy_baron_strucker",
+      "breakpoints": true
     }
   ]
 }

@@ -295,6 +295,7 @@ export const evalResults = pgTable("eval_results", {
   naturalness: real("naturalness"),
   noiseReduction: integer("noise_reduction"),
   rawData: jsonb("raw_data").default({}),
+  artifactStatus: varchar("artifact_status", { length: 20 }).default("pending"),
   artifactUrl: text("artifact_url"),
   artifactFiles: jsonb("artifact_files"),
   createdAt: timestamp("created_at").defaultNow().notNull(),

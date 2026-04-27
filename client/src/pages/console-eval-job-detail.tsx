@@ -1,13 +1,19 @@
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation } from "@tanstack/react-query";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { ArrowLeft, Download, CheckCircle, XCircle, Loader2, Clock, Play } from "lucide-react";
+import { ArrowLeft, Download, CheckCircle, XCircle, Loader2, Clock, Play, Upload, RefreshCw } from "lucide-react";
 import { Link } from "wouter";
+import { useToast } from "@/hooks/use-toast";
+import { apiRequest, queryClient } from "@/lib/queryClient";
 import { formatSmartTimestamp, formatRegion } from "@/lib/utils";
 import type { EvalJob, EvalResult } from "@shared/schema";
+
+interface AuthStatus {
+  user: { id: number; isAdmin: boolean } | null;
+}
 
 interface ArtifactFile {
   name: string;
@@ -31,11 +37,29 @@ const STATUS_CONFIG: Record<string, { variant: "default" | "destructive" | "seco
 };
 
 export default function ConsoleEvalJobDetail({ jobId }: { jobId: number }) {
+  const { toast } = useToast();
+  const { data: auth } = useQuery<AuthStatus>({ queryKey: ["/api/auth/status"] });
   const { data, isLoading } = useQuery<JobDetailResponse>({
     queryKey: [`/api/eval-jobs/${jobId}/detail`],
     refetchInterval: (query) => {
-      const status = query.state.data?.job.status;
-      return status === "pending" || status === "running" ? 5000 : false;
+      const job = query.state.data?.job;
+      const artStatus = query.state.data?.result?.artifactStatus;
+      if (job?.status === "pending" || job?.status === "running") return 20000;
+      if (artStatus === "uploading") return 10000;
+      return false;
+    },
+  });
+
+  const reuploadMutation = useMutation({
+    mutationFn: async () => {
+      await apiRequest("POST", `/api/eval-jobs/${jobId}/reupload`);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: [`/api/eval-jobs/${jobId}/detail`] });
+      toast({ title: "Re-upload requested", description: "The eval agent will retry if output files are still on disk. If the agent was restarted, the files may no longer be available." });
+    },
+    onError: () => {
+      toast({ title: "Error", description: "Failed to request re-upload", variant: "destructive" });
     },
   });
 
@@ -66,6 +90,7 @@ export default function ConsoleEvalJobDetail({ jobId }: { jobId: number }) {
 
   const artifactFiles = (result?.artifactFiles ?? []) as ArtifactFile[];
   const artifactUrl = result?.artifactUrl as string | null;
+  const artifactStatus = (result?.artifactStatus as string) ?? "pending";
   const rawData = (result?.rawData ?? {}) as Record<string, unknown>;
 
   // Extract turn-level data from rawData or from known metrics structure
@@ -75,6 +100,11 @@ export default function ConsoleEvalJobDetail({ jobId }: { jobId: number }) {
 
   // Find audio file
   const audioFile = artifactFiles.find(f => f.name.includes('recording'));
+
+  // Can this user trigger re-upload?
+  const userId = auth?.user?.id;
+  const isAdmin = auth?.user?.isAdmin ?? false;
+  const canReupload = isAdmin || job.createdBy === userId;
 
   return (
     <div className="space-y-6">
@@ -98,13 +128,39 @@ export default function ConsoleEvalJobDetail({ jobId }: { jobId: number }) {
             </p>
           </div>
         </div>
-        {artifactUrl && (
-          <a href={artifactUrl} download>
-            <Button variant="outline" className="gap-2">
-              <Download className="h-4 w-4" /> Download Artifacts
-            </Button>
-          </a>
-        )}
+        <div className="flex items-center gap-2">
+          {/* Artifact status + actions */}
+          {result && artifactStatus === "uploaded" && artifactUrl && (
+            <a href={artifactUrl} download>
+              <Button variant="outline" className="gap-2">
+                <Download className="h-4 w-4" /> Download
+              </Button>
+            </a>
+          )}
+          {result && artifactStatus === "uploading" && (
+            <Badge variant="secondary" className="gap-1">
+              <Loader2 className="h-3 w-3 animate-spin" /> Uploading
+            </Badge>
+          )}
+          {result && artifactStatus === "failed" && (
+            <div className="flex items-center gap-2">
+              <Badge variant="destructive" className="gap-1">
+                <XCircle className="h-3 w-3" /> Upload Failed
+              </Badge>
+              {canReupload && (
+                <Button variant="outline" size="sm" className="gap-1.5" onClick={() => reuploadMutation.mutate()} disabled={reuploadMutation.isPending}>
+                  {reuploadMutation.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
+                  Re-Upload
+                </Button>
+              )}
+            </div>
+          )}
+          {result && artifactStatus === "pending" && job.status === "completed" && (
+            <Badge variant="outline" className="gap-1">
+              <Clock className="h-3 w-3" /> Upload Pending
+            </Badge>
+          )}
+        </div>
       </div>
 
       {/* Error */}

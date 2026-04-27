@@ -3528,4 +3528,76 @@ describe('Vox API Tests', () => {
       }
     });
   });
+
+  // ==================== Artifact Status & Re-upload ====================
+  describe('Artifact Status & Re-upload', () => {
+    it('should include artifactStatus in job detail', async () => {
+      const jobsRes = await authFetch(adminSession, `${BASE_URL}/api/eval-jobs?status=completed&limit=1`);
+      if (!jobsRes.ok) return;
+      const jobs = await jobsRes.json();
+      if (jobs.length === 0) return;
+
+      const detailRes = await authFetch(adminSession, `${BASE_URL}/api/eval-jobs/${jobs[0].id}/detail`);
+      expect(detailRes.ok).toBe(true);
+      const detail = await detailRes.json();
+      if (detail.result) {
+        expect(detail.result).toHaveProperty('artifactStatus');
+        expect(['pending', 'uploading', 'uploaded', 'failed', null]).toContain(detail.result.artifactStatus);
+      }
+    });
+
+    it('should reject reupload for non-existent job', async () => {
+      const res = await authFetch(adminSession, `${BASE_URL}/api/eval-jobs/999999/reupload`, { method: 'POST' });
+      expect(res.status).toBe(404);
+    });
+
+    it('should reject reupload if artifacts already uploaded', async () => {
+      // Find a completed job and set its status to uploaded
+      const jobsRes = await authFetch(adminSession, `${BASE_URL}/api/eval-jobs?status=completed&limit=1`);
+      if (!jobsRes.ok) return;
+      const jobs = await jobsRes.json();
+      if (jobs.length === 0) return;
+
+      const detailRes = await authFetch(adminSession, `${BASE_URL}/api/eval-jobs/${jobs[0].id}/detail`);
+      const detail = await detailRes.json();
+      if (detail.result?.artifactStatus === 'uploaded') {
+        const res = await authFetch(adminSession, `${BASE_URL}/api/eval-jobs/${jobs[0].id}/reupload`, { method: 'POST' });
+        expect(res.status).toBe(400);
+      }
+    });
+
+    it('should reject reupload if status is pending', async () => {
+      const jobsRes = await authFetch(adminSession, `${BASE_URL}/api/eval-jobs?status=completed&limit=1`);
+      if (!jobsRes.ok) return;
+      const jobs = await jobsRes.json();
+      if (jobs.length === 0) return;
+
+      const detailRes = await authFetch(adminSession, `${BASE_URL}/api/eval-jobs/${jobs[0].id}/detail`);
+      const detail = await detailRes.json();
+      if (detail.result?.artifactStatus === 'pending') {
+        const res = await authFetch(adminSession, `${BASE_URL}/api/eval-jobs/${jobs[0].id}/reupload`, { method: 'POST' });
+        expect(res.status).toBe(409);
+      }
+    });
+
+    it('should require auth for reupload', async () => {
+      const res = await fetch(`${BASE_URL}/api/eval-jobs/1/reupload`, { method: 'POST' });
+      expect(res.status).toBe(401);
+    });
+
+    it('should validate artifact-status values', async () => {
+      // This endpoint requires eval agent token, not session auth
+      // Test with session auth — should be 401
+      const res = await authFetch(adminSession, `${BASE_URL}/api/eval-agent/jobs/1/artifact-status`, {
+        method: 'PATCH',
+        body: JSON.stringify({ status: 'uploaded' }),
+      });
+      expect(res.status).toBe(401); // requires Bearer token, not session
+    });
+
+    it('should require auth for reset-stuck', async () => {
+      const res = await fetch(`${BASE_URL}/api/eval-agent/artifacts/reset-stuck`, { method: 'POST' });
+      expect(res.status).toBe(401);
+    });
+  });
 });

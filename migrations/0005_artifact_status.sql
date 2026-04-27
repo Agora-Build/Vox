@@ -1,0 +1,1 @@
+ALTER TABLE "eval_results" ADD COLUMN "artifact_status" varchar(20) DEFAULT 'pending';

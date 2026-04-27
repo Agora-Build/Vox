@@ -823,6 +823,7 @@ export class DatabaseStorage {
         naturalness: evalResults.naturalness,
         noiseReduction: evalResults.noiseReduction,
         rawData: evalResults.rawData,
+        artifactStatus: evalResults.artifactStatus,
         artifactUrl: evalResults.artifactUrl,
         artifactFiles: evalResults.artifactFiles,
         createdAt: evalResults.createdAt,
@@ -1710,8 +1711,22 @@ export class DatabaseStorage {
 
   async updateEvalResultArtifacts(evalJobId: number, artifactUrl: string, artifactFiles: unknown): Promise<void> {
     await db.update(evalResults)
-      .set({ artifactUrl, artifactFiles })
+      .set({ artifactUrl, artifactFiles, artifactStatus: 'uploaded' })
       .where(eq(evalResults.evalJobId, evalJobId));
+  }
+
+  async updateEvalResultArtifactStatus(evalJobId: number, status: string): Promise<void> {
+    await db.update(evalResults)
+      .set({ artifactStatus: status })
+      .where(eq(evalResults.evalJobId, evalJobId));
+  }
+
+  async resetStuckArtifactUploads(): Promise<number> {
+    const result = await db.update(evalResults)
+      .set({ artifactStatus: 'failed' })
+      .where(eq(evalResults.artifactStatus, 'uploading'))
+      .returning({ id: evalResults.id });
+    return result.length;
   }
 }
 
