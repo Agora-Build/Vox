@@ -198,9 +198,9 @@ class VoxEvalAgentDaemon {
         proc.on('error', () => resolve(null));
       });
 
+      console.log(`[Daemon] aeval --version: code=${code}, stdout+stderr length=${output.length}`);
       if (code === 0 && output.trim()) {
         // Expected: last line is "aeval 0.1.4" or "aeval v0.1.4"
-        // DEBUG logs on stderr may contain timestamps that look like versions — match only the aeval line
         const match = output.match(/aeval\s+v?(\d+\.\d+\.\d+)/);
         if (match) {
           this.aevalVersion = `v${match[1]}`;
