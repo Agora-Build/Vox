@@ -56,7 +56,7 @@ interface AuthStatus {
     isEnabled: boolean;
     emailVerified: boolean;
     organizationId: number | null;
-    isOrgAdmin: boolean;
+    orgRole: string | null;
   } | null;
 }
 
@@ -643,7 +643,7 @@ function ConsoleOrganizationBillingWrapper() {
     );
   }
 
-  if (!authStatus.user.organizationId || !authStatus.user.isOrgAdmin) {
+  if (!authStatus.user.organizationId || !(authStatus.user.orgRole === "owner" || authStatus.user.orgRole === "admin")) {
     setLocation("/console/organization");
     return null;
   }
@@ -687,7 +687,7 @@ function ConsoleOrganizationSettingsWrapper() {
     );
   }
 
-  if (!authStatus.user.organizationId || !authStatus.user.isOrgAdmin) {
+  if (!authStatus.user.organizationId || !(authStatus.user.orgRole === "owner" || authStatus.user.orgRole === "admin")) {
     setLocation("/console/organization");
     return null;
   }

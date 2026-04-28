@@ -1164,7 +1164,7 @@ export class DatabaseStorage {
   async countOrgAdmins(organizationId: number): Promise<number> {
     const result = await db.select({ count: sql<number>`count(*)` })
       .from(users)
-      .where(and(eq(users.organizationId, organizationId), eq(users.isOrgAdmin, true)));
+      .where(and(eq(users.organizationId, organizationId), inArray(users.orgRole, ['owner', 'admin'])));
     return Number(result[0]?.count || 0);
   }
 
@@ -1177,7 +1177,7 @@ export class DatabaseStorage {
 
   async removeUserFromOrganization(userId: number): Promise<User | undefined> {
     const result = await db.update(users)
-      .set({ organizationId: null, isOrgAdmin: false, updatedAt: new Date() })
+      .set({ organizationId: null, orgRole: null, updatedAt: new Date() })
       .where(eq(users.id, userId))
       .returning();
     return result[0];
@@ -1294,6 +1294,7 @@ export class DatabaseStorage {
       runCount: evalSchedules.runCount,
       maxRuns: evalSchedules.maxRuns,
       createdBy: evalSchedules.createdBy,
+      organizationId: evalSchedules.organizationId,
       createdAt: evalSchedules.createdAt,
       updatedAt: evalSchedules.updatedAt,
       workflowName: workflows.name,

@@ -15,7 +15,7 @@ import { Save, LogOut } from "lucide-react";
 interface AuthStatus {
   user: {
     organizationId: number | null;
-    isOrgAdmin: boolean;
+    orgRole: string | null;
   } | null;
 }
 

@@ -14,6 +14,7 @@ export const clashStatusEnum = pgEnum("clash_status", ["pending", "starting", "l
 export const scheduleTypeEnum = pgEnum("schedule_type", ["once", "recurring"]);
 export const clashEventStatusEnum = pgEnum("clash_event_status", ["upcoming", "live", "completed", "cancelled"]);
 export const clashRunnerStateEnum = pgEnum("clash_runner_state", ["idle", "assigned", "running", "draining"]);
+export const orgRoleEnum = pgEnum("org_role", ["owner", "admin", "member"]);
 
 // Helper function to generate 12-char random ID for providers
 export function generateProviderId(): string {
@@ -52,7 +53,7 @@ export const users = pgTable("users", {
   isEnabled: boolean("is_enabled").default(true).notNull(),
   emailVerifiedAt: timestamp("email_verified_at"),
   organizationId: integer("organization_id").references(() => organizations.id),
-  isOrgAdmin: boolean("is_org_admin").default(false).notNull(),
+  orgRole: orgRoleEnum("org_role"),
   googleId: text("google_id").unique(),
   githubId: text("github_id").unique(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
@@ -118,6 +119,7 @@ export const workflows = pgTable("workflows", {
   ownerId: integer("owner_id").notNull().references(() => users.id),
   projectId: integer("project_id").references(() => projects.id, { onDelete: "cascade" }),
   providerId: varchar("provider_id", { length: 12 }).notNull().references(() => providers.id),
+  organizationId: integer("organization_id").references(() => organizations.id),
   visibility: visibilityEnum("visibility").default("public").notNull(),
   isMainline: boolean("is_mainline").default(false).notNull(),
   config: jsonb("config").default({}).notNull(),
@@ -141,6 +143,7 @@ export const evalSets = pgTable("eval_sets", {
   name: text("name").notNull(),
   description: text("description"),
   ownerId: integer("owner_id").notNull().references(() => users.id),
+  organizationId: integer("organization_id").references(() => organizations.id),
   visibility: visibilityEnum("visibility").default("public").notNull(),
   isMainline: boolean("is_mainline").default(false).notNull(),
   config: jsonb("config").default({}).notNull(),
@@ -224,6 +227,7 @@ export const evalSchedules = pgTable("eval_schedules", {
   runCount: integer("run_count").default(0).notNull(),
   maxRuns: integer("max_runs"), // null = unlimited for recurring
   createdBy: integer("created_by").notNull().references(() => users.id),
+  organizationId: integer("organization_id").references(() => organizations.id),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 }, (table) => ({
@@ -333,6 +337,22 @@ export const insertUserStorageConfigSchema = createInsertSchema(userStorageConfi
 
 export type InsertUserStorageConfig = z.infer<typeof insertUserStorageConfigSchema>;
 export type UserStorageConfig = typeof userStorageConfig.$inferSelect;
+
+// ==================== ORG SECRETS ====================
+
+export const orgSecrets = pgTable("org_secrets", {
+  id: serial("id").primaryKey(),
+  organizationId: integer("organization_id").notNull().references(() => organizations.id),
+  name: text("name").notNull(),
+  encryptedValue: text("encrypted_value").notNull(),
+  createdBy: integer("created_by").references(() => users.id),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (table) => ({
+  orgNameIdx: index("org_secrets_org_name_idx").on(table.organizationId, table.name),
+}));
+
+export type OrgSecret = typeof orgSecrets.$inferSelect;
 
 // ==================== API KEYS ====================
 

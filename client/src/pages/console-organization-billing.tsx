@@ -15,7 +15,7 @@ import { StripeCardForm } from "@/components/stripe-card-form";
 interface AuthStatus {
   user: {
     organizationId: number | null;
-    isOrgAdmin: boolean;
+    orgRole: string | null;
   } | null;
 }
 

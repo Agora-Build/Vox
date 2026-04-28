@@ -33,7 +33,7 @@ interface AuthStatus {
     isEnabled: boolean;
     emailVerified: boolean;
     organizationId: number | null;
-    isOrgAdmin: boolean;
+    orgRole: string | null;
   } | null;
 }
 
@@ -188,7 +188,7 @@ export default function ConsoleLayout({ children }: ConsoleLayoutProps) {
       icon: Users,
       active: location === "/console/organization/members",
     });
-    if (user.isOrgAdmin) {
+    if (user.orgRole === "owner" || user.orgRole === "admin") {
       orgNavItems.push({
         title: "Billing",
         url: "/console/organization/billing",

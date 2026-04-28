@@ -15,7 +15,7 @@ import { UserPlus, Shield, UserMinus, Copy } from "lucide-react";
 interface AuthStatus {
   user: {
     organizationId: number | null;
-    isOrgAdmin: boolean;
+    orgRole: string | null;
   } | null;
 }
 
@@ -24,7 +24,7 @@ interface Member {
   username: string;
   email: string;
   plan: string;
-  isOrgAdmin: boolean;
+  orgRole: string | null;
   createdAt: string;
 }
 
@@ -32,7 +32,7 @@ interface Organization {
   id: number;
   totalSeats: number;
   usedSeats: number;
-  isOrgAdmin: boolean;
+  orgRole: string | null;
 }
 
 export default function ConsoleOrganizationMembers() {
@@ -76,8 +76,8 @@ export default function ConsoleOrganizationMembers() {
   });
 
   const updateRoleMutation = useMutation({
-    mutationFn: async ({ userId, isOrgAdmin }: { userId: number; isOrgAdmin: boolean }) => {
-      return apiRequest("PATCH", `/api/organizations/${authStatus?.user?.organizationId}/members/${userId}`, { isOrgAdmin });
+    mutationFn: async ({ userId, orgRole }: { userId: number; orgRole: string }) => {
+      return apiRequest("PATCH", `/api/organizations/${authStatus?.user?.organizationId}/members/${userId}`, { orgRole });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/organizations"] });
@@ -114,7 +114,7 @@ export default function ConsoleOrganizationMembers() {
     toast({ title: "Copied", description: "Invite link copied to clipboard" });
   };
 
-  const isOrgAdmin = authStatus?.user?.isOrgAdmin || false;
+  const isOrgAdmin = authStatus?.user?.orgRole === "owner" || authStatus?.user?.orgRole === "admin";
   const availableSeats = org ? Math.max(0, org.totalSeats - org.usedSeats) : 0;
 
   if (isLoading) {
@@ -235,7 +235,12 @@ export default function ConsoleOrganizationMembers() {
                   <TableCell className="font-medium">{member.username}</TableCell>
                   <TableCell>{member.email}</TableCell>
                   <TableCell>
-                    {member.isOrgAdmin ? (
+                    {member.orgRole === "owner" ? (
+                      <Badge variant="default" className="gap-1">
+                        <Shield className="h-3 w-3" />
+                        Owner
+                      </Badge>
+                    ) : member.orgRole === "admin" ? (
                       <Badge variant="default" className="gap-1">
                         <Shield className="h-3 w-3" />
                         Admin
@@ -247,7 +252,7 @@ export default function ConsoleOrganizationMembers() {
                   <TableCell>
                     <Badge variant="outline">{member.plan}</Badge>
                   </TableCell>
-                  {isOrgAdmin && (
+                  {isOrgAdmin && member.orgRole !== "owner" && (
                     <TableCell>
                       <div className="flex gap-1">
                         <Button
@@ -255,10 +260,10 @@ export default function ConsoleOrganizationMembers() {
                           size="sm"
                           onClick={() => updateRoleMutation.mutate({
                             userId: member.id,
-                            isOrgAdmin: !member.isOrgAdmin
+                            orgRole: member.orgRole === "admin" ? "member" : "admin",
                           })}
                           disabled={updateRoleMutation.isPending}
-                          title={member.isOrgAdmin ? "Demote to member" : "Promote to admin"}
+                          title={member.orgRole === "admin" ? "Demote to member" : "Promote to admin"}
                         >
                           <Shield className="h-4 w-4" />
                         </Button>

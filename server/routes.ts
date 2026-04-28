@@ -140,7 +140,7 @@ export async function registerRoutes(
           isEnabled: user.isEnabled,
           emailVerified: !!user.emailVerifiedAt,
           organizationId: user.organizationId,
-          isOrgAdmin: user.isOrgAdmin,
+          orgRole: user.orgRole,
         } : null
       });
     } catch (error) {
@@ -3237,10 +3237,10 @@ export async function registerRoutes(
         discountPercent: 0,
       });
 
-      // Link user to organization and make them admin
+      // Link user to organization as owner
       await storage.updateUser(user.id, {
         organizationId: org.id,
-        isOrgAdmin: true,
+        orgRole: 'owner',
       });
 
       res.json(org);
@@ -3380,7 +3380,7 @@ export async function registerRoutes(
         username: m.username,
         email: m.email,
         plan: m.plan,
-        isOrgAdmin: m.isOrgAdmin,
+        orgRole: m.orgRole,
         createdAt: m.createdAt,
       })));
     } catch (error) {
@@ -3398,7 +3398,11 @@ export async function registerRoutes(
       }
 
       const { id, userId } = req.params;
-      const { isOrgAdmin } = req.body;
+      const { orgRole } = req.body;
+
+      if (!orgRole || !['admin', 'member'].includes(orgRole)) {
+        return res.status(400).json({ error: "orgRole must be 'admin' or 'member'" });
+      }
 
       if (user.organizationId !== parseInt(id)) {
         return res.status(403).json({ error: "Not authorized to modify this organization" });
@@ -3409,24 +3413,34 @@ export async function registerRoutes(
         return res.status(404).json({ error: "Member not found in organization" });
       }
 
+      // Cannot change owner role
+      if (member.orgRole === 'owner') {
+        return res.status(400).json({ error: "Cannot change owner role" });
+      }
+
       // Cannot demote yourself
-      if (parseInt(userId) === user.id && isOrgAdmin === false) {
-        return res.status(400).json({ error: "Cannot demote yourself" });
+      if (parseInt(userId) === user.id) {
+        return res.status(400).json({ error: "Cannot change your own role" });
+      }
+
+      // Only owner can promote to admin
+      if (orgRole === 'admin' && user.orgRole !== 'owner') {
+        return res.status(403).json({ error: "Only owner can promote to admin" });
       }
 
       // Check max org admins (4)
-      if (isOrgAdmin === true) {
+      if (orgRole === 'admin') {
         const adminCount = await storage.countOrgAdmins(parseInt(id));
         if (adminCount >= 4) {
           return res.status(400).json({ error: "Maximum 4 organization admins allowed" });
         }
       }
 
-      const updated = await storage.updateUser(parseInt(userId), { isOrgAdmin });
+      const updated = await storage.updateUser(parseInt(userId), { orgRole });
       res.json({
         id: updated?.id,
         username: updated?.username,
-        isOrgAdmin: updated?.isOrgAdmin,
+        orgRole: updated?.orgRole,
       });
     } catch (error) {
       console.error("Error updating member:", error);
@@ -3458,12 +3472,9 @@ export async function registerRoutes(
         return res.status(400).json({ error: "Cannot remove yourself. Use leave organization instead." });
       }
 
-      // Cannot remove the only org admin
-      if (member.isOrgAdmin) {
-        const adminCount = await storage.countOrgAdmins(parseInt(id));
-        if (adminCount <= 1) {
-          return res.status(400).json({ error: "Cannot remove the only organization admin" });
-        }
+      // Cannot remove the owner
+      if (member.orgRole === 'owner') {
+        return res.status(400).json({ error: "Cannot remove the organization owner" });
       }
 
       await storage.removeUserFromOrganization(parseInt(userId));
@@ -3497,12 +3508,9 @@ export async function registerRoutes(
         return res.status(403).json({ error: "Not a member of this organization" });
       }
 
-      // Cannot leave if only org admin
-      if (user.isOrgAdmin) {
-        const adminCount = await storage.countOrgAdmins(parseInt(id));
-        if (adminCount <= 1) {
-          return res.status(400).json({ error: "Cannot leave as the only organization admin. Transfer admin role first." });
-        }
+      // Owner cannot leave — must transfer ownership first
+      if (user.orgRole === 'owner') {
+        return res.status(400).json({ error: "Owner cannot leave. Transfer ownership first." });
       }
 
       await storage.removeUserFromOrganization(user.id);
@@ -3588,7 +3596,7 @@ export async function registerRoutes(
         memberCount,
         totalSeats: seats?.totalSeats || 0,
         usedSeats: seats?.usedSeats || 0,
-        isOrgAdmin: user.isOrgAdmin,
+        orgRole: user.orgRole,
       });
     } catch (error) {
       console.error("Error fetching user organization:", error);
