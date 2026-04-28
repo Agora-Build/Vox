@@ -66,6 +66,7 @@ interface EvalResult {
   networkResilience: number;
   naturalness: number;
   noiseReduction: number;
+  rawData?: Record<string, unknown>;
 }
 
 // ---------------------------------------------------------------------------
@@ -646,7 +647,7 @@ class VoxEvalAgentDaemon {
       if (ilTurns) console.log(`[Daemon]   interruption_metrics.latency.turn_level: ${JSON.stringify(ilTurns)}`);
       if (agg) console.log(`[Daemon]   aggregated_summary: ${JSON.stringify(agg)}`);
 
-      const results: EvalResult = { ...RESULT_DEFAULTS };
+      const results: EvalResult = { ...RESULT_DEFAULTS, rawData: metrics };
 
       // Helper: compute median from array of numbers
       const median = (arr: number[]) => {
@@ -1251,33 +1252,50 @@ class VoxEvalAgentDaemon {
       const prefix = `jobs/${task.jobId}`;
       const uploadedFiles: Array<{ name: string; url: string; size: number; contentType: string }> = [];
 
-      // Upload individual files
-      const filesToUpload = ['metrics.json', 'report.json', 'recording.webm'];
-      for (const fileName of filesToUpload) {
-        // Search in session dir and analysis subdir
-        const candidates = [
-          path.join(task.outputDir, fileName),
-          path.join(task.outputDir, 'analysis', fileName),
-        ];
-        for (const filePath of candidates) {
-          if (fs.existsSync(filePath)) {
-            const body = fs.readFileSync(filePath);
-            const key = `${prefix}/${fileName}`;
-            const contentType = fileName.endsWith('.json') ? 'application/json'
-              : fileName.endsWith('.webm') ? 'audio/webm'
-              : 'application/octet-stream';
-
-            await client.send(new PutObjectCommand({
-              Bucket: s3Config.bucket,
-              Key: key,
-              Body: body,
-              ContentType: contentType,
-            }));
-
-            uploadedFiles.push({ name: fileName, url: key, size: body.length, contentType });
-            console.log(`[Daemon] Uploaded ${fileName} (${body.length} bytes)`);
-            break; // found this file, skip other candidates
+      // Upload all files recursively from the output directory
+      const scanDir = (dir: string, relPrefix: string = '') => {
+        const entries = fs.readdirSync(dir, { withFileTypes: true });
+        const files: Array<{ filePath: string; relPath: string }> = [];
+        for (const entry of entries) {
+          const fullPath = path.join(dir, entry.name);
+          const rel = relPrefix ? `${relPrefix}/${entry.name}` : entry.name;
+          if (entry.isDirectory()) {
+            files.push(...scanDir(fullPath, rel));
+          } else if (entry.isFile() && entry.name !== '.DS_Store') {
+            files.push({ filePath: fullPath, relPath: rel });
           }
+        }
+        return files;
+      };
+
+      const allFiles = scanDir(task.outputDir);
+      for (const { filePath: fp, relPath } of allFiles) {
+        try {
+          const body = fs.readFileSync(fp);
+          if (body.length === 0) continue; // skip empty files
+          const key = `${prefix}/${relPath}`;
+          const ext = path.extname(relPath).toLowerCase();
+          const contentType = ext === '.json' ? 'application/json'
+            : ext === '.webm' ? 'audio/webm'
+            : ext === '.wav' ? 'audio/wav'
+            : ext === '.png' ? 'image/png'
+            : ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg'
+            : ext === '.html' ? 'text/html'
+            : ext === '.log' || ext === '.txt' ? 'text/plain'
+            : ext === '.yaml' || ext === '.yml' ? 'text/yaml'
+            : 'application/octet-stream';
+
+          await client.send(new PutObjectCommand({
+            Bucket: s3Config.bucket,
+            Key: key,
+            Body: body,
+            ContentType: contentType,
+          }));
+
+          uploadedFiles.push({ name: relPath, url: key, size: body.length, contentType });
+          console.log(`[Daemon] Uploaded ${relPath} (${body.length} bytes)`);
+        } catch (e) {
+          console.warn(`[Daemon] Failed to upload ${relPath}: ${e instanceof Error ? e.message : e}`);
         }
       }
 

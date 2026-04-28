@@ -93,13 +93,19 @@ export default function ConsoleEvalJobDetail({ jobId }: { jobId: number }) {
   const artifactStatus = (result?.artifactStatus as string) ?? "pending";
   const rawData = (result?.rawData ?? {}) as Record<string, unknown>;
 
-  // Extract turn-level data from rawData or from known metrics structure
-  const responseTurns = (rawData?.response_metrics as Record<string, unknown>)?.latency as Record<string, unknown> | undefined;
-  const turnLevel = (responseTurns?.turn_level ?? []) as Array<Record<string, number>>;
-  const interruptTurns = ((rawData?.interruption_metrics as Record<string, unknown>)?.latency as Record<string, unknown>)?.turn_level as Array<Record<string, number>> | undefined;
+  // Extract turn-level data from rawData
+  const responseMetrics = rawData?.response_metrics as Record<string, unknown> | undefined;
+  const responseTurns = (responseMetrics?.latency as Record<string, unknown>)?.turn_level as Array<Record<string, unknown>> | undefined;
+  const turnLevel = (responseTurns ?? []) as Array<Record<string, number | string | boolean>>;
 
-  // Find audio file
-  const audioFile = artifactFiles.find(f => f.name.includes('recording'));
+  const interruptMetrics = rawData?.interruption_metrics as Record<string, unknown> | undefined;
+  const interruptTurns = ((interruptMetrics?.latency as Record<string, unknown>)?.turn_level ?? []) as Array<Record<string, number | string | boolean>>;
+
+  // Find audio/video files (recordings can be nested in subdirs)
+  const audioFiles = artifactFiles.filter(f => /\.(webm|wav|mp3|ogg)$/i.test(f.name) && f.size > 0);
+
+  // Find screenshot files
+  const screenshotFiles = artifactFiles.filter(f => /\.(png|jpg|jpeg)$/i.test(f.name));
 
   // Can this user trigger re-upload?
   const userId = auth?.user?.id;
@@ -233,24 +239,49 @@ export default function ConsoleEvalJobDetail({ jobId }: { jobId: number }) {
       )}
 
       {/* Audio Player */}
-      {audioFile && (
+      {audioFiles.length > 0 && (
         <Card>
           <CardHeader>
             <CardTitle className="text-sm flex items-center gap-2">
               <Play className="h-4 w-4" />
-              Recording
+              Recordings
             </CardTitle>
-            <CardDescription>{audioFile.name} ({Math.round(audioFile.size / 1024)}KB)</CardDescription>
+            <CardDescription>{audioFiles.length} audio file{audioFiles.length !== 1 ? "s" : ""}</CardDescription>
           </CardHeader>
-          <CardContent>
-            <audio controls className="w-full" src={audioFile.url}>
-              Your browser does not support the audio element.
-            </audio>
+          <CardContent className="space-y-3">
+            {audioFiles.map((f, i) => (
+              <div key={i} className="space-y-1">
+                <p className="text-xs text-muted-foreground font-mono">{f.name} ({Math.round(f.size / 1024)}KB)</p>
+                <audio controls className="w-full" src={f.url} />
+              </div>
+            ))}
           </CardContent>
         </Card>
       )}
 
-      {/* Turn-Level Data */}
+      {/* Screenshots */}
+      {screenshotFiles.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-sm">Screenshots</CardTitle>
+            <CardDescription>{screenshotFiles.length} screenshot{screenshotFiles.length !== 1 ? "s" : ""}</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="grid gap-4 sm:grid-cols-2">
+              {screenshotFiles.map((f, i) => (
+                <div key={i} className="space-y-1">
+                  <a href={f.url} target="_blank" rel="noopener noreferrer">
+                    <img src={f.url} alt={f.name} className="rounded border w-full cursor-pointer hover:opacity-90 transition" />
+                  </a>
+                  <p className="text-xs text-muted-foreground font-mono">{f.name}</p>
+                </div>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Response Turn-Level Data */}
       {turnLevel.length > 0 && (
         <Card>
           <CardHeader>
@@ -263,13 +294,15 @@ export default function ConsoleEvalJobDetail({ jobId }: { jobId: number }) {
                 <TableRow>
                   <TableHead>Turn</TableHead>
                   <TableHead className="text-right">Latency (ms)</TableHead>
+                  <TableHead>Type</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {turnLevel.map((turn, i) => (
                   <TableRow key={i}>
-                    <TableCell className="font-mono">{turn.turn_index ?? i + 1}</TableCell>
-                    <TableCell className="text-right font-mono">{Math.round(turn.latency_ms)}</TableCell>
+                    <TableCell className="font-mono">{String(turn.turn_index ?? i + 1)}</TableCell>
+                    <TableCell className="text-right font-mono">{Math.round(Number(turn.latency_ms))}</TableCell>
+                    <TableCell className="text-xs text-muted-foreground">{String(turn.response_kind ?? "")}</TableCell>
                   </TableRow>
                 ))}
               </TableBody>
@@ -279,7 +312,7 @@ export default function ConsoleEvalJobDetail({ jobId }: { jobId: number }) {
       )}
 
       {/* Interrupt Turn-Level Data */}
-      {interruptTurns && interruptTurns.length > 0 && (
+      {interruptTurns.length > 0 && (
         <Card>
           <CardHeader>
             <CardTitle className="text-sm">Interrupt Turn-Level Latency</CardTitle>
@@ -290,14 +323,16 @@ export default function ConsoleEvalJobDetail({ jobId }: { jobId: number }) {
               <TableHeader>
                 <TableRow>
                   <TableHead>Turn</TableHead>
-                  <TableHead className="text-right">Reaction Time (ms)</TableHead>
+                  <TableHead className="text-right">Reaction (ms)</TableHead>
+                  <TableHead>Kind</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {interruptTurns.map((turn, i) => (
                   <TableRow key={i}>
-                    <TableCell className="font-mono">{turn.turn_index ?? i + 1}</TableCell>
-                    <TableCell className="text-right font-mono">{Math.round(turn.reaction_time_ms ?? turn.latency_ms)}</TableCell>
+                    <TableCell className="font-mono">{String(turn.turn_index ?? i + 1)}</TableCell>
+                    <TableCell className="text-right font-mono">{Math.round(Number(turn.interrupt_action_ms ?? turn.reaction_time_ms_diagnostic ?? turn.latency_ms))}</TableCell>
+                    <TableCell className="text-xs text-muted-foreground">{String(turn.interruption_kind ?? "")}</TableCell>
                   </TableRow>
                 ))}
               </TableBody>
