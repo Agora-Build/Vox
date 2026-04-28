@@ -132,6 +132,7 @@ RUN mkdir -p /app/output \
  && ln -sfn /app/output /app/aeval-data/output \
  && ln -sfn /app/output /app/voice-agent-tester/output
 VOLUME /app/output
+EXPOSE 8099
 
 # Run the daemon
 CMD ["node", "vox-agentd.js"]

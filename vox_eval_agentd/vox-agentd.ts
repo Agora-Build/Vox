@@ -28,6 +28,7 @@
  */
 
 import { spawn } from 'child_process';
+import { createServer, type Server as HttpServer } from 'http';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -155,6 +156,9 @@ class VoxEvalAgentDaemon {
   private isUploading = false;
   private s3Warned = false;
   private lastOutputDir: string | null = null;
+  private healthServer: HttpServer | null = null;
+  private startTime = Date.now();
+  private currentJobId: number | null = null;
 
   constructor(config: DaemonConfig) {
     this.config = config;
@@ -1475,6 +1479,7 @@ class VoxEvalAgentDaemon {
     if (!claimed) return;
 
     this.isRunningJob = true;
+    this.currentJobId = job.id;
     this.lastOutputDir = null;
     try {
       const results = await this.executeJob(job);
@@ -1511,6 +1516,7 @@ class VoxEvalAgentDaemon {
         });
       }
       this.isRunningJob = false;
+      this.currentJobId = null;
     }
   }
 
@@ -1541,6 +1547,28 @@ class VoxEvalAgentDaemon {
     // Initial poll
     setTimeout(() => this.processJobs(), 2000);
 
+    // Health endpoint
+    const healthPort = parseInt(process.env.HEALTH_PORT || '8099');
+    this.healthServer = createServer((req, res) => {
+      if (req.url === '/health' && req.method === 'GET') {
+        const status = this.isRunningJob ? 'occupied' : this.isUploading ? 'uploading' : 'idle';
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          status,
+          uptime: Math.round((Date.now() - this.startTime) / 1000),
+          buildTag: process.env.BUILD_TAG || 'dev',
+          buildDate: process.env.BUILD_DATE || 'unknown',
+          currentJobId: this.currentJobId,
+        }));
+      } else {
+        res.writeHead(404);
+        res.end();
+      }
+    });
+    this.healthServer.listen(healthPort, () => {
+      console.log(`[Daemon] Health endpoint: http://0.0.0.0:${healthPort}/health`);
+    });
+
     console.log(`[Daemon] Agent daemon started. Press Ctrl+C to stop.`);
   }
 
@@ -1548,6 +1576,7 @@ class VoxEvalAgentDaemon {
     console.log(`[Daemon] Stopping...`);
     if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
     if (this.jobPollTimer) clearInterval(this.jobPollTimer);
+    if (this.healthServer) this.healthServer.close();
   }
 }
 

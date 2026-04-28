@@ -5,12 +5,19 @@
 # Reads tokens from .env file. If AGENT_TOKEN is set, upgrades vox-eval-agentd.
 # If RUNNER_TOKEN is set, upgrades vox-clash-runner. Both can be set.
 #
+# Before stopping a container, checks the /health endpoint to ensure it's idle.
+# If busy, polls every 10s for up to 5 minutes before prompting to force stop.
+#
 # Usage:
-#   ./scripts/upgrade.sh              # uses .env in current directory
-#   ./scripts/upgrade.sh /path/.env   # uses specified env file
+#   ./scripts/vox-upgrade.sh              # uses .env in current directory
+#   ./scripts/vox-upgrade.sh /path/.env   # uses specified env file
 #
 
 set -euo pipefail
+
+HEALTH_PORT="${HEALTH_PORT:-8099}"
+WAIT_TIMEOUT=300  # 5 minutes
+POLL_INTERVAL=10
 
 ENV_FILE="${1:-.env}"
 
@@ -55,6 +62,60 @@ fi
 
 echo "-----------------------------------"
 
+# Wait for container to become idle via /health endpoint
+wait_for_idle() {
+    local container_id="$1"
+    local name="$2"
+
+    # Try to get the mapped health port
+    local health_url=""
+    local mapped_port=$(docker port "$container_id" "$HEALTH_PORT" 2>/dev/null | head -1 | sed 's/.*://')
+    if [ -n "$mapped_port" ]; then
+        health_url="http://localhost:${mapped_port}/health"
+    else
+        # Try direct container IP (works on same host)
+        local container_ip=$(docker inspect --format='{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$container_id" 2>/dev/null)
+        if [ -n "$container_ip" ]; then
+            health_url="http://${container_ip}:${HEALTH_PORT}/health"
+        fi
+    fi
+
+    if [ -z "$health_url" ]; then
+        echo "  No health endpoint available — stopping immediately."
+        return 0
+    fi
+
+    # Check health
+    local status=""
+    status=$(curl -s --max-time 3 "$health_url" 2>/dev/null | grep -o '"status":"[^"]*"' | head -1 | cut -d'"' -f4) || true
+
+    if [ "$status" = "idle" ] || [ -z "$status" ]; then
+        [ -n "$status" ] && echo "  Status: idle — safe to stop."
+        return 0
+    fi
+
+    echo "  Status: $status — waiting for idle..."
+    local waited=0
+    while [ "$waited" -lt "$WAIT_TIMEOUT" ]; do
+        sleep "$POLL_INTERVAL"
+        waited=$((waited + POLL_INTERVAL))
+        status=$(curl -s --max-time 3 "$health_url" 2>/dev/null | grep -o '"status":"[^"]*"' | head -1 | cut -d'"' -f4) || true
+
+        if [ "$status" = "idle" ] || [ -z "$status" ]; then
+            echo "  Status: idle after ${waited}s — safe to stop."
+            return 0
+        fi
+        echo "  Still $status... (${waited}s / ${WAIT_TIMEOUT}s)"
+    done
+
+    echo "  Timeout: container still $status after ${WAIT_TIMEOUT}s."
+    read -p "  Force stop? (y/n): " choice
+    case "$choice" in
+        y|Y ) return 0 ;;
+        * ) return 1 ;;
+    esac
+}
+
 declare -A new_containers
 
 for name in "${!images[@]}"; do
@@ -78,7 +139,15 @@ for name in "${!images[@]}"; do
             echo "-----------------------------------"
             continue
         else
-            echo "New image detected. Stopping old container $running_id..."
+            echo "New image detected."
+
+            # Wait for idle before stopping
+            if ! wait_for_idle "$running_id" "$name"; then
+                echo "Skipping $name (user chose not to force stop)."
+                echo "-----------------------------------"
+                continue
+            fi
+
             docker stop "$running_id"
             docker rm "$running_id"
         fi
@@ -107,7 +176,8 @@ for name in "${!images[@]}"; do
     [ -n "${EVAL_FRAMEWORK:-}" ] && env_args+="-e EVAL_FRAMEWORK=$EVAL_FRAMEWORK "
     [ -n "${VOX_AGENT_NAME:-}" ] && env_args+="-e VOX_AGENT_NAME=$VOX_AGENT_NAME "
 
-    new_container_id=$(docker run -d $env_args "$image")
+    # Expose health port for future upgrades
+    new_container_id=$(docker run -d -p "${HEALTH_PORT}:${HEALTH_PORT}" $env_args "$image")
     short_id="${new_container_id:0:12}"
     new_containers[$name]=$short_id
     echo "Started $name: $short_id"
