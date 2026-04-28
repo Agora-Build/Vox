@@ -185,8 +185,9 @@ class VoxEvalAgentDaemon {
       });
 
       if (code === 0 && output.trim()) {
-        // Expected formats: "aeval 0.1.1", "aeval v0.1.0", "v0.1.0"
-        const match = output.match(/v?(\d+\.\d+\.\d+)/);
+        // Expected: last line is "aeval 0.1.4" or "aeval v0.1.4"
+        // DEBUG logs on stderr may contain timestamps that look like versions — match only the aeval line
+        const match = output.match(/aeval\s+v?(\d+\.\d+\.\d+)/);
         if (match) {
           this.aevalVersion = `v${match[1]}`;
           return this.aevalVersion;
