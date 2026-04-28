@@ -2943,13 +2943,33 @@ export async function registerRoutes(
     }));
   }
 
+  // Simple TTL cache for metrics queries (30s) — prevents identical 7-table joins from hammering the DB
+  const metricsCache = new Map<string, { data: unknown; expiry: number }>();
+  const CACHE_TTL = 30000; // 30 seconds
+
+  function getCached<T>(key: string): T | null {
+    const entry = metricsCache.get(key);
+    if (entry && Date.now() < entry.expiry) return entry.data as T;
+    return null;
+  }
+
+  function setCache(key: string, data: unknown): void {
+    metricsCache.set(key, { data, expiry: Date.now() + CACHE_TTL });
+  }
+
   app.get("/api/metrics/realtime", async (req, res) => {
     try {
       const { hours, limit } = req.query;
+      const cacheKey = `realtime:${hours || 'all'}:${limit || '50'}`;
+      const cached = getCached(cacheKey);
+      if (cached) return res.json(cached);
+
       const hoursBack = hours ? parseInt(hours as string) : undefined;
       const limitNum = limit ? parseInt(limit as string) : 50;
       const results = await storage.getMainlineEvalResults(limitNum, hoursBack);
-      res.json(await formatMetricsResults(results));
+      const data = await formatMetricsResults(results);
+      setCache(cacheKey, data);
+      res.json(data);
     } catch (error) {
       console.error("Error fetching realtime metrics:", error);
       res.status(500).json({ error: "Failed to fetch metrics" });
@@ -2959,10 +2979,16 @@ export async function registerRoutes(
   app.get("/api/metrics/community", async (req, res) => {
     try {
       const { hours, limit } = req.query;
+      const cacheKey = `community:${hours || 'all'}:${limit || '50'}`;
+      const cached = getCached(cacheKey);
+      if (cached) return res.json(cached);
+
       const hoursBack = hours ? parseInt(hours as string) : undefined;
       const limitNum = limit ? parseInt(limit as string) : 50;
       const results = await storage.getCommunityEvalResults(limitNum, hoursBack);
-      res.json(await formatMetricsResults(results));
+      const data = await formatMetricsResults(results);
+      setCache(cacheKey, data);
+      res.json(data);
     } catch (error) {
       console.error("Error fetching community metrics:", error);
       res.status(500).json({ error: "Failed to fetch community metrics" });
@@ -2976,10 +3002,16 @@ export async function registerRoutes(
         return res.status(401).json({ error: "Not authenticated" });
       }
       const { hours, limit } = req.query;
+      const cacheKey = `my-evals:${user.id}:${hours || 'all'}:${limit || '50'}`;
+      const cached = getCached(cacheKey);
+      if (cached) return res.json(cached);
+
       const hoursBack = hours ? parseInt(hours as string) : undefined;
       const limitNum = limit ? parseInt(limit as string) : 50;
       const results = await storage.getMyEvalResults(user.id, limitNum, hoursBack);
-      res.json(await formatMetricsResults(results));
+      const data = await formatMetricsResults(results);
+      setCache(cacheKey, data);
+      res.json(data);
     } catch (error) {
       console.error("Error fetching my eval metrics:", error);
       res.status(500).json({ error: "Failed to fetch my eval metrics" });
@@ -2989,6 +3021,10 @@ export async function registerRoutes(
   app.get("/api/metrics/leaderboard", async (req, res) => {
     try {
       const { hours } = req.query;
+      const cacheKey = `leaderboard:${hours || 'all'}`;
+      const cached = getCached(cacheKey);
+      if (cached) return res.json(cached);
+
       const hoursBack = hours ? parseInt(hours as string) : undefined;
       const results = await storage.getMainlineEvalResults(1000, hoursBack);
 
@@ -3107,6 +3143,7 @@ export async function registerRoutes(
         .sort((a, b) => b.compositeScore - a.compositeScore)
         .map((entry, index) => ({ rank: index + 1, ...entry }));
 
+      setCache(cacheKey, sorted);
       res.json(sorted);
     } catch (error) {
       console.error("Error fetching leaderboard:", error);
