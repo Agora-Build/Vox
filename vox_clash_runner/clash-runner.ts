@@ -36,6 +36,15 @@ if (!RUNNER_TOKEN) {
 // Health state
 let runnerStatus: "idle" | "occupied" = "idle";
 let currentMatchId: number | null = null;
+
+function shortBuildTag(): string {
+  const raw = process.env.BUILD_TAG || "dev";
+  const slash = raw.indexOf("/");
+  if (slash > 0 && raw.length - slash > 8) {
+    return raw.slice(0, slash) + "/" + raw.slice(slash + 1, slash + 8);
+  }
+  return raw;
+}
 const startTime = Date.now();
 
 const headers = {
@@ -106,7 +115,7 @@ async function main() {
       res.end(JSON.stringify({
         status: runnerStatus,
         uptime: Math.round((Date.now() - startTime) / 1000),
-        buildTag: process.env.BUILD_TAG || "dev",
+        buildTag: shortBuildTag(),
         buildDate: process.env.BUILD_DATE || "unknown",
         currentMatchId,
       }));

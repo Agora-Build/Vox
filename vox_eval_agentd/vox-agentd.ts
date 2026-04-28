@@ -88,6 +88,16 @@ const JOB_POLL_INTERVAL = 10000;  // 10 seconds
 const VOICE_AGENT_TESTER_PATH = path.resolve(__dirname, 'voice-agent-tester');
 const AEVAL_DATA_PATH = path.resolve(__dirname, 'aeval-data');
 
+// Shorten BUILD_TAG: "main/abc123def456..." → "main/abc123d"
+function shortBuildTag(): string {
+  const raw = process.env.BUILD_TAG || 'dev';
+  const slash = raw.indexOf('/');
+  if (slash > 0 && raw.length - slash > 8) {
+    return raw.slice(0, slash) + '/' + raw.slice(slash + 1, slash + 8);
+  }
+  return raw;
+}
+
 const RESULT_DEFAULTS: EvalResult = {
   responseLatencyMedian: 0,
   responseLatencySd: 0,
@@ -1525,10 +1535,9 @@ class VoxEvalAgentDaemon {
   // -------------------------------------------------------------------------
 
   start(): void {
-    const buildTag = process.env.BUILD_TAG || 'dev';
     const buildDate = process.env.BUILD_DATE || 'unknown';
     console.log(`[Daemon] Starting vox_eval_agentd`);
-    console.log(`  - Build: ${buildTag} (${buildDate})`);
+    console.log(`  - Build: ${shortBuildTag()} (${buildDate})`);
     console.log(`  - Server: ${this.config.serverUrl}`);
     console.log(`  - Agent Name: ${this.config.name || '(inherits from token)'}`);
     console.log(`  - Headless: ${this.config.headless}`);
@@ -1556,7 +1565,7 @@ class VoxEvalAgentDaemon {
         res.end(JSON.stringify({
           status,
           uptime: Math.round((Date.now() - this.startTime) / 1000),
-          buildTag: process.env.BUILD_TAG || 'dev',
+          buildTag: shortBuildTag(),
           buildDate: process.env.BUILD_DATE || 'unknown',
           currentJobId: this.currentJobId,
         }));
