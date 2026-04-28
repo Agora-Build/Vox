@@ -292,12 +292,12 @@ export default function ConsoleSecrets() {
                       <DialogTrigger asChild>
                         <Button disabled={!encryptionConfigured}>
                           <Plus className="mr-2 h-4 w-4" />
-                          Add Org Secret
+                          Add Secret
                         </Button>
                       </DialogTrigger>
                       <DialogContent>
                         <DialogHeader>
-                          <DialogTitle>Add Organization Secret</DialogTitle>
+                          <DialogTitle>Add Secret</DialogTitle>
                           <DialogDescription>
                             This secret will be available to all workflows in your organization.
                           </DialogDescription>
