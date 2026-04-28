@@ -136,10 +136,6 @@ function ScheduledJobsBlock() {
     <>
       <Card>
         <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <CalendarClock className="h-5 w-5" />
-            Scheduled Jobs
-          </CardTitle>
           <CardDescription>
             {schedules ? `${schedules.length} schedule${schedules.length !== 1 ? "s" : ""}` : "Loading..."}
           </CardDescription>
@@ -357,10 +353,6 @@ function JobsTab() {
 
       <Card>
         <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <ClipboardList className="h-5 w-5" />
-            Jobs
-          </CardTitle>
           <CardDescription>
             {jobs ? `${jobs.length} job${jobs.length !== 1 ? "s" : ""}` : "Loading..."}
             {" \u00b7 auto-refreshes every 10s"}
