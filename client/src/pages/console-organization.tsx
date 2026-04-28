@@ -12,7 +12,7 @@ interface Organization {
   memberCount: number;
   totalSeats: number;
   usedSeats: number;
-  isOrgAdmin: boolean;
+  orgRole: string | null;
   createdAt: string;
 }
 
@@ -63,7 +63,7 @@ export default function ConsoleOrganization() {
               Pending Verification
             </Badge>
           )}
-          {org.isOrgAdmin && (
+          {(org.orgRole === "owner" || org.orgRole === "admin") && (
             <Badge variant="outline">Admin</Badge>
           )}
         </div>
@@ -136,7 +136,7 @@ export default function ConsoleOrganization() {
           </p>
           <ul className="list-disc list-inside text-sm text-muted-foreground space-y-1">
             <li>View and manage team members</li>
-            {org.isOrgAdmin && (
+            {(org.orgRole === "owner" || org.orgRole === "admin") && (
               <>
                 <li>Purchase additional seats</li>
                 <li>Manage billing and payment methods</li>

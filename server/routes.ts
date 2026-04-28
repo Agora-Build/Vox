@@ -54,6 +54,41 @@ import {
   getStripePublishableKey,
 } from "./stripe";
 
+// ---- Org resource permission helpers ----
+interface OrgResource {
+  ownerId?: number | null;
+  organizationId?: number | null;
+  createdBy?: number | null;
+  visibility?: string | null;
+}
+
+interface AuthUser {
+  id: number;
+  isAdmin: boolean;
+  organizationId: number | null;
+  orgRole: string | null;
+}
+
+function canAccessResource(user: AuthUser, resource: OrgResource): boolean {
+  if (user.isAdmin) return true;
+  if (resource.ownerId === user.id || resource.createdBy === user.id) return true;
+  if (resource.organizationId && resource.organizationId === user.organizationId) return true;
+  if (resource.visibility === 'public') return true;
+  return false;
+}
+
+function canEditResource(user: AuthUser, resource: OrgResource): boolean {
+  if (user.isAdmin) return true;
+  // Personal resource owner
+  if (!resource.organizationId && (resource.ownerId === user.id || resource.createdBy === user.id)) return true;
+  // Org resource
+  if (resource.organizationId && resource.organizationId === user.organizationId) {
+    if (user.orgRole === 'owner' || user.orgRole === 'admin') return true;
+    if (resource.ownerId === user.id || resource.createdBy === user.id) return true;
+  }
+  return false;
+}
+
 // Elo rating calculation for Clash matches
 // Lower latency = better. Compare median response latency to determine winner.
 async function updateClashEloRatings(
@@ -140,7 +175,7 @@ export async function registerRoutes(
           isEnabled: user.isEnabled,
           emailVerified: !!user.emailVerifiedAt,
           organizationId: user.organizationId,
-          isOrgAdmin: user.isOrgAdmin,
+          orgRole: user.orgRole,
         } : null
       });
     } catch (error) {
@@ -646,6 +681,7 @@ export async function registerRoutes(
         isEnabled: true,
         emailVerifiedAt: new Date(),
         organizationId: invite.organizationId,
+        orgRole: invite.organizationId ? 'member' : null,
       });
 
       await storage.markInviteTokenUsed(tokenHash);
@@ -1059,14 +1095,22 @@ export async function registerRoutes(
       }
       const ownWorkflows = await storage.getWorkflowsByOwner(user.id);
 
+      // Include org workflows if user is in an org
+      let orgWorkflows: typeof ownWorkflows = [];
+      if (user.organizationId) {
+        const all = await storage.getWorkflowsByOrganization(user.organizationId);
+        const ownIds = new Set(ownWorkflows.map(w => w.id));
+        orgWorkflows = all.filter(w => !ownIds.has(w.id));
+      }
+
       if (req.query.includePublic === "true") {
         const publicWorkflows = await storage.getPublicWorkflows();
-        const ownIds = new Set(ownWorkflows.map((w) => w.id));
-        const merged = [...ownWorkflows, ...publicWorkflows.filter((w) => !ownIds.has(w.id))];
+        const seenIds = new Set([...ownWorkflows, ...orgWorkflows].map(w => w.id));
+        const merged = [...ownWorkflows, ...orgWorkflows, ...publicWorkflows.filter(w => !seenIds.has(w.id))];
         return res.json(merged);
       }
 
-      res.json(ownWorkflows);
+      res.json([...ownWorkflows, ...orgWorkflows]);
     } catch (error) {
       console.error("Error fetching workflows:", error);
       res.status(500).json({ error: "Failed to fetch workflows" });
@@ -1083,7 +1127,7 @@ export async function registerRoutes(
       if (!workflow) {
         return res.status(404).json({ error: "Workflow not found" });
       }
-      if (workflow.ownerId !== user.id && workflow.visibility !== "public" && !user.isAdmin) {
+      if (!canAccessResource(user, workflow)) {
         return res.status(403).json({ error: "Access denied" });
       }
       res.json(workflow);
@@ -1100,7 +1144,7 @@ export async function registerRoutes(
         return res.status(401).json({ error: "Not authenticated" });
       }
 
-      const { name, description, projectId, providerId, visibility, config } = req.body;
+      const { name, description, projectId, providerId, visibility, config, organizationId } = req.body;
 
       if (!name) {
         return res.status(400).json({ error: "Name required" });
@@ -1133,12 +1177,18 @@ export async function registerRoutes(
         }
       }
 
+      // Validate org membership if org resource
+      if (organizationId && user.organizationId !== organizationId) {
+        return res.status(403).json({ error: "Not a member of this organization" });
+      }
+
       const workflow = await storage.createWorkflow({
         name,
         description,
         ownerId: user.id,
         projectId,
         providerId,
+        organizationId: organizationId || null,
         visibility: visibility || "public",
         isMainline: false,
         config: config || {},
@@ -1165,7 +1215,7 @@ export async function registerRoutes(
         return res.status(404).json({ error: "Workflow not found" });
       }
 
-      if (workflow.ownerId !== user.id && !user.isAdmin) {
+      if (!canEditResource(user, workflow)) {
         return res.status(403).json({ error: "Not authorized to modify this workflow" });
       }
 
@@ -1246,7 +1296,7 @@ export async function registerRoutes(
         return res.status(404).json({ error: "Workflow not found" });
       }
 
-      if (workflow.ownerId !== user.id) {
+      if (!canEditResource(user, workflow)) {
         return res.status(403).json({ error: "Not authorized to delete this workflow" });
       }
 
@@ -1303,15 +1353,22 @@ export async function registerRoutes(
 
       const ownSets = await storage.getEvalSetsByOwner(user.id);
 
+      // Include org eval sets if user is in an org
+      let orgSets: typeof ownSets = [];
+      if (user.organizationId) {
+        const all = await storage.getEvalSetsByOrganization(user.organizationId);
+        const ownIds = new Set(ownSets.map(s => s.id));
+        orgSets = all.filter(s => !ownIds.has(s.id));
+      }
+
       if (req.query.includePublic === "true") {
         const publicSets = await storage.getPublicEvalSets();
-        // Merge, deduplicating by id (own sets take priority)
-        const ownIds = new Set(ownSets.map((s) => s.id));
-        const merged = [...ownSets, ...publicSets.filter((s) => !ownIds.has(s.id))];
+        const seenIds = new Set([...ownSets, ...orgSets].map(s => s.id));
+        const merged = [...ownSets, ...orgSets, ...publicSets.filter(s => !seenIds.has(s.id))];
         return res.json(merged);
       }
 
-      res.json(ownSets);
+      res.json([...ownSets, ...orgSets]);
     } catch (error) {
       console.error("Error fetching eval sets:", error);
       res.status(500).json({ error: "Failed to fetch eval sets" });
@@ -1328,7 +1385,7 @@ export async function registerRoutes(
       if (!evalSet) {
         return res.status(404).json({ error: "Eval set not found" });
       }
-      if (evalSet.ownerId !== user.id && evalSet.visibility !== "public") {
+      if (!canAccessResource(user, evalSet)) {
         return res.status(403).json({ error: "Access denied" });
       }
       res.json(evalSet);
@@ -1345,7 +1402,7 @@ export async function registerRoutes(
         return res.status(401).json({ error: "Not authenticated" });
       }
 
-      const { name, description, visibility, config } = req.body;
+      const { name, description, visibility, config, organizationId } = req.body;
 
       if (!name) {
         return res.status(400).json({ error: "Name required" });
@@ -1360,10 +1417,15 @@ export async function registerRoutes(
         return res.status(403).json({ error: "Premium plan required for private eval sets" });
       }
 
+      if (organizationId && user.organizationId !== organizationId) {
+        return res.status(403).json({ error: "Not a member of this organization" });
+      }
+
       const evalSet = await storage.createEvalSet({
         name,
         description,
         ownerId: user.id,
+        organizationId: organizationId || null,
         visibility: visibility || "public",
         isMainline: false,
         config: config || {},
@@ -1390,7 +1452,7 @@ export async function registerRoutes(
         return res.status(404).json({ error: "Eval set not found" });
       }
 
-      if (evalSet.ownerId !== user.id && !user.isAdmin) {
+      if (!canEditResource(user, evalSet)) {
         return res.status(403).json({ error: "Not authorized to modify this eval set" });
       }
 
@@ -1502,7 +1564,7 @@ export async function registerRoutes(
       const evalSet = await storage.getEvalSet(parseInt(req.params.id));
       if (!evalSet) return res.status(404).json({ error: "Eval set not found" });
 
-      if (evalSet.ownerId !== user.id && !user.isAdmin) {
+      if (!canEditResource(user, evalSet)) {
         return res.status(403).json({ error: "Not authorized" });
       }
 
@@ -1549,7 +1611,7 @@ export async function registerRoutes(
       if (!schedule) {
         return res.status(404).json({ error: "Schedule not found" });
       }
-      if (schedule.createdBy !== user.id && !user.isAdmin) {
+      if (!canEditResource(user, schedule)) {
         return res.status(403).json({ error: "Access denied" });
       }
       res.json(schedule);
@@ -1567,7 +1629,7 @@ export async function registerRoutes(
         return res.status(401).json({ error: "Not authenticated" });
       }
 
-      const { name, workflowId, evalSetId, region, scheduleType, cronExpression, timezone, runAt, maxRuns } = req.body;
+      const { name, workflowId, evalSetId, region, scheduleType, cronExpression, timezone, runAt, maxRuns, organizationId } = req.body;
 
       if (!name || !workflowId || !region) {
         return res.status(400).json({ error: "Name, workflowId, and region are required" });
@@ -1582,7 +1644,7 @@ export async function registerRoutes(
       if (!workflow) {
         return res.status(404).json({ error: "Workflow not found" });
       }
-      if (workflow.ownerId !== user.id && !user.isAdmin) {
+      if (!canEditResource(user, workflow)) {
         return res.status(403).json({ error: "Access denied to workflow" });
       }
 
@@ -1594,7 +1656,7 @@ export async function registerRoutes(
       if (!evalSet) {
         return res.status(404).json({ error: "Eval set not found" });
       }
-      if (evalSet.ownerId !== user.id && evalSet.visibility !== "public") {
+      if (!canAccessResource(user, evalSet)) {
         return res.status(403).json({ error: "Access denied to eval set" });
       }
 
@@ -1630,6 +1692,7 @@ export async function registerRoutes(
         nextRunAt,
         maxRuns: maxRuns || null,
         createdBy: user.id,
+        organizationId: organizationId || null,
       });
 
       res.json(schedule);
@@ -1653,7 +1716,7 @@ export async function registerRoutes(
       if (!schedule) {
         return res.status(404).json({ error: "Schedule not found" });
       }
-      if (schedule.createdBy !== user.id && !user.isAdmin) {
+      if (!canEditResource(user, schedule)) {
         return res.status(403).json({ error: "Access denied" });
       }
 
@@ -1712,7 +1775,7 @@ export async function registerRoutes(
       if (!schedule) {
         return res.status(404).json({ error: "Schedule not found" });
       }
-      if (schedule.createdBy !== user.id && !user.isAdmin) {
+      if (!canEditResource(user, schedule)) {
         return res.status(403).json({ error: "Access denied" });
       }
 
@@ -1738,7 +1801,7 @@ export async function registerRoutes(
       if (!schedule) {
         return res.status(404).json({ error: "Schedule not found" });
       }
-      if (schedule.createdBy !== user.id && !user.isAdmin) {
+      if (!canEditResource(user, schedule)) {
         return res.status(403).json({ error: "Access denied" });
       }
 
@@ -1855,6 +1918,75 @@ export async function registerRoutes(
     } catch (error) {
       console.error("Error deleting secret:", error);
       res.status(500).json({ error: "Failed to delete secret" });
+    }
+  });
+
+  // ==================== ORG SECRETS ====================
+
+  // List org secrets (all members see names, admins see full)
+  app.get("/api/org-secrets", requireAuth, async (req, res) => {
+    try {
+      const user = await getCurrentUser(req);
+      if (!user || !user.organizationId) {
+        return res.status(403).json({ error: "Organization membership required" });
+      }
+      const secrets = await storage.getOrgSecrets(user.organizationId);
+      res.json(secrets.map(s => ({
+        name: s.name,
+        createdAt: s.createdAt,
+        updatedAt: s.updatedAt,
+      })));
+    } catch (error) {
+      console.error("Error fetching org secrets:", error);
+      res.status(500).json({ error: "Failed to fetch org secrets" });
+    }
+  });
+
+  // Create/update org secret (admin/owner only)
+  app.post("/api/org-secrets", requireAuth, requireOrgAdmin, async (req, res) => {
+    try {
+      const user = await getCurrentUser(req);
+      if (!user || !user.organizationId) {
+        return res.status(403).json({ error: "Organization membership required" });
+      }
+      const { name, value } = req.body;
+      if (!name || !value) {
+        return res.status(400).json({ error: "Name and value are required" });
+      }
+      const trimmedName = name.trim();
+      if (!SECRET_NAME_PATTERN.test(trimmedName)) {
+        return res.status(400).json({ error: "Name must be uppercase letters, digits, and underscores (e.g., MY_SECRET)" });
+      }
+      if (trimmedName.length > 100) {
+        return res.status(400).json({ error: "Name too long (max 100 characters)" });
+      }
+      if (value.length > 10000) {
+        return res.status(400).json({ error: "Value too long (max 10000 characters)" });
+      }
+      if (!isEncryptionConfigured()) {
+        return res.status(503).json({ error: "Encryption not configured on server" });
+      }
+      const encrypted = encryptValue(value);
+      await storage.upsertOrgSecret(user.organizationId, trimmedName, encrypted, user.id);
+      res.json({ message: "Org secret saved" });
+    } catch (error) {
+      console.error("Error saving org secret:", error);
+      res.status(500).json({ error: "Failed to save org secret" });
+    }
+  });
+
+  // Delete org secret (admin/owner only)
+  app.delete("/api/org-secrets/:name", requireAuth, requireOrgAdmin, async (req, res) => {
+    try {
+      const user = await getCurrentUser(req);
+      if (!user || !user.organizationId) {
+        return res.status(403).json({ error: "Organization membership required" });
+      }
+      await storage.deleteOrgSecret(user.organizationId, decodeURIComponent(req.params.name));
+      res.json({ message: "Org secret deleted" });
+    } catch (error) {
+      console.error("Error deleting org secret:", error);
+      res.status(500).json({ error: "Failed to delete org secret" });
     }
   });
 
@@ -2565,10 +2697,12 @@ export async function registerRoutes(
         return res.status(403).json({ error: "Job not assigned to your agent" });
       }
 
-      // Get workflow owner's secrets
-      const userSecrets = await storage.getSecretsForJob(parseInt(jobId));
-      console.log(`[Secrets] Job ${jobId}: found ${userSecrets.length} secret(s) for workflow owner`);
+      // Merge secrets: org secrets (if org workflow) + personal secrets (workflow owner)
+      // Org secrets take precedence for same name
       const decrypted: Record<string, string> = {};
+
+      // 1. Personal secrets from workflow owner
+      const userSecrets = await storage.getSecretsForJob(parseInt(jobId));
       for (const s of userSecrets) {
         try {
           decrypted[s.name] = decryptValue(s.encryptedValue);
@@ -2576,6 +2710,12 @@ export async function registerRoutes(
           console.error(`[Secrets] Failed to decrypt secret ${s.name} for job ${jobId}:`, err instanceof Error ? err.message : err);
         }
       }
+
+      // 2. Org secrets override personal (if workflow belongs to an org)
+      const orgSecrets = await storage.getOrgSecretsForJob(parseInt(jobId));
+      Object.assign(decrypted, orgSecrets);
+
+      console.log(`[Secrets] Job ${jobId}: ${userSecrets.length} personal + ${Object.keys(orgSecrets).length} org secret(s)`);
 
       res.json(decrypted);
     } catch (error) {
@@ -2605,7 +2745,7 @@ export async function registerRoutes(
       }
 
       // Public workflows can be run by anyone; private workflows only by owner/admin/principal/fellow
-      if (workflow.visibility === "private" && workflow.ownerId !== user.id && !user.isAdmin && user.plan !== "principal" && user.plan !== "fellow") {
+      if (workflow.visibility === "private" && !canEditResource(user, workflow) && user.plan !== "principal" && user.plan !== "fellow") {
         return res.status(403).json({ error: "Not authorized to run this workflow" });
       }
 
@@ -2740,7 +2880,7 @@ export async function registerRoutes(
       // Check authorization: owner, admin, or public workflow
       if (!user.isAdmin) {
         const workflow = await storage.getWorkflow(job.workflowId);
-        if (!workflow || (workflow.ownerId !== user.id && workflow.visibility !== "public")) {
+        if (!workflow || !canAccessResource(user, workflow)) {
           return res.status(403).json({ error: "Not authorized to view this job" });
         }
       }
@@ -2770,7 +2910,7 @@ export async function registerRoutes(
       // Check authorization: owner, admin, or public workflow
       if (!user.isAdmin) {
         const workflow = await storage.getWorkflow(job.workflowId);
-        if (!workflow || (workflow.ownerId !== user.id && workflow.visibility !== "public")) {
+        if (!workflow || !canAccessResource(user, workflow)) {
           return res.status(403).json({ error: "Not authorized to view this job" });
         }
       }
@@ -3237,10 +3377,10 @@ export async function registerRoutes(
         discountPercent: 0,
       });
 
-      // Link user to organization and make them admin
+      // Link user to organization as owner
       await storage.updateUser(user.id, {
         organizationId: org.id,
-        isOrgAdmin: true,
+        orgRole: 'owner',
       });
 
       res.json(org);
@@ -3380,7 +3520,7 @@ export async function registerRoutes(
         username: m.username,
         email: m.email,
         plan: m.plan,
-        isOrgAdmin: m.isOrgAdmin,
+        orgRole: m.orgRole,
         createdAt: m.createdAt,
       })));
     } catch (error) {
@@ -3398,7 +3538,11 @@ export async function registerRoutes(
       }
 
       const { id, userId } = req.params;
-      const { isOrgAdmin } = req.body;
+      const { orgRole } = req.body;
+
+      if (!orgRole || !['admin', 'member'].includes(orgRole)) {
+        return res.status(400).json({ error: "orgRole must be 'admin' or 'member'" });
+      }
 
       if (user.organizationId !== parseInt(id)) {
         return res.status(403).json({ error: "Not authorized to modify this organization" });
@@ -3409,24 +3553,34 @@ export async function registerRoutes(
         return res.status(404).json({ error: "Member not found in organization" });
       }
 
+      // Cannot change owner role
+      if (member.orgRole === 'owner') {
+        return res.status(400).json({ error: "Cannot change owner role" });
+      }
+
       // Cannot demote yourself
-      if (parseInt(userId) === user.id && isOrgAdmin === false) {
-        return res.status(400).json({ error: "Cannot demote yourself" });
+      if (parseInt(userId) === user.id) {
+        return res.status(400).json({ error: "Cannot change your own role" });
+      }
+
+      // Only owner can promote to admin
+      if (orgRole === 'admin' && user.orgRole !== 'owner') {
+        return res.status(403).json({ error: "Only owner can promote to admin" });
       }
 
       // Check max org admins (4)
-      if (isOrgAdmin === true) {
+      if (orgRole === 'admin') {
         const adminCount = await storage.countOrgAdmins(parseInt(id));
         if (adminCount >= 4) {
           return res.status(400).json({ error: "Maximum 4 organization admins allowed" });
         }
       }
 
-      const updated = await storage.updateUser(parseInt(userId), { isOrgAdmin });
+      const updated = await storage.updateUser(parseInt(userId), { orgRole });
       res.json({
         id: updated?.id,
         username: updated?.username,
-        isOrgAdmin: updated?.isOrgAdmin,
+        orgRole: updated?.orgRole,
       });
     } catch (error) {
       console.error("Error updating member:", error);
@@ -3458,12 +3612,9 @@ export async function registerRoutes(
         return res.status(400).json({ error: "Cannot remove yourself. Use leave organization instead." });
       }
 
-      // Cannot remove the only org admin
-      if (member.isOrgAdmin) {
-        const adminCount = await storage.countOrgAdmins(parseInt(id));
-        if (adminCount <= 1) {
-          return res.status(400).json({ error: "Cannot remove the only organization admin" });
-        }
+      // Cannot remove the owner
+      if (member.orgRole === 'owner') {
+        return res.status(400).json({ error: "Cannot remove the organization owner" });
       }
 
       await storage.removeUserFromOrganization(parseInt(userId));
@@ -3497,12 +3648,9 @@ export async function registerRoutes(
         return res.status(403).json({ error: "Not a member of this organization" });
       }
 
-      // Cannot leave if only org admin
-      if (user.isOrgAdmin) {
-        const adminCount = await storage.countOrgAdmins(parseInt(id));
-        if (adminCount <= 1) {
-          return res.status(400).json({ error: "Cannot leave as the only organization admin. Transfer admin role first." });
-        }
+      // Owner cannot leave — must transfer ownership first
+      if (user.orgRole === 'owner') {
+        return res.status(400).json({ error: "Owner cannot leave. Transfer ownership first." });
       }
 
       await storage.removeUserFromOrganization(user.id);
@@ -3588,7 +3736,7 @@ export async function registerRoutes(
         memberCount,
         totalSeats: seats?.totalSeats || 0,
         usedSeats: seats?.usedSeats || 0,
-        isOrgAdmin: user.isOrgAdmin,
+        orgRole: user.orgRole,
       });
     } catch (error) {
       console.error("Error fetching user organization:", error);
@@ -5091,7 +5239,7 @@ export async function registerRoutes(
 
       const schedule = await storage.getClashSchedule(scheduleId);
       if (!schedule) return res.status(404).json({ error: "Schedule not found" });
-      if (schedule.createdBy !== user.id && !user.isAdmin) {
+      if (!canEditResource(user, schedule)) {
         return res.status(403).json({ error: "Not authorized" });
       }
 
@@ -5126,7 +5274,7 @@ export async function registerRoutes(
 
       const schedule = await storage.getClashSchedule(scheduleId);
       if (!schedule) return res.status(404).json({ error: "Schedule not found" });
-      if (schedule.createdBy !== user.id && !user.isAdmin) {
+      if (!canEditResource(user, schedule)) {
         return res.status(403).json({ error: "Not authorized" });
       }
 

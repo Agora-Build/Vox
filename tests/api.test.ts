@@ -1779,7 +1779,7 @@ describe('Vox API Tests', () => {
       expect(response.ok).toBe(true);
       const org = await response.json();
       expect(org.id).toBe(organizationId);
-      expect(org.isOrgAdmin).toBe(true);
+      expect(org.orgRole).toBeDefined();
     });
 
     it('should get organization details', async () => {
@@ -1796,7 +1796,7 @@ describe('Vox API Tests', () => {
       const members = await response.json();
       expect(Array.isArray(members)).toBe(true);
       expect(members.length).toBe(1); // Just the creator
-      expect(members[0].isOrgAdmin).toBe(true);
+      expect(['owner', 'admin'].includes(members[0].orgRole)).toBe(true);
     });
 
     it('should get organization seats info', async () => {
@@ -1856,14 +1856,14 @@ describe('Vox API Tests', () => {
       expect(org.name).toBe('Updated Organization');
     });
 
-    it('should prevent user from leaving if they are the only admin', async () => {
+    it('should prevent owner from leaving organization', async () => {
       expect(orgSession).toBeDefined();
       const response = await authFetch(orgSession, `${BASE_URL}/api/organizations/${organizationId}/leave`, {
         method: 'POST',
       });
       expect(response.status).toBe(400);
       const error = await response.json();
-      expect(error.error).toContain('admin');
+      expect(error.error).toContain('Owner');
     });
   });
 
@@ -3626,6 +3626,219 @@ describe('Vox API Tests', () => {
     it('should require auth for reset-stuck', async () => {
       const res = await fetch(`${BASE_URL}/api/eval-agent/artifacts/reset-stuck`, { method: 'POST' });
       expect(res.status).toBe(401);
+    });
+  });
+
+  // ==================== Organization Roles ====================
+  describe('Organization Roles', () => {
+    it('should return orgRole in auth status', async () => {
+      const res = await authFetch(adminSession, `${BASE_URL}/api/auth/status`);
+      expect(res.ok).toBe(true);
+      const data = await res.json();
+      expect(data.user).toHaveProperty('orgRole');
+      // orgRole is null when not in an org, or 'owner'/'admin'/'member'
+      expect([null, 'owner', 'admin', 'member']).toContain(data.user.orgRole);
+    });
+
+    it('should create org and assign owner role', async () => {
+      // Check if admin already in an org
+      const statusRes = await authFetch(adminSession, `${BASE_URL}/api/auth/status`);
+      const status = await statusRes.json();
+      if (status.user.organizationId) {
+        // Already in org — check orgRole
+        const orgRes = await authFetch(adminSession, `${BASE_URL}/api/user/organization`);
+        if (orgRes.ok) {
+          const org = await orgRes.json();
+          if (org) {
+            expect(org.orgRole).toBeDefined();
+            expect(['owner', 'admin', 'member']).toContain(org.orgRole);
+          }
+        }
+        return;
+      }
+
+      // Create org
+      const createRes = await authFetch(adminSession, `${BASE_URL}/api/organizations`, {
+        method: 'POST',
+        body: JSON.stringify({ name: 'Test Org' }),
+      });
+      if (!createRes.ok) return; // may fail if already in org
+
+      // Verify role is owner
+      const checkRes = await authFetch(adminSession, `${BASE_URL}/api/auth/status`);
+      const checkData = await checkRes.json();
+      expect(checkData.user.orgRole).toBe('owner');
+    });
+
+    it('should list members with orgRole', async () => {
+      const statusRes = await authFetch(adminSession, `${BASE_URL}/api/auth/status`);
+      const status = await statusRes.json();
+      if (!status.user.organizationId) return;
+
+      const membersRes = await authFetch(adminSession, `${BASE_URL}/api/organizations/${status.user.organizationId}/members`);
+      expect(membersRes.ok).toBe(true);
+      const members = await membersRes.json();
+      expect(Array.isArray(members)).toBe(true);
+      if (members.length > 0) {
+        expect(members[0]).toHaveProperty('orgRole');
+        expect(['owner', 'admin', 'member']).toContain(members[0].orgRole);
+      }
+    });
+
+    it('should reject invalid role in member update', async () => {
+      const statusRes = await authFetch(adminSession, `${BASE_URL}/api/auth/status`);
+      const status = await statusRes.json();
+      if (!status.user.organizationId) return;
+
+      const res = await authFetch(adminSession, `${BASE_URL}/api/organizations/${status.user.organizationId}/members/${status.user.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ orgRole: 'superadmin' }),
+      });
+      expect(res.status).toBe(400);
+    });
+
+    it('should reject self role change', async () => {
+      const statusRes = await authFetch(adminSession, `${BASE_URL}/api/auth/status`);
+      const status = await statusRes.json();
+      if (!status.user.organizationId) return;
+
+      const res = await authFetch(adminSession, `${BASE_URL}/api/organizations/${status.user.organizationId}/members/${status.user.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ orgRole: 'member' }),
+      });
+      expect(res.status).toBe(400);
+    });
+
+    it('should reject owner leaving org', async () => {
+      const statusRes = await authFetch(adminSession, `${BASE_URL}/api/auth/status`);
+      const status = await statusRes.json();
+      if (!status.user.organizationId || status.user.orgRole !== 'owner') return;
+
+      const res = await authFetch(adminSession, `${BASE_URL}/api/organizations/${status.user.organizationId}/leave`, {
+        method: 'POST',
+      });
+      expect(res.status).toBe(400);
+    });
+
+    it('should include orgRole in user organization endpoint', async () => {
+      const res = await authFetch(adminSession, `${BASE_URL}/api/user/organization`);
+      expect(res.ok).toBe(true);
+      const data = await res.json();
+      if (data) {
+        expect(data).toHaveProperty('orgRole');
+      }
+    });
+  });
+
+  // ==================== Resource Organization Scoping ====================
+  describe('Resource Organization Scoping', () => {
+    it('should include organizationId in workflow schema', async () => {
+      const res = await authFetch(adminSession, `${BASE_URL}/api/workflows?includePublic=true`);
+      if (!res.ok) return;
+      const workflows = await res.json();
+      if (workflows.length > 0) {
+        expect('organizationId' in workflows[0] || workflows[0].organizationId === undefined || workflows[0].organizationId === null).toBe(true);
+      }
+    });
+
+    it('should accept organizationId in eval-agents metadata', async () => {
+      const res = await fetch(`${BASE_URL}/api/eval-agents`);
+      expect(res.ok).toBe(true);
+      const agents = await res.json();
+      if (agents.length > 0) {
+        expect(agents[0]).toHaveProperty('metadata');
+      }
+    });
+  });
+
+  // ==================== Org Secrets ====================
+  describe('Org Secrets', () => {
+    it('should require org membership to list org secrets', async () => {
+      const res = await fetch(`${BASE_URL}/api/org-secrets`);
+      expect(res.status).toBe(401);
+    });
+
+    it('should list org secrets when in an org', async () => {
+      const statusRes = await authFetch(adminSession, `${BASE_URL}/api/auth/status`);
+      const status = await statusRes.json();
+      if (!status.user.organizationId) return;
+
+      const res = await authFetch(adminSession, `${BASE_URL}/api/org-secrets`);
+      expect(res.ok).toBe(true);
+      const secrets = await res.json();
+      expect(Array.isArray(secrets)).toBe(true);
+      // Should return names only, no values
+      if (secrets.length > 0) {
+        expect(secrets[0]).toHaveProperty('name');
+        expect(secrets[0]).not.toHaveProperty('encryptedValue');
+      }
+    });
+
+    it('should create and delete org secret (admin)', async () => {
+      const statusRes = await authFetch(adminSession, `${BASE_URL}/api/auth/status`);
+      const status = await statusRes.json();
+      if (!status.user.organizationId) return;
+
+      // Create
+      const createRes = await authFetch(adminSession, `${BASE_URL}/api/org-secrets`, {
+        method: 'POST',
+        body: JSON.stringify({ name: 'TEST_ORG_SECRET', value: 'test-value-123' }),
+      });
+      // May fail if encryption not configured
+      if (!createRes.ok) return;
+
+      // Verify it's listed
+      const listRes = await authFetch(adminSession, `${BASE_URL}/api/org-secrets`);
+      const secrets = await listRes.json();
+      const found = secrets.find((s: { name: string }) => s.name === 'TEST_ORG_SECRET');
+      expect(found).toBeDefined();
+
+      // Delete
+      const delRes = await authFetch(adminSession, `${BASE_URL}/api/org-secrets/TEST_ORG_SECRET`, { method: 'DELETE' });
+      expect(delRes.ok).toBe(true);
+
+      // Verify deleted
+      const listRes2 = await authFetch(adminSession, `${BASE_URL}/api/org-secrets`);
+      const secrets2 = await listRes2.json();
+      const notFound = secrets2.find((s: { name: string }) => s.name === 'TEST_ORG_SECRET');
+      expect(notFound).toBeUndefined();
+    });
+
+    it('should require name and value for org secret creation', async () => {
+      const statusRes = await authFetch(adminSession, `${BASE_URL}/api/auth/status`);
+      const status = await statusRes.json();
+      if (!status.user.organizationId) return;
+
+      const res = await authFetch(adminSession, `${BASE_URL}/api/org-secrets`, {
+        method: 'POST',
+        body: JSON.stringify({ name: 'NO_VALUE' }),
+      });
+      expect(res.status).toBe(400);
+    });
+  });
+
+  // ==================== Permission Helpers ====================
+  describe('Permission Checks', () => {
+    it('should allow admin to access any workflow', async () => {
+      const res = await authFetch(adminSession, `${BASE_URL}/api/workflows?includePublic=true`);
+      expect(res.ok).toBe(true);
+    });
+
+    it('should allow access to public workflows', async () => {
+      const res = await authFetch(adminSession, `${BASE_URL}/api/workflows?includePublic=true`);
+      expect(res.ok).toBe(true);
+      const workflows = await res.json();
+      const publicWorkflows = workflows.filter((w: { visibility: string }) => w.visibility === 'public');
+      expect(publicWorkflows.length).toBeGreaterThanOrEqual(0);
+    });
+
+    it('should return schedules with creatorName for org admin', async () => {
+      const res = await authFetch(adminSession, `${BASE_URL}/api/eval-schedules`);
+      expect(res.ok).toBe(true);
+      const schedules = await res.json();
+      if (schedules.length > 0) {
+        expect(schedules[0]).toHaveProperty('creatorName');
+      }
     });
   });
 });

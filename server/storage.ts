@@ -55,6 +55,7 @@ import {
   type InsertClashRunnerIssuedToken,
   type UserStorageConfig,
   type InsertUserStorageConfig,
+  type OrgSecret,
   users,
   organizations,
   providers,
@@ -86,6 +87,7 @@ import {
   clashTranscripts,
   clashSchedules,
   userStorageConfig,
+  orgSecrets,
 } from "@shared/schema";
 import { drizzle } from "drizzle-orm/node-postgres";
 import pkg from "pg";
@@ -333,6 +335,10 @@ export class DatabaseStorage {
     return db.select().from(workflows).where(eq(workflows.ownerId, ownerId)).orderBy(desc(workflows.createdAt));
   }
 
+  async getWorkflowsByOrganization(organizationId: number): Promise<Workflow[]> {
+    return db.select().from(workflows).where(eq(workflows.organizationId, organizationId)).orderBy(desc(workflows.createdAt));
+  }
+
   async getWorkflowsByProject(projectId: number): Promise<Workflow[]> {
     return db.select().from(workflows).where(eq(workflows.projectId, projectId)).orderBy(desc(workflows.createdAt));
   }
@@ -376,6 +382,10 @@ export class DatabaseStorage {
 
   async getEvalSetsByOwner(ownerId: number): Promise<EvalSet[]> {
     return db.select().from(evalSets).where(eq(evalSets.ownerId, ownerId)).orderBy(desc(evalSets.createdAt));
+  }
+
+  async getEvalSetsByOrganization(organizationId: number): Promise<EvalSet[]> {
+    return db.select().from(evalSets).where(eq(evalSets.organizationId, organizationId)).orderBy(desc(evalSets.createdAt));
   }
 
   async getPublicEvalSets(): Promise<EvalSet[]> {
@@ -1164,7 +1174,7 @@ export class DatabaseStorage {
   async countOrgAdmins(organizationId: number): Promise<number> {
     const result = await db.select({ count: sql<number>`count(*)` })
       .from(users)
-      .where(and(eq(users.organizationId, organizationId), eq(users.isOrgAdmin, true)));
+      .where(and(eq(users.organizationId, organizationId), inArray(users.orgRole, ['owner', 'admin'])));
     return Number(result[0]?.count || 0);
   }
 
@@ -1177,7 +1187,7 @@ export class DatabaseStorage {
 
   async removeUserFromOrganization(userId: number): Promise<User | undefined> {
     const result = await db.update(users)
-      .set({ organizationId: null, isOrgAdmin: false, updatedAt: new Date() })
+      .set({ organizationId: null, orgRole: null, updatedAt: new Date() })
       .where(eq(users.id, userId))
       .returning();
     return result[0];
@@ -1294,6 +1304,7 @@ export class DatabaseStorage {
       runCount: evalSchedules.runCount,
       maxRuns: evalSchedules.maxRuns,
       createdBy: evalSchedules.createdBy,
+      organizationId: evalSchedules.organizationId,
       createdAt: evalSchedules.createdAt,
       updatedAt: evalSchedules.updatedAt,
       workflowName: workflows.name,
@@ -1730,6 +1741,60 @@ export class DatabaseStorage {
       .where(eq(evalResults.artifactStatus, 'uploading'))
       .returning({ id: evalResults.id });
     return result.length;
+  }
+
+  // ==================== ORG SECRETS ====================
+
+  async getOrgSecrets(organizationId: number): Promise<OrgSecret[]> {
+    return db.select().from(orgSecrets)
+      .where(eq(orgSecrets.organizationId, organizationId))
+      .orderBy(desc(orgSecrets.createdAt));
+  }
+
+  async getOrgSecret(organizationId: number, name: string): Promise<OrgSecret | undefined> {
+    const result = await db.select().from(orgSecrets)
+      .where(and(eq(orgSecrets.organizationId, organizationId), eq(orgSecrets.name, name)));
+    return result[0];
+  }
+
+  async upsertOrgSecret(organizationId: number, name: string, encryptedValue: string, createdBy: number): Promise<OrgSecret> {
+    const existing = await this.getOrgSecret(organizationId, name);
+    if (existing) {
+      const result = await db.update(orgSecrets)
+        .set({ encryptedValue, updatedAt: new Date() })
+        .where(eq(orgSecrets.id, existing.id))
+        .returning();
+      return result[0];
+    }
+    const result = await db.insert(orgSecrets)
+      .values({ organizationId, name, encryptedValue, createdBy })
+      .returning();
+    return result[0];
+  }
+
+  async deleteOrgSecret(organizationId: number, name: string): Promise<void> {
+    await db.delete(orgSecrets)
+      .where(and(eq(orgSecrets.organizationId, organizationId), eq(orgSecrets.name, name)));
+  }
+
+  async getOrgSecretsForJob(jobId: number): Promise<Record<string, string>> {
+    // Follow: job → workflow → organizationId → org_secrets
+    // Only return org secrets if job creator is a member of the org
+    const job = await this.getEvalJob(jobId);
+    if (!job) return {};
+    const workflow = await this.getWorkflow(job.workflowId);
+    if (!workflow?.organizationId) return {};
+    // Verify job creator is org member (prevent secret leak via public org workflows)
+    if (job.createdBy) {
+      const creator = await this.getUser(job.createdBy);
+      if (!creator || creator.organizationId !== workflow.organizationId) return {};
+    }
+    const secrets = await this.getOrgSecrets(workflow.organizationId);
+    const result: Record<string, string> = {};
+    for (const s of secrets) {
+      result[s.name] = decryptValue(s.encryptedValue);
+    }
+    return result;
   }
 }
 

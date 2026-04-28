@@ -114,7 +114,7 @@ export async function requireOrgAdmin(req: Request, res: Response, next: NextFun
   if (!user.organizationId) {
     return res.status(403).json({ error: "Organization membership required" });
   }
-  if (!user.isOrgAdmin) {
+  if (user.orgRole !== 'owner' && user.orgRole !== 'admin') {
     return res.status(403).json({ error: "Organization admin access required" });
   }
   next();

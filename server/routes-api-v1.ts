@@ -773,7 +773,7 @@ export function registerApiV1Routes(app: Express): void {
           email: user.email,
           plan: user.plan,
           organizationId: user.organizationId,
-          isOrgAdmin: user.isOrgAdmin,
+          orgRole: user.orgRole,
         },
       });
     } catch (error) {
