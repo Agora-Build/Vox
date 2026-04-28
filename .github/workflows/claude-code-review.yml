@@ -36,17 +36,10 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-          prompt: |
-            Review the code changes in this PR. Focus on:
-            1. Security issues (injection, auth bypass, credential exposure)
-            2. Logic errors and edge cases
-            3. Performance concerns
-            4. Code quality and maintainability
-
-            Be concise. Only comment on real issues, not style preferences.
-            If the code looks good, say so briefly.
-
-            Always post your review as a PR comment, even if other bots have already commented.
+          plugin_marketplaces: 'https://github.com/anthropics/claude-code.git'
+          plugins: 'code-review@claude-code-plugins'
+          prompt: '/code-review:code-review ${{ github.repository }}/pull/${{ github.event.pull_request.number }}'
+          exclude_comments_by_actor: 'github-actions[bot]'
           # See https://github.com/anthropics/claude-code-action/blob/main/docs/usage.md
         env:
           ANTHROPIC_BASE_URL: ${{ secrets.ANTHROPIC_BASE_URL }}
