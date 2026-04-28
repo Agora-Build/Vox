@@ -108,8 +108,9 @@ for name in "${!images[@]}"; do
     [ -n "${VOX_AGENT_NAME:-}" ] && env_args+="-e VOX_AGENT_NAME=$VOX_AGENT_NAME "
 
     new_container_id=$(docker run -d $env_args "$image")
-    new_containers[$name]=$new_container_id
-    echo "Started $name: $new_container_id"
+    short_id="${new_container_id:0:12}"
+    new_containers[$name]=$short_id
+    echo "Started $name: $short_id"
     echo "-----------------------------------"
 done
 
