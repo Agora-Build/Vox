@@ -10,6 +10,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { Server, MapPin, Activity, Clock, Eye, EyeOff, Plus, Key, Copy, Check, Ban, Lock } from "lucide-react";
 import { useState } from "react";
 import { formatSmartTimestamp, formatRegion, REGIONS } from "@/lib/utils";
@@ -234,13 +235,29 @@ export default function ConsoleEvalAgents() {
                       {getStateBadge(agent.state)}
                     </TableCell>
                     <TableCell className="text-muted-foreground text-xs font-mono">
-                      {agent.metadata?.buildTag && (
-                        <div>{agent.metadata.buildTag}</div>
-                      )}
-                      {agent.metadata?.buildDate && agent.metadata.buildDate !== 'unknown' && (
-                        <div>{agent.metadata.buildDate.split('T')[0]}</div>
-                      )}
-                      {!agent.metadata?.buildTag && '-'}
+                      {agent.metadata?.buildTag ? (
+                        <TooltipProvider>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <span className="cursor-default">{agent.metadata.buildTag}</span>
+                            </TooltipTrigger>
+                            <TooltipContent side="bottom" className="text-xs font-mono space-y-1">
+                              {agent.metadata.buildDate && agent.metadata.buildDate !== 'unknown' && (
+                                <div>Date: {agent.metadata.buildDate}</div>
+                              )}
+                              {agent.metadata.framework && (
+                                <div>Framework: {agent.metadata.framework}</div>
+                              )}
+                              {agent.metadata.frameworkVersion && (
+                                <div>Version: {agent.metadata.frameworkVersion}</div>
+                              )}
+                              {agent.metadata.aevalDataCommit && (
+                                <div>Data: {agent.metadata.aevalDataCommit}</div>
+                              )}
+                            </TooltipContent>
+                          </Tooltip>
+                        </TooltipProvider>
+                      ) : '-'}
                     </TableCell>
                     <TableCell className="text-muted-foreground">
                       <div className="flex items-center gap-1">
