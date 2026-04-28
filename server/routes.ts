@@ -2065,6 +2065,7 @@ export async function registerRoutes(
         name: a.name,
         region: a.region,
         state: a.state,
+        metadata: a.metadata,
         lastSeenAt: a.lastSeenAt,
         lastJobAt: a.lastJobAt,
         createdAt: a.createdAt,
