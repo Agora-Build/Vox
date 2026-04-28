@@ -175,15 +175,9 @@ export default function ConsoleSecrets() {
           <Card>
             <CardHeader>
               <div className="flex items-center justify-between gap-4">
-                <div>
-                  <CardTitle className="flex items-center gap-2">
-                    <KeyRound className="h-5 w-5" />
-                    Personal Secrets
-                  </CardTitle>
-                  <CardDescription className="mt-1.5">
-                    Private to you. Used by workflows you own.
-                  </CardDescription>
-                </div>
+                <CardDescription>
+                  Private to you. Used by workflows you own.
+                </CardDescription>
                 <Dialog open={createOpen} onOpenChange={setCreateOpen}>
                   <DialogTrigger asChild>
                     <Button disabled={!encryptionConfigured}>
@@ -290,15 +284,9 @@ export default function ConsoleSecrets() {
             <Card>
               <CardHeader>
                 <div className="flex items-center justify-between gap-4">
-                  <div>
-                    <CardTitle className="flex items-center gap-2">
-                      <Building2 className="h-5 w-5" />
-                      Organization Secrets
-                    </CardTitle>
-                    <CardDescription className="mt-1.5">
-                      Shared across all org workflows. Org secrets override personal secrets with the same name.
-                    </CardDescription>
-                  </div>
+                  <CardDescription>
+                    Shared across all org workflows. Org secrets override personal secrets with the same name.
+                  </CardDescription>
                   {isOrgAdmin && (
                     <Dialog open={orgCreateOpen} onOpenChange={setOrgCreateOpen}>
                       <DialogTrigger asChild>
