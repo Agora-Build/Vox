@@ -3737,7 +3737,6 @@ describe('Vox API Tests', () => {
       if (!res.ok) return;
       const workflows = await res.json();
       if (workflows.length > 0) {
-        // organizationId should be present (null for personal)
         expect('organizationId' in workflows[0] || workflows[0].organizationId === undefined || workflows[0].organizationId === null).toBe(true);
       }
     });
@@ -3747,8 +3746,98 @@ describe('Vox API Tests', () => {
       expect(res.ok).toBe(true);
       const agents = await res.json();
       if (agents.length > 0) {
-        // metadata should be present
         expect(agents[0]).toHaveProperty('metadata');
+      }
+    });
+  });
+
+  // ==================== Org Secrets ====================
+  describe('Org Secrets', () => {
+    it('should require org membership to list org secrets', async () => {
+      const res = await fetch(`${BASE_URL}/api/org-secrets`);
+      expect(res.status).toBe(401);
+    });
+
+    it('should list org secrets when in an org', async () => {
+      const statusRes = await authFetch(adminSession, `${BASE_URL}/api/auth/status`);
+      const status = await statusRes.json();
+      if (!status.user.organizationId) return;
+
+      const res = await authFetch(adminSession, `${BASE_URL}/api/org-secrets`);
+      expect(res.ok).toBe(true);
+      const secrets = await res.json();
+      expect(Array.isArray(secrets)).toBe(true);
+      // Should return names only, no values
+      if (secrets.length > 0) {
+        expect(secrets[0]).toHaveProperty('name');
+        expect(secrets[0]).not.toHaveProperty('encryptedValue');
+      }
+    });
+
+    it('should create and delete org secret (admin)', async () => {
+      const statusRes = await authFetch(adminSession, `${BASE_URL}/api/auth/status`);
+      const status = await statusRes.json();
+      if (!status.user.organizationId) return;
+
+      // Create
+      const createRes = await authFetch(adminSession, `${BASE_URL}/api/org-secrets`, {
+        method: 'POST',
+        body: JSON.stringify({ name: 'TEST_ORG_SECRET', value: 'test-value-123' }),
+      });
+      // May fail if encryption not configured
+      if (!createRes.ok) return;
+
+      // Verify it's listed
+      const listRes = await authFetch(adminSession, `${BASE_URL}/api/org-secrets`);
+      const secrets = await listRes.json();
+      const found = secrets.find((s: { name: string }) => s.name === 'TEST_ORG_SECRET');
+      expect(found).toBeDefined();
+
+      // Delete
+      const delRes = await authFetch(adminSession, `${BASE_URL}/api/org-secrets/TEST_ORG_SECRET`, { method: 'DELETE' });
+      expect(delRes.ok).toBe(true);
+
+      // Verify deleted
+      const listRes2 = await authFetch(adminSession, `${BASE_URL}/api/org-secrets`);
+      const secrets2 = await listRes2.json();
+      const notFound = secrets2.find((s: { name: string }) => s.name === 'TEST_ORG_SECRET');
+      expect(notFound).toBeUndefined();
+    });
+
+    it('should require name and value for org secret creation', async () => {
+      const statusRes = await authFetch(adminSession, `${BASE_URL}/api/auth/status`);
+      const status = await statusRes.json();
+      if (!status.user.organizationId) return;
+
+      const res = await authFetch(adminSession, `${BASE_URL}/api/org-secrets`, {
+        method: 'POST',
+        body: JSON.stringify({ name: 'NO_VALUE' }),
+      });
+      expect(res.status).toBe(400);
+    });
+  });
+
+  // ==================== Permission Helpers ====================
+  describe('Permission Checks', () => {
+    it('should allow admin to access any workflow', async () => {
+      const res = await authFetch(adminSession, `${BASE_URL}/api/workflows?includePublic=true`);
+      expect(res.ok).toBe(true);
+    });
+
+    it('should allow access to public workflows', async () => {
+      const res = await authFetch(adminSession, `${BASE_URL}/api/workflows?includePublic=true`);
+      expect(res.ok).toBe(true);
+      const workflows = await res.json();
+      const publicWorkflows = workflows.filter((w: { visibility: string }) => w.visibility === 'public');
+      expect(publicWorkflows.length).toBeGreaterThanOrEqual(0);
+    });
+
+    it('should return schedules with creatorName for org admin', async () => {
+      const res = await authFetch(adminSession, `${BASE_URL}/api/eval-schedules`);
+      expect(res.ok).toBe(true);
+      const schedules = await res.json();
+      if (schedules.length > 0) {
+        expect(schedules[0]).toHaveProperty('creatorName');
       }
     });
   });

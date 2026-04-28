@@ -55,6 +55,7 @@ import {
   type InsertClashRunnerIssuedToken,
   type UserStorageConfig,
   type InsertUserStorageConfig,
+  type OrgSecret,
   users,
   organizations,
   providers,
@@ -86,6 +87,7 @@ import {
   clashTranscripts,
   clashSchedules,
   userStorageConfig,
+  orgSecrets,
 } from "@shared/schema";
 import { drizzle } from "drizzle-orm/node-postgres";
 import pkg from "pg";
@@ -1731,6 +1733,54 @@ export class DatabaseStorage {
       .where(eq(evalResults.artifactStatus, 'uploading'))
       .returning({ id: evalResults.id });
     return result.length;
+  }
+
+  // ==================== ORG SECRETS ====================
+
+  async getOrgSecrets(organizationId: number): Promise<OrgSecret[]> {
+    return db.select().from(orgSecrets)
+      .where(eq(orgSecrets.organizationId, organizationId))
+      .orderBy(desc(orgSecrets.createdAt));
+  }
+
+  async getOrgSecret(organizationId: number, name: string): Promise<OrgSecret | undefined> {
+    const result = await db.select().from(orgSecrets)
+      .where(and(eq(orgSecrets.organizationId, organizationId), eq(orgSecrets.name, name)));
+    return result[0];
+  }
+
+  async upsertOrgSecret(organizationId: number, name: string, encryptedValue: string, createdBy: number): Promise<OrgSecret> {
+    const existing = await this.getOrgSecret(organizationId, name);
+    if (existing) {
+      const result = await db.update(orgSecrets)
+        .set({ encryptedValue, updatedAt: new Date() })
+        .where(eq(orgSecrets.id, existing.id))
+        .returning();
+      return result[0];
+    }
+    const result = await db.insert(orgSecrets)
+      .values({ organizationId, name, encryptedValue, createdBy })
+      .returning();
+    return result[0];
+  }
+
+  async deleteOrgSecret(organizationId: number, name: string): Promise<void> {
+    await db.delete(orgSecrets)
+      .where(and(eq(orgSecrets.organizationId, organizationId), eq(orgSecrets.name, name)));
+  }
+
+  async getOrgSecretsForJob(jobId: number): Promise<Record<string, string>> {
+    // Follow: job → workflow → organizationId → org_secrets
+    const job = await this.getEvalJob(jobId);
+    if (!job) return {};
+    const workflow = await this.getWorkflow(job.workflowId);
+    if (!workflow?.organizationId) return {};
+    const secrets = await this.getOrgSecrets(workflow.organizationId);
+    const result: Record<string, string> = {};
+    for (const s of secrets) {
+      result[s.name] = decryptValue(s.encryptedValue);
+    }
+    return result;
   }
 }
 
