@@ -4,7 +4,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { ArrowLeft, Download, CheckCircle, XCircle, Loader2, Clock, Play, Upload, RefreshCw, ExternalLink } from "lucide-react";
+import { ArrowLeft, Download, CheckCircle, XCircle, Loader2, Clock, Play, Upload, RefreshCw } from "lucide-react";
 import { Link } from "wouter";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -104,7 +104,6 @@ export default function ConsoleEvalJobDetail({ jobId }: { jobId: number }) {
   // Find special artifact files
   const audioFiles = artifactFiles.filter(f => /\.(webm|wav|mp3|ogg)$/i.test(f.name) && f.size > 0);
   const screenshotFiles = artifactFiles.filter(f => /\.(png|jpg|jpeg)$/i.test(f.name));
-  const htmlFiles = artifactFiles.filter(f => /\.html?$/i.test(f.name));
 
   // Can this user trigger re-upload?
   const userId = auth?.user?.id;
@@ -235,25 +234,6 @@ export default function ConsoleEvalJobDetail({ jobId }: { jobId: number }) {
             </CardContent>
           </Card>
         </div>
-      )}
-
-      {/* HTML Reports */}
-      {htmlFiles.length > 0 && (
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-sm">Reports</CardTitle>
-            <CardDescription>{htmlFiles.length} report{htmlFiles.length !== 1 ? "s" : ""}</CardDescription>
-          </CardHeader>
-          <CardContent className="flex flex-wrap gap-2">
-            {htmlFiles.map((f, i) => (
-              <a key={i} href={f.url} target="_blank" rel="noopener noreferrer">
-                <Button variant="outline" size="sm" className="gap-1.5">
-                  {f.name.split('/').pop()} <ExternalLink className="h-3 w-3" />
-                </Button>
-              </a>
-            ))}
-          </CardContent>
-        </Card>
       )}
 
       {/* Audio Player */}
