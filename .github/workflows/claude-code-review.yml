@@ -36,7 +36,7 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-          direct_prompt: |
+          prompt: |
             Review the code changes in this PR. Focus on:
             1. Security issues (injection, auth bypass, credential exposure)
             2. Logic errors and edge cases
@@ -46,7 +46,7 @@ jobs:
             Be concise. Only comment on real issues, not style preferences.
             If the code looks good, say so briefly.
 
-            Always post your review, even if other bots have already commented.
+            Always post your review as a PR comment, even if other bots have already commented.
           # See https://github.com/anthropics/claude-code-action/blob/main/docs/usage.md
         env:
           ANTHROPIC_BASE_URL: ${{ secrets.ANTHROPIC_BASE_URL }}
