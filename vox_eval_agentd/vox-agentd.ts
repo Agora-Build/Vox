@@ -196,7 +196,10 @@ class VoxEvalAgentDaemon {
 
       const code = await new Promise<number | null>((resolve) => {
         proc.on('close', resolve);
-        proc.on('error', () => resolve(null));
+        proc.on('error', (err) => {
+          console.error(`[Daemon] aeval --version spawn error:`, err.message);
+          resolve(null);
+        });
       });
 
       console.log(`[Daemon] aeval --version: code=${code}, stdout+stderr length=${output.length}`);
