@@ -128,5 +128,6 @@ ENV PIPEWIRE_RUNTIME_DIR=/tmp/pipewire-run
 ENV LD_LIBRARY_PATH=/opt/agora_rtc_sdk/agora_sdk
 
 VOLUME /app/output
+EXPOSE 8099
 
 CMD ["node", "clash-runner.js"]

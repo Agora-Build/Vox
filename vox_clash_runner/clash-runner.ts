@@ -17,6 +17,7 @@
 // 6. Return to step 4 (poll for next assignment)
 
 import { execSync } from "child_process";
+import { createServer } from "http";
 import * as fs from "fs";
 import * as path from "path";
 import WebSocket from "ws";
@@ -31,6 +32,11 @@ if (!RUNNER_TOKEN) {
   console.error("[ClashRunner] RUNNER_TOKEN required");
   process.exit(1);
 }
+
+// Health state
+let runnerStatus: "idle" | "occupied" = "idle";
+let currentMatchId: number | null = null;
+const startTime = Date.now();
 
 const headers = {
   "Content-Type": "application/json",
@@ -92,6 +98,26 @@ async function main() {
   // Step 3: Start heartbeat loop
   startHeartbeat();
 
+  // Health endpoint
+  const healthPort = parseInt(process.env.HEALTH_PORT || "8099");
+  createServer((req, res) => {
+    if (req.url === "/health" && req.method === "GET") {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({
+        status: runnerStatus,
+        uptime: Math.round((Date.now() - startTime) / 1000),
+        buildTag: process.env.BUILD_TAG || "dev",
+        buildDate: process.env.BUILD_DATE || "unknown",
+        currentMatchId,
+      }));
+    } else {
+      res.writeHead(404);
+      res.end();
+    }
+  }).listen(healthPort, () => {
+    console.log(`[ClashRunner] Health endpoint: http://0.0.0.0:${healthPort}/health`);
+  });
+
   // Step 4: Poll for assignments forever
   console.log("[ClashRunner] Polling for assignments...");
   while (true) {
@@ -104,7 +130,14 @@ async function main() {
       }
 
       console.log(`[ClashRunner] Assigned match #${assignment.match.id}: "${assignment.match.topic}"`);
-      await executeMatch(assignment);
+      runnerStatus = "occupied";
+      currentMatchId = assignment.match.id;
+      try {
+        await executeMatch(assignment);
+      } finally {
+        runnerStatus = "idle";
+        currentMatchId = null;
+      }
       console.log("[ClashRunner] Match complete, returning to pool.");
     } catch (err) {
       console.error("[ClashRunner] Error in poll loop:", err);
