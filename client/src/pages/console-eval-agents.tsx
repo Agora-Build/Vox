@@ -239,7 +239,12 @@ export default function ConsoleEvalAgents() {
                         <TooltipProvider>
                           <Tooltip>
                             <TooltipTrigger asChild>
-                              <span className="cursor-default">{agent.metadata.buildTag}</span>
+                              <span className="cursor-default">
+                                {agent.metadata.buildTag}
+                                {agent.metadata.buildDate && agent.metadata.buildDate !== 'unknown' && (
+                                  <span className="text-muted-foreground/60 ml-1">({agent.metadata.buildDate.split('T')[0]})</span>
+                                )}
+                              </span>
                             </TooltipTrigger>
                             <TooltipContent side="bottom" className="text-xs font-mono space-y-1">
                               {agent.metadata.buildDate && agent.metadata.buildDate !== 'unknown' && (
