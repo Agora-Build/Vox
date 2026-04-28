@@ -1779,7 +1779,7 @@ describe('Vox API Tests', () => {
       expect(response.ok).toBe(true);
       const org = await response.json();
       expect(org.id).toBe(organizationId);
-      expect(org.isOrgAdmin).toBe(true);
+      expect(org.orgRole).toBeDefined();
     });
 
     it('should get organization details', async () => {
@@ -1796,7 +1796,7 @@ describe('Vox API Tests', () => {
       const members = await response.json();
       expect(Array.isArray(members)).toBe(true);
       expect(members.length).toBe(1); // Just the creator
-      expect(members[0].isOrgAdmin).toBe(true);
+      expect(['owner', 'admin'].includes(members[0].orgRole)).toBe(true);
     });
 
     it('should get organization seats info', async () => {
@@ -1856,14 +1856,14 @@ describe('Vox API Tests', () => {
       expect(org.name).toBe('Updated Organization');
     });
 
-    it('should prevent user from leaving if they are the only admin', async () => {
+    it('should prevent owner from leaving organization', async () => {
       expect(orgSession).toBeDefined();
       const response = await authFetch(orgSession, `${BASE_URL}/api/organizations/${organizationId}/leave`, {
         method: 'POST',
       });
       expect(response.status).toBe(400);
       const error = await response.json();
-      expect(error.error).toContain('admin');
+      expect(error.error).toContain('Owner');
     });
   });
 

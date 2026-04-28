@@ -1095,14 +1095,22 @@ export async function registerRoutes(
       }
       const ownWorkflows = await storage.getWorkflowsByOwner(user.id);
 
+      // Include org workflows if user is in an org
+      let orgWorkflows: typeof ownWorkflows = [];
+      if (user.organizationId) {
+        const all = await storage.getWorkflowsByOrganization(user.organizationId);
+        const ownIds = new Set(ownWorkflows.map(w => w.id));
+        orgWorkflows = all.filter(w => !ownIds.has(w.id));
+      }
+
       if (req.query.includePublic === "true") {
         const publicWorkflows = await storage.getPublicWorkflows();
-        const ownIds = new Set(ownWorkflows.map((w) => w.id));
-        const merged = [...ownWorkflows, ...publicWorkflows.filter((w) => !ownIds.has(w.id))];
+        const seenIds = new Set([...ownWorkflows, ...orgWorkflows].map(w => w.id));
+        const merged = [...ownWorkflows, ...orgWorkflows, ...publicWorkflows.filter(w => !seenIds.has(w.id))];
         return res.json(merged);
       }
 
-      res.json(ownWorkflows);
+      res.json([...ownWorkflows, ...orgWorkflows]);
     } catch (error) {
       console.error("Error fetching workflows:", error);
       res.status(500).json({ error: "Failed to fetch workflows" });
@@ -1136,7 +1144,7 @@ export async function registerRoutes(
         return res.status(401).json({ error: "Not authenticated" });
       }
 
-      const { name, description, projectId, providerId, visibility, config } = req.body;
+      const { name, description, projectId, providerId, visibility, config, organizationId } = req.body;
 
       if (!name) {
         return res.status(400).json({ error: "Name required" });
@@ -1169,12 +1177,18 @@ export async function registerRoutes(
         }
       }
 
+      // Validate org membership if org resource
+      if (organizationId && user.organizationId !== organizationId) {
+        return res.status(403).json({ error: "Not a member of this organization" });
+      }
+
       const workflow = await storage.createWorkflow({
         name,
         description,
         ownerId: user.id,
         projectId,
         providerId,
+        organizationId: organizationId || null,
         visibility: visibility || "public",
         isMainline: false,
         config: config || {},
@@ -1339,15 +1353,22 @@ export async function registerRoutes(
 
       const ownSets = await storage.getEvalSetsByOwner(user.id);
 
+      // Include org eval sets if user is in an org
+      let orgSets: typeof ownSets = [];
+      if (user.organizationId) {
+        const all = await storage.getEvalSetsByOrganization(user.organizationId);
+        const ownIds = new Set(ownSets.map(s => s.id));
+        orgSets = all.filter(s => !ownIds.has(s.id));
+      }
+
       if (req.query.includePublic === "true") {
         const publicSets = await storage.getPublicEvalSets();
-        // Merge, deduplicating by id (own sets take priority)
-        const ownIds = new Set(ownSets.map((s) => s.id));
-        const merged = [...ownSets, ...publicSets.filter((s) => !ownIds.has(s.id))];
+        const seenIds = new Set([...ownSets, ...orgSets].map(s => s.id));
+        const merged = [...ownSets, ...orgSets, ...publicSets.filter(s => !seenIds.has(s.id))];
         return res.json(merged);
       }
 
-      res.json(ownSets);
+      res.json([...ownSets, ...orgSets]);
     } catch (error) {
       console.error("Error fetching eval sets:", error);
       res.status(500).json({ error: "Failed to fetch eval sets" });
@@ -1381,7 +1402,7 @@ export async function registerRoutes(
         return res.status(401).json({ error: "Not authenticated" });
       }
 
-      const { name, description, visibility, config } = req.body;
+      const { name, description, visibility, config, organizationId } = req.body;
 
       if (!name) {
         return res.status(400).json({ error: "Name required" });
@@ -1396,10 +1417,15 @@ export async function registerRoutes(
         return res.status(403).json({ error: "Premium plan required for private eval sets" });
       }
 
+      if (organizationId && user.organizationId !== organizationId) {
+        return res.status(403).json({ error: "Not a member of this organization" });
+      }
+
       const evalSet = await storage.createEvalSet({
         name,
         description,
         ownerId: user.id,
+        organizationId: organizationId || null,
         visibility: visibility || "public",
         isMainline: false,
         config: config || {},
@@ -1603,7 +1629,7 @@ export async function registerRoutes(
         return res.status(401).json({ error: "Not authenticated" });
       }
 
-      const { name, workflowId, evalSetId, region, scheduleType, cronExpression, timezone, runAt, maxRuns } = req.body;
+      const { name, workflowId, evalSetId, region, scheduleType, cronExpression, timezone, runAt, maxRuns, organizationId } = req.body;
 
       if (!name || !workflowId || !region) {
         return res.status(400).json({ error: "Name, workflowId, and region are required" });
@@ -1666,6 +1692,7 @@ export async function registerRoutes(
         nextRunAt,
         maxRuns: maxRuns || null,
         createdBy: user.id,
+        organizationId: organizationId || null,
       });
 
       res.json(schedule);
@@ -1926,11 +1953,21 @@ export async function registerRoutes(
       if (!name || !value) {
         return res.status(400).json({ error: "Name and value are required" });
       }
+      const trimmedName = name.trim();
+      if (!SECRET_NAME_PATTERN.test(trimmedName)) {
+        return res.status(400).json({ error: "Name must be uppercase letters, digits, and underscores (e.g., MY_SECRET)" });
+      }
+      if (trimmedName.length > 100) {
+        return res.status(400).json({ error: "Name too long (max 100 characters)" });
+      }
+      if (value.length > 10000) {
+        return res.status(400).json({ error: "Value too long (max 10000 characters)" });
+      }
       if (!isEncryptionConfigured()) {
         return res.status(503).json({ error: "Encryption not configured on server" });
       }
       const encrypted = encryptValue(value);
-      await storage.upsertOrgSecret(user.organizationId, name.trim(), encrypted, user.id);
+      await storage.upsertOrgSecret(user.organizationId, trimmedName, encrypted, user.id);
       res.json({ message: "Org secret saved" });
     } catch (error) {
       console.error("Error saving org secret:", error);

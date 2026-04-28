@@ -335,6 +335,10 @@ export class DatabaseStorage {
     return db.select().from(workflows).where(eq(workflows.ownerId, ownerId)).orderBy(desc(workflows.createdAt));
   }
 
+  async getWorkflowsByOrganization(organizationId: number): Promise<Workflow[]> {
+    return db.select().from(workflows).where(eq(workflows.organizationId, organizationId)).orderBy(desc(workflows.createdAt));
+  }
+
   async getWorkflowsByProject(projectId: number): Promise<Workflow[]> {
     return db.select().from(workflows).where(eq(workflows.projectId, projectId)).orderBy(desc(workflows.createdAt));
   }
@@ -378,6 +382,10 @@ export class DatabaseStorage {
 
   async getEvalSetsByOwner(ownerId: number): Promise<EvalSet[]> {
     return db.select().from(evalSets).where(eq(evalSets.ownerId, ownerId)).orderBy(desc(evalSets.createdAt));
+  }
+
+  async getEvalSetsByOrganization(organizationId: number): Promise<EvalSet[]> {
+    return db.select().from(evalSets).where(eq(evalSets.organizationId, organizationId)).orderBy(desc(evalSets.createdAt));
   }
 
   async getPublicEvalSets(): Promise<EvalSet[]> {
