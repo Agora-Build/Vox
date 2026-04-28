@@ -373,10 +373,6 @@ export default function ConsoleEvalSets() {
 
       <Card>
         <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <FileText className="h-5 w-5" />
-            Eval Sets
-          </CardTitle>
           <CardDescription>
             {isPrincipal
               ? "As a principal user, you can mark eval sets as mainline for the official evaluation."
