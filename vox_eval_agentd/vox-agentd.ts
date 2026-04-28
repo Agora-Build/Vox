@@ -294,9 +294,14 @@ class VoxEvalAgentDaemon {
     try {
       const metadata: Record<string, string> = {
         framework: this.config.framework,
+        buildTag: shortBuildTag(),
+        buildDate: process.env.BUILD_DATE || 'unknown',
       };
       if (this.aevalVersion !== "unknown") {
         metadata.frameworkVersion = this.aevalVersion;
+      }
+      if (process.env.AEVAL_DATA_COMMIT && process.env.AEVAL_DATA_COMMIT !== 'unknown') {
+        metadata.aevalDataCommit = process.env.AEVAL_DATA_COMMIT;
       }
 
       const response = await this.fetch('/api/eval-agent/heartbeat', {
