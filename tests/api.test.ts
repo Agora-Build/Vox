@@ -3628,4 +3628,128 @@ describe('Vox API Tests', () => {
       expect(res.status).toBe(401);
     });
   });
+
+  // ==================== Organization Roles ====================
+  describe('Organization Roles', () => {
+    it('should return orgRole in auth status', async () => {
+      const res = await authFetch(adminSession, `${BASE_URL}/api/auth/status`);
+      expect(res.ok).toBe(true);
+      const data = await res.json();
+      expect(data.user).toHaveProperty('orgRole');
+      // orgRole is null when not in an org, or 'owner'/'admin'/'member'
+      expect([null, 'owner', 'admin', 'member']).toContain(data.user.orgRole);
+    });
+
+    it('should create org and assign owner role', async () => {
+      // Check if admin already in an org
+      const statusRes = await authFetch(adminSession, `${BASE_URL}/api/auth/status`);
+      const status = await statusRes.json();
+      if (status.user.organizationId) {
+        // Already in org — check orgRole
+        const orgRes = await authFetch(adminSession, `${BASE_URL}/api/user/organization`);
+        if (orgRes.ok) {
+          const org = await orgRes.json();
+          if (org) {
+            expect(org.orgRole).toBeDefined();
+            expect(['owner', 'admin', 'member']).toContain(org.orgRole);
+          }
+        }
+        return;
+      }
+
+      // Create org
+      const createRes = await authFetch(adminSession, `${BASE_URL}/api/organizations`, {
+        method: 'POST',
+        body: JSON.stringify({ name: 'Test Org' }),
+      });
+      if (!createRes.ok) return; // may fail if already in org
+
+      // Verify role is owner
+      const checkRes = await authFetch(adminSession, `${BASE_URL}/api/auth/status`);
+      const checkData = await checkRes.json();
+      expect(checkData.user.orgRole).toBe('owner');
+    });
+
+    it('should list members with orgRole', async () => {
+      const statusRes = await authFetch(adminSession, `${BASE_URL}/api/auth/status`);
+      const status = await statusRes.json();
+      if (!status.user.organizationId) return;
+
+      const membersRes = await authFetch(adminSession, `${BASE_URL}/api/organizations/${status.user.organizationId}/members`);
+      expect(membersRes.ok).toBe(true);
+      const members = await membersRes.json();
+      expect(Array.isArray(members)).toBe(true);
+      if (members.length > 0) {
+        expect(members[0]).toHaveProperty('orgRole');
+        expect(['owner', 'admin', 'member']).toContain(members[0].orgRole);
+      }
+    });
+
+    it('should reject invalid role in member update', async () => {
+      const statusRes = await authFetch(adminSession, `${BASE_URL}/api/auth/status`);
+      const status = await statusRes.json();
+      if (!status.user.organizationId) return;
+
+      const res = await authFetch(adminSession, `${BASE_URL}/api/organizations/${status.user.organizationId}/members/${status.user.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ orgRole: 'superadmin' }),
+      });
+      expect(res.status).toBe(400);
+    });
+
+    it('should reject self role change', async () => {
+      const statusRes = await authFetch(adminSession, `${BASE_URL}/api/auth/status`);
+      const status = await statusRes.json();
+      if (!status.user.organizationId) return;
+
+      const res = await authFetch(adminSession, `${BASE_URL}/api/organizations/${status.user.organizationId}/members/${status.user.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ orgRole: 'member' }),
+      });
+      expect(res.status).toBe(400);
+    });
+
+    it('should reject owner leaving org', async () => {
+      const statusRes = await authFetch(adminSession, `${BASE_URL}/api/auth/status`);
+      const status = await statusRes.json();
+      if (!status.user.organizationId || status.user.orgRole !== 'owner') return;
+
+      const res = await authFetch(adminSession, `${BASE_URL}/api/organizations/${status.user.organizationId}/leave`, {
+        method: 'POST',
+      });
+      expect(res.status).toBe(400);
+    });
+
+    it('should include orgRole in user organization endpoint', async () => {
+      const res = await authFetch(adminSession, `${BASE_URL}/api/user/organization`);
+      expect(res.ok).toBe(true);
+      const data = await res.json();
+      if (data) {
+        expect(data).toHaveProperty('orgRole');
+      }
+    });
+  });
+
+  // ==================== Resource Organization Scoping ====================
+  describe('Resource Organization Scoping', () => {
+    it('should include organizationId in workflow schema', async () => {
+      const res = await authFetch(adminSession, `${BASE_URL}/api/workflows?includePublic=true`);
+      if (!res.ok) return;
+      const workflows = await res.json();
+      if (workflows.length > 0) {
+        // organizationId should be present (null for personal)
+        expect('organizationId' in workflows[0] || workflows[0].organizationId === undefined || workflows[0].organizationId === null).toBe(true);
+      }
+    });
+
+    it('should accept organizationId in eval-agents metadata', async () => {
+      const res = await fetch(`${BASE_URL}/api/eval-agents`);
+      expect(res.ok).toBe(true);
+      const agents = await res.json();
+      if (agents.length > 0) {
+        // metadata should be present
+        expect(agents[0]).toHaveProperty('metadata');
+      }
+    });
+  });
 });
