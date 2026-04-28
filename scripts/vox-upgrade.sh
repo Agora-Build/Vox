@@ -148,8 +148,9 @@ for name in "${!images[@]}"; do
                 continue
             fi
 
-            docker stop "$running_id"
-            docker rm "$running_id"
+            echo "Stopping ${running_id:0:12}..."
+            docker stop "$running_id" > /dev/null
+            docker rm "$running_id" > /dev/null
         fi
     else
         echo "No running container found."
