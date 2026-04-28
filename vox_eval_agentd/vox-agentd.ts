@@ -470,6 +470,17 @@ class VoxEvalAgentDaemon {
         } catch { /* best effort */ }
 
         if (code !== 0) {
+          // Try to salvage partial results (metrics.json may exist even on failure)
+          if (this.lastOutputDir) {
+            try {
+              const partial = this.parseAevalResults(this.lastOutputDir, allOutput);
+              if (partial.responseLatencyMedian > 0 || partial.interruptLatencyMedian > 0) {
+                console.log(`[Daemon] Salvaged partial results from failed run:`, partial);
+                resolve(partial);
+                return;
+              }
+            } catch { /* no usable data */ }
+          }
           reject(new Error(`aeval exited with code ${code}: ${stderr.trim().split('\n').pop() || 'unknown error'}`));
           return;
         }
