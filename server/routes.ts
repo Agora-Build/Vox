@@ -2319,7 +2319,7 @@ export async function registerRoutes(
 
       await storage.updateEvalAgent(agentId, { state: "idle" });
 
-      if (results && !jobError) {
+      if (results) {
         const workflow = await storage.getWorkflow(job.workflowId);
 
         // Get providerId from workflow, or use a default provider

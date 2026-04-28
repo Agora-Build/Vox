@@ -358,6 +358,24 @@ class VoxEvalAgentDaemon {
     }
   }
 
+  async completeJobWithPartialResults(jobId: number, results: EvalResult, reason: string): Promise<boolean> {
+    try {
+      console.log(`[Daemon] Failing job ${jobId} with partial metrics...`);
+      const response = await this.fetch(`/api/eval-agent/jobs/${jobId}/complete`, {
+        method: 'POST',
+        body: JSON.stringify({ agentId: this.agentId, results, error: reason }),
+      });
+
+      if (response.ok) {
+        console.log(`[Daemon] Job ${jobId} failed with partial metrics saved`);
+        return true;
+      }
+      return false;
+    } catch {
+      return false;
+    }
+  }
+
   async failJob(jobId: number, reason: string): Promise<boolean> {
     try {
       console.log(`[Daemon] Failing job ${jobId}: ${reason}`);
@@ -471,17 +489,19 @@ class VoxEvalAgentDaemon {
 
         if (code !== 0) {
           // Try to salvage partial results (metrics.json may exist even on failure)
+          let partialResults: EvalResult | null = null;
           if (this.lastOutputDir) {
             try {
               const partial = this.parseAevalResults(this.lastOutputDir, allOutput);
               if (partial.responseLatencyMedian > 0 || partial.interruptLatencyMedian > 0) {
-                console.log(`[Daemon] Salvaged partial results from failed run:`, partial);
-                resolve(partial);
-                return;
+                partialResults = partial;
+                console.log(`[Daemon] Salvaged partial metrics from failed run:`, partial);
               }
             } catch { /* no usable data */ }
           }
-          reject(new Error(`aeval exited with code ${code}: ${stderr.trim().split('\n').pop() || 'unknown error'}`));
+          const error = new Error(`aeval exited with code ${code}: ${stderr.trim().split('\n').pop() || 'unknown error'}`);
+          (error as Error & { partialResults?: EvalResult }).partialResults = partialResults;
+          reject(error);
           return;
         }
 
@@ -1438,11 +1458,23 @@ class VoxEvalAgentDaemon {
     } catch (error: unknown) {
       const msg = error instanceof Error ? error.message : String(error);
       console.error(`[Daemon] Job execution error:`, msg);
-      try {
-        await this.failJob(job.id, msg);
-      } catch (reportError: unknown) {
-        const reportMsg = reportError instanceof Error ? reportError.message : String(reportError);
-        console.error(`[Daemon] Failed to report job failure:`, reportMsg);
+
+      // Save partial metrics if available (job still marked as failed)
+      const partial = (error as Error & { partialResults?: EvalResult })?.partialResults;
+      if (partial) {
+        try {
+          await this.completeJobWithPartialResults(job.id, partial, msg);
+        } catch {
+          // Fall back to plain fail
+          try { await this.failJob(job.id, msg); } catch { /* ignore */ }
+        }
+      } else {
+        try {
+          await this.failJob(job.id, msg);
+        } catch (reportError: unknown) {
+          const reportMsg = reportError instanceof Error ? reportError.message : String(reportError);
+          console.error(`[Daemon] Failed to report job failure:`, reportMsg);
+        }
       }
     } finally {
       // Queue artifact upload (whether job succeeded or failed)
