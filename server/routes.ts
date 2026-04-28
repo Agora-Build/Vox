@@ -681,6 +681,7 @@ export async function registerRoutes(
         isEnabled: true,
         emailVerifiedAt: new Date(),
         organizationId: invite.organizationId,
+        orgRole: invite.organizationId ? 'member' : null,
       });
 
       await storage.markInviteTokenUsed(tokenHash);
@@ -1200,7 +1201,7 @@ export async function registerRoutes(
         return res.status(404).json({ error: "Workflow not found" });
       }
 
-      if (workflow.ownerId !== user.id && !user.isAdmin) {
+      if (!canEditResource(user, workflow)) {
         return res.status(403).json({ error: "Not authorized to modify this workflow" });
       }
 
@@ -1281,7 +1282,7 @@ export async function registerRoutes(
         return res.status(404).json({ error: "Workflow not found" });
       }
 
-      if (workflow.ownerId !== user.id) {
+      if (!canEditResource(user, workflow)) {
         return res.status(403).json({ error: "Not authorized to delete this workflow" });
       }
 
@@ -1425,7 +1426,7 @@ export async function registerRoutes(
         return res.status(404).json({ error: "Eval set not found" });
       }
 
-      if (evalSet.ownerId !== user.id && !user.isAdmin) {
+      if (!canEditResource(user, evalSet)) {
         return res.status(403).json({ error: "Not authorized to modify this eval set" });
       }
 
@@ -1537,7 +1538,7 @@ export async function registerRoutes(
       const evalSet = await storage.getEvalSet(parseInt(req.params.id));
       if (!evalSet) return res.status(404).json({ error: "Eval set not found" });
 
-      if (evalSet.ownerId !== user.id && !user.isAdmin) {
+      if (!canEditResource(user, evalSet)) {
         return res.status(403).json({ error: "Not authorized" });
       }
 
@@ -1617,7 +1618,7 @@ export async function registerRoutes(
       if (!workflow) {
         return res.status(404).json({ error: "Workflow not found" });
       }
-      if (workflow.ownerId !== user.id && !user.isAdmin) {
+      if (!canEditResource(user, workflow)) {
         return res.status(403).json({ error: "Access denied to workflow" });
       }
 
@@ -2707,7 +2708,7 @@ export async function registerRoutes(
       }
 
       // Public workflows can be run by anyone; private workflows only by owner/admin/principal/fellow
-      if (workflow.visibility === "private" && workflow.ownerId !== user.id && !user.isAdmin && user.plan !== "principal" && user.plan !== "fellow") {
+      if (workflow.visibility === "private" && !canEditResource(user, workflow) && user.plan !== "principal" && user.plan !== "fellow") {
         return res.status(403).json({ error: "Not authorized to run this workflow" });
       }
 

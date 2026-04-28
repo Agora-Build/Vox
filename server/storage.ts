@@ -1771,10 +1771,16 @@ export class DatabaseStorage {
 
   async getOrgSecretsForJob(jobId: number): Promise<Record<string, string>> {
     // Follow: job → workflow → organizationId → org_secrets
+    // Only return org secrets if job creator is a member of the org
     const job = await this.getEvalJob(jobId);
     if (!job) return {};
     const workflow = await this.getWorkflow(job.workflowId);
     if (!workflow?.organizationId) return {};
+    // Verify job creator is org member (prevent secret leak via public org workflows)
+    if (job.createdBy) {
+      const creator = await this.getUser(job.createdBy);
+      if (!creator || creator.organizationId !== workflow.organizationId) return {};
+    }
     const secrets = await this.getOrgSecrets(workflow.organizationId);
     const result: Record<string, string> = {};
     for (const s of secrets) {

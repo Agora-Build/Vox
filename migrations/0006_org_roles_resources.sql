@@ -3,8 +3,16 @@ CREATE TYPE "org_role" AS ENUM ('owner', 'admin', 'member');--> statement-breakp
 
 -- Add orgRole to users, drop isOrgAdmin
 ALTER TABLE "users" ADD COLUMN "org_role" "org_role";--> statement-breakpoint
-UPDATE "users" SET "org_role" = 'admin' WHERE "is_org_admin" = true AND "organization_id" IS NOT NULL;--> statement-breakpoint
-UPDATE "users" SET "org_role" = 'member' WHERE "is_org_admin" = false AND "organization_id" IS NOT NULL;--> statement-breakpoint
+-- Set first admin per org as owner, rest as admin
+UPDATE "users" SET "org_role" = 'owner'
+  WHERE "id" IN (
+    SELECT DISTINCT ON ("organization_id") "id"
+    FROM "users"
+    WHERE "is_org_admin" = true AND "organization_id" IS NOT NULL
+    ORDER BY "organization_id", "created_at" ASC
+  );--> statement-breakpoint
+UPDATE "users" SET "org_role" = 'admin' WHERE "is_org_admin" = true AND "organization_id" IS NOT NULL AND "org_role" IS NULL;--> statement-breakpoint
+UPDATE "users" SET "org_role" = 'member' WHERE "is_org_admin" = false AND "organization_id" IS NOT NULL AND "org_role" IS NULL;--> statement-breakpoint
 ALTER TABLE "users" DROP COLUMN "is_org_admin";--> statement-breakpoint
 
 -- Add organizationId to resource tables
