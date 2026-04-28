@@ -863,6 +863,7 @@ export class DatabaseStorage {
 
   async getMainlineEvalResults(limit: number = 50, hoursBack?: number): Promise<EvalResult[]> {
     const conditions = [
+      eq(evalJobs.status, "completed"),
       eq(workflows.isMainline, true),
       eq(workflows.visibility, "public"),
       eq(evalSets.isMainline, true),
@@ -893,6 +894,7 @@ export class DatabaseStorage {
 
   async getCommunityEvalResults(limit: number = 50, hoursBack?: number): Promise<EvalResult[]> {
     const conditions = [
+      eq(evalJobs.status, "completed"),
       eq(workflows.visibility, "public"),
       eq(evalSets.visibility, "public"),
       // Exclude fully mainline results (all 4 conditions must be true to be mainline)
@@ -925,6 +927,7 @@ export class DatabaseStorage {
 
   async getMyEvalResults(userId: number, limit: number = 50, hoursBack?: number): Promise<EvalResult[]> {
     const conditions = [
+      eq(evalJobs.status, "completed"),
       or(
         and(eq(workflows.visibility, "private"), eq(workflows.ownerId, userId)),
         and(eq(evalSets.visibility, "private"), eq(evalSets.ownerId, userId)),
