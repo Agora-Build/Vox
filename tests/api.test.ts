@@ -3529,6 +3529,34 @@ describe('Vox API Tests', () => {
     });
   });
 
+  // ==================== Health Endpoint ====================
+  describe('Health Endpoint', () => {
+    it('should return health status from eval agent daemon', async () => {
+      const res = await fetch('http://localhost:8099/health');
+      expect(res.ok).toBe(true);
+      const data = await res.json();
+      expect(data.status).toBeDefined();
+      expect(['idle', 'occupied', 'uploading']).toContain(data.status);
+      expect(typeof data.uptime).toBe('number');
+      expect(data.uptime).toBeGreaterThanOrEqual(0);
+      expect(data.buildTag).toBeDefined();
+      expect(data.buildDate).toBeDefined();
+    });
+
+    it('should have null currentJobId when idle', async () => {
+      const res = await fetch('http://localhost:8099/health');
+      const data = await res.json();
+      if (data.status === 'idle') {
+        expect(data.currentJobId).toBeNull();
+      }
+    });
+
+    it('should return 404 for non-health paths', async () => {
+      const res = await fetch('http://localhost:8099/other');
+      expect(res.status).toBe(404);
+    });
+  });
+
   // ==================== Artifact Status & Re-upload ====================
   describe('Artifact Status & Re-upload', () => {
     it('should include artifactStatus in job detail', async () => {
