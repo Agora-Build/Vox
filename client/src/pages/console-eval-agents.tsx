@@ -257,7 +257,7 @@ export default function ConsoleEvalAgents() {
                                 <div>Version: {agent.metadata.frameworkVersion}</div>
                               )}
                               {agent.metadata.aevalDataCommit && (
-                                <div>Data: {agent.metadata.aevalDataCommit}</div>
+                                <div>Data: {agent.metadata.aevalDataCommit}{agent.metadata.aevalDataDate ? ` (${agent.metadata.aevalDataDate})` : ''}</div>
                               )}
                             </TooltipContent>
                           </Tooltip>

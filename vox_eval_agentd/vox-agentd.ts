@@ -246,6 +246,9 @@ class VoxEvalAgentDaemon {
     }
     if (process.env.AEVAL_DATA_COMMIT && process.env.AEVAL_DATA_COMMIT !== 'unknown') {
       metadata.aevalDataCommit = process.env.AEVAL_DATA_COMMIT;
+      if (process.env.AEVAL_DATA_DATE && process.env.AEVAL_DATA_DATE !== 'unknown') {
+        metadata.aevalDataDate = process.env.AEVAL_DATA_DATE;
+      }
     }
     return metadata;
   }
