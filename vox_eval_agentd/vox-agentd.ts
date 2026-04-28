@@ -187,7 +187,7 @@ class VoxEvalAgentDaemon {
       const proc = spawn('aeval', ['--version'], {
         stdio: ['ignore', 'pipe', 'pipe'],
         env: { ...process.env },
-        timeout: 5000,
+        timeout: 30000,
       });
 
       let output = '';
@@ -196,13 +196,9 @@ class VoxEvalAgentDaemon {
 
       const code = await new Promise<number | null>((resolve) => {
         proc.on('close', resolve);
-        proc.on('error', (err) => {
-          console.error(`[Daemon] aeval --version spawn error:`, err.message);
-          resolve(null);
-        });
+        proc.on('error', () => resolve(null));
       });
 
-      console.log(`[Daemon] aeval --version: code=${code}, stdout+stderr length=${output.length}`);
       if (code === 0 && output.trim()) {
         // Expected: last line is "aeval 0.1.4" or "aeval v0.1.4"
         const match = output.match(/aeval\s+v?(\d+\.\d+\.\d+)/);
