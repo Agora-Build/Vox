@@ -186,6 +186,7 @@ class VoxEvalAgentDaemon {
     try {
       const proc = spawn('aeval', ['--version'], {
         stdio: ['ignore', 'pipe', 'pipe'],
+        env: { ...process.env },
         timeout: 5000,
       });
 
