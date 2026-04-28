@@ -235,21 +235,26 @@ class VoxEvalAgentDaemon {
   // Registration & heartbeat
   // -------------------------------------------------------------------------
 
+  private buildMetadata(): Record<string, string> {
+    const metadata: Record<string, string> = {
+      framework: this.config.framework,
+      buildTag: shortBuildTag(),
+      buildDate: process.env.BUILD_DATE || 'unknown',
+    };
+    if (this.aevalVersion !== "unknown") {
+      metadata.frameworkVersion = this.aevalVersion;
+    }
+    if (process.env.AEVAL_DATA_COMMIT && process.env.AEVAL_DATA_COMMIT !== 'unknown') {
+      metadata.aevalDataCommit = process.env.AEVAL_DATA_COMMIT;
+    }
+    return metadata;
+  }
+
   async register(): Promise<boolean> {
     console.log(`[Daemon] Registering with Vox server: ${this.config.serverUrl}`);
 
     try {
-      const metadata: Record<string, string> = {
-        framework: this.config.framework,
-        buildTag: process.env.BUILD_TAG || 'dev',
-        buildDate: process.env.BUILD_DATE || 'unknown',
-      };
-      if (this.aevalVersion !== "unknown") {
-        metadata.frameworkVersion = this.aevalVersion;
-      }
-      if (process.env.AEVAL_DATA_COMMIT && process.env.AEVAL_DATA_COMMIT !== 'unknown') {
-        metadata.aevalDataCommit = process.env.AEVAL_DATA_COMMIT;
-      }
+      const metadata = this.buildMetadata();
 
       const response = await this.fetch('/api/eval-agent/register', {
         method: 'POST',
@@ -292,24 +297,12 @@ class VoxEvalAgentDaemon {
     if (!this.agentId) return;
 
     try {
-      const metadata: Record<string, string> = {
-        framework: this.config.framework,
-        buildTag: shortBuildTag(),
-        buildDate: process.env.BUILD_DATE || 'unknown',
-      };
-      if (this.aevalVersion !== "unknown") {
-        metadata.frameworkVersion = this.aevalVersion;
-      }
-      if (process.env.AEVAL_DATA_COMMIT && process.env.AEVAL_DATA_COMMIT !== 'unknown') {
-        metadata.aevalDataCommit = process.env.AEVAL_DATA_COMMIT;
-      }
-
       const response = await this.fetch('/api/eval-agent/heartbeat', {
         method: 'POST',
         body: JSON.stringify({
           agentId: this.agentId,
           state: this.isRunningJob ? 'occupied' : 'idle',
-          metadata,
+          metadata: this.buildMetadata(),
         }),
       });
 

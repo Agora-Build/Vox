@@ -45,6 +45,13 @@ function shortBuildTag(): string {
   }
   return raw;
 }
+
+function buildMetadata(): Record<string, string> {
+  return {
+    buildTag: shortBuildTag(),
+    buildDate: process.env.BUILD_DATE || "unknown",
+  };
+}
 const startTime = Date.now();
 
 const headers = {
@@ -101,6 +108,7 @@ async function main() {
   console.log("[ClashRunner] Registering...");
   const reg = await apiCall("POST", "/api/clash-runner/register", {
     runnerId: process.env.HOSTNAME || "local",
+    metadata: buildMetadata(),
   });
   console.log(`[ClashRunner] Registered as runner #${reg.id}, state: ${reg.state}`);
 
@@ -115,8 +123,7 @@ async function main() {
       res.end(JSON.stringify({
         status: runnerStatus,
         uptime: Math.round((Date.now() - startTime) / 1000),
-        buildTag: shortBuildTag(),
-        buildDate: process.env.BUILD_DATE || "unknown",
+        ...buildMetadata(),
         currentMatchId,
       }));
     } else {
