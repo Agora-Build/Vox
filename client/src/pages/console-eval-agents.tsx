@@ -31,6 +31,7 @@ interface EvalAgent {
   region: string;
   state: "idle" | "offline" | "occupied";
   visibility: "public" | "private";
+  metadata: Record<string, string> | null;
   lastSeenAt: string | null;
   createdAt: string;
 }
@@ -208,6 +209,7 @@ export default function ConsoleEvalAgents() {
                   <TableHead>Region</TableHead>
                   <TableHead>Visibility</TableHead>
                   <TableHead>State</TableHead>
+                  <TableHead>Build</TableHead>
                   <TableHead>Last Seen</TableHead>
                   <TableHead>Registered</TableHead>
                 </TableRow>
@@ -230,6 +232,15 @@ export default function ConsoleEvalAgents() {
                     </TableCell>
                     <TableCell>
                       {getStateBadge(agent.state)}
+                    </TableCell>
+                    <TableCell className="text-muted-foreground text-xs font-mono">
+                      {agent.metadata?.buildTag && (
+                        <div>{agent.metadata.buildTag}</div>
+                      )}
+                      {agent.metadata?.buildDate && agent.metadata.buildDate !== 'unknown' && (
+                        <div>{agent.metadata.buildDate.split('T')[0]}</div>
+                      )}
+                      {!agent.metadata?.buildTag && '-'}
                     </TableCell>
                     <TableCell className="text-muted-foreground">
                       <div className="flex items-center gap-1">

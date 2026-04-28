@@ -226,6 +226,8 @@ class VoxEvalAgentDaemon {
     try {
       const metadata: Record<string, string> = {
         framework: this.config.framework,
+        buildTag: process.env.BUILD_TAG || 'dev',
+        buildDate: process.env.BUILD_DATE || 'unknown',
       };
       if (this.aevalVersion !== "unknown") {
         metadata.frameworkVersion = this.aevalVersion;
