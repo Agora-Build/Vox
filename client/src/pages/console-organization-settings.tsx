@@ -156,7 +156,7 @@ export default function ConsoleOrganizationSettings() {
         <CardContent>
           <AlertDialog>
             <AlertDialogTrigger asChild>
-              <Button variant="destructive">
+              <Button variant="destructive" disabled={authStatus?.user?.orgRole === 'owner'}>
                 <LogOut className="mr-2 h-4 w-4" />
                 Leave Organization
               </Button>
