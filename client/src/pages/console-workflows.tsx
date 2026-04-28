@@ -206,8 +206,8 @@ export default function ConsoleWorkflows() {
     <div className="space-y-6">
       <div className="flex items-center justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold">Test Workflows</h1>
-          <p className="text-muted-foreground">Manage evaluation test workflows</p>
+          <h1 className="text-2xl font-bold">Workflows</h1>
+          <p className="text-muted-foreground">Manage evaluation workflows</p>
         </div>
         <Dialog open={createOpen} onOpenChange={setCreateOpen}>
           <DialogTrigger asChild>
@@ -448,10 +448,6 @@ export default function ConsoleWorkflows() {
 
       <Card>
         <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <Workflow className="h-5 w-5" />
-            Workflows
-          </CardTitle>
           <CardDescription>
             {isPrincipal
               ? "As a principal user, you can mark workflows as mainline for the official evaluation."

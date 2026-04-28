@@ -214,10 +214,6 @@ export default function ConsoleProjects() {
 
       <Card>
         <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <FolderKanban className="h-5 w-5" />
-            Your Projects
-          </CardTitle>
           <CardDescription>
             {plan === "basic"
               ? `Basic plan: ${maxProjects} projects, 10 workflows each`
