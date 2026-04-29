@@ -14,6 +14,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { Save, LogOut, ArrowRight, FolderKanban, Workflow, FileText, CalendarClock } from "lucide-react";
+import { formatRegion } from "@/lib/utils";
 
 interface AuthStatus {
   user: {
@@ -32,7 +33,7 @@ interface Organization {
 interface Project { id: number; name: string; organizationId: number | null; }
 interface WorkflowItem { id: number; name: string; projectId: number | null; organizationId: number | null; }
 interface EvalSetItem { id: number; name: string; organizationId: number | null; }
-interface ScheduleItem { id: number; name: string; workflowName: string; organizationId: number | null; }
+interface ScheduleItem { id: number; name: string; workflowName: string; region: string; organizationId: number | null; }
 
 export default function ConsoleOrganizationSettings() {
   const { toast } = useToast();
@@ -248,7 +249,7 @@ function MoveResourcesDialog({ open, onOpenChange, orgName }: { open: boolean; o
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-lg max-h-[80vh] overflow-y-auto">
+      <DialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>Move Resources to {orgName}</DialogTitle>
           <DialogDescription>
@@ -327,7 +328,7 @@ function MoveResourcesDialog({ open, onOpenChange, orgName }: { open: boolean; o
                     <label key={s.id} className="flex items-center gap-2 text-sm cursor-pointer hover:bg-muted/50 rounded px-2 py-1">
                       <Checkbox checked={selectedSchedules.has(s.id)} onCheckedChange={() => toggleSet(selectedSchedules, s.id, setSelectedSchedules)} />
                       {s.name}
-                      <span className="text-xs text-muted-foreground ml-auto">{s.workflowName}</span>
+                      <span className="text-xs text-muted-foreground ml-auto">{s.workflowName} / {formatRegion(s.region)}</span>
                     </label>
                   ))}
                 </div>
