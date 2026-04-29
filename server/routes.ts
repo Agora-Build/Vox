@@ -941,6 +941,77 @@ export async function registerRoutes(
     }
   });
 
+  // ==================== MOVE RESOURCES TO ORG ====================
+
+  app.post("/api/organizations/move-resources", requireAuth, async (req, res) => {
+    try {
+      const user = await getCurrentUser(req);
+      if (!user) return res.status(401).json({ error: "Not authenticated" });
+      if (!user.organizationId) return res.status(403).json({ error: "Organization membership required" });
+
+      const { projectIds, workflowIds, evalSetIds, scheduleIds } = req.body;
+      const orgId = user.organizationId;
+      let moved = { projects: 0, workflows: 0, evalSets: 0, schedules: 0 };
+
+      // Move projects (and their child workflows)
+      if (Array.isArray(projectIds) && projectIds.length > 0) {
+        for (const id of projectIds) {
+          const project = await storage.getProject(id);
+          if (project && project.ownerId === user.id && !project.organizationId) {
+            await storage.updateProject(id, { organizationId: orgId });
+            moved.projects++;
+            // Move child workflows too
+            const childWorkflows = await storage.getWorkflowsByProject(id);
+            for (const w of childWorkflows) {
+              if (w.ownerId === user.id && !w.organizationId) {
+                await storage.updateWorkflow(w.id, { organizationId: orgId });
+                moved.workflows++;
+              }
+            }
+          }
+        }
+      }
+
+      // Move standalone workflows
+      if (Array.isArray(workflowIds) && workflowIds.length > 0) {
+        for (const id of workflowIds) {
+          const workflow = await storage.getWorkflow(id);
+          if (workflow && workflow.ownerId === user.id && !workflow.organizationId) {
+            await storage.updateWorkflow(id, { organizationId: orgId });
+            moved.workflows++;
+          }
+        }
+      }
+
+      // Move eval sets
+      if (Array.isArray(evalSetIds) && evalSetIds.length > 0) {
+        for (const id of evalSetIds) {
+          const evalSet = await storage.getEvalSet(id);
+          if (evalSet && evalSet.ownerId === user.id && !evalSet.organizationId) {
+            await storage.updateEvalSet(id, { organizationId: orgId });
+            moved.evalSets++;
+          }
+        }
+      }
+
+      // Move schedules
+      if (Array.isArray(scheduleIds) && scheduleIds.length > 0) {
+        for (const id of scheduleIds) {
+          const schedule = await storage.getEvalSchedule(id);
+          if (schedule && schedule.createdBy === user.id && !schedule.organizationId) {
+            await storage.updateEvalSchedule(id, { organizationId: orgId });
+            moved.schedules++;
+          }
+        }
+      }
+
+      res.json({ message: "Resources moved to organization", moved });
+    } catch (error) {
+      console.error("Error moving resources:", error);
+      res.status(500).json({ error: "Failed to move resources" });
+    }
+  });
+
   // ==================== PROJECT ROUTES ====================
 
   app.get("/api/projects", requireAuth, async (req, res) => {
