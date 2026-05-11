@@ -19,26 +19,6 @@ import { Plus, FileText, Globe, Lock, Star, Play, Pencil, Copy, Trash2 } from "l
 import { useState } from "react";
 import type { EvalSet, Workflow as WorkflowType } from "@shared/schema";
 
-const SCENARIO_PRESETS: Record<string, string> = {
-  "appointment-vat": `tags:
-  - default
-steps:
-  - action: wait_for_voice
-  - action: wait_for_silence
-  - action: speak
-    file: hello_make_an_appointment.mp3
-  - action: wait_for_voice
-    metrics: elapsed_time
-  - action: wait_for_silence
-  - action: speak
-    file: appointment_data.mp3
-  - action: wait_for_voice
-    metrics: elapsed_time`,
-  "response-latency-aeval": `# aeval response latency scenario
-# Place your aeval scenario YAML here
-# See aeval documentation for schema details`,
-  custom: "",
-};
 
 interface AuthStatus {
   user: {
@@ -58,7 +38,6 @@ export default function ConsoleEvalSets() {
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [visibility, setVisibility] = useState("public");
-  const [scenarioPreset, setScenarioPreset] = useState("custom");
   const [scenarioYaml, setScenarioYaml] = useState("");
 
   // Run dialog state
@@ -111,7 +90,6 @@ export default function ConsoleEvalSets() {
       setName("");
       setDescription("");
       setVisibility("public");
-      setScenarioPreset("custom");
       setScenarioYaml("");
       queryClient.invalidateQueries({ queryKey: ["/api/eval-sets?includePublic=true"] });
       toast({ title: "Eval set created" });
@@ -323,27 +301,6 @@ export default function ConsoleEvalSets() {
                     <SelectItem value="private" disabled={!canCreatePrivate}>
                       Private {!canCreatePrivate && "(Premium required)"}
                     </SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="space-y-2">
-                <Label>Scenario Preset</Label>
-                <Select
-                  value={scenarioPreset}
-                  onValueChange={(v) => {
-                    setScenarioPreset(v);
-                    if (SCENARIO_PRESETS[v] !== undefined) {
-                      setScenarioYaml(SCENARIO_PRESETS[v]);
-                    }
-                  }}
-                >
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="appointment-vat">Appointment (VAT)</SelectItem>
-                    <SelectItem value="response-latency-aeval">Response Latency (aeval)</SelectItem>
-                    <SelectItem value="custom">Custom</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
