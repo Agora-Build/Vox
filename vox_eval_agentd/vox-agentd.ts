@@ -1420,8 +1420,13 @@ class VoxEvalAgentDaemon {
         configPlaceholders[k] = v;
       }
     }
+    console.log(`[Daemon] Config placeholders:`, JSON.stringify(configPlaceholders));
+    console.log(`[Daemon] Scenario contains \${config.*}:`, /\$\{config\.\w+\}/.test(scenario));
     if (Object.keys(configPlaceholders).length > 0) {
-      scenario = scenario.replace(/\$\{config\.(\w+)\}/g, (_m, key) => configPlaceholders[key] ?? _m);
+      scenario = scenario.replace(/\$\{config\.(\w+)\}/g, (_m, key) => {
+        console.log(`[Daemon] Resolving \${config.${key}} → ${configPlaceholders[key] ?? 'NOT FOUND'}`);
+        return configPlaceholders[key] ?? _m;
+      });
       if (app) app = app.replace(/\$\{config\.(\w+)\}/g, (_m, key) => configPlaceholders[key] ?? _m);
     }
 
