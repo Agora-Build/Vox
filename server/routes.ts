@@ -257,12 +257,6 @@ export async function registerRoutes(
         description: "ElevenLabs Conversational AI Agents",
       });
 
-      await storage.createProvider({
-        name: "Custom",
-        sku: "convoai",
-        description: "Any web-based conversational AI product",
-      });
-
       // Set default pricing config (prices in cents)
       await storage.setPricingConfig({ name: "Solo Premium", pricePerSeat: 500, minSeats: 1, maxSeats: 1, discountPercent: 0, isActive: true });
       await storage.setPricingConfig({ name: "Org Premium (1-2 seats)", pricePerSeat: 600, minSeats: 1, maxSeats: 2, discountPercent: 0, isActive: true });
