@@ -138,7 +138,7 @@ export default function SelfTest() {
       const provider = providers?.find(p => p.sku === workflowType);
       const res = await apiRequest("POST", "/api/workflows", {
         name: workflowName,
-        description: workflowUrl ? workflowUrl : undefined,
+        description: workflowUrl,
         providerId: provider?.id,
         visibility: "public",
         config: { url: workflowUrl },
@@ -382,6 +382,18 @@ export default function SelfTest() {
                   </div>
 
                   <div className="space-y-2">
+                    <Label>Product URL</Label>
+                    <Input
+                      placeholder="https://your-product.com"
+                      value={workflowUrl}
+                      onChange={(e) => setWorkflowUrl(e.target.value)}
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      URL of the web-based product to evaluate
+                    </p>
+                  </div>
+
+                  <div className="space-y-2">
                     <Label>Workflow Name</Label>
                     <Input
                       placeholder="My Voice AI Workflow"
@@ -390,21 +402,9 @@ export default function SelfTest() {
                     />
                   </div>
 
-                  <div className="space-y-2">
-                    <Label>URL (optional)</Label>
-                    <Input
-                      placeholder="https://your-product.com"
-                      value={workflowUrl}
-                      onChange={(e) => setWorkflowUrl(e.target.value)}
-                    />
-                    <p className="text-xs text-muted-foreground">
-                      URL of the product to evaluate
-                    </p>
-                  </div>
-
                   <Button
                     onClick={handleCreateWorkflow}
-                    disabled={createWorkflowMutation.isPending || !workflowName}
+                    disabled={createWorkflowMutation.isPending || !workflowName || !workflowUrl}
                     className="w-full"
                   >
                     {createWorkflowMutation.isPending ? (
