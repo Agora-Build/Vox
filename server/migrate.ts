@@ -30,6 +30,7 @@ const MIGRATIONS: Array<{ version: number; description: string; file: string | n
   { version: 6, description: "artifact upload status", file: "0005_artifact_status.sql" },
   { version: 7, description: "org roles + resource scoping + org secrets", file: "0006_org_roles_resources.sql" },
   { version: 8, description: "remove auto-seeded aeval data", file: "0007_remove_aeval_seeds.sql" },
+  { version: 9, description: "fix: remove aeval seeds (correct pattern)", file: "0008_fix_remove_aeval_seeds.sql" },
 ];
 
 const TARGET_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version;
