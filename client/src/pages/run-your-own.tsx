@@ -58,6 +58,7 @@ interface EvalSetFull {
 
 export default function SelfTest() {
   const { toast } = useToast();
+  const [workflowTab, setWorkflowTab] = useState<string>("existing");
   const [workflowType, setWorkflowType] = useState<string>("convoai");
   const [workflowName, setWorkflowName] = useState("");
   const [workflowUrl, setWorkflowUrl] = useState("");
@@ -336,7 +337,7 @@ export default function SelfTest() {
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-6 relative z-10">
-              <Tabs defaultValue="existing" className="w-full">
+              <Tabs value={workflowTab} onValueChange={setWorkflowTab} className="w-full">
                 <TabsList className="grid w-full grid-cols-2">
                   <TabsTrigger value="existing">Select Workflow</TabsTrigger>
                   <TabsTrigger value="new">Create New</TabsTrigger>
@@ -425,11 +426,15 @@ export default function SelfTest() {
                         <SelectValue placeholder="Select eval set" />
                       </SelectTrigger>
                       <SelectContent>
-                        {evalSets?.map((es) => (
-                          <SelectItem key={es.id} value={es.id.toString()}>
-                            {es.name}
-                          </SelectItem>
-                        ))}
+                        {evalSets?.map((es) => {
+                          const isBuiltIn = es.config?.builtIn === true;
+                          const disabled = workflowTab === "new" && isBuiltIn;
+                          return (
+                            <SelectItem key={es.id} value={es.id.toString()} disabled={disabled}>
+                              {es.name}{isBuiltIn && workflowTab === "new" ? " (built-in)" : ""}
+                            </SelectItem>
+                          );
+                        })}
                       </SelectContent>
                     </Select>
                     <Button

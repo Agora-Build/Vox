@@ -1411,10 +1411,22 @@ class VoxEvalAgentDaemon {
       throw new Error('job.config.scenario is required');
     }
 
-    // Fetch secrets for this job and resolve ${secrets.*} placeholders
-    const jobSecrets = await this.fetchSecrets(job.id);
+    // Resolve ${config.*} placeholders (e.g., ${config.url} from workflow config)
     let scenario = config.scenario;
     let app = config.app;
+    const configPlaceholders: Record<string, string> = {};
+    for (const [k, v] of Object.entries(config)) {
+      if (typeof v === 'string' && k !== 'scenario' && k !== 'app' && k !== 'framework') {
+        configPlaceholders[k] = v;
+      }
+    }
+    if (Object.keys(configPlaceholders).length > 0) {
+      scenario = scenario.replace(/\$\{config\.(\w+)\}/g, (_m, key) => configPlaceholders[key] ?? _m);
+      if (app) app = app.replace(/\$\{config\.(\w+)\}/g, (_m, key) => configPlaceholders[key] ?? _m);
+    }
+
+    // Fetch secrets for this job and resolve ${secrets.*} placeholders
+    const jobSecrets = await this.fetchSecrets(job.id);
     if (Object.keys(jobSecrets).length > 0) {
       scenario = this.resolveSecrets(scenario, jobSecrets);
       if (app) {
