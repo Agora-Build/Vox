@@ -9,7 +9,6 @@ import rateLimit from "express-rate-limit";
 import { authenticateApiKey, passport, initializeGoogleOAuth } from "./auth";
 import { storage, mergeEvalConfig } from "./storage";
 import { parseNextCronRun } from "./cron";
-import { seedFromLocalAevalData } from "./aeval-seed";
 import { setupClashWebSocket } from "./clash-ws";
 import pkg from "pg";
 const { Pool } = pkg;
@@ -209,10 +208,6 @@ app.use((req, res, next) => {
       // Start background worker for stale job detection and agent status
       startBackgroundWorker();
 
-      // Auto-seed built-in aeval data if available
-      seedFromLocalAevalData().catch((err) =>
-        console.error("[aeval-seed] Startup seed error:", err),
-      );
     },
   );
 })();

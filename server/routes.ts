@@ -2,7 +2,7 @@ import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage, hashToken, generateSecureToken, generateEvalAgentToken, mergeEvalConfig, validateEvalConfig, encryptValue, decryptValue, isEncryptionConfigured } from "./storage";
 import { parseNextCronRun } from "./cron";
-import { seedAevalVersion, compareVersions } from "./aeval-seed";
+import { compareVersions } from "./aeval-seed";
 import { generateProviderId } from "@shared/schema";
 import { SECRET_NAME_PATTERN } from "@shared/secrets";
 import { registerApiV1Routes } from "./routes-api-v1";
@@ -255,6 +255,12 @@ export async function registerRoutes(
         name: "ElevenLabs Agents",
         sku: "convoai",
         description: "ElevenLabs Conversational AI Agents",
+      });
+
+      await storage.createProvider({
+        name: "Custom",
+        sku: "convoai",
+        description: "Any web-based conversational AI product",
       });
 
       // Set default pricing config (prices in cents)
@@ -2329,13 +2335,6 @@ export async function registerRoutes(
       }
 
       await storage.updateEvalAgentHeartbeat(agent.id);
-
-      // Fire-and-forget: seed built-in data if daemon reports a new aeval version
-      if (metadata?.frameworkVersion && metadata?.framework === 'aeval') {
-        seedAevalVersion(metadata.frameworkVersion).catch((err) =>
-          console.error("[aeval-seed] Seed from register error:", err),
-        );
-      }
 
       res.json({
         id: agent.id,
