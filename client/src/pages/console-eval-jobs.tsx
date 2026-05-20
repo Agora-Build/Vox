@@ -34,12 +34,18 @@ const STATUSES = [
   { value: "failed", label: "Failed" },
 ];
 
-function buildJobsUrl(filters: { status: string; region: string; workflowId: string }) {
+const TIME_RANGES = [
+  { value: "24", label: "Last 24 hours" },
+  { value: "168", label: "Last 7 days" },
+  { value: "720", label: "Last 30 days" },
+];
+
+function buildJobsUrl(filters: { status: string; region: string; workflowId: string; hours: string }) {
   const params = new URLSearchParams();
   if (filters.status !== "all") params.set("status", filters.status);
   if (filters.region !== "all") params.set("region", filters.region);
   if (filters.workflowId !== "all") params.set("workflowId", filters.workflowId);
-  params.set("limit", "50");
+  params.set("hours", filters.hours);
   const qs = params.toString();
   return `/api/eval-jobs${qs ? `?${qs}` : ""}`;
 }
@@ -282,8 +288,9 @@ function JobsTab() {
   const [statusFilter, setStatusFilter] = useState("all");
   const [regionFilter, setRegionFilter] = useState("all");
   const [workflowFilter, setWorkflowFilter] = useState("all");
+  const [timeFilter, setTimeFilter] = useState("24");
 
-  const url = buildJobsUrl({ status: statusFilter, region: regionFilter, workflowId: workflowFilter });
+  const url = buildJobsUrl({ status: statusFilter, region: regionFilter, workflowId: workflowFilter, hours: timeFilter });
 
   const { data: jobs, isLoading } = useQuery<EnrichedEvalJob[]>({
     queryKey: [url],
@@ -301,11 +308,22 @@ function JobsTab() {
 
   const workflowMap = new Map(workflows?.map((w) => [w.id, w.name]) ?? []);
 
-  const hasActiveFilters = statusFilter !== "all" || regionFilter !== "all" || workflowFilter !== "all";
+  const hasActiveFilters = statusFilter !== "all" || regionFilter !== "all" || workflowFilter !== "all" || timeFilter !== "24";
 
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-3">
+        <Select value={timeFilter} onValueChange={setTimeFilter}>
+          <SelectTrigger className="w-[160px]" data-testid="select-filter-time">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {TIME_RANGES.map((t) => (
+              <SelectItem key={t.value} value={t.value}>{t.label}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+
         <Select value={statusFilter} onValueChange={setStatusFilter}>
           <SelectTrigger className="w-[160px]" data-testid="select-filter-status">
             <SelectValue />
@@ -344,7 +362,7 @@ function JobsTab() {
           <Button
             variant="ghost"
             size="sm"
-            onClick={() => { setStatusFilter("all"); setRegionFilter("all"); setWorkflowFilter("all"); }}
+            onClick={() => { setStatusFilter("all"); setRegionFilter("all"); setWorkflowFilter("all"); setTimeFilter("24"); }}
           >
             Clear filters
           </Button>
@@ -355,6 +373,8 @@ function JobsTab() {
         <CardHeader>
           <CardDescription>
             {jobs ? `${jobs.length} job${jobs.length !== 1 ? "s" : ""}` : "Loading..."}
+            {" \u00b7 "}
+            {TIME_RANGES.find((t) => t.value === timeFilter)?.label?.toLowerCase() ?? ""}
             {" \u00b7 auto-refreshes every 10s"}
           </CardDescription>
         </CardHeader>
