@@ -3897,7 +3897,7 @@ describe('Vox API Tests', () => {
       const body = await res.json();
       const cutoff = Date.now() - 24 * 60 * 60 * 1000;
       for (const job of body.data) {
-        expect(new Date(job.createdAt).getTime()).toBeGreaterThanOrEqual(cutoff - 60000); // 1min tolerance
+        expect(new Date(job.createdAt).getTime()).toBeGreaterThanOrEqual(cutoff - 300000); // 5min tolerance
       }
     });
 

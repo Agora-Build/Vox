@@ -643,6 +643,8 @@ export class DatabaseStorage {
     agentId?: number;
     ownerId?: number;
     hoursBack?: number;
+    limit?: number;
+    offset?: number;
   }): Promise<EvalJob[]> {
     const conditions = [];
     if (filters?.status) {
@@ -693,6 +695,13 @@ export class DatabaseStorage {
       }
 
       query = query.orderBy(desc(evalJobs.createdAt)) as typeof query;
+
+      if (filters?.limit) {
+        query = query.limit(filters.limit) as typeof query;
+      }
+      if (filters?.offset) {
+        query = query.offset(filters.offset) as typeof query;
+      }
 
       return query;
     }

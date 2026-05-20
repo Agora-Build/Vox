@@ -13,7 +13,7 @@ import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Pagination, PaginationContent, PaginationItem, PaginationLink, PaginationNext, PaginationPrevious, PaginationEllipsis } from "@/components/ui/pagination";
 import { ClipboardList, CheckCircle, XCircle, Loader2, Clock, RefreshCw, CalendarClock, MousePointerClick, MoreHorizontal, Pause, Play, Pencil, Trash2, Zap } from "lucide-react";
-import { useState, useCallback } from "react";
+import { useState } from "react";
 import { useLocation, useSearch, Link } from "wouter";
 import { formatSmartTimestamp, formatRegion, REGIONS } from "@/lib/utils";
 import { format } from "date-fns";
@@ -321,12 +321,10 @@ function JobsTab() {
 
   const hasActiveFilters = statusFilter !== "all" || regionFilter !== "all" || workflowFilter !== "all" || timeFilter !== "24";
 
-  const resetPage = useCallback(() => setPage(1), []);
-
-  const setTimeAndReset = (v: string) => { setTimeFilter(v); resetPage(); };
-  const setStatusAndReset = (v: string) => { setStatusFilter(v); resetPage(); };
-  const setRegionAndReset = (v: string) => { setRegionFilter(v); resetPage(); };
-  const setWorkflowAndReset = (v: string) => { setWorkflowFilter(v); resetPage(); };
+  const setTimeAndReset = (v: string) => { setTimeFilter(v); setPage(1); };
+  const setStatusAndReset = (v: string) => { setStatusFilter(v); setPage(1); };
+  const setRegionAndReset = (v: string) => { setRegionFilter(v); setPage(1); };
+  const setWorkflowAndReset = (v: string) => { setWorkflowFilter(v); setPage(1); };
 
   const rangeStart = total > 0 ? offset + 1 : 0;
   const rangeEnd = Math.min(offset + PAGE_SIZE, total);
@@ -398,7 +396,7 @@ function JobsTab() {
           <Button
             variant="ghost"
             size="sm"
-            onClick={() => { setStatusFilter("all"); setRegionFilter("all"); setWorkflowFilter("all"); setTimeFilter("24"); resetPage(); }}
+            onClick={() => { setStatusFilter("all"); setRegionFilter("all"); setWorkflowFilter("all"); setTimeFilter("24"); setPage(1); }}
           >
             Clear filters
           </Button>

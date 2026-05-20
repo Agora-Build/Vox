@@ -377,18 +377,16 @@ export function registerApiV1Routes(app: Express): void {
         ? (status as typeof validStatuses[number])
         : undefined;
 
-      const allJobs = await storage.getEvalJobs({
-        ownerId: user.id,
-        status: statusFilter,
-      });
-
-      const total = allJobs.length;
-      const jobs = allJobs.slice(pageOffset, pageOffset + pageLimit);
+      // Count total (no limit/offset) and fetch page in parallel
+      const [allJobs, pagedJobs] = await Promise.all([
+        storage.getEvalJobs({ ownerId: user.id, status: statusFilter }),
+        storage.getEvalJobs({ ownerId: user.id, status: statusFilter, limit: pageLimit, offset: pageOffset }),
+      ]);
 
       res.json({
-        data: jobs,
+        data: pagedJobs,
         meta: {
-          total,
+          total: allJobs.length,
           limit: pageLimit,
           offset: pageOffset,
         },
