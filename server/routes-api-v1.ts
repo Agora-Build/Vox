@@ -368,24 +368,27 @@ export function registerApiV1Routes(app: Express): void {
 
       const { status, limit, offset } = req.query;
 
+      const pageLimit = Math.min(Math.max(parseInt(limit as string) || 50, 1), 200);
+      const pageOffset = Math.max(parseInt(offset as string) || 0, 0);
+
       // Validate status if provided
       const validStatuses = ["pending", "running", "completed", "failed"] as const;
       const statusFilter = status && validStatuses.includes(status as typeof validStatuses[number])
         ? (status as typeof validStatuses[number])
         : undefined;
 
-      const jobs = await storage.getEvalJobs({
-        ownerId: user.id,
-        status: statusFilter,
-        limit: limit ? parseInt(limit as string) : 50,
-        offset: offset ? parseInt(offset as string) : 0,
-      });
+      // Count total (no limit/offset) and fetch page in parallel
+      const [allJobs, pagedJobs] = await Promise.all([
+        storage.getEvalJobs({ ownerId: user.id, status: statusFilter }),
+        storage.getEvalJobs({ ownerId: user.id, status: statusFilter, limit: pageLimit, offset: pageOffset }),
+      ]);
 
       res.json({
-        data: jobs,
+        data: pagedJobs,
         meta: {
-          limit: limit ? parseInt(limit as string) : 50,
-          offset: offset ? parseInt(offset as string) : 0,
+          total: allJobs.length,
+          limit: pageLimit,
+          offset: pageOffset,
         },
       });
     } catch (error) {

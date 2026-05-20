@@ -2867,12 +2867,13 @@ export async function registerRoutes(
 
       const { status, region, workflowId, limit, offset, hours } = req.query;
 
+      const pageLimit = Math.min(Math.max(parseInt(limit as string) || 50, 1), 200);
+      const pageOffset = Math.max(parseInt(offset as string) || 0, 0);
+
       const filters: {
         status?: "pending" | "running" | "completed" | "failed";
         region?: "na" | "apac" | "eu" | "sa";
         workflowId?: number;
-        limit?: number;
-        offset?: number;
         hoursBack?: number;
       } = {};
 
@@ -2883,13 +2884,10 @@ export async function registerRoutes(
         filters.region = region as "na" | "apac" | "eu" | "sa";
       }
       if (workflowId) {
-        filters.workflowId = parseInt(workflowId as string);
-      }
-      if (limit) {
-        filters.limit = parseInt(limit as string);
-      }
-      if (offset) {
-        filters.offset = parseInt(offset as string);
+        const parsed = parseInt(workflowId as string, 10);
+        if (Number.isFinite(parsed) && parsed > 0) {
+          filters.workflowId = parsed;
+        }
       }
       if (hours) {
         const parsed = parseInt(hours as string, 10);
@@ -2913,21 +2911,24 @@ export async function registerRoutes(
         visibleJobs = jobs.filter(job => allowedIds.has(job.workflowId));
       }
 
+      const total = visibleJobs.length;
+      const paged = visibleJobs.slice(pageOffset, pageOffset + pageLimit);
+
       // Enrich with creator username
-      const creatorIds = Array.from(new Set(visibleJobs.map(j => j.createdBy).filter((id): id is number => id != null)));
+      const creatorIds = Array.from(new Set(paged.map(j => j.createdBy).filter((id): id is number => id != null)));
       const creatorMap = new Map<number, string>();
       for (const id of creatorIds) {
         const u = await storage.getUser(id);
         if (u) creatorMap.set(id, u.username);
       }
 
-      const enriched = visibleJobs.map(job => ({
+      const enriched = paged.map(job => ({
         ...job,
         creatorName: job.createdBy ? creatorMap.get(job.createdBy) || null : null,
         type: job.scheduleId ? "scheduled" : "manual",
       }));
 
-      res.json(enriched);
+      res.json({ data: enriched, total });
     } catch (error) {
       console.error("Error fetching eval jobs:", error);
       res.status(500).json({ error: "Failed to fetch eval jobs" });

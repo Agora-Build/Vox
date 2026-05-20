@@ -3291,9 +3291,9 @@ describe('Vox API Tests', () => {
   describe('Job Detail API', () => {
     it('should get job detail with result data', async () => {
       // Get a completed job
-      const jobsRes = await authFetch(adminSession, `${BASE_URL}/api/eval-jobs?status=completed&limit=1`);
+      const jobsRes = await authFetch(adminSession, `${BASE_URL}/api/eval-jobs?status=completed&limit=1&hours=720`);
       if (!jobsRes.ok) return; // skip if no completed jobs
-      const jobs = await jobsRes.json();
+      const { data: jobs } = await jobsRes.json();
       if (jobs.length === 0) return;
 
       const detailRes = await authFetch(adminSession, `${BASE_URL}/api/eval-jobs/${jobs[0].id}/detail`);
@@ -3560,9 +3560,9 @@ describe('Vox API Tests', () => {
   // ==================== Artifact Status & Re-upload ====================
   describe('Artifact Status & Re-upload', () => {
     it('should include artifactStatus in job detail', async () => {
-      const jobsRes = await authFetch(adminSession, `${BASE_URL}/api/eval-jobs?status=completed&limit=1`);
+      const jobsRes = await authFetch(adminSession, `${BASE_URL}/api/eval-jobs?status=completed&limit=1&hours=720`);
       if (!jobsRes.ok) return;
-      const jobs = await jobsRes.json();
+      const { data: jobs } = await jobsRes.json();
       if (jobs.length === 0) return;
 
       const detailRes = await authFetch(adminSession, `${BASE_URL}/api/eval-jobs/${jobs[0].id}/detail`);
@@ -3581,9 +3581,9 @@ describe('Vox API Tests', () => {
 
     it('should reject reupload if artifacts already uploaded', async () => {
       // Find a completed job and set its status to uploaded
-      const jobsRes = await authFetch(adminSession, `${BASE_URL}/api/eval-jobs?status=completed&limit=1`);
+      const jobsRes = await authFetch(adminSession, `${BASE_URL}/api/eval-jobs?status=completed&limit=1&hours=720`);
       if (!jobsRes.ok) return;
-      const jobs = await jobsRes.json();
+      const { data: jobs } = await jobsRes.json();
       if (jobs.length === 0) return;
 
       const detailRes = await authFetch(adminSession, `${BASE_URL}/api/eval-jobs/${jobs[0].id}/detail`);
@@ -3595,9 +3595,9 @@ describe('Vox API Tests', () => {
     });
 
     it('should reject reupload if status is pending', async () => {
-      const jobsRes = await authFetch(adminSession, `${BASE_URL}/api/eval-jobs?status=completed&limit=1`);
+      const jobsRes = await authFetch(adminSession, `${BASE_URL}/api/eval-jobs?status=completed&limit=1&hours=720`);
       if (!jobsRes.ok) return;
-      const jobs = await jobsRes.json();
+      const { data: jobs } = await jobsRes.json();
       if (jobs.length === 0) return;
 
       const detailRes = await authFetch(adminSession, `${BASE_URL}/api/eval-jobs/${jobs[0].id}/detail`);
@@ -3839,6 +3839,135 @@ describe('Vox API Tests', () => {
       if (schedules.length > 0) {
         expect(schedules[0]).toHaveProperty('creatorName');
       }
+    });
+  });
+
+  // ==================== Eval Jobs Pagination & Parameter Safety ====================
+  describe('Eval Jobs Pagination', () => {
+    it('should return paginated response with data and total', async () => {
+      const res = await authFetch(adminSession, `${BASE_URL}/api/eval-jobs?hours=720`);
+      expect(res.ok).toBe(true);
+      const body = await res.json();
+      expect(body).toHaveProperty('data');
+      expect(body).toHaveProperty('total');
+      expect(Array.isArray(body.data)).toBe(true);
+      expect(typeof body.total).toBe('number');
+      expect(body.total).toBeGreaterThanOrEqual(body.data.length);
+    });
+
+    it('should respect limit parameter', async () => {
+      const res = await authFetch(adminSession, `${BASE_URL}/api/eval-jobs?hours=720&limit=2`);
+      expect(res.ok).toBe(true);
+      const body = await res.json();
+      expect(body.data.length).toBeLessThanOrEqual(2);
+    });
+
+    it('should respect offset parameter', async () => {
+      // Fetch first page
+      const res1 = await authFetch(adminSession, `${BASE_URL}/api/eval-jobs?hours=720&limit=1&offset=0`);
+      const body1 = await res1.json();
+
+      // Fetch second page
+      const res2 = await authFetch(adminSession, `${BASE_URL}/api/eval-jobs?hours=720&limit=1&offset=1`);
+      const body2 = await res2.json();
+
+      // totals should match
+      expect(body1.total).toBe(body2.total);
+
+      // If enough jobs exist, pages should differ
+      if (body1.data.length > 0 && body2.data.length > 0) {
+        expect(body1.data[0].id).not.toBe(body2.data[0].id);
+      }
+    });
+
+    it('should return enriched fields (creatorName, type)', async () => {
+      const res = await authFetch(adminSession, `${BASE_URL}/api/eval-jobs?hours=720&limit=5`);
+      const body = await res.json();
+      if (body.data.length > 0) {
+        const job = body.data[0];
+        expect(job).toHaveProperty('creatorName');
+        expect(job).toHaveProperty('type');
+        expect(['manual', 'scheduled']).toContain(job.type);
+      }
+    });
+
+    it('should filter by hours', async () => {
+      const res = await authFetch(adminSession, `${BASE_URL}/api/eval-jobs?hours=24`);
+      expect(res.ok).toBe(true);
+      const body = await res.json();
+      const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+      for (const job of body.data) {
+        expect(new Date(job.createdAt).getTime()).toBeGreaterThanOrEqual(cutoff - 300000); // 5min tolerance
+      }
+    });
+
+    it('should reject invalid hours (negative)', async () => {
+      const res = await authFetch(adminSession, `${BASE_URL}/api/eval-jobs?hours=-5`);
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toMatch(/hours/i);
+    });
+
+    it('should reject invalid hours (zero)', async () => {
+      const res = await authFetch(adminSession, `${BASE_URL}/api/eval-jobs?hours=0`);
+      expect(res.status).toBe(400);
+    });
+
+    it('should reject invalid hours (non-numeric)', async () => {
+      const res = await authFetch(adminSession, `${BASE_URL}/api/eval-jobs?hours=abc`);
+      expect(res.status).toBe(400);
+    });
+
+    it('should clamp negative limit to 1', async () => {
+      const res = await authFetch(adminSession, `${BASE_URL}/api/eval-jobs?hours=720&limit=-10`);
+      expect(res.ok).toBe(true);
+      const body = await res.json();
+      // Negative limit clamped to 1, so at most 1 result
+      expect(body.data.length).toBeLessThanOrEqual(1);
+    });
+
+    it('should clamp excessive limit to 200', async () => {
+      const res = await authFetch(adminSession, `${BASE_URL}/api/eval-jobs?hours=720&limit=9999`);
+      expect(res.ok).toBe(true);
+      const body = await res.json();
+      expect(body.data.length).toBeLessThanOrEqual(200);
+    });
+
+    it('should handle non-numeric limit gracefully', async () => {
+      const res = await authFetch(adminSession, `${BASE_URL}/api/eval-jobs?hours=720&limit=abc`);
+      expect(res.ok).toBe(true);
+      // NaN falls back to default 50
+      const body = await res.json();
+      expect(body.data.length).toBeLessThanOrEqual(50);
+    });
+
+    it('should handle negative offset as 0', async () => {
+      const res = await authFetch(adminSession, `${BASE_URL}/api/eval-jobs?hours=720&offset=-5`);
+      expect(res.ok).toBe(true);
+      const body = await res.json();
+      expect(body).toHaveProperty('total');
+    });
+
+    it('should ignore invalid workflowId', async () => {
+      const res = await authFetch(adminSession, `${BASE_URL}/api/eval-jobs?hours=720&workflowId=notanumber`);
+      expect(res.ok).toBe(true);
+      // Invalid workflowId is silently ignored — returns unfiltered results
+    });
+
+    it('should ignore invalid status', async () => {
+      const res = await authFetch(adminSession, `${BASE_URL}/api/eval-jobs?hours=720&status=bogus`);
+      expect(res.ok).toBe(true);
+      // Invalid status is silently ignored
+    });
+
+    it('should ignore invalid region', async () => {
+      const res = await authFetch(adminSession, `${BASE_URL}/api/eval-jobs?hours=720&region=mars`);
+      expect(res.ok).toBe(true);
+    });
+
+    it('should require authentication', async () => {
+      const res = await fetch(`${BASE_URL}/api/eval-jobs?hours=24`);
+      expect(res.status).toBe(401);
     });
   });
 });
