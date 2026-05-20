@@ -2865,7 +2865,7 @@ export async function registerRoutes(
         return res.status(401).json({ error: "Not authenticated" });
       }
 
-      const { status, region, workflowId, limit, offset } = req.query;
+      const { status, region, workflowId, limit, offset, hours } = req.query;
 
       const filters: {
         status?: "pending" | "running" | "completed" | "failed";
@@ -2873,6 +2873,7 @@ export async function registerRoutes(
         workflowId?: number;
         limit?: number;
         offset?: number;
+        hoursBack?: number;
       } = {};
 
       if (status && ["pending", "running", "completed", "failed"].includes(status as string)) {
@@ -2889,6 +2890,9 @@ export async function registerRoutes(
       }
       if (offset) {
         filters.offset = parseInt(offset as string);
+      }
+      if (hours) {
+        filters.hoursBack = parseInt(hours as string);
       }
 
       const jobs = await storage.getEvalJobs(filters);

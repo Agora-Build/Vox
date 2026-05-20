@@ -644,6 +644,7 @@ export class DatabaseStorage {
     ownerId?: number;
     limit?: number;
     offset?: number;
+    hoursBack?: number;
   }): Promise<EvalJob[]> {
     const conditions = [];
     if (filters?.status) {
@@ -651,6 +652,10 @@ export class DatabaseStorage {
     }
     if (filters?.region) {
       conditions.push(eq(evalJobs.region, filters.region));
+    }
+    if (filters?.hoursBack) {
+      const cutoff = new Date(Date.now() - filters.hoursBack * 60 * 60 * 1000);
+      conditions.push(gte(evalJobs.createdAt, cutoff));
     }
     if (filters?.workflowId) {
       conditions.push(eq(evalJobs.workflowId, filters.workflowId));
