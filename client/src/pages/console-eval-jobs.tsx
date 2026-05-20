@@ -11,8 +11,9 @@ import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, 
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Pagination, PaginationContent, PaginationItem, PaginationLink, PaginationNext, PaginationPrevious, PaginationEllipsis } from "@/components/ui/pagination";
 import { ClipboardList, CheckCircle, XCircle, Loader2, Clock, RefreshCw, CalendarClock, MousePointerClick, MoreHorizontal, Pause, Play, Pencil, Trash2, Zap } from "lucide-react";
-import { useState } from "react";
+import { useState, useCallback } from "react";
 import { useLocation, useSearch, Link } from "wouter";
 import { formatSmartTimestamp, formatRegion, REGIONS } from "@/lib/utils";
 import { format } from "date-fns";
@@ -40,12 +41,16 @@ const TIME_RANGES = [
   { value: "720", label: "Last 30 days" },
 ];
 
-function buildJobsUrl(filters: { status: string; region: string; workflowId: string; hours: string }) {
+const PAGE_SIZE = 50;
+
+function buildJobsUrl(filters: { status: string; region: string; workflowId: string; hours: string; limit: number; offset: number }) {
   const params = new URLSearchParams();
   if (filters.status !== "all") params.set("status", filters.status);
   if (filters.region !== "all") params.set("region", filters.region);
   if (filters.workflowId !== "all") params.set("workflowId", filters.workflowId);
   params.set("hours", filters.hours);
+  params.set("limit", String(filters.limit));
+  if (filters.offset > 0) params.set("offset", String(filters.offset));
   const qs = params.toString();
   return `/api/eval-jobs${qs ? `?${qs}` : ""}`;
 }
@@ -289,18 +294,24 @@ function JobsTab() {
   const [regionFilter, setRegionFilter] = useState("all");
   const [workflowFilter, setWorkflowFilter] = useState("all");
   const [timeFilter, setTimeFilter] = useState("24");
+  const [page, setPage] = useState(1);
 
-  const url = buildJobsUrl({ status: statusFilter, region: regionFilter, workflowId: workflowFilter, hours: timeFilter });
+  const offset = (page - 1) * PAGE_SIZE;
+  const url = buildJobsUrl({ status: statusFilter, region: regionFilter, workflowId: workflowFilter, hours: timeFilter, limit: PAGE_SIZE, offset });
 
-  const { data: jobs, isLoading } = useQuery<EnrichedEvalJob[]>({
+  const { data, isLoading } = useQuery<{ data: EnrichedEvalJob[]; total: number }>({
     queryKey: [url],
     queryFn: async () => {
       const res = await fetch(url, { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch jobs");
       return res.json();
     },
-    refetchInterval: 10000,
+    refetchInterval: timeFilter === "24" ? 10000 : false,
   });
+
+  const jobs = data?.data;
+  const total = data?.total ?? 0;
+  const totalPages = Math.ceil(total / PAGE_SIZE);
 
   const { data: workflows } = useQuery<WorkflowType[]>({
     queryKey: ["/api/workflows?includePublic=true"],
@@ -310,10 +321,34 @@ function JobsTab() {
 
   const hasActiveFilters = statusFilter !== "all" || regionFilter !== "all" || workflowFilter !== "all" || timeFilter !== "24";
 
+  const resetPage = useCallback(() => setPage(1), []);
+
+  const setTimeAndReset = (v: string) => { setTimeFilter(v); resetPage(); };
+  const setStatusAndReset = (v: string) => { setStatusFilter(v); resetPage(); };
+  const setRegionAndReset = (v: string) => { setRegionFilter(v); resetPage(); };
+  const setWorkflowAndReset = (v: string) => { setWorkflowFilter(v); resetPage(); };
+
+  const rangeStart = total > 0 ? offset + 1 : 0;
+  const rangeEnd = Math.min(offset + PAGE_SIZE, total);
+
+  // Build page numbers to display: current +/- 2, with ellipsis
+  const pageNumbers: (number | "ellipsis")[] = [];
+  if (totalPages <= 7) {
+    for (let i = 1; i <= totalPages; i++) pageNumbers.push(i);
+  } else {
+    pageNumbers.push(1);
+    if (page > 3) pageNumbers.push("ellipsis");
+    for (let i = Math.max(2, page - 1); i <= Math.min(totalPages - 1, page + 1); i++) {
+      pageNumbers.push(i);
+    }
+    if (page < totalPages - 2) pageNumbers.push("ellipsis");
+    pageNumbers.push(totalPages);
+  }
+
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-3">
-        <Select value={timeFilter} onValueChange={setTimeFilter}>
+        <Select value={timeFilter} onValueChange={setTimeAndReset}>
           <SelectTrigger className="w-[160px]" data-testid="select-filter-time">
             <SelectValue />
           </SelectTrigger>
@@ -324,7 +359,7 @@ function JobsTab() {
           </SelectContent>
         </Select>
 
-        <Select value={statusFilter} onValueChange={setStatusFilter}>
+        <Select value={statusFilter} onValueChange={setStatusAndReset}>
           <SelectTrigger className="w-[160px]" data-testid="select-filter-status">
             <SelectValue />
           </SelectTrigger>
@@ -335,18 +370,19 @@ function JobsTab() {
           </SelectContent>
         </Select>
 
-        <Select value={regionFilter} onValueChange={setRegionFilter}>
+        <Select value={regionFilter} onValueChange={setRegionAndReset}>
           <SelectTrigger className="w-[160px]" data-testid="select-filter-region">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
+            <SelectItem value="all">All Regions</SelectItem>
             {REGIONS.map((r) => (
               <SelectItem key={r.value} value={r.value}>{r.label}</SelectItem>
             ))}
           </SelectContent>
         </Select>
 
-        <Select value={workflowFilter} onValueChange={setWorkflowFilter}>
+        <Select value={workflowFilter} onValueChange={setWorkflowAndReset}>
           <SelectTrigger className="w-[200px]" data-testid="select-filter-workflow">
             <SelectValue placeholder="All Workflows" />
           </SelectTrigger>
@@ -362,7 +398,7 @@ function JobsTab() {
           <Button
             variant="ghost"
             size="sm"
-            onClick={() => { setStatusFilter("all"); setRegionFilter("all"); setWorkflowFilter("all"); setTimeFilter("24"); }}
+            onClick={() => { setStatusFilter("all"); setRegionFilter("all"); setWorkflowFilter("all"); setTimeFilter("24"); resetPage(); }}
           >
             Clear filters
           </Button>
@@ -372,10 +408,14 @@ function JobsTab() {
       <Card>
         <CardHeader>
           <CardDescription>
-            {jobs ? `${jobs.length} job${jobs.length !== 1 ? "s" : ""}` : "Loading..."}
+            {data
+              ? total > PAGE_SIZE
+                ? `${rangeStart}-${rangeEnd} of ${total} jobs`
+                : `${total} job${total !== 1 ? "s" : ""}`
+              : "Loading..."}
             {" \u00b7 "}
             {TIME_RANGES.find((t) => t.value === timeFilter)?.label?.toLowerCase() ?? ""}
-            {" \u00b7 auto-refreshes every 10s"}
+            {timeFilter === "24" ? " \u00b7 auto-refreshes every 10s" : ""}
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -386,69 +426,109 @@ function JobsTab() {
               ))}
             </div>
           ) : jobs && jobs.length > 0 ? (
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>ID</TableHead>
-                  <TableHead>Workflow</TableHead>
-                  <TableHead>Creator</TableHead>
-                  <TableHead>Type</TableHead>
-                  <TableHead>Region</TableHead>
-                  <TableHead>Status</TableHead>
-                  <TableHead>Created</TableHead>
-                  <TableHead>Completed</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {jobs.map((job) => {
-                  const cfg = STATUS_CONFIG[job.status] ?? STATUS_CONFIG.pending;
-                  const StatusIcon = cfg.icon;
-                  return (
-                    <TableRow key={job.id} data-testid={`row-job-${job.id}`}>
-                      <TableCell className="font-mono">
-                        <Link href={`/console/eval-jobs/${job.id}`}>
-                          <span className="text-primary hover:underline cursor-pointer">#{job.id}</span>
-                        </Link>
-                      </TableCell>
-                      <TableCell className="font-medium">
-                        {workflowMap.get(job.workflowId) ?? `Workflow #${job.workflowId}`}
-                      </TableCell>
-                      <TableCell className="text-sm text-muted-foreground">
-                        {job.creatorName || "-"}
-                      </TableCell>
-                      <TableCell>
-                        {job.type === "scheduled" ? (
-                          <Badge variant="outline" className="gap-1">
-                            <CalendarClock className="h-3 w-3" />
-                            scheduled
+            <>
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>ID</TableHead>
+                    <TableHead>Workflow</TableHead>
+                    <TableHead>Creator</TableHead>
+                    <TableHead>Type</TableHead>
+                    <TableHead>Region</TableHead>
+                    <TableHead>Status</TableHead>
+                    <TableHead>Created</TableHead>
+                    <TableHead>Completed</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {jobs.map((job) => {
+                    const cfg = STATUS_CONFIG[job.status] ?? STATUS_CONFIG.pending;
+                    const StatusIcon = cfg.icon;
+                    return (
+                      <TableRow key={job.id} data-testid={`row-job-${job.id}`}>
+                        <TableCell className="font-mono">
+                          <Link href={`/console/eval-jobs/${job.id}`}>
+                            <span className="text-primary hover:underline cursor-pointer">#{job.id}</span>
+                          </Link>
+                        </TableCell>
+                        <TableCell className="font-medium">
+                          {workflowMap.get(job.workflowId) ?? `Workflow #${job.workflowId}`}
+                        </TableCell>
+                        <TableCell className="text-sm text-muted-foreground">
+                          {job.creatorName || "-"}
+                        </TableCell>
+                        <TableCell>
+                          {job.type === "scheduled" ? (
+                            <Badge variant="outline" className="gap-1">
+                              <CalendarClock className="h-3 w-3" />
+                              scheduled
+                            </Badge>
+                          ) : (
+                            <Badge variant="outline" className="gap-1">
+                              <MousePointerClick className="h-3 w-3" />
+                              manual
+                            </Badge>
+                          )}
+                        </TableCell>
+                        <TableCell>
+                          <Badge variant="outline">{formatRegion(job.region)}</Badge>
+                        </TableCell>
+                        <TableCell>
+                          <Badge variant={cfg.variant} className="gap-1">
+                            <StatusIcon className={`h-3 w-3${job.status === "running" ? " animate-spin" : ""}`} />
+                            {job.status}
                           </Badge>
+                        </TableCell>
+                        <TableCell className="text-sm text-muted-foreground">
+                          {formatSmartTimestamp(job.createdAt)}
+                        </TableCell>
+                        <TableCell className="text-sm text-muted-foreground">
+                          {job.completedAt ? formatSmartTimestamp(job.completedAt) : "-"}
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })}
+                </TableBody>
+              </Table>
+
+              {totalPages > 1 && (
+                <div className="mt-4">
+                  <Pagination>
+                    <PaginationContent>
+                      <PaginationItem>
+                        <PaginationPrevious
+                          onClick={() => setPage((p) => Math.max(1, p - 1))}
+                          className={page <= 1 ? "pointer-events-none opacity-50" : "cursor-pointer"}
+                        />
+                      </PaginationItem>
+                      {pageNumbers.map((p, i) =>
+                        p === "ellipsis" ? (
+                          <PaginationItem key={`e-${i}`}>
+                            <PaginationEllipsis />
+                          </PaginationItem>
                         ) : (
-                          <Badge variant="outline" className="gap-1">
-                            <MousePointerClick className="h-3 w-3" />
-                            manual
-                          </Badge>
-                        )}
-                      </TableCell>
-                      <TableCell>
-                        <Badge variant="outline">{formatRegion(job.region)}</Badge>
-                      </TableCell>
-                      <TableCell>
-                        <Badge variant={cfg.variant} className="gap-1">
-                          <StatusIcon className={`h-3 w-3${job.status === "running" ? " animate-spin" : ""}`} />
-                          {job.status}
-                        </Badge>
-                      </TableCell>
-                      <TableCell className="text-sm text-muted-foreground">
-                        {formatSmartTimestamp(job.createdAt)}
-                      </TableCell>
-                      <TableCell className="text-sm text-muted-foreground">
-                        {job.completedAt ? formatSmartTimestamp(job.completedAt) : "-"}
-                      </TableCell>
-                    </TableRow>
-                  );
-                })}
-              </TableBody>
-            </Table>
+                          <PaginationItem key={p}>
+                            <PaginationLink
+                              isActive={p === page}
+                              onClick={() => setPage(p)}
+                              className="cursor-pointer"
+                            >
+                              {p}
+                            </PaginationLink>
+                          </PaginationItem>
+                        )
+                      )}
+                      <PaginationItem>
+                        <PaginationNext
+                          onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                          className={page >= totalPages ? "pointer-events-none opacity-50" : "cursor-pointer"}
+                        />
+                      </PaginationItem>
+                    </PaginationContent>
+                  </Pagination>
+                </div>
+              )}
+            </>
           ) : (
             <div className="text-center py-8 text-muted-foreground">
               {hasActiveFilters
