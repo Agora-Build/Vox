@@ -105,12 +105,6 @@ export default function ConsoleLayout({ children }: ConsoleLayoutProps) {
       icon: Users,
       active: location === "/console",
     });
-    navItems.push({
-      title: "Providers",
-      url: "/admin/console/providers",
-      icon: Box,
-      active: location === "/admin/console/providers",
-    });
   }
 
   navItems.push({
@@ -119,6 +113,15 @@ export default function ConsoleLayout({ children }: ConsoleLayoutProps) {
     icon: FolderKanban,
     active: location === "/console/projects",
   });
+
+  if (user?.isAdmin) {
+    navItems.push({
+      title: "Providers",
+      url: "/admin/console/providers",
+      icon: Box,
+      active: location === "/admin/console/providers",
+    });
+  }
 
   navItems.push({
     title: "Workflows",
