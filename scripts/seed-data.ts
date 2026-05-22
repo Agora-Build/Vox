@@ -59,20 +59,29 @@ async function seedData() {
     const agoraProvider = await storage.createProvider({
       name: "Agora ConvoAI Engine",
       sku: "convoai",
+      brandColor: "#099DFD",
     });
     console.log(`Provider created: ${agoraProvider.name} (ID: ${agoraProvider.id})`);
-    
+
     const livekitProvider = await storage.createProvider({
       name: "LiveKit Agents",
       sku: "convoai",
+      brandColor: "#1FD5F9",
     });
     console.log(`Provider created: ${livekitProvider.name} (ID: ${livekitProvider.id})`);
 
     const elevenProvider = await storage.createProvider({
       name: "ElevenLabs Agents",
       sku: "convoai",
+      brandColor: "#A8A29E",
     });
     console.log(`Provider created: ${elevenProvider.name} (ID: ${elevenProvider.id})`);
+
+    const customProvider = await storage.createProvider({
+      name: "Custom",
+      sku: "convoai",
+    });
+    console.log(`Provider created: ${customProvider.name} (ID: ${customProvider.id})`);
   } else {
     console.log(`Providers already exist: ${providers.length} found`);
   }

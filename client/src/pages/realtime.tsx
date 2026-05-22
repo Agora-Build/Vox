@@ -59,14 +59,7 @@ interface CombinedRow {
   [key: string]: string | number | undefined;
 }
 
-// Brand colors keyed by provider ID, resolved once from provider name
-const BRAND_KEYWORDS: Array<[string, string]> = [
-  ["Agora",      "#099DFD"], // Agora blue
-  ["LiveKit",    "#1FD5F9"], // LiveKit cyan
-  ["ElevenLabs", "#A8A29E"], // ElevenLabs silver
-];
-
-// Fallback palette for unknown providers
+// Fallback palette for providers without brandColor
 const PALETTE = [
   "#f97316", // orange
   "#22c55e", // green
@@ -75,24 +68,12 @@ const PALETTE = [
   "#eab308", // yellow
 ];
 
-// Cache: providerId → color (resolved once per ID)
-const providerColorCache = new Map<string, string>();
-
-function resolveProviderColor(id: string, name: string): string {
-  const cached = providerColorCache.get(id);
-  if (cached) return cached;
-  const brand = BRAND_KEYWORDS.find(([key]) => name.includes(key));
-  if (brand) {
-    providerColorCache.set(id, brand[1]);
-    return brand[1];
-  }
+function fallbackColor(id: string): string {
   let hash = 0;
   for (let i = 0; i < id.length; i++) {
     hash = ((hash << 5) - hash + id.charCodeAt(i)) | 0;
   }
-  const color = PALETTE[((hash % PALETTE.length) + PALETTE.length) % PALETTE.length];
-  providerColorCache.set(id, color);
-  return color;
+  return PALETTE[((hash % PALETTE.length) + PALETTE.length) % PALETTE.length];
 }
 
 /** Convert provider name to a safe key prefix: "Agora ConvoAI Engine" → "agora_convoai_engine" */
@@ -105,7 +86,7 @@ interface ChartProviders {
   providers: Array<{ key: string; name: string; stroke: string }>;
 }
 
-function buildCombinedData(filteredMetrics: EvalResult[]): ChartProviders {
+function buildCombinedData(filteredMetrics: EvalResult[], colorMap: Map<string, string>): ChartProviders {
   if (!filteredMetrics || filteredMetrics.length === 0) return { data: [], providers: [] };
 
   // Discover providers — keyed by providerId for stable color
@@ -121,7 +102,7 @@ function buildCombinedData(filteredMetrics: EvalResult[]): ChartProviders {
     .map(({ id, name }) => ({
       key: providerKey(name),
       name,
-      stroke: resolveProviderColor(id, name),
+      stroke: colorMap.get(id) || fallbackColor(id),
     }));
 
   const nameToKey = new Map(providers.map(p => [p.name, p.key]));
@@ -442,11 +423,24 @@ interface MetricsSectionProps {
 }
 
 function MetricsSection({ metrics, isLoading, selectedRegion, timeRangeLabel, regionLabel, testIdPrefix = "" }: MetricsSectionProps) {
+  const { data: providerList } = useQuery<Array<{ id: string; brandColor: string | null }>>({
+    queryKey: ["/api/providers"],
+    staleTime: 60000,
+  });
+
+  const colorMap = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const p of providerList ?? []) {
+      if (p.brandColor) map.set(p.id, p.brandColor);
+    }
+    return map;
+  }, [providerList]);
+
   const filteredMetrics = metrics?.filter(m =>
     selectedRegion === "all" || m.region.toLowerCase() === selectedRegion
   ) || [];
 
-  const { data: combinedData, providers } = useMemo(() => buildCombinedData(filteredMetrics), [filteredMetrics]);
+  const { data: combinedData, providers } = useMemo(() => buildCombinedData(filteredMetrics, colorMap), [filteredMetrics, colorMap]);
 
   // Show latest single test result (metrics are ordered by createdAt DESC)
   const latest = filteredMetrics[0] ?? null;
