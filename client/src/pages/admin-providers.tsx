@@ -208,9 +208,6 @@ export default function AdminProviders() {
                   placeholder="#099DFD"
                   className="font-mono"
                 />
-                {editColor && /^#[0-9A-Fa-f]{6}$/.test(editColor) && (
-                  <div className="w-10 h-10 rounded border shrink-0" style={{ backgroundColor: editColor }} />
-                )}
                 <input
                   type="color"
                   value={editColor || "#000000"}
