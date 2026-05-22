@@ -59,8 +59,8 @@ interface CombinedRow {
   [key: string]: string | number | undefined;
 }
 
-// Official brand colors matched by keyword in provider name
-const BRAND_COLORS: Array<[string, string]> = [
+// Brand colors keyed by provider ID, resolved once from provider name
+const BRAND_KEYWORDS: Array<[string, string]> = [
   ["Agora",      "#099DFD"], // Agora blue
   ["LiveKit",    "#1FD5F9"], // LiveKit cyan
   ["ElevenLabs", "#A8A29E"], // ElevenLabs silver
@@ -75,14 +75,24 @@ const PALETTE = [
   "#eab308", // yellow
 ];
 
-function providerColor(name: string): string {
-  const brand = BRAND_COLORS.find(([key]) => name.includes(key));
-  if (brand) return brand[1];
-  let hash = 0;
-  for (let i = 0; i < name.length; i++) {
-    hash = ((hash << 5) - hash + name.charCodeAt(i)) | 0;
+// Cache: providerId → color (resolved once per ID)
+const providerColorCache = new Map<string, string>();
+
+function resolveProviderColor(id: string, name: string): string {
+  const cached = providerColorCache.get(id);
+  if (cached) return cached;
+  const brand = BRAND_KEYWORDS.find(([key]) => name.includes(key));
+  if (brand) {
+    providerColorCache.set(id, brand[1]);
+    return brand[1];
   }
-  return PALETTE[((hash % PALETTE.length) + PALETTE.length) % PALETTE.length];
+  let hash = 0;
+  for (let i = 0; i < id.length; i++) {
+    hash = ((hash << 5) - hash + id.charCodeAt(i)) | 0;
+  }
+  const color = PALETTE[((hash % PALETTE.length) + PALETTE.length) % PALETTE.length];
+  providerColorCache.set(id, color);
+  return color;
 }
 
 /** Convert provider name to a safe key prefix: "Agora ConvoAI Engine" → "agora_convoai_engine" */
@@ -111,7 +121,7 @@ function buildCombinedData(filteredMetrics: EvalResult[]): ChartProviders {
     .map(({ id, name }) => ({
       key: providerKey(name),
       name,
-      stroke: providerColor(name),
+      stroke: resolveProviderColor(id, name),
     }));
 
   const nameToKey = new Map(providers.map(p => [p.name, p.key]));
