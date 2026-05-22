@@ -59,20 +59,27 @@ interface CombinedRow {
   [key: string]: string | number | undefined;
 }
 
-// Curated palette — easy on the eyes, distinct from each other
+// Official brand colors by provider name
+const BRAND_COLORS: Record<string, string> = {
+  "Agora ConvoAI Engine": "#099DFD", // Agora blue
+  "LiveKit Agents":       "#1FD5F9", // LiveKit cyan
+  "ElevenLabs Agents":    "#A8A29E", // ElevenLabs silver (warm stone)
+};
+
+// Fallback palette for unknown providers
 const PALETTE = [
-  "#3b82f6", // blue
   "#f97316", // orange
   "#22c55e", // green
-  "#a855f7", // purple (softer)
+  "#a855f7", // purple
   "#ef4444", // red
+  "#eab308", // yellow
 ];
 
-// Hash providerId to a stable palette index
-function providerColor(providerId: string): string {
+function providerColor(name: string): string {
+  if (BRAND_COLORS[name]) return BRAND_COLORS[name];
   let hash = 0;
-  for (let i = 0; i < providerId.length; i++) {
-    hash = ((hash << 5) - hash + providerId.charCodeAt(i)) | 0;
+  for (let i = 0; i < name.length; i++) {
+    hash = ((hash << 5) - hash + name.charCodeAt(i)) | 0;
   }
   return PALETTE[((hash % PALETTE.length) + PALETTE.length) % PALETTE.length];
 }
@@ -103,7 +110,7 @@ function buildCombinedData(filteredMetrics: EvalResult[]): ChartProviders {
     .map(({ id, name }) => ({
       key: providerKey(name),
       name,
-      stroke: providerColor(id),
+      stroke: providerColor(name),
     }));
 
   const nameToKey = new Map(providers.map(p => [p.name, p.key]));
