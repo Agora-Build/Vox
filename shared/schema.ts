@@ -76,6 +76,7 @@ export const providers = pgTable("providers", {
   name: text("name").notNull(),
   sku: providerSkuEnum("sku").notNull(),
   description: text("description"),
+  brandColor: text("brand_color"),
   isActive: boolean("is_active").default(true).notNull(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),

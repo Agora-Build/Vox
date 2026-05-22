@@ -243,18 +243,21 @@ export async function registerRoutes(
         name: "Agora ConvoAI Engine",
         sku: "convoai",
         description: "Agora's Conversational AI Engine",
+        brandColor: "#099DFD",
       });
 
       await storage.createProvider({
         name: "LiveKit Agents",
         sku: "convoai",
         description: "LiveKit's Real-time Communication Agents",
+        brandColor: "#1FD5F9",
       });
 
       await storage.createProvider({
         name: "ElevenLabs Agents",
         sku: "convoai",
         description: "ElevenLabs Conversational AI Agents",
+        brandColor: "#A8A29E",
       });
 
       // Set default pricing config (prices in cents)
@@ -737,6 +740,30 @@ export async function registerRoutes(
     } catch (error) {
       console.error("Error creating provider:", error);
       res.status(500).json({ error: "Failed to create provider" });
+    }
+  });
+
+  app.patch("/api/providers/:id", requireAuth, requireAdmin, async (req, res) => {
+    try {
+      const { id } = req.params;
+      const { name, description, brandColor, isActive } = req.body;
+
+      const existing = await storage.getProvider(id);
+      if (!existing) {
+        return res.status(404).json({ error: "Provider not found" });
+      }
+
+      const updates: Record<string, unknown> = {};
+      if (name !== undefined) updates.name = name;
+      if (description !== undefined) updates.description = description;
+      if (brandColor !== undefined) updates.brandColor = brandColor;
+      if (isActive !== undefined) updates.isActive = isActive;
+
+      const updated = await storage.updateProvider(id, updates);
+      res.json(updated);
+    } catch (error) {
+      console.error("Error updating provider:", error);
+      res.status(500).json({ error: "Failed to update provider" });
     }
   });
 

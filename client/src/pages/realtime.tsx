@@ -59,20 +59,19 @@ interface CombinedRow {
   [key: string]: string | number | undefined;
 }
 
-// Curated palette — easy on the eyes, distinct from each other
+// Fallback palette for providers without brandColor
 const PALETTE = [
-  "#3b82f6", // blue
   "#f97316", // orange
   "#22c55e", // green
-  "#a855f7", // purple (softer)
+  "#a855f7", // purple
   "#ef4444", // red
+  "#eab308", // yellow
 ];
 
-// Hash providerId to a stable palette index
-function providerColor(providerId: string): string {
+function fallbackColor(id: string): string {
   let hash = 0;
-  for (let i = 0; i < providerId.length; i++) {
-    hash = ((hash << 5) - hash + providerId.charCodeAt(i)) | 0;
+  for (let i = 0; i < id.length; i++) {
+    hash = ((hash << 5) - hash + id.charCodeAt(i)) | 0;
   }
   return PALETTE[((hash % PALETTE.length) + PALETTE.length) % PALETTE.length];
 }
@@ -87,7 +86,7 @@ interface ChartProviders {
   providers: Array<{ key: string; name: string; stroke: string }>;
 }
 
-function buildCombinedData(filteredMetrics: EvalResult[]): ChartProviders {
+function buildCombinedData(filteredMetrics: EvalResult[], colorMap: Map<string, string>): ChartProviders {
   if (!filteredMetrics || filteredMetrics.length === 0) return { data: [], providers: [] };
 
   // Discover providers — keyed by providerId for stable color
@@ -103,7 +102,7 @@ function buildCombinedData(filteredMetrics: EvalResult[]): ChartProviders {
     .map(({ id, name }) => ({
       key: providerKey(name),
       name,
-      stroke: providerColor(id),
+      stroke: colorMap.get(id) || fallbackColor(id),
     }));
 
   const nameToKey = new Map(providers.map(p => [p.name, p.key]));
@@ -424,11 +423,24 @@ interface MetricsSectionProps {
 }
 
 function MetricsSection({ metrics, isLoading, selectedRegion, timeRangeLabel, regionLabel, testIdPrefix = "" }: MetricsSectionProps) {
+  const { data: providerList } = useQuery<Array<{ id: string; brandColor: string | null }>>({
+    queryKey: ["/api/providers"],
+    staleTime: 60000,
+  });
+
+  const colorMap = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const p of providerList ?? []) {
+      if (p.brandColor) map.set(p.id, p.brandColor);
+    }
+    return map;
+  }, [providerList]);
+
   const filteredMetrics = metrics?.filter(m =>
     selectedRegion === "all" || m.region.toLowerCase() === selectedRegion
   ) || [];
 
-  const { data: combinedData, providers } = useMemo(() => buildCombinedData(filteredMetrics), [filteredMetrics]);
+  const { data: combinedData, providers } = useMemo(() => buildCombinedData(filteredMetrics, colorMap), [filteredMetrics, colorMap]);
 
   // Show latest single test result (metrics are ordered by createdAt DESC)
   const latest = filteredMetrics[0] ?? null;

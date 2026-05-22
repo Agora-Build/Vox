@@ -3970,4 +3970,105 @@ describe('Vox API Tests', () => {
       expect(res.status).toBe(401);
     });
   });
+
+  // ==================== Provider Brand Color ====================
+  describe('Provider Brand Color', () => {
+    it('should return brandColor in provider list', async () => {
+      const res = await fetch(`${BASE_URL}/api/providers`);
+      expect(res.ok).toBe(true);
+      const providers = await res.json();
+      expect(Array.isArray(providers)).toBe(true);
+      if (providers.length > 0) {
+        expect(providers[0]).toHaveProperty('brandColor');
+      }
+    });
+
+    it('should update brandColor via PATCH (admin)', async () => {
+      const listRes = await fetch(`${BASE_URL}/api/providers`);
+      const providers = await listRes.json();
+      if (providers.length === 0) return;
+
+      const provider = providers[0];
+      const newColor = '#FF5733';
+
+      const res = await authFetch(adminSession, `${BASE_URL}/api/providers/${provider.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ brandColor: newColor }),
+      });
+      expect(res.ok).toBe(true);
+      const updated = await res.json();
+      expect(updated.brandColor).toBe(newColor);
+
+      // Restore original color
+      await authFetch(adminSession, `${BASE_URL}/api/providers/${provider.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ brandColor: provider.brandColor }),
+      });
+    });
+
+    it('should clear brandColor by setting null', async () => {
+      const listRes = await fetch(`${BASE_URL}/api/providers`);
+      const providers = await listRes.json();
+      if (providers.length === 0) return;
+
+      const provider = providers[0];
+      const res = await authFetch(adminSession, `${BASE_URL}/api/providers/${provider.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ brandColor: null }),
+      });
+      expect(res.ok).toBe(true);
+      const updated = await res.json();
+      expect(updated.brandColor).toBeNull();
+
+      // Restore
+      await authFetch(adminSession, `${BASE_URL}/api/providers/${provider.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ brandColor: provider.brandColor }),
+      });
+    });
+
+    it('should return 404 for non-existent provider', async () => {
+      const res = await authFetch(adminSession, `${BASE_URL}/api/providers/nonexistent`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ brandColor: '#000000' }),
+      });
+      expect(res.status).toBe(404);
+    });
+
+    it('should require admin for PATCH', async () => {
+      const res = await fetch(`${BASE_URL}/api/providers/any-id`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ brandColor: '#000000' }),
+      });
+      expect(res.status).toBe(401);
+    });
+
+    it('should update provider name via PATCH', async () => {
+      const listRes = await fetch(`${BASE_URL}/api/providers`);
+      const providers = await listRes.json();
+      if (providers.length === 0) return;
+
+      const provider = providers[providers.length - 1]; // use last to avoid renaming key providers
+      const res = await authFetch(adminSession, `${BASE_URL}/api/providers/${provider.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Test Rename' }),
+      });
+      expect(res.ok).toBe(true);
+      expect((await res.json()).name).toBe('Test Rename');
+
+      // Restore
+      await authFetch(adminSession, `${BASE_URL}/api/providers/${provider.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: provider.name }),
+      });
+    });
+  });
 });
