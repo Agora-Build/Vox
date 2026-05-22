@@ -59,12 +59,12 @@ interface CombinedRow {
   [key: string]: string | number | undefined;
 }
 
-// Official brand colors by provider name
-const BRAND_COLORS: Record<string, string> = {
-  "Agora ConvoAI Engine": "#099DFD", // Agora blue
-  "LiveKit Agents":       "#1FD5F9", // LiveKit cyan
-  "ElevenLabs Agents":    "#A8A29E", // ElevenLabs silver (warm stone)
-};
+// Official brand colors matched by keyword in provider name
+const BRAND_COLORS: Array<[string, string]> = [
+  ["Agora",      "#099DFD"], // Agora blue
+  ["LiveKit",    "#1FD5F9"], // LiveKit cyan
+  ["ElevenLabs", "#A8A29E"], // ElevenLabs silver
+];
 
 // Fallback palette for unknown providers
 const PALETTE = [
@@ -76,7 +76,8 @@ const PALETTE = [
 ];
 
 function providerColor(name: string): string {
-  if (BRAND_COLORS[name]) return BRAND_COLORS[name];
+  const brand = BRAND_COLORS.find(([key]) => name.includes(key));
+  if (brand) return brand[1];
   let hash = 0;
   for (let i = 0; i < name.length; i++) {
     hash = ((hash << 5) - hash + name.charCodeAt(i)) | 0;
