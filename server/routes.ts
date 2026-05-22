@@ -754,6 +754,10 @@ export async function registerRoutes(
         return res.status(404).json({ error: "Provider not found" });
       }
 
+      if (brandColor !== undefined && brandColor !== null && !/^#[0-9A-Fa-f]{6}$/.test(brandColor)) {
+        return res.status(400).json({ error: "brandColor must be a valid hex color (e.g. #099DFD) or null" });
+      }
+
       const updates: Record<string, unknown> = {};
       if (name !== undefined) updates.name = name;
       if (description !== undefined) updates.description = description;
