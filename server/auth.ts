@@ -82,11 +82,11 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
 }
 
 export async function requireAdmin(req: Request, res: Response, next: NextFunction) {
-  if (!req.session?.userId) {
+  const user = req.apiKeyUser ?? (req.session?.userId ? await storage.getUser(req.session.userId) : undefined);
+  if (!user) {
     return res.status(401).json({ error: "Authentication required" });
   }
-  const user = await storage.getUser(req.session.userId);
-  if (!user || !user.isAdmin) {
+  if (!user.isAdmin) {
     return res.status(403).json({ error: "Admin access required" });
   }
   next();
