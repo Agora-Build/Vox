@@ -37,6 +37,7 @@ import ConsoleOrganizationSettings from "@/pages/console-organization-settings";
 import ConsoleOrganizationCreate from "@/pages/console-organization-create";
 import AdminOrganizations from "@/pages/admin-organizations";
 import AdminFundReturns from "@/pages/admin-fund-returns";
+import AdminProviders from "@/pages/admin-providers";
 import Activate from "@/pages/activate";
 import AuthGithubCallback from "@/pages/auth-github-callback";
 import NotFound from "@/pages/not-found";
@@ -831,6 +832,43 @@ function AdminFundReturnsWrapper() {
   );
 }
 
+function AdminProvidersWrapper() {
+  const [, setLocation] = useLocation();
+  const { data: authStatus, isLoading, isFetching } = useQuery<AuthStatus>({
+    queryKey: ["/api/auth/status"],
+  });
+
+  useEffect(() => {
+    if (!isLoading && !isFetching && authStatus?.initialized && !authStatus.user) {
+      setLocation("/admin/login");
+    }
+  }, [isLoading, isFetching, authStatus, setLocation]);
+
+  if ((isLoading || isFetching) && !authStatus?.user) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="animate-pulse text-muted-foreground">Loading...</div>
+      </div>
+    );
+  }
+
+  if (!authStatus?.initialized) return <ConsoleInit />;
+  if (!authStatus.user) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="animate-pulse text-muted-foreground">Redirecting...</div>
+      </div>
+    );
+  }
+  if (!authStatus.user.isAdmin) { setLocation("/console/workflows"); return null; }
+
+  return (
+    <ConsoleLayout>
+      <AdminProviders />
+    </ConsoleLayout>
+  );
+}
+
 function Router() {
   return (
     <Switch>
@@ -894,6 +932,9 @@ function Router() {
       </Route>
       <Route path="/admin/console/fund-returns">
         <AdminFundReturnsWrapper />
+      </Route>
+      <Route path="/admin/console/providers">
+        <AdminProvidersWrapper />
       </Route>
       <Route path="/admin/console" component={AdminConsolePage} />
       <Route path="/setup" component={ConsoleInit} />

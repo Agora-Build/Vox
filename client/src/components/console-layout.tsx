@@ -19,7 +19,7 @@ import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import { Users, Workflow, FileText, LogOut, Shield, Gem, Sparkles, Rocket, Server, Building2, CreditCard, Settings, FolderKanban, ClipboardList, KeyRound, Swords, HardDrive } from "lucide-react";
+import { Users, Workflow, FileText, LogOut, Shield, Gem, Sparkles, Rocket, Server, Building2, CreditCard, Settings, FolderKanban, ClipboardList, KeyRound, Swords, HardDrive, Box } from "lucide-react";
 import { ThemeToggle } from "@/components/theme-toggle";
 
 interface AuthStatus {
@@ -104,6 +104,12 @@ export default function ConsoleLayout({ children }: ConsoleLayoutProps) {
       url: "/console",
       icon: Users,
       active: location === "/console",
+    });
+    navItems.push({
+      title: "Providers",
+      url: "/admin/console/providers",
+      icon: Box,
+      active: location === "/admin/console/providers",
     });
   }
 
