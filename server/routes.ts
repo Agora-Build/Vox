@@ -19,6 +19,7 @@ import {
   requireAdmin,
   requirePrincipal,
   requireOrgAdmin,
+  requireAuthOrApiKey,
   generateApiKey,
   passport,
   getGithubOAuthUrl,
@@ -743,7 +744,7 @@ export async function registerRoutes(
     }
   });
 
-  app.patch("/api/providers/:id", requireAuth, requireAdmin, async (req, res) => {
+  app.patch("/api/providers/:id", requireAuthOrApiKey, requireAdmin, async (req, res) => {
     try {
       const { id } = req.params;
       const { name, description, brandColor, isActive } = req.body;
