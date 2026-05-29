@@ -504,8 +504,10 @@ class VoxEvalAgentDaemon {
     const { prefixSteps, suffixSteps, samples } = extractSampleGroups(parsed.steps);
 
     // Determine setup/teardown steps:
-    // If workflow provides stepsPrefix/stepsSuffix, use those.
-    // Otherwise, use the prefix/suffix extracted from the scenario itself.
+    // If workflow provides stepsPrefix/stepsSuffix, use those (and we MUST
+    // recompose the YAML). Otherwise, use the prefix/suffix extracted from the
+    // scenario itself.
+    const hasWorkflowComposition = !!(config.stepsPrefix || config.stepsSuffix);
     let setupSteps = prefixSteps;
     let teardownSteps = suffixSteps;
 
@@ -518,17 +520,23 @@ class VoxEvalAgentDaemon {
       if (Array.isArray(suffixParsed)) teardownSteps = suffixParsed as ScenarioStep[];
     }
 
-    if (samples.length <= CHUNK_SIZE) {
-      // Small enough — run as single YAML
-      const caseId = samples[0]?.caseId || 'default';
-      const fullYaml = buildChunkYaml(parsed, setupSteps, samples, teardownSteps, caseId, 1, 1);
-      const scenarioConfig = this.writeTempYaml(fullYaml, 'vox-scenario')!;
+    // Group samples by case_id, then chunk each group independently
+    const caseGroups = groupByCaseId(samples);
+    let totalChunkFiles = 0;
+    for (const [, caseSamples] of caseGroups) {
+      totalChunkFiles += Math.ceil(caseSamples.length / CHUNK_SIZE);
+    }
+
+    // Fast path: a single self-contained chunk and no workflow composition
+    // needed → run the ORIGINAL scenario verbatim. This avoids rewriting
+    // through buildChunkYaml, which would rename the scenario, force one
+    // case_id, and drop any top-level fields not explicitly copied. This
+    // matters for small (<=5-sample) mixed-case evals.
+    if (totalChunkFiles <= 1 && !hasWorkflowComposition) {
+      const scenarioConfig = this.writeTempYaml(scenario, 'vox-scenario')!;
       tempFiles.push(scenarioConfig);
       return this.runAeval(scenarioConfig);
     }
-
-    // Group samples by case_id, then chunk each group independently
-    const caseGroups = groupByCaseId(samples);
 
     // Build all chunk files: for each case_id, split into chunks of CHUNK_SIZE
     const chunkFiles: { caseId: string; chunkIndex: number; totalChunks: number; file: string }[] = [];
@@ -1528,24 +1536,33 @@ class VoxEvalAgentDaemon {
     // Resolve ${config.*} placeholders (e.g., ${config.url} from workflow config)
     let scenario = config.scenario;
     let app = config.app;
+    // stepsPrefix/stepsSuffix come from the workflow and typically hold
+    // platform.setup with credentials — they MUST go through the same
+    // ${config.*} / ${secrets.*} resolution as the scenario.
+    let stepsPrefix = config.stepsPrefix;
+    let stepsSuffix = config.stepsSuffix;
     const configPlaceholders: Record<string, string> = {};
     for (const [k, v] of Object.entries(config)) {
       if (typeof v === 'string' && k !== 'scenario' && k !== 'app' && k !== 'framework') {
         configPlaceholders[k] = v;
       }
     }
+    const resolveConfigVars = (s: string) =>
+      s.replace(/\$\{config\.(\w+)\}/g, (_m, key) => configPlaceholders[key] ?? _m);
     if (Object.keys(configPlaceholders).length > 0) {
-      scenario = scenario.replace(/\$\{config\.(\w+)\}/g, (_m, key) => configPlaceholders[key] ?? _m);
-      if (app) app = app.replace(/\$\{config\.(\w+)\}/g, (_m, key) => configPlaceholders[key] ?? _m);
+      scenario = resolveConfigVars(scenario);
+      if (app) app = resolveConfigVars(app);
+      if (stepsPrefix) stepsPrefix = resolveConfigVars(stepsPrefix);
+      if (stepsSuffix) stepsSuffix = resolveConfigVars(stepsSuffix);
     }
 
     // Fetch secrets for this job and resolve ${secrets.*} placeholders
     const jobSecrets = await this.fetchSecrets(job.id);
     if (Object.keys(jobSecrets).length > 0) {
       scenario = this.resolveSecrets(scenario, jobSecrets);
-      if (app) {
-        app = this.resolveSecrets(app, jobSecrets);
-      }
+      if (app) app = this.resolveSecrets(app, jobSecrets);
+      if (stepsPrefix) stepsPrefix = this.resolveSecrets(stepsPrefix, jobSecrets);
+      if (stepsSuffix) stepsSuffix = this.resolveSecrets(stepsSuffix, jobSecrets);
     }
 
     const tempFiles: (string | null)[] = [];
@@ -1555,7 +1572,7 @@ class VoxEvalAgentDaemon {
 
       switch (framework) {
         case 'aeval': {
-          results = await this.executeAevalWithChunking(scenario, config, tempFiles);
+          results = await this.executeAevalWithChunking(scenario, { stepsPrefix, stepsSuffix }, tempFiles);
           break;
         }
         case 'voice-agent-tester': {
