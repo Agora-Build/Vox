@@ -35,6 +35,17 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { SECRET_PLACEHOLDER_REGEX } from '../shared/secrets';
 import yaml from 'js-yaml';
+import {
+  CHUNK_SIZE,
+  type ParsedScenario,
+  type ScenarioStep,
+  type SampleGroup,
+  sanitizeForFilename,
+  extractSampleGroups,
+  groupByCaseId,
+  buildChunkYaml,
+  mergeChunkMetrics,
+} from './chunking';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -88,147 +99,6 @@ const JOB_POLL_INTERVAL = 10000;  // 10 seconds
 
 const VOICE_AGENT_TESTER_PATH = path.resolve(__dirname, 'voice-agent-tester');
 const AEVAL_DATA_PATH = path.resolve(__dirname, 'aeval-data');
-
-const CHUNK_SIZE = 5; // max samples per aeval run
-
-// ---------------------------------------------------------------------------
-// Chunk splitting helpers (pure functions, no side effects)
-// ---------------------------------------------------------------------------
-
-interface ScenarioStep {
-  type: string;
-  [key: string]: unknown;
-}
-
-interface ParsedScenario {
-  name: string;
-  description?: string;
-  analysis?: Record<string, unknown>;
-  params?: Record<string, unknown>;
-  steps: ScenarioStep[];
-}
-
-/** A sample group = lab.trace step + all following steps until the next lab.trace */
-interface SampleGroup {
-  steps: ScenarioStep[];
-  sampleId?: string;
-  caseId?: string;
-}
-
-/**
- * Extract sample groups from a scenario's steps array.
- * A sample starts at each `lab.trace` step and includes all steps until the next `lab.trace`.
- * Steps before the first `lab.trace` are "prefix" steps (setup).
- * Steps are consumed sequentially — no lookahead needed.
- */
-function extractSampleGroups(steps: ScenarioStep[]): {
-  prefixSteps: ScenarioStep[];
-  suffixSteps: ScenarioStep[];
-  samples: SampleGroup[];
-} {
-  const prefixSteps: ScenarioStep[] = [];
-  const samples: SampleGroup[] = [];
-  let current: SampleGroup | null = null;
-  let foundFirstSample = false;
-
-  for (const step of steps) {
-    if (step.type === 'lab.trace') {
-      // Start a new sample group
-      if (current) samples.push(current);
-      // lab.trace fields may be top-level or nested in params
-      const sampleId = (step.sample_id ?? (step.params as Record<string, unknown> | undefined)?.sample_id) as string | undefined;
-      const caseId = (step.case_id ?? (step.params as Record<string, unknown> | undefined)?.case_id) as string | undefined;
-      current = { steps: [step], sampleId, caseId };
-      foundFirstSample = true;
-    } else if (!foundFirstSample) {
-      // Before first lab.trace — these are setup steps
-      prefixSteps.push(step);
-    } else if (current) {
-      current.steps.push(step);
-    }
-  }
-  if (current) samples.push(current);
-
-  // Detect suffix: steps after the last sample that are teardown (stop_recording, platform.exit)
-  // These are NOT part of the last sample — they should come from the workflow stepsPrefix/stepsSuffix
-  // For backward compat (full YAML with setup/teardown), we leave them in.
-  // When stepsPrefix/stepsSuffix are provided, the scenario won't have them.
-
-  return { prefixSteps, suffixSteps: [], samples };
-}
-
-/**
- * Build a complete chunk YAML from parts.
- */
-function buildChunkYaml(
-  scenario: ParsedScenario,
-  stepsPrefix: ScenarioStep[],
-  chunkSamples: SampleGroup[],
-  stepsSuffix: ScenarioStep[],
-  caseId: string,
-  chunkIndex: number,
-  totalChunks: number,
-): string {
-  const chunkId = `chunk_${String(chunkIndex).padStart(3, '0')}`;
-  const sampleIds = chunkSamples.map(s => s.sampleId).filter(Boolean);
-
-  const chunkSteps = [
-    ...stepsPrefix,
-    ...chunkSamples.flatMap(s => s.steps),
-    ...stepsSuffix,
-  ];
-
-  const baseName = scenario.name || 'scenario';
-  const chunkScenario: Record<string, unknown> = {
-    name: `${baseName}_${caseId}_${chunkId}`,
-    description: `${baseName} ${caseId} ${chunkId}`,
-  };
-  if (scenario.analysis) chunkScenario.analysis = scenario.analysis;
-
-  // Build params.lab with case_id, chunk_id, sample_ids
-  const labBase = (scenario.params?.lab && typeof scenario.params.lab === 'object')
-    ? { ...(scenario.params.lab as Record<string, unknown>) }
-    : {};
-  chunkScenario.params = {
-    ...(scenario.params || {}),
-    lab: { ...labBase, case_id: caseId, chunk_id: chunkId, sample_ids: sampleIds },
-  };
-  chunkScenario.steps = chunkSteps;
-
-  return yaml.dump(chunkScenario, { lineWidth: -1, noRefs: true });
-}
-
-/**
- * Merge metrics.json outputs from multiple chunks into a single EvalResult.
- * Concatenates turn-level arrays and recomputes MED/SD/P95.
- */
-function mergeChunkMetrics(chunkMetrics: Record<string, unknown>[]): Record<string, unknown> {
-  const allResponseTurns: Record<string, unknown>[] = [];
-  const allInterruptTurns: Record<string, unknown>[] = [];
-
-  for (const m of chunkMetrics) {
-    const rm = m.response_metrics as Record<string, unknown> | undefined;
-    const im = m.interruption_metrics as Record<string, unknown> | undefined;
-    const rlTurns = (rm?.latency as Record<string, unknown>)?.turn_level;
-    const ilTurns = (im?.latency as Record<string, unknown>)?.turn_level;
-    if (Array.isArray(rlTurns)) allResponseTurns.push(...rlTurns);
-    if (Array.isArray(ilTurns)) allInterruptTurns.push(...ilTurns);
-  }
-
-  // Re-index turn numbers
-  allResponseTurns.forEach((t, i) => { t.turn_index = i + 1; });
-  allInterruptTurns.forEach((t, i) => { t.turn_index = i + 1; });
-
-  return {
-    response_metrics: {
-      latency: { turn_level: allResponseTurns },
-    },
-    interruption_metrics: {
-      latency: { turn_level: allInterruptTurns },
-    },
-    _merged_from_chunks: chunkMetrics.length,
-  };
-}
 
 // Shorten BUILD_TAG: "main/abc123def456..." → "main/abc123d"
 function shortBuildTag(): string {
@@ -658,12 +528,7 @@ class VoxEvalAgentDaemon {
     }
 
     // Group samples by case_id, then chunk each group independently
-    const caseGroups = new Map<string, SampleGroup[]>();
-    for (const sample of samples) {
-      const caseId = sample.caseId || 'default';
-      if (!caseGroups.has(caseId)) caseGroups.set(caseId, []);
-      caseGroups.get(caseId)!.push(sample);
-    }
+    const caseGroups = groupByCaseId(samples);
 
     // Build all chunk files: for each case_id, split into chunks of CHUNK_SIZE
     const chunkFiles: { caseId: string; chunkIndex: number; totalChunks: number; file: string }[] = [];
@@ -672,7 +537,10 @@ class VoxEvalAgentDaemon {
       for (let i = 0; i < totalChunks; i++) {
         const chunkSamples = caseSamples.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE);
         const chunkYaml = buildChunkYaml(parsed, setupSteps, chunkSamples, teardownSteps, caseId, i + 1, totalChunks);
-        const chunkFile = this.writeTempYaml(chunkYaml, `vox-${caseId}-chunk-${i + 1}`)!;
+        // Sanitize caseId before using it in the temp filename — untrusted input
+        // from job YAML must not enable path traversal out of os.tmpdir().
+        const safePrefix = `vox-${sanitizeForFilename(caseId)}-chunk-${i + 1}`;
+        const chunkFile = this.writeTempYaml(chunkYaml, safePrefix)!;
         tempFiles.push(chunkFile);
         chunkFiles.push({ caseId, chunkIndex: i + 1, totalChunks, file: chunkFile });
       }
@@ -1395,7 +1263,10 @@ class VoxEvalAgentDaemon {
 
   private writeTempYaml(content: string, prefix = 'vox-config'): string | null {
     if (!content) return null;
-    const tmpFile = path.join(os.tmpdir(), `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}.yaml`);
+    // Defense-in-depth: strip any path separators from the prefix so it can
+    // never escape os.tmpdir(), even if a caller forgets to sanitize.
+    const safePrefix = path.basename(prefix);
+    const tmpFile = path.join(os.tmpdir(), `${safePrefix}-${Date.now()}-${Math.random().toString(36).slice(2)}.yaml`);
     fs.writeFileSync(tmpFile, content, { encoding: 'utf-8', mode: 0o600 });
     console.log(`[Daemon] Wrote temp YAML: ${tmpFile}`);
     return tmpFile;
