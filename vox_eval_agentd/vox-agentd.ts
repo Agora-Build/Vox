@@ -34,6 +34,7 @@ import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { SECRET_PLACEHOLDER_REGEX } from '../shared/secrets';
+import yaml from 'js-yaml';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -87,6 +88,140 @@ const JOB_POLL_INTERVAL = 10000;  // 10 seconds
 
 const VOICE_AGENT_TESTER_PATH = path.resolve(__dirname, 'voice-agent-tester');
 const AEVAL_DATA_PATH = path.resolve(__dirname, 'aeval-data');
+
+const CHUNK_SIZE = 5; // max samples per aeval run
+
+// ---------------------------------------------------------------------------
+// Chunk splitting helpers (pure functions, no side effects)
+// ---------------------------------------------------------------------------
+
+interface ScenarioStep {
+  type: string;
+  [key: string]: unknown;
+}
+
+interface ParsedScenario {
+  name: string;
+  description?: string;
+  analysis?: Record<string, unknown>;
+  params?: Record<string, unknown>;
+  steps: ScenarioStep[];
+}
+
+/** A sample group = lab.trace step + all following steps until the next lab.trace */
+interface SampleGroup {
+  steps: ScenarioStep[];
+  sampleId?: string;
+}
+
+/**
+ * Extract sample groups from a scenario's steps array.
+ * A sample starts at each `lab.trace` step and includes all steps until the next `lab.trace`.
+ * Steps before the first `lab.trace` are "prefix" steps (setup).
+ * Steps are consumed sequentially — no lookahead needed.
+ */
+function extractSampleGroups(steps: ScenarioStep[]): {
+  prefixSteps: ScenarioStep[];
+  suffixSteps: ScenarioStep[];
+  samples: SampleGroup[];
+} {
+  const prefixSteps: ScenarioStep[] = [];
+  const samples: SampleGroup[] = [];
+  let current: SampleGroup | null = null;
+  let foundFirstSample = false;
+
+  for (const step of steps) {
+    if (step.type === 'lab.trace') {
+      // Start a new sample group
+      if (current) samples.push(current);
+      const params = step.params as Record<string, unknown> | undefined;
+      current = { steps: [step], sampleId: params?.sample_id as string | undefined };
+      foundFirstSample = true;
+    } else if (!foundFirstSample) {
+      // Before first lab.trace — these are setup steps
+      prefixSteps.push(step);
+    } else if (current) {
+      current.steps.push(step);
+    }
+  }
+  if (current) samples.push(current);
+
+  // Detect suffix: steps after the last sample that are teardown (stop_recording, platform.exit)
+  // These are NOT part of the last sample — they should come from the workflow stepsPrefix/stepsSuffix
+  // For backward compat (full YAML with setup/teardown), we leave them in.
+  // When stepsPrefix/stepsSuffix are provided, the scenario won't have them.
+
+  return { prefixSteps, suffixSteps: [], samples };
+}
+
+/**
+ * Build a complete chunk YAML from parts.
+ */
+function buildChunkYaml(
+  scenario: ParsedScenario,
+  stepsPrefix: ScenarioStep[],
+  chunkSamples: SampleGroup[],
+  stepsSuffix: ScenarioStep[],
+  chunkIndex: number,
+  totalChunks: number,
+): string {
+  const chunkId = `chunk_${String(chunkIndex).padStart(3, '0')}`;
+  const sampleIds = chunkSamples.map(s => s.sampleId).filter(Boolean);
+
+  const chunkSteps = [
+    ...stepsPrefix,
+    ...chunkSamples.flatMap(s => s.steps),
+    ...stepsSuffix,
+  ];
+
+  const chunkScenario: Record<string, unknown> = {
+    name: `${scenario.name}_${chunkId}`,
+    description: `${scenario.description || scenario.name} (${chunkId} of ${totalChunks})`,
+  };
+  if (scenario.analysis) chunkScenario.analysis = scenario.analysis;
+  if (scenario.params) {
+    const params = { ...scenario.params } as Record<string, unknown>;
+    if (params.lab && typeof params.lab === 'object') {
+      params.lab = { ...(params.lab as Record<string, unknown>), chunk_id: chunkId, sample_ids: sampleIds };
+    }
+    chunkScenario.params = params;
+  }
+  chunkScenario.steps = chunkSteps;
+
+  return yaml.dump(chunkScenario, { lineWidth: -1, noRefs: true });
+}
+
+/**
+ * Merge metrics.json outputs from multiple chunks into a single EvalResult.
+ * Concatenates turn-level arrays and recomputes MED/SD/P95.
+ */
+function mergeChunkMetrics(chunkMetrics: Record<string, unknown>[]): Record<string, unknown> {
+  const allResponseTurns: Record<string, unknown>[] = [];
+  const allInterruptTurns: Record<string, unknown>[] = [];
+
+  for (const m of chunkMetrics) {
+    const rm = m.response_metrics as Record<string, unknown> | undefined;
+    const im = m.interruption_metrics as Record<string, unknown> | undefined;
+    const rlTurns = (rm?.latency as Record<string, unknown>)?.turn_level;
+    const ilTurns = (im?.latency as Record<string, unknown>)?.turn_level;
+    if (Array.isArray(rlTurns)) allResponseTurns.push(...rlTurns);
+    if (Array.isArray(ilTurns)) allInterruptTurns.push(...ilTurns);
+  }
+
+  // Re-index turn numbers
+  allResponseTurns.forEach((t, i) => { t.turn_index = i + 1; });
+  allInterruptTurns.forEach((t, i) => { t.turn_index = i + 1; });
+
+  return {
+    response_metrics: {
+      latency: { turn_level: allResponseTurns },
+    },
+    interruption_metrics: {
+      latency: { turn_level: allInterruptTurns },
+    },
+    _merged_from_chunks: chunkMetrics.length,
+  };
+}
 
 // Shorten BUILD_TAG: "main/abc123def456..." → "main/abc123d"
 function shortBuildTag(): string {
@@ -470,6 +605,90 @@ class VoxEvalAgentDaemon {
   // -------------------------------------------------------------------------
   // aeval framework
   // -------------------------------------------------------------------------
+
+  /**
+   * Execute aeval with automatic chunk splitting.
+   * If the scenario has >CHUNK_SIZE samples, splits into multiple chunk files,
+   * runs aeval sequentially on each, and merges results.
+   */
+  private async executeAevalWithChunking(
+    scenario: string,
+    config: { stepsPrefix?: string; stepsSuffix?: string },
+    tempFiles: (string | null)[],
+  ): Promise<EvalResult> {
+    const parsed = yaml.load(scenario) as ParsedScenario;
+    if (!parsed?.steps || !Array.isArray(parsed.steps)) {
+      // No steps to split — run as-is
+      const scenarioConfig = this.writeTempYaml(scenario, 'vox-scenario')!;
+      tempFiles.push(scenarioConfig);
+      return this.runAeval(scenarioConfig);
+    }
+
+    const { prefixSteps, suffixSteps, samples } = extractSampleGroups(parsed.steps);
+
+    // Determine setup/teardown steps:
+    // If workflow provides stepsPrefix/stepsSuffix, use those.
+    // Otherwise, use the prefix/suffix extracted from the scenario itself.
+    let setupSteps = prefixSteps;
+    let teardownSteps = suffixSteps;
+
+    if (config.stepsPrefix) {
+      const prefixParsed = yaml.load(config.stepsPrefix);
+      if (Array.isArray(prefixParsed)) setupSteps = prefixParsed as ScenarioStep[];
+    }
+    if (config.stepsSuffix) {
+      const suffixParsed = yaml.load(config.stepsSuffix);
+      if (Array.isArray(suffixParsed)) teardownSteps = suffixParsed as ScenarioStep[];
+    }
+
+    if (samples.length <= CHUNK_SIZE) {
+      // Small enough — run as single YAML (merge prefix/suffix if from workflow)
+      const fullYaml = buildChunkYaml(parsed, setupSteps, samples, teardownSteps, 1, 1);
+      const scenarioConfig = this.writeTempYaml(fullYaml, 'vox-scenario')!;
+      tempFiles.push(scenarioConfig);
+      return this.runAeval(scenarioConfig);
+    }
+
+    // Split into chunks
+    const totalChunks = Math.ceil(samples.length / CHUNK_SIZE);
+    console.log(`[Daemon] Splitting ${samples.length} samples into ${totalChunks} chunks of ${CHUNK_SIZE}`);
+
+    const chunkMetrics: Record<string, unknown>[] = [];
+    const chunkResults: EvalResult[] = [];
+
+    for (let i = 0; i < totalChunks; i++) {
+      const chunkSamples = samples.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE);
+      const chunkYaml = buildChunkYaml(parsed, setupSteps, chunkSamples, teardownSteps, i + 1, totalChunks);
+      const chunkFile = this.writeTempYaml(chunkYaml, `vox-chunk-${i + 1}`)!;
+      tempFiles.push(chunkFile);
+
+      console.log(`[Daemon] Running chunk ${i + 1}/${totalChunks} (${chunkSamples.length} samples)`);
+      const result = await this.runAeval(chunkFile);
+      chunkResults.push(result);
+      if (result.rawData && typeof result.rawData === 'object') {
+        chunkMetrics.push(result.rawData as Record<string, unknown>);
+      }
+    }
+
+    // Merge all chunk metrics into a single result
+    console.log(`[Daemon] All ${totalChunks} chunks complete — merging results`);
+    const mergedRawData = mergeChunkMetrics(chunkMetrics);
+
+    // Recompute MED/SD/P95 from merged turn-level data using the existing parser
+    const mergedJson = JSON.stringify(mergedRawData);
+    const mergedFile = path.join(os.tmpdir(), `vox-merged-${Date.now()}.json`);
+    fs.writeFileSync(mergedFile, mergedJson);
+    tempFiles.push(mergedFile);
+
+    const mergedResult = this.tryParseMetricsJson(mergedFile);
+    if (mergedResult) {
+      return mergedResult;
+    }
+
+    // Fallback: return last chunk's result if merge parsing fails
+    console.warn('[Daemon] Merged metrics parsing failed — using last chunk result');
+    return chunkResults[chunkResults.length - 1];
+  }
 
   private runAeval(scenarioConfig: string): Promise<EvalResult> {
     return new Promise((resolve, reject) => {
@@ -1401,7 +1620,7 @@ class VoxEvalAgentDaemon {
     console.log(`  - Workflow ID: ${job.workflowId}`);
     console.log(`  - Region: ${job.region}`);
 
-    const config = (job.config || {}) as { framework?: string; app?: string; scenario?: string };
+    const config = (job.config || {}) as { framework?: string; app?: string; scenario?: string; stepsPrefix?: string; stepsSuffix?: string };
 
     // Per-job framework override, falling back to daemon default
     const framework = config.framework || this.config.framework;
@@ -1441,9 +1660,7 @@ class VoxEvalAgentDaemon {
 
       switch (framework) {
         case 'aeval': {
-          const scenarioConfig = this.writeTempYaml(scenario, 'vox-scenario')!;
-          tempFiles.push(scenarioConfig);
-          results = await this.runAeval(scenarioConfig);
+          results = await this.executeAevalWithChunking(scenario, config, tempFiles);
           break;
         }
         case 'voice-agent-tester': {
