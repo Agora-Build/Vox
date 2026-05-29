@@ -150,28 +150,59 @@ export function buildChunkYaml(
 
 /**
  * Merge metrics.json outputs from multiple chunks into a single structure.
- * Concatenates turn-level arrays and re-indexes turn numbers. MED/SD/P95 are
- * recomputed downstream by the daemon's metrics parser from these merged turns.
+ *
+ * Turn-level arrays are concatenated and re-indexed; the daemon's parser
+ * recomputes MED/SD/P95 from them — this is the source of truth for the
+ * normal aeval path. For families/chunks that only emit summary data (no
+ * turn_level), we also carry through the last seen `summary`, the
+ * `aggregated_summary`, and scalar metrics so the daemon's existing
+ * per-family summary fallback still works instead of silently zeroing a
+ * family that had usable summary data.
  */
 export function mergeChunkMetrics(chunkMetrics: Record<string, unknown>[]): Record<string, unknown> {
   const allResponseTurns: Record<string, unknown>[] = [];
   const allInterruptTurns: Record<string, unknown>[] = [];
+  let responseSummary: unknown;
+  let interruptSummary: unknown;
+  let aggregated: unknown;
+  let networkResilience: unknown;
+  let naturalness: unknown;
+  let noiseReduction: unknown;
 
   for (const m of chunkMetrics) {
     const rm = m.response_metrics as Record<string, unknown> | undefined;
     const im = m.interruption_metrics as Record<string, unknown> | undefined;
-    const rlTurns = (rm?.latency as Record<string, unknown>)?.turn_level;
-    const ilTurns = (im?.latency as Record<string, unknown>)?.turn_level;
-    if (Array.isArray(rlTurns)) allResponseTurns.push(...rlTurns);
-    if (Array.isArray(ilTurns)) allInterruptTurns.push(...ilTurns);
+    const rl = rm?.latency as Record<string, unknown> | undefined;
+    const il = im?.latency as Record<string, unknown> | undefined;
+    if (Array.isArray(rl?.turn_level)) allResponseTurns.push(...(rl!.turn_level as Record<string, unknown>[]));
+    if (Array.isArray(il?.turn_level)) allInterruptTurns.push(...(il!.turn_level as Record<string, unknown>[]));
+    // Carry through summary/scalar data (last non-empty wins) as a fallback
+    // for families that lack turn-level data in the merged set.
+    if (rl?.summary) responseSummary = rl.summary;
+    if (il?.summary) interruptSummary = il.summary;
+    if (m.aggregated_summary) aggregated = m.aggregated_summary;
+    if (m.network_resilience != null) networkResilience = m.network_resilience;
+    if (m.naturalness != null) naturalness = m.naturalness;
+    if (m.noise_reduction != null) noiseReduction = m.noise_reduction;
   }
 
   allResponseTurns.forEach((t, i) => { t.turn_index = i + 1; });
   allInterruptTurns.forEach((t, i) => { t.turn_index = i + 1; });
 
-  return {
-    response_metrics: { latency: { turn_level: allResponseTurns } },
-    interruption_metrics: { latency: { turn_level: allInterruptTurns } },
+  const responseLatency: Record<string, unknown> = { turn_level: allResponseTurns };
+  if (responseSummary) responseLatency.summary = responseSummary;
+  const interruptLatency: Record<string, unknown> = { turn_level: allInterruptTurns };
+  if (interruptSummary) interruptLatency.summary = interruptSummary;
+
+  const merged: Record<string, unknown> = {
+    response_metrics: { latency: responseLatency },
+    interruption_metrics: { latency: interruptLatency },
     _merged_from_chunks: chunkMetrics.length,
   };
+  if (aggregated) merged.aggregated_summary = aggregated;
+  if (networkResilience != null) merged.network_resilience = networkResilience;
+  if (naturalness != null) merged.naturalness = naturalness;
+  if (noiseReduction != null) merged.noise_reduction = noiseReduction;
+
+  return merged;
 }

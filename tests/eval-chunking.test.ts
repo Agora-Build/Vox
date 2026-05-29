@@ -425,6 +425,27 @@ describe("mergeChunkMetrics", () => {
     expect(rTurns(merged)).toHaveLength(2);
     expect(iTurns(merged)).toHaveLength(1);
   });
+
+  it("preserves per-family summary when a family has no turn-level data", () => {
+    // response has turn-level; interruption only has summary (no turn_level)
+    const c1 = { response_metrics: { latency: { turn_level: [{ latency_ms: 500 }] } } };
+    const c2 = { interruption_metrics: { latency: { summary: { p50_reaction_time_ms: 300, p95_reaction_time_ms: 450 } } } };
+    const merged = mergeChunkMetrics([c1, c2]);
+    expect(rTurns(merged)).toHaveLength(1);
+    expect(iTurns(merged)).toHaveLength(0);
+    // interruption summary carried through so the daemon parser can fall back
+    const iSummary = ((merged.interruption_metrics as Record<string, unknown>).latency as Record<string, unknown>).summary as Record<string, unknown>;
+    expect(iSummary.p50_reaction_time_ms).toBe(300);
+  });
+
+  it("preserves aggregated_summary and scalar metrics", () => {
+    const c1 = { response_metrics: { latency: { turn_level: [{ latency_ms: 500 }] } }, aggregated_summary: { avg_response_latency_ms: 510 }, network_resilience: 88, naturalness: 4.1, noise_reduction: 92 };
+    const merged = mergeChunkMetrics([c1]);
+    expect((merged.aggregated_summary as Record<string, unknown>).avg_response_latency_ms).toBe(510);
+    expect(merged.network_resilience).toBe(88);
+    expect(merged.naturalness).toBe(4.1);
+    expect(merged.noise_reduction).toBe(92);
+  });
 });
 
 // ---------------------------------------------------------------------------
