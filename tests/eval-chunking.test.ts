@@ -23,6 +23,7 @@ interface ScenarioStep {
 interface SampleGroup {
   steps: ScenarioStep[];
   sampleId?: string;
+  caseId?: string;
 }
 
 interface ParsedScenario {
@@ -46,8 +47,9 @@ function extractSampleGroups(steps: ScenarioStep[]): {
   for (const step of steps) {
     if (step.type === 'lab.trace') {
       if (current) samples.push(current);
-      const params = step.params as Record<string, unknown> | undefined;
-      current = { steps: [step], sampleId: params?.sample_id as string | undefined };
+      const sampleId = (step.sample_id ?? (step.params as Record<string, unknown> | undefined)?.sample_id) as string | undefined;
+      const caseId = (step.case_id ?? (step.params as Record<string, unknown> | undefined)?.case_id) as string | undefined;
+      current = { steps: [step], sampleId, caseId };
       foundFirstSample = true;
     } else if (!foundFirstSample) {
       prefixSteps.push(step);
@@ -212,6 +214,136 @@ describe('extractSampleGroups', () => {
       chunks.push(samples.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE));
     }
     expect(chunks.map(c => c.length)).toEqual([5, 5, 5, 3]);
+  });
+
+  it('should capture caseId from lab.trace (top-level fields)', () => {
+    const steps: ScenarioStep[] = [
+      { type: 'lab.trace', case_id: 'RSP_BASIC', sample_id: 'RSP_BASIC-001' },
+      { type: 'audio.play' },
+      { type: 'audio.wait_for_speech' },
+      { type: 'lab.trace', case_id: 'INT_BASIC', sample_id: 'INT_BASIC-001' },
+      { type: 'audio.play' },
+      { type: 'audio.wait_for_speech' },
+    ];
+    const { samples } = extractSampleGroups(steps);
+    expect(samples).toHaveLength(2);
+    expect(samples[0].caseId).toBe('RSP_BASIC');
+    expect(samples[1].caseId).toBe('INT_BASIC');
+  });
+
+  it('should capture caseId from lab.trace (nested in params)', () => {
+    const steps: ScenarioStep[] = [
+      { type: 'lab.trace', params: { case_id: 'RSP_BASIC', sample_id: 'RSP-001' } },
+      { type: 'audio.play' },
+    ];
+    const { samples } = extractSampleGroups(steps);
+    expect(samples[0].caseId).toBe('RSP_BASIC');
+  });
+});
+
+describe('groupSamplesByCaseId', () => {
+  // Helper: group samples by caseId (same logic as daemon)
+  function groupByCaseId(samples: SampleGroup[]): Map<string, SampleGroup[]> {
+    const groups = new Map<string, SampleGroup[]>();
+    for (const s of samples) {
+      const caseId = s.caseId || 'default';
+      if (!groups.has(caseId)) groups.set(caseId, []);
+      groups.get(caseId)!.push(s);
+    }
+    return groups;
+  }
+
+  it('should group 3 suites × 10 samples → 3 groups of 10', () => {
+    const steps: ScenarioStep[] = [];
+    for (const caseId of ['RSP_BASIC', 'INT_BASIC', 'INT_FALSE']) {
+      for (let i = 1; i <= 10; i++) {
+        steps.push(
+          { type: 'lab.trace', case_id: caseId, sample_id: `${caseId}-${String(i).padStart(3, '0')}` },
+          { type: 'audio.play' },
+          { type: 'audio.wait_for_speech' },
+        );
+      }
+    }
+
+    const { samples } = extractSampleGroups(steps);
+    expect(samples).toHaveLength(30);
+
+    const groups = groupByCaseId(samples);
+    expect(groups.size).toBe(3);
+    expect(groups.get('RSP_BASIC')!).toHaveLength(10);
+    expect(groups.get('INT_BASIC')!).toHaveLength(10);
+    expect(groups.get('INT_FALSE')!).toHaveLength(10);
+  });
+
+  it('should produce 6 chunks from 3 suites × 10 samples (5 per chunk)', () => {
+    const steps: ScenarioStep[] = [];
+    for (const caseId of ['RSP_BASIC', 'INT_BASIC', 'INT_FALSE']) {
+      for (let i = 1; i <= 10; i++) {
+        steps.push(
+          { type: 'lab.trace', case_id: caseId, sample_id: `${caseId}-${i}` },
+          { type: 'audio.play' },
+          { type: 'audio.wait_for_speech' },
+        );
+      }
+    }
+
+    const { samples } = extractSampleGroups(steps);
+    const groups = groupByCaseId(samples);
+
+    const CHUNK_SIZE = 5;
+    let totalChunkFiles = 0;
+    const chunkBreakdown: Record<string, number> = {};
+
+    for (const [caseId, caseSamples] of groups) {
+      const chunks = Math.ceil(caseSamples.length / CHUNK_SIZE);
+      chunkBreakdown[caseId] = chunks;
+      totalChunkFiles += chunks;
+    }
+
+    expect(totalChunkFiles).toBe(6); // 2 + 2 + 2
+    expect(chunkBreakdown).toEqual({
+      RSP_BASIC: 2,
+      INT_BASIC: 2,
+      INT_FALSE: 2,
+    });
+  });
+
+  it('should handle uneven suite sizes (7+3+8 samples)', () => {
+    const steps: ScenarioStep[] = [];
+    const sizes = { RSP: 7, INT: 3, FALSE: 8 };
+    for (const [caseId, count] of Object.entries(sizes)) {
+      for (let i = 1; i <= count; i++) {
+        steps.push(
+          { type: 'lab.trace', case_id: caseId, sample_id: `${caseId}-${i}` },
+          { type: 'audio.play' },
+        );
+      }
+    }
+
+    const { samples } = extractSampleGroups(steps);
+    const groups = groupByCaseId(samples);
+
+    const CHUNK_SIZE = 5;
+    let totalChunks = 0;
+    for (const [, caseSamples] of groups) {
+      totalChunks += Math.ceil(caseSamples.length / CHUNK_SIZE);
+    }
+    // RSP: 7 → 2 chunks (5+2), INT: 3 → 1 chunk, FALSE: 8 → 2 chunks (5+3)
+    expect(totalChunks).toBe(5);
+  });
+
+  it('should handle single suite (no grouping needed)', () => {
+    const steps: ScenarioStep[] = [];
+    for (let i = 1; i <= 3; i++) {
+      steps.push(
+        { type: 'lab.trace', case_id: 'RSP_BASIC', sample_id: `RSP-${i}` },
+        { type: 'audio.play' },
+      );
+    }
+    const { samples } = extractSampleGroups(steps);
+    const groups = groupByCaseId(samples);
+    expect(groups.size).toBe(1);
+    expect(groups.get('RSP_BASIC')!).toHaveLength(3);
   });
 });
 

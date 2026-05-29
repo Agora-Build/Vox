@@ -112,6 +112,7 @@ interface ParsedScenario {
 interface SampleGroup {
   steps: ScenarioStep[];
   sampleId?: string;
+  caseId?: string;
 }
 
 /**
@@ -134,8 +135,10 @@ function extractSampleGroups(steps: ScenarioStep[]): {
     if (step.type === 'lab.trace') {
       // Start a new sample group
       if (current) samples.push(current);
-      const params = step.params as Record<string, unknown> | undefined;
-      current = { steps: [step], sampleId: params?.sample_id as string | undefined };
+      // lab.trace fields may be top-level or nested in params
+      const sampleId = (step.sample_id ?? (step.params as Record<string, unknown> | undefined)?.sample_id) as string | undefined;
+      const caseId = (step.case_id ?? (step.params as Record<string, unknown> | undefined)?.case_id) as string | undefined;
+      current = { steps: [step], sampleId, caseId };
       foundFirstSample = true;
     } else if (!foundFirstSample) {
       // Before first lab.trace — these are setup steps
@@ -162,6 +165,7 @@ function buildChunkYaml(
   stepsPrefix: ScenarioStep[],
   chunkSamples: SampleGroup[],
   stepsSuffix: ScenarioStep[],
+  caseId: string,
   chunkIndex: number,
   totalChunks: number,
 ): string {
@@ -174,18 +178,21 @@ function buildChunkYaml(
     ...stepsSuffix,
   ];
 
+  const baseName = scenario.name || 'scenario';
   const chunkScenario: Record<string, unknown> = {
-    name: `${scenario.name}_${chunkId}`,
-    description: `${scenario.description || scenario.name} (${chunkId} of ${totalChunks})`,
+    name: `${baseName}_${caseId}_${chunkId}`,
+    description: `${baseName} ${caseId} ${chunkId}`,
   };
   if (scenario.analysis) chunkScenario.analysis = scenario.analysis;
-  if (scenario.params) {
-    const params = { ...scenario.params } as Record<string, unknown>;
-    if (params.lab && typeof params.lab === 'object') {
-      params.lab = { ...(params.lab as Record<string, unknown>), chunk_id: chunkId, sample_ids: sampleIds };
-    }
-    chunkScenario.params = params;
-  }
+
+  // Build params.lab with case_id, chunk_id, sample_ids
+  const labBase = (scenario.params?.lab && typeof scenario.params.lab === 'object')
+    ? { ...(scenario.params.lab as Record<string, unknown>) }
+    : {};
+  chunkScenario.params = {
+    ...(scenario.params || {}),
+    lab: { ...labBase, case_id: caseId, chunk_id: chunkId, sample_ids: sampleIds },
+  };
   chunkScenario.steps = chunkSteps;
 
   return yaml.dump(chunkScenario, { lineWidth: -1, noRefs: true });
@@ -642,28 +649,45 @@ class VoxEvalAgentDaemon {
     }
 
     if (samples.length <= CHUNK_SIZE) {
-      // Small enough — run as single YAML (merge prefix/suffix if from workflow)
-      const fullYaml = buildChunkYaml(parsed, setupSteps, samples, teardownSteps, 1, 1);
+      // Small enough — run as single YAML
+      const caseId = samples[0]?.caseId || 'default';
+      const fullYaml = buildChunkYaml(parsed, setupSteps, samples, teardownSteps, caseId, 1, 1);
       const scenarioConfig = this.writeTempYaml(fullYaml, 'vox-scenario')!;
       tempFiles.push(scenarioConfig);
       return this.runAeval(scenarioConfig);
     }
 
-    // Split into chunks
-    const totalChunks = Math.ceil(samples.length / CHUNK_SIZE);
-    console.log(`[Daemon] Splitting ${samples.length} samples into ${totalChunks} chunks of ${CHUNK_SIZE}`);
+    // Group samples by case_id, then chunk each group independently
+    const caseGroups = new Map<string, SampleGroup[]>();
+    for (const sample of samples) {
+      const caseId = sample.caseId || 'default';
+      if (!caseGroups.has(caseId)) caseGroups.set(caseId, []);
+      caseGroups.get(caseId)!.push(sample);
+    }
 
+    // Build all chunk files: for each case_id, split into chunks of CHUNK_SIZE
+    const chunkFiles: { caseId: string; chunkIndex: number; totalChunks: number; file: string }[] = [];
+    for (const [caseId, caseSamples] of caseGroups) {
+      const totalChunks = Math.ceil(caseSamples.length / CHUNK_SIZE);
+      for (let i = 0; i < totalChunks; i++) {
+        const chunkSamples = caseSamples.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE);
+        const chunkYaml = buildChunkYaml(parsed, setupSteps, chunkSamples, teardownSteps, caseId, i + 1, totalChunks);
+        const chunkFile = this.writeTempYaml(chunkYaml, `vox-${caseId}-chunk-${i + 1}`)!;
+        tempFiles.push(chunkFile);
+        chunkFiles.push({ caseId, chunkIndex: i + 1, totalChunks, file: chunkFile });
+      }
+    }
+
+    console.log(`[Daemon] Split ${samples.length} samples (${caseGroups.size} suites) into ${chunkFiles.length} chunks`);
+
+    // Run each chunk sequentially
     const chunkMetrics: Record<string, unknown>[] = [];
     const chunkResults: EvalResult[] = [];
 
-    for (let i = 0; i < totalChunks; i++) {
-      const chunkSamples = samples.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE);
-      const chunkYaml = buildChunkYaml(parsed, setupSteps, chunkSamples, teardownSteps, i + 1, totalChunks);
-      const chunkFile = this.writeTempYaml(chunkYaml, `vox-chunk-${i + 1}`)!;
-      tempFiles.push(chunkFile);
-
-      console.log(`[Daemon] Running chunk ${i + 1}/${totalChunks} (${chunkSamples.length} samples)`);
-      const result = await this.runAeval(chunkFile);
+    for (let i = 0; i < chunkFiles.length; i++) {
+      const { caseId, chunkIndex, totalChunks, file } = chunkFiles[i];
+      console.log(`[Daemon] Running ${caseId} chunk ${chunkIndex}/${totalChunks} (${i + 1}/${chunkFiles.length} total)`);
+      const result = await this.runAeval(file);
       chunkResults.push(result);
       if (result.rawData && typeof result.rawData === 'object') {
         chunkMetrics.push(result.rawData as Record<string, unknown>);
@@ -671,7 +695,7 @@ class VoxEvalAgentDaemon {
     }
 
     // Merge all chunk metrics into a single result
-    console.log(`[Daemon] All ${totalChunks} chunks complete — merging results`);
+    console.log(`[Daemon] All ${chunkFiles.length} chunks complete — merging results`);
     const mergedRawData = mergeChunkMetrics(chunkMetrics);
 
     // Recompute MED/SD/P95 from merged turn-level data using the existing parser
