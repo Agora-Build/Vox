@@ -554,6 +554,12 @@ class VoxEvalAgentDaemon {
       }
     }
 
+    if (chunkFiles.length === 0) {
+      // No samples (no lab.trace steps) but composition was requested — this is
+      // a malformed scenario. Fail loudly instead of reporting default zeros.
+      throw new Error('No samples found in scenario (no lab.trace steps) — nothing to run');
+    }
+
     console.log(`[Daemon] Split ${samples.length} samples (${caseGroups.size} suites) into ${chunkFiles.length} chunks`);
 
     // Run each chunk sequentially
@@ -581,13 +587,25 @@ class VoxEvalAgentDaemon {
     tempFiles.push(mergedFile);
 
     const mergedResult = this.tryParseMetricsJson(mergedFile);
-    if (mergedResult) {
-      return mergedResult;
+    const mergedHasData = !!mergedResult &&
+      (mergedResult.responseLatencyMedian > 0 || mergedResult.interruptLatencyMedian > 0);
+    if (mergedHasData) {
+      return mergedResult!;
     }
 
-    // Fallback: return last chunk's result if merge parsing fails
-    console.warn('[Daemon] Merged metrics parsing failed — using last chunk result');
-    return chunkResults[chunkResults.length - 1];
+    // Merge produced no usable turn-level metrics (e.g. aeval emitted only
+    // summary data, which mergeChunkMetrics doesn't carry). Fall back to a
+    // chunk result that actually has metrics rather than reporting zeros.
+    const usableChunk = chunkResults.find(
+      r => r.responseLatencyMedian > 0 || r.interruptLatencyMedian > 0,
+    );
+    if (usableChunk) {
+      console.warn('[Daemon] Merged turn-level metrics empty — using a chunk result with data');
+      return usableChunk;
+    }
+
+    console.warn('[Daemon] No usable metrics from any chunk — returning merged defaults');
+    return mergedResult ?? chunkResults[chunkResults.length - 1];
   }
 
   private runAeval(scenarioConfig: string): Promise<EvalResult> {
