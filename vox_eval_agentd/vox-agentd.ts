@@ -527,11 +527,13 @@ class VoxEvalAgentDaemon {
       totalChunkFiles += Math.ceil(caseSamples.length / CHUNK_SIZE);
     }
 
-    // Fast path: a single self-contained chunk and no workflow composition
-    // needed → run the ORIGINAL scenario verbatim. This avoids rewriting
-    // through buildChunkYaml, which would rename the scenario, force one
-    // case_id, and drop any top-level fields not explicitly copied. This
-    // matters for small (<=5-sample) mixed-case evals.
+    // Fast path: exactly one case group that fits in a single chunk, and no
+    // workflow setup/teardown to inject → run the ORIGINAL scenario verbatim.
+    // This avoids rewriting through buildChunkYaml (which renames the scenario,
+    // sets a single params.lab.case_id, and drops un-copied top-level fields).
+    // Multi-suite eval sets are always split per case_id by design — each aeval
+    // run needs its own params.lab.case_id (and may need a different analysis
+    // preset), so samples from different cases cannot share one file.
     if (totalChunkFiles <= 1 && !hasWorkflowComposition) {
       const scenarioConfig = this.writeTempYaml(scenario, 'vox-scenario')!;
       tempFiles.push(scenarioConfig);
@@ -582,8 +584,10 @@ class VoxEvalAgentDaemon {
 
     // Recompute MED/SD/P95 from merged turn-level data using the existing parser
     const mergedJson = JSON.stringify(mergedRawData);
-    const mergedFile = path.join(os.tmpdir(), `vox-merged-${Date.now()}.json`);
-    fs.writeFileSync(mergedFile, mergedJson);
+    // Random name + 0600, same as writeTempYaml — metrics may contain transcript
+    // data; avoid predictable names (symlink races) and world-readable perms.
+    const mergedFile = path.join(os.tmpdir(), `vox-merged-${Date.now()}-${Math.random().toString(36).slice(2)}.json`);
+    fs.writeFileSync(mergedFile, mergedJson, { encoding: 'utf-8', mode: 0o600 });
     tempFiles.push(mergedFile);
 
     const mergedResult = this.tryParseMetricsJson(mergedFile);
