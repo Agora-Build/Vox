@@ -321,6 +321,68 @@ describe('Vox API Tests', () => {
     });
   });
 
+  describe('Config separation enforcement', () => {
+    it('rejects a workflow whose config has scenario', async () => {
+      const response = await authFetch(adminSession, `${BASE_URL}/api/workflows`, {
+        method: 'POST',
+        body: JSON.stringify({
+          name: 'Bad Workflow',
+          visibility: 'public',
+          projectId: testProjectId,
+          providerId: testProviderId,
+          config: { framework: 'aeval', scenario: 'name: x' },
+        }),
+      });
+      expect(response.status).toBe(400);
+      const body = await response.json();
+      expect(body.error).toContain('eval set');
+    });
+
+    it('rejects an eval set whose config has framework', async () => {
+      const response = await authFetch(adminSession, `${BASE_URL}/api/eval-sets`, {
+        method: 'POST',
+        body: JSON.stringify({
+          name: 'Bad Eval Set',
+          visibility: 'public',
+          config: { scenario: 'name: x', framework: 'aeval' },
+        }),
+      });
+      expect(response.status).toBe(400);
+      const body = await response.json();
+      expect(body.error).toContain('workflow');
+    });
+
+    it('accepts a valid disjoint workflow + eval set', async () => {
+      const wf = await authFetch(adminSession, `${BASE_URL}/api/workflows`, {
+        method: 'POST',
+        body: JSON.stringify({
+          name: 'Good Workflow',
+          visibility: 'public',
+          projectId: testProjectId,
+          providerId: testProviderId,
+          config: { framework: 'aeval', stepsPrefix: '- type: platform.setup' },
+        }),
+      });
+      expect(wf.ok).toBe(true);
+      const wfBody = await wf.json();
+
+      const es = await authFetch(adminSession, `${BASE_URL}/api/eval-sets`, {
+        method: 'POST',
+        body: JSON.stringify({
+          name: 'Good Eval Set',
+          visibility: 'public',
+          config: { scenario: 'name: x\nsteps: []' },
+        }),
+      });
+      expect(es.ok).toBe(true);
+      const esBody = await es.json();
+
+      // Clean up so these rows don't leak into the shared test DB.
+      await authFetch(adminSession, `${BASE_URL}/api/workflows/${wfBody.id}`, { method: 'DELETE' });
+      await authFetch(adminSession, `${BASE_URL}/api/eval-sets/${esBody.id}`, { method: 'DELETE' });
+    });
+  });
+
   describe('Eval Schedule API', () => {
     it('should create a one-time schedule', async () => {
       const response = await authFetch(adminSession, `${BASE_URL}/api/eval-schedules`, {
