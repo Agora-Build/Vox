@@ -34,6 +34,18 @@ import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { SECRET_PLACEHOLDER_REGEX } from '../shared/secrets';
+import yaml from 'js-yaml';
+import {
+  CHUNK_SIZE,
+  type ParsedScenario,
+  type ScenarioStep,
+  type SampleGroup,
+  sanitizeForFilename,
+  extractSampleGroups,
+  groupByCaseId,
+  buildChunkYaml,
+  mergeChunkMetrics,
+} from './chunking';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -470,6 +482,135 @@ class VoxEvalAgentDaemon {
   // -------------------------------------------------------------------------
   // aeval framework
   // -------------------------------------------------------------------------
+
+  /**
+   * Execute aeval with automatic chunk splitting.
+   * If the scenario has >CHUNK_SIZE samples, splits into multiple chunk files,
+   * runs aeval sequentially on each, and merges results.
+   */
+  private async executeAevalWithChunking(
+    scenario: string,
+    config: { stepsPrefix?: string; stepsSuffix?: string },
+    tempFiles: (string | null)[],
+  ): Promise<EvalResult> {
+    const parsed = yaml.load(scenario) as ParsedScenario;
+    if (!parsed?.steps || !Array.isArray(parsed.steps)) {
+      // No steps to split — run as-is
+      const scenarioConfig = this.writeTempYaml(scenario, 'vox-scenario')!;
+      tempFiles.push(scenarioConfig);
+      return this.runAeval(scenarioConfig);
+    }
+
+    const { prefixSteps, suffixSteps, samples } = extractSampleGroups(parsed.steps);
+
+    // Determine setup/teardown steps:
+    // If workflow provides stepsPrefix/stepsSuffix, use those (and we MUST
+    // recompose the YAML). Otherwise, use the prefix/suffix extracted from the
+    // scenario itself.
+    const hasWorkflowComposition = !!(config.stepsPrefix || config.stepsSuffix);
+    let setupSteps = prefixSteps;
+    let teardownSteps = suffixSteps;
+
+    if (config.stepsPrefix) {
+      const prefixParsed = yaml.load(config.stepsPrefix);
+      if (Array.isArray(prefixParsed)) setupSteps = prefixParsed as ScenarioStep[];
+    }
+    if (config.stepsSuffix) {
+      const suffixParsed = yaml.load(config.stepsSuffix);
+      if (Array.isArray(suffixParsed)) teardownSteps = suffixParsed as ScenarioStep[];
+    }
+
+    // Group samples by case_id, then chunk each group independently
+    const caseGroups = groupByCaseId(samples);
+    let totalChunkFiles = 0;
+    for (const [, caseSamples] of caseGroups) {
+      totalChunkFiles += Math.ceil(caseSamples.length / CHUNK_SIZE);
+    }
+
+    // Fast path: exactly one case group that fits in a single chunk, and no
+    // workflow setup/teardown to inject → run the ORIGINAL scenario verbatim.
+    // This avoids rewriting through buildChunkYaml (which renames the scenario,
+    // sets a single params.lab.case_id, and drops un-copied top-level fields).
+    // Multi-suite eval sets are always split per case_id by design — each aeval
+    // run needs its own params.lab.case_id (and may need a different analysis
+    // preset), so samples from different cases cannot share one file.
+    if (totalChunkFiles <= 1 && !hasWorkflowComposition) {
+      const scenarioConfig = this.writeTempYaml(scenario, 'vox-scenario')!;
+      tempFiles.push(scenarioConfig);
+      return this.runAeval(scenarioConfig);
+    }
+
+    // Build all chunk files: for each case_id, split into chunks of CHUNK_SIZE
+    const chunkFiles: { caseId: string; chunkIndex: number; totalChunks: number; file: string }[] = [];
+    for (const [caseId, caseSamples] of caseGroups) {
+      const totalChunks = Math.ceil(caseSamples.length / CHUNK_SIZE);
+      for (let i = 0; i < totalChunks; i++) {
+        const chunkSamples = caseSamples.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE);
+        const chunkYaml = buildChunkYaml(parsed, setupSteps, chunkSamples, teardownSteps, caseId, i + 1, totalChunks);
+        // Sanitize caseId before using it in the temp filename — untrusted input
+        // from job YAML must not enable path traversal out of os.tmpdir().
+        const safePrefix = `vox-${sanitizeForFilename(caseId)}-chunk-${i + 1}`;
+        const chunkFile = this.writeTempYaml(chunkYaml, safePrefix)!;
+        tempFiles.push(chunkFile);
+        chunkFiles.push({ caseId, chunkIndex: i + 1, totalChunks, file: chunkFile });
+      }
+    }
+
+    if (chunkFiles.length === 0) {
+      // No samples (no lab.trace steps) but composition was requested — this is
+      // a malformed scenario. Fail loudly instead of reporting default zeros.
+      throw new Error('No samples found in scenario (no lab.trace steps) — nothing to run');
+    }
+
+    console.log(`[Daemon] Split ${samples.length} samples (${caseGroups.size} suites) into ${chunkFiles.length} chunks`);
+
+    // Run each chunk sequentially
+    const chunkMetrics: Record<string, unknown>[] = [];
+    const chunkResults: EvalResult[] = [];
+
+    for (let i = 0; i < chunkFiles.length; i++) {
+      const { caseId, chunkIndex, totalChunks, file } = chunkFiles[i];
+      console.log(`[Daemon] Running ${caseId} chunk ${chunkIndex}/${totalChunks} (${i + 1}/${chunkFiles.length} total)`);
+      const result = await this.runAeval(file);
+      chunkResults.push(result);
+      if (result.rawData && typeof result.rawData === 'object') {
+        chunkMetrics.push(result.rawData as Record<string, unknown>);
+      }
+    }
+
+    // Merge all chunk metrics into a single result
+    console.log(`[Daemon] All ${chunkFiles.length} chunks complete — merging results`);
+    const mergedRawData = mergeChunkMetrics(chunkMetrics);
+
+    // Recompute MED/SD/P95 from merged turn-level data using the existing parser
+    const mergedJson = JSON.stringify(mergedRawData);
+    // Random name + 0600, same as writeTempYaml — metrics may contain transcript
+    // data; avoid predictable names (symlink races) and world-readable perms.
+    const mergedFile = path.join(os.tmpdir(), `vox-merged-${Date.now()}-${Math.random().toString(36).slice(2)}.json`);
+    fs.writeFileSync(mergedFile, mergedJson, { encoding: 'utf-8', mode: 0o600 });
+    tempFiles.push(mergedFile);
+
+    const mergedResult = this.tryParseMetricsJson(mergedFile);
+    const mergedHasData = !!mergedResult &&
+      (mergedResult.responseLatencyMedian > 0 || mergedResult.interruptLatencyMedian > 0);
+    if (mergedHasData) {
+      return mergedResult!;
+    }
+
+    // Merge produced no usable turn-level metrics (e.g. aeval emitted only
+    // summary data, which mergeChunkMetrics doesn't carry). Fall back to a
+    // chunk result that actually has metrics rather than reporting zeros.
+    const usableChunk = chunkResults.find(
+      r => r.responseLatencyMedian > 0 || r.interruptLatencyMedian > 0,
+    );
+    if (usableChunk) {
+      console.warn('[Daemon] Merged turn-level metrics empty — using a chunk result with data');
+      return usableChunk;
+    }
+
+    console.warn('[Daemon] No usable metrics from any chunk — returning merged defaults');
+    return mergedResult ?? chunkResults[chunkResults.length - 1];
+  }
 
   private runAeval(scenarioConfig: string): Promise<EvalResult> {
     return new Promise((resolve, reject) => {
@@ -1152,7 +1293,10 @@ class VoxEvalAgentDaemon {
 
   private writeTempYaml(content: string, prefix = 'vox-config'): string | null {
     if (!content) return null;
-    const tmpFile = path.join(os.tmpdir(), `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}.yaml`);
+    // Defense-in-depth: strip any path separators from the prefix so it can
+    // never escape os.tmpdir(), even if a caller forgets to sanitize.
+    const safePrefix = path.basename(prefix);
+    const tmpFile = path.join(os.tmpdir(), `${safePrefix}-${Date.now()}-${Math.random().toString(36).slice(2)}.yaml`);
     fs.writeFileSync(tmpFile, content, { encoding: 'utf-8', mode: 0o600 });
     console.log(`[Daemon] Wrote temp YAML: ${tmpFile}`);
     return tmpFile;
@@ -1401,7 +1545,7 @@ class VoxEvalAgentDaemon {
     console.log(`  - Workflow ID: ${job.workflowId}`);
     console.log(`  - Region: ${job.region}`);
 
-    const config = (job.config || {}) as { framework?: string; app?: string; scenario?: string };
+    const config = (job.config || {}) as { framework?: string; app?: string; scenario?: string; stepsPrefix?: string; stepsSuffix?: string };
 
     // Per-job framework override, falling back to daemon default
     const framework = config.framework || this.config.framework;
@@ -1414,24 +1558,33 @@ class VoxEvalAgentDaemon {
     // Resolve ${config.*} placeholders (e.g., ${config.url} from workflow config)
     let scenario = config.scenario;
     let app = config.app;
+    // stepsPrefix/stepsSuffix come from the workflow and typically hold
+    // platform.setup with credentials — they MUST go through the same
+    // ${config.*} / ${secrets.*} resolution as the scenario.
+    let stepsPrefix = config.stepsPrefix;
+    let stepsSuffix = config.stepsSuffix;
     const configPlaceholders: Record<string, string> = {};
     for (const [k, v] of Object.entries(config)) {
       if (typeof v === 'string' && k !== 'scenario' && k !== 'app' && k !== 'framework') {
         configPlaceholders[k] = v;
       }
     }
+    const resolveConfigVars = (s: string) =>
+      s.replace(/\$\{config\.(\w+)\}/g, (_m, key) => configPlaceholders[key] ?? _m);
     if (Object.keys(configPlaceholders).length > 0) {
-      scenario = scenario.replace(/\$\{config\.(\w+)\}/g, (_m, key) => configPlaceholders[key] ?? _m);
-      if (app) app = app.replace(/\$\{config\.(\w+)\}/g, (_m, key) => configPlaceholders[key] ?? _m);
+      scenario = resolveConfigVars(scenario);
+      if (app) app = resolveConfigVars(app);
+      if (stepsPrefix) stepsPrefix = resolveConfigVars(stepsPrefix);
+      if (stepsSuffix) stepsSuffix = resolveConfigVars(stepsSuffix);
     }
 
     // Fetch secrets for this job and resolve ${secrets.*} placeholders
     const jobSecrets = await this.fetchSecrets(job.id);
     if (Object.keys(jobSecrets).length > 0) {
       scenario = this.resolveSecrets(scenario, jobSecrets);
-      if (app) {
-        app = this.resolveSecrets(app, jobSecrets);
-      }
+      if (app) app = this.resolveSecrets(app, jobSecrets);
+      if (stepsPrefix) stepsPrefix = this.resolveSecrets(stepsPrefix, jobSecrets);
+      if (stepsSuffix) stepsSuffix = this.resolveSecrets(stepsSuffix, jobSecrets);
     }
 
     const tempFiles: (string | null)[] = [];
@@ -1441,9 +1594,7 @@ class VoxEvalAgentDaemon {
 
       switch (framework) {
         case 'aeval': {
-          const scenarioConfig = this.writeTempYaml(scenario, 'vox-scenario')!;
-          tempFiles.push(scenarioConfig);
-          results = await this.runAeval(scenarioConfig);
+          results = await this.executeAevalWithChunking(scenario, { stepsPrefix, stepsSuffix }, tempFiles);
           break;
         }
         case 'voice-agent-tester': {

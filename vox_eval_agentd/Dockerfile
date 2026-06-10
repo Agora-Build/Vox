@@ -62,7 +62,7 @@ WORKDIR /app
 # --- aeval framework ---
 # Download aeval binary from GitHub Release (multi-platform)
 ARG TARGETARCH
-ARG AEVAL_VERSION=v0.1.4
+ARG AEVAL_VERSION=v0.2.0
 RUN ARCH=$(case "${TARGETARCH}" in arm64) echo "arm64" ;; *) echo "x86_64" ;; esac) && \
     if [ "${AEVAL_VERSION}" = "latest" ]; then \
       DOWNLOAD_URL="https://github.com/Agora-Build/aeval/releases/latest/download/aeval-linux-${ARCH}"; \
@@ -98,6 +98,7 @@ COPY vox_eval_agentd/applications/ /app/applications/
 COPY vox_eval_agentd/scenarios/ /app/scenarios/
 COPY vox_eval_agentd/assets/ /app/assets/
 COPY vox_eval_agentd/vox-agentd.ts /app/
+COPY vox_eval_agentd/chunking.ts /app/
 COPY vox_eval_agentd/package.json /app/
 COPY shared/secrets.ts /shared/secrets.ts
 
