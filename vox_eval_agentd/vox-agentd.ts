@@ -44,6 +44,7 @@ import {
   extractSampleGroups,
   groupByCaseId,
   buildChunkYaml,
+  composeScenarioYaml,
   mergeChunkMetrics,
 } from './chunking';
 
@@ -501,46 +502,73 @@ class VoxEvalAgentDaemon {
       return this.runAeval(scenarioConfig);
     }
 
-    const { prefixSteps, suffixSteps, samples } = extractSampleGroups(parsed.steps);
-
-    // Determine setup/teardown steps:
-    // If workflow provides stepsPrefix/stepsSuffix, use those (and we MUST
-    // recompose the YAML). Otherwise, use the prefix/suffix extracted from the
-    // scenario itself.
     const hasWorkflowComposition = !!(config.stepsPrefix || config.stepsSuffix);
-    let setupSteps = prefixSteps;
-    let teardownSteps = suffixSteps;
 
+    // Parse workflow setup/teardown (from the workflow config), if provided.
+    let workflowPrefix: ScenarioStep[] = [];
+    let workflowSuffix: ScenarioStep[] = [];
     if (config.stepsPrefix) {
-      const prefixParsed = yaml.load(config.stepsPrefix);
-      if (Array.isArray(prefixParsed)) setupSteps = prefixParsed as ScenarioStep[];
+      const p = yaml.load(config.stepsPrefix);
+      if (Array.isArray(p)) workflowPrefix = p as ScenarioStep[];
     }
     if (config.stepsSuffix) {
-      const suffixParsed = yaml.load(config.stepsSuffix);
-      if (Array.isArray(suffixParsed)) teardownSteps = suffixParsed as ScenarioStep[];
+      const s = yaml.load(config.stepsSuffix);
+      if (Array.isArray(s)) workflowSuffix = s as ScenarioStep[];
     }
 
-    // Group samples by case_id, then chunk each group independently
+    const { prefixSteps, suffixSteps, samples } = extractSampleGroups(parsed.steps);
+
+    if (hasWorkflowComposition) {
+      // The eval set provides ONLY the body; the workflow provides setup/teardown.
+      if (parsed.steps.length === 0) {
+        throw new Error('Eval set scenario has no steps — nothing to run');
+      }
+      // Chunk only when the body is a clean set of lab.trace samples with no
+      // leading/trailing non-sample steps. Otherwise (control.for_each, mixed,
+      // or no lab.trace) compose the whole body into ONE file so nothing is lost.
+      const canChunk = samples.length > 0 && prefixSteps.length === 0 && suffixSteps.length === 0;
+      if (canChunk) {
+        return this.runChunked(parsed, workflowPrefix, samples, workflowSuffix, tempFiles);
+      }
+      const composed = composeScenarioYaml(parsed, workflowPrefix, parsed.steps, workflowSuffix);
+      const f = this.writeTempYaml(composed, 'vox-scenario')!;
+      tempFiles.push(f);
+      return this.runAeval(f);
+    }
+
+    // No workflow composition → eval set is self-contained (backward compat).
     const caseGroups = groupByCaseId(samples);
     let totalChunkFiles = 0;
     for (const [, caseSamples] of caseGroups) {
       totalChunkFiles += Math.ceil(caseSamples.length / CHUNK_SIZE);
     }
 
-    // Fast path: exactly one case group that fits in a single chunk, and no
-    // workflow setup/teardown to inject → run the ORIGINAL scenario verbatim.
-    // This avoids rewriting through buildChunkYaml (which renames the scenario,
-    // sets a single params.lab.case_id, and drops un-copied top-level fields).
-    // Multi-suite eval sets are always split per case_id by design — each aeval
-    // run needs its own params.lab.case_id (and may need a different analysis
-    // preset), so samples from different cases cannot share one file.
-    if (totalChunkFiles <= 1 && !hasWorkflowComposition) {
+    // Fast path: a single self-contained chunk → run the ORIGINAL scenario
+    // verbatim (avoids buildChunkYaml renaming/dropping top-level fields).
+    // Multi-suite sets are always split per case_id — each aeval run needs its
+    // own params.lab.case_id (and may need a different analysis preset).
+    if (totalChunkFiles <= 1) {
       const scenarioConfig = this.writeTempYaml(scenario, 'vox-scenario')!;
       tempFiles.push(scenarioConfig);
       return this.runAeval(scenarioConfig);
     }
 
-    // Build all chunk files: for each case_id, split into chunks of CHUNK_SIZE
+    return this.runChunked(parsed, prefixSteps, samples, suffixSteps, tempFiles);
+  }
+
+  /**
+   * Split samples per case_id into chunk files, run each aeval sequentially, and
+   * merge the per-chunk metrics into one result. Each chunk is wrapped with the
+   * given setup/teardown steps.
+   */
+  private async runChunked(
+    parsed: ParsedScenario,
+    setupSteps: ScenarioStep[],
+    samples: SampleGroup[],
+    teardownSteps: ScenarioStep[],
+    tempFiles: (string | null)[],
+  ): Promise<EvalResult> {
+    const caseGroups = groupByCaseId(samples);
     const chunkFiles: { caseId: string; chunkIndex: number; totalChunks: number; file: string }[] = [];
     for (const [caseId, caseSamples] of caseGroups) {
       const totalChunks = Math.ceil(caseSamples.length / CHUNK_SIZE);
@@ -557,14 +585,11 @@ class VoxEvalAgentDaemon {
     }
 
     if (chunkFiles.length === 0) {
-      // No samples (no lab.trace steps) but composition was requested — this is
-      // a malformed scenario. Fail loudly instead of reporting default zeros.
-      throw new Error('No samples found in scenario (no lab.trace steps) — nothing to run');
+      throw new Error('No samples to run after grouping by case_id');
     }
 
     console.log(`[Daemon] Split ${samples.length} samples (${caseGroups.size} suites) into ${chunkFiles.length} chunks`);
 
-    // Run each chunk sequentially
     const chunkMetrics: Record<string, unknown>[] = [];
     const chunkResults: EvalResult[] = [];
 
@@ -578,14 +603,12 @@ class VoxEvalAgentDaemon {
       }
     }
 
-    // Merge all chunk metrics into a single result
     console.log(`[Daemon] All ${chunkFiles.length} chunks complete — merging results`);
     const mergedRawData = mergeChunkMetrics(chunkMetrics);
 
-    // Recompute MED/SD/P95 from merged turn-level data using the existing parser
+    // Recompute MED/SD/P95 from merged turn-level data using the existing parser.
+    // Random name + 0600 (metrics may contain transcript data).
     const mergedJson = JSON.stringify(mergedRawData);
-    // Random name + 0600, same as writeTempYaml — metrics may contain transcript
-    // data; avoid predictable names (symlink races) and world-readable perms.
     const mergedFile = path.join(os.tmpdir(), `vox-merged-${Date.now()}-${Math.random().toString(36).slice(2)}.json`);
     fs.writeFileSync(mergedFile, mergedJson, { encoding: 'utf-8', mode: 0o600 });
     tempFiles.push(mergedFile);
@@ -598,8 +621,7 @@ class VoxEvalAgentDaemon {
     }
 
     // Merge produced no usable turn-level metrics (e.g. aeval emitted only
-    // summary data, which mergeChunkMetrics doesn't carry). Fall back to a
-    // chunk result that actually has metrics rather than reporting zeros.
+    // summary data). Fall back to a chunk result that actually has metrics.
     const usableChunk = chunkResults.find(
       r => r.responseLatencyMedian > 0 || r.interruptLatencyMedian > 0,
     );
