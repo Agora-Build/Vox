@@ -313,6 +313,9 @@ export default function ConsoleEvalSets() {
                   onChange={(e) => setScenarioYaml(e.target.value)}
                   data-testid="textarea-evalset-scenario"
                 />
+                <p className="text-xs text-muted-foreground">
+                  Test body only (samples + analysis). Platform setup/login lives in the workflow.
+                </p>
               </div>
             </div>
             <DialogFooter>
@@ -604,6 +607,9 @@ export default function ConsoleEvalSets() {
                 value={editScenarioYaml}
                 onChange={(e) => setEditScenarioYaml(e.target.value)}
               />
+              <p className="text-xs text-muted-foreground">
+                Test body only (samples + analysis). Platform setup/login lives in the workflow.
+              </p>
             </div>
           </div>
           <DialogFooter>
