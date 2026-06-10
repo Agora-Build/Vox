@@ -42,7 +42,7 @@ import {
   type SampleGroup,
   sanitizeForFilename,
   extractSampleGroups,
-  groupByCaseId,
+  groupSamplesByChunk,
   buildChunkYaml,
   composeScenarioYaml,
   mergeChunkMetrics,
@@ -485,9 +485,10 @@ class VoxEvalAgentDaemon {
   // -------------------------------------------------------------------------
 
   /**
-   * Execute aeval with automatic chunk splitting.
-   * If the scenario has >CHUNK_SIZE samples, splits into multiple chunk files,
-   * runs aeval sequentially on each, and merges results.
+   * Execute aeval, splitting a lab.trace body into one file per (case_id,
+   * chunk_id) — the file boundaries come from the data — then running each
+   * sequentially and merging results. Bodies that aren't clean lab.trace
+   * samples (e.g. control.for_each) run as a single composed file.
    */
   private async executeAevalWithChunking(
     scenario: string,
@@ -537,17 +538,15 @@ class VoxEvalAgentDaemon {
     }
 
     // No workflow composition → eval set is self-contained (backward compat).
-    const caseGroups = groupByCaseId(samples);
-    let totalChunkFiles = 0;
-    for (const [, caseSamples] of caseGroups) {
-      totalChunkFiles += Math.ceil(caseSamples.length / CHUNK_SIZE);
-    }
+    // Files are defined by the data's (case_id, chunk_id); no size-based split.
+    const groups = groupSamplesByChunk(samples);
+    const hasPerCaseAnalysis = !!(parsed.params?.lab as Record<string, unknown> | undefined)?.cases;
 
-    // Fast path: a single self-contained chunk → run the ORIGINAL scenario
-    // verbatim (avoids buildChunkYaml renaming/dropping top-level fields).
-    // Multi-suite sets are always split per case_id — each aeval run needs its
-    // own params.lab.case_id (and may need a different analysis preset).
-    if (totalChunkFiles <= 1) {
+    // Fast path: a single group AND no per-case analysis remap → run the
+    // ORIGINAL scenario verbatim (avoids buildChunkYaml renaming/dropping
+    // top-level fields). With per-case analysis we must rebuild so each file
+    // gets its case's preset.
+    if (groups.length <= 1 && !hasPerCaseAnalysis) {
       const scenarioConfig = this.writeTempYaml(scenario, 'vox-scenario')!;
       tempFiles.push(scenarioConfig);
       return this.runAeval(scenarioConfig);
@@ -557,9 +556,11 @@ class VoxEvalAgentDaemon {
   }
 
   /**
-   * Split samples per case_id into chunk files, run each aeval sequentially, and
-   * merge the per-chunk metrics into one result. Each chunk is wrapped with the
-   * given setup/teardown steps.
+   * Split samples into one aeval file per (case_id, chunk_id) — the file
+   * boundaries come from the data — run each sequentially, and merge the
+   * per-chunk metrics into one result. Each chunk is wrapped with the given
+   * setup/teardown steps and gets its case's analysis preset. A group larger
+   * than CHUNK_SIZE is run as-is with a warning (no forced split).
    */
   private async runChunked(
     parsed: ParsedScenario,
@@ -568,34 +569,34 @@ class VoxEvalAgentDaemon {
     teardownSteps: ScenarioStep[],
     tempFiles: (string | null)[],
   ): Promise<EvalResult> {
-    const caseGroups = groupByCaseId(samples);
-    const chunkFiles: { caseId: string; chunkIndex: number; totalChunks: number; file: string }[] = [];
-    for (const [caseId, caseSamples] of caseGroups) {
-      const totalChunks = Math.ceil(caseSamples.length / CHUNK_SIZE);
-      for (let i = 0; i < totalChunks; i++) {
-        const chunkSamples = caseSamples.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE);
-        const chunkYaml = buildChunkYaml(parsed, setupSteps, chunkSamples, teardownSteps, caseId, i + 1, totalChunks);
-        // Sanitize caseId before using it in the temp filename — untrusted input
-        // from job YAML must not enable path traversal out of os.tmpdir().
-        const safePrefix = `vox-${sanitizeForFilename(caseId)}-chunk-${i + 1}`;
-        const chunkFile = this.writeTempYaml(chunkYaml, safePrefix)!;
-        tempFiles.push(chunkFile);
-        chunkFiles.push({ caseId, chunkIndex: i + 1, totalChunks, file: chunkFile });
+    const groups = groupSamplesByChunk(samples);
+    const chunkFiles: { caseId: string; chunkId: string; file: string }[] = [];
+    for (const g of groups) {
+      if (g.samples.length > CHUNK_SIZE) {
+        console.warn(`[Daemon] Chunk ${g.caseId}/${g.chunkId} has ${g.samples.length} samples (recommended max ${CHUNK_SIZE}) — running as one file`);
       }
+      const chunkYaml = buildChunkYaml(parsed, setupSteps, g.samples, teardownSteps, g.caseId, g.chunkId);
+      // Sanitize case_id/chunk_id before using them in the temp filename —
+      // untrusted input from job YAML must not enable path traversal.
+      const safePrefix = `vox-${sanitizeForFilename(g.caseId)}-${sanitizeForFilename(g.chunkId)}`;
+      const chunkFile = this.writeTempYaml(chunkYaml, safePrefix)!;
+      tempFiles.push(chunkFile);
+      chunkFiles.push({ caseId: g.caseId, chunkId: g.chunkId, file: chunkFile });
     }
 
     if (chunkFiles.length === 0) {
-      throw new Error('No samples to run after grouping by case_id');
+      throw new Error('No samples to run after grouping by case_id/chunk_id');
     }
 
-    console.log(`[Daemon] Split ${samples.length} samples (${caseGroups.size} suites) into ${chunkFiles.length} chunks`);
+    const caseCount = new Set(groups.map(g => g.caseId)).size;
+    console.log(`[Daemon] Split ${samples.length} samples (${caseCount} case(s)) into ${chunkFiles.length} file(s)`);
 
     const chunkMetrics: Record<string, unknown>[] = [];
     const chunkResults: EvalResult[] = [];
 
     for (let i = 0; i < chunkFiles.length; i++) {
-      const { caseId, chunkIndex, totalChunks, file } = chunkFiles[i];
-      console.log(`[Daemon] Running ${caseId} chunk ${chunkIndex}/${totalChunks} (${i + 1}/${chunkFiles.length} total)`);
+      const { caseId, chunkId, file } = chunkFiles[i];
+      console.log(`[Daemon] Running ${caseId}/${chunkId} (${i + 1}/${chunkFiles.length})`);
       const result = await this.runAeval(file);
       chunkResults.push(result);
       if (result.rawData && typeof result.rawData === 'object') {

@@ -22,3 +22,7 @@ test-results/
 .chisel/
 docs/superpowers/
 dots-break.png
+
+# Local turn_taking reference YAMLs (paste into the console UI; not tracked)
+vox_eval_agentd/eval-sets/
+vox_eval_agentd/workflows/

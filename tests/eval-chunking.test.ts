@@ -4,6 +4,10 @@
  * These import the SAME pure functions the daemon uses (from
  * vox_eval_agentd/chunking.ts), so a regression in production code is caught
  * here instead of passing against a divergent re-implementation.
+ *
+ * Chunking is DATA-DRIVEN: each lab.trace carries case_id + chunk_id, and the
+ * daemon emits one aeval file per (case_id, chunk_id). CHUNK_SIZE is only a soft
+ * warn threshold — there is no size-based splitting.
  */
 
 import { describe, it, expect } from "vitest";
@@ -15,11 +19,14 @@ import {
   type ParsedScenario,
   sanitizeForFilename,
   extractSampleGroups,
-  groupByCaseId,
+  groupSamplesByChunk,
+  resolveCaseAnalysis,
   buildChunkYaml,
   mergeChunkMetrics,
   composeScenarioYaml,
 } from "../vox_eval_agentd/chunking";
+
+const pad = (i: number) => String(i).padStart(3, "0");
 
 // Test-only stats helpers — mirror the daemon's metrics parser so we can assert
 // that merged turn-level data produces sensible MED/SD/P95.
@@ -49,6 +56,7 @@ describe("sanitizeForFilename", () => {
   it("passes through safe values", () => {
     expect(sanitizeForFilename("RSP_BASIC")).toBe("RSP_BASIC");
     expect(sanitizeForFilename("INT-FALSE.v2")).toBe("INT-FALSE.v2");
+    expect(sanitizeForFilename("chunk_001")).toBe("chunk_001");
   });
 
   it("strips path traversal sequences", () => {
@@ -77,8 +85,8 @@ describe("sanitizeForFilename", () => {
     expect(sanitizeForFilename("a".repeat(200)).length).toBeLessThanOrEqual(64);
   });
 
-  it("a sanitized case_id cannot escape a tmp prefix", () => {
-    const prefix = `vox-${sanitizeForFilename("../../../etc/cron.d/evil")}-chunk-1`;
+  it("a sanitized case_id/chunk_id cannot escape a tmp prefix", () => {
+    const prefix = `vox-${sanitizeForFilename("../../../etc/cron.d/evil")}-${sanitizeForFilename("../x")}`;
     expect(prefix).not.toContain("/");
     expect(prefix).not.toContain("..");
   });
@@ -155,24 +163,27 @@ describe("extractSampleGroups", () => {
     expect(samples).toHaveLength(0);
   });
 
-  it("captures caseId from top-level lab.trace fields", () => {
+  it("captures case_id + chunk_id from top-level lab.trace fields", () => {
     const steps: ScenarioStep[] = [
-      { type: "lab.trace", case_id: "RSP_BASIC", sample_id: "RSP_BASIC-001" },
+      { type: "lab.trace", case_id: "RSP_BASIC", chunk_id: "chunk_001", sample_id: "RSP_BASIC-001" },
       { type: "audio.play" },
-      { type: "lab.trace", case_id: "INT_BASIC", sample_id: "INT_BASIC-001" },
+      { type: "lab.trace", case_id: "INT_BASIC", chunk_id: "chunk_002", sample_id: "INT_BASIC-006" },
       { type: "audio.play" },
     ];
     const { samples } = extractSampleGroups(steps);
     expect(samples[0].caseId).toBe("RSP_BASIC");
+    expect(samples[0].chunkId).toBe("chunk_001");
     expect(samples[1].caseId).toBe("INT_BASIC");
+    expect(samples[1].chunkId).toBe("chunk_002");
   });
 
-  it("captures caseId nested in params", () => {
+  it("captures case_id + chunk_id nested in params", () => {
     const { samples } = extractSampleGroups([
-      { type: "lab.trace", params: { case_id: "RSP_BASIC", sample_id: "RSP-001" } },
+      { type: "lab.trace", params: { case_id: "RSP_BASIC", chunk_id: "chunk_003", sample_id: "RSP-001" } },
       { type: "audio.play" },
     ]);
     expect(samples[0].caseId).toBe("RSP_BASIC");
+    expect(samples[0].chunkId).toBe("chunk_003");
   });
 
   // --- teardown extraction (regression for "teardown only in last chunk") ---
@@ -203,101 +214,112 @@ describe("extractSampleGroups", () => {
     expect(suffixSteps).toHaveLength(0);
     expect(samples[0].steps).toHaveLength(3);
   });
+});
 
-  it("full backward-compat scenario: every chunk gets teardown", () => {
-    const steps: ScenarioStep[] = [
-      { type: "platform.setup", platform_id: "livekit" },
-      { type: "audio.start_recording" },
-      { type: "platform.enter" },
-      { type: "audio.wait_for_speech" },
-    ];
-    for (let i = 1; i <= 6; i++) {
+// ---------------------------------------------------------------------------
+// groupSamplesByChunk — file boundaries come from (case_id, chunk_id)
+// ---------------------------------------------------------------------------
+
+describe("groupSamplesByChunk", () => {
+  /** Build samples tagged with case_id + chunk_id from a {caseId: [chunkIds...]} spec. */
+  function buildSteps(spec: Array<[string, string]>): ScenarioStep[] {
+    const steps: ScenarioStep[] = [];
+    let n = 0;
+    for (const [caseId, chunkId] of spec) {
+      n++;
       steps.push(
-        { type: "lab.trace", case_id: "RSP", sample_id: `RSP-${i}` },
+        { type: "lab.trace", case_id: caseId, chunk_id: chunkId, sample_id: `${caseId}-${pad(n)}` },
         { type: "audio.play" },
         { type: "audio.wait_for_speech" },
       );
     }
-    steps.push({ type: "audio.stop_recording" }, { type: "platform.exit" });
-
-    const { prefixSteps, suffixSteps, samples } = extractSampleGroups(steps);
-    expect(prefixSteps).toHaveLength(4);
-    expect(suffixSteps.map(s => s.type)).toEqual(["audio.stop_recording", "platform.exit"]);
-    expect(samples).toHaveLength(6);
-
-    const scenario: ParsedScenario = { name: "s", steps: [] };
-    const caseSamples = groupByCaseId(samples).get("RSP")!;
-    const totalChunks = Math.ceil(caseSamples.length / CHUNK_SIZE);
-    expect(totalChunks).toBe(2);
-
-    for (let i = 0; i < totalChunks; i++) {
-      const chunk = caseSamples.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE);
-      const y = buildChunkYaml(scenario, prefixSteps, chunk, suffixSteps, "RSP", i + 1, totalChunks);
-      const parsedSteps = (yaml.load(y) as Record<string, unknown>).steps as ScenarioStep[];
-      expect(parsedSteps[0].type).toBe("platform.setup");
-      expect(parsedSteps[parsedSteps.length - 2].type).toBe("audio.stop_recording");
-      expect(parsedSteps[parsedSteps.length - 1].type).toBe("platform.exit");
-    }
-  });
-});
-
-// ---------------------------------------------------------------------------
-// groupByCaseId
-// ---------------------------------------------------------------------------
-
-describe("groupByCaseId", () => {
-  function buildSteps(suites: Record<string, number>): ScenarioStep[] {
-    const steps: ScenarioStep[] = [];
-    for (const [caseId, count] of Object.entries(suites)) {
-      for (let i = 1; i <= count; i++) {
-        steps.push(
-          { type: "lab.trace", case_id: caseId, sample_id: `${caseId}-${i}` },
-          { type: "audio.play" },
-          { type: "audio.wait_for_speech" },
-        );
-      }
-    }
     return steps;
   }
 
-  it("groups 3 suites × 10 → 3 groups of 10", () => {
-    const { samples } = extractSampleGroups(buildSteps({ RSP_BASIC: 10, INT_BASIC: 10, INT_FALSE: 10 }));
-    expect(samples).toHaveLength(30);
-    const groups = groupByCaseId(samples);
-    expect(groups.size).toBe(3);
-    expect(groups.get("RSP_BASIC")!).toHaveLength(10);
-    expect(groups.get("INT_BASIC")!).toHaveLength(10);
-    expect(groups.get("INT_FALSE")!).toHaveLength(10);
-  });
-
-  it("produces 6 chunks from 3 suites × 10 (5 per chunk)", () => {
-    const { samples } = extractSampleGroups(buildSteps({ RSP_BASIC: 10, INT_BASIC: 10, INT_FALSE: 10 }));
-    const groups = groupByCaseId(samples);
-    let total = 0;
-    const breakdown: Record<string, number> = {};
-    for (const [caseId, s] of groups) {
-      const c = Math.ceil(s.length / CHUNK_SIZE);
-      breakdown[caseId] = c;
-      total += c;
+  it("groups 3 cases × 2 chunks → 6 groups, order preserved", () => {
+    const spec: Array<[string, string]> = [];
+    for (const c of ["RSP_BASIC", "INT_BASIC", "INT_FALSE"]) {
+      for (let i = 1; i <= 10; i++) spec.push([c, i <= 5 ? "chunk_001" : "chunk_002"]);
     }
-    expect(total).toBe(6);
-    expect(breakdown).toEqual({ RSP_BASIC: 2, INT_BASIC: 2, INT_FALSE: 2 });
+    const { samples } = extractSampleGroups(buildSteps(spec));
+    expect(samples).toHaveLength(30);
+
+    const groups = groupSamplesByChunk(samples);
+    expect(groups).toHaveLength(6);
+    expect(groups.map(g => `${g.caseId}/${g.chunkId}`)).toEqual([
+      "RSP_BASIC/chunk_001", "RSP_BASIC/chunk_002",
+      "INT_BASIC/chunk_001", "INT_BASIC/chunk_002",
+      "INT_FALSE/chunk_001", "INT_FALSE/chunk_002",
+    ]);
+    expect(groups.every(g => g.samples.length === 5)).toBe(true);
   });
 
-  it("handles uneven suite sizes (7+3+8 → 2+1+2 = 5 chunks)", () => {
-    const { samples } = extractSampleGroups(buildSteps({ RSP: 7, INT: 3, FALSE: 8 }));
-    const groups = groupByCaseId(samples);
-    let total = 0;
-    for (const [, s] of groups) total += Math.ceil(s.length / CHUNK_SIZE);
-    expect(total).toBe(5);
+  it("respects data-defined boundaries, NOT a fixed size (10 in one chunk → 1 group of 10)", () => {
+    const spec: Array<[string, string]> = [];
+    for (let i = 1; i <= 10; i++) spec.push(["RSP_BASIC", "chunk_001"]);
+    const { samples } = extractSampleGroups(buildSteps(spec));
+    const groups = groupSamplesByChunk(samples);
+    expect(groups).toHaveLength(1);
+    expect(groups[0].samples).toHaveLength(10); // daemon warns ( > CHUNK_SIZE ) but does NOT split
+    expect(groups[0].samples.length).toBeGreaterThan(CHUNK_SIZE);
   });
 
-  it("falls back to 'default' when caseId missing", () => {
+  it("defaults missing chunk_id to chunk_001 and missing case_id to default", () => {
     const { samples } = extractSampleGroups([
       { type: "lab.trace", sample_id: "X-1" },
       { type: "audio.play" },
     ]);
-    expect(groupByCaseId(samples).has("default")).toBe(true);
+    const groups = groupSamplesByChunk(samples);
+    expect(groups).toHaveLength(1);
+    expect(groups[0].caseId).toBe("default");
+    expect(groups[0].chunkId).toBe("chunk_001");
+  });
+
+  it("splits same case across chunks but keeps chunks separate", () => {
+    const { samples } = extractSampleGroups(buildSteps([
+      ["RSP", "chunk_001"], ["RSP", "chunk_001"], ["RSP", "chunk_002"],
+    ]));
+    const groups = groupSamplesByChunk(samples);
+    expect(groups).toHaveLength(2);
+    expect(groups[0].samples).toHaveLength(2);
+    expect(groups[1].samples).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// resolveCaseAnalysis — per-case preset, falling back to top-level analysis
+// ---------------------------------------------------------------------------
+
+describe("resolveCaseAnalysis", () => {
+  it("returns the per-case analysis when params.lab.cases[caseId] exists", () => {
+    const scenario: ParsedScenario = {
+      name: "s",
+      analysis: { preset: "config/analysis_presets/default.yaml" },
+      params: {
+        lab: {
+          cases: {
+            INT_FALSE: { analysis: { preset: "config/analysis_presets/lab_int_false.yaml" } },
+          },
+        },
+      },
+      steps: [],
+    };
+    expect(resolveCaseAnalysis(scenario, "INT_FALSE")).toEqual({ preset: "config/analysis_presets/lab_int_false.yaml" });
+  });
+
+  it("falls back to top-level analysis when no per-case entry", () => {
+    const scenario: ParsedScenario = {
+      name: "s",
+      analysis: { preset: "config/analysis_presets/default.yaml" },
+      params: { lab: { cases: { INT_FALSE: { analysis: { preset: "x" } } } } },
+      steps: [],
+    };
+    expect(resolveCaseAnalysis(scenario, "RSP_BASIC")).toEqual({ preset: "config/analysis_presets/default.yaml" });
+  });
+
+  it("returns undefined when neither per-case nor top-level analysis exists", () => {
+    const scenario: ParsedScenario = { name: "s", params: { lab: {} }, steps: [] };
+    expect(resolveCaseAnalysis(scenario, "RSP_BASIC")).toBeUndefined();
   });
 });
 
@@ -308,9 +330,17 @@ describe("groupByCaseId", () => {
 describe("buildChunkYaml", () => {
   const scenario: ParsedScenario = {
     name: "turn_taking_en",
-    description: "all suites",
-    analysis: { preset: "config/analysis_presets/default.yaml", report: { template: "medialab.html.jinja2" } },
-    params: { lab: { suite: "turn_taking_en" } },
+    description: "all cases",
+    params: {
+      output_dir: "temp/output",
+      lab: {
+        suite: "turn_taking_en",
+        cases: {
+          RSP_BASIC: { analysis: { preset: "config/analysis_presets/default.yaml", report: { template: "medialab.html.jinja2" } } },
+          INT_FALSE: { analysis: { preset: "config/analysis_presets/lab_int_false.yaml", report: { template: "medialab.html.jinja2" } } },
+        },
+      },
+    },
     steps: [],
   };
   const prefix: ScenarioStep[] = [
@@ -321,13 +351,12 @@ describe("buildChunkYaml", () => {
   ];
   const suffix: ScenarioStep[] = [{ type: "audio.stop_recording" }, { type: "platform.exit" }];
 
-  it("produces valid YAML with correct name, chunk_id, case_id, sample_ids", () => {
+  it("produces valid YAML with name, case_id, chunk_id, sample_ids from the data", () => {
     const samples: SampleGroup[] = [
-      { steps: [{ type: "lab.trace" }, { type: "audio.play" }], sampleId: "RSP_BASIC-001", caseId: "RSP_BASIC" },
+      { steps: [{ type: "lab.trace" }, { type: "audio.play" }], sampleId: "RSP_BASIC-001", caseId: "RSP_BASIC", chunkId: "chunk_001" },
     ];
-    const parsed = yaml.load(buildChunkYaml(scenario, prefix, samples, suffix, "RSP_BASIC", 1, 2)) as Record<string, unknown>;
+    const parsed = yaml.load(buildChunkYaml(scenario, prefix, samples, suffix, "RSP_BASIC", "chunk_001")) as Record<string, unknown>;
     expect(parsed.name).toBe("turn_taking_en_RSP_BASIC_chunk_001");
-    expect(parsed.analysis).toBeDefined();
     const lab = (parsed.params as Record<string, unknown>).lab as Record<string, unknown>;
     expect(lab.suite).toBe("turn_taking_en");
     expect(lab.case_id).toBe("RSP_BASIC");
@@ -335,12 +364,27 @@ describe("buildChunkYaml", () => {
     expect(lab.sample_ids).toEqual(["RSP_BASIC-001"]);
   });
 
+  it("stamps the per-case analysis preset onto each file", () => {
+    const rsp = buildChunkYaml(scenario, prefix, [{ steps: [{ type: "lab.trace" }], caseId: "RSP_BASIC", chunkId: "chunk_001" }], suffix, "RSP_BASIC", "chunk_001");
+    const intF = buildChunkYaml(scenario, prefix, [{ steps: [{ type: "lab.trace" }], caseId: "INT_FALSE", chunkId: "chunk_001" }], suffix, "INT_FALSE", "chunk_001");
+    const rspAnalysis = (yaml.load(rsp) as Record<string, unknown>).analysis as Record<string, unknown>;
+    const intAnalysis = (yaml.load(intF) as Record<string, unknown>).analysis as Record<string, unknown>;
+    expect(rspAnalysis.preset).toBe("config/analysis_presets/default.yaml");
+    expect(intAnalysis.preset).toBe("config/analysis_presets/lab_int_false.yaml");
+  });
+
+  it("strips the cases map from the emitted params.lab", () => {
+    const out = buildChunkYaml(scenario, prefix, [{ steps: [{ type: "lab.trace" }], caseId: "RSP_BASIC", chunkId: "chunk_001" }], suffix, "RSP_BASIC", "chunk_001");
+    const lab = ((yaml.load(out) as Record<string, unknown>).params as Record<string, unknown>).lab as Record<string, unknown>;
+    expect(lab.cases).toBeUndefined();
+  });
+
   it("orders steps: prefix + samples + suffix", () => {
     const samples: SampleGroup[] = [
-      { steps: [{ type: "lab.trace" }, { type: "audio.play" }, { type: "audio.wait_for_speech" }], caseId: "RSP" },
-      { steps: [{ type: "lab.trace" }, { type: "audio.play" }, { type: "audio.wait_for_speech" }], caseId: "RSP" },
+      { steps: [{ type: "lab.trace" }, { type: "audio.play" }, { type: "audio.wait_for_speech" }], caseId: "RSP", chunkId: "chunk_001" },
+      { steps: [{ type: "lab.trace" }, { type: "audio.play" }, { type: "audio.wait_for_speech" }], caseId: "RSP", chunkId: "chunk_001" },
     ];
-    const steps = (yaml.load(buildChunkYaml(scenario, prefix, samples, suffix, "RSP", 1, 1)) as Record<string, unknown>).steps as ScenarioStep[];
+    const steps = (yaml.load(buildChunkYaml(scenario, prefix, samples, suffix, "RSP", "chunk_001")) as Record<string, unknown>).steps as ScenarioStep[];
     expect(steps).toHaveLength(12); // 4 + 6 + 2
     expect(steps[0].type).toBe("platform.setup");
     expect(steps[4].type).toBe("lab.trace");
@@ -351,7 +395,7 @@ describe("buildChunkYaml", () => {
   it("preserves INT_BASIC sample fields through YAML roundtrip", () => {
     const samples: SampleGroup[] = [{
       steps: [
-        { type: "lab.trace", event: "case_sample_start", case_id: "INT_BASIC", sample_id: "INT_BASIC-001", question_id: "en_question4", material_id: "en_Short05Wordswav4" },
+        { type: "lab.trace", event: "case_sample_start", case_id: "INT_BASIC", chunk_id: "chunk_001", sample_id: "INT_BASIC-001", question_id: "en_question4", material_id: "en_Short05Wordswav4" },
         { type: "audio.play", file: "corpus/turn_taking/en/audio/en_question4.wav" },
         { type: "audio.wait_for_speech_start", timeout_ms: 15000, wait_after_start_ms: 2000 },
         { type: "audio.play", file: "corpus/turn_taking/en/audio/en_Short05Wordswav4.wav" },
@@ -359,8 +403,9 @@ describe("buildChunkYaml", () => {
       ],
       sampleId: "INT_BASIC-001",
       caseId: "INT_BASIC",
+      chunkId: "chunk_001",
     }];
-    const steps = (yaml.load(buildChunkYaml(scenario, prefix, samples, suffix, "INT_BASIC", 1, 1)) as Record<string, unknown>).steps as ScenarioStep[];
+    const steps = (yaml.load(buildChunkYaml(scenario, prefix, samples, suffix, "INT_BASIC", "chunk_001")) as Record<string, unknown>).steps as ScenarioStep[];
     const trace = steps[4];
     expect(trace.question_id).toBe("en_question4");
     expect(trace.material_id).toBe("en_Short05Wordswav4");
@@ -428,13 +473,11 @@ describe("mergeChunkMetrics", () => {
   });
 
   it("preserves per-family summary when a family has no turn-level data", () => {
-    // response has turn-level; interruption only has summary (no turn_level)
     const c1 = { response_metrics: { latency: { turn_level: [{ latency_ms: 500 }] } } };
     const c2 = { interruption_metrics: { latency: { summary: { p50_reaction_time_ms: 300, p95_reaction_time_ms: 450 } } } };
     const merged = mergeChunkMetrics([c1, c2]);
     expect(rTurns(merged)).toHaveLength(1);
     expect(iTurns(merged)).toHaveLength(0);
-    // interruption summary carried through so the daemon parser can fall back
     const iSummary = ((merged.interruption_metrics as Record<string, unknown>).latency as Record<string, unknown>).summary as Record<string, unknown>;
     expect(iSummary.p50_reaction_time_ms).toBe(300);
   });
@@ -450,7 +493,7 @@ describe("mergeChunkMetrics", () => {
 });
 
 // ---------------------------------------------------------------------------
-// End-to-end: realistic 30-sample, 3-suite scenario → 6 chunks
+// End-to-end: realistic 30-sample, 3-case turn_taking body → 6 files
 // ---------------------------------------------------------------------------
 
 describe("end-to-end: full chunking pipeline", () => {
@@ -463,19 +506,18 @@ describe("end-to-end: full chunking pipeline", () => {
     ];
     const stepsSuffix: ScenarioStep[] = [{ type: "audio.stop_recording" }, { type: "platform.exit" }];
     const sampleSteps: ScenarioStep[] = [];
+    const chunkOf = (i: number) => (i <= 5 ? "chunk_001" : "chunk_002");
 
     for (let i = 1; i <= 10; i++) {
-      const id = `RSP_BASIC-${String(i).padStart(3, "0")}`;
       sampleSteps.push(
-        { type: "lab.trace", event: "case_sample_start", suite: "turn_taking_en", case_id: "RSP_BASIC", sample_id: id, sample_index: i },
+        { type: "lab.trace", event: "case_sample_start", suite: "turn_taking_en", case_id: "RSP_BASIC", chunk_id: chunkOf(i), sample_id: `RSP_BASIC-${pad(i)}`, sample_index: i, question_id: `en_question_short${i}` },
         { type: "audio.play", file: `corpus/turn_taking/en/audio/en_question_short${i}.wav` },
         { type: "audio.wait_for_speech", end_timeout_ms: 45000, silence_duration_ms: 3000 },
       );
     }
     for (let i = 1; i <= 10; i++) {
-      const id = `INT_BASIC-${String(i).padStart(3, "0")}`;
       sampleSteps.push(
-        { type: "lab.trace", event: "case_sample_start", suite: "turn_taking_en", case_id: "INT_BASIC", sample_id: id, sample_index: i, material_id: `en_Short05Wordswav${i}` },
+        { type: "lab.trace", event: "case_sample_start", suite: "turn_taking_en", case_id: "INT_BASIC", chunk_id: chunkOf(i), sample_id: `INT_BASIC-${pad(i)}`, sample_index: i, question_id: `en_question${i}`, material_id: `en_Short05Wordswav${i}` },
         { type: "audio.play", file: `corpus/turn_taking/en/audio/en_question${i}.wav` },
         { type: "audio.wait_for_speech_start", timeout_ms: 15000, wait_after_start_ms: 2000 },
         { type: "audio.play", file: `corpus/turn_taking/en/audio/en_Short05Wordswav${i}.wav` },
@@ -483,9 +525,8 @@ describe("end-to-end: full chunking pipeline", () => {
       );
     }
     for (let i = 1; i <= 10; i++) {
-      const id = `INT_FALSE-${String(i).padStart(3, "0")}`;
       sampleSteps.push(
-        { type: "lab.trace", event: "case_sample_start", suite: "turn_taking_en", case_id: "INT_FALSE", sample_id: id, sample_index: i, material_id: `sound_NonsemanticCoughLaughterwav${i}` },
+        { type: "lab.trace", event: "case_sample_start", suite: "turn_taking_en", case_id: "INT_FALSE", chunk_id: chunkOf(i), sample_id: `INT_FALSE-${pad(i)}`, sample_index: i, question_id: `en_question${i}`, material_id: `sound_NonsemanticCoughLaughterwav${i}` },
         { type: "audio.play", file: `corpus/turn_taking/en/audio/en_question${i}.wav` },
         { type: "audio.wait_for_speech_start", timeout_ms: 15000, wait_after_start_ms: 1000 },
         { type: "audio.play", file: `corpus/turn_taking/en/audio/NonsemanticCoughLaughterwav${i}.wav` },
@@ -496,43 +537,51 @@ describe("end-to-end: full chunking pipeline", () => {
     const scenario: ParsedScenario = {
       name: "turn_taking_en",
       description: "turn_taking_en - RSP_BASIC + INT_BASIC + INT_FALSE",
-      analysis: { preset: "config/analysis_presets/default.yaml", report: { template: "medialab.html.jinja2" } },
-      params: { lab: { suite: "turn_taking_en" } },
+      params: {
+        output_dir: "temp/output",
+        lab: {
+          suite: "turn_taking_en",
+          cases: {
+            RSP_BASIC: { analysis: { preset: "config/analysis_presets/default.yaml", report: { template: "medialab.html.jinja2" } } },
+            INT_BASIC: { analysis: { preset: "config/analysis_presets/default.yaml", report: { template: "medialab.html.jinja2" } } },
+            INT_FALSE: { analysis: { preset: "config/analysis_presets/lab_int_false.yaml", report: { template: "medialab.html.jinja2" } } },
+          },
+        },
+      },
       steps: sampleSteps,
     };
     return { scenario, stepsPrefix, stepsSuffix };
   }
 
-  it("extracts 30 samples, no inline prefix/suffix", () => {
+  it("extracts 30 samples, no inline prefix/suffix, each tagged case_id + chunk_id", () => {
     const { scenario } = buildRealistic();
     const { prefixSteps, suffixSteps, samples } = extractSampleGroups(scenario.steps);
     expect(prefixSteps).toHaveLength(0);
     expect(suffixSteps).toHaveLength(0);
     expect(samples).toHaveLength(30);
+    expect(samples.every(s => s.caseId && s.chunkId)).toBe(true);
   });
 
-  it("groups into 3 suites of 10", () => {
+  it("groups into 6 files (3 cases × 2 chunks), 5 samples each", () => {
     const { scenario } = buildRealistic();
     const { samples } = extractSampleGroups(scenario.steps);
-    const groups = groupByCaseId(samples);
-    expect(groups.size).toBe(3);
-    expect([...groups.values()].map(g => g.length)).toEqual([10, 10, 10]);
+    const groups = groupSamplesByChunk(samples);
+    expect(groups).toHaveLength(6);
+    expect(groups.every(g => g.samples.length === 5)).toBe(true);
   });
 
-  it("produces 6 valid chunk YAMLs with aeval-convention names", () => {
+  it("produces 6 valid chunk YAMLs with aeval-convention names + correct presets", () => {
     const { scenario, stepsPrefix, stepsSuffix } = buildRealistic();
     const { samples } = extractSampleGroups(scenario.steps);
-    const groups = groupByCaseId(samples);
+    const groups = groupSamplesByChunk(samples);
     const names: string[] = [];
-    for (const [caseId, caseSamples] of groups) {
-      const totalChunks = Math.ceil(caseSamples.length / CHUNK_SIZE);
-      for (let i = 0; i < totalChunks; i++) {
-        const chunk = caseSamples.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE);
-        const y = buildChunkYaml(scenario, stepsPrefix, chunk, stepsSuffix, caseId, i + 1, totalChunks);
-        const parsed = yaml.load(y) as Record<string, unknown>;
-        expect(Array.isArray(parsed.steps)).toBe(true);
-        names.push(parsed.name as string);
-      }
+    for (const g of groups) {
+      const parsed = yaml.load(buildChunkYaml(scenario, stepsPrefix, g.samples, stepsSuffix, g.caseId, g.chunkId)) as Record<string, unknown>;
+      expect(Array.isArray(parsed.steps)).toBe(true);
+      const preset = ((parsed.analysis as Record<string, unknown>).preset) as string;
+      // INT_FALSE files get the lab_int_false preset; others get default.
+      expect(preset).toBe(g.caseId === "INT_FALSE" ? "config/analysis_presets/lab_int_false.yaml" : "config/analysis_presets/default.yaml");
+      names.push(parsed.name as string);
     }
     expect(names).toHaveLength(6);
     expect(names).toContain("turn_taking_en_RSP_BASIC_chunk_001");
@@ -541,34 +590,34 @@ describe("end-to-end: full chunking pipeline", () => {
     expect(names).toContain("turn_taking_en_INT_FALSE_chunk_002");
   });
 
-  it("RSP chunk has 4 prefix + 15 sample + 2 suffix = 21 steps", () => {
+  it("RSP file has 4 prefix + 15 sample + 2 suffix = 21 steps", () => {
     const { scenario, stepsPrefix, stepsSuffix } = buildRealistic();
     const { samples } = extractSampleGroups(scenario.steps);
-    const rsp = samples.filter(s => s.caseId === "RSP_BASIC").slice(0, 5);
-    const steps = (yaml.load(buildChunkYaml(scenario, stepsPrefix, rsp, stepsSuffix, "RSP_BASIC", 1, 2)) as Record<string, unknown>).steps as ScenarioStep[];
+    const g = groupSamplesByChunk(samples).find(x => x.caseId === "RSP_BASIC" && x.chunkId === "chunk_001")!;
+    const steps = (yaml.load(buildChunkYaml(scenario, stepsPrefix, g.samples, stepsSuffix, g.caseId, g.chunkId)) as Record<string, unknown>).steps as ScenarioStep[];
     expect(steps).toHaveLength(21);
     expect(steps[19].type).toBe("audio.stop_recording");
     expect(steps[20].type).toBe("platform.exit");
   });
 
-  it("INT chunk has 4 prefix + 25 sample + 2 suffix = 31 steps", () => {
+  it("INT file has 4 prefix + 25 sample + 2 suffix = 31 steps", () => {
     const { scenario, stepsPrefix, stepsSuffix } = buildRealistic();
     const { samples } = extractSampleGroups(scenario.steps);
-    const intB = samples.filter(s => s.caseId === "INT_BASIC").slice(0, 5);
-    const steps = (yaml.load(buildChunkYaml(scenario, stepsPrefix, intB, stepsSuffix, "INT_BASIC", 1, 2)) as Record<string, unknown>).steps as ScenarioStep[];
+    const g = groupSamplesByChunk(samples).find(x => x.caseId === "INT_BASIC" && x.chunkId === "chunk_001")!;
+    const steps = (yaml.load(buildChunkYaml(scenario, stepsPrefix, g.samples, stepsSuffix, g.caseId, g.chunkId)) as Record<string, unknown>).steps as ScenarioStep[];
     expect(steps).toHaveLength(31);
   });
 
-  it("partitions sample_ids correctly across chunks", () => {
+  it("partitions sample_ids by chunk_id from the data", () => {
     const { scenario, stepsPrefix, stepsSuffix } = buildRealistic();
     const { samples } = extractSampleGroups(scenario.steps);
-    const rsp = samples.filter(s => s.caseId === "RSP_BASIC");
-    const p1 = yaml.load(buildChunkYaml(scenario, stepsPrefix, rsp.slice(0, 5), stepsSuffix, "RSP_BASIC", 1, 2)) as Record<string, unknown>;
-    const p2 = yaml.load(buildChunkYaml(scenario, stepsPrefix, rsp.slice(5, 10), stepsSuffix, "RSP_BASIC", 2, 2)) as Record<string, unknown>;
-    const ids1 = ((p1.params as Record<string, unknown>).lab as Record<string, unknown>).sample_ids;
-    const ids2 = ((p2.params as Record<string, unknown>).lab as Record<string, unknown>).sample_ids;
-    expect(ids1).toEqual(["RSP_BASIC-001", "RSP_BASIC-002", "RSP_BASIC-003", "RSP_BASIC-004", "RSP_BASIC-005"]);
-    expect(ids2).toEqual(["RSP_BASIC-006", "RSP_BASIC-007", "RSP_BASIC-008", "RSP_BASIC-009", "RSP_BASIC-010"]);
+    const groups = groupSamplesByChunk(samples);
+    const g1 = groups.find(g => g.caseId === "RSP_BASIC" && g.chunkId === "chunk_001")!;
+    const g2 = groups.find(g => g.caseId === "RSP_BASIC" && g.chunkId === "chunk_002")!;
+    const ids1 = ((yaml.load(buildChunkYaml(scenario, stepsPrefix, g1.samples, stepsSuffix, g1.caseId, g1.chunkId)) as Record<string, unknown>).params as Record<string, unknown>).lab as Record<string, unknown>;
+    const ids2 = ((yaml.load(buildChunkYaml(scenario, stepsPrefix, g2.samples, stepsSuffix, g2.caseId, g2.chunkId)) as Record<string, unknown>).params as Record<string, unknown>).lab as Record<string, unknown>;
+    expect(ids1.sample_ids).toEqual(["RSP_BASIC-001", "RSP_BASIC-002", "RSP_BASIC-003", "RSP_BASIC-004", "RSP_BASIC-005"]);
+    expect(ids2.sample_ids).toEqual(["RSP_BASIC-006", "RSP_BASIC-007", "RSP_BASIC-008", "RSP_BASIC-009", "RSP_BASIC-010"]);
   });
 
   it("merged metrics from 6 chunks compute sane MED/SD/P95", () => {
@@ -589,33 +638,14 @@ describe("end-to-end: full chunking pipeline", () => {
     const merged = mergeChunkMetrics(chunkMetrics);
     const rt = ((merged.response_metrics as Record<string, unknown>).latency as { turn_level: Record<string, unknown>[] }).turn_level;
     const it = ((merged.interruption_metrics as Record<string, unknown>).latency as { turn_level: Record<string, unknown>[] }).turn_level;
-    expect(rt).toHaveLength(14); // 5+5+2+2
-    expect(it).toHaveLength(14); // 5+5+2+2
+    expect(rt).toHaveLength(14);
+    expect(it).toHaveLength(14);
 
     const rVals = rt.map(t => t.latency_ms as number);
     expect(Math.round(median(rVals))).toBeGreaterThan(0);
     expect(Math.round(sd(rVals))).toBeGreaterThan(0);
     expect(Math.round(p95(rVals))).toBeGreaterThanOrEqual(Math.round(median(rVals)));
     expect(merged._merged_from_chunks).toBe(6);
-  });
-
-  it("boundary: 3 samples → 1 chunk", () => {
-    const { samples } = extractSampleGroups([
-      { type: "lab.trace", case_id: "RSP", sample_id: "RSP-1" }, { type: "audio.play" },
-      { type: "lab.trace", case_id: "RSP", sample_id: "RSP-2" }, { type: "audio.play" },
-      { type: "lab.trace", case_id: "RSP", sample_id: "RSP-3" }, { type: "audio.play" },
-    ]);
-    expect(Math.ceil(groupByCaseId(samples).get("RSP")!.length / CHUNK_SIZE)).toBe(1);
-  });
-
-  it("boundary: exactly 5 → 1 chunk; 6 → 2 chunks", () => {
-    const make = (n: number) => {
-      const steps: ScenarioStep[] = [];
-      for (let i = 1; i <= n; i++) steps.push({ type: "lab.trace", case_id: "RSP", sample_id: `RSP-${i}` }, { type: "audio.play" });
-      return extractSampleGroups(steps).samples;
-    };
-    expect(Math.ceil(make(5).length / CHUNK_SIZE)).toBe(1);
-    expect(Math.ceil(make(6).length / CHUNK_SIZE)).toBe(2);
   });
 });
 
@@ -662,7 +692,7 @@ describe("composeScenarioYaml", () => {
 
 describe("chunk-vs-compose decision", () => {
   // Mirrors the daemon's `canChunk` predicate in vox_eval_agentd/vox-agentd.ts
-  // (executeAevalWithChunking, ~line 529) — keep in sync; it is a private method
+  // (executeAevalWithChunking, ~line 530) — keep in sync; it is a private method
   // and cannot be imported:
   //   samples.length > 0 && prefixSteps.length === 0 && suffixSteps.length === 0
   const canChunk = (steps: ScenarioStep[]) => {
@@ -672,9 +702,9 @@ describe("chunk-vs-compose decision", () => {
 
   it("clean lab.trace body is chunkable", () => {
     const steps: ScenarioStep[] = [
-      { type: "lab.trace", sample_id: "A-001", case_id: "INT_BASIC" },
+      { type: "lab.trace", sample_id: "A-001", case_id: "INT_BASIC", chunk_id: "chunk_001" },
       { type: "audio.play", corpus_id: "q1" },
-      { type: "lab.trace", sample_id: "A-002", case_id: "INT_BASIC" },
+      { type: "lab.trace", sample_id: "A-002", case_id: "INT_BASIC", chunk_id: "chunk_001" },
       { type: "audio.play", corpus_id: "q2" },
     ];
     expect(canChunk(steps)).toBe(true);
