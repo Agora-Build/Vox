@@ -52,6 +52,10 @@ export default function ConsoleWorkflows() {
   const [framework, setFramework] = useState("aeval");
   const [appConfigPreset, setAppConfigPreset] = useState("custom");
   const [appConfigYaml, setAppConfigYaml] = useState("");
+  const [stepsPrefix, setStepsPrefix] = useState("");
+  const [stepsSuffix, setStepsSuffix] = useState("");
+  const [editStepsPrefix, setEditStepsPrefix] = useState("");
+  const [editStepsSuffix, setEditStepsSuffix] = useState("");
 
   // Edit dialog state
   const [editOpen, setEditOpen] = useState(false);
@@ -85,6 +89,10 @@ export default function ConsoleWorkflows() {
       if (framework === "voice-agent-tester" && appConfigYaml) {
         config.app = appConfigYaml;
       }
+      if (framework === "aeval") {
+        if (stepsPrefix) config.stepsPrefix = stepsPrefix;
+        if (stepsSuffix) config.stepsSuffix = stepsSuffix;
+      }
       const res = await apiRequest("POST", "/api/workflows", {
         name,
         description,
@@ -103,6 +111,8 @@ export default function ConsoleWorkflows() {
       setFramework("aeval");
       setAppConfigPreset("custom");
       setAppConfigYaml("");
+      setStepsPrefix("");
+      setStepsSuffix("");
       queryClient.invalidateQueries({ queryKey: ["/api/workflows?includePublic=true"] });
       toast({ title: "Workflow created" });
     },
@@ -122,6 +132,10 @@ export default function ConsoleWorkflows() {
       const config: Record<string, string> = { framework: editFramework };
       if (editFramework === "voice-agent-tester" && editAppConfigYaml) {
         config.app = editAppConfigYaml;
+      }
+      if (editFramework === "aeval") {
+        if (editStepsPrefix) config.stepsPrefix = editStepsPrefix;
+        if (editStepsSuffix) config.stepsSuffix = editStepsSuffix;
       }
       body.config = config;
       const res = await apiRequest("PATCH", `/api/workflows/${editWorkflow.id}`, body);
@@ -195,6 +209,8 @@ export default function ConsoleWorkflows() {
     setEditProjectId(workflow.projectId?.toString() || "");
     setEditFramework(cfg.framework || "aeval");
     setEditAppConfigYaml(cfg.app || "");
+    setEditStepsPrefix(cfg.stepsPrefix || "");
+    setEditStepsSuffix(cfg.stepsSuffix || "");
     setEditOpen(true);
   };
 
@@ -319,6 +335,33 @@ export default function ConsoleWorkflows() {
                   </div>
                 </>
               )}
+              {framework === "aeval" && (
+                <>
+                  <div className="space-y-2">
+                    <Label>Setup Steps (stepsPrefix, YAML)</Label>
+                    <Textarea
+                      className="font-mono text-sm min-h-[120px]"
+                      placeholder={"- type: platform.setup\n  platform_id: livekit\n- type: platform.enter"}
+                      value={stepsPrefix}
+                      onChange={(e) => setStepsPrefix(e.target.value)}
+                      data-testid="textarea-workflow-steps-prefix"
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      Platform connect/login steps. Differs per provider. The test body lives in the eval set.
+                    </p>
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Teardown Steps (stepsSuffix, YAML)</Label>
+                    <Textarea
+                      className="font-mono text-sm min-h-[80px]"
+                      placeholder={"- type: audio.stop_recording\n- type: platform.exit"}
+                      value={stepsSuffix}
+                      onChange={(e) => setStepsSuffix(e.target.value)}
+                      data-testid="textarea-workflow-steps-suffix"
+                    />
+                  </div>
+                </>
+              )}
             </div>
             <DialogFooter>
               <Button
@@ -400,6 +443,33 @@ export default function ConsoleWorkflows() {
                   onChange={(e) => setEditAppConfigYaml(e.target.value)}
                 />
               </div>
+            )}
+            {editFramework === "aeval" && (
+              <>
+                <div className="space-y-2">
+                  <Label>Setup Steps (stepsPrefix, YAML)</Label>
+                  <Textarea
+                    className="font-mono text-sm min-h-[120px]"
+                    placeholder={"- type: platform.setup\n  platform_id: livekit\n- type: platform.enter"}
+                    value={editStepsPrefix}
+                    onChange={(e) => setEditStepsPrefix(e.target.value)}
+                    data-testid="textarea-workflow-steps-prefix-edit"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Platform connect/login steps. Differs per provider. The test body lives in the eval set.
+                  </p>
+                </div>
+                <div className="space-y-2">
+                  <Label>Teardown Steps (stepsSuffix, YAML)</Label>
+                  <Textarea
+                    className="font-mono text-sm min-h-[80px]"
+                    placeholder={"- type: audio.stop_recording\n- type: platform.exit"}
+                    value={editStepsSuffix}
+                    onChange={(e) => setEditStepsSuffix(e.target.value)}
+                    data-testid="textarea-workflow-steps-suffix-edit"
+                  />
+                </div>
+              </>
             )}
             <div className="space-y-2">
               <Label htmlFor="edit-workflow-project">Project</Label>
