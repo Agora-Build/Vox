@@ -60,10 +60,14 @@ Both configs stay **flat JSONB**. Ownership is disjoint and role-based.
 
 1. `scenario` may appear **only** in an eval set.
 2. `framework`, `app`, `stepsPrefix`, `stepsSuffix` may appear **only** in a workflow.
-3. At merge time the two key sets must not overlap.
+3. Role-disjointness (rules 1–2) is enforced by the validators. Other keys may
+   legitimately appear in both configs (e.g. `frameworkVersion`); at merge time
+   they may carry the **same** value, but must not **conflict**.
 
-A violation is a validation error returned to the client (HTTP 400). Defense in
-depth: `mergeEvalConfig` also throws on any overlapping key.
+A role violation is a validation error returned to the client (HTTP 400). Defense
+in depth: `mergeEvalConfig` throws if the two configs share a key with
+**conflicting values** (identical shared values are allowed — the eval set's
+value is used).
 
 ### Note on `scenario` semantics
 
@@ -82,7 +86,7 @@ Workflow.config (per provider)        EvalSet.config (shared)
         │                                 steps: [lab.trace, audio.play, ...]
         └──────────────┬──────────────────────────┘
                        ▼
-       mergeEvalConfig(workflow, evalSet)   ← server, asserts disjoint
+       mergeEvalConfig(workflow, evalSet)   ← server, rejects conflicts
                        ▼
                   job.config  (flat)
                        ▼
@@ -121,10 +125,14 @@ Both return `{ valid: boolean; error?: string }` (same shape as today).
 ### 2. Server merge — `server/storage.ts`
 
 `mergeEvalConfig(workflowConfig, evalSetConfig)`:
-- Compute the intersection of the two key sets; if non-empty, `throw` with the
-  offending keys (should never happen given validation, but guards scheduler and
-  any non-validated path).
-- Otherwise spread `{ ...workflow, ...evalSet }` as today.
+- Find keys present in both configs whose values **differ** (deep-compared via
+  JSON). If any exist, `throw` listing them — this catches a workflow and eval set
+  disagreeing on a shared key (e.g. `frameworkVersion`) and guards the scheduler
+  and any non-validated path.
+- Keys shared with identical values are fine. Spread `{ ...workflow, ...evalSet }`
+  (eval set wins, though for identical shared values it makes no difference).
+- Role-key contamination (`scenario` in a workflow, etc.) cannot reach here once
+  the validators are wired — they reject it at the API boundary first.
 
 ### 3. Route wiring — `server/routes.ts`
 
@@ -135,8 +143,8 @@ Both return `{ valid: boolean; error?: string }` (same shape as today).
 - Existing call sites currently use `validateEvalConfig`; replace each with the
   role-appropriate validator. (Find via `grep validateEvalConfig server/routes.ts`.)
 - The merge path (`POST /api/workflows/:workflowId/run` and the scheduler in
-  `server/index.ts`) is unchanged structurally — `mergeEvalConfig` now asserts
-  disjoint.
+  `server/index.ts`) is unchanged structurally — `mergeEvalConfig` now rejects
+  conflicting shared-key values.
 
 ### 4. Data migration — `migrations/0010_*.sql` + `server/migrate.ts`
 
@@ -210,15 +218,17 @@ Both workflows run the same eval set, proving the separation.
 
 - Validation failures return 400 with a specific message naming the offending key
   and where it belongs.
-- `mergeEvalConfig` overlap is an internal invariant violation → throws (500),
-  surfaced in server logs; should be unreachable once validation is in place.
+- `mergeEvalConfig` throws (500) if a workflow and eval set share a key with
+  conflicting values — a config mistake worth surfacing in server logs. Identical
+  shared values (e.g. matching `frameworkVersion`) merge cleanly.
 - Daemon failure policy is unchanged: non-zero aeval exit → job failed, no partial
   results reported.
 
 ## Testing Strategy
 
-- Unit: validators (both roles, accept + reject paths), `mergeEvalConfig` disjoint
-  assertion, `composeScenarioYaml`.
+- Unit: validators (both roles, accept + reject paths), `mergeEvalConfig`
+  conflict detection (throws on differing shared values, allows identical),
+  `composeScenarioYaml`.
 - Integration (`tests/api.test.ts`): create/update workflow and eval set with valid
   and invalid configs; run-workflow merge result.
 - Pre-push gate (per project convention): `npm run check` + `npm test`.
