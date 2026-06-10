@@ -223,9 +223,15 @@ export function mergeEvalConfig(
 ): Record<string, unknown> {
   const wf = (workflowConfig as Record<string, unknown>) || {};
   const es = (evalSetConfig as Record<string, unknown>) || {};
-  const overlap = Object.keys(wf).filter((k) => k in es);
-  if (overlap.length > 0) {
-    throw new Error(`Workflow and eval set configs share keys: ${overlap.join(", ")}`);
+  // Role-disjointness (scenario vs framework/app/steps*) is enforced by the
+  // validators. Here we only guard against the workflow and eval set sharing a
+  // key with CONFLICTING values (e.g. a frameworkVersion mismatch). Identical
+  // shared values are fine — the eval set's value is used.
+  const conflicts = Object.keys(wf).filter(
+    (k) => k in es && JSON.stringify(wf[k]) !== JSON.stringify(es[k]),
+  );
+  if (conflicts.length > 0) {
+    throw new Error(`Workflow and eval set configs share keys with conflicting values: ${conflicts.join(", ")}`);
   }
   return { ...wf, ...es };
 }

@@ -355,5 +355,13 @@ describe('Config separation validators', () => {
         mergeEvalConfig({ framework: 'aeval', scenario: 'a' }, { framework: 'x', scenario: 'b' }),
       ).toThrow(/framework, scenario/);
     });
+
+    it('allows identical shared values (e.g. frameworkVersion)', () => {
+      const merged = mergeEvalConfig(
+        { framework: 'aeval', frameworkVersion: 'v0.1.0' },
+        { scenario: 'b', frameworkVersion: 'v0.1.0' },
+      );
+      expect(merged).toEqual({ framework: 'aeval', frameworkVersion: 'v0.1.0', scenario: 'b' });
+    });
   });
 });
