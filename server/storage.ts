@@ -159,7 +159,12 @@ export function decryptValue(stored: string): string {
 
 const MAX_CONFIG_SIZE = 100_000; // 100KB
 
-export function validateEvalConfig(config: unknown): { valid: boolean; error?: string } {
+// Keys owned exclusively by the eval set (the test body).
+const EVALSET_ONLY_KEYS = ["scenario"] as const;
+// Keys owned exclusively by the workflow (platform setup + connection).
+const WORKFLOW_ONLY_KEYS = ["framework", "app", "stepsPrefix", "stepsSuffix"] as const;
+
+export function validateWorkflowConfig(config: unknown): { valid: boolean; error?: string } {
   if (config === null || config === undefined) {
     return { valid: true };
   }
@@ -167,11 +172,41 @@ export function validateEvalConfig(config: unknown): { valid: boolean; error?: s
     return { valid: false, error: "Config must be an object" };
   }
   const c = config as Record<string, unknown>;
+  for (const k of EVALSET_ONLY_KEYS) {
+    if (k in c) {
+      return { valid: false, error: `'${k}' belongs to the eval set, not the workflow` };
+    }
+  }
   if (c.framework !== undefined && c.framework !== "aeval" && c.framework !== "voice-agent-tester") {
     return { valid: false, error: "Framework must be 'aeval' or 'voice-agent-tester'" };
   }
   if (c.app !== undefined && typeof c.app !== "string") {
     return { valid: false, error: "Config app must be a string" };
+  }
+  if (c.stepsPrefix !== undefined && typeof c.stepsPrefix !== "string") {
+    return { valid: false, error: "Config stepsPrefix must be a string" };
+  }
+  if (c.stepsSuffix !== undefined && typeof c.stepsSuffix !== "string") {
+    return { valid: false, error: "Config stepsSuffix must be a string" };
+  }
+  if (JSON.stringify(config).length > MAX_CONFIG_SIZE) {
+    return { valid: false, error: "Config too large (max 100KB)" };
+  }
+  return { valid: true };
+}
+
+export function validateEvalSetConfig(config: unknown): { valid: boolean; error?: string } {
+  if (config === null || config === undefined) {
+    return { valid: true };
+  }
+  if (typeof config !== "object" || Array.isArray(config)) {
+    return { valid: false, error: "Config must be an object" };
+  }
+  const c = config as Record<string, unknown>;
+  for (const k of WORKFLOW_ONLY_KEYS) {
+    if (k in c) {
+      return { valid: false, error: `'${k}' belongs to the workflow, not the eval set` };
+    }
   }
   if (c.scenario !== undefined && typeof c.scenario !== "string") {
     return { valid: false, error: "Config scenario must be a string" };
@@ -186,10 +221,13 @@ export function mergeEvalConfig(
   workflowConfig: unknown,
   evalSetConfig: unknown,
 ): Record<string, unknown> {
-  return {
-    ...((workflowConfig as Record<string, unknown>) || {}),
-    ...((evalSetConfig as Record<string, unknown>) || {}),
-  };
+  const wf = (workflowConfig as Record<string, unknown>) || {};
+  const es = (evalSetConfig as Record<string, unknown>) || {};
+  const overlap = Object.keys(wf).filter((k) => k in es);
+  if (overlap.length > 0) {
+    throw new Error(`Workflow and eval set configs share keys: ${overlap.join(", ")}`);
+  }
+  return { ...wf, ...es };
 }
 
 // Helper to convert snake_case SQL results to camelCase for type safety
