@@ -32,6 +32,7 @@ const MIGRATIONS: Array<{ version: number; description: string; file: string | n
   { version: 8, description: "remove auto-seeded aeval data", file: "0007_remove_aeval_seeds.sql" },
   { version: 9, description: "fix: remove aeval seeds (correct pattern)", file: "0008_fix_remove_aeval_seeds.sql" },
   { version: 10, description: "add provider brand color", file: "0009_add_provider_brand_color.sql" },
+  { version: 11, description: "strip scenario from workflow configs", file: "0010_strip_workflow_scenario.sql" },
 ];
 
 const TARGET_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version;
