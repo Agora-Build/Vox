@@ -2498,7 +2498,6 @@ describe('Vox API Tests', () => {
       const result = await response.json();
       expect(result.job.config).toEqual({});
     });
-
   });
 
   describe('Workflow Clone', () => {

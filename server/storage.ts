@@ -227,6 +227,9 @@ export function mergeEvalConfig(
   // validators. Here we only guard against the workflow and eval set sharing a
   // key with CONFLICTING values (e.g. a frameworkVersion mismatch). Identical
   // shared values are fine — the eval set's value is used.
+  // Shared keys are scalars (e.g. frameworkVersion), so JSON.stringify compares
+  // them reliably; revisit with a canonical compare if object-valued shared keys
+  // ever appear.
   const conflicts = Object.keys(wf).filter(
     (k) => k in es && JSON.stringify(wf[k]) !== JSON.stringify(es[k]),
   );
