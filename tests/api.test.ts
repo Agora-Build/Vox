@@ -321,6 +321,68 @@ describe('Vox API Tests', () => {
     });
   });
 
+  describe('Config separation enforcement', () => {
+    it('rejects a workflow whose config has scenario', async () => {
+      const response = await authFetch(adminSession, `${BASE_URL}/api/workflows`, {
+        method: 'POST',
+        body: JSON.stringify({
+          name: 'Bad Workflow',
+          visibility: 'public',
+          projectId: testProjectId,
+          providerId: testProviderId,
+          config: { framework: 'aeval', scenario: 'name: x' },
+        }),
+      });
+      expect(response.status).toBe(400);
+      const body = await response.json();
+      expect(body.error).toContain('eval set');
+    });
+
+    it('rejects an eval set whose config has framework', async () => {
+      const response = await authFetch(adminSession, `${BASE_URL}/api/eval-sets`, {
+        method: 'POST',
+        body: JSON.stringify({
+          name: 'Bad Eval Set',
+          visibility: 'public',
+          config: { scenario: 'name: x', framework: 'aeval' },
+        }),
+      });
+      expect(response.status).toBe(400);
+      const body = await response.json();
+      expect(body.error).toContain('workflow');
+    });
+
+    it('accepts a valid disjoint workflow + eval set', async () => {
+      const wf = await authFetch(adminSession, `${BASE_URL}/api/workflows`, {
+        method: 'POST',
+        body: JSON.stringify({
+          name: 'Good Workflow',
+          visibility: 'public',
+          projectId: testProjectId,
+          providerId: testProviderId,
+          config: { framework: 'aeval', stepsPrefix: '- type: platform.setup' },
+        }),
+      });
+      expect(wf.ok).toBe(true);
+      const wfBody = await wf.json();
+
+      const es = await authFetch(adminSession, `${BASE_URL}/api/eval-sets`, {
+        method: 'POST',
+        body: JSON.stringify({
+          name: 'Good Eval Set',
+          visibility: 'public',
+          config: { scenario: 'name: x\nsteps: []' },
+        }),
+      });
+      expect(es.ok).toBe(true);
+      const esBody = await es.json();
+
+      // Clean up so these rows don't leak into the shared test DB.
+      await authFetch(adminSession, `${BASE_URL}/api/workflows/${wfBody.id}`, { method: 'DELETE' });
+      await authFetch(adminSession, `${BASE_URL}/api/eval-sets/${esBody.id}`, { method: 'DELETE' });
+    });
+  });
+
   describe('Eval Schedule API', () => {
     it('should create a one-time schedule', async () => {
       const response = await authFetch(adminSession, `${BASE_URL}/api/eval-schedules`, {
@@ -2436,44 +2498,6 @@ describe('Vox API Tests', () => {
       const result = await response.json();
       expect(result.job.config).toEqual({});
     });
-
-    it('should let eval set scenario override workflow scenario field if both set', async () => {
-      // Workflow has a scenario field too (edge case)
-      const wfRes = await authFetch(adminSession, `${BASE_URL}/api/workflows`, {
-        method: 'POST',
-        body: JSON.stringify({
-          name: 'Override Test Workflow',
-          visibility: 'public',
-          providerId: testProviderId,
-          config: { framework: 'aeval', scenario: 'old-scenario' },
-        }),
-      });
-      const wf: Workflow = await wfRes.json();
-
-      const esRes = await authFetch(adminSession, `${BASE_URL}/api/eval-sets`, {
-        method: 'POST',
-        body: JSON.stringify({
-          name: 'Override Test Eval Set',
-          visibility: 'public',
-          config: { scenario: 'new-scenario' },
-        }),
-      });
-      const es: EvalSet = await esRes.json();
-
-      const response = await authFetch(adminSession, `${BASE_URL}/api/workflows/${wf.id}/run`, {
-        method: 'POST',
-        body: JSON.stringify({
-          evalSetId: es.id,
-          region: 'na',
-        }),
-      });
-
-      expect(response.ok).toBe(true);
-      const result = await response.json();
-      // Eval set config is spread last, so its scenario wins
-      expect(result.job.config.scenario).toBe('new-scenario');
-      expect(result.job.config.framework).toBe('aeval');
-    });
   });
 
   describe('Workflow Clone', () => {
@@ -2811,7 +2835,7 @@ describe('Vox API Tests', () => {
           name: 'Test Built-in Eval Set',
           description: 'Simulated built-in eval set',
           visibility: 'public',
-          config: { framework: 'aeval', builtIn: true, scenario: 'steps: []' },
+          config: { builtIn: true, scenario: 'steps: []' },
         }),
       });
       expect(response.ok).toBe(true);
@@ -2860,7 +2884,6 @@ describe('Vox API Tests', () => {
       const cloned: EvalSet = await response.json();
       expect(cloned.config.builtIn).toBeUndefined();
       // But other config fields should be preserved
-      expect(cloned.config.framework).toBe('aeval');
       expect(cloned.config.scenario).toBe('steps: []');
     });
   });
@@ -2938,7 +2961,7 @@ describe('Vox API Tests', () => {
     it('should clone with config override', async () => {
       const response = await authFetch(adminSession, `${BASE_URL}/api/eval-sets/${cloneSourceId}/clone`, {
         method: 'POST',
-        body: JSON.stringify({ config: { scenario: 'modified: true', framework: 'aeval' } }),
+        body: JSON.stringify({ config: { scenario: 'modified: true' } }),
       });
       expect(response.ok).toBe(true);
       const cloned: EvalSet = await response.json();
@@ -2950,7 +2973,7 @@ describe('Vox API Tests', () => {
         method: 'POST',
         body: JSON.stringify({
           name: 'Full Override Clone',
-          config: { scenario: 'new scenario', framework: 'aeval' },
+          config: { scenario: 'new scenario' },
         }),
       });
       expect(response.ok).toBe(true);

@@ -149,6 +149,26 @@ export function buildChunkYaml(
 }
 
 /**
+ * Compose a single scenario YAML from workflow setup/teardown wrapped around an
+ * eval-set body, preserving the scenario's metadata. Used when the body is not a
+ * clean set of lab.trace samples (e.g. control.for_each) so it can't be chunked —
+ * we run it as one file: prefix + body + suffix.
+ */
+export function composeScenarioYaml(
+  scenario: ParsedScenario,
+  prefix: ScenarioStep[],
+  body: ScenarioStep[],
+  suffix: ScenarioStep[],
+): string {
+  const out: Record<string, unknown> = { name: scenario.name || 'scenario' };
+  if (scenario.description) out.description = scenario.description;
+  if (scenario.analysis) out.analysis = scenario.analysis;
+  if (scenario.params) out.params = scenario.params;
+  out.steps = [...prefix, ...body, ...suffix];
+  return yaml.dump(out, { lineWidth: -1, noRefs: true });
+}
+
+/**
  * Merge metrics.json outputs from multiple chunks into a single structure.
  *
  * Turn-level arrays are concatenated and re-indexed; the daemon's parser

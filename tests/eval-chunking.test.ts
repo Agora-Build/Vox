@@ -18,6 +18,7 @@ import {
   groupByCaseId,
   buildChunkYaml,
   mergeChunkMetrics,
+  composeScenarioYaml,
 } from "../vox_eval_agentd/chunking";
 
 // Test-only stats helpers — mirror the daemon's metrics parser so we can assert
@@ -615,5 +616,84 @@ describe("end-to-end: full chunking pipeline", () => {
     };
     expect(Math.ceil(make(5).length / CHUNK_SIZE)).toBe(1);
     expect(Math.ceil(make(6).length / CHUNK_SIZE)).toBe(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// composeScenarioYaml
+// ---------------------------------------------------------------------------
+
+describe("composeScenarioYaml", () => {
+  it("wraps the body with prefix/suffix and preserves metadata", () => {
+    const scenario: ParsedScenario = {
+      name: "turn_taking_en",
+      description: "desc",
+      analysis: { preset: "medialab" },
+      params: { lab: { suite: "turn_taking_en", case_id: "INT_BASIC" } },
+      steps: [{ type: "lab.trace", sample_id: "INT_BASIC-001" }],
+    };
+    const prefix: ScenarioStep[] = [{ type: "platform.setup", platform_id: "agora" }];
+    const suffix: ScenarioStep[] = [{ type: "platform.exit" }];
+
+    const out = composeScenarioYaml(scenario, prefix, scenario.steps, suffix);
+    const parsed = yaml.load(out) as ParsedScenario;
+
+    expect(parsed.name).toBe("turn_taking_en");
+    expect(parsed.description).toBe("desc");
+    expect(parsed.analysis).toEqual({ preset: "medialab" });
+    expect(parsed.params).toEqual({ lab: { suite: "turn_taking_en", case_id: "INT_BASIC" } });
+    expect(parsed.steps).toHaveLength(3);
+    expect(parsed.steps[0]).toEqual({ type: "platform.setup", platform_id: "agora" });
+    expect(parsed.steps[1]).toEqual({ type: "lab.trace", sample_id: "INT_BASIC-001" });
+    expect(parsed.steps[2]).toEqual({ type: "platform.exit" });
+  });
+
+  it("falls back to a default name when scenario has none", () => {
+    const scenario = { steps: [] } as unknown as ParsedScenario;
+    const out = composeScenarioYaml(scenario, [], [], []);
+    const parsed = yaml.load(out) as ParsedScenario;
+    expect(parsed.name).toBe("scenario");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// chunk-vs-compose decision
+// ---------------------------------------------------------------------------
+
+describe("chunk-vs-compose decision", () => {
+  // Mirrors the daemon's `canChunk` predicate in vox_eval_agentd/vox-agentd.ts
+  // (executeAevalWithChunking, ~line 529) — keep in sync; it is a private method
+  // and cannot be imported:
+  //   samples.length > 0 && prefixSteps.length === 0 && suffixSteps.length === 0
+  const canChunk = (steps: ScenarioStep[]) => {
+    const { prefixSteps, suffixSteps, samples } = extractSampleGroups(steps);
+    return samples.length > 0 && prefixSteps.length === 0 && suffixSteps.length === 0;
+  };
+
+  it("clean lab.trace body is chunkable", () => {
+    const steps: ScenarioStep[] = [
+      { type: "lab.trace", sample_id: "A-001", case_id: "INT_BASIC" },
+      { type: "audio.play", corpus_id: "q1" },
+      { type: "lab.trace", sample_id: "A-002", case_id: "INT_BASIC" },
+      { type: "audio.play", corpus_id: "q2" },
+    ];
+    expect(canChunk(steps)).toBe(true);
+  });
+
+  it("control.for_each body is NOT chunkable (compose one file)", () => {
+    const steps: ScenarioStep[] = [
+      { type: "control.for_each", corpus_set: "three_questions_en", steps: [] },
+    ];
+    expect(canChunk(steps)).toBe(false);
+  });
+
+  it("body with trailing teardown is NOT chunkable via the fast path", () => {
+    const steps: ScenarioStep[] = [
+      { type: "lab.trace", sample_id: "A-001", case_id: "INT_BASIC" },
+      { type: "audio.play", corpus_id: "q1" },
+      { type: "platform.exit" },
+    ];
+    // extractSampleGroups pulls platform.exit into suffixSteps -> canChunk false.
+    expect(canChunk(steps)).toBe(false);
   });
 });

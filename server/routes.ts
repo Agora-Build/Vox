@@ -1,6 +1,6 @@
 import type { Express } from "express";
 import { createServer, type Server } from "http";
-import { storage, hashToken, generateSecureToken, generateEvalAgentToken, mergeEvalConfig, validateEvalConfig, encryptValue, decryptValue, isEncryptionConfigured } from "./storage";
+import { storage, hashToken, generateSecureToken, generateEvalAgentToken, mergeEvalConfig, validateWorkflowConfig, validateEvalSetConfig, encryptValue, decryptValue, isEncryptionConfigured } from "./storage";
 import { parseNextCronRun } from "./cron";
 import { compareVersions } from "./aeval-seed";
 import { generateProviderId } from "@shared/schema";
@@ -1262,7 +1262,7 @@ export async function registerRoutes(
       }
 
       if (config) {
-        const v = validateEvalConfig(config);
+        const v = validateWorkflowConfig(config);
         if (!v.valid) return res.status(400).json({ error: v.error });
       }
 
@@ -1324,7 +1324,7 @@ export async function registerRoutes(
 
       const { name, description, visibility, config, projectId } = req.body;
       if (config) {
-        const v = validateEvalConfig(config);
+        const v = validateWorkflowConfig(config);
         if (!v.valid) return res.status(400).json({ error: v.error });
       }
       const updates: Record<string, unknown> = {};
@@ -1512,7 +1512,7 @@ export async function registerRoutes(
       }
 
       if (config) {
-        const v = validateEvalConfig(config);
+        const v = validateEvalSetConfig(config);
         if (!v.valid) return res.status(400).json({ error: v.error });
       }
 
@@ -1566,7 +1566,7 @@ export async function registerRoutes(
 
       const { name, description, visibility, config } = req.body;
       if (config !== undefined && config !== null) {
-        const v = validateEvalConfig(config);
+        const v = validateEvalSetConfig(config);
         if (!v.valid) return res.status(400).json({ error: v.error });
       }
       const updates: Record<string, unknown> = {};
@@ -1634,7 +1634,7 @@ export async function registerRoutes(
       const { name, config } = req.body || {};
 
       if (config) {
-        const v = validateEvalConfig(config);
+        const v = validateEvalSetConfig(config);
         if (!v.valid) return res.status(400).json({ error: v.error });
       }
 

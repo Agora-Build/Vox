@@ -12,6 +12,7 @@
 // What this script adds on top of init (local dev only):
 //   - Enables Scout account + sets known password (scout123) + email (scout@vox.ai)
 //   - Creates Scout's mainline LiveKit evaluation workflow + eval set + schedule
+//   - Creates Scout's Agora ConvoAI evaluation workflow (same eval set, authenticated setup)
 //
 // Do not add production bootstrap logic here. If you need data in production,
 // either add it to /api/auth/init or run a one-off migration.
@@ -151,6 +152,7 @@ async function seedData() {
     // Get LiveKit provider
     const allProviders = await storage.getAllProviders();
     const livekitProvider = allProviders.find(p => p.name.includes("LiveKit"));
+    const agoraProvider = allProviders.find(p => p.name.includes("Agora"));
 
     // Create project for Scout
     let scoutProject = (await storage.getProjectsByOwner(scoutId))[0];
@@ -163,7 +165,33 @@ async function seedData() {
       console.log(`Created Scout project: ${scoutProject.name}`);
     }
 
-    // Create LiveKit evaluation workflow
+    // Requires the 'three_questions_en' corpus to exist in aeval-data/ at runtime.
+    // Shared eval-set body (provider-agnostic): a minimal aeval scenario with
+    // analysis + steps, NO platform setup. Inline YAML content (not a filename).
+    const sharedScenarioBody = `name: basic_conversation
+description: Standard conversation latency body
+analysis:
+  preset: config/analysis_presets/default.yaml
+params:
+  output_dir: temp/output
+steps:
+  - type: audio.wait_for_speech
+    timeout_ms: 30000
+    silence_duration_ms: 1500
+    description: Wait for agent greeting
+  - type: control.for_each
+    corpus_set: three_questions_en
+    steps:
+      - type: audio.play
+        corpus_id: \${item}
+        description: Play question (response latency test)
+      - type: audio.wait_for_speech
+        end_timeout_ms: 45000
+        silence_duration_ms: 1000
+        description: Wait for full agent response
+`;
+
+    // LiveKit workflow: platform enter/exit only (no login).
     const livekitWorkflow = await storage.createWorkflow({
       name: "LiveKit Agent Evaluation",
       description: "Mainline evaluation workflow for LiveKit Agents - runs every 8 hours",
@@ -171,15 +199,54 @@ async function seedData() {
       projectId: scoutProject.id,
       providerId: livekitProvider?.id || null,
       visibility: "public",
-      isMainline: true,  // Mark as mainline for leaderboard
+      isMainline: true,
       config: {
-        application: "livekit.yaml",
-        scenario: "basic_conversation.yaml",
+        framework: "aeval",
+        stepsPrefix: `- type: platform.setup
+  platform_id: livekit
+  params:
+    mode: public
+- type: audio.start_recording
+- type: platform.enter
+  params:
+    tone_name: ''`,
+        // Same teardown for all aeval workflows (stop recording, leave platform).
+        stepsSuffix: `- type: audio.stop_recording
+- type: platform.exit`,
       },
     });
     console.log(`Created LiveKit workflow: ${livekitWorkflow.name} (mainline: true)`);
 
-    // Create eval set for basic conversation testing
+    // Agora workflow: login/auth BEFORE enter — demonstrates provider-specific setup.
+    const agoraWorkflow = await storage.createWorkflow({
+      name: "Agora ConvoAI Evaluation",
+      description: "Evaluation workflow for Agora ConvoAI - login required before joining",
+      ownerId: scoutId,
+      projectId: scoutProject.id,
+      providerId: agoraProvider?.id || null,
+      visibility: "public",
+      isMainline: false,
+      config: {
+        framework: "aeval",
+        stepsPrefix: `- type: platform.setup
+  platform_id: agora
+  params:
+    mode: authenticated
+- type: platform.login
+  params:
+    token: \${secrets.agora_token}
+- type: audio.start_recording
+- type: platform.enter
+  params:
+    tone_name: ''`,
+        // Same teardown for all aeval workflows (stop recording, leave platform).
+        stepsSuffix: `- type: audio.stop_recording
+- type: platform.exit`,
+      },
+    });
+    console.log(`Created Agora workflow: ${agoraWorkflow.name}`);
+
+    // Shared eval set (body only) — referenced by both workflows.
     const scoutEvalSets = await storage.getEvalSetsByOwner(scoutId);
     let basicEvalSet = scoutEvalSets.find(e => e.name === "Basic Conversation Test");
     if (!basicEvalSet) {
@@ -190,8 +257,7 @@ async function seedData() {
         visibility: "public",
         isMainline: true,
         config: {
-          scenario: "basic_conversation.yaml",
-          turns: 5,
+          scenario: sharedScenarioBody,
         },
       });
       console.log(`Created eval set: ${basicEvalSet.name}`);

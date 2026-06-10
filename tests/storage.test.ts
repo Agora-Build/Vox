@@ -1,5 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { hashToken, generateSecureToken } from '../server/storage';
+import {
+  hashToken,
+  generateSecureToken,
+  validateWorkflowConfig,
+  validateEvalSetConfig,
+  mergeEvalConfig,
+} from '../server/storage';
 
 describe('Storage Utilities', () => {
   describe('hashToken', () => {
@@ -257,6 +263,105 @@ describe('Data Validation', () => {
       invalidValues.forEach(value => {
         expect(['public', 'private'].includes(value)).toBe(false);
       });
+    });
+  });
+});
+
+describe('Config separation validators', () => {
+  describe('validateWorkflowConfig', () => {
+    it('accepts framework + steps + connection params', () => {
+      const r = validateWorkflowConfig({
+        framework: 'aeval',
+        stepsPrefix: '- type: platform.setup',
+        stepsSuffix: '- type: platform.exit',
+        url: 'https://example.com',
+      });
+      expect(r.valid).toBe(true);
+    });
+
+    it('rejects scenario in a workflow', () => {
+      const r = validateWorkflowConfig({ framework: 'aeval', scenario: 'name: x' });
+      expect(r.valid).toBe(false);
+      expect(r.error).toContain('eval set');
+    });
+
+    it('rejects an invalid framework', () => {
+      const r = validateWorkflowConfig({ framework: 'nope' });
+      expect(r.valid).toBe(false);
+    });
+
+    it('rejects non-string stepsPrefix', () => {
+      const r = validateWorkflowConfig({ stepsPrefix: 123 });
+      expect(r.valid).toBe(false);
+    });
+
+    it('accepts null/undefined', () => {
+      expect(validateWorkflowConfig(null).valid).toBe(true);
+      expect(validateWorkflowConfig(undefined).valid).toBe(true);
+    });
+  });
+
+  describe('validateEvalSetConfig', () => {
+    it('accepts a scenario body', () => {
+      const r = validateEvalSetConfig({ scenario: 'name: x\nsteps: []' });
+      expect(r.valid).toBe(true);
+    });
+
+    it('rejects framework in an eval set', () => {
+      const r = validateEvalSetConfig({ scenario: 'name: x', framework: 'aeval' });
+      expect(r.valid).toBe(false);
+      expect(r.error).toContain('workflow');
+    });
+
+    it('rejects stepsPrefix in an eval set', () => {
+      const r = validateEvalSetConfig({ stepsPrefix: '- type: platform.setup' });
+      expect(r.valid).toBe(false);
+      expect(r.error).toContain('workflow');
+    });
+
+    it('rejects non-string scenario', () => {
+      const r = validateEvalSetConfig({ scenario: { name: 'x' } });
+      expect(r.valid).toBe(false);
+    });
+
+    it('rejects stepsSuffix in an eval set', () => {
+      const r = validateEvalSetConfig({ stepsSuffix: '- type: platform.exit' });
+      expect(r.valid).toBe(false);
+      expect(r.error).toContain('workflow');
+    });
+  });
+
+  describe('mergeEvalConfig', () => {
+    it('spreads disjoint configs', () => {
+      const merged = mergeEvalConfig(
+        { framework: 'aeval', stepsPrefix: 'a' },
+        { scenario: 'b' },
+      );
+      expect(merged).toEqual({ framework: 'aeval', stepsPrefix: 'a', scenario: 'b' });
+    });
+
+    it('throws on overlapping keys', () => {
+      expect(() =>
+        mergeEvalConfig({ scenario: 'a' }, { scenario: 'b' }),
+      ).toThrow(/share keys/);
+    });
+
+    it('tolerates null inputs', () => {
+      expect(mergeEvalConfig(null, { scenario: 'b' })).toEqual({ scenario: 'b' });
+    });
+
+    it('reports all overlapping keys', () => {
+      expect(() =>
+        mergeEvalConfig({ framework: 'aeval', scenario: 'a' }, { framework: 'x', scenario: 'b' }),
+      ).toThrow(/framework, scenario/);
+    });
+
+    it('allows identical shared values (e.g. frameworkVersion)', () => {
+      const merged = mergeEvalConfig(
+        { framework: 'aeval', frameworkVersion: 'v0.1.0' },
+        { scenario: 'b', frameworkVersion: 'v0.1.0' },
+      );
+      expect(merged).toEqual({ framework: 'aeval', frameworkVersion: 'v0.1.0', scenario: 'b' });
     });
   });
 });
