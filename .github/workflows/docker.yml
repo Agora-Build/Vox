@@ -38,6 +38,8 @@ jobs:
         id: filter
         with:
           filters: |
+            # The workflow file itself affects how every image is built —
+            # changing it must rebuild all images.
             vox-service:
               - 'Dockerfile'
               - 'server/**'
@@ -48,14 +50,17 @@ jobs:
               - 'tsconfig.json'
               - 'vite.config.ts'
               - 'drizzle.config.ts'
+              - '.github/workflows/docker.yml'
             vox-eval-agentd:
               - 'vox_eval_agentd/**'
               - 'shared/**'
               - '.dockerignore'
+              - '.github/workflows/docker.yml'
             vox-clash-runner:
               - 'vox_clash_runner/**'
               - 'shared/**'
               - '.dockerignore'
+              - '.github/workflows/docker.yml'
 
   build-vox-service:
     needs: changes
