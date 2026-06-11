@@ -107,17 +107,18 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Sync aeval-data submodule to AEVAL_VERSION tag
+      - name: Record aeval-data commit for image labels
         id: aeval
         run: |
-          AEVAL_VERSION=$(grep 'ARG AEVAL_VERSION=' vox_eval_agentd/Dockerfile | cut -d= -f2)
-          echo "AEVAL_VERSION=${AEVAL_VERSION}"
+          # The image bakes in aeval-data (corpus/config) at the commit the
+          # submodule pins — checked out above. AEVAL_VERSION in the Dockerfile
+          # only selects the aeval BINARY; it no longer overrides the data.
+          # To update the corpus: bump the submodule. To update the binary:
+          # bump AEVAL_VERSION.
           cd vox_eval_agentd/aeval-data
-          git fetch origin tag "${AEVAL_VERSION}" --no-tags
-          git checkout "${AEVAL_VERSION}"
           echo "commit=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
           echo "date=$(git log -1 --format=%ci)" >> "$GITHUB_OUTPUT"
-          echo "aeval-data synced to ${AEVAL_VERSION} ($(git rev-parse --short HEAD))"
+          echo "aeval-data at pinned submodule commit $(git rev-parse --short HEAD)"
 
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
