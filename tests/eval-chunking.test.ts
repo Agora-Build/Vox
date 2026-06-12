@@ -27,6 +27,7 @@ import {
   computePerCaseAndRates,
   enrichMetricsWithTurns,
   parseTurnsJson,
+  headlineLatencyVals,
   buildChunkYaml,
   mergeChunkMetrics,
   composeScenarioYaml,
@@ -917,6 +918,36 @@ describe("end-to-end: full chunking pipeline", () => {
     expect(Math.round(sd(rVals))).toBeGreaterThan(0);
     expect(Math.round(p95(rVals))).toBeGreaterThanOrEqual(Math.round(median(rVals)));
     expect(merged._merged_from_chunks).toBe(6);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// headlineLatencyVals — case-scoped values for the stored latency columns
+// ---------------------------------------------------------------------------
+
+describe("headlineLatencyVals", () => {
+  it("response latency from response-type cases; interrupt latency excludes false cases", () => {
+    const merged = mergeChunkMetrics([
+      entry(respChunk([1400, 1500]), { caseId: "RSP_BASIC" }),
+      entry({ ...respChunk([2000, 2100]), interruption_metrics: { latency: { turn_level: [
+        { turn_index: 1, interrupt_action_ms: 1100 }, { turn_index: 3, interrupt_action_ms: 1200 },
+      ] } } }, { caseId: "INT_BASIC", hasInterruptPhase: true }),
+      entry({ interruption_metrics: { latency: { turn_level: [
+        { turn_index: 1, interrupt_action_ms: 900 },
+      ] } } }, { caseId: "INT_FALSE", hasInterruptPhase: true }),
+    ]);
+    const { respVals, intVals } = headlineLatencyVals(merged);
+    expect(respVals).toEqual([1400, 1500]);      // INT cases' answers excluded
+    expect(intVals).toEqual([1100, 1200]);       // false-interrupt reaction excluded
+  });
+
+  it("without per_case/case_id (single-file run) all turns count", () => {
+    const metrics = { ...respChunk([800, 900]), interruption_metrics: { latency: { turn_level: [
+      { turn_index: 1, interrupt_action_ms: 700 },
+    ] } } };
+    const { respVals, intVals } = headlineLatencyVals(metrics);
+    expect(respVals).toEqual([800, 900]);
+    expect(intVals).toEqual([700]);
   });
 });
 

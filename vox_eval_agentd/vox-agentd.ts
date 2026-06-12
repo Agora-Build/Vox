@@ -53,6 +53,7 @@ import {
   computePerCaseAndRates,
   enrichMetricsWithTurns,
   parseTurnsJson,
+  headlineLatencyVals,
 } from './chunking';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -922,27 +923,21 @@ class VoxEvalAgentDaemon {
         return sorted[Math.max(0, idx)];
       };
 
-      // --- Primary: compute median & SD from turn-level data (ground truth) ---
-      if (Array.isArray(rlTurns) && rlTurns.length > 0) {
-        const vals = rlTurns.map((t: Record<string, unknown>) => t.latency_ms as number).filter((v: number) => v != null && v >= 0);
-        if (vals.length > 0) {
-          results.responseLatencyMedian = Math.round(median(vals));
-          results.responseLatencySd = Math.round(sd(vals));
-          results.responseLatencyP95 = Math.round(p95(vals));
-        }
+      // --- Primary: compute median & SD from turn-level data (ground truth).
+      // Case-scoped (headlineLatencyVals): response latency from response-type
+      // cases only; interrupt latency from true-interrupt cases only, using
+      // interrupt_action_ms with the INTERRUPT_ACTION_MAX_MS threshold and
+      // greeting turns excluded. Single-file runs (no case data) use all turns.
+      const { respVals, intVals } = headlineLatencyVals(metrics);
+      if (respVals.length > 0) {
+        results.responseLatencyMedian = Math.round(median(respVals));
+        results.responseLatencySd = Math.round(sd(respVals));
+        results.responseLatencyP95 = Math.round(p95(respVals));
       }
-
-      if (Array.isArray(ilTurns) && ilTurns.length > 0) {
-        // Stops slower than INTERRUPT_ACTION_MAX_MS are the agent finishing
-        // naturally, not reacting — exclude them from reaction latency stats.
-        // Always use interrupt_action_ms (actual stop); the diagnostic
-        // estimator is never consulted. reaction_time_ms covers pre-v0.2.1.
-        const vals = ilTurns.map((t: Record<string, unknown>) => (t.interrupt_action_ms ?? t.reaction_time_ms) as number).filter((v: number) => v != null && v >= 0 && v <= INTERRUPT_ACTION_MAX_MS);
-        if (vals.length > 0) {
-          results.interruptLatencyMedian = Math.round(median(vals));
-          results.interruptLatencySd = Math.round(sd(vals));
-          results.interruptLatencyP95 = Math.round(p95(vals));
-        }
+      if (intVals.length > 0) {
+        results.interruptLatencyMedian = Math.round(median(intVals));
+        results.interruptLatencySd = Math.round(sd(intVals));
+        results.interruptLatencyP95 = Math.round(p95(intVals));
       }
 
       // --- Fallback: p50/p95 from summary (if turn_level missing) ---
