@@ -621,6 +621,22 @@ describe("computePerCaseAndRates", () => {
     expect(c.response.turn_count).toBe(9);           // raw count stays truthful
   });
 
+  it("threshold: stops slower than INTERRUPT_ACTION_MAX_MS are not reactions (real chunk_002 data)", () => {
+    // Real job-20471 INT_FALSE chunk_002: turns 3 and 5 "stopped" 11.5s/9.3s
+    // after the sound — the agent finishing its answer, not reacting.
+    const metrics = {
+      interruption_metrics: { latency: { turn_level: [1164, 11564, 9268, 1344, 1100]
+        .map((ms, i) => ({ turn_index: i * 2 + 1, action_applicable: true, interrupt_action_ms: ms })) } },
+    };
+    const { rates, perCase } = computePerCaseAndRates([
+      entry(metrics, { caseId: "INT_FALSE", sampleCount: 5, hasInterruptPhase: true }),
+    ]);
+    const c = perCase.INT_FALSE as Record<string, any>;
+    expect(c.interruption.turn_count).toBe(3);       // 11564 & 9268 excluded
+    expect(c.interruption.median_ms).toBe(1164);     // median of 1100, 1164, 1344
+    expect(rates.false_interrupt_rate).toBeCloseTo(3 / 5);
+  });
+
   it("real job-20471 INT_FALSE data: agent stopping for coughs → false rate 1.0", () => {
     const metrics = {
       response_metrics: { latency: { turn_level: [1364, 1412, 1428, 1444, 1412]
