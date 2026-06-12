@@ -111,6 +111,14 @@ export default function ConsoleEvalJobDetail({ jobId }: { jobId: number }) {
   }
   const perCase = (rawData?.per_case ?? {}) as Record<string, CaseStats>;
   const pct = (v: number | null | undefined) => v == null ? "-" : `${Math.round(v * 100)}%`;
+  const fmtT = (v: unknown) => v == null ? "-" : `${Number(v).toFixed(1)}s`;
+
+  // Split interruptions into true vs false interrupts via each turn's case_id
+  // (annotated at merge time). Turns without case_id (single-file runs) are
+  // shown as true interrupts.
+  const falseCaseIds = new Set(Object.entries(perCase).filter(([, c]) => c.false_interrupt_case).map(([id]) => id));
+  const falseIntTurns = interruptTurns.filter(t => falseCaseIds.has(String(t.case_id)));
+  const trueIntTurns = interruptTurns.filter(t => !falseCaseIds.has(String(t.case_id)));
 
   // Find special artifact files
   const audioFiles = artifactFiles.filter(f => /\.(webm|wav|mp3|ogg)$/i.test(f.name) && f.size > 0);
@@ -269,22 +277,30 @@ export default function ConsoleEvalJobDetail({ jobId }: { jobId: number }) {
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b text-left text-muted-foreground">
-                    <th className="py-2 pr-4 font-medium">Case</th>
+                    <th className="py-2 pr-4 font-medium">Metric</th>
                     <th className="py-2 pr-4 font-medium text-right">Samples</th>
                     <th className="py-2 pr-4 font-medium text-right">Responses</th>
                     <th className="py-2 pr-4 font-medium text-right">Resp MED</th>
                     <th className="py-2 pr-4 font-medium text-right">Resp P95</th>
-                    <th className="py-2 pr-4 font-medium text-right">Reactions</th>
+                    <th className="py-2 pr-4 font-medium text-right" title="Samples where the agent stopped talking (within the reaction threshold)">Reactions</th>
                     <th className="py-2 pr-4 font-medium text-right">Int MED</th>
                     <th className="py-2 font-medium text-right">Int P95</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {Object.entries(perCase).map(([caseId, c]) => (
+                  {Object.entries(perCase)
+                    .map(([caseId, c]) => ({
+                      caseId,
+                      c,
+                      label: c.false_interrupt_case ? "False Int. ↓" : c.has_interrupt_phase ? "Interrupt" : "Response",
+                      order: c.false_interrupt_case ? 2 : c.has_interrupt_phase ? 1 : 0,
+                    }))
+                    .sort((a, b) => a.order - b.order || a.caseId.localeCompare(b.caseId))
+                    .map(({ caseId, c, label }) => (
                     <tr key={caseId} className="border-b last:border-0">
-                      <td className="py-2 pr-4 font-mono">
-                        {caseId}
-                        {c.false_interrupt_case && <Badge variant="secondary" className="ml-2 text-xs">false-int ↓</Badge>}
+                      <td className="py-2 pr-4">
+                        {label}
+                        <span className="ml-2 text-xs text-muted-foreground font-mono">{caseId}</span>
                       </td>
                       <td className="py-2 pr-4 text-right font-mono">{c.sample_count}</td>
                       <td className="py-2 pr-4 text-right font-mono">{c.response?.turn_count ?? "-"}</td>
@@ -357,16 +373,25 @@ export default function ConsoleEvalJobDetail({ jobId }: { jobId: number }) {
               <TableHeader>
                 <TableRow>
                   <TableHead>Turn</TableHead>
+                  <TableHead className="text-right">Start</TableHead>
+                  <TableHead className="text-right">End</TableHead>
                   <TableHead className="text-right">Latency (ms)</TableHead>
                   <TableHead>Type</TableHead>
+                  <TableHead>Transcript</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {turnLevel.map((turn, i) => (
                   <TableRow key={i}>
                     <TableCell className="font-mono">{String(turn.turn_index ?? i + 1)}</TableCell>
+                    <TableCell className="text-right font-mono">{fmtT(turn.turn_start)}</TableCell>
+                    <TableCell className="text-right font-mono">{fmtT(turn.turn_end)}</TableCell>
                     <TableCell className="text-right font-mono">{Math.round(Number(turn.latency_ms))}</TableCell>
                     <TableCell className="text-xs text-muted-foreground">{String(turn.response_kind ?? "")}</TableCell>
+                    <TableCell className="text-xs max-w-md">
+                      {turn.user_transcript != null && <p className="text-muted-foreground">U: {String(turn.user_transcript)}</p>}
+                      {turn.agent_transcript != null && <p>A: {String(turn.agent_transcript)}</p>}
+                    </TableCell>
                   </TableRow>
                 ))}
               </TableBody>
@@ -375,35 +400,47 @@ export default function ConsoleEvalJobDetail({ jobId }: { jobId: number }) {
         </Card>
       )}
 
-      {/* Interrupt Turn-Level Data */}
-      {interruptTurns.length > 0 && (
-        <Card>
+      {/* Interrupt / False Interrupt Turn-Level Data */}
+      {[
+        { title: "Interrupt Turn-Level Latency", turns: trueIntTurns, noun: "interruption" },
+        { title: "False Interrupt Turn-Level Latency", turns: falseIntTurns, noun: "false interrupt" },
+      ].filter(s => s.turns.length > 0).map(section => (
+        <Card key={section.title}>
           <CardHeader>
-            <CardTitle className="text-sm">Interrupt Turn-Level Latency</CardTitle>
-            <CardDescription>{interruptTurns.length} interruption{interruptTurns.length !== 1 ? "s" : ""}</CardDescription>
+            <CardTitle className="text-sm">{section.title}</CardTitle>
+            <CardDescription>{section.turns.length} {section.noun}{section.turns.length !== 1 ? "s" : ""}</CardDescription>
           </CardHeader>
           <CardContent>
             <Table>
               <TableHeader>
                 <TableRow>
                   <TableHead>Turn</TableHead>
+                  <TableHead className="text-right">Start</TableHead>
+                  <TableHead className="text-right">End</TableHead>
                   <TableHead className="text-right">Reaction (ms)</TableHead>
                   <TableHead>Kind</TableHead>
+                  <TableHead>Transcript</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {interruptTurns.map((turn, i) => (
+                {section.turns.map((turn, i) => (
                   <TableRow key={i}>
                     <TableCell className="font-mono">{String(turn.turn_index ?? i + 1)}</TableCell>
-                    <TableCell className="text-right font-mono">{Math.round(Number(turn.interrupt_action_ms ?? turn.reaction_time_ms_diagnostic ?? turn.latency_ms))}</TableCell>
+                    <TableCell className="text-right font-mono">{fmtT(turn.turn_start)}</TableCell>
+                    <TableCell className="text-right font-mono">{fmtT(turn.turn_end)}</TableCell>
+                    <TableCell className="text-right font-mono">{Math.round(Number(turn.interrupt_action_ms ?? turn.reaction_time_ms ?? 0))}</TableCell>
                     <TableCell className="text-xs text-muted-foreground">{String(turn.interruption_kind ?? "")}</TableCell>
+                    <TableCell className="text-xs max-w-md">
+                      {turn.user_transcript != null && <p className="text-muted-foreground">U: {String(turn.user_transcript)}</p>}
+                      {turn.agent_transcript != null && <p>A: {String(turn.agent_transcript)}</p>}
+                    </TableCell>
                   </TableRow>
                 ))}
               </TableBody>
             </Table>
           </CardContent>
         </Card>
-      )}
+      ))}
 
       {/* Artifact Files */}
       {artifactFiles.length > 0 && (

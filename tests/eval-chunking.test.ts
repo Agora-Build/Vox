@@ -25,6 +25,8 @@ import {
   resolveCaseAnalysis,
   isFalseInterruptCase,
   computePerCaseAndRates,
+  enrichMetricsWithTurns,
+  parseTurnsJson,
   buildChunkYaml,
   mergeChunkMetrics,
   composeScenarioYaml,
@@ -600,6 +602,73 @@ describe("computePerCaseAndRates", () => {
     expect(rates.response_rate).toBeCloseTo(2 / 5);
   });
 
+  it("reads v0.2.1 interruption turns (interrupt_action_ms, no reaction_time_ms)", () => {
+    // Real v0.2.1 lab turn shape from a live run (job 20471, INT_BASIC chunk_001)
+    const metrics = {
+      response_metrics: { latency: { turn_level: [1364, 1428, 1348, 1428, 1460, 1380, 1524, 1556, 1636]
+        .map((ms, i) => ({ turn_index: i + 1, latency_ms: ms, is_greeting: false })) } },
+      interruption_metrics: { latency: { turn_level: [1084, 1100, 1100, 1084, 1068]
+        .map((ms, i) => ({ turn_index: i * 2 + 1, interruption_kind: 'user_interrupt_agent', action_applicable: true, interrupt_action_ms: ms, reaction_time_ms_diagnostic: ms })) } },
+    };
+    const { rates, perCase } = computePerCaseAndRates([
+      entry(metrics, { caseId: "INT_BASIC", sampleCount: 5, hasInterruptPhase: true }),
+    ]);
+    const c = perCase.INT_BASIC as Record<string, any>;
+    expect(c.interruption.turn_count).toBe(5);
+    expect(c.interruption.median_ms).toBe(1084);
+    expect(rates.interrupt_rate).toBe(1);            // 5 reactions / 5 samples
+    // 9 response turns for 5 samples (interrupted + post-material answers) —
+    // capped per case, not warned: every sample was answered.
+    expect(rates.response_rate).toBe(1);
+    expect(c.response.turn_count).toBe(9);           // raw count stays truthful
+  });
+
+  it("threshold: stops slower than INTERRUPT_ACTION_MAX_MS are not reactions (real chunk_002 data)", () => {
+    // Real job-20471 INT_FALSE chunk_002: turns 3 and 5 "stopped" 11.5s/9.3s
+    // after the sound — the agent finishing its answer, not reacting.
+    const metrics = {
+      interruption_metrics: { latency: { turn_level: [1164, 11564, 9268, 1344, 1100]
+        .map((ms, i) => ({ turn_index: i * 2 + 1, action_applicable: true, interrupt_action_ms: ms })) } },
+    };
+    const { rates, perCase } = computePerCaseAndRates([
+      entry(metrics, { caseId: "INT_FALSE", sampleCount: 5, hasInterruptPhase: true }),
+    ]);
+    const c = perCase.INT_FALSE as Record<string, any>;
+    expect(c.interruption.turn_count).toBe(3);       // 11564 & 9268 excluded
+    expect(c.interruption.median_ms).toBe(1164);     // median of 1100, 1164, 1344
+    expect(rates.false_interrupt_rate).toBeCloseTo(3 / 5);
+  });
+
+  it("always uses interrupt_action_ms — the diagnostic estimator is never consulted", () => {
+    // Real job-20471 chunk_002 turn 3: full stop at 11564ms but the diagnostic
+    // estimator says 1916ms. The agent finished talking — not a false interrupt.
+    const metrics = { interruption_metrics: { latency: { turn_level: [
+      { turn_index: 3, action_applicable: true, interrupt_action_ms: 11564, reaction_time_ms_diagnostic: 1916 },
+      { turn_index: 1, action_applicable: true, interrupt_action_ms: 1164, reaction_time_ms_diagnostic: 1164 },
+      // diagnostic-only turn (no action recorded): not a reaction at all
+      { turn_index: 5, action_applicable: true, reaction_time_ms_diagnostic: 1200 },
+    ] } } };
+    const { rates, perCase } = computePerCaseAndRates([
+      entry(metrics, { caseId: "INT_FALSE", sampleCount: 5, hasInterruptPhase: true }),
+    ]);
+    expect((perCase.INT_FALSE as Record<string, any>).interruption.turn_count).toBe(1);
+    expect(rates.false_interrupt_rate).toBeCloseTo(1 / 5);
+  });
+
+  it("real job-20471 INT_FALSE data: agent stopping for coughs → false rate 1.0", () => {
+    const metrics = {
+      response_metrics: { latency: { turn_level: [1364, 1412, 1428, 1444, 1412]
+        .map((ms, i) => ({ turn_index: i + 1, latency_ms: ms, response_kind: 'interrupted_response' })) } },
+      interruption_metrics: { latency: { turn_level: [1084, 1068, 1404, 1308, 2156]
+        .map((ms, i) => ({ turn_index: i * 2 + 1, action_applicable: true, interrupt_action_ms: ms })) } },
+    };
+    const { rates, perCase } = computePerCaseAndRates([
+      entry(metrics, { caseId: "INT_FALSE", sampleCount: 5, hasInterruptPhase: true }),
+    ]);
+    expect(rates.false_interrupt_rate).toBe(1);      // reacted to every non-semantic sound
+    expect((perCase.INT_FALSE as Record<string, any>).interruption.median_ms).toBe(1308);
+  });
+
   it("excludes is_greeting turns from response counts (real aeval turn shape)", () => {
     // Field shape confirmed against a real metrics.json: turns carry
     // turn_index, user_end_time, agent_start_time, latency_ms, is_barge_in, is_greeting.
@@ -852,6 +921,69 @@ describe("end-to-end: full chunking pipeline", () => {
 });
 
 // ---------------------------------------------------------------------------
+// enrichMetricsWithTurns — join turns.json (boundaries + STT) onto metrics
+// ---------------------------------------------------------------------------
+
+describe("parseTurnsJson", () => {
+  it("tolerates bare Infinity/NaN value tokens (real aeval output)", () => {
+    const raw = '[{"index": 0, "start": 0.0, "end": 6.1, "metrics": {"turn_boundary": Infinity, "x": NaN, "y": -Infinity}, "agent_segments": [{"start": 1.5, "end": 2.9, "text": "to Infinity and beyond"}]}]';
+    const parsed = parseTurnsJson(raw)!;
+    expect(parsed).toHaveLength(1);
+    expect((parsed[0] as Record<string, any>).metrics.turn_boundary).toBeNull();
+    expect(parsed[0].agent_segments![0].text).toBe("to Infinity and beyond"); // strings untouched
+  });
+
+  it("returns null for garbage or non-array input", () => {
+    expect(parseTurnsJson("not json")).toBeNull();
+    expect(parseTurnsJson('{"a": 1}')).toBeNull();
+  });
+});
+
+describe("enrichMetricsWithTurns", () => {
+  it("attaches turn boundaries and transcripts by turn_index (real shapes)", () => {
+    const metrics = {
+      response_metrics: { latency: { turn_level: [
+        { turn_index: 1, latency_ms: 1364, agent_start_time: 14.242 },
+        { turn_index: 2, latency_ms: 1428 },
+      ] } },
+      interruption_metrics: { latency: { turn_level: [
+        { turn_index: 1, interrupt_action_ms: 1084 },
+      ] } },
+    };
+    // Real turns.json shape (job 20471): index 0 = greeting, then samples.
+    const turns = [
+      { index: 0, start: 0.0, end: 6.13, user_segments: [], agent_segments: [{ start: 1.5, end: 2.9, text: "How can I help you today?" }] },
+      { index: 1, start: 5.881, end: 17.726,
+        user_segments: [{ start: 6.0, end: 13.0, text: "Please talk about some ways" }],
+        agent_segments: [{ start: 14.242, end: 15.486, text: "Oh, let me think." }, { start: 16.386, end: 16.798, text: "On!" }] },
+      // index 2 intentionally missing → turn 2 untouched
+    ];
+    enrichMetricsWithTurns(metrics, turns);
+
+    const r1 = metrics.response_metrics.latency.turn_level[0] as Record<string, unknown>;
+    expect(r1.turn_start).toBe(5.881);
+    expect(r1.turn_end).toBe(17.726);
+    expect(r1.user_transcript).toBe("Please talk about some ways");
+    expect(r1.agent_transcript).toBe("Oh, let me think. On!"); // segments joined
+    const i1 = metrics.interruption_metrics.latency.turn_level[0] as Record<string, unknown>;
+    expect(i1.turn_start).toBe(5.881);                          // same turn, both families
+    expect(i1.agent_transcript).toBe("Oh, let me think. On!");
+    const r2 = metrics.response_metrics.latency.turn_level[1] as Record<string, unknown>;
+    expect(r2.turn_start).toBeUndefined();                      // no matching index → untouched
+  });
+
+  it("enriched fields survive mergeChunkMetrics", () => {
+    const metrics = { response_metrics: { latency: { turn_level: [{ turn_index: 1, latency_ms: 900 }] } } };
+    enrichMetricsWithTurns(metrics, [{ index: 1, start: 3.0, end: 9.0, agent_segments: [{ start: 4, end: 8, text: "hi" }] }]);
+    const merged = mergeChunkMetrics([entry(metrics, { caseId: "RSP_BASIC" })]);
+    const t = rTurns(merged)[0];
+    expect(t.turn_start).toBe(3.0);
+    expect(t.agent_transcript).toBe("hi");
+    expect(t.case_id).toBe("RSP_BASIC");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // composeScenarioYaml
 // ---------------------------------------------------------------------------
 
@@ -894,7 +1026,7 @@ describe("composeScenarioYaml", () => {
 
 describe("chunk-vs-compose decision", () => {
   // Mirrors the daemon's `canChunk` predicate in vox_eval_agentd/vox-agentd.ts
-  // (executeAevalWithChunking, ~line 530) — keep in sync; it is a private method
+  // (executeAevalWithChunking, ~line 548) — keep in sync; it is a private method
   // and cannot be imported:
   //   samples.length > 0 && prefixSteps.length === 0 && suffixSteps.length === 0
   const canChunk = (steps: ScenarioStep[]) => {

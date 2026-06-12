@@ -42,6 +42,7 @@ import {
   type SampleGroup,
   type ChunkGroup,
   type ChunkMetricsEntry,
+  INTERRUPT_ACTION_MAX_MS,
   sanitizeForFilename,
   extractSampleGroups,
   groupSamplesByChunk,
@@ -50,6 +51,8 @@ import {
   composeScenarioYaml,
   mergeChunkMetrics,
   computePerCaseAndRates,
+  enrichMetricsWithTurns,
+  parseTurnsJson,
 } from './chunking';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -818,6 +821,15 @@ class VoxEvalAgentDaemon {
       if (fs.existsSync(candidate)) {
         const results = this.tryParseMetricsJson(candidate);
         if (results && (results.responseLatencyMedian > 0 || results.interruptLatencyMedian > 0)) {
+          // Best-effort: join turn boundaries + STT transcripts from the
+          // sibling turns.json onto the turn-level data.
+          try {
+            const turnsPath = path.join(path.dirname(candidate), 'turns.json');
+            if (results.rawData && fs.existsSync(turnsPath)) {
+              const turns = parseTurnsJson(fs.readFileSync(turnsPath, 'utf-8'));
+              if (turns) enrichMetricsWithTurns(results.rawData as Record<string, unknown>, turns);
+            }
+          } catch { /* transcripts are optional */ }
           console.log(`[Daemon] Parsed aeval results (${path.basename(candidate)}):`, results);
           return results;
         }
@@ -843,24 +855,17 @@ class VoxEvalAgentDaemon {
   /**
    * Parse metrics.json (json_exporter output) — has computed latency metrics.
    *
-   * aeval v0.1.x outputs this structure:
-   *   {
-   *     "response_metrics": {
-   *       "latency": {
-   *         "summary": { "avg_latency_ms": N, "p50_latency_ms": N, ... },
-   *         "turn_level": [...]
-   *       }
-   *     },
-   *     "interruption_metrics": {
-   *       "latency": { "summary": { "avg_reaction_time_ms": N, ... } },
-   *       "post_interruption_latency": { "summary": { "avg_latency_ms": N } }
-   *     },
-   *     "aggregated_summary": {
-   *       "avg_response_latency_ms": N,
-   *       "avg_interruption_reaction_ms": N,
-   *       "avg_post_interruption_latency_ms": N
-   *     }
-   *   }
+   * Structure (v0.2.1 names; pre-v0.2.1 legacy names in parentheses):
+   *   response_metrics.latency:
+   *     summary:    { p50_latency_ms, p95_latency_ms, avg_latency_ms, ... }
+   *     turn_level: [{ latency_ms, is_greeting, is_barge_in, ... }]
+   *   interruption_metrics.latency:
+   *     summary:    { p50_interrupt_action_ms (p50_reaction_time_ms), ... }
+   *     turn_level: [{ interrupt_action_ms (reaction_time_ms),
+   *                    reaction_time_ms_diagnostic — never consulted, ... }]
+   *   aggregated_summary:
+   *     { avg_response_latency_ms,
+   *       avg_interruption_action_ms (avg_interruption_reaction_ms) }
    */
   private tryParseMetricsJson(filePath: string): EvalResult | null {
     try {
@@ -928,7 +933,11 @@ class VoxEvalAgentDaemon {
       }
 
       if (Array.isArray(ilTurns) && ilTurns.length > 0) {
-        const vals = ilTurns.map((t: Record<string, unknown>) => (t.reaction_time_ms ?? t.reaction_time_ms_diagnostic ?? t.interrupt_action_ms ?? t.latency_ms) as number).filter((v: number) => v != null && v >= 0);
+        // Stops slower than INTERRUPT_ACTION_MAX_MS are the agent finishing
+        // naturally, not reacting — exclude them from reaction latency stats.
+        // Always use interrupt_action_ms (actual stop); the diagnostic
+        // estimator is never consulted. reaction_time_ms covers pre-v0.2.1.
+        const vals = ilTurns.map((t: Record<string, unknown>) => (t.interrupt_action_ms ?? t.reaction_time_ms) as number).filter((v: number) => v != null && v >= 0 && v <= INTERRUPT_ACTION_MAX_MS);
         if (vals.length > 0) {
           results.interruptLatencyMedian = Math.round(median(vals));
           results.interruptLatencySd = Math.round(sd(vals));
@@ -948,13 +957,16 @@ class VoxEvalAgentDaemon {
         }
       }
       if (results.interruptLatencyMedian === 0 && ilSummary && typeof ilSummary === 'object') {
-        if (ilSummary.p50_reaction_time_ms != null) {
-          results.interruptLatencyMedian = Math.round(ilSummary.p50_reaction_time_ms);
+        // v0.2.1 name first; legacy name for pre-v0.2.1 output.
+        const p50 = ilSummary.p50_interrupt_action_ms ?? ilSummary.p50_reaction_time_ms;
+        if (p50 != null) {
+          results.interruptLatencyMedian = Math.round(p50);
         }
       }
       if (results.interruptLatencyP95 === 0 && ilSummary && typeof ilSummary === 'object') {
-        if (ilSummary.p95_reaction_time_ms != null) {
-          results.interruptLatencyP95 = Math.round(ilSummary.p95_reaction_time_ms);
+        const p95v = ilSummary.p95_interrupt_action_ms ?? ilSummary.p95_reaction_time_ms;
+        if (p95v != null) {
+          results.interruptLatencyP95 = Math.round(p95v);
         }
       }
 
@@ -965,8 +977,9 @@ class VoxEvalAgentDaemon {
         }
       }
       if (results.interruptLatencyMedian === 0 && agg && typeof agg === 'object') {
-        if (agg.avg_interruption_reaction_ms != null) {
-          results.interruptLatencyMedian = Math.round(agg.avg_interruption_reaction_ms);
+        const avgAct = agg.avg_interruption_action_ms ?? agg.avg_interruption_reaction_ms;
+        if (avgAct != null) {
+          results.interruptLatencyMedian = Math.round(avgAct);
         }
       }
 
