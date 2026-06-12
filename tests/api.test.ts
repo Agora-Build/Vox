@@ -1141,6 +1141,9 @@ describe('Vox API Tests', () => {
             responseLatencySd: 150,
             interruptLatencyMedian: 1100,
             interruptLatencySd: 120,
+            responseRate: 0.9,
+            interruptRate: 0.8,
+            falseInterruptRate: 0.1,
             networkResilience: 90,
             naturalness: 4.0,
             noiseReduction: 95,
@@ -1161,6 +1164,9 @@ describe('Vox API Tests', () => {
       expect(result).toBeDefined();
       expect(result.responseLatencyMedian).toBe(1200);
       expect(result.naturalness).toBe(4.0);
+      expect(result.responseRate).toBeCloseTo(0.9);
+      expect(result.interruptRate).toBeCloseTo(0.8);
+      expect(result.falseInterruptRate).toBeCloseTo(0.1);
     });
 
     it('should cleanup job flow test resources', async () => {

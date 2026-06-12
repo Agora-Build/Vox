@@ -17,10 +17,14 @@ import {
   type ScenarioStep,
   type SampleGroup,
   type ParsedScenario,
+  type ChunkMetricsEntry,
   sanitizeForFilename,
   extractSampleGroups,
   groupSamplesByChunk,
+  groupHasInterruptPhase,
   resolveCaseAnalysis,
+  isFalseInterruptCase,
+  computePerCaseAndRates,
   buildChunkYaml,
   mergeChunkMetrics,
   composeScenarioYaml,
@@ -419,22 +423,26 @@ describe("buildChunkYaml", () => {
 // mergeChunkMetrics
 // ---------------------------------------------------------------------------
 
-describe("mergeChunkMetrics", () => {
-  function respChunk(latencies: number[]) {
-    return { response_metrics: { latency: { turn_level: latencies.map((ms, i) => ({ turn_index: i + 1, latency_ms: ms })) } } };
-  }
-  function intChunk(latencies: number[]) {
-    return { interruption_metrics: { latency: { turn_level: latencies.map((ms, i) => ({ turn_index: i + 1, reaction_time_ms: ms })) } } };
-  }
-  function rTurns(m: Record<string, unknown>) {
-    return ((m.response_metrics as Record<string, unknown>).latency as { turn_level: Record<string, unknown>[] }).turn_level;
-  }
-  function iTurns(m: Record<string, unknown>) {
-    return ((m.interruption_metrics as Record<string, unknown>).latency as { turn_level: Record<string, unknown>[] }).turn_level;
-  }
+function respChunk(latencies: number[]) {
+  return { response_metrics: { latency: { turn_level: latencies.map((ms, i) => ({ turn_index: i + 1, latency_ms: ms })) } } };
+}
+function intChunk(latencies: number[]) {
+  return { interruption_metrics: { latency: { turn_level: latencies.map((ms, i) => ({ turn_index: i + 1, reaction_time_ms: ms })) } } };
+}
+function rTurns(m: Record<string, unknown>) {
+  return ((m.response_metrics as Record<string, unknown>).latency as { turn_level: Record<string, unknown>[] }).turn_level;
+}
+function iTurns(m: Record<string, unknown>) {
+  return ((m.interruption_metrics as Record<string, unknown>).latency as { turn_level: Record<string, unknown>[] }).turn_level;
+}
+/** Wrap raw metrics into a ChunkMetricsEntry with overridable meta. */
+function entry(metrics: Record<string, unknown>, over: Partial<ChunkMetricsEntry> = {}): ChunkMetricsEntry {
+  return { caseId: "RSP", chunkId: "chunk_001", sampleCount: 5, hasInterruptPhase: false, metrics, ...over };
+}
 
+describe("mergeChunkMetrics", () => {
   it("concatenates and re-indexes response turns", () => {
-    const merged = mergeChunkMetrics([respChunk([500, 600]), respChunk([700, 800])]);
+    const merged = mergeChunkMetrics([entry(respChunk([500, 600])), entry(respChunk([700, 800]), { chunkId: "chunk_002" })]);
     const turns = rTurns(merged);
     expect(turns).toHaveLength(4);
     expect(turns[0].turn_index).toBe(1);
@@ -443,8 +451,17 @@ describe("mergeChunkMetrics", () => {
     expect(turns[3].latency_ms).toBe(800);
   });
 
+  it("annotates every merged turn with its case_id", () => {
+    const merged = mergeChunkMetrics([
+      entry(respChunk([500]), { caseId: "RSP_BASIC" }),
+      entry({ ...respChunk([600]), ...intChunk([200]) }, { caseId: "INT_BASIC", hasInterruptPhase: true }),
+    ]);
+    expect(rTurns(merged).map(t => t.case_id)).toEqual(["RSP_BASIC", "INT_BASIC"]);
+    expect(iTurns(merged)[0].case_id).toBe("INT_BASIC");
+  });
+
   it("concatenates interrupt turns", () => {
-    const merged = mergeChunkMetrics([intChunk([300]), intChunk([400])]);
+    const merged = mergeChunkMetrics([entry(intChunk([300])), entry(intChunk([400]), { chunkId: "chunk_002" })]);
     const turns = iTurns(merged);
     expect(turns).toHaveLength(2);
     expect(turns[0].reaction_time_ms).toBe(300);
@@ -452,14 +469,14 @@ describe("mergeChunkMetrics", () => {
   });
 
   it("handles chunks with no metrics", () => {
-    const merged = mergeChunkMetrics([{}, {}]);
+    const merged = mergeChunkMetrics([entry({}), entry({}, { chunkId: "chunk_002" })]);
     expect(rTurns(merged)).toHaveLength(0);
     expect(iTurns(merged)).toHaveLength(0);
     expect(merged._merged_from_chunks).toBe(2);
   });
 
   it("handles single chunk", () => {
-    const merged = mergeChunkMetrics([respChunk([500])]);
+    const merged = mergeChunkMetrics([entry(respChunk([500]))]);
     expect(rTurns(merged)).toHaveLength(1);
     expect(merged._merged_from_chunks).toBe(1);
   });
@@ -467,7 +484,7 @@ describe("mergeChunkMetrics", () => {
   it("handles mixed response + interrupt across chunks", () => {
     const c1 = { ...respChunk([500]), ...intChunk([200]) };
     const c2 = respChunk([600]);
-    const merged = mergeChunkMetrics([c1, c2]);
+    const merged = mergeChunkMetrics([entry(c1), entry(c2, { chunkId: "chunk_002" })]);
     expect(rTurns(merged)).toHaveLength(2);
     expect(iTurns(merged)).toHaveLength(1);
   });
@@ -475,7 +492,7 @@ describe("mergeChunkMetrics", () => {
   it("preserves per-family summary when a family has no turn-level data", () => {
     const c1 = { response_metrics: { latency: { turn_level: [{ latency_ms: 500 }] } } };
     const c2 = { interruption_metrics: { latency: { summary: { p50_reaction_time_ms: 300, p95_reaction_time_ms: 450 } } } };
-    const merged = mergeChunkMetrics([c1, c2]);
+    const merged = mergeChunkMetrics([entry(c1), entry(c2, { chunkId: "chunk_002" })]);
     expect(rTurns(merged)).toHaveLength(1);
     expect(iTurns(merged)).toHaveLength(0);
     const iSummary = ((merged.interruption_metrics as Record<string, unknown>).latency as Record<string, unknown>).summary as Record<string, unknown>;
@@ -484,11 +501,109 @@ describe("mergeChunkMetrics", () => {
 
   it("preserves aggregated_summary and scalar metrics", () => {
     const c1 = { response_metrics: { latency: { turn_level: [{ latency_ms: 500 }] } }, aggregated_summary: { avg_response_latency_ms: 510 }, network_resilience: 88, naturalness: 4.1, noise_reduction: 92 };
-    const merged = mergeChunkMetrics([c1]);
+    const merged = mergeChunkMetrics([entry(c1)]);
     expect((merged.aggregated_summary as Record<string, unknown>).avg_response_latency_ms).toBe(510);
     expect(merged.network_resilience).toBe(88);
     expect(merged.naturalness).toBe(4.1);
     expect(merged.noise_reduction).toBe(92);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// computePerCaseAndRates + case classification
+// ---------------------------------------------------------------------------
+
+describe("isFalseInterruptCase", () => {
+  it("matches FALSE as a segment", () => {
+    expect(isFalseInterruptCase("INT_FALSE")).toBe(true);
+    expect(isFalseInterruptCase("FALSE")).toBe(true);
+    expect(isFalseInterruptCase("FALSE_START")).toBe(true);
+    expect(isFalseInterruptCase("int_false")).toBe(true);
+  });
+  it("does not match other cases", () => {
+    expect(isFalseInterruptCase("RSP_BASIC")).toBe(false);
+    expect(isFalseInterruptCase("INT_BASIC")).toBe(false);
+    expect(isFalseInterruptCase("FALSEY")).toBe(false);
+  });
+});
+
+describe("groupHasInterruptPhase", () => {
+  it("true when a sample waits for speech start", () => {
+    expect(groupHasInterruptPhase({ caseId: "INT", chunkId: "chunk_001", samples: [
+      { steps: [{ type: "lab.trace" }, { type: "audio.play" }, { type: "audio.wait_for_speech_start" }] },
+    ] })).toBe(true);
+  });
+  it("false for response-only samples", () => {
+    expect(groupHasInterruptPhase({ caseId: "RSP", chunkId: "chunk_001", samples: [
+      { steps: [{ type: "lab.trace" }, { type: "audio.play" }, { type: "audio.wait_for_speech" }] },
+    ] })).toBe(false);
+  });
+});
+
+describe("computePerCaseAndRates", () => {
+  // Realistic turn_taking shape: 3 cases × 2 chunks × 5 samples.
+  const entries: ChunkMetricsEntry[] = [
+    entry({ ...respChunk([500, 520, 540, 560, 580]) }, { caseId: "RSP_BASIC", chunkId: "chunk_001" }),
+    entry({ ...respChunk([510, 530, 550]) }, { caseId: "RSP_BASIC", chunkId: "chunk_002" }), // 2 samples got no response
+    entry({ ...respChunk([600, 610, 620, 630, 640]), ...intChunk([200, 210, 220, 230]) }, { caseId: "INT_BASIC", chunkId: "chunk_001", hasInterruptPhase: true }),
+    entry({ ...respChunk([650, 660, 670, 680, 690]), ...intChunk([240, 250, 260, 270, 280]) }, { caseId: "INT_BASIC", chunkId: "chunk_002", hasInterruptPhase: true }),
+    entry({ ...respChunk([700, 710, 720, 730, 740]), ...intChunk([300]) }, { caseId: "INT_FALSE", chunkId: "chunk_001", hasInterruptPhase: true }),
+    entry({ ...respChunk([750, 760, 770, 780, 790]), ...intChunk([310]) }, { caseId: "INT_FALSE", chunkId: "chunk_002", hasInterruptPhase: true }),
+  ];
+
+  it("computes true cross-chunk rates with daemon sample counts as denominators", () => {
+    const { rates } = computePerCaseAndRates(entries);
+    // responses: 8 + 10 + 10 = 28 of 30 samples
+    expect(rates.response_rate).toBeCloseTo(28 / 30);
+    // true interrupts: 9 reactions over INT_BASIC's 10 samples
+    expect(rates.interrupt_rate).toBeCloseTo(9 / 10);
+    // false interrupts: 2 reactions over INT_FALSE's 10 samples (lower = better)
+    expect(rates.false_interrupt_rate).toBeCloseTo(2 / 10);
+  });
+
+  it("emits per-case stats keyed by case_id", () => {
+    const { perCase } = computePerCaseAndRates(entries);
+    expect(Object.keys(perCase).sort()).toEqual(["INT_BASIC", "INT_FALSE", "RSP_BASIC"]);
+    const rsp = perCase.RSP_BASIC as Record<string, any>;
+    expect(rsp.sample_count).toBe(10);
+    expect(rsp.chunk_count).toBe(2);
+    expect(rsp.false_interrupt_case).toBe(false);
+    expect(rsp.response.turn_count).toBe(8);
+    expect(rsp.response.median_ms).toBe(535); // median of 8 values 500..580
+    const intF = perCase.INT_FALSE as Record<string, any>;
+    expect(intF.false_interrupt_case).toBe(true);
+    expect(intF.interruption.turn_count).toBe(2);
+  });
+
+  it("returns null rates when no case of that kind ran", () => {
+    const { rates } = computePerCaseAndRates([
+      entry(respChunk([500, 600]), { caseId: "RSP_BASIC", sampleCount: 2 }),
+    ]);
+    expect(rates.response_rate).toBeCloseTo(1);
+    expect(rates.interrupt_rate).toBeNull();
+    expect(rates.false_interrupt_rate).toBeNull();
+  });
+
+  it("returns all-null rates for empty input and clamps rates at 1", () => {
+    expect(computePerCaseAndRates([]).rates.response_rate).toBeNull();
+    const { rates } = computePerCaseAndRates([
+      entry(respChunk([500, 510, 520]), { sampleCount: 2 }), // more turns than samples (greeting picked up)
+    ]);
+    expect(rates.response_rate).toBe(1);
+  });
+
+  it("ignores negative (overlapping-speech) latencies in counts", () => {
+    const { rates, perCase } = computePerCaseAndRates([
+      entry(respChunk([500, -100, 600]), { sampleCount: 5 }),
+    ]);
+    expect((perCase.RSP as Record<string, any>).response.turn_count).toBe(2);
+    expect(rates.response_rate).toBeCloseTo(2 / 5);
+  });
+
+  it("merged output carries rates + per_case", () => {
+    const merged = mergeChunkMetrics(entries);
+    expect((merged.rates as Record<string, number>).response_rate).toBeCloseTo(28 / 30);
+    expect(Object.keys(merged.per_case as Record<string, unknown>)).toHaveLength(3);
   });
 });
 
@@ -621,21 +736,24 @@ describe("end-to-end: full chunking pipeline", () => {
   });
 
   it("merged metrics from 6 chunks compute sane MED/SD/P95", () => {
-    const chunkMetrics: Record<string, unknown>[] = [];
+    const chunkEntries: ChunkMetricsEntry[] = [];
+    let n = 0;
     for (const lat of [[400, 450, 500, 550, 600], [420, 470, 520, 570, 620]]) {
-      chunkMetrics.push({ response_metrics: { latency: { turn_level: lat.map((ms, i) => ({ turn_index: i + 1, latency_ms: ms })) } } });
+      chunkEntries.push(entry({ response_metrics: { latency: { turn_level: lat.map((ms, i) => ({ turn_index: i + 1, latency_ms: ms })) } } },
+        { caseId: "RSP_BASIC", chunkId: `chunk_${++n}` }));
     }
     for (const lat of [[200, 250, 300, 350, 400], [220, 270, 320, 370, 420]]) {
-      chunkMetrics.push({ interruption_metrics: { latency: { turn_level: lat.map((ms, i) => ({ turn_index: i + 1, reaction_time_ms: ms })) } } });
+      chunkEntries.push(entry({ interruption_metrics: { latency: { turn_level: lat.map((ms, i) => ({ turn_index: i + 1, reaction_time_ms: ms })) } } },
+        { caseId: "INT_BASIC", chunkId: `chunk_${++n}`, hasInterruptPhase: true }));
     }
     for (const vals of [[500, 550], [480, 530]]) {
-      chunkMetrics.push({
+      chunkEntries.push(entry({
         response_metrics: { latency: { turn_level: vals.map((ms, i) => ({ turn_index: i + 1, latency_ms: ms })) } },
         interruption_metrics: { latency: { turn_level: vals.map((ms, i) => ({ turn_index: i + 1, reaction_time_ms: ms - 200 })) } },
-      });
+      }, { caseId: "INT_FALSE", chunkId: `chunk_${++n}`, hasInterruptPhase: true }));
     }
 
-    const merged = mergeChunkMetrics(chunkMetrics);
+    const merged = mergeChunkMetrics(chunkEntries);
     const rt = ((merged.response_metrics as Record<string, unknown>).latency as { turn_level: Record<string, unknown>[] }).turn_level;
     const it = ((merged.interruption_metrics as Record<string, unknown>).latency as { turn_level: Record<string, unknown>[] }).turn_level;
     expect(rt).toHaveLength(14);
