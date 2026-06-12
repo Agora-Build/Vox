@@ -600,6 +600,21 @@ describe("computePerCaseAndRates", () => {
     expect(rates.response_rate).toBeCloseTo(2 / 5);
   });
 
+  it("excludes is_greeting turns from response counts (real aeval turn shape)", () => {
+    // Field shape confirmed against a real metrics.json: turns carry
+    // turn_index, user_end_time, agent_start_time, latency_ms, is_barge_in, is_greeting.
+    const metrics = { response_metrics: { latency: { turn_level: [
+      { turn_index: 1, latency_ms: 2500, is_barge_in: false, is_greeting: true },
+      { turn_index: 2, latency_ms: 900, is_barge_in: false, is_greeting: false },
+      { turn_index: 3, latency_ms: 1100, is_barge_in: true, is_greeting: false },
+    ] } } };
+    const { rates, perCase } = computePerCaseAndRates([entry(metrics, { sampleCount: 2 })]);
+    const rsp = (perCase.RSP as Record<string, any>).response;
+    expect(rsp.turn_count).toBe(2);          // greeting excluded; barge-in counts
+    expect(rsp.median_ms).toBe(1000);        // median of 900, 1100 — not skewed by greeting
+    expect(rates.response_rate).toBe(1);     // 2 answers / 2 samples
+  });
+
   it("merged output carries rates + per_case", () => {
     const merged = mergeChunkMetrics(entries);
     expect((merged.rates as Record<string, number>).response_rate).toBeCloseTo(28 / 30);
@@ -694,8 +709,14 @@ describe("end-to-end: full chunking pipeline", () => {
     const { samples } = extractSampleGroups(scenario.steps);
     const groups = groupSamplesByChunk(samples);
 
+    // RSP chunk_001 also picked up the agent greeting as a flagged turn —
+    // it must not count as an answered sample.
+    const rspChunk1 = respChunk([980, 1020, 1150, 875, -50]);
+    (rspChunk1.response_metrics.latency.turn_level as Record<string, unknown>[]).unshift(
+      { turn_index: 0, latency_ms: 3200, is_greeting: true },
+    );
     const perChunk: Record<string, Record<string, unknown>> = {
-      "RSP_BASIC/chunk_001": respChunk([980, 1020, 1150, 875, -50]),            // 4 valid of 5
+      "RSP_BASIC/chunk_001": rspChunk1,                                          // 4 valid of 5 + greeting
       "RSP_BASIC/chunk_002": respChunk([1100, 990, 1045, 1310]),                // 1 timed out
       "INT_BASIC/chunk_001": { ...respChunk([1500, 1600, 1480, 1550, 1700]), ...intChunk([620, 580, 710, 640, 690]) },
       "INT_BASIC/chunk_002": { ...respChunk([1450, 1520, 1610, 1390]), ...intChunk([600, 560, 720, 655]) }, // 1 sample dead
@@ -723,9 +744,11 @@ describe("end-to-end: full chunking pipeline", () => {
 
     // Merged latencies — what the daemon's parser recomputes for the columns.
     // Negative overlap turn is carried in turn_level but excluded from stats.
-    const respVals = rTurns(merged).map(t => t.latency_ms as number).filter(v => v >= 0);
+    const respVals = rTurns(merged)
+      .filter(t => t.is_greeting !== true)
+      .map(t => t.latency_ms as number).filter(v => v >= 0);
     const intVals = iTurns(merged).map(t => t.reaction_time_ms as number).filter(v => v >= 0);
-    expect(rTurns(merged)).toHaveLength(28); // 27 valid + 1 negative
+    expect(rTurns(merged)).toHaveLength(29); // 27 valid + 1 negative + 1 greeting
     expect(respVals).toHaveLength(27);
     expect(Math.round(median(respVals))).toBe(1340); // middle of the 27 valid values
     expect(Math.round(median(intVals))).toBe(630);          // 10 reactions: 9 true + 1 false
@@ -742,7 +765,7 @@ describe("end-to-end: full chunking pipeline", () => {
     expect(perCase.INT_FALSE.interruption.median_ms).toBe(450);
 
     // Every merged turn attributable to its case
-    expect(rTurns(merged).filter(t => t.case_id === "RSP_BASIC")).toHaveLength(9); // 8 valid + 1 negative
+    expect(rTurns(merged).filter(t => t.case_id === "RSP_BASIC")).toHaveLength(10); // 8 valid + negative + greeting
     expect(iTurns(merged).filter(t => t.case_id === "INT_FALSE")).toHaveLength(1);
   });
 
