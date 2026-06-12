@@ -111,6 +111,14 @@ export default function ConsoleEvalJobDetail({ jobId }: { jobId: number }) {
   }
   const perCase = (rawData?.per_case ?? {}) as Record<string, CaseStats>;
   const pct = (v: number | null | undefined) => v == null ? "-" : `${Math.round(v * 100)}%`;
+  const fmtT = (v: unknown) => v == null ? "-" : `${Number(v).toFixed(1)}s`;
+
+  // Split interruptions into true vs false interrupts via each turn's case_id
+  // (annotated at merge time). Turns without case_id (single-file runs) are
+  // shown as true interrupts.
+  const falseCaseIds = new Set(Object.entries(perCase).filter(([, c]) => c.false_interrupt_case).map(([id]) => id));
+  const falseIntTurns = interruptTurns.filter(t => falseCaseIds.has(String(t.case_id)));
+  const trueIntTurns = interruptTurns.filter(t => !falseCaseIds.has(String(t.case_id)));
 
   // Find special artifact files
   const audioFiles = artifactFiles.filter(f => /\.(webm|wav|mp3|ogg)$/i.test(f.name) && f.size > 0);
@@ -365,16 +373,25 @@ export default function ConsoleEvalJobDetail({ jobId }: { jobId: number }) {
               <TableHeader>
                 <TableRow>
                   <TableHead>Turn</TableHead>
+                  <TableHead className="text-right">Start</TableHead>
+                  <TableHead className="text-right">End</TableHead>
                   <TableHead className="text-right">Latency (ms)</TableHead>
                   <TableHead>Type</TableHead>
+                  <TableHead>Transcript</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {turnLevel.map((turn, i) => (
                   <TableRow key={i}>
                     <TableCell className="font-mono">{String(turn.turn_index ?? i + 1)}</TableCell>
+                    <TableCell className="text-right font-mono">{fmtT(turn.turn_start)}</TableCell>
+                    <TableCell className="text-right font-mono">{fmtT(turn.turn_end)}</TableCell>
                     <TableCell className="text-right font-mono">{Math.round(Number(turn.latency_ms))}</TableCell>
                     <TableCell className="text-xs text-muted-foreground">{String(turn.response_kind ?? "")}</TableCell>
+                    <TableCell className="text-xs max-w-md">
+                      {turn.user_transcript != null && <p className="text-muted-foreground">U: {String(turn.user_transcript)}</p>}
+                      {turn.agent_transcript != null && <p>A: {String(turn.agent_transcript)}</p>}
+                    </TableCell>
                   </TableRow>
                 ))}
               </TableBody>
@@ -383,35 +400,47 @@ export default function ConsoleEvalJobDetail({ jobId }: { jobId: number }) {
         </Card>
       )}
 
-      {/* Interrupt Turn-Level Data */}
-      {interruptTurns.length > 0 && (
-        <Card>
+      {/* Interrupt / False Interrupt Turn-Level Data */}
+      {[
+        { title: "Interrupt Turn-Level Latency", turns: trueIntTurns, noun: "interruption" },
+        { title: "False Interrupt Turn-Level Latency", turns: falseIntTurns, noun: "false interrupt" },
+      ].filter(s => s.turns.length > 0).map(section => (
+        <Card key={section.title}>
           <CardHeader>
-            <CardTitle className="text-sm">Interrupt Turn-Level Latency</CardTitle>
-            <CardDescription>{interruptTurns.length} interruption{interruptTurns.length !== 1 ? "s" : ""}</CardDescription>
+            <CardTitle className="text-sm">{section.title}</CardTitle>
+            <CardDescription>{section.turns.length} {section.noun}{section.turns.length !== 1 ? "s" : ""}</CardDescription>
           </CardHeader>
           <CardContent>
             <Table>
               <TableHeader>
                 <TableRow>
                   <TableHead>Turn</TableHead>
+                  <TableHead className="text-right">Start</TableHead>
+                  <TableHead className="text-right">End</TableHead>
                   <TableHead className="text-right">Reaction (ms)</TableHead>
                   <TableHead>Kind</TableHead>
+                  <TableHead>Transcript</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {interruptTurns.map((turn, i) => (
+                {section.turns.map((turn, i) => (
                   <TableRow key={i}>
                     <TableCell className="font-mono">{String(turn.turn_index ?? i + 1)}</TableCell>
-                    <TableCell className="text-right font-mono">{Math.round(Number(turn.interrupt_action_ms ?? turn.reaction_time_ms_diagnostic ?? turn.latency_ms))}</TableCell>
+                    <TableCell className="text-right font-mono">{fmtT(turn.turn_start)}</TableCell>
+                    <TableCell className="text-right font-mono">{fmtT(turn.turn_end)}</TableCell>
+                    <TableCell className="text-right font-mono">{Math.round(Number(turn.interrupt_action_ms ?? turn.reaction_time_ms ?? 0))}</TableCell>
                     <TableCell className="text-xs text-muted-foreground">{String(turn.interruption_kind ?? "")}</TableCell>
+                    <TableCell className="text-xs max-w-md">
+                      {turn.user_transcript != null && <p className="text-muted-foreground">U: {String(turn.user_transcript)}</p>}
+                      {turn.agent_transcript != null && <p>A: {String(turn.agent_transcript)}</p>}
+                    </TableCell>
                   </TableRow>
                 ))}
               </TableBody>
             </Table>
           </CardContent>
         </Card>
-      )}
+      ))}
 
       {/* Artifact Files */}
       {artifactFiles.length > 0 && (

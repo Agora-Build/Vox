@@ -51,6 +51,8 @@ import {
   composeScenarioYaml,
   mergeChunkMetrics,
   computePerCaseAndRates,
+  enrichMetricsWithTurns,
+  parseTurnsJson,
 } from './chunking';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -819,6 +821,15 @@ class VoxEvalAgentDaemon {
       if (fs.existsSync(candidate)) {
         const results = this.tryParseMetricsJson(candidate);
         if (results && (results.responseLatencyMedian > 0 || results.interruptLatencyMedian > 0)) {
+          // Best-effort: join turn boundaries + STT transcripts from the
+          // sibling turns.json onto the turn-level data.
+          try {
+            const turnsPath = path.join(path.dirname(candidate), 'turns.json');
+            if (results.rawData && fs.existsSync(turnsPath)) {
+              const turns = parseTurnsJson(fs.readFileSync(turnsPath, 'utf-8'));
+              if (turns) enrichMetricsWithTurns(results.rawData as Record<string, unknown>, turns);
+            }
+          } catch { /* transcripts are optional */ }
           console.log(`[Daemon] Parsed aeval results (${path.basename(candidate)}):`, results);
           return results;
         }

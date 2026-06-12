@@ -25,6 +25,8 @@ import {
   resolveCaseAnalysis,
   isFalseInterruptCase,
   computePerCaseAndRates,
+  enrichMetricsWithTurns,
+  parseTurnsJson,
   buildChunkYaml,
   mergeChunkMetrics,
   composeScenarioYaml,
@@ -915,6 +917,69 @@ describe("end-to-end: full chunking pipeline", () => {
     expect(Math.round(sd(rVals))).toBeGreaterThan(0);
     expect(Math.round(p95(rVals))).toBeGreaterThanOrEqual(Math.round(median(rVals)));
     expect(merged._merged_from_chunks).toBe(6);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// enrichMetricsWithTurns — join turns.json (boundaries + STT) onto metrics
+// ---------------------------------------------------------------------------
+
+describe("parseTurnsJson", () => {
+  it("tolerates bare Infinity/NaN value tokens (real aeval output)", () => {
+    const raw = '[{"index": 0, "start": 0.0, "end": 6.1, "metrics": {"turn_boundary": Infinity, "x": NaN, "y": -Infinity}, "agent_segments": [{"start": 1.5, "end": 2.9, "text": "to Infinity and beyond"}]}]';
+    const parsed = parseTurnsJson(raw)!;
+    expect(parsed).toHaveLength(1);
+    expect((parsed[0] as Record<string, any>).metrics.turn_boundary).toBeNull();
+    expect(parsed[0].agent_segments![0].text).toBe("to Infinity and beyond"); // strings untouched
+  });
+
+  it("returns null for garbage or non-array input", () => {
+    expect(parseTurnsJson("not json")).toBeNull();
+    expect(parseTurnsJson('{"a": 1}')).toBeNull();
+  });
+});
+
+describe("enrichMetricsWithTurns", () => {
+  it("attaches turn boundaries and transcripts by turn_index (real shapes)", () => {
+    const metrics = {
+      response_metrics: { latency: { turn_level: [
+        { turn_index: 1, latency_ms: 1364, agent_start_time: 14.242 },
+        { turn_index: 2, latency_ms: 1428 },
+      ] } },
+      interruption_metrics: { latency: { turn_level: [
+        { turn_index: 1, interrupt_action_ms: 1084 },
+      ] } },
+    };
+    // Real turns.json shape (job 20471): index 0 = greeting, then samples.
+    const turns = [
+      { index: 0, start: 0.0, end: 6.13, user_segments: [], agent_segments: [{ start: 1.5, end: 2.9, text: "How can I help you today?" }] },
+      { index: 1, start: 5.881, end: 17.726,
+        user_segments: [{ start: 6.0, end: 13.0, text: "Please talk about some ways" }],
+        agent_segments: [{ start: 14.242, end: 15.486, text: "Oh, let me think." }, { start: 16.386, end: 16.798, text: "On!" }] },
+      // index 2 intentionally missing → turn 2 untouched
+    ];
+    enrichMetricsWithTurns(metrics, turns);
+
+    const r1 = metrics.response_metrics.latency.turn_level[0] as Record<string, unknown>;
+    expect(r1.turn_start).toBe(5.881);
+    expect(r1.turn_end).toBe(17.726);
+    expect(r1.user_transcript).toBe("Please talk about some ways");
+    expect(r1.agent_transcript).toBe("Oh, let me think. On!"); // segments joined
+    const i1 = metrics.interruption_metrics.latency.turn_level[0] as Record<string, unknown>;
+    expect(i1.turn_start).toBe(5.881);                          // same turn, both families
+    expect(i1.agent_transcript).toBe("Oh, let me think. On!");
+    const r2 = metrics.response_metrics.latency.turn_level[1] as Record<string, unknown>;
+    expect(r2.turn_start).toBeUndefined();                      // no matching index → untouched
+  });
+
+  it("enriched fields survive mergeChunkMetrics", () => {
+    const metrics = { response_metrics: { latency: { turn_level: [{ turn_index: 1, latency_ms: 900 }] } } };
+    enrichMetricsWithTurns(metrics, [{ index: 1, start: 3.0, end: 9.0, agent_segments: [{ start: 4, end: 8, text: "hi" }] }]);
+    const merged = mergeChunkMetrics([entry(metrics, { caseId: "RSP_BASIC" })]);
+    const t = rTurns(merged)[0];
+    expect(t.turn_start).toBe(3.0);
+    expect(t.agent_transcript).toBe("hi");
+    expect(t.case_id).toBe("RSP_BASIC");
   });
 });
 
