@@ -133,7 +133,9 @@ const RESULT_DEFAULTS: EvalResult = {
 
 interface UploadTask {
   jobId: number;
-  outputDir: string;
+  // All aeval output dirs produced for this job — one per chunk for chunked
+  // runs, a single entry otherwise.
+  outputDirs: string[];
   scenarioName: string;
   retries: number;
 }
@@ -179,6 +181,9 @@ class VoxEvalAgentDaemon {
   private isUploading = false;
   private s3Warned = false;
   private lastOutputDir: string | null = null;
+  // Every output dir produced during the current job (one per chunk run), so
+  // artifact upload covers ALL chunks — not just the last one.
+  private jobOutputDirs: string[] = [];
   private healthServer: HttpServer | null = null;
   private startTime = Date.now();
   private currentJobId: number | null = null;
@@ -671,6 +676,9 @@ class VoxEvalAgentDaemon {
         const allOutput = stdout + stderr;
         try {
           this.lastOutputDir = this.resolveAevalOutputDir(scenarioConfig, allOutput);
+          if (this.lastOutputDir && !this.jobOutputDirs.includes(this.lastOutputDir)) {
+            this.jobOutputDirs.push(this.lastOutputDir);
+          }
         } catch { /* best effort */ }
 
         if (code !== 0) {
@@ -1412,11 +1420,17 @@ class VoxEvalAgentDaemon {
       return;
     }
 
-    if (!fs.existsSync(task.outputDir)) {
-      console.warn(`[Daemon] Output dir not found for job ${task.jobId}: ${task.outputDir} — files may have been lost after restart`);
+    const dirs = task.outputDirs.filter(d => fs.existsSync(d));
+    for (const missing of task.outputDirs.filter(d => !dirs.includes(d))) {
+      console.warn(`[Daemon] Output dir not found for job ${task.jobId}: ${missing} — files may have been lost after restart`);
+    }
+    if (dirs.length === 0) {
       await this.updateArtifactStatus(task.jobId, 'failed');
       return;
     }
+    // Single-dir jobs keep the historical flat layout; multi-chunk jobs
+    // namespace each chunk by its scenario dir name (vox-<case>-<chunk>-...).
+    const labelFor = (d: string) => dirs.length === 1 ? '' : path.basename(path.dirname(d));
 
     try {
       console.log(`[Daemon] Uploading artifacts for job ${task.jobId}...`);
@@ -1456,7 +1470,10 @@ class VoxEvalAgentDaemon {
         return files;
       };
 
-      const allFiles = scanDir(task.outputDir);
+      const allFiles: Array<{ filePath: string; relPath: string }> = [];
+      for (const dir of dirs) {
+        allFiles.push(...scanDir(dir, labelFor(dir)));
+      }
       for (const { filePath: fp, relPath } of allFiles) {
         try {
           const body = fs.readFileSync(fp);
@@ -1487,9 +1504,20 @@ class VoxEvalAgentDaemon {
         }
       }
 
-      // Create zip of entire output dir
+      // Create one zip covering every chunk's output dir. Single-dir jobs zip
+      // flat (historical layout); multi-chunk entries are prefixed with the
+      // chunk's scenario dir name so cases stay separable.
       const zipPath = path.join(os.tmpdir(), `vox-artifacts-${task.jobId}.zip`);
-      await this.createZip(task.outputDir, zipPath);
+      try { fs.unlinkSync(zipPath); } catch { /* stale zip from a retry */ }
+      if (dirs.length === 1) {
+        await this.createZip(dirs[0], zipPath);
+      } else {
+        for (const dir of dirs) {
+          // cwd two levels up so entries are <scenarioBase>/<session>/...
+          await this.zipAppend(path.dirname(path.dirname(dir)),
+            path.join(path.basename(path.dirname(dir)), path.basename(dir)), zipPath);
+        }
+      }
 
       if (fs.existsSync(zipPath)) {
         const zipBody = fs.readFileSync(zipPath);
@@ -1538,6 +1566,26 @@ class VoxEvalAgentDaemon {
         await this.updateArtifactStatus(task.jobId, 'failed');
       }
     }
+  }
+
+  /** Add `relPath` (relative to `cwd`) to the archive, creating it if absent. */
+  private zipAppend(cwd: string, relPath: string, outputPath: string): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const proc = spawn('zip', ['-r', '-q', outputPath, relPath], { cwd });
+      const timeout = setTimeout(() => {
+        proc.kill();
+        reject(new Error('zip timed out after 120s'));
+      }, 120000);
+      proc.on('close', (code) => {
+        clearTimeout(timeout);
+        if (code === 0) resolve();
+        else reject(new Error(`zip exited with code ${code}`));
+      });
+      proc.on('error', (err) => {
+        clearTimeout(timeout);
+        reject(err);
+      });
+    });
   }
 
   private createZip(sourceDir: string, outputPath: string): Promise<void> {
@@ -1678,6 +1726,7 @@ class VoxEvalAgentDaemon {
     this.isRunningJob = true;
     this.currentJobId = job.id;
     this.lastOutputDir = null;
+    this.jobOutputDirs = [];
     try {
       const results = await this.executeJob(job);
       await this.completeJob(job.id, results);
@@ -1703,11 +1752,12 @@ class VoxEvalAgentDaemon {
         }
       }
     } finally {
-      // Queue artifact upload (whether job succeeded or failed)
-      if (this.lastOutputDir) {
+      // Queue artifact upload (whether job succeeded or failed) — covers every
+      // chunk's output dir, not just the last run's.
+      if (this.jobOutputDirs.length > 0) {
         this.queueUpload({
           jobId: job.id,
-          outputDir: this.lastOutputDir,
+          outputDirs: [...this.jobOutputDirs],
           scenarioName: (job.config as Record<string, string>)?.scenario?.slice(0, 50) || 'unknown',
           retries: 0,
         });
