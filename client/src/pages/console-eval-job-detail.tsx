@@ -120,6 +120,13 @@ export default function ConsoleEvalJobDetail({ jobId }: { jobId: number }) {
   const falseIntTurns = interruptTurns.filter(t => falseCaseIds.has(String(t.case_id)));
   const trueIntTurns = interruptTurns.filter(t => !falseCaseIds.has(String(t.case_id)));
 
+  // The Response table shows only response-type cases: interrupt cases also
+  // emit response turns (the cut-off answer + the post-material answer), but
+  // those belong to the interrupt story, told in the tables below. Turns
+  // without case_id (single-file runs, old rows) are kept.
+  const interruptCaseIds = new Set(Object.entries(perCase).filter(([, c]) => c.has_interrupt_phase).map(([id]) => id));
+  const responseTurnsShown = turnLevel.filter(t => t.case_id == null || !interruptCaseIds.has(String(t.case_id)));
+
   // Find special artifact files
   const audioFiles = artifactFiles.filter(f => /\.(webm|wav|mp3|ogg)$/i.test(f.name) && f.size > 0);
   const screenshotFiles = artifactFiles.filter(f => /\.(png|jpg|jpeg)$/i.test(f.name));
@@ -362,11 +369,11 @@ export default function ConsoleEvalJobDetail({ jobId }: { jobId: number }) {
       )}
 
       {/* Response Turn-Level Data */}
-      {turnLevel.length > 0 && (
+      {responseTurnsShown.length > 0 && (
         <Card>
           <CardHeader>
             <CardTitle className="text-sm">Response Turn-Level Latency</CardTitle>
-            <CardDescription>{turnLevel.length} turn{turnLevel.length !== 1 ? "s" : ""}</CardDescription>
+            <CardDescription>{responseTurnsShown.length} turn{responseTurnsShown.length !== 1 ? "s" : ""}</CardDescription>
           </CardHeader>
           <CardContent>
             <Table>
@@ -381,7 +388,7 @@ export default function ConsoleEvalJobDetail({ jobId }: { jobId: number }) {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {turnLevel.map((turn, i) => (
+                {responseTurnsShown.map((turn, i) => (
                   <TableRow key={i}>
                     <TableCell className="font-mono">{String(turn.turn_index ?? i + 1)}</TableCell>
                     <TableCell className="text-right font-mono">{fmtT(turn.turn_start)}</TableCell>
