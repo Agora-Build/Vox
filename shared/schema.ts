@@ -296,6 +296,11 @@ export const evalResults = pgTable("eval_results", {
   interruptLatencySd: real("interrupt_latency_sd").notNull(),
   responseLatencyP95: integer("response_latency_p95").notNull(),
   interruptLatencyP95: integer("interrupt_latency_p95").notNull(),
+  // Cross-chunk rates (0..1); null when sample counts were unknown or no case
+  // of that kind ran. false_interrupt_rate: lower is better.
+  responseRate: real("response_rate"),
+  interruptRate: real("interrupt_rate"),
+  falseInterruptRate: real("false_interrupt_rate"),
   networkResilience: integer("network_resilience"),
   naturalness: real("naturalness"),
   noiseReduction: integer("noise_reduction"),

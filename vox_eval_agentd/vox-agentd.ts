@@ -40,12 +40,16 @@ import {
   type ParsedScenario,
   type ScenarioStep,
   type SampleGroup,
+  type ChunkGroup,
+  type ChunkMetricsEntry,
   sanitizeForFilename,
   extractSampleGroups,
   groupSamplesByChunk,
+  groupHasInterruptPhase,
   buildChunkYaml,
   composeScenarioYaml,
   mergeChunkMetrics,
+  computePerCaseAndRates,
 } from './chunking';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -77,6 +81,11 @@ interface EvalResult {
   interruptLatencyMedian: number;
   interruptLatencySd: number;
   interruptLatencyP95: number;
+  // Cross-chunk rates (0..1); null when sample counts are unknown (e.g.
+  // control.for_each bodies) or no case of that kind ran.
+  responseRate: number | null;
+  interruptRate: number | null;
+  falseInterruptRate: number | null;
   networkResilience: number;
   naturalness: number;
   noiseReduction: number;
@@ -118,6 +127,9 @@ const RESULT_DEFAULTS: EvalResult = {
   interruptLatencyMedian: 0,
   interruptLatencySd: 0,
   interruptLatencyP95: 0,
+  responseRate: null,
+  interruptRate: null,
+  falseInterruptRate: null,
   networkResilience: 85,
   naturalness: 3.5,
   noiseReduction: 90,
@@ -133,7 +145,9 @@ const RESULT_DEFAULTS: EvalResult = {
 
 interface UploadTask {
   jobId: number;
-  outputDir: string;
+  // All aeval output dirs produced for this job — one per chunk for chunked
+  // runs, a single entry otherwise.
+  outputDirs: string[];
   scenarioName: string;
   retries: number;
 }
@@ -179,6 +193,9 @@ class VoxEvalAgentDaemon {
   private isUploading = false;
   private s3Warned = false;
   private lastOutputDir: string | null = null;
+  // Every output dir produced during the current job (one per chunk run), so
+  // artifact upload covers ALL chunks — not just the last one.
+  private jobOutputDirs: string[] = [];
   private healthServer: HttpServer | null = null;
   private startTime = Date.now();
   private currentJobId: number | null = null;
@@ -549,7 +566,18 @@ class VoxEvalAgentDaemon {
     if (groups.length <= 1 && !hasPerCaseAnalysis) {
       const scenarioConfig = this.writeTempYaml(scenario, 'vox-scenario')!;
       tempFiles.push(scenarioConfig);
-      return this.runAeval(scenarioConfig);
+      const result = await this.runAeval(scenarioConfig);
+      // Rates need sample counts, which only exist for lab.trace bodies.
+      if (groups.length === 1 && result.rawData && typeof result.rawData === 'object') {
+        this.attachRates(result, [{
+          caseId: groups[0].caseId,
+          chunkId: groups[0].chunkId,
+          sampleCount: groups[0].samples.length,
+          hasInterruptPhase: groupHasInterruptPhase(groups[0]),
+          metrics: result.rawData as Record<string, unknown>,
+        }]);
+      }
+      return result;
     }
 
     return this.runChunked(parsed, prefixSteps, samples, suffixSteps, tempFiles);
@@ -570,7 +598,7 @@ class VoxEvalAgentDaemon {
     tempFiles: (string | null)[],
   ): Promise<EvalResult> {
     const groups = groupSamplesByChunk(samples);
-    const chunkFiles: { caseId: string; chunkId: string; file: string }[] = [];
+    const chunkFiles: { group: ChunkGroup; file: string }[] = [];
     for (const g of groups) {
       if (g.samples.length > CHUNK_SIZE) {
         console.warn(`[Daemon] Chunk ${g.caseId}/${g.chunkId} has ${g.samples.length} samples (recommended max ${CHUNK_SIZE}) — running as one file`);
@@ -581,7 +609,7 @@ class VoxEvalAgentDaemon {
       const safePrefix = `vox-${sanitizeForFilename(g.caseId)}-${sanitizeForFilename(g.chunkId)}`;
       const chunkFile = this.writeTempYaml(chunkYaml, safePrefix)!;
       tempFiles.push(chunkFile);
-      chunkFiles.push({ caseId: g.caseId, chunkId: g.chunkId, file: chunkFile });
+      chunkFiles.push({ group: g, file: chunkFile });
     }
 
     if (chunkFiles.length === 0) {
@@ -591,21 +619,26 @@ class VoxEvalAgentDaemon {
     const caseCount = new Set(groups.map(g => g.caseId)).size;
     console.log(`[Daemon] Split ${samples.length} samples (${caseCount} case(s)) into ${chunkFiles.length} file(s)`);
 
-    const chunkMetrics: Record<string, unknown>[] = [];
+    const entries: ChunkMetricsEntry[] = [];
     const chunkResults: EvalResult[] = [];
 
     for (let i = 0; i < chunkFiles.length; i++) {
-      const { caseId, chunkId, file } = chunkFiles[i];
-      console.log(`[Daemon] Running ${caseId}/${chunkId} (${i + 1}/${chunkFiles.length})`);
+      const { group: g, file } = chunkFiles[i];
+      console.log(`[Daemon] Running ${g.caseId}/${g.chunkId} (${i + 1}/${chunkFiles.length})`);
       const result = await this.runAeval(file);
       chunkResults.push(result);
-      if (result.rawData && typeof result.rawData === 'object') {
-        chunkMetrics.push(result.rawData as Record<string, unknown>);
-      }
+      entries.push({
+        caseId: g.caseId,
+        chunkId: g.chunkId,
+        sampleCount: g.samples.length,
+        hasInterruptPhase: groupHasInterruptPhase(g),
+        metrics: (result.rawData && typeof result.rawData === 'object')
+          ? result.rawData as Record<string, unknown> : {},
+      });
     }
 
     console.log(`[Daemon] All ${chunkFiles.length} chunks complete — merging results`);
-    const mergedRawData = mergeChunkMetrics(chunkMetrics);
+    const mergedRawData = mergeChunkMetrics(entries);
 
     // Recompute MED/SD/P95 from merged turn-level data using the existing parser.
     // Random name + 0600 (metrics may contain transcript data).
@@ -633,6 +666,21 @@ class VoxEvalAgentDaemon {
 
     console.warn('[Daemon] No usable metrics from any chunk — returning merged defaults');
     return mergedResult ?? chunkResults[chunkResults.length - 1];
+  }
+
+  /**
+   * Compute cross-chunk rates + per-case stats from chunk entries and attach
+   * them to the result (fields and rawData), without replacing rawData.
+   */
+  private attachRates(result: EvalResult, entries: ChunkMetricsEntry[]): void {
+    const { perCase, rates } = computePerCaseAndRates(entries);
+    result.responseRate = rates.response_rate;
+    result.interruptRate = rates.interrupt_rate;
+    result.falseInterruptRate = rates.false_interrupt_rate;
+    if (result.rawData && typeof result.rawData === 'object') {
+      (result.rawData as Record<string, unknown>).per_case = perCase;
+      (result.rawData as Record<string, unknown>).rates = rates;
+    }
   }
 
   private runAeval(scenarioConfig: string): Promise<EvalResult> {
@@ -671,6 +719,9 @@ class VoxEvalAgentDaemon {
         const allOutput = stdout + stderr;
         try {
           this.lastOutputDir = this.resolveAevalOutputDir(scenarioConfig, allOutput);
+          if (this.lastOutputDir && !this.jobOutputDirs.includes(this.lastOutputDir)) {
+            this.jobOutputDirs.push(this.lastOutputDir);
+          }
         } catch { /* best effort */ }
 
         if (code !== 0) {
@@ -833,6 +884,15 @@ class VoxEvalAgentDaemon {
       if (agg) console.log(`[Daemon]   aggregated_summary: ${JSON.stringify(agg)}`);
 
       const results: EvalResult = { ...RESULT_DEFAULTS, rawData: metrics };
+
+      // Cross-chunk rates computed at merge time (mergeChunkMetrics) ride
+      // through the merged metrics file — pick them up if present.
+      const rates = metrics.rates as { response_rate?: number | null; interrupt_rate?: number | null; false_interrupt_rate?: number | null } | undefined;
+      if (rates && typeof rates === 'object') {
+        results.responseRate = rates.response_rate ?? null;
+        results.interruptRate = rates.interrupt_rate ?? null;
+        results.falseInterruptRate = rates.false_interrupt_rate ?? null;
+      }
 
       // Helper: compute median from array of numbers
       const median = (arr: number[]) => {
@@ -1412,11 +1472,17 @@ class VoxEvalAgentDaemon {
       return;
     }
 
-    if (!fs.existsSync(task.outputDir)) {
-      console.warn(`[Daemon] Output dir not found for job ${task.jobId}: ${task.outputDir} — files may have been lost after restart`);
+    const dirs = task.outputDirs.filter(d => fs.existsSync(d));
+    for (const missing of task.outputDirs.filter(d => !dirs.includes(d))) {
+      console.warn(`[Daemon] Output dir not found for job ${task.jobId}: ${missing} — files may have been lost after restart`);
+    }
+    if (dirs.length === 0) {
       await this.updateArtifactStatus(task.jobId, 'failed');
       return;
     }
+    // Single-dir jobs keep the historical flat layout; multi-chunk jobs
+    // namespace each chunk by its scenario dir name (vox-<case>-<chunk>-...).
+    const labelFor = (d: string) => dirs.length === 1 ? '' : path.basename(path.dirname(d));
 
     try {
       console.log(`[Daemon] Uploading artifacts for job ${task.jobId}...`);
@@ -1456,7 +1522,10 @@ class VoxEvalAgentDaemon {
         return files;
       };
 
-      const allFiles = scanDir(task.outputDir);
+      const allFiles: Array<{ filePath: string; relPath: string }> = [];
+      for (const dir of dirs) {
+        allFiles.push(...scanDir(dir, labelFor(dir)));
+      }
       for (const { filePath: fp, relPath } of allFiles) {
         try {
           const body = fs.readFileSync(fp);
@@ -1487,9 +1556,20 @@ class VoxEvalAgentDaemon {
         }
       }
 
-      // Create zip of entire output dir
+      // Create one zip covering every chunk's output dir. Single-dir jobs zip
+      // flat (historical layout); multi-chunk entries are prefixed with the
+      // chunk's scenario dir name so cases stay separable.
       const zipPath = path.join(os.tmpdir(), `vox-artifacts-${task.jobId}.zip`);
-      await this.createZip(task.outputDir, zipPath);
+      try { fs.unlinkSync(zipPath); } catch { /* stale zip from a retry */ }
+      if (dirs.length === 1) {
+        await this.createZip(dirs[0], zipPath);
+      } else {
+        for (const dir of dirs) {
+          // cwd two levels up so entries are <scenarioBase>/<session>/...
+          await this.zipAppend(path.dirname(path.dirname(dir)),
+            path.join(path.basename(path.dirname(dir)), path.basename(dir)), zipPath);
+        }
+      }
 
       if (fs.existsSync(zipPath)) {
         const zipBody = fs.readFileSync(zipPath);
@@ -1538,6 +1618,26 @@ class VoxEvalAgentDaemon {
         await this.updateArtifactStatus(task.jobId, 'failed');
       }
     }
+  }
+
+  /** Add `relPath` (relative to `cwd`) to the archive, creating it if absent. */
+  private zipAppend(cwd: string, relPath: string, outputPath: string): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const proc = spawn('zip', ['-r', '-q', outputPath, relPath], { cwd });
+      const timeout = setTimeout(() => {
+        proc.kill();
+        reject(new Error('zip timed out after 120s'));
+      }, 120000);
+      proc.on('close', (code) => {
+        clearTimeout(timeout);
+        if (code === 0) resolve();
+        else reject(new Error(`zip exited with code ${code}`));
+      });
+      proc.on('error', (err) => {
+        clearTimeout(timeout);
+        reject(err);
+      });
+    });
   }
 
   private createZip(sourceDir: string, outputPath: string): Promise<void> {
@@ -1678,6 +1778,7 @@ class VoxEvalAgentDaemon {
     this.isRunningJob = true;
     this.currentJobId = job.id;
     this.lastOutputDir = null;
+    this.jobOutputDirs = [];
     try {
       const results = await this.executeJob(job);
       await this.completeJob(job.id, results);
@@ -1703,11 +1804,12 @@ class VoxEvalAgentDaemon {
         }
       }
     } finally {
-      // Queue artifact upload (whether job succeeded or failed)
-      if (this.lastOutputDir) {
+      // Queue artifact upload (whether job succeeded or failed) — covers every
+      // chunk's output dir, not just the last run's.
+      if (this.jobOutputDirs.length > 0) {
         this.queueUpload({
           jobId: job.id,
-          outputDir: this.lastOutputDir,
+          outputDirs: [...this.jobOutputDirs],
           scenarioName: (job.config as Record<string, string>)?.scenario?.slice(0, 50) || 'unknown',
           retries: 0,
         });
