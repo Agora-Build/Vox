@@ -128,6 +128,14 @@ export default function ConsoleEvalJobDetail({ jobId }: { jobId: number }) {
   const interruptCaseIds = new Set(Object.entries(perCase).filter(([, c]) => c.has_interrupt_phase).map(([id]) => id));
   const responseTurnsShown = turnLevel.filter(t => t.case_id == null || !interruptCaseIds.has(String(t.case_id)));
 
+  // An interruption's follow-up: the response turn right after it in the same
+  // chunk (source_turn_index + 1) — the agent's answer after the interrupt
+  // material (normal_response). Absent for false interrupts that just resume.
+  const followUpOf = (turn: Record<string, unknown>) =>
+    turn.source_turn_index == null ? undefined : turnLevel.find(r =>
+      r.case_id === turn.case_id && r.chunk_id === turn.chunk_id &&
+      Number(r.source_turn_index) === Number(turn.source_turn_index) + 1);
+
   // Find special artifact files
   const audioFiles = artifactFiles.filter(f => /\.(webm|wav|mp3|ogg)$/i.test(f.name) && f.size > 0);
   const screenshotFiles = artifactFiles.filter(f => /\.(png|jpg|jpeg)$/i.test(f.name));
@@ -435,6 +443,7 @@ export default function ConsoleEvalJobDetail({ jobId }: { jobId: number }) {
                   const reactionMs = Math.round(Number(turn.interrupt_action_ms ?? turn.reaction_time_ms ?? 0));
                   const tooSlow = reactionMs > INTERRUPT_ACTION_MAX_MS;
                   const kind = String(turn.interruption_kind ?? "");
+                  const followUp = followUpOf(turn);
                   return (
                   <TableRow key={i}>
                     <TableCell className="font-mono">{String(turn.turn_index ?? i + 1)}</TableCell>
@@ -450,6 +459,12 @@ export default function ConsoleEvalJobDetail({ jobId }: { jobId: number }) {
                     <TableCell className="text-xs max-w-md">
                       {turn.user_transcript != null && <p className="text-muted-foreground">U: {String(turn.user_transcript)}</p>}
                       {turn.agent_transcript != null && <p>A: {String(turn.agent_transcript)}</p>}
+                      {followUp && (followUp.user_transcript != null || followUp.agent_transcript != null) && (
+                        <div className="mt-1 border-l-2 pl-2" title="Follow-up: the agent's response after the interrupt">
+                          {followUp.user_transcript != null && <p className="text-muted-foreground">↳ U: {String(followUp.user_transcript)}</p>}
+                          {followUp.agent_transcript != null && <p>↳ A: {String(followUp.agent_transcript)}</p>}
+                        </div>
+                      )}
                     </TableCell>
                   </TableRow>
                   );

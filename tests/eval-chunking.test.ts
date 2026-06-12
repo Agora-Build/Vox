@@ -463,6 +463,25 @@ describe("mergeChunkMetrics", () => {
     expect(iTurns(merged)[0].case_id).toBe("INT_BASIC");
   });
 
+  it("preserves chunk_id + source_turn_index through re-indexing", () => {
+    // Two chunks whose turns both start at chunk-local turn_index 1.
+    const merged = mergeChunkMetrics([
+      entry(respChunk([500, 600]), { caseId: "INT_BASIC", chunkId: "chunk_001", hasInterruptPhase: true }),
+      entry(respChunk([700]), { caseId: "INT_BASIC", chunkId: "chunk_002", hasInterruptPhase: true }),
+    ]);
+    const turns = rTurns(merged);
+    expect(turns.map(t => t.turn_index)).toEqual([1, 2, 3]);          // merged, continuous
+    expect(turns.map(t => t.source_turn_index)).toEqual([1, 2, 1]);  // chunk-local preserved
+    expect(turns.map(t => t.chunk_id)).toEqual(["chunk_001", "chunk_001", "chunk_002"]);
+    // The follow-up join key: same case+chunk, source index + 1 — unambiguous
+    // even though both chunks contain a source_turn_index 1.
+    const interrupted = turns[0];
+    const followUp = turns.find(r => r.case_id === interrupted.case_id &&
+      r.chunk_id === interrupted.chunk_id &&
+      Number(r.source_turn_index) === Number(interrupted.source_turn_index) + 1);
+    expect(followUp?.latency_ms).toBe(600);
+  });
+
   it("concatenates interrupt turns", () => {
     const merged = mergeChunkMetrics([entry(intChunk([300])), entry(intChunk([400]), { chunkId: "chunk_002" })]);
     const turns = iTurns(merged);
