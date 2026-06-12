@@ -931,8 +931,9 @@ class VoxEvalAgentDaemon {
       if (Array.isArray(ilTurns) && ilTurns.length > 0) {
         // Stops slower than INTERRUPT_ACTION_MAX_MS are the agent finishing
         // naturally, not reacting — exclude them from reaction latency stats.
-        // interrupt_action_ms (actual stop) outranks the diagnostic estimator.
-        const vals = ilTurns.map((t: Record<string, unknown>) => (t.reaction_time_ms ?? t.interrupt_action_ms ?? t.reaction_time_ms_diagnostic ?? t.latency_ms) as number).filter((v: number) => v != null && v >= 0 && v <= INTERRUPT_ACTION_MAX_MS);
+        // Always use interrupt_action_ms (actual stop); the diagnostic
+        // estimator is never consulted. reaction_time_ms covers pre-v0.2.1.
+        const vals = ilTurns.map((t: Record<string, unknown>) => (t.interrupt_action_ms ?? t.reaction_time_ms) as number).filter((v: number) => v != null && v >= 0 && v <= INTERRUPT_ACTION_MAX_MS);
         if (vals.length > 0) {
           results.interruptLatencyMedian = Math.round(median(vals));
           results.interruptLatencySd = Math.round(sd(vals));
@@ -952,13 +953,16 @@ class VoxEvalAgentDaemon {
         }
       }
       if (results.interruptLatencyMedian === 0 && ilSummary && typeof ilSummary === 'object') {
-        if (ilSummary.p50_reaction_time_ms != null) {
-          results.interruptLatencyMedian = Math.round(ilSummary.p50_reaction_time_ms);
+        // v0.2.1 name first; legacy name for pre-v0.2.1 output.
+        const p50 = ilSummary.p50_interrupt_action_ms ?? ilSummary.p50_reaction_time_ms;
+        if (p50 != null) {
+          results.interruptLatencyMedian = Math.round(p50);
         }
       }
       if (results.interruptLatencyP95 === 0 && ilSummary && typeof ilSummary === 'object') {
-        if (ilSummary.p95_reaction_time_ms != null) {
-          results.interruptLatencyP95 = Math.round(ilSummary.p95_reaction_time_ms);
+        const p95v = ilSummary.p95_interrupt_action_ms ?? ilSummary.p95_reaction_time_ms;
+        if (p95v != null) {
+          results.interruptLatencyP95 = Math.round(p95v);
         }
       }
 
@@ -969,8 +973,9 @@ class VoxEvalAgentDaemon {
         }
       }
       if (results.interruptLatencyMedian === 0 && agg && typeof agg === 'object') {
-        if (agg.avg_interruption_reaction_ms != null) {
-          results.interruptLatencyMedian = Math.round(agg.avg_interruption_reaction_ms);
+        const avgAct = agg.avg_interruption_action_ms ?? agg.avg_interruption_reaction_ms;
+        if (avgAct != null) {
+          results.interruptLatencyMedian = Math.round(avgAct);
         }
       }
 

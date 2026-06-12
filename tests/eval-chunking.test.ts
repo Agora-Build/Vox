@@ -637,12 +637,14 @@ describe("computePerCaseAndRates", () => {
     expect(rates.false_interrupt_rate).toBeCloseTo(3 / 5);
   });
 
-  it("interrupt_action_ms outranks the diagnostic: a slow stop is not a reaction", () => {
+  it("always uses interrupt_action_ms — the diagnostic estimator is never consulted", () => {
     // Real job-20471 chunk_002 turn 3: full stop at 11564ms but the diagnostic
     // estimator says 1916ms. The agent finished talking — not a false interrupt.
     const metrics = { interruption_metrics: { latency: { turn_level: [
       { turn_index: 3, action_applicable: true, interrupt_action_ms: 11564, reaction_time_ms_diagnostic: 1916 },
       { turn_index: 1, action_applicable: true, interrupt_action_ms: 1164, reaction_time_ms_diagnostic: 1164 },
+      // diagnostic-only turn (no action recorded): not a reaction at all
+      { turn_index: 5, action_applicable: true, reaction_time_ms_diagnostic: 1200 },
     ] } } };
     const { rates, perCase } = computePerCaseAndRates([
       entry(metrics, { caseId: "INT_FALSE", sampleCount: 5, hasInterruptPhase: true }),
