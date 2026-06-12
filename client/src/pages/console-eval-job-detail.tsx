@@ -1,4 +1,5 @@
 import { useQuery, useMutation } from "@tanstack/react-query";
+import { INTERRUPT_ACTION_MAX_MS } from "@shared/metrics";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -119,6 +120,13 @@ export default function ConsoleEvalJobDetail({ jobId }: { jobId: number }) {
   const falseCaseIds = new Set(Object.entries(perCase).filter(([, c]) => c.false_interrupt_case).map(([id]) => id));
   const falseIntTurns = interruptTurns.filter(t => falseCaseIds.has(String(t.case_id)));
   const trueIntTurns = interruptTurns.filter(t => !falseCaseIds.has(String(t.case_id)));
+
+  // The Response table shows only response-type cases: interrupt cases also
+  // emit response turns (the cut-off answer + the post-material answer), but
+  // those belong to the interrupt story, told in the tables below. Turns
+  // without case_id (single-file runs, old rows) are kept.
+  const interruptCaseIds = new Set(Object.entries(perCase).filter(([, c]) => c.has_interrupt_phase).map(([id]) => id));
+  const responseTurnsShown = turnLevel.filter(t => t.case_id == null || !interruptCaseIds.has(String(t.case_id)));
 
   // Find special artifact files
   const audioFiles = artifactFiles.filter(f => /\.(webm|wav|mp3|ogg)$/i.test(f.name) && f.size > 0);
@@ -362,11 +370,11 @@ export default function ConsoleEvalJobDetail({ jobId }: { jobId: number }) {
       )}
 
       {/* Response Turn-Level Data */}
-      {turnLevel.length > 0 && (
+      {responseTurnsShown.length > 0 && (
         <Card>
           <CardHeader>
             <CardTitle className="text-sm">Response Turn-Level Latency</CardTitle>
-            <CardDescription>{turnLevel.length} turn{turnLevel.length !== 1 ? "s" : ""}</CardDescription>
+            <CardDescription>{responseTurnsShown.length} turn{responseTurnsShown.length !== 1 ? "s" : ""}</CardDescription>
           </CardHeader>
           <CardContent>
             <Table>
@@ -381,7 +389,7 @@ export default function ConsoleEvalJobDetail({ jobId }: { jobId: number }) {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {turnLevel.map((turn, i) => (
+                {responseTurnsShown.map((turn, i) => (
                   <TableRow key={i}>
                     <TableCell className="font-mono">{String(turn.turn_index ?? i + 1)}</TableCell>
                     <TableCell className="text-right font-mono">{fmtT(turn.turn_start)}</TableCell>
@@ -423,19 +431,29 @@ export default function ConsoleEvalJobDetail({ jobId }: { jobId: number }) {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {section.turns.map((turn, i) => (
+                {section.turns.map((turn, i) => {
+                  const reactionMs = Math.round(Number(turn.interrupt_action_ms ?? turn.reaction_time_ms ?? 0));
+                  const tooSlow = reactionMs > INTERRUPT_ACTION_MAX_MS;
+                  const kind = String(turn.interruption_kind ?? "");
+                  return (
                   <TableRow key={i}>
                     <TableCell className="font-mono">{String(turn.turn_index ?? i + 1)}</TableCell>
                     <TableCell className="text-right font-mono">{fmtT(turn.turn_start)}</TableCell>
                     <TableCell className="text-right font-mono">{fmtT(turn.turn_end)}</TableCell>
-                    <TableCell className="text-right font-mono">{Math.round(Number(turn.interrupt_action_ms ?? turn.reaction_time_ms ?? 0))}</TableCell>
-                    <TableCell className="text-xs text-muted-foreground">{String(turn.interruption_kind ?? "")}</TableCell>
+                    <TableCell
+                      className={`text-right font-mono ${tooSlow ? "text-amber-600 dark:text-amber-400 font-semibold" : ""}`}
+                      title={tooSlow ? `Slower than the ${INTERRUPT_ACTION_MAX_MS}ms reaction threshold — not counted as a reaction (agent likely finished naturally)` : undefined}
+                    >
+                      {reactionMs}{tooSlow ? " ⚠" : ""}
+                    </TableCell>
+                    <TableCell className={`text-xs ${kind === "user_interrupt_agent" ? "text-amber-600 dark:text-amber-400 font-medium" : "text-muted-foreground"}`}>{kind}</TableCell>
                     <TableCell className="text-xs max-w-md">
                       {turn.user_transcript != null && <p className="text-muted-foreground">U: {String(turn.user_transcript)}</p>}
                       {turn.agent_transcript != null && <p>A: {String(turn.agent_transcript)}</p>}
                     </TableCell>
                   </TableRow>
-                ))}
+                  );
+                })}
               </TableBody>
             </Table>
           </CardContent>
