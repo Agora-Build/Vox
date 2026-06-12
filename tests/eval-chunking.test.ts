@@ -961,7 +961,7 @@ describe("composeScenarioYaml", () => {
 
 describe("chunk-vs-compose decision", () => {
   // Mirrors the daemon's `canChunk` predicate in vox_eval_agentd/vox-agentd.ts
-  // (executeAevalWithChunking, ~line 530) — keep in sync; it is a private method
+  // (executeAevalWithChunking, ~line 548) — keep in sync; it is a private method
   // and cannot be imported:
   //   samples.length > 0 && prefixSteps.length === 0 && suffixSteps.length === 0
   const canChunk = (steps: ScenarioStep[]) => {

@@ -844,24 +844,17 @@ class VoxEvalAgentDaemon {
   /**
    * Parse metrics.json (json_exporter output) — has computed latency metrics.
    *
-   * aeval v0.1.x outputs this structure:
-   *   {
-   *     "response_metrics": {
-   *       "latency": {
-   *         "summary": { "avg_latency_ms": N, "p50_latency_ms": N, ... },
-   *         "turn_level": [...]
-   *       }
-   *     },
-   *     "interruption_metrics": {
-   *       "latency": { "summary": { "avg_reaction_time_ms": N, ... } },
-   *       "post_interruption_latency": { "summary": { "avg_latency_ms": N } }
-   *     },
-   *     "aggregated_summary": {
-   *       "avg_response_latency_ms": N,
-   *       "avg_interruption_reaction_ms": N,
-   *       "avg_post_interruption_latency_ms": N
-   *     }
-   *   }
+   * Structure (v0.2.1 names; pre-v0.2.1 legacy names in parentheses):
+   *   response_metrics.latency:
+   *     summary:    { p50_latency_ms, p95_latency_ms, avg_latency_ms, ... }
+   *     turn_level: [{ latency_ms, is_greeting, is_barge_in, ... }]
+   *   interruption_metrics.latency:
+   *     summary:    { p50_interrupt_action_ms (p50_reaction_time_ms), ... }
+   *     turn_level: [{ interrupt_action_ms (reaction_time_ms),
+   *                    reaction_time_ms_diagnostic — never consulted, ... }]
+   *   aggregated_summary:
+   *     { avg_response_latency_ms,
+   *       avg_interruption_action_ms (avg_interruption_reaction_ms) }
    */
   private tryParseMetricsJson(filePath: string): EvalResult | null {
     try {
