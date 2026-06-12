@@ -29,6 +29,10 @@ interface JobDetailResponse {
   creatorName: string | null;
 }
 
+// Keep in sync with INTERRUPT_ACTION_MAX_MS (vox_eval_agentd/chunking.ts):
+// stops slower than this are not counted as reactions.
+const REACTION_THRESHOLD_MS = 3000;
+
 const STATUS_CONFIG: Record<string, { variant: "default" | "destructive" | "secondary" | "outline"; icon: React.ElementType; label: string }> = {
   completed: { variant: "default", icon: CheckCircle, label: "Completed" },
   failed: { variant: "destructive", icon: XCircle, label: "Failed" },
@@ -430,19 +434,29 @@ export default function ConsoleEvalJobDetail({ jobId }: { jobId: number }) {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {section.turns.map((turn, i) => (
+                {section.turns.map((turn, i) => {
+                  const reactionMs = Math.round(Number(turn.interrupt_action_ms ?? turn.reaction_time_ms ?? 0));
+                  const tooSlow = reactionMs > REACTION_THRESHOLD_MS;
+                  const kind = String(turn.interruption_kind ?? "");
+                  return (
                   <TableRow key={i}>
                     <TableCell className="font-mono">{String(turn.turn_index ?? i + 1)}</TableCell>
                     <TableCell className="text-right font-mono">{fmtT(turn.turn_start)}</TableCell>
                     <TableCell className="text-right font-mono">{fmtT(turn.turn_end)}</TableCell>
-                    <TableCell className="text-right font-mono">{Math.round(Number(turn.interrupt_action_ms ?? turn.reaction_time_ms ?? 0))}</TableCell>
-                    <TableCell className="text-xs text-muted-foreground">{String(turn.interruption_kind ?? "")}</TableCell>
+                    <TableCell
+                      className={`text-right font-mono ${tooSlow ? "text-amber-600 dark:text-amber-400 font-semibold" : ""}`}
+                      title={tooSlow ? `Slower than the ${REACTION_THRESHOLD_MS}ms reaction threshold — not counted as a reaction (agent likely finished naturally)` : undefined}
+                    >
+                      {reactionMs}{tooSlow ? " ⚠" : ""}
+                    </TableCell>
+                    <TableCell className={`text-xs ${kind === "user_interrupt_agent" ? "text-amber-600 dark:text-amber-400 font-medium" : "text-muted-foreground"}`}>{kind}</TableCell>
                     <TableCell className="text-xs max-w-md">
                       {turn.user_transcript != null && <p className="text-muted-foreground">U: {String(turn.user_transcript)}</p>}
                       {turn.agent_transcript != null && <p>A: {String(turn.agent_transcript)}</p>}
                     </TableCell>
                   </TableRow>
-                ))}
+                  );
+                })}
               </TableBody>
             </Table>
           </CardContent>
