@@ -269,22 +269,30 @@ export default function ConsoleEvalJobDetail({ jobId }: { jobId: number }) {
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b text-left text-muted-foreground">
-                    <th className="py-2 pr-4 font-medium">Case</th>
+                    <th className="py-2 pr-4 font-medium">Metric</th>
                     <th className="py-2 pr-4 font-medium text-right">Samples</th>
                     <th className="py-2 pr-4 font-medium text-right">Responses</th>
                     <th className="py-2 pr-4 font-medium text-right">Resp MED</th>
                     <th className="py-2 pr-4 font-medium text-right">Resp P95</th>
-                    <th className="py-2 pr-4 font-medium text-right">Reactions</th>
+                    <th className="py-2 pr-4 font-medium text-right" title="Samples where the agent stopped talking (within the reaction threshold)">Reactions</th>
                     <th className="py-2 pr-4 font-medium text-right">Int MED</th>
                     <th className="py-2 font-medium text-right">Int P95</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {Object.entries(perCase).map(([caseId, c]) => (
+                  {Object.entries(perCase)
+                    .map(([caseId, c]) => ({
+                      caseId,
+                      c,
+                      label: c.false_interrupt_case ? "False Int. ↓" : c.has_interrupt_phase ? "Interrupt" : "Response",
+                      order: c.false_interrupt_case ? 2 : c.has_interrupt_phase ? 1 : 0,
+                    }))
+                    .sort((a, b) => a.order - b.order || a.caseId.localeCompare(b.caseId))
+                    .map(({ caseId, c, label }) => (
                     <tr key={caseId} className="border-b last:border-0">
-                      <td className="py-2 pr-4 font-mono">
-                        {caseId}
-                        {c.false_interrupt_case && <Badge variant="secondary" className="ml-2 text-xs">false-int ↓</Badge>}
+                      <td className="py-2 pr-4">
+                        {label}
+                        <span className="ml-2 text-xs text-muted-foreground font-mono">{caseId}</span>
                       </td>
                       <td className="py-2 pr-4 text-right font-mono">{c.sample_count}</td>
                       <td className="py-2 pr-4 text-right font-mono">{c.response?.turn_count ?? "-"}</td>
