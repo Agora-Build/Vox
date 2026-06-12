@@ -1,4 +1,5 @@
 import { useQuery, useMutation } from "@tanstack/react-query";
+import { INTERRUPT_ACTION_MAX_MS } from "@shared/metrics";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -28,10 +29,6 @@ interface JobDetailResponse {
   workflowName: string;
   creatorName: string | null;
 }
-
-// Keep in sync with INTERRUPT_ACTION_MAX_MS (vox_eval_agentd/chunking.ts):
-// stops slower than this are not counted as reactions.
-const REACTION_THRESHOLD_MS = 3000;
 
 const STATUS_CONFIG: Record<string, { variant: "default" | "destructive" | "secondary" | "outline"; icon: React.ElementType; label: string }> = {
   completed: { variant: "default", icon: CheckCircle, label: "Completed" },
@@ -436,7 +433,7 @@ export default function ConsoleEvalJobDetail({ jobId }: { jobId: number }) {
               <TableBody>
                 {section.turns.map((turn, i) => {
                   const reactionMs = Math.round(Number(turn.interrupt_action_ms ?? turn.reaction_time_ms ?? 0));
-                  const tooSlow = reactionMs > REACTION_THRESHOLD_MS;
+                  const tooSlow = reactionMs > INTERRUPT_ACTION_MAX_MS;
                   const kind = String(turn.interruption_kind ?? "");
                   return (
                   <TableRow key={i}>
@@ -445,7 +442,7 @@ export default function ConsoleEvalJobDetail({ jobId }: { jobId: number }) {
                     <TableCell className="text-right font-mono">{fmtT(turn.turn_end)}</TableCell>
                     <TableCell
                       className={`text-right font-mono ${tooSlow ? "text-amber-600 dark:text-amber-400 font-semibold" : ""}`}
-                      title={tooSlow ? `Slower than the ${REACTION_THRESHOLD_MS}ms reaction threshold — not counted as a reaction (agent likely finished naturally)` : undefined}
+                      title={tooSlow ? `Slower than the ${INTERRUPT_ACTION_MAX_MS}ms reaction threshold — not counted as a reaction (agent likely finished naturally)` : undefined}
                     >
                       {reactionMs}{tooSlow ? " ⚠" : ""}
                     </TableCell>
