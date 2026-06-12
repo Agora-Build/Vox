@@ -685,6 +685,67 @@ describe("end-to-end: full chunking pipeline", () => {
     expect(groups.every(g => g.samples.length === 5)).toBe(true);
   });
 
+  it("practical: a realistic imperfect run produces correct DB-bound numbers", () => {
+    // Drive the REAL pipeline: body → groups → per-chunk metrics → merge,
+    // with the imperfections a live run has: one RSP sample overlapped
+    // (negative latency), one timed out, one INT_BASIC sample got neither
+    // reaction nor response, and INT_FALSE drew one false interrupt.
+    const { scenario } = buildRealistic();
+    const { samples } = extractSampleGroups(scenario.steps);
+    const groups = groupSamplesByChunk(samples);
+
+    const perChunk: Record<string, Record<string, unknown>> = {
+      "RSP_BASIC/chunk_001": respChunk([980, 1020, 1150, 875, -50]),            // 4 valid of 5
+      "RSP_BASIC/chunk_002": respChunk([1100, 990, 1045, 1310]),                // 1 timed out
+      "INT_BASIC/chunk_001": { ...respChunk([1500, 1600, 1480, 1550, 1700]), ...intChunk([620, 580, 710, 640, 690]) },
+      "INT_BASIC/chunk_002": { ...respChunk([1450, 1520, 1610, 1390]), ...intChunk([600, 560, 720, 655]) }, // 1 sample dead
+      "INT_FALSE/chunk_001": { ...respChunk([1300, 1340, 1280, 1410, 1360]), ...intChunk([450]) },          // 1 false interrupt
+      "INT_FALSE/chunk_002": respChunk([1290, 1330, 1405, 1255, 1375]),         // clean: no reactions
+    };
+
+    const chunkEntries: ChunkMetricsEntry[] = groups.map(g => ({
+      caseId: g.caseId,
+      chunkId: g.chunkId,
+      sampleCount: g.samples.length,
+      hasInterruptPhase: groupHasInterruptPhase(g),
+      metrics: perChunk[`${g.caseId}/${g.chunkId}`],
+    }));
+    // hasInterruptPhase derives from the real body steps, not hand-tagged
+    expect(chunkEntries.filter(e => e.hasInterruptPhase)).toHaveLength(4);
+
+    const merged = mergeChunkMetrics(chunkEntries);
+
+    // Rates — denominators from sample counts, numerators from valid turns
+    const rates = merged.rates as Record<string, number>;
+    expect(rates.response_rate).toBeCloseTo(27 / 30);       // 8 + 9 + 10
+    expect(rates.interrupt_rate).toBeCloseTo(9 / 10);       // INT_BASIC reactions
+    expect(rates.false_interrupt_rate).toBeCloseTo(1 / 10); // INT_FALSE reactions
+
+    // Merged latencies — what the daemon's parser recomputes for the columns.
+    // Negative overlap turn is carried in turn_level but excluded from stats.
+    const respVals = rTurns(merged).map(t => t.latency_ms as number).filter(v => v >= 0);
+    const intVals = iTurns(merged).map(t => t.reaction_time_ms as number).filter(v => v >= 0);
+    expect(rTurns(merged)).toHaveLength(28); // 27 valid + 1 negative
+    expect(respVals).toHaveLength(27);
+    expect(Math.round(median(respVals))).toBe(1340); // middle of the 27 valid values
+    expect(Math.round(median(intVals))).toBe(630);          // 10 reactions: 9 true + 1 false
+    expect(Math.round(p95(intVals))).toBe(720);
+
+    // Per-case separability — INT_FALSE distinguishable without artifacts
+    const perCase = merged.per_case as Record<string, any>;
+    expect(perCase.RSP_BASIC.response.turn_count).toBe(8);
+    expect(perCase.RSP_BASIC.response.median_ms).toBe(Math.round(median([980, 1020, 1150, 875, 1100, 990, 1045, 1310])));
+    expect(perCase.INT_BASIC.interruption.turn_count).toBe(9);
+    expect(perCase.INT_BASIC.interruption.median_ms).toBe(640);
+    expect(perCase.INT_FALSE.false_interrupt_case).toBe(true);
+    expect(perCase.INT_FALSE.interruption.turn_count).toBe(1);
+    expect(perCase.INT_FALSE.interruption.median_ms).toBe(450);
+
+    // Every merged turn attributable to its case
+    expect(rTurns(merged).filter(t => t.case_id === "RSP_BASIC")).toHaveLength(9); // 8 valid + 1 negative
+    expect(iTurns(merged).filter(t => t.case_id === "INT_FALSE")).toHaveLength(1);
+  });
+
   it("produces 6 valid chunk YAMLs with aeval-convention names + correct presets", () => {
     const { scenario, stepsPrefix, stepsSuffix } = buildRealistic();
     const { samples } = extractSampleGroups(scenario.steps);

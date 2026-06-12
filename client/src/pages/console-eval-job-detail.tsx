@@ -101,6 +101,17 @@ export default function ConsoleEvalJobDetail({ jobId }: { jobId: number }) {
   const interruptMetrics = rawData?.interruption_metrics as Record<string, unknown> | undefined;
   const interruptTurns = ((interruptMetrics?.latency as Record<string, unknown>)?.turn_level ?? []) as Array<Record<string, number | string | boolean>>;
 
+  // Per-case breakdown emitted by the daemon for chunked lab runs
+  interface CaseStats {
+    sample_count: number;
+    has_interrupt_phase: boolean;
+    false_interrupt_case: boolean;
+    response?: { turn_count: number; median_ms: number; p95_ms: number };
+    interruption?: { turn_count: number; median_ms: number; p95_ms: number };
+  }
+  const perCase = (rawData?.per_case ?? {}) as Record<string, CaseStats>;
+  const pct = (v: number | null | undefined) => v == null ? "-" : `${Math.round(v * 100)}%`;
+
   // Find special artifact files
   const audioFiles = artifactFiles.filter(f => /\.(webm|wav|mp3|ogg)$/i.test(f.name) && f.size > 0);
   const screenshotFiles = artifactFiles.filter(f => /\.(png|jpg|jpeg)$/i.test(f.name));
@@ -202,7 +213,7 @@ export default function ConsoleEvalJobDetail({ jobId }: { jobId: number }) {
 
       {/* Metrics */}
       {result && (
-        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
           <Card>
             <CardHeader className="pb-2">
               <CardTitle className="text-sm">Response Latency</CardTitle>
@@ -225,6 +236,16 @@ export default function ConsoleEvalJobDetail({ jobId }: { jobId: number }) {
           </Card>
           <Card>
             <CardHeader className="pb-2">
+              <CardTitle className="text-sm">Rates</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-1">
+              <div className="flex justify-between"><span className="text-sm text-muted-foreground">Response</span><span className="text-xl font-bold font-mono">{pct(result.responseRate)}</span></div>
+              <div className="flex justify-between"><span className="text-sm text-muted-foreground">Interrupt</span><span className="text-sm font-mono text-muted-foreground">{pct(result.interruptRate)}</span></div>
+              <div className="flex justify-between"><span className="text-sm text-muted-foreground" title="Reactions to non-semantic material — lower is better">False Int. ↓</span><span className="text-sm font-mono text-muted-foreground">{pct(result.falseInterruptRate)}</span></div>
+            </CardContent>
+          </Card>
+          <Card>
+            <CardHeader className="pb-2">
               <CardTitle className="text-sm">Other Metrics</CardTitle>
             </CardHeader>
             <CardContent className="space-y-1">
@@ -234,6 +255,51 @@ export default function ConsoleEvalJobDetail({ jobId }: { jobId: number }) {
             </CardContent>
           </Card>
         </div>
+      )}
+
+      {/* Per-case breakdown (chunked lab runs) */}
+      {Object.keys(perCase).length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-sm">Per-Case Results</CardTitle>
+            <CardDescription>Each case aggregated across its chunks</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b text-left text-muted-foreground">
+                    <th className="py-2 pr-4 font-medium">Case</th>
+                    <th className="py-2 pr-4 font-medium text-right">Samples</th>
+                    <th className="py-2 pr-4 font-medium text-right">Responses</th>
+                    <th className="py-2 pr-4 font-medium text-right">Resp MED</th>
+                    <th className="py-2 pr-4 font-medium text-right">Resp P95</th>
+                    <th className="py-2 pr-4 font-medium text-right">Reactions</th>
+                    <th className="py-2 pr-4 font-medium text-right">Int MED</th>
+                    <th className="py-2 font-medium text-right">Int P95</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {Object.entries(perCase).map(([caseId, c]) => (
+                    <tr key={caseId} className="border-b last:border-0">
+                      <td className="py-2 pr-4 font-mono">
+                        {caseId}
+                        {c.false_interrupt_case && <Badge variant="secondary" className="ml-2 text-xs">false-int ↓</Badge>}
+                      </td>
+                      <td className="py-2 pr-4 text-right font-mono">{c.sample_count}</td>
+                      <td className="py-2 pr-4 text-right font-mono">{c.response?.turn_count ?? "-"}</td>
+                      <td className="py-2 pr-4 text-right font-mono">{c.response?.turn_count ? `${c.response.median_ms}ms` : "-"}</td>
+                      <td className="py-2 pr-4 text-right font-mono">{c.response?.turn_count ? `${c.response.p95_ms}ms` : "-"}</td>
+                      <td className="py-2 pr-4 text-right font-mono">{c.has_interrupt_phase ? c.interruption?.turn_count ?? 0 : "-"}</td>
+                      <td className="py-2 pr-4 text-right font-mono">{c.interruption?.turn_count ? `${c.interruption.median_ms}ms` : "-"}</td>
+                      <td className="py-2 text-right font-mono">{c.interruption?.turn_count ? `${c.interruption.p95_ms}ms` : "-"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </CardContent>
+        </Card>
       )}
 
       {/* Audio Player */}
