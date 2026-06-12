@@ -600,6 +600,41 @@ describe("computePerCaseAndRates", () => {
     expect(rates.response_rate).toBeCloseTo(2 / 5);
   });
 
+  it("reads v0.2.1 interruption turns (interrupt_action_ms, no reaction_time_ms)", () => {
+    // Real v0.2.1 lab turn shape from a live run (job 20471, INT_BASIC chunk_001)
+    const metrics = {
+      response_metrics: { latency: { turn_level: [1364, 1428, 1348, 1428, 1460, 1380, 1524, 1556, 1636]
+        .map((ms, i) => ({ turn_index: i + 1, latency_ms: ms, is_greeting: false })) } },
+      interruption_metrics: { latency: { turn_level: [1084, 1100, 1100, 1084, 1068]
+        .map((ms, i) => ({ turn_index: i * 2 + 1, interruption_kind: 'user_interrupt_agent', action_applicable: true, interrupt_action_ms: ms, reaction_time_ms_diagnostic: ms })) } },
+    };
+    const { rates, perCase } = computePerCaseAndRates([
+      entry(metrics, { caseId: "INT_BASIC", sampleCount: 5, hasInterruptPhase: true }),
+    ]);
+    const c = perCase.INT_BASIC as Record<string, any>;
+    expect(c.interruption.turn_count).toBe(5);
+    expect(c.interruption.median_ms).toBe(1084);
+    expect(rates.interrupt_rate).toBe(1);            // 5 reactions / 5 samples
+    // 9 response turns for 5 samples (interrupted + post-material answers) —
+    // capped per case, not warned: every sample was answered.
+    expect(rates.response_rate).toBe(1);
+    expect(c.response.turn_count).toBe(9);           // raw count stays truthful
+  });
+
+  it("real job-20471 INT_FALSE data: agent stopping for coughs → false rate 1.0", () => {
+    const metrics = {
+      response_metrics: { latency: { turn_level: [1364, 1412, 1428, 1444, 1412]
+        .map((ms, i) => ({ turn_index: i + 1, latency_ms: ms, response_kind: 'interrupted_response' })) } },
+      interruption_metrics: { latency: { turn_level: [1084, 1068, 1404, 1308, 2156]
+        .map((ms, i) => ({ turn_index: i * 2 + 1, action_applicable: true, interrupt_action_ms: ms })) } },
+    };
+    const { rates, perCase } = computePerCaseAndRates([
+      entry(metrics, { caseId: "INT_FALSE", sampleCount: 5, hasInterruptPhase: true }),
+    ]);
+    expect(rates.false_interrupt_rate).toBe(1);      // reacted to every non-semantic sound
+    expect((perCase.INT_FALSE as Record<string, any>).interruption.median_ms).toBe(1308);
+  });
+
   it("excludes is_greeting turns from response counts (real aeval turn shape)", () => {
     // Field shape confirmed against a real metrics.json: turns carry
     // turn_index, user_end_time, agent_start_time, latency_ms, is_barge_in, is_greeting.
