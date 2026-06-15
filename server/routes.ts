@@ -1,6 +1,6 @@
 import type { Express } from "express";
 import { createServer, type Server } from "http";
-import { storage, hashToken, generateSecureToken, generateEvalAgentToken, mergeEvalConfig, validateWorkflowConfig, validateEvalSetConfig, encryptValue, decryptValue, isEncryptionConfigured } from "./storage";
+import { storage, hashToken, generateSecureToken, generateEvalAgentToken, mergeEvalConfig, validateWorkflowConfig, validateEvalSetConfig, encryptValue, decryptValue, isEncryptionConfigured, type MetricSourceRow } from "./storage";
 import { parseNextCronRun } from "./cron";
 import { compareVersions } from "./aeval-seed";
 import { generateProviderId } from "@shared/schema";
@@ -3166,8 +3166,9 @@ export async function registerRoutes(
 
   // ==================== METRICS ROUTES ====================
 
-  // Helper to transform DB eval results into the format the dashboard expects
-  async function formatMetricsResults(results: Awaited<ReturnType<typeof storage.getMainlineEvalResults>>) {
+  // Helper to transform DB eval results into the format the dashboard expects.
+  // Accepts both raw rows and daily-bucket aggregates (both are MetricSourceRow).
+  async function formatMetricsResults(results: MetricSourceRow[]) {
     const providerCache = new Map<string, string>();
     const allProviders = await storage.getAllProviders();
     for (const p of allProviders) {
@@ -3205,16 +3206,28 @@ export async function registerRoutes(
     metricsCache.set(key, { data, expiry: Date.now() + CACHE_TTL });
   }
 
+  // Parse the only client-supplied metrics knob: the time window. `hours` must be
+  // a positive integer; absent means "all time". The client `limit` is ignored —
+  // the server alone decides row counts / raw-vs-bucket (see storage.tierMetrics).
+  // Returns { hoursBack } on success, or { error } describing a 400.
+  function parseMetricsWindow(hours: unknown): { hoursBack?: number } | { error: string } {
+    if (hours === undefined) return {};
+    const parsed = Number(hours);
+    if (!Number.isInteger(parsed) || parsed <= 0) {
+      return { error: "hours must be a positive integer (omit for all time)" };
+    }
+    return { hoursBack: parsed };
+  }
+
   app.get("/api/metrics/realtime", async (req, res) => {
     try {
-      const { hours, limit } = req.query;
-      const cacheKey = `realtime:${hours || 'all'}:${limit || '50'}`;
+      const win = parseMetricsWindow(req.query.hours);
+      if ("error" in win) return res.status(400).json({ error: win.error });
+      const cacheKey = `realtime:${win.hoursBack ?? 'all'}`;
       const cached = getCached(cacheKey);
       if (cached) return res.json(cached);
 
-      const hoursBack = hours ? parseInt(hours as string) : undefined;
-      const limitNum = limit ? parseInt(limit as string) : 50;
-      const results = await storage.getMainlineEvalResults(limitNum, hoursBack);
+      const results = await storage.getMainlineMetrics(win.hoursBack);
       const data = await formatMetricsResults(results);
       setCache(cacheKey, data);
       res.json(data);
@@ -3226,14 +3239,13 @@ export async function registerRoutes(
 
   app.get("/api/metrics/community", async (req, res) => {
     try {
-      const { hours, limit } = req.query;
-      const cacheKey = `community:${hours || 'all'}:${limit || '50'}`;
+      const win = parseMetricsWindow(req.query.hours);
+      if ("error" in win) return res.status(400).json({ error: win.error });
+      const cacheKey = `community:${win.hoursBack ?? 'all'}`;
       const cached = getCached(cacheKey);
       if (cached) return res.json(cached);
 
-      const hoursBack = hours ? parseInt(hours as string) : undefined;
-      const limitNum = limit ? parseInt(limit as string) : 50;
-      const results = await storage.getCommunityEvalResults(limitNum, hoursBack);
+      const results = await storage.getCommunityMetrics(win.hoursBack);
       const data = await formatMetricsResults(results);
       setCache(cacheKey, data);
       res.json(data);
@@ -3249,14 +3261,13 @@ export async function registerRoutes(
       if (!user) {
         return res.status(401).json({ error: "Not authenticated" });
       }
-      const { hours, limit } = req.query;
-      const cacheKey = `my-evals:${user.id}:${hours || 'all'}:${limit || '50'}`;
+      const win = parseMetricsWindow(req.query.hours);
+      if ("error" in win) return res.status(400).json({ error: win.error });
+      const cacheKey = `my-evals:${user.id}:${win.hoursBack ?? 'all'}`;
       const cached = getCached(cacheKey);
       if (cached) return res.json(cached);
 
-      const hoursBack = hours ? parseInt(hours as string) : undefined;
-      const limitNum = limit ? parseInt(limit as string) : 50;
-      const results = await storage.getMyEvalResults(user.id, limitNum, hoursBack);
+      const results = await storage.getMyEvalMetrics(user.id, win.hoursBack);
       const data = await formatMetricsResults(results);
       setCache(cacheKey, data);
       res.json(data);
