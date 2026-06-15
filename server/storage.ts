@@ -95,6 +95,31 @@ const { Pool } = pkg;
 import { desc, eq, and, or, not, sql, gte, inArray } from "drizzle-orm";
 import crypto from "crypto";
 
+// Realtime-metrics windowing policy (server-owned; the client never sets these).
+// Windows spanning <= 90 days return raw per-test points (capped by the ceiling
+// as a safety net); longer windows are aggregated into daily buckets so payload
+// stays bounded as history grows. "All time" is bounded to the last 3 years.
+// See DatabaseStorage.tierMetrics().
+const METRICS_RAW_MAX_DAYS = 90;
+const METRICS_RAW_ROW_CEILING = 20000;
+const METRICS_ALL_MAX_DAYS = 3 * 365; // "all time" shows at most the last 3 years
+
+export type MetricTier = "mainline" | "community" | "myEvals";
+export type MetricsMode = "raw" | "bucketDay";
+
+// Pure raw-vs-bucket decision for a window of `spanDays`. Exported for testing.
+export function resolveMetricsMode(spanDays: number): MetricsMode {
+  return spanDays > METRICS_RAW_MAX_DAYS ? "bucketDay" : "raw";
+}
+
+// The subset of eval-result columns the metrics dashboard consumes. Raw rows
+// (full EvalResult) and daily-bucket aggregates both satisfy this shape.
+export type MetricSourceRow = Pick<EvalResult,
+  | "id" | "providerId" | "region"
+  | "responseLatencyMedian" | "responseLatencySd" | "responseLatencyP95"
+  | "interruptLatencyMedian" | "interruptLatencySd" | "interruptLatencyP95"
+  | "networkResilience" | "naturalness" | "noiseReduction" | "createdAt">;
+
 export function hashToken(token: string): string {
   return crypto.createHash('sha256').update(token).digest('hex');
 }
@@ -919,7 +944,12 @@ export class DatabaseStorage {
       .offset(filters?.offset || 0);
   }
 
-  async getMainlineEvalResults(limit: number = 50, hoursBack?: number): Promise<EvalResult[]> {
+  // --- Metrics tiers (mainline / community / my-evals) -------------------
+  // Each tier has its own WHERE conditions and join chain. Raw, daily-bucketed,
+  // and span-probe queries all share these helpers so their filters can never
+  // drift apart. See getXMetrics() for the span-based raw-vs-bucket policy.
+
+  private mainlineConditions(hoursBack?: number) {
     const conditions = [
       eq(evalJobs.status, "completed"),
       eq(workflows.isMainline, true),
@@ -930,27 +960,13 @@ export class DatabaseStorage {
       // Only principal/fellow users' jobs qualify as mainline
       inArray(users.plan, ["principal", "fellow"]),
     ];
-
     if (hoursBack) {
-      const cutoff = new Date(Date.now() - hoursBack * 60 * 60 * 1000);
-      conditions.push(gte(evalResults.createdAt, cutoff));
+      conditions.push(gte(evalResults.createdAt, new Date(Date.now() - hoursBack * 60 * 60 * 1000)));
     }
-
-    return db.select()
-      .from(evalResults)
-      .innerJoin(evalJobs, eq(evalResults.evalJobId, evalJobs.id))
-      .innerJoin(users, eq(evalJobs.createdBy, users.id))
-      .innerJoin(workflows, eq(evalJobs.workflowId, workflows.id))
-      .innerJoin(evalSets, eq(evalJobs.evalSetId, evalSets.id))
-      .innerJoin(evalAgents, eq(evalJobs.evalAgentId, evalAgents.id))
-      .innerJoin(evalAgentTokens, eq(evalAgents.tokenId, evalAgentTokens.id))
-      .where(and(...conditions))
-      .orderBy(desc(evalResults.createdAt))
-      .limit(limit)
-      .then(rows => rows.map(r => r.eval_results));
+    return conditions;
   }
 
-  async getCommunityEvalResults(limit: number = 50, hoursBack?: number): Promise<EvalResult[]> {
+  private communityConditions(hoursBack?: number) {
     const conditions = [
       eq(evalJobs.status, "completed"),
       eq(workflows.visibility, "public"),
@@ -963,27 +979,13 @@ export class DatabaseStorage {
         sql`${users.plan} IS NULL OR ${users.plan} NOT IN ('principal', 'fellow')`,
       ),
     ];
-
     if (hoursBack) {
-      const cutoff = new Date(Date.now() - hoursBack * 60 * 60 * 1000);
-      conditions.push(gte(evalResults.createdAt, cutoff));
+      conditions.push(gte(evalResults.createdAt, new Date(Date.now() - hoursBack * 60 * 60 * 1000)));
     }
-
-    return db.select()
-      .from(evalResults)
-      .innerJoin(evalJobs, eq(evalResults.evalJobId, evalJobs.id))
-      .innerJoin(workflows, eq(evalJobs.workflowId, workflows.id))
-      .innerJoin(evalSets, eq(evalJobs.evalSetId, evalSets.id))
-      .leftJoin(users, eq(evalJobs.createdBy, users.id))
-      .leftJoin(evalAgents, eq(evalJobs.evalAgentId, evalAgents.id))
-      .leftJoin(evalAgentTokens, eq(evalAgents.tokenId, evalAgentTokens.id))
-      .where(and(...conditions))
-      .orderBy(desc(evalResults.createdAt))
-      .limit(limit)
-      .then(rows => rows.map(r => r.eval_results));
+    return conditions;
   }
 
-  async getMyEvalResults(userId: number, limit: number = 50, hoursBack?: number): Promise<EvalResult[]> {
+  private myEvalConditions(userId: number, hoursBack?: number) {
     const conditions = [
       eq(evalJobs.status, "completed"),
       or(
@@ -991,21 +993,150 @@ export class DatabaseStorage {
         and(eq(evalSets.visibility, "private"), eq(evalSets.ownerId, userId)),
       ),
     ];
-
     if (hoursBack) {
-      const cutoff = new Date(Date.now() - hoursBack * 60 * 60 * 1000);
-      conditions.push(gte(evalResults.createdAt, cutoff));
+      conditions.push(gte(evalResults.createdAt, new Date(Date.now() - hoursBack * 60 * 60 * 1000)));
     }
+    return conditions;
+  }
 
-    return db.select()
-      .from(evalResults)
+  // Join appliers — typed loosely because the three chains differ structurally
+  // (mainline: all inner; community: left joins for nullable user/agent/token;
+  // my-evals: only jobs+workflow+evalSet). The select shape is supplied first.
+  private joinMainline(q: any): any {
+    return q
+      .innerJoin(evalJobs, eq(evalResults.evalJobId, evalJobs.id))
+      .innerJoin(users, eq(evalJobs.createdBy, users.id))
+      .innerJoin(workflows, eq(evalJobs.workflowId, workflows.id))
+      .innerJoin(evalSets, eq(evalJobs.evalSetId, evalSets.id))
+      .innerJoin(evalAgents, eq(evalJobs.evalAgentId, evalAgents.id))
+      .innerJoin(evalAgentTokens, eq(evalAgents.tokenId, evalAgentTokens.id));
+  }
+  private joinCommunity(q: any): any {
+    return q
       .innerJoin(evalJobs, eq(evalResults.evalJobId, evalJobs.id))
       .innerJoin(workflows, eq(evalJobs.workflowId, workflows.id))
       .innerJoin(evalSets, eq(evalJobs.evalSetId, evalSets.id))
-      .where(and(...conditions))
+      .leftJoin(users, eq(evalJobs.createdBy, users.id))
+      .leftJoin(evalAgents, eq(evalJobs.evalAgentId, evalAgents.id))
+      .leftJoin(evalAgentTokens, eq(evalAgents.tokenId, evalAgentTokens.id));
+  }
+  private joinMyEvals(q: any): any {
+    return q
+      .innerJoin(evalJobs, eq(evalResults.evalJobId, evalJobs.id))
+      .innerJoin(workflows, eq(evalJobs.workflowId, workflows.id))
+      .innerJoin(evalSets, eq(evalJobs.evalSetId, evalSets.id));
+  }
+
+  private tierConditions(tier: MetricTier, hoursBack?: number, userId?: number) {
+    return tier === "mainline" ? this.mainlineConditions(hoursBack)
+      : tier === "community" ? this.communityConditions(hoursBack)
+      : this.myEvalConditions(userId!, hoursBack);
+  }
+  private applyTierJoins(tier: MetricTier, q: any): any {
+    return tier === "mainline" ? this.joinMainline(q)
+      : tier === "community" ? this.joinCommunity(q)
+      : this.joinMyEvals(q);
+  }
+
+  // Earliest createdAt for a tier (null if no rows) → used to size "all time".
+  private async tierSpanDays(tier: MetricTier, userId?: number): Promise<number | null> {
+    const base = db.select({ minAt: sql<string | null>`min(${evalResults.createdAt})` }).from(evalResults);
+    const rows = await this.applyTierJoins(tier, base).where(and(...this.tierConditions(tier, undefined, userId)));
+    const minAt = rows[0]?.minAt;
+    if (!minAt) return null;
+    return (Date.now() - new Date(minAt).getTime()) / (24 * 60 * 60 * 1000);
+  }
+
+  // One averaged point per (day, provider, region). Same shape formatMetricsResults
+  // consumes; SD/P95/secondary metrics are averages-of-aggregates (trend overview).
+  private async tierBucketedDaily(tier: MetricTier, hoursBack?: number, userId?: number): Promise<MetricSourceRow[]> {
+    const day = sql`date_trunc('day', ${evalResults.createdAt})`;
+    const base = db.select({
+      id: sql<number>`min(${evalResults.id})::int`,
+      providerId: evalResults.providerId,
+      region: evalResults.region,
+      responseLatencyMedian: sql<number>`round(avg(${evalResults.responseLatencyMedian}))::int`,
+      responseLatencySd: sql<number>`avg(${evalResults.responseLatencySd})::real`,
+      responseLatencyP95: sql<number>`round(avg(${evalResults.responseLatencyP95}))::int`,
+      interruptLatencyMedian: sql<number>`round(avg(${evalResults.interruptLatencyMedian}))::int`,
+      interruptLatencySd: sql<number>`avg(${evalResults.interruptLatencySd})::real`,
+      interruptLatencyP95: sql<number>`round(avg(${evalResults.interruptLatencyP95}))::int`,
+      networkResilience: sql<number | null>`round(avg(${evalResults.networkResilience}))::int`,
+      naturalness: sql<number | null>`avg(${evalResults.naturalness})::real`,
+      noiseReduction: sql<number | null>`round(avg(${evalResults.noiseReduction}))::int`,
+      createdAt: sql<Date>`${day}`,
+    }).from(evalResults);
+    const rows = await this.applyTierJoins(tier, base)
+      .where(and(...this.tierConditions(tier, hoursBack, userId)))
+      .groupBy(day, evalResults.providerId, evalResults.region)
+      .orderBy(day);
+    return rows as MetricSourceRow[];
+  }
+
+  // Span-based policy: <= 90 days → raw points (every test, capped by a safety
+  // ceiling); > 90 days → daily buckets. "All time" (no hoursBack) is bounded to
+  // the last METRICS_ALL_MAX_DAYS and its mode is sized from the actual data
+  // span (so a young deployment's "all" still shows raw points). The client
+  // never controls any of this.
+  private async tierMetrics(tier: MetricTier, hoursBack?: number, userId?: number): Promise<MetricSourceRow[]> {
+    let effectiveHoursBack = hoursBack;
+    let spanDays: number;
+    if (hoursBack != null) {
+      spanDays = hoursBack / 24;
+    } else {
+      // "all time": clamp the window to the 3-year retention cap, and decide
+      // raw-vs-bucket from how much history actually exists (also clamped).
+      effectiveHoursBack = METRICS_ALL_MAX_DAYS * 24;
+      const actualSpan = (await this.tierSpanDays(tier, userId)) ?? 0;
+      spanDays = Math.min(actualSpan, METRICS_ALL_MAX_DAYS);
+    }
+
+    if (resolveMetricsMode(spanDays) === "bucketDay") {
+      return this.tierBucketedDaily(tier, effectiveHoursBack, userId);
+    }
+    const rows = await this.applyTierJoins(tier, db.select().from(evalResults))
+      .where(and(...this.tierConditions(tier, effectiveHoursBack, userId)))
+      .orderBy(desc(evalResults.createdAt))
+      .limit(METRICS_RAW_ROW_CEILING);
+    return rows.map((r: any) => r.eval_results) as MetricSourceRow[];
+  }
+
+  // Public metrics entry points used by the realtime dashboard. They own the
+  // raw-vs-bucket decision and the row ceiling — callers pass only the window.
+  getMainlineMetrics(hoursBack?: number): Promise<MetricSourceRow[]> {
+    return this.tierMetrics("mainline", hoursBack);
+  }
+  getCommunityMetrics(hoursBack?: number): Promise<MetricSourceRow[]> {
+    return this.tierMetrics("community", hoursBack);
+  }
+  getMyEvalMetrics(userId: number, hoursBack?: number): Promise<MetricSourceRow[]> {
+    return this.tierMetrics("myEvals", hoursBack, userId);
+  }
+
+  // Raw, limit-controlled tier queries — kept for the leaderboard / API v1
+  // callers that request a fixed count and don't need the span policy.
+  async getMainlineEvalResults(limit: number = 50, hoursBack?: number): Promise<EvalResult[]> {
+    return this.joinMainline(db.select().from(evalResults))
+      .where(and(...this.mainlineConditions(hoursBack)))
       .orderBy(desc(evalResults.createdAt))
       .limit(limit)
-      .then(rows => rows.map(r => r.eval_results));
+      .then((rows: any[]) => rows.map(r => r.eval_results));
+  }
+
+  async getCommunityEvalResults(limit: number = 50, hoursBack?: number): Promise<EvalResult[]> {
+    return this.joinCommunity(db.select().from(evalResults))
+      .where(and(...this.communityConditions(hoursBack)))
+      .orderBy(desc(evalResults.createdAt))
+      .limit(limit)
+      .then((rows: any[]) => rows.map(r => r.eval_results));
+  }
+
+  async getMyEvalResults(userId: number, limit: number = 50, hoursBack?: number): Promise<EvalResult[]> {
+    return this.joinMyEvals(db.select().from(evalResults))
+      .where(and(...this.myEvalConditions(userId, hoursBack)))
+      .orderBy(desc(evalResults.createdAt))
+      .limit(limit)
+      .then((rows: any[]) => rows.map(r => r.eval_results));
   }
 
   async createApiKey(apiKey: InsertApiKey): Promise<ApiKey> {
