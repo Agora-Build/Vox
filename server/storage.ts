@@ -1073,11 +1073,9 @@ export class DatabaseStorage {
     return rows as MetricSourceRow[];
   }
 
-  // Span-based policy: <= 90 days → raw points (every test, capped by a safety
-  // ceiling); > 90 days → daily buckets. "All time" (no hoursBack) is bounded to
-  // the last METRICS_ALL_MAX_DAYS and its mode is sized from the actual data
-  // span (so a young deployment's "all" still shows raw points). The client
-  // never controls any of this.
+  // Applies the windowing policy (see the module-level comment). "All time"
+  // (no hoursBack) is bounded to the retention cap and its raw-vs-bucket mode is
+  // sized from the actual data span, so a young deployment's "all" stays raw.
   private async tierMetrics(tier: MetricTier, hoursBack?: number, userId?: number): Promise<MetricSourceRow[]> {
     let effectiveHoursBack = hoursBack;
     let spanDays: number;

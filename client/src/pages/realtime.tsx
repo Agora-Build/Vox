@@ -679,7 +679,6 @@ export default function Dashboard() {
     queryFn: async () => {
       const params = new URLSearchParams();
       if (timeRange !== "all") params.set("hours", timeRange);
-      // No limit param: the server owns row counts + raw-vs-bucket per window.
       const res = await fetch(`/api/metrics/community?${params}`);
       if (!res.ok) throw new Error("Failed to fetch community metrics");
       return res.json();
@@ -693,7 +692,6 @@ export default function Dashboard() {
     queryFn: async () => {
       const params = new URLSearchParams();
       if (timeRange !== "all") params.set("hours", timeRange);
-      // No limit param: the server owns row counts + raw-vs-bucket per window.
       const res = await fetch(`/api/metrics/my-evals?${params}`);
       if (!res.ok) throw new Error("Failed to fetch my eval metrics");
       return res.json();
