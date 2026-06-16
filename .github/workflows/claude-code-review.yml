@@ -54,7 +54,8 @@ jobs:
 
             Be concise. Only comment on real issues, not style preferences. If the
             code looks good, say so briefly. Output ONLY the review as markdown —
-            do not post any comments yourself.
+            do not post any comments yourself. Do NOT add your own title or top
+            heading (e.g. "Code Review: ..."); start directly with the findings.
         env:
           ANTHROPIC_BASE_URL: ${{ secrets.ANTHROPIC_BASE_URL }}
 
