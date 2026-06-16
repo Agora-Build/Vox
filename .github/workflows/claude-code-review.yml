@@ -40,6 +40,8 @@ jobs:
           plugins: 'code-review@claude-code-plugins'
           prompt: '/code-review:code-review ${{ github.repository }}/pull/${{ github.event.pull_request.number }}'
           exclude_comments_by_actor: 'github-actions[bot]'
+          track_progress: true
+          use_sticky_comment: true
           # See https://github.com/anthropics/claude-code-action/blob/main/docs/usage.md
         env:
           ANTHROPIC_BASE_URL: ${{ secrets.ANTHROPIC_BASE_URL }}
