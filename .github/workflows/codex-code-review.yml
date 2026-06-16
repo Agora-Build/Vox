@@ -32,6 +32,8 @@ jobs:
         uses: openai/codex-action@v1
         with:
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          responses-api-endpoint: ${{ secrets.CODEX_OPENAI_BASE_URL }}v1/responses
+          model: gpt-5.5
           sandbox: read-only
           prompt: |
             You are a senior code reviewer. Review the changes in PR #${{ github.event.pull_request.number }}.
