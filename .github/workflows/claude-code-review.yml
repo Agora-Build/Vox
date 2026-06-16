@@ -41,7 +41,10 @@ jobs:
           github_token: ${{ github.token }}
           plugin_marketplaces: 'https://github.com/anthropics/claude-code.git'
           plugins: 'code-review@claude-code-plugins'
-          prompt: '/code-review:code-review ${{ github.repository }}/pull/${{ github.event.pull_request.number }}'
+          prompt: |
+            /code-review:code-review ${{ github.repository }}/pull/${{ github.event.pull_request.number }}
+            Begin the review comment with the heading "## 🤖 Claude Code Review".
+            Do not include the pull request title as a heading or restate it.
           exclude_comments_by_actor: 'github-actions[bot]'
           track_progress: true
           use_sticky_comment: true
