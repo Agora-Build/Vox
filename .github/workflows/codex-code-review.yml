@@ -6,6 +6,15 @@ on:
 
 jobs:
   codex-review:
+    # Trusted-author gate: the model gets OPENAI_API_KEY in env and its output is
+    # posted verbatim, so untrusted PR text could try to exfiltrate secrets via
+    # the review comment. Restrict to authors with push access — they already
+    # have repo-secret access, so this adds no exposure; fork/untrusted PRs don't
+    # run. (Mirrors claude-code-review.yml.)
+    if: >-
+      github.event.pull_request.author_association == 'OWNER' ||
+      github.event.pull_request.author_association == 'MEMBER' ||
+      github.event.pull_request.author_association == 'COLLABORATOR'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -32,7 +41,8 @@ jobs:
         uses: openai/codex-action@v1
         with:
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}
-          responses-api-endpoint: ${{ secrets.CODEX_OPENAI_BASE_URL }}v1/responses
+          # OPENAI_BASE_URL secret has no trailing slash, e.g. https://host/openai
+          responses-api-endpoint: ${{ secrets.OPENAI_BASE_URL }}/v1/responses
           model: gpt-5.5
           sandbox: read-only
           prompt: |
