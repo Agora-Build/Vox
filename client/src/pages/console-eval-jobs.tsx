@@ -274,7 +274,11 @@ function ScheduledJobsBlock() {
           <AlertDialogHeader>
             <AlertDialogTitle>Delete Schedule</AlertDialogTitle>
             <AlertDialogDescription>
-              This will permanently delete this schedule. Any jobs already created by it will remain. This action cannot be undone.
+              This will permanently delete the schedule{" "}
+              <span className="font-semibold text-foreground">
+                {schedules?.find((s) => s.id === deleteId)?.name ?? `#${deleteId}`}
+              </span>
+              . Any jobs already created by it will remain. This action cannot be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
