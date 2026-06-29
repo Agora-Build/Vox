@@ -1917,6 +1917,7 @@ export async function registerRoutes(
 
       const job = await storage.createEvalJob({
         scheduleId: schedule.id,
+        triggerType: 1, // scheduled (run-now off an existing schedule)
         workflowId: schedule.workflowId,
         evalSetId: schedule.evalSetId,
         createdBy: user.id,
@@ -2870,6 +2871,7 @@ export async function registerRoutes(
 
       const job = await storage.createEvalJob({
         workflowId: parseInt(workflowId),
+        triggerType: 2, // manual (Run Workflow)
         evalSetId,
         createdBy: user.id,
         region,
@@ -2960,7 +2962,11 @@ export async function registerRoutes(
       const enriched = paged.map(job => ({
         ...job,
         creatorName: job.createdBy ? creatorMap.get(job.createdBy) || null : null,
-        type: job.scheduleId ? "scheduled" : "manual",
+        // trigger_type: 1 = scheduled, 2 = manual (recorded at creation). Fall back
+        // to scheduleId for rows created before the column existed.
+        type: job.triggerType === 1 ? "scheduled"
+          : job.triggerType === 2 ? "manual"
+          : job.scheduleId ? "scheduled" : "manual",
       }));
 
       res.json({ data: enriched, total });

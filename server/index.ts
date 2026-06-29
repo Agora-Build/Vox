@@ -253,6 +253,7 @@ function startBackgroundWorker() {
           // Create the eval job
           const job = await storage.createEvalJob({
             scheduleId: schedule.id,
+            triggerType: 1, // scheduled
             workflowId: schedule.workflowId,
             evalSetId: schedule.evalSetId,
             createdBy: schedule.createdBy,

@@ -251,6 +251,10 @@ export type EvalSchedule = typeof evalSchedules.$inferSelect;
 export const evalJobs = pgTable("eval_jobs", {
   id: serial("id").primaryKey(),
   scheduleId: integer("schedule_id").references(() => evalSchedules.id, { onDelete: "set null" }),
+  // How the job was created: 1 = scheduled, 2 = manual. Recorded at creation so
+  // the origin survives schedule deletion (which nulls schedule_id). Nullable for
+  // rows created before this column — the API falls back to schedule_id then.
+  triggerType: integer("trigger_type"),
   workflowId: integer("workflow_id").notNull().references(() => workflows.id, { onDelete: "cascade" }),
   evalSetId: integer("eval_set_id").notNull().references(() => evalSets.id),
   evalAgentId: integer("eval_agent_id").references(() => evalAgents.id),

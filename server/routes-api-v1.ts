@@ -239,6 +239,7 @@ export function registerApiV1Routes(app: Express): void {
       // Create eval job
       const job = await storage.createEvalJob({
         workflowId: parseInt(id),
+        triggerType: 2, // manual (API v1 run)
         evalSetId,
         createdBy: user.id,
         region: region || "na",
