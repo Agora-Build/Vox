@@ -34,6 +34,7 @@ const MIGRATIONS: Array<{ version: number; description: string; file: string | n
   { version: 10, description: "add provider brand color", file: "0009_add_provider_brand_color.sql" },
   { version: 11, description: "strip scenario from workflow configs", file: "0010_strip_workflow_scenario.sql" },
   { version: 12, description: "eval result rate columns", file: "0011_add_rate_columns.sql" },
+  { version: 13, description: "eval job trigger type", file: "0012_add_job_trigger_type.sql" },
 ];
 
 const TARGET_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version;

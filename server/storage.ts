@@ -741,6 +741,7 @@ export class DatabaseStorage {
       let query = db.select({
         id: evalJobs.id,
         scheduleId: evalJobs.scheduleId,
+        triggerType: evalJobs.triggerType,
         workflowId: evalJobs.workflowId,
         evalSetId: evalJobs.evalSetId,
         evalAgentId: evalJobs.evalAgentId,
