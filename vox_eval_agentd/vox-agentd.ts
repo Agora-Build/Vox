@@ -785,6 +785,12 @@ class VoxEvalAgentDaemon {
           // the pipes open), destroy the streams and settle anyway.
           forceTimer = setTimeout(() => {
             try { proc.stdout?.destroy(); proc.stderr?.destroy(); } catch { /* ignore */ }
+            // Best-effort: record the output dir so processJobs still uploads the
+            // run's artifacts — the most useful evidence for diagnosing the hang.
+            try {
+              const dir = this.resolveAevalOutputDir(scenarioConfig, stdout + stderr);
+              if (dir && !this.jobOutputDirs.includes(dir)) this.jobOutputDirs.push(dir);
+            } catch { /* best effort */ }
             console.error(`[Daemon] aeval did not exit after SIGKILL — forcing job failure`);
             const err = new Error(`aeval timed out after ${AEVAL_RUN_TIMEOUT_MS}ms (forced)`) as Error & { partialResults?: EvalResult };
             fail(err);
