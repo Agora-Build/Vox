@@ -139,7 +139,9 @@ function buildCombinedData(filteredMetrics: EvalResult[], colorMap: Map<string, 
   return { data, providers };
 }
 
-const GAP_MS = 2 * 60 * 60 * 1000; // 2 hours
+// Connect consecutive points into one line when they're within this window;
+// break into a separate segment only when the gap is longer (a real outage).
+const GAP_MS = 6 * 60 * 60 * 1000; // 6 hours
 
 interface SegmentLineInfo {
   segKey: string;
@@ -151,7 +153,7 @@ interface SegmentLineInfo {
 }
 
 /**
- * Pre-compute segmented data: splits each provider's series at 2h gaps.
+ * Pre-compute segmented data: splits each provider's series at gaps longer than GAP_MS.
  * Returns a new data array with segment keys baked in, plus line descriptors.
  */
 function buildSegmentedData(
