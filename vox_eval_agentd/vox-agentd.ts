@@ -117,7 +117,10 @@ const JOB_POLL_INTERVAL = 10000;  // 10 seconds
 // "occupied" forever — never completing, never claiming new work. On timeout we
 // SIGTERM then SIGKILL the process group so the run fails, the job is released,
 // and the agent frees up.
-const AEVAL_RUN_TIMEOUT_MS = Number(process.env.AEVAL_RUN_TIMEOUT_MS) || 20 * 60 * 1000; // 20 min
+const AEVAL_RUN_TIMEOUT_MS = (() => {
+  const v = Number(process.env.AEVAL_RUN_TIMEOUT_MS);
+  return Number.isFinite(v) && v > 0 ? v : 20 * 60 * 1000; // default 20 min; ignore junk/negative
+})();
 
 const VOICE_AGENT_TESTER_PATH = path.resolve(__dirname, 'voice-agent-tester');
 const AEVAL_DATA_PATH = path.resolve(__dirname, 'aeval-data');
@@ -743,13 +746,13 @@ class VoxEvalAgentDaemon {
       let stdout = '';
       let stderr = '';
 
-      // Signal the whole process group (negative pid); fall back to the direct
-      // process if the group send fails.
+      // Signal the whole process group (negative pid); if the group send fails
+      // (unsupported / already gone), fall back to signalling the direct child.
       const killTree = (signal: NodeJS.Signals) => {
         try {
-          if (proc.pid) process.kill(-proc.pid, signal);
-          else proc.kill(signal);
-        } catch { /* already gone */ }
+          if (proc.pid) { process.kill(-proc.pid, signal); return; }
+        } catch { /* group send failed — fall through to a direct kill */ }
+        try { proc.kill(signal); } catch { /* already gone */ }
       };
 
       // Kill a run that overruns the ceiling so it can't pin the agent forever.
