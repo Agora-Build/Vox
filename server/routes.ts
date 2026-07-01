@@ -2351,6 +2351,13 @@ export async function registerRoutes(
         agent = existing[0];
         await storage.updateEvalAgent(agent.id, { name: agentName, state: "idle", metadata: metadata || {} });
         agent = { ...agent, name: agentName, state: "idle" as const, metadata: metadata || {} };
+        // A fresh registration means the prior process died; release any jobs it
+        // was still running so they re-queue instead of hanging as "running"
+        // forever (the heartbeat reaper misses them — this agent looks alive).
+        const released = await storage.releaseAgentRunningJobs(agent.id);
+        if (released > 0) {
+          console.log(`[eval-agent] Released ${released} orphaned running job(s) from re-registered agent ${agent.id}`);
+        }
       } else {
         agent = await storage.createEvalAgent({
           name: agentName,
