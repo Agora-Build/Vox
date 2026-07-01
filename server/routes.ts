@@ -2345,13 +2345,6 @@ export async function registerRoutes(
     return false;
   };
 
-  // Non-job-scoped fallback (reset-stuck): fence against the token's current
-  // agent lease. No job to key on, so this is best-effort for the current lease.
-  const isSupersededTokenLease = async (tokenId: number, leaseId: unknown): Promise<boolean> => {
-    const agents = await storage.getEvalAgentsByTokenId(tokenId);
-    return !!agents[0] && isSupersededLease(agents[0], leaseId);
-  };
-
   // Eval agent registration endpoint (uses eval agent token for auth)
   app.post("/api/eval-agent/register", async (req, res) => {
     try {
@@ -2775,7 +2768,10 @@ export async function registerRoutes(
         return res.status(401).json({ error: "Invalid or revoked token" });
       }
 
-      if (await isSupersededTokenLease(evalAgentToken.id, req.body?.leaseId)) {
+      // Strict: require a current leased agent for this token and a matching
+      // lease — a token with no registered agent can't reset uploads either.
+      const currentAgent = (await storage.getEvalAgentsByTokenId(evalAgentToken.id))[0];
+      if (!currentAgent || isSupersededLease(currentAgent, req.body?.leaseId)) {
         return res.status(403).json({ error: "superseded", superseded: true });
       }
 

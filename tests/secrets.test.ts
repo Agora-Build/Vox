@@ -496,6 +496,7 @@ describe('Secrets - Agent Endpoint', () => {
   let serverAvailable = false;
   let agentToken = '';
   let agentId = 0;
+  let leaseId = '';
   let workflowId = 0;
   let jobId = 0;
   let encryptionAvailable = false;
@@ -535,6 +536,7 @@ describe('Secrets - Agent Endpoint', () => {
         if (regRes.ok) {
           const agent = await regRes.json();
           agentId = agent.id;
+          leaseId = agent.leaseId;
         }
       }
 
@@ -576,7 +578,7 @@ describe('Secrets - Agent Endpoint', () => {
           await fetch(`${BASE_URL}/api/eval-agent/jobs/${jobId}/claim`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${agentToken}` },
-            body: JSON.stringify({ agentId }),
+            body: JSON.stringify({ agentId, leaseId }),
           });
         }
       }
@@ -609,7 +611,7 @@ describe('Secrets - Agent Endpoint', () => {
 
   it('should return decrypted secrets for a claimed running job', async () => {
     if (!serverAvailable || !jobId || !agentToken || !encryptionAvailable) return;
-    const res = await fetch(`${BASE_URL}/api/eval-agent/jobs/${jobId}/secrets`, {
+    const res = await fetch(`${BASE_URL}/api/eval-agent/jobs/${jobId}/secrets?leaseId=${encodeURIComponent(leaseId)}`, {
       headers: { 'Authorization': `Bearer ${agentToken}` },
     });
     expect(res.ok).toBe(true);
@@ -625,11 +627,11 @@ describe('Secrets - Agent Endpoint', () => {
     await fetch(`${BASE_URL}/api/eval-agent/jobs/${jobId}/complete`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${agentToken}` },
-      body: JSON.stringify({ agentId, error: 'test completion for secrets guard' }),
+      body: JSON.stringify({ agentId, leaseId, error: 'test completion for secrets guard' }),
     });
 
-    // Now try to fetch secrets — should be rejected
-    const res = await fetch(`${BASE_URL}/api/eval-agent/jobs/${jobId}/secrets`, {
+    // Now try to fetch secrets — should be rejected by the running-status guard
+    const res = await fetch(`${BASE_URL}/api/eval-agent/jobs/${jobId}/secrets?leaseId=${encodeURIComponent(leaseId)}`, {
       headers: { 'Authorization': `Bearer ${agentToken}` },
     });
     expect(res.status).toBe(403);
