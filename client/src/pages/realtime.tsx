@@ -153,7 +153,7 @@ interface SegmentLineInfo {
 }
 
 /**
- * Pre-compute segmented data: splits each provider's series at 2h gaps.
+ * Pre-compute segmented data: splits each provider's series at gaps longer than GAP_MS.
  * Returns a new data array with segment keys baked in, plus line descriptors.
  */
 function buildSegmentedData(
