@@ -761,17 +761,16 @@ describe('Vox API Tests', () => {
       expect(hb2.ok).toBe(true);
     });
 
-    it('should fence an artifact call with a wrong lease (derived from token)', async () => {
-      // The artifact endpoints carry no agentId — the server derives the token's
-      // current agent and fences a mismatched lease (checked before job lookup).
+    it('should deny an artifact call for a job the agent does not own', async () => {
+      // Artifact/credential endpoints authorize against the job's assigned agent,
+      // so this agent cannot touch a job it never claimed (job 1) — denied with
+      // 403 (not assigned) or 404 (no such job), never 200.
       const res = await fetch(`${BASE_URL}/api/eval-agent/jobs/1/artifact-status`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${testEvalAgentToken}` },
-        body: JSON.stringify({ status: 'uploaded', leaseId: 'not-the-current-lease' }),
+        body: JSON.stringify({ status: 'uploaded', leaseId }),
       });
-      expect(res.status).toBe(403);
-      const body = await res.json();
-      expect(body.superseded).toBe(true);
+      expect([403, 404]).toContain(res.status);
     });
   });
 
