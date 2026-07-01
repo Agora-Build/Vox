@@ -2314,11 +2314,36 @@ export async function registerRoutes(
   });
 
   // A daemon that re-registered rotates the agent's lease; an older instance
-  // (restart leftover or duplicate on the same token) is thus superseded. Fence
-  // its state-changing calls. Only enforced when both sides carry a lease, so
-  // pre-lease daemons (no leaseId) keep working during rollout.
+  // (restart leftover or duplicate on the same token) is thus superseded. Once
+  // an agent holds a lease, every state-changing call MUST carry the matching
+  // lease — a missing or mismatched lease is fenced. (Requires all daemons to be
+  // on the lease-aware build; deploy after `vox-upgrade.sh`.)
   const isSupersededLease = (agent: { currentLeaseId?: string | null }, leaseId: unknown): boolean =>
-    !!agent.currentLeaseId && typeof leaseId === "string" && leaseId.length > 0 && leaseId !== agent.currentLeaseId;
+    !!agent.currentLeaseId && leaseId !== agent.currentLeaseId;
+
+  // Authorize a job-scoped agent endpoint against the job's OWN assigned agent
+  // (not the token's latest agent — token_id isn't unique, so duplicate rows
+  // could otherwise validate the lease against the wrong agent). This both
+  // prevents cross-job access (the job's agent must belong to this token) and
+  // fences a superseded lease (must match the assigned agent's current lease).
+  const authorizeJobAgent = async (jobId: number, tokenId: number, leaseId: unknown) => {
+    const job = await storage.getEvalJob(jobId);
+    if (!job) return { status: "notfound" as const };
+    if (!job.evalAgentId) return { status: "unauthorized" as const };
+    const agent = await storage.getEvalAgent(job.evalAgentId);
+    if (!agent || agent.tokenId !== tokenId) return { status: "unauthorized" as const };
+    if (isSupersededLease(agent, leaseId)) return { status: "superseded" as const };
+    return { status: "ok" as const, job, agent };
+  };
+
+  // Map an authorizeJobAgent result to an HTTP response; returns true if it
+  // handled (sent) an error, false if authorized (caller proceeds).
+  const denyJobAgent = (res: { status: (c: number) => { json: (b: unknown) => void } }, auth: { status: string }): boolean => {
+    if (auth.status === "notfound") { res.status(404).json({ error: "Job not found" }); return true; }
+    if (auth.status === "unauthorized") { res.status(403).json({ error: "Job not assigned to your agent" }); return true; }
+    if (auth.status === "superseded") { res.status(403).json({ error: "superseded", superseded: true }); return true; }
+    return false;
+  };
 
   // Eval agent registration endpoint (uses eval agent token for auth)
   app.post("/api/eval-agent/register", async (req, res) => {
@@ -2649,7 +2674,11 @@ export async function registerRoutes(
       }
 
       const jobId = parseInt(req.params.jobId);
-      const { zipUrl, files } = req.body;
+      const { zipUrl, files, leaseId } = req.body;
+
+      // Only the agent that ran this job (matching lease) may store its artifacts.
+      const auth = await authorizeJobAgent(jobId, evalAgentToken.id, leaseId);
+      if (auth.status !== "ok") { denyJobAgent(res, auth); return; }
 
       if (!zipUrl) {
         return res.status(400).json({ error: "zipUrl is required" });
@@ -2705,7 +2734,11 @@ export async function registerRoutes(
       }
 
       const jobId = parseInt(req.params.jobId);
-      const { status } = req.body;
+      const { status, leaseId } = req.body;
+
+      // Only the agent that ran this job (matching lease) may change its status.
+      const auth = await authorizeJobAgent(jobId, evalAgentToken.id, leaseId);
+      if (auth.status !== "ok") { denyJobAgent(res, auth); return; }
 
       if (!status || !['pending', 'uploading', 'uploaded', 'failed'].includes(status)) {
         return res.status(400).json({ error: "Invalid status. Must be: pending, uploading, uploaded, failed" });
@@ -2733,6 +2766,13 @@ export async function registerRoutes(
 
       if (!evalAgentToken || evalAgentToken.isRevoked) {
         return res.status(401).json({ error: "Invalid or revoked token" });
+      }
+
+      // Strict: require a current leased agent for this token and a matching
+      // lease — a token with no registered agent can't reset uploads either.
+      const currentAgent = (await storage.getEvalAgentsByTokenId(evalAgentToken.id))[0];
+      if (!currentAgent || isSupersededLease(currentAgent, req.body?.leaseId)) {
+        return res.status(403).json({ error: "superseded", superseded: true });
       }
 
       const count = await storage.resetStuckArtifactUploads();
@@ -2763,11 +2803,11 @@ export async function registerRoutes(
         return res.status(401).json({ error: "Invalid or revoked token" });
       }
 
-      const jobId = parseInt(req.params.jobId);
-      const job = await storage.getEvalJob(jobId);
-      if (!job) {
-        return res.status(404).json({ error: "Job not found" });
-      }
+      // Authorize against the job's assigned agent + fence a superseded lease
+      // before returning any storage credentials.
+      const auth = await authorizeJobAgent(parseInt(req.params.jobId), evalAgentToken.id, req.query.leaseId);
+      if (auth.status !== "ok") { denyJobAgent(res, auth); return; }
+      const { job } = auth;
 
       // Check if job creator has custom storage config
       if (job.createdBy) {
@@ -2809,23 +2849,14 @@ export async function registerRoutes(
       }
 
       const { jobId } = req.params;
-      const job = await storage.getEvalJob(parseInt(jobId));
-      if (!job) {
-        return res.status(404).json({ error: "Job not found" });
-      }
+      // Authorize against the job's assigned agent + fence a superseded lease
+      // before returning any decrypted secrets.
+      const auth = await authorizeJobAgent(parseInt(jobId), evalAgentToken.id, req.query.leaseId);
+      if (auth.status !== "ok") { denyJobAgent(res, auth); return; }
 
       // Only allow secrets access for actively running jobs
-      if (job.status !== "running") {
+      if (auth.job.status !== "running") {
         return res.status(403).json({ error: "Secrets only available for running jobs" });
-      }
-
-      // Verify the job is claimed by an agent belonging to this token
-      if (!job.evalAgentId) {
-        return res.status(403).json({ error: "Job not yet claimed" });
-      }
-      const agent = await storage.getEvalAgent(job.evalAgentId);
-      if (!agent || agent.tokenId !== evalAgentToken.id) {
-        return res.status(403).json({ error: "Job not assigned to your agent" });
       }
 
       // Merge secrets: org secrets (if org workflow) + personal secrets (workflow owner)
