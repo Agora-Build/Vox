@@ -111,6 +111,16 @@ interface DaemonConfig {
 
 const HEARTBEAT_INTERVAL = 30000; // 30 seconds
 const JOB_POLL_INTERVAL = 10000;  // 10 seconds
+// Hard ceiling on a single `aeval` invocation (per chunk — a chunked job runs
+// one invocation per chunk, each bounded separately). Without it, a hung run
+// (e.g. a login/select_agent step that never resolves) pins the daemon
+// "occupied" forever — never completing, never claiming new work. On timeout we
+// SIGTERM then SIGKILL the process group so the run fails, the job is released,
+// and the agent frees up.
+const AEVAL_RUN_TIMEOUT_MS = (() => {
+  const v = Number(process.env.AEVAL_RUN_TIMEOUT_MS);
+  return Number.isFinite(v) && v > 0 ? v : 20 * 60 * 1000; // default 20 min; ignore junk/negative
+})();
 
 const VOICE_AGENT_TESTER_PATH = path.resolve(__dirname, 'voice-agent-tester');
 const AEVAL_DATA_PATH = path.resolve(__dirname, 'aeval-data');
@@ -721,14 +731,72 @@ class VoxEvalAgentDaemon {
 
       console.log(`[Daemon] Running: aeval ${args.join(' ')}`);
 
+      // detached: run aeval as its own process-group leader so a timeout can
+      // kill the whole tree (aeval + the browser/driver children it spawns).
+      // Killing only the parent would orphan those children, and because they
+      // inherit the stdio pipes, 'close' would never fire → the promise (and the
+      // agent) would stay hung despite the timeout.
       const proc = spawn('aeval', args, {
         cwd: AEVAL_DATA_PATH,
         env: { ...process.env },
         stdio: ['ignore', 'pipe', 'pipe'],
+        detached: true,
       });
 
       let stdout = '';
       let stderr = '';
+
+      // Signal the whole process group (negative pid); if the group send fails
+      // (unsupported / already gone), fall back to signalling the direct child.
+      const killTree = (signal: NodeJS.Signals) => {
+        try {
+          if (proc.pid) { process.kill(-proc.pid, signal); return; }
+        } catch { /* group send failed — fall through to a direct kill */ }
+        try { proc.kill(signal); } catch { /* already gone */ }
+      };
+
+      // Settle exactly once. The forced-deadline timer below can reject even if
+      // 'close' never fires (a surviving descendant holding the stdio pipes),
+      // so the agent is guaranteed to free up.
+      let settled = false;
+      let sigkillTimer: NodeJS.Timeout | null = null;
+      let forceTimer: NodeJS.Timeout | null = null;
+      const clearTimers = () => {
+        clearTimeout(killTimer);
+        if (sigkillTimer) clearTimeout(sigkillTimer);
+        if (forceTimer) clearTimeout(forceTimer);
+      };
+      const finish = (fn: (v: EvalResult) => void, v: EvalResult) => {
+        if (settled) return; settled = true; clearTimers(); fn(v);
+      };
+      const fail = (err: Error) => {
+        if (settled) return; settled = true; clearTimers(); reject(err);
+      };
+
+      // Kill a run that overruns the ceiling so it can't pin the agent forever.
+      let timedOut = false;
+      const killTimer = setTimeout(() => {
+        timedOut = true;
+        console.error(`[Daemon] aeval run exceeded ${AEVAL_RUN_TIMEOUT_MS}ms — terminating`);
+        killTree('SIGTERM');
+        sigkillTimer = setTimeout(() => {
+          killTree('SIGKILL');
+          // Last resort: if 'close' still hasn't fired (a descendant is holding
+          // the pipes open), destroy the streams and settle anyway.
+          forceTimer = setTimeout(() => {
+            try { proc.stdout?.destroy(); proc.stderr?.destroy(); } catch { /* ignore */ }
+            // Best-effort: record the output dir so processJobs still uploads the
+            // run's artifacts — the most useful evidence for diagnosing the hang.
+            try {
+              const dir = this.resolveAevalOutputDir(scenarioConfig, stdout + stderr);
+              if (dir && !this.jobOutputDirs.includes(dir)) this.jobOutputDirs.push(dir);
+            } catch { /* best effort */ }
+            console.error(`[Daemon] aeval did not exit after SIGKILL — forcing job failure`);
+            const err = new Error(`aeval timed out after ${AEVAL_RUN_TIMEOUT_MS}ms (forced)`) as Error & { partialResults?: EvalResult };
+            fail(err);
+          }, 15000);
+        }, 10000);
+      }, AEVAL_RUN_TIMEOUT_MS);
 
       proc.stdout.on('data', (data) => {
         stdout += data.toString();
@@ -741,7 +809,8 @@ class VoxEvalAgentDaemon {
       });
 
       proc.on('close', (code) => {
-        console.log(`[Daemon] aeval exited with code ${code}`);
+        if (settled) return; // already force-failed by the deadline
+        console.log(`[Daemon] aeval exited with code ${code}${timedOut ? ' (timed out)' : ''}`);
 
         // Always resolve output dir (artifacts exist even on failure)
         const allOutput = stdout + stderr;
@@ -752,7 +821,7 @@ class VoxEvalAgentDaemon {
           }
         } catch { /* best effort */ }
 
-        if (code !== 0) {
+        if (timedOut || code !== 0) {
           // Try to salvage partial results (metrics.json may exist even on failure)
           let partialResults: EvalResult | null = null;
           if (this.lastOutputDir) {
@@ -764,19 +833,22 @@ class VoxEvalAgentDaemon {
               }
             } catch { /* no usable data */ }
           }
-          const error = new Error(`aeval exited with code ${code}: ${stderr.trim().split('\n').pop() || 'unknown error'}`);
-          (error as Error & { partialResults?: EvalResult }).partialResults = partialResults;
-          reject(error);
+          const reason = timedOut
+            ? `aeval timed out after ${AEVAL_RUN_TIMEOUT_MS}ms`
+            : `aeval exited with code ${code}: ${stderr.trim().split('\n').pop() || 'unknown error'}`;
+          const error = new Error(reason) as Error & { partialResults?: EvalResult };
+          error.partialResults = partialResults;
+          fail(error);
           return;
         }
 
         const outputDir = this.lastOutputDir!;
         const results = this.parseAevalResults(outputDir, allOutput);
-        resolve(results);
+        finish(resolve, results);
       });
 
       proc.on('error', (error) => {
-        reject(error);
+        fail(error);
       });
     });
   }
