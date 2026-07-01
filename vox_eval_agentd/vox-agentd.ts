@@ -111,10 +111,12 @@ interface DaemonConfig {
 
 const HEARTBEAT_INTERVAL = 30000; // 30 seconds
 const JOB_POLL_INTERVAL = 10000;  // 10 seconds
-// Hard ceiling on a single `aeval` invocation. Without it, a hung run (e.g. a
-// login/select_agent step that never resolves) pins the daemon "occupied"
-// forever — never completing, never claiming new work. On timeout we SIGTERM
-// then SIGKILL so the run fails, the job is released, and the agent frees up.
+// Hard ceiling on a single `aeval` invocation (per chunk — a chunked job runs
+// one invocation per chunk, each bounded separately). Without it, a hung run
+// (e.g. a login/select_agent step that never resolves) pins the daemon
+// "occupied" forever — never completing, never claiming new work. On timeout we
+// SIGTERM then SIGKILL the process group so the run fails, the job is released,
+// and the agent frees up.
 const AEVAL_RUN_TIMEOUT_MS = Number(process.env.AEVAL_RUN_TIMEOUT_MS) || 20 * 60 * 1000; // 20 min
 
 const VOICE_AGENT_TESTER_PATH = path.resolve(__dirname, 'voice-agent-tester');
@@ -726,14 +728,29 @@ class VoxEvalAgentDaemon {
 
       console.log(`[Daemon] Running: aeval ${args.join(' ')}`);
 
+      // detached: run aeval as its own process-group leader so a timeout can
+      // kill the whole tree (aeval + the browser/driver children it spawns).
+      // Killing only the parent would orphan those children, and because they
+      // inherit the stdio pipes, 'close' would never fire → the promise (and the
+      // agent) would stay hung despite the timeout.
       const proc = spawn('aeval', args, {
         cwd: AEVAL_DATA_PATH,
         env: { ...process.env },
         stdio: ['ignore', 'pipe', 'pipe'],
+        detached: true,
       });
 
       let stdout = '';
       let stderr = '';
+
+      // Signal the whole process group (negative pid); fall back to the direct
+      // process if the group send fails.
+      const killTree = (signal: NodeJS.Signals) => {
+        try {
+          if (proc.pid) process.kill(-proc.pid, signal);
+          else proc.kill(signal);
+        } catch { /* already gone */ }
+      };
 
       // Kill a run that overruns the ceiling so it can't pin the agent forever.
       let timedOut = false;
@@ -741,8 +758,8 @@ class VoxEvalAgentDaemon {
       const killTimer = setTimeout(() => {
         timedOut = true;
         console.error(`[Daemon] aeval run exceeded ${AEVAL_RUN_TIMEOUT_MS}ms — terminating`);
-        try { proc.kill('SIGTERM'); } catch { /* already gone */ }
-        sigkillTimer = setTimeout(() => { try { proc.kill('SIGKILL'); } catch { /* already gone */ } }, 10000);
+        killTree('SIGTERM');
+        sigkillTimer = setTimeout(() => killTree('SIGKILL'), 10000);
       }, AEVAL_RUN_TIMEOUT_MS);
       const clearTimers = () => {
         clearTimeout(killTimer);
