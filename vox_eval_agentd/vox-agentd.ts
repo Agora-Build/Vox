@@ -67,6 +67,7 @@ interface EvalAgent {
   name: string;
   region: string;
   state: string;
+  leaseId?: string;
 }
 
 interface EvalJob {
@@ -188,6 +189,7 @@ function getSystemS3Config(): S3Config | null {
 class VoxEvalAgentDaemon {
   private config: DaemonConfig;
   private agentId: number | null = null;
+  private leaseId: string | null = null;
   private region: string | null = null;
   private heartbeatTimer: NodeJS.Timeout | null = null;
   private jobPollTimer: NodeJS.Timeout | null = null;
@@ -307,6 +309,7 @@ class VoxEvalAgentDaemon {
       const agent: EvalAgent = await response.json();
       this.agentId = agent.id;
       this.region = agent.region;
+      this.leaseId = agent.leaseId ?? null;
 
       console.log(`[Daemon] Registered successfully!`);
       console.log(`  - Agent ID: ${agent.id}`);
@@ -330,6 +333,21 @@ class VoxEvalAgentDaemon {
     }
   }
 
+  // A 403 with { superseded: true } means another instance (same token) took
+  // over the lease — this process is fenced and must stop. Uses response.clone()
+  // so the caller can still read the body.
+  private async exitIfSuperseded(response: Response): Promise<void> {
+    if (response.status !== 403) return;
+    try {
+      const body = await response.clone().json() as { superseded?: boolean };
+      if (body?.superseded) {
+        console.error('[Daemon] Superseded by a newer instance on the same token — exiting.');
+        this.stop();
+        process.exit(1);
+      }
+    } catch { /* not a superseded response */ }
+  }
+
   async sendHeartbeat(): Promise<void> {
     if (!this.agentId) return;
 
@@ -338,11 +356,13 @@ class VoxEvalAgentDaemon {
         method: 'POST',
         body: JSON.stringify({
           agentId: this.agentId,
+          leaseId: this.leaseId,
           state: this.isRunningJob ? 'occupied' : 'idle',
           metadata: this.buildMetadata(),
         }),
       });
 
+      await this.exitIfSuperseded(response);
       if (response.ok) {
         console.log(`[Daemon] Heartbeat sent (state: ${this.isRunningJob ? 'occupied' : 'idle'})`);
       }
@@ -374,9 +394,10 @@ class VoxEvalAgentDaemon {
     try {
       const response = await this.fetch(`/api/eval-agent/jobs/${jobId}/claim`, {
         method: 'POST',
-        body: JSON.stringify({ agentId: this.agentId }),
+        body: JSON.stringify({ agentId: this.agentId, leaseId: this.leaseId }),
       });
 
+      await this.exitIfSuperseded(response);
       if (!response.ok) {
         console.error(`[Daemon] Failed to claim job ${jobId}`);
         return false;
@@ -396,9 +417,10 @@ class VoxEvalAgentDaemon {
       console.log(`[Daemon] Completing job ${jobId}...`);
       const response = await this.fetch(`/api/eval-agent/jobs/${jobId}/complete`, {
         method: 'POST',
-        body: JSON.stringify({ agentId: this.agentId, results }),
+        body: JSON.stringify({ agentId: this.agentId, leaseId: this.leaseId, results }),
       });
 
+      await this.exitIfSuperseded(response);
       if (response.ok) {
         console.log(`[Daemon] Job ${jobId} completed successfully`);
         return true;
@@ -419,9 +441,10 @@ class VoxEvalAgentDaemon {
       console.log(`[Daemon] Failing job ${jobId} with partial metrics...`);
       const response = await this.fetch(`/api/eval-agent/jobs/${jobId}/complete`, {
         method: 'POST',
-        body: JSON.stringify({ agentId: this.agentId, results, error: reason }),
+        body: JSON.stringify({ agentId: this.agentId, leaseId: this.leaseId, results, error: reason }),
       });
 
+      await this.exitIfSuperseded(response);
       if (response.ok) {
         console.log(`[Daemon] Job ${jobId} failed with partial metrics saved`);
         return true;
@@ -437,9 +460,10 @@ class VoxEvalAgentDaemon {
       console.log(`[Daemon] Failing job ${jobId}: ${reason}`);
       const response = await this.fetch(`/api/eval-agent/jobs/${jobId}/complete`, {
         method: 'POST',
-        body: JSON.stringify({ agentId: this.agentId, error: reason }),
+        body: JSON.stringify({ agentId: this.agentId, leaseId: this.leaseId, error: reason }),
       });
 
+      await this.exitIfSuperseded(response);
       if (response.ok) {
         console.log(`[Daemon] Job ${jobId} marked as failed`);
         return true;
