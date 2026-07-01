@@ -2328,6 +2328,15 @@ export async function registerRoutes(
     return !!agents[0] && isSupersededLease(agents[0], leaseId);
   };
 
+  // Authorize job-scoped agent endpoints: the job must be claimed by an agent
+  // belonging to this token. Prevents a token holder from reading/mutating
+  // another user's job data (artifacts, storage credentials). Mirrors secrets.
+  const jobBelongsToToken = async (job: { evalAgentId?: number | null }, tokenId: number): Promise<boolean> => {
+    if (!job.evalAgentId) return false;
+    const agent = await storage.getEvalAgent(job.evalAgentId);
+    return !!agent && agent.tokenId === tokenId;
+  };
+
   // Eval agent registration endpoint (uses eval agent token for auth)
   app.post("/api/eval-agent/register", async (req, res) => {
     try {
@@ -2663,6 +2672,15 @@ export async function registerRoutes(
         return res.status(403).json({ error: "superseded", superseded: true });
       }
 
+      const artifactJob = await storage.getEvalJob(jobId);
+      if (!artifactJob) {
+        return res.status(404).json({ error: "Job not found" });
+      }
+      // Only the agent that ran this job may store its artifacts.
+      if (!(await jobBelongsToToken(artifactJob, evalAgentToken.id))) {
+        return res.status(403).json({ error: "Job not assigned to your agent" });
+      }
+
       if (!zipUrl) {
         return res.status(400).json({ error: "zipUrl is required" });
       }
@@ -2721,6 +2739,15 @@ export async function registerRoutes(
 
       if (await isSupersededTokenLease(evalAgentToken.id, leaseId)) {
         return res.status(403).json({ error: "superseded", superseded: true });
+      }
+
+      const statusJob = await storage.getEvalJob(jobId);
+      if (!statusJob) {
+        return res.status(404).json({ error: "Job not found" });
+      }
+      // Only the agent that ran this job may change its artifact status.
+      if (!(await jobBelongsToToken(statusJob, evalAgentToken.id))) {
+        return res.status(403).json({ error: "Job not assigned to your agent" });
       }
 
       if (!status || !['pending', 'uploading', 'uploaded', 'failed'].includes(status)) {
@@ -2792,6 +2819,10 @@ export async function registerRoutes(
       const job = await storage.getEvalJob(jobId);
       if (!job) {
         return res.status(404).json({ error: "Job not found" });
+      }
+      // Only the agent that claimed this job may read its storage credentials.
+      if (!(await jobBelongsToToken(job, evalAgentToken.id))) {
+        return res.status(403).json({ error: "Job not assigned to your agent" });
       }
 
       // Check if job creator has custom storage config
