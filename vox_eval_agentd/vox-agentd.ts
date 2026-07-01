@@ -328,7 +328,10 @@ class VoxEvalAgentDaemon {
 
       // Reset any artifact uploads stuck in 'uploading' from a previous run
       try {
-        const resetRes = await this.fetch('/api/eval-agent/artifacts/reset-stuck', { method: 'POST' });
+        const resetRes = await this.fetch('/api/eval-agent/artifacts/reset-stuck', {
+          method: 'POST',
+          body: JSON.stringify({ leaseId: this.leaseId }),
+        });
         if (resetRes.ok) {
           const { reset } = await resetRes.json();
           if (reset > 0) console.log(`[Daemon] Reset ${reset} stuck artifact upload(s) to failed`);
@@ -1505,7 +1508,7 @@ class VoxEvalAgentDaemon {
       await fetch(`${this.config.serverUrl}/api/eval-agent/jobs/${jobId}/artifact-status`, {
         method: 'PATCH',
         headers: { 'Authorization': `Bearer ${this.config.token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ status }),
+        body: JSON.stringify({ status, leaseId: this.leaseId }),
         signal: AbortSignal.timeout(10000),
       });
     } catch { /* non-fatal */ }
@@ -1696,7 +1699,7 @@ class VoxEvalAgentDaemon {
               'Authorization': `Bearer ${this.config.token}`,
               'Content-Type': 'application/json',
             },
-            body: JSON.stringify({ zipUrl, files: uploadedFiles }),
+            body: JSON.stringify({ zipUrl, files: uploadedFiles, leaseId: this.leaseId }),
             signal: AbortSignal.timeout(15000),
           });
           console.log(`[Daemon] Artifact URLs stored for job ${task.jobId}`);
