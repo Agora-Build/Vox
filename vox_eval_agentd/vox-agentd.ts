@@ -111,6 +111,11 @@ interface DaemonConfig {
 
 const HEARTBEAT_INTERVAL = 30000; // 30 seconds
 const JOB_POLL_INTERVAL = 10000;  // 10 seconds
+// Hard ceiling on a single `aeval` invocation. Without it, a hung run (e.g. a
+// login/select_agent step that never resolves) pins the daemon "occupied"
+// forever — never completing, never claiming new work. On timeout we SIGTERM
+// then SIGKILL so the run fails, the job is released, and the agent frees up.
+const AEVAL_RUN_TIMEOUT_MS = Number(process.env.AEVAL_RUN_TIMEOUT_MS) || 20 * 60 * 1000; // 20 min
 
 const VOICE_AGENT_TESTER_PATH = path.resolve(__dirname, 'voice-agent-tester');
 const AEVAL_DATA_PATH = path.resolve(__dirname, 'aeval-data');
@@ -730,6 +735,20 @@ class VoxEvalAgentDaemon {
       let stdout = '';
       let stderr = '';
 
+      // Kill a run that overruns the ceiling so it can't pin the agent forever.
+      let timedOut = false;
+      let sigkillTimer: NodeJS.Timeout | null = null;
+      const killTimer = setTimeout(() => {
+        timedOut = true;
+        console.error(`[Daemon] aeval run exceeded ${AEVAL_RUN_TIMEOUT_MS}ms — terminating`);
+        try { proc.kill('SIGTERM'); } catch { /* already gone */ }
+        sigkillTimer = setTimeout(() => { try { proc.kill('SIGKILL'); } catch { /* already gone */ } }, 10000);
+      }, AEVAL_RUN_TIMEOUT_MS);
+      const clearTimers = () => {
+        clearTimeout(killTimer);
+        if (sigkillTimer) clearTimeout(sigkillTimer);
+      };
+
       proc.stdout.on('data', (data) => {
         stdout += data.toString();
         console.log(`[aeval] ${data.toString().trim()}`);
@@ -741,7 +760,8 @@ class VoxEvalAgentDaemon {
       });
 
       proc.on('close', (code) => {
-        console.log(`[Daemon] aeval exited with code ${code}`);
+        clearTimers();
+        console.log(`[Daemon] aeval exited with code ${code}${timedOut ? ' (timed out)' : ''}`);
 
         // Always resolve output dir (artifacts exist even on failure)
         const allOutput = stdout + stderr;
@@ -752,7 +772,7 @@ class VoxEvalAgentDaemon {
           }
         } catch { /* best effort */ }
 
-        if (code !== 0) {
+        if (timedOut || code !== 0) {
           // Try to salvage partial results (metrics.json may exist even on failure)
           let partialResults: EvalResult | null = null;
           if (this.lastOutputDir) {
@@ -764,7 +784,10 @@ class VoxEvalAgentDaemon {
               }
             } catch { /* no usable data */ }
           }
-          const error = new Error(`aeval exited with code ${code}: ${stderr.trim().split('\n').pop() || 'unknown error'}`);
+          const reason = timedOut
+            ? `aeval timed out after ${AEVAL_RUN_TIMEOUT_MS}ms`
+            : `aeval exited with code ${code}: ${stderr.trim().split('\n').pop() || 'unknown error'}`;
+          const error = new Error(reason);
           (error as Error & { partialResults?: EvalResult }).partialResults = partialResults;
           reject(error);
           return;
@@ -776,6 +799,7 @@ class VoxEvalAgentDaemon {
       });
 
       proc.on('error', (error) => {
+        clearTimers();
         reject(error);
       });
     });
