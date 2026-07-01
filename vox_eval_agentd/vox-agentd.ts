@@ -328,7 +328,10 @@ class VoxEvalAgentDaemon {
 
       // Reset any artifact uploads stuck in 'uploading' from a previous run
       try {
-        const resetRes = await this.fetch('/api/eval-agent/artifacts/reset-stuck', { method: 'POST' });
+        const resetRes = await this.fetch('/api/eval-agent/artifacts/reset-stuck', {
+          method: 'POST',
+          body: JSON.stringify({ leaseId: this.leaseId }),
+        });
         if (resetRes.ok) {
           const { reset } = await resetRes.json();
           if (reset > 0) console.log(`[Daemon] Reset ${reset} stuck artifact upload(s) to failed`);
@@ -495,7 +498,7 @@ class VoxEvalAgentDaemon {
 
   async fetchSecrets(jobId: number): Promise<Record<string, string>> {
     try {
-      const response = await this.fetch(`/api/eval-agent/jobs/${jobId}/secrets`);
+      const response = await this.fetch(`/api/eval-agent/jobs/${jobId}/secrets?leaseId=${encodeURIComponent(this.leaseId ?? '')}`);
       if (!response.ok) {
         if (response.status === 500) {
           console.warn(`[Daemon] Server encryption not configured — skipping secrets`);
@@ -1505,7 +1508,7 @@ class VoxEvalAgentDaemon {
       await fetch(`${this.config.serverUrl}/api/eval-agent/jobs/${jobId}/artifact-status`, {
         method: 'PATCH',
         headers: { 'Authorization': `Bearer ${this.config.token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ status }),
+        body: JSON.stringify({ status, leaseId: this.leaseId }),
         signal: AbortSignal.timeout(10000),
       });
     } catch { /* non-fatal */ }
@@ -1524,7 +1527,7 @@ class VoxEvalAgentDaemon {
   private async getS3ConfigForJob(jobId: number): Promise<S3Config | null> {
     // Try per-user config from Vox server
     try {
-      const response = await fetch(`${this.config.serverUrl}/api/eval-agent/jobs/${jobId}/storage-config`, {
+      const response = await fetch(`${this.config.serverUrl}/api/eval-agent/jobs/${jobId}/storage-config?leaseId=${encodeURIComponent(this.leaseId ?? '')}`, {
         headers: { 'Authorization': `Bearer ${this.config.token}` },
         signal: AbortSignal.timeout(10000),
       });
@@ -1696,7 +1699,7 @@ class VoxEvalAgentDaemon {
               'Authorization': `Bearer ${this.config.token}`,
               'Content-Type': 'application/json',
             },
-            body: JSON.stringify({ zipUrl, files: uploadedFiles }),
+            body: JSON.stringify({ zipUrl, files: uploadedFiles, leaseId: this.leaseId }),
             signal: AbortSignal.timeout(15000),
           });
           console.log(`[Daemon] Artifact URLs stored for job ${task.jobId}`);
