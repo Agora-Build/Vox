@@ -2321,6 +2321,13 @@ export async function registerRoutes(
   const isSupersededLease = (agent: { currentLeaseId?: string | null }, leaseId: unknown): boolean =>
     !!agent.currentLeaseId && leaseId !== agent.currentLeaseId;
 
+  // Fence endpoints that carry a token but not an agentId (artifacts): derive
+  // the token's current agent and reject if the request's lease doesn't match.
+  const isSupersededTokenLease = async (tokenId: number, leaseId: unknown): Promise<boolean> => {
+    const agents = await storage.getEvalAgentsByTokenId(tokenId);
+    return !!agents[0] && isSupersededLease(agents[0], leaseId);
+  };
+
   // Eval agent registration endpoint (uses eval agent token for auth)
   app.post("/api/eval-agent/register", async (req, res) => {
     try {
@@ -2650,7 +2657,11 @@ export async function registerRoutes(
       }
 
       const jobId = parseInt(req.params.jobId);
-      const { zipUrl, files } = req.body;
+      const { zipUrl, files, leaseId } = req.body;
+
+      if (await isSupersededTokenLease(evalAgentToken.id, leaseId)) {
+        return res.status(403).json({ error: "superseded", superseded: true });
+      }
 
       if (!zipUrl) {
         return res.status(400).json({ error: "zipUrl is required" });
@@ -2706,7 +2717,11 @@ export async function registerRoutes(
       }
 
       const jobId = parseInt(req.params.jobId);
-      const { status } = req.body;
+      const { status, leaseId } = req.body;
+
+      if (await isSupersededTokenLease(evalAgentToken.id, leaseId)) {
+        return res.status(403).json({ error: "superseded", superseded: true });
+      }
 
       if (!status || !['pending', 'uploading', 'uploaded', 'failed'].includes(status)) {
         return res.status(400).json({ error: "Invalid status. Must be: pending, uploading, uploaded, failed" });
@@ -2734,6 +2749,10 @@ export async function registerRoutes(
 
       if (!evalAgentToken || evalAgentToken.isRevoked) {
         return res.status(401).json({ error: "Invalid or revoked token" });
+      }
+
+      if (await isSupersededTokenLease(evalAgentToken.id, req.body?.leaseId)) {
+        return res.status(403).json({ error: "superseded", superseded: true });
       }
 
       const count = await storage.resetStuckArtifactUploads();
