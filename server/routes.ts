@@ -2313,6 +2313,13 @@ export async function registerRoutes(
     }
   });
 
+  // A daemon that re-registered rotates the agent's lease; an older instance
+  // (restart leftover or duplicate on the same token) is thus superseded. Fence
+  // its state-changing calls. Only enforced when both sides carry a lease, so
+  // pre-lease daemons (no leaseId) keep working during rollout.
+  const isSupersededLease = (agent: { currentLeaseId?: string | null }, leaseId: unknown): boolean =>
+    !!agent.currentLeaseId && typeof leaseId === "string" && leaseId.length > 0 && leaseId !== agent.currentLeaseId;
+
   // Eval agent registration endpoint (uses eval agent token for auth)
   app.post("/api/eval-agent/register", async (req, res) => {
     try {
@@ -2344,13 +2351,24 @@ export async function registerRoutes(
 
       await storage.updateEvalAgentTokenLastUsed(evalAgentToken.id);
 
+      // Issue a fresh per-process lease. Only this lease may act as the agent;
+      // any earlier instance is fenced on its next heartbeat/claim/complete.
+      const leaseId = generateSecureToken(16);
+
       // Upsert: reuse existing agent row for this token instead of creating duplicates on restart
       const existing = await storage.getEvalAgentsByTokenId(evalAgentToken.id);
       let agent;
       if (existing.length > 0) {
         agent = existing[0];
-        await storage.updateEvalAgent(agent.id, { name: agentName, state: "idle", metadata: metadata || {} });
-        agent = { ...agent, name: agentName, state: "idle" as const, metadata: metadata || {} };
+        await storage.updateEvalAgent(agent.id, { name: agentName, state: "idle", metadata: metadata || {}, currentLeaseId: leaseId });
+        agent = { ...agent, name: agentName, state: "idle" as const, metadata: metadata || {}, currentLeaseId: leaseId };
+        // A fresh registration means the prior process died; release any jobs it
+        // was still running so they re-queue instead of hanging as "running"
+        // forever (the heartbeat reaper misses them — this agent looks alive).
+        const released = await storage.releaseAgentRunningJobs(agent.id);
+        if (released > 0) {
+          console.log(`[eval-agent] Released ${released} orphaned running job(s) from re-registered agent ${agent.id}`);
+        }
       } else {
         agent = await storage.createEvalAgent({
           name: agentName,
@@ -2358,6 +2376,7 @@ export async function registerRoutes(
           region: evalAgentToken.region,
           state: "idle",
           metadata: metadata || {},
+          currentLeaseId: leaseId,
         });
       }
 
@@ -2368,6 +2387,7 @@ export async function registerRoutes(
         name: agent.name,
         region: agent.region,
         state: agent.state,
+        leaseId,
       });
     } catch (error) {
       console.error("Error registering eval agent:", error);
@@ -2391,7 +2411,7 @@ export async function registerRoutes(
         return res.status(401).json({ error: "Invalid or revoked eval agent token" });
       }
 
-      const { agentId, state, metadata } = req.body;
+      const { agentId, state, metadata, leaseId } = req.body;
 
       if (!agentId) {
         return res.status(400).json({ error: "Agent ID required" });
@@ -2400,6 +2420,9 @@ export async function registerRoutes(
       const agent = await storage.getEvalAgent(agentId);
       if (!agent || agent.tokenId !== evalAgentToken.id) {
         return res.status(403).json({ error: "Agent not found or token mismatch" });
+      }
+      if (isSupersededLease(agent, leaseId)) {
+        return res.status(403).json({ error: "superseded", superseded: true });
       }
 
       await storage.updateEvalAgentHeartbeat(agentId);
@@ -2480,7 +2503,7 @@ export async function registerRoutes(
       }
 
       const { jobId } = req.params;
-      const { agentId } = req.body;
+      const { agentId, leaseId } = req.body;
 
       if (!agentId) {
         return res.status(400).json({ error: "Agent ID required" });
@@ -2489,6 +2512,9 @@ export async function registerRoutes(
       const agent = await storage.getEvalAgent(agentId);
       if (!agent || agent.tokenId !== evalAgentToken.id) {
         return res.status(403).json({ error: "Agent not found or token mismatch" });
+      }
+      if (isSupersededLease(agent, leaseId)) {
+        return res.status(403).json({ error: "superseded", superseded: true });
       }
 
       // Check that job's region matches agent's region
@@ -2531,7 +2557,7 @@ export async function registerRoutes(
       }
 
       const { jobId } = req.params;
-      const { agentId, error: jobError, results } = req.body;
+      const { agentId, error: jobError, results, leaseId } = req.body;
 
       if (!agentId) {
         return res.status(400).json({ error: "Agent ID required" });
@@ -2540,6 +2566,11 @@ export async function registerRoutes(
       const agent = await storage.getEvalAgent(agentId);
       if (!agent || agent.tokenId !== evalAgentToken.id) {
         return res.status(403).json({ error: "Agent not found or token mismatch" });
+      }
+      // Fence a superseded instance so it can't write stale results for a job
+      // that was already re-queued to the current lease holder.
+      if (isSupersededLease(agent, leaseId)) {
+        return res.status(403).json({ error: "superseded", superseded: true });
       }
 
       const job = await storage.getEvalJob(parseInt(jobId));

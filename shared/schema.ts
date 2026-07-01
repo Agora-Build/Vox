@@ -193,6 +193,10 @@ export const evalAgents = pgTable("eval_agents", {
   tokenId: integer("token_id").notNull().references(() => evalAgentTokens.id),
   region: regionEnum("region").notNull(),
   state: evalAgentStateEnum("state").default("offline").notNull(),
+  // Per-process lease issued at registration. Only the current lease holder may
+  // heartbeat/claim/complete; a superseded (restarted or duplicate) instance is
+  // fenced. Nullable for rows created before this column / by pre-lease daemons.
+  currentLeaseId: text("current_lease_id"),
   lastSeenAt: timestamp("last_seen_at"),
   lastJobAt: timestamp("last_job_at"),
   metadata: jsonb("metadata").default({}),

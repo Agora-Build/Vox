@@ -707,6 +707,34 @@ export class DatabaseStorage {
     return (result as unknown as { rowCount: number }).rowCount || 0;
   }
 
+  // Release running jobs still assigned to an agent that just (re)registered.
+  // A fresh registration means the previous process died mid-job, so those jobs
+  // are orphaned — the reaper's heartbeat-staleness check never catches them
+  // because the restarted agent's heartbeat is fresh. Re-queue (retry_count++)
+  // or fail at max retries, mirroring releaseStaleJobs.
+  async releaseAgentRunningJobs(agentId: number): Promise<number> {
+    const result = await db.execute(sql`
+      UPDATE eval_jobs
+      SET
+        status = CASE
+          WHEN retry_count >= max_retries THEN 'failed'::eval_job_status
+          ELSE 'pending'::eval_job_status
+        END,
+        retry_count = retry_count + 1,
+        eval_agent_id = NULL,
+        started_at = NULL,
+        error = CASE
+          WHEN retry_count >= max_retries THEN 'Agent restarted mid-job - max retries exceeded'
+          ELSE NULL
+        END,
+        updated_at = NOW()
+      WHERE status = 'running'::eval_job_status
+      AND eval_agent_id = ${agentId}
+    `);
+
+    return (result as unknown as { rowCount: number }).rowCount || 0;
+  }
+
   // Get all jobs with optional filters
   async getEvalJobs(filters?: {
     status?: "pending" | "running" | "completed" | "failed";
