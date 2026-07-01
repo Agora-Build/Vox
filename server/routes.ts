@@ -2783,6 +2783,11 @@ export async function registerRoutes(
         return res.status(401).json({ error: "Invalid or revoked token" });
       }
 
+      // Fence before returning any storage credentials.
+      if (await isSupersededTokenLease(evalAgentToken.id, req.query.leaseId)) {
+        return res.status(403).json({ error: "superseded", superseded: true });
+      }
+
       const jobId = parseInt(req.params.jobId);
       const job = await storage.getEvalJob(jobId);
       if (!job) {
@@ -2826,6 +2831,11 @@ export async function registerRoutes(
 
       if (!evalAgentToken || evalAgentToken.isRevoked) {
         return res.status(401).json({ error: "Invalid or revoked eval agent token" });
+      }
+
+      // Fence before returning any decrypted secrets.
+      if (await isSupersededTokenLease(evalAgentToken.id, req.query.leaseId)) {
+        return res.status(403).json({ error: "superseded", superseded: true });
       }
 
       const { jobId } = req.params;
