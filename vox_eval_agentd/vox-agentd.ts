@@ -498,7 +498,7 @@ class VoxEvalAgentDaemon {
 
   async fetchSecrets(jobId: number): Promise<Record<string, string>> {
     try {
-      const response = await this.fetch(`/api/eval-agent/jobs/${jobId}/secrets`);
+      const response = await this.fetch(`/api/eval-agent/jobs/${jobId}/secrets?leaseId=${encodeURIComponent(this.leaseId ?? '')}`);
       if (!response.ok) {
         if (response.status === 500) {
           console.warn(`[Daemon] Server encryption not configured — skipping secrets`);
@@ -1527,7 +1527,7 @@ class VoxEvalAgentDaemon {
   private async getS3ConfigForJob(jobId: number): Promise<S3Config | null> {
     // Try per-user config from Vox server
     try {
-      const response = await fetch(`${this.config.serverUrl}/api/eval-agent/jobs/${jobId}/storage-config`, {
+      const response = await fetch(`${this.config.serverUrl}/api/eval-agent/jobs/${jobId}/storage-config?leaseId=${encodeURIComponent(this.leaseId ?? '')}`, {
         headers: { 'Authorization': `Bearer ${this.config.token}` },
         signal: AbortSignal.timeout(10000),
       });
