@@ -51,6 +51,7 @@ interface EvalAgent {
   name: string;
   region: string;
   state: string;
+  leaseId?: string;
 }
 
 interface EvalJob {
@@ -681,63 +682,83 @@ describe('Vox API Tests', () => {
 
   describe('Eval Agent Registration API', () => {
     let agentId: number;
+    let leaseId: string;
 
-    it('should register an eval agent with valid token', async () => {
-      const response = await fetch(`${BASE_URL}/api/eval-agent/register`, {
+    // POST to an eval-agent endpoint as our test agent (raw token as Bearer).
+    const agentPost = (path: string, body: unknown) =>
+      fetch(`${BASE_URL}${path}`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${testEvalAgentToken}`,
-        },
-        body: JSON.stringify({
-          name: 'Test Agent NA-1',
-        }),
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${testEvalAgentToken}` },
+        body: JSON.stringify(body),
       });
 
+    it('should register an eval agent and receive a lease', async () => {
+      const response = await agentPost('/api/eval-agent/register', { name: 'Test Agent NA-1' });
       expect(response.ok).toBe(true);
       const agent: EvalAgent = await response.json();
       expect(agent.region).toBe('na');
       expect(agent.state).toBe('idle');
+      expect(typeof agent.leaseId).toBe('string');
+      expect(agent.leaseId!.length).toBeGreaterThan(0);
       agentId = agent.id;
+      leaseId = agent.leaseId!;
     });
 
     it('should reject registration with invalid token', async () => {
       const response = await fetch(`${BASE_URL}/api/eval-agent/register`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': 'Bearer invalid-token',
-        },
-        body: JSON.stringify({
-          name: 'Invalid Agent',
-        }),
+        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer invalid-token' },
+        body: JSON.stringify({ name: 'Invalid Agent' }),
       });
-
       expect(response.status).toBe(401);
     });
 
     it('should get all eval agents (public)', async () => {
       const response = await fetch(`${BASE_URL}/api/eval-agents`);
       expect(response.ok).toBe(true);
-
       const agents: EvalAgent[] = await response.json();
       expect(Array.isArray(agents)).toBe(true);
       expect(agents.length).toBeGreaterThan(0);
     });
 
-    it('should send agent heartbeat', async () => {
-      const response = await fetch(`${BASE_URL}/api/eval-agent/heartbeat`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${testEvalAgentToken}`,
-        },
-        body: JSON.stringify({
-          agentId,
-        }),
-      });
-
+    it('should accept a heartbeat carrying the current lease', async () => {
+      const response = await agentPost('/api/eval-agent/heartbeat', { agentId, leaseId });
       expect(response.ok).toBe(true);
+    });
+
+    it('should fence a heartbeat with a wrong lease (superseded)', async () => {
+      const response = await agentPost('/api/eval-agent/heartbeat', { agentId, leaseId: 'not-the-current-lease' });
+      expect(response.status).toBe(403);
+      const body = await response.json();
+      expect(body.superseded).toBe(true);
+    });
+
+    it('should fence a heartbeat with no lease once the agent holds one (strict)', async () => {
+      const response = await agentPost('/api/eval-agent/heartbeat', { agentId });
+      expect(response.status).toBe(403);
+    });
+
+    it('should rotate the lease on re-registration and fence the old lease', async () => {
+      // Re-register (simulates a restart): same agent row, brand-new lease.
+      const reReg = await agentPost('/api/eval-agent/register', { name: 'Test Agent NA-1' });
+      expect(reReg.ok).toBe(true);
+      const agent2: EvalAgent = await reReg.json();
+      expect(agent2.id).toBe(agentId);              // reused row
+      expect(agent2.leaseId).not.toBe(leaseId);     // rotated lease
+      const newLease = agent2.leaseId!;
+
+      // The old lease is now superseded — on heartbeat...
+      const hb = await agentPost('/api/eval-agent/heartbeat', { agentId, leaseId });
+      expect(hb.status).toBe(403);
+
+      // ...and on claim (lease is checked before the job lookup, so a nonexistent
+      // job id still yields 403 superseded rather than 404).
+      const claim = await agentPost('/api/eval-agent/jobs/999999999/claim', { agentId, leaseId });
+      expect(claim.status).toBe(403);
+
+      // The new lease still works.
+      const hb2 = await agentPost('/api/eval-agent/heartbeat', { agentId, leaseId: newLease });
+      expect(hb2.ok).toBe(true);
     });
   });
 
@@ -1040,6 +1061,7 @@ describe('Vox API Tests', () => {
     let flowEvalSetId: number;
     let flowAgentToken: string;
     let flowAgentId: number;
+    let flowLeaseId: string;
     let flowJobId: number;
 
     it('should create workflow for job flow test', async () => {
@@ -1095,6 +1117,7 @@ describe('Vox API Tests', () => {
       expect(response.ok).toBe(true);
       const agent = await response.json();
       flowAgentId = agent.id;
+      flowLeaseId = agent.leaseId;
       expect(agent.region).toBe('na');
     });
 
@@ -1119,7 +1142,7 @@ describe('Vox API Tests', () => {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${flowAgentToken}`,
         },
-        body: JSON.stringify({ agentId: flowAgentId }),
+        body: JSON.stringify({ agentId: flowAgentId, leaseId: flowLeaseId }),
       });
       expect(response.ok).toBe(true);
       const job = await response.json();
@@ -1136,6 +1159,7 @@ describe('Vox API Tests', () => {
         },
         body: JSON.stringify({
           agentId: flowAgentId,
+          leaseId: flowLeaseId,
           results: {
             responseLatencyMedian: 1200,
             responseLatencySd: 150,
@@ -1264,6 +1288,8 @@ describe('Vox API Tests', () => {
     let naAgentId: number;
     let apacAgentId: number;
     let euAgentId: number;
+    let naLeaseId: string;
+    let apacLeaseId: string;
     let multiRegionWorkflowId: number;
     let multiRegionEvalSetId: number;
     let naJobId: number;
@@ -1312,6 +1338,7 @@ describe('Vox API Tests', () => {
       expect(naResponse.ok).toBe(true);
       const naAgent = await naResponse.json();
       naAgentId = naAgent.id;
+      naLeaseId = naAgent.leaseId;
       expect(naAgent.region).toBe('na');
 
       // Register APAC agent
@@ -1326,6 +1353,7 @@ describe('Vox API Tests', () => {
       expect(apacResponse.ok).toBe(true);
       const apacAgent = await apacResponse.json();
       apacAgentId = apacAgent.id;
+      apacLeaseId = apacAgent.leaseId;
       expect(apacAgent.region).toBe('apac');
 
       // Register EU agent
@@ -1426,7 +1454,7 @@ describe('Vox API Tests', () => {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${naToken}`,
         },
-        body: JSON.stringify({ agentId: naAgentId }),
+        body: JSON.stringify({ agentId: naAgentId, leaseId: naLeaseId }),
       });
       // Should fail because region mismatch
       expect(response.ok).toBe(false);
@@ -1440,7 +1468,7 @@ describe('Vox API Tests', () => {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${naToken}`,
         },
-        body: JSON.stringify({ agentId: naAgentId }),
+        body: JSON.stringify({ agentId: naAgentId, leaseId: naLeaseId }),
       });
       expect(naResponse.ok).toBe(true);
       const naJob = await naResponse.json();
@@ -1453,7 +1481,7 @@ describe('Vox API Tests', () => {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${apacToken}`,
         },
-        body: JSON.stringify({ agentId: apacAgentId }),
+        body: JSON.stringify({ agentId: apacAgentId, leaseId: apacLeaseId }),
       });
       expect(apacResponse.ok).toBe(true);
       const apacJob = await apacResponse.json();
@@ -1468,7 +1496,7 @@ describe('Vox API Tests', () => {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${naToken}`,
         },
-        body: JSON.stringify({ agentId: naAgentId }),
+        body: JSON.stringify({ agentId: naAgentId, leaseId: naLeaseId }),
       });
 
       await fetch(`${BASE_URL}/api/eval-agent/jobs/${apacJobId}/complete`, {
@@ -1477,7 +1505,7 @@ describe('Vox API Tests', () => {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${apacToken}`,
         },
-        body: JSON.stringify({ agentId: apacAgentId }),
+        body: JSON.stringify({ agentId: apacAgentId, leaseId: apacLeaseId }),
       });
 
       // Delete workflow (cascades to jobs)
@@ -1667,6 +1695,8 @@ describe('Vox API Tests', () => {
     let agent2Token: string;
     let agent1Id: number;
     let agent2Id: number;
+    let agent1Lease: string;
+    let agent2Lease: string;
 
     it('should setup agents for concurrent test', async () => {
       // Create workflow
@@ -1716,6 +1746,7 @@ describe('Vox API Tests', () => {
       expect(agent1Response.ok).toBe(true);
       const agent1 = await agent1Response.json();
       agent1Id = agent1.id;
+      agent1Lease = agent1.leaseId;
 
       const agent2Response = await fetch(`${BASE_URL}/api/eval-agent/register`, {
         method: 'POST',
@@ -1728,6 +1759,7 @@ describe('Vox API Tests', () => {
       expect(agent2Response.ok).toBe(true);
       const agent2 = await agent2Response.json();
       agent2Id = agent2.id;
+      agent2Lease = agent2.leaseId;
 
       // Create a single job
       const jobResponse = await authFetch(adminSession, `${BASE_URL}/api/workflows/${concurrentWorkflowId}/run`, {
@@ -1748,7 +1780,7 @@ describe('Vox API Tests', () => {
             'Content-Type': 'application/json',
             'Authorization': `Bearer ${agent1Token}`,
           },
-          body: JSON.stringify({ agentId: agent1Id }),
+          body: JSON.stringify({ agentId: agent1Id, leaseId: agent1Lease }),
         }),
         fetch(`${BASE_URL}/api/eval-agent/jobs/${concurrentJobId}/claim`, {
           method: 'POST',
@@ -1756,7 +1788,7 @@ describe('Vox API Tests', () => {
             'Content-Type': 'application/json',
             'Authorization': `Bearer ${agent2Token}`,
           },
-          body: JSON.stringify({ agentId: agent2Id }),
+          body: JSON.stringify({ agentId: agent2Id, leaseId: agent2Lease }),
         }),
       ]);
 
@@ -3223,6 +3255,7 @@ describe('Vox API Tests', () => {
   describe('Heartbeat Metadata Persistence', () => {
     let hbToken: string;
     let hbAgentId: number;
+    let hbLeaseId: string;
 
     beforeAll(async () => {
       const tokenRes = await authFetch(adminSession, `${BASE_URL}/api/admin/eval-agent-tokens`, {
@@ -3245,6 +3278,7 @@ describe('Vox API Tests', () => {
       });
       const agent: EvalAgent = await agentRes.json();
       hbAgentId = agent.id;
+      hbLeaseId = agent.leaseId!;
     });
 
     it('should persist metadata sent with heartbeat', async () => {
@@ -3256,6 +3290,7 @@ describe('Vox API Tests', () => {
         },
         body: JSON.stringify({
           agentId: hbAgentId,
+          leaseId: hbLeaseId,
           state: 'idle',
           metadata: { framework: 'aeval', frameworkVersion: 'v0.2.0' },
         }),

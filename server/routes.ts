@@ -2314,11 +2314,12 @@ export async function registerRoutes(
   });
 
   // A daemon that re-registered rotates the agent's lease; an older instance
-  // (restart leftover or duplicate on the same token) is thus superseded. Fence
-  // its state-changing calls. Only enforced when both sides carry a lease, so
-  // pre-lease daemons (no leaseId) keep working during rollout.
+  // (restart leftover or duplicate on the same token) is thus superseded. Once
+  // an agent holds a lease, every state-changing call MUST carry the matching
+  // lease — a missing or mismatched lease is fenced. (Requires all daemons to be
+  // on the lease-aware build; deploy after `vox-upgrade.sh`.)
   const isSupersededLease = (agent: { currentLeaseId?: string | null }, leaseId: unknown): boolean =>
-    !!agent.currentLeaseId && typeof leaseId === "string" && leaseId.length > 0 && leaseId !== agent.currentLeaseId;
+    !!agent.currentLeaseId && leaseId !== agent.currentLeaseId;
 
   // Eval agent registration endpoint (uses eval agent token for auth)
   app.post("/api/eval-agent/register", async (req, res) => {
