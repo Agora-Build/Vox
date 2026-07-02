@@ -245,8 +245,6 @@ export async function registerRoutes(
       // (0003 → ElevenLabs, 0014 → Custom). init is a post-boot call, so it must
       // skip providers that already exist — otherwise a brand-new instance ends up
       // with duplicate rows. Covers every seed-migrated provider, not just Custom.
-      const existingProviders = await storage.getAllProviders();
-      const hasProvider = (name: string) => existingProviders.some((p) => p.name === name);
       const seedProviders = [
         { name: "Agora ConvoAI Engine", sku: "convoai" as const, description: "Agora's Conversational AI Engine", brandColor: "#099DFD", platformId: "agora" },
         { name: "LiveKit Agents", sku: "convoai" as const, description: "LiveKit's Real-time Communication Agents", brandColor: "#1FD5F9", platformId: "livekit" },
@@ -254,7 +252,10 @@ export async function registerRoutes(
         { name: "Custom", sku: "convoai" as const, description: "Custom / self-hosted conversational AI agent" },
       ];
       for (const p of seedProviders) {
-        if (!hasProvider(p.name)) await storage.createProvider(p);
+        // getProviderByName is unfiltered by isActive, so a deactivated seed
+        // provider can't slip past the guard and create a duplicate row.
+        const existing = await storage.getProviderByName(p.name);
+        if (!existing) await storage.createProvider(p);
       }
 
       // Set default pricing config (prices in cents)
