@@ -61,6 +61,7 @@ async function seedData() {
       name: "Agora ConvoAI Engine",
       sku: "convoai",
       brandColor: "#099DFD",
+      platformId: "agora",
     });
     console.log(`Provider created: ${agoraProvider.name} (ID: ${agoraProvider.id})`);
 
@@ -68,6 +69,7 @@ async function seedData() {
       name: "LiveKit Agents",
       sku: "convoai",
       brandColor: "#1FD5F9",
+      platformId: "livekit",
     });
     console.log(`Provider created: ${livekitProvider.name} (ID: ${livekitProvider.id})`);
 
@@ -75,6 +77,7 @@ async function seedData() {
       name: "ElevenLabs Agents",
       sku: "convoai",
       brandColor: "#A8A29E",
+      platformId: "elevenlabs",
     });
     console.log(`Provider created: ${elevenProvider.name} (ID: ${elevenProvider.id})`);
 

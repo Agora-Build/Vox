@@ -245,6 +245,7 @@ export async function registerRoutes(
         sku: "convoai",
         description: "Agora's Conversational AI Engine",
         brandColor: "#099DFD",
+        platformId: "agora",
       });
 
       await storage.createProvider({
@@ -252,6 +253,7 @@ export async function registerRoutes(
         sku: "convoai",
         description: "LiveKit's Real-time Communication Agents",
         brandColor: "#1FD5F9",
+        platformId: "livekit",
       });
 
       await storage.createProvider({
@@ -259,6 +261,13 @@ export async function registerRoutes(
         sku: "convoai",
         description: "ElevenLabs Conversational AI Agents",
         brandColor: "#A8A29E",
+        platformId: "elevenlabs",
+      });
+
+      await storage.createProvider({
+        name: "Custom",
+        sku: "convoai",
+        description: "Custom / self-hosted conversational AI agent",
       });
 
       // Set default pricing config (prices in cents)
@@ -747,7 +756,7 @@ export async function registerRoutes(
   app.patch("/api/providers/:id", requireAuthOrApiKey, requireAdmin, async (req, res) => {
     try {
       const { id } = req.params;
-      const { name, description, brandColor, isActive } = req.body;
+      const { name, description, brandColor, platformId, isActive } = req.body;
 
       const existing = await storage.getProvider(id);
       if (!existing) {
@@ -758,10 +767,15 @@ export async function registerRoutes(
         return res.status(400).json({ error: "brandColor must be a valid hex color (e.g. #099DFD) or null" });
       }
 
+      if (platformId !== undefined && platformId !== null && !/^[a-z0-9_-]+$/.test(platformId)) {
+        return res.status(400).json({ error: "platformId must be a lowercase slug (e.g. agora, livekit) or null" });
+      }
+
       const updates: Record<string, unknown> = {};
       if (name !== undefined) updates.name = name;
       if (description !== undefined) updates.description = description;
       if (brandColor !== undefined) updates.brandColor = brandColor;
+      if (platformId !== undefined) updates.platformId = platformId;
       if (isActive !== undefined) updates.isActive = isActive;
 
       const updated = await storage.updateProvider(id, updates);
@@ -1322,7 +1336,7 @@ export async function registerRoutes(
         return res.status(403).json({ error: "Not authorized to modify this workflow" });
       }
 
-      const { name, description, visibility, config, projectId } = req.body;
+      const { name, description, visibility, config, projectId, providerId } = req.body;
       if (config) {
         const v = validateWorkflowConfig(config);
         if (!v.valid) return res.status(400).json({ error: v.error });
@@ -1331,6 +1345,13 @@ export async function registerRoutes(
       if (name) updates.name = name;
       if (description !== undefined) updates.description = description;
       if (config) updates.config = config;
+      if (providerId !== undefined) {
+        const provider = await storage.getProvider(providerId);
+        if (!provider) {
+          return res.status(404).json({ error: "Provider not found" });
+        }
+        updates.providerId = providerId;
+      }
       if (visibility) {
         if (visibility === "private" && user.plan === "basic") {
           return res.status(403).json({ error: "Premium plan required for private workflows" });
