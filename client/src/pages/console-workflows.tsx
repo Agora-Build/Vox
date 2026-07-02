@@ -16,7 +16,53 @@ import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, 
 import { Plus, Workflow, Globe, Lock, Star, StarOff, ChevronRight, Pencil, FolderKanban, Copy, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { useLocation } from "wouter";
+import { load as loadYaml } from "js-yaml";
 import type { Workflow as WorkflowType, Provider, Project } from "@shared/schema";
+
+// Extract `platform_id` from the aeval `platform.setup` step in a stepsPrefix YAML.
+// Checks both the step's top level and its `params`. Returns null if absent/unparseable.
+function extractPlatformId(stepsPrefix: string): string | null {
+  if (!stepsPrefix?.trim()) return null;
+  try {
+    const parsed = loadYaml(stepsPrefix);
+    if (!Array.isArray(parsed)) return null;
+    for (const step of parsed) {
+      if (step && typeof step === "object" && (step as any).type === "platform.setup") {
+        const pid = (step as any).platform_id ?? (step as any).params?.platform_id;
+        return pid != null ? String(pid) : null;
+      }
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+type SaveDecision =
+  | { action: "ok" }
+  | { action: "auto-custom"; customId: string }
+  | { action: "mismatch"; yamlPlatform: string; providerName: string };
+
+// Decide whether a workflow save can proceed, must switch to Custom, or should warn.
+// Only meaningful for the aeval framework (voice-agent-tester has no platform_id).
+function evaluateSave(
+  framework: string,
+  stepsPrefix: string,
+  providerId: string,
+  providers: Provider[] | undefined,
+): SaveDecision {
+  if (framework !== "aeval") return { action: "ok" };
+  const yamlPlatform = extractPlatformId(stepsPrefix);
+  const selected = providers?.find((p) => p.id === providerId);
+  const custom = providers?.find((p) => p.name === "Custom" || (!p.platformId && p.name.toLowerCase() === "custom"));
+  if (!yamlPlatform) {
+    // No platform_id in the setup steps → this is a Custom/self-hosted workflow.
+    if (custom && providerId !== custom.id) return { action: "auto-custom", customId: custom.id };
+    return { action: "ok" };
+  }
+  if (selected?.platformId && selected.platformId === yamlPlatform) return { action: "ok" };
+  return { action: "mismatch", yamlPlatform, providerName: selected?.name ?? "(none)" };
+}
 
 const APP_CONFIG_PRESETS: Record<string, string> = {
   "livekit-playground": `url: "https://livekit.io/"
@@ -66,6 +112,10 @@ export default function ConsoleWorkflows() {
   const [editProjectId, setEditProjectId] = useState("");
   const [editFramework, setEditFramework] = useState("aeval");
   const [editAppConfigYaml, setEditAppConfigYaml] = useState("");
+  const [editProviderId, setEditProviderId] = useState("");
+
+  // Non-blocking warning when the workflow's provider disagrees with its YAML platform_id.
+  const [pendingMismatch, setPendingMismatch] = useState<{ kind: "create" | "edit"; yamlPlatform: string; providerName: string } | null>(null);
 
   const { data: authStatus } = useQuery<AuthStatus>({
     queryKey: ["/api/auth/status"],
@@ -84,7 +134,7 @@ export default function ConsoleWorkflows() {
   });
 
   const createMutation = useMutation({
-    mutationFn: async () => {
+    mutationFn: async (overrideProviderId?: string) => {
       const config: Record<string, string> = { framework };
       if (framework === "voice-agent-tester" && appConfigYaml) {
         config.app = appConfigYaml;
@@ -97,7 +147,7 @@ export default function ConsoleWorkflows() {
         name,
         description,
         visibility,
-        providerId,
+        providerId: overrideProviderId ?? providerId,
         config,
       });
       return res.json();
@@ -122,13 +172,15 @@ export default function ConsoleWorkflows() {
   });
 
   const editMutation = useMutation({
-    mutationFn: async () => {
+    mutationFn: async (overrideProviderId?: string) => {
       if (!editWorkflow) return;
       const body: Record<string, unknown> = {};
       if (editName !== editWorkflow.name) body.name = editName;
       if (editDescription !== (editWorkflow.description || "")) body.description = editDescription;
       if (editVisibility !== editWorkflow.visibility) body.visibility = editVisibility;
       if (editProjectId && !editWorkflow.projectId) body.projectId = parseInt(editProjectId);
+      const pid = overrideProviderId ?? editProviderId;
+      if (pid && pid !== editWorkflow.providerId) body.providerId = pid;
       const config: Record<string, string> = { framework: editFramework };
       if (editFramework === "voice-agent-tester" && editAppConfigYaml) {
         config.app = editAppConfigYaml;
@@ -211,7 +263,46 @@ export default function ConsoleWorkflows() {
     setEditAppConfigYaml(cfg.app || "");
     setEditStepsPrefix(cfg.stepsPrefix || "");
     setEditStepsSuffix(cfg.stepsSuffix || "");
+    setEditProviderId(workflow.providerId);
     setEditOpen(true);
+  };
+
+  // Run the provider/platform_id guard, then create. Warns on mismatch, auto-switches to Custom.
+  const handleCreateClick = () => {
+    const decision = evaluateSave(framework, stepsPrefix, providerId, providers);
+    if (decision.action === "mismatch") {
+      setPendingMismatch({ kind: "create", yamlPlatform: decision.yamlPlatform, providerName: decision.providerName });
+      return;
+    }
+    if (decision.action === "auto-custom") {
+      setProviderId(decision.customId);
+      toast({ title: "Provider set to Custom", description: "No platform_id found in the setup steps." });
+      createMutation.mutate(decision.customId);
+      return;
+    }
+    createMutation.mutate(undefined);
+  };
+
+  const handleEditClick = () => {
+    const decision = evaluateSave(editFramework, editStepsPrefix, editProviderId, providers);
+    if (decision.action === "mismatch") {
+      setPendingMismatch({ kind: "edit", yamlPlatform: decision.yamlPlatform, providerName: decision.providerName });
+      return;
+    }
+    if (decision.action === "auto-custom") {
+      setEditProviderId(decision.customId);
+      toast({ title: "Provider set to Custom", description: "No platform_id found in the setup steps." });
+      editMutation.mutate(decision.customId);
+      return;
+    }
+    editMutation.mutate(undefined);
+  };
+
+  const confirmMismatchSave = () => {
+    if (!pendingMismatch) return;
+    if (pendingMismatch.kind === "create") createMutation.mutate(undefined);
+    else editMutation.mutate(undefined);
+    setPendingMismatch(null);
   };
 
   const isPrincipal = authStatus?.user?.plan === "principal";
@@ -365,7 +456,7 @@ export default function ConsoleWorkflows() {
             </div>
             <DialogFooter>
               <Button
-                onClick={() => createMutation.mutate()}
+                onClick={handleCreateClick}
                 disabled={createMutation.isPending || !name || !providerId}
                 data-testid="button-submit-workflow"
               >
@@ -406,6 +497,21 @@ export default function ConsoleWorkflows() {
                 value={editDescription}
                 onChange={(e) => setEditDescription(e.target.value)}
               />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="edit-workflow-provider">Provider</Label>
+              <Select value={editProviderId} onValueChange={setEditProviderId}>
+                <SelectTrigger data-testid="select-edit-workflow-provider">
+                  <SelectValue placeholder="Select a provider" />
+                </SelectTrigger>
+                <SelectContent>
+                  {providers?.map((p) => (
+                    <SelectItem key={p.id} value={p.id}>
+                      {p.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
             <div className="space-y-2">
               <Label htmlFor="edit-workflow-visibility">Visibility</Label>
@@ -507,8 +613,8 @@ export default function ConsoleWorkflows() {
               Cancel
             </Button>
             <Button
-              onClick={() => editMutation.mutate()}
-              disabled={editMutation.isPending || !editName}
+              onClick={handleEditClick}
+              disabled={editMutation.isPending || !editName || !editProviderId}
             >
               Save Changes
             </Button>
@@ -688,6 +794,26 @@ export default function ConsoleWorkflows() {
             >
               Delete
             </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Provider ↔ platform_id mismatch warning */}
+      <AlertDialog open={!!pendingMismatch} onOpenChange={(open) => { if (!open) setPendingMismatch(null); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Provider doesn't match the setup steps</AlertDialogTitle>
+            <AlertDialogDescription>
+              The setup YAML uses{" "}
+              <span className="font-mono font-semibold text-foreground">platform_id: {pendingMismatch?.yamlPlatform}</span>,
+              but the selected provider is{" "}
+              <span className="font-semibold text-foreground">{pendingMismatch?.providerName}</span>.
+              These usually should match. Save anyway?
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={confirmMismatchSave}>Save anyway</AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>

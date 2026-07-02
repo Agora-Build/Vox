@@ -36,6 +36,8 @@ const MIGRATIONS: Array<{ version: number; description: string; file: string | n
   { version: 12, description: "eval result rate columns", file: "0011_add_rate_columns.sql" },
   { version: 13, description: "eval job trigger type", file: "0012_add_job_trigger_type.sql" },
   { version: 14, description: "eval agent lease id", file: "0013_add_agent_lease.sql" },
+  { version: 15, description: "add Custom provider", file: "0014_add_custom_provider.sql" },
+  { version: 16, description: "add provider platform_id slug", file: "0015_add_provider_platform_id.sql" },
 ];
 
 const TARGET_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version;
