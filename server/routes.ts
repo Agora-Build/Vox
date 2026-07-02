@@ -239,36 +239,23 @@ export async function registerRoutes(
         emailVerifiedAt: null,
       });
 
-      // Create default providers (ID is generated automatically)
-      await storage.createProvider({
-        name: "Agora ConvoAI Engine",
-        sku: "convoai",
-        description: "Agora's Conversational AI Engine",
-        brandColor: "#099DFD",
-        platformId: "agora",
-      });
-
-      await storage.createProvider({
-        name: "LiveKit Agents",
-        sku: "convoai",
-        description: "LiveKit's Real-time Communication Agents",
-        brandColor: "#1FD5F9",
-        platformId: "livekit",
-      });
-
-      await storage.createProvider({
-        name: "ElevenLabs Agents",
-        sku: "convoai",
-        description: "ElevenLabs Conversational AI Agents",
-        brandColor: "#A8A29E",
-        platformId: "elevenlabs",
-      });
-
-      await storage.createProvider({
-        name: "Custom",
-        sku: "convoai",
-        description: "Custom / self-hosted conversational AI agent",
-      });
+      // Create default providers (ID is generated automatically).
+      // Idempotent by name: `npm start` runs the migration runner BEFORE the app,
+      // so on a fresh instance any seed-inserting migration has already run first
+      // (0003 → ElevenLabs, 0014 → Custom). init is a post-boot call, so it must
+      // skip providers that already exist — otherwise a brand-new instance ends up
+      // with duplicate rows. Covers every seed-migrated provider, not just Custom.
+      const existingProviders = await storage.getAllProviders();
+      const hasProvider = (name: string) => existingProviders.some((p) => p.name === name);
+      const seedProviders = [
+        { name: "Agora ConvoAI Engine", sku: "convoai" as const, description: "Agora's Conversational AI Engine", brandColor: "#099DFD", platformId: "agora" },
+        { name: "LiveKit Agents", sku: "convoai" as const, description: "LiveKit's Real-time Communication Agents", brandColor: "#1FD5F9", platformId: "livekit" },
+        { name: "ElevenLabs Agents", sku: "convoai" as const, description: "ElevenLabs Conversational AI Agents", brandColor: "#A8A29E", platformId: "elevenlabs" },
+        { name: "Custom", sku: "convoai" as const, description: "Custom / self-hosted conversational AI agent" },
+      ];
+      for (const p of seedProviders) {
+        if (!hasProvider(p.name)) await storage.createProvider(p);
+      }
 
       // Set default pricing config (prices in cents)
       await storage.setPricingConfig({ name: "Solo Premium", pricePerSeat: 500, minSeats: 1, maxSeats: 1, discountPercent: 0, isActive: true });
