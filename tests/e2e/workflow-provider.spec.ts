@@ -159,3 +159,29 @@ test.describe("Eval-jobs provenance columns", () => {
     }
   });
 });
+
+test.describe("Eval-sets My/Public tabs", () => {
+  test.beforeEach(async ({ page }) => {
+    await page.context().clearCookies();
+    await login(page);
+  });
+
+  test("defaults to My Eval Sets and can switch to Public", async ({ page }) => {
+    await page.goto("/console/eval-sets");
+    await page.waitForLoadState("networkidle");
+
+    const myTab = page.getByTestId("tab-my-evalsets");
+    const publicTab = page.getByTestId("tab-public-evalsets");
+
+    await expect(myTab).toBeVisible();
+    await expect(publicTab).toBeVisible();
+    // "My Eval Sets" is the default active tab.
+    await expect(myTab).toHaveAttribute("data-state", "active");
+    await expect(publicTab).toHaveAttribute("data-state", "inactive");
+
+    // Switching to Public activates it.
+    await publicTab.click();
+    await expect(publicTab).toHaveAttribute("data-state", "active");
+    await expect(myTab).toHaveAttribute("data-state", "inactive");
+  });
+});
