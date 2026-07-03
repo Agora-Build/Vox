@@ -1,6 +1,7 @@
 import { clsx, type ClassValue } from "clsx"
 import { twMerge } from "tailwind-merge"
 import { format } from "date-fns"
+import { dump as dumpYaml } from "js-yaml"
 
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs))
@@ -24,27 +25,14 @@ export function formatRegion(region: string): string {
 }
 
 // Render a JS value as readable YAML for read-only config display (workflow/eval-set
-// snapshots, app config). Not a full YAML serializer — good enough for display.
-export function toYaml(obj: unknown, indent = 0): string {
-  const pad = "  ".repeat(indent);
-  if (obj === null || obj === undefined) return "null";
-  if (typeof obj === "string") return obj.includes("\n") ? `|\n${obj.split("\n").map(l => pad + "  " + l).join("\n")}` : `"${obj}"`;
-  if (typeof obj !== "object") return String(obj);
-  if (Array.isArray(obj)) {
-    return obj.map(item => {
-      const val = toYaml(item, indent + 1);
-      const isComplex = typeof item === "object" && item !== null;
-      return isComplex ? `${pad}- ${val.trimStart()}` : `${pad}- ${val}`;
-    }).join("\n");
+// snapshots, app config). Uses js-yaml's serializer; lineWidth -1 keeps long
+// step/scenario lines intact. Falls back to JSON for the rare value it can't dump.
+export function toYaml(obj: unknown): string {
+  try {
+    return dumpYaml(obj ?? null, { indent: 2, lineWidth: -1 }).trimEnd();
+  } catch {
+    return JSON.stringify(obj, null, 2);
   }
-  const entries = Object.entries(obj as Record<string, unknown>);
-  if (entries.length === 0) return "{}";
-  return entries.map(([key, val]) => {
-    if (typeof val === "object" && val !== null) {
-      return `${pad}${key}:\n${toYaml(val, indent + 1)}`;
-    }
-    return `${pad}${key}: ${toYaml(val, indent)}`;
-  }).join("\n");
 }
 
 export function formatSmartTimestamp(dateStr: string | Date): string {
