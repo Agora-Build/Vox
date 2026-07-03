@@ -8,7 +8,7 @@
  */
 
 import { Express, Request, Response } from "express";
-import { storage } from "./storage";
+import { storage, mergeEvalConfig, buildJobSnapshot } from "./storage";
 import { requireAuthOrApiKey, getCurrentUserOrApiKeyUser } from "./auth";
 
 export function registerApiV1Routes(app: Express): void {
@@ -236,13 +236,17 @@ export function registerApiV1Routes(app: Express): void {
         return res.status(404).json({ error: "Eval set not found" });
       }
 
-      // Create eval job
+      // Create eval job (merge configs + capture the immutable snapshot, same as the
+      // console run path — otherwise these jobs lose provenance/attribution/tiering).
+      const provider = await storage.getProvider(workflow.providerId);
       const job = await storage.createEvalJob({
         workflowId: parseInt(id),
         triggerType: 2, // manual (API v1 run)
         evalSetId,
         createdBy: user.id,
         region: region || "na",
+        config: mergeEvalConfig(workflow.config, evalSet.config),
+        snapshot: buildJobSnapshot(workflow, evalSet, provider, user.plan),
         status: "pending",
         priority: priority || 0,
       });
@@ -416,9 +420,10 @@ export function registerApiV1Routes(app: Express): void {
         return res.status(404).json({ error: "Job not found" });
       }
 
-      // Get workflow to check ownership
-      const workflow = await storage.getWorkflow(job.workflowId);
-      if (!workflow || workflow.ownerId !== user.id) {
+      // Check ownership — live workflow owner, or the job's creator once it's deleted.
+      const workflow = job.workflowId != null ? await storage.getWorkflow(job.workflowId) : undefined;
+      const allowed = workflow ? workflow.ownerId === user.id : job.createdBy === user.id;
+      if (!allowed) {
         return res.status(403).json({ error: "Access denied" });
       }
 
@@ -447,9 +452,10 @@ export function registerApiV1Routes(app: Express): void {
         return res.status(404).json({ error: "Job not found" });
       }
 
-      // Get workflow to check ownership
-      const workflow = await storage.getWorkflow(job.workflowId);
-      if (!workflow || workflow.ownerId !== user.id) {
+      // Check ownership — live workflow owner, or the job's creator once it's deleted.
+      const workflow = job.workflowId != null ? await storage.getWorkflow(job.workflowId) : undefined;
+      const allowed = workflow ? workflow.ownerId === user.id : job.createdBy === user.id;
+      if (!allowed) {
         return res.status(403).json({ error: "Access denied" });
       }
 
@@ -528,8 +534,9 @@ export function registerApiV1Routes(app: Express): void {
         return res.status(404).json({ error: "Associated job not found" });
       }
 
-      const workflow = await storage.getWorkflow(job.workflowId);
-      if (!workflow || workflow.ownerId !== user.id) {
+      const workflow = job.workflowId != null ? await storage.getWorkflow(job.workflowId) : undefined;
+      const allowed = workflow ? workflow.ownerId === user.id : job.createdBy === user.id;
+      if (!allowed) {
         return res.status(403).json({ error: "Access denied" });
       }
 

@@ -185,3 +185,30 @@ test.describe("Eval-sets My/Public tabs", () => {
     await expect(myTab).toHaveAttribute("data-state", "inactive");
   });
 });
+
+test.describe("Job snapshot", () => {
+  test.beforeEach(async ({ page }) => {
+    await page.context().clearCookies();
+    await login(page);
+  });
+
+  test("job detail shows a 'View workflow & eval set' snapshot dialog", async ({ page }) => {
+    // Find any job to open its detail page.
+    const res = await page.request.get("/api/eval-jobs?limit=1");
+    const body = await res.json();
+    const job = body?.data?.[0];
+    test.skip(!job, "no jobs in the DB to inspect");
+
+    await page.goto(`/console/eval-jobs/${job.id}`);
+    await page.waitForLoadState("networkidle");
+
+    const btn = page.getByTestId("button-view-snapshot");
+    await expect(btn).toBeVisible();
+    await btn.click();
+
+    // Immutable snapshot dialog with the workflow/eval-set config.
+    await expect(page.getByRole("dialog").getByText("Workflow & eval set — as run")).toBeVisible();
+    await expect(page.getByText(/Workflow:/)).toBeVisible();
+    await expect(page.getByText(/Eval set:/)).toBeVisible();
+  });
+});

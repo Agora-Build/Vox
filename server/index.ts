@@ -7,7 +7,7 @@ import session from "express-session";
 import connectPgSimple from "connect-pg-simple";
 import rateLimit from "express-rate-limit";
 import { authenticateApiKey, passport, initializeGoogleOAuth } from "./auth";
-import { storage, mergeEvalConfig } from "./storage";
+import { storage, mergeEvalConfig, buildJobSnapshot } from "./storage";
 import { parseNextCronRun } from "./cron";
 import { setupClashWebSocket } from "./clash-ws";
 import pkg from "pg";
@@ -242,13 +242,18 @@ function startBackgroundWorker() {
 
       for (const schedule of dueSchedules) {
         try {
-          // Fetch workflow + evalSet to merge configs
-          const workflow = await storage.getWorkflow(schedule.workflowId);
-          if (!workflow) {
-            log(`Schedule "${schedule.name}" references deleted workflow ${schedule.workflowId}, skipping`, "scheduler");
+          // A schedule whose workflow or eval-set was deleted (FK SET NULL) can never
+          // run — DISABLE it so it isn't re-selected on every tick (zombie). It stays
+          // in the list (with a placeholder) for the user to clean up.
+          const workflow = schedule.workflowId != null ? await storage.getWorkflow(schedule.workflowId) : undefined;
+          const evalSet = schedule.evalSetId != null ? await storage.getEvalSet(schedule.evalSetId) : undefined;
+          if (!workflow || !evalSet) {
+            log(`Schedule "${schedule.name}" references a deleted workflow/eval-set — disabling`, "scheduler");
+            await storage.updateEvalSchedule(schedule.id, { isEnabled: false });
             continue;
           }
-          const evalSet = await storage.getEvalSet(schedule.evalSetId);
+          const provider = await storage.getProvider(workflow.providerId);
+          const creator = schedule.createdBy ? await storage.getUser(schedule.createdBy) : undefined;
 
           // Create the eval job
           const job = await storage.createEvalJob({
@@ -259,6 +264,7 @@ function startBackgroundWorker() {
             createdBy: schedule.createdBy,
             region: schedule.region,
             config: mergeEvalConfig(workflow.config, evalSet?.config),
+            snapshot: buildJobSnapshot(workflow, evalSet, provider, creator?.plan ?? null),
             status: "pending",
             priority: 0,
             retryCount: 0,

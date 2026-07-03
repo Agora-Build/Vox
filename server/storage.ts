@@ -20,6 +20,7 @@ import {
   type InsertEvalSchedule,
   type EvalJob,
   type InsertEvalJob,
+  type JobSnapshot,
   type EvalResult,
   type InsertEvalResult,
   type ApiKey,
@@ -262,6 +263,39 @@ export function mergeEvalConfig(
     throw new Error(`Workflow and eval set configs share keys with conflicting values: ${conflicts.join(", ")}`);
   }
   return { ...wf, ...es };
+}
+
+// Build the immutable per-job snapshot (see JobSnapshot in shared/schema). Captures
+// the metadata + config + tier flags of the workflow/eval-set/provider at run time so
+// provenance, attribution, and metric tiering never drift when those rows change.
+export function buildJobSnapshot(
+  workflow: Workflow,
+  evalSet: EvalSet | undefined | null,
+  provider: Provider | undefined | null,
+  creatorPlan: string | null,
+): JobSnapshot {
+  return {
+    provider: provider
+      ? { id: provider.id, name: provider.name, platformId: provider.platformId ?? null }
+      : null,
+    workflow: {
+      name: workflow.name,
+      config: workflow.config,
+      visibility: workflow.visibility,
+      isMainline: workflow.isMainline,
+      ownerId: workflow.ownerId,
+    },
+    evalSet: evalSet
+      ? {
+          name: evalSet.name,
+          config: evalSet.config,
+          visibility: evalSet.visibility,
+          isMainline: evalSet.isMainline,
+          ownerId: evalSet.ownerId,
+        }
+      : null,
+    creatorPlan,
+  };
 }
 
 // Helper to convert snake_case SQL results to camelCase for type safety
@@ -571,15 +605,18 @@ export class DatabaseStorage {
   async countTodayJobsByOwner(ownerId: number): Promise<number> {
     const startOfDay = new Date();
     startOfDay.setHours(0, 0, 0, 0);
+    // Count the jobs this user RAN (created_by) — immutable and survives workflow
+    // deletion, so the daily limit can't be bypassed by deleting the workflow.
     const result = await db.select({ count: sql<number>`count(*)::int` })
       .from(evalJobs)
-      .innerJoin(workflows, eq(evalJobs.workflowId, workflows.id))
-      .where(and(eq(workflows.ownerId, ownerId), gte(evalJobs.createdAt, startOfDay)));
+      .where(and(eq(evalJobs.createdBy, ownerId), gte(evalJobs.createdAt, startOfDay)));
     return result[0]?.count ?? 0;
   }
 
   async createEvalJob(job: InsertEvalJob): Promise<EvalJob> {
-    const result = await db.insert(evalJobs).values(job).returning();
+    // Cast: the Zod insert type widens the `snapshot` jsonb ($type<JobSnapshot>)
+    // to a looser shape; the runtime value is a valid JobSnapshot.
+    const result = await db.insert(evalJobs).values(job as typeof evalJobs.$inferInsert).returning();
     return result[0];
   }
 
@@ -603,7 +640,7 @@ export class DatabaseStorage {
     return result[0];
   }
 
-  async claimEvalJob(jobId: number, agentId: number): Promise<EvalJob | undefined> {
+  async claimEvalJob(jobId: number, agentId: number, tokenVisibility?: string | null): Promise<EvalJob | undefined> {
     // Use atomic claim with SELECT FOR UPDATE SKIP LOCKED to prevent race conditions
     const client = await pool.connect();
     try {
@@ -622,13 +659,15 @@ export class DatabaseStorage {
         return undefined;
       }
 
-      // Update the job
+      // Update the job. token_visibility is frozen here — in the same atomic update
+      // as the claim — so a completed result can never be mis-tiered by a lost write.
       const updateResult = await client.query(
         `UPDATE eval_jobs
-         SET eval_agent_id = $1, status = 'running'::eval_job_status, started_at = NOW(), updated_at = NOW()
+         SET eval_agent_id = $1, status = 'running'::eval_job_status, started_at = NOW(), updated_at = NOW(),
+             token_visibility = COALESCE($3, token_visibility)
          WHERE id = $2
          RETURNING *`,
-        [agentId, jobId]
+        [agentId, jobId, tokenVisibility ?? null]
       );
 
       await client.query('COMMIT');
@@ -771,51 +810,12 @@ export class DatabaseStorage {
     if (filters?.agentId) {
       conditions.push(eq(evalJobs.evalAgentId, filters.agentId));
     }
-
-    // If filtering by owner, need to join with workflows
+    // "Owner" = the job's creator (immutable), not the workflow owner — so a user's
+    // job history survives workflow deletion and isn't dropped by a live join.
     if (filters?.ownerId) {
-      let query = db.select({
-        id: evalJobs.id,
-        scheduleId: evalJobs.scheduleId,
-        triggerType: evalJobs.triggerType,
-        workflowId: evalJobs.workflowId,
-        evalSetId: evalJobs.evalSetId,
-        evalAgentId: evalJobs.evalAgentId,
-        createdBy: evalJobs.createdBy,
-        status: evalJobs.status,
-        region: evalJobs.region,
-        priority: evalJobs.priority,
-        retryCount: evalJobs.retryCount,
-        maxRetries: evalJobs.maxRetries,
-        config: evalJobs.config,
-        error: evalJobs.error,
-        startedAt: evalJobs.startedAt,
-        completedAt: evalJobs.completedAt,
-        createdAt: evalJobs.createdAt,
-        updatedAt: evalJobs.updatedAt,
-      })
-        .from(evalJobs)
-        .innerJoin(workflows, eq(evalJobs.workflowId, workflows.id));
-
-      conditions.push(eq(workflows.ownerId, filters.ownerId));
-
-      if (conditions.length > 0) {
-        query = query.where(and(...conditions)) as typeof query;
-      }
-
-      query = query.orderBy(desc(evalJobs.createdAt)) as typeof query;
-
-      if (filters?.limit) {
-        query = query.limit(filters.limit) as typeof query;
-      }
-      if (filters?.offset) {
-        query = query.offset(filters.offset) as typeof query;
-      }
-
-      return query;
+      conditions.push(eq(evalJobs.createdBy, filters.ownerId));
     }
 
-    // Simple query without join
     let query = db.select().from(evalJobs);
 
     if (conditions.length > 0) {
@@ -823,6 +823,13 @@ export class DatabaseStorage {
     }
 
     query = query.orderBy(desc(evalJobs.createdAt)) as typeof query;
+
+    if (filters?.limit) {
+      query = query.limit(filters.limit) as typeof query;
+    }
+    if (filters?.offset) {
+      query = query.offset(filters.offset) as typeof query;
+    }
 
     return query;
   }
@@ -949,15 +956,16 @@ export class DatabaseStorage {
         createdAt: evalResults.createdAt,
       })
         .from(evalResults)
-        .innerJoin(evalJobs, eq(evalResults.evalJobId, evalJobs.id))
-        .innerJoin(workflows, eq(evalJobs.workflowId, workflows.id));
+        .innerJoin(evalJobs, eq(evalResults.evalJobId, evalJobs.id));
 
       if (filters.workflowId) {
         conditions.push(eq(evalJobs.workflowId, filters.workflowId));
       }
 
+      // Scope by the job's creator (immutable) — survives workflow deletion and
+      // matches the created_by model used for jobs/quota.
       if (filters.ownerId) {
-        conditions.push(eq(workflows.ownerId, filters.ownerId));
+        conditions.push(eq(evalJobs.createdBy, filters.ownerId));
       }
 
       if (conditions.length > 0) {
@@ -986,16 +994,22 @@ export class DatabaseStorage {
   // and span-probe queries all share these helpers so their filters can never
   // drift apart. See getXMetrics() for the span-based raw-vs-bucket policy.
 
+  // Tiering reads the immutable per-job snapshot (see JobSnapshot) instead of the
+  // live workflows/eval_sets/users/agent-tokens. Consequences: a result keeps its
+  // run-time tier even after its workflow/eval-set is edited or deleted, and the
+  // join chain collapses to just eval_results → eval_jobs.
   private mainlineConditions(hoursBack?: number) {
+    const snap = evalJobs.snapshot;
     const conditions = [
       eq(evalJobs.status, "completed"),
-      eq(workflows.isMainline, true),
-      eq(workflows.visibility, "public"),
-      eq(evalSets.isMainline, true),
-      eq(evalSets.visibility, "public"),
-      eq(evalAgentTokens.visibility, "public"),
-      // Only principal/fellow users' jobs qualify as mainline
-      inArray(users.plan, ["principal", "fellow"]),
+      sql`${snap}->'workflow'->>'visibility' = 'public'`,
+      // Compare as text ('true'/'false') so the text expression index is usable.
+      sql`${snap}->'workflow'->>'isMainline' = 'true'`,
+      sql`${snap}->'evalSet'->>'visibility' = 'public'`,
+      sql`${snap}->'evalSet'->>'isMainline' = 'true'`,
+      eq(evalJobs.tokenVisibility, "public"),
+      // Only principal/fellow creators' jobs qualify as mainline
+      sql`${snap}->>'creatorPlan' IN ('principal', 'fellow')`,
     ];
     if (hoursBack) {
       conditions.push(gte(evalResults.createdAt, new Date(Date.now() - hoursBack * 60 * 60 * 1000)));
@@ -1004,16 +1018,18 @@ export class DatabaseStorage {
   }
 
   private communityConditions(hoursBack?: number) {
+    const snap = evalJobs.snapshot;
     const conditions = [
       eq(evalJobs.status, "completed"),
-      eq(workflows.visibility, "public"),
-      eq(evalSets.visibility, "public"),
-      // Exclude fully mainline results (all 4 conditions must be true to be mainline)
+      sql`${snap}->'workflow'->>'visibility' = 'public'`,
+      sql`${snap}->'evalSet'->>'visibility' = 'public'`,
+      // Exclude fully mainline results (all 4 inputs true → mainline).
+      // Text comparison (matches the expression index; NULL/'false' → not mainline).
       or(
-        not(eq(workflows.isMainline, true)),
-        not(eq(evalSets.isMainline, true)),
-        sql`${evalAgentTokens.visibility} IS NULL OR ${evalAgentTokens.visibility} != 'public'`,
-        sql`${users.plan} IS NULL OR ${users.plan} NOT IN ('principal', 'fellow')`,
+        sql`${snap}->'workflow'->>'isMainline' IS DISTINCT FROM 'true'`,
+        sql`${snap}->'evalSet'->>'isMainline' IS DISTINCT FROM 'true'`,
+        sql`${evalJobs.tokenVisibility} IS DISTINCT FROM 'public'`,
+        sql`${snap}->>'creatorPlan' IS NULL OR ${snap}->>'creatorPlan' NOT IN ('principal', 'fellow')`,
       ),
     ];
     if (hoursBack) {
@@ -1023,11 +1039,12 @@ export class DatabaseStorage {
   }
 
   private myEvalConditions(userId: number, hoursBack?: number) {
+    const snap = evalJobs.snapshot;
     const conditions = [
       eq(evalJobs.status, "completed"),
       or(
-        and(eq(workflows.visibility, "private"), eq(workflows.ownerId, userId)),
-        and(eq(evalSets.visibility, "private"), eq(evalSets.ownerId, userId)),
+        sql`${snap}->'workflow'->>'visibility' = 'private' AND (${snap}->'workflow'->>'ownerId')::int = ${userId}`,
+        sql`${snap}->'evalSet'->>'visibility' = 'private' AND (${snap}->'evalSet'->>'ownerId')::int = ${userId}`,
       ),
     ];
     if (hoursBack) {
@@ -1036,33 +1053,14 @@ export class DatabaseStorage {
     return conditions;
   }
 
-  // Join appliers — typed loosely because the three chains differ structurally
-  // (mainline: all inner; community: left joins for nullable user/agent/token;
-  // my-evals: only jobs+workflow+evalSet). The select shape is supplied first.
-  private joinMainline(q: any): any {
-    return q
-      .innerJoin(evalJobs, eq(evalResults.evalJobId, evalJobs.id))
-      .innerJoin(users, eq(evalJobs.createdBy, users.id))
-      .innerJoin(workflows, eq(evalJobs.workflowId, workflows.id))
-      .innerJoin(evalSets, eq(evalJobs.evalSetId, evalSets.id))
-      .innerJoin(evalAgents, eq(evalJobs.evalAgentId, evalAgents.id))
-      .innerJoin(evalAgentTokens, eq(evalAgents.tokenId, evalAgentTokens.id));
+  // All three tiers now share one join (eval_results → eval_jobs); the tier is
+  // determined entirely by the snapshot-based conditions above.
+  private joinTier(q: any): any {
+    return q.innerJoin(evalJobs, eq(evalResults.evalJobId, evalJobs.id));
   }
-  private joinCommunity(q: any): any {
-    return q
-      .innerJoin(evalJobs, eq(evalResults.evalJobId, evalJobs.id))
-      .innerJoin(workflows, eq(evalJobs.workflowId, workflows.id))
-      .innerJoin(evalSets, eq(evalJobs.evalSetId, evalSets.id))
-      .leftJoin(users, eq(evalJobs.createdBy, users.id))
-      .leftJoin(evalAgents, eq(evalJobs.evalAgentId, evalAgents.id))
-      .leftJoin(evalAgentTokens, eq(evalAgents.tokenId, evalAgentTokens.id));
-  }
-  private joinMyEvals(q: any): any {
-    return q
-      .innerJoin(evalJobs, eq(evalResults.evalJobId, evalJobs.id))
-      .innerJoin(workflows, eq(evalJobs.workflowId, workflows.id))
-      .innerJoin(evalSets, eq(evalJobs.evalSetId, evalSets.id));
-  }
+  private joinMainline(q: any): any { return this.joinTier(q); }
+  private joinCommunity(q: any): any { return this.joinTier(q); }
+  private joinMyEvals(q: any): any { return this.joinTier(q); }
 
   private tierConditions(tier: MetricTier, hoursBack?: number, userId?: number) {
     return tier === "mainline" ? this.mainlineConditions(hoursBack)
@@ -1521,7 +1519,9 @@ export class DatabaseStorage {
       organizationId: evalSchedules.organizationId,
       createdAt: evalSchedules.createdAt,
       updatedAt: evalSchedules.updatedAt,
-      workflowName: workflows.name,
+      // Left-joined: a schedule whose workflow was deleted still lists (with a
+      // placeholder) so users can find and remove the orphan.
+      workflowName: sql<string>`coalesce(${workflows.name}, '(deleted workflow)')`,
       creatorName: users.username,
     };
   }
@@ -1529,7 +1529,7 @@ export class DatabaseStorage {
   async getEvalSchedulesWithWorkflow(userId: number): Promise<(EvalSchedule & { workflowName: string; creatorName: string })[]> {
     return db.select(this.buildScheduleQuery())
       .from(evalSchedules)
-      .innerJoin(workflows, eq(evalSchedules.workflowId, workflows.id))
+      .leftJoin(workflows, eq(evalSchedules.workflowId, workflows.id))
       .innerJoin(users, eq(evalSchedules.createdBy, users.id))
       .where(eq(evalSchedules.createdBy, userId))
       .orderBy(desc(evalSchedules.createdAt));
@@ -1538,7 +1538,7 @@ export class DatabaseStorage {
   async getAllEvalSchedulesWithWorkflow(): Promise<(EvalSchedule & { workflowName: string; creatorName: string })[]> {
     return db.select(this.buildScheduleQuery())
       .from(evalSchedules)
-      .innerJoin(workflows, eq(evalSchedules.workflowId, workflows.id))
+      .leftJoin(workflows, eq(evalSchedules.workflowId, workflows.id))
       .innerJoin(users, eq(evalSchedules.createdBy, users.id))
       .orderBy(desc(evalSchedules.createdAt));
   }
@@ -1574,6 +1574,7 @@ export class DatabaseStorage {
     // Find the workflow owner for this job, then return their secrets
     const job = await this.getEvalJob(jobId);
     if (!job) { console.log(`[Secrets] getSecretsForJob: job ${jobId} not found`); return []; }
+    if (job.workflowId == null) { console.log(`[Secrets] getSecretsForJob: job ${jobId} has no workflow (deleted)`); return []; }
     const workflow = await this.getWorkflow(job.workflowId);
     if (!workflow) { console.log(`[Secrets] getSecretsForJob: workflow ${job.workflowId} not found`); return []; }
     console.log(`[Secrets] getSecretsForJob: job ${jobId} → workflow ${workflow.id} → owner ${workflow.ownerId}`);
@@ -1996,6 +1997,7 @@ export class DatabaseStorage {
     // Only return org secrets if job creator is a member of the org
     const job = await this.getEvalJob(jobId);
     if (!job) return {};
+    if (job.workflowId == null) return {};
     const workflow = await this.getWorkflow(job.workflowId);
     if (!workflow?.organizationId) return {};
     // Verify job creator is org member (prevent secret leak via public org workflows)

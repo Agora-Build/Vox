@@ -1,16 +1,18 @@
 import { useQuery, useMutation } from "@tanstack/react-query";
+import { useState } from "react";
 import { INTERRUPT_ACTION_MAX_MS } from "@shared/metrics";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { ArrowLeft, Download, CheckCircle, XCircle, Loader2, Clock, Play, Upload, RefreshCw } from "lucide-react";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { ArrowLeft, Download, CheckCircle, XCircle, Loader2, Clock, Play, Upload, RefreshCw, FileText } from "lucide-react";
 import { Link } from "wouter";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import { formatSmartTimestamp, formatRegion } from "@/lib/utils";
-import type { EvalJob, EvalResult, Workflow as WorkflowType, Provider, EvalSet } from "@shared/schema";
+import { formatSmartTimestamp, formatRegion, toYaml } from "@/lib/utils";
+import type { EvalJob, EvalResult } from "@shared/schema";
 
 interface AuthStatus {
   user: { id: number; isAdmin: boolean } | null;
@@ -51,10 +53,7 @@ export default function ConsoleEvalJobDetail({ jobId }: { jobId: number }) {
     },
   });
 
-  // Resolve provider + eval-set names for the header (job carries workflowId/evalSetId).
-  const { data: workflows } = useQuery<WorkflowType[]>({ queryKey: ["/api/workflows?includePublic=true"] });
-  const { data: providers } = useQuery<Provider[]>({ queryKey: ["/api/providers"] });
-  const { data: evalSets } = useQuery<EvalSet[]>({ queryKey: ["/api/eval-sets"] });
+  const [snapshotOpen, setSnapshotOpen] = useState(false);
 
   const reuploadMutation = useMutation({
     mutationFn: async () => {
@@ -94,9 +93,11 @@ export default function ConsoleEvalJobDetail({ jobId }: { jobId: number }) {
   const statusCfg = STATUS_CONFIG[job.status] ?? STATUS_CONFIG.pending;
   const StatusIcon = statusCfg.icon;
 
-  const jobWorkflow = workflows?.find((w) => w.id === job.workflowId);
-  const providerName = providers?.find((p) => p.id === jobWorkflow?.providerId)?.name ?? null;
-  const jobEvalSetName = evalSets?.find((s) => s.id === job.evalSetId)?.name ?? `#${job.evalSetId}`;
+  // Provenance from the job's immutable snapshot — correct even after the
+  // workflow/eval-set is edited or deleted.
+  const snap = job.snapshot;
+  const providerName = snap?.provider?.name ?? null;
+  const jobEvalSetName = snap?.evalSet?.name ?? `#${job.evalSetId ?? "?"}`;
 
   const artifactFiles = (result?.artifactFiles ?? []) as ArtifactFile[];
   const artifactUrl = result?.artifactUrl as string | null;
@@ -171,20 +172,33 @@ export default function ConsoleEvalJobDetail({ jobId }: { jobId: number }) {
               </Badge>
             </h1>
             <p className="text-muted-foreground text-sm">
-              <Link href={`/console/workflows/${job.workflowId}`}>
-                <span className="text-primary hover:underline cursor-pointer">{workflowName}</span>
-              </Link>
+              {job.workflowId != null ? (
+                <Link href={`/console/workflows/${job.workflowId}`}>
+                  <span className="text-primary hover:underline cursor-pointer">{workflowName}</span>
+                </Link>
+              ) : (
+                <span title="Workflow deleted">{workflowName}</span>
+              )}
               {providerName && <> · {providerName}</>}
               {" · "}
-              <Link href="/console/eval-sets">
-                <span className="text-primary hover:underline cursor-pointer">{jobEvalSetName}</span>
-              </Link>
+              {job.evalSetId != null ? (
+                <Link href="/console/eval-sets">
+                  <span className="text-primary hover:underline cursor-pointer">{jobEvalSetName}</span>
+                </Link>
+              ) : (
+                <span title="Eval set deleted">{jobEvalSetName}</span>
+              )}
               {" · "}{formatRegion(job.region)}
               {creatorName && ` · by ${creatorName}`}
             </p>
           </div>
         </div>
         <div className="flex items-center gap-2">
+          {snap && (
+            <Button variant="outline" className="gap-2" onClick={() => setSnapshotOpen(true)} data-testid="button-view-snapshot">
+              <FileText className="h-4 w-4" /> View workflow &amp; eval set
+            </Button>
+          )}
           {/* Artifact status + actions */}
           {result && artifactStatus === "uploaded" && artifactUrl && (
             <a href={artifactUrl} download>
@@ -527,6 +541,41 @@ export default function ConsoleEvalJobDetail({ jobId }: { jobId: number }) {
           </CardContent>
         </Card>
       )}
+
+      {/* Immutable workflow + eval-set snapshot (as run) */}
+      <Dialog open={snapshotOpen} onOpenChange={setSnapshotOpen}>
+        <DialogContent className="max-w-3xl max-h-[85vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Workflow &amp; eval set — as run</DialogTitle>
+            <DialogDescription>
+              Immutable snapshot captured when this job ran. It does not change if the
+              workflow or eval set is later edited or deleted.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div>
+              <div className="text-sm font-semibold mb-1">
+                Provider: <span className="font-normal">{snap?.provider?.name ?? "—"}</span>
+                {snap?.provider?.platformId && (
+                  <span className="text-muted-foreground font-normal"> · platform_id: {snap.provider.platformId}</span>
+                )}
+              </div>
+            </div>
+            <div>
+              <div className="text-sm font-semibold mb-1">Workflow: {snap?.workflow?.name ?? "—"}</div>
+              <pre className="p-3 bg-muted rounded-md text-xs font-mono overflow-auto max-h-72">
+                {snap?.workflow?.config ? toYaml(snap.workflow.config) : "(no config)"}
+              </pre>
+            </div>
+            <div>
+              <div className="text-sm font-semibold mb-1">Eval set: {snap?.evalSet?.name ?? "—"}</div>
+              <pre className="p-3 bg-muted rounded-md text-xs font-mono overflow-auto max-h-72">
+                {snap?.evalSet?.config ? toYaml(snap.evalSet.config) : "(no config)"}
+              </pre>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
