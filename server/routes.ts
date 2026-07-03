@@ -2559,18 +2559,17 @@ export async function registerRoutes(
         return res.status(403).json({ error: "Job region does not match agent region" });
       }
 
-      const job = await storage.claimEvalJob(parseInt(jobId), agentId);
+      // Freeze the claiming agent's token visibility onto the job in the SAME atomic
+      // claim update — the one tier input not known at creation. Completes the
+      // immutable metric-tier snapshot (no separate write to lose on a crash).
+      const job = await storage.claimEvalJob(parseInt(jobId), agentId, evalAgentToken.visibility);
       if (!job) {
         return res.status(409).json({ error: "Job already claimed or not found" });
       }
 
-      // Freeze the claiming agent's token visibility onto the job — the one tier
-      // input not known at creation. Completes the immutable metric-tier snapshot.
-      const updated = await storage.updateEvalJob(job.id, { tokenVisibility: evalAgentToken.visibility });
-
       await storage.updateEvalAgent(agentId, { state: "occupied", lastJobAt: new Date() });
 
-      res.json(updated ?? job);
+      res.json(job);
     } catch (error) {
       console.error("Error claiming job:", error);
       res.status(500).json({ error: "Failed to claim job" });
@@ -3012,8 +3011,10 @@ export async function registerRoutes(
       const jobs = await storage.getEvalJobs(filters);
 
       // For non-admin users, only return jobs for workflows they own or are public.
-      // Deleted-workflow jobs (workflowId null) fall back to the frozen snapshot so a
-      // user's own job history survives deletion.
+      // While the workflow exists, use its LIVE visibility (so a since-privatised
+      // workflow's jobs aren't exposed via the frozen snapshot). Once the workflow is
+      // deleted, only the owner may see the job — run-time visibility does not grant
+      // ongoing public access.
       let visibleJobs = jobs;
       if (!user.isAdmin) {
         const userWorkflows = await storage.getWorkflowsByOwner(user.id);
@@ -3023,9 +3024,8 @@ export async function registerRoutes(
           ...publicWorkflows.map(w => w.id),
         ]);
         visibleJobs = jobs.filter(job => {
-          if (job.workflowId != null && allowedIds.has(job.workflowId)) return true;
-          const wf = job.snapshot?.workflow;
-          return !!wf && (wf.ownerId === user.id || wf.visibility === "public");
+          if (job.workflowId != null) return allowedIds.has(job.workflowId);
+          return job.snapshot?.workflow?.ownerId === user.id;
         });
       }
 
@@ -3072,14 +3072,13 @@ export async function registerRoutes(
         return res.status(404).json({ error: "Job not found" });
       }
 
-      // Check authorization: owner, admin, or public workflow. Fall back to the
-      // job's snapshot when the workflow has been deleted.
+      // Check authorization: owner, admin, or public workflow. Live check while the
+      // workflow exists; once deleted, only the owner may view it.
       if (!user.isAdmin) {
         const workflow = job.workflowId != null ? await storage.getWorkflow(job.workflowId) : undefined;
-        const wf = job.snapshot?.workflow;
         const allowed = workflow
           ? canAccessResource(user, workflow)
-          : (!!wf && (wf.ownerId === user.id || wf.visibility === "public"));
+          : job.snapshot?.workflow?.ownerId === user.id;
         if (!allowed) {
           return res.status(403).json({ error: "Not authorized to view this job" });
         }
@@ -3108,19 +3107,16 @@ export async function registerRoutes(
       }
 
       // Check authorization: owner, admin, or public workflow. When the workflow
-      // still exists, use it; if it was deleted, authorize via the job's snapshot.
+      // still exists, use its LIVE visibility; once deleted, only the owner may view
+      // it (run-time visibility does not confer ongoing public read access).
       if (!user.isAdmin) {
         const workflow = job.workflowId != null ? await storage.getWorkflow(job.workflowId) : undefined;
         if (workflow) {
           if (!canAccessResource(user, workflow)) {
             return res.status(403).json({ error: "Not authorized to view this job" });
           }
-        } else {
-          const wf = job.snapshot?.workflow;
-          const allowed = !!wf && (wf.ownerId === user.id || wf.visibility === "public");
-          if (!allowed) {
-            return res.status(403).json({ error: "Not authorized to view this job" });
-          }
+        } else if (job.snapshot?.workflow?.ownerId !== user.id) {
+          return res.status(403).json({ error: "Not authorized to view this job" });
         }
       }
 

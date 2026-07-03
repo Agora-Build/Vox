@@ -639,7 +639,7 @@ export class DatabaseStorage {
     return result[0];
   }
 
-  async claimEvalJob(jobId: number, agentId: number): Promise<EvalJob | undefined> {
+  async claimEvalJob(jobId: number, agentId: number, tokenVisibility?: string | null): Promise<EvalJob | undefined> {
     // Use atomic claim with SELECT FOR UPDATE SKIP LOCKED to prevent race conditions
     const client = await pool.connect();
     try {
@@ -658,13 +658,15 @@ export class DatabaseStorage {
         return undefined;
       }
 
-      // Update the job
+      // Update the job. token_visibility is frozen here — in the same atomic update
+      // as the claim — so a completed result can never be mis-tiered by a lost write.
       const updateResult = await client.query(
         `UPDATE eval_jobs
-         SET eval_agent_id = $1, status = 'running'::eval_job_status, started_at = NOW(), updated_at = NOW()
+         SET eval_agent_id = $1, status = 'running'::eval_job_status, started_at = NOW(), updated_at = NOW(),
+             token_visibility = COALESCE($3, token_visibility)
          WHERE id = $2
          RETURNING *`,
-        [agentId, jobId]
+        [agentId, jobId, tokenVisibility ?? null]
       );
 
       await client.query('COMMIT');

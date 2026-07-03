@@ -39,6 +39,7 @@ const MIGRATIONS: Array<{ version: number; description: string; file: string | n
   { version: 15, description: "add Custom provider", file: "0014_add_custom_provider.sql" },
   { version: 16, description: "add provider platform_id slug", file: "0015_add_provider_platform_id.sql" },
   { version: 17, description: "per-job workflow/eval-set snapshot + survive-delete FKs", file: "0016_job_snapshot.sql" },
+  { version: 18, description: "expression indexes for snapshot tier predicates", file: "0017_snapshot_tier_indexes.sql" },
 ];
 
 const TARGET_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version;
