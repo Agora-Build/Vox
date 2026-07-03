@@ -1145,6 +1145,14 @@ describe('Vox API Tests', () => {
       const result = await response.json();
       flowJobId = result.job.id;
       expect(result.job.status).toBe('pending');
+      // Immutable snapshot captured at run time.
+      const snap = result.job.snapshot;
+      expect(snap).toBeTruthy();
+      expect(snap.provider?.id).toBe(testProviderId);
+      expect(snap.workflow?.name).toBe('Job Flow Test Workflow');
+      expect(snap.evalSet?.name).toBe('Job Flow Test Eval Set');
+      expect(snap.workflow?.visibility).toBe('public');
+      expect(snap.evalSet?.visibility).toBe('public');
     });
 
     it('should claim job as eval agent', async () => {
@@ -1160,6 +1168,8 @@ describe('Vox API Tests', () => {
       const job = await response.json();
       expect(job.status).toBe('running');
       expect(job.evalAgentId).toBe(flowAgentId);
+      // token_visibility is frozen atomically at claim (public admin token).
+      expect(job.tokenVisibility).toBe('public');
     });
 
     it('should complete job with results', async () => {
@@ -1203,17 +1213,41 @@ describe('Vox API Tests', () => {
       expect(result.responseRate).toBeCloseTo(0.9);
       expect(result.interruptRate).toBeCloseTo(0.8);
       expect(result.falseInterruptRate).toBeCloseTo(0.1);
+      // Attribution is sourced from the job's frozen snapshot, not the live workflow.
+      expect(result.providerId).toBe(testProviderId);
     });
 
-    it('should cleanup job flow test resources', async () => {
-      // Delete workflow (cascades to jobs)
-      await authFetch(adminSession, `${BASE_URL}/api/workflows/${flowWorkflowId}`, {
-        method: 'DELETE',
-      });
-      // Delete eval set
-      await authFetch(adminSession, `${BASE_URL}/api/eval-sets/${flowEvalSetId}`, {
-        method: 'DELETE',
-      });
+    it('completed result appears in the snapshot-based community tier', async () => {
+      // Public workflow + public eval set + non-mainline → community. Proves the
+      // rewritten tier query (reads eval_jobs.snapshot) returns real results.
+      const response = await fetch(`${BASE_URL}/api/metrics/community`);
+      expect(response.ok).toBe(true);
+      const data = await response.json();
+      expect(Array.isArray(data)).toBe(true);
+      expect(data.length).toBeGreaterThan(0);
+    });
+
+    it('job + result survive workflow and eval-set deletion (snapshot preserved)', async () => {
+      // Deleting the workflow now SET NULLs the FK instead of cascading the job away.
+      const delWf = await authFetch(adminSession, `${BASE_URL}/api/workflows/${flowWorkflowId}`, { method: 'DELETE' });
+      expect(delWf.ok).toBe(true);
+
+      // The job still resolves, snapshot intact, workflowId nulled, name from snapshot.
+      const detail = await authFetch(adminSession, `${BASE_URL}/api/eval-jobs/${flowJobId}/detail`);
+      expect(detail.ok).toBe(true);
+      const { job, workflowName } = await detail.json();
+      expect(job.workflowId).toBeNull();
+      expect(job.snapshot?.workflow?.name).toBe('Job Flow Test Workflow');
+      expect(job.snapshot?.provider?.id).toBe(testProviderId);
+      expect(workflowName).toBe('Job Flow Test Workflow');
+
+      // Deleting an eval set referenced by a job no longer 500s (FK SET NULL).
+      const delEs = await authFetch(adminSession, `${BASE_URL}/api/eval-sets/${flowEvalSetId}`, { method: 'DELETE' });
+      expect(delEs.ok).toBe(true);
+
+      // Still resolves after both parents are gone.
+      const detail2 = await authFetch(adminSession, `${BASE_URL}/api/eval-jobs/${flowJobId}/detail`);
+      expect(detail2.ok).toBe(true);
     });
   });
 
