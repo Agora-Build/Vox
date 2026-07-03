@@ -13,7 +13,7 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import { ArrowLeft, Play, Settings, History, Clock, CheckCircle, XCircle, Loader2, RefreshCw } from "lucide-react";
 import { useState } from "react";
 import type { Workflow as WorkflowType, Provider, EvalJob, EvalSet } from "@shared/schema";
-import { formatSmartTimestamp, formatRegion } from "@/lib/utils";
+import { formatSmartTimestamp, formatRegion, toYaml } from "@/lib/utils";
 
 interface AuthStatus {
   user: {
@@ -22,27 +22,6 @@ interface AuthStatus {
     plan: string;
     isAdmin: boolean;
   } | null;
-}
-
-function toYaml(obj: unknown, indent = 0): string {
-  const pad = "  ".repeat(indent);
-  if (obj === null || obj === undefined) return "null";
-  if (typeof obj === "string") return obj.includes("\n") ? `|\n${obj.split("\n").map(l => pad + "  " + l).join("\n")}` : `"${obj}"`;
-  if (typeof obj !== "object") return String(obj);
-  if (Array.isArray(obj)) {
-    return obj.map(item => {
-      const val = toYaml(item, indent + 1);
-      const isComplex = typeof item === "object" && item !== null;
-      return isComplex ? `${pad}- ${val.trimStart()}` : `${pad}- ${val}`;
-    }).join("\n");
-  }
-  const entries = Object.entries(obj as Record<string, unknown>);
-  return entries.map(([key, val]) => {
-    if (typeof val === "object" && val !== null) {
-      return `${pad}${key}:\n${toYaml(val, indent + 1)}`;
-    }
-    return `${pad}${key}: ${toYaml(val, indent)}`;
-  }).join("\n");
 }
 
 const REGIONS = [
