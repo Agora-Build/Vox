@@ -956,15 +956,16 @@ export class DatabaseStorage {
         createdAt: evalResults.createdAt,
       })
         .from(evalResults)
-        .innerJoin(evalJobs, eq(evalResults.evalJobId, evalJobs.id))
-        .innerJoin(workflows, eq(evalJobs.workflowId, workflows.id));
+        .innerJoin(evalJobs, eq(evalResults.evalJobId, evalJobs.id));
 
       if (filters.workflowId) {
         conditions.push(eq(evalJobs.workflowId, filters.workflowId));
       }
 
+      // Scope by the job's creator (immutable) — survives workflow deletion and
+      // matches the created_by model used for jobs/quota.
       if (filters.ownerId) {
-        conditions.push(eq(workflows.ownerId, filters.ownerId));
+        conditions.push(eq(evalJobs.createdBy, filters.ownerId));
       }
 
       if (conditions.length > 0) {
@@ -1518,7 +1519,9 @@ export class DatabaseStorage {
       organizationId: evalSchedules.organizationId,
       createdAt: evalSchedules.createdAt,
       updatedAt: evalSchedules.updatedAt,
-      workflowName: workflows.name,
+      // Left-joined: a schedule whose workflow was deleted still lists (with a
+      // placeholder) so users can find and remove the orphan.
+      workflowName: sql<string>`coalesce(${workflows.name}, '(deleted workflow)')`,
       creatorName: users.username,
     };
   }
@@ -1526,7 +1529,7 @@ export class DatabaseStorage {
   async getEvalSchedulesWithWorkflow(userId: number): Promise<(EvalSchedule & { workflowName: string; creatorName: string })[]> {
     return db.select(this.buildScheduleQuery())
       .from(evalSchedules)
-      .innerJoin(workflows, eq(evalSchedules.workflowId, workflows.id))
+      .leftJoin(workflows, eq(evalSchedules.workflowId, workflows.id))
       .innerJoin(users, eq(evalSchedules.createdBy, users.id))
       .where(eq(evalSchedules.createdBy, userId))
       .orderBy(desc(evalSchedules.createdAt));
@@ -1535,7 +1538,7 @@ export class DatabaseStorage {
   async getAllEvalSchedulesWithWorkflow(): Promise<(EvalSchedule & { workflowName: string; creatorName: string })[]> {
     return db.select(this.buildScheduleQuery())
       .from(evalSchedules)
-      .innerJoin(workflows, eq(evalSchedules.workflowId, workflows.id))
+      .leftJoin(workflows, eq(evalSchedules.workflowId, workflows.id))
       .innerJoin(users, eq(evalSchedules.createdBy, users.id))
       .orderBy(desc(evalSchedules.createdAt));
   }

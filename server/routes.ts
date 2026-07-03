@@ -3028,7 +3028,7 @@ export async function registerRoutes(
         ]);
         visibleJobs = jobs.filter(job => {
           if (job.workflowId != null) return allowedIds.has(job.workflowId);
-          return job.snapshot?.workflow?.ownerId === user.id;
+          return job.createdBy === user.id; // deleted workflow: the runner sees their own job
         });
       }
 
@@ -3081,7 +3081,7 @@ export async function registerRoutes(
         const workflow = job.workflowId != null ? await storage.getWorkflow(job.workflowId) : undefined;
         const allowed = workflow
           ? canAccessResource(user, workflow)
-          : job.snapshot?.workflow?.ownerId === user.id;
+          : job.createdBy === user.id; // deleted workflow: runner only
         if (!allowed) {
           return res.status(403).json({ error: "Not authorized to view this job" });
         }
@@ -3118,7 +3118,8 @@ export async function registerRoutes(
           if (!canAccessResource(user, workflow)) {
             return res.status(403).json({ error: "Not authorized to view this job" });
           }
-        } else if (job.snapshot?.workflow?.ownerId !== user.id) {
+        } else if (job.createdBy !== user.id) {
+          // Deleted workflow: only the runner may view their own job.
           return res.status(403).json({ error: "Not authorized to view this job" });
         }
       }
@@ -3215,11 +3216,11 @@ export async function registerRoutes(
         return res.status(404).json({ error: "Job not found" });
       }
 
-      // Check authorization (owner). Fall back to the snapshot if the workflow was deleted.
+      // Check authorization (owner). Deleted workflow → the runner (createdBy).
       if (!user.isAdmin) {
         const workflow = job.workflowId != null ? await storage.getWorkflow(job.workflowId) : undefined;
-        const ownerId = workflow?.ownerId ?? job.snapshot?.workflow?.ownerId;
-        if (ownerId !== user.id) {
+        const allowed = workflow ? workflow.ownerId === user.id : job.createdBy === user.id;
+        if (!allowed) {
           return res.status(403).json({ error: "Not authorized to cancel this job" });
         }
       }
