@@ -416,9 +416,10 @@ export function registerApiV1Routes(app: Express): void {
         return res.status(404).json({ error: "Job not found" });
       }
 
-      // Get workflow to check ownership
-      const workflow = await storage.getWorkflow(job.workflowId);
-      if (!workflow || workflow.ownerId !== user.id) {
+      // Check ownership — via the live workflow, or the job's snapshot if it was deleted.
+      const workflow = job.workflowId != null ? await storage.getWorkflow(job.workflowId) : undefined;
+      const ownerId = workflow?.ownerId ?? job.snapshot?.workflow?.ownerId;
+      if (ownerId !== user.id) {
         return res.status(403).json({ error: "Access denied" });
       }
 
@@ -447,9 +448,10 @@ export function registerApiV1Routes(app: Express): void {
         return res.status(404).json({ error: "Job not found" });
       }
 
-      // Get workflow to check ownership
-      const workflow = await storage.getWorkflow(job.workflowId);
-      if (!workflow || workflow.ownerId !== user.id) {
+      // Check ownership — via the live workflow, or the job's snapshot if it was deleted.
+      const workflow = job.workflowId != null ? await storage.getWorkflow(job.workflowId) : undefined;
+      const ownerId = workflow?.ownerId ?? job.snapshot?.workflow?.ownerId;
+      if (ownerId !== user.id) {
         return res.status(403).json({ error: "Access denied" });
       }
 
@@ -528,8 +530,9 @@ export function registerApiV1Routes(app: Express): void {
         return res.status(404).json({ error: "Associated job not found" });
       }
 
-      const workflow = await storage.getWorkflow(job.workflowId);
-      if (!workflow || workflow.ownerId !== user.id) {
+      const workflow = job.workflowId != null ? await storage.getWorkflow(job.workflowId) : undefined;
+      const ownerId = workflow?.ownerId ?? job.snapshot?.workflow?.ownerId;
+      if (ownerId !== user.id) {
         return res.status(403).json({ error: "Access denied" });
       }
 

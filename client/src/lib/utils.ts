@@ -23,6 +23,30 @@ export function formatRegion(region: string): string {
   return REGIONS.find(r => r.value === region.toLowerCase())?.label ?? region;
 }
 
+// Render a JS value as readable YAML for read-only config display (workflow/eval-set
+// snapshots, app config). Not a full YAML serializer — good enough for display.
+export function toYaml(obj: unknown, indent = 0): string {
+  const pad = "  ".repeat(indent);
+  if (obj === null || obj === undefined) return "null";
+  if (typeof obj === "string") return obj.includes("\n") ? `|\n${obj.split("\n").map(l => pad + "  " + l).join("\n")}` : `"${obj}"`;
+  if (typeof obj !== "object") return String(obj);
+  if (Array.isArray(obj)) {
+    return obj.map(item => {
+      const val = toYaml(item, indent + 1);
+      const isComplex = typeof item === "object" && item !== null;
+      return isComplex ? `${pad}- ${val.trimStart()}` : `${pad}- ${val}`;
+    }).join("\n");
+  }
+  const entries = Object.entries(obj as Record<string, unknown>);
+  if (entries.length === 0) return "{}";
+  return entries.map(([key, val]) => {
+    if (typeof val === "object" && val !== null) {
+      return `${pad}${key}:\n${toYaml(val, indent + 1)}`;
+    }
+    return `${pad}${key}: ${toYaml(val, indent)}`;
+  }).join("\n");
+}
+
 export function formatSmartTimestamp(dateStr: string | Date): string {
   const date = dateStr instanceof Date ? dateStr : new Date(dateStr);
   const now = new Date();

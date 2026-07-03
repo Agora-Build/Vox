@@ -256,6 +256,17 @@ export type EvalSchedule = typeof evalSchedules.$inferSelect;
 
 // ==================== EVAL JOBS ====================
 
+// Immutable snapshot of the workflow + eval-set (+ provider + creator plan) captured
+// on each job at run time. Everything downstream — provenance display, provider
+// attribution, and metric tiering — reads this instead of the live rows, so editing
+// or deleting a workflow/eval-set never rewrites a past job's history.
+export type JobSnapshot = {
+  provider: { id: string; name: string; platformId: string | null } | null;
+  workflow: { name: string; config: unknown; visibility: string; isMainline: boolean; ownerId: number } | null;
+  evalSet: { name: string; config: unknown; visibility: string; isMainline: boolean; ownerId: number } | null;
+  creatorPlan: string | null;
+};
+
 export const evalJobs = pgTable("eval_jobs", {
   id: serial("id").primaryKey(),
   scheduleId: integer("schedule_id").references(() => evalSchedules.id, { onDelete: "set null" }),
@@ -263,8 +274,10 @@ export const evalJobs = pgTable("eval_jobs", {
   // the origin survives schedule deletion (which nulls schedule_id). Nullable for
   // rows created before this column — the API falls back to schedule_id then.
   triggerType: integer("trigger_type"),
-  workflowId: integer("workflow_id").notNull().references(() => workflows.id, { onDelete: "cascade" }),
-  evalSetId: integer("eval_set_id").notNull().references(() => evalSets.id),
+  // Nullable + SET NULL: a job (and its results) survives deletion of its workflow
+  // or eval-set — provenance/tiering come from `snapshot`, not these live FKs.
+  workflowId: integer("workflow_id").references(() => workflows.id, { onDelete: "set null" }),
+  evalSetId: integer("eval_set_id").references(() => evalSets.id, { onDelete: "set null" }),
   evalAgentId: integer("eval_agent_id").references(() => evalAgents.id),
   createdBy: integer("created_by").references(() => users.id),
   region: regionEnum("region").notNull(),
@@ -273,6 +286,12 @@ export const evalJobs = pgTable("eval_jobs", {
   retryCount: integer("retry_count").default(0).notNull(),
   maxRetries: integer("max_retries").default(3).notNull(),
   config: jsonb("config").default({}).notNull(),
+  // Immutable run-time snapshot (see JobSnapshot). Nullable for rows created before
+  // this column; backfilled from live tables by migration 0016.
+  snapshot: jsonb("snapshot").$type<JobSnapshot>(),
+  // Agent-token visibility captured when the job is claimed (the one tier input not
+  // known at creation). Feeds the frozen mainline/community classification.
+  tokenVisibility: text("token_visibility"),
   startedAt: timestamp("started_at"),
   completedAt: timestamp("completed_at"),
   error: text("error"),

@@ -7,7 +7,7 @@ import session from "express-session";
 import connectPgSimple from "connect-pg-simple";
 import rateLimit from "express-rate-limit";
 import { authenticateApiKey, passport, initializeGoogleOAuth } from "./auth";
-import { storage, mergeEvalConfig } from "./storage";
+import { storage, mergeEvalConfig, buildJobSnapshot } from "./storage";
 import { parseNextCronRun } from "./cron";
 import { setupClashWebSocket } from "./clash-ws";
 import pkg from "pg";
@@ -249,6 +249,8 @@ function startBackgroundWorker() {
             continue;
           }
           const evalSet = await storage.getEvalSet(schedule.evalSetId);
+          const provider = await storage.getProvider(workflow.providerId);
+          const creator = schedule.createdBy ? await storage.getUser(schedule.createdBy) : undefined;
 
           // Create the eval job
           const job = await storage.createEvalJob({
@@ -259,6 +261,7 @@ function startBackgroundWorker() {
             createdBy: schedule.createdBy,
             region: schedule.region,
             config: mergeEvalConfig(workflow.config, evalSet?.config),
+            snapshot: buildJobSnapshot(workflow, evalSet, provider, creator?.plan ?? null),
             status: "pending",
             priority: 0,
             retryCount: 0,

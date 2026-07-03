@@ -1,6 +1,6 @@
 import type { Express } from "express";
 import { createServer, type Server } from "http";
-import { storage, hashToken, generateSecureToken, generateEvalAgentToken, mergeEvalConfig, validateWorkflowConfig, validateEvalSetConfig, encryptValue, decryptValue, isEncryptionConfigured, type MetricSourceRow } from "./storage";
+import { storage, hashToken, generateSecureToken, generateEvalAgentToken, mergeEvalConfig, buildJobSnapshot, validateWorkflowConfig, validateEvalSetConfig, encryptValue, decryptValue, isEncryptionConfigured, type MetricSourceRow } from "./storage";
 import { parseNextCronRun } from "./cron";
 import { compareVersions } from "./aeval-seed";
 import { generateProviderId } from "@shared/schema";
@@ -1680,11 +1680,8 @@ export async function registerRoutes(
         return res.status(403).json({ error: "Not authorized" });
       }
 
-      const jobs = await storage.getEvalJobsByEvalSetId(evalSet.id);
-      if (jobs.length > 0) {
-        return res.status(400).json({ error: `Cannot delete: ${jobs.length} job(s) reference this eval set` });
-      }
-
+      // Jobs referencing this eval set survive its deletion (FK is SET NULL and each
+      // job carries an immutable snapshot), so deletion is no longer blocked.
       await storage.deleteEvalSet(evalSet.id);
       res.json({ message: "Eval set deleted" });
     } catch (error) {
@@ -1924,6 +1921,7 @@ export async function registerRoutes(
       }
       const evalSet = await storage.getEvalSet(schedule.evalSetId);
 
+      const provider = await storage.getProvider(workflow.providerId);
       const job = await storage.createEvalJob({
         scheduleId: schedule.id,
         triggerType: 1, // scheduled (run-now off an existing schedule)
@@ -1932,6 +1930,7 @@ export async function registerRoutes(
         createdBy: user.id,
         region: schedule.region,
         config: mergeEvalConfig(workflow.config, evalSet?.config),
+        snapshot: buildJobSnapshot(workflow, evalSet, provider, user.plan),
         status: "pending",
         priority: 0,
         retryCount: 0,
@@ -2565,9 +2564,13 @@ export async function registerRoutes(
         return res.status(409).json({ error: "Job already claimed or not found" });
       }
 
+      // Freeze the claiming agent's token visibility onto the job — the one tier
+      // input not known at creation. Completes the immutable metric-tier snapshot.
+      const updated = await storage.updateEvalJob(job.id, { tokenVisibility: evalAgentToken.visibility });
+
       await storage.updateEvalAgent(agentId, { state: "occupied", lastJobAt: new Date() });
 
-      res.json(job);
+      res.json(updated ?? job);
     } catch (error) {
       console.error("Error claiming job:", error);
       res.status(500).json({ error: "Failed to claim job" });
@@ -2615,12 +2618,11 @@ export async function registerRoutes(
       await storage.updateEvalAgent(agentId, { state: "idle" });
 
       if (results) {
-        const workflow = await storage.getWorkflow(job.workflowId);
-
-        // Get providerId from workflow, or use a default provider
-        let providerId = workflow?.providerId;
+        // Attribute the result to the provider snapshotted on the job at creation —
+        // not the live workflow, which may have been re-pointed since. Fall back to a
+        // default provider only for legacy jobs with no snapshot.
+        let providerId = job.snapshot?.provider?.id;
         if (!providerId) {
-          // Find a default provider (e.g., LiveKit Agents)
           const providers = await storage.getAllProviders();
           const defaultProvider = providers.find(p => p.name.includes("LiveKit")) || providers[0];
           providerId = defaultProvider?.id;
@@ -2698,9 +2700,9 @@ export async function registerRoutes(
       if (existing.length === 0) {
         const job = await storage.getEvalJob(jobId);
         if (job) {
-          const workflow = await storage.getWorkflow(job.workflowId);
+          // Attribute to the snapshotted provider (immutable), not the live workflow.
           const providers = await storage.getAllProviders();
-          const providerId = workflow?.providerId || providers[0]?.id;
+          const providerId = job.snapshot?.provider?.id || providers[0]?.id;
           if (providerId) {
             await storage.createEvalResult({
               evalJobId: jobId,
@@ -2940,6 +2942,7 @@ export async function registerRoutes(
         return res.status(404).json({ error: "Eval set not found" });
       }
 
+      const provider = await storage.getProvider(workflow.providerId);
       const job = await storage.createEvalJob({
         workflowId: parseInt(workflowId),
         triggerType: 2, // manual (Run Workflow)
@@ -2947,6 +2950,7 @@ export async function registerRoutes(
         createdBy: user.id,
         region,
         config: mergeEvalConfig(workflow.config, evalSet.config),
+        snapshot: buildJobSnapshot(workflow, evalSet, provider, user.plan),
         status: "pending",
         priority: 0,
         retryCount: 0,
@@ -3007,7 +3011,9 @@ export async function registerRoutes(
 
       const jobs = await storage.getEvalJobs(filters);
 
-      // For non-admin users, only return jobs for workflows they own or are public
+      // For non-admin users, only return jobs for workflows they own or are public.
+      // Deleted-workflow jobs (workflowId null) fall back to the frozen snapshot so a
+      // user's own job history survives deletion.
       let visibleJobs = jobs;
       if (!user.isAdmin) {
         const userWorkflows = await storage.getWorkflowsByOwner(user.id);
@@ -3016,7 +3022,11 @@ export async function registerRoutes(
           ...userWorkflows.map(w => w.id),
           ...publicWorkflows.map(w => w.id),
         ]);
-        visibleJobs = jobs.filter(job => allowedIds.has(job.workflowId));
+        visibleJobs = jobs.filter(job => {
+          if (job.workflowId != null && allowedIds.has(job.workflowId)) return true;
+          const wf = job.snapshot?.workflow;
+          return !!wf && (wf.ownerId === user.id || wf.visibility === "public");
+        });
       }
 
       const total = visibleJobs.length;
@@ -3062,10 +3072,15 @@ export async function registerRoutes(
         return res.status(404).json({ error: "Job not found" });
       }
 
-      // Check authorization: owner, admin, or public workflow
+      // Check authorization: owner, admin, or public workflow. Fall back to the
+      // job's snapshot when the workflow has been deleted.
       if (!user.isAdmin) {
-        const workflow = await storage.getWorkflow(job.workflowId);
-        if (!workflow || !canAccessResource(user, workflow)) {
+        const workflow = job.workflowId != null ? await storage.getWorkflow(job.workflowId) : undefined;
+        const wf = job.snapshot?.workflow;
+        const allowed = workflow
+          ? canAccessResource(user, workflow)
+          : (!!wf && (wf.ownerId === user.id || wf.visibility === "public"));
+        if (!allowed) {
           return res.status(403).json({ error: "Not authorized to view this job" });
         }
       }
@@ -3092,20 +3107,26 @@ export async function registerRoutes(
         return res.status(404).json({ error: "Job not found" });
       }
 
-      // Check authorization: owner, admin, or public workflow
+      // Check authorization: owner, admin, or public workflow. When the workflow
+      // still exists, use it; if it was deleted, authorize via the job's snapshot.
       if (!user.isAdmin) {
-        const workflow = await storage.getWorkflow(job.workflowId);
-        if (!workflow || !canAccessResource(user, workflow)) {
-          return res.status(403).json({ error: "Not authorized to view this job" });
+        const workflow = job.workflowId != null ? await storage.getWorkflow(job.workflowId) : undefined;
+        if (workflow) {
+          if (!canAccessResource(user, workflow)) {
+            return res.status(403).json({ error: "Not authorized to view this job" });
+          }
+        } else {
+          const wf = job.snapshot?.workflow;
+          const allowed = !!wf && (wf.ownerId === user.id || wf.visibility === "public");
+          if (!allowed) {
+            return res.status(403).json({ error: "Not authorized to view this job" });
+          }
         }
       }
 
       // Get eval results for this job
       const results = await storage.getEvalResultsByJob(jobId);
       const result = results[0] ?? null;
-
-      // Get workflow name
-      const workflow = await storage.getWorkflow(job.workflowId);
 
       // Get creator name
       const creator = job.createdBy ? await storage.getUser(job.createdBy) : null;
@@ -3137,7 +3158,7 @@ export async function registerRoutes(
           artifactUrl: signedArtifactUrl,
           artifactFiles: signedFiles.length > 0 ? signedFiles : result.artifactFiles,
         } : null,
-        workflowName: workflow?.name ?? `Workflow #${job.workflowId}`,
+        workflowName: job.snapshot?.workflow?.name ?? `Workflow #${job.workflowId ?? "?"}`,
         creatorName: creator?.username ?? null,
       });
     } catch (error) {
@@ -3195,10 +3216,11 @@ export async function registerRoutes(
         return res.status(404).json({ error: "Job not found" });
       }
 
-      // Check authorization
+      // Check authorization (owner). Fall back to the snapshot if the workflow was deleted.
       if (!user.isAdmin) {
-        const workflow = await storage.getWorkflow(job.workflowId);
-        if (!workflow || workflow.ownerId !== user.id) {
+        const workflow = job.workflowId != null ? await storage.getWorkflow(job.workflowId) : undefined;
+        const ownerId = workflow?.ownerId ?? job.snapshot?.workflow?.ownerId;
+        if (ownerId !== user.id) {
           return res.status(403).json({ error: "Not authorized to cancel this job" });
         }
       }
