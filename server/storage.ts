@@ -356,6 +356,14 @@ export class DatabaseStorage {
     return db.select().from(providers).where(eq(providers.isActive, true)).orderBy(desc(providers.createdAt));
   }
 
+  // Unfiltered by isActive (unlike getAllProviders) — used by /api/auth/init to
+  // guard seeding so a deactivated provider can't slip past the name check and
+  // create a duplicate row.
+  async getProviderByName(name: string): Promise<Provider | undefined> {
+    const result = await db.select().from(providers).where(eq(providers.name, name));
+    return result[0];
+  }
+
   async updateProvider(id: string, data: Partial<Provider>): Promise<Provider | undefined> {
     const result = await db.update(providers).set({ ...data, updatedAt: new Date() }).where(eq(providers.id, id)).returning();
     return result[0];

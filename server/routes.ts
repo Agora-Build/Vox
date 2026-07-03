@@ -239,27 +239,24 @@ export async function registerRoutes(
         emailVerifiedAt: null,
       });
 
-      // Create default providers (ID is generated automatically)
-      await storage.createProvider({
-        name: "Agora ConvoAI Engine",
-        sku: "convoai",
-        description: "Agora's Conversational AI Engine",
-        brandColor: "#099DFD",
-      });
-
-      await storage.createProvider({
-        name: "LiveKit Agents",
-        sku: "convoai",
-        description: "LiveKit's Real-time Communication Agents",
-        brandColor: "#1FD5F9",
-      });
-
-      await storage.createProvider({
-        name: "ElevenLabs Agents",
-        sku: "convoai",
-        description: "ElevenLabs Conversational AI Agents",
-        brandColor: "#A8A29E",
-      });
+      // Create default providers (ID is generated automatically).
+      // Idempotent by name: `npm start` runs the migration runner BEFORE the app,
+      // so on a fresh instance any seed-inserting migration has already run first
+      // (0003 → ElevenLabs, 0014 → Custom). init is a post-boot call, so it must
+      // skip providers that already exist — otherwise a brand-new instance ends up
+      // with duplicate rows. Covers every seed-migrated provider, not just Custom.
+      const seedProviders = [
+        { name: "Agora ConvoAI Engine", sku: "convoai" as const, description: "Agora's Conversational AI Engine", brandColor: "#099DFD", platformId: "agora" },
+        { name: "LiveKit Agents", sku: "convoai" as const, description: "LiveKit's Real-time Communication Agents", brandColor: "#1FD5F9", platformId: "livekit" },
+        { name: "ElevenLabs Agents", sku: "convoai" as const, description: "ElevenLabs Conversational AI Agents", brandColor: "#A8A29E", platformId: "elevenlabs" },
+        { name: "Custom", sku: "convoai" as const, description: "Custom / self-hosted conversational AI agent" },
+      ];
+      for (const p of seedProviders) {
+        // getProviderByName is unfiltered by isActive, so a deactivated seed
+        // provider can't slip past the guard and create a duplicate row.
+        const existing = await storage.getProviderByName(p.name);
+        if (!existing) await storage.createProvider(p);
+      }
 
       // Set default pricing config (prices in cents)
       await storage.setPricingConfig({ name: "Solo Premium", pricePerSeat: 500, minSeats: 1, maxSeats: 1, discountPercent: 0, isActive: true });
@@ -747,7 +744,7 @@ export async function registerRoutes(
   app.patch("/api/providers/:id", requireAuthOrApiKey, requireAdmin, async (req, res) => {
     try {
       const { id } = req.params;
-      const { name, description, brandColor, isActive } = req.body;
+      const { name, description, brandColor, platformId, isActive } = req.body;
 
       const existing = await storage.getProvider(id);
       if (!existing) {
@@ -758,10 +755,15 @@ export async function registerRoutes(
         return res.status(400).json({ error: "brandColor must be a valid hex color (e.g. #099DFD) or null" });
       }
 
+      if (platformId !== undefined && platformId !== null && !/^[a-z0-9_-]+$/.test(platformId)) {
+        return res.status(400).json({ error: "platformId must be a lowercase slug (e.g. agora, livekit) or null" });
+      }
+
       const updates: Record<string, unknown> = {};
       if (name !== undefined) updates.name = name;
       if (description !== undefined) updates.description = description;
       if (brandColor !== undefined) updates.brandColor = brandColor;
+      if (platformId !== undefined) updates.platformId = platformId;
       if (isActive !== undefined) updates.isActive = isActive;
 
       const updated = await storage.updateProvider(id, updates);
@@ -1322,7 +1324,7 @@ export async function registerRoutes(
         return res.status(403).json({ error: "Not authorized to modify this workflow" });
       }
 
-      const { name, description, visibility, config, projectId } = req.body;
+      const { name, description, visibility, config, projectId, providerId } = req.body;
       if (config) {
         const v = validateWorkflowConfig(config);
         if (!v.valid) return res.status(400).json({ error: v.error });
@@ -1331,6 +1333,13 @@ export async function registerRoutes(
       if (name) updates.name = name;
       if (description !== undefined) updates.description = description;
       if (config) updates.config = config;
+      if (providerId !== undefined) {
+        const provider = await storage.getProvider(providerId);
+        if (!provider) {
+          return res.status(404).json({ error: "Provider not found" });
+        }
+        updates.providerId = providerId;
+      }
       if (visibility) {
         if (visibility === "private" && user.plan === "basic") {
           return res.status(403).json({ error: "Premium plan required for private workflows" });

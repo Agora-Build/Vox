@@ -17,7 +17,7 @@ import { useState } from "react";
 import { useLocation, useSearch, Link } from "wouter";
 import { formatSmartTimestamp, formatRegion, REGIONS } from "@/lib/utils";
 import { format } from "date-fns";
-import type { EvalJob, EvalSchedule, Workflow as WorkflowType } from "@shared/schema";
+import type { EvalJob, EvalSchedule, Workflow as WorkflowType, Provider, EvalSet } from "@shared/schema";
 
 type EnrichedSchedule = EvalSchedule & { workflowName: string; creatorName: string };
 
@@ -321,7 +321,18 @@ function JobsTab() {
     queryKey: ["/api/workflows?includePublic=true"],
   });
 
+  const { data: providers } = useQuery<Provider[]>({
+    queryKey: ["/api/providers"],
+  });
+
+  const { data: evalSets } = useQuery<EvalSet[]>({
+    queryKey: ["/api/eval-sets"],
+  });
+
   const workflowMap = new Map(workflows?.map((w) => [w.id, w.name]) ?? []);
+  const workflowProvider = new Map(workflows?.map((w) => [w.id, w.providerId]) ?? []);
+  const providerById = new Map(providers?.map((p) => [p.id, p.name]) ?? []);
+  const evalSetName = new Map(evalSets?.map((s) => [s.id, s.name]) ?? []);
 
   const hasActiveFilters = statusFilter !== "all" || regionFilter !== "all" || workflowFilter !== "all" || timeFilter !== "24";
 
@@ -434,6 +445,8 @@ function JobsTab() {
                   <TableRow>
                     <TableHead>ID</TableHead>
                     <TableHead>Workflow</TableHead>
+                    <TableHead>Provider</TableHead>
+                    <TableHead>Eval Set</TableHead>
                     <TableHead>Creator</TableHead>
                     <TableHead>Type</TableHead>
                     <TableHead>Region</TableHead>
@@ -454,7 +467,21 @@ function JobsTab() {
                           </Link>
                         </TableCell>
                         <TableCell className="font-medium">
-                          {workflowMap.get(job.workflowId) ?? `Workflow #${job.workflowId}`}
+                          <Link href={`/console/workflows/${job.workflowId}`}>
+                            <span className="text-primary hover:underline cursor-pointer">
+                              {workflowMap.get(job.workflowId) ?? `Workflow #${job.workflowId}`}
+                            </span>
+                          </Link>
+                        </TableCell>
+                        <TableCell className="text-sm">
+                          {providerById.get(workflowProvider.get(job.workflowId) ?? "") ?? "-"}
+                        </TableCell>
+                        <TableCell className="text-sm">
+                          <Link href="/console/eval-sets">
+                            <span className="text-primary hover:underline cursor-pointer">
+                              {evalSetName.get(job.evalSetId) ?? `#${job.evalSetId}`}
+                            </span>
+                          </Link>
                         </TableCell>
                         <TableCell className="text-sm text-muted-foreground">
                           {job.creatorName || "-"}

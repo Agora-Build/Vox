@@ -11,6 +11,7 @@ import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Switch } from "@/components/ui/switch";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { useToast } from "@/hooks/use-toast";
@@ -65,8 +66,14 @@ export default function ConsoleEvalSets() {
     queryKey: ["/api/auth/status"],
   });
 
+  // All eval-sets I can see (own + org + others' public) — drives the Public tab.
   const { data: evalSets, isLoading } = useQuery<EvalSet[]>({
     queryKey: ["/api/eval-sets?includePublic=true"],
+  });
+
+  // My own (+ org) eval-sets — drives the default "My Eval Sets" tab.
+  const { data: myEvalSets, isLoading: myLoading } = useQuery<EvalSet[]>({
+    queryKey: ["/api/eval-sets"],
   });
 
   const { data: workflows } = useQuery<WorkflowType[]>({
@@ -91,7 +98,7 @@ export default function ConsoleEvalSets() {
       setDescription("");
       setVisibility("public");
       setScenarioYaml("");
-      queryClient.invalidateQueries({ queryKey: ["/api/eval-sets?includePublic=true"] });
+      queryClient.invalidateQueries({ predicate: (q) => typeof q.queryKey[0] === "string" && (q.queryKey[0] as string).startsWith("/api/eval-sets") });
       toast({ title: "Eval set created" });
     },
     onError: (error: Error) => {
@@ -105,7 +112,7 @@ export default function ConsoleEvalSets() {
       return res.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/eval-sets?includePublic=true"] });
+      queryClient.invalidateQueries({ predicate: (q) => typeof q.queryKey[0] === "string" && (q.queryKey[0] as string).startsWith("/api/eval-sets") });
       toast({ title: "Eval set updated" });
     },
     onError: (error: Error) => {
@@ -166,7 +173,7 @@ export default function ConsoleEvalSets() {
     onSuccess: () => {
       setEditOpen(false);
       setEditEvalSet(null);
-      queryClient.invalidateQueries({ queryKey: ["/api/eval-sets?includePublic=true"] });
+      queryClient.invalidateQueries({ predicate: (q) => typeof q.queryKey[0] === "string" && (q.queryKey[0] as string).startsWith("/api/eval-sets") });
       toast({ title: "Eval set updated" });
     },
     onError: (error: Error) => {
@@ -182,7 +189,7 @@ export default function ConsoleEvalSets() {
     onSuccess: () => {
       setDeleteTarget(null);
       setDeleteConfirmName("");
-      queryClient.invalidateQueries({ queryKey: ["/api/eval-sets?includePublic=true"] });
+      queryClient.invalidateQueries({ predicate: (q) => typeof q.queryKey[0] === "string" && (q.queryKey[0] as string).startsWith("/api/eval-sets") });
       toast({ title: "Eval set deleted" });
     },
     onError: (error: Error) => {
@@ -199,7 +206,7 @@ export default function ConsoleEvalSets() {
       return res.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/eval-sets?includePublic=true"] });
+      queryClient.invalidateQueries({ predicate: (q) => typeof q.queryKey[0] === "string" && (q.queryKey[0] as string).startsWith("/api/eval-sets") });
       toast({ title: "Eval set cloned" });
     },
     onError: (error: Error) => {
@@ -247,6 +254,124 @@ export default function ConsoleEvalSets() {
 
   const isRunPending = runOnceMutation.isPending || runRecurringMutation.isPending;
   const canRun = runWorkflowId && runRegion && (runMode === "once" || cronExpression);
+
+  // "My Eval Sets" = own + org; "Public" = everything public I don't already own.
+  const myIds = new Set((myEvalSets ?? []).map((s) => s.id));
+  const publicEvalSets = (evalSets ?? []).filter((s) => !myIds.has(s.id));
+
+  const renderEvalSetTable = (sets: EvalSet[] | undefined, loading: boolean, emptyMsg: string) => {
+    if (loading) {
+      return (
+        <div className="space-y-4">
+          {[1, 2, 3].map((i) => (
+            <Skeleton key={i} className="h-12 w-full" />
+          ))}
+        </div>
+      );
+    }
+    if (!sets || sets.length === 0) {
+      return <div className="text-center py-8 text-muted-foreground">{emptyMsg}</div>;
+    }
+    return (
+      <Table>
+        <TableHeader>
+          <TableRow>
+            <TableHead>Name</TableHead>
+            <TableHead>Visibility</TableHead>
+            <TableHead>Status</TableHead>
+            {isPrincipal && <TableHead>Mainline</TableHead>}
+            <TableHead className="text-right">Actions</TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {sets.map((evalSet) => (
+            <TableRow key={evalSet.id} data-testid={`row-evalset-${evalSet.id}`}>
+              <TableCell>
+                <div>
+                  <div className="font-medium">{evalSet.name}</div>
+                  {evalSet.description && (
+                    <div className="text-sm text-muted-foreground">{evalSet.description}</div>
+                  )}
+                </div>
+              </TableCell>
+              <TableCell>
+                <Badge variant="outline" className="gap-1">
+                  {evalSet.visibility === "public" ? (
+                    <><Globe className="h-3 w-3" /> Public</>
+                  ) : (
+                    <><Lock className="h-3 w-3" /> Private</>
+                  )}
+                </Badge>
+              </TableCell>
+              <TableCell>
+                {evalSet.isMainline ? (
+                  <Badge className="gap-1">
+                    <Star className="h-3 w-3" /> Mainline
+                  </Badge>
+                ) : (
+                  <Badge variant="secondary">Community</Badge>
+                )}
+              </TableCell>
+              {isPrincipal && (
+                <TableCell>
+                  <Switch
+                    checked={evalSet.isMainline}
+                    onCheckedChange={(checked) =>
+                      toggleMainlineMutation.mutate({ id: evalSet.id, isMainline: checked })
+                    }
+                    disabled={evalSet.visibility === "private" && !evalSet.isMainline}
+                    data-testid={`switch-mainline-${evalSet.id}`}
+                  />
+                </TableCell>
+              )}
+              <TableCell className="text-right">
+                <div className="flex items-center justify-end gap-1">
+                  {String(evalSet.ownerId) === String(authStatus?.user?.id) ? (
+                    <>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        onClick={() => openEditDialog(evalSet)}
+                        data-testid={`button-edit-evalset-${evalSet.id}`}
+                      >
+                        <Pencil className="h-4 w-4" />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        onClick={() => { setDeleteTarget(evalSet); setDeleteConfirmName(""); }}
+                        data-testid={`button-delete-evalset-${evalSet.id}`}
+                      >
+                        <Trash2 className="h-4 w-4 text-destructive" />
+                      </Button>
+                    </>
+                  ) : evalSet.visibility === "public" ? (
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      onClick={() => cloneMutation.mutate(evalSet.id)}
+                      disabled={cloneMutation.isPending}
+                      data-testid={`button-clone-evalset-${evalSet.id}`}
+                    >
+                      <Copy className="h-4 w-4" />
+                    </Button>
+                  ) : null}
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    onClick={() => openRunDialog(evalSet)}
+                    data-testid={`button-run-evalset-${evalSet.id}`}
+                  >
+                    <Play className="h-4 w-4" />
+                  </Button>
+                </div>
+              </TableCell>
+            </TableRow>
+          ))}
+        </TableBody>
+      </Table>
+    );
+  };
 
   return (
     <div className="space-y-6">
@@ -331,127 +456,41 @@ export default function ConsoleEvalSets() {
         </Dialog>
       </div>
 
-      <Card>
-        <CardHeader>
-          <CardDescription>
-            {isPrincipal
-              ? "As a principal user, you can mark eval sets as mainline for the official evaluation."
-              : "View and manage your evaluation configurations."
-            }
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          {isLoading ? (
-            <div className="space-y-4">
-              {[1, 2, 3].map((i) => (
-                <Skeleton key={i} className="h-12 w-full" />
-              ))}
-            </div>
-          ) : evalSets && evalSets.length > 0 ? (
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Name</TableHead>
-                  <TableHead>Visibility</TableHead>
-                  <TableHead>Status</TableHead>
-                  {isPrincipal && <TableHead>Mainline</TableHead>}
-                  <TableHead className="text-right">Actions</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {evalSets.map((evalSet) => (
-                  <TableRow key={evalSet.id} data-testid={`row-evalset-${evalSet.id}`}>
-                    <TableCell>
-                      <div>
-                        <div className="font-medium">{evalSet.name}</div>
-                        {evalSet.description && (
-                          <div className="text-sm text-muted-foreground">{evalSet.description}</div>
-                        )}
-                      </div>
-                    </TableCell>
-                    <TableCell>
-                      <Badge variant="outline" className="gap-1">
-                        {evalSet.visibility === "public" ? (
-                          <><Globe className="h-3 w-3" /> Public</>
-                        ) : (
-                          <><Lock className="h-3 w-3" /> Private</>
-                        )}
-                      </Badge>
-                    </TableCell>
-                    <TableCell>
-                      {evalSet.isMainline ? (
-                        <Badge className="gap-1">
-                          <Star className="h-3 w-3" /> Mainline
-                        </Badge>
-                      ) : (
-                        <Badge variant="secondary">Community</Badge>
-                      )}
-                    </TableCell>
-                    {isPrincipal && (
-                      <TableCell>
-                        <Switch
-                          checked={evalSet.isMainline}
-                          onCheckedChange={(checked) =>
-                            toggleMainlineMutation.mutate({ id: evalSet.id, isMainline: checked })
-                          }
-                          disabled={evalSet.visibility === "private" && !evalSet.isMainline}
-                          data-testid={`switch-mainline-${evalSet.id}`}
-                        />
-                      </TableCell>
-                    )}
-                    <TableCell className="text-right">
-                      <div className="flex items-center justify-end gap-1">
-                        {String(evalSet.ownerId) === String(authStatus?.user?.id) ? (
-                          <>
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              onClick={() => openEditDialog(evalSet)}
-                              data-testid={`button-edit-evalset-${evalSet.id}`}
-                            >
-                              <Pencil className="h-4 w-4" />
-                            </Button>
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              onClick={() => { setDeleteTarget(evalSet); setDeleteConfirmName(""); }}
-                              data-testid={`button-delete-evalset-${evalSet.id}`}
-                            >
-                              <Trash2 className="h-4 w-4 text-destructive" />
-                            </Button>
-                          </>
-                        ) : evalSet.visibility === "public" ? (
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            onClick={() => cloneMutation.mutate(evalSet.id)}
-                            disabled={cloneMutation.isPending}
-                            data-testid={`button-clone-evalset-${evalSet.id}`}
-                          >
-                            <Copy className="h-4 w-4" />
-                          </Button>
-                        ) : null}
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          onClick={() => openRunDialog(evalSet)}
-                          data-testid={`button-run-evalset-${evalSet.id}`}
-                        >
-                          <Play className="h-4 w-4" />
-                        </Button>
-                      </div>
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          ) : (
-            <div className="text-center py-8 text-muted-foreground">
-              No eval sets yet. Create your first eval set to get started.
-            </div>
-          )}
-        </CardContent>
-      </Card>
+      <Tabs defaultValue="my">
+        <TabsList>
+          <TabsTrigger value="my" data-testid="tab-my-evalsets">My Eval Sets</TabsTrigger>
+          <TabsTrigger value="public" data-testid="tab-public-evalsets">Public</TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="my" className="mt-4">
+          <Card>
+            <CardHeader>
+              <CardDescription>
+                {isPrincipal
+                  ? "As a principal user, you can mark eval sets as mainline for the official evaluation."
+                  : "View and manage your evaluation configurations."
+                }
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              {renderEvalSetTable(myEvalSets, myLoading, "No eval sets yet. Create your first eval set to get started.")}
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="public" className="mt-4">
+          <Card>
+            <CardHeader>
+              <CardDescription>
+                Public eval sets shared by other users. Clone one to use it in your own workflows.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              {renderEvalSetTable(publicEvalSets, isLoading, "No public eval sets from other users yet.")}
+            </CardContent>
+          </Card>
+        </TabsContent>
+      </Tabs>
 
       {/* Run Eval Set Dialog */}
       <Dialog open={runOpen} onOpenChange={(open) => { if (!open) closeRunDialog(); else setRunOpen(true); }}>

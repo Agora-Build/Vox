@@ -10,7 +10,7 @@ import { Link } from "wouter";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { formatSmartTimestamp, formatRegion } from "@/lib/utils";
-import type { EvalJob, EvalResult } from "@shared/schema";
+import type { EvalJob, EvalResult, Workflow as WorkflowType, Provider, EvalSet } from "@shared/schema";
 
 interface AuthStatus {
   user: { id: number; isAdmin: boolean } | null;
@@ -51,6 +51,11 @@ export default function ConsoleEvalJobDetail({ jobId }: { jobId: number }) {
     },
   });
 
+  // Resolve provider + eval-set names for the header (job carries workflowId/evalSetId).
+  const { data: workflows } = useQuery<WorkflowType[]>({ queryKey: ["/api/workflows?includePublic=true"] });
+  const { data: providers } = useQuery<Provider[]>({ queryKey: ["/api/providers"] });
+  const { data: evalSets } = useQuery<EvalSet[]>({ queryKey: ["/api/eval-sets"] });
+
   const reuploadMutation = useMutation({
     mutationFn: async () => {
       await apiRequest("POST", `/api/eval-jobs/${jobId}/reupload`);
@@ -88,6 +93,10 @@ export default function ConsoleEvalJobDetail({ jobId }: { jobId: number }) {
   const { job, result, workflowName, creatorName } = data;
   const statusCfg = STATUS_CONFIG[job.status] ?? STATUS_CONFIG.pending;
   const StatusIcon = statusCfg.icon;
+
+  const jobWorkflow = workflows?.find((w) => w.id === job.workflowId);
+  const providerName = providers?.find((p) => p.id === jobWorkflow?.providerId)?.name ?? null;
+  const jobEvalSetName = evalSets?.find((s) => s.id === job.evalSetId)?.name ?? `#${job.evalSetId}`;
 
   const artifactFiles = (result?.artifactFiles ?? []) as ArtifactFile[];
   const artifactUrl = result?.artifactUrl as string | null;
@@ -162,8 +171,16 @@ export default function ConsoleEvalJobDetail({ jobId }: { jobId: number }) {
               </Badge>
             </h1>
             <p className="text-muted-foreground text-sm">
-              {workflowName} / {formatRegion(job.region)}
-              {creatorName && ` / by ${creatorName}`}
+              <Link href={`/console/workflows/${job.workflowId}`}>
+                <span className="text-primary hover:underline cursor-pointer">{workflowName}</span>
+              </Link>
+              {providerName && <> · {providerName}</>}
+              {" · "}
+              <Link href="/console/eval-sets">
+                <span className="text-primary hover:underline cursor-pointer">{jobEvalSetName}</span>
+              </Link>
+              {" · "}{formatRegion(job.region)}
+              {creatorName && ` · by ${creatorName}`}
             </p>
           </div>
         </div>

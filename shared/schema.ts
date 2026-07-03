@@ -77,6 +77,10 @@ export const providers = pgTable("providers", {
   sku: providerSkuEnum("sku").notNull(),
   description: text("description"),
   brandColor: text("brand_color"),
+  // Stable platform slug matching the aeval workflow YAML `platform.setup → platform_id`
+  // (e.g. "agora", "livekit", "elevenlabs"). Null for generic providers like "Custom".
+  // Used to warn when a workflow's provider disagrees with its setup YAML.
+  platformId: text("platform_id"),
   isActive: boolean("is_active").default(true).notNull(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
