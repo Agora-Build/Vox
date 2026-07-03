@@ -140,13 +140,20 @@ The system uses distributed eval agents to run evaluation tests:
 2. Eval agents register using tokens (`evalAgentTokens` table, which includes a `visibility` column)
 3. Agents fetch jobs matching their region (`evalJobs` table with `pending` → `running` → `completed`/`failed` status)
 4. Agents execute tests using external `voice-agent-tester` tool and report results to `evalResults` table
-5. Results are linked to `workflows` and `evalSets` via foreign keys
+5. Results are linked to `workflows` and `evalSets` via foreign keys (nullable — see the immutable job snapshot below)
 
-**3-Tier Eval Classification:**
-Results are classified into tiers based on the visibility/mainline flags of the workflow, eval set, and agent token:
-- **Mainline**: workflow is public+mainline AND eval set is public+mainline AND agent token is public → shown on `/api/metrics/realtime`
-- **Community**: workflow and eval set are both public, but NOT fully mainline → shown on `/api/metrics/community`
-- **My Evals**: workflow or eval set is private, visible only to the owner → shown on `/api/metrics/my-evals` (requires auth)
+**Immutable per-job snapshot (provenance / attribution / tiering):**
+Each `evalJobs` row carries a `snapshot` jsonb (the workflow + eval-set metadata + config + provider + creator plan, captured at run time) and a `tokenVisibility` (frozen when the job is claimed). Everything downstream reads the snapshot, not the live rows, so editing or deleting a workflow/eval-set never rewrites a past job's history:
+- Provider **attribution** on `evalResults` is sourced from `snapshot.provider.id`.
+- The eval-jobs list/detail provenance columns and the "View workflow & eval set" dialog read the snapshot.
+- Metric **tiering** (below) reads the snapshot + `tokenVisibility` instead of joining the live tables.
+- `evalJobs.workflowId`/`evalSetId` and `evalSchedules.workflowId`/`evalSetId` are nullable + `ON DELETE SET NULL`, so **jobs, results, and schedules survive deletion** of their workflow/eval-set. Deleted-workflow jobs are authorized by `evalJobs.createdBy` (the runner); orphaned schedules are auto-disabled by the scheduler. `buildJobSnapshot()` in `server/storage.ts` builds the snapshot; migration `0016` added the columns and backfilled existing rows.
+
+**3-Tier Eval Classification (reads the frozen snapshot):**
+Results are classified from each job's snapshot flags — not the live workflow/eval-set — so a result keeps its run-time tier even after its parents are edited or deleted, and deleted-parent results keep counting:
+- **Mainline**: snapshot workflow public+mainline AND snapshot eval set public+mainline AND `tokenVisibility` public AND `snapshot.creatorPlan` in (principal, fellow) → `/api/metrics/realtime`
+- **Community**: snapshot workflow + eval set both public, but NOT fully mainline → `/api/metrics/community`
+- **My Evals**: snapshot workflow or eval set private, owned by the requesting user (`snapshot.*.ownerId`) → `/api/metrics/my-evals` (requires auth)
 
 **Important:** The codebase recently underwent a refactor where "workers" were renamed to "eval agents" and "testSets" to "evalSets". Some UI text may still reference old terminology.
 
@@ -571,7 +578,7 @@ Development dependencies:
 - The application listens on port **5000** by default (configurable via `PORT` env var)
 - First-time setup requires `INIT_CODE` to create admin user via `/api/auth/init`
 - System creates two users on init: admin (active) and Scout (needs activation)
-- Default providers seeded: "Agora ConvoAI Engine" and "LiveKit Agents" (both with `convoai` SKU)
+- Default providers seeded (all `convoai` SKU): "Agora ConvoAI Engine" (`platformId: agora`), "LiveKit Agents" (`livekit`), "ElevenLabs Agents" (`elevenlabs`), and "Custom" (no `platformId`). `providers.platformId` is the stable slug matched against a workflow's `platform.setup → platform_id` (the console warns on mismatch and auto-selects Custom when the YAML has no `platform_id`). Provider seeding is idempotent-by-name: it runs from both migrations (retrofit existing DBs) and `/api/auth/init` (fresh installs), which coexist without duplicating.
 - The eval agent daemon supports two frameworks: `aeval` (default, binary) and `voice-agent-tester` (Node/Puppeteer)
   - aeval: `aeval run scenario.yaml` — produces `metrics.json` with latency data
   - voice-agent-tester: `npm start -- -a apps/livekit.yaml -s suites/appointment.yaml --headless false` — produces CSV report

@@ -635,11 +635,6 @@ export class DatabaseStorage {
     return db.select().from(evalJobs).where(eq(evalJobs.evalAgentId, agentId)).orderBy(desc(evalJobs.createdAt));
   }
 
-  async updateEvalJob(id: number, data: Partial<EvalJob>): Promise<EvalJob | undefined> {
-    const result = await db.update(evalJobs).set({ ...data, updatedAt: new Date() }).where(eq(evalJobs.id, id)).returning();
-    return result[0];
-  }
-
   async claimEvalJob(jobId: number, agentId: number, tokenVisibility?: string | null): Promise<EvalJob | undefined> {
     // Use atomic claim with SELECT FOR UPDATE SKIP LOCKED to prevent race conditions
     const client = await pool.connect();

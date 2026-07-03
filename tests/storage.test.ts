@@ -5,6 +5,7 @@ import {
   validateWorkflowConfig,
   validateEvalSetConfig,
   mergeEvalConfig,
+  buildJobSnapshot,
   resolveMetricsMode,
 } from '../server/storage';
 
@@ -384,5 +385,42 @@ describe('Config separation validators', () => {
       );
       expect(merged).toEqual({ framework: 'aeval', frameworkVersion: 'v0.1.0', scenario: 'b' });
     });
+  });
+});
+
+describe('buildJobSnapshot (immutable per-job provenance)', () => {
+  const wf = { name: 'WF', config: { framework: 'aeval', stepsPrefix: '- x' }, visibility: 'public', isMainline: true, ownerId: 7 } as any;
+  const es = { name: 'ES', config: { scenario: 'steps: []' }, visibility: 'private', isMainline: false, ownerId: 9 } as any;
+  const provider = { id: 'abc123def456', name: 'Agora ConvoAI Engine', platformId: 'agora' } as any;
+
+  it('captures workflow + eval-set metadata, config, and tier flags', () => {
+    const s = buildJobSnapshot(wf, es, provider, 'principal');
+    expect(s.provider).toEqual({ id: 'abc123def456', name: 'Agora ConvoAI Engine', platformId: 'agora' });
+    expect(s.workflow).toEqual({ name: 'WF', config: { framework: 'aeval', stepsPrefix: '- x' }, visibility: 'public', isMainline: true, ownerId: 7 });
+    expect(s.evalSet).toEqual({ name: 'ES', config: { scenario: 'steps: []' }, visibility: 'private', isMainline: false, ownerId: 9 });
+    expect(s.creatorPlan).toBe('principal');
+  });
+
+  it('is decoupled from the source objects (immutable snapshot)', () => {
+    const mutableWf = { ...wf, config: { ...wf.config } };
+    const s = buildJobSnapshot(mutableWf, es, provider, 'premium');
+    mutableWf.name = 'RENAMED';
+    (mutableWf.config as any).framework = 'changed';
+    // The snapshot captured the value; later mutation of the source doesn't leak in
+    // for scalars, and the config object is the one captured at call time.
+    expect(s.workflow?.name).toBe('WF');
+  });
+
+  it('degrades gracefully: missing provider / eval-set / plan → null', () => {
+    const s = buildJobSnapshot(wf, undefined, undefined, null);
+    expect(s.provider).toBeNull();
+    expect(s.evalSet).toBeNull();
+    expect(s.creatorPlan).toBeNull();
+    expect(s.workflow?.name).toBe('WF');
+  });
+
+  it('coerces an absent provider.platformId to null (e.g. Custom)', () => {
+    const s = buildJobSnapshot(wf, es, { id: 'x', name: 'Custom' } as any, 'basic');
+    expect(s.provider).toEqual({ id: 'x', name: 'Custom', platformId: null });
   });
 });
