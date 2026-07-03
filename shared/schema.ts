@@ -224,8 +224,10 @@ export type EvalAgent = typeof evalAgents.$inferSelect;
 export const evalSchedules = pgTable("eval_schedules", {
   id: serial("id").primaryKey(),
   name: text("name").notNull(),
-  workflowId: integer("workflow_id").notNull().references(() => workflows.id, { onDelete: "cascade" }),
-  evalSetId: integer("eval_set_id").notNull().references(() => evalSets.id),
+  // Nullable + SET NULL: a schedule survives deletion of its workflow/eval-set
+  // (it's then skipped by the scheduler). Avoids a FK error when either is deleted.
+  workflowId: integer("workflow_id").references(() => workflows.id, { onDelete: "set null" }),
+  evalSetId: integer("eval_set_id").references(() => evalSets.id, { onDelete: "set null" }),
   region: regionEnum("region").notNull(),
   scheduleType: scheduleTypeEnum("schedule_type").default("once").notNull(),
   cronExpression: varchar("cron_expression", { length: 100 }), // e.g., "0 * * * *" for hourly

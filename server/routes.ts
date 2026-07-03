@@ -1915,6 +1915,9 @@ export async function registerRoutes(
       }
 
       // Merge workflow + evalSet configs
+      if (schedule.workflowId == null || schedule.evalSetId == null) {
+        return res.status(404).json({ error: "Schedule references a deleted workflow or eval set" });
+      }
       const workflow = await storage.getWorkflow(schedule.workflowId);
       if (!workflow) {
         return res.status(404).json({ error: "Schedule references a deleted workflow" });

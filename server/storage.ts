@@ -605,10 +605,11 @@ export class DatabaseStorage {
   async countTodayJobsByOwner(ownerId: number): Promise<number> {
     const startOfDay = new Date();
     startOfDay.setHours(0, 0, 0, 0);
+    // Count the jobs this user RAN (created_by) — immutable and survives workflow
+    // deletion, so the daily limit can't be bypassed by deleting the workflow.
     const result = await db.select({ count: sql<number>`count(*)::int` })
       .from(evalJobs)
-      .innerJoin(workflows, eq(evalJobs.workflowId, workflows.id))
-      .where(and(eq(workflows.ownerId, ownerId), gte(evalJobs.createdAt, startOfDay)));
+      .where(and(eq(evalJobs.createdBy, ownerId), gte(evalJobs.createdAt, startOfDay)));
     return result[0]?.count ?? 0;
   }
 
@@ -809,53 +810,12 @@ export class DatabaseStorage {
     if (filters?.agentId) {
       conditions.push(eq(evalJobs.evalAgentId, filters.agentId));
     }
-
-    // If filtering by owner, need to join with workflows
+    // "Owner" = the job's creator (immutable), not the workflow owner — so a user's
+    // job history survives workflow deletion and isn't dropped by a live join.
     if (filters?.ownerId) {
-      let query = db.select({
-        id: evalJobs.id,
-        scheduleId: evalJobs.scheduleId,
-        triggerType: evalJobs.triggerType,
-        workflowId: evalJobs.workflowId,
-        evalSetId: evalJobs.evalSetId,
-        evalAgentId: evalJobs.evalAgentId,
-        createdBy: evalJobs.createdBy,
-        status: evalJobs.status,
-        region: evalJobs.region,
-        priority: evalJobs.priority,
-        retryCount: evalJobs.retryCount,
-        maxRetries: evalJobs.maxRetries,
-        config: evalJobs.config,
-        snapshot: evalJobs.snapshot,
-        tokenVisibility: evalJobs.tokenVisibility,
-        error: evalJobs.error,
-        startedAt: evalJobs.startedAt,
-        completedAt: evalJobs.completedAt,
-        createdAt: evalJobs.createdAt,
-        updatedAt: evalJobs.updatedAt,
-      })
-        .from(evalJobs)
-        .innerJoin(workflows, eq(evalJobs.workflowId, workflows.id));
-
-      conditions.push(eq(workflows.ownerId, filters.ownerId));
-
-      if (conditions.length > 0) {
-        query = query.where(and(...conditions)) as typeof query;
-      }
-
-      query = query.orderBy(desc(evalJobs.createdAt)) as typeof query;
-
-      if (filters?.limit) {
-        query = query.limit(filters.limit) as typeof query;
-      }
-      if (filters?.offset) {
-        query = query.offset(filters.offset) as typeof query;
-      }
-
-      return query;
+      conditions.push(eq(evalJobs.createdBy, filters.ownerId));
     }
 
-    // Simple query without join
     let query = db.select().from(evalJobs);
 
     if (conditions.length > 0) {
@@ -863,6 +823,13 @@ export class DatabaseStorage {
     }
 
     query = query.orderBy(desc(evalJobs.createdAt)) as typeof query;
+
+    if (filters?.limit) {
+      query = query.limit(filters.limit) as typeof query;
+    }
+    if (filters?.offset) {
+      query = query.offset(filters.offset) as typeof query;
+    }
 
     return query;
   }
@@ -1035,9 +1002,10 @@ export class DatabaseStorage {
     const conditions = [
       eq(evalJobs.status, "completed"),
       sql`${snap}->'workflow'->>'visibility' = 'public'`,
-      sql`(${snap}->'workflow'->>'isMainline')::boolean = true`,
+      // Compare as text ('true'/'false') so the text expression index is usable.
+      sql`${snap}->'workflow'->>'isMainline' = 'true'`,
       sql`${snap}->'evalSet'->>'visibility' = 'public'`,
-      sql`(${snap}->'evalSet'->>'isMainline')::boolean = true`,
+      sql`${snap}->'evalSet'->>'isMainline' = 'true'`,
       eq(evalJobs.tokenVisibility, "public"),
       // Only principal/fellow creators' jobs qualify as mainline
       sql`${snap}->>'creatorPlan' IN ('principal', 'fellow')`,
@@ -1054,10 +1022,11 @@ export class DatabaseStorage {
       eq(evalJobs.status, "completed"),
       sql`${snap}->'workflow'->>'visibility' = 'public'`,
       sql`${snap}->'evalSet'->>'visibility' = 'public'`,
-      // Exclude fully mainline results (all 4 inputs true → mainline)
+      // Exclude fully mainline results (all 4 inputs true → mainline).
+      // Text comparison (matches the expression index; NULL/'false' → not mainline).
       or(
-        sql`(${snap}->'workflow'->>'isMainline')::boolean IS DISTINCT FROM true`,
-        sql`(${snap}->'evalSet'->>'isMainline')::boolean IS DISTINCT FROM true`,
+        sql`${snap}->'workflow'->>'isMainline' IS DISTINCT FROM 'true'`,
+        sql`${snap}->'evalSet'->>'isMainline' IS DISTINCT FROM 'true'`,
         sql`${evalJobs.tokenVisibility} IS DISTINCT FROM 'public'`,
         sql`${snap}->>'creatorPlan' IS NULL OR ${snap}->>'creatorPlan' NOT IN ('principal', 'fellow')`,
       ),

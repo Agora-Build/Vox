@@ -242,6 +242,11 @@ function startBackgroundWorker() {
 
       for (const schedule of dueSchedules) {
         try {
+          // Skip schedules whose workflow or eval-set was deleted (FK is SET NULL).
+          if (schedule.workflowId == null || schedule.evalSetId == null) {
+            log(`Schedule "${schedule.name}" references a deleted workflow/eval-set, skipping`, "scheduler");
+            continue;
+          }
           // Fetch workflow + evalSet to merge configs
           const workflow = await storage.getWorkflow(schedule.workflowId);
           if (!workflow) {
