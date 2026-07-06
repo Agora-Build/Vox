@@ -281,7 +281,7 @@ export default function ConsoleEvalJobDetail({ jobId }: { jobId: number }) {
           </Card>
           <Card>
             <CardHeader className="pb-2">
-              <CardTitle className="text-sm">Interrupt Latency</CardTitle>
+              <CardTitle className="text-sm" title="Time for the AI to stop after the user interrupts (barges in) — lower is better">Interrupt Latency</CardTitle>
             </CardHeader>
             <CardContent className="space-y-1">
               <div className="flex justify-between"><span className="text-sm text-muted-foreground">MED</span><span className="text-xl font-bold font-mono">{result.interruptLatencyMedian}ms</span></div>
@@ -296,7 +296,7 @@ export default function ConsoleEvalJobDetail({ jobId }: { jobId: number }) {
             <CardContent className="space-y-1">
               <div className="flex justify-between"><span className="text-sm text-muted-foreground">Response</span><span className="text-xl font-bold font-mono">{pct(result.responseRate)}</span></div>
               <div className="flex justify-between"><span className="text-sm text-muted-foreground">Interrupt</span><span className="text-sm font-mono text-muted-foreground">{pct(result.interruptRate)}</span></div>
-              <div className="flex justify-between"><span className="text-sm text-muted-foreground" title="Reactions to non-semantic material — lower is better">False Int. ↓</span><span className="text-sm font-mono text-muted-foreground">{pct(result.falseInterruptRate)}</span></div>
+              <div className="flex justify-between"><span className="text-sm text-muted-foreground" title="How often the AI barges in before the user finishes speaking — lower is better">False Barge-in ↓</span><span className="text-sm font-mono text-muted-foreground">{pct(result.falseInterruptRate)}</span></div>
             </CardContent>
           </Card>
           <Card>
@@ -339,7 +339,7 @@ export default function ConsoleEvalJobDetail({ jobId }: { jobId: number }) {
                     .map(([caseId, c]) => ({
                       caseId,
                       c,
-                      label: c.false_interrupt_case ? "False Int. ↓" : c.has_interrupt_phase ? "Interrupt" : "Response",
+                      label: c.false_interrupt_case ? "False Barge-in ↓" : c.has_interrupt_phase ? "Interrupt" : "Response",
                       order: c.false_interrupt_case ? 2 : c.has_interrupt_phase ? 1 : 0,
                     }))
                     .sort((a, b) => a.order - b.order || a.caseId.localeCompare(b.caseId))
@@ -450,7 +450,7 @@ export default function ConsoleEvalJobDetail({ jobId }: { jobId: number }) {
       {/* Interrupt / False Interrupt Turn-Level Data */}
       {[
         { title: "Interrupt Turn-Level Latency", turns: trueIntTurns, noun: "interruption" },
-        { title: "False Interrupt Turn-Level Latency", turns: falseIntTurns, noun: "false interrupt" },
+        { title: "False Barge-in Turn-Level Latency", turns: falseIntTurns, noun: "false barge-in" },
       ].filter(s => s.turns.length > 0).map(section => (
         <Card key={section.title}>
           <CardHeader>
