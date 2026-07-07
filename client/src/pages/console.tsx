@@ -8,7 +8,7 @@ import { Switch } from "@/components/ui/switch";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
-import { Users, Shield, Gem, Sparkles, Award, UserPlus, Link, Copy, Check, CircleDot } from "lucide-react";
+import { Users, Shield, Sparkles, UserPlus, Link, Copy, Check } from "lucide-react";
 import { useState } from "react";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
@@ -39,35 +39,12 @@ interface UserData {
   createdAt: string;
 }
 
-function getUserRole(user: UserData): string {
-  if (user.isAdmin) return "Admin";
-  switch (user.plan) {
-    case "principal": return "Principal";
-    case "fellow": return "Fellow";
-    case "premium": return "Premium";
-    default: return "Basic";
-  }
-}
-
-function getRoleIcon(role: string) {
-  switch (role) {
-    case "Admin": return <Shield className="h-3 w-3" />;
-    case "Principal": return <Gem className="h-3 w-3" />;
-    case "Fellow": return <Award className="h-3 w-3" />;
-    case "Premium": return <Sparkles className="h-3 w-3" />;
-    default: return <CircleDot className="h-3 w-3" />;
-  }
-}
-
-function getRoleBadgeVariant(role: string): "default" | "secondary" | "outline" {
-  switch (role) {
-    case "Admin": return "default";
-    case "Principal": return "default";
-    case "Fellow": return "secondary";
-    case "Premium": return "secondary";
-    default: return "outline";
-  }
-}
+const PLAN_OPTIONS = [
+  { value: "basic", label: "Basic" },
+  { value: "premium", label: "Premium" },
+  { value: "principal", label: "Principal" },
+  { value: "fellow", label: "Fellow" },
+];
 
 function getPaidStatus(user: UserData): { label: string; variant: "default" | "secondary" | "outline" | "destructive" } {
   if (user.isAdmin || user.plan === "principal" || user.plan === "fellow") {
@@ -321,7 +298,7 @@ export default function Console() {
               <TableHeader>
                 <TableRow>
                   <TableHead>User</TableHead>
-                  <TableHead>Role</TableHead>
+                  <TableHead>Plan</TableHead>
                   <TableHead>Paid</TableHead>
                   <TableHead>Status</TableHead>
                   <TableHead className="text-right">Actions</TableHead>
@@ -329,7 +306,6 @@ export default function Console() {
               </TableHeader>
               <TableBody>
                 {users?.map((user) => {
-                  const role = getUserRole(user);
                   const paid = getPaidStatus(user);
                   return (
                     <TableRow key={user.id} data-testid={`row-user-${user.id}`}>
@@ -340,10 +316,19 @@ export default function Console() {
                         </div>
                       </TableCell>
                       <TableCell>
-                        <Badge variant={getRoleBadgeVariant(role)} className="gap-1">
-                          {getRoleIcon(role)}
-                          {role}
-                        </Badge>
+                        <Select
+                          value={user.plan}
+                          onValueChange={(plan) => updateUserMutation.mutate({ id: user.id, plan })}
+                        >
+                          <SelectTrigger className="w-[130px] h-8" data-testid={`select-plan-${user.id}`}>
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {PLAN_OPTIONS.map((p) => (
+                              <SelectItem key={p.value} value={p.value}>{p.label}</SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
                       </TableCell>
                       <TableCell>
                         <Badge variant={paid.variant}>
@@ -356,7 +341,7 @@ export default function Console() {
                         </Badge>
                       </TableCell>
                       <TableCell className="text-right">
-                        <div className="flex items-center justify-end gap-2">
+                        <div className="flex items-center justify-end gap-4">
                           {!user.emailVerified && (
                             <Button
                               size="sm"
@@ -368,14 +353,28 @@ export default function Console() {
                               Activate
                             </Button>
                           )}
-                          <Switch
-                            checked={user.isEnabled}
-                            onCheckedChange={(checked) =>
-                              updateUserMutation.mutate({ id: user.id, isEnabled: checked })
-                            }
-                            disabled={user.id === authStatus.user?.id}
-                            data-testid={`switch-enable-${user.id}`}
-                          />
+                          <label className="flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer" title="Grant or revoke admin access">
+                            <Shield className="h-3 w-3" /> Admin
+                            <Switch
+                              checked={user.isAdmin}
+                              onCheckedChange={(checked) =>
+                                updateUserMutation.mutate({ id: user.id, isAdmin: checked })
+                              }
+                              disabled={user.id === authStatus.user?.id}
+                              data-testid={`switch-admin-${user.id}`}
+                            />
+                          </label>
+                          <label className="flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer">
+                            Enabled
+                            <Switch
+                              checked={user.isEnabled}
+                              onCheckedChange={(checked) =>
+                                updateUserMutation.mutate({ id: user.id, isEnabled: checked })
+                              }
+                              disabled={user.id === authStatus.user?.id}
+                              data-testid={`switch-enable-${user.id}`}
+                            />
+                          </label>
                         </div>
                       </TableCell>
                     </TableRow>

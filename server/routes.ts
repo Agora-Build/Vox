@@ -451,7 +451,16 @@ export async function registerRoutes(
     try {
       const { id } = req.params;
       const { isEnabled, isAdmin, plan } = req.body;
-      
+
+      // Prevent self-lockout server-side (the UI also disables these toggles for
+      // your own row, but that can't be the only guard): an admin can't remove
+      // their own admin access or disable their own account. Plan is harmless.
+      const currentUser = await getCurrentUser(req);
+      if (currentUser && currentUser.id === parseInt(id)) {
+        if (isAdmin === false) return res.status(400).json({ error: "You cannot remove your own admin access" });
+        if (isEnabled === false) return res.status(400).json({ error: "You cannot disable your own account" });
+      }
+
       const updates: Record<string, unknown> = {};
       if (typeof isEnabled === "boolean") updates.isEnabled = isEnabled;
       if (typeof isAdmin === "boolean") updates.isAdmin = isAdmin;
