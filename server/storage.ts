@@ -1995,7 +1995,7 @@ export class DatabaseStorage {
     const result = await db.execute(
       sql`DELETE FROM user_sessions WHERE (sess->>'userId')::int = ${userId} AND sid <> ${keepSid}`
     );
-    return result.rowCount ?? 0;
+    return (result as unknown as { rowCount: number }).rowCount || 0;
   }
 
   async getOrgSecretsForJob(jobId: number): Promise<Record<string, string>> {

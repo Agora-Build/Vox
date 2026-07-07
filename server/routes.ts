@@ -844,15 +844,19 @@ export async function registerRoutes(
       const passwordHash = await hashPassword(newPassword);
       await storage.updateUser(user.id, { passwordHash });
 
-      // Evict every other session for this user so a stale or attacker-held
-      // session can't outlive a password rotation. Keep the caller's own session.
-      if (req.sessionID) {
-        try {
-          await storage.deleteOtherUserSessions(user.id, req.sessionID);
-        } catch (e) {
-          console.error("Failed to revoke other sessions after password change:", e);
-        }
-      }
+      // Harden the session after a credential change. These steps are REQUIRED,
+      // not best-effort: if any fail we surface an error (the outer catch → 500)
+      // rather than reporting success while stale sessions might still be valid.
+      //   1. Regenerate the caller's own session id (defends against fixation).
+      //   2. Revoke every OTHER session for this user (evicts stale/stolen ones).
+      await new Promise<void>((resolve, reject) =>
+        req.session.regenerate((err) => (err ? reject(err) : resolve())),
+      );
+      req.session.userId = user.id;
+      await new Promise<void>((resolve, reject) =>
+        req.session.save((err) => (err ? reject(err) : resolve())),
+      );
+      await storage.deleteOtherUserSessions(user.id, req.sessionID);
 
       res.json({ message: "Password updated", hadPassword: !!user.passwordHash });
     } catch (error) {
