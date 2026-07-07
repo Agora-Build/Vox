@@ -13,7 +13,6 @@ import ProviderGuide from "@/pages/provider";
 import SelfTest from "@/pages/run-your-own";
 import Login from "@/pages/login";
 import AdminLogin from "@/pages/login-admin";
-import AdminConsolePage from "@/pages/admin-console";
 import Console from "@/pages/console";
 import ConsoleInit from "@/pages/console-init";
 import ConsoleProjects from "@/pages/console-projects";
@@ -942,7 +941,9 @@ function Router() {
       <Route path="/admin/console/providers">
         <Redirect to="/console/providers" />
       </Route>
-      <Route path="/admin/console" component={AdminConsolePage} />
+      <Route path="/admin/console">
+        <Redirect to="/console/users" />
+      </Route>
       <Route path="/setup" component={ConsoleInit} />
       <Route path="/">
         <Layout>

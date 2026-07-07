@@ -79,7 +79,9 @@ export function LoginForm({ variant = "user" }: LoginFormProps) {
       }
 
       const isAdmin = data.user?.isAdmin;
-      const destination = isAdmin ? "/admin/console" : "/console";
+      // Admins → User Management; everyone else → Projects (/console now redirects
+      // to the admin-only /console/users, so non-admins must not land there).
+      const destination = isAdmin ? "/console/users" : "/console/projects";
       toast({ title: isAdmin ? "Welcome back, Admin!" : "Welcome back!" });
       setLocation(destination);
     },
