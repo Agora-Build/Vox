@@ -1849,14 +1849,16 @@ export async function registerRoutes(
         return res.status(400).json({ error: "Invalid region. Must be na, apac, eu, or sa" });
       }
 
-      // Verify workflow exists and the user may run it (a schedule is a recurring
-      // run, not an edit — so run rights, not edit rights).
+      // A recurring schedule runs the workflow repeatedly on the OWNER's bound
+      // secrets, so scheduling is restricted to those who manage the workflow
+      // (owner / org-admin / admin) — not everyone who can merely run it once.
+      // Run-once stays open to any runner of a public workflow.
       const workflow = await storage.getWorkflow(workflowId);
       if (!workflow) {
         return res.status(404).json({ error: "Workflow not found" });
       }
-      if (!canRunWorkflow(user, workflow)) {
-        return res.status(403).json({ error: "Not authorized to run this workflow" });
+      if (!canEditResource(user, workflow)) {
+        return res.status(403).json({ error: "Only the workflow owner can schedule recurring evaluations" });
       }
 
       // Verify eval set
