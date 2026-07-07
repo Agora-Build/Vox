@@ -88,6 +88,16 @@ function canEditResource(user: AuthUser, resource: OrgResource): boolean {
   return false;
 }
 
+// "Run" rights sit between access (view) and edit (mutate): running or scheduling
+// an eval executes a workflow without changing it. Public workflows are runnable
+// by anyone; private ones only by an editor (owner/org-admin/admin) or a
+// principal/fellow. Used by both the run-once and schedule-create routes so the
+// two entry points can't drift apart.
+function canRunWorkflow(user: AuthUser & { plan: string }, resource: OrgResource): boolean {
+  if (resource.visibility === 'public') return true;
+  return canEditResource(user, resource) || user.plan === 'principal' || user.plan === 'fellow';
+}
+
 // Elo rating calculation for Clash matches
 // Lower latency = better. Compare median response latency to determine winner.
 async function updateClashEloRatings(
@@ -1839,13 +1849,14 @@ export async function registerRoutes(
         return res.status(400).json({ error: "Invalid region. Must be na, apac, eu, or sa" });
       }
 
-      // Verify workflow exists and user owns it
+      // Verify workflow exists and the user may run it (a schedule is a recurring
+      // run, not an edit — so run rights, not edit rights).
       const workflow = await storage.getWorkflow(workflowId);
       if (!workflow) {
         return res.status(404).json({ error: "Workflow not found" });
       }
-      if (!canEditResource(user, workflow)) {
-        return res.status(403).json({ error: "Access denied to workflow" });
+      if (!canRunWorkflow(user, workflow)) {
+        return res.status(403).json({ error: "Not authorized to run this workflow" });
       }
 
       // Verify eval set
@@ -3011,7 +3022,7 @@ export async function registerRoutes(
       }
 
       // Public workflows can be run by anyone; private workflows only by owner/admin/principal/fellow
-      if (workflow.visibility === "private" && !canEditResource(user, workflow) && user.plan !== "principal" && user.plan !== "fellow") {
+      if (!canRunWorkflow(user, workflow)) {
         return res.status(403).json({ error: "Not authorized to run this workflow" });
       }
 
@@ -3033,6 +3044,11 @@ export async function registerRoutes(
       const evalSet = await storage.getEvalSet(evalSetId);
       if (!evalSet) {
         return res.status(404).json({ error: "Eval set not found" });
+      }
+      // Same access level as the schedule route: you must be able to see the eval
+      // set to run against it (blocks running against someone else's private set).
+      if (!canAccessResource(user, evalSet)) {
+        return res.status(403).json({ error: "Access denied to eval set" });
       }
 
       const provider = await storage.getProvider(workflow.providerId);
