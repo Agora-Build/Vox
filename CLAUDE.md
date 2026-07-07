@@ -225,7 +225,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 - Token generation utilities
 - Google OAuth via Passport.js
 
-**Rate Limiting:** API routes are rate-limited (100 req/15min general, 20 req/15min for auth endpoints)
+**Rate Limiting:** API routes are rate-limited (100 req/15min general, 20 req/15min for auth endpoints). The strict auth limiter covers `/api/auth/login`, `/register`, `/activate`, and `/api/user/change-password` (bcrypt-verified, so an online brute-force surface). Rate limits apply in production only.
 
 #### Data Access Layer
 `server/storage.ts` exports a singleton `DatabaseStorage` instance as `storage`:
@@ -252,6 +252,10 @@ All routes defined in `server/routes.ts`:
 - `GET /api/auth/google` - Initiate Google OAuth flow
 - `GET /api/auth/google/callback` - Google OAuth callback
 - `GET /api/auth/google/status` - Check if Google OAuth is enabled
+
+**User Profile (`/api/user/*`):** (requires auth, self only)
+- `PATCH /api/user/profile` - Update own display name (`username`; 2–50 chars, uniqueness-checked; 23505 race → 400)
+- `POST /api/user/change-password` - Change/set own password. Verifies `currentPassword` when one exists; OAuth-only accounts (no password yet) may set one without a current. On success, **regenerates the caller's session and revokes all the user's other sessions**. On the strict auth rate limiter (20 req/15min).
 
 **API Keys (`/api/user/api-keys`):** (requires auth)
 - `GET /api/user/api-keys` - List user's API keys
