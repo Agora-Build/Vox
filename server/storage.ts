@@ -38,7 +38,6 @@ import {
   type FundReturnRequest,
   type InsertFundReturnRequest,
   type Secret,
-  type InsertSecret,
   type ClashAgentProfile,
   type InsertClashAgentProfile,
   type ClashMatch,
@@ -1985,6 +1984,17 @@ export class DatabaseStorage {
   async deleteOrgSecret(organizationId: number, name: string): Promise<void> {
     await db.delete(orgSecrets)
       .where(and(eq(orgSecrets.organizationId, organizationId), eq(orgSecrets.name, name)));
+  }
+
+  // Revoke every OTHER active session for a user (keep the caller's current one).
+  // Used after a password change/set so a stale or attacker-held session is evicted.
+  // Sessions live in user_sessions (connect-pg-simple); the userId is stored in the
+  // serialized `sess` JSON.
+  async deleteOtherUserSessions(userId: number, keepSid: string): Promise<number> {
+    const result = await db.execute(
+      sql`DELETE FROM user_sessions WHERE (sess->>'userId')::int = ${userId} AND sid <> ${keepSid}`
+    );
+    return (result as unknown as { rowCount: number }).rowCount || 0;
   }
 
   async getOrgSecretsForJob(jobId: number): Promise<Record<string, string>> {

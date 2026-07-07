@@ -1,9 +1,8 @@
 import type { Express } from "express";
-import { createServer, type Server } from "http";
+import { type Server } from "http";
 import { storage, hashToken, generateSecureToken, generateEvalAgentToken, mergeEvalConfig, buildJobSnapshot, validateWorkflowConfig, validateEvalSetConfig, encryptValue, decryptValue, isEncryptionConfigured, type MetricSourceRow } from "./storage";
 import { parseNextCronRun } from "./cron";
 import { compareVersions } from "./aeval-seed";
-import { generateProviderId } from "@shared/schema";
 import { SECRET_NAME_PATTERN } from "@shared/secrets";
 import { registerApiV1Routes } from "./routes-api-v1";
 import { generateSignedUrlForUser } from "./s3";
@@ -27,12 +26,11 @@ import {
   getGithubProfile,
   findOrCreateGithubUser,
 } from "./auth";
-import { calculateSeatPrice, isStripeConfigured as isPricingStripeConfigured } from "./pricing";
+import { calculateSeatPrice } from "./pricing";
 import {
   isAgoraConfigured,
   isModeratorConfigured,
   generateRtcToken,
-  generateChannelName,
   generateEventChannelName,
   startModerator,
   stopModerator,
@@ -177,6 +175,7 @@ export async function registerRoutes(
           emailVerified: !!user.emailVerifiedAt,
           organizationId: user.organizationId,
           orgRole: user.orgRole,
+          hasPassword: !!user.passwordHash,
         } : null
       });
     } catch (error) {
@@ -783,6 +782,89 @@ export async function registerRoutes(
     }
   });
 
+  // ==================== USER PROFILE (SELF) ROUTES ====================
+
+  // Update own display name (username)
+  app.patch("/api/user/profile", requireAuth, async (req, res) => {
+    try {
+      const user = await getCurrentUser(req);
+      if (!user) return res.status(401).json({ error: "Not authenticated" });
+
+      const { username } = req.body;
+      if (typeof username !== "string" || username.trim().length < 2) {
+        return res.status(400).json({ error: "Name must be at least 2 characters" });
+      }
+      const clean = username.trim();
+      if (clean.length > 50) return res.status(400).json({ error: "Name must be 50 characters or fewer" });
+
+      const existing = await storage.getUserByUsername(clean);
+      if (existing && existing.id !== user.id) {
+        return res.status(400).json({ error: "That name is already taken" });
+      }
+
+      let updated;
+      try {
+        updated = await storage.updateUser(user.id, { username: clean });
+      } catch (e) {
+        // username has a UNIQUE constraint; a concurrent claim races past the
+        // check above and surfaces as a Postgres unique violation (23505).
+        if (e && typeof e === "object" && (e as { code?: string }).code === "23505") {
+          return res.status(400).json({ error: "That name is already taken" });
+        }
+        throw e;
+      }
+      if (!updated) return res.status(404).json({ error: "User not found" });
+      res.json({ id: updated.id, username: updated.username, email: updated.email, isAdmin: updated.isAdmin });
+    } catch (error) {
+      console.error("Error updating profile:", error);
+      res.status(500).json({ error: "Failed to update profile" });
+    }
+  });
+
+  // Change own password. If the account has no password yet (OAuth-only), a new
+  // one can be set without a current password; otherwise the current is verified.
+  app.post("/api/user/change-password", requireAuth, async (req, res) => {
+    try {
+      const user = await getCurrentUser(req);
+      if (!user) return res.status(401).json({ error: "Not authenticated" });
+
+      const { currentPassword, newPassword } = req.body;
+      if (typeof newPassword !== "string" || newPassword.length < 8) {
+        return res.status(400).json({ error: "New password must be at least 8 characters" });
+      }
+
+      if (user.passwordHash) {
+        if (typeof currentPassword !== "string" || !(await verifyPassword(currentPassword, user.passwordHash))) {
+          return res.status(400).json({ error: "Current password is incorrect" });
+        }
+      }
+
+      // Harden the session BEFORE the irreversible password write, so a failure
+      // here returns an error with the password still unchanged (fail closed,
+      // consistent state — the old password keeps working on retry). These steps
+      // are REQUIRED, not best-effort:
+      //   1. Regenerate the caller's own session id (defends against fixation).
+      //   2. Revoke every OTHER session for this user (evicts stale/stolen ones).
+      await new Promise<void>((resolve, reject) =>
+        req.session.regenerate((err) => (err ? reject(err) : resolve())),
+      );
+      req.session.userId = user.id;
+      await new Promise<void>((resolve, reject) =>
+        req.session.save((err) => (err ? reject(err) : resolve())),
+      );
+      await storage.deleteOtherUserSessions(user.id, req.sessionID);
+
+      // Commit the new password only after session hardening has succeeded.
+      const passwordHash = await hashPassword(newPassword);
+      await storage.updateUser(user.id, { passwordHash });
+
+      res.json({ message: "Password updated", hadPassword: !!user.passwordHash });
+    } catch (error) {
+      console.error("Error changing password:", error);
+      res.status(500).json({ error: "Failed to change password" });
+    }
+  });
+
   // ==================== API KEY ROUTES ====================
 
   // List user's API keys
@@ -994,7 +1076,7 @@ export async function registerRoutes(
 
       const { projectIds, workflowIds, evalSetIds, scheduleIds } = req.body;
       const orgId = user.organizationId;
-      let moved = { projects: 0, workflows: 0, evalSets: 0, schedules: 0 };
+      const moved = { projects: 0, workflows: 0, evalSets: 0, schedules: 0 };
 
       // Move projects (and their child workflows)
       if (Array.isArray(projectIds) && projectIds.length > 0) {
@@ -5287,7 +5369,7 @@ export async function registerRoutes(
       if (!authHeader || !authHeader.startsWith("Bearer ")) {
         return res.status(401).json({ error: "Runner token required" });
       }
-      const { matchId, phase } = req.body;
+      const { matchId } = req.body;
       if (!matchId) return res.status(400).json({ error: "matchId required" });
 
       if (!isModeratorConfigured()) {

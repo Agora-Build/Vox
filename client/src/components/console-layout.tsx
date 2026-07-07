@@ -1,4 +1,5 @@
 import { useQuery, useMutation } from "@tanstack/react-query";
+import { useState } from "react";
 import { useLocation, Link } from "wouter";
 import { 
   SidebarProvider, 
@@ -15,11 +16,13 @@ import {
   SidebarFooter,
 } from "@/components/ui/sidebar";
 import { Button } from "@/components/ui/button";
-import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { GradientAvatar } from "@/components/gradient-avatar";
+import { ProfileDialog } from "@/components/profile-dialog";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import { Users, Workflow, FileText, LogOut, Shield, Gem, Sparkles, Rocket, Server, Building2, CreditCard, Settings, FolderKanban, ClipboardList, KeyRound, Swords, HardDrive, Box } from "lucide-react";
+import { Users, Workflow, FileText, LogOut, Shield, Gem, Sparkles, Rocket, Server, Building2, CreditCard, Settings, FolderKanban, ClipboardList, KeyRound, Swords, HardDrive, Box, ChevronsUpDown, Mail, UserCog } from "lucide-react";
 import { ThemeToggle } from "@/components/theme-toggle";
 
 interface AuthStatus {
@@ -34,6 +37,7 @@ interface AuthStatus {
     emailVerified: boolean;
     organizationId: number | null;
     orgRole: string | null;
+    hasPassword?: boolean;
   } | null;
 }
 
@@ -43,6 +47,8 @@ interface ConsoleLayoutProps {
 
 export default function ConsoleLayout({ children }: ConsoleLayoutProps) {
   const [location, setLocation] = useLocation();
+  const [profileOpen, setProfileOpen] = useState(false);
+  const [profileDialogOpen, setProfileDialogOpen] = useState(false);
   const { toast } = useToast();
 
   const { data: authStatus, isLoading } = useQuery<AuthStatus>({
@@ -268,28 +274,67 @@ export default function ConsoleLayout({ children }: ConsoleLayoutProps) {
               </SidebarGroupContent>
             </SidebarGroup>
           </SidebarContent>
-          <SidebarFooter className="p-4 border-t">
-            {user && (
-              <div className="flex items-center gap-3">
-                <Avatar className="h-8 w-8">
-                  <AvatarFallback>{user.username[0].toUpperCase()}</AvatarFallback>
-                </Avatar>
-                <div className="flex-1 min-w-0">
-                  <div className="font-medium text-sm truncate">{user.username}</div>
-                  <div className="flex items-center gap-1">
-                    {(() => {
-                      const role = getRoleLabel(user);
-                      return (
-                        <Badge variant={user.isAdmin ? "default" : "outline"} className="text-xs gap-1">
-                          {getRoleIcon(role)}
-                          {role}
+          <SidebarFooter className="p-2 border-t">
+            {user && (() => {
+              const role = getRoleLabel(user);
+              const go = (url: string) => { setProfileOpen(false); setLocation(url); };
+              return (
+                <Popover open={profileOpen} onOpenChange={setProfileOpen}>
+                  <PopoverTrigger asChild>
+                    <button
+                      className="w-full flex items-center gap-3 rounded-lg p-2 text-left transition-colors hover:bg-sidebar-accent data-[state=open]:bg-sidebar-accent"
+                      data-testid="button-profile-menu"
+                    >
+                      <GradientAvatar name={user.username} className="h-9 w-9 text-sm shrink-0" />
+                      <div className="flex-1 min-w-0">
+                        <div className="font-medium text-sm truncate">{user.username}</div>
+                        <div className="text-xs text-muted-foreground truncate">{user.email}</div>
+                      </div>
+                      <ChevronsUpDown className="h-4 w-4 text-muted-foreground shrink-0" />
+                    </button>
+                  </PopoverTrigger>
+                  <PopoverContent side="top" align="start" sideOffset={8} className="w-64 p-0" data-testid="popover-profile">
+                    <div className="flex items-center gap-3 p-3">
+                      <GradientAvatar name={user.username} className="h-11 w-11 text-base shrink-0" />
+                      <div className="min-w-0">
+                        <div className="font-semibold text-sm truncate">{user.username}</div>
+                        <div className="text-xs text-muted-foreground truncate flex items-center gap-1">
+                          <Mail className="h-3 w-3 shrink-0" /> {user.email}
+                        </div>
+                        <Badge variant={user.isAdmin ? "default" : "outline"} className="mt-1.5 text-[10px] gap-1 h-5">
+                          {getRoleIcon(role)} {role}
                         </Badge>
-                      );
-                    })()}
-                  </div>
-                </div>
-              </div>
-            )}
+                      </div>
+                    </div>
+                    <div className="h-px bg-border" />
+                    <div className="p-1">
+                      <button onClick={() => { setProfileOpen(false); setProfileDialogOpen(true); }} className="flex items-center gap-2 w-full rounded-md px-2 py-1.5 text-sm hover:bg-accent transition-colors" data-testid="button-edit-profile">
+                        <UserCog className="h-4 w-4 text-muted-foreground" /> Edit profile
+                      </button>
+                      <button onClick={() => go("/console/api-keys")} className="flex items-center gap-2 w-full rounded-md px-2 py-1.5 text-sm hover:bg-accent transition-colors" data-testid="link-profile-api-keys">
+                        <KeyRound className="h-4 w-4 text-muted-foreground" /> API Keys
+                      </button>
+                      {user.organizationId && (
+                        <button onClick={() => go("/console/organization")} className="flex items-center gap-2 w-full rounded-md px-2 py-1.5 text-sm hover:bg-accent transition-colors" data-testid="link-profile-org">
+                          <Building2 className="h-4 w-4 text-muted-foreground" /> Organization
+                        </button>
+                      )}
+                    </div>
+                    <div className="h-px bg-border" />
+                    <div className="p-1">
+                      <button
+                        onClick={() => { setProfileOpen(false); logoutMutation.mutate(); }}
+                        disabled={logoutMutation.isPending}
+                        className="flex items-center gap-2 w-full rounded-md px-2 py-1.5 text-sm text-destructive hover:bg-destructive/10 transition-colors"
+                        data-testid="button-profile-logout"
+                      >
+                        <LogOut className="h-4 w-4" /> Sign out
+                      </button>
+                    </div>
+                  </PopoverContent>
+                </Popover>
+              );
+            })()}
           </SidebarFooter>
         </Sidebar>
         <div className="flex flex-col flex-1 overflow-hidden">
@@ -316,6 +361,9 @@ export default function ConsoleLayout({ children }: ConsoleLayoutProps) {
           </main>
         </div>
       </div>
+      {user && (
+        <ProfileDialog user={user} open={profileDialogOpen} onOpenChange={setProfileDialogOpen} />
+      )}
     </SidebarProvider>
   );
 }
