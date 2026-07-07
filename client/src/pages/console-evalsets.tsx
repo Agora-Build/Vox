@@ -17,7 +17,7 @@ import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, 
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { Plus, FileText, Globe, Lock, Star, Play, Pencil, Copy, Trash2 } from "lucide-react";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import type { EvalSet, Workflow as WorkflowType } from "@shared/schema";
 
 
@@ -27,7 +27,26 @@ interface AuthStatus {
     username: string;
     plan: string;
     isAdmin: boolean;
+    organizationId: number | null;
+    orgRole: string | null;
   } | null;
+}
+
+// Mirrors the server's canEditResource: who may manage (and therefore schedule)
+// a workflow. Recurring schedules run on the owner's bound secrets, so scheduling
+// is limited to editors even for public workflows anyone can run once.
+function canManageWorkflow(
+  user: AuthStatus["user"],
+  wf: { ownerId?: number | null; createdBy?: number | null; organizationId?: number | null } | undefined,
+): boolean {
+  if (!user || !wf) return false;
+  if (user.isAdmin) return true;
+  if (!wf.organizationId && (wf.ownerId === user.id || wf.createdBy === user.id)) return true;
+  if (wf.organizationId && wf.organizationId === user.organizationId) {
+    if (user.orgRole === "owner" || user.orgRole === "admin") return true;
+    if (wf.ownerId === user.id || wf.createdBy === user.id) return true;
+  }
+  return false;
 }
 
 
@@ -254,6 +273,16 @@ export default function ConsoleEvalSets() {
 
   const isRunPending = runOnceMutation.isPending || runRecurringMutation.isPending;
   const canRun = runWorkflowId && runRegion && (runMode === "once" || cronExpression);
+
+  // Only workflow managers may schedule (recurring runs use the owner's secrets).
+  const selectedRunWorkflow = workflows?.find((w) => String(w.id) === runWorkflowId);
+  const canScheduleSelected = canManageWorkflow(authStatus?.user ?? null, selectedRunWorkflow);
+  // If the picked workflow isn't manageable, fall back to a one-off run.
+  useEffect(() => {
+    if (runMode === "recurring" && runWorkflowId && !canScheduleSelected) {
+      setRunMode("once");
+    }
+  }, [runMode, runWorkflowId, canScheduleSelected]);
 
   // "My Eval Sets" = own + org; "Public" = everything public I don't already own.
   const myIds = new Set((myEvalSets ?? []).map((s) => s.id));
@@ -544,12 +573,20 @@ export default function ConsoleEvalSets() {
                   </Label>
                 </div>
                 <div className="flex items-center space-x-2">
-                  <RadioGroupItem value="recurring" id="run-recurring" data-testid="radio-run-recurring" />
-                  <Label htmlFor="run-recurring" className="font-normal cursor-pointer">
+                  <RadioGroupItem value="recurring" id="run-recurring" data-testid="radio-run-recurring" disabled={!!runWorkflowId && !canScheduleSelected} />
+                  <Label
+                    htmlFor="run-recurring"
+                    className={`font-normal ${!!runWorkflowId && !canScheduleSelected ? "cursor-not-allowed text-muted-foreground" : "cursor-pointer"}`}
+                  >
                     Recurring schedule
                   </Label>
                 </div>
               </RadioGroup>
+              {!!runWorkflowId && !canScheduleSelected && (
+                <p className="text-xs text-muted-foreground" data-testid="text-schedule-owner-only">
+                  Recurring schedules can only be created by the workflow's owner, since they run on the owner's saved secrets. You can still run this workflow once.
+                </p>
+              )}
             </div>
 
             {runMode === "recurring" && (
