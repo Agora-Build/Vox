@@ -414,7 +414,7 @@ export async function registerRoutes(
       // Exchange code → access token → profile → user
       const accessToken = await exchangeGithubCode(code);
       const profile = await getGithubProfile(accessToken);
-      const user = await findOrCreateGithubUser(profile.id, profile.email);
+      const user = await findOrCreateGithubUser(profile.id, profile.email, profile.login);
 
       // Set session
       req.session.userId = user.id;
