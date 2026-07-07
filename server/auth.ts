@@ -354,7 +354,7 @@ export async function exchangeGithubCode(code: string): Promise<string> {
   return data.access_token;
 }
 
-export async function getGithubProfile(accessToken: string): Promise<{ id: string; email: string }> {
+export async function getGithubProfile(accessToken: string): Promise<{ id: string; email: string; login: string }> {
   // Fetch user profile
   const userRes = await fetch("https://api.github.com/user", {
     headers: { Authorization: `Bearer ${accessToken}`, Accept: "application/json" },
@@ -376,10 +376,23 @@ export async function getGithubProfile(accessToken: string): Promise<{ id: strin
   }
 
   if (!email) throw new Error("No email found in GitHub profile");
-  return { id: String(user.id), email };
+  return { id: String(user.id), email, login: user.login };
 }
 
-export async function findOrCreateGithubUser(githubId: string, email: string): Promise<User> {
+// Pick a username for a new GitHub user: prefer their GitHub handle, fall back to
+// the email local part, and append a numeric suffix on collision (username is
+// UNIQUE in the schema, so it must be resolved before insert).
+async function uniqueGithubUsername(login: string | undefined, email: string): Promise<string> {
+  const base = (login && login.trim()) || email.split("@")[0] || "user";
+  if (!(await storage.getUserByUsername(base))) return base;
+  for (let i = 2; i < 1000; i++) {
+    const candidate = `${base}${i}`;
+    if (!(await storage.getUserByUsername(candidate))) return candidate;
+  }
+  return `${base}_${crypto.randomBytes(4).toString("hex")}`;
+}
+
+export async function findOrCreateGithubUser(githubId: string, email: string, login?: string): Promise<User> {
   console.log(`[GitHub OAuth] Finding/creating user: githubId=${githubId}, email=${email}`);
 
   // 1. Check by GitHub ID
@@ -405,8 +418,8 @@ export async function findOrCreateGithubUser(githubId: string, email: string): P
     return updated || user;
   }
 
-  // 3. Create new user
-  const username = email.split("@")[0] + "_" + crypto.randomBytes(4).toString("hex");
+  // 3. Create new user — username = GitHub handle (unique-suffixed if taken)
+  const username = await uniqueGithubUsername(login, email);
   return storage.createUser({
     username,
     email,
