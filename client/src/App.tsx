@@ -1,4 +1,4 @@
-import { Switch, Route, useLocation, useRoute } from "wouter";
+import { Switch, Route, useLocation, useRoute, Redirect } from "wouter";
 import { queryClient } from "./lib/queryClient";
 import { QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { useEffect, lazy, Suspense } from "react";
@@ -876,8 +876,11 @@ function Router() {
       <Route path="/admin/login" component={AdminLogin} />
       <Route path="/activate/:token" component={Activate} />
       <Route path="/auth/github/callback" component={AuthGithubCallback} />
-      <Route path="/console">
+      <Route path="/console/users">
         <ConsoleWrapper />
+      </Route>
+      <Route path="/console">
+        <Redirect to="/console/users" />
       </Route>
       <Route path="/console/projects">
         <ConsoleProjectsWrapper />
@@ -933,8 +936,11 @@ function Router() {
       <Route path="/admin/console/fund-returns">
         <AdminFundReturnsWrapper />
       </Route>
-      <Route path="/admin/console/providers">
+      <Route path="/console/providers">
         <AdminProvidersWrapper />
+      </Route>
+      <Route path="/admin/console/providers">
+        <Redirect to="/console/providers" />
       </Route>
       <Route path="/admin/console" component={AdminConsolePage} />
       <Route path="/setup" component={ConsoleInit} />

@@ -101,9 +101,9 @@ export default function ConsoleLayout({ children }: ConsoleLayoutProps) {
   if (user?.isAdmin) {
     navItems.push({
       title: "User Management",
-      url: "/console",
+      url: "/console/users",
       icon: Users,
-      active: location === "/console",
+      active: location === "/console/users",
     });
   }
 
@@ -117,9 +117,9 @@ export default function ConsoleLayout({ children }: ConsoleLayoutProps) {
   if (user?.isAdmin) {
     navItems.push({
       title: "Providers",
-      url: "/admin/console/providers",
+      url: "/console/providers",
       icon: Box,
-      active: location === "/admin/console/providers",
+      active: location === "/console/providers",
     });
   }
 
