@@ -1,9 +1,8 @@
 import type { Express } from "express";
-import { createServer, type Server } from "http";
+import { type Server } from "http";
 import { storage, hashToken, generateSecureToken, generateEvalAgentToken, mergeEvalConfig, buildJobSnapshot, validateWorkflowConfig, validateEvalSetConfig, encryptValue, decryptValue, isEncryptionConfigured, type MetricSourceRow } from "./storage";
 import { parseNextCronRun } from "./cron";
 import { compareVersions } from "./aeval-seed";
-import { generateProviderId } from "@shared/schema";
 import { SECRET_NAME_PATTERN } from "@shared/secrets";
 import { registerApiV1Routes } from "./routes-api-v1";
 import { generateSignedUrlForUser } from "./s3";
@@ -27,12 +26,11 @@ import {
   getGithubProfile,
   findOrCreateGithubUser,
 } from "./auth";
-import { calculateSeatPrice, isStripeConfigured as isPricingStripeConfigured } from "./pricing";
+import { calculateSeatPrice } from "./pricing";
 import {
   isAgoraConfigured,
   isModeratorConfigured,
   generateRtcToken,
-  generateChannelName,
   generateEventChannelName,
   startModerator,
   stopModerator,
@@ -1076,7 +1074,7 @@ export async function registerRoutes(
 
       const { projectIds, workflowIds, evalSetIds, scheduleIds } = req.body;
       const orgId = user.organizationId;
-      let moved = { projects: 0, workflows: 0, evalSets: 0, schedules: 0 };
+      const moved = { projects: 0, workflows: 0, evalSets: 0, schedules: 0 };
 
       // Move projects (and their child workflows)
       if (Array.isArray(projectIds) && projectIds.length > 0) {
@@ -5369,7 +5367,7 @@ export async function registerRoutes(
       if (!authHeader || !authHeader.startsWith("Bearer ")) {
         return res.status(401).json({ error: "Runner token required" });
       }
-      const { matchId, phase } = req.body;
+      const { matchId } = req.body;
       if (!matchId) return res.status(400).json({ error: "matchId required" });
 
       if (!isModeratorConfigured()) {

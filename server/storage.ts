@@ -38,7 +38,6 @@ import {
   type FundReturnRequest,
   type InsertFundReturnRequest,
   type Secret,
-  type InsertSecret,
   type ClashAgentProfile,
   type InsertClashAgentProfile,
   type ClashMatch,
