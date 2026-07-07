@@ -804,7 +804,17 @@ export async function registerRoutes(
         return res.status(400).json({ error: "That name is already taken" });
       }
 
-      const updated = await storage.updateUser(user.id, { username: clean });
+      let updated;
+      try {
+        updated = await storage.updateUser(user.id, { username: clean });
+      } catch (e) {
+        // username has a UNIQUE constraint; a concurrent claim races past the
+        // check above and surfaces as a Postgres unique violation (23505).
+        if (e && typeof e === "object" && (e as { code?: string }).code === "23505") {
+          return res.status(400).json({ error: "That name is already taken" });
+        }
+        throw e;
+      }
       if (!updated) return res.status(404).json({ error: "User not found" });
       res.json({ id: updated.id, username: updated.username, email: updated.email, isAdmin: updated.isAdmin });
     } catch (error) {
@@ -833,6 +843,17 @@ export async function registerRoutes(
 
       const passwordHash = await hashPassword(newPassword);
       await storage.updateUser(user.id, { passwordHash });
+
+      // Evict every other session for this user so a stale or attacker-held
+      // session can't outlive a password rotation. Keep the caller's own session.
+      if (req.sessionID) {
+        try {
+          await storage.deleteOtherUserSessions(user.id, req.sessionID);
+        } catch (e) {
+          console.error("Failed to revoke other sessions after password change:", e);
+        }
+      }
+
       res.json({ message: "Password updated", hadPassword: !!user.passwordHash });
     } catch (error) {
       console.error("Error changing password:", error);

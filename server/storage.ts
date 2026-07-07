@@ -1987,6 +1987,17 @@ export class DatabaseStorage {
       .where(and(eq(orgSecrets.organizationId, organizationId), eq(orgSecrets.name, name)));
   }
 
+  // Revoke every OTHER active session for a user (keep the caller's current one).
+  // Used after a password change/set so a stale or attacker-held session is evicted.
+  // Sessions live in user_sessions (connect-pg-simple); the userId is stored in the
+  // serialized `sess` JSON.
+  async deleteOtherUserSessions(userId: number, keepSid: string): Promise<number> {
+    const result = await db.execute(
+      sql`DELETE FROM user_sessions WHERE (sess->>'userId')::int = ${userId} AND sid <> ${keepSid}`
+    );
+    return result.rowCount ?? 0;
+  }
+
   async getOrgSecretsForJob(jobId: number): Promise<Record<string, string>> {
     // Follow: job → workflow → organizationId → org_secrets
     // Only return org secrets if job creator is a member of the org

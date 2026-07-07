@@ -116,6 +116,10 @@ app.use(apiLimiter);
 app.use("/api/auth/login", authLimiter);
 app.use("/api/auth/register", authLimiter);
 app.use("/api/auth/activate", authLimiter);
+// change-password verifies the current password via bcrypt — an online
+// brute-force surface, so it belongs on the strict auth limiter, not the loose
+// /api/* one.
+app.use("/api/user/change-password", authLimiter);
 
 // API key authentication middleware (checks Bearer token for vox_live_ prefix)
 app.use(authenticateApiKey);
