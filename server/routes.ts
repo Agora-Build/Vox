@@ -839,12 +839,10 @@ export async function registerRoutes(
         }
       }
 
-      const passwordHash = await hashPassword(newPassword);
-      await storage.updateUser(user.id, { passwordHash });
-
-      // Harden the session after a credential change. These steps are REQUIRED,
-      // not best-effort: if any fail we surface an error (the outer catch → 500)
-      // rather than reporting success while stale sessions might still be valid.
+      // Harden the session BEFORE the irreversible password write, so a failure
+      // here returns an error with the password still unchanged (fail closed,
+      // consistent state — the old password keeps working on retry). These steps
+      // are REQUIRED, not best-effort:
       //   1. Regenerate the caller's own session id (defends against fixation).
       //   2. Revoke every OTHER session for this user (evicts stale/stolen ones).
       await new Promise<void>((resolve, reject) =>
@@ -855,6 +853,10 @@ export async function registerRoutes(
         req.session.save((err) => (err ? reject(err) : resolve())),
       );
       await storage.deleteOtherUserSessions(user.id, req.sessionID);
+
+      // Commit the new password only after session hardening has succeeded.
+      const passwordHash = await hashPassword(newPassword);
+      await storage.updateUser(user.id, { passwordHash });
 
       res.json({ message: "Password updated", hadPassword: !!user.passwordHash });
     } catch (error) {
