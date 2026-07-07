@@ -177,6 +177,7 @@ export async function registerRoutes(
           emailVerified: !!user.emailVerifiedAt,
           organizationId: user.organizationId,
           orgRole: user.orgRole,
+          hasPassword: !!user.passwordHash,
         } : null
       });
     } catch (error) {
@@ -780,6 +781,62 @@ export async function registerRoutes(
     } catch (error) {
       console.error("Error updating provider:", error);
       res.status(500).json({ error: "Failed to update provider" });
+    }
+  });
+
+  // ==================== USER PROFILE (SELF) ROUTES ====================
+
+  // Update own display name (username)
+  app.patch("/api/user/profile", requireAuth, async (req, res) => {
+    try {
+      const user = await getCurrentUser(req);
+      if (!user) return res.status(401).json({ error: "Not authenticated" });
+
+      const { username } = req.body;
+      if (typeof username !== "string" || username.trim().length < 2) {
+        return res.status(400).json({ error: "Name must be at least 2 characters" });
+      }
+      const clean = username.trim();
+      if (clean.length > 50) return res.status(400).json({ error: "Name must be 50 characters or fewer" });
+
+      const existing = await storage.getUserByUsername(clean);
+      if (existing && existing.id !== user.id) {
+        return res.status(400).json({ error: "That name is already taken" });
+      }
+
+      const updated = await storage.updateUser(user.id, { username: clean });
+      if (!updated) return res.status(404).json({ error: "User not found" });
+      res.json({ id: updated.id, username: updated.username, email: updated.email, isAdmin: updated.isAdmin });
+    } catch (error) {
+      console.error("Error updating profile:", error);
+      res.status(500).json({ error: "Failed to update profile" });
+    }
+  });
+
+  // Change own password. If the account has no password yet (OAuth-only), a new
+  // one can be set without a current password; otherwise the current is verified.
+  app.post("/api/user/change-password", requireAuth, async (req, res) => {
+    try {
+      const user = await getCurrentUser(req);
+      if (!user) return res.status(401).json({ error: "Not authenticated" });
+
+      const { currentPassword, newPassword } = req.body;
+      if (typeof newPassword !== "string" || newPassword.length < 8) {
+        return res.status(400).json({ error: "New password must be at least 8 characters" });
+      }
+
+      if (user.passwordHash) {
+        if (typeof currentPassword !== "string" || !(await verifyPassword(currentPassword, user.passwordHash))) {
+          return res.status(400).json({ error: "Current password is incorrect" });
+        }
+      }
+
+      const passwordHash = await hashPassword(newPassword);
+      await storage.updateUser(user.id, { passwordHash });
+      res.json({ message: "Password updated", hadPassword: !!user.passwordHash });
+    } catch (error) {
+      console.error("Error changing password:", error);
+      res.status(500).json({ error: "Failed to change password" });
     }
   });
 
