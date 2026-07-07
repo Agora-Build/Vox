@@ -118,7 +118,11 @@ export type MetricSourceRow = Pick<EvalResult,
   | "id" | "providerId" | "region"
   | "responseLatencyMedian" | "responseLatencySd" | "responseLatencyP95"
   | "interruptLatencyMedian" | "interruptLatencySd" | "interruptLatencyP95"
-  | "networkResilience" | "naturalness" | "noiseReduction" | "createdAt">;
+  | "networkResilience" | "naturalness" | "noiseReduction" | "createdAt">
+  // Workflow identity, from the job snapshot. Present only on raw (non-bucketed)
+  // rows, where each point maps to one job → one workflow; null on daily buckets
+  // (which average many workflows) and when the snapshot predates the field.
+  & { workflowId?: number | null; workflowName?: string | null };
 
 export function hashToken(token: string): string {
   return crypto.createHash('sha256').update(token).digest('hex');
@@ -1125,7 +1129,13 @@ export class DatabaseStorage {
       .where(and(...this.tierConditions(tier, effectiveHoursBack, userId)))
       .orderBy(desc(evalResults.createdAt))
       .limit(METRICS_RAW_ROW_CEILING);
-    return rows.map((r: any) => r.eval_results) as MetricSourceRow[];
+    // evalJobs is already inner-joined (joinTier) for tiering, so its snapshot +
+    // workflowId ride along — attach the workflow identity for the hover tooltip.
+    return rows.map((r: any) => ({
+      ...r.eval_results,
+      workflowId: r.eval_jobs?.workflowId ?? null,
+      workflowName: (r.eval_jobs?.snapshot as JobSnapshot | null)?.workflow?.name ?? null,
+    })) as MetricSourceRow[];
   }
 
   // Public metrics entry points used by the realtime dashboard. They own the

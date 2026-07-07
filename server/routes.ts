@@ -3395,6 +3395,9 @@ export async function registerRoutes(
       naturalness: r.naturalness || 0,
       noiseReduction: r.noiseReduction || 0,
       timestamp: r.createdAt,
+      // Workflow identity for the hover tooltip (raw rows only; null on buckets).
+      workflowId: r.workflowId ?? null,
+      workflowName: r.workflowName ?? null,
     }));
   }
 
