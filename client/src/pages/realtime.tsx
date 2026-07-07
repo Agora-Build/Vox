@@ -11,6 +11,7 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { useQuery } from "@tanstack/react-query";
+import { Link } from "wouter";
 import { Skeleton } from "@/components/ui/skeleton";
 import { format } from "date-fns";
 
@@ -29,6 +30,9 @@ interface EvalResult {
   naturalness: number;
   noiseReduction: number;
   timestamp: string;
+  // Present on Community / My Evals (raw) points; null on aggregated buckets.
+  workflowId?: number | null;
+  workflowName?: string | null;
 }
 
 interface AuthStatus {
@@ -132,6 +136,9 @@ function buildCombinedData(filteredMetrics: EvalResult[], colorMap: Map<string, 
         const m = group.values.get(p.key);
         row[`${p.key}_response`] = m?.responseLatency;
         row[`${p.key}_interrupt`] = m?.interruptLatency;
+        // Carry the workflow behind this point so the tooltip can name/link it.
+        row[`${p.key}_wfname`] = m?.workflowName ?? undefined;
+        row[`${p.key}_wfid`] = m?.workflowId ?? undefined;
       }
       return row;
     });
@@ -415,6 +422,53 @@ function makeEndpointDot(dataIndices: number[], stroke: string) {
   };
 }
 
+// Derive a provider's row-key prefix from a segment dataKey:
+// "agora_convoai_engine_response_s0" → "agora_convoai_engine"
+function providerPrefixFromDataKey(dataKey: string): string {
+  return dataKey.replace(/_s\d+$/, "").replace(/_(response|interrupt)$/, "");
+}
+
+/**
+ * Chart tooltip that adds the workflow name (as a link to its detail page) under
+ * each provider line. `showWorkflow` gates the workflow row so the mainline tab —
+ * where a point is a daily average of many workflows — keeps the plain tooltip.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function WorkflowTooltip({ active, payload, label, showWorkflow }: any) {
+  if (!active || !Array.isArray(payload) || payload.length === 0) return null;
+  const row = (payload[0]?.payload ?? {}) as CombinedRow;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const items = payload.filter((e: any) => e.value != null);
+  if (items.length === 0) return null;
+  return (
+    <div className="rounded-lg border bg-popover text-popover-foreground shadow-md px-3 py-2 text-sm">
+      <div className="font-medium mb-1">{label}</div>
+      {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
+      {items.map((e: any) => {
+        const prefix = providerPrefixFromDataKey(String(e.dataKey));
+        const wfName = showWorkflow ? (row[`${prefix}_wfname`] as string | undefined) : undefined;
+        const wfId = showWorkflow ? (row[`${prefix}_wfid`] as number | undefined) : undefined;
+        return (
+          <div key={e.dataKey} className="flex flex-col gap-0.5 py-0.5">
+            <span style={{ color: e.color }}>{e.name}: {e.value}ms</span>
+            {wfName && (wfId != null ? (
+              <Link
+                href={`/console/workflows/${wfId}`}
+                className="text-xs text-muted-foreground hover:text-primary hover:underline underline-offset-2 w-fit"
+                data-testid="link-tooltip-workflow"
+              >
+                {wfName}
+              </Link>
+            ) : (
+              <span className="text-xs text-muted-foreground">{wfName}</span>
+            ))}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 interface MetricsSectionProps {
   metrics: EvalResult[] | undefined;
   isLoading: boolean;
@@ -422,9 +476,11 @@ interface MetricsSectionProps {
   timeRangeLabel: string;
   regionLabel: string;
   testIdPrefix?: string;
+  /** Show the workflow name/link in the tooltip (Community / My Evals only). */
+  showWorkflow?: boolean;
 }
 
-function MetricsSection({ metrics, isLoading, selectedRegion, timeRangeLabel, regionLabel, testIdPrefix = "" }: MetricsSectionProps) {
+function MetricsSection({ metrics, isLoading, selectedRegion, timeRangeLabel, regionLabel, testIdPrefix = "", showWorkflow = false }: MetricsSectionProps) {
   const { data: providerList } = useQuery<Array<{ id: string; brandColor: string | null }>>({
     queryKey: ["/api/providers"],
     staleTime: 60000,
@@ -601,7 +657,7 @@ function MetricsSection({ metrics, isLoading, selectedRegion, timeRangeLabel, re
                       <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" vertical={false} />
                       <XAxis dataKey="timestamp" stroke="hsl(var(--muted-foreground))" fontSize={12} tickLine={false} axisLine={false} />
                       <YAxis stroke="hsl(var(--muted-foreground))" fontSize={12} tickLine={false} axisLine={false} tickFormatter={(value) => `${value}ms`} />
-                      <Tooltip contentStyle={{ backgroundColor: 'hsl(var(--popover))', borderColor: 'hsl(var(--border))', borderRadius: '8px' }} itemStyle={{ color: 'hsl(var(--popover-foreground))' }} />
+                      <Tooltip content={<WorkflowTooltip showWorkflow={showWorkflow} />} wrapperStyle={{ pointerEvents: 'auto' }} />
                       <Legend />
                       {responseChart.lines.map(l => (
                         <Line key={l.segKey} type="monotone" dataKey={l.segKey} name={l.name} stroke={l.stroke} strokeWidth={2} dot={makeEndpointDot(l.dataIndices, l.stroke)} activeDot={{ r: 6 }} connectNulls legendType={l.showLegend ? "line" : "none"} />
@@ -630,7 +686,7 @@ function MetricsSection({ metrics, isLoading, selectedRegion, timeRangeLabel, re
                       <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" vertical={false} />
                       <XAxis dataKey="timestamp" stroke="hsl(var(--muted-foreground))" fontSize={12} tickLine={false} axisLine={false} />
                       <YAxis stroke="hsl(var(--muted-foreground))" fontSize={12} tickLine={false} axisLine={false} tickFormatter={(value) => `${value}ms`} />
-                      <Tooltip contentStyle={{ backgroundColor: 'hsl(var(--popover))', borderColor: 'hsl(var(--border))', borderRadius: '8px' }} itemStyle={{ color: 'hsl(var(--popover-foreground))' }} />
+                      <Tooltip content={<WorkflowTooltip showWorkflow={showWorkflow} />} wrapperStyle={{ pointerEvents: 'auto' }} />
                       <Legend />
                       {interruptChart.lines.map(l => (
                         <Line key={l.segKey} type="monotone" dataKey={l.segKey} name={l.name} stroke={l.stroke} strokeWidth={2} dot={makeEndpointDot(l.dataIndices, l.stroke)} activeDot={{ r: 6 }} connectNulls legendType={l.showLegend ? "line" : "none"} />
@@ -852,6 +908,7 @@ export default function Dashboard() {
             timeRangeLabel={timeRangeLabel}
             regionLabel={regionLabel}
             testIdPrefix="community-"
+            showWorkflow
           />
         </TabsContent>
 
@@ -864,6 +921,7 @@ export default function Dashboard() {
               timeRangeLabel={timeRangeLabel}
               regionLabel={regionLabel}
               testIdPrefix="my-evals-"
+              showWorkflow
             />
           ) : (
             <Card>
