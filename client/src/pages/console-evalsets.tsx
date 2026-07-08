@@ -27,27 +27,13 @@ interface AuthStatus {
     username: string;
     plan: string;
     isAdmin: boolean;
-    organizationId: number | null;
-    orgRole: string | null;
   } | null;
 }
 
-// Mirrors the server's canEditResource: who may manage (and therefore schedule)
-// a workflow. Recurring schedules run on the owner's bound secrets, so scheduling
-// is limited to editors even for public workflows anyone can run once.
-function canManageWorkflow(
-  user: AuthStatus["user"],
-  wf: { ownerId?: number | null; createdBy?: number | null; organizationId?: number | null } | undefined,
-): boolean {
-  if (!user || !wf) return false;
-  if (user.isAdmin) return true;
-  if (!wf.organizationId && (wf.ownerId === user.id || wf.createdBy === user.id)) return true;
-  if (wf.organizationId && wf.organizationId === user.organizationId) {
-    if (user.orgRole === "owner" || user.orgRole === "admin") return true;
-    if (wf.ownerId === user.id || wf.createdBy === user.id) return true;
-  }
-  return false;
-}
+// The workflows list carries the server's authorization decision (canManage),
+// computed from the same canEditResource used to enforce the schedule route — so
+// the client never re-derives it and can't disagree with the backend.
+type WorkflowWithPerms = WorkflowType & { canManage?: boolean };
 
 
 export default function ConsoleEvalSets() {
@@ -95,7 +81,7 @@ export default function ConsoleEvalSets() {
     queryKey: ["/api/eval-sets"],
   });
 
-  const { data: workflows } = useQuery<WorkflowType[]>({
+  const { data: workflows } = useQuery<WorkflowWithPerms[]>({
     queryKey: ["/api/workflows?includePublic=true"],
   });
 
@@ -275,8 +261,10 @@ export default function ConsoleEvalSets() {
   const canRun = runWorkflowId && runRegion && (runMode === "once" || cronExpression);
 
   // Only workflow managers may schedule (recurring runs use the owner's secrets).
+  // Trust the server's canManage; if it's absent (older API), fail open so we
+  // never wrongly block a legitimate owner.
   const selectedRunWorkflow = workflows?.find((w) => String(w.id) === runWorkflowId);
-  const canScheduleSelected = canManageWorkflow(authStatus?.user ?? null, selectedRunWorkflow);
+  const canScheduleSelected = selectedRunWorkflow?.canManage ?? true;
   // If the picked workflow isn't manageable, fall back to a one-off run.
   useEffect(() => {
     if (runMode === "recurring" && runWorkflowId && !canScheduleSelected) {

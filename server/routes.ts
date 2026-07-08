@@ -1309,14 +1309,19 @@ export async function registerRoutes(
         orgWorkflows = all.filter(w => !ownIds.has(w.id));
       }
 
+      // Attach the server's own authorization decision so the client doesn't have
+      // to re-derive it (and risk getting it wrong): canManage gates edit/schedule.
+      const withPerms = (list: typeof ownWorkflows) =>
+        list.map(w => ({ ...w, canManage: canEditResource(user, w) }));
+
       if (req.query.includePublic === "true") {
         const publicWorkflows = await storage.getPublicWorkflows();
         const seenIds = new Set([...ownWorkflows, ...orgWorkflows].map(w => w.id));
         const merged = [...ownWorkflows, ...orgWorkflows, ...publicWorkflows.filter(w => !seenIds.has(w.id))];
-        return res.json(merged);
+        return res.json(withPerms(merged));
       }
 
-      res.json([...ownWorkflows, ...orgWorkflows]);
+      res.json(withPerms([...ownWorkflows, ...orgWorkflows]));
     } catch (error) {
       console.error("Error fetching workflows:", error);
       res.status(500).json({ error: "Failed to fetch workflows" });
