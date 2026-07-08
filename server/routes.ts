@@ -56,8 +56,6 @@ import {
 // Org resource permission helpers live in ./permissions so the background
 // scheduler shares the exact same authorization logic as the API.
 import {
-  type OrgResource,
-  type AuthUser,
   canAccessResource,
   canEditResource,
   isOwnerOrOrgManager,

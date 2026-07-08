@@ -175,6 +175,19 @@ All sensitive tokens are hashed with SHA256 before database storage:
 
 Passwords use bcrypt hashing (salt built-in). See `server/storage.ts:hashToken()` and `server/auth.ts:hashPassword()`.
 
+#### Resource Permission Model (`server/permissions.ts`)
+Content (workflows, eval sets) is gated by three predicates plus one for scheduling. **A system admin is NOT a super-editor** — admin's elevated powers are limited to user management and provider config (separate `requireAdmin` routes). For content, admin behaves like a normal user, except it retains **delete (moderation)**.
+
+- **`canAccessResource`** (view): owner, same-org, public, or admin.
+- **`isOwnerOrOrgManager`** (edit / run-private): owner/creator, or an org manager for org resources. **No admin bypass.** Used by workflow + eval-set `PATCH` and by `canRunWorkflow` for private workflows.
+- **`canEditResource`** = `isAdmin || isOwnerOrOrgManager` — the admin-capable predicate, kept for **delete** routes (moderation) so admin can remove others' content.
+- **`canRunWorkflow`** (run-once): public → anyone; private → `isOwnerOrOrgManager` (no admin / principal-fellow bypass).
+- **`canScheduleWorkflow`** (create schedule / run-now / enable / re-cron): **owner/creator only** — no admin, no org manager. A recurring schedule is an indefinite commitment; only the owner sets it up. The background scheduler re-checks this each tick and disables schedules whose creator lost the right. (`Extend` and run-once are looser — owner-or-org.)
+
+**Secrets follow workflow ownership** (job-secrets endpoint in `routes.ts`): an **org-owned** workflow spends the **organization's** secrets (`org_secrets`, fenced by the job creator's org membership); a **personal** workflow spends its **owner's personal** secrets (`secrets`, keyed by `workflow.ownerId`). This is what makes org-member run/extend safe — org members spend org credentials, never an individual's personal key. Built-in eval sets are system templates (`config.builtIn`, server-controlled — stripped from user create/update) editable only by admins.
+
+The UI mirrors the server via server-computed flags on the list responses (`canSchedule`/`canManage` on schedules, `canSchedule` on workflows) so it never offers an action that would 403; delete buttons stay creator-only (admin deletes via API).
+
 #### Project & Workflow Organization
 - **Projects** (`projects` table) - Organizational containers for workflows
   - Basic users: 5 projects, 10 workflows each

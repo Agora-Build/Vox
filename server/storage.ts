@@ -2016,11 +2016,13 @@ export class DatabaseStorage {
     if (job.workflowId == null) return {};
     const workflow = await this.getWorkflow(job.workflowId);
     if (!workflow?.organizationId) return {};
-    // Verify job creator is org member (prevent secret leak via public org workflows)
-    if (job.createdBy) {
-      const creator = await this.getUser(job.createdBy);
-      if (!creator || creator.organizationId !== workflow.organizationId) return {};
-    }
+    // Verify the job creator is a member of the workflow's org before releasing
+    // org secrets (prevents a non-member run of a public org workflow from
+    // getting org creds). Org secrets are now the SOLE source for org workflows,
+    // so fail closed if the creator is unknown.
+    if (!job.createdBy) return {};
+    const creator = await this.getUser(job.createdBy);
+    if (!creator || creator.organizationId !== workflow.organizationId) return {};
     const secrets = await this.getOrgSecrets(workflow.organizationId);
     const result: Record<string, string> = {};
     for (const s of secrets) {
