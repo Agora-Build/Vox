@@ -3,8 +3,9 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from "recharts";
-import { Clock, Activity, RefreshCw, Lock } from "lucide-react";
+import { Clock, Activity, RefreshCw, Lock, ChevronDown } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Popover,
   PopoverContent,
@@ -478,9 +479,11 @@ interface MetricsSectionProps {
   testIdPrefix?: string;
   /** Show the workflow name/link in the tooltip (Community / My Evals only). */
   showWorkflow?: boolean;
+  /** Provider ids to hide from the charts (multi-select filter). */
+  hiddenProviders?: Set<string>;
 }
 
-function MetricsSection({ metrics, isLoading, selectedRegion, timeRangeLabel, regionLabel, testIdPrefix = "", showWorkflow = false }: MetricsSectionProps) {
+function MetricsSection({ metrics, isLoading, selectedRegion, timeRangeLabel, regionLabel, testIdPrefix = "", showWorkflow = false, hiddenProviders }: MetricsSectionProps) {
   const { data: providerList } = useQuery<Array<{ id: string; brandColor: string | null }>>({
     queryKey: ["/api/providers"],
     staleTime: 60000,
@@ -495,7 +498,8 @@ function MetricsSection({ metrics, isLoading, selectedRegion, timeRangeLabel, re
   }, [providerList]);
 
   const filteredMetrics = metrics?.filter(m =>
-    selectedRegion === "all" || m.region.toLowerCase() === selectedRegion
+    (selectedRegion === "all" || m.region.toLowerCase() === selectedRegion) &&
+    !(hiddenProviders?.has(m.providerId))
   ) || [];
 
   const { data: combinedData, providers } = useMemo(() => buildCombinedData(filteredMetrics, colorMap), [filteredMetrics, colorMap]);
@@ -707,6 +711,12 @@ export default function Dashboard() {
   const [selectedRegion, setSelectedRegion] = useState<string>("all");
   const [refreshInterval, setRefreshInterval] = useState<number>(30000);
   const [timeRange, setTimeRange] = useState<string>("24");
+  // Provider multi-select: hidden set (default empty = all shown).
+  const [hiddenProviders, setHiddenProviders] = useState<Set<string>>(new Set());
+  const { data: providerList } = useQuery<Array<{ id: string; name: string }>>({
+    queryKey: ["/api/providers"],
+    staleTime: 60000,
+  });
   const initialTab = new URLSearchParams(window.location.search).get("tab");
   const [activeTab, setActiveTab] = useState<string>(
     initialTab && ["mainline", "community", "my-evals"].includes(initialTab) ? initialTab : "mainline"
@@ -857,6 +867,42 @@ export default function Dashboard() {
               <SelectItem value="sa">South America</SelectItem>
             </SelectContent>
           </Select>
+          <Popover>
+            <PopoverTrigger asChild>
+              <Button variant="outline" className="w-[150px] justify-between font-normal" data-testid="button-provider-filter">
+                <span className="truncate">
+                  {hiddenProviders.size === 0
+                    ? "All providers"
+                    : `Providers ${(providerList?.length ?? 0) - hiddenProviders.size}/${providerList?.length ?? 0}`}
+                </span>
+                <ChevronDown className="h-4 w-4 opacity-50 shrink-0" />
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent align="end" className="w-56 p-2">
+              <div className="flex items-center justify-between px-1 pb-2 mb-1 border-b">
+                <span className="text-xs font-medium text-muted-foreground">Providers</span>
+                <div className="flex gap-2">
+                  <button className="text-xs hover:text-primary" onClick={() => setHiddenProviders(new Set())} data-testid="button-providers-all">All</button>
+                  <button className="text-xs hover:text-primary" onClick={() => setHiddenProviders(new Set((providerList ?? []).map(p => p.id)))} data-testid="button-providers-none">None</button>
+                </div>
+              </div>
+              <div className="max-h-64 overflow-auto space-y-0.5">
+                {(providerList ?? []).map(p => (
+                  <label key={p.id} className="flex items-center gap-2 px-1 py-1 rounded hover:bg-accent cursor-pointer text-sm" data-testid={`provider-filter-${p.id}`}>
+                    <Checkbox
+                      checked={!hiddenProviders.has(p.id)}
+                      onCheckedChange={() => setHiddenProviders(prev => {
+                        const next = new Set(prev);
+                        if (next.has(p.id)) next.delete(p.id); else next.add(p.id);
+                        return next;
+                      })}
+                    />
+                    <span className="truncate">{p.name}</span>
+                  </label>
+                ))}
+              </div>
+            </PopoverContent>
+          </Popover>
           <Select value={refreshInterval.toString()} onValueChange={(v) => setRefreshInterval(parseInt(v))}>
             <SelectTrigger className="w-[100px]">
               <SelectValue placeholder="Refresh" />
@@ -897,6 +943,7 @@ export default function Dashboard() {
             timeRangeLabel={timeRangeLabel}
             regionLabel={regionLabel}
             testIdPrefix=""
+            hiddenProviders={hiddenProviders}
           />
         </TabsContent>
 
@@ -909,6 +956,7 @@ export default function Dashboard() {
             regionLabel={regionLabel}
             testIdPrefix="community-"
             showWorkflow
+            hiddenProviders={hiddenProviders}
           />
         </TabsContent>
 
@@ -922,6 +970,7 @@ export default function Dashboard() {
               regionLabel={regionLabel}
               testIdPrefix="my-evals-"
               showWorkflow
+              hiddenProviders={hiddenProviders}
             />
           ) : (
             <Card>
