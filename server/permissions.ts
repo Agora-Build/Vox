@@ -59,14 +59,15 @@ export function canRunWorkflow(user: AuthUser, resource: OrgResource): boolean {
   return isOwnerOrOrgManager(user, resource);
 }
 
-// "Schedule" rights are stricter than edit: a schedule (recurring OR deferred
-// one-time) repeatedly/later runs the workflow on the OWNER's stored secrets —
-// and secret resolution always loads the workflow owner's PERSONAL secrets first
-// (storage.getSecretsForJob), even for org workflows. So only the workflow
-// owner/creator may schedule it: NOT a system admin, and NOT an org manager
-// (either could otherwise spend the owner's personal credentials without consent).
-// The background scheduler applies the same check per tick, so a schedule whose
-// creator lost this right (e.g. a legacy admin-created one) stops firing.
+// "Schedule" rights are the strictest workflow action: creating a schedule sets
+// up an indefinite recurring commitment, so it is limited to the workflow's
+// owner/creator — NOT a system admin, and (by deliberate product choice) NOT an
+// org manager either. Running once and *extending* an existing schedule are
+// looser (owner-or-org via isOwnerOrOrgManager); only *creating* the recurring
+// commitment is owner-only. Note secrets now follow ownership (org workflows
+// spend org secrets), so this is a product decision, not a credential-ownership
+// argument. The background scheduler applies the same check per tick, so a
+// schedule whose creator lost this right (e.g. a legacy admin-created one) stops firing.
 export function canScheduleWorkflow(user: Pick<AuthUser, 'id'>, resource: OrgResource): boolean {
   return resource.ownerId === user.id || resource.createdBy === user.id;
 }

@@ -363,6 +363,22 @@ describe('Vox API Tests', () => {
       });
       expect(res.status).toBe(400);
     });
+
+    it('strips user-supplied config.builtIn (marker is server-controlled)', async () => {
+      // A user cannot mark their own eval set as a built-in template (which would
+      // flip edit rights to admin-only and lock the owner out).
+      const create = await authFetch(nonOwner, `${BASE_URL}/api/eval-sets`, {
+        method: 'POST', body: JSON.stringify({ name: `Sneaky ${Date.now()}`, visibility: 'private', config: { scenario: 'x', builtIn: true } }),
+      });
+      expect(create.ok).toBe(true);
+      const es = await create.json();
+      expect(es.config?.builtIn).toBeUndefined();
+      // Owner can still edit it (not locked out).
+      const edit = await authFetch(nonOwner, `${BASE_URL}/api/eval-sets/${es.id}`, {
+        method: 'PATCH', body: JSON.stringify({ description: 'mine' }),
+      });
+      expect(edit.ok).toBe(true);
+    });
   });
 
   describe('Eval Set API', () => {
