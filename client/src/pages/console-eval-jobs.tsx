@@ -275,7 +275,8 @@ function ScheduledJobsBlock() {
         <AlertDialogContent>
           {(() => {
             const deleteName = schedules?.find((s) => s.id === deleteId)?.name ?? "";
-            const confirmed = deleteConfirmText.trim() === deleteName && deleteName.length > 0;
+            // Trim both sides so a name with stray surrounding whitespace is still confirmable.
+            const confirmed = deleteName.trim().length > 0 && deleteConfirmText.trim() === deleteName.trim();
             return (
               <>
                 <AlertDialogHeader>
