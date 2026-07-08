@@ -93,17 +93,19 @@ function ScheduledJobsBlock() {
   const [deleteConfirmText, setDeleteConfirmText] = useState("");
   const [actionLoading, setActionLoading] = useState<number | null>(null);
 
-  // Whether to show the actions dropdown at all: the creator, an admin
-  // (moderation), or an org manager who can Extend an org schedule. Individual
-  // items are still gated inside (Run Now/Resume owner-only via canRunOrResume,
-  // Extend via s.canExtend), so opening the menu never implies every action.
-  const canOpenMenu = (s: EnrichedSchedule) => s.createdBy === userId || isAdmin || !!s.canExtend;
+  // Managing the schedule OBJECT (pause / edit / delete) — the creator or an admin
+  // (moderation). Distinct from spending its secrets.
+  const canManageSchedule = (s: EnrichedSchedule) => s.createdBy === userId || isAdmin;
   // Enable/Run-Now spend the workflow owner's secrets, so the server restricts
   // them to the workflow owner (no admin bypass). Use the server-computed
   // canManage bit (owner of the schedule's workflow); fail open if it's absent
-  // (older API) so a legitimate owner is never blocked. Pause/Delete stay open to
-  // any schedule manager.
+  // (older API) so a legitimate owner is never blocked.
   const canRunOrResume = (s: EnrichedSchedule) => s.canManage ?? (s.createdBy === userId);
+  // Show the dropdown if the user can do ANY action; each item is gated below:
+  // pause/edit/delete → canManageSchedule, run-now/resume → canRunOrResume (owner),
+  // extend → s.canExtend (owner-or-org). So a canExtend-only org manager sees only
+  // Extend, not destructive actions.
+  const canOpenMenu = (s: EnrichedSchedule) => canManageSchedule(s) || canRunOrResume(s) || !!s.canExtend;
 
   const refetchAll = () => {
     queryClient.invalidateQueries({ queryKey: ["/api/eval-schedules"] });
@@ -279,30 +281,35 @@ function ScheduledJobsBlock() {
                             </Button>
                           </DropdownMenuTrigger>
                           <DropdownMenuContent align="end">
-                            {/* Pause (disable) is benign; Resume (enable) resumes spending the
-                                owner's secrets, so only offer it to the owner. */}
-                            {(s.isEnabled || canRunOrResume(s)) && (
+                            {/* Pause/Resume: managing the schedule object. Pause (disable) is a
+                                creator/admin action; Resume (enable) resumes spending the
+                                owner's secrets, so it's owner-only. */}
+                            {(s.isEnabled ? canManageSchedule(s) : canRunOrResume(s)) && (
                               <DropdownMenuItem onClick={() => toggleEnabled(s)}>
                                 {s.isEnabled ? <><Pause className="h-4 w-4 mr-2" />Pause</> : <><Play className="h-4 w-4 mr-2" />Resume</>}
                               </DropdownMenuItem>
                             )}
-                            <DropdownMenuItem onClick={() => openEdit(s)}>
-                              <Pencil className="h-4 w-4 mr-2" />Edit
-                            </DropdownMenuItem>
+                            {canManageSchedule(s) && (
+                              <DropdownMenuItem onClick={() => openEdit(s)}>
+                                <Pencil className="h-4 w-4 mr-2" />Edit
+                              </DropdownMenuItem>
+                            )}
                             {canRunOrResume(s) && (
                               <DropdownMenuItem onClick={() => runNow(s.id)}>
                                 <Zap className="h-4 w-4 mr-2" />Run Now
                               </DropdownMenuItem>
                             )}
-                            {(s.canExtend ?? canRunOrResume(s)) && (
+                            {s.canExtend && (
                               <DropdownMenuItem onClick={() => extendSchedule(s.id)}>
                                 <CalendarPlus className="h-4 w-4 mr-2" />Extend 90 days
                               </DropdownMenuItem>
                             )}
-                            <DropdownMenuSeparator />
-                            <DropdownMenuItem className="text-destructive" onClick={() => { setDeleteConfirmText(""); setDeleteId(s.id); }}>
-                              <Trash2 className="h-4 w-4 mr-2" />Delete
-                            </DropdownMenuItem>
+                            {canManageSchedule(s) && <DropdownMenuSeparator />}
+                            {canManageSchedule(s) && (
+                              <DropdownMenuItem className="text-destructive" onClick={() => { setDeleteConfirmText(""); setDeleteId(s.id); }}>
+                                <Trash2 className="h-4 w-4 mr-2" />Delete
+                              </DropdownMenuItem>
+                            )}
                           </DropdownMenuContent>
                         </DropdownMenu>
                       )}

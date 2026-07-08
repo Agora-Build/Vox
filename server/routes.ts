@@ -1794,9 +1794,13 @@ export async function registerRoutes(
       if (!user) {
         return res.status(401).json({ error: "Not authenticated" });
       }
+      // Org managers additionally see (and can Extend) schedules on their org's
+      // workflows; regular members see only their own to avoid exposing other
+      // members' schedule metadata.
+      const isOrgManager = user.orgRole === "owner" || user.orgRole === "admin";
       const schedules = user.isAdmin
         ? await storage.getAllEvalSchedulesWithWorkflow()
-        : await storage.getEvalSchedulesWithWorkflow(user.id, user.organizationId);
+        : await storage.getEvalSchedulesWithWorkflow(user.id, isOrgManager ? user.organizationId : null);
       // Server-computed UI flags + lifecycle status, so the client never offers an
       // action that would 403 and shows a consistent status badge:
       //  - canManage: owner-only run/resume (matches run-now/enable routes)
