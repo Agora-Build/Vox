@@ -4,6 +4,7 @@ import { storage, hashToken, generateSecureToken, generateEvalAgentToken, mergeE
 import { parseNextCronRun } from "./cron";
 import { compareVersions } from "./aeval-seed";
 import { SECRET_NAME_PATTERN } from "@shared/secrets";
+import { deriveScheduleStatus } from "@shared/schedule-status";
 import { registerApiV1Routes } from "./routes-api-v1";
 import { generateSignedUrlForUser } from "./s3";
 import {
@@ -1802,19 +1803,13 @@ export async function registerRoutes(
       //  - canExtend: owner OR org manager (matches the extend route)
       //  - status: inactive (expired) → paused (disabled) → active; expiringSoon
       //    is an active schedule within 14 days of expiry (amber warning).
-      const now = Date.now();
-      const SOON_MS = 14 * 24 * 60 * 60 * 1000;
       const withPerms = schedules.map(s => {
         const wfRef = { ownerId: s.workflowOwnerId, organizationId: s.workflowOrganizationId };
-        const expired = s.expiresAt != null && new Date(s.expiresAt).getTime() <= now;
-        const status = expired ? "inactive" : !s.isEnabled ? "paused" : "active";
-        const expiringSoon = status === "active" && s.expiresAt != null && new Date(s.expiresAt).getTime() <= now + SOON_MS;
         return {
           ...s,
           canManage: canScheduleWorkflow(user, wfRef),
           canExtend: isOwnerOrOrgManager(user, wfRef),
-          status,
-          expiringSoon,
+          ...deriveScheduleStatus(s.isEnabled, s.expiresAt),
         };
       });
       res.json(withPerms);
