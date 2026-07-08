@@ -98,6 +98,21 @@ function canRunWorkflow(user: AuthUser & { plan: string }, resource: OrgResource
   return canEditResource(user, resource) || user.plan === 'principal' || user.plan === 'fellow';
 }
 
+// "Schedule" rights are stricter than edit: a recurring schedule repeatedly
+// consumes the WORKFLOW OWNER's stored secrets, so only someone who owns those
+// secrets may schedule it. That means the workflow owner/creator, or — for an org
+// workflow, whose secrets are the org's — an org manager. A system admin is NOT
+// exempt here (unlike canEditResource): scheduling someone else's workflow would
+// spend their credentials without consent.
+function canScheduleWorkflow(user: AuthUser, resource: OrgResource): boolean {
+  if (!resource.organizationId && (resource.ownerId === user.id || resource.createdBy === user.id)) return true;
+  if (resource.organizationId && resource.organizationId === user.organizationId) {
+    if (user.orgRole === 'owner' || user.orgRole === 'admin') return true;
+    if (resource.ownerId === user.id || resource.createdBy === user.id) return true;
+  }
+  return false;
+}
+
 // Elo rating calculation for Clash matches
 // Lower latency = better. Compare median response latency to determine winner.
 async function updateClashEloRatings(
@@ -1310,9 +1325,10 @@ export async function registerRoutes(
       }
 
       // Attach the server's own authorization decision so the client doesn't have
-      // to re-derive it (and risk getting it wrong): canManage gates edit/schedule.
+      // to re-derive it (and risk getting it wrong): canSchedule gates the
+      // recurring-schedule UI, matching the schedule route's canScheduleWorkflow.
       const withPerms = (list: typeof ownWorkflows) =>
-        list.map(w => ({ ...w, canManage: canEditResource(user, w) }));
+        list.map(w => ({ ...w, canSchedule: canScheduleWorkflow(user, w) }));
 
       if (req.query.includePublic === "true") {
         const publicWorkflows = await storage.getPublicWorkflows();
@@ -1855,14 +1871,15 @@ export async function registerRoutes(
       }
 
       // A recurring schedule runs the workflow repeatedly on the OWNER's bound
-      // secrets, so scheduling is restricted to those who manage the workflow
-      // (owner / org-admin / admin) — not everyone who can merely run it once.
-      // Run-once stays open to any runner of a public workflow.
+      // secrets, so scheduling is restricted to the workflow's owner (or an org
+      // manager for org workflows). A system admin is NOT exempt — scheduling
+      // someone else's workflow would spend their secrets. Run-once stays open to
+      // any runner of a public workflow.
       const workflow = await storage.getWorkflow(workflowId);
       if (!workflow) {
         return res.status(404).json({ error: "Workflow not found" });
       }
-      if (!canEditResource(user, workflow)) {
+      if (!canScheduleWorkflow(user, workflow)) {
         return res.status(403).json({ error: "Only the workflow owner can schedule recurring evaluations" });
       }
 

@@ -30,10 +30,10 @@ interface AuthStatus {
   } | null;
 }
 
-// The workflows list carries the server's authorization decision (canManage),
-// computed from the same canEditResource used to enforce the schedule route — so
-// the client never re-derives it and can't disagree with the backend.
-type WorkflowWithPerms = WorkflowType & { canManage?: boolean };
+// The workflows list carries the server's authorization decision (canSchedule),
+// computed from the same canScheduleWorkflow the schedule route enforces — so the
+// client never re-derives it and can't disagree with the backend.
+type WorkflowWithPerms = WorkflowType & { canSchedule?: boolean };
 
 
 export default function ConsoleEvalSets() {
@@ -261,10 +261,10 @@ export default function ConsoleEvalSets() {
   const canRun = runWorkflowId && runRegion && (runMode === "once" || cronExpression);
 
   // Only workflow managers may schedule (recurring runs use the owner's secrets).
-  // Trust the server's canManage; if it's absent (older API), fail open so we
+  // Trust the server's canSchedule; if it's absent (older API), fail open so we
   // never wrongly block a legitimate owner.
   const selectedRunWorkflow = workflows?.find((w) => String(w.id) === runWorkflowId);
-  const canScheduleSelected = selectedRunWorkflow?.canManage ?? true;
+  const canScheduleSelected = selectedRunWorkflow?.canSchedule ?? true;
   // If the picked workflow isn't manageable, fall back to a one-off run.
   useEffect(() => {
     if (runMode === "recurring" && runWorkflowId && !canScheduleSelected) {
