@@ -547,6 +547,30 @@ describe('Vox API Tests', () => {
       expect(ext.ok).toBe(true);
     });
 
+    it('blocks deleting a workflow with an active schedule, then allows it once paused', async () => {
+      const wfRes = await authFetch(adminSession, `${BASE_URL}/api/workflows`, {
+        method: 'POST', body: JSON.stringify({ name: `Del Guard WF ${Date.now()}`, visibility: 'private', providerId: testProviderId }),
+      });
+      const wfId = (await wfRes.json()).id;
+      const scRes = await authFetch(adminSession, `${BASE_URL}/api/eval-schedules`, {
+        method: 'POST', body: JSON.stringify({ name: 'guard', workflowId: wfId, evalSetId: testEvalSetId, region: 'na', scheduleType: 'recurring', cronExpression: '0 * * * *' }),
+      });
+      const scId = (await scRes.json()).id;
+      // Active schedule blocks deletion (409).
+      const blocked = await authFetch(adminSession, `${BASE_URL}/api/workflows/${wfId}`, { method: 'DELETE' });
+      expect(blocked.status).toBe(409);
+      expect((await blocked.json()).error).toMatch(/active schedule/i);
+      // Pause it, then deletion succeeds.
+      await authFetch(adminSession, `${BASE_URL}/api/eval-schedules/${scId}`, { method: 'PATCH', body: JSON.stringify({ isEnabled: false }) });
+      const ok = await authFetch(adminSession, `${BASE_URL}/api/workflows/${wfId}`, { method: 'DELETE' });
+      expect(ok.ok).toBe(true);
+      // The now-orphaned schedule can't be extended (409, clear message).
+      const ext = await authFetch(adminSession, `${BASE_URL}/api/eval-schedules/${scId}/extend`, { method: 'POST' });
+      expect(ext.status).toBe(409);
+      expect((await ext.json()).error).toMatch(/workflow was deleted/i);
+      await authFetch(adminSession, `${BASE_URL}/api/eval-schedules/${scId}`, { method: 'DELETE' });
+    });
+
     it('rejects Extend by a non-owner (403)', async () => {
       const pw = 'extpass123';
       const email = `ext-nonowner-${Date.now()}@test.local`;

@@ -1460,6 +1460,20 @@ export class DatabaseStorage {
     await db.delete(evalSchedules).where(eq(evalSchedules.id, id));
   }
 
+  // Count "active" schedules on a workflow: enabled and not expired. Used to block
+  // deletion of a workflow that still has a live schedule.
+  async countActiveSchedulesForWorkflow(workflowId: number): Promise<number> {
+    const now = new Date();
+    const rows = await db.select({ count: sql<number>`count(*)::int` })
+      .from(evalSchedules)
+      .where(and(
+        eq(evalSchedules.workflowId, workflowId),
+        eq(evalSchedules.isEnabled, true),
+        sql`(${evalSchedules.expiresAt} IS NULL OR ${evalSchedules.expiresAt} > ${now})`,
+      ));
+    return rows[0]?.count ?? 0;
+  }
+
   // Get schedules that are due to run (isEnabled=true, nextRunAt <= now)
   async getDueSchedules(): Promise<EvalSchedule[]> {
     const now = new Date();

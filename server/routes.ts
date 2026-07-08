@@ -1492,6 +1492,15 @@ export async function registerRoutes(
         return res.status(403).json({ error: "Not authorized to delete this workflow" });
       }
 
+      // Block deletion while an active schedule still points at this workflow —
+      // otherwise it would be orphaned. Tell the user exactly what to do first.
+      const activeSchedules = await storage.countActiveSchedulesForWorkflow(parseInt(id));
+      if (activeSchedules > 0) {
+        return res.status(409).json({
+          error: `This workflow has ${activeSchedules} active schedule${activeSchedules === 1 ? "" : "s"}. Pause or delete ${activeSchedules === 1 ? "it" : "them"} first (Eval Jobs → Schedules), then delete the workflow.`,
+        });
+      }
+
       await storage.deleteWorkflow(parseInt(id));
       res.json({ success: true });
     } catch (error) {
@@ -1962,7 +1971,10 @@ export async function registerRoutes(
       const nextRunChanged = nextRunAt !== undefined; // an explicit override always advances the schedule
       if (wantsEnable || cronChanged || capChanged || nextRunChanged) {
         const wf = schedule.workflowId != null ? await storage.getWorkflow(schedule.workflowId) : undefined;
-        if (!wf || !canScheduleWorkflow(user, wf)) {
+        if (!wf) {
+          return res.status(409).json({ error: "This schedule's workflow was deleted, so it can't be resumed or rescheduled. Delete the schedule instead." });
+        }
+        if (!canScheduleWorkflow(user, wf)) {
           return res.status(403).json({ error: "Only the workflow owner can enable or reschedule this schedule" });
         }
       }
@@ -2102,7 +2114,10 @@ export async function registerRoutes(
       if (!schedule) return res.status(404).json({ error: "Schedule not found" });
 
       const workflow = schedule.workflowId != null ? await storage.getWorkflow(schedule.workflowId) : undefined;
-      if (!workflow || !isOwnerOrOrgManager(user, workflow)) {
+      if (!workflow) {
+        return res.status(409).json({ error: "This schedule's workflow was deleted, so it can't be extended. Delete the schedule instead." });
+      }
+      if (!isOwnerOrOrgManager(user, workflow)) {
         return res.status(403).json({ error: "Only the workflow's owner or org can extend this schedule" });
       }
 
