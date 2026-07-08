@@ -78,6 +78,7 @@ function ScheduledJobsBlock() {
   const [editCron, setEditCron] = useState("");
   const [editMaxRuns, setEditMaxRuns] = useState("");
   const [deleteId, setDeleteId] = useState<number | null>(null);
+  const [deleteConfirmText, setDeleteConfirmText] = useState("");
   const [actionLoading, setActionLoading] = useState<number | null>(null);
 
   const canManage = (s: EnrichedSchedule) => s.createdBy === userId || isAdmin;
@@ -140,6 +141,7 @@ function ScheduledJobsBlock() {
       credentials: "include",
     });
     setDeleteId(null);
+    setDeleteConfirmText("");
     refetchAll();
   };
 
@@ -217,7 +219,7 @@ function ScheduledJobsBlock() {
                               <Zap className="h-4 w-4 mr-2" />Run Now
                             </DropdownMenuItem>
                             <DropdownMenuSeparator />
-                            <DropdownMenuItem className="text-destructive" onClick={() => setDeleteId(s.id)}>
+                            <DropdownMenuItem className="text-destructive" onClick={() => { setDeleteConfirmText(""); setDeleteId(s.id); }}>
                               <Trash2 className="h-4 w-4 mr-2" />Delete
                             </DropdownMenuItem>
                           </DropdownMenuContent>
@@ -268,25 +270,51 @@ function ScheduledJobsBlock() {
         </DialogContent>
       </Dialog>
 
-      {/* Delete Confirmation */}
-      <AlertDialog open={deleteId != null} onOpenChange={(open) => { if (!open) setDeleteId(null); }}>
+      {/* Delete Confirmation — requires typing the schedule name */}
+      <AlertDialog open={deleteId != null} onOpenChange={(open) => { if (!open) { setDeleteId(null); setDeleteConfirmText(""); } }}>
         <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Delete Schedule</AlertDialogTitle>
-            <AlertDialogDescription>
-              This will permanently delete the schedule{" "}
-              <span className="font-semibold text-foreground">
-                {schedules?.find((s) => s.id === deleteId)?.name ?? `#${deleteId}`}
-              </span>
-              . Any jobs already created by it will remain. This action cannot be undone.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction onClick={confirmDelete} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">
-              Delete
-            </AlertDialogAction>
-          </AlertDialogFooter>
+          {(() => {
+            const deleteName = schedules?.find((s) => s.id === deleteId)?.name ?? "";
+            const confirmed = deleteConfirmText.trim() === deleteName && deleteName.length > 0;
+            return (
+              <>
+                <AlertDialogHeader>
+                  <AlertDialogTitle>Delete Schedule</AlertDialogTitle>
+                  <AlertDialogDescription>
+                    This will permanently delete the schedule{" "}
+                    <span className="font-semibold text-foreground">
+                      {deleteName || `#${deleteId}`}
+                    </span>
+                    . Any jobs already created by it will remain. This action cannot be undone.
+                  </AlertDialogDescription>
+                </AlertDialogHeader>
+                <div className="space-y-2">
+                  <Label htmlFor="delete-confirm-name">
+                    Type <span className="font-semibold text-foreground">{deleteName}</span> to confirm
+                  </Label>
+                  <Input
+                    id="delete-confirm-name"
+                    value={deleteConfirmText}
+                    onChange={(e) => setDeleteConfirmText(e.target.value)}
+                    placeholder={deleteName}
+                    autoComplete="off"
+                    data-testid="input-delete-confirm"
+                  />
+                </div>
+                <AlertDialogFooter>
+                  <AlertDialogCancel>Cancel</AlertDialogCancel>
+                  <AlertDialogAction
+                    onClick={confirmDelete}
+                    disabled={!confirmed}
+                    className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                    data-testid="button-confirm-delete-schedule"
+                  >
+                    Delete
+                  </AlertDialogAction>
+                </AlertDialogFooter>
+              </>
+            );
+          })()}
         </AlertDialogContent>
       </AlertDialog>
     </>
