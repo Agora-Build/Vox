@@ -85,7 +85,10 @@ function ScheduledJobsBlock() {
   const [deleteConfirmText, setDeleteConfirmText] = useState("");
   const [actionLoading, setActionLoading] = useState<number | null>(null);
 
-  const canManage = (s: EnrichedSchedule) => s.createdBy === userId || isAdmin;
+  // Whether to show the actions dropdown at all (creator or admin can manage the
+  // schedule object — pause/rename/delete). Distinct from the server-sent
+  // `s.canManage` (owner-only) used by canRunOrResume for the secret-spending items.
+  const canOpenMenu = (s: EnrichedSchedule) => s.createdBy === userId || isAdmin;
   // Enable/Run-Now spend the workflow owner's secrets, so the server restricts
   // them to the workflow owner (no admin bypass). Use the server-computed
   // canManage bit (owner of the schedule's workflow); fail open if it's absent
@@ -223,7 +226,7 @@ function ScheduledJobsBlock() {
                     </TableCell>
                     <TableCell className="text-sm text-muted-foreground">{s.creatorName}</TableCell>
                     <TableCell>
-                      {canManage(s) && (
+                      {canOpenMenu(s) && (
                         <DropdownMenu>
                           <DropdownMenuTrigger asChild>
                             <Button variant="ghost" size="icon" className="h-8 w-8" disabled={actionLoading === s.id}>
