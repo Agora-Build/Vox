@@ -430,6 +430,40 @@ describe('Vox API Tests', () => {
       testRecurringScheduleId = schedule.id;
     });
 
+    it('should reject scheduling a workflow you do not own (owner-only, no admin bypass)', async () => {
+      // Register a fresh non-admin, non-owner user via invite.
+      const pw = 'schedpass123';
+      const email = `sched-noowner-${Date.now()}@test.local`;
+      const inviteRes = await authFetch(adminSession, `${BASE_URL}/api/admin/invite`, {
+        method: 'POST',
+        body: JSON.stringify({ email, plan: 'premium' }),
+      });
+      expect(inviteRes.ok).toBe(true);
+      const { token } = await inviteRes.json();
+      const regRes = await fetch(`${BASE_URL}/api/auth/register`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: `noowner-${Date.now()}`, password: pw, token }),
+      });
+      expect(regRes.ok).toBe(true);
+      const nonOwner = await login(email, pw);
+
+      // testWorkflowId is owned by admin — a non-owner must not be able to schedule
+      // it (scheduling runs on the owner's secrets; there is no admin/org bypass).
+      const res = await authFetch(nonOwner, `${BASE_URL}/api/eval-schedules`, {
+        method: 'POST',
+        body: JSON.stringify({
+          name: 'should-be-denied',
+          workflowId: testWorkflowId,
+          evalSetId: testEvalSetId,
+          region: 'na',
+          scheduleType: 'recurring',
+          cronExpression: '0 * * * *',
+        }),
+      });
+      expect(res.status).toBe(403);
+    });
+
     it('should reject recurring schedule without cron expression', async () => {
       const response = await authFetch(adminSession, `${BASE_URL}/api/eval-schedules`, {
         method: 'POST',
