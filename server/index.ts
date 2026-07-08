@@ -8,6 +8,7 @@ import connectPgSimple from "connect-pg-simple";
 import rateLimit from "express-rate-limit";
 import { authenticateApiKey, passport, initializeGoogleOAuth } from "./auth";
 import { storage, mergeEvalConfig, buildJobSnapshot } from "./storage";
+import { canScheduleWorkflow } from "./permissions";
 import { parseNextCronRun } from "./cron";
 import { setupClashWebSocket } from "./clash-ws";
 import pkg from "pg";
@@ -253,6 +254,16 @@ function startBackgroundWorker() {
           const evalSet = schedule.evalSetId != null ? await storage.getEvalSet(schedule.evalSetId) : undefined;
           if (!workflow || !evalSet) {
             log(`Schedule "${schedule.name}" references a deleted workflow/eval-set — disabling`, "scheduler");
+            await storage.updateEvalSchedule(schedule.id, { isEnabled: false });
+            continue;
+          }
+          // Re-check at runtime that the schedule's creator may still schedule
+          // this workflow (secrets resolve from the workflow owner). This disables
+          // schedules whose creator lost the right — e.g. legacy ones created by a
+          // system admin on someone else's workflow before scheduling was
+          // restricted to the owner — so they stop spending the owner's secrets.
+          if (schedule.createdBy == null || !canScheduleWorkflow({ id: schedule.createdBy }, workflow)) {
+            log(`Schedule "${schedule.name}" creator is no longer authorized to schedule its workflow — disabling`, "scheduler");
             await storage.updateEvalSchedule(schedule.id, { isEnabled: false });
             continue;
           }

@@ -1526,11 +1526,12 @@ export class DatabaseStorage {
       // Left-joined: a schedule whose workflow was deleted still lists (with a
       // placeholder) so users can find and remove the orphan.
       workflowName: sql<string>`coalesce(${workflows.name}, '(deleted workflow)')`,
+      workflowOwnerId: workflows.ownerId,
       creatorName: users.username,
     };
   }
 
-  async getEvalSchedulesWithWorkflow(userId: number): Promise<(EvalSchedule & { workflowName: string; creatorName: string })[]> {
+  async getEvalSchedulesWithWorkflow(userId: number): Promise<(EvalSchedule & { workflowName: string; workflowOwnerId: number | null; creatorName: string })[]> {
     return db.select(this.buildScheduleQuery())
       .from(evalSchedules)
       .leftJoin(workflows, eq(evalSchedules.workflowId, workflows.id))
@@ -1539,7 +1540,7 @@ export class DatabaseStorage {
       .orderBy(desc(evalSchedules.createdAt));
   }
 
-  async getAllEvalSchedulesWithWorkflow(): Promise<(EvalSchedule & { workflowName: string; creatorName: string })[]> {
+  async getAllEvalSchedulesWithWorkflow(): Promise<(EvalSchedule & { workflowName: string; workflowOwnerId: number | null; creatorName: string })[]> {
     return db.select(this.buildScheduleQuery())
       .from(evalSchedules)
       .leftJoin(workflows, eq(evalSchedules.workflowId, workflows.id))

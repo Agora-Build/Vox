@@ -19,7 +19,9 @@ import { formatSmartTimestamp, formatRegion, REGIONS } from "@/lib/utils";
 import { format } from "date-fns";
 import type { EvalJob, EvalSchedule, Workflow as WorkflowType } from "@shared/schema";
 
-type EnrichedSchedule = EvalSchedule & { workflowName: string; creatorName: string };
+// canManage is the server's owner-only decision for run-now/resume (matches the
+// backend), so the UI never offers actions that would 403.
+type EnrichedSchedule = EvalSchedule & { workflowName: string; creatorName: string; canManage?: boolean };
 
 interface AuthStatus {
   user: { id: number; isAdmin: boolean } | null;
@@ -83,9 +85,11 @@ function ScheduledJobsBlock() {
 
   const canManage = (s: EnrichedSchedule) => s.createdBy === userId || isAdmin;
   // Enable/Run-Now spend the workflow owner's secrets, so the server restricts
-  // them to the owner (no admin bypass) — mirror that here so we don't offer
-  // actions that would 403. Pause/Delete stay available to any manager.
-  const isScheduleOwner = (s: EnrichedSchedule) => s.createdBy === userId;
+  // them to the workflow owner (no admin bypass). Use the server-computed
+  // canManage bit (owner of the schedule's workflow); fail open if it's absent
+  // (older API) so a legitimate owner is never blocked. Pause/Delete stay open to
+  // any schedule manager.
+  const canRunOrResume = (s: EnrichedSchedule) => s.canManage ?? (s.createdBy === userId);
 
   const refetchAll = () => {
     queryClient.invalidateQueries({ queryKey: ["/api/eval-schedules"] });
@@ -215,7 +219,7 @@ function ScheduledJobsBlock() {
                           <DropdownMenuContent align="end">
                             {/* Pause (disable) is benign; Resume (enable) resumes spending the
                                 owner's secrets, so only offer it to the owner. */}
-                            {(s.isEnabled || isScheduleOwner(s)) && (
+                            {(s.isEnabled || canRunOrResume(s)) && (
                               <DropdownMenuItem onClick={() => toggleEnabled(s)}>
                                 {s.isEnabled ? <><Pause className="h-4 w-4 mr-2" />Pause</> : <><Play className="h-4 w-4 mr-2" />Resume</>}
                               </DropdownMenuItem>
@@ -223,7 +227,7 @@ function ScheduledJobsBlock() {
                             <DropdownMenuItem onClick={() => openEdit(s)}>
                               <Pencil className="h-4 w-4 mr-2" />Edit
                             </DropdownMenuItem>
-                            {isScheduleOwner(s) && (
+                            {canRunOrResume(s) && (
                               <DropdownMenuItem onClick={() => runNow(s.id)}>
                                 <Zap className="h-4 w-4 mr-2" />Run Now
                               </DropdownMenuItem>

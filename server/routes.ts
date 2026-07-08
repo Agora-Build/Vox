@@ -53,60 +53,16 @@ import {
   getStripePublishableKey,
 } from "./stripe";
 
-// ---- Org resource permission helpers ----
-interface OrgResource {
-  ownerId?: number | null;
-  organizationId?: number | null;
-  createdBy?: number | null;
-  visibility?: string | null;
-}
-
-interface AuthUser {
-  id: number;
-  isAdmin: boolean;
-  organizationId: number | null;
-  orgRole: string | null;
-}
-
-function canAccessResource(user: AuthUser, resource: OrgResource): boolean {
-  if (user.isAdmin) return true;
-  if (resource.ownerId === user.id || resource.createdBy === user.id) return true;
-  if (resource.organizationId && resource.organizationId === user.organizationId) return true;
-  if (resource.visibility === 'public') return true;
-  return false;
-}
-
-function canEditResource(user: AuthUser, resource: OrgResource): boolean {
-  if (user.isAdmin) return true;
-  // Personal resource owner
-  if (!resource.organizationId && (resource.ownerId === user.id || resource.createdBy === user.id)) return true;
-  // Org resource
-  if (resource.organizationId && resource.organizationId === user.organizationId) {
-    if (user.orgRole === 'owner' || user.orgRole === 'admin') return true;
-    if (resource.ownerId === user.id || resource.createdBy === user.id) return true;
-  }
-  return false;
-}
-
-// "Run" rights sit between access (view) and edit (mutate): running or scheduling
-// an eval executes a workflow without changing it. Public workflows are runnable
-// by anyone; private ones only by an editor (owner/org-admin/admin) or a
-// principal/fellow. Used by both the run-once and schedule-create routes so the
-// two entry points can't drift apart.
-function canRunWorkflow(user: AuthUser & { plan: string }, resource: OrgResource): boolean {
-  if (resource.visibility === 'public') return true;
-  return canEditResource(user, resource) || user.plan === 'principal' || user.plan === 'fellow';
-}
-
-// "Schedule" rights are stricter than edit: a schedule (recurring OR deferred
-// one-time) repeatedly/later runs the workflow on the OWNER's stored secrets —
-// and secret resolution always loads the workflow owner's PERSONAL secrets first
-// (storage.getSecretsForJob), even for org workflows. So only the workflow
-// owner/creator may schedule it: NOT a system admin, and NOT an org manager
-// (either could otherwise spend the owner's personal credentials without consent).
-function canScheduleWorkflow(user: AuthUser, resource: OrgResource): boolean {
-  return resource.ownerId === user.id || resource.createdBy === user.id;
-}
+// Org resource permission helpers live in ./permissions so the background
+// scheduler shares the exact same authorization logic as the API.
+import {
+  type OrgResource,
+  type AuthUser,
+  canAccessResource,
+  canEditResource,
+  canRunWorkflow,
+  canScheduleWorkflow,
+} from "./permissions";
 
 // Elo rating calculation for Clash matches
 // Lower latency = better. Compare median response latency to determine winner.
@@ -1819,7 +1775,15 @@ export async function registerRoutes(
       const schedules = user.isAdmin
         ? await storage.getAllEvalSchedulesWithWorkflow()
         : await storage.getEvalSchedulesWithWorkflow(user.id);
-      res.json(schedules);
+      // canManage = may this viewer run/resume the schedule (owner-only, matching
+      // the run-now/enable routes) — computed server-side against the workflow
+      // owner so the UI doesn't offer actions that would 403 (e.g. an admin
+      // viewing a legacy schedule they created on someone else's workflow).
+      const withPerms = schedules.map(s => ({
+        ...s,
+        canManage: canScheduleWorkflow(user, { ownerId: s.workflowOwnerId }),
+      }));
+      res.json(withPerms);
     } catch (error) {
       console.error("Error fetching eval schedules:", error);
       res.status(500).json({ error: "Failed to fetch eval schedules" });
