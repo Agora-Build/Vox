@@ -1918,12 +1918,15 @@ export async function registerRoutes(
 
       // Enabling, rescheduling, advancing nextRunAt, or changing the run cap all
       // affect how many times runs execute on the workflow OWNER's secrets, so
-      // they need owner rights (a system admin isn't exempt). Only disable/rename
-      // stay open to the schedule's manager for cleanup.
+      // they need owner rights (a system admin isn't exempt). Gate on an ACTUAL
+      // change, not mere presence — the Edit dialog resends cron/maxRuns even on a
+      // name-only edit, and disable/rename must stay open to the schedule's
+      // manager for cleanup.
       const wantsEnable = isEnabled === true && !schedule.isEnabled;
-      const wantsReschedule = cronExpression !== undefined || nextRunAt !== undefined;
-      const wantsChangeCap = maxRuns !== undefined;
-      if (wantsEnable || wantsReschedule || wantsChangeCap) {
+      const cronChanged = cronExpression !== undefined && cronExpression !== schedule.cronExpression;
+      const capChanged = maxRuns !== undefined && (maxRuns ?? null) !== (schedule.maxRuns ?? null);
+      const nextRunChanged = nextRunAt !== undefined; // an explicit override always advances the schedule
+      if (wantsEnable || cronChanged || capChanged || nextRunChanged) {
         const wf = schedule.workflowId != null ? await storage.getWorkflow(schedule.workflowId) : undefined;
         if (!wf || !canScheduleWorkflow(user, wf)) {
           return res.status(403).json({ error: "Only the workflow owner can enable or reschedule this schedule" });

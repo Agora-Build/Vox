@@ -14,6 +14,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Pagination, PaginationContent, PaginationItem, PaginationLink, PaginationNext, PaginationPrevious, PaginationEllipsis } from "@/components/ui/pagination";
 import { ClipboardList, CheckCircle, XCircle, Loader2, Clock, RefreshCw, CalendarClock, MousePointerClick, MoreHorizontal, Pause, Play, Pencil, Trash2, Zap } from "lucide-react";
 import { useState } from "react";
+import { useToast } from "@/hooks/use-toast";
 import { useLocation, useSearch, Link } from "wouter";
 import { formatSmartTimestamp, formatRegion, REGIONS } from "@/lib/utils";
 import { format } from "date-fns";
@@ -66,6 +67,7 @@ const STATUS_CONFIG: Record<string, { variant: "default" | "destructive" | "seco
 
 function ScheduledJobsBlock() {
   const queryClient = useQueryClient();
+  const { toast } = useToast();
   const { data: auth } = useQuery<AuthStatus>({ queryKey: ["/api/auth/status"] });
   const userId = auth?.user?.id;
   const isAdmin = auth?.user?.isAdmin ?? false;
@@ -95,24 +97,35 @@ function ScheduledJobsBlock() {
     queryClient.invalidateQueries({ queryKey: ["/api/eval-schedules"] });
   };
 
+  // Surface a failed schedule action (e.g. a 403 from the owner-only gate) instead
+  // of silently no-op'ing. Returns true on success.
+  const checkRes = async (res: Response, action: string): Promise<boolean> => {
+    if (res.ok) return true;
+    const msg = await res.json().then((d) => d?.error).catch(() => null);
+    toast({ title: `Couldn't ${action}`, description: msg ?? `Request failed (${res.status})`, variant: "destructive" });
+    return false;
+  };
+
   const toggleEnabled = async (s: EnrichedSchedule) => {
     setActionLoading(s.id);
-    await fetch(`/api/eval-schedules/${s.id}`, {
+    const res = await fetch(`/api/eval-schedules/${s.id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       credentials: "include",
       body: JSON.stringify({ isEnabled: !s.isEnabled }),
     });
+    await checkRes(res, s.isEnabled ? "pause the schedule" : "resume the schedule");
     refetchAll();
     setActionLoading(null);
   };
 
   const runNow = async (id: number) => {
     setActionLoading(id);
-    await fetch(`/api/eval-schedules/${id}/run-now`, {
+    const res = await fetch(`/api/eval-schedules/${id}/run-now`, {
       method: "POST",
       credentials: "include",
     });
+    await checkRes(res, "run the schedule");
     refetchAll();
     queryClient.invalidateQueries({ queryKey: ["/api/eval-jobs"] });
     setActionLoading(null);
@@ -132,12 +145,13 @@ function ScheduledJobsBlock() {
       body.cronExpression = editCron;
       body.maxRuns = editMaxRuns ? parseInt(editMaxRuns) : null;
     }
-    await fetch(`/api/eval-schedules/${editSchedule.id}`, {
+    const res = await fetch(`/api/eval-schedules/${editSchedule.id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       credentials: "include",
       body: JSON.stringify(body),
     });
+    if (!(await checkRes(res, "update the schedule"))) return; // keep dialog open on failure
     setEditSchedule(null);
     refetchAll();
   };
