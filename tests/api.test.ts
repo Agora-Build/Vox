@@ -527,6 +527,37 @@ describe('Vox API Tests', () => {
       testRecurringScheduleId = schedule.id;
     });
 
+    it('sets a ~90-day expiry on new schedules and reports status active', async () => {
+      const created = await authFetch(adminSession, `${BASE_URL}/api/eval-schedules`, {
+        method: 'POST',
+        body: JSON.stringify({ name: 'Expiry Create', workflowId: testWorkflowId, evalSetId: testEvalSetId, region: 'na', scheduleType: 'recurring', cronExpression: '0 * * * *' }),
+      });
+      expect(created.ok).toBe(true);
+      const s = await created.json();
+      expect(s.expiresAt).toBeTruthy();
+      const days = (new Date(s.expiresAt).getTime() - Date.now()) / 86400000;
+      expect(days).toBeGreaterThan(85);
+      expect(days).toBeLessThan(95);
+      // List reports lifecycle status.
+      const list = await (await authFetch(adminSession, `${BASE_URL}/api/eval-schedules`)).json();
+      const row = list.find((r: { id: number }) => r.id === s.id);
+      expect(row.status).toBe('active');
+      // Extend by the owner (admin owns testWorkflowId) succeeds.
+      const ext = await authFetch(adminSession, `${BASE_URL}/api/eval-schedules/${s.id}/extend`, { method: 'POST' });
+      expect(ext.ok).toBe(true);
+    });
+
+    it('rejects Extend by a non-owner (403)', async () => {
+      const pw = 'extpass123';
+      const email = `ext-nonowner-${Date.now()}@test.local`;
+      const inv = await authFetch(adminSession, `${BASE_URL}/api/admin/invite`, { method: 'POST', body: JSON.stringify({ email, plan: 'premium' }) });
+      const { token } = await inv.json();
+      await fetch(`${BASE_URL}/api/auth/register`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: `ext-${Date.now()}`, password: pw, token }) });
+      const other = await login(email, pw);
+      const res = await authFetch(other, `${BASE_URL}/api/eval-schedules/${testRecurringScheduleId}/extend`, { method: 'POST' });
+      expect(res.status).toBe(403);
+    });
+
     it('should reject scheduling a workflow you do not own (owner-only, no admin bypass)', async () => {
       // Register a fresh non-admin, non-owner user via invite.
       const pw = 'schedpass123';

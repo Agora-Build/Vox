@@ -63,6 +63,10 @@ import {
   canScheduleWorkflow,
 } from "./permissions";
 
+// Schedule lifecycle: a schedule is created with a 90-day expiry and can be
+// Extended by the same window. Past expiry the scheduler stops firing it.
+const SCHEDULE_TTL_MS = 90 * 24 * 60 * 60 * 1000;
+
 // Elo rating calculation for Clash matches
 // Lower latency = better. Compare median response latency to determine winner.
 async function updateClashEloRatings(
@@ -1792,14 +1796,27 @@ export async function registerRoutes(
       const schedules = user.isAdmin
         ? await storage.getAllEvalSchedulesWithWorkflow()
         : await storage.getEvalSchedulesWithWorkflow(user.id);
-      // canManage = may this viewer run/resume the schedule (owner-only, matching
-      // the run-now/enable routes) — computed server-side against the workflow
-      // owner so the UI doesn't offer actions that would 403 (e.g. an admin
-      // viewing a legacy schedule they created on someone else's workflow).
-      const withPerms = schedules.map(s => ({
-        ...s,
-        canManage: canScheduleWorkflow(user, { ownerId: s.workflowOwnerId }),
-      }));
+      // Server-computed UI flags + lifecycle status, so the client never offers an
+      // action that would 403 and shows a consistent status badge:
+      //  - canManage: owner-only run/resume (matches run-now/enable routes)
+      //  - canExtend: owner OR org manager (matches the extend route)
+      //  - status: inactive (expired) → paused (disabled) → active; expiringSoon
+      //    is an active schedule within 14 days of expiry (amber warning).
+      const now = Date.now();
+      const SOON_MS = 14 * 24 * 60 * 60 * 1000;
+      const withPerms = schedules.map(s => {
+        const wfRef = { ownerId: s.workflowOwnerId, organizationId: s.workflowOrganizationId };
+        const expired = s.expiresAt != null && new Date(s.expiresAt).getTime() <= now;
+        const status = expired ? "inactive" : !s.isEnabled ? "paused" : "active";
+        const expiringSoon = status === "active" && s.expiresAt != null && new Date(s.expiresAt).getTime() <= now + SOON_MS;
+        return {
+          ...s,
+          canManage: canScheduleWorkflow(user, wfRef),
+          canExtend: isOwnerOrOrgManager(user, wfRef),
+          status,
+          expiringSoon,
+        };
+      });
       res.json(withPerms);
     } catch (error) {
       console.error("Error fetching eval schedules:", error);
@@ -1901,6 +1918,7 @@ export async function registerRoutes(
         timezone: timezone || "UTC",
         isEnabled: true,
         nextRunAt,
+        expiresAt: new Date(Date.now() + SCHEDULE_TTL_MS), // 90-day lifecycle; owner can Extend
         maxRuns: maxRuns || null,
         createdBy: user.id,
         organizationId: organizationId || null,
@@ -2069,6 +2087,33 @@ export async function registerRoutes(
     } catch (error) {
       console.error("Error running schedule:", error);
       res.status(500).json({ error: "Failed to run schedule" });
+    }
+  });
+
+  // Extend a schedule's 90-day lifecycle. Owner OR org manager of the workflow
+  // (extending resumes/prolongs runs on the workflow's secrets). Re-activates an
+  // already-expired schedule by pushing expiresAt back into the future.
+  app.post("/api/eval-schedules/:id/extend", requireAuth, async (req, res) => {
+    try {
+      const user = await getCurrentUser(req);
+      if (!user) return res.status(401).json({ error: "Not authenticated" });
+
+      const scheduleId = parseInt(req.params.id);
+      const schedule = await storage.getEvalSchedule(scheduleId);
+      if (!schedule) return res.status(404).json({ error: "Schedule not found" });
+
+      const workflow = schedule.workflowId != null ? await storage.getWorkflow(schedule.workflowId) : undefined;
+      if (!workflow || !isOwnerOrOrgManager(user, workflow)) {
+        return res.status(403).json({ error: "Only the workflow's owner or org can extend this schedule" });
+      }
+
+      const updated = await storage.updateEvalSchedule(scheduleId, {
+        expiresAt: new Date(Date.now() + SCHEDULE_TTL_MS),
+      });
+      res.json(updated);
+    } catch (error) {
+      console.error("Error extending schedule:", error);
+      res.status(500).json({ error: "Failed to extend schedule" });
     }
   });
 

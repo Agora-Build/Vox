@@ -267,6 +267,11 @@ function startBackgroundWorker() {
             await storage.updateEvalSchedule(schedule.id, { isEnabled: false });
             continue;
           }
+          // Expired schedules stop firing (but stay enabled, so an Extend resumes
+          // them without re-enabling). The 90-day lifecycle; owner can Extend.
+          if (schedule.expiresAt && schedule.expiresAt.getTime() <= Date.now()) {
+            continue;
+          }
           const provider = await storage.getProvider(workflow.providerId);
           const creator = schedule.createdBy ? await storage.getUser(schedule.createdBy) : undefined;
 

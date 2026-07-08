@@ -1517,6 +1517,7 @@ export class DatabaseStorage {
       isEnabled: evalSchedules.isEnabled,
       nextRunAt: evalSchedules.nextRunAt,
       lastRunAt: evalSchedules.lastRunAt,
+      expiresAt: evalSchedules.expiresAt,
       runCount: evalSchedules.runCount,
       maxRuns: evalSchedules.maxRuns,
       createdBy: evalSchedules.createdBy,
@@ -1527,11 +1528,12 @@ export class DatabaseStorage {
       // placeholder) so users can find and remove the orphan.
       workflowName: sql<string>`coalesce(${workflows.name}, '(deleted workflow)')`,
       workflowOwnerId: workflows.ownerId,
+      workflowOrganizationId: workflows.organizationId,
       creatorName: users.username,
     };
   }
 
-  async getEvalSchedulesWithWorkflow(userId: number): Promise<(EvalSchedule & { workflowName: string; workflowOwnerId: number | null; creatorName: string })[]> {
+  async getEvalSchedulesWithWorkflow(userId: number): Promise<(EvalSchedule & { workflowName: string; workflowOwnerId: number | null; workflowOrganizationId: number | null; creatorName: string })[]> {
     return db.select(this.buildScheduleQuery())
       .from(evalSchedules)
       .leftJoin(workflows, eq(evalSchedules.workflowId, workflows.id))
@@ -1540,7 +1542,7 @@ export class DatabaseStorage {
       .orderBy(desc(evalSchedules.createdAt));
   }
 
-  async getAllEvalSchedulesWithWorkflow(): Promise<(EvalSchedule & { workflowName: string; workflowOwnerId: number | null; creatorName: string })[]> {
+  async getAllEvalSchedulesWithWorkflow(): Promise<(EvalSchedule & { workflowName: string; workflowOwnerId: number | null; workflowOrganizationId: number | null; creatorName: string })[]> {
     return db.select(this.buildScheduleQuery())
       .from(evalSchedules)
       .leftJoin(workflows, eq(evalSchedules.workflowId, workflows.id))
