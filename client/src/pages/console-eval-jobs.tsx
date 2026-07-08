@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardDescription, CardHeader } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -12,7 +12,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Pagination, PaginationContent, PaginationItem, PaginationLink, PaginationNext, PaginationPrevious, PaginationEllipsis } from "@/components/ui/pagination";
-import { ClipboardList, CheckCircle, XCircle, Loader2, Clock, RefreshCw, CalendarClock, MousePointerClick, MoreHorizontal, Pause, Play, Pencil, Trash2, Zap } from "lucide-react";
+import { ClipboardList, CheckCircle, XCircle, Loader2, Clock, CalendarClock, CalendarPlus, MousePointerClick, MoreHorizontal, Pause, Play, Pencil, Trash2, Zap } from "lucide-react";
 import { useState } from "react";
 import { useToast } from "@/hooks/use-toast";
 import { useLocation, useSearch, Link } from "wouter";
@@ -22,7 +22,15 @@ import type { EvalJob, EvalSchedule, Workflow as WorkflowType } from "@shared/sc
 
 // canManage is the server's owner-only decision for run-now/resume (matches the
 // backend), so the UI never offers actions that would 403.
-type EnrichedSchedule = EvalSchedule & { workflowName: string; creatorName: string; canManage?: boolean };
+type ScheduleStatus = "active" | "paused" | "inactive";
+type EnrichedSchedule = EvalSchedule & {
+  workflowName: string;
+  creatorName: string;
+  canManage?: boolean;
+  canExtend?: boolean;
+  status?: ScheduleStatus;
+  expiringSoon?: boolean;
+};
 
 interface AuthStatus {
   user: { id: number; isAdmin: boolean } | null;
@@ -85,16 +93,19 @@ function ScheduledJobsBlock() {
   const [deleteConfirmText, setDeleteConfirmText] = useState("");
   const [actionLoading, setActionLoading] = useState<number | null>(null);
 
-  // Whether to show the actions dropdown at all (creator or admin can manage the
-  // schedule object — pause/rename/delete). Distinct from the server-sent
-  // `s.canManage` (owner-only) used by canRunOrResume for the secret-spending items.
-  const canOpenMenu = (s: EnrichedSchedule) => s.createdBy === userId || isAdmin;
+  // Managing the schedule OBJECT (pause / edit / delete) — the creator or an admin
+  // (moderation). Distinct from spending its secrets.
+  const canManageSchedule = (s: EnrichedSchedule) => s.createdBy === userId || isAdmin;
   // Enable/Run-Now spend the workflow owner's secrets, so the server restricts
   // them to the workflow owner (no admin bypass). Use the server-computed
   // canManage bit (owner of the schedule's workflow); fail open if it's absent
-  // (older API) so a legitimate owner is never blocked. Pause/Delete stay open to
-  // any schedule manager.
+  // (older API) so a legitimate owner is never blocked.
   const canRunOrResume = (s: EnrichedSchedule) => s.canManage ?? (s.createdBy === userId);
+  // Show the dropdown if the user can do ANY action; each item is gated below:
+  // pause/edit/delete → canManageSchedule, run-now/resume → canRunOrResume (owner),
+  // extend → s.canExtend (owner-or-org). So a canExtend-only org manager sees only
+  // Extend, not destructive actions.
+  const canOpenMenu = (s: EnrichedSchedule) => canManageSchedule(s) || canRunOrResume(s) || !!s.canExtend;
 
   const refetchAll = () => {
     queryClient.invalidateQueries({ queryKey: ["/api/eval-schedules"] });
@@ -118,6 +129,16 @@ function ScheduledJobsBlock() {
       body: JSON.stringify({ isEnabled: !s.isEnabled }),
     });
     await checkRes(res, s.isEnabled ? "pause the schedule" : "resume the schedule");
+    refetchAll();
+    setActionLoading(null);
+  };
+
+  const extendSchedule = async (id: number) => {
+    setActionLoading(id);
+    const res = await fetch(`/api/eval-schedules/${id}/extend`, { method: "POST", credentials: "include" });
+    if (await checkRes(res, "extend the schedule")) {
+      toast({ title: "Schedule extended", description: "Active for another 90 days." });
+    }
     refetchAll();
     setActionLoading(null);
   };
@@ -211,9 +232,35 @@ function ScheduledJobsBlock() {
                     </TableCell>
                     <TableCell className="font-mono text-xs">{s.cronExpression ?? "-"}</TableCell>
                     <TableCell>
-                      <Badge variant={s.isEnabled ? "default" : "outline"}>
-                        {s.isEnabled ? "active" : "paused"}
-                      </Badge>
+                      {(() => {
+                        const status = s.status ?? (s.isEnabled ? "active" : "paused");
+                        // active=blue (amber if expiring soon), paused=gray, inactive/expired=red
+                        const cls = status === "inactive"
+                          ? "bg-red-600 text-white hover:bg-red-600"
+                          : status === "paused"
+                          ? "bg-muted text-muted-foreground hover:bg-muted"
+                          : s.expiringSoon
+                          ? "bg-amber-500 text-white hover:bg-amber-500"
+                          : "bg-blue-600 text-white hover:bg-blue-600";
+                        const label = status === "inactive" ? "expired" : status;
+                        let expiryText = "";
+                        if (s.expiresAt) {
+                          const days = Math.round((new Date(s.expiresAt).getTime() - Date.now()) / 86400000);
+                          expiryText = status === "inactive"
+                            ? (days === 0 ? "expired today" : `expired ${Math.abs(days)}d ago`)
+                            : (days === 0 ? "expires today" : `expires in ${days}d`);
+                        }
+                        return (
+                          <div className="flex flex-col gap-0.5">
+                            <Badge className={cls} data-testid={`status-schedule-${s.id}`}>{label}</Badge>
+                            {expiryText && (
+                              <span className={`text-[10px] ${s.expiringSoon ? "text-amber-600" : status === "inactive" ? "text-red-600" : "text-muted-foreground"}`}>
+                                {expiryText}
+                              </span>
+                            )}
+                          </div>
+                        );
+                      })()}
                     </TableCell>
                     <TableCell className="text-sm text-muted-foreground">
                       {s.nextRunAt ? format(new Date(s.nextRunAt), "MM/dd HH:mm") : "-"}
@@ -234,25 +281,35 @@ function ScheduledJobsBlock() {
                             </Button>
                           </DropdownMenuTrigger>
                           <DropdownMenuContent align="end">
-                            {/* Pause (disable) is benign; Resume (enable) resumes spending the
-                                owner's secrets, so only offer it to the owner. */}
-                            {(s.isEnabled || canRunOrResume(s)) && (
+                            {/* Pause/Resume: managing the schedule object. Pause (disable) is a
+                                creator/admin action; Resume (enable) resumes spending the
+                                owner's secrets, so it's owner-only. */}
+                            {(s.isEnabled ? canManageSchedule(s) : canRunOrResume(s)) && (
                               <DropdownMenuItem onClick={() => toggleEnabled(s)}>
                                 {s.isEnabled ? <><Pause className="h-4 w-4 mr-2" />Pause</> : <><Play className="h-4 w-4 mr-2" />Resume</>}
                               </DropdownMenuItem>
                             )}
-                            <DropdownMenuItem onClick={() => openEdit(s)}>
-                              <Pencil className="h-4 w-4 mr-2" />Edit
-                            </DropdownMenuItem>
+                            {canManageSchedule(s) && (
+                              <DropdownMenuItem onClick={() => openEdit(s)}>
+                                <Pencil className="h-4 w-4 mr-2" />Edit
+                              </DropdownMenuItem>
+                            )}
                             {canRunOrResume(s) && (
                               <DropdownMenuItem onClick={() => runNow(s.id)}>
                                 <Zap className="h-4 w-4 mr-2" />Run Now
                               </DropdownMenuItem>
                             )}
-                            <DropdownMenuSeparator />
-                            <DropdownMenuItem className="text-destructive" onClick={() => { setDeleteConfirmText(""); setDeleteId(s.id); }}>
-                              <Trash2 className="h-4 w-4 mr-2" />Delete
-                            </DropdownMenuItem>
+                            {s.canExtend && (
+                              <DropdownMenuItem onClick={() => extendSchedule(s.id)}>
+                                <CalendarPlus className="h-4 w-4 mr-2" />Extend 90 days
+                              </DropdownMenuItem>
+                            )}
+                            {canManageSchedule(s) && <DropdownMenuSeparator />}
+                            {canManageSchedule(s) && (
+                              <DropdownMenuItem className="text-destructive" onClick={() => { setDeleteConfirmText(""); setDeleteId(s.id); }}>
+                                <Trash2 className="h-4 w-4 mr-2" />Delete
+                              </DropdownMenuItem>
+                            )}
                           </DropdownMenuContent>
                         </DropdownMenu>
                       )}

@@ -235,6 +235,11 @@ export const evalSchedules = pgTable("eval_schedules", {
   isEnabled: boolean("is_enabled").default(true).notNull(),
   nextRunAt: timestamp("next_run_at"),
   lastRunAt: timestamp("last_run_at"),
+  // Lifecycle expiry (90-day default). Past this, the scheduler stops firing and
+  // the UI shows the schedule as inactive/expired until the owner Extends it.
+  // Kept separate from is_enabled (the user's pause toggle) so Extend resumes
+  // without re-enabling. Nullable = never expires (legacy rows before backfill).
+  expiresAt: timestamp("expires_at"),
   runCount: integer("run_count").default(0).notNull(),
   maxRuns: integer("max_runs"), // null = unlimited for recurring
   createdBy: integer("created_by").notNull().references(() => users.id),

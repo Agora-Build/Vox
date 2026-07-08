@@ -4,6 +4,7 @@ import { storage, hashToken, generateSecureToken, generateEvalAgentToken, mergeE
 import { parseNextCronRun } from "./cron";
 import { compareVersions } from "./aeval-seed";
 import { SECRET_NAME_PATTERN } from "@shared/secrets";
+import { deriveScheduleStatus } from "@shared/schedule-status";
 import { registerApiV1Routes } from "./routes-api-v1";
 import { generateSignedUrlForUser } from "./s3";
 import {
@@ -62,6 +63,10 @@ import {
   canRunWorkflow,
   canScheduleWorkflow,
 } from "./permissions";
+
+// Schedule lifecycle: a schedule is created with a 90-day expiry and can be
+// Extended by the same window. Past expiry the scheduler stops firing it.
+const SCHEDULE_TTL_MS = 90 * 24 * 60 * 60 * 1000;
 
 // Elo rating calculation for Clash matches
 // Lower latency = better. Compare median response latency to determine winner.
@@ -1487,6 +1492,15 @@ export async function registerRoutes(
         return res.status(403).json({ error: "Not authorized to delete this workflow" });
       }
 
+      // Block deletion while an active schedule still points at this workflow —
+      // otherwise it would be orphaned. Tell the user exactly what to do first.
+      const activeSchedules = await storage.countActiveSchedulesForWorkflow(parseInt(id));
+      if (activeSchedules > 0) {
+        return res.status(409).json({
+          error: `This workflow has ${activeSchedules} active schedule${activeSchedules === 1 ? "" : "s"}. Pause or delete ${activeSchedules === 1 ? "it" : "them"} first (Eval Jobs → Schedules), then delete the workflow.`,
+        });
+      }
+
       await storage.deleteWorkflow(parseInt(id));
       res.json({ success: true });
     } catch (error) {
@@ -1789,17 +1803,28 @@ export async function registerRoutes(
       if (!user) {
         return res.status(401).json({ error: "Not authenticated" });
       }
+      // Org managers additionally see (and can Extend) schedules on their org's
+      // workflows; regular members see only their own to avoid exposing other
+      // members' schedule metadata.
+      const isOrgManager = user.orgRole === "owner" || user.orgRole === "admin";
       const schedules = user.isAdmin
         ? await storage.getAllEvalSchedulesWithWorkflow()
-        : await storage.getEvalSchedulesWithWorkflow(user.id);
-      // canManage = may this viewer run/resume the schedule (owner-only, matching
-      // the run-now/enable routes) — computed server-side against the workflow
-      // owner so the UI doesn't offer actions that would 403 (e.g. an admin
-      // viewing a legacy schedule they created on someone else's workflow).
-      const withPerms = schedules.map(s => ({
-        ...s,
-        canManage: canScheduleWorkflow(user, { ownerId: s.workflowOwnerId }),
-      }));
+        : await storage.getEvalSchedulesWithWorkflow(user.id, isOrgManager ? user.organizationId : null);
+      // Server-computed UI flags + lifecycle status, so the client never offers an
+      // action that would 403 and shows a consistent status badge:
+      //  - canManage: owner-only run/resume (matches run-now/enable routes)
+      //  - canExtend: owner OR org manager (matches the extend route)
+      //  - status: inactive (expired) → paused (disabled) → active; expiringSoon
+      //    is an active schedule within 14 days of expiry (amber warning).
+      const withPerms = schedules.map(s => {
+        const wfRef = { ownerId: s.workflowOwnerId, organizationId: s.workflowOrganizationId };
+        return {
+          ...s,
+          canManage: canScheduleWorkflow(user, wfRef),
+          canExtend: isOwnerOrOrgManager(user, wfRef),
+          ...deriveScheduleStatus(s.isEnabled, s.expiresAt),
+        };
+      });
       res.json(withPerms);
     } catch (error) {
       console.error("Error fetching eval schedules:", error);
@@ -1901,6 +1926,7 @@ export async function registerRoutes(
         timezone: timezone || "UTC",
         isEnabled: true,
         nextRunAt,
+        expiresAt: new Date(Date.now() + SCHEDULE_TTL_MS), // 90-day lifecycle; owner can Extend
         maxRuns: maxRuns || null,
         createdBy: user.id,
         organizationId: organizationId || null,
@@ -1945,7 +1971,10 @@ export async function registerRoutes(
       const nextRunChanged = nextRunAt !== undefined; // an explicit override always advances the schedule
       if (wantsEnable || cronChanged || capChanged || nextRunChanged) {
         const wf = schedule.workflowId != null ? await storage.getWorkflow(schedule.workflowId) : undefined;
-        if (!wf || !canScheduleWorkflow(user, wf)) {
+        if (!wf) {
+          return res.status(409).json({ error: "This schedule's workflow was deleted, so it can't be resumed or rescheduled. Delete the schedule instead." });
+        }
+        if (!canScheduleWorkflow(user, wf)) {
           return res.status(403).json({ error: "Only the workflow owner can enable or reschedule this schedule" });
         }
       }
@@ -2069,6 +2098,46 @@ export async function registerRoutes(
     } catch (error) {
       console.error("Error running schedule:", error);
       res.status(500).json({ error: "Failed to run schedule" });
+    }
+  });
+
+  // Extend a schedule's 90-day lifecycle. Owner OR org manager of the workflow
+  // (extending resumes/prolongs runs on the workflow's secrets). Re-activates an
+  // already-expired schedule by pushing expiresAt back into the future.
+  app.post("/api/eval-schedules/:id/extend", requireAuth, async (req, res) => {
+    try {
+      const user = await getCurrentUser(req);
+      if (!user) return res.status(401).json({ error: "Not authenticated" });
+
+      const scheduleId = parseInt(req.params.id);
+      const schedule = await storage.getEvalSchedule(scheduleId);
+      if (!schedule) return res.status(404).json({ error: "Schedule not found" });
+
+      const workflow = schedule.workflowId != null ? await storage.getWorkflow(schedule.workflowId) : undefined;
+      if (!workflow) {
+        return res.status(409).json({ error: "This schedule's workflow was deleted, so it can't be extended. Delete the schedule instead." });
+      }
+      if (!isOwnerOrOrgManager(user, workflow)) {
+        return res.status(403).json({ error: "Only the workflow's owner or org can extend this schedule" });
+      }
+
+      const scheduleUpdates: Record<string, unknown> = {
+        expiresAt: new Date(Date.now() + SCHEDULE_TTL_MS),
+      };
+      // If a recurring schedule lapsed with a stale (past) nextRunAt, resume at the
+      // next cron occurrence instead of firing an immediate catch-up run.
+      if (
+        schedule.scheduleType === "recurring" &&
+        schedule.cronExpression &&
+        (!schedule.nextRunAt || schedule.nextRunAt.getTime() <= Date.now())
+      ) {
+        scheduleUpdates.nextRunAt = parseNextCronRun(schedule.cronExpression);
+      }
+      const updated = await storage.updateEvalSchedule(scheduleId, scheduleUpdates);
+      res.json(updated);
+    } catch (error) {
+      console.error("Error extending schedule:", error);
+      res.status(500).json({ error: "Failed to extend schedule" });
     }
   });
 

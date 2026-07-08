@@ -41,6 +41,7 @@ const MIGRATIONS: Array<{ version: number; description: string; file: string | n
   { version: 17, description: "per-job workflow/eval-set snapshot + survive-delete FKs", file: "0016_job_snapshot.sql" },
   { version: 18, description: "expression indexes for snapshot tier predicates", file: "0017_snapshot_tier_indexes.sql" },
   { version: 19, description: "eval_schedules workflow/eval-set FKs survive delete", file: "0018_schedule_survive_delete.sql" },
+  { version: 20, description: "eval_schedules 90-day expiry (expires_at)", file: "0019_schedule_expiry.sql" },
 ];
 
 const TARGET_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version;

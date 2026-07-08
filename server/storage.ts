@@ -1460,6 +1460,20 @@ export class DatabaseStorage {
     await db.delete(evalSchedules).where(eq(evalSchedules.id, id));
   }
 
+  // Count "active" schedules on a workflow: enabled and not expired. Used to block
+  // deletion of a workflow that still has a live schedule.
+  async countActiveSchedulesForWorkflow(workflowId: number): Promise<number> {
+    const now = new Date();
+    const rows = await db.select({ count: sql<number>`count(*)::int` })
+      .from(evalSchedules)
+      .where(and(
+        eq(evalSchedules.workflowId, workflowId),
+        eq(evalSchedules.isEnabled, true),
+        sql`(${evalSchedules.expiresAt} IS NULL OR ${evalSchedules.expiresAt} > ${now})`,
+      ));
+    return rows[0]?.count ?? 0;
+  }
+
   // Get schedules that are due to run (isEnabled=true, nextRunAt <= now)
   async getDueSchedules(): Promise<EvalSchedule[]> {
     const now = new Date();
@@ -1468,7 +1482,9 @@ export class DatabaseStorage {
       .where(
         and(
           eq(evalSchedules.isEnabled, true),
-          sql`${evalSchedules.nextRunAt} <= ${now}`
+          sql`${evalSchedules.nextRunAt} <= ${now}`,
+          // Skip expired schedules in SQL so they aren't re-read every tick.
+          sql`(${evalSchedules.expiresAt} IS NULL OR ${evalSchedules.expiresAt} > ${now})`
         )
       )
       .orderBy(evalSchedules.nextRunAt);
@@ -1517,6 +1533,7 @@ export class DatabaseStorage {
       isEnabled: evalSchedules.isEnabled,
       nextRunAt: evalSchedules.nextRunAt,
       lastRunAt: evalSchedules.lastRunAt,
+      expiresAt: evalSchedules.expiresAt,
       runCount: evalSchedules.runCount,
       maxRuns: evalSchedules.maxRuns,
       createdBy: evalSchedules.createdBy,
@@ -1527,20 +1544,27 @@ export class DatabaseStorage {
       // placeholder) so users can find and remove the orphan.
       workflowName: sql<string>`coalesce(${workflows.name}, '(deleted workflow)')`,
       workflowOwnerId: workflows.ownerId,
+      workflowOrganizationId: workflows.organizationId,
       creatorName: users.username,
     };
   }
 
-  async getEvalSchedulesWithWorkflow(userId: number): Promise<(EvalSchedule & { workflowName: string; workflowOwnerId: number | null; creatorName: string })[]> {
+  // Returns the user's own schedules plus schedules on their organization's
+  // workflows (so an org manager can see/Extend them — actions are gated per row
+  // by the route's canExtend/canManage flags).
+  async getEvalSchedulesWithWorkflow(userId: number, organizationId?: number | null): Promise<(EvalSchedule & { workflowName: string; workflowOwnerId: number | null; workflowOrganizationId: number | null; creatorName: string })[]> {
+    const scope = organizationId != null
+      ? or(eq(evalSchedules.createdBy, userId), eq(workflows.organizationId, organizationId))
+      : eq(evalSchedules.createdBy, userId);
     return db.select(this.buildScheduleQuery())
       .from(evalSchedules)
       .leftJoin(workflows, eq(evalSchedules.workflowId, workflows.id))
       .innerJoin(users, eq(evalSchedules.createdBy, users.id))
-      .where(eq(evalSchedules.createdBy, userId))
+      .where(scope)
       .orderBy(desc(evalSchedules.createdAt));
   }
 
-  async getAllEvalSchedulesWithWorkflow(): Promise<(EvalSchedule & { workflowName: string; workflowOwnerId: number | null; creatorName: string })[]> {
+  async getAllEvalSchedulesWithWorkflow(): Promise<(EvalSchedule & { workflowName: string; workflowOwnerId: number | null; workflowOrganizationId: number | null; creatorName: string })[]> {
     return db.select(this.buildScheduleQuery())
       .from(evalSchedules)
       .leftJoin(workflows, eq(evalSchedules.workflowId, workflows.id))
