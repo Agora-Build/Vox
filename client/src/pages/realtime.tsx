@@ -798,6 +798,18 @@ export default function Dashboard() {
     return Math.round((Date.now() - date.getTime()) / 60000);
   })();
 
+  // Provider filter options = union of the active provider list and any provider
+  // actually present in the loaded metrics, so historical/inactive providers on
+  // the charts still get a checkbox (and "None" can hide them).
+  const providerOptions = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const p of providerList ?? []) map.set(p.id, p.name);
+    for (const rows of [mainlineMetrics, communityMetrics, myEvalsMetrics]) {
+      for (const m of rows ?? []) if (!map.has(m.providerId)) map.set(m.providerId, m.provider);
+    }
+    return Array.from(map, ([id, name]) => ({ id, name })).sort((a, b) => a.name.localeCompare(b.name));
+  }, [providerList, mainlineMetrics, communityMetrics, myEvalsMetrics]);
+
   const regionLabel = selectedRegion === "all" ? "All Regions"
     : selectedRegion === "na" ? "North America"
     : selectedRegion === "apac" ? "Asia Pacific"
@@ -873,7 +885,7 @@ export default function Dashboard() {
                 <span className="truncate">
                   {hiddenProviders.size === 0
                     ? "All providers"
-                    : `Providers ${(providerList?.length ?? 0) - hiddenProviders.size}/${providerList?.length ?? 0}`}
+                    : `Providers ${providerOptions.length - hiddenProviders.size}/${providerOptions.length}`}
                 </span>
                 <ChevronDown className="h-4 w-4 opacity-50 shrink-0" />
               </Button>
@@ -883,11 +895,11 @@ export default function Dashboard() {
                 <span className="text-xs font-medium text-muted-foreground">Providers</span>
                 <div className="flex gap-2">
                   <button className="text-xs hover:text-primary" onClick={() => setHiddenProviders(new Set())} data-testid="button-providers-all">All</button>
-                  <button className="text-xs hover:text-primary" onClick={() => setHiddenProviders(new Set((providerList ?? []).map(p => p.id)))} data-testid="button-providers-none">None</button>
+                  <button className="text-xs hover:text-primary" onClick={() => setHiddenProviders(new Set(providerOptions.map(p => p.id)))} data-testid="button-providers-none">None</button>
                 </div>
               </div>
               <div className="max-h-64 overflow-auto space-y-0.5">
-                {(providerList ?? []).map(p => (
+                {providerOptions.map(p => (
                   <label key={p.id} className="flex items-center gap-2 px-1 py-1 rounded hover:bg-accent cursor-pointer text-sm" data-testid={`provider-filter-${p.id}`}>
                     <Checkbox
                       checked={!hiddenProviders.has(p.id)}
