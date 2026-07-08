@@ -1468,7 +1468,9 @@ export class DatabaseStorage {
       .where(
         and(
           eq(evalSchedules.isEnabled, true),
-          sql`${evalSchedules.nextRunAt} <= ${now}`
+          sql`${evalSchedules.nextRunAt} <= ${now}`,
+          // Skip expired schedules in SQL so they aren't re-read every tick.
+          sql`(${evalSchedules.expiresAt} IS NULL OR ${evalSchedules.expiresAt} > ${now})`
         )
       )
       .orderBy(evalSchedules.nextRunAt);

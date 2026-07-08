@@ -2107,9 +2107,19 @@ export async function registerRoutes(
         return res.status(403).json({ error: "Only the workflow's owner or org can extend this schedule" });
       }
 
-      const updated = await storage.updateEvalSchedule(scheduleId, {
+      const scheduleUpdates: Record<string, unknown> = {
         expiresAt: new Date(Date.now() + SCHEDULE_TTL_MS),
-      });
+      };
+      // If a recurring schedule lapsed with a stale (past) nextRunAt, resume at the
+      // next cron occurrence instead of firing an immediate catch-up run.
+      if (
+        schedule.scheduleType === "recurring" &&
+        schedule.cronExpression &&
+        (!schedule.nextRunAt || schedule.nextRunAt.getTime() <= Date.now())
+      ) {
+        scheduleUpdates.nextRunAt = parseNextCronRun(schedule.cronExpression);
+      }
+      const updated = await storage.updateEvalSchedule(scheduleId, scheduleUpdates);
       res.json(updated);
     } catch (error) {
       console.error("Error extending schedule:", error);

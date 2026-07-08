@@ -247,6 +247,12 @@ function startBackgroundWorker() {
 
       for (const schedule of dueSchedules) {
         try {
+          // Expired schedules stop firing (kept enabled so an Extend resumes them
+          // without re-enabling). getDueSchedules already filters these in SQL;
+          // this guard covers the query→loop race and avoids the fetches below.
+          if (schedule.expiresAt && schedule.expiresAt.getTime() <= Date.now()) {
+            continue;
+          }
           // A schedule whose workflow or eval-set was deleted (FK SET NULL) can never
           // run — DISABLE it so it isn't re-selected on every tick (zombie). It stays
           // in the list (with a placeholder) for the user to clean up.
@@ -265,11 +271,6 @@ function startBackgroundWorker() {
           if (schedule.createdBy == null || !canScheduleWorkflow({ id: schedule.createdBy }, workflow)) {
             log(`Schedule "${schedule.name}" creator is no longer authorized to schedule its workflow — disabling`, "scheduler");
             await storage.updateEvalSchedule(schedule.id, { isEnabled: false });
-            continue;
-          }
-          // Expired schedules stop firing (but stay enabled, so an Extend resumes
-          // them without re-enabling). The 90-day lifecycle; owner can Extend.
-          if (schedule.expiresAt && schedule.expiresAt.getTime() <= Date.now()) {
             continue;
           }
           const provider = await storage.getProvider(workflow.providerId);
