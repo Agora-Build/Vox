@@ -340,15 +340,28 @@ describe('Vox API Tests', () => {
       expect(res.status).toBe(403);
     });
 
-    it('admin CAN still delete another user\'s workflow via API (moderation)', async () => {
-      // Non-owner creates a workflow; admin deletes it.
+    it('ADMIN (also a principal) cannot run a non-owned PRIVATE workflow (403)', async () => {
+      // A private workflow owned by the non-owner; the admin (adminSession is admin
+      // AND principal plan) must not be able to run it — no admin/principal bypass.
       const wfRes = await authFetch(nonOwner, `${BASE_URL}/api/workflows`, {
-        method: 'POST', body: JSON.stringify({ name: 'NonOwner WF', visibility: 'public', providerId: testProviderId }),
+        method: 'POST', body: JSON.stringify({ name: 'NonOwner Private WF', visibility: 'private', providerId: testProviderId }),
       });
       expect(wfRes.ok).toBe(true);
       const id = (await wfRes.json()).id;
+      const res = await authFetch(adminSession, `${BASE_URL}/api/workflows/${id}/run`, {
+        method: 'POST', body: JSON.stringify({ region: 'na', evalSetId: publicEvalSetId }),
+      });
+      expect(res.status).toBe(403);
+      // ...but admin CAN still delete it via API (moderation preserved).
       const del = await authFetch(adminSession, `${BASE_URL}/api/workflows/${id}`, { method: 'DELETE' });
       expect(del.ok).toBe(true);
+    });
+
+    it('rejects a whitespace-only workflow name (so type-to-confirm delete stays possible)', async () => {
+      const res = await authFetch(adminSession, `${BASE_URL}/api/workflows`, {
+        method: 'POST', body: JSON.stringify({ name: '   ', visibility: 'public', providerId: testProviderId }),
+      });
+      expect(res.status).toBe(400);
     });
   });
 

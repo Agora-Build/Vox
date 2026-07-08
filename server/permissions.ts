@@ -47,10 +47,13 @@ export function canEditResource(user: AuthUser, resource: OrgResource): boolean 
 }
 
 // Run-once rights: a public workflow can be run by anyone (a one-off on the
-// owner's key, which they opted into by publishing); a PRIVATE workflow can be
-// run only by its owner/org — no system-admin bypass and no principal/fellow
-// bypass, since running a private workflow you don't own spends the owner's
-// secrets without consent.
+// owner's key, which they opted into by publishing). A PRIVATE workflow can be
+// run only by its owner or, for an org-owned workflow, its org managers — no
+// system-admin and no principal/fellow bypass. This is safe because secrets
+// follow ownership: a personal workflow spends the owner's personal key (so only
+// the owner runs it), while an org workflow spends the ORG's secrets (so org
+// members running it spend org — not anyone's personal — credentials). See the
+// job-secrets endpoint in routes.ts.
 export function canRunWorkflow(user: AuthUser, resource: OrgResource): boolean {
   if (resource.visibility === 'public') return true;
   return isOwnerOrOrgManager(user, resource);
