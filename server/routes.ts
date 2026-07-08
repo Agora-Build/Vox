@@ -60,6 +60,7 @@ import {
   type AuthUser,
   canAccessResource,
   canEditResource,
+  isOwnerOrOrgManager,
   canRunWorkflow,
   canScheduleWorkflow,
 } from "./permissions";
@@ -1393,8 +1394,10 @@ export async function registerRoutes(
         return res.status(404).json({ error: "Workflow not found" });
       }
 
-      if (!canEditResource(user, workflow)) {
-        return res.status(403).json({ error: "Not authorized to modify this workflow" });
+      // Editing is owner/org only — a system admin has no special power over
+      // another user's workflow (deleting for moderation stays admin-capable).
+      if (!isOwnerOrOrgManager(user, workflow)) {
+        return res.status(403).json({ error: "Only the workflow's owner can edit it" });
       }
 
       const { name, description, visibility, config, projectId, providerId } = req.body;
@@ -1637,13 +1640,15 @@ export async function registerRoutes(
         return res.status(404).json({ error: "Eval set not found" });
       }
 
-      if (!canEditResource(user, evalSet)) {
-        return res.status(403).json({ error: "Not authorized to modify this eval set" });
-      }
-
-      // Built-in eval sets are immutable (clone instead)
-      if ((evalSet.config as Record<string, unknown>)?.builtIn === true && !user.isAdmin) {
-        return res.status(403).json({ error: "Built-in eval sets cannot be edited. Use clone instead." });
+      // Built-in eval sets are system templates — only admins may edit them
+      // (everyone else clones). User-owned eval sets are owner/org only: a system
+      // admin has no special power over another user's content.
+      if ((evalSet.config as Record<string, unknown>)?.builtIn === true) {
+        if (!user.isAdmin) {
+          return res.status(403).json({ error: "Built-in eval sets cannot be edited. Use clone instead." });
+        }
+      } else if (!isOwnerOrOrgManager(user, evalSet)) {
+        return res.status(403).json({ error: "Only the owner can edit this eval set" });
       }
 
       const { name, description, visibility, config } = req.body;

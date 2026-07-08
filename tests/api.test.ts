@@ -284,6 +284,74 @@ describe('Vox API Tests', () => {
     });
   });
 
+  describe('Workflow ownership permissions (admin is not a super-editor)', () => {
+    let nonOwner: AuthSession;
+    let adminPrivateWfId: number;
+    let publicEvalSetId: number;
+
+    it('sets up a fresh non-owner user, an admin-owned private workflow, and a public eval set', async () => {
+      const pw = 'ownpass123';
+      const email = `wf-nonowner-${Date.now()}@test.local`;
+      const inviteRes = await authFetch(adminSession, `${BASE_URL}/api/admin/invite`, {
+        method: 'POST', body: JSON.stringify({ email, plan: 'premium' }),
+      });
+      expect(inviteRes.ok).toBe(true);
+      const { token } = await inviteRes.json();
+      const regRes = await fetch(`${BASE_URL}/api/auth/register`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: `wf-nonowner-${Date.now()}`, password: pw, token }),
+      });
+      expect(regRes.ok).toBe(true);
+      nonOwner = await login(email, pw);
+
+      const wfRes = await authFetch(adminSession, `${BASE_URL}/api/workflows`, {
+        method: 'POST',
+        body: JSON.stringify({ name: 'Admin Private WF', visibility: 'private', projectId: testProjectId, providerId: testProviderId }),
+      });
+      expect(wfRes.ok).toBe(true);
+      adminPrivateWfId = (await wfRes.json()).id;
+
+      // A public eval set so run-once isn't blocked by the eval-set access gate.
+      const esRes = await authFetch(adminSession, `${BASE_URL}/api/eval-sets`, {
+        method: 'POST', body: JSON.stringify({ name: `Perm Public EvalSet ${Date.now()}`, visibility: 'public', config: { scenario: 'x' } }),
+      });
+      expect(esRes.ok).toBe(true);
+      publicEvalSetId = (await esRes.json()).id;
+    });
+
+    it('non-owner cannot EDIT another user\'s workflow (403)', async () => {
+      const res = await authFetch(nonOwner, `${BASE_URL}/api/workflows/${testWorkflowId}`, {
+        method: 'PATCH', body: JSON.stringify({ description: 'hijack' }),
+      });
+      expect(res.status).toBe(403);
+    });
+
+    it('non-owner CAN run a PUBLIC workflow they do not own', async () => {
+      const res = await authFetch(nonOwner, `${BASE_URL}/api/workflows/${testWorkflowId}/run`, {
+        method: 'POST', body: JSON.stringify({ region: 'na', evalSetId: publicEvalSetId }),
+      });
+      expect(res.ok).toBe(true); // testWorkflowId is public
+    });
+
+    it('non-owner CANNOT run a PRIVATE workflow they do not own (403)', async () => {
+      const res = await authFetch(nonOwner, `${BASE_URL}/api/workflows/${adminPrivateWfId}/run`, {
+        method: 'POST', body: JSON.stringify({ region: 'na', evalSetId: publicEvalSetId }),
+      });
+      expect(res.status).toBe(403);
+    });
+
+    it('admin CAN still delete another user\'s workflow via API (moderation)', async () => {
+      // Non-owner creates a workflow; admin deletes it.
+      const wfRes = await authFetch(nonOwner, `${BASE_URL}/api/workflows`, {
+        method: 'POST', body: JSON.stringify({ name: 'NonOwner WF', visibility: 'public', providerId: testProviderId }),
+      });
+      expect(wfRes.ok).toBe(true);
+      const id = (await wfRes.json()).id;
+      const del = await authFetch(adminSession, `${BASE_URL}/api/workflows/${id}`, { method: 'DELETE' });
+      expect(del.ok).toBe(true);
+    });
+  });
+
   describe('Eval Set API', () => {
     it('should create an eval set', async () => {
       const response = await authFetch(adminSession, `${BASE_URL}/api/eval-sets`, {
