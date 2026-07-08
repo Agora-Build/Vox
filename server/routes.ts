@@ -1796,7 +1796,7 @@ export async function registerRoutes(
       }
       const schedules = user.isAdmin
         ? await storage.getAllEvalSchedulesWithWorkflow()
-        : await storage.getEvalSchedulesWithWorkflow(user.id);
+        : await storage.getEvalSchedulesWithWorkflow(user.id, user.organizationId);
       // Server-computed UI flags + lifecycle status, so the client never offers an
       // action that would 403 and shows a consistent status badge:
       //  - canManage: owner-only run/resume (matches run-now/enable routes)

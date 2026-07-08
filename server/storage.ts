@@ -1535,12 +1535,18 @@ export class DatabaseStorage {
     };
   }
 
-  async getEvalSchedulesWithWorkflow(userId: number): Promise<(EvalSchedule & { workflowName: string; workflowOwnerId: number | null; workflowOrganizationId: number | null; creatorName: string })[]> {
+  // Returns the user's own schedules plus schedules on their organization's
+  // workflows (so an org manager can see/Extend them — actions are gated per row
+  // by the route's canExtend/canManage flags).
+  async getEvalSchedulesWithWorkflow(userId: number, organizationId?: number | null): Promise<(EvalSchedule & { workflowName: string; workflowOwnerId: number | null; workflowOrganizationId: number | null; creatorName: string })[]> {
+    const scope = organizationId != null
+      ? or(eq(evalSchedules.createdBy, userId), eq(workflows.organizationId, organizationId))
+      : eq(evalSchedules.createdBy, userId);
     return db.select(this.buildScheduleQuery())
       .from(evalSchedules)
       .leftJoin(workflows, eq(evalSchedules.workflowId, workflows.id))
       .innerJoin(users, eq(evalSchedules.createdBy, users.id))
-      .where(eq(evalSchedules.createdBy, userId))
+      .where(scope)
       .orderBy(desc(evalSchedules.createdAt));
   }
 

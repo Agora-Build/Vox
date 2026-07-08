@@ -93,10 +93,11 @@ function ScheduledJobsBlock() {
   const [deleteConfirmText, setDeleteConfirmText] = useState("");
   const [actionLoading, setActionLoading] = useState<number | null>(null);
 
-  // Whether to show the actions dropdown at all (creator or admin can manage the
-  // schedule object — pause/rename/delete). Distinct from the server-sent
-  // `s.canManage` (owner-only) used by canRunOrResume for the secret-spending items.
-  const canOpenMenu = (s: EnrichedSchedule) => s.createdBy === userId || isAdmin;
+  // Whether to show the actions dropdown at all: the creator, an admin
+  // (moderation), or an org manager who can Extend an org schedule. Individual
+  // items are still gated inside (Run Now/Resume owner-only via canRunOrResume,
+  // Extend via s.canExtend), so opening the menu never implies every action.
+  const canOpenMenu = (s: EnrichedSchedule) => s.createdBy === userId || isAdmin || !!s.canExtend;
   // Enable/Run-Now spend the workflow owner's secrets, so the server restricts
   // them to the workflow owner (no admin bypass). Use the server-computed
   // canManage bit (owner of the schedule's workflow); fail open if it's absent
