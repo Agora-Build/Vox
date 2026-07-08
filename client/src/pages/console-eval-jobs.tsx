@@ -82,6 +82,10 @@ function ScheduledJobsBlock() {
   const [actionLoading, setActionLoading] = useState<number | null>(null);
 
   const canManage = (s: EnrichedSchedule) => s.createdBy === userId || isAdmin;
+  // Enable/Run-Now spend the workflow owner's secrets, so the server restricts
+  // them to the owner (no admin bypass) — mirror that here so we don't offer
+  // actions that would 403. Pause/Delete stay available to any manager.
+  const isScheduleOwner = (s: EnrichedSchedule) => s.createdBy === userId;
 
   const refetchAll = () => {
     queryClient.invalidateQueries({ queryKey: ["/api/eval-schedules"] });
@@ -209,15 +213,21 @@ function ScheduledJobsBlock() {
                             </Button>
                           </DropdownMenuTrigger>
                           <DropdownMenuContent align="end">
-                            <DropdownMenuItem onClick={() => toggleEnabled(s)}>
-                              {s.isEnabled ? <><Pause className="h-4 w-4 mr-2" />Pause</> : <><Play className="h-4 w-4 mr-2" />Resume</>}
-                            </DropdownMenuItem>
+                            {/* Pause (disable) is benign; Resume (enable) resumes spending the
+                                owner's secrets, so only offer it to the owner. */}
+                            {(s.isEnabled || isScheduleOwner(s)) && (
+                              <DropdownMenuItem onClick={() => toggleEnabled(s)}>
+                                {s.isEnabled ? <><Pause className="h-4 w-4 mr-2" />Pause</> : <><Play className="h-4 w-4 mr-2" />Resume</>}
+                              </DropdownMenuItem>
+                            )}
                             <DropdownMenuItem onClick={() => openEdit(s)}>
                               <Pencil className="h-4 w-4 mr-2" />Edit
                             </DropdownMenuItem>
-                            <DropdownMenuItem onClick={() => runNow(s.id)}>
-                              <Zap className="h-4 w-4 mr-2" />Run Now
-                            </DropdownMenuItem>
+                            {isScheduleOwner(s) && (
+                              <DropdownMenuItem onClick={() => runNow(s.id)}>
+                                <Zap className="h-4 w-4 mr-2" />Run Now
+                              </DropdownMenuItem>
+                            )}
                             <DropdownMenuSeparator />
                             <DropdownMenuItem className="text-destructive" onClick={() => { setDeleteConfirmText(""); setDeleteId(s.id); }}>
                               <Trash2 className="h-4 w-4 mr-2" />Delete

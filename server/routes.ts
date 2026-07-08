@@ -1952,13 +1952,14 @@ export async function registerRoutes(
 
       const { name, isEnabled, cronExpression, maxRuns, nextRunAt } = req.body;
 
-      // Enabling, rescheduling, or advancing nextRunAt resumes runs on the
-      // workflow OWNER's secrets, so those need owner rights (a system admin
-      // isn't exempt). Benign edits (disable, rename, maxRuns) stay open to the
-      // schedule's manager.
+      // Enabling, rescheduling, advancing nextRunAt, or changing the run cap all
+      // affect how many times runs execute on the workflow OWNER's secrets, so
+      // they need owner rights (a system admin isn't exempt). Only disable/rename
+      // stay open to the schedule's manager for cleanup.
       const wantsEnable = isEnabled === true && !schedule.isEnabled;
       const wantsReschedule = cronExpression !== undefined || nextRunAt !== undefined;
-      if (wantsEnable || wantsReschedule) {
+      const wantsChangeCap = maxRuns !== undefined;
+      if (wantsEnable || wantsReschedule || wantsChangeCap) {
         const wf = schedule.workflowId != null ? await storage.getWorkflow(schedule.workflowId) : undefined;
         if (!wf || !canScheduleWorkflow(user, wf)) {
           return res.status(403).json({ error: "Only the workflow owner can enable or reschedule this schedule" });
