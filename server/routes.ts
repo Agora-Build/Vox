@@ -56,10 +56,9 @@ import {
 // Org resource permission helpers live in ./permissions so the background
 // scheduler shares the exact same authorization logic as the API.
 import {
-  type OrgResource,
-  type AuthUser,
   canAccessResource,
   canEditResource,
+  isOwnerOrOrgManager,
   canRunWorkflow,
   canScheduleWorkflow,
 } from "./permissions";
@@ -1324,9 +1323,10 @@ export async function registerRoutes(
 
       const { name, description, projectId, providerId, visibility, config, organizationId } = req.body;
 
-      if (!name) {
+      if (!name || !String(name).trim()) {
         return res.status(400).json({ error: "Name required" });
       }
+      const cleanName = String(name).trim();
 
       if (!providerId) {
         return res.status(400).json({ error: "Provider required" });
@@ -1361,7 +1361,7 @@ export async function registerRoutes(
       }
 
       const workflow = await storage.createWorkflow({
-        name,
+        name: cleanName,
         description,
         ownerId: user.id,
         projectId,
@@ -1393,8 +1393,10 @@ export async function registerRoutes(
         return res.status(404).json({ error: "Workflow not found" });
       }
 
-      if (!canEditResource(user, workflow)) {
-        return res.status(403).json({ error: "Not authorized to modify this workflow" });
+      // Editing is owner/org only — a system admin has no special power over
+      // another user's workflow (deleting for moderation stays admin-capable).
+      if (!isOwnerOrOrgManager(user, workflow)) {
+        return res.status(403).json({ error: "Only the workflow's owner can edit it" });
       }
 
       const { name, description, visibility, config, projectId, providerId } = req.body;
@@ -1403,7 +1405,7 @@ export async function registerRoutes(
         if (!v.valid) return res.status(400).json({ error: v.error });
       }
       const updates: Record<string, unknown> = {};
-      if (name) updates.name = name;
+      if (name && String(name).trim()) updates.name = String(name).trim();
       if (description !== undefined) updates.description = description;
       if (config) updates.config = config;
       if (providerId !== undefined) {
@@ -1589,9 +1591,10 @@ export async function registerRoutes(
 
       const { name, description, visibility, config, organizationId } = req.body;
 
-      if (!name) {
+      if (!name || !String(name).trim()) {
         return res.status(400).json({ error: "Name required" });
       }
+      const cleanName = String(name).trim();
 
       if (config) {
         const v = validateEvalSetConfig(config);
@@ -1606,14 +1609,19 @@ export async function registerRoutes(
         return res.status(403).json({ error: "Not a member of this organization" });
       }
 
+      // `builtIn` is a server-only marker for seeded system templates — never
+      // accept it from a create request, or a user could lock their own eval set
+      // to admin-only editing.
+      const createCfg: Record<string, unknown> = config && typeof config === "object" ? { ...config } : {};
+      delete createCfg.builtIn;
       const evalSet = await storage.createEvalSet({
-        name,
+        name: cleanName,
         description,
         ownerId: user.id,
         organizationId: organizationId || null,
         visibility: visibility || "public",
         isMainline: false,
-        config: config || {},
+        config: createCfg,
       });
 
       res.json(evalSet);
@@ -1637,13 +1645,15 @@ export async function registerRoutes(
         return res.status(404).json({ error: "Eval set not found" });
       }
 
-      if (!canEditResource(user, evalSet)) {
-        return res.status(403).json({ error: "Not authorized to modify this eval set" });
-      }
-
-      // Built-in eval sets are immutable (clone instead)
-      if ((evalSet.config as Record<string, unknown>)?.builtIn === true && !user.isAdmin) {
-        return res.status(403).json({ error: "Built-in eval sets cannot be edited. Use clone instead." });
+      // Built-in eval sets are system templates — only admins may edit them
+      // (everyone else clones). User-owned eval sets are owner/org only: a system
+      // admin has no special power over another user's content.
+      if ((evalSet.config as Record<string, unknown>)?.builtIn === true) {
+        if (!user.isAdmin) {
+          return res.status(403).json({ error: "Built-in eval sets cannot be edited. Use clone instead." });
+        }
+      } else if (!isOwnerOrOrgManager(user, evalSet)) {
+        return res.status(403).json({ error: "Only the owner can edit this eval set" });
       }
 
       const { name, description, visibility, config } = req.body;
@@ -1652,9 +1662,16 @@ export async function registerRoutes(
         if (!v.valid) return res.status(400).json({ error: v.error });
       }
       const updates: Record<string, unknown> = {};
-      if (name) updates.name = name;
+      if (name && String(name).trim()) updates.name = String(name).trim();
       if (description !== undefined) updates.description = description;
-      if (config !== undefined) updates.config = config || {};
+      if (config !== undefined) {
+        // `builtIn` is a server-controlled marker (system templates), not client
+        // input — preserve the record's existing value so a user can't promote
+        // their eval set to a template (which would flip edit rights to admin).
+        const cfg: Record<string, unknown> = config && typeof config === "object" ? { ...config } : {};
+        if ((evalSet.config as Record<string, unknown>)?.builtIn === true) cfg.builtIn = true; else delete cfg.builtIn;
+        updates.config = cfg;
+      }
       if (visibility) {
         if (visibility === "private" && user.plan === "basic") {
           return res.status(403).json({ error: "Premium plan required for private eval sets" });
@@ -2980,25 +2997,34 @@ export async function registerRoutes(
         return res.status(403).json({ error: "Secrets only available for running jobs" });
       }
 
-      // Merge secrets: org secrets (if org workflow) + personal secrets (workflow owner)
-      // Org secrets take precedence for same name
+      // Secrets follow ownership of the workflow: an ORG-owned workflow spends the
+      // ORG's secrets (so org co-workers can run it without touching anyone's
+      // personal key); a PERSONAL workflow spends its owner's personal secrets.
+      // This is what makes org-member run/extend safe — they never spend an
+      // individual's personal credentials.
       const decrypted: Record<string, string> = {};
+      const jobWorkflow = auth.job.workflowId != null ? await storage.getWorkflow(auth.job.workflowId) : undefined;
 
-      // 1. Personal secrets from workflow owner
-      const userSecrets = await storage.getSecretsForJob(parseInt(jobId));
-      for (const s of userSecrets) {
-        try {
-          decrypted[s.name] = decryptValue(s.encryptedValue);
-        } catch (err) {
-          console.error(`[Secrets] Failed to decrypt secret ${s.name} for job ${jobId}:`, err instanceof Error ? err.message : err);
+      if (jobWorkflow?.organizationId) {
+        // Org workflow → org secrets only. getOrgSecretsForJob fences by the job
+        // creator's org membership, so a non-member running a *public* org
+        // workflow deliberately gets no secrets (never leak org creds to
+        // outsiders) — such a run simply fails at execution if it needs them.
+        const orgSecrets = await storage.getOrgSecretsForJob(parseInt(jobId));
+        Object.assign(decrypted, orgSecrets);
+        console.log(`[Secrets] Job ${jobId}: org workflow → ${Object.keys(orgSecrets).length} org secret(s)`);
+      } else {
+        // Personal workflow → the owner's personal secrets.
+        const userSecrets = await storage.getSecretsForJob(parseInt(jobId));
+        for (const s of userSecrets) {
+          try {
+            decrypted[s.name] = decryptValue(s.encryptedValue);
+          } catch (err) {
+            console.error(`[Secrets] Failed to decrypt secret ${s.name} for job ${jobId}:`, err instanceof Error ? err.message : err);
+          }
         }
+        console.log(`[Secrets] Job ${jobId}: personal workflow → ${userSecrets.length} personal secret(s)`);
       }
-
-      // 2. Org secrets override personal (if workflow belongs to an org)
-      const orgSecrets = await storage.getOrgSecretsForJob(parseInt(jobId));
-      Object.assign(decrypted, orgSecrets);
-
-      console.log(`[Secrets] Job ${jobId}: ${userSecrets.length} personal + ${Object.keys(orgSecrets).length} org secret(s)`);
 
       res.json(decrypted);
     } catch (error) {
@@ -3027,7 +3053,9 @@ export async function registerRoutes(
         return res.status(404).json({ error: "Workflow not found" });
       }
 
-      // Public workflows can be run by anyone; private workflows only by owner/admin/principal/fellow
+      // Public workflows can be run by anyone; a private workflow only by its
+      // owner or, for an org workflow, its org managers (no admin / principal-
+      // fellow bypass — see canRunWorkflow).
       if (!canRunWorkflow(user, workflow)) {
         return res.status(403).json({ error: "Not authorized to run this workflow" });
       }

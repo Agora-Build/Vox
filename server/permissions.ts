@@ -24,8 +24,12 @@ export function canAccessResource(user: AuthUser, resource: OrgResource): boolea
   return false;
 }
 
-export function canEditResource(user: AuthUser, resource: OrgResource): boolean {
-  if (user.isAdmin) return true;
+// Owner/creator, or an org manager for org resources — WITHOUT the system-admin
+// bypass. This is the predicate for *editing* content and *running* private
+// workflows: a system admin has no special power over another user's content
+// (its secrets/quota are the owner's). Admin's elevated powers are limited to
+// user management and provider config (separate requireAdmin routes).
+export function isOwnerOrOrgManager(user: AuthUser, resource: OrgResource): boolean {
   // Personal resource owner
   if (!resource.organizationId && (resource.ownerId === user.id || resource.createdBy === user.id)) return true;
   // Org resource
@@ -36,24 +40,34 @@ export function canEditResource(user: AuthUser, resource: OrgResource): boolean 
   return false;
 }
 
-// "Run" rights sit between access (view) and edit (mutate): running or scheduling
-// an eval executes a workflow without changing it. Public workflows are runnable
-// by anyone; private ones only by an editor (owner/org-admin/admin) or a
-// principal/fellow. Used by both the run-once and schedule-create routes so the
-// two entry points can't drift apart.
-export function canRunWorkflow(user: AuthUser & { plan: string }, resource: OrgResource): boolean {
-  if (resource.visibility === 'public') return true;
-  return canEditResource(user, resource) || user.plan === 'principal' || user.plan === 'fellow';
+// Edit/delete gate that DOES include the system-admin bypass — kept for the
+// delete routes (admin moderation) and other admin-capable operations.
+export function canEditResource(user: AuthUser, resource: OrgResource): boolean {
+  return user.isAdmin || isOwnerOrOrgManager(user, resource);
 }
 
-// "Schedule" rights are stricter than edit: a schedule (recurring OR deferred
-// one-time) repeatedly/later runs the workflow on the OWNER's stored secrets —
-// and secret resolution always loads the workflow owner's PERSONAL secrets first
-// (storage.getSecretsForJob), even for org workflows. So only the workflow
-// owner/creator may schedule it: NOT a system admin, and NOT an org manager
-// (either could otherwise spend the owner's personal credentials without consent).
-// The background scheduler applies the same check per tick, so a schedule whose
-// creator lost this right (e.g. a legacy admin-created one) stops firing.
+// Run-once rights: a public workflow can be run by anyone (a one-off on the
+// owner's key, which they opted into by publishing). A PRIVATE workflow can be
+// run only by its owner or, for an org-owned workflow, its org managers — no
+// system-admin and no principal/fellow bypass. This is safe because secrets
+// follow ownership: a personal workflow spends the owner's personal key (so only
+// the owner runs it), while an org workflow spends the ORG's secrets (so org
+// members running it spend org — not anyone's personal — credentials). See the
+// job-secrets endpoint in routes.ts.
+export function canRunWorkflow(user: AuthUser, resource: OrgResource): boolean {
+  if (resource.visibility === 'public') return true;
+  return isOwnerOrOrgManager(user, resource);
+}
+
+// "Schedule" rights are the strictest workflow action: creating a schedule sets
+// up an indefinite recurring commitment, so it is limited to the workflow's
+// owner/creator — NOT a system admin, and (by deliberate product choice) NOT an
+// org manager either. Running once and *extending* an existing schedule are
+// looser (owner-or-org via isOwnerOrOrgManager); only *creating* the recurring
+// commitment is owner-only. Note secrets now follow ownership (org workflows
+// spend org secrets), so this is a product decision, not a credential-ownership
+// argument. The background scheduler applies the same check per tick, so a
+// schedule whose creator lost this right (e.g. a legacy admin-created one) stops firing.
 export function canScheduleWorkflow(user: Pick<AuthUser, 'id'>, resource: OrgResource): boolean {
   return resource.ownerId === user.id || resource.createdBy === user.id;
 }

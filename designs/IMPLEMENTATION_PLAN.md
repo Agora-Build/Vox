@@ -78,6 +78,16 @@ Use the latest in following spec:
 
 #### `payment_methods` Support stripe only so far, but can be extented to others
 
+### Access Control / Permission Model (`server/permissions.ts`):
+
+#### `admin` is NOT a super-editor. Its elevated powers are limited to **user management** and **provider config** (`requireAdmin` routes). For content (workflows/eval-sets) `admin` behaves like a normal user — it can **view** and **delete** (moderation, via API) another user's content, but **cannot edit** it and **cannot run** a private workflow it doesn't own.
+
+#### Content permission predicates: `canAccessResource` (view: owner/same-org/public/admin); `isOwnerOrOrgManager` (edit + run-private: owner or org manager, **no admin bypass**); `canEditResource = isAdmin || isOwnerOrOrgManager` (kept for **delete/moderation** only); `canRunWorkflow` (public → anyone, private → `isOwnerOrOrgManager`).
+
+#### Scheduling is **owner-only** (`canScheduleWorkflow`: owner/creator, no admin, no org manager) for create / run-now / enable / re-cron — a recurring schedule is an indefinite commitment on the workflow. The background scheduler re-checks per tick and disables schedules whose creator lost the right. Running once and **extending** a schedule are looser (owner-or-org).
+
+#### **Secrets follow workflow ownership.** An **org-owned** workflow spends the **organization's** `org_secrets` (fenced by the job creator's org membership — a non-member run of a public org workflow gets none); a **personal** workflow spends its **owner's** personal `secrets` (keyed by `workflow.ownerId`). So org members can safely run/extend org workflows (they spend org credentials, never an individual's personal key). Built-in eval-sets (`config.builtIn`) are server-controlled system templates, editable only by `admin`.
+
 ### Pages:
 
 #### `/realtime` - Real-time dashboard with latency charts (Agora ConvoAI vs LiveKit Agent)

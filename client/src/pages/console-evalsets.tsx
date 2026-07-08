@@ -716,7 +716,7 @@ export default function ConsoleEvalSets() {
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-              disabled={deleteConfirmName !== deleteTarget?.name || deleteMutation.isPending}
+              disabled={!deleteTarget?.name?.trim() || deleteConfirmName.trim() !== deleteTarget.name.trim() || deleteMutation.isPending}
               onClick={() => deleteTarget && deleteMutation.mutate(deleteTarget.id)}
               data-testid="button-confirm-delete-evalset"
             >
