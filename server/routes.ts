@@ -53,50 +53,16 @@ import {
   getStripePublishableKey,
 } from "./stripe";
 
-// ---- Org resource permission helpers ----
-interface OrgResource {
-  ownerId?: number | null;
-  organizationId?: number | null;
-  createdBy?: number | null;
-  visibility?: string | null;
-}
-
-interface AuthUser {
-  id: number;
-  isAdmin: boolean;
-  organizationId: number | null;
-  orgRole: string | null;
-}
-
-function canAccessResource(user: AuthUser, resource: OrgResource): boolean {
-  if (user.isAdmin) return true;
-  if (resource.ownerId === user.id || resource.createdBy === user.id) return true;
-  if (resource.organizationId && resource.organizationId === user.organizationId) return true;
-  if (resource.visibility === 'public') return true;
-  return false;
-}
-
-function canEditResource(user: AuthUser, resource: OrgResource): boolean {
-  if (user.isAdmin) return true;
-  // Personal resource owner
-  if (!resource.organizationId && (resource.ownerId === user.id || resource.createdBy === user.id)) return true;
-  // Org resource
-  if (resource.organizationId && resource.organizationId === user.organizationId) {
-    if (user.orgRole === 'owner' || user.orgRole === 'admin') return true;
-    if (resource.ownerId === user.id || resource.createdBy === user.id) return true;
-  }
-  return false;
-}
-
-// "Run" rights sit between access (view) and edit (mutate): running or scheduling
-// an eval executes a workflow without changing it. Public workflows are runnable
-// by anyone; private ones only by an editor (owner/org-admin/admin) or a
-// principal/fellow. Used by both the run-once and schedule-create routes so the
-// two entry points can't drift apart.
-function canRunWorkflow(user: AuthUser & { plan: string }, resource: OrgResource): boolean {
-  if (resource.visibility === 'public') return true;
-  return canEditResource(user, resource) || user.plan === 'principal' || user.plan === 'fellow';
-}
+// Org resource permission helpers live in ./permissions so the background
+// scheduler shares the exact same authorization logic as the API.
+import {
+  type OrgResource,
+  type AuthUser,
+  canAccessResource,
+  canEditResource,
+  canRunWorkflow,
+  canScheduleWorkflow,
+} from "./permissions";
 
 // Elo rating calculation for Clash matches
 // Lower latency = better. Compare median response latency to determine winner.
@@ -1310,9 +1276,10 @@ export async function registerRoutes(
       }
 
       // Attach the server's own authorization decision so the client doesn't have
-      // to re-derive it (and risk getting it wrong): canManage gates edit/schedule.
+      // to re-derive it (and risk getting it wrong): canSchedule gates the
+      // recurring-schedule UI, matching the schedule route's canScheduleWorkflow.
       const withPerms = (list: typeof ownWorkflows) =>
-        list.map(w => ({ ...w, canManage: canEditResource(user, w) }));
+        list.map(w => ({ ...w, canSchedule: canScheduleWorkflow(user, w) }));
 
       if (req.query.includePublic === "true") {
         const publicWorkflows = await storage.getPublicWorkflows();
@@ -1808,7 +1775,15 @@ export async function registerRoutes(
       const schedules = user.isAdmin
         ? await storage.getAllEvalSchedulesWithWorkflow()
         : await storage.getEvalSchedulesWithWorkflow(user.id);
-      res.json(schedules);
+      // canManage = may this viewer run/resume the schedule (owner-only, matching
+      // the run-now/enable routes) — computed server-side against the workflow
+      // owner so the UI doesn't offer actions that would 403 (e.g. an admin
+      // viewing a legacy schedule they created on someone else's workflow).
+      const withPerms = schedules.map(s => ({
+        ...s,
+        canManage: canScheduleWorkflow(user, { ownerId: s.workflowOwnerId }),
+      }));
+      res.json(withPerms);
     } catch (error) {
       console.error("Error fetching eval schedules:", error);
       res.status(500).json({ error: "Failed to fetch eval schedules" });
@@ -1855,14 +1830,15 @@ export async function registerRoutes(
       }
 
       // A recurring schedule runs the workflow repeatedly on the OWNER's bound
-      // secrets, so scheduling is restricted to those who manage the workflow
-      // (owner / org-admin / admin) — not everyone who can merely run it once.
-      // Run-once stays open to any runner of a public workflow.
+      // secrets, so scheduling is restricted to the workflow's owner/creator — a
+      // system admin and org managers are NOT exempt, since that would spend the
+      // owner's secrets. Applies to deferred one-time schedules here too; the
+      // always-open path is the separate immediate /api/workflows/:id/run route.
       const workflow = await storage.getWorkflow(workflowId);
       if (!workflow) {
         return res.status(404).json({ error: "Workflow not found" });
       }
-      if (!canEditResource(user, workflow)) {
+      if (!canScheduleWorkflow(user, workflow)) {
         return res.status(403).json({ error: "Only the workflow owner can schedule recurring evaluations" });
       }
 
@@ -1939,6 +1915,24 @@ export async function registerRoutes(
       }
 
       const { name, isEnabled, cronExpression, maxRuns, nextRunAt } = req.body;
+
+      // Enabling, rescheduling, advancing nextRunAt, or changing the run cap all
+      // affect how many times runs execute on the workflow OWNER's secrets, so
+      // they need owner rights (a system admin isn't exempt). Gate on an ACTUAL
+      // change, not mere presence — the Edit dialog resends cron/maxRuns even on a
+      // name-only edit, and disable/rename must stay open to the schedule's
+      // manager for cleanup.
+      const wantsEnable = isEnabled === true && !schedule.isEnabled;
+      const cronChanged = cronExpression !== undefined && cronExpression !== schedule.cronExpression;
+      const capChanged = maxRuns !== undefined && (maxRuns ?? null) !== (schedule.maxRuns ?? null);
+      const nextRunChanged = nextRunAt !== undefined; // an explicit override always advances the schedule
+      if (wantsEnable || cronChanged || capChanged || nextRunChanged) {
+        const wf = schedule.workflowId != null ? await storage.getWorkflow(schedule.workflowId) : undefined;
+        if (!wf || !canScheduleWorkflow(user, wf)) {
+          return res.status(403).json({ error: "Only the workflow owner can enable or reschedule this schedule" });
+        }
+      }
+
       const updates: Record<string, unknown> = {};
 
       if (name !== undefined) updates.name = name;
@@ -2030,6 +2024,11 @@ export async function registerRoutes(
       const workflow = await storage.getWorkflow(schedule.workflowId);
       if (!workflow) {
         return res.status(404).json({ error: "Schedule references a deleted workflow" });
+      }
+      // run-now fires a job on the workflow OWNER's secrets, so it needs the same
+      // owner-only gate as scheduling — a system admin isn't exempt.
+      if (!canScheduleWorkflow(user, workflow)) {
+        return res.status(403).json({ error: "Only the workflow owner can run this schedule" });
       }
       const evalSet = await storage.getEvalSet(schedule.evalSetId);
 

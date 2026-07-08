@@ -14,12 +14,15 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Pagination, PaginationContent, PaginationItem, PaginationLink, PaginationNext, PaginationPrevious, PaginationEllipsis } from "@/components/ui/pagination";
 import { ClipboardList, CheckCircle, XCircle, Loader2, Clock, RefreshCw, CalendarClock, MousePointerClick, MoreHorizontal, Pause, Play, Pencil, Trash2, Zap } from "lucide-react";
 import { useState } from "react";
+import { useToast } from "@/hooks/use-toast";
 import { useLocation, useSearch, Link } from "wouter";
 import { formatSmartTimestamp, formatRegion, REGIONS } from "@/lib/utils";
 import { format } from "date-fns";
 import type { EvalJob, EvalSchedule, Workflow as WorkflowType } from "@shared/schema";
 
-type EnrichedSchedule = EvalSchedule & { workflowName: string; creatorName: string };
+// canManage is the server's owner-only decision for run-now/resume (matches the
+// backend), so the UI never offers actions that would 403.
+type EnrichedSchedule = EvalSchedule & { workflowName: string; creatorName: string; canManage?: boolean };
 
 interface AuthStatus {
   user: { id: number; isAdmin: boolean } | null;
@@ -64,6 +67,7 @@ const STATUS_CONFIG: Record<string, { variant: "default" | "destructive" | "seco
 
 function ScheduledJobsBlock() {
   const queryClient = useQueryClient();
+  const { toast } = useToast();
   const { data: auth } = useQuery<AuthStatus>({ queryKey: ["/api/auth/status"] });
   const userId = auth?.user?.id;
   const isAdmin = auth?.user?.isAdmin ?? false;
@@ -81,30 +85,50 @@ function ScheduledJobsBlock() {
   const [deleteConfirmText, setDeleteConfirmText] = useState("");
   const [actionLoading, setActionLoading] = useState<number | null>(null);
 
-  const canManage = (s: EnrichedSchedule) => s.createdBy === userId || isAdmin;
+  // Whether to show the actions dropdown at all (creator or admin can manage the
+  // schedule object — pause/rename/delete). Distinct from the server-sent
+  // `s.canManage` (owner-only) used by canRunOrResume for the secret-spending items.
+  const canOpenMenu = (s: EnrichedSchedule) => s.createdBy === userId || isAdmin;
+  // Enable/Run-Now spend the workflow owner's secrets, so the server restricts
+  // them to the workflow owner (no admin bypass). Use the server-computed
+  // canManage bit (owner of the schedule's workflow); fail open if it's absent
+  // (older API) so a legitimate owner is never blocked. Pause/Delete stay open to
+  // any schedule manager.
+  const canRunOrResume = (s: EnrichedSchedule) => s.canManage ?? (s.createdBy === userId);
 
   const refetchAll = () => {
     queryClient.invalidateQueries({ queryKey: ["/api/eval-schedules"] });
   };
 
+  // Surface a failed schedule action (e.g. a 403 from the owner-only gate) instead
+  // of silently no-op'ing. Returns true on success.
+  const checkRes = async (res: Response, action: string): Promise<boolean> => {
+    if (res.ok) return true;
+    const msg = await res.json().then((d) => d?.error).catch(() => null);
+    toast({ title: `Couldn't ${action}`, description: msg ?? `Request failed (${res.status})`, variant: "destructive" });
+    return false;
+  };
+
   const toggleEnabled = async (s: EnrichedSchedule) => {
     setActionLoading(s.id);
-    await fetch(`/api/eval-schedules/${s.id}`, {
+    const res = await fetch(`/api/eval-schedules/${s.id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       credentials: "include",
       body: JSON.stringify({ isEnabled: !s.isEnabled }),
     });
+    await checkRes(res, s.isEnabled ? "pause the schedule" : "resume the schedule");
     refetchAll();
     setActionLoading(null);
   };
 
   const runNow = async (id: number) => {
     setActionLoading(id);
-    await fetch(`/api/eval-schedules/${id}/run-now`, {
+    const res = await fetch(`/api/eval-schedules/${id}/run-now`, {
       method: "POST",
       credentials: "include",
     });
+    await checkRes(res, "run the schedule");
     refetchAll();
     queryClient.invalidateQueries({ queryKey: ["/api/eval-jobs"] });
     setActionLoading(null);
@@ -124,12 +148,13 @@ function ScheduledJobsBlock() {
       body.cronExpression = editCron;
       body.maxRuns = editMaxRuns ? parseInt(editMaxRuns) : null;
     }
-    await fetch(`/api/eval-schedules/${editSchedule.id}`, {
+    const res = await fetch(`/api/eval-schedules/${editSchedule.id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       credentials: "include",
       body: JSON.stringify(body),
     });
+    if (!(await checkRes(res, "update the schedule"))) return; // keep dialog open on failure
     setEditSchedule(null);
     refetchAll();
   };
@@ -201,7 +226,7 @@ function ScheduledJobsBlock() {
                     </TableCell>
                     <TableCell className="text-sm text-muted-foreground">{s.creatorName}</TableCell>
                     <TableCell>
-                      {canManage(s) && (
+                      {canOpenMenu(s) && (
                         <DropdownMenu>
                           <DropdownMenuTrigger asChild>
                             <Button variant="ghost" size="icon" className="h-8 w-8" disabled={actionLoading === s.id}>
@@ -209,15 +234,21 @@ function ScheduledJobsBlock() {
                             </Button>
                           </DropdownMenuTrigger>
                           <DropdownMenuContent align="end">
-                            <DropdownMenuItem onClick={() => toggleEnabled(s)}>
-                              {s.isEnabled ? <><Pause className="h-4 w-4 mr-2" />Pause</> : <><Play className="h-4 w-4 mr-2" />Resume</>}
-                            </DropdownMenuItem>
+                            {/* Pause (disable) is benign; Resume (enable) resumes spending the
+                                owner's secrets, so only offer it to the owner. */}
+                            {(s.isEnabled || canRunOrResume(s)) && (
+                              <DropdownMenuItem onClick={() => toggleEnabled(s)}>
+                                {s.isEnabled ? <><Pause className="h-4 w-4 mr-2" />Pause</> : <><Play className="h-4 w-4 mr-2" />Resume</>}
+                              </DropdownMenuItem>
+                            )}
                             <DropdownMenuItem onClick={() => openEdit(s)}>
                               <Pencil className="h-4 w-4 mr-2" />Edit
                             </DropdownMenuItem>
-                            <DropdownMenuItem onClick={() => runNow(s.id)}>
-                              <Zap className="h-4 w-4 mr-2" />Run Now
-                            </DropdownMenuItem>
+                            {canRunOrResume(s) && (
+                              <DropdownMenuItem onClick={() => runNow(s.id)}>
+                                <Zap className="h-4 w-4 mr-2" />Run Now
+                              </DropdownMenuItem>
+                            )}
                             <DropdownMenuSeparator />
                             <DropdownMenuItem className="text-destructive" onClick={() => { setDeleteConfirmText(""); setDeleteId(s.id); }}>
                               <Trash2 className="h-4 w-4 mr-2" />Delete
