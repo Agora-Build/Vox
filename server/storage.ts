@@ -752,6 +752,27 @@ export class DatabaseStorage {
     return (result as unknown as { rowCount: number }).rowCount || 0;
   }
 
+  // Hard job-level timeout: fail any job that has been "running" longer than
+  // maxRunMinutes, regardless of agent heartbeat. Catches jobs whose agent zombied
+  // or was superseded (its heartbeats stop updating last_seen_at, so the
+  // heartbeat reaper never reclaims them) — otherwise they hang "running" forever.
+  // Terminal (failed), so the user sees a clear result instead of an endless run.
+  async failTimedOutRunningJobs(maxRunMinutes: number): Promise<number> {
+    const cutoff = new Date(Date.now() - maxRunMinutes * 60 * 1000);
+    const message = `Exceeded maximum running time (${maxRunMinutes} min) — the agent stopped responding`;
+    const result = await db.execute(sql`
+      UPDATE eval_jobs
+      SET status = 'failed'::eval_job_status,
+          error = ${message},
+          completed_at = NOW(),
+          updated_at = NOW()
+      WHERE status = 'running'::eval_job_status
+      AND started_at IS NOT NULL
+      AND started_at < ${cutoff}
+    `);
+    return (result as unknown as { rowCount: number }).rowCount || 0;
+  }
+
   // Release running jobs still assigned to an agent that just (re)registered.
   // A fresh registration means the previous process died mid-job, so those jobs
   // are orphaned — the reaper's heartbeat-staleness check never catches them

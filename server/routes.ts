@@ -2807,8 +2807,20 @@ export async function registerRoutes(
       }
 
       const job = await storage.getEvalJob(parseInt(jobId));
-      if (!job || job.evalAgentId !== agentId) {
-        return res.status(403).json({ error: "Job not found or not assigned to this agent" });
+      if (!job) {
+        return res.status(404).json({ error: "Job not found" });
+      }
+      // Idempotent: a duplicate completion (agent retry) must not create a second result.
+      if (job.status === "completed") {
+        return res.json({ message: "Job already completed" });
+      }
+      // The lease is current (superseded fenced above), so this is the legitimate
+      // agent for the token. Accept its result even if the job was re-queued
+      // (eval_agent_id cleared by the reaper/re-register) — otherwise a valid
+      // finish arriving after a re-queue is silently dropped. Reject only if the
+      // job is now actively assigned to a DIFFERENT agent.
+      if (job.evalAgentId !== null && job.evalAgentId !== agentId) {
+        return res.status(403).json({ error: "Job is assigned to a different agent" });
       }
 
       await storage.updateEvalAgent(agentId, { state: "idle" });
