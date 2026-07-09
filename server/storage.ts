@@ -901,6 +901,23 @@ export class DatabaseStorage {
     return (result as unknown as { rowCount: number }).rowCount || 0;
   }
 
+  // Atomically finalize a RUNNING job (running → completed/failed) in a single
+  // UPDATE. Only the first caller gets a row back; a concurrent duplicate
+  // completion or an already-terminal job returns undefined — so exactly one
+  // completion creates the result.
+  async finalizeRunningJob(jobId: number, error?: string): Promise<EvalJob | undefined> {
+    const result = await db.update(evalJobs)
+      .set({
+        status: error ? "failed" : "completed",
+        completedAt: new Date(),
+        error: error || null,
+        updatedAt: new Date(),
+      })
+      .where(and(eq(evalJobs.id, jobId), eq(evalJobs.status, "running")))
+      .returning();
+    return result[0];
+  }
+
   async completeEvalJob(jobId: number, error?: string): Promise<EvalJob | undefined> {
     const result = await db.update(evalJobs)
       .set({ 

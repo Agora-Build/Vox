@@ -3848,7 +3848,7 @@ describe('Vox API Tests', () => {
         method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body,
       });
       expect(done2.ok).toBe(true);
-      expect((await done2.json()).message).toMatch(/already completed/i);
+      expect((await done2.json()).message).toMatch(/already finalized/i);
     });
   });
 
