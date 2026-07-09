@@ -2807,8 +2807,23 @@ export async function registerRoutes(
       }
 
       const job = await storage.getEvalJob(parseInt(jobId));
-      if (!job || job.evalAgentId !== agentId) {
-        return res.status(403).json({ error: "Job not found or not assigned to this agent" });
+      if (!job) {
+        return res.status(404).json({ error: "Job not found" });
+      }
+      // Authorize first: only the agent this job is currently assigned to may
+      // complete it (a re-queued job has been re-claimed by its next runner, so
+      // its eval_agent_id is set again). Ordered before finalization so a
+      // stranger's token can't probe job status/existence.
+      if (job.evalAgentId !== agentId) {
+        return res.status(403).json({ error: "Job not assigned to this agent" });
+      }
+      // Atomically finalize (running → completed/failed). Exactly one caller wins,
+      // so a duplicate completion or an already-terminal job (e.g. one failed by
+      // the 90-min timeout) returns idempotently without creating a second result
+      // or resurrecting a finished job.
+      const finalized = await storage.finalizeRunningJob(parseInt(jobId), jobError);
+      if (!finalized) {
+        return res.json({ message: "Job already finalized" });
       }
 
       await storage.updateEvalAgent(agentId, { state: "idle" });
@@ -2846,8 +2861,11 @@ export async function registerRoutes(
             });
           } catch (resultError) {
             console.error(`Failed to create eval result for job ${jobId}:`, resultError);
-            // Mark job as failed since results couldn't be saved
-            await storage.completeEvalJob(parseInt(jobId), "Failed to save eval results");
+            // The finalize above already marked the job completed. Roll it back to
+            // running so the agent's retry can re-finalize WITH the result (a 500
+            // is what an agent retries) instead of losing it to "already
+            // finalized". The 90-min reaper is the backstop if no retry comes.
+            await storage.resetJobToRunning(parseInt(jobId));
             return res.status(500).json({ error: "Failed to save eval results" });
           }
         } else {
@@ -2855,8 +2873,7 @@ export async function registerRoutes(
         }
       }
 
-      // Mark job as completed (or failed if jobError was provided)
-      await storage.completeEvalJob(parseInt(jobId), jobError);
+      // Status already set by finalizeRunningJob above.
       res.json({ message: "Job completed" });
     } catch (error) {
       console.error("Error completing job:", error);

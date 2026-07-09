@@ -752,6 +752,27 @@ export class DatabaseStorage {
     return (result as unknown as { rowCount: number }).rowCount || 0;
   }
 
+  // Hard job-level timeout: fail any job that has been "running" longer than
+  // maxRunMinutes, regardless of agent heartbeat. Catches jobs whose agent zombied
+  // or was superseded (its heartbeats stop updating last_seen_at, so the
+  // heartbeat reaper never reclaims them) — otherwise they hang "running" forever.
+  // Terminal (failed), so the user sees a clear result instead of an endless run.
+  async failTimedOutRunningJobs(maxRunMinutes: number): Promise<number> {
+    const cutoff = new Date(Date.now() - maxRunMinutes * 60 * 1000);
+    const message = `Exceeded maximum running time (${maxRunMinutes} min) — the agent stopped responding`;
+    const result = await db.execute(sql`
+      UPDATE eval_jobs
+      SET status = 'failed'::eval_job_status,
+          error = ${message},
+          completed_at = NOW(),
+          updated_at = NOW()
+      WHERE status = 'running'::eval_job_status
+      AND started_at IS NOT NULL
+      AND started_at < ${cutoff}
+    `);
+    return (result as unknown as { rowCount: number }).rowCount || 0;
+  }
+
   // Release running jobs still assigned to an agent that just (re)registered.
   // A fresh registration means the previous process died mid-job, so those jobs
   // are orphaned — the reaper's heartbeat-staleness check never catches them
@@ -878,6 +899,31 @@ export class DatabaseStorage {
       ));
 
     return (result as unknown as { rowCount: number }).rowCount || 0;
+  }
+
+  // Atomically finalize a RUNNING job (running → completed/failed) in a single
+  // UPDATE. Only the first caller gets a row back; a concurrent duplicate
+  // completion or an already-terminal job returns undefined — so exactly one
+  // completion creates the result.
+  async finalizeRunningJob(jobId: number, error?: string): Promise<EvalJob | undefined> {
+    const result = await db.update(evalJobs)
+      .set({
+        status: error ? "failed" : "completed",
+        completedAt: new Date(),
+        error: error || null,
+        updatedAt: new Date(),
+      })
+      .where(and(eq(evalJobs.id, jobId), eq(evalJobs.status, "running")))
+      .returning();
+    return result[0];
+  }
+
+  // Roll a just-finalized job back to running so a retry can re-attempt saving
+  // its result (used when the result insert failed transiently after finalize).
+  async resetJobToRunning(jobId: number): Promise<void> {
+    await db.update(evalJobs)
+      .set({ status: "running", completedAt: null, error: null, updatedAt: new Date() })
+      .where(eq(evalJobs.id, jobId));
   }
 
   async completeEvalJob(jobId: number, error?: string): Promise<EvalJob | undefined> {

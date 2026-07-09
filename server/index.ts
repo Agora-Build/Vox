@@ -9,6 +9,10 @@ import rateLimit from "express-rate-limit";
 import { authenticateApiKey, passport, initializeGoogleOAuth } from "./auth";
 import { storage, mergeEvalConfig, buildJobSnapshot } from "./storage";
 import { canScheduleWorkflow } from "./permissions";
+
+// Global hard cap on how long a single eval job may stay "running" before the
+// background reaper fails it (agent zombied/superseded/killed). Tune here.
+const MAX_JOB_RUN_MINUTES = 90;
 import { parseNextCronRun } from "./cron";
 import { setupClashWebSocket } from "./clash-ws";
 import pkg from "pg";
@@ -228,6 +232,13 @@ function startBackgroundWorker() {
       const releasedJobs = await storage.releaseStaleJobs(STALE_THRESHOLD_MINUTES);
       if (releasedJobs > 0) {
         log(`Released ${releasedJobs} stale job(s)`, "worker");
+      }
+
+      // Fail jobs stuck "running" past the global hard cap (agent zombied/
+      // superseded, so the heartbeat check above never catches them).
+      const timedOut = await storage.failTimedOutRunningJobs(MAX_JOB_RUN_MINUTES);
+      if (timedOut > 0) {
+        log(`Failed ${timedOut} job(s) exceeding ${MAX_JOB_RUN_MINUTES}min run time`, "worker");
       }
 
       // Mark offline agents

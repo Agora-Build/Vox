@@ -3800,6 +3800,58 @@ describe('Vox API Tests', () => {
   });
 
   // ==================== Metrics API (P95 fields) ====================
+  describe('Eval Agent job completion', () => {
+    // Uses region 'sa' so the local 'na' daemon (if any) doesn't race for the job.
+    it('completes a job once and is idempotent on a duplicate completion', async () => {
+      // 1) token + registered agent
+      const tokRes = await authFetch(adminSession, `${BASE_URL}/api/eval-agent-tokens`, {
+        method: 'POST', body: JSON.stringify({ region: 'sa', name: `complete-test-${Date.now()}` }),
+      });
+      expect(tokRes.ok).toBe(true);
+      const { token } = await tokRes.json();
+      const regRes = await fetch(`${BASE_URL}/api/eval-agent/register`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ name: 'complete-test-agent' }),
+      });
+      expect(regRes.ok).toBe(true);
+      const { id: agentId, leaseId } = await regRes.json();
+
+      // 2) self-contained workflow + eval set (this block runs after the Cleanup
+      // describe that deletes the shared fixtures), then a job claimed by the agent.
+      const wf = await authFetch(adminSession, `${BASE_URL}/api/workflows`, {
+        method: 'POST', body: JSON.stringify({ name: `Complete WF ${Date.now()}`, visibility: 'public', providerId: testProviderId }),
+      });
+      const wfId = (await wf.json()).id;
+      const es = await authFetch(adminSession, `${BASE_URL}/api/eval-sets`, {
+        method: 'POST', body: JSON.stringify({ name: `Complete ES ${Date.now()}`, visibility: 'public', config: { scenario: 'x' } }),
+      });
+      const esId = (await es.json()).id;
+      const jobRes = await authFetch(adminSession, `${BASE_URL}/api/workflows/${wfId}/run`, {
+        method: 'POST', body: JSON.stringify({ region: 'sa', evalSetId: esId }),
+      });
+      expect(jobRes.ok).toBe(true);
+      const jobBody = await jobRes.json();
+      const jobId = jobBody.job?.id ?? jobBody.id;
+      const claim = await fetch(`${BASE_URL}/api/eval-agent/jobs/${jobId}/claim`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ agentId, leaseId }),
+      });
+      expect(claim.ok).toBe(true);
+
+      // 3) complete once → ok
+      const body = JSON.stringify({ agentId, leaseId, results: { responseLatencyMedian: 100, interruptLatencyMedian: 40 } });
+      const done1 = await fetch(`${BASE_URL}/api/eval-agent/jobs/${jobId}/complete`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body,
+      });
+      expect(done1.ok).toBe(true);
+
+      // 4) complete again → idempotent, no duplicate result
+      const done2 = await fetch(`${BASE_URL}/api/eval-agent/jobs/${jobId}/complete`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body,
+      });
+      expect(done2.ok).toBe(true);
+      expect((await done2.json()).message).toMatch(/already finalized/i);
+    });
+  });
+
   describe('Metrics API with P95', () => {
     it('should include p95 fields in realtime metrics', async () => {
       const res = await fetch(`${BASE_URL}/api/metrics/realtime?limit=5`);
