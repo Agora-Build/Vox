@@ -2861,9 +2861,11 @@ export async function registerRoutes(
             });
           } catch (resultError) {
             console.error(`Failed to create eval result for job ${jobId}:`, resultError);
-            // Job was already marked completed above; flip it to failed since the
-            // results couldn't be saved.
-            await storage.completeEvalJob(parseInt(jobId), "Failed to save eval results");
+            // The finalize above already marked the job completed. Roll it back to
+            // running so the agent's retry can re-finalize WITH the result (a 500
+            // is what an agent retries) instead of losing it to "already
+            // finalized". The 90-min reaper is the backstop if no retry comes.
+            await storage.resetJobToRunning(parseInt(jobId));
             return res.status(500).json({ error: "Failed to save eval results" });
           }
         } else {
