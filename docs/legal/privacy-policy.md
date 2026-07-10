@@ -85,10 +85,22 @@ Where applicable law (such as the GDPR) requires a legal basis, we rely on:
 
 ## 6. Cookies and Similar Technologies
 
-We use strictly necessary cookies to keep you signed in and to maintain session
-security. We may use limited functional cookies to remember preferences. You can
-control cookies through your browser settings, but disabling strictly necessary
-cookies may prevent parts of the Service from working.
+We use a single **strictly necessary session cookie** to keep you signed in and to
+maintain session security. It is set with `HttpOnly` and `SameSite=Lax` attributes
+(and marked `Secure` in production) and is required for the authenticated areas of
+the Service to work.
+
+We also store limited preferences (such as your light/dark theme) in your
+browser's **local storage**, which remains on your device and is not transmitted
+to us as a cookie.
+
+Third-party providers used for sign-in (such as Google or GitHub) and for payment
+processing may set their own cookies during those flows; those cookies are
+governed by the respective provider's privacy policy.
+
+You can control or clear cookies and local storage through your browser settings,
+but disabling the strictly necessary session cookie may prevent you from signing
+in or using parts of the Service.
 
 ## 7. How We Share Information
 
