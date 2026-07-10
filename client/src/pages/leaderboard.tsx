@@ -27,17 +27,21 @@ interface LeaderboardEntry {
   responseLatencyP95: number | null;
   interruptLatency: number | null;
   interruptLatencyP95: number | null;
+  // Turn Success Rate (0..1), or null. Includes no-response turns as failures.
+  turnSuccessRate: number | null;
   networkResilience: number | null;
   naturalness: number | null;
   noiseReduction: number | null;
   compositeScore: number;
 }
 
-type SortField = "rank" | "responseLatency" | "interruptLatency" | "networkResilience" | "naturalness" | "noiseReduction";
+type SortField = "rank" | "responseLatency" | "interruptLatency" | "turnSuccessRate" | "networkResilience" | "naturalness" | "noiseReduction";
 type SortDirection = "asc" | "desc";
 
 // null latency = NA (every run in the group was non-responsive).
 const naNum = (v: number | null, suffix = "") => v == null ? "NA" : `${v}${suffix}`;
+// Turn Success Rate is 0..1; null = no evaluable turns. Show as a percentage.
+const naPct = (v: number | null) => v == null ? "NA" : `${Math.round(v * 100)}%`;
 
 export default function Leaderboard() {
   const [selectedRegion, setSelectedRegion] = useState<string>("all");
@@ -238,6 +242,18 @@ export default function Leaderboard() {
                       variant="ghost"
                       size="sm"
                       className="h-8 p-0 font-medium hover:bg-transparent"
+                      onClick={() => handleSort("turnSuccessRate")}
+                      title="Share of turns handled correctly — responded, stopped on interrupt, no false barge-in. No-response turns count as failures."
+                    >
+                      Turn Success
+                      <SortIcon field="turnSuccessRate" />
+                    </Button>
+                  </TableHead>
+                  <TableHead className="text-right">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-8 p-0 font-medium hover:bg-transparent"
                       onClick={() => handleSort("networkResilience")}
                     >
                       Network
@@ -297,6 +313,7 @@ export default function Leaderboard() {
                       <div>{naNum(entry.interruptLatency)}</div>
                       <div className="text-xs text-muted-foreground">P95: {naNum(entry.interruptLatencyP95)}</div>
                     </TableCell>
+                    <TableCell className="text-right font-mono font-semibold" data-testid={`text-turn-success-${entry.rank}`}>{naPct(entry.turnSuccessRate)}</TableCell>
                     <TableCell className="text-right w-[150px]">
                       <div className="flex items-center justify-end gap-2">
                         <span className="font-mono text-xs" data-testid={`text-network-${entry.rank}`}>{entry.networkResilience}%</span>
@@ -374,6 +391,10 @@ export default function Leaderboard() {
                 </div>
               </div>
               <div className="space-y-3 pt-2 border-t">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm" title="Share of turns handled correctly — responded, stopped on interrupt, no false barge-in. No-response turns count as failures.">Turn Success Rate</span>
+                  <span className="font-mono text-sm font-semibold">{naPct(selectedEntry.turnSuccessRate)}</span>
+                </div>
                 <div className="flex items-center justify-between">
                   <span className="text-sm">Network Resilience</span>
                   <div className="flex items-center gap-2">

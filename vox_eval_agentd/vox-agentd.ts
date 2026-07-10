@@ -96,6 +96,11 @@ interface EvalResult {
   responseRate: number | null;
   interruptRate: number | null;
   falseInterruptRate: number | null;
+  // Turn Success Rate (0..1): opportunity-weighted composite of the three rates
+  // above (responded / stopped-on-interrupt / no-false-barge). Includes
+  // no-response turns as failures, so it's the resilience signal. null when no
+  // evaluable turns.
+  turnSuccessRate: number | null;
   networkResilience: number;
   naturalness: number;
   noiseReduction: number;
@@ -152,6 +157,7 @@ const RESULT_DEFAULTS: EvalResult = {
   responseRate: null,
   interruptRate: null,
   falseInterruptRate: null,
+  turnSuccessRate: null,
   networkResilience: 85,
   naturalness: 3.5,
   noiseReduction: 90,
@@ -709,6 +715,7 @@ class VoxEvalAgentDaemon {
     result.responseRate = rates.response_rate;
     result.interruptRate = rates.interrupt_rate;
     result.falseInterruptRate = rates.false_interrupt_rate;
+    result.turnSuccessRate = rates.turn_success_rate;
     if (result.rawData && typeof result.rawData === 'object') {
       (result.rawData as Record<string, unknown>).per_case = perCase;
       (result.rawData as Record<string, unknown>).rates = rates;
@@ -996,11 +1003,12 @@ class VoxEvalAgentDaemon {
 
       // Cross-chunk rates computed at merge time (mergeChunkMetrics) ride
       // through the merged metrics file — pick them up if present.
-      const rates = metrics.rates as { response_rate?: number | null; interrupt_rate?: number | null; false_interrupt_rate?: number | null } | undefined;
+      const rates = metrics.rates as { response_rate?: number | null; interrupt_rate?: number | null; false_interrupt_rate?: number | null; turn_success_rate?: number | null } | undefined;
       if (rates && typeof rates === 'object') {
         results.responseRate = rates.response_rate ?? null;
         results.interruptRate = rates.interrupt_rate ?? null;
         results.falseInterruptRate = rates.false_interrupt_rate ?? null;
+        results.turnSuccessRate = rates.turn_success_rate ?? null;
       }
 
       // Helper: compute median from array of numbers

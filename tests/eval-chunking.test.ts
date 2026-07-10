@@ -581,6 +581,10 @@ describe("computePerCaseAndRates", () => {
     expect(rates.interrupt_rate).toBeCloseTo(9 / 10);
     // false interrupts: 2 reactions over INT_FALSE's 10 samples (lower = better)
     expect(rates.false_interrupt_rate).toBeCloseTo(2 / 10);
+    // Turn Success Rate (opportunity-weighted): responses (28) + interrupt stops
+    // (9) + non-barges (10 false chances − 2 barges = 8) = 45 successful, over
+    // total opportunities 30 + 10 + 10 = 50 → 0.9.
+    expect(rates.turn_success_rate).toBeCloseTo(45 / 50);
   });
 
   it("emits per-case stats keyed by case_id", () => {
@@ -604,10 +608,23 @@ describe("computePerCaseAndRates", () => {
     expect(rates.response_rate).toBeCloseTo(1);
     expect(rates.interrupt_rate).toBeNull();
     expect(rates.false_interrupt_rate).toBeNull();
+    // Only response opportunities, all answered → TSR 1.
+    expect(rates.turn_success_rate).toBe(1);
+  });
+
+  it("turn success rate: a no-response run counts every turn as failed → 0", () => {
+    // 5 samples, zero response turns (agent never answered — e.g. under network
+    // impairment). Unlike latency (NA), TSR is 0/5 = 0: the resilience signal.
+    const { rates } = computePerCaseAndRates([
+      entry(respChunk([]), { caseId: "RSP_BASIC", sampleCount: 5 }),
+    ]);
+    expect(rates.response_rate).toBe(0);
+    expect(rates.turn_success_rate).toBe(0);
   });
 
   it("returns all-null rates for empty input and clamps rates at 1", () => {
     expect(computePerCaseAndRates([]).rates.response_rate).toBeNull();
+    expect(computePerCaseAndRates([]).rates.turn_success_rate).toBeNull();
     const { rates } = computePerCaseAndRates([
       entry(respChunk([500, 510, 520]), { sampleCount: 2 }), // more turns than samples (greeting picked up)
     ]);

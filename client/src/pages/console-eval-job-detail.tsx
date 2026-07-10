@@ -304,12 +304,15 @@ export default function ConsoleEvalJobDetail({ jobId }: { jobId: number }) {
           </Card>
           <Card>
             <CardHeader className="pb-2">
-              <CardTitle className="text-sm">Rates</CardTitle>
+              <CardTitle className="text-sm" title="Opportunity-weighted success across responding, stopping on interrupt, and avoiding false barge-in. A no-response turn counts as a failure, so this stays meaningful under network impairment.">Turn Success Rate</CardTitle>
             </CardHeader>
             <CardContent className="space-y-1">
-              <div className="flex justify-between"><span className="text-sm text-muted-foreground">Response</span><span className="text-xl font-bold font-mono">{pct(result.responseRate)}</span></div>
-              <div className="flex justify-between"><span className="text-sm text-muted-foreground">Interrupt</span><span className="text-sm font-mono text-muted-foreground">{pct(result.interruptRate)}</span></div>
-              <div className="flex justify-between"><span className="text-sm text-muted-foreground" title="How often the AI barges in before the user finishes speaking — lower is better">False Barge-in ↓</span><span className="text-sm font-mono text-muted-foreground">{pct(result.falseInterruptRate)}</span></div>
+              <div className="flex justify-between items-baseline"><span className="text-sm text-muted-foreground">Overall</span><span className="text-xl font-bold font-mono">{pct(result.turnSuccessRate)}</span></div>
+              <div className="mt-1 pt-1 border-t space-y-1">
+                <div className="flex justify-between"><span className="text-xs text-muted-foreground">Response</span><span className="text-xs font-mono text-muted-foreground">{pct(result.responseRate)}</span></div>
+                <div className="flex justify-between"><span className="text-xs text-muted-foreground">Interrupt</span><span className="text-xs font-mono text-muted-foreground">{pct(result.interruptRate)}</span></div>
+                <div className="flex justify-between"><span className="text-xs text-muted-foreground" title="How often the AI barges in before the user finishes speaking — lower is better">False Barge-in ↓</span><span className="text-xs font-mono text-muted-foreground">{pct(result.falseInterruptRate)}</span></div>
+              </div>
             </CardContent>
           </Card>
           <Card>

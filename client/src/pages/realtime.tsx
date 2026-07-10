@@ -28,6 +28,9 @@ interface EvalResult {
   interruptLatency: number | null;
   interruptLatencySd: number | null;
   interruptLatencyP95: number | null;
+  // Turn Success Rate (0..1), or null. Includes no-response turns as failures —
+  // the quality/resilience signal that stays meaningful when latency is NA.
+  turnSuccessRate: number | null;
   networkResilience: number | null;
   naturalness: number | null;
   noiseReduction: number | null;
@@ -54,6 +57,8 @@ interface ConfigData {
 
 // Latency of null = NA (agent didn't respond). Render NA, never "0ms".
 const fmtMs = (v: number | null | undefined) => v == null ? "NA" : `${Math.round(v).toLocaleString()}ms`;
+// Turn Success Rate is 0..1; null = no evaluable turns. Render as a percentage.
+const fmtPct = (v: number | null | undefined) => v == null ? "NA" : `${Math.round(v * 100)}%`;
 
 interface HealthData {
   status: "operational" | "degraded" | "down";
@@ -143,6 +148,9 @@ function buildCombinedData(filteredMetrics: EvalResult[], colorMap: Map<string, 
         // point (a gap) rather than plotting it as 0.
         row[`${p.key}_response`] = m?.responseLatency ?? undefined;
         row[`${p.key}_interrupt`] = m?.interruptLatency ?? undefined;
+        // Turn Success Rate as a percentage (0..100); undefined when no data so
+        // connectNulls skips it.
+        row[`${p.key}_tsr`] = m?.turnSuccessRate != null ? Math.round(m.turnSuccessRate * 100) : undefined;
         // Carry the workflow behind this point so the tooltip can name/link it.
         row[`${p.key}_wfname`] = m?.workflowName ?? undefined;
         row[`${p.key}_wfid`] = m?.workflowId ?? undefined;
@@ -441,7 +449,7 @@ function providerPrefixFromDataKey(dataKey: string): string {
  * where a point is a daily average of many workflows — keeps the plain tooltip.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function WorkflowTooltip({ active, payload, label, showWorkflow }: any) {
+function WorkflowTooltip({ active, payload, label, showWorkflow, unit = "ms" }: any) {
   if (!active || !Array.isArray(payload) || payload.length === 0) return null;
   const row = (payload[0]?.payload ?? {}) as CombinedRow;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -457,7 +465,7 @@ function WorkflowTooltip({ active, payload, label, showWorkflow }: any) {
         const wfId = showWorkflow ? (row[`${prefix}_wfid`] as number | undefined) : undefined;
         return (
           <div key={e.dataKey} className="flex flex-col gap-0.5 py-0.5">
-            <span style={{ color: e.color }}>{e.name}: {e.value}ms</span>
+            <span style={{ color: e.color }}>{e.name}: {e.value}{unit}</span>
             {wfName && (wfId != null ? (
               <Link
                 href={`/console/workflows/${wfId}`}
@@ -520,9 +528,11 @@ function MetricsSection({ metrics, isLoading, selectedRegion, timeRangeLabel, re
   // Pre-compute segmented chart data (breaks lines at 2h gaps)
   const responseProviders = useMemo(() => providers.map(p => ({ dataKey: `${p.key}_response`, name: p.name, stroke: p.stroke })), [providers]);
   const interruptProviders = useMemo(() => providers.map(p => ({ dataKey: `${p.key}_interrupt`, name: p.name, stroke: p.stroke })), [providers]);
+  const tsrProviders = useMemo(() => providers.map(p => ({ dataKey: `${p.key}_tsr`, name: p.name, stroke: p.stroke })), [providers]);
 
   const responseChart = useMemo(() => buildSegmentedData(visibleData, responseProviders), [visibleData, responseProviders]);
   const interruptChart = useMemo(() => buildSegmentedData(visibleData, interruptProviders), [visibleData, interruptProviders]);
+  const tsrChart = useMemo(() => buildSegmentedData(visibleData, tsrProviders), [visibleData, tsrProviders]);
 
   return (
     <>
@@ -627,6 +637,37 @@ function MetricsSection({ metrics, isLoading, selectedRegion, timeRangeLabel, re
         </Card>
         <Card>
           <CardHeader className="flex flex-row items-center justify-between gap-2 space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">Turn Success Rate</CardTitle>
+            <div className="flex items-center gap-2">
+              <Popover>
+                <PopoverTrigger asChild>
+                  <Clock className="h-4 w-4 text-muted-foreground cursor-pointer hover:text-foreground transition-colors" />
+                </PopoverTrigger>
+                <PopoverContent className="w-80">
+                  <div className="space-y-2">
+                    <h4 className="font-medium leading-none">Turn Success Rate</h4>
+                    <p className="text-sm text-muted-foreground">
+                      Share of turns the agent handled correctly — responded when expected, stopped promptly on interrupt, and avoided false barge-in.
+                    </p>
+                    <p className="text-xs text-muted-foreground pt-2 border-t">
+                      A no-response turn counts as a failure, so this stays meaningful under network impairment where latency is NA.
+                    </p>
+                  </div>
+                </PopoverContent>
+              </Popover>
+            </div>
+          </CardHeader>
+          <CardContent>
+            {isLoading ? (
+              <Skeleton className="h-8 w-20 mt-2" />
+            ) : (
+              <div className="text-2xl font-bold font-mono mt-2" data-testid={`${testIdPrefix}text-turn-success-rate`}>{fmtPct(latest?.turnSuccessRate)}</div>
+            )}
+            <p className="text-xs text-muted-foreground">Responds · stops · no false barge-in</p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between gap-2 space-y-0 pb-2">
             <CardTitle className="text-sm font-medium">Data Points</CardTitle>
             <Activity className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
@@ -636,16 +677,8 @@ function MetricsSection({ metrics, isLoading, selectedRegion, timeRangeLabel, re
             ) : (
               <div className="text-2xl font-bold font-mono mt-2" data-testid={`${testIdPrefix}text-total-tests`}>{filteredMetrics.length.toLocaleString()}</div>
             )}
-            <p className="text-xs text-muted-foreground">{timeRangeLabel}</p>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between gap-2 space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Region Filter</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold mt-2">{regionLabel}</div>
-            <p className="text-xs text-muted-foreground">{filteredMetrics.length} data points</p>
+            <p className="text-xs text-muted-foreground truncate">{regionLabel} · {timeRangeLabel}</p>
+            <p className="text-xs text-muted-foreground truncate pt-1" title={latest?.provider ?? undefined} data-testid={`${testIdPrefix}text-latest-provider`}>Latest: {latest?.provider ?? "—"}</p>
           </CardContent>
         </Card>
       </div>
@@ -699,6 +732,35 @@ function MetricsSection({ metrics, isLoading, selectedRegion, timeRangeLabel, re
                       <Tooltip content={<WorkflowTooltip showWorkflow={showWorkflow} />} wrapperStyle={{ pointerEvents: 'auto' }} />
                       <Legend />
                       {interruptChart.lines.map(l => (
+                        <Line key={l.segKey} type="monotone" dataKey={l.segKey} name={l.name} stroke={l.stroke} strokeWidth={2} dot={makeEndpointDot(l.dataIndices, l.stroke)} activeDot={{ r: 6 }} connectNulls legendType={l.showLegend ? "line" : "none"} />
+                      ))}
+                    </LineChart>
+                  </ResponsiveContainer>
+                )}
+              </div>
+            </ZoomableChart>
+          </CardContent>
+        </Card>
+
+        <Card className="col-span-1 md:col-span-2">
+          <CardHeader>
+            <CardTitle>Turn Success Rate (%)</CardTitle>
+            <CardDescription>Responds · stops on interrupt · no false barge-in - {regionLabel}</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <ZoomableChart totalLength={combinedData.length} zoomState={chartZoom}>
+              <div className="h-[300px] w-full">
+                {isLoading ? (
+                  <Skeleton className="h-full w-full" />
+                ) : (
+                  <ResponsiveContainer width="100%" height="100%">
+                    <LineChart data={tsrChart.rows}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" vertical={false} />
+                      <XAxis dataKey="timestamp" stroke="hsl(var(--muted-foreground))" fontSize={12} tickLine={false} axisLine={false} />
+                      <YAxis stroke="hsl(var(--muted-foreground))" fontSize={12} tickLine={false} axisLine={false} domain={[0, 100]} tickFormatter={(value) => `${value}%`} />
+                      <Tooltip content={<WorkflowTooltip showWorkflow={showWorkflow} unit="%" />} wrapperStyle={{ pointerEvents: 'auto' }} />
+                      <Legend />
+                      {tsrChart.lines.map(l => (
                         <Line key={l.segKey} type="monotone" dataKey={l.segKey} name={l.name} stroke={l.stroke} strokeWidth={2} dot={makeEndpointDot(l.dataIndices, l.stroke)} activeDot={{ r: 6 }} connectNulls legendType={l.showLegend ? "line" : "none"} />
                       ))}
                     </LineChart>
@@ -813,8 +875,13 @@ export default function Dashboard() {
     for (const rows of [mainlineMetrics, communityMetrics, myEvalsMetrics]) {
       for (const m of rows ?? []) if (!map.has(m.providerId)) map.set(m.providerId, m.provider);
     }
-    return Array.from(map, ([id, name]) => ({ id, name })).sort((a, b) => a.name.localeCompare(b.name));
-  }, [providerList, mainlineMetrics, communityMetrics, myEvalsMetrics]);
+    let opts = Array.from(map, ([id, name]) => ({ id, name }));
+    // "Custom" is the catch-all provider for user-defined platforms — never a
+    // Mainline entrant, so hide it from the Mainline filter. Community and My
+    // Evals still show it (those tiers include custom-platform evals).
+    if (activeTab === "mainline") opts = opts.filter(o => o.name !== "Custom");
+    return opts.sort((a, b) => a.name.localeCompare(b.name));
+  }, [providerList, mainlineMetrics, communityMetrics, myEvalsMetrics, activeTab]);
 
   const regionLabel = selectedRegion === "all" ? "All Regions"
     : selectedRegion === "na" ? "North America"
@@ -889,9 +956,15 @@ export default function Dashboard() {
             <PopoverTrigger asChild>
               <Button variant="outline" className="w-[150px] justify-between font-normal" data-testid="button-provider-filter">
                 <span className="truncate">
-                  {hiddenProviders.size === 0
-                    ? "All providers"
-                    : `Providers ${providerOptions.length - hiddenProviders.size}/${providerOptions.length}`}
+                  {(() => {
+                    // Count only providers in the current tab's list — the hidden
+                    // set may carry ids absent here (e.g. Custom, hidden on
+                    // another tab), which would skew a raw size subtraction.
+                    const visible = providerOptions.filter(p => !hiddenProviders.has(p.id)).length;
+                    return visible === providerOptions.length
+                      ? "All providers"
+                      : `Providers ${visible}/${providerOptions.length}`;
+                  })()}
                 </span>
                 <ChevronDown className="h-4 w-4 opacity-50 shrink-0" />
               </Button>

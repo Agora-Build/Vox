@@ -1400,6 +1400,7 @@ describe('Vox API Tests', () => {
             responseRate: 0.9,
             interruptRate: 0.8,
             falseInterruptRate: 0.1,
+            turnSuccessRate: 0.92,
             networkResilience: 90,
             naturalness: 4.0,
             noiseReduction: 95,
@@ -1423,6 +1424,7 @@ describe('Vox API Tests', () => {
       expect(result.responseRate).toBeCloseTo(0.9);
       expect(result.interruptRate).toBeCloseTo(0.8);
       expect(result.falseInterruptRate).toBeCloseTo(0.1);
+      expect(result.turnSuccessRate).toBeCloseTo(0.92);
       // Attribution is sourced from the job's frozen snapshot, not the live workflow.
       expect(result.providerId).toBe(testProviderId);
     });
@@ -1441,6 +1443,7 @@ describe('Vox API Tests', () => {
           responseRate: 0,
           interruptRate: null,
           falseInterruptRate: null,
+          turnSuccessRate: 0,
           networkResilience: 85,
           naturalness: 3.5,
           noiseReduction: 90,
@@ -1459,8 +1462,11 @@ describe('Vox API Tests', () => {
       expect(result.responseLatencySd).toBeNull();
       expect(result.responseLatencyP95).toBeNull();
       expect(result.interruptLatencyMedian).toBeNull();
-      // Response rate carries the real "answered 0%" signal.
+      // Response rate carries the real "answered 0%" signal, and Turn Success
+      // Rate is 0 (every turn failed) — the resilience signal that stays
+      // meaningful even though latency is NA.
       expect(result.responseRate).toBe(0);
+      expect(result.turnSuccessRate).toBe(0);
     });
 
     it('exposes responseRate on the eval-jobs list so it can flag "Partial response"', async () => {

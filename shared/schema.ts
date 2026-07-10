@@ -343,6 +343,11 @@ export const evalResults = pgTable("eval_results", {
   responseRate: real("response_rate"),
   interruptRate: real("interrupt_rate"),
   falseInterruptRate: real("false_interrupt_rate"),
+  // Turn Success Rate (0..1): opportunity-weighted composite of the three rates
+  // above (responded / stopped-on-interrupt / no-false-barge). Includes
+  // no-response turns as failures, so it stays meaningful under network
+  // impairment where latency is NA. null when no evaluable turns.
+  turnSuccessRate: real("turn_success_rate"),
   networkResilience: integer("network_resilience"),
   naturalness: real("naturalness"),
   noiseReduction: integer("noise_reduction"),
