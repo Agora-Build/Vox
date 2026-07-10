@@ -684,6 +684,35 @@ function MetricsSection({ metrics, isLoading, selectedRegion, timeRangeLabel, re
       </div>
 
       <div className="grid gap-4 md:grid-cols-2">
+        <Card className="col-span-1 md:col-span-2">
+          <CardHeader>
+            <CardTitle>Turn Success Rate (%)</CardTitle>
+            <CardDescription>Responds · stops on interrupt · no false barge-in - {regionLabel}</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <ZoomableChart totalLength={combinedData.length} zoomState={chartZoom}>
+              <div className="h-[300px] w-full">
+                {isLoading ? (
+                  <Skeleton className="h-full w-full" />
+                ) : (
+                  <ResponsiveContainer width="100%" height="100%">
+                    <LineChart data={tsrChart.rows}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" vertical={false} />
+                      <XAxis dataKey="timestamp" stroke="hsl(var(--muted-foreground))" fontSize={12} tickLine={false} axisLine={false} />
+                      <YAxis stroke="hsl(var(--muted-foreground))" fontSize={12} tickLine={false} axisLine={false} domain={[0, 100]} tickFormatter={(value) => `${value}%`} />
+                      <Tooltip content={<WorkflowTooltip showWorkflow={showWorkflow} unit="%" />} wrapperStyle={{ pointerEvents: 'auto' }} />
+                      <Legend />
+                      {tsrChart.lines.map(l => (
+                        <Line key={l.segKey} type="monotone" dataKey={l.segKey} name={l.name} stroke={l.stroke} strokeWidth={2} dot={makeEndpointDot(l.dataIndices, l.stroke)} activeDot={{ r: 6 }} connectNulls legendType={l.showLegend ? "line" : "none"} />
+                      ))}
+                    </LineChart>
+                  </ResponsiveContainer>
+                )}
+              </div>
+            </ZoomableChart>
+          </CardContent>
+        </Card>
+
         <Card className="col-span-1">
           <CardHeader>
             <CardTitle>Response Latency (ms)</CardTitle>
@@ -732,35 +761,6 @@ function MetricsSection({ metrics, isLoading, selectedRegion, timeRangeLabel, re
                       <Tooltip content={<WorkflowTooltip showWorkflow={showWorkflow} />} wrapperStyle={{ pointerEvents: 'auto' }} />
                       <Legend />
                       {interruptChart.lines.map(l => (
-                        <Line key={l.segKey} type="monotone" dataKey={l.segKey} name={l.name} stroke={l.stroke} strokeWidth={2} dot={makeEndpointDot(l.dataIndices, l.stroke)} activeDot={{ r: 6 }} connectNulls legendType={l.showLegend ? "line" : "none"} />
-                      ))}
-                    </LineChart>
-                  </ResponsiveContainer>
-                )}
-              </div>
-            </ZoomableChart>
-          </CardContent>
-        </Card>
-
-        <Card className="col-span-1 md:col-span-2">
-          <CardHeader>
-            <CardTitle>Turn Success Rate (%)</CardTitle>
-            <CardDescription>Responds · stops on interrupt · no false barge-in - {regionLabel}</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <ZoomableChart totalLength={combinedData.length} zoomState={chartZoom}>
-              <div className="h-[300px] w-full">
-                {isLoading ? (
-                  <Skeleton className="h-full w-full" />
-                ) : (
-                  <ResponsiveContainer width="100%" height="100%">
-                    <LineChart data={tsrChart.rows}>
-                      <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" vertical={false} />
-                      <XAxis dataKey="timestamp" stroke="hsl(var(--muted-foreground))" fontSize={12} tickLine={false} axisLine={false} />
-                      <YAxis stroke="hsl(var(--muted-foreground))" fontSize={12} tickLine={false} axisLine={false} domain={[0, 100]} tickFormatter={(value) => `${value}%`} />
-                      <Tooltip content={<WorkflowTooltip showWorkflow={showWorkflow} unit="%" />} wrapperStyle={{ pointerEvents: 'auto' }} />
-                      <Legend />
-                      {tsrChart.lines.map(l => (
                         <Line key={l.segKey} type="monotone" dataKey={l.segKey} name={l.name} stroke={l.stroke} strokeWidth={2} dot={makeEndpointDot(l.dataIndices, l.stroke)} activeDot={{ r: 6 }} connectNulls legendType={l.showLegend ? "line" : "none"} />
                       ))}
                     </LineChart>
