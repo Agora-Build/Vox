@@ -875,8 +875,13 @@ export default function Dashboard() {
     for (const rows of [mainlineMetrics, communityMetrics, myEvalsMetrics]) {
       for (const m of rows ?? []) if (!map.has(m.providerId)) map.set(m.providerId, m.provider);
     }
-    return Array.from(map, ([id, name]) => ({ id, name })).sort((a, b) => a.name.localeCompare(b.name));
-  }, [providerList, mainlineMetrics, communityMetrics, myEvalsMetrics]);
+    let opts = Array.from(map, ([id, name]) => ({ id, name }));
+    // "Custom" is the catch-all provider for user-defined platforms — never a
+    // Mainline entrant, so hide it from the Mainline filter. Community and My
+    // Evals still show it (those tiers include custom-platform evals).
+    if (activeTab === "mainline") opts = opts.filter(o => o.name !== "Custom");
+    return opts.sort((a, b) => a.name.localeCompare(b.name));
+  }, [providerList, mainlineMetrics, communityMetrics, myEvalsMetrics, activeTab]);
 
   const regionLabel = selectedRegion === "all" ? "All Regions"
     : selectedRegion === "na" ? "North America"
@@ -951,9 +956,15 @@ export default function Dashboard() {
             <PopoverTrigger asChild>
               <Button variant="outline" className="w-[150px] justify-between font-normal" data-testid="button-provider-filter">
                 <span className="truncate">
-                  {hiddenProviders.size === 0
-                    ? "All providers"
-                    : `Providers ${providerOptions.length - hiddenProviders.size}/${providerOptions.length}`}
+                  {(() => {
+                    // Count only providers in the current tab's list — the hidden
+                    // set may carry ids absent here (e.g. Custom, hidden on
+                    // another tab), which would skew a raw size subtraction.
+                    const visible = providerOptions.filter(p => !hiddenProviders.has(p.id)).length;
+                    return visible === providerOptions.length
+                      ? "All providers"
+                      : `Providers ${visible}/${providerOptions.length}`;
+                  })()}
                 </span>
                 <ChevronDown className="h-4 w-4 opacity-50 shrink-0" />
               </Button>
