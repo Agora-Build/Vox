@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { ArrowLeft, Download, CheckCircle, XCircle, Loader2, Clock, Play, Upload, RefreshCw, FileText } from "lucide-react";
+import { ArrowLeft, Download, CheckCircle, XCircle, Loader2, Clock, Play, Upload, RefreshCw, FileText, AlertTriangle } from "lucide-react";
 import { Link } from "wouter";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -123,6 +123,10 @@ export default function ConsoleEvalJobDetail({ jobId }: { jobId: number }) {
   const perCase = (rawData?.per_case ?? {}) as Record<string, CaseStats>;
   const pct = (v: number | null | undefined) => v == null ? "-" : `${Math.round(v * 100)}%`;
   const fmtT = (v: unknown) => v == null ? "-" : `${Number(v).toFixed(1)}s`;
+  // null latency = NA (agent didn't respond) — never render it as 0 ms.
+  const ms = (v: number | null | undefined) => v == null ? "NA" : `${Math.round(v)}ms`;
+  // Fewer than all prompts answered (0% included) → a partial/no-response run.
+  const partialResponse = result?.responseRate != null && result.responseRate < 1;
 
   // Split interruptions into true vs false interrupts via each turn's case_id
   // (annotated at merge time). Turns without case_id (single-file runs) are
@@ -170,6 +174,15 @@ export default function ConsoleEvalJobDetail({ jobId }: { jobId: number }) {
                 <StatusIcon className={`h-3 w-3${job.status === "running" ? " animate-spin" : ""}`} />
                 {statusCfg.label}
               </Badge>
+              {partialResponse && (
+                <Badge
+                  className="gap-1 bg-amber-500 text-white hover:bg-amber-500"
+                  title={`Agent responded to ${pct(result?.responseRate)} of prompts`}
+                  data-testid="badge-partial-response"
+                >
+                  <AlertTriangle className="h-3 w-3" /> Partial response
+                </Badge>
+              )}
             </h1>
             <p className="text-muted-foreground text-sm">
               {job.workflowId != null ? (
@@ -274,9 +287,9 @@ export default function ConsoleEvalJobDetail({ jobId }: { jobId: number }) {
               <CardTitle className="text-sm">Response Latency</CardTitle>
             </CardHeader>
             <CardContent className="space-y-1">
-              <div className="flex justify-between"><span className="text-sm text-muted-foreground">MED</span><span className="text-xl font-bold font-mono">{result.responseLatencyMedian}ms</span></div>
-              <div className="flex justify-between"><span className="text-sm text-muted-foreground">SD</span><span className="text-sm font-mono text-muted-foreground">{Math.round(result.responseLatencySd)}ms</span></div>
-              <div className="flex justify-between"><span className="text-sm text-muted-foreground">P95</span><span className="text-sm font-mono text-muted-foreground">{result.responseLatencyP95}ms</span></div>
+              <div className="flex justify-between"><span className="text-sm text-muted-foreground">MED</span><span className="text-xl font-bold font-mono">{ms(result.responseLatencyMedian)}</span></div>
+              <div className="flex justify-between"><span className="text-sm text-muted-foreground">SD</span><span className="text-sm font-mono text-muted-foreground">{ms(result.responseLatencySd)}</span></div>
+              <div className="flex justify-between"><span className="text-sm text-muted-foreground">P95</span><span className="text-sm font-mono text-muted-foreground">{ms(result.responseLatencyP95)}</span></div>
             </CardContent>
           </Card>
           <Card>
@@ -284,9 +297,9 @@ export default function ConsoleEvalJobDetail({ jobId }: { jobId: number }) {
               <CardTitle className="text-sm" title="Time for the AI to stop after the user interrupts (barges in) — lower is better">Interrupt Latency</CardTitle>
             </CardHeader>
             <CardContent className="space-y-1">
-              <div className="flex justify-between"><span className="text-sm text-muted-foreground">MED</span><span className="text-xl font-bold font-mono">{result.interruptLatencyMedian}ms</span></div>
-              <div className="flex justify-between"><span className="text-sm text-muted-foreground">SD</span><span className="text-sm font-mono text-muted-foreground">{Math.round(result.interruptLatencySd)}ms</span></div>
-              <div className="flex justify-between"><span className="text-sm text-muted-foreground">P95</span><span className="text-sm font-mono text-muted-foreground">{result.interruptLatencyP95}ms</span></div>
+              <div className="flex justify-between"><span className="text-sm text-muted-foreground">MED</span><span className="text-xl font-bold font-mono">{ms(result.interruptLatencyMedian)}</span></div>
+              <div className="flex justify-between"><span className="text-sm text-muted-foreground">SD</span><span className="text-sm font-mono text-muted-foreground">{ms(result.interruptLatencySd)}</span></div>
+              <div className="flex justify-between"><span className="text-sm text-muted-foreground">P95</span><span className="text-sm font-mono text-muted-foreground">{ms(result.interruptLatencyP95)}</span></div>
             </CardContent>
           </Card>
           <Card>

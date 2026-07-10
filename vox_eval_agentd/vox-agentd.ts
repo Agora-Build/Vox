@@ -80,12 +80,17 @@ interface EvalJob {
 }
 
 interface EvalResult {
-  responseLatencyMedian: number;
-  responseLatencySd: number;
-  responseLatencyP95: number;
-  interruptLatencyMedian: number;
-  interruptLatencySd: number;
-  interruptLatencyP95: number;
+  // Latency is null when NOT measurable (agent produced no response/interrupt
+  // turns). null = NA, distinct from a genuine 0 ms. The server stores NULL, so
+  // a non-responsive agent stays out of latency averages/rankings instead of
+  // looking like the fastest. Response rate (below) carries the "0% answered"
+  // signal.
+  responseLatencyMedian: number | null;
+  responseLatencySd: number | null;
+  responseLatencyP95: number | null;
+  interruptLatencyMedian: number | null;
+  interruptLatencySd: number | null;
+  interruptLatencyP95: number | null;
   // Cross-chunk rates (0..1); null when sample counts are unknown (e.g.
   // control.for_each bodies) or no case of that kind ran.
   responseRate: number | null;
@@ -136,12 +141,14 @@ function shortBuildTag(): string {
 }
 
 const RESULT_DEFAULTS: EvalResult = {
-  responseLatencyMedian: 0,
-  responseLatencySd: 0,
-  responseLatencyP95: 0,
-  interruptLatencyMedian: 0,
-  interruptLatencySd: 0,
-  interruptLatencyP95: 0,
+  // Latencies default to null (NA). Parsing overwrites them only when real
+  // turn-level data exists; "agent didn't respond" leaves them null.
+  responseLatencyMedian: null,
+  responseLatencySd: null,
+  responseLatencyP95: null,
+  interruptLatencyMedian: null,
+  interruptLatencySd: null,
+  interruptLatencyP95: null,
   responseRate: null,
   interruptRate: null,
   falseInterruptRate: null,
@@ -449,25 +456,6 @@ class VoxEvalAgentDaemon {
     }
   }
 
-  async completeJobWithPartialResults(jobId: number, results: EvalResult, reason: string): Promise<boolean> {
-    try {
-      console.log(`[Daemon] Failing job ${jobId} with partial metrics...`);
-      const response = await this.fetch(`/api/eval-agent/jobs/${jobId}/complete`, {
-        method: 'POST',
-        body: JSON.stringify({ agentId: this.agentId, leaseId: this.leaseId, results, error: reason }),
-      });
-
-      await this.exitIfSuperseded(response);
-      if (response.ok) {
-        console.log(`[Daemon] Job ${jobId} failed with partial metrics saved`);
-        return true;
-      }
-      return false;
-    } catch {
-      return false;
-    }
-  }
-
   async failJob(jobId: number, reason: string): Promise<boolean> {
     try {
       console.log(`[Daemon] Failing job ${jobId}: ${reason}`);
@@ -690,7 +678,7 @@ class VoxEvalAgentDaemon {
 
     const mergedResult = this.tryParseMetricsJson(mergedFile);
     const mergedHasData = !!mergedResult &&
-      (mergedResult.responseLatencyMedian > 0 || mergedResult.interruptLatencyMedian > 0);
+      (mergedResult.responseLatencyMedian != null || mergedResult.interruptLatencyMedian != null);
     if (mergedHasData) {
       return mergedResult!;
     }
@@ -698,14 +686,17 @@ class VoxEvalAgentDaemon {
     // Merge produced no usable turn-level metrics (e.g. aeval emitted only
     // summary data). Fall back to a chunk result that actually has metrics.
     const usableChunk = chunkResults.find(
-      r => r.responseLatencyMedian > 0 || r.interruptLatencyMedian > 0,
+      r => r.responseLatencyMedian != null || r.interruptLatencyMedian != null,
     );
     if (usableChunk) {
       console.warn('[Daemon] Merged turn-level metrics empty — using a chunk result with data');
       return usableChunk;
     }
 
-    console.warn('[Daemon] No usable metrics from any chunk — returning merged defaults');
+    // No latency anywhere: the agent produced no response/interrupt turns. This
+    // is a VALID "no response" outcome — return the merged result with null (NA)
+    // latencies and response_rate carrying the real 0% signal (not a failure).
+    console.warn('[Daemon] No usable latency from any chunk — returning NA latencies (no-response result)');
     return mergedResult ?? chunkResults[chunkResults.length - 1];
   }
 
@@ -795,8 +786,7 @@ class VoxEvalAgentDaemon {
               if (dir && !this.jobOutputDirs.includes(dir)) this.jobOutputDirs.push(dir);
             } catch { /* best effort */ }
             console.error(`[Daemon] aeval did not exit after SIGKILL — forcing job failure`);
-            const err = new Error(`aeval timed out after ${AEVAL_RUN_TIMEOUT_MS}ms (forced)`) as Error & { partialResults?: EvalResult };
-            fail(err);
+            fail(new Error(`aeval timed out after ${AEVAL_RUN_TIMEOUT_MS}ms (forced)`));
           }, 15000);
         }, 10000);
       }, AEVAL_RUN_TIMEOUT_MS);
@@ -825,23 +815,15 @@ class VoxEvalAgentDaemon {
         } catch { /* best effort */ }
 
         if (timedOut || code !== 0) {
-          // Try to salvage partial results (metrics.json may exist even on failure)
-          let partialResults: EvalResult | null = null;
-          if (this.lastOutputDir) {
-            try {
-              const partial = this.parseAevalResults(this.lastOutputDir, allOutput);
-              if (partial.responseLatencyMedian > 0 || partial.interruptLatencyMedian > 0) {
-                partialResults = partial;
-                console.log(`[Daemon] Salvaged partial metrics from failed run:`, partial);
-              }
-            } catch { /* no usable data */ }
-          }
+          // A non-zero aeval exit means we did NOT measure the product — the job
+          // fails and records NO result. (A run that completes but the agent
+          // didn't respond exits 0 and IS reported, with NA latencies + response
+          // rate 0.) We deliberately don't salvage partial metrics here: a failed
+          // run's numbers are statistically unreliable and would pollute metrics.
           const reason = timedOut
             ? `aeval timed out after ${AEVAL_RUN_TIMEOUT_MS}ms`
             : `aeval exited with code ${code}: ${stderr.trim().split('\n').pop() || 'unknown error'}`;
-          const error = new Error(reason) as Error & { partialResults?: EvalResult };
-          error.partialResults = partialResults;
-          fail(error);
+          fail(new Error(reason));
           return;
         }
 
@@ -896,6 +878,23 @@ class VoxEvalAgentDaemon {
     return scenarioDir;
   }
 
+  /** A latency was actually measured (not NA). null latency = agent didn't respond. */
+  private hasLatency(r: EvalResult): boolean {
+    return r.responseLatencyMedian != null || r.interruptLatencyMedian != null;
+  }
+
+  /**
+   * The parsed result carries a genuine aeval analysis structure (even if it
+   * measured no latency — a valid "no response" run). Distinguishes an
+   * authoritative metrics.json from an empty/garbage file that should fall
+   * through to other sources.
+   */
+  private isAnalysisOutput(r: EvalResult): boolean {
+    const m = r.rawData as Record<string, unknown> | undefined;
+    return !!m && typeof m === 'object' &&
+      (m.response_metrics != null || m.interruption_metrics != null || m.aggregated_summary != null);
+  }
+
   /**
    * Parse aeval's output into Vox result schema.
    *
@@ -920,7 +919,12 @@ class VoxEvalAgentDaemon {
     ]) {
       if (fs.existsSync(candidate)) {
         const results = this.tryParseMetricsJson(candidate);
-        if (results && (results.responseLatencyMedian > 0 || results.interruptLatencyMedian > 0)) {
+        // Accept metrics.json when it has real latency OR is a genuine analysis
+        // output (has response/interruption/aggregated structure). The latter
+        // covers a valid "no response" run — null latency but real rawData we
+        // must keep for rate computation — so we don't fall through to stdout
+        // and lose it. Only a structureless/garbage metrics.json falls through.
+        if (results && (this.hasLatency(results) || this.isAnalysisOutput(results))) {
           // Best-effort: join turn boundaries + STT transcripts from the
           // sibling turns.json onto the turn-level data.
           try {
@@ -940,7 +944,7 @@ class VoxEvalAgentDaemon {
     const reportJson = path.join(outputDir, 'report.json');
     if (fs.existsSync(reportJson)) {
       const results = this.tryParseReportJson(reportJson);
-      if (results && (results.responseLatencyMedian > 0 || results.interruptLatencyMedian > 0)) {
+      if (results && this.hasLatency(results)) {
         console.log(`[Daemon] Parsed aeval results (report.json step timing):`, results);
         return results;
       }
@@ -1040,37 +1044,39 @@ class VoxEvalAgentDaemon {
       }
 
       // --- Fallback: p50/p95 from summary (if turn_level missing) ---
-      if (results.responseLatencyMedian === 0 && rlSummary && typeof rlSummary === 'object') {
+      // `== null` = "still unset (NA)": try the next source. A latency that was
+      // measured as null (no turns) stays null through all fallbacks below.
+      if (results.responseLatencyMedian == null && rlSummary && typeof rlSummary === 'object') {
         if (rlSummary.p50_latency_ms != null) {
           results.responseLatencyMedian = Math.round(rlSummary.p50_latency_ms);
         }
       }
-      if (results.responseLatencyP95 === 0 && rlSummary && typeof rlSummary === 'object') {
+      if (results.responseLatencyP95 == null && rlSummary && typeof rlSummary === 'object') {
         if (rlSummary.p95_latency_ms != null) {
           results.responseLatencyP95 = Math.round(rlSummary.p95_latency_ms);
         }
       }
-      if (results.interruptLatencyMedian === 0 && ilSummary && typeof ilSummary === 'object') {
+      if (results.interruptLatencyMedian == null && ilSummary && typeof ilSummary === 'object') {
         // v0.2.1 name first; legacy name for pre-v0.2.1 output.
         const p50 = ilSummary.p50_interrupt_action_ms ?? ilSummary.p50_reaction_time_ms;
         if (p50 != null) {
           results.interruptLatencyMedian = Math.round(p50);
         }
       }
-      if (results.interruptLatencyP95 === 0 && ilSummary && typeof ilSummary === 'object') {
+      if (results.interruptLatencyP95 == null && ilSummary && typeof ilSummary === 'object') {
         const p95v = ilSummary.p95_interrupt_action_ms ?? ilSummary.p95_reaction_time_ms;
         if (p95v != null) {
           results.interruptLatencyP95 = Math.round(p95v);
         }
       }
 
-      // --- Last resort: aggregated_summary avg (better than 0) ---
-      if (results.responseLatencyMedian === 0 && agg && typeof agg === 'object') {
+      // --- Last resort: aggregated_summary avg (better than NA) ---
+      if (results.responseLatencyMedian == null && agg && typeof agg === 'object') {
         if (agg.avg_response_latency_ms != null) {
           results.responseLatencyMedian = Math.round(agg.avg_response_latency_ms);
         }
       }
-      if (results.interruptLatencyMedian === 0 && agg && typeof agg === 'object') {
+      if (results.interruptLatencyMedian == null && agg && typeof agg === 'object') {
         const avgAct = agg.avg_interruption_action_ms ?? agg.avg_interruption_reaction_ms;
         if (avgAct != null) {
           results.interruptLatencyMedian = Math.round(avgAct);
@@ -1078,12 +1084,12 @@ class VoxEvalAgentDaemon {
       }
 
       // --- Fallback: flat keys directly on metrics (future-proofing) ---
-      if (results.responseLatencyMedian === 0) {
+      if (results.responseLatencyMedian == null) {
         const rl = metrics.response_latency || metrics.responseLatency || {};
         if (rl.median_ms != null) results.responseLatencyMedian = Math.round(rl.median_ms);
         else if (rl.avg_latency_ms != null) results.responseLatencyMedian = Math.round(rl.avg_latency_ms);
       }
-      if (results.interruptLatencyMedian === 0) {
+      if (results.interruptLatencyMedian == null) {
         const il = metrics.interrupt_latency || metrics.interruptLatency || {};
         if (il.median_ms != null) results.interruptLatencyMedian = Math.round(il.median_ms);
         else if (il.avg_latency_ms != null) results.interruptLatencyMedian = Math.round(il.avg_latency_ms);
@@ -1115,7 +1121,7 @@ class VoxEvalAgentDaemon {
 
       // Try direct metrics (if report.json IS the metrics output)
       const direct = this.tryParseMetricsJson(filePath);
-      if (direct && (direct.responseLatencyMedian > 0 || direct.interruptLatencyMedian > 0)) {
+      if (direct && this.hasLatency(direct)) {
         return direct;
       }
 
@@ -1460,8 +1466,8 @@ class VoxEvalAgentDaemon {
       console.error(`[Daemon] Error parsing results:`, msg);
     }
 
-    // Fallback: parse stdout if CSV parsing failed
-    if (results.responseLatencyMedian === 0) {
+    // Fallback: parse stdout if CSV parsing failed (== null = still unset/NA)
+    if (results.responseLatencyMedian == null) {
       const elapsedMatch = stdout.match(/elapsed[_\s]?time[:\s]+(\d+)/i);
       if (elapsedMatch) {
         results.responseLatencyMedian = parseInt(elapsedMatch[1]);
@@ -1893,22 +1899,13 @@ class VoxEvalAgentDaemon {
       const msg = error instanceof Error ? error.message : String(error);
       console.error(`[Daemon] Job execution error:`, msg);
 
-      // Save partial metrics if available (job still marked as failed)
-      const partial = (error as Error & { partialResults?: EvalResult })?.partialResults;
-      if (partial) {
-        try {
-          await this.completeJobWithPartialResults(job.id, partial, msg);
-        } catch {
-          // Fall back to plain fail
-          try { await this.failJob(job.id, msg); } catch { /* ignore */ }
-        }
-      } else {
-        try {
-          await this.failJob(job.id, msg);
-        } catch (reportError: unknown) {
-          const reportMsg = reportError instanceof Error ? reportError.message : String(reportError);
-          console.error(`[Daemon] Failed to report job failure:`, reportMsg);
-        }
+      // A failed run records NO result — partial metrics from a failed run are
+      // statistically unreliable and would pollute the leaderboard.
+      try {
+        await this.failJob(job.id, msg);
+      } catch (reportError: unknown) {
+        const reportMsg = reportError instanceof Error ? reportError.message : String(reportError);
+        console.error(`[Daemon] Failed to report job failure:`, reportMsg);
       }
     } finally {
       // Queue artifact upload (whether job succeeded or failed) — covers every

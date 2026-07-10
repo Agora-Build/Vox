@@ -413,24 +413,26 @@ describe("Eval Agent Daemon - API Communication", () => {
 // ---------------------------------------------------------------------------
 
 interface EvalResults {
-  responseLatencyMedian: number;
-  responseLatencySd: number;
-  responseLatencyP95: number;
-  interruptLatencyMedian: number;
-  interruptLatencySd: number;
-  interruptLatencyP95: number;
+  // Latency is null (NA) until measured — a run where the agent never responds
+  // stays null, never 0.
+  responseLatencyMedian: number | null;
+  responseLatencySd: number | null;
+  responseLatencyP95: number | null;
+  interruptLatencyMedian: number | null;
+  interruptLatencySd: number | null;
+  interruptLatencyP95: number | null;
   networkResilience: number;
   naturalness: number;
   noiseReduction: number;
 }
 
 const AEVAL_DEFAULTS: EvalResults = {
-  responseLatencyMedian: 0,
-  responseLatencySd: 0,
-  responseLatencyP95: 0,
-  interruptLatencyMedian: 0,
-  interruptLatencySd: 0,
-  interruptLatencyP95: 0,
+  responseLatencyMedian: null,
+  responseLatencySd: null,
+  responseLatencyP95: null,
+  interruptLatencyMedian: null,
+  interruptLatencySd: null,
+  interruptLatencyP95: null,
   networkResilience: 85,
   naturalness: 3.5,
   noiseReduction: 90,
@@ -492,47 +494,48 @@ function parseAevalMetricsJson(jsonContent: string): EvalResults {
     }
   }
 
-  // Fallback: p50/p95 from summary (if turn_level missing)
-  if (results.responseLatencyMedian === 0 && rlSummary && typeof rlSummary === 'object') {
+  // Fallback: p50/p95 from summary (if turn_level missing). == null = still
+  // unset (NA) — try the next source; a measured-null latency stays null.
+  if (results.responseLatencyMedian == null && rlSummary && typeof rlSummary === 'object') {
     if (rlSummary.p50_latency_ms != null) {
       results.responseLatencyMedian = Math.round(rlSummary.p50_latency_ms);
     }
   }
-  if (results.responseLatencyP95 === 0 && rlSummary && typeof rlSummary === 'object') {
+  if (results.responseLatencyP95 == null && rlSummary && typeof rlSummary === 'object') {
     if (rlSummary.p95_latency_ms != null) {
       results.responseLatencyP95 = Math.round(rlSummary.p95_latency_ms);
     }
   }
-  if (results.interruptLatencyMedian === 0 && ilSummary && typeof ilSummary === 'object') {
+  if (results.interruptLatencyMedian == null && ilSummary && typeof ilSummary === 'object') {
     if (ilSummary.p50_reaction_time_ms != null) {
       results.interruptLatencyMedian = Math.round(ilSummary.p50_reaction_time_ms);
     }
   }
-  if (results.interruptLatencyP95 === 0 && ilSummary && typeof ilSummary === 'object') {
+  if (results.interruptLatencyP95 == null && ilSummary && typeof ilSummary === 'object') {
     if (ilSummary.p95_reaction_time_ms != null) {
       results.interruptLatencyP95 = Math.round(ilSummary.p95_reaction_time_ms);
     }
   }
 
-  // Last resort: aggregated_summary avg (better than 0)
-  if (results.responseLatencyMedian === 0 && agg && typeof agg === 'object') {
+  // Last resort: aggregated_summary avg (better than NA)
+  if (results.responseLatencyMedian == null && agg && typeof agg === 'object') {
     if (agg.avg_response_latency_ms != null) {
       results.responseLatencyMedian = Math.round(agg.avg_response_latency_ms);
     }
   }
-  if (results.interruptLatencyMedian === 0 && agg && typeof agg === 'object') {
+  if (results.interruptLatencyMedian == null && agg && typeof agg === 'object') {
     if (agg.avg_interruption_reaction_ms != null) {
       results.interruptLatencyMedian = Math.round(agg.avg_interruption_reaction_ms);
     }
   }
 
   // Fallback: flat keys directly on metrics (future-proofing)
-  if (results.responseLatencyMedian === 0) {
+  if (results.responseLatencyMedian == null) {
     const rl = metrics.response_latency || metrics.responseLatency || {};
     if (rl.median_ms != null) results.responseLatencyMedian = Math.round(rl.median_ms);
     else if (rl.avg_latency_ms != null) results.responseLatencyMedian = Math.round(rl.avg_latency_ms);
   }
-  if (results.interruptLatencyMedian === 0) {
+  if (results.interruptLatencyMedian == null) {
     const il = metrics.interrupt_latency || metrics.interruptLatency || {};
     if (il.median_ms != null) results.interruptLatencyMedian = Math.round(il.median_ms);
     else if (il.avg_latency_ms != null) results.interruptLatencyMedian = Math.round(il.avg_latency_ms);
@@ -806,8 +809,8 @@ describe("Eval Agent Daemon - aeval Metrics JSON Parsing", () => {
     const results = parseAevalMetricsJson(json);
     expect(results.responseLatencyMedian).toBe(1890);
     expect(results.responseLatencyP95).toBe(1890); // single turn: p95 = value
-    expect(results.interruptLatencyMedian).toBe(0); // no interruptions
-    expect(results.interruptLatencyP95).toBe(0);
+    expect(results.interruptLatencyMedian).toBeNull(); // no interruptions → NA, not 0
+    expect(results.interruptLatencyP95).toBeNull();
   });
 
   it("should compute median from turn_level, not use aggregated avg", () => {
@@ -869,16 +872,32 @@ describe("Eval Agent Daemon - aeval Metrics JSON Parsing", () => {
     expect(results.responseLatencyMedian).toBe(275);
   });
 
-  it("should return defaults when response_latency and interrupt_latency are missing", () => {
+  it("should return NA latencies when response_latency and interrupt_latency are missing", () => {
     const json = JSON.stringify({ some_other_key: 42 });
     const results = parseAevalMetricsJson(json);
-    expect(results.responseLatencyMedian).toBe(0);
-    expect(results.responseLatencySd).toBe(0);
-    expect(results.interruptLatencyMedian).toBe(0);
-    expect(results.interruptLatencySd).toBe(0);
+    // No measurable latency → NA (null), NOT 0 — 0 would rank a dead agent fastest.
+    expect(results.responseLatencyMedian).toBeNull();
+    expect(results.responseLatencySd).toBeNull();
+    expect(results.interruptLatencyMedian).toBeNull();
+    expect(results.interruptLatencySd).toBeNull();
     expect(results.networkResilience).toBe(85);
     expect(results.naturalness).toBe(3.5);
     expect(results.noiseReduction).toBe(90);
+  });
+
+  it("no-response run: empty turn_level yields NA latencies (agent didn't respond)", () => {
+    // aeval ran and analyzed, but the agent produced no response/interrupt turns.
+    // A valid outcome — latencies are NA (null), never 0.
+    const json = JSON.stringify({
+      response_metrics: { latency: { summary: {}, turn_level: [] } },
+      interruption_metrics: { latency: { summary: {}, turn_level: [] } },
+      aggregated_summary: {},
+    });
+    const results = parseAevalMetricsJson(json);
+    expect(results.responseLatencyMedian).toBeNull();
+    expect(results.responseLatencyP95).toBeNull();
+    expect(results.interruptLatencyMedian).toBeNull();
+    expect(results.interruptLatencyP95).toBeNull();
   });
 
   it("should pick up optional top-level overrides", () => {
@@ -917,9 +936,9 @@ describe("Eval Agent Daemon - aeval Metrics JSON Parsing", () => {
     });
     const results = parseAevalMetricsJson(json);
     expect(results.responseLatencyMedian).toBe(500);
-    expect(results.responseLatencySd).toBe(0); // single sample → no SD
-    expect(results.interruptLatencyMedian).toBe(0);
-    expect(results.interruptLatencySd).toBe(0);
+    expect(results.responseLatencySd).toBe(0); // single sample → real SD 0
+    expect(results.interruptLatencyMedian).toBeNull(); // no interruptions → NA
+    expect(results.interruptLatencySd).toBeNull();
   });
 
   it("should throw on invalid JSON", () => {
@@ -993,9 +1012,9 @@ describe("Eval Agent Daemon - Practical Metrics Parsing", () => {
     // SD = sqrt(((1450-1653.33)^2 + (1890-1653.33)^2 + (1620-1653.33)^2) / 3)
     expect(results.responseLatencySd).toBe(Math.round(expectedSd(responseTimes)));
 
-    // No interrupts
-    expect(results.interruptLatencyMedian).toBe(0);
-    expect(results.interruptLatencySd).toBe(0);
+    // No interrupts → NA (null), not 0
+    expect(results.interruptLatencyMedian).toBeNull();
+    expect(results.interruptLatencySd).toBeNull();
   });
 
   it("full test: 3 responses + 2 interrupts (all phases completed)", () => {
@@ -1153,7 +1172,7 @@ describe("Eval Agent Daemon - Practical Metrics Parsing", () => {
 
     const results = parseAevalMetricsJson(json);
     expect(results.responseLatencyMedian).toBe(1500);
-    expect(results.responseLatencySd).toBe(0); // no turn_level → can't compute
+    expect(results.responseLatencySd).toBeNull(); // no turn_level → can't compute → NA
   });
 
   it("null values in aggregated_summary are ignored", () => {
@@ -1173,20 +1192,20 @@ describe("Eval Agent Daemon - Practical Metrics Parsing", () => {
 
     const results = parseAevalMetricsJson(json);
     expect(results.responseLatencyMedian).toBe(1800);
-    expect(results.interruptLatencyMedian).toBe(0); // null → stays default
+    expect(results.interruptLatencyMedian).toBeNull(); // no interrupt data → NA
   });
 });
 
 describe("Eval Agent Daemon - aeval Stdout Timestamp Parsing", () => {
-  it("should return defaults for empty stdout", () => {
+  it("should return NA for empty stdout", () => {
     const results = parseAevalStdout("");
-    expect(results.responseLatencyMedian).toBe(0);
+    expect(results.responseLatencyMedian).toBeNull();
   });
 
-  it("should return defaults for non-timestamped output", () => {
+  it("should return NA for non-timestamped output", () => {
     const stdout = `[aeval] some random output with no timestamps`;
     const results = parseAevalStdout(stdout);
-    expect(results.responseLatencyMedian).toBe(0);
+    expect(results.responseLatencyMedian).toBeNull();
     expect(results.networkResilience).toBe(85);
   });
 
@@ -1285,7 +1304,7 @@ describe("Eval Agent Daemon - aeval Stdout Timestamp Parsing", () => {
       "2026-03-03 12:00:00.050 | INFO     | Complete speech detected successfully",
     ].join("\n");
     const results = parseAevalStdout(stdout);
-    expect(results.responseLatencyMedian).toBe(0); // 50ms filtered out
+    expect(results.responseLatencyMedian).toBeNull(); // 50ms filtered out → NA
   });
 
   it("should skip deltas over 120s (timeout)", () => {
@@ -1294,7 +1313,7 @@ describe("Eval Agent Daemon - aeval Stdout Timestamp Parsing", () => {
       "2026-03-03 12:03:00.000 | INFO     | Complete speech detected successfully",
     ].join("\n");
     const results = parseAevalStdout(stdout);
-    expect(results.responseLatencyMedian).toBe(0); // 180s filtered out
+    expect(results.responseLatencyMedian).toBeNull(); // 180s filtered out → NA
   });
 
   it("should handle context recall phase as response (not interrupt)", () => {
@@ -1308,7 +1327,7 @@ describe("Eval Agent Daemon - aeval Stdout Timestamp Parsing", () => {
     const results = parseAevalStdout(stdout);
     // Context recall should count as response, not interrupt
     expect(results.responseLatencyMedian).toBe(2500);
-    expect(results.interruptLatencyMedian).toBe(0);
+    expect(results.interruptLatencyMedian).toBeNull(); // no interrupts → NA
   });
 });
 
@@ -1380,12 +1399,12 @@ describe("Eval Agent Daemon - computeLatencyStats", () => {
     expect(results.responseLatencyMedian).toBe(300);
     expect(results.responseLatencySd).toBeGreaterThan(0);
     expect(results.responseLatencyP95).toBe(400); // ceil(3*0.95)-1 = 2 → sorted[2]
-    expect(results.interruptLatencyMedian).toBe(0);
+    expect(results.interruptLatencyMedian).toBeNull(); // no interrupts → NA
   });
 
   it("should compute median, stddev, and p95 for interrupt times", () => {
     const results = computeLatencyStats([], [100, 150, 200]);
-    expect(results.responseLatencyMedian).toBe(0);
+    expect(results.responseLatencyMedian).toBeNull(); // no responses → NA
     expect(results.interruptLatencyMedian).toBe(150);
     expect(results.interruptLatencySd).toBeGreaterThan(0);
     expect(results.interruptLatencyP95).toBe(200);
@@ -1400,10 +1419,11 @@ describe("Eval Agent Daemon - computeLatencyStats", () => {
 
   it("should handle empty arrays", () => {
     const results = computeLatencyStats([], []);
-    expect(results.responseLatencyMedian).toBe(0);
-    expect(results.responseLatencyP95).toBe(0);
-    expect(results.interruptLatencyMedian).toBe(0);
-    expect(results.interruptLatencyP95).toBe(0);
+    // No samples → NA (null), never 0.
+    expect(results.responseLatencyMedian).toBeNull();
+    expect(results.responseLatencyP95).toBeNull();
+    expect(results.interruptLatencyMedian).toBeNull();
+    expect(results.interruptLatencyP95).toBeNull();
   });
 
   it("should compute p95 correctly with 20 samples", () => {

@@ -42,6 +42,7 @@ const MIGRATIONS: Array<{ version: number; description: string; file: string | n
   { version: 18, description: "expression indexes for snapshot tier predicates", file: "0017_snapshot_tier_indexes.sql" },
   { version: 19, description: "eval_schedules workflow/eval-set FKs survive delete", file: "0018_schedule_survive_delete.sql" },
   { version: 20, description: "eval_schedules 90-day expiry (expires_at)", file: "0019_schedule_expiry.sql" },
+  { version: 21, description: "eval_result latency columns nullable (NA for no-response)", file: "0020_eval_result_latency_nullable.sql" },
 ];
 
 const TARGET_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version;

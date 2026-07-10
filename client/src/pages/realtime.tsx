@@ -21,15 +21,16 @@ interface EvalResult {
   providerId: string;
   provider: string;
   region: string;
-  responseLatency: number;
-  responseLatencySd: number;
-  responseLatencyP95: number;
-  interruptLatency: number;
-  interruptLatencySd: number;
-  interruptLatencyP95: number;
-  networkResilience: number;
-  naturalness: number;
-  noiseReduction: number;
+  // Latency is null (NA) when the agent didn't respond — never plotted/counted as 0.
+  responseLatency: number | null;
+  responseLatencySd: number | null;
+  responseLatencyP95: number | null;
+  interruptLatency: number | null;
+  interruptLatencySd: number | null;
+  interruptLatencyP95: number | null;
+  networkResilience: number | null;
+  naturalness: number | null;
+  noiseReduction: number | null;
   timestamp: string;
   // Present on Community / My Evals (raw) points; null on aggregated buckets.
   workflowId?: number | null;
@@ -50,6 +51,9 @@ interface ConfigData {
   test_interval_hours?: string;
   total_tests_24h?: string;
 }
+
+// Latency of null = NA (agent didn't respond). Render NA, never "0ms".
+const fmtMs = (v: number | null | undefined) => v == null ? "NA" : `${Math.round(v).toLocaleString()}ms`;
 
 interface HealthData {
   status: "operational" | "degraded" | "down";
@@ -135,8 +139,10 @@ function buildCombinedData(filteredMetrics: EvalResult[], colorMap: Map<string, 
       const row: CombinedRow = { timestamp, rawTime: group.rawTime };
       for (const p of providers) {
         const m = group.values.get(p.key);
-        row[`${p.key}_response`] = m?.responseLatency;
-        row[`${p.key}_interrupt`] = m?.interruptLatency;
+        // null latency (NA) → undefined so the chart's connectNulls skips the
+        // point (a gap) rather than plotting it as 0.
+        row[`${p.key}_response`] = m?.responseLatency ?? undefined;
+        row[`${p.key}_interrupt`] = m?.interruptLatency ?? undefined;
         // Carry the workflow behind this point so the tooltip can name/link it.
         row[`${p.key}_wfname`] = m?.workflowName ?? undefined;
         row[`${p.key}_wfid`] = m?.workflowId ?? undefined;
@@ -556,15 +562,15 @@ function MetricsSection({ metrics, isLoading, selectedRegion, timeRangeLabel, re
               <>
                 <div className="flex justify-between items-baseline">
                   <span className="text-sm text-muted-foreground font-mono">MED</span>
-                  <span className="text-2xl font-bold font-mono" data-testid={`${testIdPrefix}text-response-median`}>{(latest?.responseLatency ?? 0).toLocaleString()}ms</span>
+                  <span className="text-2xl font-bold font-mono" data-testid={`${testIdPrefix}text-response-median`}>{fmtMs(latest?.responseLatency)}</span>
                 </div>
                 <div className="flex justify-between items-baseline">
                   <span className="text-sm text-muted-foreground font-mono">SD</span>
-                  <span className="text-lg font-mono text-muted-foreground" data-testid={`${testIdPrefix}text-response-stddev`}>{Math.round(latest?.responseLatencySd ?? 0)}ms</span>
+                  <span className="text-lg font-mono text-muted-foreground" data-testid={`${testIdPrefix}text-response-stddev`}>{fmtMs(latest?.responseLatencySd)}</span>
                 </div>
                 <div className="flex justify-between items-baseline">
                   <span className="text-sm text-muted-foreground font-mono">P95</span>
-                  <span className="text-lg font-mono text-muted-foreground" data-testid={`${testIdPrefix}text-response-p95`}>{(latest?.responseLatencyP95 ?? 0).toLocaleString()}ms</span>
+                  <span className="text-lg font-mono text-muted-foreground" data-testid={`${testIdPrefix}text-response-p95`}>{fmtMs(latest?.responseLatencyP95)}</span>
                 </div>
               </>
             )}
@@ -605,15 +611,15 @@ function MetricsSection({ metrics, isLoading, selectedRegion, timeRangeLabel, re
               <>
                 <div className="flex justify-between items-baseline">
                   <span className="text-sm text-muted-foreground font-mono">MED</span>
-                  <span className="text-2xl font-bold font-mono" data-testid={`${testIdPrefix}text-interrupt-median`}>{(latest?.interruptLatency ?? 0).toLocaleString()}ms</span>
+                  <span className="text-2xl font-bold font-mono" data-testid={`${testIdPrefix}text-interrupt-median`}>{fmtMs(latest?.interruptLatency)}</span>
                 </div>
                 <div className="flex justify-between items-baseline">
                   <span className="text-sm text-muted-foreground font-mono">SD</span>
-                  <span className="text-lg font-mono text-muted-foreground" data-testid={`${testIdPrefix}text-interrupt-stddev`}>{Math.round(latest?.interruptLatencySd ?? 0)}ms</span>
+                  <span className="text-lg font-mono text-muted-foreground" data-testid={`${testIdPrefix}text-interrupt-stddev`}>{fmtMs(latest?.interruptLatencySd)}</span>
                 </div>
                 <div className="flex justify-between items-baseline">
                   <span className="text-sm text-muted-foreground font-mono">P95</span>
-                  <span className="text-lg font-mono text-muted-foreground" data-testid={`${testIdPrefix}text-interrupt-p95`}>{(latest?.interruptLatencyP95 ?? 0).toLocaleString()}ms</span>
+                  <span className="text-lg font-mono text-muted-foreground" data-testid={`${testIdPrefix}text-interrupt-p95`}>{fmtMs(latest?.interruptLatencyP95)}</span>
                 </div>
               </>
             )}

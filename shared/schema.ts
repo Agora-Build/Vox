@@ -328,12 +328,16 @@ export const evalResults = pgTable("eval_results", {
   evalJobId: integer("eval_job_id").notNull().references(() => evalJobs.id, { onDelete: "cascade" }),
   providerId: varchar("provider_id", { length: 12 }).notNull().references(() => providers.id),
   region: regionEnum("region").notNull(),
-  responseLatencyMedian: integer("response_latency_median").notNull(),
-  responseLatencySd: real("response_latency_sd").notNull(),
-  interruptLatencyMedian: integer("interrupt_latency_median").notNull(),
-  interruptLatencySd: real("interrupt_latency_sd").notNull(),
-  responseLatencyP95: integer("response_latency_p95").notNull(),
-  interruptLatencyP95: integer("interrupt_latency_p95").notNull(),
+  // Latency columns are nullable: null = NA (not measurable). When the target
+  // agent doesn't respond, aeval produces no turn-level latency, so these are
+  // NULL rather than 0 — a 0 ms "response" would rank a dead agent as fastest
+  // and poison latency averages. Response rate carries the real signal (0%).
+  responseLatencyMedian: integer("response_latency_median"),
+  responseLatencySd: real("response_latency_sd"),
+  interruptLatencyMedian: integer("interrupt_latency_median"),
+  interruptLatencySd: real("interrupt_latency_sd"),
+  responseLatencyP95: integer("response_latency_p95"),
+  interruptLatencyP95: integer("interrupt_latency_p95"),
   // Cross-chunk rates (0..1); null when sample counts were unknown or no case
   // of that kind ran. false_interrupt_rate: lower is better.
   responseRate: real("response_rate"),
