@@ -2,11 +2,6 @@
 
 **Last updated: July 10, 2026**
 
-> **Note:** VOX is a community-driven, open-source project. These Terms are provided
-> as a general template and do not constitute legal advice. You should have them
-> reviewed by qualified legal counsel and complete the bracketed placeholders
-> (jurisdiction, contact details, entity name) before relying on them.
-
 ## 1. Introduction and Acceptance
 
 These Terms of Use ("Terms") govern your access to and use of the VOX website,
@@ -73,6 +68,11 @@ using a transparent evaluation methodology. You acknowledge and agree that:
 To the maximum extent permitted by law, VOX and its contributors make no
 representation or warranty that any evaluation is accurate, complete, current, or
 fit for any particular purpose.
+
+**Corrections and reruns.** If a vendor or product owner believes an evaluation is
+inaccurate, outdated, or affected by a reproducible issue, they are welcome to open
+an issue or submit evidence for review. Corrections and reruns will be considered
+using the same published methodology.
 
 ## 5. Third-Party Products, Names, and Trademarks
 
@@ -237,5 +237,5 @@ transfer of the project.
 
 Questions about these Terms, or requests from product owners, can be directed to:
 
-- **Project repository / issues:** [link to the VOX repository]
-- **Email:** [insert contact email]
+- **Project repository / issues:** [github.com/Agora-Build/Vox](https://github.com/Agora-Build/Vox)
+- **Email:** [oss@agora.build](mailto:oss@agora.build)

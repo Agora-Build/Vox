@@ -37,6 +37,8 @@ import ConsoleOrganizationCreate from "@/pages/console-organization-create";
 import AdminOrganizations from "@/pages/admin-organizations";
 import AdminFundReturns from "@/pages/admin-fund-returns";
 import AdminProviders from "@/pages/admin-providers";
+import Privacy from "@/pages/privacy";
+import Terms from "@/pages/terms";
 import Activate from "@/pages/activate";
 import AuthGithubCallback from "@/pages/auth-github-callback";
 import NotFound from "@/pages/not-found";
@@ -968,6 +970,16 @@ function Router() {
       <Route path="/run-your-own">
         <Layout>
           <SelfTest />
+        </Layout>
+      </Route>
+      <Route path="/privacy">
+        <Layout>
+          <Privacy />
+        </Layout>
+      </Route>
+      <Route path="/terms">
+        <Layout>
+          <Terms />
         </Layout>
       </Route>
       <Route path="/clash/event/:id">
