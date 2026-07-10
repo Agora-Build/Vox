@@ -674,6 +674,7 @@ export function registerApiV1Routes(app: Express): void {
         region: string;
         responseLatencies: number[];
         interruptLatencies: number[];
+        turnSuccessRates: number[];
         networkResiliences: number[];
         naturalnesses: number[];
         noiseReductions: number[];
@@ -689,6 +690,7 @@ export function registerApiV1Routes(app: Express): void {
             region: result.region,
             responseLatencies: [],
             interruptLatencies: [],
+            turnSuccessRates: [],
             networkResiliences: [],
             naturalnesses: [],
             noiseReductions: [],
@@ -700,6 +702,8 @@ export function registerApiV1Routes(app: Express): void {
         // as a fake-fast 0 ms.
         if (result.responseLatencyMedian != null) entry.responseLatencies.push(result.responseLatencyMedian);
         if (result.interruptLatencyMedian != null) entry.interruptLatencies.push(result.interruptLatencyMedian);
+        // TSR includes no-response runs as failed turns (resilience signal).
+        if (result.turnSuccessRate != null) entry.turnSuccessRates.push(result.turnSuccessRate);
         if (result.networkResilience !== null) entry.networkResiliences.push(result.networkResilience);
         if (result.naturalness !== null) entry.naturalnesses.push(result.naturalness);
         if (result.noiseReduction !== null) entry.noiseReductions.push(result.noiseReduction);
@@ -710,11 +714,13 @@ export function registerApiV1Routes(app: Express): void {
       const leaderboard = Array.from(providerRegionMap.values()).map((entry) => {
         const avg = (arr: number[]): number | null => arr.length > 0 ? Math.round(arr.reduce((a, b) => a + b, 0) / arr.length) : null;
 
+        const avgRate = (arr: number[]): number | null => arr.length > 0 ? Math.round((arr.reduce((a, b) => a + b, 0) / arr.length) * 10000) / 10000 : null;
         return {
           provider: entry.providerId,
           region: entry.region,
           responseLatency: avg(entry.responseLatencies),
           interruptLatency: avg(entry.interruptLatencies),
+          turnSuccessRate: avgRate(entry.turnSuccessRates),
           networkResilience: avg(entry.networkResiliences),
           naturalness: entry.naturalnesses.length > 0
             ? Math.round((entry.naturalnesses.reduce((a, b) => a + b, 0) / entry.naturalnesses.length) * 10) / 10

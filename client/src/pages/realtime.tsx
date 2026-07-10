@@ -28,6 +28,9 @@ interface EvalResult {
   interruptLatency: number | null;
   interruptLatencySd: number | null;
   interruptLatencyP95: number | null;
+  // Turn Success Rate (0..1), or null. Includes no-response turns as failures —
+  // the quality/resilience signal that stays meaningful when latency is NA.
+  turnSuccessRate: number | null;
   networkResilience: number | null;
   naturalness: number | null;
   noiseReduction: number | null;
@@ -54,6 +57,8 @@ interface ConfigData {
 
 // Latency of null = NA (agent didn't respond). Render NA, never "0ms".
 const fmtMs = (v: number | null | undefined) => v == null ? "NA" : `${Math.round(v).toLocaleString()}ms`;
+// Turn Success Rate is 0..1; null = no evaluable turns. Render as a percentage.
+const fmtPct = (v: number | null | undefined) => v == null ? "NA" : `${Math.round(v * 100)}%`;
 
 interface HealthData {
   status: "operational" | "degraded" | "down";
@@ -623,6 +628,37 @@ function MetricsSection({ metrics, isLoading, selectedRegion, timeRangeLabel, re
                 </div>
               </>
             )}
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between gap-2 space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">Turn Success Rate</CardTitle>
+            <div className="flex items-center gap-2">
+              <Popover>
+                <PopoverTrigger asChild>
+                  <Clock className="h-4 w-4 text-muted-foreground cursor-pointer hover:text-foreground transition-colors" />
+                </PopoverTrigger>
+                <PopoverContent className="w-80">
+                  <div className="space-y-2">
+                    <h4 className="font-medium leading-none">Turn Success Rate</h4>
+                    <p className="text-sm text-muted-foreground">
+                      Share of turns the agent handled correctly — responded when expected, stopped promptly on interrupt, and avoided false barge-in.
+                    </p>
+                    <p className="text-xs text-muted-foreground pt-2 border-t">
+                      A no-response turn counts as a failure, so this stays meaningful under network impairment where latency is NA.
+                    </p>
+                  </div>
+                </PopoverContent>
+              </Popover>
+            </div>
+          </CardHeader>
+          <CardContent>
+            {isLoading ? (
+              <Skeleton className="h-8 w-20 mt-2" />
+            ) : (
+              <div className="text-2xl font-bold font-mono mt-2" data-testid={`${testIdPrefix}text-turn-success-rate`}>{fmtPct(latest?.turnSuccessRate)}</div>
+            )}
+            <p className="text-xs text-muted-foreground">Responds · stops · no false barge-in</p>
           </CardContent>
         </Card>
         <Card>

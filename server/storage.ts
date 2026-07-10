@@ -118,6 +118,7 @@ export type MetricSourceRow = Pick<EvalResult,
   | "id" | "providerId" | "region"
   | "responseLatencyMedian" | "responseLatencySd" | "responseLatencyP95"
   | "interruptLatencyMedian" | "interruptLatencySd" | "interruptLatencyP95"
+  | "turnSuccessRate"
   | "networkResilience" | "naturalness" | "noiseReduction" | "createdAt">
   // Workflow identity, from the job snapshot. Present only on raw (non-bucketed)
   // rows, where each point maps to one job → one workflow; null on daily buckets
@@ -1010,6 +1011,7 @@ export class DatabaseStorage {
         responseRate: evalResults.responseRate,
         interruptRate: evalResults.interruptRate,
         falseInterruptRate: evalResults.falseInterruptRate,
+        turnSuccessRate: evalResults.turnSuccessRate,
         networkResilience: evalResults.networkResilience,
         naturalness: evalResults.naturalness,
         noiseReduction: evalResults.noiseReduction,
@@ -1160,6 +1162,7 @@ export class DatabaseStorage {
       interruptLatencyMedian: sql<number>`round(avg(${evalResults.interruptLatencyMedian}))::int`,
       interruptLatencySd: sql<number>`avg(${evalResults.interruptLatencySd})::real`,
       interruptLatencyP95: sql<number>`round(avg(${evalResults.interruptLatencyP95}))::int`,
+      turnSuccessRate: sql<number | null>`avg(${evalResults.turnSuccessRate})::real`,
       networkResilience: sql<number | null>`round(avg(${evalResults.networkResilience}))::int`,
       naturalness: sql<number | null>`avg(${evalResults.naturalness})::real`,
       noiseReduction: sql<number | null>`round(avg(${evalResults.noiseReduction}))::int`,

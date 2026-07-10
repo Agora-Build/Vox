@@ -2862,6 +2862,7 @@ export async function registerRoutes(
               responseRate: results.responseRate ?? null,
               interruptRate: results.interruptRate ?? null,
               falseInterruptRate: results.falseInterruptRate ?? null,
+              turnSuccessRate: results.turnSuccessRate ?? null,
               networkResilience: results.networkResilience,
               naturalness: results.naturalness,
               noiseReduction: results.noiseReduction,
@@ -3524,6 +3525,9 @@ export async function registerRoutes(
       interruptLatency: r.interruptLatencyMedian,
       interruptLatencySd: r.interruptLatencySd,
       interruptLatencyP95: r.interruptLatencyP95,
+      // Turn Success Rate (0..1), or null. The quality/resilience axis — kept as
+      // null (not 0) so "no data" doesn't read as "0% success".
+      turnSuccessRate: r.turnSuccessRate ?? null,
       networkResilience: r.networkResilience || 0,
       naturalness: r.naturalness || 0,
       noiseReduction: r.noiseReduction || 0,
@@ -3637,6 +3641,7 @@ export async function registerRoutes(
         responseLatenciesP95: number[];
         interruptLatencies: number[];
         interruptLatenciesP95: number[];
+        turnSuccessRates: number[];
         networkResiliences: number[];
         naturalnesses: number[];
         noiseReductions: number[];
@@ -3652,6 +3657,7 @@ export async function registerRoutes(
             responseLatenciesP95: [],
             interruptLatencies: [],
             interruptLatenciesP95: [],
+            turnSuccessRates: [],
             networkResiliences: [],
             naturalnesses: [],
             noiseReductions: [],
@@ -3665,6 +3671,9 @@ export async function registerRoutes(
         if (result.responseLatencyP95 != null) group.responseLatenciesP95.push(result.responseLatencyP95);
         if (result.interruptLatencyMedian != null) group.interruptLatencies.push(result.interruptLatencyMedian);
         if (result.interruptLatencyP95 != null) group.interruptLatenciesP95.push(result.interruptLatencyP95);
+        // TSR INCLUDES no-response runs (a failed turn lowers it) — that's the
+        // point: it's the resilience signal, unlike latency which excludes them.
+        if (result.turnSuccessRate != null) group.turnSuccessRates.push(result.turnSuccessRate);
         if (result.networkResilience != null) group.networkResiliences.push(result.networkResilience);
         if (result.naturalness != null) group.naturalnesses.push(result.naturalness);
         if (result.noiseReduction != null) group.noiseReductions.push(result.noiseReduction);
@@ -3692,6 +3701,7 @@ export async function registerRoutes(
             responseLatencyP95: avgRound(group.responseLatenciesP95),
             interruptLatency: avgRound(group.interruptLatencies),
             interruptLatencyP95: avgRound(group.interruptLatenciesP95),
+            turnSuccessRate: avgRound(group.turnSuccessRates, 4),
             networkResilience: avgRound(group.networkResiliences),
             naturalness: avgRound(group.naturalnesses, 1),
             noiseReduction: avgRound(group.noiseReductions),
@@ -3703,13 +3713,17 @@ export async function registerRoutes(
         return res.json([]);
       }
 
-      // Min-max normalization + weighted composite score
-      // Weights: response 30%, interrupt 25%, noise 20%, network 15%, naturalness 10%
+      // Min-max normalization + weighted composite score. Weighted by end-user
+      // experience: reliability (TSR) and first-response speed co-lead; noise
+      // handling outranks naturalness because real-world background noise is
+      // constant and directly degrades the conversation.
+      // TSR 25 · responseLatency 25 · interruptLatency 15 · noise 15 · network 10 · naturalness 10
       const weights = {
-        responseLatency:  { w: 0.30, lowerIsBetter: true },
-        interruptLatency: { w: 0.25, lowerIsBetter: true },
-        noiseReduction:   { w: 0.20, lowerIsBetter: false },
-        networkResilience:{ w: 0.15, lowerIsBetter: false },
+        responseLatency:  { w: 0.25, lowerIsBetter: true },
+        turnSuccessRate:  { w: 0.25, lowerIsBetter: false },
+        interruptLatency: { w: 0.15, lowerIsBetter: true },
+        noiseReduction:   { w: 0.15, lowerIsBetter: false },
+        networkResilience:{ w: 0.10, lowerIsBetter: false },
         naturalness:      { w: 0.10, lowerIsBetter: false },
       } as const;
 
