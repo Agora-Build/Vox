@@ -2,12 +2,6 @@
 
 **Last updated: July 10, 2026**
 
-> **Note:** VOX is a community-driven, open-source project. This Privacy Policy is
-> provided as a general template and does not constitute legal advice. You should
-> have it reviewed by qualified legal counsel and complete the bracketed
-> placeholders (contact details, data controller identity, hosting region) before
-> relying on it.
-
 ## 1. Introduction
 
 This Privacy Policy explains how the VOX project ("VOX", "we", "us") collects,
@@ -179,6 +173,8 @@ constitutes acceptance of the revised Policy.
 
 For privacy questions or to exercise your rights, contact us at:
 
-- **Email:** [insert contact email]
-- **Project repository / issues:** [link to the VOX repository]
-- **Data controller:** [insert responsible entity or maintainer name, if applicable]
+- **Email:** [oss@agora.build](mailto:oss@agora.build)
+- **Project repository / issues:** [github.com/Agora-Build/Vox](https://github.com/Agora-Build/Vox)
+- **Data controller:** [Brent G](https://github.com/guohai), project maintainer,
+  reachable at the email above. VOX is a community-driven, open-source project and
+  is operated independently of any product or company evaluated on it.
