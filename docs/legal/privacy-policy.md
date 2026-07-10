@@ -175,6 +175,7 @@ For privacy questions or to exercise your rights, contact us at:
 
 - **Email:** [oss@agora.build](mailto:oss@agora.build)
 - **Project repository / issues:** [github.com/Agora-Build/Vox](https://github.com/Agora-Build/Vox)
-- **Data controller:** Brent Guo, project maintainer, operating the hosted VOX
-  service in a personal capacity. VOX is a community-driven, open-source project
-  and is operated independently of any product or company evaluated on it.
+- **Data controller:** Brent G, project maintainer, operating the hosted VOX
+  service in a personal capacity, reachable at the email above. VOX is a
+  community-driven, open-source project and is operated independently of any
+  product or company evaluated on it.
