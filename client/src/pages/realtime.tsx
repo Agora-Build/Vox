@@ -582,7 +582,6 @@ function MetricsSection({ metrics, isLoading, selectedRegion, timeRangeLabel, re
                   <span className="text-sm text-muted-foreground font-mono">P95</span>
                   <span className="text-lg font-mono text-muted-foreground" data-testid={`${testIdPrefix}text-response-p95`}>{fmtMs(latest?.responseLatencyP95)}</span>
                 </div>
-                <p className="text-xs text-muted-foreground truncate pt-1" title={latest?.provider ?? undefined} data-testid={`${testIdPrefix}text-response-provider`}>{latest?.provider ?? "—"}</p>
               </>
             )}
           </CardContent>
@@ -632,7 +631,6 @@ function MetricsSection({ metrics, isLoading, selectedRegion, timeRangeLabel, re
                   <span className="text-sm text-muted-foreground font-mono">P95</span>
                   <span className="text-lg font-mono text-muted-foreground" data-testid={`${testIdPrefix}text-interrupt-p95`}>{fmtMs(latest?.interruptLatencyP95)}</span>
                 </div>
-                <p className="text-xs text-muted-foreground truncate pt-1" title={latest?.provider ?? undefined} data-testid={`${testIdPrefix}text-interrupt-provider`}>{latest?.provider ?? "—"}</p>
               </>
             )}
           </CardContent>
@@ -665,7 +663,7 @@ function MetricsSection({ metrics, isLoading, selectedRegion, timeRangeLabel, re
             ) : (
               <div className="text-2xl font-bold font-mono mt-2" data-testid={`${testIdPrefix}text-turn-success-rate`}>{fmtPct(latest?.turnSuccessRate)}</div>
             )}
-            <p className="text-xs text-muted-foreground truncate" title={latest?.provider ?? undefined} data-testid={`${testIdPrefix}text-tsr-provider`}>{latest?.provider ?? "—"}</p>
+            <p className="text-xs text-muted-foreground">Responds · stops · no false barge-in</p>
           </CardContent>
         </Card>
         <Card>
