@@ -218,11 +218,11 @@ survive termination (including Sections 4, 5, 8, 9, and 13–19) will survive.
 
 ## 18. Governing Law and Dispute Resolution
 
-These Terms are governed by the laws of **[specify governing jurisdiction]**,
-without regard to conflict-of-laws principles. The courts located in **[specify
-venue]** will have exclusive jurisdiction over any dispute arising out of or
-relating to these Terms or the Service, and you consent to their jurisdiction and
-venue, except where prohibited by applicable law.
+These Terms are governed by the laws of **the State of California, USA**, without
+regard to conflict-of-laws principles. The state and federal courts located in
+**California, USA** will have exclusive jurisdiction over any dispute arising out
+of or relating to these Terms or the Service, and you consent to their
+jurisdiction and venue, except where prohibited by applicable law.
 
 ## 19. Miscellaneous
 
