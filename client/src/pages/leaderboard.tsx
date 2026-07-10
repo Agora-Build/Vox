@@ -140,8 +140,8 @@ export default function Leaderboard() {
                     Rankings are computed using a <strong>normalized weighted composite score</strong> across 6 metrics:
                   </p>
                   <div className="text-sm space-y-1">
-                    <div className="flex justify-between"><span>Response Latency</span><span className="font-mono text-muted-foreground">25%</span></div>
                     <div className="flex justify-between"><span>Turn Success Rate</span><span className="font-mono text-muted-foreground">25%</span></div>
+                    <div className="flex justify-between"><span>Response Latency</span><span className="font-mono text-muted-foreground">25%</span></div>
                     <div className="flex justify-between"><span>Interrupt Latency</span><span className="font-mono text-muted-foreground">15%</span></div>
                     <div className="flex justify-between"><span className="text-muted-foreground">Noise Reduction (coming soon)</span><span className="font-mono text-muted-foreground">15%</span></div>
                     <div className="flex justify-between"><span className="text-muted-foreground">Network Resilience (coming soon)</span><span className="font-mono text-muted-foreground">10%</span></div>
