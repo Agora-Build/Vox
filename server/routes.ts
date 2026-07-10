@@ -2828,7 +2828,11 @@ export async function registerRoutes(
 
       await storage.updateEvalAgent(agentId, { state: "idle" });
 
-      if (results) {
+      // Record a result only on SUCCESS. A failed completion (jobError set) is a
+      // measurement failure — no result row, so failed runs never enter metrics.
+      // A run that completed but got no agent response is NOT a failure: it comes
+      // through here with results (NA latencies + responseRate 0) and is stored.
+      if (results && !jobError) {
         // Attribute the result to the provider snapshotted on the job at creation —
         // not the live workflow, which may have been re-pointed since. Fall back to a
         // default provider only for legacy jobs with no snapshot.
@@ -2845,12 +2849,16 @@ export async function registerRoutes(
               evalJobId: parseInt(jobId),
               providerId,
               region: job.region,
-              responseLatencyMedian: results.responseLatencyMedian || 0,
-              responseLatencySd: results.responseLatencySd || 0,
-              responseLatencyP95: results.responseLatencyP95 || 0,
-              interruptLatencyMedian: results.interruptLatencyMedian || 0,
-              interruptLatencySd: results.interruptLatencySd || 0,
-              interruptLatencyP95: results.interruptLatencyP95 || 0,
+              // Pass latencies through as-is: null = NA (agent didn't respond).
+              // Do NOT coerce to 0 — a 0 ms "response" would rank a dead agent as
+              // the fastest and poison latency averages. responseRate carries the
+              // real "answered 0%" signal.
+              responseLatencyMedian: results.responseLatencyMedian ?? null,
+              responseLatencySd: results.responseLatencySd ?? null,
+              responseLatencyP95: results.responseLatencyP95 ?? null,
+              interruptLatencyMedian: results.interruptLatencyMedian ?? null,
+              interruptLatencySd: results.interruptLatencySd ?? null,
+              interruptLatencyP95: results.interruptLatencyP95 ?? null,
               responseRate: results.responseRate ?? null,
               interruptRate: results.interruptRate ?? null,
               falseInterruptRate: results.falseInterruptRate ?? null,
@@ -3270,9 +3278,14 @@ export async function registerRoutes(
         if (u) creatorMap.set(id, u.username);
       }
 
+      // Batch response rates for the page so the list can flag "Partial response"
+      // (responseRate < 1) without an N+1 result join.
+      const rateMap = await storage.getResponseRatesByJobIds(paged.map(j => j.id));
+
       const enriched = paged.map(job => ({
         ...job,
         creatorName: job.createdBy ? creatorMap.get(job.createdBy) || null : null,
+        responseRate: rateMap.has(job.id) ? rateMap.get(job.id)! : null,
         // trigger_type: 1 = scheduled, 2 = manual (recorded at creation). Fall back
         // to scheduleId for rows created before the column existed.
         type: job.triggerType === 1 ? "scheduled"
@@ -3645,16 +3658,27 @@ export async function registerRoutes(
           });
         }
         const group = providerRegionMap.get(key)!;
-        group.responseLatencies.push(result.responseLatencyMedian);
-        group.responseLatenciesP95.push(result.responseLatencyP95);
-        group.interruptLatencies.push(result.interruptLatencyMedian);
-        group.interruptLatenciesP95.push(result.interruptLatencyP95);
+        // Only real (non-NA) latencies enter the averages. A non-responsive run
+        // stores null latency — excluding it keeps a dead agent out of the
+        // ranking instead of averaging it in as a fake-fast 0 ms.
+        if (result.responseLatencyMedian != null) group.responseLatencies.push(result.responseLatencyMedian);
+        if (result.responseLatencyP95 != null) group.responseLatenciesP95.push(result.responseLatencyP95);
+        if (result.interruptLatencyMedian != null) group.interruptLatencies.push(result.interruptLatencyMedian);
+        if (result.interruptLatencyP95 != null) group.interruptLatenciesP95.push(result.interruptLatencyP95);
         if (result.networkResilience != null) group.networkResiliences.push(result.networkResilience);
         if (result.naturalness != null) group.naturalnesses.push(result.naturalness);
         if (result.noiseReduction != null) group.noiseReductions.push(result.noiseReduction);
       }
 
-      const avg = (arr: number[]) => arr.length > 0 ? arr.reduce((a, b) => a + b, 0) / arr.length : 0;
+      // Returns null (NA) for an empty set — never 0, which would read as a
+      // real, best-possible latency.
+      const avg = (arr: number[]): number | null => arr.length > 0 ? arr.reduce((a, b) => a + b, 0) / arr.length : null;
+      const avgRound = (arr: number[], decimals = 0): number | null => {
+        const a = avg(arr);
+        if (a == null) return null;
+        const f = 10 ** decimals;
+        return Math.round(a * f) / f;
+      };
 
       // Aggregate metrics per group
       const entries = await Promise.all(
@@ -3664,13 +3688,13 @@ export async function registerRoutes(
             providerId: group.providerId,
             provider: provider?.name || "Unknown",
             region: group.region,
-            responseLatency: Math.round(avg(group.responseLatencies)),
-            responseLatencyP95: Math.round(avg(group.responseLatenciesP95)),
-            interruptLatency: Math.round(avg(group.interruptLatencies)),
-            interruptLatencyP95: Math.round(avg(group.interruptLatenciesP95)),
-            networkResilience: Math.round(avg(group.networkResiliences)),
-            naturalness: Math.round(avg(group.naturalnesses) * 10) / 10,
-            noiseReduction: Math.round(avg(group.noiseReductions)),
+            responseLatency: avgRound(group.responseLatencies),
+            responseLatencyP95: avgRound(group.responseLatenciesP95),
+            interruptLatency: avgRound(group.interruptLatencies),
+            interruptLatencyP95: avgRound(group.interruptLatenciesP95),
+            networkResilience: avgRound(group.networkResiliences),
+            naturalness: avgRound(group.naturalnesses, 1),
+            noiseReduction: avgRound(group.noiseReductions),
           };
         })
       );
@@ -3692,11 +3716,13 @@ export async function registerRoutes(
       type MetricKey = keyof typeof weights;
       const metricKeys = Object.keys(weights) as MetricKey[];
 
-      // Compute min/max for each metric
-      const ranges: Record<string, { min: number; max: number }> = {};
+      // Compute min/max for each metric over non-NA values only (a null would
+      // coerce to 0 in Math.min/max and corrupt the range). A metric no entry
+      // has is left null and skipped entirely below.
+      const ranges: Record<string, { min: number; max: number } | null> = {};
       for (const key of metricKeys) {
-        const values = entries.map(e => e[key]);
-        ranges[key] = { min: Math.min(...values), max: Math.max(...values) };
+        const values = entries.map(e => e[key]).filter((v): v is number => v != null);
+        ranges[key] = values.length > 0 ? { min: Math.min(...values), max: Math.max(...values) } : null;
       }
 
       // Normalize and compute composite score
@@ -3705,17 +3731,28 @@ export async function registerRoutes(
         let totalWeight = 0;
 
         for (const key of metricKeys) {
-          const { min, max } = ranges[key];
+          const range = ranges[key];
           const { w, lowerIsBetter } = weights[key];
+          const val = entry[key];
 
-          if (min === max) {
+          if (range == null) {
+            // No entry has this metric — skip the axis (don't spend its weight).
+            continue;
+          }
+          if (val == null) {
+            // This entry is NA on a metric others do have (e.g. a fully
+            // non-responsive agent has no latency): score it worst on this axis
+            // — 0 contribution — but still count the weight so it ranks below
+            // agents that produced a value.
+            totalWeight += w;
+          } else if (range.min === range.max) {
             // All entries have the same value — full score
             composite += w;
             totalWeight += w;
           } else {
             const normalized = lowerIsBetter
-              ? (max - entry[key]) / (max - min)
-              : (entry[key] - min) / (max - min);
+              ? (range.max - val) / (range.max - range.min)
+              : (val - range.min) / (range.max - range.min);
             composite += w * normalized;
             totalWeight += w;
           }

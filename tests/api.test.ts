@@ -1261,6 +1261,30 @@ describe('Vox API Tests', () => {
     let flowAgentId: number;
     let flowLeaseId: string;
     let flowJobId: number;
+    let noRespJobId: number;
+
+    // Run the flow workflow, claim the resulting job as the flow agent, and
+    // complete it with the given body. Returns the new job id.
+    const runClaimComplete = async (completeBody: Record<string, unknown>): Promise<number> => {
+      const runRes = await authFetch(adminSession, `${BASE_URL}/api/workflows/${flowWorkflowId}/run`, {
+        method: 'POST',
+        body: JSON.stringify({ evalSetId: flowEvalSetId, region: 'na' }),
+      });
+      const { job } = await runRes.json();
+      const claim = await fetch(`${BASE_URL}/api/eval-agent/jobs/${job.id}/claim`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${flowAgentToken}` },
+        body: JSON.stringify({ agentId: flowAgentId, leaseId: flowLeaseId }),
+      });
+      expect(claim.ok).toBe(true);
+      const done = await fetch(`${BASE_URL}/api/eval-agent/jobs/${job.id}/complete`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${flowAgentToken}` },
+        body: JSON.stringify({ agentId: flowAgentId, leaseId: flowLeaseId, ...completeBody }),
+      });
+      expect(done.ok).toBe(true);
+      return job.id;
+    };
 
     it('should create workflow for job flow test', async () => {
       const response = await authFetch(adminSession, `${BASE_URL}/api/workflows`, {
@@ -1401,6 +1425,70 @@ describe('Vox API Tests', () => {
       expect(result.falseInterruptRate).toBeCloseTo(0.1);
       // Attribution is sourced from the job's frozen snapshot, not the live workflow.
       expect(result.providerId).toBe(testProviderId);
+    });
+
+    it('records a no-response run as a valid result: NA latencies + responseRate 0', async () => {
+      // The agent ran but got no response — latencies are null (NA, not 0) and
+      // responseRate is 0. This is a successful completion, not a failure.
+      noRespJobId = await runClaimComplete({
+        results: {
+          responseLatencyMedian: null,
+          responseLatencySd: null,
+          responseLatencyP95: null,
+          interruptLatencyMedian: null,
+          interruptLatencySd: null,
+          interruptLatencyP95: null,
+          responseRate: 0,
+          interruptRate: null,
+          falseInterruptRate: null,
+          networkResilience: 85,
+          naturalness: 3.5,
+          noiseReduction: 90,
+        },
+      });
+
+      const response = await fetch(`${BASE_URL}/api/v1/results?jobId=${noRespJobId}`, {
+        headers: { 'Authorization': `Bearer ${testApiKey}` },
+      });
+      expect(response.ok).toBe(true);
+      const { data } = await response.json();
+      const result = data.find((r: any) => r.evalJobId === noRespJobId);
+      expect(result).toBeDefined();
+      // Latencies stored as NULL (NA), NOT coerced to 0.
+      expect(result.responseLatencyMedian).toBeNull();
+      expect(result.responseLatencySd).toBeNull();
+      expect(result.responseLatencyP95).toBeNull();
+      expect(result.interruptLatencyMedian).toBeNull();
+      // Response rate carries the real "answered 0%" signal.
+      expect(result.responseRate).toBe(0);
+    });
+
+    it('exposes responseRate on the eval-jobs list so it can flag "Partial response"', async () => {
+      const response = await authFetch(adminSession, `${BASE_URL}/api/eval-jobs?workflowId=${flowWorkflowId}&limit=200`);
+      expect(response.ok).toBe(true);
+      const { data } = await response.json();
+      const naJob = data.find((j: any) => j.id === noRespJobId);
+      expect(naJob).toBeDefined();
+      expect(naJob.responseRate).toBe(0); // < 1 → UI renders the Partial tag
+    });
+
+    it('a failed run records NO result and marks the job failed', async () => {
+      const failJobId = await runClaimComplete({ error: 'aeval exited with code 1: target agent timeout' });
+
+      // No result row for a failed run — failures never enter metrics.
+      const resultsRes = await fetch(`${BASE_URL}/api/v1/results?jobId=${failJobId}`, {
+        headers: { 'Authorization': `Bearer ${testApiKey}` },
+      });
+      expect(resultsRes.ok).toBe(true);
+      const { data } = await resultsRes.json();
+      expect(data.find((r: any) => r.evalJobId === failJobId)).toBeUndefined();
+
+      // Job is marked failed, with no attached result.
+      const detailRes = await authFetch(adminSession, `${BASE_URL}/api/eval-jobs/${failJobId}/detail`);
+      expect(detailRes.ok).toBe(true);
+      const detail = await detailRes.json();
+      expect(detail.job.status).toBe('failed');
+      expect(detail.result).toBeNull();
     });
 
     it('completed result appears in the snapshot-based community tier', async () => {

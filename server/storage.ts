@@ -957,6 +957,26 @@ export class DatabaseStorage {
     return db.select().from(evalResults).where(eq(evalResults.providerId, providerId)).orderBy(desc(evalResults.createdAt));
   }
 
+  /**
+   * Batch response_rate lookup for a page of jobs — one query, no N+1. Used by
+   * the jobs list to flag "Partial response" (responseRate < 1) without joining
+   * full result rows. Jobs with no result are simply absent from the map.
+   */
+  async getResponseRatesByJobIds(jobIds: number[]): Promise<Map<number, number | null>> {
+    const map = new Map<number, number | null>();
+    if (jobIds.length === 0) return map;
+    const rows = await db
+      .select({ evalJobId: evalResults.evalJobId, responseRate: evalResults.responseRate })
+      .from(evalResults)
+      .where(inArray(evalResults.evalJobId, jobIds));
+    // One result per job in practice; if several exist, first wins (order is
+    // unspecified but the rate is per-job identical enough for a badge).
+    for (const r of rows) {
+      if (!map.has(r.evalJobId)) map.set(r.evalJobId, r.responseRate);
+    }
+    return map;
+  }
+
   async getRecentEvalResults(limit: number = 50): Promise<EvalResult[]> {
     return db.select().from(evalResults).orderBy(desc(evalResults.createdAt)).limit(limit);
   }

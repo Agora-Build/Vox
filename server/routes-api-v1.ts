@@ -696,16 +696,19 @@ export function registerApiV1Routes(app: Express): void {
         }
 
         const entry = providerRegionMap.get(key)!;
-        entry.responseLatencies.push(result.responseLatencyMedian);
-        entry.interruptLatencies.push(result.interruptLatencyMedian);
+        // Exclude NA (null) latencies — a non-responsive run must not average in
+        // as a fake-fast 0 ms.
+        if (result.responseLatencyMedian != null) entry.responseLatencies.push(result.responseLatencyMedian);
+        if (result.interruptLatencyMedian != null) entry.interruptLatencies.push(result.interruptLatencyMedian);
         if (result.networkResilience !== null) entry.networkResiliences.push(result.networkResilience);
         if (result.naturalness !== null) entry.naturalnesses.push(result.naturalness);
         if (result.noiseReduction !== null) entry.noiseReductions.push(result.noiseReduction);
       }
 
-      // Calculate averages and build leaderboard
+      // Calculate averages and build leaderboard. Latency avg is null (NA) for an
+      // empty set (all runs non-responsive) — never 0.
       const leaderboard = Array.from(providerRegionMap.values()).map((entry) => {
-        const avg = (arr: number[]) => arr.length > 0 ? Math.round(arr.reduce((a, b) => a + b, 0) / arr.length) : 0;
+        const avg = (arr: number[]): number | null => arr.length > 0 ? Math.round(arr.reduce((a, b) => a + b, 0) / arr.length) : null;
 
         return {
           provider: entry.providerId,
@@ -715,13 +718,17 @@ export function registerApiV1Routes(app: Express): void {
           networkResilience: avg(entry.networkResiliences),
           naturalness: entry.naturalnesses.length > 0
             ? Math.round((entry.naturalnesses.reduce((a, b) => a + b, 0) / entry.naturalnesses.length) * 10) / 10
-            : 0,
+            : null,
           noiseReduction: avg(entry.noiseReductions),
         };
       });
 
-      // Sort by weighted score (lower latency is better)
-      leaderboard.sort((a, b) => a.responseLatency - b.responseLatency);
+      // Sort by response latency (lower is better); NA (null) sinks to the bottom.
+      leaderboard.sort((a, b) => {
+        if (a.responseLatency == null) return b.responseLatency == null ? 0 : 1;
+        if (b.responseLatency == null) return -1;
+        return a.responseLatency - b.responseLatency;
+      });
 
       // Add ranks
       const rankedLeaderboard = leaderboard.map((entry, index) => ({

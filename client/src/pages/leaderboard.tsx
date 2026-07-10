@@ -22,18 +22,22 @@ interface LeaderboardEntry {
   rank: number;
   provider: string;
   region: string;
-  responseLatency: number;
-  responseLatencyP95: number;
-  interruptLatency: number;
-  interruptLatencyP95: number;
-  networkResilience: number;
-  naturalness: number;
-  noiseReduction: number;
+  // Latency is null (NA) when every run in the group was non-responsive.
+  responseLatency: number | null;
+  responseLatencyP95: number | null;
+  interruptLatency: number | null;
+  interruptLatencyP95: number | null;
+  networkResilience: number | null;
+  naturalness: number | null;
+  noiseReduction: number | null;
   compositeScore: number;
 }
 
 type SortField = "rank" | "responseLatency" | "interruptLatency" | "networkResilience" | "naturalness" | "noiseReduction";
 type SortDirection = "asc" | "desc";
+
+// null latency = NA (every run in the group was non-responsive).
+const naNum = (v: number | null, suffix = "") => v == null ? "NA" : `${v}${suffix}`;
 
 export default function Leaderboard() {
   const [selectedRegion, setSelectedRegion] = useState<string>("all");
@@ -65,29 +69,20 @@ export default function Leaderboard() {
 
     // Sort data
     const sorted = [...filtered].sort((a, b) => {
-      let comparison = 0;
-
-      switch (sortField) {
-        case "rank":
-          comparison = a.rank - b.rank;
-          break;
-        case "responseLatency":
-          comparison = a.responseLatency - b.responseLatency;
-          break;
-        case "interruptLatency":
-          comparison = a.interruptLatency - b.interruptLatency;
-          break;
-        case "networkResilience":
-          comparison = b.networkResilience - a.networkResilience; // Higher is better
-          break;
-        case "naturalness":
-          comparison = b.naturalness - a.naturalness; // Higher is better
-          break;
-        case "noiseReduction":
-          comparison = b.noiseReduction - a.noiseReduction; // Higher is better
-          break;
+      if (sortField === "rank") {
+        return sortDirection === "asc" ? a.rank - b.rank : b.rank - a.rank;
       }
 
+      const av = a[sortField];
+      const bv = b[sortField];
+      // NA (null) always sinks to the bottom, whichever direction — a
+      // non-responsive agent must never sort as the fastest.
+      if (av == null && bv == null) return 0;
+      if (av == null) return 1;
+      if (bv == null) return -1;
+
+      const lowerIsBetter = sortField === "responseLatency" || sortField === "interruptLatency";
+      const comparison = lowerIsBetter ? av - bv : bv - av;
       return sortDirection === "asc" ? comparison : -comparison;
     });
 
@@ -295,12 +290,12 @@ export default function Leaderboard() {
                       </Badge>
                     </TableCell>
                     <TableCell className="text-right font-mono" data-testid={`text-response-${entry.rank}`}>
-                      <div>{entry.responseLatency}</div>
-                      <div className="text-xs text-muted-foreground">P95: {entry.responseLatencyP95}</div>
+                      <div>{naNum(entry.responseLatency)}</div>
+                      <div className="text-xs text-muted-foreground">P95: {naNum(entry.responseLatencyP95)}</div>
                     </TableCell>
                     <TableCell className="text-right font-mono" data-testid={`text-interrupt-${entry.rank}`}>
-                      <div>{entry.interruptLatency}</div>
-                      <div className="text-xs text-muted-foreground">P95: {entry.interruptLatencyP95}</div>
+                      <div>{naNum(entry.interruptLatency)}</div>
+                      <div className="text-xs text-muted-foreground">P95: {naNum(entry.interruptLatencyP95)}</div>
                     </TableCell>
                     <TableCell className="text-right w-[150px]">
                       <div className="flex items-center justify-end gap-2">
@@ -367,14 +362,14 @@ export default function Leaderboard() {
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-1">
                   <p className="text-sm text-muted-foreground">Response Latency</p>
-                  <p className="text-2xl font-bold font-mono">{selectedEntry.responseLatency}ms</p>
-                  <p className="text-sm font-mono text-muted-foreground">P95: {selectedEntry.responseLatencyP95}ms</p>
+                  <p className="text-2xl font-bold font-mono">{naNum(selectedEntry.responseLatency, "ms")}</p>
+                  <p className="text-sm font-mono text-muted-foreground">P95: {naNum(selectedEntry.responseLatencyP95, "ms")}</p>
                   <p className="text-xs text-muted-foreground">Time to first audio byte</p>
                 </div>
                 <div className="space-y-1">
                   <p className="text-sm text-muted-foreground">Interrupt Latency</p>
-                  <p className="text-2xl font-bold font-mono">{selectedEntry.interruptLatency}ms</p>
-                  <p className="text-sm font-mono text-muted-foreground">P95: {selectedEntry.interruptLatencyP95}ms</p>
+                  <p className="text-2xl font-bold font-mono">{naNum(selectedEntry.interruptLatency, "ms")}</p>
+                  <p className="text-sm font-mono text-muted-foreground">P95: {naNum(selectedEntry.interruptLatencyP95, "ms")}</p>
                   <p className="text-xs text-muted-foreground">Time to stop on interrupt</p>
                 </div>
               </div>

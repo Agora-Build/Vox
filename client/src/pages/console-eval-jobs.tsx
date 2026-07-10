@@ -12,7 +12,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Pagination, PaginationContent, PaginationItem, PaginationLink, PaginationNext, PaginationPrevious, PaginationEllipsis } from "@/components/ui/pagination";
-import { ClipboardList, CheckCircle, XCircle, Loader2, Clock, CalendarClock, CalendarPlus, MousePointerClick, MoreHorizontal, Pause, Play, Pencil, Trash2, Zap } from "lucide-react";
+import { ClipboardList, CheckCircle, XCircle, Loader2, Clock, CalendarClock, CalendarPlus, MousePointerClick, MoreHorizontal, Pause, Play, Pencil, Trash2, Zap, AlertTriangle } from "lucide-react";
 import { useState } from "react";
 import { useToast } from "@/hooks/use-toast";
 import { useLocation, useSearch, Link } from "wouter";
@@ -36,7 +36,7 @@ interface AuthStatus {
   user: { id: number; isAdmin: boolean } | null;
 }
 
-type EnrichedEvalJob = EvalJob & { creatorName?: string | null; type?: "manual" | "scheduled" };
+type EnrichedEvalJob = EvalJob & { creatorName?: string | null; type?: "manual" | "scheduled"; responseRate?: number | null };
 
 const STATUSES = [
   { value: "all", label: "All Statuses" },
@@ -619,10 +619,21 @@ function JobsTab() {
                           <Badge variant="outline">{formatRegion(job.region)}</Badge>
                         </TableCell>
                         <TableCell>
-                          <Badge variant={cfg.variant} className="gap-1">
-                            <StatusIcon className={`h-3 w-3${job.status === "running" ? " animate-spin" : ""}`} />
-                            {job.status}
-                          </Badge>
+                          <div className="flex flex-wrap items-center gap-1">
+                            <Badge variant={cfg.variant} className="gap-1">
+                              <StatusIcon className={`h-3 w-3${job.status === "running" ? " animate-spin" : ""}`} />
+                              {job.status}
+                            </Badge>
+                            {job.responseRate != null && job.responseRate < 1 && (
+                              <Badge
+                                className="gap-1 bg-amber-500 text-white hover:bg-amber-500"
+                                title={`Agent responded to ${Math.round(job.responseRate * 100)}% of prompts`}
+                                data-testid={`badge-partial-${job.id}`}
+                              >
+                                <AlertTriangle className="h-3 w-3" /> Partial
+                              </Badge>
+                            )}
+                          </div>
                         </TableCell>
                         <TableCell className="text-sm text-muted-foreground">
                           {formatSmartTimestamp(job.createdAt)}
