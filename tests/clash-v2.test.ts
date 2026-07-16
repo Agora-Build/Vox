@@ -11,6 +11,7 @@ import { WebSocket } from "ws";
 import {
   isAgoraConfigured,
   isModeratorConfigured,
+  getConvoAiAuthHeader,
   generateChannelName,
   generateEventChannelName,
   buildAnnouncementPrompt,
@@ -65,6 +66,81 @@ describe("Agora Functions (real imports)", () => {
       delete process.env.AGORA_APP_ID;
       expect(isModeratorConfigured()).toBe(false);
       if (orig) process.env.AGORA_APP_ID = orig;
+    });
+
+    it("is satisfied by a Bearer access token — no Customer ID/Secret needed", () => {
+      const snapshot = {
+        id: process.env.AGORA_APP_ID, cert: process.env.AGORA_APP_CERTIFICATE,
+        cfg: process.env.AGORA_CONVOAI_CONFIG, token: process.env.AGORA_ACCESS_TOKEN,
+        cid: process.env.AGORA_CUSTOMER_ID, csecret: process.env.AGORA_CUSTOMER_SECRET,
+      };
+      process.env.AGORA_APP_ID = "id";
+      process.env.AGORA_APP_CERTIFICATE = "cert";
+      process.env.AGORA_CONVOAI_CONFIG = "{}";
+      delete process.env.AGORA_CUSTOMER_ID;
+      delete process.env.AGORA_CUSTOMER_SECRET;
+
+      // No auth at all → not configured.
+      delete process.env.AGORA_ACCESS_TOKEN;
+      expect(isModeratorConfigured()).toBe(false);
+
+      // Access token alone → configured.
+      process.env.AGORA_ACCESS_TOKEN = "acc-tok";
+      expect(isModeratorConfigured()).toBe(true);
+
+      // Basic creds alone (no token) → also configured (backward compat).
+      delete process.env.AGORA_ACCESS_TOKEN;
+      process.env.AGORA_CUSTOMER_ID = "cid";
+      process.env.AGORA_CUSTOMER_SECRET = "csecret";
+      expect(isModeratorConfigured()).toBe(true);
+
+      // Restore
+      for (const [k, v] of Object.entries({
+        AGORA_APP_ID: snapshot.id, AGORA_APP_CERTIFICATE: snapshot.cert,
+        AGORA_CONVOAI_CONFIG: snapshot.cfg, AGORA_ACCESS_TOKEN: snapshot.token,
+        AGORA_CUSTOMER_ID: snapshot.cid, AGORA_CUSTOMER_SECRET: snapshot.csecret,
+      })) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+    });
+  });
+
+  describe("getConvoAiAuthHeader", () => {
+    const save = () => ({
+      token: process.env.AGORA_ACCESS_TOKEN,
+      cid: process.env.AGORA_CUSTOMER_ID,
+      csecret: process.env.AGORA_CUSTOMER_SECRET,
+    });
+    const restore = (s: ReturnType<typeof save>) => {
+      for (const [k, v] of Object.entries({
+        AGORA_ACCESS_TOKEN: s.token, AGORA_CUSTOMER_ID: s.cid, AGORA_CUSTOMER_SECRET: s.csecret,
+      })) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+    };
+
+    it("prefers a Bearer access token when set", () => {
+      const s = save();
+      process.env.AGORA_ACCESS_TOKEN = "  my-access-token  "; // trimmed
+      process.env.AGORA_CUSTOMER_ID = "cid";
+      process.env.AGORA_CUSTOMER_SECRET = "csecret";
+      expect(getConvoAiAuthHeader()).toBe("Bearer my-access-token");
+      restore(s);
+    });
+
+    it("falls back to Basic auth when no access token", () => {
+      const s = save();
+      delete process.env.AGORA_ACCESS_TOKEN;
+      process.env.AGORA_CUSTOMER_ID = "cid";
+      process.env.AGORA_CUSTOMER_SECRET = "csecret";
+      const expected = "Basic " + Buffer.from("cid:csecret").toString("base64");
+      expect(getConvoAiAuthHeader()).toBe(expected);
+      restore(s);
+    });
+
+    it("throws when neither token nor Basic creds are present", () => {
+      const s = save();
+      delete process.env.AGORA_ACCESS_TOKEN;
+      delete process.env.AGORA_CUSTOMER_ID;
+      delete process.env.AGORA_CUSTOMER_SECRET;
+      expect(() => getConvoAiAuthHeader()).toThrow();
+      restore(s);
     });
   });
 

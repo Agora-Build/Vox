@@ -5,13 +5,17 @@
  *   AGORA_APP_ID, AGORA_APP_CERTIFICATE
  *
  * Required env vars for ConvoAI:
- *   AGORA_CUSTOMER_ID, AGORA_CUSTOMER_SECRET — Agora REST API credentials
  *   AGORA_CONVOAI_CONFIG — JSON string with LLM/TTS/ASR config:
  *   {
  *     "llm": { "url": "...", "api_key": "...", "params": { "model": "..." } },
  *     "tts": { "vendor": "minimax", "params": { ... } },
  *     "asr": { "language": "en-US", "vendor": "ares", "params": {} }
  *   }
+ *
+ *   ...plus REST API auth, EITHER of:
+ *   - AGORA_ACCESS_TOKEN — a Bearer access token (preferred; no long-lived
+ *     secrets at runtime), OR
+ *   - AGORA_CUSTOMER_ID + AGORA_CUSTOMER_SECRET — legacy Basic-auth credentials.
  */
 
 import { createRequire } from "module";
@@ -33,12 +37,15 @@ export function isAgoraConfigured(): boolean {
   return !!(process.env.AGORA_APP_ID && process.env.AGORA_APP_CERTIFICATE);
 }
 
-export function isModeratorConfigured(): boolean {
-  return isAgoraConfigured() && !!(
-    process.env.AGORA_CUSTOMER_ID &&
-    process.env.AGORA_CUSTOMER_SECRET &&
-    process.env.AGORA_CONVOAI_CONFIG
+/** REST API auth is present if we have a Bearer access token OR Basic creds. */
+function hasConvoAiAuth(): boolean {
+  return !!process.env.AGORA_ACCESS_TOKEN || !!(
+    process.env.AGORA_CUSTOMER_ID && process.env.AGORA_CUSTOMER_SECRET
   );
+}
+
+export function isModeratorConfigured(): boolean {
+  return isAgoraConfigured() && hasConvoAiAuth() && !!process.env.AGORA_CONVOAI_CONFIG;
 }
 
 interface ConvoAIConfig {
@@ -127,7 +134,15 @@ interface ConvoAIJoinResponse {
   status: string;
 }
 
-function getBasicAuthHeader(): string {
+/**
+ * Authorization header for the Agora ConvoAI REST API. Prefers a Bearer access
+ * token (`AGORA_ACCESS_TOKEN`) — the recommended auth, with no long-lived
+ * Customer ID/Secret needed at runtime — and falls back to Basic auth for
+ * existing deployments. Exported for unit testing.
+ */
+export function getConvoAiAuthHeader(): string {
+  const accessToken = process.env.AGORA_ACCESS_TOKEN?.trim();
+  if (accessToken) return `Bearer ${accessToken}`;
   const key = getEnv("AGORA_CUSTOMER_ID");
   const secret = getEnv("AGORA_CUSTOMER_SECRET");
   return "Basic " + Buffer.from(`${key}:${secret}`).toString("base64");
@@ -166,7 +181,7 @@ export async function startModerator(opts: StartModeratorOptions): Promise<strin
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      Authorization: getBasicAuthHeader(),
+      Authorization: getConvoAiAuthHeader(),
     },
     body: JSON.stringify(payload),
   });
@@ -188,7 +203,7 @@ export async function stopModerator(agentId: string): Promise<void> {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      Authorization: getBasicAuthHeader(),
+      Authorization: getConvoAiAuthHeader(),
     },
     body: JSON.stringify({}),
   });
@@ -212,7 +227,7 @@ export async function speakModerator(
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      Authorization: getBasicAuthHeader(),
+      Authorization: getConvoAiAuthHeader(),
     },
     body: JSON.stringify({ text, priority, interruptable }),
   });

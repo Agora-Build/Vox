@@ -10,10 +10,19 @@ AGORA_APP_CERTIFICATE=<app certificate>
 
 ### ConvoAI Moderator
 ```
+AGORA_CONVOAI_CONFIG=<JSON with LLM/TTS/ASR config>
+
+# REST API auth — EITHER a Bearer access token (preferred, no long-lived
+# secrets at runtime):
+AGORA_ACCESS_TOKEN=<Agora REST access token>
+# OR the legacy Basic-auth credentials:
 AGORA_CUSTOMER_ID=<REST API customer ID>
 AGORA_CUSTOMER_SECRET=<REST API customer secret>
-AGORA_CONVOAI_CONFIG=<JSON with LLM/TTS/ASR config>
 ```
+
+If `AGORA_ACCESS_TOKEN` is set it takes precedence (sent as `Authorization:
+Bearer …`); otherwise the server falls back to Basic auth from the customer
+ID/secret.
 
 ## Getting Credentials with atem CLI
 
