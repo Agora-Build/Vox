@@ -157,16 +157,38 @@ function guardStartup(proc: ChildProcess, label: string): Promise<boolean> {
 function killAgent(agent: AgentBroadcast): Promise<void> {
   return new Promise((resolve) => {
     let closed = 0;
-    const onClose = () => { if (++closed >= 2) resolve(); };
-    agent.broadcaster.on("close", onClose);
-    agent.capture.on("close", onClose);
-    agent.broadcaster.kill("SIGTERM");
-    agent.capture.kill("SIGTERM");
-    // Force kill after 3s if still alive
-    setTimeout(() => {
+    let done = false;
+    const finish = () => {
+      if (done || closed < 2) return;
+      done = true;
+      clearTimeout(force);
+      resolve();
+    };
+    // Force-kill fallback ALWAYS resolves — teardown must never hang the
+    // runner, whatever state the processes are in.
+    const force = setTimeout(() => {
       agent.broadcaster.kill("SIGKILL");
       agent.capture.kill("SIGKILL");
+      if (!done) {
+        done = true;
+        resolve();
+      }
     }, 3000);
+    for (const proc of [agent.broadcaster, agent.capture]) {
+      if (proc.exitCode !== null || proc.signalCode !== null) {
+        // Already exited (e.g. failed its startup guard in degraded mode) —
+        // its close event fired long ago, so count it now instead of waiting
+        // for a listener that can never fire.
+        closed++;
+      } else {
+        proc.once("close", () => {
+          closed++;
+          finish();
+        });
+        proc.kill("SIGTERM");
+      }
+    }
+    finish();
   });
 }
 
@@ -284,7 +306,19 @@ export async function startBroadcast(config: BroadcastConfig): Promise<Broadcast
       pacatB.kill("SIGTERM");
       agentAInDump?.kill("SIGTERM");
       agentBInDump?.kill("SIGTERM");
-      moderatorTee?.end();
+      // Await the moderator tee's flush — stopRecording reads moderator_out.raw
+      // right after stop() returns, so an unflushed stream would mix truncated
+      // (or missing) moderator audio into the recording. Bounded so a stream
+      // that already errored can't hang teardown.
+      if (moderatorTee) {
+        await new Promise<void>((resolve) => {
+          const bail = setTimeout(resolve, 2000);
+          moderatorTee!.end(() => {
+            clearTimeout(bail);
+            resolve();
+          });
+        });
+      }
       await Promise.all([killAgent(agentA), killAgent(agentB)]);
       setTimeout(() => {
         receiver.kill("SIGKILL");
