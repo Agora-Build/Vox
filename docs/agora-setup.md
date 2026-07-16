@@ -10,10 +10,13 @@ AGORA_APP_CERTIFICATE=<app certificate>
 
 ### ConvoAI Moderator
 ```
-AGORA_CUSTOMER_ID=<REST API customer ID>
-AGORA_CUSTOMER_SECRET=<REST API customer secret>
 AGORA_CONVOAI_CONFIG=<JSON with LLM/TTS/ASR config>
 ```
+
+No REST API credentials are needed. The ConvoAI REST calls are authenticated
+with Agora **token** auth (`Authorization: agora token="<rtc-token>"`), and the
+token is minted per-call from `AGORA_APP_CERTIFICATE` — the same cert already
+used for RTC. **No `AGORA_CUSTOMER_ID` / `AGORA_CUSTOMER_SECRET`.**
 
 ## Getting Credentials with atem CLI
 
@@ -87,7 +90,7 @@ Base URL: `https://api.agora.io/api/conversational-ai-agent/v2/projects/{appId}`
 | Stop agent | POST | `/agents/{agentId}/leave` |
 | Speak (TTS) | POST | `/agents/{agentId}/speak` |
 
-Auth: Basic (base64 of `AGORA_CUSTOMER_ID:AGORA_CUSTOMER_SECRET`)
+Auth: Agora token — `Authorization: agora token="<rtc-token>"`, minted per call from `AGORA_APP_CERTIFICATE` (see `getConvoAiAuthHeader` in `server/agora.ts`). No Customer ID/Secret.
 
 ## Testing Audio Pipeline
 
@@ -121,7 +124,7 @@ docker run --rm vox-clash-runner-test bash /app/audio/test-audio-pipeline.sh
 ### Run Agora E2E tests (requires credentials)
 
 ```bash
-# Requires .env.dev with AGORA_APP_ID, AGORA_APP_CERTIFICATE,
-# AGORA_CUSTOMER_ID, AGORA_CUSTOMER_SECRET, AGORA_CONVOAI_CONFIG
+# Requires .env.dev with AGORA_APP_ID, AGORA_APP_CERTIFICATE, AGORA_CONVOAI_CONFIG
+# (ConvoAI REST auth is minted from the app certificate — no Customer ID/Secret)
 npx vitest run tests/agora-e2e.test.ts
 ```

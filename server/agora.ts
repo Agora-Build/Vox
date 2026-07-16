@@ -5,13 +5,16 @@
  *   AGORA_APP_ID, AGORA_APP_CERTIFICATE
  *
  * Required env vars for ConvoAI:
- *   AGORA_CUSTOMER_ID, AGORA_CUSTOMER_SECRET — Agora REST API credentials
  *   AGORA_CONVOAI_CONFIG — JSON string with LLM/TTS/ASR config:
  *   {
  *     "llm": { "url": "...", "api_key": "...", "params": { "model": "..." } },
  *     "tts": { "vendor": "minimax", "params": { ... } },
  *     "asr": { "language": "en-US", "vendor": "ares", "params": {} }
  *   }
+ *
+ * The ConvoAI REST API is authenticated with Agora "token" auth
+ * (`Authorization: agora token="<rtc-token>"`), minted from AGORA_APP_CERTIFICATE
+ * — no Customer ID/Secret required. See getConvoAiAuthHeader().
  */
 
 import { createRequire } from "module";
@@ -34,11 +37,9 @@ export function isAgoraConfigured(): boolean {
 }
 
 export function isModeratorConfigured(): boolean {
-  return isAgoraConfigured() && !!(
-    process.env.AGORA_CUSTOMER_ID &&
-    process.env.AGORA_CUSTOMER_SECRET &&
-    process.env.AGORA_CONVOAI_CONFIG
-  );
+  // REST auth is minted from the app certificate (getConvoAiAuthHeader), so the
+  // moderator needs nothing beyond RTC config + the ConvoAI LLM/TTS config.
+  return isAgoraConfigured() && !!process.env.AGORA_CONVOAI_CONFIG;
 }
 
 interface ConvoAIConfig {
@@ -127,10 +128,40 @@ interface ConvoAIJoinResponse {
   status: string;
 }
 
-function getBasicAuthHeader(): string {
-  const key = getEnv("AGORA_CUSTOMER_ID");
-  const secret = getEnv("AGORA_CUSTOMER_SECRET");
-  return "Basic " + Buffer.from(`${key}:${secret}`).toString("base64");
+// The REST-auth token's channel/uid are irrelevant to the ConvoAI auth check —
+// it only validates the app-certificate signature — so a fixed placeholder is
+// used (verified against the live /join endpoint).
+const REST_AUTH_CHANNEL = "vox-clash-rest-auth";
+
+/**
+ * Authorization header for the Agora ConvoAI REST API using Agora "token" auth:
+ * `Authorization: agora token="<rtc-token>"`. The RTC token is minted fresh per
+ * call from AGORA_APP_CERTIFICATE (the same cert used for RTC), so there are NO
+ * Customer ID/Secret and nothing static to rotate. Exported for unit testing.
+ *
+ * SECURITY (accepted trade-off): Agora's ConvoAI REST API accepts ANY token
+ * signed by the project's app certificate. Since `/api/clash/matches/:id/
+ * stream-info` issues cert-signed *audience* tokens to anonymous spectators,
+ * such a token can be replayed as `agora token="…"` to call ConvoAI
+ * join/speak/leave on the project (verified). This privilege-escalation risk
+ * was knowingly accepted to avoid a long-lived Customer ID/Secret. If abuse
+ * appears, move REST auth to a server-only credential (Basic auth or a token
+ * users can't obtain) and/or restrict the stream-info endpoint.
+ */
+export function getConvoAiAuthHeader(): string {
+  const appId = getEnv("AGORA_APP_ID");
+  const appCert = getEnv("AGORA_APP_CERTIFICATE");
+  const rtcRole = RtcRole.PUBLISHER;
+  const token = RtcTokenBuilder.buildTokenWithUid(
+    appId,
+    appCert,
+    REST_AUTH_CHANNEL,
+    0,
+    rtcRole,
+    TOKEN_EXPIRY_SECONDS,
+    TOKEN_EXPIRY_SECONDS,
+  );
+  return `agora token="${token}"`;
 }
 
 export async function startModerator(opts: StartModeratorOptions): Promise<string> {
@@ -166,7 +197,7 @@ export async function startModerator(opts: StartModeratorOptions): Promise<strin
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      Authorization: getBasicAuthHeader(),
+      Authorization: getConvoAiAuthHeader(),
     },
     body: JSON.stringify(payload),
   });
@@ -188,7 +219,7 @@ export async function stopModerator(agentId: string): Promise<void> {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      Authorization: getBasicAuthHeader(),
+      Authorization: getConvoAiAuthHeader(),
     },
     body: JSON.stringify({}),
   });
@@ -212,7 +243,7 @@ export async function speakModerator(
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      Authorization: getBasicAuthHeader(),
+      Authorization: getConvoAiAuthHeader(),
     },
     body: JSON.stringify({ text, priority, interruptable }),
   });

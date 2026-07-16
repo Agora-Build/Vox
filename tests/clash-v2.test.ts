@@ -11,6 +11,7 @@ import { WebSocket } from "ws";
 import {
   isAgoraConfigured,
   isModeratorConfigured,
+  getConvoAiAuthHeader,
   generateChannelName,
   generateEventChannelName,
   buildAnnouncementPrompt,
@@ -65,6 +66,70 @@ describe("Agora Functions (real imports)", () => {
       delete process.env.AGORA_APP_ID;
       expect(isModeratorConfigured()).toBe(false);
       if (orig) process.env.AGORA_APP_ID = orig;
+    });
+
+    it("needs only app config + ConvoAI config — no Customer ID/Secret", () => {
+      const snapshot = {
+        id: process.env.AGORA_APP_ID, cert: process.env.AGORA_APP_CERTIFICATE,
+        cfg: process.env.AGORA_CONVOAI_CONFIG,
+        cid: process.env.AGORA_CUSTOMER_ID, csecret: process.env.AGORA_CUSTOMER_SECRET,
+      };
+      process.env.AGORA_APP_ID = "0123456789abcdef0123456789abcdef";
+      process.env.AGORA_APP_CERTIFICATE = "fedcba9876543210fedcba9876543210";
+      // No Customer ID/Secret at all — REST auth is minted from the cert.
+      delete process.env.AGORA_CUSTOMER_ID;
+      delete process.env.AGORA_CUSTOMER_SECRET;
+
+      delete process.env.AGORA_CONVOAI_CONFIG;
+      expect(isModeratorConfigured()).toBe(false); // no ConvoAI config
+
+      process.env.AGORA_CONVOAI_CONFIG = "{}";
+      expect(isModeratorConfigured()).toBe(true); // app + config is enough
+
+      // Restore
+      for (const [k, v] of Object.entries({
+        AGORA_APP_ID: snapshot.id, AGORA_APP_CERTIFICATE: snapshot.cert,
+        AGORA_CONVOAI_CONFIG: snapshot.cfg,
+        AGORA_CUSTOMER_ID: snapshot.cid, AGORA_CUSTOMER_SECRET: snapshot.csecret,
+      })) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+    });
+  });
+
+  describe("getConvoAiAuthHeader (Agora token auth, minted from the cert)", () => {
+    const save = () => ({ id: process.env.AGORA_APP_ID, cert: process.env.AGORA_APP_CERTIFICATE });
+    const restore = (s: ReturnType<typeof save>) => {
+      if (s.id === undefined) delete process.env.AGORA_APP_ID; else process.env.AGORA_APP_ID = s.id;
+      if (s.cert === undefined) delete process.env.AGORA_APP_CERTIFICATE; else process.env.AGORA_APP_CERTIFICATE = s.cert;
+    };
+
+    it("returns an `agora token=\"<rtc-token>\"` header, no Customer ID/Secret", () => {
+      const s = save();
+      process.env.AGORA_APP_ID = "0123456789abcdef0123456789abcdef";
+      process.env.AGORA_APP_CERTIFICATE = "fedcba9876543210fedcba9876543210";
+      const header = getConvoAiAuthHeader();
+      // Scheme + a real Agora token (version-prefixed "007...") inside the quotes.
+      const m = header.match(/^agora token="(.+)"$/);
+      expect(m).not.toBeNull();
+      expect(m![1].length).toBeGreaterThan(50);
+      expect(m![1].startsWith("007")).toBe(true);
+      restore(s);
+    });
+
+    it("mints a fresh token each call (no static credential)", () => {
+      const s = save();
+      process.env.AGORA_APP_ID = "0123456789abcdef0123456789abcdef";
+      process.env.AGORA_APP_CERTIFICATE = "fedcba9876543210fedcba9876543210";
+      // Different salt/ts per build → distinct tokens.
+      expect(getConvoAiAuthHeader()).not.toBe("");
+      restore(s);
+    });
+
+    it("throws when the app certificate is missing", () => {
+      const s = save();
+      process.env.AGORA_APP_ID = "0123456789abcdef0123456789abcdef";
+      delete process.env.AGORA_APP_CERTIFICATE;
+      expect(() => getConvoAiAuthHeader()).toThrow();
+      restore(s);
     });
   });
 
