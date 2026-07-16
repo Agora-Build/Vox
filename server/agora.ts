@@ -12,10 +12,9 @@
  *     "asr": { "language": "en-US", "vendor": "ares", "params": {} }
  *   }
  *
- *   ...plus REST API auth, EITHER of:
- *   - AGORA_ACCESS_TOKEN — a Bearer access token (preferred; no long-lived
- *     secrets at runtime), OR
- *   - AGORA_CUSTOMER_ID + AGORA_CUSTOMER_SECRET — legacy Basic-auth credentials.
+ * The ConvoAI REST API is authenticated with Agora "token" auth
+ * (`Authorization: agora token="<rtc-token>"`), minted from AGORA_APP_CERTIFICATE
+ * — no Customer ID/Secret required. See getConvoAiAuthHeader().
  */
 
 import { createRequire } from "module";
@@ -37,15 +36,10 @@ export function isAgoraConfigured(): boolean {
   return !!(process.env.AGORA_APP_ID && process.env.AGORA_APP_CERTIFICATE);
 }
 
-/** REST API auth is present if we have a Bearer access token OR Basic creds. */
-function hasConvoAiAuth(): boolean {
-  return !!process.env.AGORA_ACCESS_TOKEN || !!(
-    process.env.AGORA_CUSTOMER_ID && process.env.AGORA_CUSTOMER_SECRET
-  );
-}
-
 export function isModeratorConfigured(): boolean {
-  return isAgoraConfigured() && hasConvoAiAuth() && !!process.env.AGORA_CONVOAI_CONFIG;
+  // REST auth is minted from the app certificate (getConvoAiAuthHeader), so the
+  // moderator needs nothing beyond RTC config + the ConvoAI LLM/TTS config.
+  return isAgoraConfigured() && !!process.env.AGORA_CONVOAI_CONFIG;
 }
 
 interface ConvoAIConfig {
@@ -134,18 +128,31 @@ interface ConvoAIJoinResponse {
   status: string;
 }
 
+// The REST-auth token's channel/uid are irrelevant to the ConvoAI auth check —
+// it only validates the app-certificate signature — so a fixed placeholder is
+// used (verified against the live /join endpoint).
+const REST_AUTH_CHANNEL = "vox-clash-rest-auth";
+
 /**
- * Authorization header for the Agora ConvoAI REST API. Prefers a Bearer access
- * token (`AGORA_ACCESS_TOKEN`) — the recommended auth, with no long-lived
- * Customer ID/Secret needed at runtime — and falls back to Basic auth for
- * existing deployments. Exported for unit testing.
+ * Authorization header for the Agora ConvoAI REST API using Agora "token" auth:
+ * `Authorization: agora token="<rtc-token>"`. The RTC token is minted fresh per
+ * call from AGORA_APP_CERTIFICATE (the same cert used for RTC), so there are NO
+ * Customer ID/Secret and nothing static to rotate. Exported for unit testing.
  */
 export function getConvoAiAuthHeader(): string {
-  const accessToken = process.env.AGORA_ACCESS_TOKEN?.trim();
-  if (accessToken) return `Bearer ${accessToken}`;
-  const key = getEnv("AGORA_CUSTOMER_ID");
-  const secret = getEnv("AGORA_CUSTOMER_SECRET");
-  return "Basic " + Buffer.from(`${key}:${secret}`).toString("base64");
+  const appId = getEnv("AGORA_APP_ID");
+  const appCert = getEnv("AGORA_APP_CERTIFICATE");
+  const rtcRole = RtcRole.PUBLISHER;
+  const token = RtcTokenBuilder.buildTokenWithUid(
+    appId,
+    appCert,
+    REST_AUTH_CHANNEL,
+    0,
+    rtcRole,
+    TOKEN_EXPIRY_SECONDS,
+    TOKEN_EXPIRY_SECONDS,
+  );
+  return `agora token="${token}"`;
 }
 
 export async function startModerator(opts: StartModeratorOptions): Promise<string> {
