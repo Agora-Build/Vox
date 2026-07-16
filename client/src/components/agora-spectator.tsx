@@ -21,13 +21,19 @@ export default function AgoraSpectator({ appId, channelId, token, uid }: AgoraSp
   const [state, setState] = useState<ConnectionState>("connecting");
   const [muted, setMuted] = useState(false);
   const [remoteUsers, setRemoteUsers] = useState<number>(0);
-  const tracksRef = useRef<IRemoteAudioTrack[]>([]);
+  // Tracks keyed by publisher uid — user.audioTrack may already be null by the
+  // time user-unpublished fires, so removal must not rely on the track ref.
+  const tracksRef = useRef<Map<string | number, IRemoteAudioTrack>>(new Map());
+  // Ref mirror of `muted` so publishers that join mid-match (e.g. the
+  // moderator) respect the current mute state — the event handler closure
+  // would otherwise see a stale value.
+  const mutedRef = useRef(false);
 
   const cleanup = useCallback(async () => {
-    for (const track of tracksRef.current) {
+    for (const track of Array.from(tracksRef.current.values())) {
       track.stop();
     }
-    tracksRef.current = [];
+    tracksRef.current.clear();
     if (clientRef.current) {
       await clientRef.current.leave().catch(() => {});
       clientRef.current = null;
@@ -43,14 +49,18 @@ export default function AgoraSpectator({ appId, channelId, token, uid }: AgoraSp
       await client.subscribe(user, mediaType);
       const audioTrack = user.audioTrack;
       if (audioTrack) {
-        audioTrack.play();
-        tracksRef.current.push(audioTrack);
+        if (!mutedRef.current) audioTrack.play();
+        tracksRef.current.set(user.uid, audioTrack);
       }
+      setRemoteUsers(client.remoteUsers.length);
     });
 
     client.on("user-unpublished", (user, mediaType) => {
       if (mediaType !== "audio") return;
-      tracksRef.current = tracksRef.current.filter(t => t !== user.audioTrack);
+      const track = tracksRef.current.get(user.uid);
+      track?.stop();
+      tracksRef.current.delete(user.uid);
+      setRemoteUsers(client.remoteUsers.length);
     });
 
     client.on("user-joined", () => {
@@ -86,7 +96,8 @@ export default function AgoraSpectator({ appId, channelId, token, uid }: AgoraSp
   const toggleMute = () => {
     const next = !muted;
     setMuted(next);
-    for (const track of tracksRef.current) {
+    mutedRef.current = next;
+    for (const track of Array.from(tracksRef.current.values())) {
       if (next) track.stop();
       else track.play();
     }

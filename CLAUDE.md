@@ -491,6 +491,7 @@ When adding new features, write tests for critical paths like authentication, jo
 
 ### Documentation & Design
 - `designs/IMPLEMENTATION_PLAN.md` - Detailed specs and implementation phases
+- `designs/CLASH_DESIGN.md` - Clash architecture: RTC uid map, PipeWire audio graph, match lifecycle, failure policy
 - `designs/vox-arch.png` - Low-level architecture diagram
 - `docs/openapi.yaml` - OpenAPI 3.0 specification for API v1
 

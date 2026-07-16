@@ -105,6 +105,12 @@ export function generateEventChannelName(eventId: number): string {
 // ConvoAI Moderator lifecycle
 // ---------------------------------------------------------------------------
 
+// The moderator's fixed RTC uid (reserved system range <= 10,000). Single
+// source of truth: used when the ConvoAI moderator joins AND delivered to the
+// clash runner in the assignment payload so the receiver's --filterUid (which
+// passes ONLY this uid's audio into the agents' mics) can never drift from it.
+export const MODERATOR_UID = 500;
+
 const CONVOAI_BASE_URL = "https://api.agora.io/api/conversational-ai-agent/v2/projects";
 
 interface StartModeratorOptions {

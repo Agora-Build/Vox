@@ -1,6 +1,8 @@
 #!/bin/bash
 # Audio pipeline integration test for the clash runner container.
-# Tests the 4-sink design: Sink_A_Out, Sink_B_Out, Sink_A_In, Sink_B_In
+# Tests the 4-sink design (Sink_A_Out, Sink_B_Out, Sink_A_In, Sink_B_In) with
+# REAL audio signal: sox-generated tones + RMS non-silence assertions — a
+# byte-count of silence proves only that bytes flowed, not that sound was heard.
 #
 # Run inside the container:
 #   docker run --rm vox-clash-runner-test bash /app/audio/test-audio-pipeline.sh
@@ -13,11 +15,38 @@ FAIL=0
 pass() { echo "  PASS: $1"; ((PASS++)); }
 fail() { echo "  FAIL: $1"; ((FAIL++)); }
 
-echo "=== Audio Pipeline Test (4-sink design) ==="
+RATE=16000
+FMT_ARGS="--format=s16le --rate=${RATE} --channels=1"
+SOX_RAW="-r ${RATE} -e signed -b 16 -c 1"
+
+# RMS amplitude (0..1) of a raw s16le capture; 0 for missing/empty files.
+rms_of() {
+  local f="$1"
+  if [ ! -s "$f" ]; then echo 0; return; fi
+  sox ${SOX_RAW} "$f" -n stat 2>&1 | awk '/RMS.*amplitude/ {print $3; exit}'
+}
+
+# assert_rms <file> <op> <threshold> <label>   (op: gt | lt)
+assert_rms() {
+  local f="$1" op="$2" threshold="$3" label="$4"
+  local rms
+  rms=$(rms_of "$f")
+  if awk -v r="$rms" -v t="$threshold" -v o="$op" 'BEGIN{ exit !((o=="gt" && r>t) || (o=="lt" && r<t)) }'; then
+    pass "$label (RMS=$rms)"
+  else
+    fail "$label (RMS=$rms, wanted $op $threshold)"
+  fi
+}
+
+loopback_count() {
+  pactl list short modules 2>/dev/null | awk -F'\t' '$2=="module-loopback"' | wc -l
+}
+
+echo "=== Audio Pipeline Test (4-sink design, real-signal) ==="
 echo ""
 
 # --- 1. Start PipeWire stack ---
-echo "[1/8] Starting PipeWire stack..."
+echo "[1/9] Starting PipeWire stack..."
 bash /app/audio/pipewire-setup.sh 2>/dev/null
 source /tmp/pipewire-env.sh
 
@@ -39,9 +68,13 @@ else
   fail "PipeWire-Pulse is not running"
 fi
 
+# Test tones: distinct frequencies so cross-wire directions can't be confused.
+sox -n ${SOX_RAW} /tmp/tone_a.raw synth 8 sine 440 vol 0.5
+sox -n ${SOX_RAW} /tmp/tone_b.raw synth 8 sine 880 vol 0.5
+
 # --- 2. Verify all 4 sinks ---
 echo ""
-echo "[2/8] Checking 4 sinks..."
+echo "[2/9] Checking 4 sinks..."
 
 SINKS=$(pactl list sinks short 2>/dev/null)
 for SINK in Sink_A_Out Sink_B_Out Sink_A_In Sink_B_In; do
@@ -61,101 +94,131 @@ for SRC in Sink_A_Out.monitor Sink_B_Out.monitor Sink_A_In.monitor Sink_B_In.mon
   fi
 done
 
-# --- 3. Test output sink playback ---
+# --- 3. Output playback + monitor capture with REAL signal (both agents) ---
 echo ""
-echo "[3/8] Testing output sink playback..."
+echo "[3/9] Output sinks: real tone in, non-silent monitor capture out..."
 
-echo -ne '\x00\x00\x00\x00' | timeout 5 pacat -d Sink_A_Out --format=s16le --rate=16000 --channels=1 2>/dev/null
-if [ $? -eq 0 ]; then
-  pass "pacat can write to Sink_A_Out"
+for AGENT in A B; do
+  TONE="/tmp/tone_a.raw"; [ "$AGENT" = "B" ] && TONE="/tmp/tone_b.raw"
+  timeout 8 pacat -d "Sink_${AGENT}_Out" ${FMT_ARGS} --raw < "$TONE" &
+  PRODUCER=$!
+  sleep 1
+  timeout 3 parec -d "Sink_${AGENT}_Out.monitor" ${FMT_ARGS} --raw 2>/dev/null > "/tmp/capture_${AGENT}.raw" || true
+  kill $PRODUCER 2>/dev/null; wait $PRODUCER 2>/dev/null || true
+  assert_rms "/tmp/capture_${AGENT}.raw" gt 0.05 "Sink_${AGENT}_Out.monitor carries real signal"
+done
+
+# --- 4. Cross-wire BOTH directions with distinct tones ---
+echo ""
+echo "[4/9] Cross-wiring both directions (A_Out→B_In @440Hz, B_Out→A_In @880Hz)..."
+
+LOOP_AB=$(pactl load-module module-loopback source=Sink_A_Out.monitor sink=Sink_B_In latency_msec=20 2>/dev/null)
+LOOP_BA=$(pactl load-module module-loopback source=Sink_B_Out.monitor sink=Sink_A_In latency_msec=20 2>/dev/null)
+
+if [ -n "$LOOP_AB" ] && [ -n "$LOOP_BA" ]; then
+  pass "Both loopback modules loaded (ids: $LOOP_AB, $LOOP_BA)"
 else
-  fail "pacat failed to write to Sink_A_Out"
+  fail "Loopback load failed (ids: '$LOOP_AB', '$LOOP_BA')"
 fi
 
-# --- 4. Test output sink capture ---
-echo ""
-echo "[4/8] Testing capture from output sink monitor..."
-
-timeout 5 pacat -d Sink_A_Out --format=s16le --rate=16000 --channels=1 --raw < /dev/zero &
-PRODUCER=$!
-sleep 1
-
-timeout 2 parec -d Sink_A_Out.monitor --format=s16le --rate=16000 --channels=1 --raw 2>/dev/null > /tmp/capture_test.raw || true
-
-kill $PRODUCER 2>/dev/null; wait $PRODUCER 2>/dev/null || true
-CAPTURE_SIZE=$(wc -c < /tmp/capture_test.raw 2>/dev/null || echo 0)
-
-if [ "$CAPTURE_SIZE" -gt 1000 ]; then
-  pass "parec captured ${CAPTURE_SIZE} bytes from Sink_A_Out.monitor"
-else
-  fail "parec captured only ${CAPTURE_SIZE} bytes (expected >1000)"
-fi
-
-# --- 5. Test cross-wiring (Out → In) ---
-echo ""
-echo "[5/8] Testing cross-wiring (Sink_A_Out → loopback → Sink_B_In)..."
-
-pactl load-module module-loopback source=Sink_A_Out.monitor sink=Sink_B_In latency_msec=20 2>/dev/null
-
-timeout 8 pacat -d Sink_A_Out --format=s16le --rate=16000 --channels=1 --raw < /dev/zero &
-PRODUCER2=$!
+# A speaks → B hears
+timeout 8 pacat -d Sink_A_Out ${FMT_ARGS} --raw < /tmp/tone_a.raw &
+PROD_A=$!
 sleep 2
+timeout 3 parec -d Sink_B_In.monitor ${FMT_ARGS} --raw 2>/dev/null > /tmp/crosswire_ab.raw || true
+kill $PROD_A 2>/dev/null; wait $PROD_A 2>/dev/null || true
+assert_rms /tmp/crosswire_ab.raw gt 0.05 "Cross-wire A→B: B hears A's tone"
 
-timeout 3 parec -d Sink_B_In.monitor --format=s16le --rate=16000 --channels=1 --raw 2>/dev/null > /tmp/crosswire_test.raw || true
+# B speaks → A hears
+timeout 8 pacat -d Sink_B_Out ${FMT_ARGS} --raw < /tmp/tone_b.raw &
+PROD_B=$!
+sleep 2
+timeout 3 parec -d Sink_A_In.monitor ${FMT_ARGS} --raw 2>/dev/null > /tmp/crosswire_ba.raw || true
+kill $PROD_B 2>/dev/null; wait $PROD_B 2>/dev/null || true
+assert_rms /tmp/crosswire_ba.raw gt 0.05 "Cross-wire B→A: A hears B's tone"
 
-kill $PRODUCER2 2>/dev/null; wait $PRODUCER2 2>/dev/null || true
-CROSSWIRE_SIZE=$(wc -c < /tmp/crosswire_test.raw 2>/dev/null || echo 0)
+# --- 5. Teardown / warm-pool leak guard ---
+echo ""
+echo "[5/9] Loopback teardown (warm-pool leak guard)..."
 
-if [ "$CROSSWIRE_SIZE" -gt 1000 ]; then
-  pass "Cross-wire: ${CROSSWIRE_SIZE} bytes on Sink_B_In from Sink_A_Out"
+pactl unload-module "$LOOP_AB" 2>/dev/null
+pactl unload-module "$LOOP_BA" 2>/dev/null
+
+if [ "$(loopback_count)" -eq 0 ]; then
+  pass "All loopbacks unloaded after match teardown"
 else
-  fail "Cross-wire: only ${CROSSWIRE_SIZE} bytes (expected >1000)"
+  fail "Loopback modules leaked after unload ($(loopback_count) remain)"
 fi
 
-# --- 6. Test moderator path (pacat → Sink_In → parec) ---
-echo ""
-echo "[6/8] Testing moderator path (pacat --raw → Sink_A_In → parec)..."
-
-timeout 10 pacat -d Sink_A_In --format=s16le --rate=16000 --channels=1 --raw < /dev/zero &
-MOD_PROD=$!
-sleep 4
-
-timeout 3 parec -d Sink_A_In.monitor --format=s16le --rate=16000 --channels=1 --raw 2>/dev/null > /tmp/mod_test.raw || true
-
-kill $MOD_PROD 2>/dev/null; wait $MOD_PROD 2>/dev/null || true
-MOD_SIZE=$(wc -c < /tmp/mod_test.raw 2>/dev/null || echo 0)
-
-if [ "$MOD_SIZE" -gt 1000 ]; then
-  pass "Moderator path: ${MOD_SIZE} bytes on Sink_A_In.monitor"
+# Simulate two more warm-pool matches: wire → assert exactly 2 → unwire.
+LEAK_OK=1
+for MATCH in 2 3; do
+  M1=$(pactl load-module module-loopback source=Sink_A_Out.monitor sink=Sink_B_In latency_msec=20 2>/dev/null)
+  M2=$(pactl load-module module-loopback source=Sink_B_Out.monitor sink=Sink_A_In latency_msec=20 2>/dev/null)
+  if [ "$(loopback_count)" -ne 2 ]; then
+    LEAK_OK=0
+    fail "Match #$MATCH: expected exactly 2 loopbacks, found $(loopback_count)"
+  fi
+  pactl unload-module "$M1" 2>/dev/null
+  pactl unload-module "$M2" 2>/dev/null
+done
+if [ "$LEAK_OK" -eq 1 ] && [ "$(loopback_count)" -eq 0 ]; then
+  pass "Warm-pool simulation: loopback count stable at 2 per match, 0 after"
 else
-  fail "Moderator path: only ${MOD_SIZE} bytes (expected >1000)"
+  fail "Warm-pool simulation: loopback accumulation detected"
 fi
 
-# --- 7. Test isolation: output noise does NOT leak to input ---
+# --- 6. Moderator path into BOTH agent mics ---
 echo ""
-echo "[7/8] Testing isolation (Sink_A_Out noise does NOT appear on Sink_A_In)..."
+echo "[6/9] Moderator path (pacat → Sink_A_In AND Sink_B_In → monitors)..."
 
-# Play into A_Out (browser noise)
-timeout 5 pacat -d Sink_A_Out --format=s16le --rate=16000 --channels=1 --raw < /dev/zero &
+for AGENT in A B; do
+  timeout 8 pacat -d "Sink_${AGENT}_In" ${FMT_ARGS} --raw < /tmp/tone_a.raw &
+  MOD_PROD=$!
+  sleep 2
+  timeout 3 parec -d "Sink_${AGENT}_In.monitor" ${FMT_ARGS} --raw 2>/dev/null > "/tmp/mod_${AGENT}.raw" || true
+  kill $MOD_PROD 2>/dev/null; wait $MOD_PROD 2>/dev/null || true
+  assert_rms "/tmp/mod_${AGENT}.raw" gt 0.05 "Agent ${AGENT} mic hears moderator tone"
+done
+
+# --- 7. Isolation: A's own output must NOT reach A's mic ---
+echo ""
+echo "[7/9] Isolation (Sink_A_Out tone must NOT appear on Sink_A_In)..."
+# No loopbacks are loaded at this point (step 5 removed them), so A's mic
+# monitor must be silent while A's output carries a loud tone. This is a REAL
+# assertion — a leak (RMS above the silence floor) fails the suite.
+
+timeout 6 pacat -d Sink_A_Out ${FMT_ARGS} --raw < /tmp/tone_a.raw &
 NOISE=$!
 sleep 1
-
-# Capture from A_In (should be silent — no loopback from A_Out to A_In)
-timeout 2 parec -d Sink_A_In.monitor --format=s16le --rate=16000 --channels=1 --raw 2>/dev/null > /tmp/isolation_test.raw || true
-
+timeout 2 parec -d Sink_A_In.monitor ${FMT_ARGS} --raw 2>/dev/null > /tmp/isolation_test.raw || true
 kill $NOISE 2>/dev/null; wait $NOISE 2>/dev/null || true
-ISO_SIZE=$(wc -c < /tmp/isolation_test.raw 2>/dev/null || echo 0)
 
-if [ "$ISO_SIZE" -lt 1000 ]; then
-  pass "Isolation: Sink_A_Out noise does NOT leak to Sink_A_In (${ISO_SIZE} bytes)"
+assert_rms /tmp/isolation_test.raw lt 0.02 "Sink_A_Out audio does not leak into Sink_A_In"
+
+# --- 8. sox stereo merge (recording pipeline) ---
+echo ""
+echo "[8/9] Recording merge (sox -M A B → stereo, + moderator mix)..."
+
+sox -M ${SOX_RAW} /tmp/tone_a.raw ${SOX_RAW} /tmp/tone_b.raw /tmp/rec_stereo.wav 2>/dev/null
+if [ -s /tmp/rec_stereo.wav ] && [ "$(soxi -c /tmp/rec_stereo.wav 2>/dev/null)" = "2" ]; then
+  pass "Stereo merge produced a 2-channel WAV"
 else
-  # Check if it's actual silence (all zeros) vs real audio
-  pass "Sink_A_In captured ${ISO_SIZE} bytes (may be PipeWire silence frames — check waveform)"
+  fail "Stereo merge failed"
 fi
 
-# --- 8. Verify C++ binaries ---
+# Moderator mixed into both channels (as stopRecording does)
+sox ${SOX_RAW} /tmp/tone_a.raw /tmp/mod_stereo.wav remix 1 1 2>/dev/null
+sox -m /tmp/rec_stereo.wav /tmp/mod_stereo.wav /tmp/rec_full.wav 2>/dev/null
+if [ -s /tmp/rec_full.wav ] && [ "$(soxi -c /tmp/rec_full.wav 2>/dev/null)" = "2" ]; then
+  pass "Moderator mix produced the whole-voice recording"
+else
+  fail "Moderator mix failed"
+fi
+
+# --- 9. Verify C++ binaries ---
 echo ""
-echo "[8/8] Checking C++ binaries..."
+echo "[9/9] Checking C++ binaries..."
 
 BCAST_OUT=$(/app/agora-broadcaster 2>&1 || true)
 if echo "$BCAST_OUT" | grep -qi "appid"; then
@@ -169,6 +232,12 @@ if echo "$RECV_OUT" | grep -qi "appid"; then
   pass "agora-receiver binary runs"
 else
   fail "agora-receiver binary failed"
+fi
+
+if echo "$RECV_OUT" | grep -qi "filterUid"; then
+  pass "agora-receiver supports --filterUid (moderator→agents contract)"
+else
+  fail "agora-receiver missing --filterUid support"
 fi
 
 # --- Summary ---

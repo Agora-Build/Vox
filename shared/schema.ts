@@ -720,6 +720,10 @@ export const clashResults = pgTable("clash_results", {
   ttftMedian: integer("ttft_median"),
   turnCount: integer("turn_count"),
   overlapPercent: real("overlap_percent"),
+  // Audio health (from the runner's raw captures): did this agent actually
+  // produce sound? A silent agent / dead pipeline is detectable on the record.
+  audioRms: real("audio_rms"),
+  talkTimeSeconds: real("talk_time_seconds"),
   rawData: jsonb("raw_data").default({}),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
