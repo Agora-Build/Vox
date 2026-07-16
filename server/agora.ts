@@ -138,6 +138,15 @@ const REST_AUTH_CHANNEL = "vox-clash-rest-auth";
  * `Authorization: agora token="<rtc-token>"`. The RTC token is minted fresh per
  * call from AGORA_APP_CERTIFICATE (the same cert used for RTC), so there are NO
  * Customer ID/Secret and nothing static to rotate. Exported for unit testing.
+ *
+ * SECURITY (accepted trade-off): Agora's ConvoAI REST API accepts ANY token
+ * signed by the project's app certificate. Since `/api/clash/matches/:id/
+ * stream-info` issues cert-signed *audience* tokens to anonymous spectators,
+ * such a token can be replayed as `agora token="…"` to call ConvoAI
+ * join/speak/leave on the project (verified). This privilege-escalation risk
+ * was knowingly accepted to avoid a long-lived Customer ID/Secret. If abuse
+ * appears, move REST auth to a server-only credential (Basic auth or a token
+ * users can't obtain) and/or restrict the stream-info endpoint.
  */
 export function getConvoAiAuthHeader(): string {
   const appId = getEnv("AGORA_APP_ID");
