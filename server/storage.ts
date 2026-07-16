@@ -1916,11 +1916,20 @@ export class DatabaseStorage {
     return result.length;
   }
 
-  async failStuckMatches(stuckThresholdMs: number = 300_000): Promise<number> {
-    const cutoff = new Date(Date.now() - stuckThresholdMs);
+  /**
+   * Fail matches whose runner never completed. The cutoff is PER MATCH:
+   * max_duration_seconds + a fixed buffer for briefings/setup/teardown. A flat
+   * cutoff shorter than a match's real wall time would reap healthy matches
+   * mid-run and free their runner for double-assignment.
+   */
+  async failStuckMatches(bufferMs: number = 180_000): Promise<number> {
+    const bufferSeconds = Math.ceil(bufferMs / 1000);
     const result = await db.update(clashMatches)
       .set({ status: "failed", error: "Match timed out — runner did not complete", completedAt: new Date() })
-      .where(and(eq(clashMatches.status, "starting"), sql`${clashMatches.startedAt} < ${cutoff}`))
+      .where(and(
+        eq(clashMatches.status, "starting"),
+        sql`${clashMatches.startedAt} < now() - make_interval(secs => ${clashMatches.maxDurationSeconds} + ${bufferSeconds})`,
+      ))
       .returning();
     // Reset any runners stuck on these matches
     for (const match of result) {

@@ -33,6 +33,7 @@ import {
   isModeratorConfigured,
   generateRtcToken,
   generateEventChannelName,
+  MODERATOR_UID,
   startModerator,
   stopModerator,
   speakModerator,
@@ -5274,6 +5275,7 @@ export async function registerRoutes(
         broadcasterTokenA: string; broadcasterTokenB: string;
         broadcasterUidA: number; broadcasterUidB: number;
         receiverToken: string; receiverUid: number;
+        moderatorUid: number;
       } | undefined;
       const channelName = event.agoraChannelName;
       if (isAgoraConfigured() && channelName) {
@@ -5286,6 +5288,10 @@ export async function registerRoutes(
           broadcasterUidB: BROADCASTER_UID_B,
           receiverToken: generateRtcToken(channelName, RECEIVER_UID, "audience"),
           receiverUid: RECEIVER_UID,
+          // The uid the ConvoAI moderator joins with — the runner's receiver
+          // filters to exactly this uid, so agents hear the moderator (and
+          // never their own broadcast echoed back).
+          moderatorUid: MODERATOR_UID,
         };
       }
 
@@ -5577,7 +5583,7 @@ export async function registerRoutes(
       if (!profileA || !profileB) return res.status(500).json({ error: "Agent profile(s) missing" });
 
       const channelName = event.agoraChannelName || generateEventChannelName(event.id);
-      const modUid = 500;  // Fixed moderator UID (reserved range <= 10,000)
+      const modUid = MODERATOR_UID; // single source of truth — must match the runner's receiver filter
       const modToken = generateRtcToken(channelName, modUid, "publisher");
 
       const prompt = buildAnnouncementPrompt(
@@ -5794,8 +5800,10 @@ export async function registerRoutes(
       // Clean up runners that have been draining for >1 hour
       await storage.removeStaleRunners(3600_000);
 
-      // Fail matches stuck in "starting" for >5 minutes (runner likely crashed)
-      await storage.failStuckMatches(300_000);
+      // Fail matches whose runner never completed. Cutoff is per-match:
+      // maxDurationSeconds + 180s buffer (briefings/setup/teardown) — a flat
+      // cutoff would reap healthy matches mid-run and double-assign runners.
+      await storage.failStuckMatches(180_000);
 
       // Check live events for pending matches to assign
       const liveEvents = await storage.getClashEventsByStatus("live");

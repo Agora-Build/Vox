@@ -22,11 +22,19 @@ import * as fs from "fs";
 import * as path from "path";
 import WebSocket from "ws";
 import { launchBrowserAgent, closeBrowserAgent, type AgentConfig, type BrowserAgent } from "./browser-agent.js";
-import { crossWireAudio, startObserver, computeMetrics } from "./audio/observer.js";
+import { crossWireAudio, unwireAudio, startObserver, computeMetrics } from "./audio/observer.js";
 
 const VOX_SERVER = process.env.VOX_SERVER || "http://localhost:5000";
 const RUNNER_TOKEN = process.env.RUNNER_TOKEN;
 const OUTPUT_DIR = process.env.OUTPUT_DIR || "/app/output";
+
+// Match pacing (all tunable in one place).
+const CROSSWIRE_SETTLE_MS = 2000;   // browsers settle before wiring
+const RECEIVER_CONNECT_MS = 3000;   // receiver joins RTC before moderator speaks
+const ANNOUNCE_WAIT_MS = 8000;      // let the ring-announcer greeting play out
+const BRIEF_WAIT_MS = 5000;         // per-agent briefing playback
+const START_PAUSE_MS = 3000;        // pause after "begin!" so agents don't talk over it
+const END_WAIT_MS = 5000;           // let the closing announcement play out
 
 if (!RUNNER_TOKEN) {
   console.error("[ClashRunner] RUNNER_TOKEN required");
@@ -167,6 +175,7 @@ async function executeMatch(config: any) {
   let agentB: BrowserAgent | null = null;
   let observer: Awaited<ReturnType<typeof startObserver>> | null = null;
   let metricsWs: WebSocket | null = null;
+  let loopbackIds: number[] = [];
   const matchId = config.match.id;
 
   try {
@@ -196,10 +205,13 @@ async function executeMatch(config: any) {
       secrets,
     );
 
-    // Step 2: Cross-wire audio so agents hear each other
+    // Step 2: Cross-wire audio so agents hear each other. crossWireAudio
+    // unloads any stale loopbacks first (warm-pool hygiene) and THROWS on
+    // failure — a match where the agents can't hear each other is garbage
+    // data, so the error propagates and fails the match.
     console.log("[ClashRunner] Cross-wiring audio...");
-    await sleep(2000);
-    crossWireAudio();
+    await sleep(CROSSWIRE_SETTLE_MS);
+    loopbackIds = crossWireAudio();
 
     // Step 3: Start observer (receiver + broadcaster) — audio pipeline ready
     const outputDir = path.join(OUTPUT_DIR, `clash-${matchId}`);
@@ -215,17 +227,21 @@ async function executeMatch(config: any) {
             uidB: config.agora.broadcasterUidB,
             receiverToken: config.agora.receiverToken,
             receiverUid: config.agora.receiverUid,
+            // Server-provided moderator uid keeps the receiver's filter in
+            // lockstep with the uid the ConvoAI moderator joins with.
+            // (Fallback for servers that predate the field.)
+            moderatorUid: config.agora.moderatorUid,
           }
         : undefined,
     );
     // Give receiver time to connect to RTC channel
-    await sleep(3000);
+    await sleep(RECEIVER_CONNECT_MS);
 
     // Step 4: NOW start the moderator — browsers are listening, receiver is piping
     try {
       const modResult = await apiCall("POST", "/api/clash/moderator/start", { matchId, phase: "announce" });
       console.log("[ClashRunner] Moderator:", modResult);
-      if (modResult.moderatorAvailable) await sleep(8000);
+      if (modResult.moderatorAvailable) await sleep(ANNOUNCE_WAIT_MS);
     } catch (err) {
       console.warn("[ClashRunner] Moderator start failed:", err instanceof Error ? err.message : err);
     }
@@ -233,21 +249,23 @@ async function executeMatch(config: any) {
     // Step 5: Brief each agent individually
     try {
       await apiCall("POST", "/api/clash/moderator/announce", { matchId, phase: "brief_a" });
-      await sleep(5000);
+      await sleep(BRIEF_WAIT_MS);
     } catch (err) {
       console.warn("[ClashRunner] Moderator brief_a failed:", err instanceof Error ? err.message : err);
     }
 
     try {
       await apiCall("POST", "/api/clash/moderator/announce", { matchId, phase: "brief_b" });
-      await sleep(5000);
+      await sleep(BRIEF_WAIT_MS);
     } catch (err) {
       console.warn("[ClashRunner] Moderator brief_b failed:", err instanceof Error ? err.message : err);
     }
 
-    // Step 6: Begin!
+    // Step 6: Begin! Short pause so the agents don't talk over the
+    // moderator's "let the clash begin" line.
     try {
       await apiCall("POST", "/api/clash/moderator/announce", { matchId, phase: "start" });
+      await sleep(START_PAUSE_MS);
     } catch (err) {
       console.warn("[ClashRunner] Moderator start announce failed:", err instanceof Error ? err.message : err);
     }
@@ -272,8 +290,13 @@ async function executeMatch(config: any) {
     await sleep(config.match.maxDurationSeconds * 1000);
 
     console.log("[ClashRunner] Match time expired. Stopping...");
-    const recordingPath = await observer.stopAll();
+    const { recordingPath, statsA, statsB } = await observer.stopAll();
     observer = null;
+
+    // Unload this match's loopback modules — leaving them accumulates doubled/
+    // echoing cross-talk for every subsequent match in the warm pool.
+    unwireAudio(loopbackIds);
+    loopbackIds = [];
 
     if (metricsWs) {
       metricsWs.close();
@@ -285,11 +308,11 @@ async function executeMatch(config: any) {
     await closeBrowserAgent(agentB);
     agentB = null;
 
-    const { metricsA, metricsB } = computeMetrics(recordingPath, config.match.maxDurationSeconds);
+    const { metricsA, metricsB } = computeMetrics(statsA, statsB);
 
     try {
       await apiCall("POST", "/api/clash/moderator/announce", { matchId, phase: "end" });
-      await sleep(5000);
+      await sleep(END_WAIT_MS);
       await apiCall("POST", "/api/clash/moderator/stop", { matchId });
     } catch (err) {
       console.warn("[ClashRunner] Moderator end/stop failed:", err instanceof Error ? err.message : err);
@@ -309,6 +332,9 @@ async function executeMatch(config: any) {
     if (observer) {
       try { await observer.stopAll(); } catch {}
     }
+    // Same loopback hygiene on the error path — never leak into the next match.
+    try { unwireAudio(loopbackIds); } catch {}
+    loopbackIds = [];
     if (metricsWs) {
       try { metricsWs.close(); } catch {}
     }

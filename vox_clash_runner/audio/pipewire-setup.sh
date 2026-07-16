@@ -41,7 +41,23 @@ sleep 1
 
 pipewire-pulse &
 PULSE_PID=$!
-sleep 0.5
+
+# Wait for pipewire-pulse to actually accept connections — a fixed sleep races
+# the socket creation, and under `set -e` a single failed pactl would abort the
+# whole setup leaving some (or all) sinks missing → silent agents.
+echo "[PipeWire] Waiting for pipewire-pulse readiness..."
+PULSE_READY=0
+for _ in $(seq 1 40); do
+    if pactl info >/dev/null 2>&1; then
+        PULSE_READY=1
+        break
+    fi
+    sleep 0.25
+done
+if [ "$PULSE_READY" -ne 1 ]; then
+    echo "[PipeWire] FATAL: pipewire-pulse not ready after 10s" >&2
+    exit 1
+fi
 
 echo "[PipeWire] Creating virtual sinks (4-sink design)..."
 
@@ -51,6 +67,15 @@ pactl load-module module-null-sink sink_name=Sink_A_In sink_properties=device.de
 pactl load-module module-null-sink sink_name=Sink_B_In sink_properties=device.description=AgentB_Input
 
 sleep 0.3
+
+# Verify every sink actually exists — fail loudly rather than run matches on a
+# half-built audio graph.
+for sink in Sink_A_Out Sink_B_Out Sink_A_In Sink_B_In; do
+    if ! pactl list sinks short | awk '{print $2}' | grep -qx "$sink"; then
+        echo "[PipeWire] FATAL: sink $sink missing after creation" >&2
+        exit 1
+    fi
+done
 
 echo "[PipeWire] Sinks:"
 pactl list sinks short

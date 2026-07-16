@@ -306,7 +306,9 @@ describe("Clash Runner Lifecycle", () => {
       const event = await eventRes.json();
       const matchId = event.matches[0].id;
 
-      // Simulate completion (the runner normally does this after running browsers)
+      // Simulate completion (the runner normally does this after running browsers).
+      // Includes the audio-health fields (audioRms/talkTimeSeconds) the observer
+      // now computes — the server must accept and store them.
       const completeRes = await bearerFetch(runnerToken, "POST", "/api/clash-runner/complete", {
         matchId,
         metricsA: {
@@ -317,6 +319,8 @@ describe("Clash Runner Lifecycle", () => {
           ttftMedian: 300,
           turnCount: 8,
           overlapPercent: 5.2,
+          audioRms: 0.32,
+          talkTimeSeconds: 41.5,
         },
         metricsB: {
           responseLatencyMedian: 600,
@@ -326,6 +330,8 @@ describe("Clash Runner Lifecycle", () => {
           ttftMedian: 400,
           turnCount: 7,
           overlapPercent: 3.8,
+          audioRms: 0.28,
+          talkTimeSeconds: 38.0,
         },
         durationSeconds: 55,
       });
@@ -742,18 +748,36 @@ describe("Clash Runner Storage Logic", () => {
   });
 
   describe("Match Timeout Logic", () => {
-    it("5-minute timeout detects stuck matches", () => {
-      const threshold = 300_000;
+    // Mirrors storage.failStuckMatches: a match is stuck only after its OWN
+    // maxDurationSeconds plus a fixed buffer for briefings/setup/teardown. A
+    // flat cutoff shorter than a match's real wall time would reap healthy
+    // matches mid-run and free their runner for double-assignment.
+    const BUFFER_MS = 180_000;
+    const isStuck = (startedAt: number, maxDurationSeconds: number, now: number) =>
+      now - startedAt > maxDurationSeconds * 1000 + BUFFER_MS;
+
+    it("a normal 300s match still running at 6 minutes is NOT stuck", () => {
+      // 300s match + ~25s briefings + teardown ≈ 5.5–6 min of legitimate wall time.
       const now = Date.now();
-      const startedAt = now - 360_000; // 6 min ago
-      expect(now - startedAt > threshold).toBe(true);
+      expect(isStuck(now - 360_000, 300, now)).toBe(false);
+    });
+
+    it("a 300s match is stuck after duration + buffer", () => {
+      const now = Date.now();
+      expect(isStuck(now - (300_000 + 180_000 + 1_000), 300, now)).toBe(true);
+    });
+
+    it("cutoff scales with the match's own duration", () => {
+      const now = Date.now();
+      // A 10-minute match at the 8-minute mark is healthy...
+      expect(isStuck(now - 480_000, 600, now)).toBe(false);
+      // ...and stuck only past 600s + buffer.
+      expect(isStuck(now - (600_000 + 180_000 + 1_000), 600, now)).toBe(true);
     });
 
     it("recent match is not stuck", () => {
-      const threshold = 300_000;
       const now = Date.now();
-      const startedAt = now - 120_000; // 2 min ago
-      expect(now - startedAt > threshold).toBe(false);
+      expect(isStuck(now - 120_000, 300, now)).toBe(false);
     });
   });
 
@@ -792,28 +816,35 @@ describe("Clash Runner Storage Logic", () => {
   });
 
   describe("Dual Broadcast Config", () => {
-    it("BroadcastConfig has separate tokenA/tokenB and uidA/uidB", () => {
+    it("BroadcastConfig has separate tokenA/tokenB and uidA/uidB, and carries the moderator uid", () => {
       const config = {
         appId: "test-app-id",
-        channelName: "clash-42",
+        channelName: "clash-event-42",
         tokenA: "token-for-agent-a",
         tokenB: "token-for-agent-b",
         uidA: 100,
         uidB: 200,
+        // Delivered by the assignment payload; the runner's receiver filters
+        // to exactly this uid so agents hear the moderator and never their
+        // own broadcast echoed back.
+        moderatorUid: 500,
       };
       expect(config.tokenA).not.toBe(config.tokenB);
       expect(config.uidA).not.toBe(config.uidB);
       expect(config.uidA).toBe(100);
       expect(config.uidB).toBe(200);
+      expect(config.moderatorUid).toBe(500);
+      expect([config.uidA, config.uidB]).not.toContain(config.moderatorUid);
     });
 
-    it("each agent maps to its own PipeWire monitor", () => {
+    it("each agent maps to its own PipeWire output monitor", () => {
+      // Real device names from the 4-sink design (pipewire-setup.sh).
       const mapping = {
-        agentA: { device: "Virtual_Sink_A.monitor", uid: 100 },
-        agentB: { device: "Virtual_Sink_B.monitor", uid: 200 },
+        agentA: { device: "Sink_A_Out.monitor", uid: 100 },
+        agentB: { device: "Sink_B_Out.monitor", uid: 200 },
       };
-      expect(mapping.agentA.device).toContain("_A");
-      expect(mapping.agentB.device).toContain("_B");
+      expect(mapping.agentA.device).toContain("_A_Out");
+      expect(mapping.agentB.device).toContain("_B_Out");
       expect(mapping.agentA.uid).not.toBe(mapping.agentB.uid);
     });
   });

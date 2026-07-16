@@ -44,6 +44,7 @@ const MIGRATIONS: Array<{ version: number; description: string; file: string | n
   { version: 20, description: "eval_schedules 90-day expiry (expires_at)", file: "0019_schedule_expiry.sql" },
   { version: 21, description: "eval_result latency columns nullable (NA for no-response)", file: "0020_eval_result_latency_nullable.sql" },
   { version: 22, description: "eval_result turn_success_rate column", file: "0021_add_turn_success_rate.sql" },
+  { version: 23, description: "clash_results audio-health columns (audio_rms, talk_time_seconds)", file: "0022_clash_audio_health.sql" },
 ];
 
 const TARGET_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version;
