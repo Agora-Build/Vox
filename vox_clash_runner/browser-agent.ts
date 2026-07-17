@@ -9,6 +9,14 @@ export interface SetupStep {
   selector?: string;
   value?: string;
   timeout?: number;
+  /**
+   * Best-effort step: if `selector` never appears within `timeout`, SKIP this
+   * step (no-op) instead of failing the whole run. Use for conditional UI such
+   * as one-time consent modals that only show for accounts that haven't
+   * accepted yet — the same step must both click the modal when present and be
+   * harmless when it's already been dismissed.
+   */
+  optional?: boolean;
 }
 
 export interface AgentConfig {
@@ -103,7 +111,25 @@ export async function launchBrowserAgent(
   for (let i = 0; i < steps.length; i++) {
     const step = steps[i];
     const timeout = step.timeout || 10000;
-    console.log(`[BrowserAgent] "${config.name}" step ${i + 1}/${steps.length}: ${step.action} ${step.selector || ""}`);
+    console.log(`[BrowserAgent] "${config.name}" step ${i + 1}/${steps.length}: ${step.action} ${step.selector || ""}${step.optional ? " (optional)" : ""}`);
+
+    // Best-effort (optional) step: if the selector never shows up within the
+    // timeout, skip instead of throwing. Keeps a run alive across conditional
+    // UI (e.g. a consent modal that only appears the first time an account is used).
+    if (step.optional && step.selector) {
+      try {
+        await page.waitForSelector(step.selector, { timeout, state: "visible" });
+      } catch (err) {
+        // Only a visibility timeout means "not present → skip". Any other error
+        // (invalid selector, page/frame closed, browser crash) is a real
+        // failure and must still abort the run rather than be silently swallowed.
+        if (err instanceof Error && err.name === "TimeoutError") {
+          console.log(`[BrowserAgent] "${config.name}" step ${i + 1}/${steps.length}: optional selector not present — skipping`);
+          continue;
+        }
+        throw err;
+      }
+    }
 
     switch (step.action) {
       case "click":
