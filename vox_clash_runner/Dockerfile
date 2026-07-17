@@ -1,8 +1,10 @@
 # vox_clash_runner - Clash Runner for AI Agent Voice Duels
 #
-# Launches two headless Chromium browsers (via Playwright), each visiting
-# a different AI agent's web URL. PipeWire cross-routes audio so the agents
-# hear each other. An observer records the conversation and computes metrics.
+# Launches two Chromium browsers in NEW headless mode (via Playwright), each
+# visiting a different AI agent's web URL. New headless is required so browser
+# audio renders to the PulseAudio sinks (old headless has no audio stack).
+# PipeWire cross-routes audio so the agents hear each other. An observer records
+# the conversation and computes metrics.
 #
 # Build (from repo root):
 #   docker build -f vox_clash_runner/Dockerfile -t vox_clash_runner .

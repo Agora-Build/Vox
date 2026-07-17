@@ -43,7 +43,14 @@ function resolveSecrets(steps: SetupStep[], secrets: Record<string, string>): Se
 }
 
 /**
- * Launch a headless Chromium browser targeting an agent's web URL.
+ * Launch a Chromium browser (NEW headless mode) targeting an agent's web URL.
+ *
+ * Must use new headless (`--headless=new`), not plain `headless: true`:
+ * Playwright's old headless is the "headless shell" with NO audio stack, so the
+ * agent's TTS/WebRTC voice is never rendered to the PulseAudio sink and the
+ * broadcaster publishes silence. New headless runs the full Chromium (audio
+ * included) without needing an X server — verified to render audio to
+ * Sink_*_Out in the runner container. Mirrors voice-agent-tester.
  *
  * @param config Agent configuration (URL + setup steps)
  * @param sinkName PipeWire sink name for audio output (e.g., "Virtual_Sink_A")
@@ -60,8 +67,13 @@ export async function launchBrowserAgent(
   console.log(`[BrowserAgent]   Audio out → ${sinkName}, Mic in ← ${sourceName}`);
 
   const browser = await chromium.launch({
-    headless: true,
+    // headless:false + `--headless=new` selects Chromium's new headless mode,
+    // which (unlike Playwright's default old headless) includes the audio
+    // pipeline so the agent's voice reaches Sink_*_Out. See the doc comment
+    // above — old headless made every agent broadcast pure silence.
+    headless: false,
     args: [
+      "--headless=new",
       "--no-sandbox",
       "--disable-setuid-sandbox",
       "--autoplay-policy=no-user-gesture-required",
