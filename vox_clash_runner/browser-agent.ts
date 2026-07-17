@@ -54,7 +54,9 @@ function resolveSecrets(steps: SetupStep[], secrets: Record<string, string>): Se
  *
  * @param config Agent configuration (URL + setup steps)
  * @param sinkName PipeWire sink name for audio output (e.g., "Virtual_Sink_A")
- * @param sourceName PipeWire source name for mic input (e.g., "Virtual_Sink_B.monitor")
+ * @param sourceName PulseAudio capture source for mic input (e.g., "Mic_A").
+ *   Must be a real source, NOT a `.monitor` — Chromium doesn't expose monitors
+ *   as microphones, so getUserMedia would fail with NotFoundError.
  * @param secrets Decrypted secrets for placeholder resolution
  */
 export async function launchBrowserAgent(

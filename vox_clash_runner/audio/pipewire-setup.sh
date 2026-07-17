@@ -7,8 +7,13 @@
 # 4-sink design (separate output and input to prevent noise bleed):
 #   Sink_A_Out: Browser A audio output (PULSE_SINK)
 #   Sink_B_Out: Browser B audio output (PULSE_SINK)
-#   Sink_A_In:  Browser A mic input (PULSE_SOURCE=Sink_A_In.monitor)
-#   Sink_B_In:  Browser B mic input (PULSE_SOURCE=Sink_B_In.monitor)
+#   Sink_A_In:  Browser A mic input, exposed to Chromium as source Mic_A
+#   Sink_B_In:  Browser B mic input, exposed to Chromium as source Mic_B
+#
+# Chromium/WebRTC does NOT enumerate PipeWire `.monitor` sources as microphones,
+# so getUserMedia against Sink_*_In.monitor fails (NotFoundError) and the agent's
+# voice web app never starts its call. We remap each input-sink monitor into a
+# REAL capture source (Mic_A / Mic_B) that Chromium sees as a mic.
 #
 # Cross-wiring (done later by observer.ts via module-loopback):
 #   Sink_A_Out.monitor -> Sink_B_In  (A speaks -> B hears)
@@ -77,8 +82,25 @@ for sink in Sink_A_Out Sink_B_Out Sink_A_In Sink_B_In; do
     fi
 done
 
+# Expose the input-sink monitors as real capture sources. Without this,
+# Chromium sees no microphone and the agent's getUserMedia fails → silent agent.
+echo "[PipeWire] Creating mic sources (remap of input-sink monitors)..."
+pactl load-module module-remap-source master=Sink_A_In.monitor source_name=Mic_A source_properties=device.description=AgentA_Mic
+pactl load-module module-remap-source master=Sink_B_In.monitor source_name=Mic_B source_properties=device.description=AgentB_Mic
+
+sleep 0.3
+
+for src in Mic_A Mic_B; do
+    if ! pactl list sources short | awk '{print $2}' | grep -qx "$src"; then
+        echo "[PipeWire] FATAL: mic source $src missing after creation" >&2
+        exit 1
+    fi
+done
+
 echo "[PipeWire] Sinks:"
 pactl list sinks short
+echo "[PipeWire] Mic sources:"
+pactl list sources short | grep -E "Mic_A|Mic_B"
 
 echo "[PipeWire] PID: dbus=$DBUS_PID, pipewire=$PIPEWIRE_PID, wireplumber=$WIREPLUMBER_PID, pulse=$PULSE_PID"
 

@@ -94,6 +94,26 @@ for SRC in Sink_A_Out.monitor Sink_B_Out.monitor Sink_A_In.monitor Sink_B_In.mon
   fi
 done
 
+# Mic capture sources (remap of the input-sink monitors) — the fix for silent
+# agents: Chromium won't expose a raw .monitor as a microphone, so the agent's
+# getUserMedia needs these named sources or it fails with NotFoundError.
+for MIC in Mic_A Mic_B; do
+  if echo "$SOURCES" | grep -q "$MIC"; then
+    pass "$MIC capture source available"
+  else
+    fail "$MIC capture source missing (agent would have no microphone)"
+  fi
+done
+
+# The remap must actually carry audio: a tone played into Sink_A_In has to appear
+# on Mic_A — that is how the agent hears the moderator/opponent.
+timeout 6 pacat -d Sink_A_In ${FMT_ARGS} --raw < /tmp/tone_a.raw &
+MIC_PROD=$!
+sleep 1
+timeout 3 parec -d Mic_A ${FMT_ARGS} --raw 2>/dev/null > /tmp/mic_a_flow.raw || true
+kill $MIC_PROD 2>/dev/null; wait $MIC_PROD 2>/dev/null || true
+assert_rms /tmp/mic_a_flow.raw gt 0.05 "Mic_A carries audio played into Sink_A_In"
+
 # --- 3. Output playback + monitor capture with REAL signal (both agents) ---
 echo ""
 echo "[3/9] Output sinks: real tone in, non-silent monitor capture out..."
