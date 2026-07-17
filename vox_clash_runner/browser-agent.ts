@@ -117,13 +117,17 @@ export async function launchBrowserAgent(
     // timeout, skip instead of throwing. Keeps a run alive across conditional
     // UI (e.g. a consent modal that only appears the first time an account is used).
     if (step.optional && step.selector) {
-      const present = await page
-        .waitForSelector(step.selector, { timeout, state: "visible" })
-        .then(() => true)
-        .catch(() => false);
-      if (!present) {
-        console.log(`[BrowserAgent] "${config.name}" step ${i + 1}/${steps.length}: optional selector not present — skipping`);
-        continue;
+      try {
+        await page.waitForSelector(step.selector, { timeout, state: "visible" });
+      } catch (err) {
+        // Only a visibility timeout means "not present → skip". Any other error
+        // (invalid selector, page/frame closed, browser crash) is a real
+        // failure and must still abort the run rather than be silently swallowed.
+        if (err instanceof Error && err.name === "TimeoutError") {
+          console.log(`[BrowserAgent] "${config.name}" step ${i + 1}/${steps.length}: optional selector not present — skipping`);
+          continue;
+        }
+        throw err;
       }
     }
 
