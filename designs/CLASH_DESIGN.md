@@ -56,14 +56,23 @@ container boot (`audio/pipewire-setup.sh`):
 ```
 Sink_A_Out  — Browser A's speaker (PULSE_SINK)
 Sink_B_Out  — Browser B's speaker
-Sink_A_In   — Browser A's mic feed; browser reads Sink_A_In.monitor (PULSE_SOURCE)
-Sink_B_In   — Browser B's mic feed
+Sink_A_In   — Browser A's mic feed; exposed to the browser as source Mic_A (PULSE_SOURCE)
+Sink_B_In   — Browser B's mic feed; exposed as source Mic_B
 ```
 
 Each browser is a separate Chromium process launched with per-process
 `PULSE_SINK` / `PULSE_SOURCE` env (`browser-agent.ts`), so A and B are fully
 isolated. Setup waits for `pactl info` readiness (bounded retries) and
 verifies all four sinks exist before declaring success.
+
+**Mic exposure (critical).** Chromium/WebRTC does **not** enumerate a PipeWire
+`.monitor` as a microphone, so pointing the browser at `Sink_A_In.monitor`
+makes `getUserMedia` fail with `NotFoundError` — the agent's voice web app then
+never starts its call and the agent is silent. Setup therefore remaps each
+input-sink monitor into a real capture source (`module-remap-source` →
+`Mic_A` / `Mic_B`), and the browsers use those as `PULSE_SOURCE`. The runner
+also launches Chromium in **new headless** mode (`--headless=new`); old
+headless has no audio stack, so browser audio never reaches `Sink_*_Out`.
 
 ### The full graph
 

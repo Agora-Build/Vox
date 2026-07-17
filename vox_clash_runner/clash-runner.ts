@@ -193,7 +193,9 @@ async function executeMatch(config: any) {
     agentA = await launchBrowserAgent(
       config.agentA,
       "Sink_A_Out",
-      "Sink_A_In.monitor",
+      // Real capture source (remap of Sink_A_In.monitor) — Chromium won't expose
+      // a raw .monitor as a mic, so getUserMedia needs this named source.
+      "Mic_A",
       secrets,
     );
 
@@ -201,7 +203,7 @@ async function executeMatch(config: any) {
     agentB = await launchBrowserAgent(
       config.agentB,
       "Sink_B_Out",
-      "Sink_B_In.monitor",
+      "Mic_B",
       secrets,
     );
 
