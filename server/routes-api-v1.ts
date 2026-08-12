@@ -10,6 +10,87 @@
 import { Express, Request, Response } from "express";
 import { storage, mergeEvalConfig, buildJobSnapshot } from "./storage";
 import { requireAuthOrApiKey, getCurrentUserOrApiKeyUser } from "./auth";
+import { regionSiteSequence } from "@shared/regions";
+
+type ApiRegionLocation = Awaited<ReturnType<typeof storage.getAllRegionLocations>>[number];
+
+function apiRegionMetadata(region: string, locations: ApiRegionLocation[]) {
+  const location = [...locations]
+    .sort((a, b) => b.baseId.length - a.baseId.length)
+    .find((entry) => regionSiteSequence(region, entry.baseId) !== null);
+  if (!location) return {
+    regionLabel: region,
+    regionBaseId: null,
+    city: null,
+    countryCode: null,
+    countryName: null,
+    macroRegionCode: null,
+    macroRegionName: null,
+  };
+  const sequence = region.slice(location.baseId.length + 1);
+  return {
+    regionLabel: `${location.displayName} ${sequence.padStart(2, "0")}`,
+    regionBaseId: location.baseId,
+    city: location.city,
+    countryCode: location.countryCode,
+    countryName: location.countryName,
+    macroRegionCode: location.macroRegionCode,
+    macroRegionName: location.macroRegionName,
+  };
+}
+
+function apiRegionScope(
+  locations: ApiRegionLocation[],
+  query: { region?: unknown; location?: unknown; country?: unknown; macroRegion?: unknown; regionScope?: unknown },
+) {
+  if (query.regionScope !== undefined) {
+    if ([query.region, query.location, query.country, query.macroRegion].some((value) => value !== undefined && value !== "")) {
+      return { error: "regionScope cannot be combined with other region filters" };
+    }
+    const rawScopes = Array.isArray(query.regionScope) ? query.regionScope : [query.regionScope];
+    const scopes = rawScopes.flatMap((value) => typeof value === "string" ? value.split(",") : []);
+    const baseIds = new Set<string>();
+    for (const rawScope of scopes) {
+      const [level, rawValue, extra] = rawScope.trim().split(":");
+      if (extra !== undefined || !rawValue || !["macro", "country", "location"].includes(level)) {
+        return { error: "regionScope entries must be macro:<code>, country:<code>, or location:<baseId>" };
+      }
+      const value = level === "country" ? rawValue.toUpperCase() : rawValue.toLowerCase();
+      const matches = locations.filter((entry) =>
+        level === "macro" ? entry.macroRegionCode === value
+          : level === "country" ? entry.countryCode === value
+          : entry.baseId === value
+      );
+      if (matches.length === 0) return { error: `Unknown regionScope: ${rawScope}` };
+      for (const match of matches) baseIds.add(match.baseId);
+    }
+    return baseIds.size > 0 ? { scope: { baseIds: Array.from(baseIds).sort() } } : { error: "regionScope cannot be empty" };
+  }
+  const supplied = [
+    ["region", query.region],
+    ["location", query.location],
+    ["country", query.country],
+    ["macroRegion", query.macroRegion],
+  ].filter(([, value]) => value !== undefined && value !== "");
+  if (supplied.length > 1) return { error: "Use only one region filter: region, location, country, or macroRegion" };
+  if (supplied.length === 0) return {};
+
+  const [kind, rawValue] = supplied[0];
+  if (typeof rawValue !== "string" || !rawValue.trim()) return { error: `${kind} must be a non-empty string` };
+  const value = rawValue.trim();
+  if (kind === "region") return { scope: { region: value } };
+  if (kind === "location") {
+    const match = locations.find((entry) => entry.baseId === value);
+    return match ? { scope: { baseIds: [match.baseId] } } : { error: "Unknown region location" };
+  }
+  const normalized = kind === "country" ? value.toUpperCase() : value.toLowerCase();
+  const baseIds = locations
+    .filter((entry) => kind === "country"
+      ? entry.countryCode === normalized
+      : entry.macroRegionCode === normalized)
+    .map((entry) => entry.baseId);
+  return baseIds.length > 0 ? { scope: { baseIds } } : { error: `Unknown ${kind}` };
+}
 
 export function registerApiV1Routes(app: Express): void {
   // ==================== WORKFLOWS ====================
@@ -239,12 +320,19 @@ export function registerApiV1Routes(app: Express): void {
       // Create eval job (merge configs + capture the immutable snapshot, same as the
       // console run path — otherwise these jobs lose provenance/attribution/tiering).
       const provider = await storage.getProvider(workflow.providerId);
+      if (!region) {
+        return res.status(400).json({ error: "An exact region site ID is required" });
+      }
+      const requestedRegion = String(region);
+      if (!(await storage.isAllocatedRegion(requestedRegion))) {
+        return res.status(400).json({ error: "Region must be an active allocated site ID" });
+      }
       const job = await storage.createEvalJob({
         workflowId: parseInt(id),
         triggerType: 2, // manual (API v1 run)
         evalSetId,
         createdBy: user.id,
-        region: region || "na",
+        region: requestedRegion,
         config: mergeEvalConfig(workflow.config, evalSet.config),
         snapshot: buildJobSnapshot(workflow, evalSet, provider, user.plan),
         status: "pending",
@@ -631,13 +719,20 @@ export function registerApiV1Routes(app: Express): void {
    */
   app.get("/api/v1/metrics/realtime", async (req: Request, res: Response) => {
     try {
-      const results = await storage.getMainlineEvalResults(50);
+      const locations = await storage.getAllRegionLocations();
+      const regionScope = apiRegionScope(locations, req.query);
+      if ("error" in regionScope) return res.status(400).json({ error: regionScope.error });
+      if (regionScope.scope?.region && !(await storage.isAllocatedRegion(regionScope.scope.region, false))) {
+        return res.status(400).json({ error: "region must be an exact allocated site ID" });
+      }
+      const results = await storage.getMainlineEvalResults(50, undefined, regionScope.scope);
 
       // Transform to API format
       const metrics = results.map((r) => ({
         id: r.id,
         provider: r.providerId,
         region: r.region,
+        ...apiRegionMetadata(r.region, locations),
         responseLatency: r.responseLatencyMedian,
         interruptLatency: r.interruptLatencyMedian,
         networkResilience: r.networkResilience,
@@ -665,8 +760,14 @@ export function registerApiV1Routes(app: Express): void {
    */
   app.get("/api/v1/metrics/leaderboard", async (req: Request, res: Response) => {
     try {
-      const { region } = req.query;
-      const results = await storage.getMainlineEvalResults(1000);
+      const { region, location, country, macroRegion, regionScope: requestedScopes } = req.query;
+      const locations = await storage.getAllRegionLocations();
+      const regionScope = apiRegionScope(locations, { region, location, country, macroRegion, regionScope: requestedScopes });
+      if ("error" in regionScope) return res.status(400).json({ error: regionScope.error });
+      if (regionScope.scope?.region && !(await storage.isAllocatedRegion(regionScope.scope.region, false))) {
+        return res.status(400).json({ error: "region must be an exact allocated site ID" });
+      }
+      const results = await storage.getMainlineEvalResults(1000, undefined, regionScope.scope);
 
       // Aggregate by provider and region
       const providerRegionMap = new Map<string, {
@@ -681,8 +782,6 @@ export function registerApiV1Routes(app: Express): void {
       }>();
 
       for (const result of results) {
-        if (region && result.region !== region) continue;
-
         const key = `${result.providerId}-${result.region}`;
         if (!providerRegionMap.has(key)) {
           providerRegionMap.set(key, {
@@ -718,6 +817,7 @@ export function registerApiV1Routes(app: Express): void {
         return {
           provider: entry.providerId,
           region: entry.region,
+          ...apiRegionMetadata(entry.region, locations),
           responseLatency: avg(entry.responseLatencies),
           interruptLatency: avg(entry.interruptLatencies),
           turnSuccessRate: avgRate(entry.turnSuccessRates),
@@ -747,6 +847,10 @@ export function registerApiV1Routes(app: Express): void {
         meta: {
           timestamp: new Date().toISOString(),
           region: region || "all",
+          location: location || "all",
+          country: country || "all",
+          macroRegion: macroRegion || "all",
+          regionScope: requestedScopes || "all",
           count: rankedLeaderboard.length,
         },
       });

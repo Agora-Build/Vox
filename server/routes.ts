@@ -1,10 +1,11 @@
 import type { Express } from "express";
 import { type Server } from "http";
-import { storage, hashToken, generateSecureToken, generateEvalAgentToken, mergeEvalConfig, buildJobSnapshot, validateWorkflowConfig, validateEvalSetConfig, encryptValue, decryptValue, isEncryptionConfigured, type MetricSourceRow } from "./storage";
+import { storage, hashToken, generateSecureToken, generateEvalAgentToken, mergeEvalConfig, buildJobSnapshot, validateWorkflowConfig, validateEvalSetConfig, encryptValue, decryptValue, isEncryptionConfigured, type MetricSourceRow, type RegionQueryScope } from "./storage";
 import { parseNextCronRun } from "./cron";
 import { compareVersions } from "./aeval-seed";
 import { SECRET_NAME_PATTERN } from "@shared/secrets";
 import { deriveScheduleStatus } from "@shared/schedule-status";
+import { regionSiteSequence } from "@shared/regions";
 import { registerApiV1Routes } from "./routes-api-v1";
 import { generateSignedUrlForUser } from "./s3";
 import {
@@ -68,6 +69,133 @@ import {
 // Schedule lifecycle: a schedule is created with a 90-day expiry and can be
 // Extended by the same window. Past expiry the scheduler stops firing it.
 const SCHEDULE_TTL_MS = 90 * 24 * 60 * 60 * 1000;
+
+type RegionLocationRecord = Awaited<ReturnType<typeof storage.getAllRegionLocations>>[number];
+
+function locationForRegion(region: string, locations: RegionLocationRecord[]): RegionLocationRecord | undefined {
+  return [...locations]
+    .sort((a, b) => b.baseId.length - a.baseId.length)
+    .find((location) => regionSiteSequence(region, location.baseId) !== null);
+}
+
+function regionMetadata(region: string, locations: RegionLocationRecord[]) {
+  const location = locationForRegion(region, locations);
+  if (!location) return {
+    regionLabel: region,
+    regionBaseId: null,
+    city: null,
+    countryCode: null,
+    countryName: null,
+    macroRegionCode: null,
+    macroRegionName: null,
+  };
+  const sequence = region.slice(location.baseId.length + 1);
+  return {
+    regionLabel: `${location.displayName} ${sequence.padStart(2, "0")}`,
+    regionBaseId: location.baseId,
+    city: location.city,
+    countryCode: location.countryCode,
+    countryName: location.countryName,
+    macroRegionCode: location.macroRegionCode,
+    macroRegionName: location.macroRegionName,
+  };
+}
+
+function serializeRegionLocation(location: RegionLocationRecord) {
+  return {
+    ...location,
+    allocatedRegions: Array.from(
+      { length: Math.max(0, location.nextSequence - 1) },
+      (_, index) => `${location.baseId}-${String(index + 1).padStart(2, "0")}`,
+    ),
+  };
+}
+
+async function parseRegionQueryScope(query: {
+  region?: unknown;
+  location?: unknown;
+  country?: unknown;
+  macroRegion?: unknown;
+  regionScope?: unknown;
+}): Promise<{ scope?: RegionQueryScope; cacheKey: string } | { error: string }> {
+  if (query.regionScope !== undefined) {
+    if ([query.region, query.location, query.country, query.macroRegion].some((value) => value !== undefined && value !== "")) {
+      return { error: "regionScope cannot be combined with region, location, country, or macroRegion" };
+    }
+    const rawScopes = Array.isArray(query.regionScope) ? query.regionScope : [query.regionScope];
+    const scopes = rawScopes.flatMap((value) => typeof value === "string" ? value.split(",") : []);
+    if (scopes.length === 0 || scopes.some((value) => !value.trim())) {
+      return { error: "regionScope must contain one or more hierarchy scopes" };
+    }
+
+    const locations = await storage.getAllRegionLocations();
+    const baseIds = new Set<string>();
+    for (const rawScope of scopes) {
+      const [level, rawValue, extra] = rawScope.trim().split(":");
+      if (extra !== undefined || !rawValue || !["macro", "country", "location"].includes(level)) {
+        return { error: "regionScope entries must be macro:<code>, country:<code>, or location:<baseId>" };
+      }
+      const value = level === "country" ? rawValue.toUpperCase() : rawValue.toLowerCase();
+      const matches = locations.filter((entry) =>
+        level === "macro" ? entry.macroRegionCode === value
+          : level === "country" ? entry.countryCode === value
+          : entry.baseId === value
+      );
+      if (matches.length === 0) return { error: `Unknown regionScope: ${rawScope}` };
+      for (const match of matches) baseIds.add(match.baseId);
+    }
+    const sortedBaseIds = Array.from(baseIds).sort();
+    return {
+      scope: { baseIds: sortedBaseIds },
+      cacheKey: `scopes:${sortedBaseIds.join(",")}`,
+    };
+  }
+
+  const supplied = [
+    ["region", query.region],
+    ["location", query.location],
+    ["country", query.country],
+    ["macroRegion", query.macroRegion],
+  ].filter(([, value]) => value !== undefined && value !== "");
+  if (supplied.length > 1) {
+    return { error: "Use only one region filter: region, location, country, or macroRegion" };
+  }
+  if (supplied.length === 0) return { cacheKey: "all" };
+
+  const [kind, rawValue] = supplied[0];
+  if (typeof rawValue !== "string") return { error: `${kind} must be a string` };
+  const value = rawValue.trim();
+  if (!value) return { error: `${kind} cannot be empty` };
+
+  if (kind === "region") {
+    if (!(await storage.isAllocatedRegion(value, false))) {
+      return { error: "region must be an exact allocated site ID" };
+    }
+    return { scope: { region: value }, cacheKey: `region:${value}` };
+  }
+
+  const locations = await storage.getAllRegionLocations();
+  if (kind === "location") {
+    const location = locations.find((entry) => entry.baseId === value);
+    if (!location) return { error: "Unknown region location" };
+    return { scope: { baseIds: [location.baseId] }, cacheKey: `location:${location.baseId}` };
+  }
+  if (kind === "country") {
+    const countryCode = value.toUpperCase();
+    const baseIds = locations
+      .filter((entry) => entry.countryCode === countryCode)
+      .map((entry) => entry.baseId);
+    if (baseIds.length === 0) return { error: "Unknown country code" };
+    return { scope: { baseIds }, cacheKey: `country:${baseIds.slice().sort().join(",")}` };
+  }
+
+  const macroRegionCode = value.toLowerCase();
+  const baseIds = locations
+    .filter((entry) => entry.macroRegionCode === macroRegionCode)
+    .map((entry) => entry.baseId);
+  if (baseIds.length === 0) return { error: "Unknown macro-region code" };
+  return { scope: { baseIds }, cacheKey: `macroRegion:${baseIds.slice().sort().join(",")}` };
+}
 
 // Elo rating calculation for Clash matches
 // Lower latency = better. Compare median response latency to determine winner.
@@ -760,6 +888,127 @@ export async function registerRoutes(
     } catch (error) {
       console.error("Error updating provider:", error);
       res.status(500).json({ error: "Failed to update provider" });
+    }
+  });
+
+  // ==================== REGION LOCATION ROUTES ====================
+
+  app.get("/api/region-locations", async (_req, res) => {
+    try {
+      // Include inactive definitions so historical site IDs keep human labels.
+      // Clients exclude inactive locations from creation selectors.
+      const locations = await storage.getAllRegionLocations();
+      res.json(locations.map(serializeRegionLocation));
+    } catch (error) {
+      console.error("Error fetching region locations:", error);
+      res.status(500).json({ error: "Failed to fetch region locations" });
+    }
+  });
+
+  app.get("/api/admin/region-locations", requireAuth, requireAdmin, async (_req, res) => {
+    try {
+      const locations = await storage.getAllRegionLocations();
+      res.json(locations.map(serializeRegionLocation));
+    } catch (error) {
+      console.error("Error fetching admin region locations:", error);
+      res.status(500).json({ error: "Failed to fetch region locations" });
+    }
+  });
+
+  app.post("/api/admin/region-locations", requireAuth, requireAdmin, async (req, res) => {
+    try {
+      const { baseId, displayName, city, countryCode, countryName, macroRegionCode, macroRegionName } = req.body;
+      const required = { baseId, displayName, city, countryCode, countryName, macroRegionCode, macroRegionName };
+      if (Object.values(required).some((value) => typeof value !== "string" || !value.trim())) {
+        return res.status(400).json({ error: "All region location fields are required" });
+      }
+
+      const normalizedBaseId = baseId.trim().toLowerCase();
+      const normalizedCountryCode = countryCode.trim().toUpperCase();
+      const normalizedMacroCode = macroRegionCode.trim().toLowerCase();
+      if (!/^[A-Z]{2}$/.test(normalizedCountryCode)) {
+        return res.status(400).json({ error: "countryCode must be a two-letter code" });
+      }
+      if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(normalizedMacroCode)) {
+        return res.status(400).json({ error: "macroRegionCode must be a lowercase ID" });
+      }
+      const expectedBasePrefix = `${normalizedMacroCode}-${normalizedCountryCode.toLowerCase()}`;
+      if (
+        !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(normalizedBaseId) ||
+        (normalizedBaseId !== expectedBasePrefix && !normalizedBaseId.startsWith(expectedBasePrefix + "-"))
+      ) {
+        return res.status(400).json({ error: "baseId must start with the macro-region and country codes" });
+      }
+      if (await storage.getRegionLocationByBaseId(normalizedBaseId)) {
+        return res.status(409).json({ error: "A region location with this baseId already exists" });
+      }
+      const locations = await storage.getAllRegionLocations();
+      const existingCountry = locations.find((entry) => entry.countryCode === normalizedCountryCode);
+      if (existingCountry && (
+        existingCountry.countryName !== countryName.trim() ||
+        existingCountry.macroRegionCode !== normalizedMacroCode
+      )) {
+        return res.status(409).json({ error: "Country code must reuse its existing country name and macro-region" });
+      }
+      const existingMacro = locations.find((entry) => entry.macroRegionCode === normalizedMacroCode);
+      if (existingMacro && existingMacro.macroRegionName !== macroRegionName.trim()) {
+        return res.status(409).json({ error: "Macro-region code must reuse its existing display name" });
+      }
+
+      const location = await storage.createRegionLocation({
+        baseId: normalizedBaseId,
+        displayName: displayName.trim(),
+        city: city.trim(),
+        countryCode: normalizedCountryCode,
+        countryName: countryName.trim(),
+        macroRegionCode: normalizedMacroCode,
+        macroRegionName: macroRegionName.trim(),
+        isActive: true,
+      });
+      res.status(201).json(serializeRegionLocation(location));
+    } catch (error) {
+      console.error("Error creating region location:", error);
+      res.status(500).json({ error: "Failed to create region location" });
+    }
+  });
+
+  app.patch("/api/admin/region-locations/:id", requireAuth, requireAdmin, async (req, res) => {
+    try {
+      const id = parseInt(req.params.id, 10);
+      const existing = await storage.getRegionLocation(id);
+      if (!existing) return res.status(404).json({ error: "Region location not found" });
+
+      const updates: Partial<RegionLocationRecord> = {};
+      for (const field of ["displayName", "city"] as const) {
+        if (req.body[field] !== undefined) {
+          if (typeof req.body[field] !== "string" || !req.body[field].trim()) {
+            return res.status(400).json({ error: `${field} cannot be empty` });
+          }
+          updates[field] = req.body[field].trim();
+        }
+      }
+      // Hierarchy metadata is permanent because changing it would reclassify historical data.
+      if (typeof req.body.isActive === "boolean") updates.isActive = req.body.isActive;
+
+      const updated = await storage.updateRegionLocation(id, updates);
+      res.json(serializeRegionLocation(updated!));
+    } catch (error) {
+      console.error("Error updating region location:", error);
+      res.status(500).json({ error: "Failed to update region location" });
+    }
+  });
+
+  // Removing a location is a soft delete so historical reports keep their labels.
+  app.delete("/api/admin/region-locations/:id", requireAuth, requireAdmin, async (req, res) => {
+    try {
+      const id = parseInt(req.params.id, 10);
+      const existing = await storage.getRegionLocation(id);
+      if (!existing) return res.status(404).json({ error: "Region location not found" });
+      const updated = await storage.updateRegionLocation(id, { isActive: false });
+      res.json(serializeRegionLocation(updated!));
+    } catch (error) {
+      console.error("Error removing region location:", error);
+      res.status(500).json({ error: "Failed to remove region location" });
     }
   });
 
@@ -1868,8 +2117,9 @@ export async function registerRoutes(
         return res.status(400).json({ error: "Name, workflowId, and region are required" });
       }
 
-      if (!["na", "apac", "eu", "sa"].includes(region)) {
-        return res.status(400).json({ error: "Invalid region. Must be na, apac, eu, or sa" });
+      const normalizedRegion = String(region);
+      if (!(await storage.isAllocatedRegion(normalizedRegion))) {
+        return res.status(400).json({ error: "Region must be an active allocated site ID" });
       }
 
       // A recurring schedule runs the workflow repeatedly on the OWNER's bound
@@ -1921,7 +2171,7 @@ export async function registerRoutes(
         name,
         workflowId,
         evalSetId,
-        region,
+        region: normalizedRegion,
         scheduleType: type,
         cronExpression: cronExpression || null,
         timezone: timezone || "UTC",
@@ -2342,30 +2592,29 @@ export async function registerRoutes(
         return res.status(403).json({ error: "Premium or higher plan required to create eval agent tokens" });
       }
 
-      const { name, region, visibility } = req.body;
+      const { name, regionLocationBaseId, region, visibility } = req.body;
+      const requestedLocation = regionLocationBaseId || region;
 
-      if (!name || !region) {
-        return res.status(400).json({ error: "Name and region required" });
+      if (!name || !requestedLocation) {
+        return res.status(400).json({ error: "Name and region location required" });
       }
 
-      if (!["na", "apac", "eu", "sa"].includes(region)) {
-        return res.status(400).json({ error: "Invalid region. Must be na, apac, eu, or sa" });
-      }
-
-      // Non-admin users can only create private tokens
+      // Non-admin users can only create private tokens.
       const tokenVisibility = user.isAdmin ? (visibility || "public") : "private";
-
       if (tokenVisibility !== "public" && tokenVisibility !== "private") {
         return res.status(400).json({ error: "Invalid visibility. Must be public or private" });
       }
 
+      const location = await storage.getRegionLocationByBaseId(String(requestedLocation));
+      if (!location || !location.isActive) {
+        return res.status(400).json({ error: "Invalid or inactive region location" });
+      }
+
       const token = generateEvalAgentToken();
       const tokenHash = hashToken(token);
-
-      const evalAgentToken = await storage.createEvalAgentToken({
+      const evalAgentToken = await storage.createEvalAgentTokenForLocation(location.baseId, {
         name,
         tokenHash,
-        region,
         visibility: tokenVisibility,
         createdBy: user.id,
         isRevoked: false,
@@ -2439,14 +2688,11 @@ export async function registerRoutes(
         return res.status(401).json({ error: "Not authenticated" });
       }
 
-      const { name, region, visibility } = req.body;
+      const { name, regionLocationBaseId, region, visibility } = req.body;
+      const requestedLocation = regionLocationBaseId || region;
 
-      if (!name || !region) {
-        return res.status(400).json({ error: "Name and region required" });
-      }
-
-      if (!["na", "apac", "eu", "sa"].includes(region)) {
-        return res.status(400).json({ error: "Invalid region. Must be na, apac, eu, or sa" });
+      if (!name || !requestedLocation) {
+        return res.status(400).json({ error: "Name and region location required" });
       }
 
       const tokenVisibility = visibility || "public";
@@ -2454,13 +2700,16 @@ export async function registerRoutes(
         return res.status(400).json({ error: "Invalid visibility. Must be public or private" });
       }
 
+      const location = await storage.getRegionLocationByBaseId(String(requestedLocation));
+      if (!location || !location.isActive) {
+        return res.status(400).json({ error: "Invalid or inactive region location" });
+      }
+
       const token = generateEvalAgentToken();
       const tokenHash = hashToken(token);
-
-      const evalAgentToken = await storage.createEvalAgentToken({
+      const evalAgentToken = await storage.createEvalAgentTokenForLocation(location.baseId, {
         name,
         tokenHash,
-        region,
         visibility: tokenVisibility,
         createdBy: user.id,
         isRevoked: false,
@@ -3164,8 +3413,9 @@ export async function registerRoutes(
         }
       }
 
-      if (!region || !["na", "apac", "eu", "sa"].includes(region)) {
-        return res.status(400).json({ error: "Valid region required (na, apac, eu, sa)" });
+      const normalizedRegion = region ? String(region) : "";
+      if (!normalizedRegion || !(await storage.isAllocatedRegion(normalizedRegion))) {
+        return res.status(400).json({ error: "An active allocated region site is required" });
       }
 
       if (!evalSetId) {
@@ -3187,7 +3437,7 @@ export async function registerRoutes(
         triggerType: 2, // manual (Run Workflow)
         evalSetId,
         createdBy: user.id,
-        region,
+        region: normalizedRegion,
         config: mergeEvalConfig(workflow.config, evalSet.config),
         snapshot: buildJobSnapshot(workflow, evalSet, provider, user.plan),
         status: "pending",
@@ -3223,7 +3473,7 @@ export async function registerRoutes(
 
       const filters: {
         status?: "pending" | "running" | "completed" | "failed";
-        region?: "na" | "apac" | "eu" | "sa";
+        region?: string;
         workflowId?: number;
         hoursBack?: number;
       } = {};
@@ -3231,8 +3481,12 @@ export async function registerRoutes(
       if (status && ["pending", "running", "completed", "failed"].includes(status as string)) {
         filters.status = status as "pending" | "running" | "completed" | "failed";
       }
-      if (region && ["na", "apac", "eu", "sa"].includes(region as string)) {
-        filters.region = region as "na" | "apac" | "eu" | "sa";
+      if (region) {
+        const normalizedRegion = String(region);
+        if (!(await storage.isAllocatedRegion(normalizedRegion, false))) {
+          return res.status(400).json({ error: "Invalid region site ID" });
+        }
+        filters.region = normalizedRegion;
       }
       if (workflowId) {
         const parsed = parseInt(workflowId as string, 10);
@@ -3511,7 +3765,10 @@ export async function registerRoutes(
   // Accepts both raw rows and daily-bucket aggregates (both are MetricSourceRow).
   async function formatMetricsResults(results: MetricSourceRow[]) {
     const providerCache = new Map<string, string>();
-    const allProviders = await storage.getAllProviders();
+    const [allProviders, locations] = await Promise.all([
+      storage.getAllProviders(),
+      storage.getAllRegionLocations(),
+    ]);
     for (const p of allProviders) {
       providerCache.set(p.id, p.name);
     }
@@ -3520,6 +3777,7 @@ export async function registerRoutes(
       providerId: r.providerId,
       provider: providerCache.get(r.providerId) || r.providerId,
       region: r.region,
+      ...regionMetadata(r.region, locations),
       responseLatency: r.responseLatencyMedian,
       responseLatencySd: r.responseLatencySd,
       responseLatencyP95: r.responseLatencyP95,
@@ -3570,11 +3828,13 @@ export async function registerRoutes(
     try {
       const win = parseMetricsWindow(req.query.hours);
       if ("error" in win) return res.status(400).json({ error: win.error });
-      const cacheKey = `realtime:${win.hoursBack ?? 'all'}`;
+      const regionScope = await parseRegionQueryScope(req.query);
+      if ("error" in regionScope) return res.status(400).json({ error: regionScope.error });
+      const cacheKey = `realtime:${win.hoursBack ?? 'all'}:${regionScope.cacheKey}`;
       const cached = getCached(cacheKey);
       if (cached) return res.json(cached);
 
-      const results = await storage.getMainlineMetrics(win.hoursBack);
+      const results = await storage.getMainlineMetrics(win.hoursBack, regionScope.scope);
       const data = await formatMetricsResults(results);
       setCache(cacheKey, data);
       res.json(data);
@@ -3588,11 +3848,13 @@ export async function registerRoutes(
     try {
       const win = parseMetricsWindow(req.query.hours);
       if ("error" in win) return res.status(400).json({ error: win.error });
-      const cacheKey = `community:${win.hoursBack ?? 'all'}`;
+      const regionScope = await parseRegionQueryScope(req.query);
+      if ("error" in regionScope) return res.status(400).json({ error: regionScope.error });
+      const cacheKey = `community:${win.hoursBack ?? 'all'}:${regionScope.cacheKey}`;
       const cached = getCached(cacheKey);
       if (cached) return res.json(cached);
 
-      const results = await storage.getCommunityMetrics(win.hoursBack);
+      const results = await storage.getCommunityMetrics(win.hoursBack, regionScope.scope);
       const data = await formatMetricsResults(results);
       setCache(cacheKey, data);
       res.json(data);
@@ -3610,11 +3872,13 @@ export async function registerRoutes(
       }
       const win = parseMetricsWindow(req.query.hours);
       if ("error" in win) return res.status(400).json({ error: win.error });
-      const cacheKey = `my-evals:${user.id}:${win.hoursBack ?? 'all'}`;
+      const regionScope = await parseRegionQueryScope(req.query);
+      if ("error" in regionScope) return res.status(400).json({ error: regionScope.error });
+      const cacheKey = `my-evals:${user.id}:${win.hoursBack ?? 'all'}:${regionScope.cacheKey}`;
       const cached = getCached(cacheKey);
       if (cached) return res.json(cached);
 
-      const results = await storage.getMyEvalMetrics(user.id, win.hoursBack);
+      const results = await storage.getMyEvalMetrics(user.id, win.hoursBack, regionScope.scope);
       const data = await formatMetricsResults(results);
       setCache(cacheKey, data);
       res.json(data);
@@ -3627,12 +3891,15 @@ export async function registerRoutes(
   app.get("/api/metrics/leaderboard", async (req, res) => {
     try {
       const { hours } = req.query;
-      const cacheKey = `leaderboard:${hours || 'all'}`;
+      const regionScope = await parseRegionQueryScope(req.query);
+      if ("error" in regionScope) return res.status(400).json({ error: regionScope.error });
+      const cacheKey = `leaderboard:${hours || 'all'}:${regionScope.cacheKey}`;
       const cached = getCached(cacheKey);
       if (cached) return res.json(cached);
 
       const hoursBack = hours ? parseInt(hours as string) : undefined;
-      const results = await storage.getMainlineEvalResults(1000, hoursBack);
+      const results = await storage.getMainlineEvalResults(1000, hoursBack, regionScope.scope);
+      const locations = await storage.getAllRegionLocations();
 
       // Group results by (provider, region)
       const providerRegionMap = new Map<string, {
@@ -3698,6 +3965,7 @@ export async function registerRoutes(
             providerId: group.providerId,
             provider: provider?.name || "Unknown",
             region: group.region,
+            ...regionMetadata(group.region, locations),
             responseLatency: avgRound(group.responseLatencies),
             responseLatencyP95: avgRound(group.responseLatenciesP95),
             interruptLatency: avgRound(group.interruptLatencies),
@@ -4942,6 +5210,10 @@ export async function registerRoutes(
       if (!name || !region || !matchups || !Array.isArray(matchups) || matchups.length === 0) {
         return res.status(400).json({ error: "name, region, and matchups array are required" });
       }
+      const normalizedRegion = String(region);
+      if (!(await storage.isAllocatedRegion(normalizedRegion))) {
+        return res.status(400).json({ error: "Region must be an active allocated site ID" });
+      }
 
       // Validate all matchups
       for (let i = 0; i < matchups.length; i++) {
@@ -4969,7 +5241,7 @@ export async function registerRoutes(
         name,
         description: description || null,
         createdBy: user.id,
-        region,
+        region: normalizedRegion,
         status: "upcoming",
         visibility: visibility || "public",
         scheduledAt: scheduledAt ? new Date(scheduledAt) : null,
@@ -5120,7 +5392,10 @@ export async function registerRoutes(
 
       const { name, region } = req.body;
       if (!name || !region) return res.status(400).json({ error: "Name and region required" });
-      if (!["na", "apac", "eu"].includes(region)) return res.status(400).json({ error: "Invalid region" });
+      const normalizedRegion = String(region);
+      if (!(await storage.isAllocatedRegion(normalizedRegion))) {
+        return res.status(400).json({ error: "Region must be an active allocated site ID" });
+      }
 
       const token = "cr" + generateSecureToken(15);
       const tokenHash = hashToken(token);
@@ -5128,7 +5403,7 @@ export async function registerRoutes(
       const issued = await storage.createClashRunnerIssuedToken({
         name,
         tokenHash,
-        region,
+        region: normalizedRegion,
         createdBy: user.id,
         isRevoked: false,
       });
@@ -5709,6 +5984,10 @@ export async function registerRoutes(
       if (!eventName || !region || !matchups || !Array.isArray(matchups) || matchups.length === 0) {
         return res.status(400).json({ error: "eventName, region, and matchups array are required" });
       }
+      const normalizedRegion = String(region);
+      if (!(await storage.isAllocatedRegion(normalizedRegion))) {
+        return res.status(400).json({ error: "Region must be an active allocated site ID" });
+      }
 
       // Validate cron if provided
       if (cronExpression) {
@@ -5722,7 +6001,7 @@ export async function registerRoutes(
         eventName,
         createdBy: user.id,
         matchups,
-        region,
+        region: normalizedRegion,
         maxDurationSeconds: maxDurationSeconds || 300,
         scheduledAt: scheduledAt ? new Date(scheduledAt) : null,
         cronExpression: cronExpression || null,

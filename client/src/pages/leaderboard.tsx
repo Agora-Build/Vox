@@ -1,5 +1,6 @@
 import { useState, useMemo } from "react";
-import { formatRegion } from "@/lib/utils";
+import { appendRegionScopes, formatRegion, formatRegionScopeSelection } from "@/lib/utils";
+import { RegionScopeSelector } from "@/components/region-scope-selector";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -17,11 +18,17 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { useRegionLocations } from "@/hooks/use-regions";
 
 interface LeaderboardEntry {
   rank: number;
   provider: string;
   region: string;
+  regionLabel?: string;
+  countryCode?: string | null;
+  countryName?: string | null;
+  macroRegionCode?: string | null;
+  macroRegionName?: string | null;
   // Latency is null (NA) when every run in the group was non-responsive.
   responseLatency: number | null;
   responseLatencyP95: number | null;
@@ -44,19 +51,22 @@ const naNum = (v: number | null, suffix = "") => v == null ? "NA" : `${v}${suffi
 const naPct = (v: number | null) => v == null ? "NA" : `${Math.round(v * 100)}%`;
 
 export default function Leaderboard() {
-  const [selectedRegion, setSelectedRegion] = useState<string>("all");
+  const [regionScopes, setRegionScopes] = useState<string[]>(["all"]);
   const [sortField, setSortField] = useState<SortField>("rank");
   const [sortDirection, setSortDirection] = useState<SortDirection>("asc");
   const [timeRange, setTimeRange] = useState<string>("168"); // 7 days default
   const [selectedEntry, setSelectedEntry] = useState<LeaderboardEntry | null>(null);
+  const { data: regionLocations } = useRegionLocations();
 
+  const regionScopeKey = [...regionScopes].sort().join(",");
   const { data: leaderboardData, isLoading } = useQuery<LeaderboardEntry[]>({
-    queryKey: ['/api/metrics/leaderboard', timeRange],
+    queryKey: ['/api/metrics/leaderboard', timeRange, regionScopeKey],
     queryFn: async () => {
       const params = new URLSearchParams();
       if (timeRange !== "all") {
         params.set("hours", timeRange);
       }
+      appendRegionScopes(params, regionScopes);
       const res = await fetch(`/api/metrics/leaderboard?${params}`);
       if (!res.ok) throw new Error("Failed to fetch leaderboard");
       return res.json();
@@ -66,13 +76,8 @@ export default function Leaderboard() {
   const filteredAndSortedData = useMemo(() => {
     if (!leaderboardData) return [];
 
-    // Filter by region
-    const filtered = selectedRegion === "all"
-      ? leaderboardData
-      : leaderboardData.filter(e => e.region.toLowerCase() === selectedRegion);
-
     // Sort data
-    const sorted = [...filtered].sort((a, b) => {
+    const sorted = [...leaderboardData].sort((a, b) => {
       if (sortField === "rank") {
         return sortDirection === "asc" ? a.rank - b.rank : b.rank - a.rank;
       }
@@ -91,7 +96,7 @@ export default function Leaderboard() {
     });
 
     return sorted;
-  }, [leaderboardData, selectedRegion, sortField, sortDirection]);
+  }, [leaderboardData, sortField, sortDirection]);
 
   const handleSort = (field: SortField) => {
     if (sortField === field) {
@@ -116,7 +121,7 @@ export default function Leaderboard() {
       : <ArrowDown className="h-4 w-4 ml-1" />;
   };
 
-  const regionLabel = selectedRegion === "all" ? "All Regions" : formatRegion(selectedRegion);
+  const regionLabel = formatRegionScopeSelection(regionLocations ?? [], regionScopes);
 
   const timeRangeLabel = timeRange === "24" ? "Last 24 hours"
     : timeRange === "168" ? "Last 7 days"
@@ -170,18 +175,11 @@ export default function Leaderboard() {
               <SelectItem value="all">All time</SelectItem>
             </SelectContent>
           </Select>
-          <Select value={selectedRegion} onValueChange={setSelectedRegion}>
-            <SelectTrigger className="w-[160px]">
-              <SelectValue placeholder="Select region" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All Regions</SelectItem>
-              <SelectItem value="na">North America</SelectItem>
-              <SelectItem value="apac">Asia Pacific</SelectItem>
-              <SelectItem value="eu">Europe</SelectItem>
-              <SelectItem value="sa">South America</SelectItem>
-            </SelectContent>
-          </Select>
+          <RegionScopeSelector
+            locations={regionLocations ?? []}
+            value={regionScopes}
+            onChange={setRegionScopes}
+          />
         </div>
       </div>
 
@@ -303,7 +301,7 @@ export default function Leaderboard() {
                     </TableCell>
                     <TableCell>
                       <Badge variant="outline" className="text-muted-foreground" data-testid={`text-region-${entry.rank}`}>
-                        {formatRegion(entry.region)}
+                        {entry.regionLabel || formatRegion(entry.region)}
                       </Badge>
                     </TableCell>
                     <TableCell className="text-right font-mono" data-testid={`text-response-${entry.rank}`}>
@@ -372,7 +370,7 @@ export default function Leaderboard() {
               )}
             </DialogTitle>
             <DialogDescription>
-              Performance metrics for {selectedEntry ? formatRegion(selectedEntry.region) : ""} region
+              Performance metrics for {selectedEntry ? selectedEntry.regionLabel || formatRegion(selectedEntry.region) : ""} region
             </DialogDescription>
           </DialogHeader>
           {selectedEntry && (

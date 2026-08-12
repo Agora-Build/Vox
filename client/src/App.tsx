@@ -37,6 +37,7 @@ import ConsoleOrganizationCreate from "@/pages/console-organization-create";
 import AdminOrganizations from "@/pages/admin-organizations";
 import AdminFundReturns from "@/pages/admin-fund-returns";
 import AdminProviders from "@/pages/admin-providers";
+import AdminRegions from "@/pages/admin-regions";
 import Privacy from "@/pages/privacy";
 import Terms from "@/pages/terms";
 import Activate from "@/pages/activate";
@@ -870,6 +871,30 @@ function AdminProvidersWrapper() {
   );
 }
 
+function AdminRegionsWrapper() {
+  const [, setLocation] = useLocation();
+  const { data: authStatus, isLoading, isFetching } = useQuery<AuthStatus>({
+    queryKey: ["/api/auth/status"],
+  });
+
+  useEffect(() => {
+    if (!isLoading && !isFetching && authStatus?.initialized && !authStatus.user) {
+      setLocation("/admin/login");
+    }
+  }, [isLoading, isFetching, authStatus, setLocation]);
+
+  if ((isLoading || isFetching) && !authStatus?.user) {
+    return <div className="min-h-screen flex items-center justify-center"><div className="animate-pulse text-muted-foreground">Loading...</div></div>;
+  }
+  if (!authStatus?.initialized) return <ConsoleInit />;
+  if (!authStatus.user) {
+    return <div className="min-h-screen flex items-center justify-center"><div className="animate-pulse text-muted-foreground">Redirecting...</div></div>;
+  }
+  if (!authStatus.user.isAdmin) { setLocation("/console/workflows"); return null; }
+
+  return <ConsoleLayout><AdminRegions /></ConsoleLayout>;
+}
+
 function Router() {
   return (
     <Switch>
@@ -939,6 +964,9 @@ function Router() {
       </Route>
       <Route path="/console/providers">
         <AdminProvidersWrapper />
+      </Route>
+      <Route path="/console/regions">
+        <AdminRegionsWrapper />
       </Route>
       <Route path="/admin/console/providers">
         <Redirect to="/console/providers" />

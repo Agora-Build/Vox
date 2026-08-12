@@ -5,6 +5,8 @@ import {
   type InsertOrganization,
   type Provider,
   type InsertProvider,
+  type RegionLocation,
+  type InsertRegionLocation,
   generateProviderId,
   type Project,
   type InsertProject,
@@ -59,6 +61,7 @@ import {
   users,
   organizations,
   providers,
+  regionLocations,
   projects,
   workflows,
   evalSets,
@@ -89,6 +92,7 @@ import {
   userStorageConfig,
   orgSecrets,
 } from "@shared/schema";
+import { regionSiteSequence } from "@shared/regions";
 import { drizzle } from "drizzle-orm/node-postgres";
 import pkg from "pg";
 const { Pool } = pkg;
@@ -106,6 +110,10 @@ const METRICS_ALL_MAX_DAYS = 3 * 365; // "all time" shows at most the last 3 yea
 
 export type MetricTier = "mainline" | "community" | "myEvals";
 export type MetricsMode = "raw" | "bucketDay";
+export type RegionQueryScope = {
+  region?: string;
+  baseIds?: string[];
+};
 
 // Pure raw-vs-bucket decision for a window of `spanDays`. Exported for testing.
 export function resolveMetricsMode(spanDays: number): MetricsMode {
@@ -407,6 +415,108 @@ export class DatabaseStorage {
     return result[0];
   }
 
+  async getAllRegionLocations(): Promise<RegionLocation[]> {
+    return db.select().from(regionLocations).orderBy(regionLocations.macroRegionName, regionLocations.countryName, regionLocations.city);
+  }
+
+  async getActiveRegionLocations(): Promise<RegionLocation[]> {
+    return db.select().from(regionLocations)
+      .where(eq(regionLocations.isActive, true))
+      .orderBy(regionLocations.macroRegionName, regionLocations.countryName, regionLocations.city);
+  }
+
+  async getRegionLocation(id: number): Promise<RegionLocation | undefined> {
+    const result = await db.select().from(regionLocations).where(eq(regionLocations.id, id));
+    return result[0];
+  }
+
+  async getRegionLocationByBaseId(baseId: string): Promise<RegionLocation | undefined> {
+    const result = await db.select().from(regionLocations).where(eq(regionLocations.baseId, baseId));
+    return result[0];
+  }
+
+  async createRegionLocation(location: InsertRegionLocation): Promise<RegionLocation> {
+    const result = await db.insert(regionLocations).values(location).returning();
+    return result[0];
+  }
+
+  async updateRegionLocation(id: number, data: Partial<RegionLocation>): Promise<RegionLocation | undefined> {
+    const result = await db.update(regionLocations)
+      .set({ ...data, updatedAt: new Date() })
+      .where(eq(regionLocations.id, id))
+      .returning();
+    return result[0];
+  }
+
+  async resolveRegionLocation(region: string): Promise<RegionLocation | undefined> {
+    const locations = await this.getAllRegionLocations();
+    return locations
+      .sort((a, b) => b.baseId.length - a.baseId.length)
+      .find((location) => regionSiteSequence(region, location.baseId) !== null);
+  }
+
+  async isAllocatedRegion(region: string, activeOnly = true): Promise<boolean> {
+    const location = await this.resolveRegionLocation(region);
+    if (!location || (activeOnly && !location.isActive)) return false;
+    const sequence = regionSiteSequence(region, location.baseId);
+    return sequence !== null && sequence < location.nextSequence;
+  }
+
+  async createEvalAgentTokenForLocation(
+    baseId: string,
+    token: Omit<InsertEvalAgentToken, "region">,
+  ): Promise<EvalAgentToken> {
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      const selected = await client.query(
+        `SELECT base_id, next_sequence, is_active
+         FROM region_locations
+         WHERE base_id = $1
+         FOR UPDATE`,
+        [baseId],
+      );
+      if (selected.rows.length === 0) throw new Error("Region location not found");
+      if (!selected.rows[0].is_active) throw new Error("Region location is inactive");
+
+      const sequence = Number(selected.rows[0].next_sequence);
+      const region = `${selected.rows[0].base_id}-${String(sequence).padStart(2, "0")}`;
+      const inserted = await client.query(
+        `INSERT INTO eval_agent_tokens
+          (name, token_hash, region, visibility, created_by, is_revoked, expires_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
+         RETURNING *`,
+        [
+          token.name,
+          token.tokenHash,
+          region,
+          token.visibility,
+          token.createdBy,
+          token.isRevoked,
+          token.expiresAt ?? null,
+        ],
+      );
+      await client.query(
+        `UPDATE region_locations
+         SET next_sequence = next_sequence + 1, updated_at = NOW()
+         WHERE base_id = $1`,
+        [baseId],
+      );
+      await client.query("COMMIT");
+      const row = inserted.rows[0];
+      return {
+        id: row.id, name: row.name, tokenHash: row.token_hash, region: row.region,
+        visibility: row.visibility, createdBy: row.created_by, isRevoked: row.is_revoked,
+        expiresAt: row.expires_at, lastUsedAt: row.last_used_at, createdAt: row.created_at,
+      };
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
   async createProject(project: InsertProject): Promise<Project> {
     const result = await db.insert(projects).values(project).returning();
     return result[0];
@@ -564,7 +674,7 @@ export class DatabaseStorage {
     return result[0];
   }
 
-  async getEvalAgentsByRegion(region: "na" | "apac" | "eu"): Promise<EvalAgent[]> {
+  async getEvalAgentsByRegion(region: string): Promise<EvalAgent[]> {
     return db.select().from(evalAgents).where(eq(evalAgents.region, region)).orderBy(desc(evalAgents.createdAt));
   }
 
@@ -629,7 +739,7 @@ export class DatabaseStorage {
     return result[0];
   }
 
-  async getPendingEvalJobsByRegion(region: "na" | "apac" | "eu" | "sa"): Promise<EvalJob[]> {
+  async getPendingEvalJobsByRegion(region: string): Promise<EvalJob[]> {
     return db.select().from(evalJobs).where(
       and(eq(evalJobs.region, region), eq(evalJobs.status, "pending"))
     ).orderBy(desc(evalJobs.priority), evalJobs.createdAt);
@@ -680,7 +790,7 @@ export class DatabaseStorage {
   }
 
   // Atomic claim for next available job in region
-  async claimNextAvailableJob(agentId: number, region: "na" | "apac" | "eu"): Promise<EvalJob | undefined> {
+  async claimNextAvailableJob(agentId: number, region: string): Promise<EvalJob | undefined> {
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
@@ -805,7 +915,7 @@ export class DatabaseStorage {
   // Get all jobs with optional filters
   async getEvalJobs(filters?: {
     status?: "pending" | "running" | "completed" | "failed";
-    region?: "na" | "apac" | "eu" | "sa";
+    region?: string;
     workflowId?: number;
     agentId?: number;
     ownerId?: number;
@@ -1064,7 +1174,16 @@ export class DatabaseStorage {
   // live workflows/eval_sets/users/agent-tokens. Consequences: a result keeps its
   // run-time tier even after its workflow/eval-set is edited or deleted, and the
   // join chain collapses to just eval_results → eval_jobs.
-  private mainlineConditions(hoursBack?: number) {
+  private regionScopeCondition(scope?: RegionQueryScope) {
+    if (scope?.region) return eq(evalResults.region, scope.region);
+    if (scope?.baseIds) {
+      if (scope.baseIds.length === 0) return sql<boolean>`false`;
+      return or(...scope.baseIds.map((baseId) => sql<boolean>`${evalResults.region} LIKE ${baseId + "-%"}`));
+    }
+    return undefined;
+  }
+
+  private mainlineConditions(hoursBack?: number, scope?: RegionQueryScope) {
     const snap = evalJobs.snapshot;
     const conditions = [
       eq(evalJobs.status, "completed"),
@@ -1080,10 +1199,12 @@ export class DatabaseStorage {
     if (hoursBack) {
       conditions.push(gte(evalResults.createdAt, new Date(Date.now() - hoursBack * 60 * 60 * 1000)));
     }
+    const regionCondition = this.regionScopeCondition(scope);
+    if (regionCondition) conditions.push(regionCondition);
     return conditions;
   }
 
-  private communityConditions(hoursBack?: number) {
+  private communityConditions(hoursBack?: number, scope?: RegionQueryScope) {
     const snap = evalJobs.snapshot;
     const conditions = [
       eq(evalJobs.status, "completed"),
@@ -1101,10 +1222,12 @@ export class DatabaseStorage {
     if (hoursBack) {
       conditions.push(gte(evalResults.createdAt, new Date(Date.now() - hoursBack * 60 * 60 * 1000)));
     }
+    const regionCondition = this.regionScopeCondition(scope);
+    if (regionCondition) conditions.push(regionCondition);
     return conditions;
   }
 
-  private myEvalConditions(userId: number, hoursBack?: number) {
+  private myEvalConditions(userId: number, hoursBack?: number, scope?: RegionQueryScope) {
     const snap = evalJobs.snapshot;
     const conditions = [
       eq(evalJobs.status, "completed"),
@@ -1116,6 +1239,8 @@ export class DatabaseStorage {
     if (hoursBack) {
       conditions.push(gte(evalResults.createdAt, new Date(Date.now() - hoursBack * 60 * 60 * 1000)));
     }
+    const regionCondition = this.regionScopeCondition(scope);
+    if (regionCondition) conditions.push(regionCondition);
     return conditions;
   }
 
@@ -1128,10 +1253,10 @@ export class DatabaseStorage {
   private joinCommunity(q: any): any { return this.joinTier(q); }
   private joinMyEvals(q: any): any { return this.joinTier(q); }
 
-  private tierConditions(tier: MetricTier, hoursBack?: number, userId?: number) {
-    return tier === "mainline" ? this.mainlineConditions(hoursBack)
-      : tier === "community" ? this.communityConditions(hoursBack)
-      : this.myEvalConditions(userId!, hoursBack);
+  private tierConditions(tier: MetricTier, hoursBack?: number, userId?: number, scope?: RegionQueryScope) {
+    return tier === "mainline" ? this.mainlineConditions(hoursBack, scope)
+      : tier === "community" ? this.communityConditions(hoursBack, scope)
+      : this.myEvalConditions(userId!, hoursBack, scope);
   }
   private applyTierJoins(tier: MetricTier, q: any): any {
     return tier === "mainline" ? this.joinMainline(q)
@@ -1140,9 +1265,9 @@ export class DatabaseStorage {
   }
 
   // Earliest createdAt for a tier (null if no rows) → used to size "all time".
-  private async tierSpanDays(tier: MetricTier, userId?: number): Promise<number | null> {
+  private async tierSpanDays(tier: MetricTier, userId?: number, scope?: RegionQueryScope): Promise<number | null> {
     const base = db.select({ minAt: sql<string | null>`min(${evalResults.createdAt})` }).from(evalResults);
-    const rows = await this.applyTierJoins(tier, base).where(and(...this.tierConditions(tier, undefined, userId)));
+    const rows = await this.applyTierJoins(tier, base).where(and(...this.tierConditions(tier, undefined, userId, scope)));
     const minAt = rows[0]?.minAt;
     if (!minAt) return null;
     return (Date.now() - new Date(minAt).getTime()) / (24 * 60 * 60 * 1000);
@@ -1150,7 +1275,7 @@ export class DatabaseStorage {
 
   // One averaged point per (day, provider, region). Same shape formatMetricsResults
   // consumes; SD/P95/secondary metrics are averages-of-aggregates (trend overview).
-  private async tierBucketedDaily(tier: MetricTier, hoursBack?: number, userId?: number): Promise<MetricSourceRow[]> {
+  private async tierBucketedDaily(tier: MetricTier, hoursBack?: number, userId?: number, scope?: RegionQueryScope): Promise<MetricSourceRow[]> {
     const day = sql`date_trunc('day', ${evalResults.createdAt})`;
     const base = db.select({
       id: sql<number>`min(${evalResults.id})::int`,
@@ -1169,7 +1294,7 @@ export class DatabaseStorage {
       createdAt: sql<Date>`${day}`,
     }).from(evalResults);
     const rows = await this.applyTierJoins(tier, base)
-      .where(and(...this.tierConditions(tier, hoursBack, userId)))
+      .where(and(...this.tierConditions(tier, hoursBack, userId, scope)))
       .groupBy(day, evalResults.providerId, evalResults.region)
       .orderBy(day);
     return rows as MetricSourceRow[];
@@ -1178,7 +1303,7 @@ export class DatabaseStorage {
   // Applies the windowing policy (see the module-level comment). "All time"
   // (no hoursBack) is bounded to the retention cap and its raw-vs-bucket mode is
   // sized from the actual data span, so a young deployment's "all" stays raw.
-  private async tierMetrics(tier: MetricTier, hoursBack?: number, userId?: number): Promise<MetricSourceRow[]> {
+  private async tierMetrics(tier: MetricTier, hoursBack?: number, userId?: number, scope?: RegionQueryScope): Promise<MetricSourceRow[]> {
     let effectiveHoursBack = hoursBack;
     let spanDays: number;
     if (hoursBack != null) {
@@ -1187,15 +1312,15 @@ export class DatabaseStorage {
       // "all time": clamp the window to the 3-year retention cap, and decide
       // raw-vs-bucket from how much history actually exists (also clamped).
       effectiveHoursBack = METRICS_ALL_MAX_DAYS * 24;
-      const actualSpan = (await this.tierSpanDays(tier, userId)) ?? 0;
+      const actualSpan = (await this.tierSpanDays(tier, userId, scope)) ?? 0;
       spanDays = Math.min(actualSpan, METRICS_ALL_MAX_DAYS);
     }
 
     if (resolveMetricsMode(spanDays) === "bucketDay") {
-      return this.tierBucketedDaily(tier, effectiveHoursBack, userId);
+      return this.tierBucketedDaily(tier, effectiveHoursBack, userId, scope);
     }
     const rows = await this.applyTierJoins(tier, db.select().from(evalResults))
-      .where(and(...this.tierConditions(tier, effectiveHoursBack, userId)))
+      .where(and(...this.tierConditions(tier, effectiveHoursBack, userId, scope)))
       .orderBy(desc(evalResults.createdAt))
       .limit(METRICS_RAW_ROW_CEILING);
     // evalJobs is already inner-joined (joinTier) for tiering, so its snapshot +
@@ -1209,21 +1334,21 @@ export class DatabaseStorage {
 
   // Public metrics entry points used by the realtime dashboard. They own the
   // raw-vs-bucket decision and the row ceiling — callers pass only the window.
-  getMainlineMetrics(hoursBack?: number): Promise<MetricSourceRow[]> {
-    return this.tierMetrics("mainline", hoursBack);
+  getMainlineMetrics(hoursBack?: number, scope?: RegionQueryScope): Promise<MetricSourceRow[]> {
+    return this.tierMetrics("mainline", hoursBack, undefined, scope);
   }
-  getCommunityMetrics(hoursBack?: number): Promise<MetricSourceRow[]> {
-    return this.tierMetrics("community", hoursBack);
+  getCommunityMetrics(hoursBack?: number, scope?: RegionQueryScope): Promise<MetricSourceRow[]> {
+    return this.tierMetrics("community", hoursBack, undefined, scope);
   }
-  getMyEvalMetrics(userId: number, hoursBack?: number): Promise<MetricSourceRow[]> {
-    return this.tierMetrics("myEvals", hoursBack, userId);
+  getMyEvalMetrics(userId: number, hoursBack?: number, scope?: RegionQueryScope): Promise<MetricSourceRow[]> {
+    return this.tierMetrics("myEvals", hoursBack, userId, scope);
   }
 
   // Raw, limit-controlled tier queries — kept for the leaderboard / API v1
   // callers that request a fixed count and don't need the span policy.
-  async getMainlineEvalResults(limit: number = 50, hoursBack?: number): Promise<EvalResult[]> {
+  async getMainlineEvalResults(limit: number = 50, hoursBack?: number, scope?: RegionQueryScope): Promise<EvalResult[]> {
     return this.joinMainline(db.select().from(evalResults))
-      .where(and(...this.mainlineConditions(hoursBack)))
+      .where(and(...this.mainlineConditions(hoursBack, scope)))
       .orderBy(desc(evalResults.createdAt))
       .limit(limit)
       .then((rows: any[]) => rows.map(r => r.eval_results));

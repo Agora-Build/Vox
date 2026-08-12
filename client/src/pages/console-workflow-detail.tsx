@@ -14,6 +14,7 @@ import { ArrowLeft, Play, Settings, History, Clock, CheckCircle, XCircle, Loader
 import { useState } from "react";
 import type { Workflow as WorkflowType, Provider, EvalJob, EvalSet } from "@shared/schema";
 import { formatSmartTimestamp, formatRegion, toYaml } from "@/lib/utils";
+import { useRegionOptions } from "@/hooks/use-regions";
 
 interface AuthStatus {
   user: {
@@ -24,15 +25,9 @@ interface AuthStatus {
   } | null;
 }
 
-const REGIONS = [
-  { value: "na", label: "North America" },
-  { value: "apac", label: "Asia Pacific" },
-  { value: "eu", label: "Europe" },
-  { value: "sa", label: "South America" },
-];
-
 export default function ConsoleWorkflowDetail() {
   const { toast } = useToast();
+  const { options: regionOptions } = useRegionOptions();
   const params = useParams<{ id: string }>();
   const [, setLocation] = useLocation();
   const workflowId = parseInt(params.id || "0");
@@ -153,7 +148,7 @@ export default function ConsoleWorkflowDetail() {
                     <SelectValue placeholder="Select region" />
                   </SelectTrigger>
                   <SelectContent>
-                    {REGIONS.map((region) => (
+                    {regionOptions.map((region) => (
                       <SelectItem key={region.value} value={region.value}>
                         {region.label}
                       </SelectItem>

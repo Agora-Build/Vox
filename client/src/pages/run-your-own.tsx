@@ -16,6 +16,7 @@ import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { Link } from "wouter";
 import generatedImage from '@assets/generated_images/abstract_digital_network_visualization_dark_blue.png';
+import { useRegionOptions } from "@/hooks/use-regions";
 
 interface AuthStatus {
   user: {
@@ -62,7 +63,8 @@ export default function SelfTest() {
   const [workflowType, setWorkflowType] = useState<string>("convoai");
   const [workflowName, setWorkflowName] = useState("");
   const [workflowUrl, setWorkflowUrl] = useState("");
-  const [region, setRegion] = useState<string>("na");
+  const [region, setRegion] = useState<string>("");
+  const { options: regionOptions } = useRegionOptions();
   const [selectedWorkflowId, setSelectedWorkflowId] = useState<string>("");
   const [selectedEvalSetId, setSelectedEvalSetId] = useState<string>("");
   const [activeJobId, setActiveJobId] = useState<number | null>(() => {
@@ -458,13 +460,12 @@ export default function SelfTest() {
                   <Label>Target Region</Label>
                   <Select value={region} onValueChange={setRegion}>
                     <SelectTrigger>
-                      <SelectValue />
+                      <SelectValue placeholder="Select a site" />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="na">North America</SelectItem>
-                      <SelectItem value="apac">Asia Pacific</SelectItem>
-                      <SelectItem value="eu">Europe</SelectItem>
-                      <SelectItem value="sa">South America</SelectItem>
+                      {regionOptions.map((option) => (
+                        <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+                      ))}
                     </SelectContent>
                   </Select>
                 </div>
@@ -475,7 +476,7 @@ export default function SelfTest() {
                 className="w-full"
                 size="lg"
                 onClick={handleRunEval}
-                disabled={runEvalMutation.isPending || isJobRunning || !selectedWorkflowId || !selectedEvalSetId}
+                disabled={runEvalMutation.isPending || isJobRunning || !selectedWorkflowId || !selectedEvalSetId || !region}
               >
                 {runEvalMutation.isPending ? (
                   <><Loader2 className="mr-2 h-4 w-4 animate-spin" /> Starting...</>
@@ -511,7 +512,7 @@ export default function SelfTest() {
 {`# Run a workflow
 curl -X POST -H "Authorization: Bearer vox_live_xxx" \\
   -H "Content-Type: application/json" \\
-  -d '{"region": "na"}' \\
+  -d '{"region": "na-us-seattle-01"}' \\
   ${window.location.origin}/api/v1/workflows/1/run
 
 # Get evaluation results
@@ -623,7 +624,7 @@ curl -H "Authorization: Bearer vox_live_xxx" \\
           <CardContent className="pt-6">
             <h3 className="font-semibold mb-2">Real Infrastructure</h3>
             <p className="text-sm text-muted-foreground">
-              Tests run on our distributed eval agents across North America, Asia Pacific, Europe, and South America.
+              Tests run on distributed eval agents at exact city-level sites.
             </p>
           </CardContent>
         </Card>

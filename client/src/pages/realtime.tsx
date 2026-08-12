@@ -15,12 +15,20 @@ import { useQuery } from "@tanstack/react-query";
 import { Link } from "wouter";
 import { Skeleton } from "@/components/ui/skeleton";
 import { format } from "date-fns";
+import { appendRegionScopes, formatRegionScopeSelection } from "@/lib/utils";
+import { useRegionLocations } from "@/hooks/use-regions";
+import { RegionScopeSelector } from "@/components/region-scope-selector";
 
 interface EvalResult {
   id: number;
   providerId: string;
   provider: string;
   region: string;
+  regionLabel?: string;
+  countryCode?: string | null;
+  countryName?: string | null;
+  macroRegionCode?: string | null;
+  macroRegionName?: string | null;
   // Latency is null (NA) when the agent didn't respond — never plotted/counted as 0.
   responseLatency: number | null;
   responseLatencySd: number | null;
@@ -487,7 +495,6 @@ function WorkflowTooltip({ active, payload, label, showWorkflow, unit = "ms" }: 
 interface MetricsSectionProps {
   metrics: EvalResult[] | undefined;
   isLoading: boolean;
-  selectedRegion: string;
   timeRangeLabel: string;
   regionLabel: string;
   testIdPrefix?: string;
@@ -497,7 +504,7 @@ interface MetricsSectionProps {
   hiddenProviders?: Set<string>;
 }
 
-function MetricsSection({ metrics, isLoading, selectedRegion, timeRangeLabel, regionLabel, testIdPrefix = "", showWorkflow = false, hiddenProviders }: MetricsSectionProps) {
+function MetricsSection({ metrics, isLoading, timeRangeLabel, regionLabel, testIdPrefix = "", showWorkflow = false, hiddenProviders }: MetricsSectionProps) {
   const { data: providerList } = useQuery<Array<{ id: string; brandColor: string | null }>>({
     queryKey: ["/api/providers"],
     staleTime: 60000,
@@ -511,10 +518,7 @@ function MetricsSection({ metrics, isLoading, selectedRegion, timeRangeLabel, re
     return map;
   }, [providerList]);
 
-  const filteredMetrics = metrics?.filter(m =>
-    (selectedRegion === "all" || m.region.toLowerCase() === selectedRegion) &&
-    !(hiddenProviders?.has(m.providerId))
-  ) || [];
+  const filteredMetrics = metrics?.filter(m => !(hiddenProviders?.has(m.providerId))) || [];
 
   const { data: combinedData, providers } = useMemo(() => buildCombinedData(filteredMetrics, colorMap), [filteredMetrics, colorMap]);
 
@@ -776,11 +780,12 @@ function MetricsSection({ metrics, isLoading, selectedRegion, timeRangeLabel, re
 }
 
 export default function Dashboard() {
-  const [selectedRegion, setSelectedRegion] = useState<string>("all");
+  const [regionScopes, setRegionScopes] = useState<string[]>(["all"]);
   const [refreshInterval, setRefreshInterval] = useState<number>(30000);
   const [timeRange, setTimeRange] = useState<string>("24");
   // Provider multi-select: hidden set (default empty = all shown).
   const [hiddenProviders, setHiddenProviders] = useState<Set<string>>(new Set());
+  const { data: regionLocations } = useRegionLocations();
   const { data: providerList } = useQuery<Array<{ id: string; name: string }>>({
     queryKey: ["/api/providers"],
     staleTime: 60000,
@@ -796,11 +801,13 @@ export default function Dashboard() {
 
   const isLoggedIn = !!authStatus?.user;
 
+  const regionScopeKey = [...regionScopes].sort().join(",");
   const { data: mainlineMetrics, isLoading: mainlineLoading, refetch: refetchMainline, isFetching: mainlineFetching } = useQuery<EvalResult[]>({
-    queryKey: ['/api/metrics/realtime', timeRange],
+    queryKey: ['/api/metrics/realtime', timeRange, regionScopeKey],
     queryFn: async () => {
       const params = new URLSearchParams();
       if (timeRange !== "all") params.set("hours", timeRange);
+      appendRegionScopes(params, regionScopes);
       // No limit param: the server owns row counts + raw-vs-bucket per window.
       const res = await fetch(`/api/metrics/realtime?${params}`);
       if (!res.ok) throw new Error("Failed to fetch metrics");
@@ -811,10 +818,11 @@ export default function Dashboard() {
   });
 
   const { data: communityMetrics, isLoading: communityLoading, refetch: refetchCommunity, isFetching: communityFetching } = useQuery<EvalResult[]>({
-    queryKey: ['/api/metrics/community', timeRange],
+    queryKey: ['/api/metrics/community', timeRange, regionScopeKey],
     queryFn: async () => {
       const params = new URLSearchParams();
       if (timeRange !== "all") params.set("hours", timeRange);
+      appendRegionScopes(params, regionScopes);
       const res = await fetch(`/api/metrics/community?${params}`);
       if (!res.ok) throw new Error("Failed to fetch community metrics");
       return res.json();
@@ -824,10 +832,11 @@ export default function Dashboard() {
   });
 
   const { data: myEvalsMetrics, isLoading: myEvalsLoading, refetch: refetchMyEvals, isFetching: myEvalsFetching } = useQuery<EvalResult[]>({
-    queryKey: ['/api/metrics/my-evals', timeRange],
+    queryKey: ['/api/metrics/my-evals', timeRange, regionScopeKey],
     queryFn: async () => {
       const params = new URLSearchParams();
       if (timeRange !== "all") params.set("hours", timeRange);
+      appendRegionScopes(params, regionScopes);
       const res = await fetch(`/api/metrics/my-evals?${params}`);
       if (!res.ok) throw new Error("Failed to fetch my eval metrics");
       return res.json();
@@ -883,11 +892,7 @@ export default function Dashboard() {
     return opts.sort((a, b) => a.name.localeCompare(b.name));
   }, [providerList, mainlineMetrics, communityMetrics, myEvalsMetrics, activeTab]);
 
-  const regionLabel = selectedRegion === "all" ? "All Regions"
-    : selectedRegion === "na" ? "North America"
-    : selectedRegion === "apac" ? "Asia Pacific"
-    : selectedRegion === "sa" ? "South America"
-    : "Europe";
+  const regionLabel = formatRegionScopeSelection(regionLocations ?? [], regionScopes);
 
   const timeRangeLabel = timeRange === "1" ? "Last hour"
     : timeRange === "6" ? "Last 6 hours"
@@ -940,18 +945,11 @@ export default function Dashboard() {
               <SelectItem value="all">All time</SelectItem>
             </SelectContent>
           </Select>
-          <Select value={selectedRegion} onValueChange={setSelectedRegion}>
-            <SelectTrigger className="w-[140px]">
-              <SelectValue placeholder="Region" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All Regions</SelectItem>
-              <SelectItem value="na">North America</SelectItem>
-              <SelectItem value="apac">Asia Pacific</SelectItem>
-              <SelectItem value="eu">Europe</SelectItem>
-              <SelectItem value="sa">South America</SelectItem>
-            </SelectContent>
-          </Select>
+          <RegionScopeSelector
+            locations={regionLocations ?? []}
+            value={regionScopes}
+            onChange={setRegionScopes}
+          />
           <Popover>
             <PopoverTrigger asChild>
               <Button variant="outline" className="w-[150px] justify-between font-normal" data-testid="button-provider-filter">
@@ -1030,7 +1028,6 @@ export default function Dashboard() {
           <MetricsSection
             metrics={mainlineMetrics}
             isLoading={mainlineLoading}
-            selectedRegion={selectedRegion}
             timeRangeLabel={timeRangeLabel}
             regionLabel={regionLabel}
             testIdPrefix=""
@@ -1042,7 +1039,6 @@ export default function Dashboard() {
           <MetricsSection
             metrics={communityMetrics}
             isLoading={communityLoading}
-            selectedRegion={selectedRegion}
             timeRangeLabel={timeRangeLabel}
             regionLabel={regionLabel}
             testIdPrefix="community-"
@@ -1056,7 +1052,6 @@ export default function Dashboard() {
             <MetricsSection
               metrics={myEvalsMetrics}
               isLoading={myEvalsLoading}
-              selectedRegion={selectedRegion}
               timeRangeLabel={timeRangeLabel}
               regionLabel={regionLabel}
               testIdPrefix="my-evals-"

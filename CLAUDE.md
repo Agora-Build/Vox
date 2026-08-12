@@ -128,7 +128,7 @@ The entire data model is defined in `shared/schema.ts` using Drizzle ORM. All ta
 
 **Enums:**
 - `userPlanEnum`: `basic`, `premium`, `principal`, `fellow`
-- `regionEnum`: `na`, `apac`, `eu`
+- Region locations are admin-managed; exact site IDs use `<location-base>-<sequence>` (for example `apac-in-mumbai-01`).
 - `providerSkuEnum`: `convoai`, `rtc`
 - `evalAgentStateEnum`: `idle`, `offline`, `occupied`
 - `evalJobStatusEnum`: `pending`, `running`, `completed`, `failed`

@@ -13,7 +13,8 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { Server, MapPin, Activity, Clock, Eye, EyeOff, Plus, Key, Copy, Check, Ban, Lock } from "lucide-react";
 import { useState } from "react";
-import { formatSmartTimestamp, formatRegion, REGIONS } from "@/lib/utils";
+import { formatSmartTimestamp, formatRegion } from "@/lib/utils";
+import { useRegionLocationOptions } from "@/hooks/use-regions";
 
 interface AuthStatus {
   initialized: boolean;
@@ -73,7 +74,9 @@ export default function ConsoleEvalAgents() {
   const [region, setRegion] = useState("");
   const [visibility, setVisibility] = useState<string>("public");
   const [newToken, setNewToken] = useState<string | null>(null);
+  const [newRegion, setNewRegion] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const { options: regionLocations, isLoading: regionsLoading } = useRegionLocationOptions();
 
   const { data: authStatus } = useQuery<AuthStatus>({
     queryKey: ["/api/auth/status"],
@@ -96,7 +99,7 @@ export default function ConsoleEvalAgents() {
 
   const createMutation = useMutation({
     mutationFn: async () => {
-      const body: Record<string, string> = { name, region };
+      const body: Record<string, string> = { name, regionLocationBaseId: region };
       if (isAdmin) {
         body.visibility = visibility;
       }
@@ -105,10 +108,12 @@ export default function ConsoleEvalAgents() {
     },
     onSuccess: (data) => {
       setNewToken(data.token);
+      setNewRegion(data.region);
       setName("");
       setRegion("");
       setVisibility("public");
       queryClient.invalidateQueries({ queryKey: ["/api/eval-agent-tokens"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/region-locations"] });
       toast({ title: "Eval agent token created" });
     },
     onError: (error: Error) => {
@@ -141,6 +146,7 @@ export default function ConsoleEvalAgents() {
   const handleCloseDialog = () => {
     setCreateOpen(false);
     setNewToken(null);
+    setNewRegion(null);
     setCopied(false);
   };
 
@@ -339,13 +345,13 @@ export default function ConsoleEvalAgents() {
                           />
                         </div>
                         <div className="space-y-2">
-                          <Label htmlFor="token-region">Region</Label>
+                          <Label htmlFor="token-region">City</Label>
                           <Select value={region} onValueChange={setRegion}>
                             <SelectTrigger>
-                              <SelectValue placeholder="Select region" />
+                              <SelectValue placeholder="Select city" />
                             </SelectTrigger>
                             <SelectContent>
-                              {REGIONS.map((r) => (
+                              {regionLocations.map((r) => (
                                 <SelectItem key={r.value} value={r.value}>
                                   {r.label}
                                 </SelectItem>
@@ -376,7 +382,7 @@ export default function ConsoleEvalAgents() {
                       <DialogFooter>
                         <Button
                           onClick={() => createMutation.mutate()}
-                          disabled={createMutation.isPending || !name || !region}
+                          disabled={createMutation.isPending || regionsLoading || !name || !region}
                         >
                           Create Agent
                         </Button>
@@ -385,6 +391,12 @@ export default function ConsoleEvalAgents() {
                   ) : (
                     <>
                       <div className="space-y-4 py-4">
+                        {newRegion && (
+                          <div className="flex items-center justify-between border px-3 py-2">
+                            <span className="text-sm text-muted-foreground">Assigned site</span>
+                            <Badge variant="secondary" className="font-mono">{newRegion}</Badge>
+                          </div>
+                        )}
                         <div className="space-y-2">
                           <Label>Agent Token</Label>
                           <div className="flex gap-2">

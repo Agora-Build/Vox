@@ -16,7 +16,8 @@ import { ClipboardList, CheckCircle, XCircle, Loader2, Clock, CalendarClock, Cal
 import { useState } from "react";
 import { useToast } from "@/hooks/use-toast";
 import { useLocation, useSearch, Link } from "wouter";
-import { formatSmartTimestamp, formatRegion, REGIONS } from "@/lib/utils";
+import { formatSmartTimestamp, formatRegion } from "@/lib/utils";
+import { useRegionOptions } from "@/hooks/use-regions";
 import { format } from "date-fns";
 import type { EvalJob, EvalSchedule, Workflow as WorkflowType } from "@shared/schema";
 
@@ -411,6 +412,7 @@ function ScheduledJobsBlock() {
 }
 
 function JobsTab() {
+  const { options: regionOptions } = useRegionOptions();
   const [statusFilter, setStatusFilter] = useState("all");
   const [regionFilter, setRegionFilter] = useState("all");
   const [workflowFilter, setWorkflowFilter] = useState("all");
@@ -496,7 +498,7 @@ function JobsTab() {
           </SelectTrigger>
           <SelectContent>
             <SelectItem value="all">All Regions</SelectItem>
-            {REGIONS.map((r) => (
+            {regionOptions.map((r) => (
               <SelectItem key={r.value} value={r.value}>{r.label}</SelectItem>
             ))}
           </SelectContent>

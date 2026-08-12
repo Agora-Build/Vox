@@ -16,7 +16,8 @@ import { Switch } from "@/components/ui/switch";
 import { Swords, Plus, Trash2, Play, X, Calendar, Copy, Check, Server, Pencil, Eye } from "lucide-react";
 import { useState } from "react";
 import { useLocation, useSearch } from "wouter";
-import { formatSmartTimestamp, formatRegion, REGIONS } from "@/lib/utils";
+import { formatSmartTimestamp, formatRegion } from "@/lib/utils";
+import { useRegionOptions } from "@/hooks/use-regions";
 
 interface ClashAgentProfile {
   id: number;
@@ -81,6 +82,7 @@ const VALID_TABS = ["profiles", "events", "schedules", "runners"];
 
 export default function ConsoleClash() {
   const { toast } = useToast();
+  const { options: regionOptions } = useRegionOptions();
   const [, setLocation] = useLocation();
   const search = useSearch();
   const tabParam = new URLSearchParams(search).get("tab");
@@ -185,7 +187,7 @@ export default function ConsoleClash() {
     onSuccess: (data) => {
       setNewRunnerToken(data.token);
       setRunnerTokenName("");
-      setRunnerTokenRegion("na");
+      setRunnerTokenRegion("");
       queryClient.invalidateQueries({ queryKey: ["/api/admin/clash-runner-tokens"] });
     },
     onError: (error: Error) => {
@@ -318,7 +320,7 @@ export default function ConsoleClash() {
     },
     onSuccess: () => {
       setEventName("");
-      setEventRegion("na");
+      setEventRegion("");
       setEventScheduledAt("");
       setEventMatchups([{ agentAProfileId: "", agentBProfileId: "", topic: "" }]);
       setCreateEventOpen(false);
@@ -375,7 +377,7 @@ export default function ConsoleClash() {
     onSuccess: () => {
       setScheduleName("");
       setScheduleMatchups([{ agentAProfileId: "", agentBProfileId: "", topic: "" }]);
-      setScheduleRegion("na");
+      setScheduleRegion("");
       setScheduleDuration("300");
       setScheduleAt("");
       setScheduleCron("");
@@ -720,7 +722,7 @@ export default function ConsoleClash() {
                           <Select value={eventRegion} onValueChange={setEventRegion}>
                             <SelectTrigger><SelectValue placeholder="Select region" /></SelectTrigger>
                             <SelectContent>
-                              {REGIONS.map(r => <SelectItem key={r.value} value={r.value}>{r.label}</SelectItem>)}
+                              {regionOptions.map(r => <SelectItem key={r.value} value={r.value}>{r.label}</SelectItem>)}
                             </SelectContent>
                           </Select>
                         </div>
@@ -985,7 +987,7 @@ export default function ConsoleClash() {
                             <Select value={scheduleRegion} onValueChange={setScheduleRegion}>
                               <SelectTrigger><SelectValue placeholder="Select region" /></SelectTrigger>
                               <SelectContent>
-                                {REGIONS.map(r => <SelectItem key={r.value} value={r.value}>{r.label}</SelectItem>)}
+                                {regionOptions.map(r => <SelectItem key={r.value} value={r.value}>{r.label}</SelectItem>)}
                               </SelectContent>
                             </Select>
                           </div>
@@ -1231,7 +1233,7 @@ export default function ConsoleClash() {
                               <Select value={runnerTokenRegion} onValueChange={setRunnerTokenRegion}>
                                 <SelectTrigger><SelectValue placeholder="Select region" /></SelectTrigger>
                                 <SelectContent>
-                                  {REGIONS.map(r => <SelectItem key={r.value} value={r.value}>{r.label}</SelectItem>)}
+                                  {regionOptions.map(r => <SelectItem key={r.value} value={r.value}>{r.label}</SelectItem>)}
                                 </SelectContent>
                               </Select>
                             </div>
