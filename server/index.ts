@@ -7,10 +7,11 @@ import session from "express-session";
 import connectPgSimple from "connect-pg-simple";
 import rateLimit from "express-rate-limit";
 import { authenticateApiKey, passport, initializeGoogleOAuth } from "./auth";
-import { storage, mergeEvalConfig, buildJobSnapshot } from "./storage";
+import { storage, mergeEvalConfig, buildJobSnapshot, pool } from "./storage";
 import { canScheduleWorkflow } from "./permissions";
 import { parseNextCronRun } from "./cron";
 import { setupClashWebSocket } from "./clash-ws";
+import { loadPlugins } from "./plugins/loader";
 import pkg from "pg";
 const { Pool } = pkg;
 
@@ -192,6 +193,15 @@ app.use((req, res, next) => {
 (async () => {
   await registerRoutes(httpServer, app);
   setupClashWebSocket(httpServer);
+
+  // Load enabled plugins (routes mounted before the error handler + vite catch-all).
+  // Any misconfiguration throws here — fail-before-listen (strict startup).
+  const plugins = await loadPlugins(app, pool);
+
+  // Graceful shutdown: stop workers and deactivate plugins in reverse order.
+  const shutdown = async () => { await plugins.shutdown(); process.exit(0); };
+  process.on("SIGTERM", shutdown);
+  process.on("SIGINT", shutdown);
 
   app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
     const status = err.status || err.statusCode || 500;
