@@ -8,6 +8,12 @@
 # Before stopping a container, checks the /health endpoint to ensure it's idle.
 # If busy, polls every 10s for up to 5 minutes before prompting to force stop.
 #
+# Containers are started with `--restart unless-stopped` so they relaunch
+# automatically after a host reboot (override with RESTART_POLICY=...). A
+# container already on the latest image is updated in place to the same policy.
+# Note: this only works if the Docker daemon itself starts on boot
+# (`sudo systemctl enable docker`); the script warns if it isn't.
+#
 # Usage:
 #   ./scripts/vox-upgrade.sh              # uses .env in current directory
 #   ./scripts/vox-upgrade.sh /path/.env   # uses specified env file
@@ -18,6 +24,10 @@ set -euo pipefail
 HEALTH_PORT="${HEALTH_PORT:-8099}"
 WAIT_TIMEOUT=300  # 5 minutes
 POLL_INTERVAL=10
+
+# Docker restart policy so containers auto-launch after a host reboot.
+# "unless-stopped" survives reboots but respects a manual `docker stop`.
+RESTART_POLICY="${RESTART_POLICY:-unless-stopped}"
 
 ENV_FILE="${1:-.env}"
 
@@ -65,7 +75,6 @@ echo "-----------------------------------"
 # Wait for container to become idle via /health endpoint
 wait_for_idle() {
     local container_id="$1"
-    local name="$2"
 
     # Try to get the mapped health port
     local health_url=""
@@ -85,7 +94,6 @@ wait_for_idle() {
         return 0
     fi
 
-    # Check health
     local status=""
     status=$(curl -s --max-time 3 "$health_url" 2>/dev/null | grep -o '"status":"[^"]*"' | head -1 | cut -d'"' -f4) || true
 
@@ -122,10 +130,17 @@ for name in "${!images[@]}"; do
     image="${images[$name]}"
     echo "Checking $name ($image)..."
 
-    # Find running container BEFORE pulling
-    running_id=$(docker ps -q --filter "ancestor=$image" 2>/dev/null || true)
+    # Find the managed container BEFORE pulling. The pull re-points the :latest
+    # tag to the new image, after which `ancestor=<tag>` no longer matches a
+    # container started from the OLD image (and `docker ps` then shows that
+    # container's image as a bare sha256 ID instead of the tag). So prefer the
+    # stable --name; fall back to ancestor for containers started by older
+    # versions of this script that had no name.
+    running_id=$(docker ps -q --filter "name=^/${name}$" 2>/dev/null | head -1 || true)
+    if [ -z "$running_id" ]; then
+        running_id=$(docker ps -q --filter "ancestor=$image" 2>/dev/null | head -1 || true)
+    fi
 
-    # Pull latest
     echo "Pulling latest image..."
     docker pull "$image"
 
@@ -135,14 +150,20 @@ for name in "${!images[@]}"; do
         running_image_id=$(docker inspect --format='{{.Image}}' "$running_id")
 
         if [ "$running_image_id" == "$latest_image_id" ]; then
-            echo "Already running the latest image. Skipping."
+            echo "Already running the latest image. Skipping upgrade."
+            # Still ensure it auto-starts after a host reboot, even though we
+            # aren't recreating it (docker update applies without a restart).
+            current_policy=$(docker inspect --format='{{.HostConfig.RestartPolicy.Name}}' "$running_id" 2>/dev/null || true)
+            if [ "$current_policy" != "$RESTART_POLICY" ]; then
+                echo "Applying restart policy '$RESTART_POLICY' (was '${current_policy:-none}')..."
+                docker update --restart "$RESTART_POLICY" "$running_id" > /dev/null
+            fi
             echo "-----------------------------------"
             continue
         else
             echo "New image detected."
 
-            # Wait for idle before stopping
-            if ! wait_for_idle "$running_id" "$name"; then
+            if ! wait_for_idle "$running_id"; then
                 echo "Skipping $name (user chose not to force stop)."
                 echo "-----------------------------------"
                 continue
@@ -177,8 +198,14 @@ for name in "${!images[@]}"; do
     [ -n "${EVAL_FRAMEWORK:-}" ] && env_args+="-e EVAL_FRAMEWORK=$EVAL_FRAMEWORK "
     [ -n "${VOX_AGENT_NAME:-}" ] && env_args+="-e VOX_AGENT_NAME=$VOX_AGENT_NAME "
 
-    # Expose health port for future upgrades
-    new_container_id=$(docker run -d -p "${HEALTH_PORT}:${HEALTH_PORT}" $env_args "$image")
+    # Clear any leftover container holding the stable name (e.g. a stopped one
+    # from a prior run) so `docker run --name` can't fail with a name conflict.
+    docker rm -f "$name" > /dev/null 2>&1 || true
+
+    # Expose health port for future upgrades; --restart so it survives reboots;
+    # --name gives it a stable identity independent of the (movable) image tag,
+    # so future upgrades always find it and it never shows as a bare image ID.
+    new_container_id=$(docker run -d --name "$name" --restart "$RESTART_POLICY" -p "${HEALTH_PORT}:${HEALTH_PORT}" $env_args "$image")
     short_id="${new_container_id:0:12}"
     new_containers[$name]=$short_id
     echo "Started $name: $short_id"
@@ -188,6 +215,17 @@ done
 echo ""
 echo "Running containers:"
 docker container ls --format "table {{.ID}}\t{{.Image}}\t{{.Status}}\t{{.Names}}"
+echo ""
+
+# A restart policy only helps if the Docker daemon itself starts on boot.
+echo "Auto-restart: containers use '--restart $RESTART_POLICY' (relaunch after a host reboot)."
+if command -v systemctl > /dev/null 2>&1; then
+    if ! systemctl is-enabled docker > /dev/null 2>&1; then
+        echo "WARNING: the Docker service is NOT enabled at boot — containers will stay down"
+        echo "         after a reboot until Docker starts. Enable it once with:"
+        echo "           sudo systemctl enable docker"
+    fi
+fi
 echo ""
 
 for name in "${!new_containers[@]}"; do
