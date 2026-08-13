@@ -1,0 +1,9 @@
+{
+  "id": "fake",
+  "version": "1.0.0",
+  "voxPluginApi": "^1.0.0",
+  "providesServices": {},
+  "requiresServices": {},
+  "optionalServices": {},
+  "routes": ["GET /api/plugins/fake/hi"]
+}

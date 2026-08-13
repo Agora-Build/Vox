@@ -5,6 +5,7 @@ export default defineConfig({
   resolve: {
     alias: {
       '@shared': path.resolve(__dirname, './shared'),
+      '@vox/plugin-sdk': path.resolve(__dirname, './packages/plugin-sdk/index.ts'),
     },
   },
   test: {
