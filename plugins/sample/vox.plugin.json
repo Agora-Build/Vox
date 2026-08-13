@@ -1,0 +1,13 @@
+{
+  "id": "sample",
+  "version": "1.0.0",
+  "voxPluginApi": "^1.0.0",
+  "providesServices": { "vox.sample": "1.0.0" },
+  "requiresServices": {},
+  "optionalServices": {},
+  "migrations": "migrations",
+  "routes": [
+    "GET /api/plugins/sample/notes",
+    "POST /api/plugins/sample/notes"
+  ]
+}
