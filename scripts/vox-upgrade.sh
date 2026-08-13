@@ -14,9 +14,14 @@
 # Note: this only works if the Docker daemon itself starts on boot
 # (`sudo systemctl enable docker`); the script warns if it isn't.
 #
+# Get this script on a server (public repo, no auth needed):
+#   curl -fsSL -o vox-upgrade.sh \
+#     https://raw.githubusercontent.com/Agora-Build/Vox/main/scripts/vox-upgrade.sh
+#   chmod +x vox-upgrade.sh
+#
 # Usage:
-#   ./scripts/vox-upgrade.sh              # uses .env in current directory
-#   ./scripts/vox-upgrade.sh /path/.env   # uses specified env file
+#   ./vox-upgrade.sh              # uses .env in current directory
+#   ./vox-upgrade.sh /path/.env   # uses specified env file
 #
 
 set -euo pipefail
