@@ -34,6 +34,17 @@ export default tseslint.config(
     },
   },
   {
+    files: ['plugins/**/*.ts'],
+    rules: {
+      'no-restricted-imports': ['error', {
+        patterns: [{
+          group: ['**/server/**', '**/shared/**', '**/client/**', '@/*', '@shared/*'],
+          message: 'Plugins may import only @vox/plugin-sdk, not Core internals.',
+        }],
+      }],
+    },
+  },
+  {
     ignores: ['dist/**', 'node_modules/**', '*.config.js', '*.config.ts'],
   }
 );
