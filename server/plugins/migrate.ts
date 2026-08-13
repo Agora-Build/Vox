@@ -36,7 +36,8 @@ export async function runPluginMigrations(
         let files: string[];
         try {
           files = (await readdir(dir)).filter((f) => f.endsWith(".sql")).sort();
-        } catch {
+        } catch (err) {
+          if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
           continue; // no migrations directory for this plugin
         }
 

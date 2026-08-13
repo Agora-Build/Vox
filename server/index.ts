@@ -199,7 +199,15 @@ app.use((req, res, next) => {
   const plugins = await loadPlugins(app, pool);
 
   // Graceful shutdown: stop workers and deactivate plugins in reverse order.
-  const shutdown = async () => { await plugins.shutdown(); process.exit(0); };
+  // Guard against re-entrancy — two signals in quick succession must not run the
+  // stop/deactivate sequence twice concurrently.
+  let shuttingDown = false;
+  const shutdown = async () => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    await plugins.shutdown();
+    process.exit(0);
+  };
   process.on("SIGTERM", shutdown);
   process.on("SIGINT", shutdown);
 

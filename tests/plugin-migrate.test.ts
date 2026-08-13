@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { Pool } from "pg";
-import { writeFile, mkdir, rm } from "fs/promises";
+import { writeFile } from "fs/promises";
 import { runPluginMigrations } from "../server/plugins/migrate";
 import type { PluginManifest } from "../server/plugins/manifest";
 
