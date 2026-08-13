@@ -16,11 +16,29 @@ export function createPluginDb(pool: Pool, schema: string): PluginDb {
     schema,
     async query<T = unknown>(sql: string, params?: unknown[]) {
       const client = await pool.connect();
+      let releaseErr: Error | undefined;
       try {
-        await client.query(`SET search_path TO "${schema}"`);
-        return await onClient<T>(sql, params, client);
+        await client.query("BEGIN");
+        // SET LOCAL (transaction-scoped): auto-reset at COMMIT/ROLLBACK so the
+        // plugin's search_path never leaks onto the shared pooled connection.
+        // Plain SET persists past COMMIT and would silently rewrite search_path
+        // for the next unrelated pool.query() (e.g. Core storage queries).
+        // "public" is included so shared/core tables still resolve; the plugin
+        // schema takes precedence for the plugin's own unqualified names.
+        await client.query(`SET LOCAL search_path TO "${schema}", public`);
+        const result = await onClient<T>(sql, params, client);
+        await client.query("COMMIT");
+        return result;
+      } catch (err) {
+        try {
+          await client.query("ROLLBACK");
+        } catch (rollbackErr) {
+          releaseErr = rollbackErr as Error;
+          console.error(`[plugin-db] ROLLBACK failed for schema ${schema}:`, rollbackErr);
+        }
+        throw err;
       } finally {
-        client.release();
+        client.release(releaseErr);
       }
     },
     async withTransaction<T>(fn: (tx: PluginDb) => Promise<T>): Promise<T> {
@@ -28,7 +46,7 @@ export function createPluginDb(pool: Pool, schema: string): PluginDb {
       let releaseErr: Error | undefined;
       try {
         await client.query("BEGIN");
-        await client.query(`SET search_path TO "${schema}"`);
+        await client.query(`SET LOCAL search_path TO "${schema}", public`);
         const tx: PluginDb = {
           schema,
           query: <U = unknown>(sql: string, params?: unknown[]) => onClient<U>(sql, params, client),

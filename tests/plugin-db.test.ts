@@ -50,4 +50,23 @@ d("createPluginDb (integration)", () => {
     const { rows } = await db.query<{ n: number }>("SELECT n FROM t WHERE n IN (100,200) ORDER BY n");
     expect(rows.map((r) => r.n)).toEqual([100]);
   });
+
+  it("does not leak search_path onto the shared pool after a plugin query", async () => {
+    // A dedicated single-connection pool guarantees the raw follow-up query
+    // below reuses the exact same physical connection the plugin query used.
+    const solo = new Pool({ connectionString: process.env.DATABASE_URL, max: 1 });
+    try {
+      const db = createPluginDb(solo, schema);
+      await db.query("SELECT 1"); // pins plugin schema for the duration of its own transaction only
+
+      // current_schemas(false) excludes implicit pg_catalog, showing only the
+      // effective search_path. It must be back to the connection default
+      // (public), not still carrying the plugin schema from the prior query.
+      const { rows } = await solo.query<{ s: string[] }>("SELECT current_schemas(false) AS s");
+      expect(rows[0].s).not.toContain(schema);
+      expect(rows[0].s).toContain("public");
+    } finally {
+      await solo.end();
+    }
+  });
 });
