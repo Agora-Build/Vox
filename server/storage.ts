@@ -884,6 +884,59 @@ export class DatabaseStorage {
     return (result as unknown as { rowCount: number }).rowCount || 0;
   }
 
+  // Fast-fail pending jobs whose region has NO online eval agent. "Online" = an
+  // agent for that region heartbeated within onlineWithinMinutes. A job is failed
+  // only once it has waited timeoutMinutes AND no such agent exists — so a brief
+  // agent restart/redeploy (host reboot, vox-upgrade) doesn't trip it, but a
+  // genuinely unstaffed region gives the user an actionable result in minutes
+  // instead of hanging "pending" forever. Terminal (failed): retrying can't
+  // summon an agent that isn't there. Job pickup is exact region-equality and an
+  // agent registers under its token's region, so eval_agents.region = the job's
+  // region is the correct "an agent serves this region" signal.
+  async failPendingJobsWithNoAgent(
+    timeoutMinutes: number,
+    onlineWithinMinutes: number = 5,
+  ): Promise<number> {
+    const timeoutCutoff = new Date(Date.now() - timeoutMinutes * 60 * 1000);
+    const onlineCutoff = new Date(Date.now() - onlineWithinMinutes * 60 * 1000);
+    const prefix = "No eval agent available for region ";
+    const suffix = ` (unclaimed for ${timeoutMinutes} min)`;
+    const result = await db.execute(sql`
+      UPDATE eval_jobs
+      SET status = 'failed'::eval_job_status,
+          error = ${prefix} || region || ${suffix},
+          completed_at = NOW(),
+          updated_at = NOW()
+      WHERE status = 'pending'::eval_job_status
+      AND created_at < ${timeoutCutoff}
+      AND NOT EXISTS (
+        SELECT 1 FROM eval_agents ea
+        WHERE ea.region = eval_jobs.region
+        AND ea.last_seen_at >= ${onlineCutoff}
+      )
+    `);
+    return (result as unknown as { rowCount: number }).rowCount || 0;
+  }
+
+  // Backstop: fail any pending job that has waited longer than maxWaitMinutes,
+  // regardless of agent availability. Catches pathological cases the no-agent
+  // fast-fail misses (e.g. a region that always has an online agent which somehow
+  // never claims the job). Terminal (failed).
+  async failExpiredPendingJobs(maxWaitMinutes: number): Promise<number> {
+    const cutoff = new Date(Date.now() - maxWaitMinutes * 60 * 1000);
+    const message = `Not claimed by any eval agent within ${maxWaitMinutes} min`;
+    const result = await db.execute(sql`
+      UPDATE eval_jobs
+      SET status = 'failed'::eval_job_status,
+          error = ${message},
+          completed_at = NOW(),
+          updated_at = NOW()
+      WHERE status = 'pending'::eval_job_status
+      AND created_at < ${cutoff}
+    `);
+    return (result as unknown as { rowCount: number }).rowCount || 0;
+  }
+
   // Release running jobs still assigned to an agent that just (re)registered.
   // A fresh registration means the previous process died mid-job, so those jobs
   // are orphaned — the reaper's heartbeat-staleness check never catches them

@@ -13,6 +13,17 @@ import { canScheduleWorkflow } from "./permissions";
 // Global hard cap on how long a single eval job may stay "running" before the
 // background reaper fails it (agent zombied/superseded/killed). Tune here.
 const MAX_JOB_RUN_MINUTES = 90;
+
+// A "pending" job is one no agent has claimed yet. Two reapers keep it from
+// hanging forever (nothing else touches the pending state):
+//   - PENDING_NO_AGENT_TIMEOUT_MINUTES: fast-fail when the job's region has no
+//     online agent — an unstaffed/misconfigured region. Long enough to survive a
+//     routine agent restart or host reboot, short enough to give the user an
+//     actionable "no agent for region X" result in minutes, not a full day.
+//   - PENDING_MAX_WAIT_MINUTES: absolute backstop for anything the fast-fail
+//     misses (region has an online agent that somehow never claims the job).
+const PENDING_NO_AGENT_TIMEOUT_MINUTES = 15;
+const PENDING_MAX_WAIT_MINUTES = 24 * 60;
 import { parseNextCronRun } from "./cron";
 import { setupClashWebSocket } from "./clash-ws";
 import pkg from "pg";
@@ -239,6 +250,22 @@ function startBackgroundWorker() {
       const timedOut = await storage.failTimedOutRunningJobs(MAX_JOB_RUN_MINUTES);
       if (timedOut > 0) {
         log(`Failed ${timedOut} job(s) exceeding ${MAX_JOB_RUN_MINUTES}min run time`, "worker");
+      }
+
+      // Fast-fail pending jobs whose region has no online agent (run before the
+      // backstop so those get the clearer "no agent for region" reason).
+      const noAgent = await storage.failPendingJobsWithNoAgent(
+        PENDING_NO_AGENT_TIMEOUT_MINUTES,
+        STALE_THRESHOLD_MINUTES,
+      );
+      if (noAgent > 0) {
+        log(`Failed ${noAgent} pending job(s) with no agent for their region`, "worker");
+      }
+
+      // Backstop: fail any pending job that has waited past the hard cap.
+      const expired = await storage.failExpiredPendingJobs(PENDING_MAX_WAIT_MINUTES);
+      if (expired > 0) {
+        log(`Failed ${expired} pending job(s) exceeding ${PENDING_MAX_WAIT_MINUTES}min wait`, "worker");
       }
 
       // Mark offline agents
