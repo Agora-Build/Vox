@@ -893,6 +893,13 @@ export class DatabaseStorage {
   // summon an agent that isn't there. Job pickup is exact region-equality and an
   // agent registers under its token's region, so eval_agents.region = the job's
   // region is the correct "an agent serves this region" signal.
+  //
+  // Age from GREATEST(created_at, updated_at), NOT created_at alone: releaseStaleJobs
+  // / releaseAgentRunningJobs requeue a job (status → pending, retry_count++) and set
+  // updated_at = NOW() without touching created_at. Aging from created_at would fail a
+  // freshly-requeued job on the spot — the exact single-agent-restart case this grace
+  // window protects — nullifying the retry budget. updated_at is only ever bumped when
+  // a row (re)enters pending or leaves it, so GREATEST = "last entered the queue".
   async failPendingJobsWithNoAgent(
     timeoutMinutes: number,
     onlineWithinMinutes: number = 5,
@@ -908,7 +915,7 @@ export class DatabaseStorage {
           completed_at = NOW(),
           updated_at = NOW()
       WHERE status = 'pending'::eval_job_status
-      AND created_at < ${timeoutCutoff}
+      AND GREATEST(created_at, updated_at) < ${timeoutCutoff}
       AND NOT EXISTS (
         SELECT 1 FROM eval_agents ea
         WHERE ea.region = eval_jobs.region
@@ -921,7 +928,8 @@ export class DatabaseStorage {
   // Backstop: fail any pending job that has waited longer than maxWaitMinutes,
   // regardless of agent availability. Catches pathological cases the no-agent
   // fast-fail misses (e.g. a region that always has an online agent which somehow
-  // never claims the job). Terminal (failed).
+  // never claims the job). Terminal (failed). Ages from GREATEST(created_at,
+  // updated_at) for the same requeue reason as failPendingJobsWithNoAgent above.
   async failExpiredPendingJobs(maxWaitMinutes: number): Promise<number> {
     const cutoff = new Date(Date.now() - maxWaitMinutes * 60 * 1000);
     const message = `Not claimed by any eval agent within ${maxWaitMinutes} min`;
@@ -932,7 +940,7 @@ export class DatabaseStorage {
           completed_at = NOW(),
           updated_at = NOW()
       WHERE status = 'pending'::eval_job_status
-      AND created_at < ${cutoff}
+      AND GREATEST(created_at, updated_at) < ${cutoff}
     `);
     return (result as unknown as { rowCount: number }).rowCount || 0;
   }

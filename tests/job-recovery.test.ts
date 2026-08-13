@@ -573,9 +573,19 @@ describe("Job Recovery - Unclaimed Pending Jobs", () => {
     status: "pending" | "running" | "completed" | "failed";
     region: string;
     createdAt: Date;
+    // Set when a job is requeued (releaseStaleJobs / releaseAgentRunningJobs bump
+    // updated_at = NOW() on the way back to pending). Both reapers age from
+    // GREATEST(created_at, updated_at), so a requeue resets the wait clock.
+    updatedAt?: Date;
   }
 
   const minsAgo = (m: number) => new Date(Date.now() - m * 60 * 1000);
+
+  // When the job last entered the pending queue — mirrors the SQL
+  // GREATEST(created_at, updated_at). A never-requeued job has no updatedAt, so
+  // this is just createdAt.
+  const pendingSince = (job: Job): Date =>
+    job.updatedAt && job.updatedAt > job.createdAt ? job.updatedAt : job.createdAt;
 
   // Region has an online agent = at least one agent for that exact region whose
   // last heartbeat is within the online window (idle OR busy both count).
@@ -586,12 +596,12 @@ describe("Job Recovery - Unclaimed Pending Jobs", () => {
 
   const shouldFailNoAgent = (job: Job, agents: Agent[]): boolean =>
     job.status === "pending" &&
-    job.createdAt < minsAgo(PENDING_NO_AGENT_TIMEOUT_MINUTES) &&
+    pendingSince(job) < minsAgo(PENDING_NO_AGENT_TIMEOUT_MINUTES) &&
     !regionHasOnlineAgent(job.region, agents);
 
   const shouldFailExpired = (job: Job): boolean =>
     job.status === "pending" &&
-    job.createdAt < minsAgo(PENDING_MAX_WAIT_MINUTES);
+    pendingSince(job) < minsAgo(PENDING_MAX_WAIT_MINUTES);
 
   describe("no-agent fast-fail", () => {
     it("fails a pending job past the timeout when its region has no agent", () => {
@@ -633,6 +643,28 @@ describe("Job Recovery - Unclaimed Pending Jobs", () => {
       const job: Job = { status: "running", region: "apac-sg-01", createdAt: minsAgo(60) };
       expect(shouldFailNoAgent(job, [])).toBe(false);
     });
+
+    it("does NOT fail a just-requeued job even though created_at is old (retry budget)", () => {
+      // The single-agent-restart case: releaseStaleJobs requeued this job seconds
+      // ago (updated_at = now), so the 15-min grace restarts and the retry survives.
+      const job: Job = {
+        status: "pending",
+        region: "eu-de-fra-01",
+        createdAt: minsAgo(40),
+        updatedAt: minsAgo(0),
+      };
+      expect(shouldFailNoAgent(job, [])).toBe(false);
+    });
+
+    it("fails a requeued job once the grace window elapses again from the requeue", () => {
+      const job: Job = {
+        status: "pending",
+        region: "eu-de-fra-01",
+        createdAt: minsAgo(90),
+        updatedAt: minsAgo(20),
+      };
+      expect(shouldFailNoAgent(job, [])).toBe(true);
+    });
   });
 
   describe("max-wait backstop", () => {
@@ -651,6 +683,16 @@ describe("Job Recovery - Unclaimed Pending Jobs", () => {
 
     it("never touches a completed job", () => {
       const job: Job = { status: "completed", region: "na-us-sea-01", createdAt: minsAgo(48 * 60) };
+      expect(shouldFailExpired(job)).toBe(false);
+    });
+
+    it("does NOT expire a day-old job that was just requeued (clock resets)", () => {
+      const job: Job = {
+        status: "pending",
+        region: "na-us-sea-01",
+        createdAt: minsAgo(25 * 60),
+        updatedAt: minsAgo(5),
+      };
       expect(shouldFailExpired(job)).toBe(false);
     });
   });
