@@ -25,6 +25,7 @@ export function createPluginDb(pool: Pool, schema: string): PluginDb {
     },
     async withTransaction<T>(fn: (tx: PluginDb) => Promise<T>): Promise<T> {
       const client = await pool.connect();
+      let releaseErr: Error | undefined;
       try {
         await client.query("BEGIN");
         await client.query(`SET search_path TO "${schema}"`);
@@ -37,10 +38,18 @@ export function createPluginDb(pool: Pool, schema: string): PluginDb {
         await client.query("COMMIT");
         return result;
       } catch (err) {
-        await client.query("ROLLBACK");
+        // If ROLLBACK itself fails the connection is in an unknown state:
+        // swallow+log its error so it can't mask the original, and mark the
+        // client tainted so the pool destroys it instead of recycling it.
+        try {
+          await client.query("ROLLBACK");
+        } catch (rollbackErr) {
+          releaseErr = rollbackErr as Error;
+          console.error(`[plugin-db] ROLLBACK failed for schema ${schema}:`, rollbackErr);
+        }
         throw err;
       } finally {
-        client.release();
+        client.release(releaseErr);
       }
     },
   };
