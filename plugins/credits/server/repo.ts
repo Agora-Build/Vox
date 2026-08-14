@@ -90,3 +90,35 @@ export async function insertHold(
     [a.payerAccountId, a.amount, a.holdGroupId, a.refType ?? null, a.refId ?? null]);
   return Number(rows[0].id);
 }
+
+export interface HoldRow {
+  id: number;
+  payerAccountId: number;
+  amount: number;
+  status: "held" | "captured" | "released";
+  refType: string | null;
+  refId: string | null;
+}
+
+export async function getHoldForUpdate(tx: PluginDb, holdId: number): Promise<HoldRow | null> {
+  const { rows } = await tx.query<{
+    id: string; payer_account_id: string; amount_credits: string;
+    status: "held" | "captured" | "released"; ref_type: string | null; ref_id: string | null;
+  }>(
+    `SELECT id, payer_account_id, amount_credits, status, ref_type, ref_id
+     FROM credit_holds WHERE id = $1 FOR UPDATE`, [holdId]);
+  if (rows.length === 0) return null;
+  const r = rows[0];
+  return {
+    id: Number(r.id), payerAccountId: Number(r.payer_account_id), amount: Number(r.amount_credits),
+    status: r.status, refType: r.ref_type, refId: r.ref_id,
+  };
+}
+
+export async function markHoldSettled(
+  tx: PluginDb, holdId: number, status: "captured" | "released", settleGroupId: string,
+): Promise<void> {
+  await tx.query(
+    `UPDATE credit_holds SET status = $2, settle_group_id = $3, settled_at = now() WHERE id = $1`,
+    [holdId, status, settleGroupId]);
+}

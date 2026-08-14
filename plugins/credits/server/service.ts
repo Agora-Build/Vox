@@ -1,5 +1,5 @@
 import type { PluginDb } from "@vox/plugin-sdk";
-import { assertPositiveCredits } from "./split";
+import { assertPositiveCredits, validateSplit } from "./split";
 import * as repo from "./repo";
 
 export type Ref = { type: string; id: string };
@@ -73,8 +73,46 @@ export function createCreditsService(db: PluginDb): CreditsService {
       });
     },
 
-    async capture() { throw new Error("not implemented"); },
-    async release() { throw new Error("not implemented"); },
+    async capture(holdId, split) {
+      await db.withTransaction(async (tx) => {
+        const hold = await repo.getHoldForUpdate(tx, holdId);
+        if (!hold) throw new Error(`hold not found: ${holdId}`);
+        if (hold.status === "captured") return; // idempotent
+        if (hold.status === "released") throw new Error(`hold already released: ${holdId}`);
+
+        validateSplit(hold.amount, { earnerShare: hold.amount - split.platformFeeCredits, platformFeeCredits: split.platformFeeCredits });
+        const earnerShare = hold.amount - split.platformFeeCredits;
+
+        const escrowAcct = await repo.systemAccountId(tx, "escrow");
+        const platformAcct = await repo.systemAccountId(tx, "platform");
+        const earnerAcct = await repo.getOrCreateUserAccount(tx, split.earnerUserId);
+        const groupId = repo.newGroupId();
+        const refType = hold.refType;
+        const refId = hold.refId;
+        await repo.applyLeg(tx, { accountId: escrowAcct, amount: -hold.amount, reason: "capture", groupId, refType, refId });
+        await repo.applyLeg(tx, { accountId: earnerAcct, amount: earnerShare, reason: "capture", groupId, refType, refId });
+        if (split.platformFeeCredits > 0) {
+          await repo.applyLeg(tx, { accountId: platformAcct, amount: split.platformFeeCredits, reason: "fee", groupId, refType, refId });
+        }
+        await repo.markHoldSettled(tx, holdId, "captured", groupId);
+      });
+    },
+
+    async release(holdId) {
+      await db.withTransaction(async (tx) => {
+        const hold = await repo.getHoldForUpdate(tx, holdId);
+        if (!hold) throw new Error(`hold not found: ${holdId}`);
+        if (hold.status === "released") return; // idempotent
+        if (hold.status === "captured") throw new Error(`hold already captured: ${holdId}`);
+
+        const escrowAcct = await repo.systemAccountId(tx, "escrow");
+        const groupId = repo.newGroupId();
+        await repo.applyLeg(tx, { accountId: escrowAcct, amount: -hold.amount, reason: "release", groupId, refType: hold.refType, refId: hold.refId });
+        await repo.applyLeg(tx, { accountId: hold.payerAccountId, amount: hold.amount, reason: "release", groupId, refType: hold.refType, refId: hold.refId });
+        await repo.markHoldSettled(tx, holdId, "released", groupId);
+      });
+    },
+
     async getStatement() { throw new Error("not implemented"); },
   };
 }
