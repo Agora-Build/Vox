@@ -1,11 +1,16 @@
 import type { VoxPlugin } from "@vox/plugin-sdk";
 import { checkInvariants } from "./reconcile";
+import { createCreditsService } from "./service";
+import { registerCreditsRoutes } from "./routes";
 
 const RECONCILE_INTERVAL_MS = 5 * 60 * 1000;
 
 const creditsPlugin: VoxPlugin = {
   async activate(ctx) {
+    const service = createCreditsService(ctx.db);
     let lastIntegrity: { ok: boolean; violation: string | null } = { ok: true, violation: null };
+
+    ctx.http((r) => registerCreditsRoutes(r, service));
 
     ctx.worker({
       id: "reconcile",
@@ -30,6 +35,8 @@ const creditsPlugin: VoxPlugin = {
       }
       return { status: "ok" };
     });
+
+    ctx.provideService("vox.credits", "1.0.0", service);
   },
 };
 

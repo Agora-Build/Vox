@@ -56,5 +56,8 @@ d("credits plugin end-to-end", () => {
     const list = await request(app).get("/api/plugins");
     expect(list.body).toContainEqual(
       { id: "credits", version: "1.0.0", servicesProvided: ["vox.credits"], servicesRequired: [] });
+
+    const bal = await request(app).get("/api/plugins/credits/balance");
+    expect(bal.status).toBe(401); // requireAuth with no session
   });
 });
