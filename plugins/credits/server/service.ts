@@ -1,6 +1,7 @@
 import type { PluginDb } from "@vox/plugin-sdk";
 import { assertPositiveCredits, validateSplit } from "./split";
 import * as repo from "./repo";
+import { encodeCursor, decodeCursor } from "./cursor";
 
 export type Ref = { type: string; id: string };
 
@@ -113,6 +114,16 @@ export function createCreditsService(db: PluginDb): CreditsService {
       });
     },
 
-    async getStatement() { throw new Error("not implemented"); },
+    async getStatement(userId, opts) {
+      const limit = Math.min(Math.max(opts?.limit ?? 50, 1), 100);
+      const beforeId = decodeCursor(opts?.cursor);
+      const rows = await repo.listEntries(db, userId, limit, beforeId);
+      const entries: LedgerEntry[] = rows.map((r) => ({
+        id: Number(r.id), amount: Number(r.amount), reason: r.reason, groupId: r.group_id,
+        refType: r.ref_type, refId: r.ref_id, createdAt: r.created_at,
+      }));
+      const nextCursor = entries.length === limit ? encodeCursor(entries[entries.length - 1].id) : null;
+      return { entries, nextCursor };
+    },
   };
 }

@@ -122,3 +122,26 @@ export async function markHoldSettled(
     `UPDATE credit_holds SET status = $2, settle_group_id = $3, settled_at = now() WHERE id = $1`,
     [holdId, status, settleGroupId]);
 }
+
+export interface LedgerEntryRow {
+  id: string;
+  amount: string;
+  reason: string;
+  group_id: string;
+  ref_type: string | null;
+  ref_id: string | null;
+  created_at: string;
+}
+
+export async function listEntries(
+  db: PluginDb, userId: number, limit: number, beforeId: number | null,
+): Promise<LedgerEntryRow[]> {
+  const { rows } = await db.query<LedgerEntryRow>(
+    `SELECT e.id, e.amount, e.reason, e.group_id, e.ref_type, e.ref_id, e.created_at
+     FROM ledger_entries e
+     JOIN accounts a ON a.id = e.account_id
+     WHERE a.user_ref = $1 AND ($2::bigint IS NULL OR e.id < $2)
+     ORDER BY e.id DESC
+     LIMIT $3`, [userId, beforeId, limit]);
+  return rows;
+}
