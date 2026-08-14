@@ -79,3 +79,14 @@ export async function finalizeIdempotency(
     "UPDATE idempotency_keys SET group_id = $2, result = $3 WHERE key = $1",
     [key, groupId, JSON.stringify(result)]);
 }
+
+export async function insertHold(
+  tx: PluginDb,
+  a: { payerAccountId: number; amount: number; holdGroupId: string; refType?: string | null; refId?: string | null },
+): Promise<number> {
+  const { rows } = await tx.query<{ id: string }>(
+    `INSERT INTO credit_holds (payer_account_id, amount_credits, hold_group_id, ref_type, ref_id)
+     VALUES ($1, $2, $3, $4, $5) RETURNING id`,
+    [a.payerAccountId, a.amount, a.holdGroupId, a.refType ?? null, a.refId ?? null]);
+  return Number(rows[0].id);
+}

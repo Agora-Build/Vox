@@ -49,7 +49,30 @@ export function createCreditsService(db: PluginDb): CreditsService {
       });
     },
 
-    async hold() { throw new Error("not implemented"); },
+    async hold({ payerUserId, credits, idempotencyKey, ref }) {
+      assertPositiveCredits(credits);
+      return db.withTransaction(async (tx) => {
+        const claim = await repo.claimIdempotency(tx, idempotencyKey, "hold");
+        if (!claim.fresh) return claim.result as { holdId: number };
+
+        const payerAcct = await repo.getOrCreateUserAccount(tx, payerUserId);
+        const balance = await repo.lockUserBalance(tx, payerAcct); // FOR UPDATE
+        if (balance < credits) throw new Error("insufficient credits");
+
+        const escrowAcct = await repo.systemAccountId(tx, "escrow");
+        const groupId = repo.newGroupId();
+        const refType = ref?.type ?? null;
+        const refId = ref?.id ?? null;
+        await repo.applyLeg(tx, { accountId: payerAcct, amount: -credits, reason: "hold", groupId, refType, refId });
+        await repo.applyLeg(tx, { accountId: escrowAcct, amount: credits, reason: "hold", groupId, refType, refId });
+        const holdId = await repo.insertHold(tx, { payerAccountId: payerAcct, amount: credits, holdGroupId: groupId, refType, refId });
+
+        const result = { holdId };
+        await repo.finalizeIdempotency(tx, idempotencyKey, groupId, result);
+        return result;
+      });
+    },
+
     async capture() { throw new Error("not implemented"); },
     async release() { throw new Error("not implemented"); },
     async getStatement() { throw new Error("not implemented"); },
