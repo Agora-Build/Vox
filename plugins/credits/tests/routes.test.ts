@@ -78,4 +78,16 @@ describe("credits routes", () => {
     expect(out.code).toBe(400);
     expect(svc.deposit).not.toHaveBeenCalled();
   });
+
+  it("statement with a non-numeric limit does not pass NaN through to the service", async () => {
+    const svc = fakeService();
+    const { r, routes } = capture();
+    registerCreditsRoutes(r, svc);
+    const statement = routes.find((x) => x.path === "/statement")!;
+    const out = res();
+    await expect(
+      statement.handler({ session: { userId: 42 }, query: { limit: "abc" } }, out),
+    ).resolves.not.toThrow();
+    expect(svc.getStatement).toHaveBeenCalledWith(42, { limit: undefined, cursor: undefined });
+  });
 });

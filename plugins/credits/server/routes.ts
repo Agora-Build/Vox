@@ -17,7 +17,8 @@ export function registerCreditsRoutes(r: RouteRegistrar, service: CreditsService
     const uid = callerId(req as never);
     if (uid == null) { res.status(401).json({ error: "Authentication required" }); return; }
     const q = (req as never as { query: Record<string, string | undefined> }).query;
-    const limit = q.limit !== undefined ? Number(q.limit) : undefined;
+    const n = q.limit !== undefined ? Number(q.limit) : undefined;
+    const limit = Number.isFinite(n) ? n : undefined;
     const page = await service.getStatement(uid, { limit, cursor: q.cursor });
     res.json(page);
   };

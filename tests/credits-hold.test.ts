@@ -12,8 +12,7 @@ d("credits hold", () => {
     await h.service.deposit({ userId: 1, credits: 100, reason: "grant", idempotencyKey: "seed-1" });
   });
   afterAll(async () => {
-    await h.pool.query(`DROP SCHEMA IF EXISTS plugin_credits CASCADE`);
-    await h.pool.query(`DELETE FROM _plugin_schema_versions WHERE plugin_id = 'credits'`).catch(() => {});
+    await h.pool.query(`DROP SCHEMA IF EXISTS "${h.schema}" CASCADE`);
     await h.pool.end();
   });
 

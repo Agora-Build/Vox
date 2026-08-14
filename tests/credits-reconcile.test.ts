@@ -12,8 +12,7 @@ d("credits reconcile", () => {
     await h.service.deposit({ userId: 1, credits: 100, reason: "grant", idempotencyKey: "rc-1" });
   });
   afterAll(async () => {
-    await h.pool.query(`DROP SCHEMA IF EXISTS plugin_credits CASCADE`);
-    await h.pool.query(`DELETE FROM _plugin_schema_versions WHERE plugin_id = 'credits'`).catch(() => {});
+    await h.pool.query(`DROP SCHEMA IF EXISTS "${h.schema}" CASCADE`);
     await h.pool.end();
   });
 
@@ -25,23 +24,23 @@ d("credits reconcile", () => {
   it("detects a cached-balance drift (invariant 1)", async () => {
     // Corrupt the cached balance directly, bypassing the ledger.
     await h.pool.query(
-      `UPDATE plugin_credits.accounts SET balance_credits = balance_credits + 1 WHERE user_ref = 1`);
+      `UPDATE "${h.schema}".accounts SET balance_credits = balance_credits + 1 WHERE user_ref = 1`);
     const r = await checkInvariants(h.db);
     expect(r.ok).toBe(false);
     expect(r.violation).toMatch(/balance/i);
     // repair for cleanliness
     await h.pool.query(
-      `UPDATE plugin_credits.accounts SET balance_credits = balance_credits - 1 WHERE user_ref = 1`);
+      `UPDATE "${h.schema}".accounts SET balance_credits = balance_credits - 1 WHERE user_ref = 1`);
   });
 
   it("detects a global-closure break (invariant 2)", async () => {
     await h.pool.query(
-      `UPDATE plugin_credits.accounts SET balance_credits = balance_credits + 5 WHERE system_key = 'platform'`);
+      `UPDATE "${h.schema}".accounts SET balance_credits = balance_credits + 5 WHERE system_key = 'platform'`);
     const r = await checkInvariants(h.db);
     expect(r.ok).toBe(false);
     // invariant 1 (platform now drifts) or invariant 2 — either is a real violation
     expect(r.violation).toBeTruthy();
     await h.pool.query(
-      `UPDATE plugin_credits.accounts SET balance_credits = balance_credits - 5 WHERE system_key = 'platform'`);
+      `UPDATE "${h.schema}".accounts SET balance_credits = balance_credits - 5 WHERE system_key = 'platform'`);
   });
 });
