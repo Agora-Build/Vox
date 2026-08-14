@@ -50,6 +50,9 @@ export function registerCreditsRoutes(r: RouteRegistrar, service: CreditsService
 
   r.get("/balance", r.requireAuth, balance);
   r.get("/statement", r.requireAuth, statement);
-  r.post("/grants", r.requireAdmin, grants);
-  r.get("/accounts", r.requireAdmin, accounts);
+  // requireAuth first (Core convention): requireAdmin alone does not reject a
+  // disabled account, so chaining guards against a disabled admin with a live
+  // session still reaching these money-admin endpoints.
+  r.post("/grants", r.requireAuth, r.requireAdmin, grants);
+  r.get("/accounts", r.requireAuth, r.requireAdmin, accounts);
 }

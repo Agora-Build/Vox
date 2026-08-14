@@ -15,16 +15,23 @@ function fakeService(over: Partial<CreditsService> = {}): CreditsService {
   };
 }
 
-interface Captured { method: string; path: string; handler: (req: any, res: any) => any; }
+interface Captured { method: string; path: string; guards: string[]; handler: (req: any, res: any) => any; }
+
+// Distinct tagged markers so a route's guard chain is identifiable by name.
+const requireAuthMark = Object.assign(() => {}, { guardName: "requireAuth" });
+const requireAdminMark = Object.assign(() => {}, { guardName: "requireAdmin" });
 
 function capture(): { r: RouteRegistrar; routes: Captured[] } {
   const routes: Captured[] = [];
-  const authMark = () => {};
   const add = (method: string) => (path: string, ...handlers: any[]) =>
-    routes.push({ method, path, handler: handlers[handlers.length - 1] });
+    routes.push({
+      method, path,
+      guards: handlers.slice(0, -1).map((h) => h.guardName ?? "unknown"),
+      handler: handlers[handlers.length - 1],
+    });
   const r = {
     get: add("get"), post: add("post"), patch: add("patch"), delete: add("delete"),
-    requireAuth: authMark, requireAdmin: authMark,
+    requireAuth: requireAuthMark, requireAdmin: requireAdminMark,
   } as unknown as RouteRegistrar;
   return { r, routes };
 }
@@ -43,6 +50,22 @@ describe("credits routes", () => {
     expect(routes.map((x) => `${x.method.toUpperCase()} ${x.path}`).sort()).toEqual([
       "GET /accounts", "GET /balance", "GET /statement", "POST /grants",
     ]);
+  });
+
+  it("guards the money-admin endpoints with requireAuth before requireAdmin", () => {
+    // requireAdmin alone does not reject a disabled account; requireAuth must run
+    // first so a disabled admin with a live session cannot mint or inspect credits.
+    const { r, routes } = capture();
+    registerCreditsRoutes(r, fakeService());
+    for (const path of ["/grants", "/accounts"]) {
+      const route = routes.find((x) => x.path === path)!;
+      expect(route.guards).toEqual(["requireAuth", "requireAdmin"]);
+    }
+    // The user-facing reads stay behind requireAuth.
+    for (const path of ["/balance", "/statement"]) {
+      const route = routes.find((x) => x.path === path)!;
+      expect(route.guards).toEqual(["requireAuth"]);
+    }
   });
 
   it("balance returns the caller's own balance from the session", async () => {
