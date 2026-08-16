@@ -2813,27 +2813,32 @@ export async function registerRoutes(
   });
 
   app.get("/api/eval-agents/dispatchable", requireAuth, async (req, res) => {
-    const user = await getCurrentUser(req);
-    if (!user) return res.status(401).json({ error: "Not authenticated" });
+    try {
+      const user = await getCurrentUser(req);
+      if (!user) return res.status(401).json({ error: "Not authenticated" });
 
-    const agents = await storage.getEvalAgentsWithTokenVisibility();
-    const rows = agents.map((a) => ({
-      tokenId: a.tokenId,
-      region: a.region,
-      dispatchTier: a.tokenDispatchTier,
-      ownerId: a.tokenCreatedBy,
-      ownerOrgId: a.tokenOwnerOrgId,
-      state: a.state,
-    }));
-    const free = filterDispatchableAgents({ id: user.id, organizationId: user.organizationId }, rows);
+      const agents = await storage.getEvalAgentsWithTokenVisibility();
+      const rows = agents.map((a) => ({
+        tokenId: a.tokenId,
+        region: a.region,
+        dispatchTier: a.tokenDispatchTier,
+        ownerId: a.tokenCreatedBy,
+        ownerOrgId: a.tokenOwnerOrgId,
+        state: a.state,
+      }));
+      const free = filterDispatchableAgents({ id: user.id, organizationId: user.organizationId }, rows);
 
-    const marketplace = getMarketplace();
-    const shared = marketplace ? await marketplace.listDispatchable(user.id) : [];
+      const marketplace = getMarketplace();
+      const shared = marketplace ? await marketplace.listDispatchable(user.id) : [];
 
-    return res.json({
-      free: free.map((a) => ({ tokenId: a.tokenId, region: a.region, dispatchTier: a.dispatchTier, state: a.state })),
-      shared, // AgentSummary[] with pricePerUnit; [] when the seam is absent
-    });
+      return res.json({
+        free: free.map((a) => ({ tokenId: a.tokenId, region: a.region, dispatchTier: a.dispatchTier, state: a.state })),
+        shared, // AgentSummary[] with pricePerUnit; [] when the seam is absent
+      });
+    } catch (error) {
+      console.error("Error fetching dispatchable agents:", error);
+      res.status(500).json({ error: "Failed to fetch dispatchable agents" });
+    }
   });
 
   // A daemon that re-registered rotates the agent's lease; an older instance
