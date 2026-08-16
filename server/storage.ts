@@ -506,8 +506,9 @@ export class DatabaseStorage {
       const row = inserted.rows[0];
       return {
         id: row.id, name: row.name, tokenHash: row.token_hash, region: row.region,
-        visibility: row.visibility, createdBy: row.created_by, isRevoked: row.is_revoked,
-        expiresAt: row.expires_at, lastUsedAt: row.last_used_at, createdAt: row.created_at,
+        visibility: row.visibility, dispatchTier: row.dispatch_tier, createdBy: row.created_by,
+        isRevoked: row.is_revoked, expiresAt: row.expires_at, lastUsedAt: row.last_used_at,
+        createdAt: row.created_at,
       };
     } catch (error) {
       await client.query("ROLLBACK");
