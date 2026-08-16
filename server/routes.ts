@@ -3500,6 +3500,25 @@ export async function registerRoutes(
         }
       }
 
+      // Validate the eval set BEFORE any dispatch authorization or region
+      // resolution. The `shared` tier's marketplace.authorizeDispatch (a future
+      // credit-hold in Phase B) must never fire against an eval set the caller
+      // cannot access or that does not exist. Hoisted above the targeting branch
+      // per the A6 final-review finding (deviates from the plan's original order,
+      // human-approved).
+      if (!evalSetId) {
+        return res.status(400).json({ error: "Eval set required" });
+      }
+      const evalSet = await storage.getEvalSet(evalSetId);
+      if (!evalSet) {
+        return res.status(404).json({ error: "Eval set not found" });
+      }
+      // Same access level as the schedule route: you must be able to see the eval
+      // set to run against it (blocks running against someone else's private set).
+      if (!canAccessResource(user, evalSet)) {
+        return res.status(403).json({ error: "Access denied to eval set" });
+      }
+
       let jobRegion: string;
       let targeting: number | null = null;
 
@@ -3535,19 +3554,6 @@ export async function registerRoutes(
           return res.status(400).json({ error: "An active allocated region site is required" });
         }
         jobRegion = normalizedRegion;
-      }
-
-      if (!evalSetId) {
-        return res.status(400).json({ error: "Eval set required" });
-      }
-      const evalSet = await storage.getEvalSet(evalSetId);
-      if (!evalSet) {
-        return res.status(404).json({ error: "Eval set not found" });
-      }
-      // Same access level as the schedule route: you must be able to see the eval
-      // set to run against it (blocks running against someone else's private set).
-      if (!canAccessResource(user, evalSet)) {
-        return res.status(403).json({ error: "Access denied to eval set" });
       }
 
       const provider = await storage.getProvider(workflow.providerId);
