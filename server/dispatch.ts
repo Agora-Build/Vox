@@ -1,4 +1,4 @@
-import { canDispatchToToken, type DispatchToken } from "./permissions";
+import { canDispatchToToken, sameOrg, type DispatchToken } from "./permissions";
 
 export type DispatchTier = "private" | "team" | "public" | "shared";
 
@@ -43,4 +43,33 @@ export function resolveTargetedDispatch(
   if (token.dispatchTier === "shared") return { ok: false, reason: "shared-requires-marketplace" };
   if (!canDispatchToToken(user, token, tokenOwner)) return { ok: false, reason: "forbidden" };
   return { ok: true, region: token.region };
+}
+
+export interface DispatchableAgentRow {
+  tokenId: number;
+  region: string;
+  dispatchTier: string;
+  ownerId: number;
+  ownerOrgId: number | null;
+  state: string;
+}
+
+/** Free tiers the caller may target. `shared` is excluded — the route merges it from the seam. */
+export function filterDispatchableAgents(
+  user: { id: number; organizationId: number | null },
+  agents: DispatchableAgentRow[],
+): DispatchableAgentRow[] {
+  return agents.filter((a) => {
+    switch (a.dispatchTier) {
+      case "public":
+        return true;
+      case "private":
+        return a.ownerId === user.id;
+      case "team":
+        return a.ownerId === user.id || sameOrg({ organizationId: user.organizationId }, { organizationId: a.ownerOrgId });
+      case "shared":
+      default:
+        return false;
+    }
+  });
 }
