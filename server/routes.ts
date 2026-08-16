@@ -3441,6 +3441,9 @@ export async function registerRoutes(
       const { workflowId } = req.params;
       const { region, evalSetId } = req.body;
       const targetTokenId = req.body.targetTokenId != null ? Number(req.body.targetTokenId) : null;
+      if (targetTokenId != null && !Number.isFinite(targetTokenId)) {
+        return res.status(400).json({ error: "Invalid target agent token id" });
+      }
 
       const workflow = await storage.getWorkflow(parseInt(workflowId));
       
@@ -3495,7 +3498,7 @@ export async function registerRoutes(
       } else {
         const normalizedRegion = region ? String(region) : "";
         if (!normalizedRegion || !(await storage.isAllocatedRegion(normalizedRegion))) {
-          return res.status(400).json({ error: "Invalid or unallocated region" });
+          return res.status(400).json({ error: "An active allocated region site is required" });
         }
         jobRegion = normalizedRegion;
       }
