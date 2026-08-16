@@ -9,7 +9,7 @@ import { deriveScheduleStatus } from "@shared/schedule-status";
 import { regionSiteSequence } from "@shared/regions";
 import { registerApiV1Routes } from "./routes-api-v1";
 import { generateSignedUrlForUser } from "./s3";
-import { validateTierChange } from "./dispatch";
+import { validateTierChange, resolveTargetedDispatch } from "./dispatch";
 import { getMarketplace } from "./marketplace";
 import {
   hashPassword,
@@ -3440,7 +3440,8 @@ export async function registerRoutes(
 
       const { workflowId } = req.params;
       const { region, evalSetId } = req.body;
-      
+      const targetTokenId = req.body.targetTokenId != null ? Number(req.body.targetTokenId) : null;
+
       const workflow = await storage.getWorkflow(parseInt(workflowId));
       
       if (!workflow) {
@@ -3462,9 +3463,41 @@ export async function registerRoutes(
         }
       }
 
-      const normalizedRegion = region ? String(region) : "";
-      if (!normalizedRegion || !(await storage.isAllocatedRegion(normalizedRegion))) {
-        return res.status(400).json({ error: "An active allocated region site is required" });
+      let jobRegion: string;
+      let targeting: number | null = null;
+
+      if (targetTokenId != null) {
+        const token = await storage.getEvalAgentToken(targetTokenId);
+        if (!token || token.isRevoked) return res.status(404).json({ error: "Target agent token not found" });
+
+        if (token.dispatchTier === "shared") {
+          const marketplace = getMarketplace();
+          if (!marketplace) return res.status(400).json({ error: "Shared dispatch is not available" });
+          const authz = await marketplace.authorizeDispatch(user.id, token.id, {
+            workflowId: parseInt(workflowId, 10),
+            evalSetId: evalSetId ?? null,
+            region: token.region,
+            createdBy: user.id,
+          });
+          if (!authz.ok) return res.status(402).json({ error: authz.reason ?? "Dispatch not authorized" });
+          // settlementContext ridealong is stashed into the snapshot in Phase B.
+        } else {
+          const owner = await storage.getUser(token.createdBy);
+          const decision = resolveTargetedDispatch(
+            { id: user.id, organizationId: user.organizationId },
+            { id: token.id, dispatchTier: token.dispatchTier, createdBy: token.createdBy, region: token.region },
+            { organizationId: owner?.organizationId ?? null },
+          );
+          if (!decision.ok) return res.status(403).json({ error: "Not allowed to dispatch to this agent" });
+        }
+        jobRegion = token.region; // targeted: region derived from token (body region ignored)
+        targeting = token.id;
+      } else {
+        const normalizedRegion = region ? String(region) : "";
+        if (!normalizedRegion || !(await storage.isAllocatedRegion(normalizedRegion))) {
+          return res.status(400).json({ error: "Invalid or unallocated region" });
+        }
+        jobRegion = normalizedRegion;
       }
 
       if (!evalSetId) {
@@ -3486,7 +3519,8 @@ export async function registerRoutes(
         triggerType: 2, // manual (Run Workflow)
         evalSetId,
         createdBy: user.id,
-        region: normalizedRegion,
+        region: jobRegion,
+        targetTokenId: targeting,
         config: mergeEvalConfig(workflow.config, evalSet.config),
         snapshot: buildJobSnapshot(workflow, evalSet, provider, user.plan),
         status: "pending",

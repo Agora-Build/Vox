@@ -1,3 +1,5 @@
+import { canDispatchToToken, type DispatchToken } from "./permissions";
+
 export type DispatchTier = "private" | "team" | "public" | "shared";
 
 export interface TierChangeContext {
@@ -24,4 +26,21 @@ export function validateTierChange(ctx: TierChangeContext): TierChangeResult {
     if (ctx.pricePerUnit == null || !(ctx.pricePerUnit > 0)) return { ok: false, status: 400, reason: "price-required" };
   }
   return { ok: true, status: 200 };
+}
+
+export interface TargetedDispatchDecision {
+  ok: boolean;
+  reason?: string;
+  region?: string;
+}
+
+/** Free-tier targeted-dispatch decision. `shared` is deferred to the marketplace seam. */
+export function resolveTargetedDispatch(
+  user: { id: number; organizationId: number | null },
+  token: DispatchToken,
+  tokenOwner: { organizationId: number | null },
+): TargetedDispatchDecision {
+  if (token.dispatchTier === "shared") return { ok: false, reason: "shared-requires-marketplace" };
+  if (!canDispatchToToken(user, token, tokenOwner)) return { ok: false, reason: "forbidden" };
+  return { ok: true, region: token.region };
 }
