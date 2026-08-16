@@ -3009,7 +3009,12 @@ export async function registerRoutes(
       // Freeze the claiming agent's token visibility onto the job in the SAME atomic
       // claim update — the one tier input not known at creation. Completes the
       // immutable metric-tier snapshot (no separate write to lose on a crash).
-      const job = await storage.claimEvalJob(parseInt(jobId), agentId, evalAgentToken.visibility);
+      const job = await storage.claimEvalJob(parseInt(jobId, 10), agentId, {
+        id: evalAgentToken.id,
+        dispatchTier: evalAgentToken.dispatchTier,
+        createdBy: evalAgentToken.createdBy,
+        visibility: evalAgentToken.visibility,
+      });
       if (!job) {
         return res.status(409).json({ error: "Job already claimed or not found" });
       }

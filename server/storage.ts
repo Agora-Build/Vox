@@ -661,6 +661,12 @@ export class DatabaseStorage {
     await db.update(evalAgentTokens).set({ isRevoked: true }).where(eq(evalAgentTokens.id, id));
   }
 
+  async updateEvalAgentTokenDispatchTier(id: number, dispatchTier: string): Promise<void> {
+    await db.update(evalAgentTokens)
+      .set({ dispatchTier: dispatchTier as typeof evalAgentTokens.$inferInsert["dispatchTier"] })
+      .where(eq(evalAgentTokens.id, id));
+  }
+
   async updateEvalAgentTokenLastUsed(id: number): Promise<void> {
     await db.update(evalAgentTokens).set({ lastUsedAt: new Date() }).where(eq(evalAgentTokens.id, id));
   }
@@ -687,7 +693,9 @@ export class DatabaseStorage {
     return db.select().from(evalAgents).orderBy(desc(evalAgents.createdAt));
   }
 
-  async getEvalAgentsWithTokenVisibility(): Promise<(EvalAgent & { tokenVisibility: string; tokenCreatedBy: number })[]> {
+  async getEvalAgentsWithTokenVisibility(): Promise<
+    (EvalAgent & { tokenVisibility: string; tokenCreatedBy: number; tokenDispatchTier: string; tokenOwnerOrgId: number | null })[]
+  > {
     const results = await db.select({
       id: evalAgents.id,
       name: evalAgents.name,
@@ -701,11 +709,16 @@ export class DatabaseStorage {
       updatedAt: evalAgents.updatedAt,
       tokenVisibility: evalAgentTokens.visibility,
       tokenCreatedBy: evalAgentTokens.createdBy,
+      tokenDispatchTier: evalAgentTokens.dispatchTier,
+      tokenOwnerOrgId: users.organizationId,
     })
       .from(evalAgents)
       .innerJoin(evalAgentTokens, eq(evalAgents.tokenId, evalAgentTokens.id))
+      .leftJoin(users, eq(evalAgentTokens.createdBy, users.id))
       .orderBy(desc(evalAgents.createdAt));
-    return results as (EvalAgent & { tokenVisibility: string; tokenCreatedBy: number })[];
+    return results as (EvalAgent & {
+      tokenVisibility: string; tokenCreatedBy: number; tokenDispatchTier: string; tokenOwnerOrgId: number | null;
+    })[];
   }
 
   async updateEvalAgent(id: number, data: Partial<EvalAgent>): Promise<EvalAgent | undefined> {
@@ -750,18 +763,27 @@ export class DatabaseStorage {
     return db.select().from(evalJobs).where(eq(evalJobs.evalAgentId, agentId)).orderBy(desc(evalJobs.createdAt));
   }
 
-  async claimEvalJob(jobId: number, agentId: number, tokenVisibility?: string | null): Promise<EvalJob | undefined> {
+  async claimEvalJob(
+    jobId: number,
+    agentId: number,
+    token: { id: number; dispatchTier: string; createdBy: number; visibility: string | null },
+  ): Promise<EvalJob | undefined> {
     // Use atomic claim with SELECT FOR UPDATE SKIP LOCKED to prevent race conditions
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
 
-      // Try to lock and select the specific job
+      // Try to lock and select the specific job. The WHERE predicate mirrors the
+      // pure isClaimable() predicate in server/permissions.ts bit for bit.
       const selectResult = await client.query(
         `SELECT * FROM eval_jobs
          WHERE id = $1 AND status = 'pending'::eval_job_status
+           AND (
+             target_token_id = $2
+             OR ( target_token_id IS NULL AND ( $3 = 'public' OR created_by = $4 ) )
+           )
          FOR UPDATE SKIP LOCKED`,
-        [jobId]
+        [jobId, token.id, token.dispatchTier, token.createdBy]
       );
 
       if (selectResult.rows.length === 0) {
@@ -777,7 +799,7 @@ export class DatabaseStorage {
              token_visibility = COALESCE($3, token_visibility)
          WHERE id = $2
          RETURNING *`,
-        [agentId, jobId, tokenVisibility ?? null]
+        [agentId, jobId, token.visibility ?? null]
       );
 
       await client.query('COMMIT');
@@ -788,6 +810,22 @@ export class DatabaseStorage {
     } finally {
       client.release();
     }
+  }
+
+  async getClaimableJobsForToken(token: {
+    id: number; region: string; dispatchTier: string; createdBy: number;
+  }): Promise<EvalJob[]> {
+    const result = await pool.query(
+      `SELECT * FROM eval_jobs
+        WHERE status = 'pending'::eval_job_status AND region = $1
+          AND (
+            target_token_id = $2
+            OR ( target_token_id IS NULL AND ( $3 = 'public' OR created_by = $4 ) )
+          )
+        ORDER BY priority DESC, created_at ASC`,
+      [token.region, token.id, token.dispatchTier, token.createdBy],
+    );
+    return result.rows.map((r) => snakeToCamel(r) as EvalJob);
   }
 
   // Atomic claim for next available job in region
