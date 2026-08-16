@@ -1,5 +1,6 @@
 import type { Express } from "express";
 import { type Server } from "http";
+import { z } from "zod";
 import { storage, hashToken, generateSecureToken, generateEvalAgentToken, mergeEvalConfig, buildJobSnapshot, validateWorkflowConfig, validateEvalSetConfig, encryptValue, decryptValue, isEncryptionConfigured, type MetricSourceRow, type RegionQueryScope } from "./storage";
 import { parseNextCronRun } from "./cron";
 import { compareVersions } from "./aeval-seed";
@@ -8,6 +9,8 @@ import { deriveScheduleStatus } from "@shared/schedule-status";
 import { regionSiteSequence } from "@shared/regions";
 import { registerApiV1Routes } from "./routes-api-v1";
 import { generateSignedUrlForUser } from "./s3";
+import { validateTierChange } from "./dispatch";
+import { getMarketplace } from "./marketplace";
 import {
   hashPassword,
   verifyPassword,
@@ -2659,6 +2662,47 @@ export async function registerRoutes(
       console.error("Error revoking eval agent token:", error);
       res.status(500).json({ error: "Failed to revoke eval agent token" });
     }
+  });
+
+  app.patch("/api/eval-agent-tokens/:id", requireAuth, async (req, res) => {
+    const user = await getCurrentUser(req);
+    if (!user) return res.status(401).json({ error: "Not authenticated" });
+
+    const id = parseInt(req.params.id, 10);
+    const token = await storage.getEvalAgentToken(id);
+    if (!token) return res.status(404).json({ error: "Token not found" });
+
+    const bodySchema = z.object({
+      dispatchTier: z.enum(["private", "team", "public", "shared"]),
+      pricePerUnit: z.number().int().positive().nullable().optional(),
+    });
+    const parsed = bodySchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: "Invalid request" });
+    const { dispatchTier, pricePerUnit } = parsed.data;
+
+    const marketplace = getMarketplace();
+    const decision = validateTierChange({
+      user: { id: user.id, isAdmin: user.isAdmin, plan: user.plan },
+      token: { createdBy: token.createdBy },
+      newTier: dispatchTier,
+      marketplacePresent: marketplace !== null,
+      pricePerUnit: pricePerUnit ?? null,
+    });
+    if (!decision.ok) return res.status(decision.status).json({ error: decision.reason });
+
+    // Core writes only its own column.
+    await storage.updateEvalAgentTokenDispatchTier(id, dispatchTier);
+
+    // Money lives only in the plugin: set/clear the listing via the seam.
+    if (marketplace) {
+      if (dispatchTier === "shared") {
+        await marketplace.setListing(id, pricePerUnit ?? null);
+      } else {
+        await marketplace.setListing(id, null); // switching away from shared deactivates the listing
+      }
+    }
+
+    return res.json({ id, dispatchTier });
   });
 
   // ==================== EVAL AGENT TOKEN ROUTES (Admin only) ====================
