@@ -2987,7 +2987,12 @@ export async function registerRoutes(
         return res.status(401).json({ error: "Invalid or revoked eval agent token" });
       }
 
-      let jobs = await storage.getPendingEvalJobsByRegion(evalAgentToken.region);
+      let jobs = await storage.getClaimableJobsForToken({
+        id: evalAgentToken.id,
+        region: evalAgentToken.region,
+        dispatchTier: evalAgentToken.dispatchTier,
+        createdBy: evalAgentToken.createdBy,
+      });
 
       // Version-gate: if the requesting agent has a frameworkVersion, filter out
       // jobs whose config requires a newer version than the agent supports.
