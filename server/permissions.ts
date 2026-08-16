@@ -71,3 +71,48 @@ export function canRunWorkflow(user: AuthUser, resource: OrgResource): boolean {
 export function canScheduleWorkflow(user: Pick<AuthUser, 'id'>, resource: OrgResource): boolean {
   return resource.ownerId === user.id || resource.createdBy === user.id;
 }
+
+// --- Shared-agents dispatch predicates (Phase A) ---
+
+export type DispatchToken = { id: number; dispatchTier: string; createdBy: number; region: string };
+
+/**
+ * Two parties are "same org" iff both have the SAME non-null organizationId.
+ * The single Core abstraction for org membership (spec §8): when orgs become a
+ * plugin, only this function moves behind the seam — dispatch/claim never change.
+ */
+export function sameOrg(a: { organizationId: number | null }, b: { organizationId: number | null }): boolean {
+  return a.organizationId != null && a.organizationId === b.organizationId;
+}
+
+/** Free-tier dispatch authz. `shared` is NOT decided here — the marketplace seam handles it. */
+export function canDispatchToToken(
+  user: { id: number; organizationId: number | null },
+  token: Pick<DispatchToken, "dispatchTier" | "createdBy">,
+  tokenOwner: { organizationId: number | null },
+): boolean {
+  switch (token.dispatchTier) {
+    case "public":
+      return true;
+    case "private":
+      return token.createdBy === user.id;
+    case "team":
+      return token.createdBy === user.id || sameOrg({ organizationId: user.organizationId }, tokenOwner);
+    case "shared":
+    default:
+      return false;
+  }
+}
+
+/**
+ * Claim eligibility — the source of truth. `storage.claimEvalJob` /
+ * `getClaimableJobsForToken` mirror this exact logic in SQL for atomicity;
+ * keep the two in lockstep.
+ */
+export function isClaimable(
+  job: { targetTokenId: number | null; createdBy: number | null },
+  token: Pick<DispatchToken, "id" | "dispatchTier" | "createdBy">,
+): boolean {
+  if (job.targetTokenId != null) return job.targetTokenId === token.id;
+  return token.dispatchTier === "public" || job.createdBy === token.createdBy;
+}
