@@ -28,10 +28,15 @@ async function makeTokenAndAgent(cookie: string, name: string, regionBaseId: str
   expect(tRes.ok).toBe(true);
   const created = await tRes.json(); // { id, name, token, region, visibility, createdAt }
 
+  // High sentinel version so the jobs route's version-gate never filters our
+  // job out: the seeded eval set this test picks (es[0]) may merge a
+  // frameworkVersion into the job config (e.g. "Config Merge Eval Set" → v0.3.0),
+  // and a low agent version would legitimately hide it. This test verifies
+  // targeting isolation, not framework-version compatibility.
   const rRes = await fetch(`${BASE_URL}/api/eval-agent/register`, {
     method: "POST",
     headers: { Authorization: `Bearer ${created.token}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ name, metadata: { frameworkVersion: "0.0.0" } }),
+    body: JSON.stringify({ name, metadata: { frameworkVersion: "v999.0.0" } }),
   });
   expect(rRes.ok).toBe(true);
   // { id, region, state, leaseId, ... } — registration issues a fresh per-process
