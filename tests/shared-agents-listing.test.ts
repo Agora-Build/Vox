@@ -1,0 +1,54 @@
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { setupMarketplaceDb, teardownMarketplaceDb, type MarketplaceHarness } from "./helpers/shared-agents-db";
+import * as repo from "../plugins/shared-agents/server/repo";
+
+const hasDb = !!process.env.DATABASE_URL;
+const d = hasDb ? describe : describe.skip;
+
+d("shared-agents listings repo", () => {
+  let h: MarketplaceHarness;
+  beforeAll(async () => { h = await setupMarketplaceDb(); });
+  afterAll(async () => { await teardownMarketplaceDb(h); });
+
+  it("upsert activates a listing; re-upsert updates price; deactivate flips active", async () => {
+    await repo.upsertListing(h.marketplaceDb, { tokenId: 101, pricePerUnit: 10, ownerId: 7, region: "na-us-ashburn-01", createdBy: 7 });
+    let row = await repo.getListing(h.marketplaceDb, 101);
+    expect(row).not.toBeNull();
+    expect(row!.pricePerUnit).toBe(10);
+    expect(row!.ownerId).toBe(7);
+    expect(row!.active).toBe(true);
+
+    await repo.upsertListing(h.marketplaceDb, { tokenId: 101, pricePerUnit: 25, ownerId: 7, region: "na-us-ashburn-01", createdBy: 7 });
+    row = await repo.getListing(h.marketplaceDb, 101);
+    expect(row!.pricePerUnit).toBe(25);
+
+    const active = await repo.listActiveListings(h.marketplaceDb);
+    expect(active.some((l) => l.tokenId === 101)).toBe(true);
+
+    await repo.deactivateListing(h.marketplaceDb, 101);
+    row = await repo.getListing(h.marketplaceDb, 101);
+    expect(row!.active).toBe(false);
+    const activeAfter = await repo.listActiveListings(h.marketplaceDb);
+    expect(activeAfter.some((l) => l.tokenId === 101)).toBe(false);
+  });
+
+  it("pending settlement round-trips and job_id backfills terminal", async () => {
+    const sid = await repo.insertPendingSettlement(h.marketplaceDb, {
+      payerUserId: 3, earnerUserId: 7, priceUnits: 1, pricePerUnit: 25, chargeCredits: 25, feeCredits: 5,
+    });
+    expect(sid).toBeGreaterThan(0);
+    await repo.setSettlementHold(h.marketplaceDb, sid, 999);
+
+    await h.marketplaceDb.withTransaction(async (tx) => {
+      const s = await repo.getSettlementForUpdate(tx, sid);
+      expect(s!.status).toBe("pending");
+      expect(s!.holdId).toBe(999);
+      await repo.markSettlementTerminal(tx, sid, "settled", 4242, true, null);
+    });
+    await h.marketplaceDb.withTransaction(async (tx) => {
+      const s = await repo.getSettlementForUpdate(tx, sid);
+      expect(s!.status).toBe("settled");
+      expect(s!.jobId).toBe(4242);
+    });
+  });
+});
