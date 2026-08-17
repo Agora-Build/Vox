@@ -12,7 +12,7 @@ import { canScheduleWorkflow } from "./permissions";
 import { parseNextCronRun } from "./cron";
 import { setupClashWebSocket } from "./clash-ws";
 import { loadPlugins } from "./plugins/loader";
-import { setMarketplace, type EvalMarketplace } from "./marketplace";
+import { setMarketplace, getMarketplace, type EvalMarketplace } from "./marketplace";
 import pkg from "pg";
 const { Pool } = pkg;
 
@@ -30,6 +30,7 @@ const MAX_JOB_RUN_MINUTES = 90;
 //     misses (region has an online agent that somehow never claims the job).
 const PENDING_NO_AGENT_TIMEOUT_MINUTES = 15;
 const PENDING_MAX_WAIT_MINUTES = 24 * 60;
+const REAP_SETTLE_LOOKBACK_MINUTES = 15; // window for the prompt reap-settle sweep
 
 const app = express();
 const httpServer = createServer(app);
@@ -292,6 +293,21 @@ function startBackgroundWorker() {
       const offlineAgents = await storage.markOfflineAgents(STALE_THRESHOLD_MINUTES);
       if (offlineAgents > 0) {
         log(`Marked ${offlineAgents} agent(s) as offline`, "worker");
+      }
+
+      // Promptly settle (refund) shared-dispatch escrow for jobs the reapers just
+      // failed. No-op when the marketplace seam is absent; settle() is idempotent,
+      // so re-visiting a job already settled within the window is a cheap no-op.
+      const marketplace = getMarketplace();
+      if (marketplace) {
+        const reapable = await storage.getReapableSharedJobs(REAP_SETTLE_LOOKBACK_MINUTES, 200);
+        for (const job of reapable) {
+          try {
+            await marketplace.settle(job);
+          } catch (settleErr) {
+            console.error(`Reap settlement failed for job ${job.id}:`, settleErr);
+          }
+        }
       }
     } catch (error) {
       console.error("Background worker error:", error);

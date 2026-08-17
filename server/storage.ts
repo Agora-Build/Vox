@@ -96,7 +96,7 @@ import { regionSiteSequence } from "@shared/regions";
 import { drizzle } from "drizzle-orm/node-postgres";
 import pkg from "pg";
 const { Pool } = pkg;
-import { desc, eq, and, or, not, sql, gte, inArray } from "drizzle-orm";
+import { desc, eq, and, or, not, sql, gte, inArray, isNotNull } from "drizzle-orm";
 import crypto from "crypto";
 
 // Realtime-metrics windowing policy (server-owned; the client never sets these).
@@ -982,6 +982,23 @@ export class DatabaseStorage {
       AND GREATEST(created_at, updated_at) < ${cutoff}
     `);
     return (result as unknown as { rowCount: number }).rowCount || 0;
+  }
+
+  // Recently-terminal targeted jobs that may still hold an unsettled shared
+  // dispatch. Read-only; the maintenance loop calls marketplace.settle() on each
+  // (idempotent). Money stays in the plugin — this only selects candidates by the
+  // opaque snapshot marker Core stashed at dispatch.
+  async getReapableSharedJobs(sinceMinutes: number, limit: number): Promise<EvalJob[]> {
+    const cutoff = new Date(Date.now() - sinceMinutes * 60 * 1000);
+    return db.select().from(evalJobs)
+      .where(and(
+        eq(evalJobs.status, "failed"),
+        isNotNull(evalJobs.targetTokenId),
+        gte(evalJobs.completedAt, cutoff),
+        sql`${evalJobs.snapshot} -> 'settlementContext' IS NOT NULL`,
+      ))
+      .orderBy(desc(evalJobs.completedAt))
+      .limit(limit);
   }
 
   // Release running jobs still assigned to an agent that just (re)registered.

@@ -3215,7 +3215,17 @@ export async function registerRoutes(
         }
       }
 
-      // Status already set by finalizeRunningJob above.
+      // Settle any shared-dispatch escrow tied to this job (plugin-owned; no-op
+      // when the seam is absent or the job carries no settlementContext). Re-fetch
+      // to read the now-terminal status + snapshot. Isolated: a settlement error
+      // must never fail an otherwise-good completion (spec §5).
+      try {
+        const settledJob = await storage.getEvalJob(parseInt(jobId));
+        if (settledJob) await getMarketplace()?.settle(settledJob);
+      } catch (settleErr) {
+        console.error(`Settlement failed for job ${jobId}:`, settleErr);
+      }
+
       res.json({ message: "Job completed" });
     } catch (error) {
       console.error("Error completing job:", error);
