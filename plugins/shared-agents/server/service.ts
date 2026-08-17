@@ -38,8 +38,39 @@ export function createMarketplaceService(db: PluginDb, credits: CreditsPort): Ma
       return rows.map((l) => ({ tokenId: l.tokenId, region: l.region, pricePerUnit: l.pricePerUnit, ownerId: l.ownerId }));
     },
 
-    async authorizeDispatch(_userId: number, _tokenId: number, _jobContext: JobContext): Promise<DispatchAuthorization> {
-      throw new Error("not implemented"); // Task 4
+    async authorizeDispatch(userId, tokenId, _jobContext) {
+      const listing = await repo.getListing(db, tokenId);
+      if (!listing || !listing.active) return { ok: false, reason: "not-for-sale" };
+
+      const charge = computeCharge(listing.pricePerUnit, PRICE_UNITS);
+      const fee = computeFee(charge);
+      assertValidSplit(charge, charge - fee, fee);
+
+      // Mint our own settlement id first; it is the credits idempotencyKey (no jobId yet).
+      const settlementId = await repo.insertPendingSettlement(db, {
+        payerUserId: userId, earnerUserId: listing.ownerId,
+        priceUnits: PRICE_UNITS, pricePerUnit: listing.pricePerUnit, chargeCredits: charge, feeCredits: fee,
+      });
+
+      try {
+        const { holdId } = await credits.hold({
+          payerUserId: userId, credits: charge, idempotencyKey: String(settlementId),
+          ref: { type: "shared-agent-dispatch", id: String(settlementId) },
+        });
+        await repo.setSettlementHold(db, settlementId, holdId);
+      } catch (err) {
+        // Credits threw (insufficient balance). Void the pending settlement so it
+        // can't leak or be picked up by the leak-reaper. No hold was placed.
+        await db.withTransaction(async (tx) => {
+          const s = await repo.getSettlementForUpdate(tx, settlementId);
+          if (s && s.status === "pending") {
+            await repo.markSettlementTerminal(tx, settlementId, "refunded", null, false, "insufficient-credits");
+          }
+        });
+        return { ok: false, reason: "insufficient-credits" };
+      }
+
+      return { ok: true, settlementContext: { settlementId } };
     },
 
     async settle(_job: EvalJob): Promise<void> {
