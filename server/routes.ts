@@ -2696,7 +2696,7 @@ export async function registerRoutes(
     // Money lives only in the plugin: set/clear the listing via the seam.
     if (marketplace) {
       if (dispatchTier === "shared") {
-        await marketplace.setListing(id, pricePerUnit ?? null);
+        await marketplace.setListing(id, pricePerUnit ?? null, { ownerId: token.createdBy, region: token.region });
       } else {
         await marketplace.setListing(id, null); // switching away from shared deactivates the listing
       }
@@ -3521,6 +3521,7 @@ export async function registerRoutes(
 
       let jobRegion: string;
       let targeting: number | null = null;
+      let settlementContext: unknown = undefined;
 
       if (targetTokenId != null) {
         const token = await storage.getEvalAgentToken(targetTokenId);
@@ -3536,7 +3537,7 @@ export async function registerRoutes(
             createdBy: user.id,
           });
           if (!authz.ok) return res.status(402).json({ error: authz.reason ?? "Dispatch not authorized" });
-          // settlementContext ridealong is stashed into the snapshot in Phase B.
+          settlementContext = authz.settlementContext; // stashed into the snapshot below
         } else {
           const owner = await storage.getUser(token.createdBy);
           const decision = resolveTargetedDispatch(
@@ -3557,6 +3558,8 @@ export async function registerRoutes(
       }
 
       const provider = await storage.getProvider(workflow.providerId);
+      const baseSnapshot = buildJobSnapshot(workflow, evalSet, provider, user.plan);
+      const snapshot = settlementContext !== undefined ? { ...baseSnapshot, settlementContext } : baseSnapshot;
       const job = await storage.createEvalJob({
         workflowId: parseInt(workflowId),
         triggerType: 2, // manual (Run Workflow)
@@ -3565,7 +3568,7 @@ export async function registerRoutes(
         region: jobRegion,
         targetTokenId: targeting,
         config: mergeEvalConfig(workflow.config, evalSet.config),
-        snapshot: buildJobSnapshot(workflow, evalSet, provider, user.plan),
+        snapshot,
         status: "pending",
         priority: 0,
         retryCount: 0,
