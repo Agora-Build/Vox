@@ -37,9 +37,23 @@ d("storage.getReapableSharedJobs", () => {
     await storage.completeEvalJob(included.id, "boom");
     await storage.completeEvalJob(excluded.id, "boom");
 
+    // COMPLETED + settlementContext → must ALSO be returned (review C1: a
+    // completed-but-unsettled job must be re-driven for capture, not left to the
+    // leak-reaper). completeEvalJob sets status=failed, so drive completed via the
+    // running→completed transition.
+    const includedCompleted = await storage.createEvalJob({
+      workflowId: null, triggerType: 2, evalSetId: null, createdBy: 1,
+      region: "na-us-ashburn-01", targetTokenId: token.id,
+      config: {}, snapshot: { provider: null, workflow: null, evalSet: null, creatorPlan: null,
+        settlementContext: { settlementId: 424243 } } as any,
+      status: "running", priority: 0, retryCount: 0, maxRetries: 3,
+    } as any);
+    await storage.finalizeRunningJob(includedCompleted.id, undefined); // running → completed
+
     const rows = await storage.getReapableSharedJobs(60, 500);
     const ids = rows.map((r) => r.id);
     expect(ids).toContain(included.id);      // the real assertion: query returns it
     expect(ids).not.toContain(excluded.id);  // no settlementContext → excluded
+    expect(ids).toContain(includedCompleted.id); // completed jobs are reapable too (C1)
   });
 });

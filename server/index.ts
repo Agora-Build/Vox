@@ -295,9 +295,11 @@ function startBackgroundWorker() {
         log(`Marked ${offlineAgents} agent(s) as offline`, "worker");
       }
 
-      // Promptly settle (refund) shared-dispatch escrow for jobs the reapers just
-      // failed. No-op when the marketplace seam is absent; settle() is idempotent,
-      // so re-visiting a job already settled within the window is a cheap no-op.
+      // Promptly settle shared-dispatch escrow for recently-terminal targeted jobs:
+      // capture on `completed`, release on `failed`. This is the prompt path so a
+      // completed-but-unsettled job (complete-route settle threw) is captured here,
+      // not eventually released by the 26h leak-reaper. No-op when the marketplace
+      // seam is absent; settle() is idempotent, so re-visiting a settled job is cheap.
       const marketplace = getMarketplace();
       if (marketplace) {
         const reapable = await storage.getReapableSharedJobs(REAP_SETTLE_LOOKBACK_MINUTES, 200);

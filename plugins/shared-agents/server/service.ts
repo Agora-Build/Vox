@@ -52,15 +52,15 @@ export function createMarketplaceService(db: PluginDb, credits: CreditsPort): Ma
         priceUnits: PRICE_UNITS, pricePerUnit: listing.pricePerUnit, chargeCredits: charge, feeCredits: fee,
       });
 
+      let holdId: number;
       try {
-        const { holdId } = await credits.hold({
+        ({ holdId } = await credits.hold({
           payerUserId: userId, credits: charge, idempotencyKey: String(settlementId),
           ref: { type: "shared-agent-dispatch", id: String(settlementId) },
-        });
-        await repo.setSettlementHold(db, settlementId, holdId);
+        }));
       } catch (err) {
-        // Credits threw (insufficient balance). Void the pending settlement so it
-        // can't leak or be picked up by the leak-reaper. No hold was placed.
+        // Credits threw (insufficient balance) — NO hold was placed. Void the
+        // pending settlement so it can't leak or be picked up by the leak-reaper.
         await db.withTransaction(async (tx) => {
           const s = await repo.getSettlementForUpdate(tx, settlementId);
           if (s && s.status === "pending") {
@@ -68,6 +68,30 @@ export function createMarketplaceService(db: PluginDb, credits: CreditsPort): Ma
           }
         });
         return { ok: false, reason: "insufficient-credits" };
+      }
+
+      // The hold IS placed. A failure recording it must release the hold (holdId is
+      // in scope) — otherwise escrow is stranded: the leak-reaper only scans pending
+      // settlements WITH a hold_id, so it could never reach a refunded/null-hold row
+      // (review I1). If the release ALSO fails, leave the settlement pending and
+      // unmarked so credits' reconcile surfaces the orphaned hold rather than hiding
+      // it behind a terminal row.
+      try {
+        await repo.setSettlementHold(db, settlementId, holdId);
+      } catch (err) {
+        try {
+          await credits.release(holdId);
+        } catch (relErr) {
+          console.error(`[shared-agents] failed to release hold ${holdId} after setSettlementHold error:`, relErr);
+          return { ok: false, reason: "dispatch-failed" };
+        }
+        await db.withTransaction(async (tx) => {
+          const s = await repo.getSettlementForUpdate(tx, settlementId);
+          if (s && s.status === "pending") {
+            await repo.markSettlementTerminal(tx, settlementId, "refunded", null, false, "hold-record-failed");
+          }
+        });
+        return { ok: false, reason: "dispatch-failed" };
       }
 
       return { ok: true, settlementContext: { settlementId } };
@@ -78,21 +102,36 @@ export function createMarketplaceService(db: PluginDb, credits: CreditsPort): Ma
       const settlementId = ctx?.settlementId;
       if (!settlementId) return; // free-tier / untargeted job — nothing to settle
 
-      // Serialize concurrent settle attempts on this settlement with FOR UPDATE.
-      // The credits capture/release run on a SEPARATE connection/transaction, so
-      // this is not one atomic write — but both credits ops are idempotent by hold
-      // status and markSettlementTerminal is guarded by the pending check, so a
-      // crash between the credits commit and the mark converges on retry.
-      await db.withTransaction(async (tx) => {
-        const s = await repo.getSettlementForUpdate(tx, settlementId);
-        if (!s || s.status !== "pending") return; // idempotent / unknown
-        if (s.holdId == null) return;              // hold never placed (already voided)
+      // Read + guard under a short lock, then RELEASE the settlement lock BEFORE
+      // touching credits. credits.capture/release open their own transaction on a
+      // SECOND pooled connection; holding this FOR UPDATE across that call can
+      // exhaust the shared pool under concurrent completions (both plugins share one
+      // pool → deadlock, review I2). Both credits ops are idempotent by hold status
+      // and Phase 3 re-guards on `pending`, so a concurrent or retried settle
+      // converges to a single capture/release.
+      const s = await db.withTransaction(async (tx) => {
+        const row = await repo.getSettlementForUpdate(tx, settlementId);
+        if (!row || row.status !== "pending" || row.holdId == null) return null; // idempotent / unknown / no hold
+        return { holdId: row.holdId, earnerUserId: row.earnerUserId, feeCredits: row.feeCredits };
+      });
+      if (!s) return;
 
-        if (job.status === "completed") {
-          await credits.capture(s.holdId, { earnerUserId: s.earnerUserId, platformFeeCredits: s.feeCredits });
+      const captured = job.status === "completed";
+      if (captured) {
+        await credits.capture(s.holdId, { earnerUserId: s.earnerUserId, platformFeeCredits: s.feeCredits });
+      } else {
+        await credits.release(s.holdId);
+      }
+
+      // Finalize under a fresh short lock, re-guarding for idempotency: a concurrent
+      // settle may have already finalized this settlement (its credits op was the
+      // same idempotent capture/release), in which case this is a no-op.
+      await db.withTransaction(async (tx) => {
+        const row = await repo.getSettlementForUpdate(tx, settlementId);
+        if (!row || row.status !== "pending") return;
+        if (captured) {
           await repo.markSettlementTerminal(tx, settlementId, "settled", job.id, true, null);
         } else {
-          await credits.release(s.holdId);
           await repo.markSettlementTerminal(tx, settlementId, "refunded", job.id, false, `job-${job.status}`);
         }
       });

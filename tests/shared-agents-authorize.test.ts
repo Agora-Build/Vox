@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
 import { setupMarketplaceDb, teardownMarketplaceDb, type MarketplaceHarness } from "./helpers/shared-agents-db";
 import { createMarketplaceService } from "../plugins/shared-agents/server/service";
 import * as repo from "../plugins/shared-agents/server/repo";
@@ -54,5 +54,28 @@ d("shared-agents authorizeDispatch", () => {
     expect(res.reason).toBe("insufficient-credits");
     expect(await h.credits.getBalance(3)).toBe(before); // untouched
     expect(await svc.countStuckPending(0)).toBe(stuckBefore); // insufficient path added no pending settlement
+  });
+
+  it("releases the hold if setSettlementHold fails (no stranded escrow)", async () => {
+    const svc = createMarketplaceService(h.marketplaceDb, h.credits as any);
+    await h.credits.deposit({ userId: 8, credits: 100, reason: "seed", idempotencyKey: "i1-8" });
+    await svc.setListing(303, 10, { ownerId: 9, region: "na-us-ashburn-01" });
+    // An earlier test in this file ("places a hold on a valid active listing")
+    // deliberately leaves its own settlement pending+held, so a raw reapLeaks()
+    // count here would be polluted by that unrelated fixture. Use the delta on
+    // countStuckPending instead — it isolates whether THIS authorizeDispatch call
+    // added a new stuck-pending (leaked-hold) settlement.
+    const stuckBefore = await svc.countStuckPending(0);
+
+    const spy = vi.spyOn(repo, "setSettlementHold").mockRejectedValueOnce(new Error("boom"));
+    const res = await svc.authorizeDispatch(8, 303, JOB_CTX);
+    spy.mockRestore();
+
+    expect(res.ok).toBe(false);
+    // Hold was placed then released → balance fully restored, nothing stranded.
+    expect(await h.credits.getBalance(8)).toBe(100);
+    // The settlement was marked terminal (refunded), not left pending — so it did
+    // not add to the stuck-pending count (no leaked hold from this dispatch).
+    expect(await svc.countStuckPending(0)).toBe(stuckBefore);
   });
 });

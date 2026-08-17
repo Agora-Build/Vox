@@ -61,4 +61,16 @@ d("shared-agents settle", () => {
     const svc = createMarketplaceService(h.marketplaceDb, h.credits as any);
     await expect(svc.settle(jobStub(9004, "completed", null))).resolves.toBeUndefined();
   });
+
+  it("concurrent settle(completed) converges to a single capture", async () => {
+    const svc = createMarketplaceService(h.marketplaceDb, h.credits as any);
+    await svc.setListing(404, 10, { ownerId: 7, region: "na-us-ashburn-01" });
+    const sid = await dispatch(svc, 3, 404);
+    const ownerBefore = await h.credits.getBalance(7);
+
+    const job = jobStub(9005, "completed", sid);
+    await Promise.all([svc.settle(job), svc.settle(job)]); // two racers, one settlement
+
+    expect(await h.credits.getBalance(7)).toBe(ownerBefore + 8); // earnerShare credited ONCE (10 - round(2))
+  });
 });

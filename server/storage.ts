@@ -984,15 +984,20 @@ export class DatabaseStorage {
     return (result as unknown as { rowCount: number }).rowCount || 0;
   }
 
-  // Recently-terminal targeted jobs that may still hold an unsettled shared
-  // dispatch. Read-only; the maintenance loop calls marketplace.settle() on each
-  // (idempotent). Money stays in the plugin — this only selects candidates by the
-  // opaque snapshot marker Core stashed at dispatch.
+  // Recently-terminal targeted jobs (completed or failed) that may still hold an
+  // unsettled shared dispatch. Read-only; the maintenance loop calls
+  // marketplace.settle() on each (idempotent). Money stays in the plugin — this
+  // only selects candidates by the opaque snapshot marker Core stashed at dispatch.
   async getReapableSharedJobs(sinceMinutes: number, limit: number): Promise<EvalJob[]> {
     const cutoff = new Date(Date.now() - sinceMinutes * 60 * 1000);
     return db.select().from(evalJobs)
       .where(and(
-        eq(evalJobs.status, "failed"),
+        // Both terminal outcomes carry an unsettled dispatch: a `failed` job
+        // refunds, a `completed` job whose complete-route settle threw still needs
+        // capturing. Widened from failed-only so a completed-but-unsettled job is
+        // re-driven (captured) here rather than eventually released by the 26h
+        // leak-reaper — which would refund valid completed work (review C1).
+        inArray(evalJobs.status, ["completed", "failed"]),
         isNotNull(evalJobs.targetTokenId),
         gte(evalJobs.completedAt, cutoff),
         sql`${evalJobs.snapshot} -> 'settlementContext' IS NOT NULL`,
