@@ -1,4 +1,5 @@
 import { pgTable, text, varchar, integer, real, timestamp, serial, boolean, pgEnum, jsonb, index, uniqueIndex } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 import crypto from "crypto";
@@ -305,6 +306,10 @@ export type JobSnapshot = {
   workflow: { name: string; config: unknown; visibility: string; isMainline: boolean; ownerId: number } | null;
   evalSet: { name: string; config: unknown; visibility: string; isMainline: boolean; ownerId: number } | null;
   creatorPlan: string | null;
+  // Opaque marketplace settlement handle stashed by Core after a paid `shared`
+  // dispatch (see the shared-agents plugin). Core never inspects it; the plugin
+  // reads it back in settle(). TS-only — `snapshot` is a jsonb column.
+  settlementContext?: unknown;
 };
 
 export const evalJobs = pgTable("eval_jobs", {
@@ -342,6 +347,12 @@ export const evalJobs = pgTable("eval_jobs", {
   statusRegionIdx: index("eval_jobs_status_region_idx").on(table.status, table.region),
   evalAgentIdx: index("eval_jobs_eval_agent_idx").on(table.evalAgentId),
   scheduleIdx: index("eval_jobs_schedule_idx").on(table.scheduleId),
+  // Serves the shared-dispatch reap-settle sweep (storage.getReapableSharedJobs):
+  // targeted terminal jobs, newest-first. Partial so it stays tiny — only paid
+  // targeted dispatches qualify (review M4). Applied by migration 0025.
+  reapableSharedIdx: index("eval_jobs_reapable_shared_idx")
+    .on(table.completedAt)
+    .where(sql`target_token_id IS NOT NULL AND status IN ('completed','failed')`),
 }));
 
 export const insertEvalJobSchema = createInsertSchema(evalJobs).omit({

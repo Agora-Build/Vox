@@ -96,7 +96,7 @@ import { regionSiteSequence } from "@shared/regions";
 import { drizzle } from "drizzle-orm/node-postgres";
 import pkg from "pg";
 const { Pool } = pkg;
-import { desc, eq, and, or, not, sql, gte, inArray } from "drizzle-orm";
+import { desc, eq, and, or, not, sql, gte, inArray, isNotNull } from "drizzle-orm";
 import crypto from "crypto";
 
 // Realtime-metrics windowing policy (server-owned; the client never sets these).
@@ -984,6 +984,28 @@ export class DatabaseStorage {
     return (result as unknown as { rowCount: number }).rowCount || 0;
   }
 
+  // Recently-terminal targeted jobs (completed or failed) that may still hold an
+  // unsettled shared dispatch. Read-only; the maintenance loop calls
+  // marketplace.settle() on each (idempotent). Money stays in the plugin — this
+  // only selects candidates by the opaque snapshot marker Core stashed at dispatch.
+  async getReapableSharedJobs(sinceMinutes: number, limit: number): Promise<EvalJob[]> {
+    const cutoff = new Date(Date.now() - sinceMinutes * 60 * 1000);
+    return db.select().from(evalJobs)
+      .where(and(
+        // Both terminal outcomes carry an unsettled dispatch: a `failed` job
+        // refunds, a `completed` job whose complete-route settle threw still needs
+        // capturing. Widened from failed-only so a completed-but-unsettled job is
+        // re-driven (captured) here rather than eventually released by the 26h
+        // leak-reaper — which would refund valid completed work (review C1).
+        inArray(evalJobs.status, ["completed", "failed"]),
+        isNotNull(evalJobs.targetTokenId),
+        gte(evalJobs.completedAt, cutoff),
+        sql`${evalJobs.snapshot} -> 'settlementContext' IS NOT NULL`,
+      ))
+      .orderBy(desc(evalJobs.completedAt))
+      .limit(limit);
+  }
+
   // Release running jobs still assigned to an agent that just (re)registered.
   // A fresh registration means the previous process died mid-job, so those jobs
   // are orphaned — the reaper's heartbeat-staleness check never catches them
@@ -1162,6 +1184,15 @@ export class DatabaseStorage {
 
   async getEvalResultsByJob(jobId: number): Promise<EvalResult[]> {
     return db.select().from(evalResults).where(eq(evalResults.evalJobId, jobId)).orderBy(desc(evalResults.createdAt));
+  }
+
+  // Artifact gate for shared-dispatch settlement (review H1): true iff the job
+  // produced a real eval-result row. A `completed` job with no result row is a bare
+  // self-report and must NOT capture the renter's escrow. Lean existence probe.
+  async hasEvalResult(jobId: number): Promise<boolean> {
+    const rows = await db.select({ id: evalResults.id }).from(evalResults)
+      .where(eq(evalResults.evalJobId, jobId)).limit(1);
+    return rows.length > 0;
   }
 
   async getEvalResultsByProvider(providerId: string): Promise<EvalResult[]> {
