@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeAll } from 'vitest';
+import { REGION_NA } from './helpers/regions';
 
 const BASE_URL = process.env.TEST_BASE_URL || 'http://localhost:5000';
 const ADMIN_EMAIL = process.env.TEST_ADMIN_EMAIL || 'admin@vox.local';
@@ -170,7 +171,7 @@ describe('Clash v2 API Tests', () => {
         method: 'POST',
         body: JSON.stringify({
           name: 'Test Clash Event',
-          region: 'na',
+          region: REGION_NA,
           visibility: 'public',
           matchups: [
             {
@@ -187,7 +188,7 @@ describe('Clash v2 API Tests', () => {
       const event: ClashEvent = await response.json();
       expect(event.name).toBe('Test Clash Event');
       expect(event.status).toBe('upcoming');
-      expect(event.region).toBe('na');
+      expect(event.region).toBe(REGION_NA);
       expect(event.matches).toBeDefined();
       expect(Array.isArray(event.matches)).toBe(true);
       expect(event.matches!.length).toBe(1);
@@ -234,7 +235,7 @@ describe('Clash v2 API Tests', () => {
         method: 'POST',
         body: JSON.stringify({
           name: 'Event To Cancel',
-          region: 'na',
+          region: REGION_NA,
           matchups: [
             {
               agentAProfileId: profileAId,
@@ -262,7 +263,7 @@ describe('Clash v2 API Tests', () => {
         method: 'POST',
         body: JSON.stringify({
           name: 'Self Clash Event',
-          region: 'na',
+          region: REGION_NA,
           matchups: [
             {
               agentAProfileId: profileAId,
@@ -283,7 +284,7 @@ describe('Clash v2 API Tests', () => {
         method: 'POST',
         body: JSON.stringify({
           name: 'Multi-Match Event',
-          region: 'na',
+          region: REGION_NA,
           matchups: [
             {
               agentAProfileId: profileAId,
@@ -375,7 +376,7 @@ describe('Clash v2 API Tests', () => {
         method: 'POST',
         body: JSON.stringify({
           eventName: 'Scheduled Clash Event',
-          region: 'na',
+          region: REGION_NA,
           matchups: [
             {
               agentAProfileId: profileAId,

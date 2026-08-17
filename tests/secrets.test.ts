@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import crypto from 'crypto';
 import { SECRET_NAME_PATTERN, SECRET_PLACEHOLDER_REGEX } from '@shared/secrets';
+import { BASE_NA } from './helpers/regions';
 
 // ---------------------------------------------------------------------------
 // Unit tests: AES-256-GCM encryption (mirrors server/storage.ts)
@@ -363,7 +364,9 @@ describe('Secrets API', () => {
     const res = await authFetch(adminSession, `${BASE_URL}/api/secrets`);
     expect(res.ok).toBe(true);
     const data = await res.json();
-    expect(Array.isArray(data)).toBe(true);
+    // GET /api/secrets returns { encryptionConfigured, secrets: [...] }.
+    expect(data).toHaveProperty('encryptionConfigured');
+    expect(Array.isArray(data.secrets)).toBe(true);
   });
 
   it('should reject invalid secret names', async () => {
@@ -423,7 +426,8 @@ describe('Secrets API', () => {
 
     const res = await authFetch(adminSession, `${BASE_URL}/api/secrets`);
     expect(res.ok).toBe(true);
-    const secrets = await res.json();
+    // GET /api/secrets returns { encryptionConfigured, secrets: [...] }
+    const { secrets } = await res.json();
     expect(secrets.length).toBeGreaterThanOrEqual(2);
 
     const names = secrets.map((s: { name: string }) => s.name);
@@ -450,7 +454,7 @@ describe('Secrets API', () => {
 
     // List should still have the same count (not duplicated)
     const listRes = await authFetch(adminSession, `${BASE_URL}/api/secrets`);
-    const secrets = await listRes.json();
+    const { secrets } = await listRes.json();
     const matches = secrets.filter((s: { name: string }) => s.name === 'TEST_SECRET_A');
     expect(matches).toHaveLength(1);
   });
@@ -465,7 +469,7 @@ describe('Secrets API', () => {
 
     // Verify it's gone
     const listRes = await authFetch(adminSession, `${BASE_URL}/api/secrets`);
-    const secrets = await listRes.json();
+    const { secrets } = await listRes.json();
     const names = secrets.map((s: { name: string }) => s.name);
     expect(names).not.toContain('TEST_SECRET_B');
   });
@@ -509,6 +513,10 @@ describe('Secrets - Agent Endpoint', () => {
 
       adminSession = await login(ADMIN_EMAIL, ADMIN_PASSWORD);
 
+      // Resolved site region for the agent token; the job must be created in the
+      // same region for this token's agent to see and claim it.
+      let agentRegion = '';
+
       // Create a secret to test with
       const secretRes = await authFetch(adminSession, `${BASE_URL}/api/secrets`, {
         method: 'POST',
@@ -519,11 +527,12 @@ describe('Secrets - Agent Endpoint', () => {
       // Create an eval agent token
       const tokenRes = await authFetch(adminSession, `${BASE_URL}/api/admin/eval-agent-tokens`, {
         method: 'POST',
-        body: JSON.stringify({ name: 'Secrets Test Token', region: 'na' }),
+        body: JSON.stringify({ name: 'Secrets Test Token', regionLocationBaseId: BASE_NA }),
       });
       if (tokenRes.ok) {
         const tokenData = await tokenRes.json();
         agentToken = tokenData.token;
+        agentRegion = tokenData.region;
       }
 
       // Register an agent
@@ -553,7 +562,7 @@ describe('Secrets - Agent Endpoint', () => {
       if (workflowId && agentToken && agentId) {
         const runRes = await authFetch(adminSession, `${BASE_URL}/api/workflows/${workflowId}/run`, {
           method: 'POST',
-          body: JSON.stringify({ region: 'na' }),
+          body: JSON.stringify({ region: agentRegion }),
         });
         if (runRes.ok) {
           const runData = await runRes.json();
@@ -562,7 +571,7 @@ describe('Secrets - Agent Endpoint', () => {
 
         // If direct job ID wasn't returned, fetch pending jobs
         if (!jobId) {
-          const jobsRes = await fetch(`${BASE_URL}/api/eval-agent/jobs?region=na`, {
+          const jobsRes = await fetch(`${BASE_URL}/api/eval-agent/jobs?region=${agentRegion}`, {
             headers: { 'Authorization': `Bearer ${agentToken}` },
           });
           if (jobsRes.ok) {
