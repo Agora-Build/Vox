@@ -73,8 +73,29 @@ export function createMarketplaceService(db: PluginDb, credits: CreditsPort): Ma
       return { ok: true, settlementContext: { settlementId } };
     },
 
-    async settle(_job: EvalJob): Promise<void> {
-      throw new Error("not implemented"); // Task 5
+    async settle(job) {
+      const ctx = (job.snapshot?.settlementContext ?? null) as { settlementId?: number } | null;
+      const settlementId = ctx?.settlementId;
+      if (!settlementId) return; // free-tier / untargeted job — nothing to settle
+
+      // Serialize concurrent settle attempts on this settlement with FOR UPDATE.
+      // The credits capture/release run on a SEPARATE connection/transaction, so
+      // this is not one atomic write — but both credits ops are idempotent by hold
+      // status and markSettlementTerminal is guarded by the pending check, so a
+      // crash between the credits commit and the mark converges on retry.
+      await db.withTransaction(async (tx) => {
+        const s = await repo.getSettlementForUpdate(tx, settlementId);
+        if (!s || s.status !== "pending") return; // idempotent / unknown
+        if (s.holdId == null) return;              // hold never placed (already voided)
+
+        if (job.status === "completed") {
+          await credits.capture(s.holdId, { earnerUserId: s.earnerUserId, platformFeeCredits: s.feeCredits });
+          await repo.markSettlementTerminal(tx, settlementId, "settled", job.id, true, null);
+        } else {
+          await credits.release(s.holdId);
+          await repo.markSettlementTerminal(tx, settlementId, "refunded", job.id, false, `job-${job.status}`);
+        }
+      });
     },
 
     async reapLeaks(_ttlMs: number, _limit: number): Promise<number> {
