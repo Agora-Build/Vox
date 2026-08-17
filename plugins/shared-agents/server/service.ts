@@ -14,7 +14,7 @@ export interface CreditsPort {
 export interface MarketplaceService extends EvalMarketplace {
   /** Backstop: release holds for settlements stuck `pending` past `ttlMs`. Returns count released. */
   reapLeaks(ttlMs: number, limit: number): Promise<number>;
-  /** Health signal: settlements still `pending` past `ttlMs`. */
+  /** Health signal: settlements still `pending` past `ttlMs` that hold escrow (hold_id set). */
   countStuckPending(ttlMs: number): Promise<number>;
 }
 
@@ -102,6 +102,15 @@ export function createMarketplaceService(db: PluginDb, credits: CreditsPort): Ma
       const settlementId = ctx?.settlementId;
       if (!settlementId) return; // free-tier / untargeted job — nothing to settle
 
+      // settle is only meaningful for a terminal job. A non-terminal status here is
+      // a caller bug; releasing/capturing on it would settle a job still in flight.
+      // Guard explicitly rather than let the `else` branch treat anything ≠ completed
+      // as a refund (review M3).
+      if (job.status !== "completed" && job.status !== "failed") {
+        console.error(`[shared-agents] settle ignored non-terminal job ${job.id} (status=${job.status})`);
+        return;
+      }
+
       // Read + guard under a short lock, then RELEASE the settlement lock BEFORE
       // touching credits. credits.capture/release open their own transaction on a
       // SECOND pooled connection; holding this FOR UPDATE across that call can
@@ -142,11 +151,24 @@ export function createMarketplaceService(db: PluginDb, credits: CreditsPort): Ma
       let released = 0;
       for (const id of ids) {
         try {
+          // Same lock discipline as settle (review I2/M6): read + guard under a
+          // short lock, RELEASE it before the credits call (which grabs a second
+          // pooled connection), then finalize under a fresh lock re-guarding on
+          // `pending`. Keeps the reaper from holding a conn-A across credits while
+          // concurrent settles contend for the same pool.
+          const s = await db.withTransaction(async (tx) => {
+            const row = await repo.getSettlementForUpdate(tx, id);
+            if (!row || row.status !== "pending" || row.holdId == null) return null;
+            return { holdId: row.holdId, jobId: row.jobId };
+          });
+          if (!s) continue; // finalized between select and lock — not released here (review M1)
+
+          await credits.release(s.holdId);
+
           await db.withTransaction(async (tx) => {
-            const s = await repo.getSettlementForUpdate(tx, id);
-            if (!s || s.status !== "pending" || s.holdId == null) return;
-            await credits.release(s.holdId);
-            await repo.markSettlementTerminal(tx, id, "refunded", s.jobId, false, "leaked-dispatch");
+            const row = await repo.getSettlementForUpdate(tx, id);
+            if (!row || row.status !== "pending") return;
+            await repo.markSettlementTerminal(tx, id, "refunded", row.jobId, false, "leaked-dispatch");
           });
           released++;
         } catch (err) {

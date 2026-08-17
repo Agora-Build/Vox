@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { setupMarketplaceDb, teardownMarketplaceDb, type MarketplaceHarness } from "./helpers/shared-agents-db";
 import { createMarketplaceService } from "../plugins/shared-agents/server/service";
+import * as repo from "../plugins/shared-agents/server/repo";
 
 const hasDb = !!process.env.DATABASE_URL;
 const d = hasDb ? describe : describe.skip;
@@ -31,5 +32,19 @@ d("shared-agents leak-reaper", () => {
     await svc.authorizeDispatch(3, 601, CTX);
     expect(await svc.reapLeaks(60_000, 100)).toBe(0);
     expect(await h.credits.getBalance(3)).toBe(90);
+  });
+
+  it("countStuckPending ignores orphan pending rows with no hold placed (M2)", async () => {
+    const svc = createMarketplaceService(h.marketplaceDb, h.credits as any);
+    const before = await svc.countStuckPending(0);
+
+    // Simulate a crash between insert and hold: a pending settlement, hold_id NULL.
+    // No escrow exists for it, and the leak-reaper (hold_id NOT NULL) never touches
+    // it — so the health signal must not count it, or health flaps `degraded` forever.
+    await repo.insertPendingSettlement(h.marketplaceDb, {
+      payerUserId: 3, earnerUserId: 7, priceUnits: 1, pricePerUnit: 10, chargeCredits: 10, feeCredits: 2,
+    });
+
+    expect(await svc.countStuckPending(0)).toBe(before); // orphan not counted
   });
 });

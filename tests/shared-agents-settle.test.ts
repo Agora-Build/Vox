@@ -62,6 +62,23 @@ d("shared-agents settle", () => {
     await expect(svc.settle(jobStub(9004, "completed", null))).resolves.toBeUndefined();
   });
 
+  it("ignores a non-terminal job, but still settles once terminal (M3)", async () => {
+    const svc = createMarketplaceService(h.marketplaceDb, h.credits as any);
+    await svc.setListing(405, 10, { ownerId: 7, region: "na-us-ashburn-01" });
+    const sid = await dispatch(svc, 3, 405);
+    const payerHeld = await h.credits.getBalance(3);
+    const ownerBefore = await h.credits.getBalance(7);
+
+    // A non-terminal status must be a no-op — no release, settlement stays pending.
+    await svc.settle(jobStub(9006, "running", sid));
+    expect(await h.credits.getBalance(3)).toBe(payerHeld);   // not refunded
+    expect(await h.credits.getBalance(7)).toBe(ownerBefore); // not captured
+
+    // The surviving pending settlement still captures correctly once terminal.
+    await svc.settle(jobStub(9006, "completed", sid));
+    expect(await h.credits.getBalance(7)).toBe(ownerBefore + 8);
+  });
+
   it("concurrent settle(completed) converges to a single capture", async () => {
     const svc = createMarketplaceService(h.marketplaceDb, h.credits as any);
     await svc.setListing(404, 10, { ownerId: 7, region: "na-us-ashburn-01" });

@@ -106,8 +106,15 @@ export async function getLeakedSettlementIds(db: PluginDb, ttlMs: number, limit:
 }
 
 export async function countStuckPending(db: PluginDb, ttlMs: number): Promise<number> {
+  // Only count pending settlements that carry a placed hold — the same set the
+  // leak-reaper acts on (getLeakedSettlementIds). A pending row with hold_id NULL
+  // means the process died between insert and hold: either no hold was placed
+  // (harmless dead row) or one was and its detection is credits' reconcile job
+  // (review I1). Counting those here flapped health `degraded` forever over rows
+  // this plugin can't and shouldn't act on (review M2).
   const { rows } = await db.query<{ n: string }>(
     `SELECT count(*)::text AS n FROM settlements
-     WHERE status = 'pending' AND created_at < now() - ($1::bigint * interval '1 millisecond')`, [ttlMs]);
+     WHERE status = 'pending' AND hold_id IS NOT NULL
+       AND created_at < now() - ($1::bigint * interval '1 millisecond')`, [ttlMs]);
   return Number(rows[0].n);
 }
