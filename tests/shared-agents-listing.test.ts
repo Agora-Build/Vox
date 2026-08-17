@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { setupMarketplaceDb, teardownMarketplaceDb, type MarketplaceHarness } from "./helpers/shared-agents-db";
 import * as repo from "../plugins/shared-agents/server/repo";
+import { createMarketplaceService } from "../plugins/shared-agents/server/service";
 
 const hasDb = !!process.env.DATABASE_URL;
 const d = hasDb ? describe : describe.skip;
@@ -50,5 +51,34 @@ d("shared-agents listings repo", () => {
       expect(s!.status).toBe("settled");
       expect(s!.jobId).toBe(4242);
     });
+  });
+});
+
+d("shared-agents service — setListing/listDispatchable", () => {
+  let h: MarketplaceHarness;
+  beforeAll(async () => { h = await setupMarketplaceDb(); });
+  afterAll(async () => { await teardownMarketplaceDb(h); });
+
+  it("setListing activate then listDispatchable returns the AgentSummary", async () => {
+    const svc = createMarketplaceService(h.marketplaceDb, h.credits as any);
+    await svc.setListing(202, 15, { ownerId: 9, region: "eu-de-frankfurt-01" });
+    const list = await svc.listDispatchable(1);
+    const row = list.find((a) => a.tokenId === 202);
+    expect(row).toBeDefined();
+    expect(row!.pricePerUnit).toBe(15);
+    expect(row!.ownerId).toBe(9);
+    expect(row!.region).toBe("eu-de-frankfurt-01");
+  });
+
+  it("setListing deactivate removes it from listDispatchable", async () => {
+    const svc = createMarketplaceService(h.marketplaceDb, h.credits as any);
+    await svc.setListing(202, null);
+    const list = await svc.listDispatchable(1);
+    expect(list.some((a) => a.tokenId === 202)).toBe(false);
+  });
+
+  it("activate without meta throws (Core always supplies it)", async () => {
+    const svc = createMarketplaceService(h.marketplaceDb, h.credits as any);
+    await expect(svc.setListing(203, 5)).rejects.toThrow();
   });
 });

@@ -32,7 +32,7 @@ export interface EvalMarketplace {
   listDispatchable(userId: number): Promise<AgentSummary[]>;
   authorizeDispatch(userId: number, tokenId: number, jobContext: JobContext): Promise<DispatchAuthorization>;
   settle(job: EvalJob): Promise<void>; // capture | release, idempotent by job id
-  setListing(tokenId: number, pricePerUnit: number | null): Promise<void>;
+  setListing(tokenId: number, pricePerUnit: number | null, meta?: { ownerId: number; region: string }): Promise<void>;
 }
 
 let current: EvalMarketplace | null = null;
