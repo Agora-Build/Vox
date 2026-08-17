@@ -1186,6 +1186,15 @@ export class DatabaseStorage {
     return db.select().from(evalResults).where(eq(evalResults.evalJobId, jobId)).orderBy(desc(evalResults.createdAt));
   }
 
+  // Artifact gate for shared-dispatch settlement (review H1): true iff the job
+  // produced a real eval-result row. A `completed` job with no result row is a bare
+  // self-report and must NOT capture the renter's escrow. Lean existence probe.
+  async hasEvalResult(jobId: number): Promise<boolean> {
+    const rows = await db.select({ id: evalResults.id }).from(evalResults)
+      .where(eq(evalResults.evalJobId, jobId)).limit(1);
+    return rows.length > 0;
+  }
+
   async getEvalResultsByProvider(providerId: string): Promise<EvalResult[]> {
     return db.select().from(evalResults).where(eq(evalResults.providerId, providerId)).orderBy(desc(evalResults.createdAt));
   }

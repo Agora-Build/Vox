@@ -3217,11 +3217,24 @@ export async function registerRoutes(
 
       // Settle any shared-dispatch escrow tied to this job (plugin-owned; no-op
       // when the seam is absent or the job carries no settlementContext). Re-fetch
-      // to read the now-terminal status + snapshot. Isolated: a settlement error
-      // must never fail an otherwise-good completion (spec §5).
+      // to read the now-terminal status + snapshot, and pass the artifact gate
+      // (hasResult) so a bare completion with no result row refunds instead of
+      // paying (review H1). Isolated: a settlement error must never fail an
+      // otherwise-good completion (spec §5).
       try {
-        const settledJob = await storage.getEvalJob(parseInt(jobId));
-        if (settledJob) await getMarketplace()?.settle(settledJob);
+        const marketplace = getMarketplace();
+        if (marketplace) {
+          const settledJob = await storage.getEvalJob(parseInt(jobId));
+          if (settledJob) {
+            const hasResult = await storage.hasEvalResult(settledJob.id);
+            await marketplace.settle({
+              jobId: settledJob.id,
+              status: settledJob.status,
+              hasResult,
+              settlementContext: (settledJob.snapshot as { settlementContext?: unknown } | null)?.settlementContext,
+            });
+          }
+        }
       } catch (settleErr) {
         console.error(`Settlement failed for job ${jobId}:`, settleErr);
       }
@@ -3570,20 +3583,36 @@ export async function registerRoutes(
       const provider = await storage.getProvider(workflow.providerId);
       const baseSnapshot = buildJobSnapshot(workflow, evalSet, provider, user.plan);
       const snapshot = settlementContext !== undefined ? { ...baseSnapshot, settlementContext } : baseSnapshot;
-      const job = await storage.createEvalJob({
-        workflowId: parseInt(workflowId),
-        triggerType: 2, // manual (Run Workflow)
-        evalSetId,
-        createdBy: user.id,
-        region: jobRegion,
-        targetTokenId: targeting,
-        config: mergeEvalConfig(workflow.config, evalSet.config),
-        snapshot,
-        status: "pending",
-        priority: 0,
-        retryCount: 0,
-        maxRetries: 3,
-      });
+      let job;
+      try {
+        job = await storage.createEvalJob({
+          workflowId: parseInt(workflowId),
+          triggerType: 2, // manual (Run Workflow)
+          evalSetId,
+          createdBy: user.id,
+          region: jobRegion,
+          targetTokenId: targeting,
+          config: mergeEvalConfig(workflow.config, evalSet.config),
+          snapshot,
+          status: "pending",
+          priority: 0,
+          retryCount: 0,
+          maxRetries: 3,
+        });
+      } catch (createErr) {
+        // A shared dispatch was authorized (escrow hold placed) but no job now exists
+        // to settle it. Compensate by releasing the hold immediately rather than
+        // stranding it for the 26h leak-reaper (review M4). Best-effort; the reaper
+        // remains the backstop if this also fails.
+        if (settlementContext !== undefined) {
+          try {
+            await getMarketplace()?.voidDispatch(settlementContext);
+          } catch (voidErr) {
+            console.error("Failed to void shared dispatch after job-create error:", voidErr);
+          }
+        }
+        throw createErr;
+      }
 
       res.json({
         message: "Job created",

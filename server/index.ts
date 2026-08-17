@@ -305,7 +305,15 @@ function startBackgroundWorker() {
         const reapable = await storage.getReapableSharedJobs(REAP_SETTLE_LOOKBACK_MINUTES, 200);
         for (const job of reapable) {
           try {
-            await marketplace.settle(job);
+            // Pass the artifact gate (hasResult) so a completed-but-resultless job
+            // refunds instead of paying out on a bare self-report (review H1).
+            const hasResult = await storage.hasEvalResult(job.id);
+            await marketplace.settle({
+              jobId: job.id,
+              status: job.status,
+              hasResult,
+              settlementContext: (job.snapshot as { settlementContext?: unknown } | null)?.settlementContext,
+            });
           } catch (settleErr) {
             console.error(`Reap settlement failed for job ${job.id}:`, settleErr);
           }
