@@ -305,6 +305,10 @@ export type JobSnapshot = {
   workflow: { name: string; config: unknown; visibility: string; isMainline: boolean; ownerId: number } | null;
   evalSet: { name: string; config: unknown; visibility: string; isMainline: boolean; ownerId: number } | null;
   creatorPlan: string | null;
+  // Opaque marketplace settlement handle stashed by Core after a paid `shared`
+  // dispatch (see the shared-agents plugin). Core never inspects it; the plugin
+  // reads it back in settle(). TS-only — `snapshot` is a jsonb column.
+  settlementContext?: unknown;
 };
 
 export const evalJobs = pgTable("eval_jobs", {

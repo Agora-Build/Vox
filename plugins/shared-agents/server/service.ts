@@ -98,8 +98,25 @@ export function createMarketplaceService(db: PluginDb, credits: CreditsPort): Ma
       });
     },
 
-    async reapLeaks(_ttlMs: number, _limit: number): Promise<number> {
-      throw new Error("not implemented"); // Task 6
+    async reapLeaks(ttlMs, limit) {
+      const ids = await repo.getLeakedSettlementIds(db, ttlMs, limit);
+      let released = 0;
+      for (const id of ids) {
+        try {
+          await db.withTransaction(async (tx) => {
+            const s = await repo.getSettlementForUpdate(tx, id);
+            if (!s || s.status !== "pending" || s.holdId == null) return;
+            await credits.release(s.holdId);
+            await repo.markSettlementTerminal(tx, id, "refunded", s.jobId, false, "leaked-dispatch");
+          });
+          released++;
+        } catch (err) {
+          // A hold already captured (rare unmarked-completed race) throws here;
+          // leave it pending + log so health surfaces it. Never abort the sweep.
+          console.error(`[shared-agents] leak-reaper failed for settlement ${id}:`, err);
+        }
+      }
+      return released;
     },
 
     async countStuckPending(ttlMs: number): Promise<number> {
