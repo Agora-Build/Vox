@@ -1,4 +1,14 @@
 import { describe, it, expect, beforeAll } from 'vitest';
+import {
+  REGION_NA,
+  REGION_EU,
+  REGION_APAC,
+  REGION_SA,
+  BASE_NA,
+  BASE_EU,
+  BASE_APAC,
+  BASE_SA,
+} from './helpers/regions';
 
 const BASE_URL = process.env.TEST_BASE_URL || 'http://localhost:5000';
 const ADMIN_EMAIL = process.env.TEST_ADMIN_EMAIL || 'admin@vox.local';
@@ -135,6 +145,9 @@ describe('Vox API Tests', () => {
   let testScheduleId: number;
   let testRecurringScheduleId: number;
   let testProviderId: string;
+  // Region resolved from the test agent token (token allocates <base>-<NN>, N>=2).
+  // Jobs that must be claimed by this agent are created in this exact region.
+  let testAgentRegion: string;
 
   beforeAll(async () => {
     adminSession = await login(ADMIN_EMAIL, ADMIN_PASSWORD);
@@ -328,14 +341,14 @@ describe('Vox API Tests', () => {
 
     it('non-owner CAN run a PUBLIC workflow they do not own', async () => {
       const res = await authFetch(nonOwner, `${BASE_URL}/api/workflows/${testWorkflowId}/run`, {
-        method: 'POST', body: JSON.stringify({ region: 'na', evalSetId: publicEvalSetId }),
+        method: 'POST', body: JSON.stringify({ region: REGION_NA, evalSetId: publicEvalSetId }),
       });
       expect(res.ok).toBe(true); // testWorkflowId is public
     });
 
     it('non-owner CANNOT run a PRIVATE workflow they do not own (403)', async () => {
       const res = await authFetch(nonOwner, `${BASE_URL}/api/workflows/${adminPrivateWfId}/run`, {
-        method: 'POST', body: JSON.stringify({ region: 'na', evalSetId: publicEvalSetId }),
+        method: 'POST', body: JSON.stringify({ region: REGION_NA, evalSetId: publicEvalSetId }),
       });
       expect(res.status).toBe(403);
     });
@@ -349,7 +362,7 @@ describe('Vox API Tests', () => {
       expect(wfRes.ok).toBe(true);
       const id = (await wfRes.json()).id;
       const res = await authFetch(adminSession, `${BASE_URL}/api/workflows/${id}/run`, {
-        method: 'POST', body: JSON.stringify({ region: 'na', evalSetId: publicEvalSetId }),
+        method: 'POST', body: JSON.stringify({ region: REGION_NA, evalSetId: publicEvalSetId }),
       });
       expect(res.status).toBe(403);
       // ...but admin CAN still delete it via API (moderation preserved).
@@ -489,7 +502,7 @@ describe('Vox API Tests', () => {
           name: 'Test One-Time Schedule',
           workflowId: testWorkflowId,
           evalSetId: testEvalSetId,
-          region: 'na',
+          region: REGION_NA,
           scheduleType: 'once',
         }),
       });
@@ -510,7 +523,7 @@ describe('Vox API Tests', () => {
           name: 'Test Recurring Schedule',
           workflowId: testWorkflowId,
           evalSetId: testEvalSetId,
-          region: 'na',
+          region: REGION_NA,
           scheduleType: 'recurring',
           cronExpression: '0 * * * *', // Every hour
           maxRuns: 10,
@@ -530,7 +543,7 @@ describe('Vox API Tests', () => {
     it('sets a ~90-day expiry on new schedules and reports status active', async () => {
       const created = await authFetch(adminSession, `${BASE_URL}/api/eval-schedules`, {
         method: 'POST',
-        body: JSON.stringify({ name: 'Expiry Create', workflowId: testWorkflowId, evalSetId: testEvalSetId, region: 'na', scheduleType: 'recurring', cronExpression: '0 * * * *' }),
+        body: JSON.stringify({ name: 'Expiry Create', workflowId: testWorkflowId, evalSetId: testEvalSetId, region: REGION_NA, scheduleType: 'recurring', cronExpression: '0 * * * *' }),
       });
       expect(created.ok).toBe(true);
       const s = await created.json();
@@ -553,7 +566,7 @@ describe('Vox API Tests', () => {
       });
       const wfId = (await wfRes.json()).id;
       const scRes = await authFetch(adminSession, `${BASE_URL}/api/eval-schedules`, {
-        method: 'POST', body: JSON.stringify({ name: 'guard', workflowId: wfId, evalSetId: testEvalSetId, region: 'na', scheduleType: 'recurring', cronExpression: '0 * * * *' }),
+        method: 'POST', body: JSON.stringify({ name: 'guard', workflowId: wfId, evalSetId: testEvalSetId, region: REGION_NA, scheduleType: 'recurring', cronExpression: '0 * * * *' }),
       });
       const scId = (await scRes.json()).id;
       // Active schedule blocks deletion (409).
@@ -608,7 +621,7 @@ describe('Vox API Tests', () => {
           name: 'should-be-denied',
           workflowId: testWorkflowId,
           evalSetId: testEvalSetId,
-          region: 'na',
+          region: REGION_NA,
           scheduleType: 'recurring',
           cronExpression: '0 * * * *',
         }),
@@ -623,7 +636,7 @@ describe('Vox API Tests', () => {
           name: 'Invalid Schedule',
           workflowId: testWorkflowId,
           evalSetId: testEvalSetId,
-          region: 'na',
+          region: REGION_NA,
           scheduleType: 'recurring',
           // Missing cronExpression
         }),
@@ -641,7 +654,7 @@ describe('Vox API Tests', () => {
           name: 'Invalid Cron Schedule',
           workflowId: testWorkflowId,
           evalSetId: testEvalSetId,
-          region: 'na',
+          region: REGION_NA,
           scheduleType: 'recurring',
           cronExpression: '0 0 * *', // Invalid - only 4 parts
         }),
@@ -737,7 +750,7 @@ describe('Vox API Tests', () => {
         body: JSON.stringify({
           name: 'Invalid Workflow Schedule',
           workflowId: 999999,
-          region: 'na',
+          region: REGION_NA,
           scheduleType: 'once',
         }),
       });
@@ -764,7 +777,7 @@ describe('Vox API Tests', () => {
         method: 'POST',
         body: JSON.stringify({
           workflowId: testWorkflowId,
-          region: 'na',
+          region: REGION_NA,
           scheduleType: 'once',
         }),
       });
@@ -780,7 +793,7 @@ describe('Vox API Tests', () => {
           name: 'Future One-Time Schedule',
           workflowId: testWorkflowId,
           evalSetId: testEvalSetId,
-          region: 'eu',
+          region: REGION_EU,
           scheduleType: 'once',
           runAt: futureTime,
         }),
@@ -789,7 +802,7 @@ describe('Vox API Tests', () => {
       expect(response.ok).toBe(true);
       const schedule: EvalSchedule = await response.json();
       expect(schedule.scheduleType).toBe('once');
-      expect(schedule.region).toBe('eu');
+      expect(schedule.region).toBe(REGION_EU);
       expect(new Date(schedule.nextRunAt!).getTime()).toBeGreaterThan(Date.now());
 
       // Cleanup
@@ -805,7 +818,7 @@ describe('Vox API Tests', () => {
           name: 'Daily Schedule',
           workflowId: testWorkflowId,
           evalSetId: testEvalSetId,
-          region: 'apac',
+          region: REGION_APAC,
           scheduleType: 'recurring',
           cronExpression: '0 8 * * *', // Daily at 8 AM
         }),
@@ -843,13 +856,17 @@ describe('Vox API Tests', () => {
         method: 'POST',
         body: JSON.stringify({
           name: 'Test Agent Token NA',
-          region: 'na',
+          regionLocationBaseId: BASE_NA,
         }),
       });
 
       expect(response.ok).toBe(true);
       const agentToken: EvalAgentToken = await response.json();
-      expect(agentToken.region).toBe('na');
+      // The server allocates the next sequence for the base and returns the
+      // resolved site region (e.g. "na-us-seattle-02"); capture it so jobs and
+      // assertions use the token's actual region rather than assuming a value.
+      testAgentRegion = agentToken.region;
+      expect(agentToken.region).toContain(BASE_NA);
       expect(agentToken.token).toBeDefined();
       expect(agentToken.token!.length).toBeGreaterThan(20);
       testEvalAgentTokenId = agentToken.id;
@@ -882,7 +899,7 @@ describe('Vox API Tests', () => {
       const response = await agentPost('/api/eval-agent/register', { name: 'Test Agent NA-1' });
       expect(response.ok).toBe(true);
       const agent: EvalAgent = await response.json();
-      expect(agent.region).toBe('na');
+      expect(agent.region).toBe(testAgentRegion);
       expect(agent.state).toBe('idle');
       expect(typeof agent.leaseId).toBe('string');
       expect(agent.leaseId!.length).toBeGreaterThan(0);
@@ -968,7 +985,7 @@ describe('Vox API Tests', () => {
         method: 'POST',
         body: JSON.stringify({
           evalSetId: testEvalSetId,
-          region: 'na',
+          region: testAgentRegion,
         }),
       });
 
@@ -980,7 +997,7 @@ describe('Vox API Tests', () => {
     });
 
     it('should get pending jobs for a region', async () => {
-      const response = await fetch(`${BASE_URL}/api/eval-agent/jobs?region=na`, {
+      const response = await fetch(`${BASE_URL}/api/eval-agent/jobs?region=${testAgentRegion}`, {
         headers: {
           'Authorization': `Bearer ${testEvalAgentToken}`,
         },
@@ -1242,14 +1259,14 @@ describe('Vox API Tests', () => {
     });
 
     it('should filter leaderboard by region', async () => {
-      const response = await fetch(`${BASE_URL}/api/v1/metrics/leaderboard?region=na`);
+      const response = await fetch(`${BASE_URL}/api/v1/metrics/leaderboard?region=${REGION_NA}`);
       expect(response.ok).toBe(true);
       const { data, meta } = await response.json();
       expect(Array.isArray(data)).toBe(true);
-      expect(meta.region).toBe('na');
+      expect(meta.region).toBe(REGION_NA);
       // All results should be from NA region
       for (const item of data) {
-        expect(item.region).toBe('na');
+        expect(item.region).toBe(REGION_NA);
       }
     });
   });
@@ -1258,6 +1275,7 @@ describe('Vox API Tests', () => {
     let flowWorkflowId: number;
     let flowEvalSetId: number;
     let flowAgentToken: string;
+    let flowAgentRegion: string;
     let flowAgentId: number;
     let flowLeaseId: string;
     let flowJobId: number;
@@ -1268,7 +1286,7 @@ describe('Vox API Tests', () => {
     const runClaimComplete = async (completeBody: Record<string, unknown>): Promise<number> => {
       const runRes = await authFetch(adminSession, `${BASE_URL}/api/workflows/${flowWorkflowId}/run`, {
         method: 'POST',
-        body: JSON.stringify({ evalSetId: flowEvalSetId, region: 'na' }),
+        body: JSON.stringify({ evalSetId: flowEvalSetId, region: flowAgentRegion }),
       });
       const { job } = await runRes.json();
       const claim = await fetch(`${BASE_URL}/api/eval-agent/jobs/${job.id}/claim`, {
@@ -1319,12 +1337,13 @@ describe('Vox API Tests', () => {
         method: 'POST',
         body: JSON.stringify({
           name: 'Job Flow Test Token',
-          region: 'na',
+          regionLocationBaseId: BASE_NA,
         }),
       });
       expect(response.ok).toBe(true);
       const token = await response.json();
       flowAgentToken = token.token;
+      flowAgentRegion = token.region;
     });
 
     it('should register eval agent for job flow', async () => {
@@ -1340,7 +1359,7 @@ describe('Vox API Tests', () => {
       const agent = await response.json();
       flowAgentId = agent.id;
       flowLeaseId = agent.leaseId;
-      expect(agent.region).toBe('na');
+      expect(agent.region).toBe(flowAgentRegion);
     });
 
     it('should create job by running workflow', async () => {
@@ -1348,7 +1367,7 @@ describe('Vox API Tests', () => {
         method: 'POST',
         body: JSON.stringify({
           evalSetId: flowEvalSetId,
-          region: 'na',
+          region: flowAgentRegion,
         }),
       });
       expect(response.ok).toBe(true);
@@ -1611,6 +1630,10 @@ describe('Vox API Tests', () => {
     let naToken: string;
     let apacToken: string;
     let euToken: string;
+    // Regions resolved from each token (each base allocates a distinct <base>-<NN>).
+    let naRegion: string;
+    let apacRegion: string;
+    let euRegion: string;
     let naAgentId: number;
     let apacAgentId: number;
     let euAgentId: number;
@@ -1626,29 +1649,32 @@ describe('Vox API Tests', () => {
       // Create NA token
       const naResponse = await authFetch(adminSession, `${BASE_URL}/api/admin/eval-agent-tokens`, {
         method: 'POST',
-        body: JSON.stringify({ name: 'Multi-Region-NA', region: 'na' }),
+        body: JSON.stringify({ name: 'Multi-Region-NA', regionLocationBaseId: BASE_NA }),
       });
       expect(naResponse.ok).toBe(true);
       const naData = await naResponse.json();
       naToken = naData.token;
+      naRegion = naData.region;
 
       // Create APAC token
       const apacResponse = await authFetch(adminSession, `${BASE_URL}/api/admin/eval-agent-tokens`, {
         method: 'POST',
-        body: JSON.stringify({ name: 'Multi-Region-APAC', region: 'apac' }),
+        body: JSON.stringify({ name: 'Multi-Region-APAC', regionLocationBaseId: BASE_APAC }),
       });
       expect(apacResponse.ok).toBe(true);
       const apacData = await apacResponse.json();
       apacToken = apacData.token;
+      apacRegion = apacData.region;
 
       // Create EU token
       const euResponse = await authFetch(adminSession, `${BASE_URL}/api/admin/eval-agent-tokens`, {
         method: 'POST',
-        body: JSON.stringify({ name: 'Multi-Region-EU', region: 'eu' }),
+        body: JSON.stringify({ name: 'Multi-Region-EU', regionLocationBaseId: BASE_EU }),
       });
       expect(euResponse.ok).toBe(true);
       const euData = await euResponse.json();
       euToken = euData.token;
+      euRegion = euData.region;
     });
 
     it('should register eval agents for all regions', async () => {
@@ -1665,7 +1691,7 @@ describe('Vox API Tests', () => {
       const naAgent = await naResponse.json();
       naAgentId = naAgent.id;
       naLeaseId = naAgent.leaseId;
-      expect(naAgent.region).toBe('na');
+      expect(naAgent.region).toBe(naRegion);
 
       // Register APAC agent
       const apacResponse = await fetch(`${BASE_URL}/api/eval-agent/register`, {
@@ -1680,7 +1706,7 @@ describe('Vox API Tests', () => {
       const apacAgent = await apacResponse.json();
       apacAgentId = apacAgent.id;
       apacLeaseId = apacAgent.leaseId;
-      expect(apacAgent.region).toBe('apac');
+      expect(apacAgent.region).toBe(apacRegion);
 
       // Register EU agent
       const euResponse = await fetch(`${BASE_URL}/api/eval-agent/register`, {
@@ -1694,7 +1720,7 @@ describe('Vox API Tests', () => {
       expect(euResponse.ok).toBe(true);
       const euAgent = await euResponse.json();
       euAgentId = euAgent.id;
-      expect(euAgent.region).toBe('eu');
+      expect(euAgent.region).toBe(euRegion);
     });
 
     it('should create workflow and eval set for multi-region testing', async () => {
@@ -1724,32 +1750,32 @@ describe('Vox API Tests', () => {
       // Create NA job
       const naResponse = await authFetch(adminSession, `${BASE_URL}/api/workflows/${multiRegionWorkflowId}/run`, {
         method: 'POST',
-        body: JSON.stringify({ region: 'na', evalSetId: multiRegionEvalSetId }),
+        body: JSON.stringify({ region: naRegion, evalSetId: multiRegionEvalSetId }),
       });
       expect(naResponse.ok).toBe(true);
       const naResult = await naResponse.json();
       naJobId = naResult.job.id;
-      expect(naResult.job.region).toBe('na');
+      expect(naResult.job.region).toBe(naRegion);
 
       // Create APAC job
       const apacResponse = await authFetch(adminSession, `${BASE_URL}/api/workflows/${multiRegionWorkflowId}/run`, {
         method: 'POST',
-        body: JSON.stringify({ region: 'apac', evalSetId: multiRegionEvalSetId }),
+        body: JSON.stringify({ region: apacRegion, evalSetId: multiRegionEvalSetId }),
       });
       expect(apacResponse.ok).toBe(true);
       const apacResult = await apacResponse.json();
       apacJobId = apacResult.job.id;
-      expect(apacResult.job.region).toBe('apac');
+      expect(apacResult.job.region).toBe(apacRegion);
 
       // Create EU job
       const euResponse = await authFetch(adminSession, `${BASE_URL}/api/workflows/${multiRegionWorkflowId}/run`, {
         method: 'POST',
-        body: JSON.stringify({ region: 'eu', evalSetId: multiRegionEvalSetId }),
+        body: JSON.stringify({ region: euRegion, evalSetId: multiRegionEvalSetId }),
       });
       expect(euResponse.ok).toBe(true);
       const euResult = await euResponse.json();
       euJobId = euResult.job.id;
-      expect(euResult.job.region).toBe('eu');
+      expect(euResult.job.region).toBe(euRegion);
     });
 
     it('should only show jobs matching agent region', async () => {
@@ -1760,7 +1786,7 @@ describe('Vox API Tests', () => {
       expect(naResponse.ok).toBe(true);
       const naJobs = await naResponse.json();
       const naJobRegions = naJobs.map((j: any) => j.region);
-      expect(naJobRegions.every((r: string) => r === 'na')).toBe(true);
+      expect(naJobRegions.every((r: string) => r === naRegion)).toBe(true);
 
       // APAC agent should only see APAC jobs
       const apacResponse = await fetch(`${BASE_URL}/api/eval-agent/jobs`, {
@@ -1769,7 +1795,7 @@ describe('Vox API Tests', () => {
       expect(apacResponse.ok).toBe(true);
       const apacJobs = await apacResponse.json();
       const apacJobRegions = apacJobs.map((j: any) => j.region);
-      expect(apacJobRegions.every((r: string) => r === 'apac')).toBe(true);
+      expect(apacJobRegions.every((r: string) => r === apacRegion)).toBe(true);
     });
 
     it('should not allow agent to claim job from different region', async () => {
@@ -1874,7 +1900,7 @@ describe('Vox API Tests', () => {
           name: 'Invalid Cron Schedule',
           workflowId: scheduleWorkflowId,
           evalSetId: scheduleEvalSetId,
-          region: 'na',
+          region: REGION_NA,
           scheduleType: 'recurring',
           cronExpression: 'invalid cron',
         }),
@@ -1889,7 +1915,7 @@ describe('Vox API Tests', () => {
           name: 'Missing Cron Schedule',
           workflowId: scheduleWorkflowId,
           evalSetId: scheduleEvalSetId,
-          region: 'na',
+          region: REGION_NA,
           scheduleType: 'recurring',
         }),
       });
@@ -1904,7 +1930,7 @@ describe('Vox API Tests', () => {
           name: 'Valid One-Time Schedule',
           workflowId: scheduleWorkflowId,
           evalSetId: scheduleEvalSetId,
-          region: 'na',
+          region: REGION_NA,
           scheduleType: 'once',
           nextRunAt: futureDate.toISOString(),
         }),
@@ -1921,7 +1947,7 @@ describe('Vox API Tests', () => {
           name: 'Valid Recurring Schedule',
           workflowId: scheduleWorkflowId,
           evalSetId: scheduleEvalSetId,
-          region: 'eu',
+          region: REGION_EU,
           scheduleType: 'recurring',
           cronExpression: '0 0 * * *', // Daily at midnight
         }),
@@ -2017,14 +2043,11 @@ describe('Vox API Tests', () => {
     let concurrentWorkflowId: number;
     let concurrentEvalSetId: number;
     let concurrentJobId: number;
-    let agent1Token: string;
-    let agent2Token: string;
-    let agent1Id: number;
-    let agent2Id: number;
-    let agent1Lease: string;
-    let agent2Lease: string;
+    let concurrentAgentToken: string;
+    let concurrentAgentId: number;
+    let concurrentLease: string;
 
-    it('should setup agents for concurrent test', async () => {
+    it('should setup an agent for the concurrent claim test', async () => {
       // Create workflow
       const wfResponse = await authFetch(adminSession, `${BASE_URL}/api/workflows`, {
         method: 'POST',
@@ -2043,80 +2066,56 @@ describe('Vox API Tests', () => {
       const evalSet = await esResponse.json();
       concurrentEvalSetId = evalSet.id;
 
-      // Create two agent tokens for same region
-      const token1Response = await authFetch(adminSession, `${BASE_URL}/api/admin/eval-agent-tokens`, {
+      // A job lives in exactly one region and each token resolves to its own
+      // <base>-<NN> region, so two distinct tokens can never contend for the same
+      // job (a cross-region claim is rejected 403, not a claim conflict). The claim
+      // race we exercise is therefore two concurrent claims from a SINGLE
+      // agent/lease: the atomic pending->running update lets exactly one through.
+      const tokenResponse = await authFetch(adminSession, `${BASE_URL}/api/admin/eval-agent-tokens`, {
         method: 'POST',
-        body: JSON.stringify({ name: 'Concurrent-Agent-1', region: 'na' }),
+        body: JSON.stringify({ name: 'Concurrent-Agent', regionLocationBaseId: BASE_NA }),
       });
-      expect(token1Response.ok).toBe(true);
-      const token1Data = await token1Response.json();
-      agent1Token = token1Data.token;
+      expect(tokenResponse.ok).toBe(true);
+      const tokenData = await tokenResponse.json();
+      concurrentAgentToken = tokenData.token;
+      const concurrentRegion = tokenData.region;
 
-      const token2Response = await authFetch(adminSession, `${BASE_URL}/api/admin/eval-agent-tokens`, {
-        method: 'POST',
-        body: JSON.stringify({ name: 'Concurrent-Agent-2', region: 'na' }),
-      });
-      expect(token2Response.ok).toBe(true);
-      const token2Data = await token2Response.json();
-      agent2Token = token2Data.token;
-
-      // Register agents
-      const agent1Response = await fetch(`${BASE_URL}/api/eval-agent/register`, {
+      // Register the agent
+      const agentResponse = await fetch(`${BASE_URL}/api/eval-agent/register`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${agent1Token}`,
+          'Authorization': `Bearer ${concurrentAgentToken}`,
         },
-        body: JSON.stringify({ name: 'Concurrent-Agent-1' }),
+        body: JSON.stringify({ name: 'Concurrent-Agent' }),
       });
-      expect(agent1Response.ok).toBe(true);
-      const agent1 = await agent1Response.json();
-      agent1Id = agent1.id;
-      agent1Lease = agent1.leaseId;
+      expect(agentResponse.ok).toBe(true);
+      const agent = await agentResponse.json();
+      concurrentAgentId = agent.id;
+      concurrentLease = agent.leaseId;
 
-      const agent2Response = await fetch(`${BASE_URL}/api/eval-agent/register`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${agent2Token}`,
-        },
-        body: JSON.stringify({ name: 'Concurrent-Agent-2' }),
-      });
-      expect(agent2Response.ok).toBe(true);
-      const agent2 = await agent2Response.json();
-      agent2Id = agent2.id;
-      agent2Lease = agent2.leaseId;
-
-      // Create a single job
+      // Create a single job in the agent's region
       const jobResponse = await authFetch(adminSession, `${BASE_URL}/api/workflows/${concurrentWorkflowId}/run`, {
         method: 'POST',
-        body: JSON.stringify({ region: 'na', evalSetId: concurrentEvalSetId }),
+        body: JSON.stringify({ region: concurrentRegion, evalSetId: concurrentEvalSetId }),
       });
       expect(jobResponse.ok).toBe(true);
       const jobResult = await jobResponse.json();
       concurrentJobId = jobResult.job.id;
     });
 
-    it('should only allow one agent to claim the same job', async () => {
-      // Both agents try to claim the same job concurrently
-      const [claim1, claim2] = await Promise.all([
-        fetch(`${BASE_URL}/api/eval-agent/jobs/${concurrentJobId}/claim`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${agent1Token}`,
-          },
-          body: JSON.stringify({ agentId: agent1Id, leaseId: agent1Lease }),
-        }),
-        fetch(`${BASE_URL}/api/eval-agent/jobs/${concurrentJobId}/claim`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${agent2Token}`,
-          },
-          body: JSON.stringify({ agentId: agent2Id, leaseId: agent2Lease }),
-        }),
-      ]);
+    it('should only allow one claim to win when the same job is claimed concurrently', async () => {
+      // Two concurrent claims from the same agent/lease race on the atomic
+      // pending->running update: one wins (200), the duplicate loses (409).
+      const claimOnce = () => fetch(`${BASE_URL}/api/eval-agent/jobs/${concurrentJobId}/claim`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${concurrentAgentToken}`,
+        },
+        body: JSON.stringify({ agentId: concurrentAgentId, leaseId: concurrentLease }),
+      });
+      const [claim1, claim2] = await Promise.all([claimOnce(), claimOnce()]);
 
       // One should succeed (200), one should fail (409 conflict)
       const statuses = [claim1.status, claim2.status].sort();
@@ -2365,7 +2364,7 @@ describe('Vox API Tests', () => {
     it('should reject token creation for basic users (403)', async () => {
       const response = await authFetch(basicSession, `${BASE_URL}/api/eval-agent-tokens`, {
         method: 'POST',
-        body: JSON.stringify({ name: 'Basic Token', region: 'na' }),
+        body: JSON.stringify({ name: 'Basic Token', regionLocationBaseId: BASE_NA }),
       });
       expect(response.status).toBe(403);
     });
@@ -2383,13 +2382,13 @@ describe('Vox API Tests', () => {
     it('should allow premium user to create a private token', async () => {
       const response = await authFetch(premiumSession, `${BASE_URL}/api/eval-agent-tokens`, {
         method: 'POST',
-        body: JSON.stringify({ name: 'Premium Private Token', region: 'na' }),
+        body: JSON.stringify({ name: 'Premium Private Token', regionLocationBaseId: BASE_NA }),
       });
       expect(response.ok).toBe(true);
       const data = await response.json();
       expect(data.token).toBeDefined();
       expect(data.visibility).toBe('private');
-      expect(data.region).toBe('na');
+      expect(data.region).toContain(BASE_NA);
       premiumTokenId = data.id;
     });
 
@@ -2397,7 +2396,7 @@ describe('Vox API Tests', () => {
     it('should force private visibility for premium user even if public requested', async () => {
       const response = await authFetch(premiumSession, `${BASE_URL}/api/eval-agent-tokens`, {
         method: 'POST',
-        body: JSON.stringify({ name: 'Premium Public Attempt', region: 'eu', visibility: 'public' }),
+        body: JSON.stringify({ name: 'Premium Public Attempt', regionLocationBaseId: BASE_EU, visibility: 'public' }),
       });
       expect(response.ok).toBe(true);
       const data = await response.json();
@@ -2430,7 +2429,7 @@ describe('Vox API Tests', () => {
     it('should allow admin to create a public token', async () => {
       const response = await authFetch(adminSession, `${BASE_URL}/api/eval-agent-tokens`, {
         method: 'POST',
-        body: JSON.stringify({ name: 'Admin Public Token', region: 'apac', visibility: 'public' }),
+        body: JSON.stringify({ name: 'Admin Public Token', regionLocationBaseId: BASE_APAC, visibility: 'public' }),
       });
       expect(response.ok).toBe(true);
       const data = await response.json();
@@ -2441,7 +2440,7 @@ describe('Vox API Tests', () => {
     it('should allow admin to create a private token', async () => {
       const response = await authFetch(adminSession, `${BASE_URL}/api/eval-agent-tokens`, {
         method: 'POST',
-        body: JSON.stringify({ name: 'Admin Private Token', region: 'na', visibility: 'private' }),
+        body: JSON.stringify({ name: 'Admin Private Token', regionLocationBaseId: BASE_NA, visibility: 'private' }),
       });
       expect(response.ok).toBe(true);
       const data = await response.json();
@@ -2452,7 +2451,7 @@ describe('Vox API Tests', () => {
     it('should default to public visibility for admin when not specified', async () => {
       const response = await authFetch(adminSession, `${BASE_URL}/api/eval-agent-tokens`, {
         method: 'POST',
-        body: JSON.stringify({ name: 'Admin Default Token', region: 'eu' }),
+        body: JSON.stringify({ name: 'Admin Default Token', regionLocationBaseId: BASE_EU }),
       });
       expect(response.ok).toBe(true);
       const data = await response.json();
@@ -2494,7 +2493,7 @@ describe('Vox API Tests', () => {
     it('should reject token creation with missing name', async () => {
       const response = await authFetch(premiumSession, `${BASE_URL}/api/eval-agent-tokens`, {
         method: 'POST',
-        body: JSON.stringify({ region: 'na' }),
+        body: JSON.stringify({ regionLocationBaseId: BASE_NA }),
       });
       expect(response.status).toBe(400);
     });
@@ -2541,11 +2540,14 @@ describe('Vox API Tests', () => {
     });
 
     it('should get community metrics with time filter', async () => {
-      const response = await fetch(`${BASE_URL}/api/metrics/community?hours=24&limit=10`);
+      // The server deliberately ignores a client `limit` (see parseMetricsWindow in
+      // routes.ts: "the client `limit` is ignored — the server alone decides row
+      // counts"). Only `hours` is honored, so assert the time-filtered array shape
+      // rather than a client-controlled row count.
+      const response = await fetch(`${BASE_URL}/api/metrics/community?hours=24`);
       expect(response.ok).toBe(true);
       const data = await response.json();
       expect(Array.isArray(data)).toBe(true);
-      expect(data.length).toBeLessThanOrEqual(10);
     });
 
     it('should reject unauthenticated access to my-evals', async () => {
@@ -2601,6 +2603,15 @@ describe('Vox API Tests', () => {
     });
 
     it('should delete workflow', async () => {
+      // testWorkflowId accumulates active schedules over the suite (the recurring
+      // + 90-day-expiry lifecycle tests). The server blocks deleting a workflow
+      // that still has an active schedule (409), so clear those first — mirroring
+      // the documented "delete the schedules first, then the workflow" flow.
+      const schedules = await (await authFetch(adminSession, `${BASE_URL}/api/eval-schedules`)).json();
+      for (const s of schedules.filter((r: { workflowId: number | null }) => r.workflowId === testWorkflowId)) {
+        await authFetch(adminSession, `${BASE_URL}/api/eval-schedules/${s.id}`, { method: 'DELETE' });
+      }
+
       const response = await authFetch(adminSession, `${BASE_URL}/api/workflows/${testWorkflowId}`, {
         method: 'DELETE',
       });
@@ -2609,6 +2620,19 @@ describe('Vox API Tests', () => {
     });
 
     it('should delete project', async () => {
+      // Other suites create workflows in testProjectId (the ownership-permission
+      // and config-separation tests) and don't remove them. The server refuses
+      // to delete a project that still has workflows ("Delete workflows first"),
+      // so clear any remaining workflows — and their schedules — first.
+      const workflows = await (await authFetch(adminSession, `${BASE_URL}/api/workflows`)).json();
+      for (const w of workflows.filter((wf: { projectId: number | null }) => wf.projectId === testProjectId)) {
+        const schedules = await (await authFetch(adminSession, `${BASE_URL}/api/eval-schedules`)).json();
+        for (const s of schedules.filter((r: { workflowId: number | null }) => r.workflowId === w.id)) {
+          await authFetch(adminSession, `${BASE_URL}/api/eval-schedules/${s.id}`, { method: 'DELETE' });
+        }
+        await authFetch(adminSession, `${BASE_URL}/api/workflows/${w.id}`, { method: 'DELETE' });
+      }
+
       const response = await authFetch(adminSession, `${BASE_URL}/api/projects/${testProjectId}`, {
         method: 'DELETE',
       });
@@ -2811,7 +2835,7 @@ describe('Vox API Tests', () => {
         method: 'POST',
         body: JSON.stringify({
           evalSetId: mergeEvalSetId,
-          region: 'na',
+          region: REGION_NA,
         }),
       });
 
@@ -2854,7 +2878,7 @@ describe('Vox API Tests', () => {
         method: 'POST',
         body: JSON.stringify({
           evalSetId: es.id,
-          region: 'na',
+          region: REGION_NA,
         }),
       });
 
@@ -2930,7 +2954,9 @@ describe('Vox API Tests', () => {
       const cloned: EvalSet = await response.json();
       expect(cloned.name).toBe('Clone of Clone Source Eval Set');
       expect(cloned.config).toEqual({ scenario: 'steps:\n  - action: speak\n    file: clone.mp3' });
-      expect(cloned.visibility).toBe('public');
+      // Clone visibility is plan-based (routes.ts: basic → public, else private).
+      // adminSession is a principal user, so the clone lands private.
+      expect(cloned.visibility).toBe('private');
       expect(cloned.isMainline).toBe(false);
       expect(cloned.id).not.toBe(sourceEvalSetId);
     });
@@ -3051,7 +3077,7 @@ describe('Vox API Tests', () => {
           name: 'RunNow Config Schedule',
           workflowId: wf.id,
           evalSetId: es.id,
-          region: 'na',
+          region: REGION_NA,
           scheduleType: 'once',
         }),
       });
@@ -3163,14 +3189,14 @@ describe('Vox API Tests', () => {
       // Run same eval set against both workflows
       const job1Res = await authFetch(adminSession, `${BASE_URL}/api/workflows/${wf1.id}/run`, {
         method: 'POST',
-        body: JSON.stringify({ evalSetId: evalSet.id, region: 'na' }),
+        body: JSON.stringify({ evalSetId: evalSet.id, region: REGION_NA }),
       });
       expect(job1Res.ok).toBe(true);
       const job1 = await job1Res.json();
 
       const job2Res = await authFetch(adminSession, `${BASE_URL}/api/workflows/${wf2.id}/run`, {
         method: 'POST',
-        body: JSON.stringify({ evalSetId: evalSet.id, region: 'na' }),
+        body: JSON.stringify({ evalSetId: evalSet.id, region: REGION_NA }),
       });
       expect(job2Res.ok).toBe(true);
       const job2 = await job2Res.json();
@@ -3190,6 +3216,10 @@ describe('Vox API Tests', () => {
 
   describe('Built-in Eval Set Protection', () => {
     let builtInEvalSetId: number;
+    // Describe-local non-admin session. The previous code referenced `premiumSession`,
+    // which is scoped to a sibling describe ("User-Facing Eval Agent Token API") and is
+    // undefined here — a ReferenceError. Set up a dedicated non-admin user instead.
+    let nonAdminSession: AuthSession;
 
     beforeAll(async () => {
       // Create an eval set with builtIn: true in config (simulates seeded data)
@@ -3205,12 +3235,27 @@ describe('Vox API Tests', () => {
       expect(response.ok).toBe(true);
       const es: EvalSet = await response.json();
       builtInEvalSetId = es.id;
+
+      // Provision a non-admin (premium) user to exercise the non-admin guard.
+      const nonAdminEmail = `builtin-nonadmin-${Date.now()}-${Math.random().toString(36).slice(2, 8)}@test.local`;
+      const nonAdminPassword = 'testpass123';
+      const inviteRes = await authFetch(adminSession, `${BASE_URL}/api/admin/invite`, {
+        method: 'POST',
+        body: JSON.stringify({ email: nonAdminEmail, plan: 'premium' }),
+      });
+      expect(inviteRes.ok).toBe(true);
+      const { token } = await inviteRes.json();
+      const regRes = await fetch(`${BASE_URL}/api/auth/register`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: `builtin-nonadmin-${Date.now()}`, password: nonAdminPassword, token }),
+      });
+      expect(regRes.ok).toBe(true);
+      nonAdminSession = await login(nonAdminEmail, nonAdminPassword);
     });
 
     it('should reject PATCH on built-in eval set for non-admin', async () => {
-      // premiumSession is a non-admin user
-      if (!premiumSession) return; // skip if premium user not set up
-      const response = await authFetch(premiumSession, `${BASE_URL}/api/eval-sets/${builtInEvalSetId}`, {
+      const response = await authFetch(nonAdminSession, `${BASE_URL}/api/eval-sets/${builtInEvalSetId}`, {
         method: 'PATCH',
         body: JSON.stringify({ name: 'Hacked Name' }),
       });
@@ -3362,20 +3407,27 @@ describe('Vox API Tests', () => {
   describe('Version-Gated Job Fetching', () => {
     let versionTestToken: string;
     let versionTestAgentId: number;
+    // The jobs listing filters by the agent's OWN token region, so every job these
+    // tests expect the agent to see must be created in this captured region.
+    let versionTestRegion: string;
     let versionedWorkflowId: number;
     let versionedEvalSetId: number;
     let unversionedWorkflowId: number;
     let unversionedEvalSetId: number;
+    // Hoisted so the legacy-agent test can create a same-region v99 job.
+    let futureWorkflowId: number;
+    let futureEvalSetId: number;
 
     beforeAll(async () => {
       // Create a new token for this test
       const tokenRes = await authFetch(adminSession, `${BASE_URL}/api/admin/eval-agent-tokens`, {
         method: 'POST',
-        body: JSON.stringify({ name: 'Version Test Token', region: 'na' }),
+        body: JSON.stringify({ name: 'Version Test Token', regionLocationBaseId: BASE_NA }),
       });
       expect(tokenRes.ok).toBe(true);
       const tokenData: EvalAgentToken = await tokenRes.json();
       versionTestToken = tokenData.token!;
+      versionTestRegion = tokenData.region!;
 
       // Register agent with frameworkVersion metadata
       const agentRes = await fetch(`${BASE_URL}/api/eval-agent/register`, {
@@ -3406,6 +3458,7 @@ describe('Vox API Tests', () => {
         body: JSON.stringify({
           name: 'v0.1.0 Workflow',
           projectId: proj.id,
+          providerId: testProviderId,
           config: { framework: 'aeval', frameworkVersion: 'v0.1.0' },
         }),
       });
@@ -3429,6 +3482,7 @@ describe('Vox API Tests', () => {
         body: JSON.stringify({
           name: 'Unversioned Workflow',
           projectId: proj.id,
+          providerId: testProviderId,
           config: { framework: 'aeval' },
         }),
       });
@@ -3450,7 +3504,7 @@ describe('Vox API Tests', () => {
       // Create a v0.1.0 job
       const runRes = await authFetch(adminSession, `${BASE_URL}/api/workflows/${versionedWorkflowId}/run`, {
         method: 'POST',
-        body: JSON.stringify({ region: 'na', evalSetId: versionedEvalSetId }),
+        body: JSON.stringify({ region: versionTestRegion, evalSetId: versionedEvalSetId }),
       });
       expect(runRes.ok).toBe(true);
 
@@ -3472,7 +3526,7 @@ describe('Vox API Tests', () => {
       // Create an unversioned job
       const runRes = await authFetch(adminSession, `${BASE_URL}/api/workflows/${unversionedWorkflowId}/run`, {
         method: 'POST',
-        body: JSON.stringify({ region: 'na', evalSetId: unversionedEvalSetId }),
+        body: JSON.stringify({ region: versionTestRegion, evalSetId: unversionedEvalSetId }),
       });
       expect(runRes.ok).toBe(true);
 
@@ -3503,10 +3557,12 @@ describe('Vox API Tests', () => {
         body: JSON.stringify({
           name: 'v99.0.0 Workflow',
           projectId: proj.id,
+          providerId: testProviderId,
           config: { framework: 'aeval', frameworkVersion: 'v99.0.0' },
         }),
       });
       const wf: Workflow = await wfRes.json();
+      futureWorkflowId = wf.id;
 
       const esRes = await authFetch(adminSession, `${BASE_URL}/api/eval-sets`, {
         method: 'POST',
@@ -3516,10 +3572,11 @@ describe('Vox API Tests', () => {
         }),
       });
       const es: EvalSet = await esRes.json();
+      futureEvalSetId = es.id;
 
       const runRes = await authFetch(adminSession, `${BASE_URL}/api/workflows/${wf.id}/run`, {
         method: 'POST',
-        body: JSON.stringify({ region: 'na', evalSetId: es.id }),
+        body: JSON.stringify({ region: versionTestRegion, evalSetId: es.id }),
       });
       expect(runRes.ok).toBe(true);
 
@@ -3541,10 +3598,11 @@ describe('Vox API Tests', () => {
       // Create a new token + agent WITHOUT frameworkVersion
       const tokenRes = await authFetch(adminSession, `${BASE_URL}/api/admin/eval-agent-tokens`, {
         method: 'POST',
-        body: JSON.stringify({ name: 'Legacy Agent Token', region: 'na' }),
+        body: JSON.stringify({ name: 'Legacy Agent Token', regionLocationBaseId: BASE_NA }),
       });
       const tokenData: EvalAgentToken = await tokenRes.json();
       const legacyToken = tokenData.token!;
+      const legacyRegion = tokenData.region!;
 
       // Register without metadata
       const agentRes = await fetch(`${BASE_URL}/api/eval-agent/register`, {
@@ -3556,6 +3614,16 @@ describe('Vox API Tests', () => {
         body: JSON.stringify({ name: 'Legacy Agent' }),
       });
       expect(agentRes.ok).toBe(true);
+
+      // The jobs listing filters by the agent's own token region, so the v99 job
+      // created earlier lives in versionTestRegion and is invisible here. Create a
+      // fresh v99 job in THIS agent's region so the "legacy sees future jobs"
+      // assertion has a same-region future job to find.
+      const futureRunRes = await authFetch(adminSession, `${BASE_URL}/api/workflows/${futureWorkflowId}/run`, {
+        method: 'POST',
+        body: JSON.stringify({ region: legacyRegion, evalSetId: futureEvalSetId }),
+      });
+      expect(futureRunRes.ok).toBe(true);
 
       // Legacy agent should see ALL pending jobs (no version filtering)
       const jobsRes = await fetch(`${BASE_URL}/api/eval-agent/jobs`, {
@@ -3586,7 +3654,7 @@ describe('Vox API Tests', () => {
     beforeAll(async () => {
       const tokenRes = await authFetch(adminSession, `${BASE_URL}/api/admin/eval-agent-tokens`, {
         method: 'POST',
-        body: JSON.stringify({ name: 'Heartbeat Test Token', region: 'na' }),
+        body: JSON.stringify({ name: 'Heartbeat Test Token', regionLocationBaseId: BASE_NA }),
       });
       const tokenData: EvalAgentToken = await tokenRes.json();
       hbToken = tokenData.token!;
@@ -3649,6 +3717,7 @@ describe('Vox API Tests', () => {
         body: JSON.stringify({
           name: 'Config Merge Workflow',
           projectId: proj.id,
+          providerId: testProviderId,
           config: { framework: 'aeval', frameworkVersion: 'v0.3.0' },
         }),
       });
@@ -3665,7 +3734,7 @@ describe('Vox API Tests', () => {
 
       const runRes = await authFetch(adminSession, `${BASE_URL}/api/workflows/${wf.id}/run`, {
         method: 'POST',
-        body: JSON.stringify({ region: 'na', evalSetId: es.id }),
+        body: JSON.stringify({ region: REGION_NA, evalSetId: es.id }),
       });
       expect(runRes.ok).toBe(true);
       const data = await runRes.json();
@@ -3895,14 +3964,14 @@ describe('Vox API Tests', () => {
 
   // ==================== Metrics API (P95 fields) ====================
   describe('Eval Agent job completion', () => {
-    // Uses region 'sa' so the local 'na' daemon (if any) doesn't race for the job.
+    // Uses an SA region so the local NA daemon (if any) doesn't race for the job.
     it('completes a job once and is idempotent on a duplicate completion', async () => {
       // 1) token + registered agent
       const tokRes = await authFetch(adminSession, `${BASE_URL}/api/eval-agent-tokens`, {
-        method: 'POST', body: JSON.stringify({ region: 'sa', name: `complete-test-${Date.now()}` }),
+        method: 'POST', body: JSON.stringify({ regionLocationBaseId: BASE_SA, name: `complete-test-${Date.now()}` }),
       });
       expect(tokRes.ok).toBe(true);
-      const { token } = await tokRes.json();
+      const { token, region: agentRegion } = await tokRes.json();
       const regRes = await fetch(`${BASE_URL}/api/eval-agent/register`, {
         method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ name: 'complete-test-agent' }),
       });
@@ -3920,7 +3989,7 @@ describe('Vox API Tests', () => {
       });
       const esId = (await es.json()).id;
       const jobRes = await authFetch(adminSession, `${BASE_URL}/api/workflows/${wfId}/run`, {
-        method: 'POST', body: JSON.stringify({ region: 'sa', evalSetId: esId }),
+        method: 'POST', body: JSON.stringify({ region: agentRegion, evalSetId: esId }),
       });
       expect(jobRes.ok).toBe(true);
       const jobBody = await jobRes.json();
@@ -4402,9 +4471,12 @@ describe('Vox API Tests', () => {
       // Invalid status is silently ignored
     });
 
-    it('should ignore invalid region', async () => {
+    it('should reject invalid region', async () => {
+      // Unlike status/workflowId (silently ignored), the region param is strictly
+      // validated against allocated site IDs post-migration 0023 — a bogus region
+      // ("mars") is rejected with 400 rather than silently ignored.
       const res = await authFetch(adminSession, `${BASE_URL}/api/eval-jobs?hours=720&region=mars`);
-      expect(res.ok).toBe(true);
+      expect(res.status).toBe(400);
     });
 
     it('should require authentication', async () => {

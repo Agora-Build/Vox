@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { REGION_NA } from "./helpers/regions";
 
 // =====================================================================
 // Clash Runner Lifecycle Tests
@@ -66,13 +67,13 @@ describe("Clash Runner Lifecycle", () => {
     it("creates a runner token with region", async () => {
       const res = await authFetch(admin, `${BASE_URL}/api/admin/clash-runner-tokens`, {
         method: "POST",
-        body: JSON.stringify({ name: "lifecycle-test-runner", region: "na" }),
+        body: JSON.stringify({ name: "lifecycle-test-runner", region: REGION_NA }),
       });
       expect(res.status).toBe(200);
       const data = await res.json();
       expect(data.token).toBeTruthy();
       expect(data.token).toMatch(/^cr/);
-      expect(data.region).toBe("na");
+      expect(data.region).toBe(REGION_NA);
       expect(data.name).toBe("lifecycle-test-runner");
       runnerToken = data.token;
       runnerTokenId = data.id;
@@ -89,7 +90,7 @@ describe("Clash Runner Lifecycle", () => {
     it("rejects token creation without name", async () => {
       const res = await authFetch(admin, `${BASE_URL}/api/admin/clash-runner-tokens`, {
         method: "POST",
-        body: JSON.stringify({ region: "na" }),
+        body: JSON.stringify({ region: REGION_NA }),
       });
       expect(res.status).toBe(400);
     });
@@ -116,7 +117,7 @@ describe("Clash Runner Lifecycle", () => {
       expect(res.status).toBe(200);
       const data = await res.json();
       expect(data.state).toBe("idle");
-      expect(data.region).toBe("na");
+      expect(data.region).toBe(REGION_NA);
       expect(data.id).toBeTypeOf("number");
     });
 
@@ -145,7 +146,7 @@ describe("Clash Runner Lifecycle", () => {
       // Create + revoke a token
       const createRes = await authFetch(admin, `${BASE_URL}/api/admin/clash-runner-tokens`, {
         method: "POST",
-        body: JSON.stringify({ name: "to-revoke", region: "na" }),
+        body: JSON.stringify({ name: "to-revoke", region: REGION_NA }),
       });
       const { token: revokeToken, id: revokeId } = await createRes.json();
 
@@ -219,7 +220,7 @@ describe("Clash Runner Lifecycle", () => {
       expect(Array.isArray(runners)).toBe(true);
       const found = runners.find((r: any) => r.runnerId === `test-host-${testId}-2`);
       expect(found).toBeTruthy();
-      expect(found.region).toBe("na");
+      expect(found.region).toBe(REGION_NA);
       expect(found.state).toBe("idle");
     });
 
@@ -263,7 +264,7 @@ describe("Clash Runner Lifecycle", () => {
         method: "POST",
         body: JSON.stringify({
           name: "Lifecycle Test Event",
-          region: "na",
+          region: REGION_NA,
           visibility: "private",
           matchups: [
             {
@@ -387,7 +388,7 @@ describe("Clash Runner Lifecycle", () => {
         method: "POST",
         body: JSON.stringify({
           name: "Failure Test Event",
-          region: "na",
+          region: REGION_NA,
           visibility: "private",
           matchups: [{
             agentAProfileId: profileAId,
@@ -429,7 +430,7 @@ describe("Clash Runner Lifecycle", () => {
         method: "POST",
         body: JSON.stringify({
           name: "Draw Test Event",
-          region: "na",
+          region: REGION_NA,
           visibility: "private",
           matchups: [{
             agentAProfileId: profileAId,
@@ -466,7 +467,7 @@ describe("Clash Runner Lifecycle", () => {
         method: "POST",
         body: JSON.stringify({
           name: "Moderator Test Event",
-          region: "na",
+          region: REGION_NA,
           visibility: "private",
           matchups: [{
             agentAProfileId: profileAId,
@@ -514,7 +515,7 @@ describe("Clash Runner Lifecycle", () => {
         method: "POST",
         body: JSON.stringify({
           name: "Phase Test",
-          region: "na",
+          region: REGION_NA,
           visibility: "private",
           matchups: [{
             agentAProfileId: profileAId,
@@ -639,7 +640,7 @@ describe("Clash Runner Lifecycle", () => {
         method: "POST",
         body: JSON.stringify({
           name: "Stream Info Test",
-          region: "na",
+          region: REGION_NA,
           visibility: "private",
           matchups: [{
             agentAProfileId: profileAId,
