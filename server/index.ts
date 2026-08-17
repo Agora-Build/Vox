@@ -12,6 +12,7 @@ import { canScheduleWorkflow } from "./permissions";
 import { parseNextCronRun } from "./cron";
 import { setupClashWebSocket } from "./clash-ws";
 import { loadPlugins } from "./plugins/loader";
+import { setMarketplace, type EvalMarketplace } from "./marketplace";
 import pkg from "pg";
 const { Pool } = pkg;
 
@@ -197,6 +198,7 @@ app.use((req, res, next) => {
   // Load enabled plugins (routes mounted before the error handler + vite catch-all).
   // Any misconfiguration throws here — fail-before-listen (strict startup).
   const plugins = await loadPlugins(app, pool);
+  setMarketplace(plugins.services.optional<EvalMarketplace>("vox.eval-marketplace", "^1.0.0"));
 
   // Graceful shutdown: stop workers and deactivate plugins in reverse order.
   // Guard against re-entrancy — two signals in quick succession must not run the

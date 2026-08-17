@@ -1,5 +1,6 @@
 import type { Express } from "express";
 import { type Server } from "http";
+import { z } from "zod";
 import { storage, hashToken, generateSecureToken, generateEvalAgentToken, mergeEvalConfig, buildJobSnapshot, validateWorkflowConfig, validateEvalSetConfig, encryptValue, decryptValue, isEncryptionConfigured, type MetricSourceRow, type RegionQueryScope } from "./storage";
 import { parseNextCronRun } from "./cron";
 import { compareVersions } from "./aeval-seed";
@@ -8,6 +9,8 @@ import { deriveScheduleStatus } from "@shared/schedule-status";
 import { regionSiteSequence } from "@shared/regions";
 import { registerApiV1Routes } from "./routes-api-v1";
 import { generateSignedUrlForUser } from "./s3";
+import { validateTierChange, resolveTargetedDispatch, filterDispatchableAgents } from "./dispatch";
+import { getMarketplace } from "./marketplace";
 import {
   hashPassword,
   verifyPassword,
@@ -2661,6 +2664,47 @@ export async function registerRoutes(
     }
   });
 
+  app.patch("/api/eval-agent-tokens/:id", requireAuth, async (req, res) => {
+    const user = await getCurrentUser(req);
+    if (!user) return res.status(401).json({ error: "Not authenticated" });
+
+    const id = parseInt(req.params.id, 10);
+    const token = await storage.getEvalAgentToken(id);
+    if (!token) return res.status(404).json({ error: "Token not found" });
+
+    const bodySchema = z.object({
+      dispatchTier: z.enum(["private", "team", "public", "shared"]),
+      pricePerUnit: z.number().int().positive().nullable().optional(),
+    });
+    const parsed = bodySchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: "Invalid request" });
+    const { dispatchTier, pricePerUnit } = parsed.data;
+
+    const marketplace = getMarketplace();
+    const decision = validateTierChange({
+      user: { id: user.id, isAdmin: user.isAdmin, plan: user.plan },
+      token: { createdBy: token.createdBy },
+      newTier: dispatchTier,
+      marketplacePresent: marketplace !== null,
+      pricePerUnit: pricePerUnit ?? null,
+    });
+    if (!decision.ok) return res.status(decision.status).json({ error: decision.reason });
+
+    // Core writes only its own column.
+    await storage.updateEvalAgentTokenDispatchTier(id, dispatchTier);
+
+    // Money lives only in the plugin: set/clear the listing via the seam.
+    if (marketplace) {
+      if (dispatchTier === "shared") {
+        await marketplace.setListing(id, pricePerUnit ?? null);
+      } else {
+        await marketplace.setListing(id, null); // switching away from shared deactivates the listing
+      }
+    }
+
+    return res.json({ id, dispatchTier });
+  });
+
   // ==================== EVAL AGENT TOKEN ROUTES (Admin only) ====================
 
   app.get("/api/admin/eval-agent-tokens", requireAuth, requireAdmin, async (req, res) => {
@@ -2765,6 +2809,35 @@ export async function registerRoutes(
     } catch (error) {
       console.error("Error fetching eval agents:", error);
       res.status(500).json({ error: "Failed to fetch eval agents" });
+    }
+  });
+
+  app.get("/api/eval-agents/dispatchable", requireAuth, async (req, res) => {
+    try {
+      const user = await getCurrentUser(req);
+      if (!user) return res.status(401).json({ error: "Not authenticated" });
+
+      const agents = await storage.getEvalAgentsWithTokenVisibility();
+      const rows = agents.map((a) => ({
+        tokenId: a.tokenId,
+        region: a.region,
+        dispatchTier: a.tokenDispatchTier,
+        ownerId: a.tokenCreatedBy,
+        ownerOrgId: a.tokenOwnerOrgId,
+        state: a.state,
+      }));
+      const free = filterDispatchableAgents({ id: user.id, organizationId: user.organizationId }, rows);
+
+      const marketplace = getMarketplace();
+      const shared = marketplace ? await marketplace.listDispatchable(user.id) : [];
+
+      return res.json({
+        free: free.map((a) => ({ tokenId: a.tokenId, region: a.region, dispatchTier: a.dispatchTier, state: a.state })),
+        shared, // AgentSummary[] with pricePerUnit; [] when the seam is absent
+      });
+    } catch (error) {
+      console.error("Error fetching dispatchable agents:", error);
+      res.status(500).json({ error: "Failed to fetch dispatchable agents" });
     }
   });
 
@@ -2943,7 +3016,12 @@ export async function registerRoutes(
         return res.status(401).json({ error: "Invalid or revoked eval agent token" });
       }
 
-      let jobs = await storage.getPendingEvalJobsByRegion(evalAgentToken.region);
+      let jobs = await storage.getClaimableJobsForToken({
+        id: evalAgentToken.id,
+        region: evalAgentToken.region,
+        dispatchTier: evalAgentToken.dispatchTier,
+        createdBy: evalAgentToken.createdBy,
+      });
 
       // Version-gate: if the requesting agent has a frameworkVersion, filter out
       // jobs whose config requires a newer version than the agent supports.
@@ -3009,7 +3087,12 @@ export async function registerRoutes(
       // Freeze the claiming agent's token visibility onto the job in the SAME atomic
       // claim update — the one tier input not known at creation. Completes the
       // immutable metric-tier snapshot (no separate write to lose on a crash).
-      const job = await storage.claimEvalJob(parseInt(jobId), agentId, evalAgentToken.visibility);
+      const job = await storage.claimEvalJob(parseInt(jobId, 10), agentId, {
+        id: evalAgentToken.id,
+        dispatchTier: evalAgentToken.dispatchTier,
+        createdBy: evalAgentToken.createdBy,
+        visibility: evalAgentToken.visibility,
+      });
       if (!job) {
         return res.status(409).json({ error: "Job already claimed or not found" });
       }
@@ -3391,7 +3474,11 @@ export async function registerRoutes(
 
       const { workflowId } = req.params;
       const { region, evalSetId } = req.body;
-      
+      const targetTokenId = req.body.targetTokenId != null ? Number(req.body.targetTokenId) : null;
+      if (targetTokenId != null && !Number.isFinite(targetTokenId)) {
+        return res.status(400).json({ error: "Invalid target agent token id" });
+      }
+
       const workflow = await storage.getWorkflow(parseInt(workflowId));
       
       if (!workflow) {
@@ -3413,11 +3500,12 @@ export async function registerRoutes(
         }
       }
 
-      const normalizedRegion = region ? String(region) : "";
-      if (!normalizedRegion || !(await storage.isAllocatedRegion(normalizedRegion))) {
-        return res.status(400).json({ error: "An active allocated region site is required" });
-      }
-
+      // Validate the eval set BEFORE any dispatch authorization or region
+      // resolution. The `shared` tier's marketplace.authorizeDispatch (a future
+      // credit-hold in Phase B) must never fire against an eval set the caller
+      // cannot access or that does not exist. Hoisted above the targeting branch
+      // per the A6 final-review finding (deviates from the plan's original order,
+      // human-approved).
       if (!evalSetId) {
         return res.status(400).json({ error: "Eval set required" });
       }
@@ -3431,13 +3519,51 @@ export async function registerRoutes(
         return res.status(403).json({ error: "Access denied to eval set" });
       }
 
+      let jobRegion: string;
+      let targeting: number | null = null;
+
+      if (targetTokenId != null) {
+        const token = await storage.getEvalAgentToken(targetTokenId);
+        if (!token || token.isRevoked) return res.status(404).json({ error: "Target agent token not found" });
+
+        if (token.dispatchTier === "shared") {
+          const marketplace = getMarketplace();
+          if (!marketplace) return res.status(400).json({ error: "Shared dispatch is not available" });
+          const authz = await marketplace.authorizeDispatch(user.id, token.id, {
+            workflowId: parseInt(workflowId, 10),
+            evalSetId: evalSetId ?? null,
+            region: token.region,
+            createdBy: user.id,
+          });
+          if (!authz.ok) return res.status(402).json({ error: authz.reason ?? "Dispatch not authorized" });
+          // settlementContext ridealong is stashed into the snapshot in Phase B.
+        } else {
+          const owner = await storage.getUser(token.createdBy);
+          const decision = resolveTargetedDispatch(
+            { id: user.id, organizationId: user.organizationId },
+            { id: token.id, dispatchTier: token.dispatchTier, createdBy: token.createdBy, region: token.region },
+            { organizationId: owner?.organizationId ?? null },
+          );
+          if (!decision.ok) return res.status(403).json({ error: "Not allowed to dispatch to this agent" });
+        }
+        jobRegion = token.region; // targeted: region derived from token (body region ignored)
+        targeting = token.id;
+      } else {
+        const normalizedRegion = region ? String(region) : "";
+        if (!normalizedRegion || !(await storage.isAllocatedRegion(normalizedRegion))) {
+          return res.status(400).json({ error: "An active allocated region site is required" });
+        }
+        jobRegion = normalizedRegion;
+      }
+
       const provider = await storage.getProvider(workflow.providerId);
       const job = await storage.createEvalJob({
         workflowId: parseInt(workflowId),
         triggerType: 2, // manual (Run Workflow)
         evalSetId,
         createdBy: user.id,
-        region: normalizedRegion,
+        region: jobRegion,
+        targetTokenId: targeting,
         config: mergeEvalConfig(workflow.config, evalSet.config),
         snapshot: buildJobSnapshot(workflow, evalSet, provider, user.plan),
         status: "pending",

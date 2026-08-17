@@ -9,6 +9,7 @@ export const visibilityEnum = pgEnum("visibility", ["public", "private"]);
 export const providerSkuEnum = pgEnum("provider_sku", ["convoai", "rtc"]);
 export const evalAgentStateEnum = pgEnum("eval_agent_state", ["idle", "offline", "occupied"]);
 export const evalJobStatusEnum = pgEnum("eval_job_status", ["pending", "running", "completed", "failed"]);
+export const dispatchTierEnum = pgEnum("dispatch_tier", ["private", "team", "public", "shared"]);
 export const clashStatusEnum = pgEnum("clash_status", ["pending", "starting", "live", "completed", "failed"]);
 export const scheduleTypeEnum = pgEnum("schedule_type", ["once", "recurring"]);
 export const clashEventStatusEnum = pgEnum("clash_event_status", ["upcoming", "live", "completed", "cancelled"]);
@@ -204,6 +205,7 @@ export const evalAgentTokens = pgTable("eval_agent_tokens", {
   tokenHash: text("token_hash").notNull().unique(),
   region: varchar("region", { length: 64 }).notNull(),
   visibility: visibilityEnum("visibility").default("public").notNull(),
+  dispatchTier: dispatchTierEnum("dispatch_tier").default("public").notNull(),
   createdBy: integer("created_by").notNull().references(() => users.id),
   isRevoked: boolean("is_revoked").default(false).notNull(),
   expiresAt: timestamp("expires_at"),
@@ -316,6 +318,7 @@ export const evalJobs = pgTable("eval_jobs", {
   // or eval-set — provenance/tiering come from `snapshot`, not these live FKs.
   workflowId: integer("workflow_id").references(() => workflows.id, { onDelete: "set null" }),
   evalSetId: integer("eval_set_id").references(() => evalSets.id, { onDelete: "set null" }),
+  targetTokenId: integer("target_token_id").references(() => evalAgentTokens.id, { onDelete: "set null" }),
   evalAgentId: integer("eval_agent_id").references(() => evalAgents.id),
   createdBy: integer("created_by").references(() => users.id),
   region: varchar("region", { length: 64 }).notNull(),

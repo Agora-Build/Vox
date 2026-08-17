@@ -15,6 +15,14 @@ import { BUILTIN_PLUGINS } from "../../plugins/index";
 
 export interface LoadedPlugins {
   shutdown(): Promise<void>;
+  services: { require: ServiceRegistry["require"]; optional: ServiceRegistry["optional"] };
+}
+
+export function makeServicesView(registry: ServiceRegistry): LoadedPlugins["services"] {
+  return {
+    require: registry.require.bind(registry),
+    optional: registry.optional.bind(registry),
+  };
 }
 
 export async function loadPlugins(
@@ -24,7 +32,9 @@ export async function loadPlugins(
   pluginsDir = "./plugins",
 ): Promise<LoadedPlugins> {
   const ids = (process.env.VOX_PLUGINS ?? "").split(",").map((s) => s.trim()).filter(Boolean);
-  if (ids.length === 0) return { shutdown: async () => {} };
+  if (ids.length === 0) {
+    return { shutdown: async () => {}, services: makeServicesView(new ServiceRegistry()) };
+  }
 
   // 1. discover + validate
   const manifests: PluginManifest[] = [];
@@ -76,5 +86,6 @@ export async function loadPlugins(
         if (plugin.deactivate) await plugin.deactivate();
       }
     },
+    services: makeServicesView(registry),
   };
 }

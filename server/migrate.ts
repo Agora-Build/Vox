@@ -46,6 +46,7 @@ const MIGRATIONS: Array<{ version: number; description: string; file: string | n
   { version: 22, description: "eval_result turn_success_rate column", file: "0021_add_turn_success_rate.sql" },
   { version: 23, description: "clash_results audio-health columns (audio_rms, talk_time_seconds)", file: "0022_clash_audio_health.sql" },
   { version: 24, description: "admin-managed region locations and exact site IDs", file: "0023_region_locations.sql" },
+  { version: 25, description: "shared agents: dispatch_tier + target_token_id", file: "0024_shared_agents_dispatch.sql" },
 ];
 
 const TARGET_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version;
