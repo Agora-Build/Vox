@@ -50,10 +50,49 @@ d("storage.getReapableSharedJobs", () => {
     } as any);
     await storage.finalizeRunningJob(includedCompleted.id, undefined); // running → completed
 
-    const rows = await storage.getReapableSharedJobs(60, 500);
+    // graceMinutes=0 → no grace exclusion, so jobs completed just now are eligible.
+    const rows = await storage.getReapableSharedJobs(60, 0, 500);
     const ids = rows.map((r) => r.id);
     expect(ids).toContain(included.id);      // the real assertion: query returns it
     expect(ids).not.toContain(excluded.id);  // no settlementContext → excluded
     expect(ids).toContain(includedCompleted.id); // completed jobs are reapable too (C1)
+  });
+
+  it("grace period excludes a job that turned terminal too recently (GitHub #90)", async () => {
+    const token = await storage.createEvalAgentToken({
+      name: "reap-grace-test",
+      tokenHash: `reap-grace-${Date.now()}`,
+      region: "na-us-ashburn-01",
+      createdBy: 1,
+    } as any);
+
+    // A completed, targeted, settlement-bearing job — the money path. Drive it
+    // through running→completed so its completed_at is ~now (inside the grace window).
+    const job = await storage.createEvalJob({
+      workflowId: null, triggerType: 2, evalSetId: null, createdBy: 1,
+      region: "na-us-ashburn-01", targetTokenId: token.id,
+      config: {}, snapshot: { provider: null, workflow: null, evalSet: null, creatorPlan: null,
+        settlementContext: { settlementId: 909090 } } as any,
+      status: "running", priority: 0, retryCount: 0, maxRetries: 3,
+    } as any);
+    await storage.finalizeRunningJob(job.id, undefined); // running → completed, completed_at=now
+
+    // With a 1-minute grace, a just-completed job must NOT be swept: this is the
+    // window where its evalResults row may not be written yet, so settling now would
+    // refund a valid job. It is excluded until it ages past the grace.
+    const withGrace = await storage.getReapableSharedJobs(60, 1, 500);
+    expect(withGrace.map((r) => r.id)).not.toContain(job.id);
+
+    // Same job with no grace IS eligible — proves the exclusion is the grace bound,
+    // not some other filter.
+    const noGrace = await storage.getReapableSharedJobs(60, 0, 500);
+    expect(noGrace.map((r) => r.id)).toContain(job.id);
+  });
+
+  it("returns candidates oldest-first so a backlog drains before aging out (#7)", async () => {
+    const rows = await storage.getReapableSharedJobs(60, 0, 500);
+    const times = rows.map((r) => (r.completedAt as Date).getTime());
+    const sorted = [...times].sort((a, b) => a - b);
+    expect(times).toEqual(sorted); // completed_at ascending
   });
 });

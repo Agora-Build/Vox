@@ -31,6 +31,11 @@ const MAX_JOB_RUN_MINUTES = 90;
 const PENDING_NO_AGENT_TIMEOUT_MINUTES = 15;
 const PENDING_MAX_WAIT_MINUTES = 24 * 60;
 const REAP_SETTLE_LOOKBACK_MINUTES = 15; // window for the prompt reap-settle sweep
+// Skip jobs that turned terminal within the last minute: the complete route commits
+// `completed` before it writes the eval-result row, so a sweep in that window would
+// refund a job that yields a valid result an instant later (GitHub #90). One minute
+// is far longer than the finalize→result gap and well inside the 15-min lookback.
+const REAP_SETTLE_GRACE_MINUTES = 1;
 
 const app = express();
 const httpServer = createServer(app);
@@ -302,7 +307,7 @@ function startBackgroundWorker() {
       // seam is absent; settle() is idempotent, so re-visiting a settled job is cheap.
       const marketplace = getMarketplace();
       if (marketplace) {
-        const reapable = await storage.getReapableSharedJobs(REAP_SETTLE_LOOKBACK_MINUTES, 200);
+        const reapable = await storage.getReapableSharedJobs(REAP_SETTLE_LOOKBACK_MINUTES, REAP_SETTLE_GRACE_MINUTES, 200);
         for (const job of reapable) {
           try {
             // Pass the artifact gate (hasResult) so a completed-but-resultless job
