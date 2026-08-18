@@ -1933,17 +1933,31 @@ export class DatabaseStorage {
 
   // ==================== SECRETS ====================
 
-  async createOrUpdateSecret(userId: number, name: string, encryptedValue: string): Promise<Secret> {
+  async createOrUpdateSecret(
+    userId: number,
+    name: string,
+    encryptedValue: string,
+    opts?: { class?: "runtime" | "login"; isTestAccount?: boolean }
+  ): Promise<Secret> {
     const existing = await db.select().from(secrets)
       .where(and(eq(secrets.userId, userId), eq(secrets.name, name)));
     if (existing[0]) {
+      const updates: Partial<typeof secrets.$inferInsert> = { encryptedValue, updatedAt: new Date() };
+      if (opts?.class !== undefined) updates.class = opts.class;
+      if (opts?.isTestAccount !== undefined) updates.isTestAccount = opts.isTestAccount;
       const result = await db.update(secrets)
-        .set({ encryptedValue, updatedAt: new Date() })
+        .set(updates)
         .where(eq(secrets.id, existing[0].id))
         .returning();
       return result[0];
     }
-    const result = await db.insert(secrets).values({ userId, name, encryptedValue }).returning();
+    const result = await db.insert(secrets).values({
+      userId,
+      name,
+      encryptedValue,
+      ...(opts?.class !== undefined ? { class: opts.class } : {}),
+      ...(opts?.isTestAccount !== undefined ? { isTestAccount: opts.isTestAccount } : {}),
+    }).returning();
     return result[0];
   }
 
@@ -2372,17 +2386,33 @@ export class DatabaseStorage {
     return result[0];
   }
 
-  async upsertOrgSecret(organizationId: number, name: string, encryptedValue: string, createdBy: number): Promise<OrgSecret> {
+  async upsertOrgSecret(
+    organizationId: number,
+    name: string,
+    encryptedValue: string,
+    createdBy: number,
+    opts?: { class?: "runtime" | "login"; isTestAccount?: boolean }
+  ): Promise<OrgSecret> {
     const existing = await this.getOrgSecret(organizationId, name);
     if (existing) {
+      const updates: Partial<typeof orgSecrets.$inferInsert> = { encryptedValue, updatedAt: new Date() };
+      if (opts?.class !== undefined) updates.class = opts.class;
+      if (opts?.isTestAccount !== undefined) updates.isTestAccount = opts.isTestAccount;
       const result = await db.update(orgSecrets)
-        .set({ encryptedValue, updatedAt: new Date() })
+        .set(updates)
         .where(eq(orgSecrets.id, existing.id))
         .returning();
       return result[0];
     }
     const result = await db.insert(orgSecrets)
-      .values({ organizationId, name, encryptedValue, createdBy })
+      .values({
+        organizationId,
+        name,
+        encryptedValue,
+        createdBy,
+        ...(opts?.class !== undefined ? { class: opts.class } : {}),
+        ...(opts?.isTestAccount !== undefined ? { isTestAccount: opts.isTestAccount } : {}),
+      })
       .returning();
     return result[0];
   }

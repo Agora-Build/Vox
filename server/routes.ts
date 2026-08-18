@@ -2414,6 +2414,8 @@ export async function registerRoutes(
         secrets: userSecrets.map(s => ({
           id: s.id,
           name: s.name,
+          class: s.class,
+          isTestAccount: s.isTestAccount,
           createdAt: s.createdAt,
           updatedAt: s.updatedAt,
         })),
@@ -2447,6 +2449,11 @@ export async function registerRoutes(
       if (value.length > 10000) {
         return res.status(400).json({ error: "Secret value too large (max 10KB)" });
       }
+      const secretClass = req.body.secretClass === undefined ? undefined : req.body.secretClass;
+      if (secretClass !== undefined && secretClass !== "runtime" && secretClass !== "login") {
+        return res.status(400).json({ error: "secretClass must be 'runtime' or 'login'" });
+      }
+      const isTestAccount = req.body.isTestAccount === undefined ? undefined : req.body.isTestAccount === true;
 
       // Per-user limit: check if this is a new secret (not an upsert of existing)
       const existing = await storage.getSecretsByUserId(user.id);
@@ -2455,9 +2462,14 @@ export async function registerRoutes(
         return res.status(400).json({ error: "Maximum of 50 secrets per user" });
       }
 
+      const existingRow = existing.find(s => s.name === trimmedName);
+      if (existingRow && existingRow.class === "login" && secretClass === "runtime") {
+        return res.status(400).json({ error: "A login secret cannot be reclassified to runtime — delete and recreate it instead" });
+      }
+
       const encrypted = encryptValue(value);
-      const secret = await storage.createOrUpdateSecret(user.id, trimmedName, encrypted);
-      res.json({ id: secret.id, name: secret.name, createdAt: secret.createdAt, updatedAt: secret.updatedAt });
+      const secret = await storage.createOrUpdateSecret(user.id, trimmedName, encrypted, { class: secretClass, isTestAccount });
+      res.json({ id: secret.id, name: secret.name, class: secret.class, isTestAccount: secret.isTestAccount, createdAt: secret.createdAt, updatedAt: secret.updatedAt });
     } catch (error) {
       console.error("Error creating secret:", error);
       if (error instanceof Error && error.message.includes("CREDENTIAL_ENCRYPTION_KEY")) {
@@ -2496,6 +2508,8 @@ export async function registerRoutes(
       const secrets = await storage.getOrgSecrets(user.organizationId);
       res.json(secrets.map(s => ({
         name: s.name,
+        class: s.class,
+        isTestAccount: s.isTestAccount,
         createdAt: s.createdAt,
         updatedAt: s.updatedAt,
       })));
@@ -2529,9 +2543,20 @@ export async function registerRoutes(
       if (!isEncryptionConfigured()) {
         return res.status(503).json({ error: "Encryption not configured on server" });
       }
+      const secretClass = req.body.secretClass === undefined ? undefined : req.body.secretClass;
+      if (secretClass !== undefined && secretClass !== "runtime" && secretClass !== "login") {
+        return res.status(400).json({ error: "secretClass must be 'runtime' or 'login'" });
+      }
+      const isTestAccount = req.body.isTestAccount === undefined ? undefined : req.body.isTestAccount === true;
+
+      const existingRow = (await storage.getOrgSecrets(user.organizationId)).find(s => s.name === trimmedName);
+      if (existingRow && existingRow.class === "login" && secretClass === "runtime") {
+        return res.status(400).json({ error: "A login secret cannot be reclassified to runtime — delete and recreate it instead" });
+      }
+
       const encrypted = encryptValue(value);
-      await storage.upsertOrgSecret(user.organizationId, trimmedName, encrypted, user.id);
-      res.json({ message: "Org secret saved" });
+      const secret = await storage.upsertOrgSecret(user.organizationId, trimmedName, encrypted, user.id, { class: secretClass, isTestAccount });
+      res.json({ message: "Org secret saved", class: secret.class, isTestAccount: secret.isTestAccount });
     } catch (error) {
       console.error("Error saving org secret:", error);
       res.status(500).json({ error: "Failed to save org secret" });

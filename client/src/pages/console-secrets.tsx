@@ -7,6 +7,9 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { KeyRound, Plus, Trash2, ShieldAlert, Building2 } from "lucide-react";
@@ -18,6 +21,8 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 interface SecretEntry {
   id: number;
   name: string;
+  class: "runtime" | "login";
+  isTestAccount: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -29,6 +34,8 @@ interface SecretsResponse {
 
 interface OrgSecretEntry {
   name: string;
+  class: "runtime" | "login";
+  isTestAccount: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -57,6 +64,8 @@ export default function ConsoleSecrets() {
   const [createOpen, setCreateOpen] = useState(false);
   const [name, setName] = useState("");
   const [value, setValue] = useState("");
+  const [secretClass, setSecretClass] = useState<"runtime" | "login">("runtime");
+  const [isTestAccount, setIsTestAccount] = useState(false);
 
   const { data: response, isLoading } = useQuery<SecretsResponse>({
     queryKey: ["/api/secrets"],
@@ -67,12 +76,19 @@ export default function ConsoleSecrets() {
 
   const createMutation = useMutation({
     mutationFn: async () => {
-      const res = await apiRequest("POST", "/api/secrets", { name: name.trim(), value });
+      const res = await apiRequest("POST", "/api/secrets", {
+        name: name.trim(),
+        value,
+        secretClass,
+        isTestAccount: secretClass === "login" ? isTestAccount : undefined,
+      });
       return res.json();
     },
     onSuccess: () => {
       setName("");
       setValue("");
+      setSecretClass("runtime");
+      setIsTestAccount(false);
       setCreateOpen(false);
       queryClient.invalidateQueries({ queryKey: ["/api/secrets"] });
       toast({ title: "Secret saved" });
@@ -100,6 +116,8 @@ export default function ConsoleSecrets() {
   const [orgCreateOpen, setOrgCreateOpen] = useState(false);
   const [orgName, setOrgName] = useState("");
   const [orgValue, setOrgValue] = useState("");
+  const [orgSecretClass, setOrgSecretClass] = useState<"runtime" | "login">("runtime");
+  const [orgIsTestAccount, setOrgIsTestAccount] = useState(false);
 
   const { data: orgSecrets, isLoading: orgLoading } = useQuery<OrgSecretEntry[]>({
     queryKey: ["/api/org-secrets"],
@@ -108,11 +126,18 @@ export default function ConsoleSecrets() {
 
   const orgCreateMutation = useMutation({
     mutationFn: async () => {
-      await apiRequest("POST", "/api/org-secrets", { name: orgName.trim(), value: orgValue });
+      await apiRequest("POST", "/api/org-secrets", {
+        name: orgName.trim(),
+        value: orgValue,
+        secretClass: orgSecretClass,
+        isTestAccount: orgSecretClass === "login" ? orgIsTestAccount : undefined,
+      });
     },
     onSuccess: () => {
       setOrgName("");
       setOrgValue("");
+      setOrgSecretClass("runtime");
+      setOrgIsTestAccount(false);
       setOrgCreateOpen(false);
       queryClient.invalidateQueries({ queryKey: ["/api/org-secrets"] });
       toast({ title: "Org secret saved" });
@@ -216,6 +241,33 @@ export default function ConsoleSecrets() {
                           onChange={(e) => setValue(e.target.value)}
                         />
                       </div>
+                      <div className="space-y-2">
+                        <Label htmlFor="secret-class">Type</Label>
+                        <Select value={secretClass} onValueChange={(v) => setSecretClass(v as "runtime" | "login")}>
+                          <SelectTrigger id="secret-class">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="runtime">Runtime</SelectItem>
+                            <SelectItem value="login">Login credential</SelectItem>
+                          </SelectContent>
+                        </Select>
+                        <p className="text-xs text-muted-foreground">
+                          Login credentials are withheld from eval agents and used only by the session broker.
+                        </p>
+                      </div>
+                      {secretClass === "login" && (
+                        <div className="flex items-center gap-2">
+                          <Checkbox
+                            id="secret-test-account"
+                            checked={isTestAccount}
+                            onCheckedChange={(checked) => setIsTestAccount(checked === true)}
+                          />
+                          <Label htmlFor="secret-test-account" className="font-normal">
+                            Dedicated test account
+                          </Label>
+                        </div>
+                      )}
                     </div>
                     <DialogFooter>
                       <Button
@@ -249,7 +301,17 @@ export default function ConsoleSecrets() {
                   <TableBody>
                     {secrets.map((secret) => (
                       <TableRow key={secret.id}>
-                        <TableCell className="font-mono font-medium">{secret.name}</TableCell>
+                        <TableCell className="font-mono font-medium">
+                          <div className="flex items-center gap-2">
+                            {secret.name}
+                            {secret.class === "login" && (
+                              <>
+                                <Badge variant="outline">login</Badge>
+                                {secret.isTestAccount && <Badge variant="secondary">test account</Badge>}
+                              </>
+                            )}
+                          </div>
+                        </TableCell>
                         <TableCell className="text-muted-foreground">••••••••</TableCell>
                         <TableCell className="text-muted-foreground">
                           {formatSmartTimestamp(secret.updatedAt)}
@@ -323,6 +385,33 @@ export default function ConsoleSecrets() {
                               onChange={(e) => setOrgValue(e.target.value)}
                             />
                           </div>
+                          <div className="space-y-2">
+                            <Label htmlFor="org-secret-class">Type</Label>
+                            <Select value={orgSecretClass} onValueChange={(v) => setOrgSecretClass(v as "runtime" | "login")}>
+                              <SelectTrigger id="org-secret-class">
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="runtime">Runtime</SelectItem>
+                                <SelectItem value="login">Login credential</SelectItem>
+                              </SelectContent>
+                            </Select>
+                            <p className="text-xs text-muted-foreground">
+                              Login credentials are withheld from eval agents and used only by the session broker.
+                            </p>
+                          </div>
+                          {orgSecretClass === "login" && (
+                            <div className="flex items-center gap-2">
+                              <Checkbox
+                                id="org-secret-test-account"
+                                checked={orgIsTestAccount}
+                                onCheckedChange={(checked) => setOrgIsTestAccount(checked === true)}
+                              />
+                              <Label htmlFor="org-secret-test-account" className="font-normal">
+                                Dedicated test account
+                              </Label>
+                            </div>
+                          )}
                         </div>
                         <DialogFooter>
                           <Button
@@ -357,7 +446,17 @@ export default function ConsoleSecrets() {
                     <TableBody>
                       {orgSecrets.map((secret, i) => (
                         <TableRow key={i}>
-                          <TableCell className="font-mono font-medium">{secret.name}</TableCell>
+                          <TableCell className="font-mono font-medium">
+                            <div className="flex items-center gap-2">
+                              {secret.name}
+                              {secret.class === "login" && (
+                                <>
+                                  <Badge variant="outline">login</Badge>
+                                  {secret.isTestAccount && <Badge variant="secondary">test account</Badge>}
+                                </>
+                              )}
+                            </div>
+                          </TableCell>
                           <TableCell className="text-muted-foreground">••••••••</TableCell>
                           <TableCell className="text-muted-foreground">
                             {formatSmartTimestamp(secret.updatedAt)}
