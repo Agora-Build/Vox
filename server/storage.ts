@@ -58,6 +58,7 @@ import {
   type UserStorageConfig,
   type InsertUserStorageConfig,
   type OrgSecret,
+  type WebSession,
   users,
   organizations,
   providers,
@@ -91,12 +92,13 @@ import {
   clashSchedules,
   userStorageConfig,
   orgSecrets,
+  webSessions,
 } from "@shared/schema";
 import { regionSiteSequence } from "@shared/regions";
 import { drizzle } from "drizzle-orm/node-postgres";
 import pkg from "pg";
 const { Pool } = pkg;
-import { asc, desc, eq, and, or, not, sql, gte, lte, inArray, isNotNull } from "drizzle-orm";
+import { asc, desc, eq, and, or, not, sql, gte, lte, inArray, isNotNull, isNull } from "drizzle-orm";
 import crypto from "crypto";
 
 // Realtime-metrics windowing policy (server-owned; the client never sets these).
@@ -323,6 +325,10 @@ function snakeToCamel(row: Record<string, any>): Record<string, any> {
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 export const db = drizzle(pool);
 export { pool };
+
+// Phase C session broker: a web_sessions row is owned by exactly one of a user
+// or an organization (mirrors secrets ownership).
+export type SessionScope = { userId: number } | { organizationId: number };
 
 export class DatabaseStorage {
   async getUser(id: number): Promise<User | undefined> {
@@ -2419,6 +2425,78 @@ export class DatabaseStorage {
       result[s.name] = decryptValue(s.encryptedValue);
     }
     return result;
+  }
+
+  // ==================== WEB SESSIONS (Phase C) ====================
+
+  private webSessionScopeWhere(scope: SessionScope) {
+    return "userId" in scope
+      ? and(eq(webSessions.userId, scope.userId), isNull(webSessions.organizationId))
+      : and(eq(webSessions.organizationId, scope.organizationId), isNull(webSessions.userId));
+  }
+
+  async getWebSession(scope: SessionScope, platformId: string): Promise<WebSession | undefined> {
+    const rows = await db.select().from(webSessions)
+      .where(and(this.webSessionScopeWhere(scope), eq(webSessions.platformId, platformId)));
+    return rows[0];
+  }
+
+  /**
+   * Single-flight mint claim. Returns the row (status now 'minting') when THIS
+   * caller won and must mint; undefined when another instance holds a live mint
+   * or a fresh 'ready' session already exists. A 'minting' row older than
+   * staleMintSeconds is reclaimable (a Core instance died mid-mint).
+   */
+  async claimWebSessionMint(
+    scope: SessionScope, platformId: string,
+    staleMintSeconds: number, freshMarginSeconds: number,
+  ): Promise<WebSession | undefined> {
+    const userId = "userId" in scope ? scope.userId : null;
+    const orgId = "organizationId" in scope ? scope.organizationId : null;
+    // First-use: create the row already claimed. ON CONFLICT targets the
+    // partial unique index matching this scope.
+    const conflictTarget = userId != null
+      ? sql`(user_id, platform_id) WHERE organization_id IS NULL`
+      : sql`(organization_id, platform_id) WHERE user_id IS NULL`;
+    const inserted = await db.execute(sql`
+      INSERT INTO web_sessions (user_id, organization_id, platform_id, status, mint_started_at)
+      VALUES (${userId}, ${orgId}, ${platformId}, 'minting', NOW())
+      ON CONFLICT ${conflictTarget} DO NOTHING
+      RETURNING *`);
+    const insRows = (inserted as unknown as { rows: WebSession[] }).rows;
+    if (insRows?.length) return this.getWebSession(scope, platformId);
+    // Row exists: claim unless someone is live-minting or it's fresh-ready.
+    const updated = await db.execute(sql`
+      UPDATE web_sessions
+      SET status = 'minting', mint_started_at = NOW(), updated_at = NOW()
+      WHERE user_id IS NOT DISTINCT FROM ${userId}
+        AND organization_id IS NOT DISTINCT FROM ${orgId}
+        AND platform_id = ${platformId}
+        AND (status <> 'minting' OR mint_started_at IS NULL
+             OR mint_started_at < NOW() - make_interval(secs => ${staleMintSeconds}))
+        AND NOT (status = 'ready' AND expires_at IS NOT NULL
+                 AND expires_at > NOW() + make_interval(secs => ${freshMarginSeconds}))
+      RETURNING *`);
+    const updRows = (updated as unknown as { rows: WebSession[] }).rows;
+    if (!updRows?.length) return undefined;
+    return this.getWebSession(scope, platformId);
+  }
+
+  async storeWebSessionReady(id: number, encryptedStorageState: string, ttlHours: number): Promise<void> {
+    await db.execute(sql`
+      UPDATE web_sessions
+      SET status = 'ready', encrypted_storage_state = ${encryptedStorageState},
+          minted_at = NOW(), expires_at = NOW() + make_interval(hours => ${ttlHours}),
+          last_error = NULL, updated_at = NOW()
+      WHERE id = ${id}`);
+  }
+
+  async markWebSessionFailed(id: number, error: string): Promise<void> {
+    await db.execute(sql`
+      UPDATE web_sessions
+      SET status = 'failed', encrypted_storage_state = NULL,
+          last_error = ${error.slice(0, 2000)}, updated_at = NOW()
+      WHERE id = ${id}`);
   }
 }
 
