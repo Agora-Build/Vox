@@ -1000,6 +1000,15 @@ export class DatabaseStorage {
     // the result row well in the past before we settle here. Prompt settlement still
     // happens on the complete route itself; this sweep is only the catch-up path
     // (GitHub #90).
+    //
+    // Clock note: these bounds are app-clock (Date.now()). The money path — a
+    // `completed` job via finalizeRunningJob — writes completed_at with app-clock
+    // `new Date()` too, so the #90 race stays consistent. The bulk FAIL paths
+    // (failTimedOutRunningJobs / failPendingJobsWithNoAgent / failExpiredPendingJobs)
+    // write completed_at = DB-clock NOW(), so a `failed` row's grace bound can skew
+    // by instance-vs-DB clock drift — harmless, since a failed job REFUNDS whether
+    // swept a tick earlier or later. Switching to NOW() here would instead skew the
+    // money path (app-clock write vs DB-clock read), so app-clock is the right choice.
     const graceCutoff = new Date(now - graceMinutes * 60 * 1000);
     return db.select().from(evalJobs)
       .where(and(
@@ -1018,7 +1027,10 @@ export class DatabaseStorage {
       // one window, drain the ones closest to aging out to the 26h leak-reaper
       // first. Descending dropped exactly those, letting valid completed work be
       // refunded by the leak-reaper instead of captured here (GitHub #90 / #7).
-      .orderBy(asc(evalJobs.completedAt))
+      // Secondary key on id breaks completed_at ties (ms precision → ties possible)
+      // so the batch boundary is deterministic — an unlucky tie spanning `limit`
+      // can't leave the same overflow row re-picked-and-truncated every tick.
+      .orderBy(asc(evalJobs.completedAt), asc(evalJobs.id))
       .limit(limit);
   }
 

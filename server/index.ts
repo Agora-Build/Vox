@@ -35,6 +35,9 @@ const REAP_SETTLE_LOOKBACK_MINUTES = 15; // window for the prompt reap-settle sw
 // `completed` before it writes the eval-result row, so a sweep in that window would
 // refund a job that yields a valid result an instant later (GitHub #90). One minute
 // is far longer than the finalize→result gap and well inside the 15-min lookback.
+// MUST stay < REAP_SETTLE_LOOKBACK_MINUTES: the sweep selects completed_at in
+// [now-lookback, now-grace], so grace ≥ lookback yields an empty range and silently
+// disables the catch-up path entirely.
 const REAP_SETTLE_GRACE_MINUTES = 1;
 
 const app = express();
@@ -309,13 +312,22 @@ function startBackgroundWorker() {
       if (marketplace) {
         const REAP_SETTLE_BATCH = 200;
         const reapable = await storage.getReapableSharedJobs(REAP_SETTLE_LOOKBACK_MINUTES, REAP_SETTLE_GRACE_MINUTES, REAP_SETTLE_BATCH);
-        // Saturation signal: a full batch means terminal targeted jobs are arriving
-        // faster than one tick drains them. Oldest-first ordering keeps the ones
-        // nearest the 26h leak-reaper at the front, but sustained saturation still
-        // warrants a look (settled jobs stay query-eligible — no settled-marker yet;
-        // see GitHub #90 follow-up). Never silent: log so it's visible, not guessed.
-        if (reapable.length === REAP_SETTLE_BATCH) {
-          log(`Reap-settle sweep hit its ${REAP_SETTLE_BATCH}-job batch cap — terminal targeted jobs may be backing up`, "worker");
+        // Honest saturation signal (not a cry-wolf): a FULL batch alone is normal —
+        // settled jobs stay query-eligible (no settled-marker yet), so ~lookback×rate
+        // rows always sit in the window even when we're keeping up. The real danger is
+        // only when the batch is full AND its oldest row (front of the oldest-first
+        // scan) is within 2 min of falling out of the lookback window — that means the
+        // rows behind the batch cap are even older and will age out to the 26h
+        // leak-reaper unsettled. Warn only then; stays quiet under healthy throughput.
+        // The cure (stop settled rows consuming the batch) is a settled-marker
+        // follow-up — see GitHub #90.
+        const oldestCompletedAt = reapable[0]?.completedAt;
+        if (
+          reapable.length === REAP_SETTLE_BATCH &&
+          oldestCompletedAt &&
+          oldestCompletedAt.getTime() < Date.now() - (REAP_SETTLE_LOOKBACK_MINUTES - 2) * 60 * 1000
+        ) {
+          log(`Reap-settle sweep is falling behind — oldest of ${REAP_SETTLE_BATCH} batched jobs is near the ${REAP_SETTLE_LOOKBACK_MINUTES}min lookback edge; jobs behind the cap may age out unsettled`, "worker");
         }
         for (const job of reapable) {
           try {
