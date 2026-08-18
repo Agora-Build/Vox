@@ -692,6 +692,10 @@ export type Secret = typeof secrets.$inferSelect;
 export const webSessions = pgTable("web_sessions", {
   id: serial("id").primaryKey(),
   // Exactly one of userId/organizationId is set — mirrors secrets ownership.
+  // Enforced at the DB level by CHECK web_sessions_scope_xor_ck
+  // (num_nonnulls(user_id, organization_id) = 1), added in migration 0026 —
+  // a row violating this falls outside both partial unique indexes below,
+  // which would silently disable the single-flight mint claim.
   userId: integer("user_id").references(() => users.id),
   organizationId: integer("organization_id").references(() => organizations.id),
   platformId: text("platform_id").notNull(),

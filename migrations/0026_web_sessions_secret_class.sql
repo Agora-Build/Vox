@@ -36,4 +36,8 @@ ALTER TABLE "secrets" ADD COLUMN "is_test_account" boolean DEFAULT false NOT NUL
 ALTER TABLE "web_sessions" ADD CONSTRAINT "web_sessions_user_id_users_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "web_sessions" ADD CONSTRAINT "web_sessions_organization_id_organizations_id_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organizations"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 CREATE UNIQUE INDEX "web_sessions_user_platform_idx" ON "web_sessions" USING btree ("user_id","platform_id") WHERE organization_id IS NULL;--> statement-breakpoint
-CREATE UNIQUE INDEX "web_sessions_org_platform_idx" ON "web_sessions" USING btree ("organization_id","platform_id") WHERE user_id IS NULL;
+CREATE UNIQUE INDEX "web_sessions_org_platform_idx" ON "web_sessions" USING btree ("organization_id","platform_id") WHERE user_id IS NULL;--> statement-breakpoint
+-- A row carrying both/neither scope key falls outside both partial unique
+-- indexes above, so ON CONFLICT never fires and the single-flight mint claim
+-- silently stops deduplicating. Make that state unrepresentable at the DB level.
+ALTER TABLE "web_sessions" ADD CONSTRAINT "web_sessions_scope_xor_ck" CHECK (num_nonnulls(user_id, organization_id) = 1);

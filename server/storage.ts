@@ -2429,6 +2429,25 @@ export class DatabaseStorage {
 
   // ==================== WEB SESSIONS (Phase C) ====================
 
+  // db.execute(sql`...`) goes through drizzle's raw-query path, which (unlike
+  // db.select()) disables node-postgres's built-in timestamp parsing and hands
+  // back TIMESTAMP/TIMESTAMPTZ/DATE columns as raw strings — snakeToCamel alone
+  // would violate WebSession's declared `Date` fields. Parse the known
+  // timestamp columns explicitly so callers (notably the mint_started_at
+  // fencing token) get real Date instances, matching db.select()'s behavior.
+  private static readonly WEB_SESSION_DATE_FIELDS = [
+    "mintedAt", "expiresAt", "mintStartedAt", "createdAt", "updatedAt",
+  ] as const;
+
+  private rowToWebSession(row: Record<string, unknown>): WebSession {
+    const camel = snakeToCamel(row);
+    for (const field of DatabaseStorage.WEB_SESSION_DATE_FIELDS) {
+      const v = camel[field];
+      if (typeof v === "string") camel[field] = new Date(v);
+    }
+    return camel as WebSession;
+  }
+
   private webSessionScopeWhere(scope: SessionScope) {
     return "userId" in scope
       ? and(eq(webSessions.userId, scope.userId), isNull(webSessions.organizationId))
@@ -2446,6 +2465,16 @@ export class DatabaseStorage {
    * caller won and must mint; undefined when another instance holds a live mint
    * or a fresh 'ready' session already exists. A 'minting' row older than
    * staleMintSeconds is reclaimable (a Core instance died mid-mint).
+   *
+   * The claim is a single query per branch (INSERT ... RETURNING or
+   * UPDATE ... RETURNING), converted straight to the typed row via
+   * snakeToCamel — no re-read of the row afterward. A re-read would open a
+   * TOCTOU window: by the time it runs, a stale-reclaim from another instance
+   * could have already overwritten the row this caller just claimed, so the
+   * caller would mint under a false belief that it holds the claim.
+   *
+   * The returned row's mintStartedAt is the fencing token the caller MUST
+   * carry through to storeWebSessionReady/markWebSessionFailed — see there.
    */
   async claimWebSessionMint(
     scope: SessionScope, platformId: string,
@@ -2458,17 +2487,23 @@ export class DatabaseStorage {
     const conflictTarget = userId != null
       ? sql`(user_id, platform_id) WHERE organization_id IS NULL`
       : sql`(organization_id, platform_id) WHERE user_id IS NULL`;
+    // Truncated to milliseconds: JS Date has no sub-millisecond precision, and
+    // mint_started_at round-trips through a Date on its way back in as the
+    // fencing token (rowToWebSession). Storing raw NOW() (microsecond
+    // precision) would make that round-trip lossy and the fence's exact-match
+    // WHERE in storeWebSessionReady/markWebSessionFailed would never match.
+    const nowMs = sql`date_trunc('milliseconds', NOW())`;
     const inserted = await db.execute(sql`
       INSERT INTO web_sessions (user_id, organization_id, platform_id, status, mint_started_at)
-      VALUES (${userId}, ${orgId}, ${platformId}, 'minting', NOW())
+      VALUES (${userId}, ${orgId}, ${platformId}, 'minting', ${nowMs})
       ON CONFLICT ${conflictTarget} DO NOTHING
       RETURNING *`);
-    const insRows = (inserted as unknown as { rows: WebSession[] }).rows;
-    if (insRows?.length) return this.getWebSession(scope, platformId);
+    const insRows = (inserted as unknown as { rows: Record<string, unknown>[] }).rows;
+    if (insRows?.length) return this.rowToWebSession(insRows[0]);
     // Row exists: claim unless someone is live-minting or it's fresh-ready.
     const updated = await db.execute(sql`
       UPDATE web_sessions
-      SET status = 'minting', mint_started_at = NOW(), updated_at = NOW()
+      SET status = 'minting', mint_started_at = ${nowMs}, updated_at = NOW()
       WHERE user_id IS NOT DISTINCT FROM ${userId}
         AND organization_id IS NOT DISTINCT FROM ${orgId}
         AND platform_id = ${platformId}
@@ -2477,26 +2512,46 @@ export class DatabaseStorage {
         AND NOT (status = 'ready' AND expires_at IS NOT NULL
                  AND expires_at > NOW() + make_interval(secs => ${freshMarginSeconds}))
       RETURNING *`);
-    const updRows = (updated as unknown as { rows: WebSession[] }).rows;
+    const updRows = (updated as unknown as { rows: Record<string, unknown>[] }).rows;
     if (!updRows?.length) return undefined;
-    return this.getWebSession(scope, platformId);
+    return this.rowToWebSession(updRows[0]);
   }
 
-  async storeWebSessionReady(id: number, encryptedStorageState: string, ttlHours: number): Promise<void> {
-    await db.execute(sql`
+  /**
+   * Marks a claimed row 'ready'. `fence` must be the mintStartedAt the caller
+   * received from claimWebSessionMint. The WHERE re-checks status='minting'
+   * AND mint_started_at=fence, so a caller whose claim was superseded by a
+   * stale-reclaim (its mint_started_at moved on) writes nothing instead of
+   * clobbering the new minter's in-flight row. Returns true iff this call's
+   * row was the one updated.
+   */
+  async storeWebSessionReady(
+    id: number, encryptedStorageState: string, ttlHours: number, fence: Date,
+  ): Promise<boolean> {
+    const result = await db.execute(sql`
       UPDATE web_sessions
       SET status = 'ready', encrypted_storage_state = ${encryptedStorageState},
-          minted_at = NOW(), expires_at = NOW() + make_interval(hours => ${ttlHours}),
+          minted_at = NOW(), expires_at = NOW() + make_interval(secs => ${Math.round(ttlHours * 3600)}),
           last_error = NULL, updated_at = NOW()
-      WHERE id = ${id}`);
+      WHERE id = ${id} AND status = 'minting' AND mint_started_at = ${fence}`);
+    return ((result as unknown as { rowCount: number }).rowCount || 0) > 0;
   }
 
-  async markWebSessionFailed(id: number, error: string): Promise<void> {
-    await db.execute(sql`
+  /**
+   * Marks a claimed row 'failed'. Same fence guard as storeWebSessionReady —
+   * a superseded minter's late failure report must be a no-op, not an
+   * overwrite of whatever the reclaiming instance is now doing with the row.
+   * expires_at is cleared so a 'failed' row never carries a stale future
+   * expiry (consumers gate on status, but the row stays self-consistent).
+   * Returns true iff this call's row was the one updated.
+   */
+  async markWebSessionFailed(id: number, error: string, fence: Date): Promise<boolean> {
+    const result = await db.execute(sql`
       UPDATE web_sessions
-      SET status = 'failed', encrypted_storage_state = NULL,
+      SET status = 'failed', encrypted_storage_state = NULL, expires_at = NULL,
           last_error = ${error.slice(0, 2000)}, updated_at = NOW()
-      WHERE id = ${id}`);
+      WHERE id = ${id} AND status = 'minting' AND mint_started_at = ${fence}`);
+    return ((result as unknown as { rowCount: number }).rowCount || 0) > 0;
   }
 }
 
