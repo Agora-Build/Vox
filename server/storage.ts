@@ -2486,6 +2486,14 @@ export class DatabaseStorage {
     return camel as WebSession;
   }
 
+  /** True iff EVERY named login secret in scope exists and is attested isTestAccount. */
+  async areLoginSecretsAttested(scope: SessionScope, names: string[]): Promise<boolean> {
+    const rows = "userId" in scope
+      ? await this.getSecretsByUserId(scope.userId)
+      : await this.getOrgSecrets(scope.organizationId);
+    return names.every(n => rows.some(r => r.name === n && r.class === "login" && r.isTestAccount));
+  }
+
   private webSessionScopeWhere(scope: SessionScope) {
     return "userId" in scope
       ? and(eq(webSessions.userId, scope.userId), isNull(webSessions.organizationId))

@@ -11,6 +11,7 @@ import { registerApiV1Routes } from "./routes-api-v1";
 import { generateSignedUrlForUser } from "./s3";
 import { validateTierChange, resolveTargetedDispatch, filterDispatchableAgents } from "./dispatch";
 import { getMarketplace } from "./marketplace";
+import { parsePlatformSetup, sessionScopeForWorkflow, workflowNeedsSession, getLoginSecretNames, ensureSession } from "./session-broker";
 import {
   hashPassword,
   verifyPassword,
@@ -3567,6 +3568,15 @@ export async function registerRoutes(
         return res.status(403).json({ error: "Access denied to eval set" });
       }
 
+      // Phase C: does this workflow need a Core-minted login session? True iff
+      // its platform.setup references login-class secrets (owner opt-in).
+      const wfConfig = (workflow.config ?? {}) as Record<string, unknown>;
+      const setupInfo = parsePlatformSetup(wfConfig.stepsPrefix as string | undefined);
+      const scope = sessionScopeForWorkflow(workflow);
+      const sessionNeed = setupInfo
+        ? workflowNeedsSession(setupInfo, await getLoginSecretNames(scope))
+        : null;
+
       let jobRegion: string;
       let targeting: number | null = null;
       let settlementContext: unknown = undefined;
@@ -3578,6 +3588,15 @@ export async function registerRoutes(
         if (token.dispatchTier === "shared") {
           const marketplace = getMarketplace();
           if (!marketplace) return res.status(400).json({ error: "Shared dispatch is not available" });
+          if (sessionNeed) {
+            if (req.body.credentialConsent !== true) {
+              return res.status(400).json({ error: "credentialConsent is required to dispatch credential-injected jobs to a shared agent" });
+            }
+            const attested = await storage.areLoginSecretsAttested(scope, [sessionNeed.emailSecret, sessionNeed.passwordSecret]);
+            if (!attested) {
+              return res.status(403).json({ error: "Shared dispatch requires dedicated test-account credentials (mark the login secrets as test accounts)" });
+            }
+          }
           const authz = await marketplace.authorizeDispatch(user.id, token.id, {
             workflowId: parseInt(workflowId, 10),
             evalSetId: evalSetId ?? null,
@@ -3607,7 +3626,19 @@ export async function registerRoutes(
 
       const provider = await storage.getProvider(workflow.providerId);
       const baseSnapshot = buildJobSnapshot(workflow, evalSet, provider, user.plan);
-      const snapshot = settlementContext !== undefined ? { ...baseSnapshot, settlementContext } : baseSnapshot;
+      const snapshot = {
+        ...baseSnapshot,
+        ...(settlementContext !== undefined ? { settlementContext } : {}),
+        ...(sessionNeed && req.body.credentialConsent === true ? { credentialConsent: true } : {}),
+      };
+      const jobConfig = mergeEvalConfig(workflow.config, evalSet.config);
+      delete (jobConfig as Record<string, unknown>).sessionInjection; // server-stamped only
+      if (sessionNeed) {
+        (jobConfig as Record<string, unknown>).sessionInjection = { platformId: sessionNeed.platformId };
+        // Pre-warm the session cache so claim-time is a cache hit. Fire-and-forget:
+        // ensureSession never throws and records failures on the web_sessions row.
+        void ensureSession(scope, sessionNeed);
+      }
       let job;
       try {
         job = await storage.createEvalJob({
@@ -3617,7 +3648,7 @@ export async function registerRoutes(
           createdBy: user.id,
           region: jobRegion,
           targetTokenId: targeting,
-          config: mergeEvalConfig(workflow.config, evalSet.config),
+          config: jobConfig,
           snapshot,
           status: "pending",
           priority: 0,

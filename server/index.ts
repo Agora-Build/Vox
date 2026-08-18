@@ -13,6 +13,7 @@ import { parseNextCronRun } from "./cron";
 import { setupClashWebSocket } from "./clash-ws";
 import { loadPlugins } from "./plugins/loader";
 import { setMarketplace, getMarketplace, type EvalMarketplace } from "./marketplace";
+import { parsePlatformSetup, sessionScopeForWorkflow, workflowNeedsSession, getLoginSecretNames, ensureSession } from "./session-broker";
 import pkg from "pg";
 const { Pool } = pkg;
 
@@ -386,6 +387,19 @@ function startBackgroundWorker() {
           const provider = await storage.getProvider(workflow.providerId);
           const creator = schedule.createdBy ? await storage.getUser(schedule.createdBy) : undefined;
 
+          const wfConfig = (workflow.config ?? {}) as Record<string, unknown>;
+          const setupInfo = parsePlatformSetup(wfConfig.stepsPrefix as string | undefined);
+          const scope = sessionScopeForWorkflow(workflow);
+          const sessionNeed = setupInfo
+            ? workflowNeedsSession(setupInfo, await getLoginSecretNames(scope))
+            : null;
+          const jobConfig = mergeEvalConfig(workflow.config, evalSet?.config);
+          delete (jobConfig as Record<string, unknown>).sessionInjection;
+          if (sessionNeed) {
+            (jobConfig as Record<string, unknown>).sessionInjection = { platformId: sessionNeed.platformId };
+            void ensureSession(scope, sessionNeed);
+          }
+
           // Create the eval job
           const job = await storage.createEvalJob({
             scheduleId: schedule.id,
@@ -394,7 +408,7 @@ function startBackgroundWorker() {
             evalSetId: schedule.evalSetId,
             createdBy: schedule.createdBy,
             region: schedule.region,
-            config: mergeEvalConfig(workflow.config, evalSet?.config),
+            config: jobConfig,
             snapshot: buildJobSnapshot(workflow, evalSet, provider, creator?.plan ?? null),
             status: "pending",
             priority: 0,
