@@ -1960,7 +1960,10 @@ export class DatabaseStorage {
     const workflow = await this.getWorkflow(job.workflowId);
     if (!workflow) { console.log(`[Secrets] getSecretsForJob: workflow ${job.workflowId} not found`); return []; }
     console.log(`[Secrets] getSecretsForJob: job ${jobId} → workflow ${workflow.id} → owner ${workflow.ownerId}`);
-    return this.getSecretsByUserId(workflow.ownerId);
+    // Structural withhold: 'login'-class rows are Core-only (Phase C). They feed
+    // the session broker's mint and must never reach an eval agent, any tier.
+    const all = await this.getSecretsByUserId(workflow.ownerId);
+    return all.filter((s) => s.class !== "login");
   }
 
   // ==================== CLASH AGENT PROFILES ====================
@@ -2412,6 +2415,7 @@ export class DatabaseStorage {
     const secrets = await this.getOrgSecrets(workflow.organizationId);
     const result: Record<string, string> = {};
     for (const s of secrets) {
+      if (s.class === "login") continue; // Core-only (Phase C) — never sent to agents
       result[s.name] = decryptValue(s.encryptedValue);
     }
     return result;
