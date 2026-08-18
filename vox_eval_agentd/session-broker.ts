@@ -22,6 +22,19 @@ export type MintFn = (req: MintRequest) => Promise<unknown>;
 
 const PLATFORM_ID_RE = /^[a-z0-9][a-z0-9-]{0,63}$/;
 
+/**
+ * Strip any of `values` (raw credentials) out of `message` before it can
+ * reach a log line or the durable `web_sessions.last_error` column.
+ * aeval's stderr is third-party output and the scenario params carry raw
+ * email/password, so any stderr-derived text is untrusted until scrubbed.
+ * Empty values are ignored (never redact on an empty-string match).
+ */
+export function scrubCredentials(message: string, values: string[]): string {
+  return values
+    .filter((v) => v.length > 0)
+    .reduce((acc, v) => acc.split(v).join('[redacted]'), message);
+}
+
 /** Real mint: one-step aeval scenario running setup:account → save_storage_state. */
 export async function mintWithAeval(req: MintRequest, timeoutMs: number): Promise<unknown> {
   const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vox-mint-'));
@@ -74,7 +87,10 @@ export async function mintWithAeval(req: MintRequest, timeoutMs: number): Promis
       proc.on('error', (err) => finish(() => reject(err)));
       proc.on('close', (code) => finish(() => {
         if (code === 0) resolve();
-        else reject(new Error(`aeval exited ${code}: ${stderr.trim().split('\n').pop() || 'login failed'}`));
+        else {
+          const tail = scrubCredentials(stderr.trim().split('\n').pop() || 'login failed', [req.email, req.password]);
+          reject(new Error(`aeval exited ${code}: ${tail}`));
+        }
       }));
     });
     if (!fs.existsSync(storageFile)) {
@@ -108,7 +124,11 @@ export function createBrokerServer(deps: { mint: MintFn; secret: string }): http
         const storageState = await deps.mint(body as MintRequest);
         return json(200, { storageState });
       } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
+        const raw = err instanceof Error ? err.message : String(err);
+        // Defense-in-depth: scrub again here so even a future mint
+        // implementation that forgets to scrub can't leak credentials
+        // through logs or the 502 response body.
+        const msg = scrubCredentials(raw, [body.email ?? '', body.password ?? '']);
         console.error(`[Broker] Mint failed for platform ${body.platformId}: ${msg}`);
         return json(502, { error: msg });
       }
