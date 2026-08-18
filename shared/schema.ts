@@ -348,8 +348,10 @@ export const evalJobs = pgTable("eval_jobs", {
   evalAgentIdx: index("eval_jobs_eval_agent_idx").on(table.evalAgentId),
   scheduleIdx: index("eval_jobs_schedule_idx").on(table.scheduleId),
   // Serves the shared-dispatch reap-settle sweep (storage.getReapableSharedJobs):
-  // targeted terminal jobs, newest-first. Partial so it stays tiny — only paid
-  // targeted dispatches qualify (review M4). Applied by migration 0025.
+  // targeted terminal jobs, ordered oldest-first so a backlog drains toward the
+  // 26h leak-reaper before aging out (GitHub #90 / #7). A plain btree serves both
+  // scan directions, so the ordering change needs no index change. Partial so it
+  // stays tiny — only paid targeted dispatches qualify (review M4). Migration 0025.
   reapableSharedIdx: index("eval_jobs_reapable_shared_idx")
     .on(table.completedAt)
     .where(sql`target_token_id IS NOT NULL AND status IN ('completed','failed')`),

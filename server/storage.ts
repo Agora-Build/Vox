@@ -96,7 +96,7 @@ import { regionSiteSequence } from "@shared/regions";
 import { drizzle } from "drizzle-orm/node-postgres";
 import pkg from "pg";
 const { Pool } = pkg;
-import { desc, eq, and, or, not, sql, gte, inArray, isNotNull } from "drizzle-orm";
+import { asc, desc, eq, and, or, not, sql, gte, lte, inArray, isNotNull } from "drizzle-orm";
 import crypto from "crypto";
 
 // Realtime-metrics windowing policy (server-owned; the client never sets these).
@@ -988,8 +988,28 @@ export class DatabaseStorage {
   // unsettled shared dispatch. Read-only; the maintenance loop calls
   // marketplace.settle() on each (idempotent). Money stays in the plugin — this
   // only selects candidates by the opaque snapshot marker Core stashed at dispatch.
-  async getReapableSharedJobs(sinceMinutes: number, limit: number): Promise<EvalJob[]> {
-    const cutoff = new Date(Date.now() - sinceMinutes * 60 * 1000);
+  async getReapableSharedJobs(sinceMinutes: number, graceMinutes: number, limit: number): Promise<EvalJob[]> {
+    const now = Date.now();
+    const windowStart = new Date(now - sinceMinutes * 60 * 1000);
+    // Grace-period upper bound: exclude jobs that turned terminal too recently.
+    // The complete route commits `status='completed'` in finalizeRunningJob BEFORE
+    // it writes the evalResults row; a sweep landing in that sub-second window would
+    // see hasResult=false and REFUND a job that produces a valid result an instant
+    // later (the H1 artifact gate makes the refund terminal, so the complete route's
+    // own settle then no-ops and the owner is never paid). Waiting graceMinutes puts
+    // the result row well in the past before we settle here. Prompt settlement still
+    // happens on the complete route itself; this sweep is only the catch-up path
+    // (GitHub #90).
+    //
+    // Clock note: these bounds are app-clock (Date.now()). The money path — a
+    // `completed` job via finalizeRunningJob — writes completed_at with app-clock
+    // `new Date()` too, so the #90 race stays consistent. The bulk FAIL paths
+    // (failTimedOutRunningJobs / failPendingJobsWithNoAgent / failExpiredPendingJobs)
+    // write completed_at = DB-clock NOW(), so a `failed` row's grace bound can skew
+    // by instance-vs-DB clock drift — harmless, since a failed job REFUNDS whether
+    // swept a tick earlier or later. Switching to NOW() here would instead skew the
+    // money path (app-clock write vs DB-clock read), so app-clock is the right choice.
+    const graceCutoff = new Date(now - graceMinutes * 60 * 1000);
     return db.select().from(evalJobs)
       .where(and(
         // Both terminal outcomes carry an unsettled dispatch: a `failed` job
@@ -999,10 +1019,18 @@ export class DatabaseStorage {
         // leak-reaper — which would refund valid completed work (review C1).
         inArray(evalJobs.status, ["completed", "failed"]),
         isNotNull(evalJobs.targetTokenId),
-        gte(evalJobs.completedAt, cutoff),
+        gte(evalJobs.completedAt, windowStart),
+        lte(evalJobs.completedAt, graceCutoff),
         sql`${evalJobs.snapshot} -> 'settlementContext' IS NOT NULL`,
       ))
-      .orderBy(desc(evalJobs.completedAt))
+      // Ascending (oldest-first): if more than `limit` targeted jobs terminate in
+      // one window, drain the ones closest to aging out to the 26h leak-reaper
+      // first. Descending dropped exactly those, letting valid completed work be
+      // refunded by the leak-reaper instead of captured here (GitHub #90 / #7).
+      // Secondary key on id breaks completed_at ties (ms precision → ties possible)
+      // so the batch boundary is deterministic — an unlucky tie spanning `limit`
+      // can't leave the same overflow row re-picked-and-truncated every tick.
+      .orderBy(asc(evalJobs.completedAt), asc(evalJobs.id))
       .limit(limit);
   }
 
