@@ -213,4 +213,50 @@ describe("Phase C: dispatch integration — session stamping, pre-warm, shared-t
       }
     });
   });
+
+  describe("6. escrow-leak fix: jobConfig assembly throws inside the voidDispatch-compensated try", () => {
+    let conflictWorkflowId: number;
+    let conflictEvalSetId: number;
+
+    beforeAll(async () => {
+      // Workflow and eval set share the "frameworkVersion" key with CONFLICTING
+      // values. Neither validateWorkflowConfig nor validateEvalSetConfig restricts
+      // this key (only "scenario" is eval-set-only and "framework"/"app"/"stepsPrefix"/
+      // "stepsSuffix" are workflow-only — see server/storage.ts:~203-258), so both
+      // creates succeed and the conflict only surfaces at run time inside
+      // mergeEvalConfig (server/storage.ts:~260-280).
+      const wfRes = await authFetch(admin, `${BASE_URL}/api/workflows`, {
+        method: "POST",
+        body: JSON.stringify({
+          name: `Conflict WF ${stamp}`,
+          providerId,
+          config: { framework: "aeval", frameworkVersion: "1.0.0" },
+        }),
+      });
+      expect(wfRes.ok).toBe(true);
+      conflictWorkflowId = (await wfRes.json()).id;
+
+      const esRes = await authFetch(admin, `${BASE_URL}/api/eval-sets`, {
+        method: "POST",
+        body: JSON.stringify({ name: `Conflict ES ${stamp}`, config: { frameworkVersion: "2.0.0" } }),
+      });
+      expect(esRes.ok).toBe(true);
+      conflictEvalSetId = (await esRes.json()).id;
+    });
+
+    // This proves only that the throw path lives inside the try (a controlled 500,
+    // not a crash / unhandled rejection) for the untargeted (no escrow) path. A full
+    // proof that a real escrow hold gets voided when this throw fires mid-shared-
+    // dispatch requires live marketplace balances and is deliberately deferred to the
+    // practical e2e suite (Task 13).
+    it("untargeted run with conflicting shared config keys surfaces a controlled 500, not a crash", async () => {
+      const res = await authFetch(admin, `${BASE_URL}/api/workflows/${conflictWorkflowId}/run`, {
+        method: "POST",
+        body: JSON.stringify({ region: REGION_NA, evalSetId: conflictEvalSetId }),
+      });
+      expect(res.status).toBe(500);
+      const body = await res.json();
+      expect(body.error).toBe("Failed to run workflow");
+    });
+  });
 });

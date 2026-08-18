@@ -3580,6 +3580,7 @@ export async function registerRoutes(
       let jobRegion: string;
       let targeting: number | null = null;
       let settlementContext: unknown = undefined;
+      let consentRecorded = false;
 
       if (targetTokenId != null) {
         const token = await storage.getEvalAgentToken(targetTokenId);
@@ -3596,6 +3597,7 @@ export async function registerRoutes(
             if (!attested) {
               return res.status(403).json({ error: "Shared dispatch requires dedicated test-account credentials (mark the login secrets as test accounts)" });
             }
+            consentRecorded = true; // gate above already guarantees credentialConsent === true
           }
           const authz = await marketplace.authorizeDispatch(user.id, token.id, {
             workflowId: parseInt(workflowId, 10),
@@ -3629,18 +3631,23 @@ export async function registerRoutes(
       const snapshot = {
         ...baseSnapshot,
         ...(settlementContext !== undefined ? { settlementContext } : {}),
-        ...(sessionNeed && req.body.credentialConsent === true ? { credentialConsent: true } : {}),
+        ...(consentRecorded ? { credentialConsent: true } : {}),
       };
-      const jobConfig = mergeEvalConfig(workflow.config, evalSet.config);
-      delete (jobConfig as Record<string, unknown>).sessionInjection; // server-stamped only
-      if (sessionNeed) {
-        (jobConfig as Record<string, unknown>).sessionInjection = { platformId: sessionNeed.platformId };
-        // Pre-warm the session cache so claim-time is a cache hit. Fire-and-forget:
-        // ensureSession never throws and records failures on the web_sessions row.
-        void ensureSession(scope, sessionNeed);
-      }
       let job;
       try {
+        // jobConfig assembly lives inside this try (not before it): mergeEvalConfig
+        // throws synchronously on conflicting shared workflow/eval-set keys, and if a
+        // shared-tier authorizeDispatch above already placed an escrow hold, that throw
+        // must still hit the catch below so voidDispatch runs — otherwise the hold leaks
+        // until the 26h reaper (review finding, Task 6 fix wave).
+        const jobConfig = mergeEvalConfig(workflow.config, evalSet.config);
+        delete (jobConfig as Record<string, unknown>).sessionInjection; // server-stamped only
+        if (sessionNeed) {
+          (jobConfig as Record<string, unknown>).sessionInjection = { platformId: sessionNeed.platformId };
+          // Pre-warm the session cache so claim-time is a cache hit. Fire-and-forget:
+          // ensureSession never throws and records failures on the web_sessions row.
+          void ensureSession(scope, sessionNeed);
+        }
         job = await storage.createEvalJob({
           workflowId: parseInt(workflowId),
           triggerType: 2, // manual (Run Workflow)
