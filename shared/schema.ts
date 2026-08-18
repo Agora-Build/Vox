@@ -16,6 +16,8 @@ export const scheduleTypeEnum = pgEnum("schedule_type", ["once", "recurring"]);
 export const clashEventStatusEnum = pgEnum("clash_event_status", ["upcoming", "live", "completed", "cancelled"]);
 export const clashRunnerStateEnum = pgEnum("clash_runner_state", ["idle", "assigned", "running", "draining"]);
 export const orgRoleEnum = pgEnum("org_role", ["owner", "admin", "member"]);
+export const secretClassEnum = pgEnum("secret_class", ["runtime", "login"]);
+export const webSessionStatusEnum = pgEnum("web_session_status", ["minting", "ready", "failed"]);
 
 // Helper function to generate 12-char random ID for providers
 export function generateProviderId(): string {
@@ -238,6 +240,11 @@ export const evalAgents = pgTable("eval_agents", {
   lastSeenAt: timestamp("last_seen_at"),
   lastJobAt: timestamp("last_job_at"),
   metadata: jsonb("metadata").default({}),
+  // Core-observed egress IP (register/heartbeat). Layer-2/3 foundation: risk
+  // tracking + network-instinct labels derive from this. Core-internal — never
+  // expose raw in any public listing; only derived labels get exposed (future).
+  observedIp: text("observed_ip"),
+  observedIpAt: timestamp("observed_ip_at"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
@@ -445,6 +452,12 @@ export const orgSecrets = pgTable("org_secrets", {
   organizationId: integer("organization_id").notNull().references(() => organizations.id),
   name: text("name").notNull(),
   encryptedValue: text("encrypted_value").notNull(),
+  // 'login' rows are Core-only: structurally excluded from the job-secrets path
+  // (getSecretsForJob) so username/password never reach an eval agent, any tier.
+  class: secretClassEnum("class").default("runtime").notNull(),
+  // Owner's attestation that this login identity is a dedicated, disposable
+  // test account — required before shared-tier dispatch of session workflows.
+  isTestAccount: boolean("is_test_account").default(false).notNull(),
   createdBy: integer("created_by").references(() => users.id),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
@@ -650,6 +663,12 @@ export const secrets = pgTable("secrets", {
   userId: integer("user_id").notNull().references(() => users.id),
   name: text("name").notNull(),
   encryptedValue: text("encrypted_value").notNull(),
+  // 'login' rows are Core-only: structurally excluded from the job-secrets path
+  // (getSecretsForJob) so username/password never reach an eval agent, any tier.
+  class: secretClassEnum("class").default("runtime").notNull(),
+  // Owner's attestation that this login identity is a dedicated, disposable
+  // test account — required before shared-tier dispatch of session workflows.
+  isTestAccount: boolean("is_test_account").default(false).notNull(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 }, (table) => ({
@@ -664,6 +683,35 @@ export const insertSecretSchema = createInsertSchema(secrets).omit({
 
 export type InsertSecret = z.infer<typeof insertSecretSchema>;
 export type Secret = typeof secrets.$inferSelect;
+
+// ==================== WEB SESSIONS (Phase C session broker) ====================
+// Core-minted login sessions (Playwright storageState), cached per owner scope
+// (user XOR org) + platform. The broker sidecar mints; agents only ever see the
+// decrypted storageState via GET /api/eval-agent/jobs/:id/session.
+
+export const webSessions = pgTable("web_sessions", {
+  id: serial("id").primaryKey(),
+  // Exactly one of userId/organizationId is set — mirrors secrets ownership.
+  userId: integer("user_id").references(() => users.id),
+  organizationId: integer("organization_id").references(() => organizations.id),
+  platformId: text("platform_id").notNull(),
+  status: webSessionStatusEnum("status").notNull(),
+  encryptedStorageState: text("encrypted_storage_state"),
+  mintedAt: timestamp("minted_at"),
+  expiresAt: timestamp("expires_at"),
+  lastError: text("last_error"),
+  // Stale-mint recovery: a 'minting' row older than the mint timeout is reclaimable.
+  mintStartedAt: timestamp("mint_started_at"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (table) => ({
+  userPlatformIdx: uniqueIndex("web_sessions_user_platform_idx")
+    .on(table.userId, table.platformId).where(sql`organization_id IS NULL`),
+  orgPlatformIdx: uniqueIndex("web_sessions_org_platform_idx")
+    .on(table.organizationId, table.platformId).where(sql`user_id IS NULL`),
+}));
+
+export type WebSession = typeof webSessions.$inferSelect;
 
 // ==================== CLASH AGENT PROFILES ====================
 
