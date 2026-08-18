@@ -11,7 +11,7 @@ import { registerApiV1Routes } from "./routes-api-v1";
 import { generateSignedUrlForUser } from "./s3";
 import { validateTierChange, resolveTargetedDispatch, filterDispatchableAgents } from "./dispatch";
 import { getMarketplace } from "./marketplace";
-import { parsePlatformSetup, sessionScopeForWorkflow, workflowNeedsSession, getLoginSecretNames, ensureSession } from "./session-broker";
+import { parsePlatformSetup, sessionScopeForWorkflow, workflowNeedsSession, getLoginSecretNames, ensureSession, SESSION_FRESH_MARGIN_SECONDS } from "./session-broker";
 import {
   hashPassword,
   verifyPassword,
@@ -3510,6 +3510,62 @@ export async function registerRoutes(
         return res.status(500).json({ error: "Server encryption not configured" });
       }
       res.status(500).json({ error: "Failed to fetch secrets" });
+    }
+  });
+
+  // Phase C: serve the Core-minted login session (storageState) for a claimed
+  // job. The agent gets ONLY this bundle — never the login secrets behind it.
+  app.get("/api/eval-agent/jobs/:jobId/session", async (req, res) => {
+    try {
+      const authHeader = req.headers.authorization;
+      if (!authHeader || !authHeader.startsWith("Bearer ")) {
+        return res.status(401).json({ error: "Eval agent token required" });
+      }
+      const evalAgentToken = await storage.getEvalAgentTokenByHash(hashToken(authHeader.slice(7)));
+      if (!evalAgentToken || evalAgentToken.isRevoked) {
+        return res.status(401).json({ error: "Invalid or revoked eval agent token" });
+      }
+      const auth = await authorizeJobAgent(parseInt(req.params.jobId), evalAgentToken.id, req.query.leaseId);
+      if (auth.status !== "ok") { denyJobAgent(res, auth); return; }
+      if (auth.job.status !== "running") {
+        return res.status(403).json({ error: "Session only available for running jobs" });
+      }
+
+      // Recompute the need from live data (the config stamp is advisory for
+      // listing; the authority is the workflow's setup + login-class secrets).
+      const jobWorkflow = auth.job.workflowId != null ? await storage.getWorkflow(auth.job.workflowId) : undefined;
+      if (!jobWorkflow) return res.json({ required: false });
+      const setupInfo = parsePlatformSetup(((jobWorkflow.config ?? {}) as Record<string, unknown>).stepsPrefix as string | undefined);
+      const scope = sessionScopeForWorkflow(jobWorkflow);
+      const need = setupInfo ? workflowNeedsSession(setupInfo, await getLoginSecretNames(scope)) : null;
+      if (!need) return res.json({ required: false });
+
+      const session = await storage.getWebSession(scope, need.platformId);
+      const fresh = session?.status === "ready" && session.expiresAt &&
+        session.expiresAt.getTime() > Date.now() + SESSION_FRESH_MARGIN_SECONDS * 1000;
+      if (fresh && session!.encryptedStorageState) {
+        // Audit trail (layer-2 foundation): who received a session bundle, when,
+        // from where. Log line only — the bundle itself is never logged
+        // (SENSITIVE_PATHS redacts the response body).
+        console.log(`[Session] Job ${auth.job.id}: bundle served to agent ${auth.agent.id} (token ${evalAgentToken.id}, ip ${req.ip})`);
+        return res.json({
+          required: true, status: "ready", authMode: "storage", platformId: need.platformId,
+          storageState: JSON.parse(decryptValue(session!.encryptedStorageState)),
+          expiresAt: session!.expiresAt,
+        });
+      }
+      if (session?.status === "failed") {
+        return res.status(503).json({ required: true, status: "failed", error: session.lastError ?? "session mint failed" });
+      }
+      // Cold or stale or currently minting: (re)trigger and tell the agent to poll.
+      void ensureSession(scope, need);
+      return res.status(202).json({ required: true, status: "minting" });
+    } catch (error) {
+      console.error("Error serving job session:", error);
+      if (error instanceof Error && error.message.includes("CREDENTIAL_ENCRYPTION_KEY")) {
+        return res.status(500).json({ error: "Server encryption not configured" });
+      }
+      res.status(500).json({ error: "Failed to serve session" });
     }
   });
 
