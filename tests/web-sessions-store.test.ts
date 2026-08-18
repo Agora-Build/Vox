@@ -1,7 +1,7 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, afterAll } from "vitest";
 import { storage, db } from "../server/storage";
 import { webSessions } from "../shared/schema";
-import { eq, sql } from "drizzle-orm";
+import { eq, sql, like } from "drizzle-orm";
 
 const hasDb = !!process.env.DATABASE_URL;
 const d = hasDb ? describe : describe.skip;
@@ -10,6 +10,15 @@ const d = hasDb ? describe : describe.skip;
 const pid = (tag: string) => `test-${tag}-${Date.now()}`;
 
 d("web_sessions store", () => {
+  // Belt-and-suspenders: each test already deletes its own row(s), but a
+  // failed assertion mid-test skips that cleanup and leaks a row. Sweep
+  // everything matching our test-data naming convention so runs don't
+  // accumulate orphans.
+  afterAll(async () => {
+    if (hasDb) await db.delete(webSessions).where(like(webSessions.platformId, "test-%"));
+  });
+
+
   it("claim → ready → getWebSession round-trip", async () => {
     const platformId = pid("rt");
     const claimed = await storage.claimWebSessionMint({ userId: 1 }, platformId, 180, 300);
@@ -96,6 +105,11 @@ d("web_sessions store", () => {
     // A claims.
     const aRow = await storage.claimWebSessionMint({ userId: 1 }, platformId, 180, 300);
     expect(aRow).toBeDefined();
+    // The two read paths (raw-query claim result vs. typed getWebSession)
+    // must agree on the exact instant — this is what breaks under a non-UTC
+    // node TZ if rowToWebSession's raw-string parsing isn't forced to UTC.
+    const aViaGet = await storage.getWebSession({ userId: 1 }, platformId);
+    expect(aViaGet!.mintStartedAt!.getTime()).toBe(aRow!.mintStartedAt!.getTime());
     // B stale-reclaims (staleMintSeconds=0 makes A's mint immediately stale).
     // Same row (same scope+platformId), but mint_started_at is bumped to NOW().
     const bRow = await storage.claimWebSessionMint({ userId: 1 }, platformId, 0, 300);

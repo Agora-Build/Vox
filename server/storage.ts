@@ -2443,7 +2443,15 @@ export class DatabaseStorage {
     const camel = snakeToCamel(row);
     for (const field of DatabaseStorage.WEB_SESSION_DATE_FIELDS) {
       const v = camel[field];
-      if (typeof v === "string") camel[field] = new Date(v);
+      // Raw-query timestamp strings (e.g. "2026-08-18 12:34:56.789") have no
+      // timezone suffix, and the DB clock is UTC — but plain `new Date(v)`
+      // parses that shape in the NODE PROCESS's local TZ, not UTC. That
+      // disagrees with drizzle's typed column path (db.select(), used by
+      // getWebSession), which parses these as UTC. On a non-UTC host this
+      // skews every raw-query-derived Date by the host's UTC offset. Force
+      // UTC interpretation to match.
+      if (typeof v === "string") camel[field] = new Date(v.replace(" ", "T") + "Z");
+      else if (v instanceof Date) camel[field] = v;
     }
     return camel as WebSession;
   }
@@ -2528,12 +2536,18 @@ export class DatabaseStorage {
   async storeWebSessionReady(
     id: number, encryptedStorageState: string, ttlHours: number, fence: Date,
   ): Promise<boolean> {
+    // Send the fence as an explicit ISO UTC string rather than the raw Date
+    // (node-postgres would otherwise serialize it using the driver's/host's
+    // local-TZ formatting). Postgres ignores the trailing "Z" when coercing
+    // a string literal to timestamp-without-time-zone, so the digits it
+    // compares are exactly what's stored — and the stored value was written
+    // from the (UTC) DB clock via NOW(), so this matches under every node TZ.
     const result = await db.execute(sql`
       UPDATE web_sessions
       SET status = 'ready', encrypted_storage_state = ${encryptedStorageState},
           minted_at = NOW(), expires_at = NOW() + make_interval(secs => ${Math.round(ttlHours * 3600)}),
           last_error = NULL, updated_at = NOW()
-      WHERE id = ${id} AND status = 'minting' AND mint_started_at = ${fence}`);
+      WHERE id = ${id} AND status = 'minting' AND mint_started_at = ${fence.toISOString()}`);
     return ((result as unknown as { rowCount: number }).rowCount || 0) > 0;
   }
 
@@ -2550,7 +2564,7 @@ export class DatabaseStorage {
       UPDATE web_sessions
       SET status = 'failed', encrypted_storage_state = NULL, expires_at = NULL,
           last_error = ${error.slice(0, 2000)}, updated_at = NOW()
-      WHERE id = ${id} AND status = 'minting' AND mint_started_at = ${fence}`);
+      WHERE id = ${id} AND status = 'minting' AND mint_started_at = ${fence.toISOString()}`);
     return ((result as unknown as { rowCount: number }).rowCount || 0) > 0;
   }
 }
