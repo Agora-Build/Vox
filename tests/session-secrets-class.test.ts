@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { storage, encryptValue } from "../server/storage";
 import { db } from "../server/storage";
-import { secrets, workflows, projects } from "../shared/schema";
+import { secrets, orgSecrets, users, organizations, evalJobs } from "../shared/schema";
 import { eq } from "drizzle-orm";
 
 const hasDb = !!process.env.DATABASE_URL;
@@ -38,5 +38,52 @@ d("login-class secrets are withheld from the job path", () => {
     // Cleanup (delete only our stamped rows/objects).
     await db.delete(secrets).where(eq(secrets.name, `SC_RUNTIME_${stamp}`));
     await db.delete(secrets).where(eq(secrets.name, `SC_LOGIN_${stamp}`));
+    // evalJobs.workflowId is ON DELETE SET NULL, so the job row (left in place,
+    // matching the repo's existing test pattern) does not block this delete.
+    await storage.deleteWorkflow(wf.id);
+    await storage.deleteProject(project.id);
+  });
+
+  it("getOrgSecretsForJob returns runtime rows only; login rows never leave Core", async () => {
+    const stamp = Date.now();
+    // Throwaway org + throwaway member user, so we never touch admin user 1.
+    const org = await storage.createOrganization({ name: `sc-org-${stamp}` } as any);
+    const user = await storage.createUser({
+      username: `sc-user-${stamp}`,
+      email: `sc-user-${stamp}@test.local`,
+      organizationId: org.id,
+    } as any);
+    // Org-owned workflow: organizationId set, owned by the throwaway member.
+    const wf = await storage.createWorkflow({
+      name: `sc-org-wf-${stamp}`, ownerId: user.id, organizationId: org.id,
+      providerId: "bEh-JgzyScxF", visibility: "private", isMainline: false, config: {},
+    } as any);
+    // One runtime + one login org secret.
+    await db.insert(orgSecrets).values({
+      organizationId: org.id, name: `SC_ORG_RUNTIME_${stamp}`, encryptedValue: encryptValue("ok"), class: "runtime",
+    });
+    await db.insert(orgSecrets).values({
+      organizationId: org.id, name: `SC_ORG_LOGIN_${stamp}`, encryptedValue: encryptValue("hunter2"), class: "login",
+    });
+    const job = await storage.createEvalJob({
+      workflowId: wf.id, triggerType: 2, evalSetId: null, createdBy: user.id,
+      region: "na-us-ashburn-01", config: {},
+      snapshot: { provider: null, workflow: null, evalSet: null, creatorPlan: null } as any,
+      status: "pending", priority: 0, retryCount: 0, maxRetries: 3,
+    } as any);
+
+    const result = await storage.getOrgSecretsForJob(job.id);
+    expect(result[`SC_ORG_RUNTIME_${stamp}`]).toBe("ok");
+    expect(result).not.toHaveProperty(`SC_ORG_LOGIN_${stamp}`);
+
+    // Cleanup, in FK-safe order: org secrets -> job (frees users.createdBy FK,
+    // which has no ON DELETE action) -> workflow (frees users.ownerId /
+    // organizations.organizationId FKs) -> user -> org.
+    await db.delete(orgSecrets).where(eq(orgSecrets.name, `SC_ORG_RUNTIME_${stamp}`));
+    await db.delete(orgSecrets).where(eq(orgSecrets.name, `SC_ORG_LOGIN_${stamp}`));
+    await db.delete(evalJobs).where(eq(evalJobs.id, job.id));
+    await storage.deleteWorkflow(wf.id);
+    await db.delete(users).where(eq(users.id, user.id));
+    await db.delete(organizations).where(eq(organizations.id, org.id));
   });
 });
