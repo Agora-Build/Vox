@@ -35,6 +35,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { SECRET_PLACEHOLDER_REGEX } from '../shared/secrets';
 import yaml from 'js-yaml';
+import { injectStorageSession } from './session-inject';
 import {
   CHUNK_SIZE,
   type ParsedScenario,
@@ -300,6 +301,7 @@ class VoxEvalAgentDaemon {
       buildTag: shortBuildTag(),
       buildDate: process.env.BUILD_DATE || 'unknown',
     };
+    metadata.sessionInjection = "1";
     if (this.aevalVersion !== "unknown") {
       metadata.frameworkVersion = this.aevalVersion;
     }
@@ -511,6 +513,33 @@ class VoxEvalAgentDaemon {
       const msg = error instanceof Error ? error.message : String(error);
       console.warn(`[Daemon] Error fetching secrets:`, msg);
       return {};
+    }
+  }
+
+  /**
+   * Fetch the Core-minted session bundle for a session-injected job.
+   * Polls while Core is minting (5s interval, 240s deadline).
+   * Returns: null (no session needed), a bundle, or throws (job must fail —
+   * running a login-gated target unauthenticated would produce garbage metrics).
+   */
+  async fetchSession(jobId: number): Promise<{ storageState: unknown; platformId: string } | null> {
+    const deadline = Date.now() + 240_000;
+    for (;;) {
+      const response = await this.fetch(`/api/eval-agent/jobs/${jobId}/session?leaseId=${encodeURIComponent(this.leaseId ?? '')}`);
+      if (response.status === 404) return null; // older Core without the endpoint
+      const body = await response.json().catch(() => ({}));
+      if (response.ok && body.required === false) return null;
+      if (response.ok && body.status === 'ready') {
+        console.log(`[Daemon] Session bundle received for job ${jobId} (platform ${body.platformId})`);
+        return { storageState: body.storageState, platformId: body.platformId };
+      }
+      if (response.status === 202) {
+        if (Date.now() > deadline) throw new Error('target login failed: timed out waiting for session mint');
+        console.log(`[Daemon] Session minting for job ${jobId} — waiting...`);
+        await new Promise((r) => setTimeout(r, 5000));
+        continue;
+      }
+      throw new Error(`target login failed: ${body.error ?? `session fetch HTTP ${response.status}`}`);
     }
   }
 
@@ -1832,6 +1861,20 @@ class VoxEvalAgentDaemon {
     }
 
     const tempFiles: (string | null)[] = [];
+
+    // Phase C: session-injected jobs get a Core-minted storageState instead of
+    // login credentials (which the server structurally withholds).
+    const sessionCfg = (job.config as Record<string, unknown> | null)?.sessionInjection;
+    if (sessionCfg) {
+      const bundle = await this.fetchSession(job.id); // throws → job fails before any eval time
+      if (bundle && stepsPrefix) {
+        const storageFile = path.join(os.tmpdir(), `vox-session-${job.id}-${Date.now()}.json`);
+        fs.writeFileSync(storageFile, JSON.stringify(bundle.storageState), { mode: 0o600 });
+        tempFiles.push(storageFile);
+        stepsPrefix = injectStorageSession(stepsPrefix, storageFile);
+        console.log(`[Daemon] Forced platform.setup to storage mode (session injection)`);
+      }
+    }
 
     try {
       let results: EvalResult;
