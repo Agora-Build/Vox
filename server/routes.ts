@@ -3051,17 +3051,25 @@ export async function registerRoutes(
 
       // Version-gate: if the requesting agent has a frameworkVersion, filter out
       // jobs whose config requires a newer version than the agent supports.
+      // Also gate session-injected jobs (Phase C) to daemons whose registration
+      // metadata declares the sessionInjection capability.
       const agents = await storage.getEvalAgentsByTokenId(evalAgentToken.id);
       const latestAgent = agents[0]; // sorted by createdAt desc
-      const agentVersion = (latestAgent?.metadata as Record<string, unknown>)?.frameworkVersion as string | undefined;
+      const agentMeta = (latestAgent?.metadata as Record<string, unknown>) ?? {};
+      const agentVersion = agentMeta.frameworkVersion as string | undefined;
+      const supportsSessionInjection = agentMeta.sessionInjection === "1";
 
-      if (agentVersion) {
-        jobs = jobs.filter((job) => {
-          const jobVersion = (job.config as Record<string, unknown>)?.frameworkVersion as string | undefined;
-          if (!jobVersion) return true; // jobs without version pass through
-          return compareVersions(jobVersion, agentVersion) <= 0;
-        });
-      }
+      jobs = jobs.filter((job) => {
+        const cfg = (job.config as Record<string, unknown>) ?? {};
+        // Phase C: never hand a session-injected job to a daemon that can't
+        // force storage-mode — it would run the target unauthenticated.
+        if (cfg.sessionInjection && !supportsSessionInjection) return false;
+        if (agentVersion) {
+          const jobVersion = cfg.frameworkVersion as string | undefined;
+          if (jobVersion && compareVersions(jobVersion, agentVersion) > 0) return false;
+        }
+        return true;
+      });
 
       res.json(jobs);
     } catch (error) {
