@@ -307,7 +307,16 @@ function startBackgroundWorker() {
       // seam is absent; settle() is idempotent, so re-visiting a settled job is cheap.
       const marketplace = getMarketplace();
       if (marketplace) {
-        const reapable = await storage.getReapableSharedJobs(REAP_SETTLE_LOOKBACK_MINUTES, REAP_SETTLE_GRACE_MINUTES, 200);
+        const REAP_SETTLE_BATCH = 200;
+        const reapable = await storage.getReapableSharedJobs(REAP_SETTLE_LOOKBACK_MINUTES, REAP_SETTLE_GRACE_MINUTES, REAP_SETTLE_BATCH);
+        // Saturation signal: a full batch means terminal targeted jobs are arriving
+        // faster than one tick drains them. Oldest-first ordering keeps the ones
+        // nearest the 26h leak-reaper at the front, but sustained saturation still
+        // warrants a look (settled jobs stay query-eligible — no settled-marker yet;
+        // see GitHub #90 follow-up). Never silent: log so it's visible, not guessed.
+        if (reapable.length === REAP_SETTLE_BATCH) {
+          log(`Reap-settle sweep hit its ${REAP_SETTLE_BATCH}-job batch cap — terminal targeted jobs may be backing up`, "worker");
+        }
         for (const job of reapable) {
           try {
             // Pass the artifact gate (hasResult) so a completed-but-resultless job

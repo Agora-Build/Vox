@@ -90,9 +90,43 @@ d("storage.getReapableSharedJobs", () => {
   });
 
   it("returns candidates oldest-first so a backlog drains before aging out (#7)", async () => {
+    const token = await storage.createEvalAgentToken({
+      name: "reap-order-test",
+      tokenHash: `reap-order-${Date.now()}`,
+      region: "na-us-ashburn-01",
+      createdBy: 1,
+    } as any);
+
+    // Seed two targeted, settlement-bearing jobs and finalize them in sequence so
+    // this test proves ordering on its OWN rows rather than relying on state left by
+    // earlier tests in this describe (which would let it pass vacuously if they were
+    // removed or reordered). Two awaited finalizes give distinct completed_at.
+    const first = await storage.createEvalJob({
+      workflowId: null, triggerType: 2, evalSetId: null, createdBy: 1,
+      region: "na-us-ashburn-01", targetTokenId: token.id,
+      config: {}, snapshot: { provider: null, workflow: null, evalSet: null, creatorPlan: null,
+        settlementContext: { settlementId: 707071 } } as any,
+      status: "running", priority: 0, retryCount: 0, maxRetries: 3,
+    } as any);
+    await storage.finalizeRunningJob(first.id, undefined);
+    const second = await storage.createEvalJob({
+      workflowId: null, triggerType: 2, evalSetId: null, createdBy: 1,
+      region: "na-us-ashburn-01", targetTokenId: token.id,
+      config: {}, snapshot: { provider: null, workflow: null, evalSet: null, creatorPlan: null,
+        settlementContext: { settlementId: 707072 } } as any,
+      status: "running", priority: 0, retryCount: 0, maxRetries: 3,
+    } as any);
+    await storage.finalizeRunningJob(second.id, undefined);
+
     const rows = await storage.getReapableSharedJobs(60, 0, 500);
+    // Not vacuous: our two seeded rows must be present.
+    const ids = rows.map((r) => r.id);
+    expect(ids).toContain(first.id);
+    expect(ids).toContain(second.id);
+    expect(rows.length).toBeGreaterThanOrEqual(2);
+
     const times = rows.map((r) => (r.completedAt as Date).getTime());
     const sorted = [...times].sort((a, b) => a - b);
-    expect(times).toEqual(sorted); // completed_at ascending
+    expect(times).toEqual(sorted); // completed_at ascending (robust to equal-time ties)
   });
 });
