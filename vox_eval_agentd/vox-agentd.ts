@@ -1862,21 +1862,23 @@ class VoxEvalAgentDaemon {
 
     const tempFiles: (string | null)[] = [];
 
-    // Phase C: session-injected jobs get a Core-minted storageState instead of
-    // login credentials (which the server structurally withholds).
-    const sessionCfg = (job.config as Record<string, unknown> | null)?.sessionInjection;
-    if (sessionCfg) {
-      const bundle = await this.fetchSession(job.id); // throws → job fails before any eval time
-      if (bundle && stepsPrefix) {
-        const storageFile = path.join(os.tmpdir(), `vox-session-${job.id}-${Date.now()}.json`);
-        fs.writeFileSync(storageFile, JSON.stringify(bundle.storageState), { mode: 0o600 });
-        tempFiles.push(storageFile);
-        stepsPrefix = injectStorageSession(stepsPrefix, storageFile);
-        console.log(`[Daemon] Forced platform.setup to storage mode (session injection)`);
-      }
-    }
-
     try {
+      // Phase C: session-injected jobs get a Core-minted storageState instead of
+      // login credentials (which the server structurally withholds).
+      const sessionCfg = (job.config as Record<string, unknown> | null)?.sessionInjection;
+      if (sessionCfg) {
+        const bundle = await this.fetchSession(job.id); // throws → job fails before any eval time
+        if (bundle && stepsPrefix) {
+          const storageFile = path.join(os.tmpdir(), `vox-session-${job.id}-${Date.now()}.json`);
+          fs.writeFileSync(storageFile, JSON.stringify(bundle.storageState), { mode: 0o600 });
+          tempFiles.push(storageFile);
+          stepsPrefix = injectStorageSession(stepsPrefix, storageFile);
+          console.log(`[Daemon] Forced platform.setup to storage mode (session injection)`);
+        } else if (bundle && !stepsPrefix) {
+          console.warn('[Daemon] Session bundle received but no stepsPrefix to inject into — proceeding without injection');
+        }
+      }
+
       let results: EvalResult;
 
       switch (framework) {
