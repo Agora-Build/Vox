@@ -2960,6 +2960,7 @@ export async function registerRoutes(
       }
 
       await storage.updateEvalAgentHeartbeat(agent.id);
+      if (req.ip) void storage.updateEvalAgentObservedIp(agent.id, req.ip);
 
       res.json({
         id: agent.id,
@@ -3005,6 +3006,7 @@ export async function registerRoutes(
       }
 
       await storage.updateEvalAgentHeartbeat(agentId);
+      if (req.ip) void storage.updateEvalAgentObservedIp(agentId, req.ip);
 
       const updates: Record<string, unknown> = {};
       if (state && ["idle", "offline", "occupied"].includes(state)) {

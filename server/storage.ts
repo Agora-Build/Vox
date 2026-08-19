@@ -736,6 +736,17 @@ export class DatabaseStorage {
     await db.update(evalAgents).set({ lastSeenAt: new Date(), state: "idle", updatedAt: new Date() }).where(eq(evalAgents.id, id));
   }
 
+  /**
+   * Layer-2/3 foundation: Core-observed egress IP of an agent (register/
+   * heartbeat). Raw IP is Core-internal — future phases derive network labels
+   * (residential/datacenter/starlink) from it; never expose it publicly.
+   */
+  async updateEvalAgentObservedIp(agentId: number, ip: string): Promise<void> {
+    await db.update(evalAgents)
+      .set({ observedIp: ip, observedIpAt: new Date() })
+      .where(eq(evalAgents.id, agentId));
+  }
+
   async countTodayJobsByOwner(ownerId: number): Promise<number> {
     const startOfDay = new Date();
     startOfDay.setHours(0, 0, 0, 0);
