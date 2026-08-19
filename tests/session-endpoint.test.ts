@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { storage, encryptValue, db } from "../server/storage";
 import { evalJobs, webSessions } from "../shared/schema";
 import { eq } from "drizzle-orm";
+import { credentialKeyFor } from "../server/session-broker";
 import { BASE_NA } from "./helpers/regions";
 
 // Task 7: GET /api/eval-agent/jobs/:jobId/session — lease-fenced serve endpoint
@@ -63,6 +64,11 @@ describe("Phase C: GET /api/eval-agent/jobs/:jobId/session", () => {
   // login-class in scope, not that each workflow has its own pair.
   const emailSecret = `SE_E_${stamp}`;
   const passwordSecret = `SE_P_${stamp}`;
+
+  // web_sessions cache key the server derives for these workflows — all share
+  // the one login-secret pair, so it varies only by platformId. Seeded rows
+  // must use the same key the /session endpoint looks up (HIGH-2).
+  const ck = (platformId: string) => credentialKeyFor({ platformId, emailSecret, passwordSecret });
 
   const platformIdReady = `vapi-ready-${stamp}`;
   const platformIdFailed = `vapi-failed-${stamp}`;
@@ -188,7 +194,7 @@ describe("Phase C: GET /api/eval-agent/jobs/:jobId/session", () => {
   async function waitForSettled(platformId: string, timeoutMs = 5000): Promise<void> {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
-      const row = await storage.getWebSession(scope, platformId);
+      const row = await storage.getWebSession(scope, platformId, ck(platformId));
       if (row && row.status !== "minting") return;
       await new Promise((r) => setTimeout(r, 50));
     }
@@ -213,7 +219,7 @@ describe("Phase C: GET /api/eval-agent/jobs/:jobId/session", () => {
     const jobId = await runAndClaim(readyWorkflowId);
     await waitForSettled(platformIdReady); // let the /run pre-warm's failed attempt land first
 
-    const row = await storage.claimWebSessionMint(scope, platformIdReady, 180, 300);
+    const row = await storage.claimWebSessionMint(scope, platformIdReady, ck(platformIdReady), 180, 300);
     expect(row).toBeDefined();
     seededRowIds.push(row!.id);
     const stored = await storage.storeWebSessionReady(
@@ -236,7 +242,7 @@ describe("Phase C: GET /api/eval-agent/jobs/:jobId/session", () => {
     const jobId = await runAndClaim(failedWorkflowId);
     await waitForSettled(platformIdFailed); // let the /run pre-warm's failed attempt land first
 
-    const row = await storage.claimWebSessionMint(scope, platformIdFailed, 180, 300);
+    const row = await storage.claimWebSessionMint(scope, platformIdFailed, ck(platformIdFailed), 180, 300);
     expect(row).toBeDefined();
     seededRowIds.push(row!.id);
     const failed = await storage.markWebSessionFailed(row!.id, "boom", row!.mintStartedAt!);
@@ -256,7 +262,7 @@ describe("Phase C: GET /api/eval-agent/jobs/:jobId/session", () => {
     // platform. Let it settle, then delete it so we can genuinely observe the
     // endpoint's own cold-start (no row at all) path rather than the pre-warm's.
     await waitForSettled(platformIdCold);
-    const preWarmRow = await storage.getWebSession(scope, platformIdCold);
+    const preWarmRow = await storage.getWebSession(scope, platformIdCold, ck(platformIdCold));
     if (preWarmRow) await db.delete(webSessions).where(eq(webSessions.id, preWarmRow.id));
 
     const res = await sessionGet(jobId);
@@ -277,7 +283,7 @@ describe("Phase C: GET /api/eval-agent/jobs/:jobId/session", () => {
     const failedBody = await last.json();
     expect(failedBody.status).toBe("failed");
 
-    const row = await storage.getWebSession(scope, platformIdCold);
+    const row = await storage.getWebSession(scope, platformIdCold, ck(platformIdCold));
     if (row) seededRowIds.push(row.id);
   });
 

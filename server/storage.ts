@@ -2525,9 +2525,13 @@ export class DatabaseStorage {
       : and(eq(webSessions.organizationId, scope.organizationId), isNull(webSessions.userId));
   }
 
-  async getWebSession(scope: SessionScope, platformId: string): Promise<WebSession | undefined> {
+  async getWebSession(scope: SessionScope, platformId: string, credentialKey: string): Promise<WebSession | undefined> {
     const rows = await db.select().from(webSessions)
-      .where(and(this.webSessionScopeWhere(scope), eq(webSessions.platformId, platformId)));
+      .where(and(
+        this.webSessionScopeWhere(scope),
+        eq(webSessions.platformId, platformId),
+        eq(webSessions.credentialKey, credentialKey),
+      ));
     return rows[0];
   }
 
@@ -2548,16 +2552,17 @@ export class DatabaseStorage {
    * carry through to storeWebSessionReady/markWebSessionFailed — see there.
    */
   async claimWebSessionMint(
-    scope: SessionScope, platformId: string,
+    scope: SessionScope, platformId: string, credentialKey: string,
     staleMintSeconds: number, freshMarginSeconds: number,
   ): Promise<WebSession | undefined> {
     const userId = "userId" in scope ? scope.userId : null;
     const orgId = "organizationId" in scope ? scope.organizationId : null;
     // First-use: create the row already claimed. ON CONFLICT targets the
-    // partial unique index matching this scope.
+    // partial unique index matching this scope (now keyed by credential_key
+    // too, so two credential pairs on one platform never collide into one row).
     const conflictTarget = userId != null
-      ? sql`(user_id, platform_id) WHERE organization_id IS NULL`
-      : sql`(organization_id, platform_id) WHERE user_id IS NULL`;
+      ? sql`(user_id, platform_id, credential_key) WHERE organization_id IS NULL`
+      : sql`(organization_id, platform_id, credential_key) WHERE user_id IS NULL`;
     // Truncated to milliseconds: JS Date has no sub-millisecond precision, and
     // mint_started_at round-trips through a Date on its way back in as the
     // fencing token (rowToWebSession). Storing raw NOW() (microsecond
@@ -2565,8 +2570,8 @@ export class DatabaseStorage {
     // WHERE in storeWebSessionReady/markWebSessionFailed would never match.
     const nowMs = sql`date_trunc('milliseconds', NOW())`;
     const inserted = await db.execute(sql`
-      INSERT INTO web_sessions (user_id, organization_id, platform_id, status, mint_started_at)
-      VALUES (${userId}, ${orgId}, ${platformId}, 'minting', ${nowMs})
+      INSERT INTO web_sessions (user_id, organization_id, platform_id, credential_key, status, mint_started_at)
+      VALUES (${userId}, ${orgId}, ${platformId}, ${credentialKey}, 'minting', ${nowMs})
       ON CONFLICT ${conflictTarget} DO NOTHING
       RETURNING *`);
     const insRows = (inserted as unknown as { rows: Record<string, unknown>[] }).rows;
@@ -2578,6 +2583,7 @@ export class DatabaseStorage {
       WHERE user_id IS NOT DISTINCT FROM ${userId}
         AND organization_id IS NOT DISTINCT FROM ${orgId}
         AND platform_id = ${platformId}
+        AND credential_key = ${credentialKey}
         AND (status <> 'minting' OR mint_started_at IS NULL
              OR mint_started_at < NOW() - make_interval(secs => ${staleMintSeconds}))
         AND NOT (status = 'ready' AND expires_at IS NOT NULL

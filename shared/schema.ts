@@ -710,6 +710,14 @@ export const webSessions = pgTable("web_sessions", {
   userId: integer("user_id").references(() => users.id),
   organizationId: integer("organization_id").references(() => organizations.id),
   platformId: text("platform_id").notNull(),
+  // Identity of the login credential PAIR that minted this session, so two
+  // accounts on the same platform under the same owner scope never share a
+  // cached bundle — a sha256 of the two login-secret NAMES (see
+  // credentialKeyFor in session-broker.ts). Without it, an attested
+  // test-account workflow could be served a non-attested prod-account session
+  // minted from a different secret pair, defeating the shared-tier attestation
+  // gate.
+  credentialKey: text("credential_key").notNull(),
   status: webSessionStatusEnum("status").notNull(),
   encryptedStorageState: text("encrypted_storage_state"),
   mintedAt: timestamp("minted_at"),
@@ -721,9 +729,9 @@ export const webSessions = pgTable("web_sessions", {
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 }, (table) => ({
   userPlatformIdx: uniqueIndex("web_sessions_user_platform_idx")
-    .on(table.userId, table.platformId).where(sql`organization_id IS NULL`),
+    .on(table.userId, table.platformId, table.credentialKey).where(sql`organization_id IS NULL`),
   orgPlatformIdx: uniqueIndex("web_sessions_org_platform_idx")
-    .on(table.organizationId, table.platformId).where(sql`user_id IS NULL`),
+    .on(table.organizationId, table.platformId, table.credentialKey).where(sql`user_id IS NULL`),
   // Mirror migration 0026's CHECK in the schema so db:push (local dev) emits it
   // too — a both/neither-scope row falls outside both partial unique indexes
   // above, silently disabling the single-flight mint claim.

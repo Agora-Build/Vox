@@ -6,6 +6,7 @@
  * them encrypted in web_sessions, and serves them to agents at claim time.
  * Login-class secrets NEVER leave Core; agents only ever see the storageState.
  */
+import { createHash } from "crypto";
 import yaml from "js-yaml";
 import { storage, encryptValue, decryptValue, type SessionScope } from "./storage";
 
@@ -53,6 +54,19 @@ export function sessionScopeForWorkflow(wf: { ownerId: number; organizationId: n
 }
 
 export interface SessionNeed { platformId: string; emailSecret: string; passwordSecret: string }
+
+/**
+ * Stable identity of the login credential PAIR behind a session need, used as
+ * the web_sessions cache key alongside (scope, platformId). Derived from the
+ * two login-secret NAMES (not their decrypted values — no secret material, no
+ * DB read) so it is cheap and deterministic. Two workflows that reference the
+ * same secret pair share a cached session (correct); two accounts on the same
+ * platform under one owner get separate rows, so an attested test-account
+ * session is never served in place of a different account's (HIGH-2).
+ */
+export function credentialKeyFor(need: SessionNeed): string {
+  return createHash("sha256").update(`${need.emailSecret}\n${need.passwordSecret}`).digest("hex");
+}
 
 /**
  * The outcome of deciding whether a workflow needs a Core-minted login session:
@@ -165,13 +179,14 @@ export async function ensureSession(
   scope: SessionScope, need: SessionNeed, fetchImpl: FetchLike = fetch,
 ): Promise<void> {
   try {
-    const existing = await storage.getWebSession(scope, need.platformId);
+    const credentialKey = credentialKeyFor(need);
+    const existing = await storage.getWebSession(scope, need.platformId, credentialKey);
     if (existing?.status === "ready" && existing.expiresAt &&
         existing.expiresAt.getTime() > Date.now() + SESSION_FRESH_MARGIN_SECONDS * 1000) {
       return; // fresh — nothing to do
     }
     const claimed = await storage.claimWebSessionMint(
-      scope, need.platformId, staleMintThresholdSeconds(), SESSION_FRESH_MARGIN_SECONDS);
+      scope, need.platformId, credentialKey, staleMintThresholdSeconds(), SESSION_FRESH_MARGIN_SECONDS);
     if (!claimed) return; // another instance is minting, or it turned fresh
     try {
       if (!brokerConfigured()) throw new Error("session broker not configured (SESSION_BROKER_URL/SECRET)");
@@ -196,4 +211,49 @@ export async function ensureSession(
   } catch (outer) {
     console.error("[SessionBroker] ensureSession error:", outer);
   }
+}
+
+/** The immutable per-job session stamp folded into a job snapshot. */
+export interface SessionSnapshotStamp {
+  platformId: string;
+  emailSecret: string;
+  passwordSecret: string;
+}
+
+export type OwnerSessionStampResult =
+  | { kind: "misconfigured"; reason: string }
+  | { kind: "ok"; snapshotInjection: SessionSnapshotStamp | null };
+
+/**
+ * Evaluate + apply the Phase C session decision for an OWNER-dispatched job —
+ * the scheduler tick and the schedule run-now route, both of which are
+ * owner/creator-gated so they carry NO cross-user dispatch-trust gates (the
+ * run route does; it stays inline). Shared so the two owner paths can never
+ * drift: a workflow whose platform.setup references login-class secrets MUST
+ * be minted via Core, never handed to the agent as durable credentials.
+ *
+ * Mutates `jobConfig` in place: strips any caller-supplied `sessionInjection`
+ * (server-stamped only), then — when a session is needed — stamps the
+ * agent-visible `{ platformId }` marker and fire-and-forget pre-warms the
+ * session cache. Returns `{ misconfigured }` for a split-class credential pair
+ * (the caller rejects/disables), or the immutable `snapshotInjection` to fold
+ * into the job snapshot (null when no session is needed).
+ */
+export async function stampOwnerSession(
+  workflow: { ownerId: number; organizationId: number | null; config: unknown },
+  jobConfig: Record<string, unknown>,
+): Promise<OwnerSessionStampResult> {
+  const wfConfig = (workflow.config ?? {}) as Record<string, unknown>;
+  const setup = parsePlatformSetup(wfConfig.stepsPrefix as string | undefined);
+  const scope = sessionScopeForWorkflow(workflow);
+  const req = evaluateSessionRequirement(setup, await getLoginSecretNames(scope));
+  if (req.kind === "misconfigured") return { kind: "misconfigured", reason: req.reason };
+
+  delete jobConfig.sessionInjection; // server-stamped only — never trust a caller value
+  if (req.kind === "need") {
+    jobConfig.sessionInjection = { platformId: req.need.platformId };
+    void ensureSession(scope, req.need);
+    return { kind: "ok", snapshotInjection: { platformId: req.need.platformId, emailSecret: req.need.emailSecret, passwordSecret: req.need.passwordSecret } };
+  }
+  return { kind: "ok", snapshotInjection: null };
 }

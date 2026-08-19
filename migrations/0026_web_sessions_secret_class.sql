@@ -7,9 +7,12 @@
 -- - eval_agents.observed_ip / observed_ip_at record the Core-observed egress IP
 --   at register/heartbeat time (Layer-2/3 foundation for risk tracking).
 -- - web_sessions caches Core-minted login sessions (Playwright storageState)
---   per owner scope (user XOR org) + platform; the broker sidecar mints them
---   and agents only ever see the decrypted storageState via
---   GET /api/eval-agent/jobs/:id/session.
+--   per owner scope (user XOR org) + platform + credential_key; the broker
+--   sidecar mints them and agents only ever see the decrypted storageState via
+--   GET /api/eval-agent/jobs/:id/session. credential_key (a sha256 of the two
+--   login-secret NAMES) isolates two accounts on the same platform under one
+--   owner, so an attested test-account workflow is never served a session
+--   minted from a different (e.g. non-attested prod) credential pair.
 CREATE TYPE "public"."secret_class" AS ENUM('runtime', 'login');--> statement-breakpoint
 CREATE TYPE "public"."web_session_status" AS ENUM('minting', 'ready', 'failed');--> statement-breakpoint
 CREATE TABLE "web_sessions" (
@@ -17,6 +20,7 @@ CREATE TABLE "web_sessions" (
 	"user_id" integer,
 	"organization_id" integer,
 	"platform_id" text NOT NULL,
+	"credential_key" text NOT NULL,
 	"status" "public"."web_session_status" NOT NULL,
 	"encrypted_storage_state" text,
 	"minted_at" timestamp,
@@ -35,8 +39,8 @@ ALTER TABLE "secrets" ADD COLUMN "class" "public"."secret_class" DEFAULT 'runtim
 ALTER TABLE "secrets" ADD COLUMN "is_test_account" boolean DEFAULT false NOT NULL;--> statement-breakpoint
 ALTER TABLE "web_sessions" ADD CONSTRAINT "web_sessions_user_id_users_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "web_sessions" ADD CONSTRAINT "web_sessions_organization_id_organizations_id_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organizations"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-CREATE UNIQUE INDEX "web_sessions_user_platform_idx" ON "web_sessions" USING btree ("user_id","platform_id") WHERE organization_id IS NULL;--> statement-breakpoint
-CREATE UNIQUE INDEX "web_sessions_org_platform_idx" ON "web_sessions" USING btree ("organization_id","platform_id") WHERE user_id IS NULL;--> statement-breakpoint
+CREATE UNIQUE INDEX "web_sessions_user_platform_idx" ON "web_sessions" USING btree ("user_id","platform_id","credential_key") WHERE organization_id IS NULL;--> statement-breakpoint
+CREATE UNIQUE INDEX "web_sessions_org_platform_idx" ON "web_sessions" USING btree ("organization_id","platform_id","credential_key") WHERE user_id IS NULL;--> statement-breakpoint
 -- A row carrying both/neither scope key falls outside both partial unique
 -- indexes above, so ON CONFLICT never fires and the single-flight mint claim
 -- silently stops deduplicating. Make that state unrepresentable at the DB level.

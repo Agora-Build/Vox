@@ -11,7 +11,7 @@ import { registerApiV1Routes } from "./routes-api-v1";
 import { generateSignedUrlForUser } from "./s3";
 import { validateTierChange, resolveTargetedDispatch, filterDispatchableAgents } from "./dispatch";
 import { getMarketplace } from "./marketplace";
-import { parsePlatformSetup, sessionScopeForWorkflow, evaluateSessionRequirement, getLoginSecretNames, ensureSession, SESSION_FRESH_MARGIN_SECONDS, type SessionNeed } from "./session-broker";
+import { parsePlatformSetup, sessionScopeForWorkflow, evaluateSessionRequirement, getLoginSecretNames, ensureSession, stampOwnerSession, credentialKeyFor, SESSION_FRESH_MARGIN_SECONDS, type SessionNeed } from "./session-broker";
 import {
   hashPassword,
   verifyPassword,
@@ -2335,7 +2335,24 @@ export async function registerRoutes(
       }
       const evalSet = await storage.getEvalSet(schedule.evalSetId);
 
+      // Phase C: run-now fires a job on the workflow OWNER's secrets, exactly
+      // like the scheduler tick — so it takes the same owner-dispatched session
+      // path. A workflow whose platform.setup references login-class secrets is
+      // Core-minted (never handed durable credentials to the agent); a
+      // split-class pair is rejected outright rather than leaking the
+      // runtime-class secret. No cross-user dispatch-trust gates here: run-now
+      // is canScheduleWorkflow-gated (owner/creator only).
+      const jobConfig = mergeEvalConfig(workflow.config, evalSet?.config);
+      const stamp = await stampOwnerSession(workflow, jobConfig as Record<string, unknown>);
+      if (stamp.kind === "misconfigured") {
+        return res.status(400).json({ error: stamp.reason });
+      }
+
       const provider = await storage.getProvider(workflow.providerId);
+      const baseSnapshot = buildJobSnapshot(workflow, evalSet, provider, user.plan);
+      const snapshot = stamp.snapshotInjection
+        ? { ...baseSnapshot, sessionInjection: stamp.snapshotInjection }
+        : baseSnapshot;
       const job = await storage.createEvalJob({
         scheduleId: schedule.id,
         triggerType: 1, // scheduled (run-now off an existing schedule)
@@ -2343,8 +2360,8 @@ export async function registerRoutes(
         evalSetId: schedule.evalSetId,
         createdBy: user.id,
         region: schedule.region,
-        config: mergeEvalConfig(workflow.config, evalSet?.config),
-        snapshot: buildJobSnapshot(workflow, evalSet, provider, user.plan),
+        config: jobConfig,
+        snapshot,
         status: "pending",
         priority: 0,
         retryCount: 0,
@@ -3584,7 +3601,7 @@ export async function registerRoutes(
       };
       const scope = sessionScopeForWorkflow({ ownerId: snapWorkflow.ownerId, organizationId: snapWorkflow.organizationId ?? null });
 
-      const session = await storage.getWebSession(scope, need.platformId);
+      const session = await storage.getWebSession(scope, need.platformId, credentialKeyFor(need));
       const fresh = session?.status === "ready" && session.expiresAt &&
         session.expiresAt.getTime() > Date.now() + SESSION_FRESH_MARGIN_SECONDS * 1000;
       if (fresh && session!.encryptedStorageState) {
