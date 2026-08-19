@@ -101,6 +101,10 @@ Optional:
 - `GITHUB_CLIENT_ID` - GitHub OAuth client ID (enables GitHub sign-in)
 - `GITHUB_CLIENT_SECRET` - GitHub OAuth client secret
 - `GITHUB_CALLBACK_URL` - OAuth callback URL (default: `/auth/github/callback`)
+- `SESSION_BROKER_URL` - Base URL of the session-broker sidecar (enables login-class secret injection via the Phase C session broker)
+- `SESSION_BROKER_SECRET` - Shared bearer secret authenticating Core → broker mint requests
+- `WEB_SESSION_TTL_HOURS` - How long a minted `storageState` session stays fresh before re-minting (default: 12)
+- `WEB_SESSION_MINT_TIMEOUT_SECONDS` - Max time to wait for a broker mint before failing the request (default: 180)
 
 ## Architecture
 
@@ -156,6 +160,15 @@ Results are classified from each job's snapshot flags — not the live workflow/
 - **My Evals**: snapshot workflow or eval set private, owned by the requesting user (`snapshot.*.ownerId`) → `/api/metrics/my-evals` (requires auth)
 
 **Important:** The codebase recently underwent a refactor where "workers" were renamed to "eval agents" and "testSets" to "evalSets". Some UI text may still reference old terminology.
+
+#### Session Broker (Phase C)
+Some target agents require an authenticated web login before an eval can run. Login-class secrets (`secretClass: "login"`) are **Core-only** — structurally withheld from the job-secrets path (`server/routes.ts`) at every dispatch tier, so a login credential is never handed to a target agent directly; the agent runs against a pre-minted session instead.
+- **Broker sidecar**: a stateless service built from the agentd image (`vox_eval_agentd/`, CMD override `node session-broker.js`) that mints a `storageState` (cookies/localStorage) by driving aeval's `setup:account` flow with the decrypted login credential. It sits on an **internal-only network** and authenticates Core's mint requests with `SESSION_BROKER_SECRET` — the login password never leaves Core → broker → target site.
+- **Agents run `setup:storage`, never `setup:account`**: the daemon (`vox_eval_agentd/vox-agentd.ts`) forces `mode: storage` on any session-injected job and strips credential fields from the config before the agent process ever sees them — the agent only ever consumes the pre-minted `storageState`.
+- **Server-stamped injection**: dispatch (`server/dispatch.ts` + `routes.ts`) stamps `config.sessionInjection` onto the job at creation time (strip-then-stamp, so a caller-supplied value is never trusted) once `session-broker.ts`'s `workflowNeedsSession()` detects a login-class secret referenced by the workflow's `platform.setup`.
+- **Session endpoint state machine**: `GET /api/eval-agent/jobs/:jobId/session` (lease-fenced, same guards as `/secrets`) returns `200 ready` (decrypted `storageState`), `202 minting` (fire-and-forget re-mint in flight), or `503 failed`. A `failed`/timed-out mint fails the job **before** any eval runs, so Phase B's escrow refund path (not a wasted capture) applies to shared-tier jobs.
+- **Shared-tier gates**: a shared-tier dispatch additionally requires `isTestAccount` attestation on the login secret and `credentialConsent` recorded on the job snapshot — both checked before `authorizeDispatch`, so an un-attested or non-consented login secret never reaches a marketplace agent.
+- **`eval_agents.observed_ip`** (Task 11) is a Core-internal layer-2/3 foundation column — the IP Core observes at register/heartbeat, written fire-and-forget and never exposed on any agent-listing endpoint. Future network-instinct labeling (e.g. residential vs. datacenter) derives from it; the raw IP itself is never surfaced.
 
 #### User & Organization System
 - **User Plans:** `basic` (free), `premium` (paid), `principal` (Scout, internal), `fellow` (external prestige)
