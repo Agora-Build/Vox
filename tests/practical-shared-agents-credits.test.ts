@@ -1,6 +1,7 @@
-import { describe, it, expect, beforeAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { Pool } from "pg";
 import { BASE_NA, BASE_EU } from "./helpers/regions";
-import { computeCharge, computeFee } from "../plugins/shared-agents/server/pricing";
+import { computeCharge, computeFee, PLATFORM_FEE_BPS } from "../plugins/shared-agents/server/pricing";
 
 // =====================================================================
 // Task 13: Practical end-to-end tests — shared-agents marketplace + credits
@@ -18,6 +19,15 @@ import { computeCharge, computeFee } from "../plugins/shared-agents/server/prici
 const BASE_URL = process.env.TEST_BASE_URL || "http://localhost:5000";
 const ADMIN_EMAIL = process.env.TEST_ADMIN_EMAIL || "admin@vox.local";
 const ADMIN_PASSWORD = process.env.TEST_ADMIN_PASSWORD || "admin123456";
+
+// Direct-DB reads are allowed for OBSERVING money legs the HTTP surface doesn't
+// expose (e.g. the platform-fee account has no balance route) — never used to
+// fabricate or mutate state. Same pool style as tests/credits-e2e.test.ts.
+const dbPool = new Pool({ connectionString: process.env.DATABASE_URL });
+
+// Every eval-agent token this suite creates, so afterAll can revoke them and
+// keep dev-DB listing growth bounded (Task 13 review minor 8).
+const createdTokenIds: number[] = [];
 
 interface AuthSession { cookie: string }
 
@@ -75,7 +85,7 @@ async function getBalance(session: AuthSession): Promise<number> {
   return body.credits as number;
 }
 
-async function getStatement(session: AuthSession, limit = 20): Promise<Array<{ id: number; amount: number; reason: string; groupId: string }>> {
+async function getStatement(session: AuthSession, limit = 20): Promise<Array<{ id: number; amount: number; reason: string; groupId: string; refType: string | null; refId: string | null }>> {
   const res = await authFetch(session, `${BASE_URL}/api/plugins/credits/statement?limit=${limit}`);
   expect(res.ok).toBe(true);
   const body = await res.json();
@@ -94,6 +104,7 @@ async function createToken(session: AuthSession, name: string, regionLocationBas
   });
   expect(res.ok).toBe(true);
   const body = await res.json();
+  createdTokenIds.push(body.id);
   return { id: body.id, token: body.token, region: body.region };
 }
 
@@ -198,6 +209,15 @@ describe("Task 13: practical shared-agents marketplace + credits e2e", () => {
     providerId = providers[0].id;
   });
 
+  afterAll(async () => {
+    // Revoke every eval-agent token this suite created (admin can revoke any
+    // token) so repeated local runs don't grow the token list unbounded.
+    for (const id of createdTokenIds) {
+      await authFetch(admin, `${BASE_URL}/api/eval-agent-tokens/${id}/revoke`, { method: "POST" });
+    }
+    await dbPool.end();
+  });
+
   // ── 1. Credits basics ────────────────────────────────────────────────
   describe("1. Credits basics: grant, balance, statement, idempotent re-grant", () => {
     const idemKey = `t13-basics-${stamp}`;
@@ -244,6 +264,14 @@ describe("Task 13: practical shared-agents marketplace + credits e2e", () => {
       happyTokenId = t.id; happyTokenPlain = t.token;
       const tier = await setDispatchTier(owner.session, happyTokenId, "shared", PRICE_PER_UNIT);
       expect(tier.ok).toBe(true);
+
+      // Minor 6: prove the marketplace seam is genuinely resolved (the listing we
+      // just created is actually served back), not merely array-shaped like the
+      // beforeAll liveness check.
+      const dispatchableRes = await authFetch(owner.session, `${BASE_URL}/api/eval-agents/dispatchable`);
+      expect(dispatchableRes.ok).toBe(true);
+      const dispatchable = await dispatchableRes.json();
+      expect(dispatchable.shared.some((a: { tokenId: number }) => a.tokenId === happyTokenId)).toBe(true);
 
       workflowId = await createWorkflow(rich.session, `t13-happy-wf-${stamp}`, providerId);
       evalSetId = await createEvalSet(rich.session, `t13-happy-es-${stamp}`);
@@ -298,9 +326,45 @@ describe("Task 13: practical shared-agents marketplace + credits e2e", () => {
       expect(fee).toBe(computeFee(charge));
       expect(charge).toBe(PRICE_PER_UNIT);
 
+      // Pin the split with NUMERIC LITERALS (review Important 1) — computing both
+      // sides from computeCharge/computeFee (as above) is a tautology that can't
+      // catch a regression in the pricing functions themselves. These literals are
+      // the product's ADVERTISED 80/20 contract for PRICE_PER_UNIT=100, PRICE_UNITS=1:
+      // if the split ever changes intentionally, this test MUST be updated consciously.
+      expect(charge).toBe(100);
+      expect(fee).toBe(20);
+      expect(earnerShare).toBe(80);
+      expect(PLATFORM_FEE_BPS).toBe(2000);
+
       const ownerEntries = await getStatement(owner.session, 5);
       expect(ownerEntries[0].reason).toBe("capture");
       expect(ownerEntries[0].amount).toBe(earnerShare);
+
+      // Observe the platform-fee leg + ledger closure directly (review Important 2):
+      // the fee account has no HTTP balance route, so this is the only way to see
+      // the +20 leg land on the platform system account with reason 'fee', and to
+      // confirm every leg tied to this dispatch (hold + capture legs share the same
+      // ref_type/ref_id, propagated from hold through settle) nets to exactly zero.
+      const { rows: settlementRows } = await dbPool.query<{ id: string; status: string }>(
+        `SELECT id, status FROM plugin_shared_agents.settlements WHERE job_id = $1`, [happyJobId]);
+      expect(settlementRows.length).toBe(1);
+      expect(settlementRows[0].status).toBe("settled");
+      const settlementId = settlementRows[0].id;
+
+      const { rows: ledgerRows } = await dbPool.query<{ amount: string; reason: string; system_key: string | null }>(
+        `SELECT e.amount, e.reason, a.system_key
+           FROM plugin_credits.ledger_entries e
+           JOIN plugin_credits.accounts a ON a.id = e.account_id
+          WHERE e.ref_type = 'shared-agent-dispatch' AND e.ref_id = $1`,
+        [settlementId]);
+
+      const feeLeg = ledgerRows.find((r) => r.reason === "fee");
+      expect(feeLeg).toBeDefined();
+      expect(Number(feeLeg!.amount)).toBe(20); // +20 to the platform account
+      expect(feeLeg!.system_key).toBe("platform");
+
+      const ledgerSum = ledgerRows.reduce((sum, r) => sum + Number(r.amount), 0);
+      expect(ledgerSum).toBe(0); // ledger closure: every leg for this dispatch (hold + capture) nets to zero
     }, 180_000);
   });
 
@@ -483,19 +547,32 @@ describe("Task 13: practical shared-agents marketplace + credits e2e", () => {
       const before = await getBalance(broke.session);
       expect(before).toBe(0);
 
-      const workflowId = await createWorkflow(broke.session, `t13-free-wf-${stamp}`, providerId);
-      const evalSetId = await createEvalSet(broke.session, `t13-free-es-${stamp}`);
-
-      const runRes = await authFetch(broke.session, `${BASE_URL}/api/workflows/${workflowId}/run`, {
-        method: "POST", body: JSON.stringify({ region: freeTokenRegion, evalSetId }),
-      });
-      expect(runRes.status).toBe(200);
-      const { job } = await runRes.json();
-
+      // Register the agent BEFORE creating the job so the claim attempt below is
+      // immediate. This is an UNTARGETED job in a shared region: any other live
+      // agent/daemon polling that same region (e.g. a real dev-local-run.sh daemon,
+      // or another suite's agent) can legitimately grab it first, which surfaces as
+      // a 409 here — a benign race, not a product bug. Mitigate pragmatically by
+      // recreating the job and retrying (up to 2 extra attempts) rather than faking
+      // the claim.
       const agent = await registerAgent(freeTokenPlain, `t13-free-agent-${stamp}`);
-      const claim = await claimTargeted(freeTokenPlain, agent.id, agent.leaseId, job.id);
-      expect(claim.ok).toBe(true);
-      const complete = await completeJob(freeTokenPlain, agent.id, agent.leaseId, job.id, { results: SAMPLE_RESULTS });
+
+      let job: { id: number } | undefined;
+      let claim: Response | undefined;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const workflowId = await createWorkflow(broke.session, `t13-free-wf-${stamp}-${attempt}`, providerId);
+        const evalSetId = await createEvalSet(broke.session, `t13-free-es-${stamp}-${attempt}`);
+        const runRes = await authFetch(broke.session, `${BASE_URL}/api/workflows/${workflowId}/run`, {
+          method: "POST", body: JSON.stringify({ region: freeTokenRegion, evalSetId }),
+        });
+        expect(runRes.status).toBe(200);
+        ({ job } = await runRes.json());
+
+        claim = await claimTargeted(freeTokenPlain, agent.id, agent.leaseId, job!.id);
+        if (claim.status !== 409) break;
+      }
+      expect(claim!.ok).toBe(true);
+
+      const complete = await completeJob(freeTokenPlain, agent.id, agent.leaseId, job!.id, { results: SAMPLE_RESULTS });
       expect(complete.ok).toBe(true);
 
       expect(await getBalance(broke.session)).toBe(0);
@@ -552,6 +629,7 @@ describe("Task 13: practical shared-agents marketplace + credits e2e", () => {
     it("shared-tier dispatch with conflicting config: 500, AND the dispatcher's hold is voided (balance restored)", async () => {
       const ownerBefore = await getBalance(owner.session);
       const dispatcherBefore = await getBalance(rich.session);
+      const charge = computeCharge(300, 1);
 
       const runRes = await authFetch(rich.session, `${BASE_URL}/api/workflows/${conflictWorkflowId}/run`, {
         method: "POST", body: JSON.stringify({ evalSetId: conflictEvalSetId, targetTokenId: holdVoidTokenId }),
@@ -568,6 +646,20 @@ describe("Task 13: practical shared-agents marketplace + credits e2e", () => {
 
       const ownerAfter = await getBalance(owner.session);
       expect(ownerAfter).toBe(ownerBefore); // owner never got paid for a job that never existed
+
+      // Review Important 3: an unchanged ENDING balance alone doesn't prove a hold was
+      // ever placed — it's also what "never dispatched" looks like. Prove the hold
+      // was genuinely placed and then voided by reading the dispatcher's statement
+      // (same HTTP surface as scenario 3): the two newest entries for this dispatch
+      // must be "release" (the void) immediately followed by "hold" (the escrow), both
+      // for exactly `charge`, sharing the same ref (same settlement/dispatch).
+      const dispatcherEntries = await getStatement(rich.session, 5);
+      expect(dispatcherEntries[0].reason).toBe("release");
+      expect(dispatcherEntries[0].amount).toBe(charge); // release credits the dispatcher back +charge
+      expect(dispatcherEntries[1].reason).toBe("hold");
+      expect(dispatcherEntries[1].amount).toBe(-charge); // the hold itself debited the dispatcher -charge
+      expect(dispatcherEntries[0].refId).toBe(dispatcherEntries[1].refId);
+      expect(dispatcherEntries[0].refType).toBe("shared-agent-dispatch");
     }, 60_000);
   });
 });
