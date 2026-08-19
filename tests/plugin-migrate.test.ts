@@ -3,6 +3,7 @@ import { Pool } from "pg";
 import { writeFile } from "fs/promises";
 import { runPluginMigrations } from "../server/plugins/migrate";
 import type { PluginManifest } from "../server/plugins/manifest";
+import { TEST_PLUGIN_DATABASE_URL, ensurePluginTestDatabase } from "./helpers/plugin-test-db";
 
 const hasDb = !!process.env.DATABASE_URL;
 const d = hasDb ? describe : describe.skip;
@@ -16,7 +17,8 @@ const DIR = "tests/fixtures/plugins";
 d("runPluginMigrations (integration)", () => {
   let pool: Pool;
   beforeAll(async () => {
-    pool = new Pool({ connectionString: process.env.DATABASE_URL });
+    await ensurePluginTestDatabase();
+    pool = new Pool({ connectionString: TEST_PLUGIN_DATABASE_URL });
     await pool.query(`DROP SCHEMA IF EXISTS plugin_mig CASCADE`);
     await pool.query(`DELETE FROM _plugin_schema_versions WHERE plugin_id = 'mig'`).catch(() => {});
   });

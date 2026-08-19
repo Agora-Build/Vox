@@ -3,6 +3,7 @@ import { readdirSync, readFileSync } from "fs";
 import { createPluginDb } from "../../server/plugins/db";
 import { createCreditsService, type CreditsService } from "../../plugins/credits/server/service";
 import type { PluginDb } from "@vox/plugin-sdk";
+import { TEST_PLUGIN_DATABASE_URL, ensurePluginTestDatabase } from "./plugin-test-db";
 
 export interface MarketplaceHarness {
   pool: Pool;
@@ -40,7 +41,10 @@ async function applyMigrations(pool: Pool, schema: string, dir: string): Promise
 }
 
 export async function setupMarketplaceDb(): Promise<MarketplaceHarness> {
-  const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+  // DEDICATED database only — never DATABASE_URL. This drops/rebuilds
+  // schemas, and DATABASE_URL is the same database the live dev server uses.
+  await ensurePluginTestDatabase();
+  const pool = new Pool({ connectionString: TEST_PLUGIN_DATABASE_URL });
   await applyMigrations(pool, CREDITS_SCHEMA, "plugins/credits/migrations");
   await applyMigrations(pool, SHARED_SCHEMA, "plugins/shared-agents/migrations");
   const creditsDb = createPluginDb(pool, CREDITS_SCHEMA);

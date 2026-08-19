@@ -4,17 +4,23 @@ import request from "supertest";
 import { Pool } from "pg";
 import { loadPlugins, type LoadedPlugins } from "../server/plugins/loader";
 import { BUILTIN_PLUGINS } from "../plugins/index";
+import { TEST_PLUGIN_DATABASE_URL, ensurePluginTestDatabase } from "./helpers/plugin-test-db";
 
 const hasDb = !!process.env.DATABASE_URL;
 const d = hasDb ? describe : describe.skip;
 
+// This suite builds its OWN in-process express app (loadPlugins below) rather
+// than hitting the live dev server, so pointing its pool at the dedicated
+// destructive-test database is a complete isolation fix: the schema drop and
+// the HTTP assertions both land on the same (dedicated) database.
 d("credits plugin end-to-end", () => {
   let pool: Pool;
   let loaded: LoadedPlugins;
   let app: express.Express;
 
   beforeAll(async () => {
-    pool = new Pool({ connectionString: process.env.DATABASE_URL });
+    await ensurePluginTestDatabase();
+    pool = new Pool({ connectionString: TEST_PLUGIN_DATABASE_URL });
     await pool.query(`DROP SCHEMA IF EXISTS plugin_credits CASCADE`);
     await pool.query(`DELETE FROM _plugin_schema_versions WHERE plugin_id = 'credits'`).catch(() => {});
     process.env.VOX_PLUGINS = "credits";
