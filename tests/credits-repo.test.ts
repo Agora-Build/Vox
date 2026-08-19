@@ -6,6 +6,7 @@ import { parseManifest } from "../server/plugins/manifest";
 import { createPluginDb } from "../server/plugins/db";
 import * as repo from "../plugins/credits/server/repo";
 import type { PluginDb } from "@vox/plugin-sdk";
+import { TEST_PLUGIN_DATABASE_URL, ensurePluginTestDatabase } from "./helpers/plugin-test-db";
 
 const hasDb = !!process.env.DATABASE_URL;
 const d = hasDb ? describe : describe.skip;
@@ -15,7 +16,8 @@ d("credits repo", () => {
   let db: PluginDb;
 
   beforeAll(async () => {
-    pool = new Pool({ connectionString: process.env.DATABASE_URL });
+    await ensurePluginTestDatabase();
+    pool = new Pool({ connectionString: TEST_PLUGIN_DATABASE_URL });
     await pool.query(`DROP SCHEMA IF EXISTS plugin_credits CASCADE`);
     await pool.query(`DELETE FROM _plugin_schema_versions WHERE plugin_id = 'credits'`).catch(() => {});
     const manifest = parseManifest(JSON.parse(readFileSync("plugins/credits/vox.plugin.json", "utf-8")));

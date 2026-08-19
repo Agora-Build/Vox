@@ -48,6 +48,7 @@ const MIGRATIONS: Array<{ version: number; description: string; file: string | n
   { version: 24, description: "admin-managed region locations and exact site IDs", file: "0023_region_locations.sql" },
   { version: 25, description: "shared agents: dispatch_tier + target_token_id", file: "0024_shared_agents_dispatch.sql" },
   { version: 26, description: "partial index for shared-dispatch reap-settle sweep", file: "0025_eval_jobs_reapable_shared_idx.sql" },
+  { version: 27, description: "phase C: secret class/attestation + web_sessions", file: "0026_web_sessions_secret_class.sql" },
 ];
 
 const TARGET_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version;

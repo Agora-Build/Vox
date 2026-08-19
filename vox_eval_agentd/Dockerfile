@@ -98,6 +98,7 @@ COPY vox_eval_agentd/applications/ /app/applications/
 COPY vox_eval_agentd/scenarios/ /app/scenarios/
 COPY vox_eval_agentd/assets/ /app/assets/
 COPY vox_eval_agentd/vox-agentd.ts /app/
+COPY vox_eval_agentd/session-broker.ts /app/
 COPY vox_eval_agentd/chunking.ts /app/
 COPY vox_eval_agentd/package.json /app/
 COPY shared/secrets.ts /shared/secrets.ts
@@ -108,6 +109,11 @@ RUN npm install
 
 # Compile daemon TS → JS
 RUN npx esbuild vox-agentd.ts --bundle --platform=node --format=esm --outfile=vox-agentd.js \
+    --external:child_process --external:fs --external:os --external:path --external:url --external:http \
+    --external:@aws-sdk/client-s3
+
+# Compile session-broker TS → JS (sidecar; default CMD stays the daemon above)
+RUN npx esbuild session-broker.ts --bundle --platform=node --format=esm --outfile=session-broker.js \
     --external:child_process --external:fs --external:os --external:path --external:url --external:http \
     --external:@aws-sdk/client-s3
 

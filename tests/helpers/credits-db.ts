@@ -3,6 +3,7 @@ import { readdirSync, readFileSync } from "fs";
 import { createPluginDb } from "../../server/plugins/db";
 import { createCreditsService, type CreditsService } from "../../plugins/credits/server/service";
 import type { PluginDb } from "@vox/plugin-sdk";
+import { TEST_PLUGIN_DATABASE_URL, ensurePluginTestDatabase } from "./plugin-test-db";
 
 export interface CreditsHarness {
   pool: Pool;
@@ -22,7 +23,10 @@ const schema = `plugin_credits_${process.env.VITEST_POOL_ID ?? process.env.VITES
 const MIGRATIONS_DIR = "plugins/credits/migrations";
 
 export async function setupCreditsDb(): Promise<CreditsHarness> {
-  const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+  // DEDICATED database only — never DATABASE_URL. This drops/rebuilds a
+  // schema, and DATABASE_URL is the same database the live dev server uses.
+  await ensurePluginTestDatabase();
+  const pool = new Pool({ connectionString: TEST_PLUGIN_DATABASE_URL });
   await pool.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);
   await pool.query(`CREATE SCHEMA "${schema}"`);
 

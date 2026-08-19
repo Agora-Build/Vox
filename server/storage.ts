@@ -58,6 +58,7 @@ import {
   type UserStorageConfig,
   type InsertUserStorageConfig,
   type OrgSecret,
+  type WebSession,
   users,
   organizations,
   providers,
@@ -91,12 +92,13 @@ import {
   clashSchedules,
   userStorageConfig,
   orgSecrets,
+  webSessions,
 } from "@shared/schema";
 import { regionSiteSequence } from "@shared/regions";
 import { drizzle } from "drizzle-orm/node-postgres";
 import pkg from "pg";
 const { Pool } = pkg;
-import { asc, desc, eq, and, or, not, sql, gte, lte, inArray, isNotNull } from "drizzle-orm";
+import { asc, desc, eq, and, or, not, sql, gte, lte, inArray, isNotNull, isNull } from "drizzle-orm";
 import crypto from "crypto";
 
 // Realtime-metrics windowing policy (server-owned; the client never sets these).
@@ -296,6 +298,7 @@ export function buildJobSnapshot(
       visibility: workflow.visibility,
       isMainline: workflow.isMainline,
       ownerId: workflow.ownerId,
+      organizationId: workflow.organizationId ?? null,
     },
     evalSet: evalSet
       ? {
@@ -323,6 +326,10 @@ function snakeToCamel(row: Record<string, any>): Record<string, any> {
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 export const db = drizzle(pool);
 export { pool };
+
+// Phase C session broker: a web_sessions row is owned by exactly one of a user
+// or an organization (mirrors secrets ownership).
+export type SessionScope = { userId: number } | { organizationId: number };
 
 export class DatabaseStorage {
   async getUser(id: number): Promise<User | undefined> {
@@ -730,6 +737,24 @@ export class DatabaseStorage {
     await db.update(evalAgents).set({ lastSeenAt: new Date(), state: "idle", updatedAt: new Date() }).where(eq(evalAgents.id, id));
   }
 
+  /**
+   * Layer-2/3 foundation: Core-observed egress IP of an agent (register/
+   * heartbeat). Raw IP is Core-internal — future phases derive network labels
+   * (residential/datacenter/starlink) from it; never expose it publicly.
+   * Fire-and-forget safe: call sites use `void ...` on the hot register/
+   * heartbeat path, so this method must never reject — a lost sample is
+   * harmless, an unhandled rejection would kill the process.
+   */
+  async updateEvalAgentObservedIp(agentId: number, ip: string): Promise<void> {
+    try {
+      await db.update(evalAgents)
+        .set({ observedIp: ip, observedIpAt: new Date() })
+        .where(eq(evalAgents.id, agentId));
+    } catch (err) {
+      console.error(`[Agents] Failed to record observed IP for agent ${agentId}:`, err instanceof Error ? err.message : err);
+    }
+  }
+
   async countTodayJobsByOwner(ownerId: number): Promise<number> {
     const startOfDay = new Date();
     startOfDay.setHours(0, 0, 0, 0);
@@ -780,7 +805,10 @@ export class DatabaseStorage {
          WHERE id = $1 AND status = 'pending'::eval_job_status
            AND (
              target_token_id = $2
-             OR ( target_token_id IS NULL AND ( $3 = 'public' OR created_by = $4 ) )
+             OR ( target_token_id IS NULL AND (
+                    created_by = $4
+                    OR ( $3 = 'public' AND (config -> 'sessionInjection') IS NULL )
+             ) )
            )
          FOR UPDATE SKIP LOCKED`,
         [jobId, token.id, token.dispatchTier, token.createdBy]
@@ -820,7 +848,10 @@ export class DatabaseStorage {
         WHERE status = 'pending'::eval_job_status AND region = $1
           AND (
             target_token_id = $2
-            OR ( target_token_id IS NULL AND ( $3 = 'public' OR created_by = $4 ) )
+            OR ( target_token_id IS NULL AND (
+                   created_by = $4
+                   OR ( $3 = 'public' AND (config -> 'sessionInjection') IS NULL )
+            ) )
           )
         ORDER BY priority DESC, created_at ASC`,
       [token.region, token.id, token.dispatchTier, token.createdBy],
@@ -1927,17 +1958,31 @@ export class DatabaseStorage {
 
   // ==================== SECRETS ====================
 
-  async createOrUpdateSecret(userId: number, name: string, encryptedValue: string): Promise<Secret> {
+  async createOrUpdateSecret(
+    userId: number,
+    name: string,
+    encryptedValue: string,
+    opts?: { class?: "runtime" | "login"; isTestAccount?: boolean }
+  ): Promise<Secret> {
     const existing = await db.select().from(secrets)
       .where(and(eq(secrets.userId, userId), eq(secrets.name, name)));
     if (existing[0]) {
+      const updates: Partial<typeof secrets.$inferInsert> = { encryptedValue, updatedAt: new Date() };
+      if (opts?.class !== undefined) updates.class = opts.class;
+      if (opts?.isTestAccount !== undefined) updates.isTestAccount = opts.isTestAccount;
       const result = await db.update(secrets)
-        .set({ encryptedValue, updatedAt: new Date() })
+        .set(updates)
         .where(eq(secrets.id, existing[0].id))
         .returning();
       return result[0];
     }
-    const result = await db.insert(secrets).values({ userId, name, encryptedValue }).returning();
+    const result = await db.insert(secrets).values({
+      userId,
+      name,
+      encryptedValue,
+      ...(opts?.class !== undefined ? { class: opts.class } : {}),
+      ...(opts?.isTestAccount !== undefined ? { isTestAccount: opts.isTestAccount } : {}),
+    }).returning();
     return result[0];
   }
 
@@ -1960,7 +2005,10 @@ export class DatabaseStorage {
     const workflow = await this.getWorkflow(job.workflowId);
     if (!workflow) { console.log(`[Secrets] getSecretsForJob: workflow ${job.workflowId} not found`); return []; }
     console.log(`[Secrets] getSecretsForJob: job ${jobId} → workflow ${workflow.id} → owner ${workflow.ownerId}`);
-    return this.getSecretsByUserId(workflow.ownerId);
+    // Structural withhold: 'login'-class rows are Core-only (Phase C). They feed
+    // the session broker's mint and must never reach an eval agent, any tier.
+    const all = await this.getSecretsByUserId(workflow.ownerId);
+    return all.filter((s) => s.class !== "login");
   }
 
   // ==================== CLASH AGENT PROFILES ====================
@@ -2363,17 +2411,33 @@ export class DatabaseStorage {
     return result[0];
   }
 
-  async upsertOrgSecret(organizationId: number, name: string, encryptedValue: string, createdBy: number): Promise<OrgSecret> {
+  async upsertOrgSecret(
+    organizationId: number,
+    name: string,
+    encryptedValue: string,
+    createdBy: number,
+    opts?: { class?: "runtime" | "login"; isTestAccount?: boolean }
+  ): Promise<OrgSecret> {
     const existing = await this.getOrgSecret(organizationId, name);
     if (existing) {
+      const updates: Partial<typeof orgSecrets.$inferInsert> = { encryptedValue, updatedAt: new Date() };
+      if (opts?.class !== undefined) updates.class = opts.class;
+      if (opts?.isTestAccount !== undefined) updates.isTestAccount = opts.isTestAccount;
       const result = await db.update(orgSecrets)
-        .set({ encryptedValue, updatedAt: new Date() })
+        .set(updates)
         .where(eq(orgSecrets.id, existing.id))
         .returning();
       return result[0];
     }
     const result = await db.insert(orgSecrets)
-      .values({ organizationId, name, encryptedValue, createdBy })
+      .values({
+        organizationId,
+        name,
+        encryptedValue,
+        createdBy,
+        ...(opts?.class !== undefined ? { class: opts.class } : {}),
+        ...(opts?.isTestAccount !== undefined ? { isTestAccount: opts.isTestAccount } : {}),
+      })
       .returning();
     return result[0];
   }
@@ -2412,9 +2476,165 @@ export class DatabaseStorage {
     const secrets = await this.getOrgSecrets(workflow.organizationId);
     const result: Record<string, string> = {};
     for (const s of secrets) {
+      if (s.class === "login") continue; // Core-only (Phase C) — never sent to agents
       result[s.name] = decryptValue(s.encryptedValue);
     }
     return result;
+  }
+
+  // ==================== WEB SESSIONS (Phase C) ====================
+
+  // db.execute(sql`...`) goes through drizzle's raw-query path, which (unlike
+  // db.select()) disables node-postgres's built-in timestamp parsing and hands
+  // back TIMESTAMP/TIMESTAMPTZ/DATE columns as raw strings — snakeToCamel alone
+  // would violate WebSession's declared `Date` fields. Parse the known
+  // timestamp columns explicitly so callers (notably the mint_started_at
+  // fencing token) get real Date instances, matching db.select()'s behavior.
+  private static readonly WEB_SESSION_DATE_FIELDS = [
+    "mintedAt", "expiresAt", "mintStartedAt", "createdAt", "updatedAt",
+  ] as const;
+
+  private rowToWebSession(row: Record<string, unknown>): WebSession {
+    const camel = snakeToCamel(row);
+    for (const field of DatabaseStorage.WEB_SESSION_DATE_FIELDS) {
+      const v = camel[field];
+      // Raw-query timestamp strings (e.g. "2026-08-18 12:34:56.789") have no
+      // timezone suffix, and the DB clock is UTC — but plain `new Date(v)`
+      // parses that shape in the NODE PROCESS's local TZ, not UTC. That
+      // disagrees with drizzle's typed column path (db.select(), used by
+      // getWebSession), which parses these as UTC. On a non-UTC host this
+      // skews every raw-query-derived Date by the host's UTC offset. Force
+      // UTC interpretation to match.
+      if (typeof v === "string") camel[field] = new Date(v.replace(" ", "T") + "Z");
+      else if (v instanceof Date) camel[field] = v;
+    }
+    return camel as WebSession;
+  }
+
+  /** True iff EVERY named login secret in scope exists and is attested isTestAccount. */
+  async areLoginSecretsAttested(scope: SessionScope, names: string[]): Promise<boolean> {
+    const rows = "userId" in scope
+      ? await this.getSecretsByUserId(scope.userId)
+      : await this.getOrgSecrets(scope.organizationId);
+    return names.every(n => rows.some(r => r.name === n && r.class === "login" && r.isTestAccount));
+  }
+
+  private webSessionScopeWhere(scope: SessionScope) {
+    return "userId" in scope
+      ? and(eq(webSessions.userId, scope.userId), isNull(webSessions.organizationId))
+      : and(eq(webSessions.organizationId, scope.organizationId), isNull(webSessions.userId));
+  }
+
+  async getWebSession(scope: SessionScope, platformId: string, credentialKey: string): Promise<WebSession | undefined> {
+    const rows = await db.select().from(webSessions)
+      .where(and(
+        this.webSessionScopeWhere(scope),
+        eq(webSessions.platformId, platformId),
+        eq(webSessions.credentialKey, credentialKey),
+      ));
+    return rows[0];
+  }
+
+  /**
+   * Single-flight mint claim. Returns the row (status now 'minting') when THIS
+   * caller won and must mint; undefined when another instance holds a live mint
+   * or a fresh 'ready' session already exists. A 'minting' row older than
+   * staleMintSeconds is reclaimable (a Core instance died mid-mint).
+   *
+   * The claim is a single query per branch (INSERT ... RETURNING or
+   * UPDATE ... RETURNING), converted straight to the typed row via
+   * snakeToCamel — no re-read of the row afterward. A re-read would open a
+   * TOCTOU window: by the time it runs, a stale-reclaim from another instance
+   * could have already overwritten the row this caller just claimed, so the
+   * caller would mint under a false belief that it holds the claim.
+   *
+   * The returned row's mintStartedAt is the fencing token the caller MUST
+   * carry through to storeWebSessionReady/markWebSessionFailed — see there.
+   */
+  async claimWebSessionMint(
+    scope: SessionScope, platformId: string, credentialKey: string,
+    staleMintSeconds: number, freshMarginSeconds: number,
+  ): Promise<WebSession | undefined> {
+    const userId = "userId" in scope ? scope.userId : null;
+    const orgId = "organizationId" in scope ? scope.organizationId : null;
+    // First-use: create the row already claimed. ON CONFLICT targets the
+    // partial unique index matching this scope (now keyed by credential_key
+    // too, so two credential pairs on one platform never collide into one row).
+    const conflictTarget = userId != null
+      ? sql`(user_id, platform_id, credential_key) WHERE organization_id IS NULL`
+      : sql`(organization_id, platform_id, credential_key) WHERE user_id IS NULL`;
+    // Truncated to milliseconds: JS Date has no sub-millisecond precision, and
+    // mint_started_at round-trips through a Date on its way back in as the
+    // fencing token (rowToWebSession). Storing raw NOW() (microsecond
+    // precision) would make that round-trip lossy and the fence's exact-match
+    // WHERE in storeWebSessionReady/markWebSessionFailed would never match.
+    const nowMs = sql`date_trunc('milliseconds', NOW())`;
+    const inserted = await db.execute(sql`
+      INSERT INTO web_sessions (user_id, organization_id, platform_id, credential_key, status, mint_started_at)
+      VALUES (${userId}, ${orgId}, ${platformId}, ${credentialKey}, 'minting', ${nowMs})
+      ON CONFLICT ${conflictTarget} DO NOTHING
+      RETURNING *`);
+    const insRows = (inserted as unknown as { rows: Record<string, unknown>[] }).rows;
+    if (insRows?.length) return this.rowToWebSession(insRows[0]);
+    // Row exists: claim unless someone is live-minting or it's fresh-ready.
+    const updated = await db.execute(sql`
+      UPDATE web_sessions
+      SET status = 'minting', mint_started_at = ${nowMs}, updated_at = NOW()
+      WHERE user_id IS NOT DISTINCT FROM ${userId}
+        AND organization_id IS NOT DISTINCT FROM ${orgId}
+        AND platform_id = ${platformId}
+        AND credential_key = ${credentialKey}
+        AND (status <> 'minting' OR mint_started_at IS NULL
+             OR mint_started_at < NOW() - make_interval(secs => ${staleMintSeconds}))
+        AND NOT (status = 'ready' AND expires_at IS NOT NULL
+                 AND expires_at > NOW() + make_interval(secs => ${freshMarginSeconds}))
+      RETURNING *`);
+    const updRows = (updated as unknown as { rows: Record<string, unknown>[] }).rows;
+    if (!updRows?.length) return undefined;
+    return this.rowToWebSession(updRows[0]);
+  }
+
+  /**
+   * Marks a claimed row 'ready'. `fence` must be the mintStartedAt the caller
+   * received from claimWebSessionMint. The WHERE re-checks status='minting'
+   * AND mint_started_at=fence, so a caller whose claim was superseded by a
+   * stale-reclaim (its mint_started_at moved on) writes nothing instead of
+   * clobbering the new minter's in-flight row. Returns true iff this call's
+   * row was the one updated.
+   */
+  async storeWebSessionReady(
+    id: number, encryptedStorageState: string, ttlHours: number, fence: Date,
+  ): Promise<boolean> {
+    // Send the fence as an explicit ISO UTC string rather than the raw Date
+    // (node-postgres would otherwise serialize it using the driver's/host's
+    // local-TZ formatting). Postgres ignores the trailing "Z" when coercing
+    // a string literal to timestamp-without-time-zone, so the digits it
+    // compares are exactly what's stored — and the stored value was written
+    // from the (UTC) DB clock via NOW(), so this matches under every node TZ.
+    const result = await db.execute(sql`
+      UPDATE web_sessions
+      SET status = 'ready', encrypted_storage_state = ${encryptedStorageState},
+          minted_at = NOW(), expires_at = NOW() + make_interval(secs => ${Math.round(ttlHours * 3600)}),
+          last_error = NULL, updated_at = NOW()
+      WHERE id = ${id} AND status = 'minting' AND mint_started_at = ${fence.toISOString()}`);
+    return ((result as unknown as { rowCount: number }).rowCount || 0) > 0;
+  }
+
+  /**
+   * Marks a claimed row 'failed'. Same fence guard as storeWebSessionReady —
+   * a superseded minter's late failure report must be a no-op, not an
+   * overwrite of whatever the reclaiming instance is now doing with the row.
+   * expires_at is cleared so a 'failed' row never carries a stale future
+   * expiry (consumers gate on status, but the row stays self-consistent).
+   * Returns true iff this call's row was the one updated.
+   */
+  async markWebSessionFailed(id: number, error: string, fence: Date): Promise<boolean> {
+    const result = await db.execute(sql`
+      UPDATE web_sessions
+      SET status = 'failed', encrypted_storage_state = NULL, expires_at = NULL,
+          last_error = ${error.slice(0, 2000)}, updated_at = NOW()
+      WHERE id = ${id} AND status = 'minting' AND mint_started_at = ${fence.toISOString()}`);
+    return ((result as unknown as { rowCount: number }).rowCount || 0) > 0;
   }
 }
 

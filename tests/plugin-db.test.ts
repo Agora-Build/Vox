@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { Pool } from "pg";
 import { createPluginDb, schemaForPlugin } from "../server/plugins/db";
+import { TEST_PLUGIN_DATABASE_URL, ensurePluginTestDatabase } from "./helpers/plugin-test-db";
 
 const hasDb = !!process.env.DATABASE_URL;
 const d = hasDb ? describe : describe.skip;
@@ -19,7 +20,8 @@ d("createPluginDb (integration)", () => {
   const schema = "plugin_dbtest";
 
   beforeAll(async () => {
-    pool = new Pool({ connectionString: process.env.DATABASE_URL });
+    await ensurePluginTestDatabase();
+    pool = new Pool({ connectionString: TEST_PLUGIN_DATABASE_URL });
     await pool.query(`DROP SCHEMA IF EXISTS ${schema} CASCADE`);
     await pool.query(`CREATE SCHEMA ${schema}`);
     await pool.query(`CREATE TABLE ${schema}.t (id serial primary key, n int)`);
@@ -54,7 +56,7 @@ d("createPluginDb (integration)", () => {
   it("does not leak search_path onto the shared pool after a plugin query", async () => {
     // A dedicated single-connection pool guarantees the raw follow-up query
     // below reuses the exact same physical connection the plugin query used.
-    const solo = new Pool({ connectionString: process.env.DATABASE_URL, max: 1 });
+    const solo = new Pool({ connectionString: TEST_PLUGIN_DATABASE_URL, max: 1 });
     try {
       const db = createPluginDb(solo, schema);
       await db.query("SELECT 1"); // pins plugin schema for the duration of its own transaction only

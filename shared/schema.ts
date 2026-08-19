@@ -1,4 +1,4 @@
-import { pgTable, text, varchar, integer, real, timestamp, serial, boolean, pgEnum, jsonb, index, uniqueIndex } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, integer, real, timestamp, serial, boolean, pgEnum, jsonb, index, uniqueIndex, check } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
@@ -16,6 +16,8 @@ export const scheduleTypeEnum = pgEnum("schedule_type", ["once", "recurring"]);
 export const clashEventStatusEnum = pgEnum("clash_event_status", ["upcoming", "live", "completed", "cancelled"]);
 export const clashRunnerStateEnum = pgEnum("clash_runner_state", ["idle", "assigned", "running", "draining"]);
 export const orgRoleEnum = pgEnum("org_role", ["owner", "admin", "member"]);
+export const secretClassEnum = pgEnum("secret_class", ["runtime", "login"]);
+export const webSessionStatusEnum = pgEnum("web_session_status", ["minting", "ready", "failed"]);
 
 // Helper function to generate 12-char random ID for providers
 export function generateProviderId(): string {
@@ -238,6 +240,11 @@ export const evalAgents = pgTable("eval_agents", {
   lastSeenAt: timestamp("last_seen_at"),
   lastJobAt: timestamp("last_job_at"),
   metadata: jsonb("metadata").default({}),
+  // Core-observed egress IP (register/heartbeat). Layer-2/3 foundation: risk
+  // tracking + network-instinct labels derive from this. Core-internal — never
+  // expose raw in any public listing; only derived labels get exposed (future).
+  observedIp: text("observed_ip"),
+  observedIpAt: timestamp("observed_ip_at"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
@@ -303,13 +310,24 @@ export type EvalSchedule = typeof evalSchedules.$inferSelect;
 // or deleting a workflow/eval-set never rewrites a past job's history.
 export type JobSnapshot = {
   provider: { id: string; name: string; platformId: string | null } | null;
-  workflow: { name: string; config: unknown; visibility: string; isMainline: boolean; ownerId: number } | null;
+  workflow: { name: string; config: unknown; visibility: string; isMainline: boolean; ownerId: number; organizationId: number | null } | null;
   evalSet: { name: string; config: unknown; visibility: string; isMainline: boolean; ownerId: number } | null;
   creatorPlan: string | null;
   // Opaque marketplace settlement handle stashed by Core after a paid `shared`
   // dispatch (see the shared-agents plugin). Core never inspects it; the plugin
   // reads it back in settle(). TS-only — `snapshot` is a jsonb column.
   settlementContext?: unknown;
+  // Phase C: the IMMUTABLE session-injection stamp. Present iff the workflow
+  // needed a Core-minted login session at dispatch time. The /session endpoint
+  // derives BOTH the session need and the credential-trust gate from this (and
+  // from workflow.ownerId/organizationId) — never from the live workflow, which
+  // the owner can edit after dispatch (TOCTOU).
+  sessionInjection?: { platformId: string; emailSecret: string; passwordSecret: string };
+  // True iff the dispatcher recorded informed credential consent AND the login
+  // secrets were attested as dedicated test accounts (shared-tier dispatch). The
+  // session serve gate requires this before handing a bundle to a targeted
+  // shared (stranger's) agent.
+  credentialConsent?: boolean;
 };
 
 export const evalJobs = pgTable("eval_jobs", {
@@ -445,6 +463,12 @@ export const orgSecrets = pgTable("org_secrets", {
   organizationId: integer("organization_id").notNull().references(() => organizations.id),
   name: text("name").notNull(),
   encryptedValue: text("encrypted_value").notNull(),
+  // 'login' rows are Core-only: structurally excluded from the job-secrets path
+  // (getSecretsForJob) so username/password never reach an eval agent, any tier.
+  class: secretClassEnum("class").default("runtime").notNull(),
+  // Owner's attestation that this login identity is a dedicated, disposable
+  // test account — required before shared-tier dispatch of session workflows.
+  isTestAccount: boolean("is_test_account").default(false).notNull(),
   createdBy: integer("created_by").references(() => users.id),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
@@ -650,6 +674,12 @@ export const secrets = pgTable("secrets", {
   userId: integer("user_id").notNull().references(() => users.id),
   name: text("name").notNull(),
   encryptedValue: text("encrypted_value").notNull(),
+  // 'login' rows are Core-only: structurally excluded from the job-secrets path
+  // (getSecretsForJob) so username/password never reach an eval agent, any tier.
+  class: secretClassEnum("class").default("runtime").notNull(),
+  // Owner's attestation that this login identity is a dedicated, disposable
+  // test account — required before shared-tier dispatch of session workflows.
+  isTestAccount: boolean("is_test_account").default(false).notNull(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 }, (table) => ({
@@ -664,6 +694,51 @@ export const insertSecretSchema = createInsertSchema(secrets).omit({
 
 export type InsertSecret = z.infer<typeof insertSecretSchema>;
 export type Secret = typeof secrets.$inferSelect;
+
+// ==================== WEB SESSIONS (Phase C session broker) ====================
+// Core-minted login sessions (Playwright storageState), cached per owner scope
+// (user XOR org) + platform. The broker sidecar mints; agents only ever see the
+// decrypted storageState via GET /api/eval-agent/jobs/:id/session.
+
+export const webSessions = pgTable("web_sessions", {
+  id: serial("id").primaryKey(),
+  // Exactly one of userId/organizationId is set — mirrors secrets ownership.
+  // Enforced at the DB level by CHECK web_sessions_scope_xor_ck
+  // (num_nonnulls(user_id, organization_id) = 1), added in migration 0026 —
+  // a row violating this falls outside both partial unique indexes below,
+  // which would silently disable the single-flight mint claim.
+  userId: integer("user_id").references(() => users.id),
+  organizationId: integer("organization_id").references(() => organizations.id),
+  platformId: text("platform_id").notNull(),
+  // Identity of the login credential PAIR that minted this session, so two
+  // accounts on the same platform under the same owner scope never share a
+  // cached bundle — a sha256 of the two login-secret NAMES (see
+  // credentialKeyFor in session-broker.ts). Without it, an attested
+  // test-account workflow could be served a non-attested prod-account session
+  // minted from a different secret pair, defeating the shared-tier attestation
+  // gate.
+  credentialKey: text("credential_key").notNull(),
+  status: webSessionStatusEnum("status").notNull(),
+  encryptedStorageState: text("encrypted_storage_state"),
+  mintedAt: timestamp("minted_at"),
+  expiresAt: timestamp("expires_at"),
+  lastError: text("last_error"),
+  // Stale-mint recovery: a 'minting' row older than the mint timeout is reclaimable.
+  mintStartedAt: timestamp("mint_started_at"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (table) => ({
+  userPlatformIdx: uniqueIndex("web_sessions_user_platform_idx")
+    .on(table.userId, table.platformId, table.credentialKey).where(sql`organization_id IS NULL`),
+  orgPlatformIdx: uniqueIndex("web_sessions_org_platform_idx")
+    .on(table.organizationId, table.platformId, table.credentialKey).where(sql`user_id IS NULL`),
+  // Mirror migration 0026's CHECK in the schema so db:push (local dev) emits it
+  // too — a both/neither-scope row falls outside both partial unique indexes
+  // above, silently disabling the single-flight mint claim.
+  scopeXorCk: check("web_sessions_scope_xor_ck", sql`num_nonnulls(user_id, organization_id) = 1`),
+}));
+
+export type WebSession = typeof webSessions.$inferSelect;
 
 // ==================== CLASH AGENT PROFILES ====================
 

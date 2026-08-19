@@ -11,6 +11,7 @@ import { registerApiV1Routes } from "./routes-api-v1";
 import { generateSignedUrlForUser } from "./s3";
 import { validateTierChange, resolveTargetedDispatch, filterDispatchableAgents } from "./dispatch";
 import { getMarketplace } from "./marketplace";
+import { parsePlatformSetup, sessionScopeForWorkflow, evaluateSessionRequirement, getLoginSecretNames, ensureSession, stampOwnerSession, credentialKeyFor, SESSION_FRESH_MARGIN_SECONDS, type SessionNeed } from "./session-broker";
 import {
   hashPassword,
   verifyPassword,
@@ -67,6 +68,8 @@ import {
   isOwnerOrOrgManager,
   canRunWorkflow,
   canScheduleWorkflow,
+  sameOrg,
+  isSessionServable,
 } from "./permissions";
 
 // Schedule lifecycle: a schedule is created with a 90-day expiry and can be
@@ -2332,7 +2335,24 @@ export async function registerRoutes(
       }
       const evalSet = await storage.getEvalSet(schedule.evalSetId);
 
+      // Phase C: run-now fires a job on the workflow OWNER's secrets, exactly
+      // like the scheduler tick — so it takes the same owner-dispatched session
+      // path. A workflow whose platform.setup references login-class secrets is
+      // Core-minted (never handed durable credentials to the agent); a
+      // split-class pair is rejected outright rather than leaking the
+      // runtime-class secret. No cross-user dispatch-trust gates here: run-now
+      // is canScheduleWorkflow-gated (owner/creator only).
+      const jobConfig = mergeEvalConfig(workflow.config, evalSet?.config);
+      const stamp = await stampOwnerSession(workflow, jobConfig as Record<string, unknown>);
+      if (stamp.kind === "misconfigured") {
+        return res.status(400).json({ error: stamp.reason });
+      }
+
       const provider = await storage.getProvider(workflow.providerId);
+      const baseSnapshot = buildJobSnapshot(workflow, evalSet, provider, user.plan);
+      const snapshot = stamp.snapshotInjection
+        ? { ...baseSnapshot, sessionInjection: stamp.snapshotInjection }
+        : baseSnapshot;
       const job = await storage.createEvalJob({
         scheduleId: schedule.id,
         triggerType: 1, // scheduled (run-now off an existing schedule)
@@ -2340,8 +2360,8 @@ export async function registerRoutes(
         evalSetId: schedule.evalSetId,
         createdBy: user.id,
         region: schedule.region,
-        config: mergeEvalConfig(workflow.config, evalSet?.config),
-        snapshot: buildJobSnapshot(workflow, evalSet, provider, user.plan),
+        config: jobConfig,
+        snapshot,
         status: "pending",
         priority: 0,
         retryCount: 0,
@@ -2414,6 +2434,8 @@ export async function registerRoutes(
         secrets: userSecrets.map(s => ({
           id: s.id,
           name: s.name,
+          class: s.class,
+          isTestAccount: s.isTestAccount,
           createdAt: s.createdAt,
           updatedAt: s.updatedAt,
         })),
@@ -2447,6 +2469,11 @@ export async function registerRoutes(
       if (value.length > 10000) {
         return res.status(400).json({ error: "Secret value too large (max 10KB)" });
       }
+      const secretClass = req.body.secretClass === undefined ? undefined : req.body.secretClass;
+      if (secretClass !== undefined && secretClass !== "runtime" && secretClass !== "login") {
+        return res.status(400).json({ error: "secretClass must be 'runtime' or 'login'" });
+      }
+      const isTestAccount = req.body.isTestAccount === undefined ? undefined : req.body.isTestAccount === true;
 
       // Per-user limit: check if this is a new secret (not an upsert of existing)
       const existing = await storage.getSecretsByUserId(user.id);
@@ -2455,9 +2482,14 @@ export async function registerRoutes(
         return res.status(400).json({ error: "Maximum of 50 secrets per user" });
       }
 
+      const existingRow = existing.find(s => s.name === trimmedName);
+      if (existingRow && existingRow.class === "login" && secretClass === "runtime") {
+        return res.status(400).json({ error: "A login secret cannot be reclassified to runtime — delete and recreate it instead" });
+      }
+
       const encrypted = encryptValue(value);
-      const secret = await storage.createOrUpdateSecret(user.id, trimmedName, encrypted);
-      res.json({ id: secret.id, name: secret.name, createdAt: secret.createdAt, updatedAt: secret.updatedAt });
+      const secret = await storage.createOrUpdateSecret(user.id, trimmedName, encrypted, { class: secretClass, isTestAccount });
+      res.json({ id: secret.id, name: secret.name, class: secret.class, isTestAccount: secret.isTestAccount, createdAt: secret.createdAt, updatedAt: secret.updatedAt });
     } catch (error) {
       console.error("Error creating secret:", error);
       if (error instanceof Error && error.message.includes("CREDENTIAL_ENCRYPTION_KEY")) {
@@ -2496,6 +2528,8 @@ export async function registerRoutes(
       const secrets = await storage.getOrgSecrets(user.organizationId);
       res.json(secrets.map(s => ({
         name: s.name,
+        class: s.class,
+        isTestAccount: s.isTestAccount,
         createdAt: s.createdAt,
         updatedAt: s.updatedAt,
       })));
@@ -2529,9 +2563,20 @@ export async function registerRoutes(
       if (!isEncryptionConfigured()) {
         return res.status(503).json({ error: "Encryption not configured on server" });
       }
+      const secretClass = req.body.secretClass === undefined ? undefined : req.body.secretClass;
+      if (secretClass !== undefined && secretClass !== "runtime" && secretClass !== "login") {
+        return res.status(400).json({ error: "secretClass must be 'runtime' or 'login'" });
+      }
+      const isTestAccount = req.body.isTestAccount === undefined ? undefined : req.body.isTestAccount === true;
+
+      const existingRow = (await storage.getOrgSecrets(user.organizationId)).find(s => s.name === trimmedName);
+      if (existingRow && existingRow.class === "login" && secretClass === "runtime") {
+        return res.status(400).json({ error: "A login secret cannot be reclassified to runtime — delete and recreate it instead" });
+      }
+
       const encrypted = encryptValue(value);
-      await storage.upsertOrgSecret(user.organizationId, trimmedName, encrypted, user.id);
-      res.json({ message: "Org secret saved" });
+      const secret = await storage.upsertOrgSecret(user.organizationId, trimmedName, encrypted, user.id, { class: secretClass, isTestAccount });
+      res.json({ message: "Org secret saved", class: secret.class, isTestAccount: secret.isTestAccount });
     } catch (error) {
       console.error("Error saving org secret:", error);
       res.status(500).json({ error: "Failed to save org secret" });
@@ -2934,6 +2979,7 @@ export async function registerRoutes(
       }
 
       await storage.updateEvalAgentHeartbeat(agent.id);
+      if (req.ip) void storage.updateEvalAgentObservedIp(agent.id, req.ip);
 
       res.json({
         id: agent.id,
@@ -2979,6 +3025,7 @@ export async function registerRoutes(
       }
 
       await storage.updateEvalAgentHeartbeat(agentId);
+      if (req.ip) void storage.updateEvalAgentObservedIp(agentId, req.ip);
 
       const updates: Record<string, unknown> = {};
       if (state && ["idle", "offline", "occupied"].includes(state)) {
@@ -3025,17 +3072,25 @@ export async function registerRoutes(
 
       // Version-gate: if the requesting agent has a frameworkVersion, filter out
       // jobs whose config requires a newer version than the agent supports.
+      // Also gate session-injected jobs (Phase C) to daemons whose registration
+      // metadata declares the sessionInjection capability.
       const agents = await storage.getEvalAgentsByTokenId(evalAgentToken.id);
       const latestAgent = agents[0]; // sorted by createdAt desc
-      const agentVersion = (latestAgent?.metadata as Record<string, unknown>)?.frameworkVersion as string | undefined;
+      const agentMeta = (latestAgent?.metadata as Record<string, unknown>) ?? {};
+      const agentVersion = agentMeta.frameworkVersion as string | undefined;
+      const supportsSessionInjection = agentMeta.sessionInjection === "1";
 
-      if (agentVersion) {
-        jobs = jobs.filter((job) => {
-          const jobVersion = (job.config as Record<string, unknown>)?.frameworkVersion as string | undefined;
-          if (!jobVersion) return true; // jobs without version pass through
-          return compareVersions(jobVersion, agentVersion) <= 0;
-        });
-      }
+      jobs = jobs.filter((job) => {
+        const cfg = (job.config as Record<string, unknown>) ?? {};
+        // Phase C: never hand a session-injected job to a daemon that can't
+        // force storage-mode — it would run the target unauthenticated.
+        if (cfg.sessionInjection && !supportsSessionInjection) return false;
+        if (agentVersion) {
+          const jobVersion = cfg.frameworkVersion as string | undefined;
+          if (jobVersion && compareVersions(jobVersion, agentVersion) > 0) return false;
+        }
+        return true;
+      });
 
       res.json(jobs);
     } catch (error) {
@@ -3487,6 +3542,94 @@ export async function registerRoutes(
     }
   });
 
+  // Phase C: serve the Core-minted login session (storageState) for a claimed
+  // job. The agent gets ONLY this bundle — never the login secrets behind it.
+  app.get("/api/eval-agent/jobs/:jobId/session", async (req, res) => {
+    try {
+      const authHeader = req.headers.authorization;
+      if (!authHeader || !authHeader.startsWith("Bearer ")) {
+        return res.status(401).json({ error: "Eval agent token required" });
+      }
+      const evalAgentToken = await storage.getEvalAgentTokenByHash(hashToken(authHeader.slice(7)));
+      if (!evalAgentToken || evalAgentToken.isRevoked) {
+        return res.status(401).json({ error: "Invalid or revoked eval agent token" });
+      }
+      const auth = await authorizeJobAgent(parseInt(req.params.jobId), evalAgentToken.id, req.query.leaseId);
+      if (auth.status !== "ok") { denyJobAgent(res, auth); return; }
+      if (auth.job.status !== "running") {
+        return res.status(403).json({ error: "Session only available for running jobs" });
+      }
+
+      // HIGH-2 (TOCTOU): the need, the mint scope, and the trust context are ALL
+      // derived from the job's IMMUTABLE stamped snapshot — never the live
+      // workflow. An owner editing the workflow (or its login-class secrets)
+      // after dispatch cannot change what a claimed job is allowed to receive,
+      // nor cause a different account's session to be minted for an agent that
+      // was authorized against the original credentials.
+      const snap = auth.job.snapshot;
+      const injection = snap?.sessionInjection;
+      const snapWorkflow = snap?.workflow;
+      if (!injection || !snapWorkflow) {
+        // No session was stamped at dispatch → this job never carried a
+        // Core-minted login. Never fall back to minting from live data.
+        return res.json({ required: false });
+      }
+
+      // Serve gate (owner + team + attested-shared), enforced against the
+      // CLAIMING token from snapshot-frozen owner/org + consent. This is the
+      // credential-authoritative check; the claim-SQL gate is the first line.
+      const tokenOwner = await storage.getUser(evalAgentToken.createdBy);
+      const servable = isSessionServable(
+        {
+          targetTokenId: auth.job.targetTokenId ?? null,
+          workflowOwnerId: snapWorkflow.ownerId ?? null,
+          workflowOrgId: snapWorkflow.organizationId ?? null,
+          consent: snap?.credentialConsent === true,
+        },
+        { id: evalAgentToken.id, createdBy: evalAgentToken.createdBy },
+        { organizationId: tokenOwner?.organizationId ?? null },
+      );
+      if (!servable) {
+        console.warn(`[Session] Job ${auth.job.id}: DENIED session bundle to token ${evalAgentToken.id} (not owner/team/attested-shared)`);
+        return res.status(403).json({ error: "This agent is not authorized to receive the login session for this job" });
+      }
+
+      const need: SessionNeed = {
+        platformId: injection.platformId,
+        emailSecret: injection.emailSecret,
+        passwordSecret: injection.passwordSecret,
+      };
+      const scope = sessionScopeForWorkflow({ ownerId: snapWorkflow.ownerId, organizationId: snapWorkflow.organizationId ?? null });
+
+      const session = await storage.getWebSession(scope, need.platformId, credentialKeyFor(need));
+      const fresh = session?.status === "ready" && session.expiresAt &&
+        session.expiresAt.getTime() > Date.now() + SESSION_FRESH_MARGIN_SECONDS * 1000;
+      if (fresh && session!.encryptedStorageState) {
+        // Audit trail (layer-2 foundation): who received a session bundle, when,
+        // from where. Log line only — the bundle itself is never logged
+        // (SENSITIVE_PATHS redacts the response body).
+        console.log(`[Session] Job ${auth.job.id}: bundle served to agent ${auth.agent.id} (token ${evalAgentToken.id}, ip ${req.ip})`);
+        return res.json({
+          required: true, status: "ready", authMode: "storage", platformId: need.platformId,
+          storageState: JSON.parse(decryptValue(session!.encryptedStorageState)),
+          expiresAt: session!.expiresAt,
+        });
+      }
+      if (session?.status === "failed") {
+        return res.status(503).json({ required: true, status: "failed", error: session.lastError ?? "session mint failed" });
+      }
+      // Cold or stale or currently minting: (re)trigger and tell the agent to poll.
+      void ensureSession(scope, need);
+      return res.status(202).json({ required: true, status: "minting" });
+    } catch (error) {
+      console.error("Error serving job session:", error);
+      if (error instanceof Error && error.message.includes("CREDENTIAL_ENCRYPTION_KEY")) {
+        return res.status(500).json({ error: "Server encryption not configured" });
+      }
+      res.status(500).json({ error: "Failed to serve session" });
+    }
+  });
+
   // Create eval jobs from workflow (triggered by user)
   app.post("/api/workflows/:workflowId/run", requireAuth, async (req, res) => {
     try {
@@ -3542,9 +3685,23 @@ export async function registerRoutes(
         return res.status(403).json({ error: "Access denied to eval set" });
       }
 
+      // Phase C: does this workflow need a Core-minted login session? True iff
+      // its platform.setup references login-class secrets (owner opt-in). A
+      // split-class pair (one login, one runtime) is rejected outright — never
+      // fall back to a path that would leak the runtime-class credential.
+      const wfConfig = (workflow.config ?? {}) as Record<string, unknown>;
+      const setupInfo = parsePlatformSetup(wfConfig.stepsPrefix as string | undefined);
+      const scope = sessionScopeForWorkflow(workflow);
+      const sessionReq = evaluateSessionRequirement(setupInfo, await getLoginSecretNames(scope));
+      if (sessionReq.kind === "misconfigured") {
+        return res.status(400).json({ error: sessionReq.reason });
+      }
+      const sessionNeed: SessionNeed | null = sessionReq.kind === "need" ? sessionReq.need : null;
+
       let jobRegion: string;
       let targeting: number | null = null;
       let settlementContext: unknown = undefined;
+      let consentRecorded = false;
 
       if (targetTokenId != null) {
         const token = await storage.getEvalAgentToken(targetTokenId);
@@ -3553,6 +3710,16 @@ export async function registerRoutes(
         if (token.dispatchTier === "shared") {
           const marketplace = getMarketplace();
           if (!marketplace) return res.status(400).json({ error: "Shared dispatch is not available" });
+          if (sessionNeed) {
+            if (req.body.credentialConsent !== true) {
+              return res.status(400).json({ error: "credentialConsent is required to dispatch credential-injected jobs to a shared agent" });
+            }
+            const attested = await storage.areLoginSecretsAttested(scope, [sessionNeed.emailSecret, sessionNeed.passwordSecret]);
+            if (!attested) {
+              return res.status(403).json({ error: "Shared dispatch requires dedicated test-account credentials (mark the login secrets as test accounts)" });
+            }
+            consentRecorded = true; // gate above already guarantees credentialConsent === true
+          }
           const authz = await marketplace.authorizeDispatch(user.id, token.id, {
             workflowId: parseInt(workflowId, 10),
             evalSetId: evalSetId ?? null,
@@ -3569,10 +3736,38 @@ export async function registerRoutes(
             { organizationId: owner?.organizationId ?? null },
           );
           if (!decision.ok) return res.status(403).json({ error: "Not allowed to dispatch to this agent" });
+          // Credential-trust gate for a session-injected job dispatched to a
+          // free-tier (private/team/public) token: the agent must belong to the
+          // workflow owner or share the workflow's org — otherwise the minted
+          // session (the OWNER's test-account cookies) would reach a token the
+          // serve gate will refuse anyway (a targeted public stranger). Mirror
+          // isSessionServable's owner/team arms; the attested-shared arm is the
+          // separate `shared` branch above.
+          if (sessionNeed) {
+            const ownerTrusted = token.createdBy === workflow.ownerId
+              || (workflow.organizationId != null && sameOrg({ organizationId: owner?.organizationId ?? null }, { organizationId: workflow.organizationId }));
+            if (!ownerTrusted) {
+              return res.status(403).json({ error: "Credential-injected jobs can only be dispatched to the workflow owner's or org's agents, or to a shared agent with consent" });
+            }
+          }
         }
         jobRegion = token.region; // targeted: region derived from token (body region ignored)
         targeting = token.id;
       } else {
+        // Untargeted (region-pool) dispatch. A session-injected job here must
+        // only land on the workflow owner's OWN agents (enforced in the claim
+        // SQL: public strangers are excluded from session jobs). Reject up front
+        // when the runner is neither the owner nor an org co-member — otherwise a
+        // stranger running a PUBLIC login workflow could pull the owner's minted
+        // test-account session. Targeting a shared agent (with consent) is the
+        // only cross-user path, handled in the targeted branch above.
+        if (sessionNeed) {
+          const isOwner = workflow.ownerId === user.id;
+          const isTeam = workflow.organizationId != null && sameOrg({ organizationId: user.organizationId }, { organizationId: workflow.organizationId });
+          if (!isOwner && !isTeam) {
+            return res.status(403).json({ error: "Credential-injected workflows can only be run untargeted by the owner or an org member; dispatch to a shared agent with consent to run it elsewhere" });
+          }
+        }
         const normalizedRegion = region ? String(region) : "";
         if (!normalizedRegion || !(await storage.isAllocatedRegion(normalizedRegion))) {
           return res.status(400).json({ error: "An active allocated region site is required" });
@@ -3582,9 +3777,33 @@ export async function registerRoutes(
 
       const provider = await storage.getProvider(workflow.providerId);
       const baseSnapshot = buildJobSnapshot(workflow, evalSet, provider, user.plan);
-      const snapshot = settlementContext !== undefined ? { ...baseSnapshot, settlementContext } : baseSnapshot;
+      const snapshot = {
+        ...baseSnapshot,
+        ...(settlementContext !== undefined ? { settlementContext } : {}),
+        ...(consentRecorded ? { credentialConsent: true } : {}),
+        // Immutable session-injection stamp: the /session endpoint reads the need
+        // (which login secrets to mint from) and the trust context from HERE, not
+        // the live workflow — an owner editing the workflow post-dispatch can't
+        // change what a claimed job is allowed to receive (HIGH-2 TOCTOU).
+        ...(sessionNeed
+          ? { sessionInjection: { platformId: sessionNeed.platformId, emailSecret: sessionNeed.emailSecret, passwordSecret: sessionNeed.passwordSecret } }
+          : {}),
+      };
       let job;
       try {
+        // jobConfig assembly lives inside this try (not before it): mergeEvalConfig
+        // throws synchronously on conflicting shared workflow/eval-set keys, and if a
+        // shared-tier authorizeDispatch above already placed an escrow hold, that throw
+        // must still hit the catch below so voidDispatch runs — otherwise the hold leaks
+        // until the 26h reaper (review finding, Task 6 fix wave).
+        const jobConfig = mergeEvalConfig(workflow.config, evalSet.config);
+        delete (jobConfig as Record<string, unknown>).sessionInjection; // server-stamped only
+        if (sessionNeed) {
+          (jobConfig as Record<string, unknown>).sessionInjection = { platformId: sessionNeed.platformId };
+          // Pre-warm the session cache so claim-time is a cache hit. Fire-and-forget:
+          // ensureSession never throws and records failures on the web_sessions row.
+          void ensureSession(scope, sessionNeed);
+        }
         job = await storage.createEvalJob({
           workflowId: parseInt(workflowId),
           triggerType: 2, // manual (Run Workflow)
@@ -3592,7 +3811,7 @@ export async function registerRoutes(
           createdBy: user.id,
           region: jobRegion,
           targetTokenId: targeting,
-          config: mergeEvalConfig(workflow.config, evalSet.config),
+          config: jobConfig,
           snapshot,
           status: "pending",
           priority: 0,
@@ -5795,11 +6014,16 @@ export async function registerRoutes(
       const event = await storage.getClashEvent(match.eventId);
       if (!event) return res.status(404).json({ error: "Event not found" });
 
-      // Fetch and decrypt event owner's secrets
+      // Fetch and decrypt event owner's secrets. LOGIN-class secrets are
+      // structurally withheld: they are Core-only credentials used to mint web
+      // sessions and must never be handed to a runner (MEDIUM-2). Only
+      // runtime-class secrets are decrypted for direct injection.
       const userSecrets = await storage.getSecretsByUserId(event.createdBy);
       const decrypted: Record<string, string> = {};
       let decryptErrors = 0;
+      let loginWithheld = 0;
       for (const s of userSecrets) {
+        if (s.class === "login") { loginWithheld++; continue; }
         try {
           decrypted[s.name] = decryptValue(s.encryptedValue);
         } catch {
@@ -5807,7 +6031,7 @@ export async function registerRoutes(
         }
       }
 
-      console.log(`[ClashSecrets] Runner ${runner.runnerId} fetched secrets for match #${matchId} (event #${event.id}, owner #${event.createdBy}): ${Object.keys(decrypted).length} decrypted, ${decryptErrors} failed`);
+      console.log(`[ClashSecrets] Runner ${runner.runnerId} fetched secrets for match #${matchId} (event #${event.id}, owner #${event.createdBy}): ${Object.keys(decrypted).length} decrypted, ${decryptErrors} failed, ${loginWithheld} login-class withheld`);
 
       res.json(decrypted);
     } catch (error) {

@@ -10,6 +10,7 @@
 import { Express, Request, Response } from "express";
 import { storage, mergeEvalConfig, buildJobSnapshot } from "./storage";
 import { requireAuthOrApiKey, getCurrentUserOrApiKeyUser } from "./auth";
+import { parsePlatformSetup, sessionScopeForWorkflow, evaluateSessionRequirement, getLoginSecretNames, ensureSession } from "./session-broker";
 import { regionSiteSequence } from "@shared/regions";
 
 type ApiRegionLocation = Awaited<ReturnType<typeof storage.getAllRegionLocations>>[number];
@@ -317,6 +318,20 @@ export function registerApiV1Routes(app: Express): void {
         return res.status(404).json({ error: "Eval set not found" });
       }
 
+      // Phase C: does this workflow need a Core-minted login session? This route
+      // is owner-only (untargeted run on the caller's own workflow), so the
+      // untargeted owner/team gate the console run route applies is satisfied
+      // structurally — only the misconfigured-pair rejection and the immutable
+      // session stamp are needed here.
+      const wfConfig = (workflow.config ?? {}) as Record<string, unknown>;
+      const setupInfo = parsePlatformSetup(wfConfig.stepsPrefix as string | undefined);
+      const scope = sessionScopeForWorkflow(workflow);
+      const sessionReq = evaluateSessionRequirement(setupInfo, await getLoginSecretNames(scope));
+      if (sessionReq.kind === "misconfigured") {
+        return res.status(400).json({ error: sessionReq.reason });
+      }
+      const sessionNeed = sessionReq.kind === "need" ? sessionReq.need : null;
+
       // Create eval job (merge configs + capture the immutable snapshot, same as the
       // console run path — otherwise these jobs lose provenance/attribution/tiering).
       const provider = await storage.getProvider(workflow.providerId);
@@ -327,14 +342,33 @@ export function registerApiV1Routes(app: Express): void {
       if (!(await storage.isAllocatedRegion(requestedRegion))) {
         return res.status(400).json({ error: "Region must be an active allocated site ID" });
       }
+
+      const jobConfig = mergeEvalConfig(workflow.config, evalSet.config);
+      delete (jobConfig as Record<string, unknown>).sessionInjection; // server-stamped only
+      const baseSnapshot = buildJobSnapshot(workflow, evalSet, provider, user.plan);
+      const snapshot = sessionNeed
+        ? {
+            ...baseSnapshot,
+            sessionInjection: {
+              platformId: sessionNeed.platformId,
+              emailSecret: sessionNeed.emailSecret,
+              passwordSecret: sessionNeed.passwordSecret,
+            },
+          }
+        : baseSnapshot;
+      if (sessionNeed) {
+        (jobConfig as Record<string, unknown>).sessionInjection = { platformId: sessionNeed.platformId };
+        void ensureSession(scope, sessionNeed);
+      }
+
       const job = await storage.createEvalJob({
         workflowId: parseInt(id),
         triggerType: 2, // manual (API v1 run)
         evalSetId,
         createdBy: user.id,
         region: requestedRegion,
-        config: mergeEvalConfig(workflow.config, evalSet.config),
-        snapshot: buildJobSnapshot(workflow, evalSet, provider, user.plan),
+        config: jobConfig,
+        snapshot,
         status: "pending",
         priority: priority || 0,
       });
