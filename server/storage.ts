@@ -740,11 +740,18 @@ export class DatabaseStorage {
    * Layer-2/3 foundation: Core-observed egress IP of an agent (register/
    * heartbeat). Raw IP is Core-internal — future phases derive network labels
    * (residential/datacenter/starlink) from it; never expose it publicly.
+   * Fire-and-forget safe: call sites use `void ...` on the hot register/
+   * heartbeat path, so this method must never reject — a lost sample is
+   * harmless, an unhandled rejection would kill the process.
    */
   async updateEvalAgentObservedIp(agentId: number, ip: string): Promise<void> {
-    await db.update(evalAgents)
-      .set({ observedIp: ip, observedIpAt: new Date() })
-      .where(eq(evalAgents.id, agentId));
+    try {
+      await db.update(evalAgents)
+        .set({ observedIp: ip, observedIpAt: new Date() })
+        .where(eq(evalAgents.id, agentId));
+    } catch (err) {
+      console.error(`[Agents] Failed to record observed IP for agent ${agentId}:`, err instanceof Error ? err.message : err);
+    }
   }
 
   async countTodayJobsByOwner(ownerId: number): Promise<number> {
