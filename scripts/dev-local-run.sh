@@ -196,6 +196,7 @@ start_service_local() {
     SESSION_SECRET="local-test-secret-123" \
     INIT_CODE="$INIT_CODE" \
     CREDENTIAL_ENCRYPTION_KEY="$CREDENTIAL_ENCRYPTION_KEY" \
+    VOX_PLUGINS="${VOX_PLUGINS:-credits,shared-agents}" \
     npm run dev > /tmp/vox-server.log 2>&1 &
 
     echo $! > /tmp/vox-server.pid
@@ -229,6 +230,7 @@ start_service_docker() {
     export SESSION_SECRET="local-test-secret-123"
     export INIT_CODE="$INIT_CODE"
     export CREDENTIAL_ENCRYPTION_KEY="$CREDENTIAL_ENCRYPTION_KEY"
+    export VOX_PLUGINS="${VOX_PLUGINS:-credits,shared-agents}"
     export VOX_TAG="${VOX_TAG:-latest}"
 
     # Build and run via docker compose
@@ -304,16 +306,31 @@ login() {
     echo "$cookie_jar"
 }
 
+# Map a macro region code (na/apac/eu/sa) to a seeded region_locations base id.
+# The region model (migration 0023) validates tokens against region_locations
+# base ids, not the legacy macro codes — so the dev bootstrap must send a real
+# base id. Bases must match those seeded by migration 0023 / seed_data.
+region_base_id() {
+    case "$1" in
+        na)   echo "na-us-seattle" ;;
+        apac) echo "apac-sg" ;;
+        eu)   echo "eu-de-frankfurt" ;;
+        sa)   echo "sa-br-saopaulo" ;;
+        *)    echo "$1" ;;  # already a base id — pass through
+    esac
+}
+
 create_eval_agent_token() {
     local cookie_jar=$1
     local name=$2
     local region=$3
+    local base_id=$(region_base_id "$region")
 
-    log_info "Creating eval agent token: $name ($region)..." >&2
+    log_info "Creating eval agent token: $name ($region -> $base_id)..." >&2
 
     local response=$(curl -s -b "$cookie_jar" -X POST "$SERVER_URL/api/admin/eval-agent-tokens" \
         -H "Content-Type: application/json" \
-        -d "{\"name\": \"$name\", \"region\": \"$region\"}")
+        -d "{\"name\": \"$name\", \"regionLocationBaseId\": \"$base_id\"}")
 
     local token=$(echo "$response" | grep -o '"token":"[^"]*"' | cut -d'"' -f4)
 

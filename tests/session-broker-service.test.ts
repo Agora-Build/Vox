@@ -1,7 +1,24 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import type { AddressInfo } from "net";
 import type { Server } from "http";
-import { createBrokerServer, scrubCredentials, type MintRequest } from "../vox_eval_agentd/session-broker";
+import { createBrokerServer, scrubCredentials, secretMatches, type MintRequest } from "../vox_eval_agentd/session-broker";
+
+describe("secretMatches (constant-time bearer check)", () => {
+  it("true only on an exact match", () => {
+    expect(secretMatches("s3cr3t", "s3cr3t")).toBe(true);
+  });
+  it("false on a wrong secret of the same length", () => {
+    expect(secretMatches("s3cr3X", "s3cr3t")).toBe(false);
+  });
+  it("false on a correct prefix (no early-exit leak)", () => {
+    expect(secretMatches("s3cr3", "s3cr3t")).toBe(false);
+    expect(secretMatches("s3cr3t-and-more", "s3cr3t")).toBe(false);
+  });
+  it("false on undefined/empty presented secret", () => {
+    expect(secretMatches(undefined, "s3cr3t")).toBe(false);
+    expect(secretMatches("", "s3cr3t")).toBe(false);
+  });
+});
 
 describe("scrubCredentials", () => {
   it("redacts all occurrences of every credential value", () => {

@@ -13,7 +13,9 @@ describe("injectStorageSession", () => {
     password: \${secrets.P}
     assistant_id: abc
 - type: audio.start_recording`;
-    const out = yaml.load(injectStorageSession(src, "/tmp/s.json")) as any[];
+    const result = injectStorageSession(src, "/tmp/s.json");
+    expect(result.injected).toBe(true);
+    const out = yaml.load(result.yaml) as any[];
     const setup = out[0];
     expect(setup.mode).toBe("storage");
     expect(setup.params.mode).toBe("storage");
@@ -25,15 +27,49 @@ describe("injectStorageSession", () => {
   });
   it("handles a setup step with no params block", () => {
     const src = `- type: platform.setup\n  platform_id: livekit`;
-    const out = yaml.load(injectStorageSession(src, "/f.json")) as any[];
+    const result = injectStorageSession(src, "/f.json");
+    expect(result.injected).toBe(true);
+    const out = yaml.load(result.yaml) as any[];
     expect(out[0].mode).toBe("storage");
     expect(out[0].params.storage_file).toBe("/f.json");
   });
-  it("transforms EVERY platform.setup step and returns input unchanged when none", () => {
+  it("transforms EVERY platform.setup step and signals injected=false when none", () => {
     const two = `- type: platform.setup\n  platform_id: a\n- type: platform.setup\n  platform_id: b`;
-    const out = yaml.load(injectStorageSession(two, "/f.json")) as any[];
+    const twoRes = injectStorageSession(two, "/f.json");
+    expect(twoRes.injected).toBe(true);
+    const out = yaml.load(twoRes.yaml) as any[];
     expect(out.every(s => s.mode === "storage")).toBe(true);
+
     const none = `- type: audio.play\n  corpus_id: x`;
-    expect(yaml.load(injectStorageSession(none, "/f.json"))).toEqual(yaml.load(none));
+    const noneRes = injectStorageSession(none, "/f.json");
+    expect(noneRes.injected).toBe(false);
+    expect(noneRes.yaml).toBe(none); // unchanged input returned verbatim
+    expect(yaml.load(noneRes.yaml)).toEqual(yaml.load(none));
+  });
+  it("handles the full-scenario { steps: [...] } document shape and dumps it back", () => {
+    const doc = `name: my_scenario
+steps:
+  - type: platform.setup
+    platform_id: vapi
+    params:
+      email: \${secrets.E}
+      password: \${secrets.P}
+  - type: audio.start_recording`;
+    const result = injectStorageSession(doc, "/tmp/s.json");
+    expect(result.injected).toBe(true);
+    const out = yaml.load(result.yaml) as { name: string; steps: any[] };
+    // Same document shape preserved (not flattened to a bare list).
+    expect(out.name).toBe("my_scenario");
+    expect(out.steps[0].mode).toBe("storage");
+    expect(out.steps[0].params.storage_file).toBe("/tmp/s.json");
+    expect(out.steps[0].params.email).toBeUndefined();
+    expect(out.steps[0].params.password).toBeUndefined();
+    expect(out.steps[1]).toEqual({ type: "audio.start_recording" });
+  });
+  it("a { steps: [...] } document with no platform.setup returns injected=false", () => {
+    const doc = `name: s\nsteps:\n  - type: audio.play\n    corpus_id: x`;
+    const result = injectStorageSession(doc, "/f.json");
+    expect(result.injected).toBe(false);
+    expect(result.yaml).toBe(doc);
   });
 });

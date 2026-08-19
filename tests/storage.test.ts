@@ -396,7 +396,7 @@ describe('buildJobSnapshot (immutable per-job provenance)', () => {
   it('captures workflow + eval-set metadata, config, and tier flags', () => {
     const s = buildJobSnapshot(wf, es, provider, 'principal');
     expect(s.provider).toEqual({ id: 'abc123def456', name: 'Agora ConvoAI Engine', platformId: 'agora' });
-    expect(s.workflow).toEqual({ name: 'WF', config: { framework: 'aeval', stepsPrefix: '- x' }, visibility: 'public', isMainline: true, ownerId: 7 });
+    expect(s.workflow).toEqual({ name: 'WF', config: { framework: 'aeval', stepsPrefix: '- x' }, visibility: 'public', isMainline: true, ownerId: 7, organizationId: null });
     expect(s.evalSet).toEqual({ name: 'ES', config: { scenario: 'steps: []' }, visibility: 'private', isMainline: false, ownerId: 9 });
     expect(s.creatorPlan).toBe('principal');
   });

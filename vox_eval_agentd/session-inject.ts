@@ -7,12 +7,34 @@
  * `mode` is set BOTH at step level and inside params: aeval-data examples put
  * it at step level, seed-data workflows put it under params — forcing both
  * covers either shape harmlessly.
+ *
+ * Two document shapes are accepted (parity with Core's parsePlatformSetup):
+ * a bare list of steps, and a full scenario document `{ steps: [...] }`. The
+ * transform dumps back the SAME shape it was given.
  */
 import yaml from 'js-yaml';
 
-export function injectStorageSession(stepsYaml: string, storageFilePath: string): string {
-  const steps = yaml.load(stepsYaml);
-  if (!Array.isArray(steps)) return stepsYaml;
+export interface InjectResult {
+  /** The rewritten YAML (unchanged input if nothing matched). */
+  yaml: string;
+  /** True iff at least one platform.setup step was forced to storage mode. */
+  injected: boolean;
+}
+
+export function injectStorageSession(stepsYaml: string, storageFilePath: string): InjectResult {
+  const doc = yaml.load(stepsYaml);
+
+  // Locate the steps array in either shape.
+  let steps: unknown[] | null = null;
+  let docShape = false;
+  if (Array.isArray(doc)) {
+    steps = doc;
+  } else if (doc && typeof doc === 'object' && Array.isArray((doc as { steps?: unknown }).steps)) {
+    steps = (doc as { steps: unknown[] }).steps;
+    docShape = true;
+  }
+  if (!steps) return { yaml: stepsYaml, injected: false };
+
   let changed = false;
   for (const raw of steps) {
     const step = raw as { type?: string; mode?: string; params?: Record<string, unknown> };
@@ -26,5 +48,7 @@ export function injectStorageSession(stepsYaml: string, storageFilePath: string)
     delete params.password;
     step.params = params;
   }
-  return changed ? yaml.dump(steps) : stepsYaml;
+  if (!changed) return { yaml: stepsYaml, injected: false };
+  // Dump back the same shape we were handed.
+  return { yaml: yaml.dump(docShape ? doc : steps), injected: true };
 }

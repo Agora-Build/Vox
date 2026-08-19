@@ -298,6 +298,7 @@ export function buildJobSnapshot(
       visibility: workflow.visibility,
       isMainline: workflow.isMainline,
       ownerId: workflow.ownerId,
+      organizationId: workflow.organizationId ?? null,
     },
     evalSet: evalSet
       ? {
@@ -804,7 +805,10 @@ export class DatabaseStorage {
          WHERE id = $1 AND status = 'pending'::eval_job_status
            AND (
              target_token_id = $2
-             OR ( target_token_id IS NULL AND ( $3 = 'public' OR created_by = $4 ) )
+             OR ( target_token_id IS NULL AND (
+                    created_by = $4
+                    OR ( $3 = 'public' AND (config -> 'sessionInjection') IS NULL )
+             ) )
            )
          FOR UPDATE SKIP LOCKED`,
         [jobId, token.id, token.dispatchTier, token.createdBy]
@@ -844,7 +848,10 @@ export class DatabaseStorage {
         WHERE status = 'pending'::eval_job_status AND region = $1
           AND (
             target_token_id = $2
-            OR ( target_token_id IS NULL AND ( $3 = 'public' OR created_by = $4 ) )
+            OR ( target_token_id IS NULL AND (
+                   created_by = $4
+                   OR ( $3 = 'public' AND (config -> 'sessionInjection') IS NULL )
+            ) )
           )
         ORDER BY priority DESC, created_at ASC`,
       [token.region, token.id, token.dispatchTier, token.createdBy],

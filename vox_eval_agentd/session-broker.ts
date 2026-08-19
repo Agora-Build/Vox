@@ -9,6 +9,7 @@
  */
 import http from 'http';
 import { spawn } from 'child_process';
+import crypto from 'crypto';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -21,6 +22,19 @@ export interface MintRequest { platformId: string; email: string; password: stri
 export type MintFn = (req: MintRequest) => Promise<unknown>;
 
 const PLATFORM_ID_RE = /^[a-z0-9][a-z0-9-]{0,63}$/;
+
+/**
+ * Constant-time bearer-secret check. A plain `!==` on the shared secret leaks
+ * its length and a prefix-match position through response timing; compare
+ * fixed-length SHA-256 digests with timingSafeEqual so every mismatch costs
+ * the same time regardless of how much of the secret an attacker guessed.
+ */
+export function secretMatches(presented: string | undefined, expected: string): boolean {
+  if (typeof presented !== 'string') return false;
+  const a = crypto.createHash('sha256').update(presented).digest();
+  const b = crypto.createHash('sha256').update(expected).digest();
+  return crypto.timingSafeEqual(a, b);
+}
 
 /**
  * Strip any of `values` (raw credentials) out of `message` before it can
@@ -111,7 +125,9 @@ export function createBrokerServer(deps: { mint: MintFn; secret: string }): http
     try {
       if (req.method === 'GET' && req.url === '/health') return json(200, { status: 'ok' });
       if (req.method !== 'POST' || req.url !== '/mint') return json(404, { error: 'not found' });
-      if (req.headers.authorization !== `Bearer ${deps.secret}`) return json(401, { error: 'unauthorized' });
+      const authz = req.headers.authorization;
+      const presented = authz && authz.startsWith('Bearer ') ? authz.slice(7) : undefined;
+      if (!secretMatches(presented, deps.secret)) return json(401, { error: 'unauthorized' });
       const chunks: Buffer[] = [];
       for await (const c of req) chunks.push(c as Buffer);
       let body: Partial<MintRequest>;

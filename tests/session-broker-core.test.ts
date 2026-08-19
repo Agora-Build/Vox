@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, afterAll } from "vitest";
-import { parsePlatformSetup, workflowNeedsSession, sessionScopeForWorkflow } from "../server/session-broker";
+import { parsePlatformSetup, evaluateSessionRequirement, sessionScopeForWorkflow } from "../server/session-broker";
 
 describe("parsePlatformSetup", () => {
   it("extracts platformId and secret refs from a stepsPrefix", () => {
@@ -36,13 +36,47 @@ describe("parsePlatformSetup", () => {
   });
 });
 
-describe("workflowNeedsSession", () => {
+describe("evaluateSessionRequirement", () => {
   const setup = { platformId: "vapi", emailSecret: "E", passwordSecret: "P" };
-  it("true only when a referenced secret is login-class", () => {
-    expect(workflowNeedsSession(setup, new Set(["E"]))).toEqual({ platformId: "vapi", emailSecret: "E", passwordSecret: "P" });
-    expect(workflowNeedsSession(setup, new Set(["OTHER"]))).toBeNull();
-    expect(workflowNeedsSession(null, new Set(["E"]))).toBeNull();
-    expect(workflowNeedsSession({ platformId: "x", emailSecret: null, passwordSecret: null }, new Set(["E"]))).toBeNull();
+
+  it("need: BOTH email and password are login-class", () => {
+    expect(evaluateSessionRequirement(setup, new Set(["E", "P"]))).toEqual({
+      kind: "need",
+      need: { platformId: "vapi", emailSecret: "E", passwordSecret: "P" },
+    });
+  });
+
+  it("none: neither referenced secret is login-class (runtime path)", () => {
+    expect(evaluateSessionRequirement(setup, new Set(["OTHER"]))).toEqual({ kind: "none" });
+    expect(evaluateSessionRequirement(setup, new Set())).toEqual({ kind: "none" });
+  });
+
+  it("none: no platform.setup at all", () => {
+    expect(evaluateSessionRequirement(null, new Set(["E", "P"]))).toEqual({ kind: "none" });
+  });
+
+  it("none: setup references no secrets even if some login-class secrets exist", () => {
+    expect(
+      evaluateSessionRequirement({ platformId: "x", emailSecret: null, passwordSecret: null }, new Set(["E", "P"])),
+    ).toEqual({ kind: "none" });
+  });
+
+  it("misconfigured: split-class pair (only email is login-class) is rejected, not downgraded", () => {
+    const req = evaluateSessionRequirement(setup, new Set(["E"]));
+    expect(req.kind).toBe("misconfigured");
+  });
+
+  it("misconfigured: only password login-class", () => {
+    const req = evaluateSessionRequirement(setup, new Set(["P"]));
+    expect(req.kind).toBe("misconfigured");
+  });
+
+  it("misconfigured: password ref missing but email is login-class", () => {
+    const req = evaluateSessionRequirement(
+      { platformId: "vapi", emailSecret: "E", passwordSecret: null },
+      new Set(["E"]),
+    );
+    expect(req.kind).toBe("misconfigured");
   });
 });
 

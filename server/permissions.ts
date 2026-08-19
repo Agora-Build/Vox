@@ -108,11 +108,42 @@ export function canDispatchToToken(
  * Claim eligibility — the source of truth. `storage.claimEvalJob` /
  * `getClaimableJobsForToken` mirror this exact logic in SQL for atomicity;
  * keep the two in lockstep.
+ *
+ * `sessionInjected` = the job carries a Core-minted login session (its config
+ * has `sessionInjection`). Such a job must never land on a PUBLIC (stranger's)
+ * agent picked up from the region pool: only the dispatcher's own agents claim
+ * it untargeted, or the aimed token if targeted. The /session serve gate
+ * (`isSessionServable`) is the second, credential-authoritative check — but we
+ * gate the claim too so a stranger's public agent can't even take the job
+ * off the queue and sit on it.
  */
 export function isClaimable(
-  job: { targetTokenId: number | null; createdBy: number | null },
+  job: { targetTokenId: number | null; createdBy: number | null; sessionInjected?: boolean },
   token: Pick<DispatchToken, "id" | "dispatchTier" | "createdBy">,
 ): boolean {
   if (job.targetTokenId != null) return job.targetTokenId === token.id;
-  return token.dispatchTier === "public" || job.createdBy === token.createdBy;
+  if (job.createdBy === token.createdBy) return true;
+  return token.dispatchTier === "public" && !job.sessionInjected;
+}
+
+/**
+ * Session serve gate (Phase C) — who may RECEIVE a Core-minted session bundle
+ * for a session-injected job. Derived entirely from the job's IMMUTABLE stamped
+ * snapshot (never the live workflow — the owner can edit it post-dispatch).
+ * Policy: owner + team + attested-shared.
+ *  - owner: the workflow owner's own agents (token.createdBy === workflow owner).
+ *  - team:  an agent whose owner shares the workflow's organization.
+ *  - attested-shared: consent + test-account attestation were verified at
+ *    dispatch (job.consent) AND the job was aimed at exactly this token.
+ * Public/community and non-attested shared agents are excluded.
+ */
+export function isSessionServable(
+  job: { targetTokenId: number | null; workflowOwnerId: number | null; workflowOrgId: number | null; consent: boolean },
+  token: { id: number; createdBy: number },
+  tokenOwner: { organizationId: number | null },
+): boolean {
+  if (job.workflowOwnerId != null && token.createdBy === job.workflowOwnerId) return true;
+  if (job.workflowOrgId != null && sameOrg({ organizationId: tokenOwner.organizationId }, { organizationId: job.workflowOrgId })) return true;
+  if (job.consent === true && job.targetTokenId != null && job.targetTokenId === token.id) return true;
+  return false;
 }

@@ -54,12 +54,37 @@ export function sessionScopeForWorkflow(wf: { ownerId: number; organizationId: n
 
 export interface SessionNeed { platformId: string; emailSecret: string; passwordSecret: string }
 
-/** A workflow needs a Core-minted session iff its platform.setup references a login-class secret. */
-export function workflowNeedsSession(setup: PlatformSetupInfo | null, loginSecretNames: Set<string>): SessionNeed | null {
-  if (!setup) return null;
-  if (!setup.emailSecret || !setup.passwordSecret) return null;
-  if (!loginSecretNames.has(setup.emailSecret) && !loginSecretNames.has(setup.passwordSecret)) return null;
-  return { platformId: setup.platformId, emailSecret: setup.emailSecret, passwordSecret: setup.passwordSecret };
+/**
+ * The outcome of deciding whether a workflow needs a Core-minted login session:
+ *  - `none`         — runtime path; the agent may fetch its (runtime-class) secrets directly.
+ *  - `need`         — Core must mint a storageState; login secrets stay in Core.
+ *  - `misconfigured`— a split-class credential pair. REJECT the run rather than
+ *    fall back to either path: a "one login-class, one runtime-class" pair would
+ *    otherwise leak the runtime-class credential to the agent while Core mints
+ *    from the login-class one. Both must be login-class, or neither.
+ */
+export type SessionRequirement =
+  | { kind: "none" }
+  | { kind: "need"; need: SessionNeed }
+  | { kind: "misconfigured"; reason: string };
+
+export function evaluateSessionRequirement(
+  setup: PlatformSetupInfo | null,
+  loginSecretNames: Set<string>,
+): SessionRequirement {
+  if (!setup) return { kind: "none" };
+  const emailLogin = !!setup.emailSecret && loginSecretNames.has(setup.emailSecret);
+  const passwordLogin = !!setup.passwordSecret && loginSecretNames.has(setup.passwordSecret);
+  // Neither credential is login-class → no Core session needed (runtime path).
+  if (!emailLogin && !passwordLogin) return { kind: "none" };
+  // At least one is login-class: demand BOTH refs present AND both login-class.
+  if (!setup.emailSecret || !setup.passwordSecret || !emailLogin || !passwordLogin) {
+    return {
+      kind: "misconfigured",
+      reason: "Login requires BOTH email and password to be dedicated login-class secrets (mark both, or neither)",
+    };
+  }
+  return { kind: "need", need: { platformId: setup.platformId, emailSecret: setup.emailSecret, passwordSecret: setup.passwordSecret } };
 }
 
 export async function getLoginSecretNames(scope: SessionScope): Promise<Set<string>> {
@@ -85,6 +110,17 @@ async function resolveScopeSecret(scope: SessionScope, name: string): Promise<st
 export const SESSION_FRESH_MARGIN_SECONDS = 300;
 export function mintTimeoutSeconds(): number {
   return parseInt(process.env.WEB_SESSION_MINT_TIMEOUT_SECONDS || "180", 10);
+}
+/**
+ * When another instance's 'minting' claim is considered abandoned and may be
+ * stolen. This MUST exceed the client-side mint-abort deadline
+ * (mintTimeoutSeconds() + 15s, see mintViaBroker's AbortSignal) — otherwise a
+ * mint still legitimately in flight gets reclaimed, causing a wasteful
+ * double-mint (harmless thanks to the fence, but avoidable). +30s of headroom
+ * over the abort keeps the single-flight actually single.
+ */
+export function staleMintThresholdSeconds(): number {
+  return mintTimeoutSeconds() + 30;
 }
 export function ttlHours(): number {
   return parseInt(process.env.WEB_SESSION_TTL_HOURS || "12", 10);
@@ -135,7 +171,7 @@ export async function ensureSession(
       return; // fresh — nothing to do
     }
     const claimed = await storage.claimWebSessionMint(
-      scope, need.platformId, mintTimeoutSeconds(), SESSION_FRESH_MARGIN_SECONDS);
+      scope, need.platformId, staleMintThresholdSeconds(), SESSION_FRESH_MARGIN_SECONDS);
     if (!claimed) return; // another instance is minting, or it turned fresh
     try {
       if (!brokerConfigured()) throw new Error("session broker not configured (SESSION_BROKER_URL/SECRET)");

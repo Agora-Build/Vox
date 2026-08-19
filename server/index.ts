@@ -13,7 +13,7 @@ import { parseNextCronRun } from "./cron";
 import { setupClashWebSocket } from "./clash-ws";
 import { loadPlugins } from "./plugins/loader";
 import { setMarketplace, getMarketplace, type EvalMarketplace } from "./marketplace";
-import { parsePlatformSetup, sessionScopeForWorkflow, workflowNeedsSession, getLoginSecretNames, ensureSession } from "./session-broker";
+import { parsePlatformSetup, sessionScopeForWorkflow, evaluateSessionRequirement, getLoginSecretNames, ensureSession } from "./session-broker";
 import pkg from "pg";
 const { Pool } = pkg;
 
@@ -390,15 +390,39 @@ function startBackgroundWorker() {
           const wfConfig = (workflow.config ?? {}) as Record<string, unknown>;
           const setupInfo = parsePlatformSetup(wfConfig.stepsPrefix as string | undefined);
           const scope = sessionScopeForWorkflow(workflow);
-          const sessionNeed = setupInfo
-            ? workflowNeedsSession(setupInfo, await getLoginSecretNames(scope))
-            : null;
+          const sessionReq = evaluateSessionRequirement(setupInfo, await getLoginSecretNames(scope));
+          // A split-class credential pair can never run safely (it would leak the
+          // runtime-class secret). The workflow owner must fix it — disable the
+          // schedule so it stops firing failing/unsafe jobs every tick.
+          if (sessionReq.kind === "misconfigured") {
+            log(`Schedule "${schedule.name}" workflow has a split-class credential pair (${sessionReq.reason}) — disabling`, "scheduler");
+            await storage.updateEvalSchedule(schedule.id, { isEnabled: false });
+            continue;
+          }
+          const sessionNeed = sessionReq.kind === "need" ? sessionReq.need : null;
           const jobConfig = mergeEvalConfig(workflow.config, evalSet?.config);
           delete (jobConfig as Record<string, unknown>).sessionInjection;
           if (sessionNeed) {
             (jobConfig as Record<string, unknown>).sessionInjection = { platformId: sessionNeed.platformId };
             void ensureSession(scope, sessionNeed);
           }
+
+          // Scheduled jobs are inherently owner-dispatched: canScheduleWorkflow
+          // (re-checked above) is owner/creator-only, so the schedule creator IS
+          // the workflow owner — the untargeted owner/team gate the run route
+          // applies is satisfied structurally here. Stamp the immutable session
+          // need into the snapshot so /session derives from it, not live data.
+          const baseSnapshot = buildJobSnapshot(workflow, evalSet, provider, creator?.plan ?? null);
+          const snapshot = sessionNeed
+            ? {
+                ...baseSnapshot,
+                sessionInjection: {
+                  platformId: sessionNeed.platformId,
+                  emailSecret: sessionNeed.emailSecret,
+                  passwordSecret: sessionNeed.passwordSecret,
+                },
+              }
+            : baseSnapshot;
 
           // Create the eval job
           const job = await storage.createEvalJob({
@@ -409,7 +433,7 @@ function startBackgroundWorker() {
             createdBy: schedule.createdBy,
             region: schedule.region,
             config: jobConfig,
-            snapshot: buildJobSnapshot(workflow, evalSet, provider, creator?.plan ?? null),
+            snapshot,
             status: "pending",
             priority: 0,
             retryCount: 0,

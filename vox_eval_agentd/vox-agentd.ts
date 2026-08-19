@@ -1872,10 +1872,19 @@ class VoxEvalAgentDaemon {
           const storageFile = path.join(os.tmpdir(), `vox-session-${job.id}-${Date.now()}.json`);
           fs.writeFileSync(storageFile, JSON.stringify(bundle.storageState), { mode: 0o600 });
           tempFiles.push(storageFile);
-          stepsPrefix = injectStorageSession(stepsPrefix, storageFile);
+          const injectResult = injectStorageSession(stepsPrefix, storageFile);
+          // Fail LOUD: the server marked this job session-injected and handed us a
+          // storageState, but the stepsPrefix had no platform.setup step to rewrite.
+          // Running anyway would either use login credentials we deliberately don't
+          // have, or silently ignore the minted session — never proceed on a false
+          // "injected" signal.
+          if (!injectResult.injected) {
+            throw new Error('Session-injected job has no platform.setup step to rewrite — refusing to run without applying the Core-minted session');
+          }
+          stepsPrefix = injectResult.yaml;
           console.log(`[Daemon] Forced platform.setup to storage mode (session injection)`);
         } else if (bundle && !stepsPrefix) {
-          console.warn('[Daemon] Session bundle received but no stepsPrefix to inject into — proceeding without injection');
+          throw new Error('Session bundle received but the job has no stepsPrefix to inject into — refusing to run without applying the Core-minted session');
         }
       }
 

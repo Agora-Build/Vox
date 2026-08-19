@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { BASE_NA } from "./helpers/regions";
 
 // Task 8: GET /api/eval-agent/jobs capability gate — a session-stamped job
@@ -73,9 +73,9 @@ describe("Phase C: GET /api/eval-agent/jobs — session-capability gate", () => 
     const providers = await (await fetch(`${BASE_URL}/api/providers`)).json();
     providerId = providers[0].id;
 
-    // Login-class secrets so the "session" workflow's platform.setup triggers
-    // workflowNeedsSession (Task 6) and its jobs get stamped with
-    // config.sessionInjection.
+    // Login-class secrets so the "session" workflow's platform.setup is
+    // evaluated by evaluateSessionRequirement as a session "need" and its jobs
+    // get stamped with config.sessionInjection.
     await createSecret(admin, emailSecret, "scg-test-user@example.com", { secretClass: "login" });
     await createSecret(admin, passwordSecret, "scg-test-password-1", { secretClass: "login" });
 
@@ -123,6 +123,14 @@ describe("Phase C: GET /api/eval-agent/jobs — session-capability gate", () => 
     const tokenData = await tokenRes.json();
     tokenValue = tokenData.token;
     region = tokenData.region;
+  });
+
+  // Release the login-class secrets so admin's per-user cap (50) isn't exhausted
+  // for later suites in the same `npm test` run.
+  afterAll(async () => {
+    for (const name of [emailSecret, passwordSecret]) {
+      await authFetch(admin, `${BASE_URL}/api/secrets/${encodeURIComponent(name)}`, { method: "DELETE" });
+    }
   });
 
   it("hides a session-stamped job from an agent whose registration lacks the capability, but still lists a plain job", async () => {

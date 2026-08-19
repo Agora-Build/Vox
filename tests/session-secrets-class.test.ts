@@ -1,20 +1,29 @@
 import { describe, it, expect } from "vitest";
 import { storage, encryptValue } from "../server/storage";
 import { db } from "../server/storage";
-import { secrets, orgSecrets, users, organizations, evalJobs } from "../shared/schema";
+import { secrets, orgSecrets, users, organizations, evalJobs, providers } from "../shared/schema";
 import { eq } from "drizzle-orm";
 
 const hasDb = !!process.env.DATABASE_URL;
 const d = hasDb ? describe : describe.skip;
 
+// Resolve a real seeded provider id at run time — provider ids are fresh
+// nanoids per seed, so hardcoding one breaks on any freshly-reset DB.
+async function anyProviderId(): Promise<string> {
+  const [p] = await db.select({ id: providers.id }).from(providers).limit(1);
+  if (!p) throw new Error("no providers seeded");
+  return p.id;
+}
+
 d("login-class secrets are withheld from the job path", () => {
   it("getSecretsForJob returns runtime rows only; login rows never leave Core", async () => {
     const stamp = Date.now();
+    const providerId = await anyProviderId();
     // Personal workflow owned by admin (user 1).
     const project = await storage.createProject({ name: `sc-proj-${stamp}`, ownerId: 1 } as any);
     const wf = await storage.createWorkflow({
       name: `sc-wf-${stamp}`, ownerId: 1, projectId: project.id,
-      providerId: "bEh-JgzyScxF", visibility: "private", isMainline: false, config: {},
+      providerId, visibility: "private", isMainline: false, config: {},
     } as any);
     // One runtime + one login secret for the owner.
     await db.insert(secrets).values({
@@ -46,6 +55,7 @@ d("login-class secrets are withheld from the job path", () => {
 
   it("getOrgSecretsForJob returns runtime rows only; login rows never leave Core", async () => {
     const stamp = Date.now();
+    const providerId = await anyProviderId();
     // Throwaway org + throwaway member user, so we never touch admin user 1.
     const org = await storage.createOrganization({ name: `sc-org-${stamp}` } as any);
     const user = await storage.createUser({
@@ -56,7 +66,7 @@ d("login-class secrets are withheld from the job path", () => {
     // Org-owned workflow: organizationId set, owned by the throwaway member.
     const wf = await storage.createWorkflow({
       name: `sc-org-wf-${stamp}`, ownerId: user.id, organizationId: org.id,
-      providerId: "bEh-JgzyScxF", visibility: "private", isMainline: false, config: {},
+      providerId, visibility: "private", isMainline: false, config: {},
     } as any);
     // One runtime + one login org secret.
     await db.insert(orgSecrets).values({

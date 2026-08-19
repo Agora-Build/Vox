@@ -53,13 +53,14 @@ async function createSecret(
 
 describe("Phase C: GET /api/eval-agent/jobs/:jobId/session", () => {
   let admin: AuthSession;
+  let adminId: number;
   let scope: { userId: number } | { organizationId: number };
   let providerId: string;
   const stamp = Date.now();
 
   // Login-class secrets shared by every session-needing workflow below —
-  // workflowNeedsSession only cares that the referenced names are login-class
-  // in scope, not that each workflow has its own pair.
+  // evaluateSessionRequirement only cares that the referenced names are
+  // login-class in scope, not that each workflow has its own pair.
   const emailSecret = `SE_E_${stamp}`;
   const passwordSecret = `SE_P_${stamp}`;
 
@@ -86,7 +87,7 @@ describe("Phase C: GET /api/eval-agent/jobs/:jobId/session", () => {
 
     const statusRes = await authFetch(admin, `${BASE_URL}/api/auth/status`);
     const statusBody = await statusRes.json();
-    const adminId: number = statusBody.user.id;
+    adminId = statusBody.user.id;
     // sessionScopeForWorkflow keys off the WORKFLOW's organizationId, not the
     // creating user's own org membership. None of the workflows below pass
     // organizationId on create, so they're personal (organizationId: null)
@@ -149,6 +150,11 @@ describe("Phase C: GET /api/eval-agent/jobs/:jobId/session", () => {
   afterAll(async () => {
     for (const id of seededRowIds) {
       await db.delete(webSessions).where(eq(webSessions.id, id));
+    }
+    // Free the login-class secrets so admin's per-user cap (50) isn't exhausted
+    // for later suites in the same `npm test` run.
+    for (const name of [emailSecret, passwordSecret]) {
+      await authFetch(admin, `${BASE_URL}/api/secrets/${encodeURIComponent(name)}`, { method: "DELETE" });
     }
   });
 
@@ -295,6 +301,45 @@ describe("Phase C: GET /api/eval-agent/jobs/:jobId/session", () => {
     // check ever runs — a pending job is blocked either way.
     const res = await sessionGet(jobId);
     expect(res.status).toBe(403);
+  });
+
+  it("6. serve gate: frozen snapshot owner is a stranger, no consent -> 403 (defense-in-depth)", async () => {
+    // The claim + dispatch gates already keep a session job off an
+    // unauthorized agent; the serve gate is the credential-authoritative
+    // backstop, derived ENTIRELY from the immutable snapshot. Claim a job the
+    // normal way (admin owner, admin token), then rewrite its frozen snapshot
+    // so the recorded workflow owner is a stranger with no consent — the
+    // endpoint must refuse to hand over the bundle even though the LIVE
+    // workflow is still admin's.
+    const jobId = await runAndClaim(readyWorkflowId);
+    const [job] = await db.select().from(evalJobs).where(eq(evalJobs.id, jobId));
+    const snap = job.snapshot as Record<string, any>;
+    expect(snap?.sessionInjection).toBeDefined(); // sanity: the job really is session-injected
+    const mutated = {
+      ...snap,
+      workflow: { ...snap.workflow, ownerId: adminId + 999999, organizationId: null },
+      credentialConsent: false,
+    };
+    await db.update(evalJobs).set({ snapshot: mutated }).where(eq(evalJobs.id, jobId));
+
+    const res = await sessionGet(jobId);
+    expect(res.status).toBe(403);
+  });
+
+  it("7. serve gate: session job with NO snapshot stamp -> {required:false}, never mints from live data", async () => {
+    // A job whose snapshot carries no sessionInjection must never fall back to
+    // deriving the need from the live workflow (HIGH-2). Even though this
+    // workflow's live config references login-class secrets, a snapshot with
+    // the stamp stripped means the endpoint reports required:false.
+    const jobId = await runAndClaim(readyWorkflowId);
+    const [job] = await db.select().from(evalJobs).where(eq(evalJobs.id, jobId));
+    const snap = job.snapshot as Record<string, any>;
+    const { sessionInjection, ...stripped } = snap;
+    await db.update(evalJobs).set({ snapshot: stripped }).where(eq(evalJobs.id, jobId));
+
+    const res = await sessionGet(jobId);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ required: false });
   });
 
   it("5c. wrong leaseId after re-register -> 403 superseded", async () => {

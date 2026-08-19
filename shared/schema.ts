@@ -1,4 +1,4 @@
-import { pgTable, text, varchar, integer, real, timestamp, serial, boolean, pgEnum, jsonb, index, uniqueIndex } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, integer, real, timestamp, serial, boolean, pgEnum, jsonb, index, uniqueIndex, check } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
@@ -310,13 +310,24 @@ export type EvalSchedule = typeof evalSchedules.$inferSelect;
 // or deleting a workflow/eval-set never rewrites a past job's history.
 export type JobSnapshot = {
   provider: { id: string; name: string; platformId: string | null } | null;
-  workflow: { name: string; config: unknown; visibility: string; isMainline: boolean; ownerId: number } | null;
+  workflow: { name: string; config: unknown; visibility: string; isMainline: boolean; ownerId: number; organizationId: number | null } | null;
   evalSet: { name: string; config: unknown; visibility: string; isMainline: boolean; ownerId: number } | null;
   creatorPlan: string | null;
   // Opaque marketplace settlement handle stashed by Core after a paid `shared`
   // dispatch (see the shared-agents plugin). Core never inspects it; the plugin
   // reads it back in settle(). TS-only — `snapshot` is a jsonb column.
   settlementContext?: unknown;
+  // Phase C: the IMMUTABLE session-injection stamp. Present iff the workflow
+  // needed a Core-minted login session at dispatch time. The /session endpoint
+  // derives BOTH the session need and the credential-trust gate from this (and
+  // from workflow.ownerId/organizationId) — never from the live workflow, which
+  // the owner can edit after dispatch (TOCTOU).
+  sessionInjection?: { platformId: string; emailSecret: string; passwordSecret: string };
+  // True iff the dispatcher recorded informed credential consent AND the login
+  // secrets were attested as dedicated test accounts (shared-tier dispatch). The
+  // session serve gate requires this before handing a bundle to a targeted
+  // shared (stranger's) agent.
+  credentialConsent?: boolean;
 };
 
 export const evalJobs = pgTable("eval_jobs", {
@@ -713,6 +724,10 @@ export const webSessions = pgTable("web_sessions", {
     .on(table.userId, table.platformId).where(sql`organization_id IS NULL`),
   orgPlatformIdx: uniqueIndex("web_sessions_org_platform_idx")
     .on(table.organizationId, table.platformId).where(sql`user_id IS NULL`),
+  // Mirror migration 0026's CHECK in the schema so db:push (local dev) emits it
+  // too — a both/neither-scope row falls outside both partial unique indexes
+  // above, silently disabling the single-flight mint claim.
+  scopeXorCk: check("web_sessions_scope_xor_ck", sql`num_nonnulls(user_id, organization_id) = 1`),
 }));
 
 export type WebSession = typeof webSessions.$inferSelect;

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { REGION_NA, BASE_NA } from "./helpers/regions";
 
 const BASE_URL = process.env.TEST_BASE_URL || "http://localhost:5000";
@@ -115,6 +115,19 @@ describe("Phase C: dispatch integration — session stamping, pre-warm, shared-t
     });
     expect(esRes.ok).toBe(true);
     evalSetId = (await esRes.json()).id;
+  });
+
+  // The per-user secret cap (50) is a real product limit; without cleanup these
+  // suites accumulate secrets across runs and exhaust admin's budget, breaking
+  // unrelated suites later in the same `npm test` invocation. Delete every
+  // secret this suite created (SDG_* are added by the "7" block's beforeAll).
+  afterAll(async () => {
+    for (const name of [
+      emailSecret, passwordSecret, runtimeEmailSecret, runtimePasswordSecret,
+      `SDG_E_${stamp}`, `SDG_P_${stamp}`, `SDG_SE_${stamp}`, `SDG_SP_${stamp}`,
+    ]) {
+      await authFetch(admin, `${BASE_URL}/api/secrets/${encodeURIComponent(name)}`, { method: "DELETE" });
+    }
   });
 
   it("1. stamps config.sessionInjection when the workflow's platform.setup references login secrets", async () => {
@@ -257,6 +270,121 @@ describe("Phase C: dispatch integration — session stamping, pre-warm, shared-t
       expect(res.status).toBe(500);
       const body = await res.json();
       expect(body.error).toBe("Failed to run workflow");
+    });
+  });
+
+  describe("7. credential-injection dispatch guards (owner + team + attested-shared)", () => {
+    let stranger: AuthSession;
+    let strangerPublicTokenId: number;
+    let guardWorkflowId: number; // public, admin-owned, references a login-class pair
+    let splitWorkflowId: number; // login-class email + runtime-class password
+
+    // A fresh login-class pair, independent of the 4-5 block's re-attestation of
+    // emailSecret/passwordSecret (which rewrites those two secrets mid-suite).
+    const gEmail = `SDG_E_${stamp}`;
+    const gPass = `SDG_P_${stamp}`;
+    // Split-class pair: email is login-class, password is runtime-class.
+    const splitEmail = `SDG_SE_${stamp}`;
+    const splitPass = `SDG_SP_${stamp}`;
+
+    beforeAll(async () => {
+      await createSecret(admin, gEmail, "sdg-test-user@example.com", { secretClass: "login" });
+      await createSecret(admin, gPass, "sdg-test-password", { secretClass: "login" });
+      await createSecret(admin, splitEmail, "sdg-split-user@example.com", { secretClass: "login" });
+      await createSecret(admin, splitPass, "sdg-split-password"); // runtime-class (default)
+
+      const setupSteps = (email: string, password: string) =>
+        `- type: platform.setup\n  platform_id: vapi\n  params:\n    email: \${secrets.${email}}\n    password: \${secrets.${password}}`;
+
+      // Default workflow visibility is "public" (server-side), so a stranger can
+      // reach the run route's session gate rather than being turned away earlier
+      // by canRunWorkflow.
+      const gRes = await authFetch(admin, `${BASE_URL}/api/workflows`, {
+        method: "POST",
+        body: JSON.stringify({
+          name: `Guard WF ${stamp}`,
+          providerId,
+          config: { framework: "aeval", stepsPrefix: setupSteps(gEmail, gPass) },
+        }),
+      });
+      expect(gRes.ok).toBe(true);
+      guardWorkflowId = (await gRes.json()).id;
+
+      const sRes = await authFetch(admin, `${BASE_URL}/api/workflows`, {
+        method: "POST",
+        body: JSON.stringify({
+          name: `Split WF ${stamp}`,
+          providerId,
+          config: { framework: "aeval", stepsPrefix: setupSteps(splitEmail, splitPass) },
+        }),
+      });
+      expect(sRes.ok).toBe(true);
+      splitWorkflowId = (await sRes.json()).id;
+
+      // A second, non-owner user (premium so they may own an eval-agent token).
+      const inviteRes = await authFetch(admin, `${BASE_URL}/api/admin/invite`, {
+        method: "POST",
+        body: JSON.stringify({ email: `sdg-stranger-${stamp}@example.com`, plan: "premium" }),
+      });
+      expect(inviteRes.ok).toBe(true);
+      const { token: inviteToken } = await inviteRes.json();
+
+      const regRes = await fetch(`${BASE_URL}/api/auth/register`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username: `sdg-stranger-${stamp}`, password: "sdg-stranger-pass-123", token: inviteToken }),
+      });
+      expect(regRes.ok).toBe(true);
+      stranger = await login(`sdg-stranger-${stamp}@example.com`, "sdg-stranger-pass-123");
+
+      const tRes = await authFetch(stranger, `${BASE_URL}/api/eval-agent-tokens`, {
+        method: "POST",
+        body: JSON.stringify({ name: `sdg-stranger-token-${stamp}`, regionLocationBaseId: BASE_NA, visibility: "public" }),
+      });
+      expect(tRes.ok).toBe(true);
+      strangerPublicTokenId = (await tRes.json()).id;
+    });
+
+    it("7a. untargeted stranger run of a PUBLIC credential-injected workflow -> 403", async () => {
+      // The workflow is public so canRunWorkflow lets the stranger through; the
+      // session gate is what stops them — running it untargeted would let a
+      // stranger's own agent pull the OWNER's minted test-account session.
+      const res = await authFetch(stranger, `${BASE_URL}/api/workflows/${guardWorkflowId}/run`, {
+        method: "POST",
+        body: JSON.stringify({ region: REGION_NA, evalSetId }),
+      });
+      expect(res.status).toBe(403);
+      const body = await res.json();
+      expect(body.error).toBe(
+        "Credential-injected workflows can only be run untargeted by the owner or an org member; dispatch to a shared agent with consent to run it elsewhere",
+      );
+    });
+
+    it("7b. owner targeting a stranger's public token with a session need -> 403", async () => {
+      // canDispatchToToken permits dispatch to a public token, but a session-
+      // injected job may only be aimed at the owner's/org's own agents (or a
+      // consented shared agent) — the serve gate would refuse this token anyway.
+      const res = await authFetch(admin, `${BASE_URL}/api/workflows/${guardWorkflowId}/run`, {
+        method: "POST",
+        body: JSON.stringify({ evalSetId, targetTokenId: strangerPublicTokenId }),
+      });
+      expect(res.status).toBe(403);
+      const body = await res.json();
+      expect(body.error).toBe(
+        "Credential-injected jobs can only be dispatched to the workflow owner's or org's agents, or to a shared agent with consent",
+      );
+    });
+
+    it("7c. split-class credential pair (one login, one runtime) -> 400, never a silent runtime leak", async () => {
+      const res = await authFetch(admin, `${BASE_URL}/api/workflows/${splitWorkflowId}/run`, {
+        method: "POST",
+        body: JSON.stringify({ region: REGION_NA, evalSetId }),
+      });
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toBe(
+        "Login requires BOTH email and password to be dedicated login-class secrets (mark both, or neither)",
+      );
     });
   });
 });

@@ -11,7 +11,7 @@ import { registerApiV1Routes } from "./routes-api-v1";
 import { generateSignedUrlForUser } from "./s3";
 import { validateTierChange, resolveTargetedDispatch, filterDispatchableAgents } from "./dispatch";
 import { getMarketplace } from "./marketplace";
-import { parsePlatformSetup, sessionScopeForWorkflow, workflowNeedsSession, getLoginSecretNames, ensureSession, SESSION_FRESH_MARGIN_SECONDS } from "./session-broker";
+import { parsePlatformSetup, sessionScopeForWorkflow, evaluateSessionRequirement, getLoginSecretNames, ensureSession, SESSION_FRESH_MARGIN_SECONDS, type SessionNeed } from "./session-broker";
 import {
   hashPassword,
   verifyPassword,
@@ -68,6 +68,8 @@ import {
   isOwnerOrOrgManager,
   canRunWorkflow,
   canScheduleWorkflow,
+  sameOrg,
+  isSessionServable,
 } from "./permissions";
 
 // Schedule lifecycle: a schedule is created with a 90-day expiry and can be
@@ -3541,14 +3543,46 @@ export async function registerRoutes(
         return res.status(403).json({ error: "Session only available for running jobs" });
       }
 
-      // Recompute the need from live data (the config stamp is advisory for
-      // listing; the authority is the workflow's setup + login-class secrets).
-      const jobWorkflow = auth.job.workflowId != null ? await storage.getWorkflow(auth.job.workflowId) : undefined;
-      if (!jobWorkflow) return res.json({ required: false });
-      const setupInfo = parsePlatformSetup(((jobWorkflow.config ?? {}) as Record<string, unknown>).stepsPrefix as string | undefined);
-      const scope = sessionScopeForWorkflow(jobWorkflow);
-      const need = setupInfo ? workflowNeedsSession(setupInfo, await getLoginSecretNames(scope)) : null;
-      if (!need) return res.json({ required: false });
+      // HIGH-2 (TOCTOU): the need, the mint scope, and the trust context are ALL
+      // derived from the job's IMMUTABLE stamped snapshot — never the live
+      // workflow. An owner editing the workflow (or its login-class secrets)
+      // after dispatch cannot change what a claimed job is allowed to receive,
+      // nor cause a different account's session to be minted for an agent that
+      // was authorized against the original credentials.
+      const snap = auth.job.snapshot;
+      const injection = snap?.sessionInjection;
+      const snapWorkflow = snap?.workflow;
+      if (!injection || !snapWorkflow) {
+        // No session was stamped at dispatch → this job never carried a
+        // Core-minted login. Never fall back to minting from live data.
+        return res.json({ required: false });
+      }
+
+      // Serve gate (owner + team + attested-shared), enforced against the
+      // CLAIMING token from snapshot-frozen owner/org + consent. This is the
+      // credential-authoritative check; the claim-SQL gate is the first line.
+      const tokenOwner = await storage.getUser(evalAgentToken.createdBy);
+      const servable = isSessionServable(
+        {
+          targetTokenId: auth.job.targetTokenId ?? null,
+          workflowOwnerId: snapWorkflow.ownerId ?? null,
+          workflowOrgId: snapWorkflow.organizationId ?? null,
+          consent: snap?.credentialConsent === true,
+        },
+        { id: evalAgentToken.id, createdBy: evalAgentToken.createdBy },
+        { organizationId: tokenOwner?.organizationId ?? null },
+      );
+      if (!servable) {
+        console.warn(`[Session] Job ${auth.job.id}: DENIED session bundle to token ${evalAgentToken.id} (not owner/team/attested-shared)`);
+        return res.status(403).json({ error: "This agent is not authorized to receive the login session for this job" });
+      }
+
+      const need: SessionNeed = {
+        platformId: injection.platformId,
+        emailSecret: injection.emailSecret,
+        passwordSecret: injection.passwordSecret,
+      };
+      const scope = sessionScopeForWorkflow({ ownerId: snapWorkflow.ownerId, organizationId: snapWorkflow.organizationId ?? null });
 
       const session = await storage.getWebSession(scope, need.platformId);
       const fresh = session?.status === "ready" && session.expiresAt &&
@@ -3635,13 +3669,17 @@ export async function registerRoutes(
       }
 
       // Phase C: does this workflow need a Core-minted login session? True iff
-      // its platform.setup references login-class secrets (owner opt-in).
+      // its platform.setup references login-class secrets (owner opt-in). A
+      // split-class pair (one login, one runtime) is rejected outright — never
+      // fall back to a path that would leak the runtime-class credential.
       const wfConfig = (workflow.config ?? {}) as Record<string, unknown>;
       const setupInfo = parsePlatformSetup(wfConfig.stepsPrefix as string | undefined);
       const scope = sessionScopeForWorkflow(workflow);
-      const sessionNeed = setupInfo
-        ? workflowNeedsSession(setupInfo, await getLoginSecretNames(scope))
-        : null;
+      const sessionReq = evaluateSessionRequirement(setupInfo, await getLoginSecretNames(scope));
+      if (sessionReq.kind === "misconfigured") {
+        return res.status(400).json({ error: sessionReq.reason });
+      }
+      const sessionNeed: SessionNeed | null = sessionReq.kind === "need" ? sessionReq.need : null;
 
       let jobRegion: string;
       let targeting: number | null = null;
@@ -3681,10 +3719,38 @@ export async function registerRoutes(
             { organizationId: owner?.organizationId ?? null },
           );
           if (!decision.ok) return res.status(403).json({ error: "Not allowed to dispatch to this agent" });
+          // Credential-trust gate for a session-injected job dispatched to a
+          // free-tier (private/team/public) token: the agent must belong to the
+          // workflow owner or share the workflow's org — otherwise the minted
+          // session (the OWNER's test-account cookies) would reach a token the
+          // serve gate will refuse anyway (a targeted public stranger). Mirror
+          // isSessionServable's owner/team arms; the attested-shared arm is the
+          // separate `shared` branch above.
+          if (sessionNeed) {
+            const ownerTrusted = token.createdBy === workflow.ownerId
+              || (workflow.organizationId != null && sameOrg({ organizationId: owner?.organizationId ?? null }, { organizationId: workflow.organizationId }));
+            if (!ownerTrusted) {
+              return res.status(403).json({ error: "Credential-injected jobs can only be dispatched to the workflow owner's or org's agents, or to a shared agent with consent" });
+            }
+          }
         }
         jobRegion = token.region; // targeted: region derived from token (body region ignored)
         targeting = token.id;
       } else {
+        // Untargeted (region-pool) dispatch. A session-injected job here must
+        // only land on the workflow owner's OWN agents (enforced in the claim
+        // SQL: public strangers are excluded from session jobs). Reject up front
+        // when the runner is neither the owner nor an org co-member — otherwise a
+        // stranger running a PUBLIC login workflow could pull the owner's minted
+        // test-account session. Targeting a shared agent (with consent) is the
+        // only cross-user path, handled in the targeted branch above.
+        if (sessionNeed) {
+          const isOwner = workflow.ownerId === user.id;
+          const isTeam = workflow.organizationId != null && sameOrg({ organizationId: user.organizationId }, { organizationId: workflow.organizationId });
+          if (!isOwner && !isTeam) {
+            return res.status(403).json({ error: "Credential-injected workflows can only be run untargeted by the owner or an org member; dispatch to a shared agent with consent to run it elsewhere" });
+          }
+        }
         const normalizedRegion = region ? String(region) : "";
         if (!normalizedRegion || !(await storage.isAllocatedRegion(normalizedRegion))) {
           return res.status(400).json({ error: "An active allocated region site is required" });
@@ -3698,6 +3764,13 @@ export async function registerRoutes(
         ...baseSnapshot,
         ...(settlementContext !== undefined ? { settlementContext } : {}),
         ...(consentRecorded ? { credentialConsent: true } : {}),
+        // Immutable session-injection stamp: the /session endpoint reads the need
+        // (which login secrets to mint from) and the trust context from HERE, not
+        // the live workflow — an owner editing the workflow post-dispatch can't
+        // change what a claimed job is allowed to receive (HIGH-2 TOCTOU).
+        ...(sessionNeed
+          ? { sessionInjection: { platformId: sessionNeed.platformId, emailSecret: sessionNeed.emailSecret, passwordSecret: sessionNeed.passwordSecret } }
+          : {}),
       };
       let job;
       try {
@@ -5924,11 +5997,16 @@ export async function registerRoutes(
       const event = await storage.getClashEvent(match.eventId);
       if (!event) return res.status(404).json({ error: "Event not found" });
 
-      // Fetch and decrypt event owner's secrets
+      // Fetch and decrypt event owner's secrets. LOGIN-class secrets are
+      // structurally withheld: they are Core-only credentials used to mint web
+      // sessions and must never be handed to a runner (MEDIUM-2). Only
+      // runtime-class secrets are decrypted for direct injection.
       const userSecrets = await storage.getSecretsByUserId(event.createdBy);
       const decrypted: Record<string, string> = {};
       let decryptErrors = 0;
+      let loginWithheld = 0;
       for (const s of userSecrets) {
+        if (s.class === "login") { loginWithheld++; continue; }
         try {
           decrypted[s.name] = decryptValue(s.encryptedValue);
         } catch {
@@ -5936,7 +6014,7 @@ export async function registerRoutes(
         }
       }
 
-      console.log(`[ClashSecrets] Runner ${runner.runnerId} fetched secrets for match #${matchId} (event #${event.id}, owner #${event.createdBy}): ${Object.keys(decrypted).length} decrypted, ${decryptErrors} failed`);
+      console.log(`[ClashSecrets] Runner ${runner.runnerId} fetched secrets for match #${matchId} (event #${event.id}, owner #${event.createdBy}): ${Object.keys(decrypted).length} decrypted, ${decryptErrors} failed, ${loginWithheld} login-class withheld`);
 
       res.json(decrypted);
     } catch (error) {
