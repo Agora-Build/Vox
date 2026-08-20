@@ -500,4 +500,80 @@ describe("Phase C: dispatch integration — session stamping, pre-warm, shared-t
       );
     });
   });
+
+  // note: the shared/marketplace listing path (getMarketplace().listDispatchable)
+  // is not exercised here — the marketplace plugin is not seeded in dev, so
+  // asserting on `body.agents.shared` would be non-deterministic.
+  describe("11. run-targets negative paths", () => {
+    let stranger: AuthSession;
+    let privateWorkflowId: number;
+    let privateEvalSetId: number;
+    const isolatedSecret = `RTNEG_ISO_${stamp}`;
+
+    beforeAll(async () => {
+      // A non-owner, non-org user with no relationship to admin's resources.
+      const inviteRes = await authFetch(admin, `${BASE_URL}/api/admin/invite`, {
+        method: "POST",
+        body: JSON.stringify({ email: `rtneg-stranger-${stamp}@example.com`, plan: "premium" }),
+      });
+      expect(inviteRes.ok).toBe(true);
+      const { token: inviteToken } = await inviteRes.json();
+      const regRes = await fetch(`${BASE_URL}/api/auth/register`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username: `rtneg-stranger-${stamp}`, password: "rtneg-stranger-pass-123", token: inviteToken }),
+      });
+      expect(regRes.ok).toBe(true);
+      stranger = await login(`rtneg-stranger-${stamp}@example.com`, "rtneg-stranger-pass-123");
+
+      // A private workflow owned by admin, for the non-owner-403 case.
+      const pRes = await authFetch(admin, `${BASE_URL}/api/workflows`, {
+        method: "POST",
+        body: JSON.stringify({ name: `RTNeg Private WF ${stamp}`, providerId, visibility: "private", config: { framework: "aeval" } }),
+      });
+      expect(pRes.ok).toBe(true);
+      const privateWorkflow = await pRes.json();
+      // Guard against a silent default-to-public, which would make the 403
+      // assertion below pass vacuously.
+      expect(privateWorkflow.visibility).toBe("private");
+      privateWorkflowId = privateWorkflow.id;
+
+      // A unique secret + private eval set (both admin-owned) referencing it,
+      // for the cross-tenant secret-exclusion case. `framework` is a
+      // workflow-only config key, so the eval set config carries only `scenario`.
+      await createSecret(admin, isolatedSecret, "iso-value");
+      const esRes = await authFetch(admin, `${BASE_URL}/api/eval-sets`, {
+        method: "POST",
+        body: JSON.stringify({
+          name: `RTNeg Private ES ${stamp}`,
+          visibility: "private",
+          config: { scenario: `x: \${secrets.${isolatedSecret}}` },
+        }),
+      });
+      expect(esRes.ok).toBe(true);
+      const privateEvalSet = await esRes.json();
+      expect(privateEvalSet.visibility).toBe("private");
+      privateEvalSetId = privateEvalSet.id;
+    });
+
+    it("401s when unauthenticated", async () => {
+      const res = await fetch(`${BASE_URL}/api/workflows/${noSessionWorkflowId}/run-targets`);
+      expect(res.status).toBe(401);
+    });
+
+    it("403s when a non-owner targets a private workflow", async () => {
+      const res = await authFetch(stranger, `${BASE_URL}/api/workflows/${privateWorkflowId}/run-targets`);
+      expect(res.status).toBe(403);
+    });
+
+    it("excludes an inaccessible eval set's secret references (cross-tenant isolation)", async () => {
+      const res = await authFetch(
+        stranger,
+        `${BASE_URL}/api/workflows/${noSessionWorkflowId}/run-targets?evalSetId=${privateEvalSetId}`,
+      );
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.referencedSecrets.map((s: any) => s.name)).not.toContain(isolatedSecret);
+    });
+  });
 });
