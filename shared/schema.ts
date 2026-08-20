@@ -462,7 +462,7 @@ export const orgSecrets = pgTable("org_secrets", {
   organizationId: integer("organization_id").notNull().references(() => organizations.id),
   name: text("name").notNull(),
   encryptedValue: text("encrypted_value").notNull(),
-  // 'login' rows are Core-only: structurally excluded from the job-secrets path
+  // 'protected' rows are Core-only: structurally excluded from the job-secrets path
   // (getSecretsForJob) so username/password never reach an eval agent, any tier.
   class: secretClassEnum("class").default("runtime").notNull(),
   // Owner's attestation that this login identity is a dedicated, disposable
@@ -673,7 +673,7 @@ export const secrets = pgTable("secrets", {
   userId: integer("user_id").notNull().references(() => users.id),
   name: text("name").notNull(),
   encryptedValue: text("encrypted_value").notNull(),
-  // 'login' rows are Core-only: structurally excluded from the job-secrets path
+  // 'protected' rows are Core-only: structurally excluded from the job-secrets path
   // (getSecretsForJob) so username/password never reach an eval agent, any tier.
   class: secretClassEnum("class").default("runtime").notNull(),
   // Owner's attestation that this login identity is a dedicated, disposable

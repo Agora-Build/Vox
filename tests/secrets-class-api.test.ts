@@ -193,16 +193,31 @@ describe('Secrets class — job-secrets withhold', () => {
       }
     }
 
-    const wfRes = await authFetch(adminSession, `${BASE_URL}/api/workflows`);
+    // A dedicated workflow + eval set owned by THIS admin session — must not
+    // borrow workflows[0]/evalSets[0] from a plain list response, since
+    // getSecretsForJob keys off workflow.ownerId and the secrets under test
+    // are owned by admin (see tests/session-dispatch.test.ts for the idiom).
+    const providers = await (await fetch(`${BASE_URL}/api/providers`)).json();
+    const providerId = providers[0].id;
+
+    const wfRes = await authFetch(adminSession, `${BASE_URL}/api/workflows`, {
+      method: 'POST',
+      body: JSON.stringify({
+        name: `Secrets Class Withhold WF ${stamp}`,
+        providerId,
+        config: { framework: 'aeval' },
+      }),
+    });
     if (wfRes.ok) {
-      const workflows = await wfRes.json();
-      if (workflows.length > 0) workflowId = workflows[0].id;
+      workflowId = (await wfRes.json()).id;
     }
 
-    const esRes = await authFetch(adminSession, `${BASE_URL}/api/eval-sets`);
+    const esRes = await authFetch(adminSession, `${BASE_URL}/api/eval-sets`, {
+      method: 'POST',
+      body: JSON.stringify({ name: `Secrets Class Withhold ES ${stamp}`, config: {} }),
+    });
     if (esRes.ok) {
-      const evalSets = await esRes.json();
-      if (evalSets.length > 0) evalSetId = evalSets[0].id;
+      evalSetId = (await esRes.json()).id;
     }
 
     if (workflowId && evalSetId && agentToken && agentId) {
