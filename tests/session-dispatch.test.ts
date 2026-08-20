@@ -427,4 +427,53 @@ describe("Phase C: dispatch integration — session stamping, pre-warm, shared-t
       expect(body.error).toContain("API_TOKEN");
     });
   });
+
+  describe("9. runtime-on-shared consent gate", () => {
+    let runtimeSharedTokenId: number;
+
+    beforeAll(async () => {
+      const tRes = await authFetch(admin, `${BASE_URL}/api/eval-agent-tokens`, {
+        method: "POST",
+        body: JSON.stringify({ name: `runtime-shared-agent-${stamp}`, regionLocationBaseId: BASE_NA, visibility: "public" }),
+      });
+      expect(tRes.ok).toBe(true);
+      runtimeSharedTokenId = (await tRes.json()).id;
+
+      const patchRes = await authFetch(admin, `${BASE_URL}/api/eval-agent-tokens/${runtimeSharedTokenId}`, {
+        method: "PATCH",
+        body: JSON.stringify({ dispatchTier: "shared", pricePerUnit: 100 }),
+      });
+      // Mirrors the "4-5" block's beforeAll: fail loudly if the marketplace plugin
+      // isn't loaded rather than letting this degrade into a silent no-op.
+      expect(patchRes.ok).toBe(true);
+    });
+
+    it("9a. blocks a shared run exposing runtime secrets without consent", async () => {
+      const res = await authFetch(admin, `${BASE_URL}/api/workflows/${noSessionWorkflowId}/run`, {
+        method: "POST",
+        body: JSON.stringify({ evalSetId, targetTokenId: runtimeSharedTokenId }),
+      });
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toMatch(/runtime secret/i);
+      expect(body.error).toContain(runtimeEmailSecret);
+    });
+
+    it("9b. allows it with runtimeSecretConsent, recording it on the snapshot when authorized", async () => {
+      const res = await authFetch(admin, `${BASE_URL}/api/workflows/${noSessionWorkflowId}/run`, {
+        method: "POST",
+        body: JSON.stringify({ evalSetId, targetTokenId: runtimeSharedTokenId, runtimeSecretConsent: true }),
+      });
+      const body = await res.json();
+      // consent unblocked the runtime gate: it is NOT a 400 whose error is the
+      // runtime-exposure message. `marketplace.authorizeDispatch` needs an active
+      // listing + credits, so a 200 is not guaranteed in dev (may be 402/400) —
+      // mirrors case 5's tolerance for the same reason.
+      const gateOpened = !(res.status === 400 && /runtime secret/i.test(body.error ?? ""));
+      expect(gateOpened).toBe(true);
+      if (res.status === 200) {
+        expect(body.job.snapshot.runtimeSecretConsent).toBe(true);
+      }
+    });
+  });
 });

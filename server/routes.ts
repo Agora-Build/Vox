@@ -3744,6 +3744,7 @@ export async function registerRoutes(
       let targeting: number | null = null;
       let settlementContext: unknown = undefined;
       let consentRecorded = false;
+      let runtimeConsentRecorded = false;
 
       if (targetTokenId != null) {
         const token = await storage.getEvalAgentToken(targetTokenId);
@@ -3761,6 +3762,19 @@ export async function registerRoutes(
               return res.status(403).json({ error: "Shared dispatch requires dedicated test-account credentials (mark the login secrets as test accounts)" });
             }
             consentRecorded = true; // gate above already guarantees credentialConsent === true
+          }
+          // Runtime secrets reach a shared (stranger's) agent raw. Require the
+          // dispatcher to acknowledge that exposure BEFORE any escrow hold is
+          // placed. Server-authoritative so a direct API caller can't skip the
+          // UI checkbox. Only present runtime secrets actually get delivered.
+          const runtimeExposed = classified.filter((c) => c.class === "runtime" && c.present).map((c) => c.name);
+          if (runtimeExposed.length > 0) {
+            if (req.body.runtimeSecretConsent !== true) {
+              return res.status(400).json({
+                error: `This run exposes runtime secret(s) ${runtimeExposed.join(", ")} to a shared agent. Set runtimeSecretConsent=true to acknowledge.`,
+              });
+            }
+            runtimeConsentRecorded = true;
           }
           const authz = await marketplace.authorizeDispatch(user.id, token.id, {
             workflowId: parseInt(workflowId, 10),
@@ -3823,6 +3837,7 @@ export async function registerRoutes(
         ...baseSnapshot,
         ...(settlementContext !== undefined ? { settlementContext } : {}),
         ...(consentRecorded ? { credentialConsent: true } : {}),
+        ...(runtimeConsentRecorded ? { runtimeSecretConsent: true } : {}),
         // Immutable session-injection stamp: the /session endpoint reads the need
         // (which login secrets to mint from) and the trust context from HERE, not
         // the live workflow — an owner editing the workflow post-dispatch can't

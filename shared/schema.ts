@@ -327,6 +327,11 @@ export type JobSnapshot = {
   // session serve gate requires this before handing a bundle to a targeted
   // shared (stranger's) agent.
   credentialConsent?: boolean;
+  // True iff the dispatcher acknowledged that this run exposes runtime-class
+  // secrets to a shared (stranger's) agent. Recorded for audit alongside
+  // credentialConsent; the run route's shared branch requires it before an
+  // escrow hold is placed.
+  runtimeSecretConsent?: boolean;
 };
 
 export const evalJobs = pgTable("eval_jobs", {
