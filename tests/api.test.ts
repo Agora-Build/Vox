@@ -51,7 +51,7 @@ interface EvalAgentToken {
   id: number;
   name: string;
   region: string;
-  visibility: string;
+  dispatchTier: string;
   token?: string;
   isRevoked: boolean;
 }
@@ -1397,8 +1397,8 @@ describe('Vox API Tests', () => {
       const job = await response.json();
       expect(job.status).toBe('running');
       expect(job.evalAgentId).toBe(flowAgentId);
-      // token_visibility is frozen atomically at claim (public admin token).
-      expect(job.tokenVisibility).toBe('public');
+      // token_dispatch_tier is frozen atomically at claim (public admin token).
+      expect(job.tokenDispatchTier).toBe('public');
     });
 
     it('should complete job with results', async () => {
@@ -2387,20 +2387,19 @@ describe('Vox API Tests', () => {
       expect(response.ok).toBe(true);
       const data = await response.json();
       expect(data.token).toBeDefined();
-      expect(data.visibility).toBe('private');
+      expect(data.dispatchTier).toBe('private');
       expect(data.region).toContain(BASE_NA);
       premiumTokenId = data.id;
     });
 
-    // Premium user cannot create public tokens (forced private)
-    it('should force private visibility for premium user even if public requested', async () => {
+    // Premium (non-admin) user cannot create public-tier tokens — public is
+    // admin-only under validateTierChoice (server/dispatch.ts), rejected 403.
+    it('should reject public dispatchTier request from non-admin premium user', async () => {
       const response = await authFetch(premiumSession, `${BASE_URL}/api/eval-agent-tokens`, {
         method: 'POST',
-        body: JSON.stringify({ name: 'Premium Public Attempt', regionLocationBaseId: BASE_EU, visibility: 'public' }),
+        body: JSON.stringify({ name: 'Premium Public Attempt', regionLocationBaseId: BASE_EU, dispatchTier: 'public' }),
       });
-      expect(response.ok).toBe(true);
-      const data = await response.json();
-      expect(data.visibility).toBe('private');
+      expect(response.status).toBe(403);
     });
 
     // Premium user sees only own tokens
@@ -2409,9 +2408,9 @@ describe('Vox API Tests', () => {
       expect(response.ok).toBe(true);
       const tokens = await response.json();
       expect(Array.isArray(tokens)).toBe(true);
-      expect(tokens.length).toBe(2); // the two we just created
+      expect(tokens.length).toBe(1); // the private token created above (the public attempt was rejected 403)
       for (const t of tokens) {
-        expect(t.visibility).toBe('private');
+        expect(t.dispatchTier).toBe('private');
       }
     });
 
@@ -2429,33 +2428,33 @@ describe('Vox API Tests', () => {
     it('should allow admin to create a public token', async () => {
       const response = await authFetch(adminSession, `${BASE_URL}/api/eval-agent-tokens`, {
         method: 'POST',
-        body: JSON.stringify({ name: 'Admin Public Token', regionLocationBaseId: BASE_APAC, visibility: 'public' }),
+        body: JSON.stringify({ name: 'Admin Public Token', regionLocationBaseId: BASE_APAC, dispatchTier: 'public' }),
       });
       expect(response.ok).toBe(true);
       const data = await response.json();
-      expect(data.visibility).toBe('public');
+      expect(data.dispatchTier).toBe('public');
     });
 
     // Admin can create private tokens
     it('should allow admin to create a private token', async () => {
       const response = await authFetch(adminSession, `${BASE_URL}/api/eval-agent-tokens`, {
         method: 'POST',
-        body: JSON.stringify({ name: 'Admin Private Token', regionLocationBaseId: BASE_NA, visibility: 'private' }),
+        body: JSON.stringify({ name: 'Admin Private Token', regionLocationBaseId: BASE_NA, dispatchTier: 'private' }),
       });
       expect(response.ok).toBe(true);
       const data = await response.json();
-      expect(data.visibility).toBe('private');
+      expect(data.dispatchTier).toBe('private');
     });
 
-    // Admin defaults to public if visibility omitted
-    it('should default to public visibility for admin when not specified', async () => {
+    // Admin defaults to public if dispatchTier omitted
+    it('should default to public dispatchTier for admin when not specified', async () => {
       const response = await authFetch(adminSession, `${BASE_URL}/api/eval-agent-tokens`, {
         method: 'POST',
         body: JSON.stringify({ name: 'Admin Default Token', regionLocationBaseId: BASE_EU }),
       });
       expect(response.ok).toBe(true);
       const data = await response.json();
-      expect(data.visibility).toBe('public');
+      expect(data.dispatchTier).toBe('public');
     });
 
     // Premium user can revoke own token
@@ -2471,7 +2470,7 @@ describe('Vox API Tests', () => {
       // Get an admin token ID
       const listResponse = await authFetch(adminSession, `${BASE_URL}/api/eval-agent-tokens`);
       const tokens = await listResponse.json();
-      const adminToken = tokens.find((t: EvalAgentToken) => !t.isRevoked && t.visibility === 'public');
+      const adminToken = tokens.find((t: EvalAgentToken) => !t.isRevoked && t.dispatchTier === 'public');
       if (adminToken) {
         const response = await authFetch(premiumSession, `${BASE_URL}/api/eval-agent-tokens/${adminToken.id}/revoke`, {
           method: 'POST',
@@ -2580,15 +2579,16 @@ describe('Vox API Tests', () => {
   });
 
   describe('Eval Agent Visibility API', () => {
-    it('should include visibility field in eval agents list', async () => {
+    it('should include dispatchTier field in eval agents list', async () => {
       const response = await fetch(`${BASE_URL}/api/eval-agents`);
       expect(response.ok).toBe(true);
       const agents = await response.json();
       expect(Array.isArray(agents)).toBe(true);
-      // Each agent should have a visibility field from its token
+      // Each agent should have a dispatchTier field from its token. Unauthenticated
+      // callers only ever see public-tier agents (server/routes.ts GET /api/eval-agents).
       for (const agent of agents) {
-        expect(agent.visibility).toBeDefined();
-        expect(['public', 'private']).toContain(agent.visibility);
+        expect(agent.dispatchTier).toBeDefined();
+        expect(agent.dispatchTier).toBe('public');
       }
     });
   });

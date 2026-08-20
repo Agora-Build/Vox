@@ -490,14 +490,14 @@ export class DatabaseStorage {
       const region = `${selected.rows[0].base_id}-${String(sequence).padStart(2, "0")}`;
       const inserted = await client.query(
         `INSERT INTO eval_agent_tokens
-          (name, token_hash, region, visibility, created_by, is_revoked, expires_at)
+          (name, token_hash, region, dispatch_tier, created_by, is_revoked, expires_at)
          VALUES ($1, $2, $3, $4, $5, $6, $7)
          RETURNING *`,
         [
           token.name,
           token.tokenHash,
           region,
-          token.visibility,
+          token.dispatchTier,
           token.createdBy,
           token.isRevoked,
           token.expiresAt ?? null,
@@ -513,7 +513,7 @@ export class DatabaseStorage {
       const row = inserted.rows[0];
       return {
         id: row.id, name: row.name, tokenHash: row.token_hash, region: row.region,
-        visibility: row.visibility, dispatchTier: row.dispatch_tier, createdBy: row.created_by,
+        dispatchTier: row.dispatch_tier, createdBy: row.created_by,
         isRevoked: row.is_revoked, expiresAt: row.expires_at, lastUsedAt: row.last_used_at,
         createdAt: row.created_at,
       };
@@ -700,8 +700,8 @@ export class DatabaseStorage {
     return db.select().from(evalAgents).orderBy(desc(evalAgents.createdAt));
   }
 
-  async getEvalAgentsWithTokenVisibility(): Promise<
-    (EvalAgent & { tokenVisibility: string; tokenCreatedBy: number; tokenDispatchTier: string; tokenOwnerOrgId: number | null })[]
+  async getEvalAgentsWithTokenTier(): Promise<
+    (EvalAgent & { tokenCreatedBy: number; tokenDispatchTier: string; tokenOwnerOrgId: number | null })[]
   > {
     const results = await db.select({
       id: evalAgents.id,
@@ -714,7 +714,6 @@ export class DatabaseStorage {
       metadata: evalAgents.metadata,
       createdAt: evalAgents.createdAt,
       updatedAt: evalAgents.updatedAt,
-      tokenVisibility: evalAgentTokens.visibility,
       tokenCreatedBy: evalAgentTokens.createdBy,
       tokenDispatchTier: evalAgentTokens.dispatchTier,
       tokenOwnerOrgId: users.organizationId,
@@ -724,7 +723,7 @@ export class DatabaseStorage {
       .leftJoin(users, eq(evalAgentTokens.createdBy, users.id))
       .orderBy(desc(evalAgents.createdAt));
     return results as (EvalAgent & {
-      tokenVisibility: string; tokenCreatedBy: number; tokenDispatchTier: string; tokenOwnerOrgId: number | null;
+      tokenCreatedBy: number; tokenDispatchTier: string; tokenOwnerOrgId: number | null;
     })[];
   }
 
@@ -791,7 +790,7 @@ export class DatabaseStorage {
   async claimEvalJob(
     jobId: number,
     agentId: number,
-    token: { id: number; dispatchTier: string; createdBy: number; visibility: string | null },
+    token: { id: number; dispatchTier: string; createdBy: number },
   ): Promise<EvalJob | undefined> {
     // Use atomic claim with SELECT FOR UPDATE SKIP LOCKED to prevent race conditions
     const client = await pool.connect();
@@ -819,15 +818,16 @@ export class DatabaseStorage {
         return undefined;
       }
 
-      // Update the job. token_visibility is frozen here — in the same atomic update
-      // as the claim — so a completed result can never be mis-tiered by a lost write.
+      // Update the job. token_dispatch_tier is frozen here — in the same atomic
+      // update as the claim — so a completed result can never be mis-tiered by a
+      // lost write. dispatchTier is NOT NULL on the token, so it is never null.
       const updateResult = await client.query(
         `UPDATE eval_jobs
          SET eval_agent_id = $1, status = 'running'::eval_job_status, started_at = NOW(), updated_at = NOW(),
-             token_visibility = COALESCE($3, token_visibility)
+             token_dispatch_tier = $3
          WHERE id = $2
          RETURNING *`,
-        [agentId, jobId, token.visibility ?? null]
+        [agentId, jobId, token.dispatchTier]
       );
 
       await client.query('COMMIT');
@@ -1382,7 +1382,7 @@ export class DatabaseStorage {
       sql`${snap}->'workflow'->>'isMainline' = 'true'`,
       sql`${snap}->'evalSet'->>'visibility' = 'public'`,
       sql`${snap}->'evalSet'->>'isMainline' = 'true'`,
-      eq(evalJobs.tokenVisibility, "public"),
+      eq(evalJobs.tokenDispatchTier, "public"),
       // Only principal/fellow creators' jobs qualify as mainline
       sql`${snap}->>'creatorPlan' IN ('principal', 'fellow')`,
     ];
@@ -1400,12 +1400,15 @@ export class DatabaseStorage {
       eq(evalJobs.status, "completed"),
       sql`${snap}->'workflow'->>'visibility' = 'public'`,
       sql`${snap}->'evalSet'->>'visibility' = 'public'`,
+      // Agent gate (tier as restriction): only public/shared agents feed a public
+      // board. private/team agents appear on no public leaderboard.
+      inArray(evalJobs.tokenDispatchTier, ["public", "shared"]),
       // Exclude fully mainline results (all 4 inputs true → mainline).
       // Text comparison (matches the expression index; NULL/'false' → not mainline).
       or(
         sql`${snap}->'workflow'->>'isMainline' IS DISTINCT FROM 'true'`,
         sql`${snap}->'evalSet'->>'isMainline' IS DISTINCT FROM 'true'`,
-        sql`${evalJobs.tokenVisibility} IS DISTINCT FROM 'public'`,
+        sql`${evalJobs.tokenDispatchTier} IS DISTINCT FROM 'public'`,
         sql`${snap}->>'creatorPlan' IS NULL OR ${snap}->>'creatorPlan' NOT IN ('principal', 'fellow')`,
       ),
     ];

@@ -207,7 +207,6 @@ export const evalAgentTokens = pgTable("eval_agent_tokens", {
   name: text("name").notNull(),
   tokenHash: text("token_hash").notNull().unique(),
   region: varchar("region", { length: 64 }).notNull(),
-  visibility: visibilityEnum("visibility").default("public").notNull(),
   dispatchTier: dispatchTierEnum("dispatch_tier").default("public").notNull(),
   createdBy: integer("created_by").notNull().references(() => users.id),
   isRevoked: boolean("is_revoked").default(false).notNull(),
@@ -353,9 +352,9 @@ export const evalJobs = pgTable("eval_jobs", {
   // Immutable run-time snapshot (see JobSnapshot). Nullable for rows created before
   // this column; backfilled from live tables by migration 0016.
   snapshot: jsonb("snapshot").$type<JobSnapshot>(),
-  // Agent-token visibility captured when the job is claimed (the one tier input not
-  // known at creation). Feeds the frozen mainline/community classification.
-  tokenVisibility: text("token_visibility"),
+  // Agent-token dispatch tier captured when the job is claimed (the one tier input
+  // not known at creation). Feeds the frozen mainline/community classification.
+  tokenDispatchTier: text("token_dispatch_tier"),
   startedAt: timestamp("started_at"),
   completedAt: timestamp("completed_at"),
   error: text("error"),
