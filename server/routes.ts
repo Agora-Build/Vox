@@ -2616,7 +2616,7 @@ export async function registerRoutes(
         id: t.id,
         name: t.name,
         region: t.region,
-        visibility: t.visibility,
+        dispatchTier: t.dispatchTier,
         isRevoked: t.isRevoked,
         lastUsedAt: t.lastUsedAt,
         createdAt: t.createdAt,
@@ -2640,18 +2640,28 @@ export async function registerRoutes(
         return res.status(403).json({ error: "Premium or higher plan required to create eval agent tokens" });
       }
 
-      const { name, regionLocationBaseId, region, visibility } = req.body;
+      const { name, regionLocationBaseId, region, dispatchTier: requestedTier, pricePerUnit } = req.body;
       const requestedLocation = regionLocationBaseId || region;
 
       if (!name || !requestedLocation) {
         return res.status(400).json({ error: "Name and region location required" });
       }
 
-      // Non-admin users can only create private tokens.
-      const tokenVisibility = user.isAdmin ? (visibility || "public") : "private";
-      if (tokenVisibility !== "public" && tokenVisibility !== "private") {
-        return res.status(400).json({ error: "Invalid visibility. Must be public or private" });
+      // Default: admin → public (today's admin default), non-admin → private.
+      const dispatchTier = (requestedTier as string) || (user.isAdmin ? "public" : "private");
+      if (!["private", "team", "public", "shared"].includes(dispatchTier)) {
+        return res.status(400).json({ error: "Invalid dispatchTier" });
       }
+
+      const marketplace = getMarketplace();
+      const decision = validateTierChoice({
+        user: { id: user.id, isAdmin: user.isAdmin, plan: user.plan, organizationId: user.organizationId },
+        isOwner: true,
+        newTier: dispatchTier as "private" | "team" | "public" | "shared",
+        marketplacePresent: marketplace !== null,
+        pricePerUnit: pricePerUnit ?? null,
+      });
+      if (!decision.ok) return res.status(decision.status).json({ error: decision.reason });
 
       const location = await storage.getRegionLocationByBaseId(String(requestedLocation));
       if (!location || !location.isActive) {
@@ -2663,17 +2673,22 @@ export async function registerRoutes(
       const evalAgentToken = await storage.createEvalAgentTokenForLocation(location.baseId, {
         name,
         tokenHash,
-        visibility: tokenVisibility,
+        dispatchTier: dispatchTier as "private" | "team" | "public" | "shared",
         createdBy: user.id,
         isRevoked: false,
       });
+
+      // Shared: register the marketplace listing (mirrors the PATCH path).
+      if (marketplace && dispatchTier === "shared") {
+        await marketplace.setListing(evalAgentToken.id, pricePerUnit ?? null, { ownerId: user.id, region: evalAgentToken.region });
+      }
 
       res.json({
         id: evalAgentToken.id,
         name: evalAgentToken.name,
         token,
         region: evalAgentToken.region,
-        visibility: evalAgentToken.visibility,
+        dispatchTier: evalAgentToken.dispatchTier,
         createdAt: evalAgentToken.createdAt,
       });
     } catch (error) {
@@ -2759,7 +2774,7 @@ export async function registerRoutes(
         id: t.id,
         name: t.name,
         region: t.region,
-        visibility: t.visibility,
+        dispatchTier: t.dispatchTier,
         isRevoked: t.isRevoked,
         lastUsedAt: t.lastUsedAt,
         createdAt: t.createdAt,
@@ -2777,39 +2792,47 @@ export async function registerRoutes(
         return res.status(401).json({ error: "Not authenticated" });
       }
 
-      const { name, regionLocationBaseId, region, visibility } = req.body;
+      const { name, regionLocationBaseId, region, dispatchTier: requestedTier, pricePerUnit } = req.body;
       const requestedLocation = regionLocationBaseId || region;
-
       if (!name || !requestedLocation) {
         return res.status(400).json({ error: "Name and region location required" });
       }
-
-      const tokenVisibility = visibility || "public";
-      if (tokenVisibility !== "public" && tokenVisibility !== "private") {
-        return res.status(400).json({ error: "Invalid visibility. Must be public or private" });
+      const dispatchTier = (requestedTier as string) || "public";
+      if (!["private", "team", "public", "shared"].includes(dispatchTier)) {
+        return res.status(400).json({ error: "Invalid dispatchTier" });
       }
+      const marketplace = getMarketplace();
+      const decision = validateTierChoice({
+        user: { id: user.id, isAdmin: user.isAdmin, plan: user.plan, organizationId: user.organizationId },
+        isOwner: true,
+        newTier: dispatchTier as "private" | "team" | "public" | "shared",
+        marketplacePresent: marketplace !== null,
+        pricePerUnit: pricePerUnit ?? null,
+      });
+      if (!decision.ok) return res.status(decision.status).json({ error: decision.reason });
 
       const location = await storage.getRegionLocationByBaseId(String(requestedLocation));
       if (!location || !location.isActive) {
         return res.status(400).json({ error: "Invalid or inactive region location" });
       }
-
       const token = generateEvalAgentToken();
       const tokenHash = hashToken(token);
       const evalAgentToken = await storage.createEvalAgentTokenForLocation(location.baseId, {
         name,
         tokenHash,
-        visibility: tokenVisibility,
+        dispatchTier: dispatchTier as "private" | "team" | "public" | "shared",
         createdBy: user.id,
         isRevoked: false,
       });
-
+      if (marketplace && dispatchTier === "shared") {
+        await marketplace.setListing(evalAgentToken.id, pricePerUnit ?? null, { ownerId: user.id, region: evalAgentToken.region });
+      }
       res.json({
         id: evalAgentToken.id,
         name: evalAgentToken.name,
         token,
         region: evalAgentToken.region,
-        visibility: evalAgentToken.visibility,
+        dispatchTier: evalAgentToken.dispatchTier,
         createdAt: evalAgentToken.createdAt,
       });
     } catch (error) {
@@ -2834,10 +2857,10 @@ export async function registerRoutes(
   app.get("/api/eval-agents", async (req, res) => {
     try {
       const user = await getCurrentUser(req);
-      const agents = await storage.getEvalAgentsWithTokenVisibility();
-      // Public agents visible to all; private agents only visible to their owner or admins
+      const agents = await storage.getEvalAgentsWithTokenTier();
+      // public-tier agents visible to all; others only to their owner or admins
       const visible = agents.filter(a =>
-        a.tokenVisibility === "public" ||
+        a.tokenDispatchTier === "public" ||
         (user && (user.id === a.tokenCreatedBy || user.isAdmin))
       );
       res.json(visible.map(a => ({
@@ -2849,7 +2872,7 @@ export async function registerRoutes(
         lastSeenAt: a.lastSeenAt,
         lastJobAt: a.lastJobAt,
         createdAt: a.createdAt,
-        visibility: a.tokenVisibility,
+        dispatchTier: a.tokenDispatchTier,
       })));
     } catch (error) {
       console.error("Error fetching eval agents:", error);
@@ -2862,7 +2885,7 @@ export async function registerRoutes(
       const user = await getCurrentUser(req);
       if (!user) return res.status(401).json({ error: "Not authenticated" });
 
-      const agents = await storage.getEvalAgentsWithTokenVisibility();
+      const agents = await storage.getEvalAgentsWithTokenTier();
       const rows = agents.map((a) => ({
         tokenId: a.tokenId,
         region: a.region,

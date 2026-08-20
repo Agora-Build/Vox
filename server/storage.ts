@@ -490,14 +490,14 @@ export class DatabaseStorage {
       const region = `${selected.rows[0].base_id}-${String(sequence).padStart(2, "0")}`;
       const inserted = await client.query(
         `INSERT INTO eval_agent_tokens
-          (name, token_hash, region, visibility, created_by, is_revoked, expires_at)
+          (name, token_hash, region, dispatch_tier, created_by, is_revoked, expires_at)
          VALUES ($1, $2, $3, $4, $5, $6, $7)
          RETURNING *`,
         [
           token.name,
           token.tokenHash,
           region,
-          token.visibility,
+          token.dispatchTier,
           token.createdBy,
           token.isRevoked,
           token.expiresAt ?? null,
@@ -513,7 +513,7 @@ export class DatabaseStorage {
       const row = inserted.rows[0];
       return {
         id: row.id, name: row.name, tokenHash: row.token_hash, region: row.region,
-        visibility: row.visibility, dispatchTier: row.dispatch_tier, createdBy: row.created_by,
+        dispatchTier: row.dispatch_tier, createdBy: row.created_by,
         isRevoked: row.is_revoked, expiresAt: row.expires_at, lastUsedAt: row.last_used_at,
         createdAt: row.created_at,
       };
@@ -700,8 +700,8 @@ export class DatabaseStorage {
     return db.select().from(evalAgents).orderBy(desc(evalAgents.createdAt));
   }
 
-  async getEvalAgentsWithTokenVisibility(): Promise<
-    (EvalAgent & { tokenVisibility: string; tokenCreatedBy: number; tokenDispatchTier: string; tokenOwnerOrgId: number | null })[]
+  async getEvalAgentsWithTokenTier(): Promise<
+    (EvalAgent & { tokenCreatedBy: number; tokenDispatchTier: string; tokenOwnerOrgId: number | null })[]
   > {
     const results = await db.select({
       id: evalAgents.id,
@@ -714,7 +714,6 @@ export class DatabaseStorage {
       metadata: evalAgents.metadata,
       createdAt: evalAgents.createdAt,
       updatedAt: evalAgents.updatedAt,
-      tokenVisibility: evalAgentTokens.visibility,
       tokenCreatedBy: evalAgentTokens.createdBy,
       tokenDispatchTier: evalAgentTokens.dispatchTier,
       tokenOwnerOrgId: users.organizationId,
@@ -724,7 +723,7 @@ export class DatabaseStorage {
       .leftJoin(users, eq(evalAgentTokens.createdBy, users.id))
       .orderBy(desc(evalAgents.createdAt));
     return results as (EvalAgent & {
-      tokenVisibility: string; tokenCreatedBy: number; tokenDispatchTier: string; tokenOwnerOrgId: number | null;
+      tokenCreatedBy: number; tokenDispatchTier: string; tokenOwnerOrgId: number | null;
     })[];
   }
 

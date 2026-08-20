@@ -207,7 +207,6 @@ export const evalAgentTokens = pgTable("eval_agent_tokens", {
   name: text("name").notNull(),
   tokenHash: text("token_hash").notNull().unique(),
   region: varchar("region", { length: 64 }).notNull(),
-  visibility: visibilityEnum("visibility").default("public").notNull(),
   dispatchTier: dispatchTierEnum("dispatch_tier").default("public").notNull(),
   createdBy: integer("created_by").notNull().references(() => users.id),
   isRevoked: boolean("is_revoked").default(false).notNull(),
