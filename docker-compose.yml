@@ -30,11 +30,40 @@ services:
       COOKIE_SECURE: "false"  # Allow cookies over HTTP for local development
       VOX_PLUGINS: ${VOX_PLUGINS:-credits,shared-agents}
       PORT: 5000
+      # AES-256-GCM key for secret encryption. Compose only injects what is
+      # listed here, so without this line the Docker server runs WITHOUT a key
+      # and the secrets/session feature is dead. Must match the value used by
+      # any direct-DB tooling on the host.
+      CREDENTIAL_ENCRYPTION_KEY: ${CREDENTIAL_ENCRYPTION_KEY:-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef}
+      # Session broker (Phase C): Core mints login sessions via this internal
+      # sidecar. Reached over the compose network by service name.
+      SESSION_BROKER_URL: ${SESSION_BROKER_URL:-http://session-broker:8200}
+      SESSION_BROKER_SECRET: ${SESSION_BROKER_SECRET:-local-broker-secret-change-me}
     ports:
       - "5000:5000"
     depends_on:
       postgres:
         condition: service_healthy
+
+  # Session broker (Phase C) — stateless sidecar built from the eval-agent
+  # image, running its `session-broker.js` entrypoint instead of the daemon.
+  # It mints a Playwright storageState by driving aeval's `setup:account` flow
+  # with the login credential Core passes over the internal network. NO ports
+  # are published: only vox-service (same compose network) may reach it. It
+  # shares the `vox_eval_agentd:latest` tag with the eval agent, so `build` is
+  # only exercised when that image is absent.
+  session-broker:
+    image: vox_eval_agentd:latest
+    build:
+      context: .
+      dockerfile: vox_eval_agentd/Dockerfile
+    container_name: vox-session-broker
+    command: ["node", "session-broker.js"]
+    environment:
+      SESSION_BROKER_SECRET: ${SESSION_BROKER_SECRET:-local-broker-secret-change-me}
+      BROKER_PORT: 8200
+      HEADLESS: "true"
+      WEB_SESSION_MINT_TIMEOUT_SECONDS: ${WEB_SESSION_MINT_TIMEOUT_SECONDS:-180}
 
   # eval-agent:
   #   build:
