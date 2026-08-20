@@ -12,7 +12,7 @@ import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { Server, MapPin, Activity, Clock, Eye, EyeOff, Plus, Key, Copy, Check, Ban, Lock } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { formatSmartTimestamp, formatRegion } from "@/lib/utils";
 import { useRegionLocationOptions } from "@/hooks/use-regions";
 
@@ -24,6 +24,7 @@ interface AuthStatus {
     email: string;
     plan: string;
     isAdmin: boolean;
+    organizationId: number | null;
   } | null;
 }
 
@@ -32,7 +33,7 @@ interface EvalAgent {
   name: string;
   region: string;
   state: "idle" | "offline" | "occupied";
-  visibility: "public" | "private";
+  dispatchTier: "private" | "team" | "public" | "shared";
   metadata: Record<string, string> | null;
   lastSeenAt: string | null;
   createdAt: string;
@@ -43,12 +44,28 @@ interface EvalAgentToken {
   name: string;
   token: string;
   region: string;
-  visibility: "public" | "private";
+  dispatchTier: "private" | "team" | "public" | "shared";
   isRevoked: boolean;
   lastUsedAt: string | null;
   createdAt: string;
 }
 
+
+function getTierBadge(tier: string) {
+  const map: Record<string, { label: string; icon: ReactNode }> = {
+    public: { label: "Public", icon: <Eye className="h-3 w-3" /> },
+    private: { label: "Private", icon: <EyeOff className="h-3 w-3" /> },
+    team: { label: "Team", icon: <Server className="h-3 w-3" /> },
+    shared: { label: "Shared", icon: <Key className="h-3 w-3" /> },
+  };
+  const m = map[tier] ?? map.private;
+  return (
+    <Badge variant={tier === "public" ? "outline" : "secondary"} className="gap-1">
+      {m.icon}
+      {m.label}
+    </Badge>
+  );
+}
 
 function getStateBadge(state: string) {
   switch (state) {
@@ -72,7 +89,8 @@ export default function ConsoleEvalAgents() {
   const [createOpen, setCreateOpen] = useState(false);
   const [name, setName] = useState("");
   const [region, setRegion] = useState("");
-  const [visibility, setVisibility] = useState<string>("public");
+  const [dispatchTier, setDispatchTier] = useState<string>("private");
+  const [pricePerUnit, setPricePerUnit] = useState<string>("");
   const [newToken, setNewToken] = useState<string | null>(null);
   const [newRegion, setNewRegion] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
@@ -86,6 +104,12 @@ export default function ConsoleEvalAgents() {
   const isAdmin = user?.isAdmin || false;
   const isBasic = !isAdmin && user?.plan === "basic";
   const canCreateTokens = !isBasic;
+  const hasOrg = !!user?.organizationId;
+
+  // Admins default to public (today's behavior); everyone else to private.
+  useEffect(() => {
+    setDispatchTier(isAdmin ? "public" : "private");
+  }, [isAdmin]);
 
   const { data: agents, isLoading: agentsLoading } = useQuery<EvalAgent[]>({
     queryKey: ["/api/eval-agents"],
@@ -99,9 +123,9 @@ export default function ConsoleEvalAgents() {
 
   const createMutation = useMutation({
     mutationFn: async () => {
-      const body: Record<string, string> = { name, regionLocationBaseId: region };
-      if (isAdmin) {
-        body.visibility = visibility;
+      const body: Record<string, unknown> = { name, regionLocationBaseId: region, dispatchTier };
+      if (dispatchTier === "shared") {
+        body.pricePerUnit = Number(pricePerUnit);
       }
       const res = await apiRequest("POST", "/api/eval-agent-tokens", body);
       return res.json();
@@ -111,7 +135,8 @@ export default function ConsoleEvalAgents() {
       setNewRegion(data.region);
       setName("");
       setRegion("");
-      setVisibility("public");
+      setDispatchTier(isAdmin ? "public" : "private");
+      setPricePerUnit("");
       queryClient.invalidateQueries({ queryKey: ["/api/eval-agent-tokens"] });
       queryClient.invalidateQueries({ queryKey: ["/api/region-locations"] });
       toast({ title: "Eval agent token created" });
@@ -214,7 +239,7 @@ export default function ConsoleEvalAgents() {
                 <TableRow>
                   <TableHead>Name</TableHead>
                   <TableHead>Region</TableHead>
-                  <TableHead>Visibility</TableHead>
+                  <TableHead>Tier</TableHead>
                   <TableHead>State</TableHead>
                   <TableHead>Build</TableHead>
                   <TableHead>Last Seen</TableHead>
@@ -232,10 +257,7 @@ export default function ConsoleEvalAgents() {
                       </Badge>
                     </TableCell>
                     <TableCell>
-                      <Badge variant={agent.visibility === "public" ? "outline" : "secondary"} className="gap-1">
-                        {agent.visibility === "public" ? <Eye className="h-3 w-3" /> : <EyeOff className="h-3 w-3" />}
-                        {agent.visibility === "public" ? "Public" : "Private"}
-                      </Badge>
+                      {getTierBadge(agent.dispatchTier)}
                     </TableCell>
                     <TableCell>
                       {getStateBadge(agent.state)}
@@ -359,30 +381,44 @@ export default function ConsoleEvalAgents() {
                             </SelectContent>
                           </Select>
                         </div>
-                        {isAdmin && (
+                        <div className="space-y-2">
+                          <Label htmlFor="token-tier">Dispatch tier</Label>
+                          <Select value={dispatchTier} onValueChange={setDispatchTier}>
+                            <SelectTrigger>
+                              <SelectValue placeholder="Select tier" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {isAdmin && <SelectItem value="public">Public</SelectItem>}
+                              <SelectItem value="private">Private</SelectItem>
+                              {hasOrg && <SelectItem value="team">Team</SelectItem>}
+                              <SelectItem value="shared">Shared</SelectItem>
+                            </SelectContent>
+                          </Select>
+                          {dispatchTier === "team" && !hasOrg && (
+                            <p className="text-xs text-destructive">Team tier requires organization membership.</p>
+                          )}
+                        </div>
+                        {dispatchTier === "shared" && (
                           <div className="space-y-2">
-                            <Label htmlFor="token-visibility">Visibility</Label>
-                            <Select value={visibility} onValueChange={setVisibility}>
-                              <SelectTrigger>
-                                <SelectValue placeholder="Select visibility" />
-                              </SelectTrigger>
-                              <SelectContent>
-                                <SelectItem value="public">Public</SelectItem>
-                                <SelectItem value="private">Private</SelectItem>
-                              </SelectContent>
-                            </Select>
+                            <Label htmlFor="token-price">Price per eval (credits)</Label>
+                            <Input
+                              id="token-price"
+                              type="number"
+                              min={1}
+                              placeholder="e.g. 5"
+                              value={pricePerUnit}
+                              onChange={(e) => setPricePerUnit(e.target.value)}
+                            />
                           </div>
-                        )}
-                        {!isAdmin && (
-                          <p className="text-xs text-muted-foreground">
-                            Non-admin created agents are always private.
-                          </p>
                         )}
                       </div>
                       <DialogFooter>
                         <Button
                           onClick={() => createMutation.mutate()}
-                          disabled={createMutation.isPending || regionsLoading || !name || !region}
+                          disabled={
+                            createMutation.isPending || regionsLoading || !name || !region ||
+                            (dispatchTier === "shared" && !(Number(pricePerUnit) > 0))
+                          }
                         >
                           Create Agent
                         </Button>
@@ -457,7 +493,7 @@ export default function ConsoleEvalAgents() {
                 <TableRow>
                   <TableHead>Name</TableHead>
                   <TableHead>Region</TableHead>
-                  <TableHead>Visibility</TableHead>
+                  <TableHead>Tier</TableHead>
                   <TableHead>Status</TableHead>
                   <TableHead>Last Used</TableHead>
                   <TableHead className="text-right">Actions</TableHead>
@@ -474,10 +510,7 @@ export default function ConsoleEvalAgents() {
                       </Badge>
                     </TableCell>
                     <TableCell>
-                      <Badge variant={token.visibility === "public" ? "outline" : "secondary"} className="gap-1">
-                        {token.visibility === "public" ? <Eye className="h-3 w-3" /> : <EyeOff className="h-3 w-3" />}
-                        {token.visibility === "public" ? "Public" : "Private"}
-                      </Badge>
+                      {getTierBadge(token.dispatchTier)}
                     </TableCell>
                     <TableCell>
                       {token.isRevoked ? (
