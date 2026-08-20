@@ -1,14 +1,6 @@
-import { canDispatchToToken, sameOrg, type DispatchToken } from "./permissions";
+import { canDispatchToToken, sameOrg, hasOrg, type DispatchToken } from "./permissions";
 
 export type DispatchTier = "private" | "team" | "public" | "shared";
-
-export interface TierChangeContext {
-  user: { id: number; isAdmin: boolean; plan: string };
-  token: { createdBy: number };
-  newTier: DispatchTier;
-  marketplacePresent: boolean;
-  pricePerUnit?: number | null;
-}
 
 export interface TierChangeResult {
   ok: boolean;
@@ -16,16 +8,38 @@ export interface TierChangeResult {
   reason?: string;
 }
 
-export function validateTierChange(ctx: TierChangeContext): TierChangeResult {
-  const isOwner = ctx.token.createdBy === ctx.user.id;
-  if (!isOwner && !ctx.user.isAdmin) return { ok: false, status: 403, reason: "forbidden" };
+export interface TierChoiceContext {
+  user: { id: number; isAdmin: boolean; plan: string; organizationId: number | null };
+  isOwner: boolean;            // create: true (self); change: token.createdBy === user.id
+  newTier: DispatchTier;
+  marketplacePresent: boolean;
+  pricePerUnit?: number | null;
+}
 
-  if (ctx.newTier === "shared") {
-    if (!ctx.marketplacePresent) return { ok: false, status: 400, reason: "shared-unavailable" };
-    if (ctx.user.plan === "basic") return { ok: false, status: 403, reason: "shared-requires-non-basic" };
-    if (ctx.pricePerUnit == null || !(ctx.pricePerUnit > 0)) return { ok: false, status: 400, reason: "price-required" };
+export function validateTierChoice(ctx: TierChoiceContext): TierChangeResult {
+  if (!ctx.isOwner && !ctx.user.isAdmin) return { ok: false, status: 403, reason: "forbidden" };
+
+  switch (ctx.newTier) {
+    case "public":
+      // Public is admin-only (create AND change).
+      if (!ctx.user.isAdmin) return { ok: false, status: 403, reason: "public-admin-only" };
+      return { ok: true, status: 200 };
+
+    case "team":
+      if (ctx.user.plan === "basic" && !ctx.user.isAdmin) return { ok: false, status: 403, reason: "team-requires-non-basic" };
+      // A team agent must belong to an org — org membership required (admin included).
+      if (!hasOrg(ctx.user)) return { ok: false, status: 400, reason: "team-requires-org" };
+      return { ok: true, status: 200 };
+
+    case "shared":
+      if (!ctx.marketplacePresent) return { ok: false, status: 400, reason: "shared-unavailable" };
+      if (ctx.user.plan === "basic" && !ctx.user.isAdmin) return { ok: false, status: 403, reason: "shared-requires-non-basic" };
+      if (ctx.pricePerUnit == null || !(ctx.pricePerUnit > 0)) return { ok: false, status: 400, reason: "price-required" };
+      return { ok: true, status: 200 };
+
+    case "private":
+      return { ok: true, status: 200 };
   }
-  return { ok: true, status: 200 };
 }
 
 export interface TargetedDispatchDecision {

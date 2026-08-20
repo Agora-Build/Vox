@@ -9,7 +9,7 @@ import { deriveScheduleStatus } from "@shared/schedule-status";
 import { regionSiteSequence } from "@shared/regions";
 import { registerApiV1Routes } from "./routes-api-v1";
 import { generateSignedUrlForUser } from "./s3";
-import { validateTierChange, resolveTargetedDispatch, filterDispatchableAgents } from "./dispatch";
+import { validateTierChoice, resolveTargetedDispatch, filterDispatchableAgents } from "./dispatch";
 import { getMarketplace } from "./marketplace";
 import { parsePlatformSetup, sessionScopeForWorkflow, evaluateSessionRequirement, getLoginSecretNames, ensureSession, stampOwnerSession, credentialKeyFor, SESSION_FRESH_MARGIN_SECONDS, type SessionNeed } from "./session-broker";
 import {
@@ -2726,9 +2726,9 @@ export async function registerRoutes(
     const { dispatchTier, pricePerUnit } = parsed.data;
 
     const marketplace = getMarketplace();
-    const decision = validateTierChange({
-      user: { id: user.id, isAdmin: user.isAdmin, plan: user.plan },
-      token: { createdBy: token.createdBy },
+    const decision = validateTierChoice({
+      user: { id: user.id, isAdmin: user.isAdmin, plan: user.plan, organizationId: user.organizationId },
+      isOwner: token.createdBy === user.id,
       newTier: dispatchTier,
       marketplacePresent: marketplace !== null,
       pricePerUnit: pricePerUnit ?? null,

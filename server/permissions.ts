@@ -85,6 +85,16 @@ export function sameOrg(a: { organizationId: number | null }, b: { organizationI
   return a.organizationId != null && a.organizationId === b.organizationId;
 }
 
+/**
+ * Single Core abstraction for "does this user belong to any org?" — the org-gate
+ * choke-point (spec §4.1). `team` tier and any future org-only capability test
+ * membership through here, so when orgs become a plugin only this moves behind
+ * the seam. Mirrors sameOrg.
+ */
+export function hasOrg(user: { organizationId: number | null }): boolean {
+  return user.organizationId != null;
+}
+
 /** Free-tier dispatch authz. `shared` is NOT decided here — the marketplace seam handles it. */
 export function canDispatchToToken(
   user: { id: number; organizationId: number | null },
