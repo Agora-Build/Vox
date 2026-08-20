@@ -6,11 +6,13 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
+import { Alert, AlertTitle, AlertDescription } from "@/components/ui/alert";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Play, Loader2, XCircle, CheckCircle, Clock, AlertCircle, Rocket, Eye, Terminal, ArrowRight, ChevronDown, ChevronUp } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -57,6 +59,19 @@ interface EvalSetFull {
   visibility: string;
 }
 
+interface RunTargetAgent {
+  tokenId: number;
+  name: string;
+  region: string;
+  dispatchTier: string;
+  price: number | null;
+}
+
+interface RunTargetsResponse {
+  agents: { mine: RunTargetAgent[]; shared: RunTargetAgent[] };
+  referencedSecrets: Array<{ name: string; class: "runtime" | "protected"; present: boolean }>;
+}
+
 export default function SelfTest() {
   const { toast } = useToast();
   const [workflowTab, setWorkflowTab] = useState<string>("existing");
@@ -67,6 +82,8 @@ export default function SelfTest() {
   const { options: regionOptions } = useRegionOptions();
   const [selectedWorkflowId, setSelectedWorkflowId] = useState<string>("");
   const [selectedEvalSetId, setSelectedEvalSetId] = useState<string>("");
+  const [targetTokenId, setTargetTokenId] = useState<string>("any");
+  const [ackRuntime, setAckRuntime] = useState(false);
   const [activeJobId, setActiveJobId] = useState<number | null>(() => {
     const saved = sessionStorage.getItem("runYourOwn_activeJobId");
     return saved ? parseInt(saved) : null;
@@ -158,16 +175,36 @@ export default function SelfTest() {
     },
   });
 
+  const { data: runTargets } = useQuery<RunTargetsResponse>({
+    queryKey: [`/api/workflows/${selectedWorkflowId}/run-targets`, region, selectedEvalSetId],
+    queryFn: async () => (await apiRequest("GET",
+      `/api/workflows/${selectedWorkflowId}/run-targets?region=${encodeURIComponent(region)}&evalSetId=${selectedEvalSetId}`)).json(),
+    enabled: !!selectedWorkflowId && !!region && !!selectedEvalSetId,
+  });
+
+  const pickerShared = (runTargets?.agents.shared ?? []).filter(
+    (s) => !(runTargets?.agents.mine ?? []).some((m) => m.tokenId === s.tokenId)
+  );
+  const selectedAgent = targetTokenId === "any" ? null :
+    [...(runTargets?.agents.mine ?? []), ...pickerShared].find((a) => String(a.tokenId) === targetTokenId);
+  const runtimeExposed = (runTargets?.referencedSecrets ?? [])
+    .filter((s) => s.class === "runtime" && s.present).map((s) => s.name);
+  const showRuntimeWarning = selectedAgent?.dispatchTier === "shared" && runtimeExposed.length > 0;
+
   const runEvalMutation = useMutation({
     mutationFn: async (workflowId: number) => {
       const res = await apiRequest("POST", `/api/workflows/${workflowId}/run`, {
         region,
         evalSetId: parseInt(selectedEvalSetId),
+        ...(targetTokenId !== "any" ? { targetTokenId: Number(targetTokenId) } : {}),
+        ...(showRuntimeWarning ? { runtimeSecretConsent: ackRuntime } : {}),
       });
       return res.json();
     },
     onSuccess: (data) => {
       setActiveJobId(data.job.id);
+      setTargetTokenId("any");
+      setAckRuntime(false);
       toast({ title: "Evaluation started", description: "Your evaluation tests is now running" });
     },
     onError: (error: Error) => {
@@ -469,14 +506,58 @@ export default function SelfTest() {
                     </SelectContent>
                   </Select>
                 </div>
+
+                <div className="space-y-2">
+                  <Label>Agent</Label>
+                  <Select value={targetTokenId} onValueChange={setTargetTokenId}>
+                    <SelectTrigger>
+                      <SelectValue placeholder="Any available in region" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="any">Any available in region</SelectItem>
+                      {(runTargets?.agents.mine ?? []).length > 0 && (
+                        <SelectGroup>
+                          <SelectLabel>My agents</SelectLabel>
+                          {runTargets!.agents.mine.map((agent) => (
+                            <SelectItem key={agent.tokenId} value={String(agent.tokenId)}>
+                              {agent.name}
+                            </SelectItem>
+                          ))}
+                        </SelectGroup>
+                      )}
+                      {pickerShared.length > 0 && (
+                        <SelectGroup>
+                          <SelectLabel>Shared marketplace</SelectLabel>
+                          {pickerShared.map((agent) => (
+                            <SelectItem key={agent.tokenId} value={String(agent.tokenId)}>
+                              {agent.name}{agent.price != null ? ` ($${agent.price})` : ""}
+                            </SelectItem>
+                          ))}
+                        </SelectGroup>
+                      )}
+                    </SelectContent>
+                  </Select>
+                </div>
               </div>
             </CardContent>
             <CardFooter className="relative z-10 flex-col items-stretch gap-3">
+              {showRuntimeWarning && (
+                <Alert variant="destructive">
+                  <AlertTitle>This workflow uses runtime secrets</AlertTitle>
+                  <AlertDescription>
+                    The selected shared agent will receive the raw values of these secrets: {runtimeExposed.join(", ")}.
+                    <label className="mt-2 flex items-center gap-2">
+                      <Checkbox checked={ackRuntime} onCheckedChange={(v) => setAckRuntime(v === true)} />
+                      I understand
+                    </label>
+                  </AlertDescription>
+                </Alert>
+              )}
               <Button
                 className="w-full"
                 size="lg"
                 onClick={handleRunEval}
-                disabled={runEvalMutation.isPending || isJobRunning || !selectedWorkflowId || !selectedEvalSetId || !region}
+                disabled={runEvalMutation.isPending || isJobRunning || !selectedWorkflowId || !selectedEvalSetId || !region || (showRuntimeWarning && !ackRuntime)}
               >
                 {runEvalMutation.isPending ? (
                   <><Loader2 className="mr-2 h-4 w-4 animate-spin" /> Starting...</>
