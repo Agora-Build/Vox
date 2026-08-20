@@ -21,7 +21,7 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 interface SecretEntry {
   id: number;
   name: string;
-  class: "runtime" | "login";
+  class: "runtime" | "protected";
   isTestAccount: boolean;
   createdAt: string;
   updatedAt: string;
@@ -34,7 +34,7 @@ interface SecretsResponse {
 
 interface OrgSecretEntry {
   name: string;
-  class: "runtime" | "login";
+  class: "runtime" | "protected";
   isTestAccount: boolean;
   createdAt: string;
   updatedAt: string;
@@ -64,7 +64,7 @@ export default function ConsoleSecrets() {
   const [createOpen, setCreateOpen] = useState(false);
   const [name, setName] = useState("");
   const [value, setValue] = useState("");
-  const [secretClass, setSecretClass] = useState<"runtime" | "login">("runtime");
+  const [secretClass, setSecretClass] = useState<"runtime" | "protected">("protected");
   const [isTestAccount, setIsTestAccount] = useState(false);
 
   const { data: response, isLoading } = useQuery<SecretsResponse>({
@@ -80,14 +80,14 @@ export default function ConsoleSecrets() {
         name: name.trim(),
         value,
         secretClass,
-        isTestAccount: secretClass === "login" ? isTestAccount : undefined,
+        isTestAccount: secretClass === "protected" ? isTestAccount : undefined,
       });
       return res.json();
     },
     onSuccess: () => {
       setName("");
       setValue("");
-      setSecretClass("runtime");
+      setSecretClass("protected");
       setIsTestAccount(false);
       setCreateOpen(false);
       queryClient.invalidateQueries({ queryKey: ["/api/secrets"] });
@@ -116,7 +116,7 @@ export default function ConsoleSecrets() {
   const [orgCreateOpen, setOrgCreateOpen] = useState(false);
   const [orgName, setOrgName] = useState("");
   const [orgValue, setOrgValue] = useState("");
-  const [orgSecretClass, setOrgSecretClass] = useState<"runtime" | "login">("runtime");
+  const [orgSecretClass, setOrgSecretClass] = useState<"runtime" | "protected">("protected");
   const [orgIsTestAccount, setOrgIsTestAccount] = useState(false);
 
   const { data: orgSecrets, isLoading: orgLoading } = useQuery<OrgSecretEntry[]>({
@@ -130,13 +130,13 @@ export default function ConsoleSecrets() {
         name: orgName.trim(),
         value: orgValue,
         secretClass: orgSecretClass,
-        isTestAccount: orgSecretClass === "login" ? orgIsTestAccount : undefined,
+        isTestAccount: orgSecretClass === "protected" ? orgIsTestAccount : undefined,
       });
     },
     onSuccess: () => {
       setOrgName("");
       setOrgValue("");
-      setOrgSecretClass("runtime");
+      setOrgSecretClass("protected");
       setOrgIsTestAccount(false);
       setOrgCreateOpen(false);
       queryClient.invalidateQueries({ queryKey: ["/api/org-secrets"] });
@@ -243,20 +243,22 @@ export default function ConsoleSecrets() {
                       </div>
                       <div className="space-y-2">
                         <Label htmlFor="secret-class">Type</Label>
-                        <Select value={secretClass} onValueChange={(v) => setSecretClass(v as "runtime" | "login")}>
+                        <Select value={secretClass} onValueChange={(v) => setSecretClass(v as "runtime" | "protected")}>
                           <SelectTrigger id="secret-class">
                             <SelectValue />
                           </SelectTrigger>
                           <SelectContent>
+                            <SelectItem value="protected">Protected (Recommended)</SelectItem>
                             <SelectItem value="runtime">Runtime</SelectItem>
-                            <SelectItem value="login">Login credential</SelectItem>
                           </SelectContent>
                         </Select>
                         <p className="text-xs text-muted-foreground">
-                          Login credentials are withheld from eval agents and used only by the session broker.
+                          {secretClass === "protected"
+                            ? "Processed securely by Core. The raw secret is never exposed to agents."
+                            : "Sent directly to the agent at runtime. Only use with agents you trust."}
                         </p>
                       </div>
-                      {secretClass === "login" && (
+                      {secretClass === "protected" && (
                         <div className="flex items-center gap-2">
                           <Checkbox
                             id="secret-test-account"
@@ -304,9 +306,9 @@ export default function ConsoleSecrets() {
                         <TableCell className="font-mono font-medium">
                           <div className="flex items-center gap-2">
                             {secret.name}
-                            {secret.class === "login" && (
+                            {secret.class === "protected" && (
                               <>
-                                <Badge variant="outline">login</Badge>
+                                <Badge variant="outline">{secret.class}</Badge>
                                 {secret.isTestAccount && <Badge variant="secondary">test account</Badge>}
                               </>
                             )}
@@ -387,20 +389,22 @@ export default function ConsoleSecrets() {
                           </div>
                           <div className="space-y-2">
                             <Label htmlFor="org-secret-class">Type</Label>
-                            <Select value={orgSecretClass} onValueChange={(v) => setOrgSecretClass(v as "runtime" | "login")}>
+                            <Select value={orgSecretClass} onValueChange={(v) => setOrgSecretClass(v as "runtime" | "protected")}>
                               <SelectTrigger id="org-secret-class">
                                 <SelectValue />
                               </SelectTrigger>
                               <SelectContent>
+                                <SelectItem value="protected">Protected (Recommended)</SelectItem>
                                 <SelectItem value="runtime">Runtime</SelectItem>
-                                <SelectItem value="login">Login credential</SelectItem>
                               </SelectContent>
                             </Select>
                             <p className="text-xs text-muted-foreground">
-                              Login credentials are withheld from eval agents and used only by the session broker.
+                              {orgSecretClass === "protected"
+                                ? "Processed securely by Core. The raw secret is never exposed to agents."
+                                : "Sent directly to the agent at runtime. Only use with agents you trust."}
                             </p>
                           </div>
-                          {orgSecretClass === "login" && (
+                          {orgSecretClass === "protected" && (
                             <div className="flex items-center gap-2">
                               <Checkbox
                                 id="org-secret-test-account"
@@ -449,9 +453,9 @@ export default function ConsoleSecrets() {
                           <TableCell className="font-mono font-medium">
                             <div className="flex items-center gap-2">
                               {secret.name}
-                              {secret.class === "login" && (
+                              {secret.class === "protected" && (
                                 <>
-                                  <Badge variant="outline">login</Badge>
+                                  <Badge variant="outline">{secret.class}</Badge>
                                   {secret.isTestAccount && <Badge variant="secondary">test account</Badge>}
                                 </>
                               )}

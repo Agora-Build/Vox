@@ -30,7 +30,7 @@ d("login-class secrets are withheld from the job path", () => {
       userId: 1, name: `SC_RUNTIME_${stamp}`, encryptedValue: encryptValue("ok"), class: "runtime",
     });
     await db.insert(secrets).values({
-      userId: 1, name: `SC_LOGIN_${stamp}`, encryptedValue: encryptValue("hunter2"), class: "login",
+      userId: 1, name: `SC_LOGIN_${stamp}`, encryptedValue: encryptValue("hunter2"), class: "protected",
     });
     const job = await storage.createEvalJob({
       workflowId: wf.id, triggerType: 2, evalSetId: null, createdBy: 1,
@@ -73,7 +73,7 @@ d("login-class secrets are withheld from the job path", () => {
       organizationId: org.id, name: `SC_ORG_RUNTIME_${stamp}`, encryptedValue: encryptValue("ok"), class: "runtime",
     });
     await db.insert(orgSecrets).values({
-      organizationId: org.id, name: `SC_ORG_LOGIN_${stamp}`, encryptedValue: encryptValue("hunter2"), class: "login",
+      organizationId: org.id, name: `SC_ORG_LOGIN_${stamp}`, encryptedValue: encryptValue("hunter2"), class: "protected",
     });
     const job = await storage.createEvalJob({
       workflowId: wf.id, triggerType: 2, evalSetId: null, createdBy: user.id,

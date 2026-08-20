@@ -32,7 +32,7 @@ async function createSecret(
   session: AuthSession,
   name: string,
   value: string,
-  opts?: { secretClass?: "runtime" | "login"; isTestAccount?: boolean },
+  opts?: { secretClass?: "runtime" | "protected"; isTestAccount?: boolean },
 ): Promise<void> {
   const res = await authFetch(session, `${BASE_URL}/api/secrets`, {
     method: "POST",
@@ -64,8 +64,8 @@ describe("Phase C: dispatch integration — session stamping, pre-warm, shared-t
     const providers = await (await fetch(`${BASE_URL}/api/providers`)).json();
     providerId = providers[0].id;
 
-    await createSecret(admin, emailSecret, "sd-test-user@example.com", { secretClass: "login" });
-    await createSecret(admin, passwordSecret, "sd-test-password-1", { secretClass: "login" });
+    await createSecret(admin, emailSecret, "sd-test-user@example.com", { secretClass: "protected" });
+    await createSecret(admin, passwordSecret, "sd-test-password-1", { secretClass: "protected" });
     await createSecret(admin, runtimeEmailSecret, "not-a-login@example.com");
     await createSecret(admin, runtimePasswordSecret, "not-a-login-password");
 
@@ -288,9 +288,9 @@ describe("Phase C: dispatch integration — session stamping, pre-warm, shared-t
     const splitPass = `SDG_SP_${stamp}`;
 
     beforeAll(async () => {
-      await createSecret(admin, gEmail, "sdg-test-user@example.com", { secretClass: "login" });
-      await createSecret(admin, gPass, "sdg-test-password", { secretClass: "login" });
-      await createSecret(admin, splitEmail, "sdg-split-user@example.com", { secretClass: "login" });
+      await createSecret(admin, gEmail, "sdg-test-user@example.com", { secretClass: "protected" });
+      await createSecret(admin, gPass, "sdg-test-password", { secretClass: "protected" });
+      await createSecret(admin, splitEmail, "sdg-split-user@example.com", { secretClass: "protected" });
       await createSecret(admin, splitPass, "sdg-split-password"); // runtime-class (default)
 
       const setupSteps = (email: string, password: string) =>
@@ -360,19 +360,19 @@ describe("Phase C: dispatch integration — session stamping, pre-warm, shared-t
       );
     });
 
-    it("7b. owner targeting a stranger's public token with a session need -> 403", async () => {
-      // canDispatchToToken permits dispatch to a public token, but a session-
-      // injected job may only be aimed at the owner's/org's own agents (or a
-      // consented shared agent) — the serve gate would refuse this token anyway.
+    it("7b. owner targeting a stranger's token with a session need -> 403", async () => {
+      // Post tier-unification, public dispatch is admin-only, so a stranger's
+      // token is necessarily private/team — the tier-authorization guard
+      // (canDispatchToToken) refuses a stranger-owned token before the session-
+      // credential gate is ever reached. Either way a session-injected job never
+      // lands on a stranger's agent; here the shallower guard fires first.
       const res = await authFetch(admin, `${BASE_URL}/api/workflows/${guardWorkflowId}/run`, {
         method: "POST",
         body: JSON.stringify({ evalSetId, targetTokenId: strangerPublicTokenId }),
       });
       expect(res.status).toBe(403);
       const body = await res.json();
-      expect(body.error).toBe(
-        "Credential-injected jobs can only be dispatched to the workflow owner's or org's agents, or to a shared agent with consent",
-      );
+      expect(body.error).toBe("Not allowed to dispatch to this agent");
     });
 
     it("7c. split-class credential pair (one login, one runtime) -> 400, never a silent runtime leak", async () => {
@@ -385,6 +385,195 @@ describe("Phase C: dispatch integration — session stamping, pre-warm, shared-t
       expect(body.error).toBe(
         "Login requires BOTH email and password to be dedicated login-class secrets (mark both, or neither)",
       );
+    });
+  });
+
+  describe("8. Protected-misuse pre-run validation", () => {
+    const protectedSecret = `API_TOKEN_${stamp}`;
+    let misuseWorkflowId: number;
+
+    beforeAll(async () => {
+      await createSecret(admin, protectedSecret, "sdp-protected-value", { secretClass: "protected" });
+
+      const misuseRes = await authFetch(admin, `${BASE_URL}/api/workflows`, {
+        method: "POST",
+        body: JSON.stringify({
+          name: `Misuse WF ${stamp}`,
+          providerId,
+          config: {
+            framework: "aeval",
+            // References the Protected secret as a runtime value (an API header),
+            // not as a platform.setup email/password login pair.
+            stepsPrefix: `- type: http.request\n  params:\n    headers:\n      Authorization: \${secrets.${protectedSecret}}`,
+          },
+        }),
+      });
+      expect(misuseRes.ok).toBe(true);
+      misuseWorkflowId = (await misuseRes.json()).id;
+    });
+
+    afterAll(async () => {
+      await authFetch(admin, `${BASE_URL}/api/secrets/${encodeURIComponent(protectedSecret)}`, { method: "DELETE" });
+    });
+
+    it("rejects a run when a Protected secret is used outside platform.setup login", async () => {
+      const res = await authFetch(admin, `${BASE_URL}/api/workflows/${misuseWorkflowId}/run`, {
+        method: "POST",
+        body: JSON.stringify({ region: REGION_NA, evalSetId }),
+      });
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toMatch(/Protected secret/i);
+      expect(body.error).toContain("API_TOKEN");
+    });
+  });
+
+  describe("9. runtime-on-shared consent gate", () => {
+    let runtimeSharedTokenId: number;
+
+    beforeAll(async () => {
+      const tRes = await authFetch(admin, `${BASE_URL}/api/eval-agent-tokens`, {
+        method: "POST",
+        body: JSON.stringify({ name: `runtime-shared-agent-${stamp}`, regionLocationBaseId: BASE_NA, visibility: "public" }),
+      });
+      expect(tRes.ok).toBe(true);
+      runtimeSharedTokenId = (await tRes.json()).id;
+
+      const patchRes = await authFetch(admin, `${BASE_URL}/api/eval-agent-tokens/${runtimeSharedTokenId}`, {
+        method: "PATCH",
+        body: JSON.stringify({ dispatchTier: "shared", pricePerUnit: 100 }),
+      });
+      // Mirrors the "4-5" block's beforeAll: fail loudly if the marketplace plugin
+      // isn't loaded rather than letting this degrade into a silent no-op.
+      expect(patchRes.ok).toBe(true);
+    });
+
+    it("9a. blocks a shared run exposing runtime secrets without consent", async () => {
+      const res = await authFetch(admin, `${BASE_URL}/api/workflows/${noSessionWorkflowId}/run`, {
+        method: "POST",
+        body: JSON.stringify({ evalSetId, targetTokenId: runtimeSharedTokenId }),
+      });
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toMatch(/runtime secret/i);
+      expect(body.error).toContain(runtimeEmailSecret);
+    });
+
+    it("9b. allows it with runtimeSecretConsent, recording it on the snapshot when authorized", async () => {
+      const res = await authFetch(admin, `${BASE_URL}/api/workflows/${noSessionWorkflowId}/run`, {
+        method: "POST",
+        body: JSON.stringify({ evalSetId, targetTokenId: runtimeSharedTokenId, runtimeSecretConsent: true }),
+      });
+      const body = await res.json();
+      // consent unblocked the runtime gate: it is NOT a 400 whose error is the
+      // runtime-exposure message. `marketplace.authorizeDispatch` needs an active
+      // listing + credits, so a 200 is not guaranteed in dev (may be 402/400) —
+      // mirrors case 5's tolerance for the same reason.
+      const gateOpened = !(res.status === 400 && /runtime secret/i.test(body.error ?? ""));
+      expect(gateOpened).toBe(true);
+      if (res.status === 200) {
+        expect(body.job.snapshot.runtimeSecretConsent).toBe(true);
+      }
+    });
+  });
+
+  describe("10. run-targets endpoint", () => {
+    let tok: { id: number; region: string | null };
+
+    beforeAll(async () => {
+      const tRes = await authFetch(admin, `${BASE_URL}/api/eval-agent-tokens`, {
+        method: "POST",
+        body: JSON.stringify({ name: `rt-own-${stamp}`, regionLocationBaseId: BASE_NA, visibility: "public" }),
+      });
+      expect(tRes.ok).toBe(true);
+      tok = await tRes.json();
+    });
+
+    it("run-targets lists own tokens and referenced-secret classes", async () => {
+      const q = tok.region ? `region=${encodeURIComponent(tok.region)}&` : "";
+      const res = await authFetch(admin, `${BASE_URL}/api/workflows/${noSessionWorkflowId}/run-targets?${q}evalSetId=${evalSetId}`);
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.agents.mine.map((a: any) => a.tokenId)).toContain(tok.id);
+      expect(body.referencedSecrets).toEqual(
+        expect.arrayContaining([{ name: runtimeEmailSecret, class: "runtime", present: true }]),
+      );
+    });
+  });
+
+  // note: the shared/marketplace listing path (getMarketplace().listDispatchable)
+  // is not exercised here — the marketplace plugin is not seeded in dev, so
+  // asserting on `body.agents.shared` would be non-deterministic.
+  describe("11. run-targets negative paths", () => {
+    let stranger: AuthSession;
+    let privateWorkflowId: number;
+    let privateEvalSetId: number;
+    const isolatedSecret = `RTNEG_ISO_${stamp}`;
+
+    beforeAll(async () => {
+      // A non-owner, non-org user with no relationship to admin's resources.
+      const inviteRes = await authFetch(admin, `${BASE_URL}/api/admin/invite`, {
+        method: "POST",
+        body: JSON.stringify({ email: `rtneg-stranger-${stamp}@example.com`, plan: "premium" }),
+      });
+      expect(inviteRes.ok).toBe(true);
+      const { token: inviteToken } = await inviteRes.json();
+      const regRes = await fetch(`${BASE_URL}/api/auth/register`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username: `rtneg-stranger-${stamp}`, password: "rtneg-stranger-pass-123", token: inviteToken }),
+      });
+      expect(regRes.ok).toBe(true);
+      stranger = await login(`rtneg-stranger-${stamp}@example.com`, "rtneg-stranger-pass-123");
+
+      // A private workflow owned by admin, for the non-owner-403 case.
+      const pRes = await authFetch(admin, `${BASE_URL}/api/workflows`, {
+        method: "POST",
+        body: JSON.stringify({ name: `RTNeg Private WF ${stamp}`, providerId, visibility: "private", config: { framework: "aeval" } }),
+      });
+      expect(pRes.ok).toBe(true);
+      const privateWorkflow = await pRes.json();
+      // Guard against a silent default-to-public, which would make the 403
+      // assertion below pass vacuously.
+      expect(privateWorkflow.visibility).toBe("private");
+      privateWorkflowId = privateWorkflow.id;
+
+      // A unique secret + private eval set (both admin-owned) referencing it,
+      // for the cross-tenant secret-exclusion case. `framework` is a
+      // workflow-only config key, so the eval set config carries only `scenario`.
+      await createSecret(admin, isolatedSecret, "iso-value");
+      const esRes = await authFetch(admin, `${BASE_URL}/api/eval-sets`, {
+        method: "POST",
+        body: JSON.stringify({
+          name: `RTNeg Private ES ${stamp}`,
+          visibility: "private",
+          config: { scenario: `x: \${secrets.${isolatedSecret}}` },
+        }),
+      });
+      expect(esRes.ok).toBe(true);
+      const privateEvalSet = await esRes.json();
+      expect(privateEvalSet.visibility).toBe("private");
+      privateEvalSetId = privateEvalSet.id;
+    });
+
+    it("401s when unauthenticated", async () => {
+      const res = await fetch(`${BASE_URL}/api/workflows/${noSessionWorkflowId}/run-targets`);
+      expect(res.status).toBe(401);
+    });
+
+    it("403s when a non-owner targets a private workflow", async () => {
+      const res = await authFetch(stranger, `${BASE_URL}/api/workflows/${privateWorkflowId}/run-targets`);
+      expect(res.status).toBe(403);
+    });
+
+    it("excludes an inaccessible eval set's secret references (cross-tenant isolation)", async () => {
+      const res = await authFetch(
+        stranger,
+        `${BASE_URL}/api/workflows/${noSessionWorkflowId}/run-targets?evalSetId=${privateEvalSetId}`,
+      );
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.referencedSecrets.map((s: any) => s.name)).not.toContain(isolatedSecret);
     });
   });
 });

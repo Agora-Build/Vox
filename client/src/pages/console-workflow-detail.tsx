@@ -4,10 +4,12 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Label } from "@/components/ui/label";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { Alert, AlertTitle, AlertDescription } from "@/components/ui/alert";
+import { Checkbox } from "@/components/ui/checkbox";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { ArrowLeft, Play, Settings, History, Clock, CheckCircle, XCircle, Loader2, RefreshCw } from "lucide-react";
@@ -25,6 +27,19 @@ interface AuthStatus {
   } | null;
 }
 
+interface RunTargetAgent {
+  tokenId: number;
+  name: string;
+  region: string;
+  dispatchTier: string;
+  price: number | null;
+}
+
+interface RunTargetsResponse {
+  agents: { mine: RunTargetAgent[]; shared: RunTargetAgent[] };
+  referencedSecrets: Array<{ name: string; class: "runtime" | "protected"; present: boolean }>;
+}
+
 export default function ConsoleWorkflowDetail() {
   const { toast } = useToast();
   const { options: regionOptions } = useRegionOptions();
@@ -35,6 +50,8 @@ export default function ConsoleWorkflowDetail() {
   const [runDialogOpen, setRunDialogOpen] = useState(false);
   const [runRegion, setRunRegion] = useState("");
   const [runEvalSetId, setRunEvalSetId] = useState("");
+  const [targetTokenId, setTargetTokenId] = useState<string>("any");
+  const [ackRuntime, setAckRuntime] = useState(false);
 
   const { data: authStatus } = useQuery<AuthStatus>({
     queryKey: ["/api/auth/status"],
@@ -64,11 +81,29 @@ export default function ConsoleWorkflowDetail() {
     refetchInterval: 10000, // Auto-refresh every 10s to update running job status
   });
 
+  const { data: runTargets } = useQuery<RunTargetsResponse>({
+    queryKey: [`/api/workflows/${workflowId}/run-targets`, runRegion, runEvalSetId],
+    queryFn: async () => (await apiRequest("GET",
+      `/api/workflows/${workflowId}/run-targets?region=${encodeURIComponent(runRegion)}&evalSetId=${runEvalSetId}`)).json(),
+    enabled: runDialogOpen && !!runRegion && !!runEvalSetId,
+  });
+
+  const pickerShared = (runTargets?.agents.shared ?? []).filter(
+    (s) => !(runTargets?.agents.mine ?? []).some((m) => m.tokenId === s.tokenId)
+  );
+  const selectedAgent = targetTokenId === "any" ? null :
+    [...(runTargets?.agents.mine ?? []), ...pickerShared].find((a) => String(a.tokenId) === targetTokenId);
+  const runtimeExposed = (runTargets?.referencedSecrets ?? [])
+    .filter((s) => s.class === "runtime" && s.present).map((s) => s.name);
+  const showRuntimeWarning = selectedAgent?.dispatchTier === "shared" && runtimeExposed.length > 0;
+
   const runWorkflowMutation = useMutation({
     mutationFn: async () => {
       const res = await apiRequest("POST", `/api/workflows/${workflowId}/run`, {
         region: runRegion,
         evalSetId: parseInt(runEvalSetId),
+        ...(targetTokenId !== "any" ? { targetTokenId: Number(targetTokenId) } : {}),
+        ...(showRuntimeWarning ? { runtimeSecretConsent: ackRuntime } : {}),
       });
       return res.json();
     },
@@ -76,6 +111,8 @@ export default function ConsoleWorkflowDetail() {
       setRunDialogOpen(false);
       setRunRegion("");
       setRunEvalSetId("");
+      setTargetTokenId("any");
+      setAckRuntime(false);
       refetchJobs();
       toast({ title: "Workflow started", description: `Job created: ${data.job?.id}` });
     },
@@ -126,7 +163,16 @@ export default function ConsoleWorkflowDetail() {
             )}
           </div>
         </div>
-        <Dialog open={runDialogOpen} onOpenChange={setRunDialogOpen}>
+        <Dialog
+          open={runDialogOpen}
+          onOpenChange={(open) => {
+            setRunDialogOpen(open);
+            if (!open) {
+              setTargetTokenId("any");
+              setAckRuntime(false);
+            }
+          }}
+        >
           <DialogTrigger asChild>
             <Button>
               <Play className="mr-2 h-4 w-4" />
@@ -171,11 +217,54 @@ export default function ConsoleWorkflowDetail() {
                   </SelectContent>
                 </Select>
               </div>
+              <div className="space-y-2">
+                <Label htmlFor="run-agent">Agent</Label>
+                <Select value={targetTokenId} onValueChange={setTargetTokenId}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Any available in region" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="any">Any available in region</SelectItem>
+                    {(runTargets?.agents.mine ?? []).length > 0 && (
+                      <SelectGroup>
+                        <SelectLabel>My agents</SelectLabel>
+                        {runTargets!.agents.mine.map((agent) => (
+                          <SelectItem key={agent.tokenId} value={String(agent.tokenId)}>
+                            {agent.name}
+                          </SelectItem>
+                        ))}
+                      </SelectGroup>
+                    )}
+                    {pickerShared.length > 0 && (
+                      <SelectGroup>
+                        <SelectLabel>Shared marketplace</SelectLabel>
+                        {pickerShared.map((agent) => (
+                          <SelectItem key={agent.tokenId} value={String(agent.tokenId)}>
+                            {agent.name}{agent.price != null ? ` ($${agent.price})` : ""}
+                          </SelectItem>
+                        ))}
+                      </SelectGroup>
+                    )}
+                  </SelectContent>
+                </Select>
+              </div>
+              {showRuntimeWarning && (
+                <Alert variant="destructive">
+                  <AlertTitle>This workflow uses runtime secrets</AlertTitle>
+                  <AlertDescription>
+                    The selected shared agent will receive the raw values of these secrets: {runtimeExposed.join(", ")}.
+                    <label className="mt-2 flex items-center gap-2">
+                      <Checkbox checked={ackRuntime} onCheckedChange={(v) => setAckRuntime(v === true)} />
+                      I understand
+                    </label>
+                  </AlertDescription>
+                </Alert>
+              )}
             </div>
             <DialogFooter>
               <Button
                 onClick={() => runWorkflowMutation.mutate()}
-                disabled={runWorkflowMutation.isPending || !runRegion || !runEvalSetId}
+                disabled={runWorkflowMutation.isPending || !runRegion || !runEvalSetId || (showRuntimeWarning && !ackRuntime)}
               >
                 Run Evaluation
               </Button>

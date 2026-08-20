@@ -16,7 +16,7 @@ export const scheduleTypeEnum = pgEnum("schedule_type", ["once", "recurring"]);
 export const clashEventStatusEnum = pgEnum("clash_event_status", ["upcoming", "live", "completed", "cancelled"]);
 export const clashRunnerStateEnum = pgEnum("clash_runner_state", ["idle", "assigned", "running", "draining"]);
 export const orgRoleEnum = pgEnum("org_role", ["owner", "admin", "member"]);
-export const secretClassEnum = pgEnum("secret_class", ["runtime", "login"]);
+export const secretClassEnum = pgEnum("secret_class", ["runtime", "protected"]);
 export const webSessionStatusEnum = pgEnum("web_session_status", ["minting", "ready", "failed"]);
 
 // Helper function to generate 12-char random ID for providers
@@ -327,6 +327,11 @@ export type JobSnapshot = {
   // session serve gate requires this before handing a bundle to a targeted
   // shared (stranger's) agent.
   credentialConsent?: boolean;
+  // True iff the dispatcher acknowledged that this run exposes runtime-class
+  // secrets to a shared (stranger's) agent. Recorded for audit alongside
+  // credentialConsent; the run route's shared branch requires it before an
+  // escrow hold is placed.
+  runtimeSecretConsent?: boolean;
 };
 
 export const evalJobs = pgTable("eval_jobs", {
@@ -462,7 +467,7 @@ export const orgSecrets = pgTable("org_secrets", {
   organizationId: integer("organization_id").notNull().references(() => organizations.id),
   name: text("name").notNull(),
   encryptedValue: text("encrypted_value").notNull(),
-  // 'login' rows are Core-only: structurally excluded from the job-secrets path
+  // 'protected' rows are Core-only: structurally excluded from the job-secrets path
   // (getSecretsForJob) so username/password never reach an eval agent, any tier.
   class: secretClassEnum("class").default("runtime").notNull(),
   // Owner's attestation that this login identity is a dedicated, disposable
@@ -673,7 +678,7 @@ export const secrets = pgTable("secrets", {
   userId: integer("user_id").notNull().references(() => users.id),
   name: text("name").notNull(),
   encryptedValue: text("encrypted_value").notNull(),
-  // 'login' rows are Core-only: structurally excluded from the job-secrets path
+  // 'protected' rows are Core-only: structurally excluded from the job-secrets path
   // (getSecretsForJob) so username/password never reach an eval agent, any tier.
   class: secretClassEnum("class").default("runtime").notNull(),
   // Owner's attestation that this login identity is a dedicated, disposable

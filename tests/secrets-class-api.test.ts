@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { BASE_NA } from './helpers/regions';
 
 const BASE_URL = process.env.TEST_BASE_URL || 'http://localhost:5000';
 const ADMIN_EMAIL = process.env.TEST_ADMIN_EMAIL || 'admin@vox.local';
@@ -74,42 +75,42 @@ describe('Secrets class + attestation API', () => {
     return body.secrets.find((s) => s.name === name);
   }
 
-  it('1. creates a login-class secret with test-account attestation', async () => {
+  it('1. creates a protected-class secret with test-account attestation', async () => {
     const res = await authFetch(adminSession, `${BASE_URL}/api/secrets`, {
       method: 'POST',
-      body: JSON.stringify({ name: loginName, value: 'x', secretClass: 'login', isTestAccount: true }),
+      body: JSON.stringify({ name: loginName, value: 'x', secretClass: 'protected', isTestAccount: true }),
     });
     expect(res.status).toBe(200);
 
     const row = await getSecret(loginName);
     expect(row).toBeDefined();
-    expect(row?.class).toBe('login');
+    expect(row?.class).toBe('protected');
     expect(row?.isTestAccount).toBe(true);
   });
 
-  it('2. rejects reclassifying an existing login secret to runtime (one-way rule)', async () => {
+  it('2. rejects reclassifying an existing protected secret to runtime (one-way rule)', async () => {
     const res = await authFetch(adminSession, `${BASE_URL}/api/secrets`, {
       method: 'POST',
       body: JSON.stringify({ name: loginName, value: 'x2', secretClass: 'runtime' }),
     });
     expect(res.status).toBe(400);
     const body = await res.json();
-    expect(body.error).toBe('A login secret cannot be reclassified to runtime — delete and recreate it instead');
+    expect(body.error).toBe('A protected secret cannot be reclassified to runtime — delete and recreate it instead');
 
     // class must remain unchanged
     const row = await getSecret(loginName);
-    expect(row?.class).toBe('login');
+    expect(row?.class).toBe('protected');
   });
 
-  it('3. allows re-attesting an existing login secret (attestation is editable)', async () => {
+  it('3. allows re-attesting an existing protected secret (attestation is editable)', async () => {
     const res = await authFetch(adminSession, `${BASE_URL}/api/secrets`, {
       method: 'POST',
-      body: JSON.stringify({ name: loginName, value: 'x3', secretClass: 'login', isTestAccount: false }),
+      body: JSON.stringify({ name: loginName, value: 'x3', secretClass: 'protected', isTestAccount: false }),
     });
     expect(res.status).toBe(200);
 
     const row = await getSecret(loginName);
-    expect(row?.class).toBe('login');
+    expect(row?.class).toBe('protected');
     expect(row?.isTestAccount).toBe(false);
   });
 
@@ -124,14 +125,150 @@ describe('Secrets class + attestation API', () => {
     expect(row?.class).toBe('runtime');
   });
 
-  it('5. allows upgrading a runtime secret to login', async () => {
+  it('5. allows upgrading a runtime secret to protected', async () => {
     const res = await authFetch(adminSession, `${BASE_URL}/api/secrets`, {
       method: 'POST',
-      body: JSON.stringify({ name: runtimeName, value: 'y2', secretClass: 'login' }),
+      body: JSON.stringify({ name: runtimeName, value: 'y2', secretClass: 'protected' }),
     });
     expect(res.status).toBe(200);
 
     const row = await getSecret(runtimeName);
-    expect(row?.class).toBe('login');
+    expect(row?.class).toBe('protected');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// A protected secret is never delivered to an agent's job payload (any tier).
+// ---------------------------------------------------------------------------
+
+describe('Secrets class — job-secrets withhold', () => {
+  let adminSession: AuthSession;
+  let agentToken = '';
+  let agentId = 0;
+  let leaseId = '';
+  let workflowId = 0;
+  let evalSetId = 0;
+  let jobId = 0;
+  let tokenId = 0;
+  let serverAvailable = false;
+  const stamp = Date.now();
+  const protectedName = `PROTECTED_LOGIN_EMAIL_${stamp}`;
+  const runtimeName = `WITHHOLD_RUNTIME_${stamp}`;
+
+  beforeAll(async () => {
+    adminSession = await login(ADMIN_EMAIL, ADMIN_PASSWORD);
+
+    // A protected-class secret and a runtime-class secret, both owned by admin.
+    await authFetch(adminSession, `${BASE_URL}/api/secrets`, {
+      method: 'POST',
+      body: JSON.stringify({ name: protectedName, value: 'admin@example.com', secretClass: 'protected', isTestAccount: true }),
+    });
+    await authFetch(adminSession, `${BASE_URL}/api/secrets`, {
+      method: 'POST',
+      body: JSON.stringify({ name: runtimeName, value: 'runtime-value' }),
+    });
+
+    let agentRegion = '';
+    const tokenRes = await authFetch(adminSession, `${BASE_URL}/api/admin/eval-agent-tokens`, {
+      method: 'POST',
+      body: JSON.stringify({ name: 'Secrets Class Withhold Token', regionLocationBaseId: BASE_NA }),
+    });
+    if (tokenRes.ok) {
+      const tokenData = await tokenRes.json();
+      agentToken = tokenData.token;
+      agentRegion = tokenData.region;
+      tokenId = tokenData.id;
+    }
+
+    if (agentToken) {
+      const regRes = await fetch(`${BASE_URL}/api/eval-agent/register`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${agentToken}` },
+        body: JSON.stringify({ name: 'Secrets Class Withhold Agent' }),
+      });
+      if (regRes.ok) {
+        const agent = await regRes.json();
+        agentId = agent.id;
+        leaseId = agent.leaseId;
+      }
+    }
+
+    // A dedicated workflow + eval set owned by THIS admin session — must not
+    // borrow workflows[0]/evalSets[0] from a plain list response, since
+    // getSecretsForJob keys off workflow.ownerId and the secrets under test
+    // are owned by admin (see tests/session-dispatch.test.ts for the idiom).
+    const providers = await (await fetch(`${BASE_URL}/api/providers`)).json();
+    const providerId = providers[0].id;
+
+    const wfRes = await authFetch(adminSession, `${BASE_URL}/api/workflows`, {
+      method: 'POST',
+      body: JSON.stringify({
+        name: `Secrets Class Withhold WF ${stamp}`,
+        providerId,
+        config: { framework: 'aeval' },
+      }),
+    });
+    if (wfRes.ok) {
+      workflowId = (await wfRes.json()).id;
+    }
+
+    const esRes = await authFetch(adminSession, `${BASE_URL}/api/eval-sets`, {
+      method: 'POST',
+      body: JSON.stringify({ name: `Secrets Class Withhold ES ${stamp}`, config: {} }),
+    });
+    if (esRes.ok) {
+      evalSetId = (await esRes.json()).id;
+    }
+
+    if (workflowId && evalSetId && agentToken && agentId) {
+      const runRes = await authFetch(adminSession, `${BASE_URL}/api/workflows/${workflowId}/run`, {
+        method: 'POST',
+        body: JSON.stringify({ region: agentRegion, evalSetId }),
+      });
+      if (runRes.ok) {
+        const runData = await runRes.json();
+        jobId = runData.job?.id || runData.jobs?.[0]?.id || runData.id || 0;
+      }
+      if (!jobId) {
+        const jobsRes = await fetch(`${BASE_URL}/api/eval-agent/jobs?region=${agentRegion}`, {
+          headers: { 'Authorization': `Bearer ${agentToken}` },
+        });
+        if (jobsRes.ok) {
+          const jobs = await jobsRes.json();
+          if (jobs.length > 0) jobId = jobs[0].id;
+        }
+      }
+      if (jobId) {
+        await fetch(`${BASE_URL}/api/eval-agent/jobs/${jobId}/claim`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${agentToken}` },
+          body: JSON.stringify({ agentId, leaseId }),
+        });
+      }
+    }
+
+    serverAvailable = !!(jobId && agentToken);
+  });
+
+  afterAll(async () => {
+    await authFetch(adminSession, `${BASE_URL}/api/secrets/${encodeURIComponent(protectedName)}`, { method: 'DELETE' });
+    await authFetch(adminSession, `${BASE_URL}/api/secrets/${encodeURIComponent(runtimeName)}`, { method: 'DELETE' });
+    if (tokenId) {
+      await authFetch(adminSession, `${BASE_URL}/api/eval-agent-tokens/${tokenId}/revoke`, { method: 'POST' });
+    }
+  });
+
+  it('withholds protected-class secrets from job secrets', async () => {
+    if (!serverAvailable) {
+      throw new Error('Setup failed to produce a claimed job — cannot verify withhold invariant');
+    }
+    const res = await fetch(`${BASE_URL}/api/eval-agent/jobs/${jobId}/secrets?leaseId=${encodeURIComponent(leaseId)}`, {
+      headers: { 'Authorization': `Bearer ${agentToken}` },
+    });
+    expect(res.ok).toBe(true);
+    const jobSecrets = await res.json();
+    const names = Object.keys(jobSecrets);
+    expect(names).not.toContain(protectedName);
+    expect(names).toContain(runtimeName);
   });
 });

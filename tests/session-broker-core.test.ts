@@ -126,8 +126,8 @@ d("ensureSession (DB + mock fetch)", () => {
     const passwordSecret = `TEST_SB_P_${stamp}`;
     const email = `user-${stamp}@example.com`;
     const password = `pw-${stamp}`;
-    await storage.createOrUpdateSecret(1, emailSecret, encryptValue(email), { class: "login" });
-    await storage.createOrUpdateSecret(1, passwordSecret, encryptValue(password), { class: "login" });
+    await storage.createOrUpdateSecret(1, emailSecret, encryptValue(email), { class: "protected" });
+    await storage.createOrUpdateSecret(1, passwordSecret, encryptValue(password), { class: "protected" });
 
     const platformId = `t-mint-${stamp}`;
     let capturedUrl: string | undefined;
@@ -166,8 +166,8 @@ d("ensureSession (DB + mock fetch)", () => {
     const emailSecret = `TEST_SB_E2_${stamp}`;
     const passwordSecret = `TEST_SB_P2_${stamp}`;
     const { encryptValue } = await import("../server/storage");
-    await storage.createOrUpdateSecret(1, emailSecret, encryptValue(`e2-${stamp}@example.com`), { class: "login" });
-    await storage.createOrUpdateSecret(1, passwordSecret, encryptValue(`pw2-${stamp}`), { class: "login" });
+    await storage.createOrUpdateSecret(1, emailSecret, encryptValue(`e2-${stamp}@example.com`), { class: "protected" });
+    await storage.createOrUpdateSecret(1, passwordSecret, encryptValue(`pw2-${stamp}`), { class: "protected" });
 
     const platformId = `t-mint-err-${stamp}`;
     const mockFetch = (async () => ({
@@ -226,8 +226,8 @@ d("ensureSession (DB + mock fetch)", () => {
     // session, not be handed A's cookies. Its login secrets exist and the mock
     // broker returns B's distinct storageState.
     const needB = { platformId, emailSecret: `TEST_SB_XBE_${stamp}`, passwordSecret: `TEST_SB_XBP_${stamp}` };
-    await storage.createOrUpdateSecret(1, needB.emailSecret, encryptValue(`b-${stamp}@example.com`), { class: "login" });
-    await storage.createOrUpdateSecret(1, needB.passwordSecret, encryptValue(`bpw-${stamp}`), { class: "login" });
+    await storage.createOrUpdateSecret(1, needB.emailSecret, encryptValue(`b-${stamp}@example.com`), { class: "protected" });
+    await storage.createOrUpdateSecret(1, needB.passwordSecret, encryptValue(`bpw-${stamp}`), { class: "protected" });
     let brokerCalled = false;
     const mockFetch = (async () => {
       brokerCalled = true;

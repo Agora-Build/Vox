@@ -30,3 +30,22 @@ export function resolveSecretPlaceholders(
     return match;
   });
 }
+
+/**
+ * Enumerate every ${secrets.NAME} referenced across one or more configs.
+ * Objects (jsonb workflow/eval-set configs) are JSON-stringified before
+ * scanning — $ { } . are all JSON-safe inside a string, so the placeholder
+ * regex still matches. A fresh RegExp per config avoids shared-lastIndex bugs
+ * with the module-level global regex.
+ */
+export function collectSecretRefs(configs: unknown[]): Set<string> {
+  const names = new Set<string>();
+  for (const cfg of configs) {
+    if (cfg == null) continue;
+    const text = typeof cfg === "string" ? cfg : JSON.stringify(cfg);
+    const re = new RegExp(SECRET_PLACEHOLDER_REGEX.source, "g");
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(text)) !== null) names.add(m[1]);
+  }
+  return names;
+}

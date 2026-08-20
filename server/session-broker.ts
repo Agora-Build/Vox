@@ -101,13 +101,13 @@ export function evaluateSessionRequirement(
   return { kind: "need", need: { platformId: setup.platformId, emailSecret: setup.emailSecret, passwordSecret: setup.passwordSecret } };
 }
 
-export async function getLoginSecretNames(scope: SessionScope): Promise<Set<string>> {
+export async function getProtectedSecretNames(scope: SessionScope): Promise<Set<string>> {
   if ("userId" in scope) {
     const rows = await storage.getSecretsByUserId(scope.userId);
-    return new Set(rows.filter(s => s.class === "login").map(s => s.name));
+    return new Set(rows.filter(s => s.class === "protected").map(s => s.name));
   }
   const rows = await storage.getOrgSecrets(scope.organizationId);
-  return new Set(rows.filter(s => s.class === "login").map(s => s.name));
+  return new Set(rows.filter(s => s.class === "protected").map(s => s.name));
 }
 
 async function resolveScopeSecret(scope: SessionScope, name: string): Promise<string | undefined> {
@@ -246,7 +246,7 @@ export async function stampOwnerSession(
   const wfConfig = (workflow.config ?? {}) as Record<string, unknown>;
   const setup = parsePlatformSetup(wfConfig.stepsPrefix as string | undefined);
   const scope = sessionScopeForWorkflow(workflow);
-  const req = evaluateSessionRequirement(setup, await getLoginSecretNames(scope));
+  const req = evaluateSessionRequirement(setup, await getProtectedSecretNames(scope));
   if (req.kind === "misconfigured") return { kind: "misconfigured", reason: req.reason };
 
   delete jobConfig.sessionInjection; // server-stamped only — never trust a caller value
@@ -256,4 +256,35 @@ export async function stampOwnerSession(
     return { kind: "ok", snapshotInjection: { platformId: req.need.platformId, emailSecret: req.need.emailSecret, passwordSecret: req.need.passwordSecret } };
   }
   return { kind: "ok", snapshotInjection: null };
+}
+
+/**
+ * Join referenced secret NAMES against the scope's secret rows, attaching each
+ * name's class and whether it exists. Names with no matching row default to
+ * class "runtime" / present:false (a dangling ref delivers nothing).
+ */
+export async function classifyReferencedSecrets(
+  scope: SessionScope,
+  names: Set<string>,
+): Promise<Array<{ name: string; class: "runtime" | "protected"; present: boolean }>> {
+  const rows = "userId" in scope
+    ? await storage.getSecretsByUserId(scope.userId)
+    : await storage.getOrgSecrets(scope.organizationId);
+  return Array.from(names).map((name) => {
+    const row = rows.find((r) => r.name === name);
+    return { name, class: (row?.class ?? "runtime") as "runtime" | "protected", present: !!row };
+  });
+}
+
+/**
+ * A Protected secret is only meaningful as a platform.setup login credential.
+ * Returns the names of Protected secrets referenced anywhere OTHER than the
+ * given login pair — i.e. misconfigurations the run route must reject.
+ */
+export function findProtectedMisuse(
+  classified: Array<{ name: string; class: string }>,
+  loginPair: { emailSecret: string; passwordSecret: string } | null,
+): string[] {
+  const allowed = new Set(loginPair ? [loginPair.emailSecret, loginPair.passwordSecret] : []);
+  return classified.filter((c) => c.class === "protected" && !allowed.has(c.name)).map((c) => c.name);
 }
