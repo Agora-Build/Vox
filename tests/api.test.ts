@@ -1397,8 +1397,8 @@ describe('Vox API Tests', () => {
       const job = await response.json();
       expect(job.status).toBe('running');
       expect(job.evalAgentId).toBe(flowAgentId);
-      // token_visibility is frozen atomically at claim (public admin token).
-      expect(job.tokenVisibility).toBe('public');
+      // token_dispatch_tier is frozen atomically at claim (public admin token).
+      expect(job.tokenDispatchTier).toBe('public');
     });
 
     it('should complete job with results', async () => {
