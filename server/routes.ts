@@ -4,14 +4,14 @@ import { z } from "zod";
 import { storage, hashToken, generateSecureToken, generateEvalAgentToken, mergeEvalConfig, buildJobSnapshot, validateWorkflowConfig, validateEvalSetConfig, encryptValue, decryptValue, isEncryptionConfigured, type MetricSourceRow, type RegionQueryScope } from "./storage";
 import { parseNextCronRun } from "./cron";
 import { compareVersions } from "./aeval-seed";
-import { SECRET_NAME_PATTERN } from "@shared/secrets";
+import { SECRET_NAME_PATTERN, collectSecretRefs } from "@shared/secrets";
 import { deriveScheduleStatus } from "@shared/schedule-status";
 import { regionSiteSequence } from "@shared/regions";
 import { registerApiV1Routes } from "./routes-api-v1";
 import { generateSignedUrlForUser } from "./s3";
 import { validateTierChoice, resolveTargetedDispatch, filterDispatchableAgents } from "./dispatch";
 import { getMarketplace } from "./marketplace";
-import { parsePlatformSetup, sessionScopeForWorkflow, evaluateSessionRequirement, getProtectedSecretNames, ensureSession, stampOwnerSession, credentialKeyFor, SESSION_FRESH_MARGIN_SECONDS, type SessionNeed } from "./session-broker";
+import { parsePlatformSetup, sessionScopeForWorkflow, evaluateSessionRequirement, getProtectedSecretNames, ensureSession, stampOwnerSession, credentialKeyFor, SESSION_FRESH_MARGIN_SECONDS, classifyReferencedSecrets, findProtectedMisuse, type SessionNeed } from "./session-broker";
 import {
   hashPassword,
   verifyPassword,
@@ -3719,6 +3719,26 @@ export async function registerRoutes(
         return res.status(400).json({ error: sessionReq.reason });
       }
       const sessionNeed: SessionNeed | null = sessionReq.kind === "need" ? sessionReq.need : null;
+
+      // Enumerate every ${secrets.NAME} the workflow + eval set reference, with
+      // class + presence. Drives the Protected-misuse gate here and the
+      // Runtime-on-shared consent gate in the targeted branch below.
+      const classified = await classifyReferencedSecrets(
+        scope,
+        collectSecretRefs([workflow.config, evalSet.config]),
+      );
+      // A Protected secret is only meaningful as a platform.setup login credential.
+      // Any other reference is a misconfiguration — reject with a clear message
+      // instead of a silently broken run.
+      const misused = findProtectedMisuse(
+        classified,
+        sessionNeed ? { emailSecret: sessionNeed.emailSecret, passwordSecret: sessionNeed.passwordSecret } : null,
+      );
+      if (misused.length > 0) {
+        return res.status(400).json({
+          error: `Protected secret(s) ${misused.join(", ")} are referenced as runtime values — Protected secrets can only be login credentials in platform.setup. Mark them Runtime or remove the reference.`,
+        });
+      }
 
       let jobRegion: string;
       let targeting: number | null = null;
