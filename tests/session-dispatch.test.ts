@@ -360,19 +360,19 @@ describe("Phase C: dispatch integration — session stamping, pre-warm, shared-t
       );
     });
 
-    it("7b. owner targeting a stranger's public token with a session need -> 403", async () => {
-      // canDispatchToToken permits dispatch to a public token, but a session-
-      // injected job may only be aimed at the owner's/org's own agents (or a
-      // consented shared agent) — the serve gate would refuse this token anyway.
+    it("7b. owner targeting a stranger's token with a session need -> 403", async () => {
+      // Post tier-unification, public dispatch is admin-only, so a stranger's
+      // token is necessarily private/team — the tier-authorization guard
+      // (canDispatchToToken) refuses a stranger-owned token before the session-
+      // credential gate is ever reached. Either way a session-injected job never
+      // lands on a stranger's agent; here the shallower guard fires first.
       const res = await authFetch(admin, `${BASE_URL}/api/workflows/${guardWorkflowId}/run`, {
         method: "POST",
         body: JSON.stringify({ evalSetId, targetTokenId: strangerPublicTokenId }),
       });
       expect(res.status).toBe(403);
       const body = await res.json();
-      expect(body.error).toBe(
-        "Credential-injected jobs can only be dispatched to the workflow owner's or org's agents, or to a shared agent with consent",
-      );
+      expect(body.error).toBe("Not allowed to dispatch to this agent");
     });
 
     it("7c. split-class credential pair (one login, one runtime) -> 400, never a silent runtime leak", async () => {
