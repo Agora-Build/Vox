@@ -331,7 +331,7 @@ export default function ConsoleEvalAgents() {
                   ? "Upgrade to Premium or above to create your own eval agent tokens and run private evaluations."
                   : isAdmin
                     ? "Create and manage eval agent tokens. Tokens allow agents to register and fetch jobs."
-                    : "Create private eval agent tokens to run your own evaluations. Results from private tokens appear in your My Evals dashboard."}
+                    : "Create eval agent tokens to run your own evaluations. Pick a dispatch tier — private, team, or shared — when you create one. Private-token results appear in your My Evals dashboard."}
               </CardDescription>
             </div>
             {canCreateTokens && (
@@ -351,7 +351,7 @@ export default function ConsoleEvalAgents() {
                     <DialogDescription>
                       {isAdmin
                         ? "Create a new token for eval agent registration."
-                        : "Create a private token for your eval agent. Private tokens produce results visible only in your evals."}
+                        : "Create a token for your eval agent and choose its dispatch tier below."}
                     </DialogDescription>
                   </DialogHeader>
                   {!newToken ? (
