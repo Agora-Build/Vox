@@ -43,7 +43,7 @@ async function createSecret(
   session: AuthSession,
   name: string,
   value: string,
-  opts?: { secretClass?: "runtime" | "login"; isTestAccount?: boolean },
+  opts?: { secretClass?: "runtime" | "protected"; isTestAccount?: boolean },
 ): Promise<void> {
   const res = await authFetch(session, `${BASE_URL}/api/secrets`, {
     method: "POST",
@@ -104,8 +104,8 @@ describe("Phase C: GET /api/eval-agent/jobs/:jobId/session", () => {
     const providers = await (await fetch(`${BASE_URL}/api/providers`)).json();
     providerId = providers[0].id;
 
-    await createSecret(admin, emailSecret, "se-test-user@example.com", { secretClass: "login" });
-    await createSecret(admin, passwordSecret, "se-test-password-1", { secretClass: "login" });
+    await createSecret(admin, emailSecret, "se-test-user@example.com", { secretClass: "protected" });
+    await createSecret(admin, passwordSecret, "se-test-password-1", { secretClass: "protected" });
 
     const setupSteps = (platformId: string) =>
       `- type: platform.setup\n  platform_id: ${platformId}\n  params:\n    email: \${secrets.${emailSecret}}\n    password: \${secrets.${passwordSecret}}`;

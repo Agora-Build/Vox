@@ -16,7 +16,7 @@ export const scheduleTypeEnum = pgEnum("schedule_type", ["once", "recurring"]);
 export const clashEventStatusEnum = pgEnum("clash_event_status", ["upcoming", "live", "completed", "cancelled"]);
 export const clashRunnerStateEnum = pgEnum("clash_runner_state", ["idle", "assigned", "running", "draining"]);
 export const orgRoleEnum = pgEnum("org_role", ["owner", "admin", "member"]);
-export const secretClassEnum = pgEnum("secret_class", ["runtime", "login"]);
+export const secretClassEnum = pgEnum("secret_class", ["runtime", "protected"]);
 export const webSessionStatusEnum = pgEnum("web_session_status", ["minting", "ready", "failed"]);
 
 // Helper function to generate 12-char random ID for providers

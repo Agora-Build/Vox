@@ -11,7 +11,7 @@ import { registerApiV1Routes } from "./routes-api-v1";
 import { generateSignedUrlForUser } from "./s3";
 import { validateTierChoice, resolveTargetedDispatch, filterDispatchableAgents } from "./dispatch";
 import { getMarketplace } from "./marketplace";
-import { parsePlatformSetup, sessionScopeForWorkflow, evaluateSessionRequirement, getLoginSecretNames, ensureSession, stampOwnerSession, credentialKeyFor, SESSION_FRESH_MARGIN_SECONDS, type SessionNeed } from "./session-broker";
+import { parsePlatformSetup, sessionScopeForWorkflow, evaluateSessionRequirement, getProtectedSecretNames, ensureSession, stampOwnerSession, credentialKeyFor, SESSION_FRESH_MARGIN_SECONDS, type SessionNeed } from "./session-broker";
 import {
   hashPassword,
   verifyPassword,
@@ -2470,8 +2470,8 @@ export async function registerRoutes(
         return res.status(400).json({ error: "Secret value too large (max 10KB)" });
       }
       const secretClass = req.body.secretClass === undefined ? undefined : req.body.secretClass;
-      if (secretClass !== undefined && secretClass !== "runtime" && secretClass !== "login") {
-        return res.status(400).json({ error: "secretClass must be 'runtime' or 'login'" });
+      if (secretClass !== undefined && secretClass !== "runtime" && secretClass !== "protected") {
+        return res.status(400).json({ error: "secretClass must be 'runtime' or 'protected'" });
       }
       const isTestAccount = req.body.isTestAccount === undefined ? undefined : req.body.isTestAccount === true;
 
@@ -2483,8 +2483,8 @@ export async function registerRoutes(
       }
 
       const existingRow = existing.find(s => s.name === trimmedName);
-      if (existingRow && existingRow.class === "login" && secretClass === "runtime") {
-        return res.status(400).json({ error: "A login secret cannot be reclassified to runtime — delete and recreate it instead" });
+      if (existingRow && existingRow.class === "protected" && secretClass === "runtime") {
+        return res.status(400).json({ error: "A protected secret cannot be reclassified to runtime — delete and recreate it instead" });
       }
 
       const encrypted = encryptValue(value);
@@ -2564,14 +2564,14 @@ export async function registerRoutes(
         return res.status(503).json({ error: "Encryption not configured on server" });
       }
       const secretClass = req.body.secretClass === undefined ? undefined : req.body.secretClass;
-      if (secretClass !== undefined && secretClass !== "runtime" && secretClass !== "login") {
-        return res.status(400).json({ error: "secretClass must be 'runtime' or 'login'" });
+      if (secretClass !== undefined && secretClass !== "runtime" && secretClass !== "protected") {
+        return res.status(400).json({ error: "secretClass must be 'runtime' or 'protected'" });
       }
       const isTestAccount = req.body.isTestAccount === undefined ? undefined : req.body.isTestAccount === true;
 
       const existingRow = (await storage.getOrgSecrets(user.organizationId)).find(s => s.name === trimmedName);
-      if (existingRow && existingRow.class === "login" && secretClass === "runtime") {
-        return res.status(400).json({ error: "A login secret cannot be reclassified to runtime — delete and recreate it instead" });
+      if (existingRow && existingRow.class === "protected" && secretClass === "runtime") {
+        return res.status(400).json({ error: "A protected secret cannot be reclassified to runtime — delete and recreate it instead" });
       }
 
       const encrypted = encryptValue(value);
@@ -3714,7 +3714,7 @@ export async function registerRoutes(
       const wfConfig = (workflow.config ?? {}) as Record<string, unknown>;
       const setupInfo = parsePlatformSetup(wfConfig.stepsPrefix as string | undefined);
       const scope = sessionScopeForWorkflow(workflow);
-      const sessionReq = evaluateSessionRequirement(setupInfo, await getLoginSecretNames(scope));
+      const sessionReq = evaluateSessionRequirement(setupInfo, await getProtectedSecretNames(scope));
       if (sessionReq.kind === "misconfigured") {
         return res.status(400).json({ error: sessionReq.reason });
       }
@@ -6036,16 +6036,16 @@ export async function registerRoutes(
       const event = await storage.getClashEvent(match.eventId);
       if (!event) return res.status(404).json({ error: "Event not found" });
 
-      // Fetch and decrypt event owner's secrets. LOGIN-class secrets are
-      // structurally withheld: they are Core-only credentials used to mint web
-      // sessions and must never be handed to a runner (MEDIUM-2). Only
-      // runtime-class secrets are decrypted for direct injection.
+      // Fetch and decrypt event owner's secrets. PROTECTED-class secrets are
+      // structurally withheld: Core-only credentials used to mint web sessions,
+      // never handed to a runner (MEDIUM-2). Only runtime-class secrets are
+      // decrypted for direct injection.
       const userSecrets = await storage.getSecretsByUserId(event.createdBy);
       const decrypted: Record<string, string> = {};
       let decryptErrors = 0;
-      let loginWithheld = 0;
+      let protectedWithheld = 0;
       for (const s of userSecrets) {
-        if (s.class === "login") { loginWithheld++; continue; }
+        if (s.class === "protected") { protectedWithheld++; continue; }
         try {
           decrypted[s.name] = decryptValue(s.encryptedValue);
         } catch {
@@ -6053,7 +6053,7 @@ export async function registerRoutes(
         }
       }
 
-      console.log(`[ClashSecrets] Runner ${runner.runnerId} fetched secrets for match #${matchId} (event #${event.id}, owner #${event.createdBy}): ${Object.keys(decrypted).length} decrypted, ${decryptErrors} failed, ${loginWithheld} login-class withheld`);
+      console.log(`[ClashSecrets] Runner ${runner.runnerId} fetched secrets for match #${matchId} (event #${event.id}, owner #${event.createdBy}): ${Object.keys(decrypted).length} decrypted, ${decryptErrors} failed, ${protectedWithheld} protected-class withheld`);
 
       res.json(decrypted);
     } catch (error) {

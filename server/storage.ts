@@ -1965,7 +1965,7 @@ export class DatabaseStorage {
     userId: number,
     name: string,
     encryptedValue: string,
-    opts?: { class?: "runtime" | "login"; isTestAccount?: boolean }
+    opts?: { class?: "runtime" | "protected"; isTestAccount?: boolean }
   ): Promise<Secret> {
     const existing = await db.select().from(secrets)
       .where(and(eq(secrets.userId, userId), eq(secrets.name, name)));
@@ -2008,10 +2008,10 @@ export class DatabaseStorage {
     const workflow = await this.getWorkflow(job.workflowId);
     if (!workflow) { console.log(`[Secrets] getSecretsForJob: workflow ${job.workflowId} not found`); return []; }
     console.log(`[Secrets] getSecretsForJob: job ${jobId} → workflow ${workflow.id} → owner ${workflow.ownerId}`);
-    // Structural withhold: 'login'-class rows are Core-only (Phase C). They feed
+    // Structural withhold: 'protected'-class rows are Core-only (Phase C). They feed
     // the session broker's mint and must never reach an eval agent, any tier.
     const all = await this.getSecretsByUserId(workflow.ownerId);
-    return all.filter((s) => s.class !== "login");
+    return all.filter((s) => s.class !== "protected");
   }
 
   // ==================== CLASH AGENT PROFILES ====================
@@ -2419,7 +2419,7 @@ export class DatabaseStorage {
     name: string,
     encryptedValue: string,
     createdBy: number,
-    opts?: { class?: "runtime" | "login"; isTestAccount?: boolean }
+    opts?: { class?: "runtime" | "protected"; isTestAccount?: boolean }
   ): Promise<OrgSecret> {
     const existing = await this.getOrgSecret(organizationId, name);
     if (existing) {
@@ -2479,7 +2479,7 @@ export class DatabaseStorage {
     const secrets = await this.getOrgSecrets(workflow.organizationId);
     const result: Record<string, string> = {};
     for (const s of secrets) {
-      if (s.class === "login") continue; // Core-only (Phase C) — never sent to agents
+      if (s.class === "protected") continue; // Core-only (Phase C) — never sent to agents
       result[s.name] = decryptValue(s.encryptedValue);
     }
     return result;
@@ -2519,7 +2519,7 @@ export class DatabaseStorage {
     const rows = "userId" in scope
       ? await this.getSecretsByUserId(scope.userId)
       : await this.getOrgSecrets(scope.organizationId);
-    return names.every(n => rows.some(r => r.name === n && r.class === "login" && r.isTestAccount));
+    return names.every(n => rows.some(r => r.name === n && r.class === "protected" && r.isTestAccount));
   }
 
   private webSessionScopeWhere(scope: SessionScope) {

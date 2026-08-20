@@ -32,7 +32,7 @@ async function createSecret(
   session: AuthSession,
   name: string,
   value: string,
-  opts?: { secretClass?: "runtime" | "login"; isTestAccount?: boolean },
+  opts?: { secretClass?: "runtime" | "protected"; isTestAccount?: boolean },
 ): Promise<void> {
   const res = await authFetch(session, `${BASE_URL}/api/secrets`, {
     method: "POST",
@@ -64,8 +64,8 @@ describe("Phase C: dispatch integration — session stamping, pre-warm, shared-t
     const providers = await (await fetch(`${BASE_URL}/api/providers`)).json();
     providerId = providers[0].id;
 
-    await createSecret(admin, emailSecret, "sd-test-user@example.com", { secretClass: "login" });
-    await createSecret(admin, passwordSecret, "sd-test-password-1", { secretClass: "login" });
+    await createSecret(admin, emailSecret, "sd-test-user@example.com", { secretClass: "protected" });
+    await createSecret(admin, passwordSecret, "sd-test-password-1", { secretClass: "protected" });
     await createSecret(admin, runtimeEmailSecret, "not-a-login@example.com");
     await createSecret(admin, runtimePasswordSecret, "not-a-login-password");
 
@@ -288,9 +288,9 @@ describe("Phase C: dispatch integration — session stamping, pre-warm, shared-t
     const splitPass = `SDG_SP_${stamp}`;
 
     beforeAll(async () => {
-      await createSecret(admin, gEmail, "sdg-test-user@example.com", { secretClass: "login" });
-      await createSecret(admin, gPass, "sdg-test-password", { secretClass: "login" });
-      await createSecret(admin, splitEmail, "sdg-split-user@example.com", { secretClass: "login" });
+      await createSecret(admin, gEmail, "sdg-test-user@example.com", { secretClass: "protected" });
+      await createSecret(admin, gPass, "sdg-test-password", { secretClass: "protected" });
+      await createSecret(admin, splitEmail, "sdg-split-user@example.com", { secretClass: "protected" });
       await createSecret(admin, splitPass, "sdg-split-password"); // runtime-class (default)
 
       const setupSteps = (email: string, password: string) =>
