@@ -239,7 +239,7 @@ start_service_docker() {
     export CREDENTIAL_ENCRYPTION_KEY="$CREDENTIAL_ENCRYPTION_KEY"
     export VOX_PLUGINS="${VOX_PLUGINS:-credits,shared-agents}"
     export VOX_TAG="${VOX_TAG:-latest}"
-    # Session broker (Phase C): Core reaches the sidecar by compose service name.
+    # Session broker: Core reaches the sidecar by compose service name.
     export SESSION_BROKER_SECRET="$SESSION_BROKER_SECRET"
     export SESSION_BROKER_URL="http://session-broker:8200"
 

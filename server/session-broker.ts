@@ -1,5 +1,5 @@
 /**
- * Phase C session broker — Core side.
+ * session broker — Core side.
  *
  * Core mints login sessions (Playwright storageState) for web eval targets by
  * driving the broker sidecar (aeval `setup:account` headless login), caches
@@ -225,7 +225,7 @@ export type OwnerSessionStampResult =
   | { kind: "ok"; snapshotInjection: SessionSnapshotStamp | null };
 
 /**
- * Evaluate + apply the Phase C session decision for an OWNER-dispatched job —
+ * Evaluate + apply the session decision for an OWNER-dispatched job —
  * the scheduler tick and the schedule run-now route, both of which are
  * owner/creator-gated so they carry NO cross-user dispatch-trust gates (the
  * run route does; it stays inline). Shared so the two owner paths can never

@@ -37,7 +37,7 @@ export interface SettlementOutcome {
 
 /**
  * Optional seam Core defines and resolves once at startup. Filled ONLY by the
- * `shared-agents` plugin (Phase B). Core carries money-shaped data but never
+ * `shared-agents` plugin. Core carries money-shaped data but never
  * interprets it. Absent → `shared` is inert.
  */
 export interface EvalMarketplace {

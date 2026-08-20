@@ -387,7 +387,7 @@ function startBackgroundWorker() {
           const provider = await storage.getProvider(workflow.providerId);
           const creator = schedule.createdBy ? await storage.getUser(schedule.createdBy) : undefined;
 
-          // Phase C: scheduled jobs are inherently owner-dispatched —
+          // scheduled jobs are inherently owner-dispatched —
           // canScheduleWorkflow (re-checked above) is owner/creator-only, so the
           // schedule creator IS the workflow owner and the untargeted owner/team
           // gate the run route applies is satisfied structurally. stampOwnerSession

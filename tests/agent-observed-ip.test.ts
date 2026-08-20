@@ -39,7 +39,7 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-describe("Phase C: agent observed-IP recording", () => {
+describe("agent observed-IP recording", () => {
   let admin: AuthSession;
   let tokenValue: string;
   let tokenId: number;

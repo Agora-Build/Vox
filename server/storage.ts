@@ -327,7 +327,7 @@ const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 export const db = drizzle(pool);
 export { pool };
 
-// Phase C session broker: a web_sessions row is owned by exactly one of a user
+// session broker: a web_sessions row is owned by exactly one of a user
 // or an organization (mirrors secrets ownership).
 export type SessionScope = { userId: number } | { organizationId: number };
 
@@ -2008,7 +2008,7 @@ export class DatabaseStorage {
     const workflow = await this.getWorkflow(job.workflowId);
     if (!workflow) { console.log(`[Secrets] getSecretsForJob: workflow ${job.workflowId} not found`); return []; }
     console.log(`[Secrets] getSecretsForJob: job ${jobId} → workflow ${workflow.id} → owner ${workflow.ownerId}`);
-    // Structural withhold: 'protected'-class rows are Core-only (Phase C). They feed
+    // Structural withhold: 'protected'-class rows are Core-only. They feed
     // the session broker's mint and must never reach an eval agent, any tier.
     const all = await this.getSecretsByUserId(workflow.ownerId);
     return all.filter((s) => s.class !== "protected");
@@ -2479,13 +2479,13 @@ export class DatabaseStorage {
     const secrets = await this.getOrgSecrets(workflow.organizationId);
     const result: Record<string, string> = {};
     for (const s of secrets) {
-      if (s.class === "protected") continue; // Core-only (Phase C) — never sent to agents
+      if (s.class === "protected") continue; // Core-only — never sent to agents
       result[s.name] = decryptValue(s.encryptedValue);
     }
     return result;
   }
 
-  // ==================== WEB SESSIONS (Phase C) ====================
+  // ==================== WEB SESSIONS ====================
 
   // db.execute(sql`...`) goes through drizzle's raw-query path, which (unlike
   // db.select()) disables node-postgres's built-in timestamp parsing and hands

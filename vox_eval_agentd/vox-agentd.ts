@@ -1863,7 +1863,7 @@ class VoxEvalAgentDaemon {
     const tempFiles: (string | null)[] = [];
 
     try {
-      // Phase C: session-injected jobs get a Core-minted storageState instead of
+      // session-injected jobs get a Core-minted storageState instead of
       // login credentials (which the server structurally withholds).
       const sessionCfg = (job.config as Record<string, unknown> | null)?.sessionInjection;
       if (sessionCfg) {
