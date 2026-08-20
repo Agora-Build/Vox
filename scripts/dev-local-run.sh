@@ -541,13 +541,25 @@ smoke_test_agent() {
         failed=1
     fi
 
-    # Check daemon script syntax (TS — use esbuild transform to validate)
-    if node -e "require('esbuild').transformSync(require('fs').readFileSync('$PROJECT_DIR/vox_eval_agentd/vox-agentd.ts','utf8'),{loader:'ts'})" 2>/dev/null; then
-        log_success "daemon syntax: OK"
+    # Check the daemon BUNDLES cleanly, not just parses. A single-file transform
+    # can't resolve imports, so a missing sibling module (e.g. ./session-inject)
+    # slips through and only fails later in the Docker build. Mirror the
+    # Dockerfile's `esbuild --bundle` step (same entrypoints, same externals,
+    # cwd = vox_eval_agentd so relative imports resolve) to catch
+    # missing-COPY / unresolved-import bugs here instead of in CI.
+    local bundle_out
+    bundle_out=$(mktemp)
+    if (cd "$PROJECT_DIR/vox_eval_agentd" && \
+        npx esbuild vox-agentd.ts session-broker.ts --bundle --platform=node --format=esm \
+            --outdir="$(dirname "$bundle_out")/vox-bundle-check" \
+            --external:child_process --external:fs --external:os --external:path \
+            --external:url --external:http --external:@aws-sdk/client-s3) >/dev/null 2>&1; then
+        log_success "daemon bundle: OK"
     else
-        log_error "daemon syntax: FAILED (vox-agentd.ts has syntax errors)"
+        log_error "daemon bundle: FAILED (vox-agentd.ts/session-broker.ts have syntax errors or unresolved imports — check every relative import has a matching COPY in the Dockerfile)"
         failed=1
     fi
+    rm -rf "$bundle_out" "$(dirname "$bundle_out")/vox-bundle-check"
 
     if [ $failed -ne 0 ]; then
         log_error "Some smoke tests failed"
@@ -654,8 +666,13 @@ build_eval_agent_docker() {
     log_info "Initializing submodules..."
     git submodule update --init --recursive
 
-    cd "$PROJECT_DIR/vox_eval_agentd"
-    docker build -t vox_eval_agentd .
+    # Build from the repo root with -f, exactly as CI does
+    # (.github/workflows/docker.yml: context: ., file: ./vox_eval_agentd/Dockerfile).
+    # The Dockerfile's COPY paths are repo-root-relative (vox_eval_agentd/…, shared/…),
+    # so building with vox_eval_agentd/ as the context would fail on those COPYs and
+    # never reach the esbuild step — diverging from what CI actually runs.
+    cd "$PROJECT_DIR"
+    docker build -f vox_eval_agentd/Dockerfile -t vox_eval_agentd .
     log_success "Docker image built: vox_eval_agentd"
 
     log_info "Running Docker image smoke tests..."
