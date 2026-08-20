@@ -476,4 +476,28 @@ describe("Phase C: dispatch integration — session stamping, pre-warm, shared-t
       }
     });
   });
+
+  describe("10. run-targets endpoint", () => {
+    let tok: { id: number; region: string | null };
+
+    beforeAll(async () => {
+      const tRes = await authFetch(admin, `${BASE_URL}/api/eval-agent-tokens`, {
+        method: "POST",
+        body: JSON.stringify({ name: `rt-own-${stamp}`, regionLocationBaseId: BASE_NA, visibility: "public" }),
+      });
+      expect(tRes.ok).toBe(true);
+      tok = await tRes.json();
+    });
+
+    it("run-targets lists own tokens and referenced-secret classes", async () => {
+      const q = tok.region ? `region=${encodeURIComponent(tok.region)}&` : "";
+      const res = await authFetch(admin, `${BASE_URL}/api/workflows/${noSessionWorkflowId}/run-targets?${q}evalSetId=${evalSetId}`);
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.agents.mine.map((a: any) => a.tokenId)).toContain(tok.id);
+      expect(body.referencedSecrets).toEqual(
+        expect.arrayContaining([{ name: runtimeEmailSecret, class: "runtime", present: true }]),
+      );
+    });
+  });
 });

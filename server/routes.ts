@@ -3900,6 +3900,60 @@ export async function registerRoutes(
     }
   });
 
+  // Targetable agents + the workflow's referenced-secret classes, for the run
+  // dialog's agent picker and the runtime-exposure banner (one round-trip).
+  app.get("/api/workflows/:id/run-targets", requireAuth, async (req, res) => {
+    try {
+      const user = await getCurrentUser(req);
+      if (!user) return res.status(401).json({ error: "Not authenticated" });
+      const workflow = await storage.getWorkflow(parseInt(req.params.id, 10));
+      if (!workflow) return res.status(404).json({ error: "Workflow not found" });
+      if (!canRunWorkflow(user, workflow)) {
+        return res.status(403).json({ error: "Not authorized to run this workflow" });
+      }
+
+      const region = req.query.region ? String(req.query.region) : null;
+      const evalSetIdRaw = req.query.evalSetId ? Number(req.query.evalSetId) : null;
+
+      type Agent = { tokenId: number; name: string; region: string; dispatchTier: string; price: number | null };
+
+      // My agents: own tokens, any tier, not revoked, region-filtered when given.
+      const ownTokens = await storage.getEvalAgentTokensByUser(user.id);
+      const mine: Agent[] = ownTokens
+        .filter((t) => !t.isRevoked && (!region || t.region === region))
+        .map((t) => ({ tokenId: t.id, name: t.name, region: t.region, dispatchTier: t.dispatchTier, price: null }));
+
+      // Shared marketplace: dispatchable listings from the plugin, if present.
+      // AgentSummary has no name, so join the token row for a display name.
+      const marketplace = getMarketplace();
+      const shared: Agent[] = [];
+      if (marketplace) {
+        const listings = await marketplace.listDispatchable(user.id);
+        for (const l of listings) {
+          if (region && l.region !== region) continue;
+          const tok = await storage.getEvalAgentToken(l.tokenId);
+          if (!tok || tok.isRevoked) continue;
+          shared.push({ tokenId: l.tokenId, name: tok.name, region: l.region, dispatchTier: "shared", price: l.pricePerUnit });
+        }
+      }
+
+      // Referenced secrets + class (workflow config + the chosen eval set, when
+      // supplied and visible to the caller).
+      const configs: unknown[] = [workflow.config];
+      if (evalSetIdRaw != null && Number.isFinite(evalSetIdRaw)) {
+        const es = await storage.getEvalSet(evalSetIdRaw);
+        if (es && canAccessResource(user, es)) configs.push(es.config);
+      }
+      const scope = sessionScopeForWorkflow(workflow);
+      const referencedSecrets = await classifyReferencedSecrets(scope, collectSecretRefs(configs));
+
+      res.json({ agents: { mine, shared }, referencedSecrets });
+    } catch (error) {
+      console.error("Error listing run targets:", error);
+      res.status(500).json({ error: "Failed to list run targets" });
+    }
+  });
+
   // ==================== EVAL JOB MANAGEMENT ROUTES ====================
 
   // List eval jobs with filters
