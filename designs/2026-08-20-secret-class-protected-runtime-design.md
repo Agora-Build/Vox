@@ -188,11 +188,14 @@ The run route already accepts `targetTokenId`; the client just doesn't offer a
 picker. Add one.
 
 - **New endpoint** `GET /api/workflows/:id/run-targets?region=…` (auth) →
-  the tokens this user may target, each with the fields the UI needs to group
-  and warn:
-  `{ tokenId, name, region, dispatchTier, price? }[]`, split into
-  **My agents** (own tokens, any tier) and **Shared marketplace**
-  (`dispatchTier === "shared"`, and `public` where applicable). Region-filtered.
+  `{ agents, referencedSecrets }`:
+  - `agents`: the tokens this user may target, each with the fields the UI needs
+    to group and warn — `{ tokenId, name, region, dispatchTier, price? }`, split
+    into **My agents** (own tokens, any tier) and **Shared marketplace**
+    (`dispatchTier === "shared"`, and `public` where applicable). Region-filtered.
+  - `referencedSecrets`: the workflow's referenced secrets with class
+    (`{ name, class, present }[]`, per Part 3) — folded in so the Part 5 banner
+    needs no second call.
 - **Run dialogs** (`console-workflow-detail.tsx` run dialog ~129–184;
   `run-your-own.tsx` run section) gain an **Agent** selector. Selecting an agent
   sets `targetTokenId` on the run mutation (region derives from the token, as the
@@ -204,15 +207,15 @@ picker. Add one.
 
 ### Part 5 — Runtime-secret → shared-agent warning + required acknowledgement
 
-- **Pre-run info** (drive the banner without guessing): the same
-  `run-targets` call, or a companion `GET
-  /api/workflows/:id/referenced-secrets`, returns the workflow's referenced
-  secrets with class so the client can compute "does this run expose Runtime
-  secrets?". Reuses Part 3.
+- **Pre-run info** (drive the banner without guessing): the `run-targets`
+  response also carries the workflow's referenced secrets with class (folded in,
+  per the resolved decision) so the client can compute "does this run expose
+  Runtime secrets?" from the same single call. Reuses Part 3.
 - **Client:** when the selected agent's tier is `shared` **and** the workflow /
   eval sets reference ≥1 Runtime secret, render the ⚠️ banner listing the
-  exposed secret names and require an explicit **"I understand"** confirmation
-  (checkbox or confirm step) before the Run button is enabled.
+  exposed secret names and require an explicit **"I understand"** confirmation —
+  an **inline checkbox in the run dialog that gates the Run button** (disabled
+  until ticked) — before the run can be submitted.
 - **Server (authoritative gate):** in the run route's shared branch, after the
   existing `credentialConsent` handling, add: if the workflow references Runtime
   secrets and the target token is `shared`, require
@@ -240,8 +243,7 @@ jsonb, exactly like `credentialConsent`.
 | --- | --- |
 | `POST /api/secrets`, `POST /api/org-secrets` | class value `protected` (was `login`); downgrade guard now `protected`→`runtime` |
 | `GET /api/secrets`, `GET /api/org-secrets` | class value `protected` in responses |
-| `GET /api/workflows/:id/run-targets` | **new** — targetable agents (tier, region) |
-| `GET /api/workflows/:id/referenced-secrets` | **new** (or folded into run-targets) — referenced secrets + class |
+| `GET /api/workflows/:id/run-targets` | **new** — targetable agents (tier, region) **and** the workflow's referenced secrets + class (folded in, one round-trip) |
 | `POST /api/workflows/:workflowId/run` | new pre-run validation (Protected-outside-login → 400); new `runtimeSecretConsent` gate for Runtime-on-shared |
 
 ## UI changes
@@ -291,12 +293,18 @@ jsonb, exactly like `credentialConsent`.
   withheld from the fetched payload while `runtime` are delivered.
 - Update any fixtures/strings referencing the `login` class.
 
-## Open questions
+## Resolved decisions
 
-1. **Acknowledgement UX** — checkbox inline in the run dialog vs a second confirm
-   step? (Default: inline "I understand" checkbox gating the Run button.)
-2. **`referenced-secrets` endpoint** — standalone vs folded into `run-targets`?
-   (Default: fold into `run-targets` to save a round-trip; split only if the
-   workflow editor also needs it.)
-3. **Advisory Protected-misuse hint in the workflow editor** — include now or
-   defer? (Default: defer; pre-run validation is the correctness guarantee.)
+- **Acknowledgement UX** — an inline "I understand" checkbox in the run dialog
+  that gates the Run button (disabled until ticked). *(Confirmed 2026-08-20.)*
+- **Referenced-secrets delivery** — **folded into `GET
+  /api/workflows/:id/run-targets`** (one round-trip); no standalone
+  `referenced-secrets` endpoint. The run-targets response carries both the
+  targetable agents and the workflow's referenced secrets + class.
+  *(Confirmed 2026-08-20.)*
+- **Advisory Protected-misuse hint in the workflow editor** — **deferred**;
+  the pre-run validation (Part 2) is the correctness guarantee. The editor may
+  gain an advisory hint later, but it is out of scope for this work.
+  *(Confirmed 2026-08-20.)*
+
+All open questions are resolved; no items remain outstanding.
