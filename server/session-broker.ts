@@ -257,3 +257,34 @@ export async function stampOwnerSession(
   }
   return { kind: "ok", snapshotInjection: null };
 }
+
+/**
+ * Join referenced secret NAMES against the scope's secret rows, attaching each
+ * name's class and whether it exists. Names with no matching row default to
+ * class "runtime" / present:false (a dangling ref delivers nothing).
+ */
+export async function classifyReferencedSecrets(
+  scope: SessionScope,
+  names: Set<string>,
+): Promise<Array<{ name: string; class: "runtime" | "protected"; present: boolean }>> {
+  const rows = "userId" in scope
+    ? await storage.getSecretsByUserId(scope.userId)
+    : await storage.getOrgSecrets(scope.organizationId);
+  return Array.from(names).map((name) => {
+    const row = rows.find((r) => r.name === name);
+    return { name, class: (row?.class ?? "runtime") as "runtime" | "protected", present: !!row };
+  });
+}
+
+/**
+ * A Protected secret is only meaningful as a platform.setup login credential.
+ * Returns the names of Protected secrets referenced anywhere OTHER than the
+ * given login pair — i.e. misconfigurations the run route must reject.
+ */
+export function findProtectedMisuse(
+  classified: Array<{ name: string; class: string }>,
+  loginPair: { emailSecret: string; passwordSecret: string } | null,
+): string[] {
+  const allowed = new Set(loginPair ? [loginPair.emailSecret, loginPair.passwordSecret] : []);
+  return classified.filter((c) => c.class === "protected" && !allowed.has(c.name)).map((c) => c.name);
+}
