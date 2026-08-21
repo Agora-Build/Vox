@@ -19,6 +19,11 @@ function isPrivateIpv4(host: string): boolean {
   return false;
 }
 
+export function isBrokerFresh(lastSeenAt: Date | null, thresholdSeconds: number, now: Date): boolean {
+  if (!lastSeenAt) return false;
+  return now.getTime() - lastSeenAt.getTime() <= thresholdSeconds * 1000;
+}
+
 export function isInternalBrokerUrl(raw: string): boolean {
   let u: URL;
   try { u = new URL(raw); } catch { return false; }

@@ -59,6 +59,10 @@ import {
   type InsertUserStorageConfig,
   type OrgSecret,
   type WebSession,
+  type InsertBrokerRegistrationToken,
+  type BrokerRegistrationToken,
+  type InsertBroker,
+  type Broker,
   users,
   organizations,
   providers,
@@ -93,6 +97,8 @@ import {
   userStorageConfig,
   orgSecrets,
   webSessions,
+  brokerRegistrationTokens,
+  brokers,
 } from "@shared/schema";
 import { regionSiteSequence } from "@shared/regions";
 import { drizzle } from "drizzle-orm/node-postgres";
@@ -752,6 +758,61 @@ export class DatabaseStorage {
     } catch (err) {
       console.error(`[Agents] Failed to record observed IP for agent ${agentId}:`, err instanceof Error ? err.message : err);
     }
+  }
+
+  async createBrokerRegistrationToken(t: InsertBrokerRegistrationToken): Promise<BrokerRegistrationToken> {
+    const [row] = await db.insert(brokerRegistrationTokens).values(t).returning();
+    return row;
+  }
+  async getBrokerRegistrationTokenByHash(hash: string): Promise<BrokerRegistrationToken | undefined> {
+    const [row] = await db.select().from(brokerRegistrationTokens)
+      .where(eq(brokerRegistrationTokens.tokenHash, hash));
+    return row;
+  }
+  async getAllBrokerRegistrationTokens(): Promise<BrokerRegistrationToken[]> {
+    return db.select().from(brokerRegistrationTokens).orderBy(desc(brokerRegistrationTokens.createdAt));
+  }
+  async revokeBrokerRegistrationToken(id: number): Promise<void> {
+    await db.update(brokerRegistrationTokens).set({ isRevoked: true })
+      .where(eq(brokerRegistrationTokens.id, id));
+  }
+  async updateBrokerRegistrationTokenLastUsed(id: number): Promise<void> {
+    await db.update(brokerRegistrationTokens).set({ lastUsedAt: new Date() })
+      .where(eq(brokerRegistrationTokens.id, id));
+  }
+  async createBroker(b: InsertBroker): Promise<Broker> {
+    const [row] = await db.insert(brokers).values(b).returning();
+    return row;
+  }
+  async getBroker(id: number): Promise<Broker | undefined> {
+    const [row] = await db.select().from(brokers).where(eq(brokers.id, id));
+    return row;
+  }
+  async getAllBrokers(): Promise<Broker[]> {
+    return db.select().from(brokers).orderBy(desc(brokers.createdAt));
+  }
+  async updateBroker(id: number, data: Partial<InsertBroker>): Promise<Broker | undefined> {
+    const [row] = await db.update(brokers).set({ ...data, updatedAt: new Date() })
+      .where(eq(brokers.id, id)).returning();
+    return row;
+  }
+  async updateBrokerHeartbeat(id: number): Promise<void> {
+    await db.update(brokers).set({ lastSeenAt: new Date(), updatedAt: new Date() })
+      .where(eq(brokers.id, id));
+  }
+  async updateBrokerObservedIp(id: number, ip: string): Promise<void> {
+    try {
+      await db.update(brokers).set({ observedIp: ip, observedIpAt: new Date() })
+        .where(eq(brokers.id, id));
+    } catch { /* fire-and-forget, mirrors updateEvalAgentObservedIp */ }
+  }
+  async getRoutableBrokers(brokerType: string, offlineThresholdSeconds: number): Promise<Broker[]> {
+    const cutoff = new Date(Date.now() - offlineThresholdSeconds * 1000);
+    return db.select().from(brokers).where(and(
+      eq(brokers.brokerType, brokerType),
+      eq(brokers.state, "idle"),
+      gte(brokers.lastSeenAt, cutoff),
+    )).orderBy(desc(brokers.lastSeenAt));
   }
 
   async countTodayJobsByOwner(ownerId: number): Promise<number> {

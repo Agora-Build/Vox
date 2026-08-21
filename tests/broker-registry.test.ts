@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { isKnownBrokerType, isInternalBrokerUrl, KNOWN_BROKER_TYPES } from "../server/broker-registry";
+import { isKnownBrokerType, isInternalBrokerUrl, KNOWN_BROKER_TYPES, isBrokerFresh } from "../server/broker-registry";
 
 describe("isKnownBrokerType", () => {
   it("accepts auth-session", () => expect(isKnownBrokerType("auth-session")).toBe(true));
@@ -37,4 +37,14 @@ describe("isInternalBrokerUrl", () => {
     expect(isInternalBrokerUrl("http://[::1]:8200")).toBe(false));
   it("rejects IPv6 ULA literal", () =>
     expect(isInternalBrokerUrl("http://[fc00::1]:8200")).toBe(false));
+});
+
+describe("isBrokerFresh", () => {
+  const now = new Date("2026-08-21T12:00:00Z");
+  it("fresh when within threshold", () =>
+    expect(isBrokerFresh(new Date("2026-08-21T11:59:30Z"), 90, now)).toBe(true));
+  it("stale when past threshold", () =>
+    expect(isBrokerFresh(new Date("2026-08-21T11:58:00Z"), 90, now)).toBe(false));
+  it("stale when never seen", () =>
+    expect(isBrokerFresh(null, 90, now)).toBe(false));
 });
