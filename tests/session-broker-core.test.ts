@@ -94,7 +94,7 @@ const d = hasDb ? describe : describe.skip;
 
 d("ensureSession (DB + mock fetch)", () => {
   // ensureSession now routes through broker-registry (routeToBroker/mintViaBroker)
-  // instead of reading SESSION_BROKER_URL/SECRET directly — register a live,
+  // instead of reading a static broker URL/secret directly — register a live,
   // routable "auth-session" broker + cache its mint secret so the mock-fetch
   // mint path below actually gets dispatched to it.
   let tokenId: number;

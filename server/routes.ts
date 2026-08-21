@@ -2490,7 +2490,7 @@ export async function registerRoutes(
         resolvedBrokerType = resolved.brokerType;
       }
       if (existingRow && existingRow.brokerType === "auth-session" && resolvedBrokerType === null) {
-        return res.status(400).json({ error: "A protected secret cannot be reclassified to runtime — delete and recreate it instead" });
+        return res.status(400).json({ error: "A brokered secret cannot be reclassified to runtime — delete and recreate it instead" });
       }
 
       const encrypted = encryptValue(value);
@@ -2585,7 +2585,7 @@ export async function registerRoutes(
         resolvedBrokerType = resolved.brokerType;
       }
       if (existingRow && existingRow.brokerType === "auth-session" && resolvedBrokerType === null) {
-        return res.status(400).json({ error: "A protected secret cannot be reclassified to runtime — delete and recreate it instead" });
+        return res.status(400).json({ error: "A brokered secret cannot be reclassified to runtime — delete and recreate it instead" });
       }
 
       const encrypted = encryptValue(value);
@@ -3850,13 +3850,13 @@ export async function registerRoutes(
       const sessionNeed: SessionNeed | null = sessionReq.kind === "need" ? sessionReq.need : null;
 
       // Enumerate every ${secrets.NAME} the workflow + eval set reference, with
-      // class + presence. Drives the Protected-misuse gate here and the
+      // class + presence. Drives the Brokered-misuse gate here and the
       // Runtime-on-shared consent gate in the targeted branch below.
       const classified = await classifyReferencedSecrets(
         scope,
         collectSecretRefs([workflow.config, evalSet.config]),
       );
-      // A Protected secret is only meaningful as a platform.setup login credential.
+      // A Brokered secret is only meaningful as a platform.setup login credential.
       // Any other reference is a misconfiguration — reject with a clear message
       // instead of a silently broken run.
       const misused = findBrokeredMisuse(
@@ -3865,7 +3865,7 @@ export async function registerRoutes(
       );
       if (misused.length > 0) {
         return res.status(400).json({
-          error: `Protected secret(s) ${misused.join(", ")} are referenced as runtime values — Protected secrets can only be login credentials in platform.setup. Mark them Runtime or remove the reference.`,
+          error: `Brokered secret(s) ${misused.join(", ")} are referenced as runtime values — Brokered secrets can only be login credentials in platform.setup. Mark them Runtime or remove the reference.`,
         });
       }
 
@@ -6254,16 +6254,16 @@ export async function registerRoutes(
       const event = await storage.getClashEvent(match.eventId);
       if (!event) return res.status(404).json({ error: "Event not found" });
 
-      // Fetch and decrypt event owner's secrets. PROTECTED-class secrets are
+      // Fetch and decrypt event owner's secrets. BROKERED-class secrets are
       // structurally withheld: Core-only credentials used to mint web sessions,
       // never handed to a runner (MEDIUM-2). Only runtime-class secrets are
       // decrypted for direct injection.
       const userSecrets = await storage.getSecretsByUserId(event.createdBy);
       const decrypted: Record<string, string> = {};
       let decryptErrors = 0;
-      let protectedWithheld = 0;
+      let brokeredWithheld = 0;
       for (const s of userSecrets) {
-        if (s.brokerType != null) { protectedWithheld++; continue; }
+        if (s.brokerType != null) { brokeredWithheld++; continue; }
         try {
           decrypted[s.name] = decryptValue(s.encryptedValue);
         } catch {
@@ -6271,7 +6271,7 @@ export async function registerRoutes(
         }
       }
 
-      console.log(`[ClashSecrets] Runner ${runner.runnerId} fetched secrets for match #${matchId} (event #${event.id}, owner #${event.createdBy}): ${Object.keys(decrypted).length} decrypted, ${decryptErrors} failed, ${protectedWithheld} protected-class withheld`);
+      console.log(`[ClashSecrets] Runner ${runner.runnerId} fetched secrets for match #${matchId} (event #${event.id}, owner #${event.createdBy}): ${Object.keys(decrypted).length} decrypted, ${decryptErrors} failed, ${brokeredWithheld} brokered-class withheld`);
 
       res.json(decrypted);
     } catch (error) {

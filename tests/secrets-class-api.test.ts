@@ -95,7 +95,7 @@ describe('Secrets class + attestation API', () => {
     });
     expect(res.status).toBe(400);
     const body = await res.json();
-    expect(body.error).toBe('A protected secret cannot be reclassified to runtime — delete and recreate it instead');
+    expect(body.error).toBe('A brokered secret cannot be reclassified to runtime — delete and recreate it instead');
 
     // brokerType must remain unchanged
     const row = await getSecret(loginName);

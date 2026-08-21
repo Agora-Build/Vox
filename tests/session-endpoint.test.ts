@@ -186,8 +186,8 @@ describe("GET /api/eval-agent/jobs/:jobId/session", () => {
 
   // /run pre-warms the session cache for session-needing workflows (Task 6:
   // `void ensureSession(scope, sessionNeed)` fired inline, fire-and-forget, right
-  // when the job is created). In this dev server SESSION_BROKER_URL/SECRET are
-  // unset, so that pre-warm fails fast and lands the row in 'failed' within a
+  // when the job is created). In this dev server no broker is registered,
+  // so that pre-warm fails fast and lands the row in 'failed' within a
   // handful of local DB round-trips — before our own follow-up assertions run.
   // Wait for it to settle (leave 'minting') before seeding/asserting our own
   // state, so our writes don't race the pre-warm's.
@@ -270,9 +270,9 @@ describe("GET /api/eval-agent/jobs/:jobId/session", () => {
     const body = await res.json();
     expect(body).toEqual({ required: true, status: "minting" });
 
-    // The endpoint fire-and-forgets ensureSession. Without SESSION_BROKER_URL/
-    // SECRET configured, ensureSession's mint attempt throws synchronously
-    // inside its try and records the failure on the row — poll briefly for it.
+    // The endpoint fire-and-forgets ensureSession. With no broker registered,
+    // ensureSession's mint attempt throws synchronously inside its try and
+    // records the failure on the row — poll briefly for it.
     let last = res;
     const deadline = Date.now() + 10_000;
     while (Date.now() < deadline && last.status !== 503) {

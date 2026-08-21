@@ -388,7 +388,7 @@ describe("dispatch integration — session stamping, pre-warm, shared-tier gates
     });
   });
 
-  describe("8. Protected-misuse pre-run validation", () => {
+  describe("8. Brokered-misuse pre-run validation", () => {
     const protectedSecret = `API_TOKEN_${stamp}`;
     let misuseWorkflowId: number;
 
@@ -402,7 +402,7 @@ describe("dispatch integration — session stamping, pre-warm, shared-tier gates
           providerId,
           config: {
             framework: "aeval",
-            // References the Protected secret as a runtime value (an API header),
+            // References the Brokered secret as a runtime value (an API header),
             // not as a platform.setup email/password login pair.
             stepsPrefix: `- type: http.request\n  params:\n    headers:\n      Authorization: \${secrets.${protectedSecret}}`,
           },
@@ -416,14 +416,14 @@ describe("dispatch integration — session stamping, pre-warm, shared-tier gates
       await authFetch(admin, `${BASE_URL}/api/secrets/${encodeURIComponent(protectedSecret)}`, { method: "DELETE" });
     });
 
-    it("rejects a run when a Protected secret is used outside platform.setup login", async () => {
+    it("rejects a run when a Brokered secret is used outside platform.setup login", async () => {
       const res = await authFetch(admin, `${BASE_URL}/api/workflows/${misuseWorkflowId}/run`, {
         method: "POST",
         body: JSON.stringify({ region: REGION_NA, evalSetId }),
       });
       expect(res.status).toBe(400);
       const body = await res.json();
-      expect(body.error).toMatch(/Protected secret/i);
+      expect(body.error).toMatch(/Brokered secret/i);
       expect(body.error).toContain("API_TOKEN");
     });
   });

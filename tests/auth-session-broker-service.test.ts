@@ -39,7 +39,7 @@ describe("scrubCredentials", () => {
   });
 });
 
-describe("session-broker HTTP service", () => {
+describe("auth-session-broker HTTP service", () => {
   let server: Server;
   let baseUrl: string;
   let received: MintRequest[] = [];
@@ -143,7 +143,7 @@ describe("session-broker HTTP service", () => {
   });
 });
 
-describe("session-broker HTTP service (no mint secret registered yet)", () => {
+describe("auth-session-broker HTTP service (no mint secret registered yet)", () => {
   let server: Server;
   let baseUrl: string;
 

@@ -163,7 +163,7 @@ export async function ensureSession(
     if (!claimed) return; // another instance is minting, or it turned fresh
     try {
       if (!(await brokerAvailable("auth-session"))) {
-        throw new Error("session broker not configured (SESSION_BROKER_URL/SECRET)");
+        throw new Error("no live auth-session broker registered");
       }
       const email = await resolveScopeSecret(scope, need.emailSecret);
       const password = await resolveScopeSecret(scope, need.passwordSecret);

@@ -57,7 +57,7 @@ fi
 DB_CONTAINER="vox-postgres"
 SERVICE_CONTAINER="vox-service"
 EVAL_AGENT_CONTAINER="vox-eval-agent"
-BROKER_CONTAINER="vox-session-broker"
+BROKER_CONTAINER="vox-auth-session-broker"
 DB_URL="postgresql://vox:vox123@localhost:5432/vox"
 SERVER_PORT=5000
 # HOST can be set to machine's IP for remote access (e.g., HOST=192.168.1.100)
@@ -69,10 +69,16 @@ INIT_CODE="VOX-DEBUG-2024"
 # loaded from .env/.env.dev above so the server and direct-DB tests share one
 # key; fall back to a deterministic dev key when none is set.
 CREDENTIAL_ENCRYPTION_KEY="${CREDENTIAL_ENCRYPTION_KEY:-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef}"
-# Shared bearer secret authenticating Core → session-broker mint requests.
-# Respect a value from .env/.env.dev; fall back to a deterministic dev secret.
-# Must match the value the broker container is started with (docker-compose.yml).
-SESSION_BROKER_SECRET="${SESSION_BROKER_SECRET:-local-broker-secret-change-me}"
+# NOTE: Core no longer holds a static broker URL/secret — the broker
+# self-registers with Core instead (register/heartbeat, per-broker mint
+# secret). This script does not bring up the auth-session-broker container
+# with real self-registration wired: doing so needs an admin-minted
+# BROKER_REG_TOKEN (POST /api/admin/broker-tokens as an admin, after the
+# server is up), which this script cannot mint for you mechanically. The
+# broker is only needed for brokered/login-class secrets — optional for most
+# local flows. TODO: if you need a live local broker, mint a token via the
+# admin API/console and export VOX_CORE_URL / BROKER_REG_TOKEN /
+# BROKER_ADVERTISE_URL before `docker compose up -d auth-session-broker`.
 EVAL_AGENT_TOKEN_FILE="/tmp/vox-eval-agent-token.txt"
 
 # Multi-region configuration
@@ -239,19 +245,20 @@ start_service_docker() {
     export CREDENTIAL_ENCRYPTION_KEY="$CREDENTIAL_ENCRYPTION_KEY"
     export VOX_PLUGINS="${VOX_PLUGINS:-credits,shared-agents}"
     export VOX_TAG="${VOX_TAG:-latest}"
-    # Session broker: Core reaches the sidecar by compose service name.
-    export SESSION_BROKER_SECRET="$SESSION_BROKER_SECRET"
-    export SESSION_BROKER_URL="http://session-broker:8200"
+    # NOTE: Core no longer takes a static broker URL/secret — the broker
+    # self-registers with Core instead (see the BROKER_REG_TOKEN note above).
 
     # Build and run Core via docker compose
     docker compose up -d --build vox-service
 
-    # Bring up the session broker sidecar. It builds the Dockerfile's `broker`
-    # target into vox-session-broker:latest on first use (compose only rebuilds
-    # when the image is absent; `docker rmi vox-session-broker` forces a rebuild).
-    # Started here so a login-class eval can mint a session.
-    log_info "Starting session broker (Docker sidecar)..."
-    docker compose up -d session-broker
+    # Bring up the auth-session-broker sidecar. It builds the Dockerfile's
+    # `broker` target into vox-auth-session-broker:latest on first use (compose
+    # only rebuilds when the image is absent; `docker rmi vox-auth-session-broker`
+    # forces a rebuild). Started here so a login-class eval can mint a session,
+    # but it won't actually register with Core until BROKER_REG_TOKEN is set
+    # (see note above) — harmless no-op otherwise for flows that don't need it.
+    log_info "Starting auth-session broker (Docker sidecar)..."
+    docker compose up -d auth-session-broker
 
     # Wait for service to be ready
     wait_for_service "$SERVER_URL/api/auth/status" "Vox service" 60
@@ -569,13 +576,13 @@ smoke_test_agent() {
     local bundle_out
     bundle_out=$(mktemp)
     if (cd "$PROJECT_DIR/vox_eval_agentd" && \
-        npx esbuild vox-agentd.ts session-broker.ts --bundle --platform=node --format=esm \
+        npx esbuild vox-agentd.ts auth-session-broker.ts --bundle --platform=node --format=esm \
             --outdir="$(dirname "$bundle_out")/vox-bundle-check" \
             --external:child_process --external:fs --external:os --external:path \
             --external:url --external:http --external:@aws-sdk/client-s3) >/dev/null 2>&1; then
         log_success "daemon bundle: OK"
     else
-        log_error "daemon bundle: FAILED (vox-agentd.ts/session-broker.ts have syntax errors or unresolved imports — check every relative import has a matching COPY in the Dockerfile)"
+        log_error "daemon bundle: FAILED (vox-agentd.ts/auth-session-broker.ts have syntax errors or unresolved imports — check every relative import has a matching COPY in the Dockerfile)"
         failed=1
     fi
     rm -rf "$bundle_out" "$(dirname "$bundle_out")/vox-bundle-check"
@@ -820,11 +827,11 @@ show_status() {
         else
             echo -e "  vox-service:     ${RED}Stopped${NC}"
         fi
-        # Session broker sidecar (docker mode only)
+        # Auth-session broker sidecar (docker mode only)
         if docker ps --format '{{.Names}}' | grep -q "^${BROKER_CONTAINER}$"; then
-            echo -e "  session-broker:  ${GREEN}Running${NC} (Docker)"
+            echo -e "  auth-session-broker:  ${GREEN}Running${NC} (Docker)"
         else
-            echo -e "  session-broker:  ${RED}Stopped${NC}"
+            echo -e "  auth-session-broker:  ${RED}Stopped${NC}"
         fi
     else
         if [ -f /tmp/vox-server.pid ] && kill -0 $(cat /tmp/vox-server.pid) 2>/dev/null; then

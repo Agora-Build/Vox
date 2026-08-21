@@ -702,7 +702,7 @@ export type InsertSecret = z.infer<typeof insertSecretSchema>;
 export type Secret = typeof secrets.$inferSelect;
 
 // ==================== BROKER REGISTRY ====================
-// Dynamic session-broker registry (mirrors evalAgentTokens/evalAgents). Brokers
+// Dynamic broker registry (mirrors evalAgentTokens/evalAgents). Brokers
 // register with a token, then Core dispatches mint requests to a live broker by
 // (broker_type, state).
 
@@ -765,7 +765,7 @@ export const webSessions = pgTable("web_sessions", {
   // Identity of the login credential PAIR that minted this session, so two
   // accounts on the same platform under the same owner scope never share a
   // cached bundle — a sha256 of the two login-secret NAMES (see
-  // credentialKeyFor in session-broker.ts). Without it, an attested
+  // credentialKeyFor in auth-session.ts). Without it, an attested
   // test-account workflow could be served a non-attested prod-account session
   // minted from a different secret pair, defeating the shared-tier attestation
   // gate.
