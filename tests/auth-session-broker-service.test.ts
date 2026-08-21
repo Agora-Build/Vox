@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import type { AddressInfo } from "net";
 import type { Server } from "http";
-import { createBrokerServer, scrubCredentials, secretMatches, type MintRequest } from "../vox_eval_agentd/auth-session-broker";
+import { createBrokerServer, scrubCredentials, secretMatches, heartbeat, type MintRequest } from "../vox_eval_agentd/auth-session-broker";
 
 describe("secretMatches (constant-time bearer check)", () => {
   it("true only on an exact match", () => {
@@ -168,5 +168,20 @@ describe("session-broker HTTP service (no mint secret registered yet)", () => {
       body: JSON.stringify({ platformId: "vapi", email: "a@b.com", password: "pw" }),
     });
     expect(res.status).toBe(401);
+  });
+});
+
+describe("heartbeat resilience", () => {
+  it("does not reject when register() fails (no unhandled rejection -> no process crash)", async () => {
+    // Under vitest the entrypoint guard is false, so register() never ran and the
+    // module's `state` is still null. heartbeat() therefore takes the register() path;
+    // we make the underlying fetch reject to simulate Core being briefly unreachable.
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (() => Promise.reject(new Error("ECONNREFUSED"))) as typeof fetch;
+    try {
+      await expect(heartbeat()).resolves.toBeUndefined();
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 });

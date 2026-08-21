@@ -179,16 +179,20 @@ async function register(): Promise<void> {
   state = await res.json();
 }
 
-async function heartbeat(): Promise<void> {
-  if (!state) return register();
-  const res = await fetch(`${CORE_URL}/api/brokers/heartbeat`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', authorization: `Bearer ${REG_TOKEN}` },
-    body: JSON.stringify({ brokerId: state.brokerId, leaseId: state.leaseId, state: 'idle' }),
-  }).catch(() => null);
-  if (!res || !res.ok) return;
-  const body = await res.json().catch(() => ({}));
-  if (body.reregister || body.superseded) { state = null; await register(); }
+export async function heartbeat(): Promise<void> {
+  try {
+    if (!state) { await register(); return; }
+    const res = await fetch(`${CORE_URL}/api/brokers/heartbeat`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${REG_TOKEN}` },
+      body: JSON.stringify({ brokerId: state.brokerId, leaseId: state.leaseId, state: 'idle' }),
+    }).catch(() => null);
+    if (!res || !res.ok) return;
+    const body = await res.json().catch(() => ({}));
+    if (body.reregister || body.superseded) { state = null; await register(); }
+  } catch (err) {
+    console.error('[Broker] heartbeat error:', err instanceof Error ? err.message : err);
+  }
 }
 
 // Entrypoint (skipped under vitest import)
