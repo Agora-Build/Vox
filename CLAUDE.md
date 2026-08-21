@@ -110,12 +110,13 @@ Optional:
 - `WEB_SESSION_TTL_HOURS` - How long a minted `storageState` session stays fresh before re-minting (default: 1)
 - `WEB_SESSION_MINT_TIMEOUT_SECONDS` - Max time to wait for a broker mint before failing the request (default: 180)
 
-Auth-session broker sidecar (its own env, not read by Core — see Auth-Session Broker below):
+Auth-session broker sidecar (registration env is broker-only, not read by Core — see Auth-Session Broker below):
 - `VOX_CORE_URL` - Core base URL the broker registers/heartbeats against
 - `BROKER_REG_TOKEN` - Admin-issued registration token (hashed at rest, like eval agent tokens)
 - `BROKER_ADVERTISE_URL` - Internal-only URL Core calls back to mint a session
 - `BROKER_NAME` - Optional display name for the registered broker
 - `BROKER_PORT` - Port the broker's HTTP service listens on
+- `WEB_SESSION_MINT_TIMEOUT_SECONDS` - Max seconds the broker waits for a headless login to finish before failing the mint (default: 180). Shared with the Core-side entry above — Core reads the same var to bound how long it waits on the broker's mint.
 
 ## Architecture
 
