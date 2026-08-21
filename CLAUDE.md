@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Working Conventions
 
-- **Reviewing design files:** whenever you need the user to review a design doc, spec, plan, or any markdown deliverable, serve it with `atem serv files <path>` (renders markdown → HTML over HTTPS and prints the URLs) rather than only citing the file path. Use `--background` to keep it running while iterating; manage with `atem serv list` / `atem serv kill files-<port>`.
+- **Reviewing design files:** whenever you need the user to review a design doc, spec, plan, or any markdown deliverable, serve it with `atem serv files <path>` (renders markdown → HTML over HTTPS and prints the URLs) rather than only citing the file path. **Surface the Custom URL** (the `genie.netbird.cloud:<port>/...` one) as the link to click — it is the reachable/shareable one; don't hand over only Local/Network. Use `--background` to keep it running while iterating; manage with `atem serv list` / `atem serv kill files-<port>`.
 - **Dev vs test scripts:** `scripts/dev-local-run.sh` is for local **service setup** (PostgreSQL + Vox service + eval agent — start/stop/reset/status/logs); `scripts/full-tests-run.sh` is the **test runner** (unit/Vitest + audio pipeline + E2E/Playwright). They are not interchangeable.
 - **Pre-merge gate:** run `./scripts/full-tests-run.sh` before every PR merge — the full suite (unit + audio + E2E), not just `npm test`.
 
