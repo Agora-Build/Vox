@@ -36,3 +36,49 @@ export function isInternalBrokerUrl(raw: string): boolean {
   if (!host.includes(".")) return true;              // single-label DNS (docker alias)
   return false;
 }
+
+import { storage } from "./storage";
+import type { Broker } from "@shared/schema";
+
+const mintSecretCache = new Map<number, string>();
+export function cacheBrokerMintSecret(id: number, secret: string): void { mintSecretCache.set(id, secret); }
+export function getCachedBrokerMintSecret(id: number): string | undefined { return mintSecretCache.get(id); }
+export function hasBrokerMintSecret(id: number): boolean { return mintSecretCache.has(id); }
+export function clearBrokerMintSecret(id: number): void { mintSecretCache.delete(id); }
+
+export interface BrokerTarget { id: number; url: string; mintSecret: string; }
+
+// Testable core: caller supplies the routable-broker lister (already freshness/state filtered).
+export async function routeToBrokerWith(
+  brokerType: BrokerType,
+  list: (t: string, thr: number) => Promise<Broker[]>,
+): Promise<BrokerTarget | null> {
+  const candidates = await list(brokerType, BROKER_OFFLINE_THRESHOLD_SECONDS);
+  for (const b of candidates) {              // list is ordered freshest-first
+    const secret = mintSecretCache.get(b.id);
+    if (secret) return { id: b.id, url: b.url, mintSecret: secret };
+  }
+  return null;
+}
+
+export function routeToBroker(brokerType: BrokerType): Promise<BrokerTarget | null> {
+  return routeToBrokerWith(brokerType, (t, thr) => storage.getRoutableBrokers(t, thr));
+}
+
+export async function brokerAvailable(brokerType: BrokerType): Promise<boolean> {
+  return (await routeToBroker(brokerType)) != null;
+}
+
+export async function mintViaBroker(
+  target: BrokerTarget,
+  req: { platformId: string; email: string; password: string },
+  fetchImpl: typeof fetch = fetch,
+): Promise<unknown> {
+  const res = await fetchImpl(`${target.url}/mint`, {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${target.mintSecret}` },
+    body: JSON.stringify(req),
+  });
+  if (!res.ok) throw new Error(`broker mint failed: ${res.status}`);
+  return res.json();
+}

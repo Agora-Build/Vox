@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { isKnownBrokerType, isInternalBrokerUrl, KNOWN_BROKER_TYPES, isBrokerFresh } from "../server/broker-registry";
+import { isKnownBrokerType, isInternalBrokerUrl, KNOWN_BROKER_TYPES, isBrokerFresh, cacheBrokerMintSecret, clearBrokerMintSecret, routeToBrokerWith } from "../server/broker-registry";
 
 describe("isKnownBrokerType", () => {
   it("accepts auth-session", () => expect(isKnownBrokerType("auth-session")).toBe(true));
@@ -47,4 +47,24 @@ describe("isBrokerFresh", () => {
     expect(isBrokerFresh(new Date("2026-08-21T11:58:00Z"), 90, now)).toBe(false));
   it("stale when never seen", () =>
     expect(isBrokerFresh(null, 90, now)).toBe(false));
+});
+
+describe("routeToBrokerWith", () => {
+  const broker = (id: number, lastSeenAt: string) =>
+    ({ id, name: `b${id}`, url: `http://10.0.0.${id}:8200`, brokerType: "auth-session", lastSeenAt: new Date(lastSeenAt) } as any);
+
+  it("skips a routable broker with no cached mint secret", async () => {
+    clearBrokerMintSecret(1);
+    const t = await routeToBrokerWith("auth-session", async () => [broker(1, "2026-08-21T12:00:00Z")]);
+    expect(t).toBeNull();
+  });
+
+  it("returns the freshest broker that has a cached secret", async () => {
+    cacheBrokerMintSecret(2, "sekret");
+    const t = await routeToBrokerWith(
+      "auth-session",
+      async () => [broker(1, "2026-08-21T11:00:00Z"), broker(2, "2026-08-21T12:00:00Z")],
+    );
+    expect(t).toEqual({ id: 2, url: "http://10.0.0.2:8200", mintSecret: "sekret" });
+  });
 });
