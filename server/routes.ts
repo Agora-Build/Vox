@@ -11,7 +11,7 @@ import { registerApiV1Routes } from "./routes-api-v1";
 import { generateSignedUrlForUser } from "./s3";
 import { validateTierChoice, resolveTargetedDispatch, filterDispatchableAgents } from "./dispatch";
 import { getMarketplace } from "./marketplace";
-import { parsePlatformSetup, sessionScopeForWorkflow, evaluateSessionRequirement, getProtectedSecretNames, ensureSession, stampOwnerSession, credentialKeyFor, SESSION_FRESH_MARGIN_SECONDS, classifyReferencedSecrets, findProtectedMisuse, type SessionNeed } from "./session-broker";
+import { parsePlatformSetup, sessionScopeForWorkflow, evaluateSessionRequirement, getBrokeredSecretNames, ensureSession, stampOwnerSession, credentialKeyFor, SESSION_FRESH_MARGIN_SECONDS, classifyReferencedSecrets, findBrokeredMisuse, defaultBrokerTypeForName, type SessionNeed } from "./auth-session";
 import {
   hashPassword,
   verifyPassword,
@@ -3720,7 +3720,7 @@ export async function registerRoutes(
       const wfConfig = (workflow.config ?? {}) as Record<string, unknown>;
       const setupInfo = parsePlatformSetup(wfConfig.stepsPrefix as string | undefined);
       const scope = sessionScopeForWorkflow(workflow);
-      const sessionReq = evaluateSessionRequirement(setupInfo, await getProtectedSecretNames(scope));
+      const sessionReq = evaluateSessionRequirement(setupInfo, await getBrokeredSecretNames(scope));
       if (sessionReq.kind === "misconfigured") {
         return res.status(400).json({ error: sessionReq.reason });
       }
@@ -3736,7 +3736,7 @@ export async function registerRoutes(
       // A Protected secret is only meaningful as a platform.setup login credential.
       // Any other reference is a misconfiguration — reject with a clear message
       // instead of a silently broken run.
-      const misused = findProtectedMisuse(
+      const misused = findBrokeredMisuse(
         classified,
         sessionNeed ? { emailSecret: sessionNeed.emailSecret, passwordSecret: sessionNeed.passwordSecret } : null,
       );

@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { storage, encryptValue, db } from "../server/storage";
 import { evalJobs, webSessions } from "../shared/schema";
 import { eq } from "drizzle-orm";
-import { credentialKeyFor } from "../server/session-broker";
+import { credentialKeyFor } from "../server/auth-session";
 import { BASE_NA } from "./helpers/regions";
 
 // Task 7: GET /api/eval-agent/jobs/:jobId/session — lease-fenced serve endpoint

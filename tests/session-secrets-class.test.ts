@@ -27,10 +27,10 @@ d("login-class secrets are withheld from the job path", () => {
     } as any);
     // One runtime + one login secret for the owner.
     await db.insert(secrets).values({
-      userId: 1, name: `SC_RUNTIME_${stamp}`, encryptedValue: encryptValue("ok"), class: "runtime",
+      userId: 1, name: `SC_RUNTIME_${stamp}`, encryptedValue: encryptValue("ok"), brokerType: null,
     });
     await db.insert(secrets).values({
-      userId: 1, name: `SC_LOGIN_${stamp}`, encryptedValue: encryptValue("hunter2"), class: "protected",
+      userId: 1, name: `SC_LOGIN_${stamp}`, encryptedValue: encryptValue("hunter2"), brokerType: "auth-session",
     });
     const job = await storage.createEvalJob({
       workflowId: wf.id, triggerType: 2, evalSetId: null, createdBy: 1,
@@ -70,10 +70,10 @@ d("login-class secrets are withheld from the job path", () => {
     } as any);
     // One runtime + one login org secret.
     await db.insert(orgSecrets).values({
-      organizationId: org.id, name: `SC_ORG_RUNTIME_${stamp}`, encryptedValue: encryptValue("ok"), class: "runtime",
+      organizationId: org.id, name: `SC_ORG_RUNTIME_${stamp}`, encryptedValue: encryptValue("ok"), brokerType: null,
     });
     await db.insert(orgSecrets).values({
-      organizationId: org.id, name: `SC_ORG_LOGIN_${stamp}`, encryptedValue: encryptValue("hunter2"), class: "protected",
+      organizationId: org.id, name: `SC_ORG_LOGIN_${stamp}`, encryptedValue: encryptValue("hunter2"), brokerType: "auth-session",
     });
     const job = await storage.createEvalJob({
       workflowId: wf.id, triggerType: 2, evalSetId: null, createdBy: user.id,

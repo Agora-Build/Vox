@@ -1,5 +1,5 @@
-import { describe, it, expect, beforeEach, afterEach, afterAll } from "vitest";
-import { parsePlatformSetup, evaluateSessionRequirement, sessionScopeForWorkflow, credentialKeyFor } from "../server/session-broker";
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { parsePlatformSetup, evaluateSessionRequirement, sessionScopeForWorkflow, credentialKeyFor } from "../server/auth-session";
 
 describe("parsePlatformSetup", () => {
   it("extracts platformId and secret refs from a stepsPrefix", () => {
@@ -93,41 +93,59 @@ const hasDb = !!process.env.DATABASE_URL;
 const d = hasDb ? describe : describe.skip;
 
 d("ensureSession (DB + mock fetch)", () => {
-  let savedBrokerUrl: string | undefined;
-  let savedBrokerSecret: string | undefined;
+  // ensureSession now routes through broker-registry (routeToBroker/mintViaBroker)
+  // instead of reading SESSION_BROKER_URL/SECRET directly — register a live,
+  // routable "auth-session" broker + cache its mint secret so the mock-fetch
+  // mint path below actually gets dispatched to it.
+  let tokenId: number;
+  let brokerId: number;
 
-  beforeEach(() => {
-    savedBrokerUrl = process.env.SESSION_BROKER_URL;
-    savedBrokerSecret = process.env.SESSION_BROKER_SECRET;
-    process.env.SESSION_BROKER_URL = "http://broker.test";
-    process.env.SESSION_BROKER_SECRET = "s";
-  });
-
-  afterEach(() => {
-    if (savedBrokerUrl === undefined) delete process.env.SESSION_BROKER_URL;
-    else process.env.SESSION_BROKER_URL = savedBrokerUrl;
-    if (savedBrokerSecret === undefined) delete process.env.SESSION_BROKER_SECRET;
-    else process.env.SESSION_BROKER_SECRET = savedBrokerSecret;
+  beforeAll(async () => {
+    const { storage } = await import("../server/storage");
+    const { cacheBrokerMintSecret, clearBrokerMintSecret } = await import("../server/broker-registry");
+    const token = await storage.createBrokerRegistrationToken({
+      name: "test-auth-session-broker-token",
+      tokenHash: `test-hash-${Date.now()}`,
+      brokerType: "auth-session",
+      createdBy: 1,
+      isRevoked: false,
+      expiresAt: null,
+    });
+    tokenId = token.id;
+    const broker = await storage.createBroker({
+      name: "test-auth-session-broker",
+      tokenId,
+      brokerType: "auth-session",
+      url: "http://broker.test",
+      state: "idle",
+      lastSeenAt: new Date(),
+    });
+    brokerId = broker.id;
+    cacheBrokerMintSecret(brokerId, "s");
   });
 
   afterAll(async () => {
     const { db } = await import("../server/storage");
-    const { secrets, webSessions } = await import("../shared/schema");
-    const { like } = await import("drizzle-orm");
+    const { secrets, webSessions, brokers, brokerRegistrationTokens } = await import("../shared/schema");
+    const { like, eq } = await import("drizzle-orm");
+    const { clearBrokerMintSecret } = await import("../server/broker-registry");
     await db.delete(secrets).where(like(secrets.name, "TEST_SB_%"));
     await db.delete(webSessions).where(like(webSessions.platformId, "t-mint-%"));
+    clearBrokerMintSecret(brokerId);
+    await db.delete(brokers).where(eq(brokers.id, brokerId));
+    await db.delete(brokerRegistrationTokens).where(eq(brokerRegistrationTokens.id, tokenId));
   });
 
   it("happy path: mints, stores ready, encrypted storageState round-trips, mint request carries decrypted email", async () => {
     const { storage, encryptValue, decryptValue } = await import("../server/storage");
-    const { ensureSession } = await import("../server/session-broker");
+    const { ensureSession } = await import("../server/auth-session");
     const stamp = Date.now();
     const emailSecret = `TEST_SB_E_${stamp}`;
     const passwordSecret = `TEST_SB_P_${stamp}`;
     const email = `user-${stamp}@example.com`;
     const password = `pw-${stamp}`;
-    await storage.createOrUpdateSecret(1, emailSecret, encryptValue(email), { class: "protected" });
-    await storage.createOrUpdateSecret(1, passwordSecret, encryptValue(password), { class: "protected" });
+    await storage.createOrUpdateSecret(1, emailSecret, encryptValue(email), { brokerType: "auth-session" });
+    await storage.createOrUpdateSecret(1, passwordSecret, encryptValue(password), { brokerType: "auth-session" });
 
     const platformId = `t-mint-${stamp}`;
     let capturedUrl: string | undefined;
@@ -149,7 +167,7 @@ d("ensureSession (DB + mock fetch)", () => {
     );
 
     expect(capturedUrl).toBe("http://broker.test/mint");
-    expect(capturedInit?.headers).toMatchObject({ Authorization: "Bearer s" });
+    expect(capturedInit?.headers).toMatchObject({ authorization: "Bearer s" });
     const body = JSON.parse(capturedInit!.body as string);
     expect(body.email).toBe(email);
     expect(body.password).toBe(password);
@@ -159,15 +177,15 @@ d("ensureSession (DB + mock fetch)", () => {
     expect(JSON.parse(decryptValue(got!.encryptedStorageState!))).toEqual({ cookies: [] });
   });
 
-  it("broker error: marks the row failed with the broker's error message", async () => {
+  it("broker error: marks the row failed with the broker's error status", async () => {
     const { storage } = await import("../server/storage");
-    const { ensureSession } = await import("../server/session-broker");
+    const { ensureSession } = await import("../server/auth-session");
     const stamp = Date.now();
     const emailSecret = `TEST_SB_E2_${stamp}`;
     const passwordSecret = `TEST_SB_P2_${stamp}`;
     const { encryptValue } = await import("../server/storage");
-    await storage.createOrUpdateSecret(1, emailSecret, encryptValue(`e2-${stamp}@example.com`), { class: "protected" });
-    await storage.createOrUpdateSecret(1, passwordSecret, encryptValue(`pw2-${stamp}`), { class: "protected" });
+    await storage.createOrUpdateSecret(1, emailSecret, encryptValue(`e2-${stamp}@example.com`), { brokerType: "auth-session" });
+    await storage.createOrUpdateSecret(1, passwordSecret, encryptValue(`pw2-${stamp}`), { brokerType: "auth-session" });
 
     const platformId = `t-mint-err-${stamp}`;
     const mockFetch = (async () => ({
@@ -184,12 +202,12 @@ d("ensureSession (DB + mock fetch)", () => {
 
     const got = await storage.getWebSession({ userId: 1 }, platformId, credentialKeyFor({ platformId, emailSecret, passwordSecret }));
     expect(got?.status).toBe("failed");
-    expect(got?.lastError).toContain("login blew up");
+    expect(got?.lastError).toContain("502");
   });
 
   it("fresh short-circuit: a ready session for the SAME credential pair skips the broker entirely", async () => {
     const { storage, encryptValue } = await import("../server/storage");
-    const { ensureSession, credentialKeyFor } = await import("../server/session-broker");
+    const { ensureSession, credentialKeyFor } = await import("../server/auth-session");
     const stamp = Date.now();
     const platformId = `t-mint-fresh-${stamp}`;
     const need = { platformId, emailSecret: `TEST_SB_FE_${stamp}`, passwordSecret: `TEST_SB_FP_${stamp}` };
@@ -213,7 +231,7 @@ d("ensureSession (DB + mock fetch)", () => {
 
   it("no cross-credential short-circuit: a ready session for a DIFFERENT credential pair does NOT satisfy the need (HIGH-2)", async () => {
     const { storage, encryptValue, decryptValue } = await import("../server/storage");
-    const { ensureSession, credentialKeyFor } = await import("../server/session-broker");
+    const { ensureSession, credentialKeyFor } = await import("../server/auth-session");
     const stamp = Date.now();
     const platformId = `t-mint-xcred-${stamp}`;
     // Account A already has a fresh, ready session on this platform.
@@ -226,8 +244,8 @@ d("ensureSession (DB + mock fetch)", () => {
     // session, not be handed A's cookies. Its login secrets exist and the mock
     // broker returns B's distinct storageState.
     const needB = { platformId, emailSecret: `TEST_SB_XBE_${stamp}`, passwordSecret: `TEST_SB_XBP_${stamp}` };
-    await storage.createOrUpdateSecret(1, needB.emailSecret, encryptValue(`b-${stamp}@example.com`), { class: "protected" });
-    await storage.createOrUpdateSecret(1, needB.passwordSecret, encryptValue(`bpw-${stamp}`), { class: "protected" });
+    await storage.createOrUpdateSecret(1, needB.emailSecret, encryptValue(`b-${stamp}@example.com`), { brokerType: "auth-session" });
+    await storage.createOrUpdateSecret(1, needB.passwordSecret, encryptValue(`bpw-${stamp}`), { brokerType: "auth-session" });
     let brokerCalled = false;
     const mockFetch = (async () => {
       brokerCalled = true;
