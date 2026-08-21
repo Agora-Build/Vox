@@ -350,6 +350,9 @@ describe("isInternalBrokerUrl", () => {
     expect(isInternalBrokerUrl("ftp://10.1.2.3")).toBe(false);
   });
   it("rejects public RFC1918-lookalike (172.32)", () => expect(isInternalBrokerUrl("http://172.32.0.1")).toBe(false));
+  it("rejects public IPv6 literal", () => expect(isInternalBrokerUrl("http://[2001:4860:4860::8888]:8200")).toBe(false));
+  it("rejects IPv6 loopback literal (use localhost/IPv4 instead)", () => expect(isInternalBrokerUrl("http://[::1]:8200")).toBe(false));
+  it("rejects IPv6 ULA literal", () => expect(isInternalBrokerUrl("http://[fc00::1]:8200")).toBe(false));
   it("rejects garbage", () => expect(isInternalBrokerUrl("not a url")).toBe(false));
 });
 ```
@@ -387,6 +390,7 @@ export function isInternalBrokerUrl(raw: string): boolean {
   try { u = new URL(raw); } catch { return false; }
   if (u.protocol !== "http:") return false;
   const host = u.hostname.toLowerCase();
+  if (host.includes(":")) return false;              // reject IPv6 literals (e.g. [2001:db8::1]); brokers use IPv4 / DNS aliases
   if (host === "localhost") return true;
   if (isPrivateIpv4(host)) return true;
   if (host.endsWith(".internal") || host.endsWith(".local")) return true;
