@@ -28,6 +28,11 @@ services:
       INIT_CODE: ${INIT_CODE:-VOX-DEBUG-2024}
       NODE_ENV: development
       COOKIE_SECURE: "false"  # Allow cookies over HTTP for local development
+      # Disable API rate limiting for local dev only. The bundle bakes
+      # NODE_ENV=production at build time, so the built server can't tell this
+      # dev container from prod and would otherwise 429 test/dev traffic. Read
+      # at runtime; prod never sets it, so prod rate limiting stays on.
+      RATE_LIMIT_DISABLED: "true"
       VOX_PLUGINS: ${VOX_PLUGINS:-credits,shared-agents}
       PORT: 5000
       # AES-256-GCM key for secret encryption. Compose only injects what is
