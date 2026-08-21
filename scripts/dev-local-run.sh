@@ -968,8 +968,13 @@ do_start_docker() {
     # 1. Start PostgreSQL (Docker)
     start_postgres
 
-    # 2. Push database schema
-    push_schema
+    # 2. Schema is applied by the vox-service container itself: `npm start`
+    #    runs `node dist/migrate.cjs` (version-based runner) before the app,
+    #    migrating an empty DB v1→v30 the same way production does. We must
+    #    NOT run `db:push` here — it pre-creates the full current schema, after
+    #    which the migrate runner detects "existing DB", assumes baseline v1,
+    #    and collides replaying v2→v30 (e.g. "type clash_event_status already
+    #    exists"). Let the container self-migrate on the clean volume.
 
     # 3. Start Vox service (Docker)
     start_service_docker
