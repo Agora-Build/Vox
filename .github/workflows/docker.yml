@@ -163,7 +163,7 @@ jobs:
         id: meta-broker
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ github.repository_owner }}/vox-session-broker
+          images: ${{ env.REGISTRY }}/${{ github.repository_owner }}/vox-auth-session-broker
           tags: |
             type=sha,prefix=
             type=raw,value=latest
@@ -217,7 +217,7 @@ jobs:
           docker run --rm "$IMAGE_TAG" bash -c "
             echo '=== Node ===' && node --version &&
             echo '=== aeval ===' && aeval --version &&
-            echo '=== Broker syntax ===' && node --check /app/session-broker.js &&
+            echo '=== Broker syntax ===' && node --check /app/auth-session-broker.js &&
             echo 'All smoke tests passed'
           "
 

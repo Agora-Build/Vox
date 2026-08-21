@@ -1,13 +1,13 @@
-# vox_eval_agentd — Vox Evaluation Agent Daemon + Session Broker
+# vox_eval_agentd — Vox Evaluation Agent Daemon + Auth Session Broker
 #
 # One Dockerfile, three stages:
 #   base   — shared: Ubuntu + Node + Chromium deps + aeval + Playwright + aeval-data
-#   broker — FROM base: session-broker.js only  (published as vox-session-broker)
+#   broker — FROM base: auth-session-broker.js only  (published as vox-auth-session-broker)
 #   daemon — FROM base: voice-agent-tester + vox-agentd.js  (published as vox-eval-agentd)
 #
 # `daemon` is the LAST stage, so it is the default --target:
-#   docker build -f vox_eval_agentd/Dockerfile -t vox_eval_agentd .                       # → daemon
-#   docker build --target broker -f vox_eval_agentd/Dockerfile -t vox-session-broker .    # → broker
+#   docker build -f vox_eval_agentd/Dockerfile -t vox_eval_agentd .                            # → daemon
+#   docker build --target broker -f vox_eval_agentd/Dockerfile -t vox-auth-session-broker .    # → broker
 #
 # Base: Ubuntu 24.04 (GLIBC 2.39) — required by aeval's bundled Python runtime.
 # Chromium: Puppeteer/Playwright download their own (Ubuntu 24.04 only offers snap Chromium).
@@ -102,28 +102,28 @@ ENV AEVAL_DATA_DATE=${AEVAL_DATA_DATE}
 ENV HEADLESS=true
 
 # ============================================================================
-# Stage: broker — trusted login sidecar (published as vox-session-broker)
-# Lean tip: session-broker.js only. No voice-agent-tester, no daemon code,
+# Stage: broker — trusted login sidecar (published as vox-auth-session-broker)
+# Lean tip: auth-session-broker.js only. No voice-agent-tester, no daemon code,
 # no shared/, no node_modules at runtime (esbuild bundles builtins-only).
 # ============================================================================
 FROM base AS broker
 WORKDIR /app
 
-COPY vox_eval_agentd/session-broker.ts /app/
+COPY vox_eval_agentd/auth-session-broker.ts /app/
 COPY vox_eval_agentd/package.json /app/
 
-# npm install only to obtain esbuild (a devDep). session-broker.ts imports only
+# npm install only to obtain esbuild (a devDep). auth-session-broker.ts imports only
 # Node builtins, so the bundle needs no node_modules at runtime — drop it after compile.
 RUN npm install \
-    && npx esbuild session-broker.ts --bundle --platform=node --format=esm --outfile=session-broker.js \
+    && npx esbuild auth-session-broker.ts --bundle --platform=node --format=esm --outfile=auth-session-broker.js \
        --external:child_process --external:fs --external:os --external:path --external:url --external:http \
        --external:@aws-sdk/client-s3 \
     && rm -rf node_modules
 
 EXPOSE 8200
 
-# Run the session broker
-CMD ["node", "session-broker.js"]
+# Run the auth session broker
+CMD ["node", "auth-session-broker.js"]
 
 # ============================================================================
 # Stage: daemon — eval-agent daemon (published as vox-eval-agentd)

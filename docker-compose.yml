@@ -56,13 +56,13 @@ services:
   # driving aeval's `setup:account` flow with the login credential Core passes
   # over the internal network. NO ports are published: only vox-service (same
   # compose network) may reach it.
-  session-broker:
-    image: vox-session-broker:latest
+  auth-session-broker:
+    image: vox-auth-session-broker:latest
     build:
       context: .
       dockerfile: vox_eval_agentd/Dockerfile
       target: broker
-    container_name: vox-session-broker
+    container_name: vox-auth-session-broker
     environment:
       SESSION_BROKER_SECRET: ${SESSION_BROKER_SECRET:-local-broker-secret-change-me}
       BROKER_PORT: 8200
