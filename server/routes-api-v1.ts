@@ -10,7 +10,7 @@
 import { Express, Request, Response } from "express";
 import { storage, mergeEvalConfig, buildJobSnapshot } from "./storage";
 import { requireAuthOrApiKey, getCurrentUserOrApiKeyUser } from "./auth";
-import { parsePlatformSetup, sessionScopeForWorkflow, evaluateSessionRequirement, getProtectedSecretNames, ensureSession } from "./session-broker";
+import { parsePlatformSetup, sessionScopeForWorkflow, evaluateSessionRequirement, getBrokeredSecretNames, ensureSession } from "./auth-session";
 import { regionSiteSequence } from "@shared/regions";
 
 type ApiRegionLocation = Awaited<ReturnType<typeof storage.getAllRegionLocations>>[number];
@@ -326,7 +326,7 @@ export function registerApiV1Routes(app: Express): void {
       const wfConfig = (workflow.config ?? {}) as Record<string, unknown>;
       const setupInfo = parsePlatformSetup(wfConfig.stepsPrefix as string | undefined);
       const scope = sessionScopeForWorkflow(workflow);
-      const sessionReq = evaluateSessionRequirement(setupInfo, await getProtectedSecretNames(scope));
+      const sessionReq = evaluateSessionRequirement(setupInfo, await getBrokeredSecretNames(scope));
       if (sessionReq.kind === "misconfigured") {
         return res.status(400).json({ error: sessionReq.reason });
       }

@@ -1,14 +1,16 @@
 /**
- * session broker — Core side.
+ * auth-session — Core-side login-session logic.
  *
  * Core mints login sessions (Playwright storageState) for web eval targets by
- * driving the broker sidecar (aeval `setup:account` headless login), caches
- * them encrypted in web_sessions, and serves them to agents at claim time.
- * Login-class secrets NEVER leave Core; agents only ever see the storageState.
+ * driving the auth-session broker (aeval `setup:account` headless login),
+ * caches them encrypted in web_sessions, and serves them to agents at claim
+ * time. Login-class secrets NEVER leave Core; agents only ever see the
+ * storageState. Broker addressing/routing lives in `./broker-registry`.
  */
 import { createHash } from "crypto";
 import yaml from "js-yaml";
 import { storage, encryptValue, decryptValue, type SessionScope } from "./storage";
+import { brokerAvailable, routeToBroker, mintViaBroker, isKnownBrokerType } from "./broker-registry";
 
 export interface PlatformSetupInfo {
   platformId: string;
@@ -101,13 +103,13 @@ export function evaluateSessionRequirement(
   return { kind: "need", need: { platformId: setup.platformId, emailSecret: setup.emailSecret, passwordSecret: setup.passwordSecret } };
 }
 
-export async function getProtectedSecretNames(scope: SessionScope): Promise<Set<string>> {
+export async function getBrokeredSecretNames(scope: SessionScope): Promise<Set<string>> {
   if ("userId" in scope) {
     const rows = await storage.getSecretsByUserId(scope.userId);
-    return new Set(rows.filter(s => s.class === "protected").map(s => s.name));
+    return new Set(rows.filter(s => s.brokerType === "auth-session").map(s => s.name));
   }
   const rows = await storage.getOrgSecrets(scope.organizationId);
-  return new Set(rows.filter(s => s.class === "protected").map(s => s.name));
+  return new Set(rows.filter(s => s.brokerType === "auth-session").map(s => s.name));
 }
 
 async function resolveScopeSecret(scope: SessionScope, name: string): Promise<string | undefined> {
@@ -139,37 +141,8 @@ export function staleMintThresholdSeconds(): number {
 export function ttlHours(): number {
   return parseInt(process.env.WEB_SESSION_TTL_HOURS || "1", 10);
 }
-export function brokerConfigured(): boolean {
-  return !!process.env.SESSION_BROKER_URL && !!process.env.SESSION_BROKER_SECRET;
-}
 
 type FetchLike = typeof fetch;
-
-async function mintViaBroker(
-  req: { platformId: string; email: string; password: string },
-  fetchImpl: FetchLike,
-): Promise<unknown> {
-  const url = `${process.env.SESSION_BROKER_URL!.replace(/\/$/, "")}/mint`;
-  const resp = await fetchImpl(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${process.env.SESSION_BROKER_SECRET}`,
-    },
-    body: JSON.stringify(req),
-    signal: AbortSignal.timeout((mintTimeoutSeconds() + 15) * 1000),
-  });
-  if (!resp.ok) {
-    let detail = "";
-    try { detail = ((await resp.json()) as { error?: string }).error ?? ""; } catch { /* non-JSON error body */ }
-    throw new Error(`broker mint failed (${resp.status})${detail ? `: ${detail}` : ""}`);
-  }
-  const body = (await resp.json()) as { storageState?: unknown };
-  if (!body.storageState || typeof body.storageState !== "object") {
-    throw new Error("broker returned no storageState");
-  }
-  return body.storageState;
-}
 
 /**
  * Mint-if-needed. Safe to fire-and-forget: single-flight via the DB claim, all
@@ -189,13 +162,21 @@ export async function ensureSession(
       scope, need.platformId, credentialKey, staleMintThresholdSeconds(), SESSION_FRESH_MARGIN_SECONDS);
     if (!claimed) return; // another instance is minting, or it turned fresh
     try {
-      if (!brokerConfigured()) throw new Error("session broker not configured (SESSION_BROKER_URL/SECRET)");
+      if (!(await brokerAvailable("auth-session"))) {
+        throw new Error("no live auth-session broker registered");
+      }
       const email = await resolveScopeSecret(scope, need.emailSecret);
       const password = await resolveScopeSecret(scope, need.passwordSecret);
       if (!email || !password) {
         throw new Error(`login secrets ${need.emailSecret}/${need.passwordSecret} not found in scope`);
       }
-      const storageState = await mintViaBroker({ platformId: need.platformId, email, password }, fetchImpl);
+      const target = await routeToBroker("auth-session");
+      if (!target) throw new Error("no auth-session broker available");
+      const mintResult = (await mintViaBroker(target, { platformId: need.platformId, email, password }, fetchImpl)) as
+        | { storageState?: unknown }
+        | undefined;
+      const storageState = mintResult?.storageState;
+      if (!storageState || typeof storageState !== "object") throw new Error("broker mint response missing or invalid storageState");
       // Fenced write: if our claim was stale-reclaimed while we minted, this is
       // a no-op and the current claim-holder's mint proceeds undisturbed.
       const stored = await storage.storeWebSessionReady(
@@ -246,7 +227,7 @@ export async function stampOwnerSession(
   const wfConfig = (workflow.config ?? {}) as Record<string, unknown>;
   const setup = parsePlatformSetup(wfConfig.stepsPrefix as string | undefined);
   const scope = sessionScopeForWorkflow(workflow);
-  const req = evaluateSessionRequirement(setup, await getProtectedSecretNames(scope));
+  const req = evaluateSessionRequirement(setup, await getBrokeredSecretNames(scope));
   if (req.kind === "misconfigured") return { kind: "misconfigured", reason: req.reason };
 
   delete jobConfig.sessionInjection; // server-stamped only — never trust a caller value
@@ -260,31 +241,49 @@ export async function stampOwnerSession(
 
 /**
  * Join referenced secret NAMES against the scope's secret rows, attaching each
- * name's class and whether it exists. Names with no matching row default to
- * class "runtime" / present:false (a dangling ref delivers nothing).
+ * name's brokerType and whether it exists. Names with no matching row default to
+ * brokerType null / present:false (a dangling ref delivers nothing).
  */
 export async function classifyReferencedSecrets(
   scope: SessionScope,
   names: Set<string>,
-): Promise<Array<{ name: string; class: "runtime" | "protected"; present: boolean }>> {
+): Promise<Array<{ name: string; brokerType: string | null; present: boolean }>> {
   const rows = "userId" in scope
     ? await storage.getSecretsByUserId(scope.userId)
     : await storage.getOrgSecrets(scope.organizationId);
   return Array.from(names).map((name) => {
     const row = rows.find((r) => r.name === name);
-    return { name, class: (row?.class ?? "runtime") as "runtime" | "protected", present: !!row };
+    return { name, brokerType: row?.brokerType ?? null, present: !!row };
   });
 }
 
 /**
- * A Protected secret is only meaningful as a platform.setup login credential.
- * Returns the names of Protected secrets referenced anywhere OTHER than the
+ * A brokered secret is only meaningful as a platform.setup login credential.
+ * Returns the names of brokered secrets referenced anywhere OTHER than the
  * given login pair — i.e. misconfigurations the run route must reject.
  */
-export function findProtectedMisuse(
-  classified: Array<{ name: string; class: string }>,
+export function findBrokeredMisuse(
+  classified: Array<{ name: string; brokerType: string | null }>,
   loginPair: { emailSecret: string; passwordSecret: string } | null,
 ): string[] {
   const allowed = new Set(loginPair ? [loginPair.emailSecret, loginPair.passwordSecret] : []);
-  return classified.filter((c) => c.class === "protected" && !allowed.has(c.name)).map((c) => c.name);
+  return classified.filter((c) => c.brokerType === "auth-session" && !allowed.has(c.name)).map((c) => c.name);
+}
+
+const AUTH_FIELD_RE = /USERNAME|PASSWORD|ACCOUNT|EMAIL/i;
+/** Default brokerType suggestion for a secret name (Task 6: pre-selects the UI toggle). */
+export function defaultBrokerTypeForName(name: string): "auth-session" | null {
+  return AUTH_FIELD_RE.test(name) ? "auth-session" : null;
+}
+
+// Resolve the brokerType for a secret at create time.
+// - undefined body value → name-based default
+// - explicit null → runtime (allowed override)
+// - explicit string → must be a known type
+export function resolveBrokerType(name: string, provided: string | null | undefined):
+  { ok: true; brokerType: string | null } | { ok: false; error: string } {
+  if (provided === undefined) return { ok: true, brokerType: defaultBrokerTypeForName(name) };
+  if (provided === null) return { ok: true, brokerType: null };
+  if (!isKnownBrokerType(provided)) return { ok: false, error: `unknown brokerType: ${provided}` };
+  return { ok: true, brokerType: provided };
 }

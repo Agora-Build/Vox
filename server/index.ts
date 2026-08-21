@@ -13,7 +13,7 @@ import { parseNextCronRun } from "./cron";
 import { setupClashWebSocket } from "./clash-ws";
 import { loadPlugins } from "./plugins/loader";
 import { setMarketplace, getMarketplace, type EvalMarketplace } from "./marketplace";
-import { stampOwnerSession } from "./session-broker";
+import { stampOwnerSession } from "./auth-session";
 import pkg from "pg";
 const { Pool } = pkg;
 

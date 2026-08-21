@@ -1,11 +1,12 @@
 /**
- * Vox Session Broker — trusted sidecar that performs headless target logins.
+ * Vox Auth Session Broker — trusted sidecar that performs headless target logins.
  *
  * Runs aeval's own per-platform `setup:account` flow (config/platforms/<id>.yaml
  * in aeval-data) and returns the captured Playwright storageState. Stateless:
  * every request gets a fresh temp dir, and nothing is persisted or logged.
- * Shipped as its own image (vox-session-broker, the Dockerfile's `broker` target).
- * Internal network ONLY — auth is a single shared secret with Core.
+ * Shipped as its own image (vox-auth-session-broker, the Dockerfile's `broker` target).
+ * Internal network ONLY. Registers itself with Core on startup and heartbeats;
+ * `/mint` auth is the per-broker mint secret handed back at registration.
  */
 import http from 'http';
 import { spawn } from 'child_process';
@@ -116,7 +117,7 @@ export async function mintWithAeval(req: MintRequest, timeoutMs: number): Promis
   }
 }
 
-export function createBrokerServer(deps: { mint: MintFn; secret: string }): http.Server {
+export function createBrokerServer(deps: { mint: MintFn; getSecret: () => string | undefined }): http.Server {
   return http.createServer(async (req, res) => {
     const json = (code: number, body: unknown) => {
       res.writeHead(code, { 'Content-Type': 'application/json' });
@@ -127,7 +128,9 @@ export function createBrokerServer(deps: { mint: MintFn; secret: string }): http
       if (req.method !== 'POST' || req.url !== '/mint') return json(404, { error: 'not found' });
       const authz = req.headers.authorization;
       const presented = authz && authz.startsWith('Bearer ') ? authz.slice(7) : undefined;
-      if (!secretMatches(presented, deps.secret)) return json(401, { error: 'unauthorized' });
+      const secret = deps.getSecret();
+      if (!secret) return json(401, { error: 'unauthorized' });
+      if (!secretMatches(presented, secret)) return json(401, { error: 'unauthorized' });
       const chunks: Buffer[] = [];
       for await (const c of req) chunks.push(c as Buffer);
       let body: Partial<MintRequest>;
@@ -155,12 +158,56 @@ export function createBrokerServer(deps: { mint: MintFn; secret: string }): http
   });
 }
 
+// Registration client: this broker registers itself with Core on startup and
+// heartbeats every HEARTBEAT_MS. The `/mint` bearer secret is NOT a static
+// env var — it is the per-broker `mintSecret` handed back by Core at
+// registration, held only in this module's `state`.
+let state: { brokerId: number; leaseId: string; mintSecret: string } | null = null;
+const CORE_URL = process.env.VOX_CORE_URL!;        // e.g. http://vox-service:5000
+const REG_TOKEN = process.env.BROKER_REG_TOKEN!;   // admin-issued registration token
+const ADVERTISE_URL = process.env.BROKER_ADVERTISE_URL!; // internal URL Core will call
+const BROKER_NAME = process.env.BROKER_NAME || 'auth-session-broker';
+const HEARTBEAT_MS = 30000;
+
+async function register(): Promise<void> {
+  const res = await fetch(`${CORE_URL}/api/brokers/register`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${REG_TOKEN}` },
+    body: JSON.stringify({ name: BROKER_NAME, brokerType: 'auth-session', url: ADVERTISE_URL }),
+  });
+  if (!res.ok) throw new Error(`register failed: ${res.status}`);
+  state = await res.json();
+}
+
+export async function heartbeat(): Promise<void> {
+  try {
+    if (!state) { await register(); return; }
+    const res = await fetch(`${CORE_URL}/api/brokers/heartbeat`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${REG_TOKEN}` },
+      body: JSON.stringify({ brokerId: state.brokerId, leaseId: state.leaseId, state: 'idle' }),
+    }).catch(() => null);
+    if (!res || !res.ok) return;
+    const body = await res.json().catch(() => ({}));
+    if (body.reregister || body.superseded) { state = null; await register(); }
+  } catch (err) {
+    console.error('[Broker] heartbeat error:', err instanceof Error ? err.message : err);
+  }
+}
+
 // Entrypoint (skipped under vitest import)
-if (process.argv[1] && process.argv[1].endsWith('session-broker.js')) {
-  const secret = process.env.SESSION_BROKER_SECRET;
-  if (!secret) { console.error('[Broker] SESSION_BROKER_SECRET is required'); process.exit(1); }
+if (process.argv[1] && process.argv[1].endsWith('auth-session-broker.js')) {
   const port = parseInt(process.env.BROKER_PORT || '8200', 10);
   const timeoutMs = parseInt(process.env.WEB_SESSION_MINT_TIMEOUT_SECONDS || '180', 10) * 1000;
-  const server = createBrokerServer({ mint: (r) => mintWithAeval(r, timeoutMs), secret });
-  server.listen(port, '0.0.0.0', () => console.log(`[Broker] Session broker listening on :${port}`));
+  const server = createBrokerServer({ mint: (r) => mintWithAeval(r, timeoutMs), getSecret: () => state?.mintSecret });
+  (async () => {
+    try {
+      await register();
+    } catch (err) {
+      console.error('[Broker] registration failed:', err instanceof Error ? err.message : err);
+      process.exit(1);
+    }
+    server.listen(port, '0.0.0.0', () => console.log(`[Broker] Auth session broker listening on :${port}`));
+    setInterval(heartbeat, HEARTBEAT_MS);
+  })();
 }

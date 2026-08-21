@@ -59,6 +59,10 @@ import {
   type InsertUserStorageConfig,
   type OrgSecret,
   type WebSession,
+  type InsertBrokerRegistrationToken,
+  type BrokerRegistrationToken,
+  type InsertBroker,
+  type Broker,
   users,
   organizations,
   providers,
@@ -93,6 +97,8 @@ import {
   userStorageConfig,
   orgSecrets,
   webSessions,
+  brokerRegistrationTokens,
+  brokers,
 } from "@shared/schema";
 import { regionSiteSequence } from "@shared/regions";
 import { drizzle } from "drizzle-orm/node-postgres";
@@ -752,6 +758,66 @@ export class DatabaseStorage {
     } catch (err) {
       console.error(`[Agents] Failed to record observed IP for agent ${agentId}:`, err instanceof Error ? err.message : err);
     }
+  }
+
+  async createBrokerRegistrationToken(t: InsertBrokerRegistrationToken): Promise<BrokerRegistrationToken> {
+    const [row] = await db.insert(brokerRegistrationTokens).values(t).returning();
+    return row;
+  }
+  async getBrokerRegistrationTokenByHash(hash: string): Promise<BrokerRegistrationToken | undefined> {
+    const [row] = await db.select().from(brokerRegistrationTokens)
+      .where(eq(brokerRegistrationTokens.tokenHash, hash));
+    return row;
+  }
+  async getAllBrokerRegistrationTokens(): Promise<BrokerRegistrationToken[]> {
+    return db.select().from(brokerRegistrationTokens).orderBy(desc(brokerRegistrationTokens.createdAt));
+  }
+  async revokeBrokerRegistrationToken(id: number): Promise<void> {
+    await db.update(brokerRegistrationTokens).set({ isRevoked: true })
+      .where(eq(brokerRegistrationTokens.id, id));
+  }
+  async updateBrokerRegistrationTokenLastUsed(id: number): Promise<void> {
+    await db.update(brokerRegistrationTokens).set({ lastUsedAt: new Date() })
+      .where(eq(brokerRegistrationTokens.id, id));
+  }
+  async createBroker(b: InsertBroker): Promise<Broker> {
+    const [row] = await db.insert(brokers).values(b).returning();
+    return row;
+  }
+  async getBroker(id: number): Promise<Broker | undefined> {
+    const [row] = await db.select().from(brokers).where(eq(brokers.id, id));
+    return row;
+  }
+  async getBrokersByTokenId(tokenId: number): Promise<Broker[]> {
+    return db.select().from(brokers).where(eq(brokers.tokenId, tokenId)).orderBy(desc(brokers.createdAt)).limit(1);
+  }
+  async getAllBrokers(): Promise<Broker[]> {
+    return db.select().from(brokers).orderBy(desc(brokers.createdAt));
+  }
+  async updateBroker(id: number, data: Partial<InsertBroker>): Promise<Broker | undefined> {
+    const [row] = await db.update(brokers).set({ ...data, updatedAt: new Date() })
+      .where(eq(brokers.id, id)).returning();
+    return row;
+  }
+  async updateBrokerHeartbeat(id: number): Promise<void> {
+    await db.update(brokers).set({ lastSeenAt: new Date(), updatedAt: new Date() })
+      .where(eq(brokers.id, id));
+  }
+  async updateBrokerObservedIp(id: number, ip: string): Promise<void> {
+    try {
+      await db.update(brokers).set({ observedIp: ip, observedIpAt: new Date() })
+        .where(eq(brokers.id, id));
+    } catch (err) {
+      console.error(`[Broker] Failed to record observed IP for broker ${id}:`, err instanceof Error ? err.message : err);
+    }
+  }
+  async getRoutableBrokers(brokerType: string, offlineThresholdSeconds: number): Promise<Broker[]> {
+    const cutoff = new Date(Date.now() - offlineThresholdSeconds * 1000);
+    return db.select().from(brokers).where(and(
+      eq(brokers.brokerType, brokerType),
+      eq(brokers.state, "idle"),
+      gte(brokers.lastSeenAt, cutoff),
+    )).orderBy(desc(brokers.lastSeenAt));
   }
 
   async countTodayJobsByOwner(ownerId: number): Promise<number> {
@@ -1965,13 +2031,13 @@ export class DatabaseStorage {
     userId: number,
     name: string,
     encryptedValue: string,
-    opts?: { class?: "runtime" | "protected"; isTestAccount?: boolean }
+    opts?: { brokerType?: string | null; isTestAccount?: boolean }
   ): Promise<Secret> {
     const existing = await db.select().from(secrets)
       .where(and(eq(secrets.userId, userId), eq(secrets.name, name)));
     if (existing[0]) {
       const updates: Partial<typeof secrets.$inferInsert> = { encryptedValue, updatedAt: new Date() };
-      if (opts?.class !== undefined) updates.class = opts.class;
+      if (opts?.brokerType !== undefined) updates.brokerType = opts.brokerType;
       if (opts?.isTestAccount !== undefined) updates.isTestAccount = opts.isTestAccount;
       const result = await db.update(secrets)
         .set(updates)
@@ -1983,7 +2049,7 @@ export class DatabaseStorage {
       userId,
       name,
       encryptedValue,
-      ...(opts?.class !== undefined ? { class: opts.class } : {}),
+      brokerType: opts?.brokerType ?? null,
       ...(opts?.isTestAccount !== undefined ? { isTestAccount: opts.isTestAccount } : {}),
     }).returning();
     return result[0];
@@ -2008,10 +2074,10 @@ export class DatabaseStorage {
     const workflow = await this.getWorkflow(job.workflowId);
     if (!workflow) { console.log(`[Secrets] getSecretsForJob: workflow ${job.workflowId} not found`); return []; }
     console.log(`[Secrets] getSecretsForJob: job ${jobId} → workflow ${workflow.id} → owner ${workflow.ownerId}`);
-    // Structural withhold: 'protected'-class rows are Core-only. They feed
-    // the session broker's mint and must never reach an eval agent, any tier.
+    // Structural withhold: brokered rows (broker_type != null) are Core-only. They
+    // feed the session broker's mint and must never reach an eval agent, any tier.
     const all = await this.getSecretsByUserId(workflow.ownerId);
-    return all.filter((s) => s.class !== "protected");
+    return all.filter((s) => s.brokerType == null);
   }
 
   // ==================== CLASH AGENT PROFILES ====================
@@ -2419,12 +2485,12 @@ export class DatabaseStorage {
     name: string,
     encryptedValue: string,
     createdBy: number,
-    opts?: { class?: "runtime" | "protected"; isTestAccount?: boolean }
+    opts?: { brokerType?: string | null; isTestAccount?: boolean }
   ): Promise<OrgSecret> {
     const existing = await this.getOrgSecret(organizationId, name);
     if (existing) {
       const updates: Partial<typeof orgSecrets.$inferInsert> = { encryptedValue, updatedAt: new Date() };
-      if (opts?.class !== undefined) updates.class = opts.class;
+      if (opts?.brokerType !== undefined) updates.brokerType = opts.brokerType;
       if (opts?.isTestAccount !== undefined) updates.isTestAccount = opts.isTestAccount;
       const result = await db.update(orgSecrets)
         .set(updates)
@@ -2438,7 +2504,7 @@ export class DatabaseStorage {
         name,
         encryptedValue,
         createdBy,
-        ...(opts?.class !== undefined ? { class: opts.class } : {}),
+        brokerType: opts?.brokerType ?? null,
         ...(opts?.isTestAccount !== undefined ? { isTestAccount: opts.isTestAccount } : {}),
       })
       .returning();
@@ -2479,7 +2545,7 @@ export class DatabaseStorage {
     const secrets = await this.getOrgSecrets(workflow.organizationId);
     const result: Record<string, string> = {};
     for (const s of secrets) {
-      if (s.class === "protected") continue; // Core-only — never sent to agents
+      if (s.brokerType != null) continue; // Core-only — never sent to agents
       result[s.name] = decryptValue(s.encryptedValue);
     }
     return result;
@@ -2519,7 +2585,7 @@ export class DatabaseStorage {
     const rows = "userId" in scope
       ? await this.getSecretsByUserId(scope.userId)
       : await this.getOrgSecrets(scope.organizationId);
-    return names.every(n => rows.some(r => r.name === n && r.class === "protected" && r.isTestAccount));
+    return names.every(n => rows.some(r => r.name === n && r.brokerType === "auth-session" && r.isTestAccount));
   }
 
   private webSessionScopeWhere(scope: SessionScope) {

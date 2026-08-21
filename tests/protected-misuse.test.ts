@@ -1,27 +1,49 @@
 import { describe, it, expect } from "vitest";
-import { findProtectedMisuse } from "../server/session-broker";
+import { findBrokeredMisuse, defaultBrokerTypeForName, resolveBrokerType } from "../server/auth-session";
 
-describe("findProtectedMisuse", () => {
+describe("findBrokeredMisuse", () => {
   const pair = { emailSecret: "LOGIN_EMAIL", passwordSecret: "LOGIN_PW" };
   it("allows protected secrets that are exactly the login pair", () => {
     const classified = [
-      { name: "LOGIN_EMAIL", class: "protected" },
-      { name: "LOGIN_PW", class: "protected" },
+      { name: "LOGIN_EMAIL", brokerType: "auth-session" },
+      { name: "LOGIN_PW", brokerType: "auth-session" },
     ];
-    expect(findProtectedMisuse(classified, pair)).toEqual([]);
+    expect(findBrokeredMisuse(classified, pair)).toEqual([]);
   });
   it("flags a protected secret referenced outside the login pair", () => {
     const classified = [
-      { name: "LOGIN_EMAIL", class: "protected" },
-      { name: "LOGIN_PW", class: "protected" },
-      { name: "API_TOKEN", class: "protected" },
+      { name: "LOGIN_EMAIL", brokerType: "auth-session" },
+      { name: "LOGIN_PW", brokerType: "auth-session" },
+      { name: "API_TOKEN", brokerType: "auth-session" },
     ];
-    expect(findProtectedMisuse(classified, pair)).toEqual(["API_TOKEN"]);
+    expect(findBrokeredMisuse(classified, pair)).toEqual(["API_TOKEN"]);
   });
   it("flags any protected ref when there is no login pair", () => {
-    expect(findProtectedMisuse([{ name: "X", class: "protected" }], null)).toEqual(["X"]);
+    expect(findBrokeredMisuse([{ name: "X", brokerType: "auth-session" }], null)).toEqual(["X"]);
   });
   it("ignores runtime secrets", () => {
-    expect(findProtectedMisuse([{ name: "X", class: "runtime" }], null)).toEqual([]);
+    expect(findBrokeredMisuse([{ name: "X", brokerType: null }], null)).toEqual([]);
   });
+});
+
+describe("defaultBrokerTypeForName", () => {
+  it("defaults auth fields to auth-session", () => {
+    for (const n of ["USERNAME", "login_password", "accountId", "user_email"])
+      expect(defaultBrokerTypeForName(n)).toBe("auth-session");
+  });
+  it("returns null for non-auth names", () => {
+    for (const n of ["openai_api_key", "region", "PROMPT"])
+      expect(defaultBrokerTypeForName(n)).toBeNull();
+  });
+});
+
+describe("resolveBrokerType", () => {
+  it("defaults by name when unspecified", () =>
+    expect(resolveBrokerType("PASSWORD", undefined)).toEqual({ ok: true, brokerType: "auth-session" }));
+  it("honors explicit null override", () =>
+    expect(resolveBrokerType("PASSWORD", null)).toEqual({ ok: true, brokerType: null }));
+  it("rejects unknown type", () =>
+    expect(resolveBrokerType("x", "openai-key")).toEqual({ ok: false, error: "unknown brokerType: openai-key" }));
+  it("passes runtime name through as null", () =>
+    expect(resolveBrokerType("region", undefined)).toEqual({ ok: true, brokerType: null }));
 });

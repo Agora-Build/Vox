@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import type { AddressInfo } from "net";
 import type { Server } from "http";
-import { createBrokerServer, scrubCredentials, secretMatches, type MintRequest } from "../vox_eval_agentd/session-broker";
+import { createBrokerServer, scrubCredentials, secretMatches, heartbeat, type MintRequest } from "../vox_eval_agentd/auth-session-broker";
 
 describe("secretMatches (constant-time bearer check)", () => {
   it("true only on an exact match", () => {
@@ -39,7 +39,7 @@ describe("scrubCredentials", () => {
   });
 });
 
-describe("session-broker HTTP service", () => {
+describe("auth-session-broker HTTP service", () => {
   let server: Server;
   let baseUrl: string;
   let received: MintRequest[] = [];
@@ -47,7 +47,7 @@ describe("session-broker HTTP service", () => {
 
   beforeAll(async () => {
     server = createBrokerServer({
-      secret: "s3",
+      getSecret: () => "s3",
       mint: async (req) => {
         received.push(req);
         return mintImpl(req);
@@ -140,5 +140,48 @@ describe("session-broker HTTP service", () => {
     expect(body.error).toContain("[redacted]");
     expect(body.error).not.toContain("secret-email@x.com");
     expect(body.error).not.toContain("hunter2-pass");
+  });
+});
+
+describe("auth-session-broker HTTP service (no mint secret registered yet)", () => {
+  let server: Server;
+  let baseUrl: string;
+
+  beforeAll(async () => {
+    server = createBrokerServer({
+      getSecret: () => undefined,
+      mint: async () => ({ cookies: [] }),
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const { port } = server.address() as AddressInfo;
+    baseUrl = `http://127.0.0.1:${port}`;
+  });
+
+  afterAll(async () => {
+    await new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));
+  });
+
+  it("POST /mint returns 401 when getSecret() returns undefined (not yet registered)", async () => {
+    const res = await fetch(`${baseUrl}/mint`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: "Bearer anything" },
+      body: JSON.stringify({ platformId: "vapi", email: "a@b.com", password: "pw" }),
+    });
+    expect(res.status).toBe(401);
+  });
+});
+
+describe("heartbeat resilience", () => {
+  it("does not reject when register() fails (no unhandled rejection -> no process crash)", async () => {
+    // Under vitest the entrypoint guard is false, so register() never ran and the
+    // module's `state` is still null. heartbeat() therefore takes the register() path;
+    // we make the underlying fetch reject to simulate Core being briefly unreachable.
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (() => Promise.reject(new Error("ECONNREFUSED"))) as typeof fetch;
+    try {
+      await expect(heartbeat()).resolves.toBeUndefined();
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 });

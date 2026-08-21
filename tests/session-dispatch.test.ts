@@ -32,7 +32,7 @@ async function createSecret(
   session: AuthSession,
   name: string,
   value: string,
-  opts?: { secretClass?: "runtime" | "protected"; isTestAccount?: boolean },
+  opts?: { brokerType?: string | null; isTestAccount?: boolean },
 ): Promise<void> {
   const res = await authFetch(session, `${BASE_URL}/api/secrets`, {
     method: "POST",
@@ -64,8 +64,8 @@ describe("dispatch integration — session stamping, pre-warm, shared-tier gates
     const providers = await (await fetch(`${BASE_URL}/api/providers`)).json();
     providerId = providers[0].id;
 
-    await createSecret(admin, emailSecret, "sd-test-user@example.com", { secretClass: "protected" });
-    await createSecret(admin, passwordSecret, "sd-test-password-1", { secretClass: "protected" });
+    await createSecret(admin, emailSecret, "sd-test-user@example.com", { brokerType: "auth-session" });
+    await createSecret(admin, passwordSecret, "sd-test-password-1", { brokerType: "auth-session" });
     await createSecret(admin, runtimeEmailSecret, "not-a-login@example.com");
     await createSecret(admin, runtimePasswordSecret, "not-a-login-password");
 
@@ -288,9 +288,9 @@ describe("dispatch integration — session stamping, pre-warm, shared-tier gates
     const splitPass = `SDG_SP_${stamp}`;
 
     beforeAll(async () => {
-      await createSecret(admin, gEmail, "sdg-test-user@example.com", { secretClass: "protected" });
-      await createSecret(admin, gPass, "sdg-test-password", { secretClass: "protected" });
-      await createSecret(admin, splitEmail, "sdg-split-user@example.com", { secretClass: "protected" });
+      await createSecret(admin, gEmail, "sdg-test-user@example.com", { brokerType: "auth-session" });
+      await createSecret(admin, gPass, "sdg-test-password", { brokerType: "auth-session" });
+      await createSecret(admin, splitEmail, "sdg-split-user@example.com", { brokerType: "auth-session" });
       await createSecret(admin, splitPass, "sdg-split-password"); // runtime-class (default)
 
       const setupSteps = (email: string, password: string) =>
@@ -388,12 +388,12 @@ describe("dispatch integration — session stamping, pre-warm, shared-tier gates
     });
   });
 
-  describe("8. Protected-misuse pre-run validation", () => {
+  describe("8. Brokered-misuse pre-run validation", () => {
     const protectedSecret = `API_TOKEN_${stamp}`;
     let misuseWorkflowId: number;
 
     beforeAll(async () => {
-      await createSecret(admin, protectedSecret, "sdp-protected-value", { secretClass: "protected" });
+      await createSecret(admin, protectedSecret, "sdp-protected-value", { brokerType: "auth-session" });
 
       const misuseRes = await authFetch(admin, `${BASE_URL}/api/workflows`, {
         method: "POST",
@@ -402,7 +402,7 @@ describe("dispatch integration — session stamping, pre-warm, shared-tier gates
           providerId,
           config: {
             framework: "aeval",
-            // References the Protected secret as a runtime value (an API header),
+            // References the Brokered secret as a runtime value (an API header),
             // not as a platform.setup email/password login pair.
             stepsPrefix: `- type: http.request\n  params:\n    headers:\n      Authorization: \${secrets.${protectedSecret}}`,
           },
@@ -416,14 +416,14 @@ describe("dispatch integration — session stamping, pre-warm, shared-tier gates
       await authFetch(admin, `${BASE_URL}/api/secrets/${encodeURIComponent(protectedSecret)}`, { method: "DELETE" });
     });
 
-    it("rejects a run when a Protected secret is used outside platform.setup login", async () => {
+    it("rejects a run when a Brokered secret is used outside platform.setup login", async () => {
       const res = await authFetch(admin, `${BASE_URL}/api/workflows/${misuseWorkflowId}/run`, {
         method: "POST",
         body: JSON.stringify({ region: REGION_NA, evalSetId }),
       });
       expect(res.status).toBe(400);
       const body = await res.json();
-      expect(body.error).toMatch(/Protected secret/i);
+      expect(body.error).toMatch(/Brokered secret/i);
       expect(body.error).toContain("API_TOKEN");
     });
   });
@@ -496,7 +496,7 @@ describe("dispatch integration — session stamping, pre-warm, shared-tier gates
       const body = await res.json();
       expect(body.agents.mine.map((a: any) => a.tokenId)).toContain(tok.id);
       expect(body.referencedSecrets).toEqual(
-        expect.arrayContaining([{ name: runtimeEmailSecret, class: "runtime", present: true }]),
+        expect.arrayContaining([{ name: runtimeEmailSecret, brokerType: null, present: true }]),
       );
     });
   });

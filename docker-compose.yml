@@ -40,10 +40,6 @@ services:
       # and the secrets/session feature is dead. Must match the value used by
       # any direct-DB tooling on the host.
       CREDENTIAL_ENCRYPTION_KEY: ${CREDENTIAL_ENCRYPTION_KEY:-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef}
-      # Session broker: Core mints login sessions via this internal
-      # sidecar. Reached over the compose network by service name.
-      SESSION_BROKER_URL: ${SESSION_BROKER_URL:-http://session-broker:8200}
-      SESSION_BROKER_SECRET: ${SESSION_BROKER_SECRET:-local-broker-secret-change-me}
     ports:
       - "5000:5000"
     depends_on:
@@ -56,15 +52,22 @@ services:
   # driving aeval's `setup:account` flow with the login credential Core passes
   # over the internal network. NO ports are published: only vox-service (same
   # compose network) may reach it.
-  session-broker:
-    image: vox-session-broker:latest
+  auth-session-broker:
+    image: vox-auth-session-broker:latest
     build:
       context: .
       dockerfile: vox_eval_agentd/Dockerfile
       target: broker
-    container_name: vox-session-broker
+    container_name: vox-auth-session-broker
     environment:
-      SESSION_BROKER_SECRET: ${SESSION_BROKER_SECRET:-local-broker-secret-change-me}
+      # The broker self-registers with Core (register/heartbeat) instead of
+      # Core holding a static broker URL/secret. BROKER_REG_TOKEN must be an
+      # admin-minted registration token (POST /api/admin/broker-tokens as an
+      # admin) — there is no safe default, so it is left unset here; set it
+      # via a .env override before bringing this service up.
+      VOX_CORE_URL: ${VOX_CORE_URL:-http://vox-service:5000}
+      BROKER_REG_TOKEN: ${BROKER_REG_TOKEN:-}
+      BROKER_ADVERTISE_URL: ${BROKER_ADVERTISE_URL:-http://auth-session-broker:8200}
       BROKER_PORT: 8200
       HEADLESS: "true"
       WEB_SESSION_MINT_TIMEOUT_SECONDS: ${WEB_SESSION_MINT_TIMEOUT_SECONDS:-180}

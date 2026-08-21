@@ -11,7 +11,8 @@ import { registerApiV1Routes } from "./routes-api-v1";
 import { generateSignedUrlForUser } from "./s3";
 import { validateTierChoice, resolveTargetedDispatch, filterDispatchableAgents } from "./dispatch";
 import { getMarketplace } from "./marketplace";
-import { parsePlatformSetup, sessionScopeForWorkflow, evaluateSessionRequirement, getProtectedSecretNames, ensureSession, stampOwnerSession, credentialKeyFor, SESSION_FRESH_MARGIN_SECONDS, classifyReferencedSecrets, findProtectedMisuse, type SessionNeed } from "./session-broker";
+import { parsePlatformSetup, sessionScopeForWorkflow, evaluateSessionRequirement, getBrokeredSecretNames, ensureSession, stampOwnerSession, credentialKeyFor, SESSION_FRESH_MARGIN_SECONDS, classifyReferencedSecrets, findBrokeredMisuse, defaultBrokerTypeForName, resolveBrokerType, type SessionNeed } from "./auth-session";
+import { isKnownBrokerType, validateRegisterPayload, cacheBrokerMintSecret, hasBrokerMintSecret } from "./broker-registry";
 import {
   hashPassword,
   verifyPassword,
@@ -2434,7 +2435,7 @@ export async function registerRoutes(
         secrets: userSecrets.map(s => ({
           id: s.id,
           name: s.name,
-          class: s.class,
+          brokerType: s.brokerType,
           isTestAccount: s.isTestAccount,
           createdAt: s.createdAt,
           updatedAt: s.updatedAt,
@@ -2469,10 +2470,7 @@ export async function registerRoutes(
       if (value.length > 10000) {
         return res.status(400).json({ error: "Secret value too large (max 10KB)" });
       }
-      const secretClass = req.body.secretClass === undefined ? undefined : req.body.secretClass;
-      if (secretClass !== undefined && secretClass !== "runtime" && secretClass !== "protected") {
-        return res.status(400).json({ error: "secretClass must be 'runtime' or 'protected'" });
-      }
+      const bodyBrokerType = req.body.brokerType === undefined ? undefined : req.body.brokerType;
       const isTestAccount = req.body.isTestAccount === undefined ? undefined : req.body.isTestAccount === true;
 
       // Per-user limit: check if this is a new secret (not an upsert of existing)
@@ -2483,13 +2481,24 @@ export async function registerRoutes(
       }
 
       const existingRow = existing.find(s => s.name === trimmedName);
-      if (existingRow && existingRow.class === "protected" && secretClass === "runtime") {
-        return res.status(400).json({ error: "A protected secret cannot be reclassified to runtime — delete and recreate it instead" });
+      let resolvedBrokerType: string | null;
+      if (existingRow && bodyBrokerType === undefined) {
+        resolvedBrokerType = existingRow.brokerType; // preserve on value-only update
+      } else {
+        const resolved = resolveBrokerType(trimmedName, bodyBrokerType);
+        if (!resolved.ok) return res.status(400).json({ error: resolved.error });
+        resolvedBrokerType = resolved.brokerType;
+      }
+      if (existingRow && existingRow.brokerType === "auth-session" && resolvedBrokerType === null) {
+        return res.status(400).json({ error: "A brokered secret cannot be reclassified to runtime — delete and recreate it instead" });
       }
 
       const encrypted = encryptValue(value);
-      const secret = await storage.createOrUpdateSecret(user.id, trimmedName, encrypted, { class: secretClass, isTestAccount });
-      res.json({ id: secret.id, name: secret.name, class: secret.class, isTestAccount: secret.isTestAccount, createdAt: secret.createdAt, updatedAt: secret.updatedAt });
+      const secret = await storage.createOrUpdateSecret(user.id, trimmedName, encrypted, {
+        brokerType: resolvedBrokerType,
+        isTestAccount,
+      });
+      res.json({ id: secret.id, name: secret.name, brokerType: secret.brokerType, isTestAccount: secret.isTestAccount, createdAt: secret.createdAt, updatedAt: secret.updatedAt });
     } catch (error) {
       console.error("Error creating secret:", error);
       if (error instanceof Error && error.message.includes("CREDENTIAL_ENCRYPTION_KEY")) {
@@ -2528,7 +2537,7 @@ export async function registerRoutes(
       const secrets = await storage.getOrgSecrets(user.organizationId);
       res.json(secrets.map(s => ({
         name: s.name,
-        class: s.class,
+        brokerType: s.brokerType,
         isTestAccount: s.isTestAccount,
         createdAt: s.createdAt,
         updatedAt: s.updatedAt,
@@ -2563,20 +2572,28 @@ export async function registerRoutes(
       if (!isEncryptionConfigured()) {
         return res.status(503).json({ error: "Encryption not configured on server" });
       }
-      const secretClass = req.body.secretClass === undefined ? undefined : req.body.secretClass;
-      if (secretClass !== undefined && secretClass !== "runtime" && secretClass !== "protected") {
-        return res.status(400).json({ error: "secretClass must be 'runtime' or 'protected'" });
-      }
+      const bodyBrokerType = req.body.brokerType === undefined ? undefined : req.body.brokerType;
       const isTestAccount = req.body.isTestAccount === undefined ? undefined : req.body.isTestAccount === true;
 
       const existingRow = (await storage.getOrgSecrets(user.organizationId)).find(s => s.name === trimmedName);
-      if (existingRow && existingRow.class === "protected" && secretClass === "runtime") {
-        return res.status(400).json({ error: "A protected secret cannot be reclassified to runtime — delete and recreate it instead" });
+      let resolvedBrokerType: string | null;
+      if (existingRow && bodyBrokerType === undefined) {
+        resolvedBrokerType = existingRow.brokerType; // preserve on value-only update
+      } else {
+        const resolved = resolveBrokerType(trimmedName, bodyBrokerType);
+        if (!resolved.ok) return res.status(400).json({ error: resolved.error });
+        resolvedBrokerType = resolved.brokerType;
+      }
+      if (existingRow && existingRow.brokerType === "auth-session" && resolvedBrokerType === null) {
+        return res.status(400).json({ error: "A brokered secret cannot be reclassified to runtime — delete and recreate it instead" });
       }
 
       const encrypted = encryptValue(value);
-      const secret = await storage.upsertOrgSecret(user.organizationId, trimmedName, encrypted, user.id, { class: secretClass, isTestAccount });
-      res.json({ message: "Org secret saved", class: secret.class, isTestAccount: secret.isTestAccount });
+      const secret = await storage.upsertOrgSecret(user.organizationId, trimmedName, encrypted, user.id, {
+        brokerType: resolvedBrokerType,
+        isTestAccount,
+      });
+      res.json({ message: "Org secret saved", brokerType: secret.brokerType, isTestAccount: secret.isTestAccount });
     } catch (error) {
       console.error("Error saving org secret:", error);
       res.status(500).json({ error: "Failed to save org secret" });
@@ -2849,6 +2866,130 @@ export async function registerRoutes(
     } catch (error) {
       console.error("Error revoking eval agent token:", error);
       res.status(500).json({ error: "Failed to revoke eval agent token" });
+    }
+  });
+
+  // ==================== BROKER REGISTRY ROUTES ====================
+
+  app.get("/api/admin/broker-tokens", requireAuth, requireAdmin, async (req, res) => {
+    try {
+      const tokens = await storage.getAllBrokerRegistrationTokens();
+      res.json(tokens.map(t => ({
+        id: t.id,
+        name: t.name,
+        brokerType: t.brokerType,
+        isRevoked: t.isRevoked,
+        lastUsedAt: t.lastUsedAt,
+        createdAt: t.createdAt,
+      })));
+    } catch (error) {
+      console.error("Error fetching broker registration tokens:", error);
+      res.status(500).json({ error: "Failed to fetch broker registration tokens" });
+    }
+  });
+
+  app.post("/api/admin/broker-tokens", requireAuth, requireAdmin, async (req, res) => {
+    try {
+      const { name, brokerType } = req.body ?? {};
+      if (typeof name !== "string" || !name) return res.status(400).json({ error: "name required" });
+      if (!isKnownBrokerType(brokerType)) return res.status(400).json({ error: "unknown brokerType" });
+      const token = generateSecureToken(32);
+      const row = await storage.createBrokerRegistrationToken({
+        name, brokerType, tokenHash: hashToken(token), createdBy: (await getCurrentUser(req))!.id, isRevoked: false, expiresAt: null,
+      });
+      res.json({ id: row.id, name: row.name, brokerType: row.brokerType, token }); // plaintext once
+    } catch (error) {
+      console.error("Error creating broker registration token:", error);
+      res.status(500).json({ error: "Failed to create broker registration token" });
+    }
+  });
+
+  app.post("/api/admin/broker-tokens/:id/revoke", requireAuth, requireAdmin, async (req, res) => {
+    try {
+      const { id } = req.params;
+      await storage.revokeBrokerRegistrationToken(parseInt(id));
+      res.json({ message: "Broker registration token revoked" });
+    } catch (error) {
+      console.error("Error revoking broker registration token:", error);
+      res.status(500).json({ error: "Failed to revoke broker registration token" });
+    }
+  });
+
+  app.get("/api/admin/brokers", requireAuth, requireAdmin, async (req, res) => {
+    try {
+      const brokers = await storage.getAllBrokers();
+      res.json(brokers.map(b => ({
+        id: b.id,
+        name: b.name,
+        tokenId: b.tokenId,
+        brokerType: b.brokerType,
+        url: b.url,
+        state: b.state,
+        currentLeaseId: b.currentLeaseId,
+        lastSeenAt: b.lastSeenAt,
+        createdAt: b.createdAt,
+        updatedAt: b.updatedAt,
+      })));
+    } catch (error) {
+      console.error("Error fetching brokers:", error);
+      res.status(500).json({ error: "Failed to fetch brokers" });
+    }
+  });
+
+  app.post("/api/brokers/register", async (req, res) => {
+    try {
+      const bearer = (req.headers.authorization || "").replace(/^Bearer\s+/i, "");
+      if (!bearer) return res.status(401).json({ error: "missing token" });
+      const tok = await storage.getBrokerRegistrationTokenByHash(hashToken(bearer));
+      if (!tok || tok.isRevoked || (tok.expiresAt && tok.expiresAt < new Date())) return res.status(401).json({ error: "invalid token" });
+      const v = validateRegisterPayload(req.body ?? {});
+      if (!v.ok) return res.status(400).json({ error: v.error });
+      if (v.brokerType !== tok.brokerType) return res.status(400).json({ error: "brokerType mismatch" });
+      const mintSecret = generateSecureToken(32);
+      const leaseId = generateSecureToken(16);
+      // Upsert by tokenId: reuse this token's broker row on re-register instead of
+      // inserting a duplicate (Core restart / broker restart / superseded lease all
+      // re-register). Mirrors the eval-agent register upsert.
+      const existing = await storage.getBrokersByTokenId(tok.id);
+      let broker;
+      if (existing.length > 0) {
+        broker = existing[0];
+        await storage.updateBroker(broker.id, {
+          name: v.name, url: v.url, state: "idle", currentLeaseId: leaseId, lastSeenAt: new Date(),
+        });
+      } else {
+        broker = await storage.createBroker({
+          name: v.name, tokenId: tok.id, brokerType: v.brokerType, url: v.url,
+          state: "idle", currentLeaseId: leaseId, lastSeenAt: new Date(),
+        });
+      }
+      cacheBrokerMintSecret(broker.id, mintSecret);
+      storage.updateBrokerObservedIp(broker.id, req.ip ?? ""); // fire-and-forget
+      storage.updateBrokerRegistrationTokenLastUsed(tok.id);
+      res.json({ brokerId: broker.id, leaseId, mintSecret }); // mintSecret returned once
+    } catch (error) {
+      console.error("Error registering broker:", error);
+      res.status(500).json({ error: "Failed to register broker" });
+    }
+  });
+
+  app.post("/api/brokers/heartbeat", async (req, res) => {
+    try {
+      const bearer = (req.headers.authorization || "").replace(/^Bearer\s+/i, "");
+      const tok = bearer ? await storage.getBrokerRegistrationTokenByHash(hashToken(bearer)) : undefined;
+      if (!tok || tok.isRevoked || (tok.expiresAt && tok.expiresAt < new Date())) return res.status(401).json({ error: "invalid token" });
+      const { brokerId, leaseId, state } = req.body ?? {};
+      const broker = await storage.getBroker(brokerId);
+      if (!broker) return res.status(404).json({ error: "unknown broker" });
+      if (broker.currentLeaseId && leaseId !== broker.currentLeaseId) return res.json({ superseded: true });
+      if (!hasBrokerMintSecret(broker.id)) return res.json({ reregister: true }); // Core cold-cache
+      await storage.updateBrokerHeartbeat(broker.id);
+      if (state && state !== broker.state) await storage.updateBroker(broker.id, { state });
+      storage.updateBrokerObservedIp(broker.id, req.ip ?? "");
+      res.json({ ok: true });
+    } catch (error) {
+      console.error("Error processing broker heartbeat:", error);
+      res.status(500).json({ error: "Failed to process broker heartbeat" });
     }
   });
 
@@ -3714,29 +3855,29 @@ export async function registerRoutes(
       const wfConfig = (workflow.config ?? {}) as Record<string, unknown>;
       const setupInfo = parsePlatformSetup(wfConfig.stepsPrefix as string | undefined);
       const scope = sessionScopeForWorkflow(workflow);
-      const sessionReq = evaluateSessionRequirement(setupInfo, await getProtectedSecretNames(scope));
+      const sessionReq = evaluateSessionRequirement(setupInfo, await getBrokeredSecretNames(scope));
       if (sessionReq.kind === "misconfigured") {
         return res.status(400).json({ error: sessionReq.reason });
       }
       const sessionNeed: SessionNeed | null = sessionReq.kind === "need" ? sessionReq.need : null;
 
       // Enumerate every ${secrets.NAME} the workflow + eval set reference, with
-      // class + presence. Drives the Protected-misuse gate here and the
+      // class + presence. Drives the Brokered-misuse gate here and the
       // Runtime-on-shared consent gate in the targeted branch below.
       const classified = await classifyReferencedSecrets(
         scope,
         collectSecretRefs([workflow.config, evalSet.config]),
       );
-      // A Protected secret is only meaningful as a platform.setup login credential.
+      // A Brokered secret is only meaningful as a platform.setup login credential.
       // Any other reference is a misconfiguration — reject with a clear message
       // instead of a silently broken run.
-      const misused = findProtectedMisuse(
+      const misused = findBrokeredMisuse(
         classified,
         sessionNeed ? { emailSecret: sessionNeed.emailSecret, passwordSecret: sessionNeed.passwordSecret } : null,
       );
       if (misused.length > 0) {
         return res.status(400).json({
-          error: `Protected secret(s) ${misused.join(", ")} are referenced as runtime values — Protected secrets can only be login credentials in platform.setup. Mark them Runtime or remove the reference.`,
+          error: `Brokered secret(s) ${misused.join(", ")} are referenced as runtime values — Brokered secrets can only be login credentials in platform.setup. Mark them Runtime or remove the reference.`,
         });
       }
 
@@ -3767,7 +3908,7 @@ export async function registerRoutes(
           // dispatcher to acknowledge that exposure BEFORE any escrow hold is
           // placed. Server-authoritative so a direct API caller can't skip the
           // UI checkbox. Only present runtime secrets actually get delivered.
-          const runtimeExposed = classified.filter((c) => c.class === "runtime" && c.present).map((c) => c.name);
+          const runtimeExposed = classified.filter((c) => c.brokerType == null && c.present).map((c) => c.name);
           if (runtimeExposed.length > 0) {
             if (req.body.runtimeSecretConsent !== true) {
               return res.status(400).json({
@@ -6125,16 +6266,16 @@ export async function registerRoutes(
       const event = await storage.getClashEvent(match.eventId);
       if (!event) return res.status(404).json({ error: "Event not found" });
 
-      // Fetch and decrypt event owner's secrets. PROTECTED-class secrets are
+      // Fetch and decrypt event owner's secrets. BROKERED-class secrets are
       // structurally withheld: Core-only credentials used to mint web sessions,
       // never handed to a runner (MEDIUM-2). Only runtime-class secrets are
       // decrypted for direct injection.
       const userSecrets = await storage.getSecretsByUserId(event.createdBy);
       const decrypted: Record<string, string> = {};
       let decryptErrors = 0;
-      let protectedWithheld = 0;
+      let brokeredWithheld = 0;
       for (const s of userSecrets) {
-        if (s.class === "protected") { protectedWithheld++; continue; }
+        if (s.brokerType != null) { brokeredWithheld++; continue; }
         try {
           decrypted[s.name] = decryptValue(s.encryptedValue);
         } catch {
@@ -6142,7 +6283,7 @@ export async function registerRoutes(
         }
       }
 
-      console.log(`[ClashSecrets] Runner ${runner.runnerId} fetched secrets for match #${matchId} (event #${event.id}, owner #${event.createdBy}): ${Object.keys(decrypted).length} decrypted, ${decryptErrors} failed, ${protectedWithheld} protected-class withheld`);
+      console.log(`[ClashSecrets] Runner ${runner.runnerId} fetched secrets for match #${matchId} (event #${event.id}, owner #${event.createdBy}): ${Object.keys(decrypted).length} decrypted, ${decryptErrors} failed, ${brokeredWithheld} brokered-class withheld`);
 
       res.json(decrypted);
     } catch (error) {

@@ -20,6 +20,7 @@
 
 import { DatabaseStorage, encryptValue } from "../server/storage";
 import { hashPassword } from "../server/auth";
+import type { InsertRegionLocation } from "../shared/schema";
 
 async function seedData() {
   const storage = new DatabaseStorage();
@@ -145,6 +146,38 @@ async function seedData() {
     console.log("Created Org Premium (11+ seats) pricing config ($6/mo, 25% off)");
   } else {
     console.log(`Pricing configs already exist: ${pricingConfigs.length} found`);
+  }
+
+  // Seed region-location bases (mirror of migration 0023_region_locations.sql).
+  //
+  // Why this is needed for local dev: `dev-local-run.sh reset` uses `db:push`
+  // (schema-only sync), which recreates table structure but never executes any
+  // migration's INSERT body — so region_locations is empty after a reset. Eval
+  // agent token creation resolves `regionLocationBaseId` against this table, so
+  // an empty table breaks any test/flow that registers an agent by region base.
+  //
+  // Idempotent per base (skip if it already exists). next_sequence must match
+  // migration 0023 — the pre-allocated `<base>-01` site IDs the tests use
+  // (e.g. na-us-seattle-01) rely on next_sequence >= 2. insertRegionLocationSchema
+  // omits nextSequence (defaults to 1), so we bump it via updateRegionLocation.
+  const regionBases: Array<{ base: InsertRegionLocation; nextSequence: number }> = [
+    { base: { baseId: "na-us-seattle", displayName: "Seattle", city: "Seattle", countryCode: "US", countryName: "United States", macroRegionCode: "na", macroRegionName: "North America", isActive: true }, nextSequence: 2 },
+    { base: { baseId: "apac-sg", displayName: "Singapore", city: "Singapore", countryCode: "SG", countryName: "Singapore", macroRegionCode: "apac", macroRegionName: "Asia Pacific", isActive: true }, nextSequence: 2 },
+    { base: { baseId: "apac-in-mumbai", displayName: "Mumbai", city: "Mumbai", countryCode: "IN", countryName: "India", macroRegionCode: "apac", macroRegionName: "Asia Pacific", isActive: true }, nextSequence: 1 },
+    { base: { baseId: "eu-de-frankfurt", displayName: "Frankfurt", city: "Frankfurt", countryCode: "DE", countryName: "Germany", macroRegionCode: "eu", macroRegionName: "Europe", isActive: true }, nextSequence: 2 },
+    { base: { baseId: "sa-br-saopaulo", displayName: "Sao Paulo", city: "Sao Paulo", countryCode: "BR", countryName: "Brazil", macroRegionCode: "sa", macroRegionName: "South America", isActive: true }, nextSequence: 2 },
+  ];
+  for (const { base, nextSequence } of regionBases) {
+    const existing = await storage.getRegionLocationByBaseId(base.baseId);
+    if (existing) {
+      console.log(`Region base already exists: ${base.baseId}`);
+      continue;
+    }
+    const created = await storage.createRegionLocation(base);
+    if (nextSequence > 1) {
+      await storage.updateRegionLocation(created.id, { nextSequence });
+    }
+    console.log(`Created region base: ${base.baseId} (next_sequence: ${nextSequence})`);
   }
 
   // Create Scout's LiveKit evaluation workflow and schedule

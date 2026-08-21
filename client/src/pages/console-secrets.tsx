@@ -21,7 +21,7 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 interface SecretEntry {
   id: number;
   name: string;
-  class: "runtime" | "protected";
+  brokerType: string | null;
   isTestAccount: boolean;
   createdAt: string;
   updatedAt: string;
@@ -34,7 +34,7 @@ interface SecretsResponse {
 
 interface OrgSecretEntry {
   name: string;
-  class: "runtime" | "protected";
+  brokerType: string | null;
   isTestAccount: boolean;
   createdAt: string;
   updatedAt: string;
@@ -64,7 +64,7 @@ export default function ConsoleSecrets() {
   const [createOpen, setCreateOpen] = useState(false);
   const [name, setName] = useState("");
   const [value, setValue] = useState("");
-  const [secretClass, setSecretClass] = useState<"runtime" | "protected">("protected");
+  const [brokerType, setBrokerType] = useState<string | null>("auth-session");
   const [isTestAccount, setIsTestAccount] = useState(false);
 
   const { data: response, isLoading } = useQuery<SecretsResponse>({
@@ -79,15 +79,15 @@ export default function ConsoleSecrets() {
       const res = await apiRequest("POST", "/api/secrets", {
         name: name.trim(),
         value,
-        secretClass,
-        isTestAccount: secretClass === "protected" ? isTestAccount : undefined,
+        brokerType: brokerType === "runtime" ? null : brokerType,
+        isTestAccount: brokerType === "auth-session" ? isTestAccount : undefined,
       });
       return res.json();
     },
     onSuccess: () => {
       setName("");
       setValue("");
-      setSecretClass("protected");
+      setBrokerType("auth-session");
       setIsTestAccount(false);
       setCreateOpen(false);
       queryClient.invalidateQueries({ queryKey: ["/api/secrets"] });
@@ -116,7 +116,7 @@ export default function ConsoleSecrets() {
   const [orgCreateOpen, setOrgCreateOpen] = useState(false);
   const [orgName, setOrgName] = useState("");
   const [orgValue, setOrgValue] = useState("");
-  const [orgSecretClass, setOrgSecretClass] = useState<"runtime" | "protected">("protected");
+  const [orgBrokerType, setOrgBrokerType] = useState<string | null>("auth-session");
   const [orgIsTestAccount, setOrgIsTestAccount] = useState(false);
 
   const { data: orgSecrets, isLoading: orgLoading } = useQuery<OrgSecretEntry[]>({
@@ -129,14 +129,14 @@ export default function ConsoleSecrets() {
       await apiRequest("POST", "/api/org-secrets", {
         name: orgName.trim(),
         value: orgValue,
-        secretClass: orgSecretClass,
-        isTestAccount: orgSecretClass === "protected" ? orgIsTestAccount : undefined,
+        brokerType: orgBrokerType === "runtime" ? null : orgBrokerType,
+        isTestAccount: orgBrokerType === "auth-session" ? orgIsTestAccount : undefined,
       });
     },
     onSuccess: () => {
       setOrgName("");
       setOrgValue("");
-      setOrgSecretClass("protected");
+      setOrgBrokerType("auth-session");
       setOrgIsTestAccount(false);
       setOrgCreateOpen(false);
       queryClient.invalidateQueries({ queryKey: ["/api/org-secrets"] });
@@ -243,22 +243,22 @@ export default function ConsoleSecrets() {
                       </div>
                       <div className="space-y-2">
                         <Label htmlFor="secret-class">Type</Label>
-                        <Select value={secretClass} onValueChange={(v) => setSecretClass(v as "runtime" | "protected")}>
+                        <Select value={brokerType ?? "runtime"} onValueChange={(v) => setBrokerType(v)}>
                           <SelectTrigger id="secret-class">
                             <SelectValue />
                           </SelectTrigger>
                           <SelectContent>
-                            <SelectItem value="protected">Protected (Recommended)</SelectItem>
+                            <SelectItem value="auth-session">Brokered — login/session (Recommended)</SelectItem>
                             <SelectItem value="runtime">Runtime</SelectItem>
                           </SelectContent>
                         </Select>
                         <p className="text-xs text-muted-foreground">
-                          {secretClass === "protected"
-                            ? "Processed securely by Core. The raw secret is never exposed to agents."
+                          {brokerType === "auth-session"
+                            ? "Materialized by a broker; the agent never sees the stored value."
                             : "Sent directly to the agent at runtime. Only use with agents you trust."}
                         </p>
                       </div>
-                      {secretClass === "protected" && (
+                      {brokerType === "auth-session" && (
                         <div className="flex items-center gap-2">
                           <Checkbox
                             id="secret-test-account"
@@ -306,9 +306,9 @@ export default function ConsoleSecrets() {
                         <TableCell className="font-mono font-medium">
                           <div className="flex items-center gap-2">
                             {secret.name}
-                            {secret.class === "protected" && (
+                            {secret.brokerType != null && (
                               <>
-                                <Badge variant="outline">{secret.class}</Badge>
+                                <Badge variant="outline">{secret.brokerType}</Badge>
                                 {secret.isTestAccount && <Badge variant="secondary">test account</Badge>}
                               </>
                             )}
@@ -389,22 +389,22 @@ export default function ConsoleSecrets() {
                           </div>
                           <div className="space-y-2">
                             <Label htmlFor="org-secret-class">Type</Label>
-                            <Select value={orgSecretClass} onValueChange={(v) => setOrgSecretClass(v as "runtime" | "protected")}>
+                            <Select value={orgBrokerType ?? "runtime"} onValueChange={(v) => setOrgBrokerType(v)}>
                               <SelectTrigger id="org-secret-class">
                                 <SelectValue />
                               </SelectTrigger>
                               <SelectContent>
-                                <SelectItem value="protected">Protected (Recommended)</SelectItem>
+                                <SelectItem value="auth-session">Brokered — login/session (Recommended)</SelectItem>
                                 <SelectItem value="runtime">Runtime</SelectItem>
                               </SelectContent>
                             </Select>
                             <p className="text-xs text-muted-foreground">
-                              {orgSecretClass === "protected"
-                                ? "Processed securely by Core. The raw secret is never exposed to agents."
+                              {orgBrokerType === "auth-session"
+                                ? "Materialized by a broker; the agent never sees the stored value."
                                 : "Sent directly to the agent at runtime. Only use with agents you trust."}
                             </p>
                           </div>
-                          {orgSecretClass === "protected" && (
+                          {orgBrokerType === "auth-session" && (
                             <div className="flex items-center gap-2">
                               <Checkbox
                                 id="org-secret-test-account"
@@ -453,9 +453,9 @@ export default function ConsoleSecrets() {
                           <TableCell className="font-mono font-medium">
                             <div className="flex items-center gap-2">
                               {secret.name}
-                              {secret.class === "protected" && (
+                              {secret.brokerType != null && (
                                 <>
-                                  <Badge variant="outline">{secret.class}</Badge>
+                                  <Badge variant="outline">{secret.brokerType}</Badge>
                                   {secret.isTestAccount && <Badge variant="secondary">test account</Badge>}
                                 </>
                               )}

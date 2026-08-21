@@ -43,7 +43,7 @@ async function createSecret(
   session: AuthSession,
   name: string,
   value: string,
-  opts?: { secretClass?: "runtime" | "protected"; isTestAccount?: boolean },
+  opts?: { brokerType?: string | null; isTestAccount?: boolean },
 ): Promise<void> {
   const res = await authFetch(session, `${BASE_URL}/api/secrets`, {
     method: "POST",
@@ -76,8 +76,8 @@ describe("GET /api/eval-agent/jobs — session-capability gate", () => {
     // Login-class secrets so the "session" workflow's platform.setup is
     // evaluated by evaluateSessionRequirement as a session "need" and its jobs
     // get stamped with config.sessionInjection.
-    await createSecret(admin, emailSecret, "scg-test-user@example.com", { secretClass: "protected" });
-    await createSecret(admin, passwordSecret, "scg-test-password-1", { secretClass: "protected" });
+    await createSecret(admin, emailSecret, "scg-test-user@example.com", { brokerType: "auth-session" });
+    await createSecret(admin, passwordSecret, "scg-test-password-1", { brokerType: "auth-session" });
 
     const setupSteps =
       `- type: platform.setup\n  platform_id: vapi\n  params:\n    email: \${secrets.${emailSecret}}\n    password: \${secrets.${passwordSecret}}`;

@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { storage, encryptValue, db } from "../server/storage";
 import { evalJobs, webSessions } from "../shared/schema";
 import { eq } from "drizzle-orm";
-import { credentialKeyFor } from "../server/session-broker";
+import { credentialKeyFor } from "../server/auth-session";
 import { BASE_NA } from "./helpers/regions";
 
 // Task 7: GET /api/eval-agent/jobs/:jobId/session — lease-fenced serve endpoint
@@ -43,7 +43,7 @@ async function createSecret(
   session: AuthSession,
   name: string,
   value: string,
-  opts?: { secretClass?: "runtime" | "protected"; isTestAccount?: boolean },
+  opts?: { brokerType?: string | null; isTestAccount?: boolean },
 ): Promise<void> {
   const res = await authFetch(session, `${BASE_URL}/api/secrets`, {
     method: "POST",
@@ -104,8 +104,8 @@ describe("GET /api/eval-agent/jobs/:jobId/session", () => {
     const providers = await (await fetch(`${BASE_URL}/api/providers`)).json();
     providerId = providers[0].id;
 
-    await createSecret(admin, emailSecret, "se-test-user@example.com", { secretClass: "protected" });
-    await createSecret(admin, passwordSecret, "se-test-password-1", { secretClass: "protected" });
+    await createSecret(admin, emailSecret, "se-test-user@example.com", { brokerType: "auth-session" });
+    await createSecret(admin, passwordSecret, "se-test-password-1", { brokerType: "auth-session" });
 
     const setupSteps = (platformId: string) =>
       `- type: platform.setup\n  platform_id: ${platformId}\n  params:\n    email: \${secrets.${emailSecret}}\n    password: \${secrets.${passwordSecret}}`;
@@ -186,8 +186,8 @@ describe("GET /api/eval-agent/jobs/:jobId/session", () => {
 
   // /run pre-warms the session cache for session-needing workflows (Task 6:
   // `void ensureSession(scope, sessionNeed)` fired inline, fire-and-forget, right
-  // when the job is created). In this dev server SESSION_BROKER_URL/SECRET are
-  // unset, so that pre-warm fails fast and lands the row in 'failed' within a
+  // when the job is created). In this dev server no broker is registered,
+  // so that pre-warm fails fast and lands the row in 'failed' within a
   // handful of local DB round-trips — before our own follow-up assertions run.
   // Wait for it to settle (leave 'minting') before seeding/asserting our own
   // state, so our writes don't race the pre-warm's.
@@ -270,9 +270,9 @@ describe("GET /api/eval-agent/jobs/:jobId/session", () => {
     const body = await res.json();
     expect(body).toEqual({ required: true, status: "minting" });
 
-    // The endpoint fire-and-forgets ensureSession. Without SESSION_BROKER_URL/
-    // SECRET configured, ensureSession's mint attempt throws synchronously
-    // inside its try and records the failure on the row — poll briefly for it.
+    // The endpoint fire-and-forgets ensureSession. With no broker registered,
+    // ensureSession's mint attempt throws synchronously inside its try and
+    // records the failure on the row — poll briefly for it.
     let last = res;
     const deadline = Date.now() + 10_000;
     while (Date.now() < deadline && last.status !== 503) {
