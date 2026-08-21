@@ -50,20 +50,19 @@ services:
       postgres:
         condition: service_healthy
 
-  # Session broker — stateless sidecar built from the eval-agent
-  # image, running its `session-broker.js` entrypoint instead of the daemon.
-  # It mints a Playwright storageState by driving aeval's `setup:account` flow
-  # with the login credential Core passes over the internal network. NO ports
-  # are published: only vox-service (same compose network) may reach it. It
-  # shares the `vox_eval_agentd:latest` tag with the eval agent, so `build` is
-  # only exercised when that image is absent.
+  # Session broker — stateless trusted sidecar, its own lean image built from the
+  # Dockerfile's `broker` target (aeval + aeval-data + Chromium only; no
+  # voice-agent-tester, no daemon code). It mints a Playwright storageState by
+  # driving aeval's `setup:account` flow with the login credential Core passes
+  # over the internal network. NO ports are published: only vox-service (same
+  # compose network) may reach it.
   session-broker:
-    image: vox_eval_agentd:latest
+    image: vox-session-broker:latest
     build:
       context: .
       dockerfile: vox_eval_agentd/Dockerfile
+      target: broker
     container_name: vox-session-broker
-    command: ["node", "session-broker.js"]
     environment:
       SESSION_BROKER_SECRET: ${SESSION_BROKER_SECRET:-local-broker-secret-change-me}
       BROKER_PORT: 8200
@@ -73,6 +72,8 @@ services:
   # eval-agent:
   #   build:
   #     context: vox_eval_agentd
+  #     dockerfile: vox_eval_agentd/Dockerfile
+  #     target: daemon   # default (last) stage; explicit for clarity
   #   container_name: vox-eval-agent
   #   environment:
   #     AGENT_TOKEN: <token>
