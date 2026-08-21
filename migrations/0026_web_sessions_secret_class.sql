@@ -1,4 +1,4 @@
--- Phase C (zero-trust credential injection) schema foundation:
+-- Zero-trust credential injection schema foundation:
 -- - secret_class distinguishes 'runtime' secrets (may reach an eval agent via
 --   getSecretsForJob) from 'login' secrets (Core-only, structurally excluded);
 --   is_test_account is the owner's attestation that a login identity is a

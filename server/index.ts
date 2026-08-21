@@ -117,6 +117,14 @@ app.use(express.urlencoded({ extended: false }));
 // Rate limiting only applies in production
 const isProduction = process.env["NODE_ENV"] === "production";
 
+// Runtime kill-switch for local/dev containers. `isProduction` above is baked
+// to a constant `true` at esbuild time (scripts/build.ts inlines NODE_ENV), so
+// the compiled bundle can't tell a dev Docker container apart from prod — the
+// container's NODE_ENV=development is dead. This var is a genuine RUNTIME read
+// (esbuild only inlines NODE_ENV), and must be the literal "true" to disable.
+// Prod never sets it → rate limiting stays on; only docker-compose (dev) opts out.
+const rateLimitDisabled = process.env["RATE_LIMIT_DISABLED"] === "true";
+
 // Paths exempt from rate limiting (lightweight read-only checks)
 const rateLimitExempt = new Set(["/api/auth/status", "/api/auth/google/status", "/api/auth/github/status"]);
 
@@ -127,7 +135,7 @@ const apiLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: "Too many requests, please try again later." },
-  skip: (req) => !isProduction || !req.path.startsWith("/api") || rateLimitExempt.has(req.path),
+  skip: (req) => rateLimitDisabled || !isProduction || !req.path.startsWith("/api") || rateLimitExempt.has(req.path),
 });
 
 // Stricter rate limit for authentication endpoints
@@ -137,7 +145,7 @@ const authLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: "Too many authentication attempts, please try again later." },
-  skip: () => !isProduction,
+  skip: () => rateLimitDisabled || !isProduction,
 });
 
 app.use(apiLimiter);
@@ -387,7 +395,7 @@ function startBackgroundWorker() {
           const provider = await storage.getProvider(workflow.providerId);
           const creator = schedule.createdBy ? await storage.getUser(schedule.createdBy) : undefined;
 
-          // Phase C: scheduled jobs are inherently owner-dispatched —
+          // scheduled jobs are inherently owner-dispatched —
           // canScheduleWorkflow (re-checked above) is owner/creator-only, so the
           // schedule creator IS the workflow owner and the untargeted owner/team
           // gate the run route applies is satisfied structurally. stampOwnerSession

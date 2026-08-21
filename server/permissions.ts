@@ -72,7 +72,7 @@ export function canScheduleWorkflow(user: Pick<AuthUser, 'id'>, resource: OrgRes
   return resource.ownerId === user.id || resource.createdBy === user.id;
 }
 
-// --- Shared-agents dispatch predicates (Phase A) ---
+// --- Shared-agents dispatch predicates ---
 
 export type DispatchToken = { id: number; dispatchTier: string; createdBy: number; region: string };
 
@@ -137,7 +137,7 @@ export function isClaimable(
 }
 
 /**
- * Session serve gate (Phase C) — who may RECEIVE a Core-minted session bundle
+ * Session serve gate — who may RECEIVE a Core-minted session bundle
  * for a session-injected job. Derived entirely from the job's IMMUTABLE stamped
  * snapshot (never the live workflow — the owner can edit it post-dispatch).
  * Policy: owner + team + attested-shared.

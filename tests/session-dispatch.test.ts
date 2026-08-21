@@ -41,7 +41,7 @@ async function createSecret(
   expect(res.ok).toBe(true);
 }
 
-describe("Phase C: dispatch integration — session stamping, pre-warm, shared-tier gates", () => {
+describe("dispatch integration — session stamping, pre-warm, shared-tier gates", () => {
   let admin: AuthSession;
   let providerId: string;
   const stamp = Date.now();

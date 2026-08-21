@@ -228,12 +228,6 @@ main() {
         log_info "Loaded .env.dev"
     fi
 
-    # Copy .env.dev to .env if .env doesn't exist or is empty
-    if [ ! -s "$PROJECT_DIR/.env" ] && [ -f "$PROJECT_DIR/.env.dev" ]; then
-        log_info "Copying .env.dev to .env..."
-        cp "$PROJECT_DIR/.env.dev" "$PROJECT_DIR/.env"
-    fi
-
     verify_env
 
     # Check server

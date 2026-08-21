@@ -1,5 +1,5 @@
 /**
- * Phase C: force every platform.setup step into storage-mode using a
+ * force every platform.setup step into storage-mode using a
  * Core-minted storageState file. The daemon never sees login credentials —
  * this transform also strips any email/password params so leftover
  * placeholders can't reach temp YAML or logs.

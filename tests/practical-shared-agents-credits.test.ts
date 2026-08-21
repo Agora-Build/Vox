@@ -450,7 +450,7 @@ describe("Task 13: practical shared-agents marketplace + credits e2e", () => {
     });
   });
 
-  // ── 5. Session-workflow gate interplay (Phase C x Phase B) ───────────
+  // ── 5. Session-workflow gate interplay ───────────
   describe("5. Session-workflow gate interplay: consent + attestation gates precede the hold", () => {
     const PRICE_PER_UNIT = 250;
     const charge = computeCharge(PRICE_PER_UNIT, 1);

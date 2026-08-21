@@ -12,12 +12,13 @@
 // What this script adds on top of init (local dev only):
 //   - Enables Scout account + sets known password (scout123) + email (scout@vox.ai)
 //   - Creates Scout's mainline LiveKit evaluation workflow + eval set + schedule
-//   - Creates Scout's Agora ConvoAI evaluation workflow (same eval set, authenticated setup)
+//   - Creates Scout's Agora ConvoAI login workflow (mode: account) + short login-smoke eval set
+//   - Seeds Protected login secrets AGORA_CONSOLE_EMAIL/PASSWORD from .env.dev (if set)
 //
 // Do not add production bootstrap logic here. If you need data in production,
 // either add it to /api/auth/init or run a one-off migration.
 
-import { DatabaseStorage } from "../server/storage";
+import { DatabaseStorage, encryptValue } from "../server/storage";
 import { hashPassword } from "../server/auth";
 
 async function seedData() {
@@ -220,10 +221,14 @@ steps:
     });
     console.log(`Created LiveKit workflow: ${livekitWorkflow.name} (mainline: true)`);
 
-    // Agora workflow: login/auth BEFORE enter — demonstrates provider-specific setup.
+    // Agora workflow: real SSO login BEFORE enter — the `mode: account` flow
+    // matches config/platforms/agora.yaml's `setup:account`. Both email and
+    // password come from Protected (login-class) secrets, so Core mints a
+    // storageState via the session broker and the agent never sees them.
+    // Mirrors scenarios/smoke_test_en_agora.yaml + examples/agora-agents.yaml.
     const agoraWorkflow = await storage.createWorkflow({
       name: "Agora ConvoAI Evaluation",
-      description: "Evaluation workflow for Agora ConvoAI - login required before joining",
+      description: "Evaluation workflow for Agora ConvoAI - Console login (mode: account) before joining",
       ownerId: scoutId,
       projectId: scoutProject.id,
       providerId: agoraProvider?.id || null,
@@ -234,14 +239,18 @@ steps:
         stepsPrefix: `- type: platform.setup
   platform_id: agora
   params:
-    mode: authenticated
-- type: platform.login
-  params:
-    token: \${secrets.agora_token}
+    mode: account
+    email: \${secrets.AGORA_CONSOLE_EMAIL}
+    password: \${secrets.AGORA_CONSOLE_PASSWORD}
 - type: audio.start_recording
 - type: platform.enter
   params:
-    tone_name: ''`,
+    tone_name: ''
+- type: platform.wait_for_active
+- type: audio.wait_for_speech
+  timeout_ms: 30000
+  silence_duration_ms: 1500
+  description: Wait for agent greeting`,
         // Same teardown for all aeval workflows (stop recording, leave platform).
         stepsSuffix: `- type: audio.stop_recording
 - type: platform.exit`,
@@ -264,6 +273,40 @@ steps:
         },
       });
       console.log(`Created eval set: ${basicEvalSet.name}`);
+    }
+
+    // Short single-turn eval set for the Agora login e2e — one prompt, one
+    // response. Deliberately minimal so the login → mint → conversation chain
+    // can be exercised end-to-end quickly (mirrors examples/agora-agents.yaml).
+    let loginSmokeEvalSet = scoutEvalSets.find(e => e.name === "Agora Login Smoke");
+    if (!loginSmokeEvalSet) {
+      loginSmokeEvalSet = await storage.createEvalSet({
+        name: "Agora Login Smoke",
+        description: "Minimal single-turn body for the Agora Console login e2e",
+        ownerId: scoutId,
+        visibility: "public",
+        isMainline: false,
+        config: {
+          scenario: `name: agora_login_smoke
+description: Minimal single-turn body for the Agora login e2e
+analysis:
+  preset: config/analysis_presets/default.yaml
+params:
+  output_dir: temp/output
+steps:
+  - type: audio.play
+    file: examples/multi_turn_dialogue/audio/1_paris.mp3
+    description: Play one user prompt
+  - type: audio.wait_for_speech
+    start_timeout_ms: 30000
+    end_timeout_ms: 90000
+    timeout_ms: 120000
+    silence_duration_ms: 3000
+    description: Wait for agent response
+`,
+        },
+      });
+      console.log(`Created eval set: ${loginSmokeEvalSet.name}`);
     }
 
     // Create recurring schedule - every 8 hours (at 0:00, 8:00, 16:00)
@@ -299,6 +342,25 @@ steps:
     }
   } else {
     console.log(`LiveKit workflow already exists: ID ${existingLiveKitWorkflow.id}`);
+  }
+
+  // Agora Console login credentials (Protected / login-class) for the login
+  // e2e. Sourced from the environment (.env.dev on the host, gitignored) so
+  // real credentials are NEVER committed. Re-run on every seed (outside the
+  // workflow guard) so an updated .env.dev value propagates after a reset.
+  // Owned by Scout to match the Agora workflow's ownership — a personal
+  // workflow spends its owner's personal secrets. `class: protected` makes
+  // them Core-only: structurally withheld from the agent, minted via broker.
+  const agoraEmail = process.env.AGORA_CONSOLE_EMAIL;
+  const agoraPassword = process.env.AGORA_CONSOLE_PASSWORD;
+  if (agoraEmail && agoraPassword) {
+    await storage.createOrUpdateSecret(
+      scoutId, "AGORA_CONSOLE_EMAIL", encryptValue(agoraEmail), { class: "protected" });
+    await storage.createOrUpdateSecret(
+      scoutId, "AGORA_CONSOLE_PASSWORD", encryptValue(agoraPassword), { class: "protected" });
+    console.log("Seeded Protected secrets: AGORA_CONSOLE_EMAIL, AGORA_CONSOLE_PASSWORD (login-class, Scout-owned)");
+  } else {
+    console.log("Skipped Agora login secrets (set AGORA_CONSOLE_EMAIL / AGORA_CONSOLE_PASSWORD in .env.dev to enable the login e2e)");
   }
 
   console.log("\nSeed data complete!");

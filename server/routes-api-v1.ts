@@ -318,7 +318,7 @@ export function registerApiV1Routes(app: Express): void {
         return res.status(404).json({ error: "Eval set not found" });
       }
 
-      // Phase C: does this workflow need a Core-minted login session? This route
+      // does this workflow need a Core-minted login session? This route
       // is owner-only (untargeted run on the caller's own workflow), so the
       // untargeted owner/team gate the console run route applies is satisfied
       // structurally — only the misconfigured-pair rejection and the immutable

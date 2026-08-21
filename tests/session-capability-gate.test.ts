@@ -52,7 +52,7 @@ async function createSecret(
   expect(res.ok).toBe(true);
 }
 
-describe("Phase C: GET /api/eval-agent/jobs — session-capability gate", () => {
+describe("GET /api/eval-agent/jobs — session-capability gate", () => {
   let admin: AuthSession;
   let providerId: string;
   const stamp = Date.now();

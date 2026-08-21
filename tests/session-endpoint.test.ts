@@ -52,7 +52,7 @@ async function createSecret(
   expect(res.ok).toBe(true);
 }
 
-describe("Phase C: GET /api/eval-agent/jobs/:jobId/session", () => {
+describe("GET /api/eval-agent/jobs/:jobId/session", () => {
   let admin: AuthSession;
   let adminId: number;
   let scope: { userId: number } | { organizationId: number };

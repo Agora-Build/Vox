@@ -2335,7 +2335,7 @@ export async function registerRoutes(
       }
       const evalSet = await storage.getEvalSet(schedule.evalSetId);
 
-      // Phase C: run-now fires a job on the workflow OWNER's secrets, exactly
+      // run-now fires a job on the workflow OWNER's secrets, exactly
       // like the scheduler tick — so it takes the same owner-dispatched session
       // path. A workflow whose platform.setup references login-class secrets is
       // Core-minted (never handed durable credentials to the agent); a
@@ -3095,7 +3095,7 @@ export async function registerRoutes(
 
       // Version-gate: if the requesting agent has a frameworkVersion, filter out
       // jobs whose config requires a newer version than the agent supports.
-      // Also gate session-injected jobs (Phase C) to daemons whose registration
+      // Also gate session-injected jobs to daemons whose registration
       // metadata declares the sessionInjection capability.
       const agents = await storage.getEvalAgentsByTokenId(evalAgentToken.id);
       const latestAgent = agents[0]; // sorted by createdAt desc
@@ -3105,7 +3105,7 @@ export async function registerRoutes(
 
       jobs = jobs.filter((job) => {
         const cfg = (job.config as Record<string, unknown>) ?? {};
-        // Phase C: never hand a session-injected job to a daemon that can't
+        // never hand a session-injected job to a daemon that can't
         // force storage-mode — it would run the target unauthenticated.
         if (cfg.sessionInjection && !supportsSessionInjection) return false;
         if (agentVersion) {
@@ -3564,7 +3564,7 @@ export async function registerRoutes(
     }
   });
 
-  // Phase C: serve the Core-minted login session (storageState) for a claimed
+  // serve the Core-minted login session (storageState) for a claimed
   // job. The agent gets ONLY this bundle — never the login secrets behind it.
   app.get("/api/eval-agent/jobs/:jobId/session", async (req, res) => {
     try {
@@ -3689,8 +3689,8 @@ export async function registerRoutes(
       }
 
       // Validate the eval set BEFORE any dispatch authorization or region
-      // resolution. The `shared` tier's marketplace.authorizeDispatch (a future
-      // credit-hold in Phase B) must never fire against an eval set the caller
+      // resolution. The `shared` tier's marketplace.authorizeDispatch (a
+      // credit-hold) must never fire against an eval set the caller
       // cannot access or that does not exist. Hoisted above the targeting branch
       // per the A6 final-review finding (deviates from the plan's original order,
       // human-approved).
@@ -3707,7 +3707,7 @@ export async function registerRoutes(
         return res.status(403).json({ error: "Access denied to eval set" });
       }
 
-      // Phase C: does this workflow need a Core-minted login session? True iff
+      // does this workflow need a Core-minted login session? True iff
       // its platform.setup references login-class secrets (owner opt-in). A
       // split-class pair (one login, one runtime) is rejected outright — never
       // fall back to a path that would leak the runtime-class credential.
@@ -3852,7 +3852,7 @@ export async function registerRoutes(
         // throws synchronously on conflicting shared workflow/eval-set keys, and if a
         // shared-tier authorizeDispatch above already placed an escrow hold, that throw
         // must still hit the catch below so voidDispatch runs — otherwise the hold leaks
-        // until the 26h reaper (review finding, Task 6 fix wave).
+        // until the 26h reaper.
         const jobConfig = mergeEvalConfig(workflow.config, evalSet.config);
         delete (jobConfig as Record<string, unknown>).sessionInjection; // server-stamped only
         if (sessionNeed) {

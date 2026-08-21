@@ -57,6 +57,7 @@ fi
 DB_CONTAINER="vox-postgres"
 SERVICE_CONTAINER="vox-service"
 EVAL_AGENT_CONTAINER="vox-eval-agent"
+BROKER_CONTAINER="vox-session-broker"
 DB_URL="postgresql://vox:vox123@localhost:5432/vox"
 SERVER_PORT=5000
 # HOST can be set to machine's IP for remote access (e.g., HOST=192.168.1.100)
@@ -64,8 +65,14 @@ HOST="${HOST:-localhost}"
 SERVER_URL="http://localhost:$SERVER_PORT"
 SERVER_URL_DISPLAY="http://${HOST}:$SERVER_PORT"
 INIT_CODE="VOX-DEBUG-2024"
-# 32-byte hex key for AES-256-GCM secret encryption (deterministic for local dev)
-CREDENTIAL_ENCRYPTION_KEY="0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+# 32-byte hex key for AES-256-GCM secret encryption. Respect a value already
+# loaded from .env/.env.dev above so the server and direct-DB tests share one
+# key; fall back to a deterministic dev key when none is set.
+CREDENTIAL_ENCRYPTION_KEY="${CREDENTIAL_ENCRYPTION_KEY:-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef}"
+# Shared bearer secret authenticating Core → session-broker mint requests.
+# Respect a value from .env/.env.dev; fall back to a deterministic dev secret.
+# Must match the value the broker container is started with (docker-compose.yml).
+SESSION_BROKER_SECRET="${SESSION_BROKER_SECRET:-local-broker-secret-change-me}"
 EVAL_AGENT_TOKEN_FILE="/tmp/vox-eval-agent-token.txt"
 
 # Multi-region configuration
@@ -232,9 +239,19 @@ start_service_docker() {
     export CREDENTIAL_ENCRYPTION_KEY="$CREDENTIAL_ENCRYPTION_KEY"
     export VOX_PLUGINS="${VOX_PLUGINS:-credits,shared-agents}"
     export VOX_TAG="${VOX_TAG:-latest}"
+    # Session broker: Core reaches the sidecar by compose service name.
+    export SESSION_BROKER_SECRET="$SESSION_BROKER_SECRET"
+    export SESSION_BROKER_URL="http://session-broker:8200"
 
-    # Build and run via docker compose
+    # Build and run Core via docker compose
     docker compose up -d --build vox-service
+
+    # Bring up the session broker sidecar. No --build: it shares the
+    # vox_eval_agentd:latest image with the eval agent, so compose only builds
+    # it when that image is absent (a subsequent `docker rmi vox_eval_agentd`
+    # forces a rebuild). Started here so a login-class eval can mint a session.
+    log_info "Starting session broker (Docker sidecar)..."
+    docker compose up -d session-broker
 
     # Wait for service to be ready
     wait_for_service "$SERVER_URL/api/auth/status" "Vox service" 60
@@ -247,6 +264,8 @@ stop_service_docker() {
     log_info "Stopping Vox service (Docker)..."
     docker stop $SERVICE_CONTAINER 2>/dev/null || true
     docker rm $SERVICE_CONTAINER 2>/dev/null || true
+    docker stop $BROKER_CONTAINER 2>/dev/null || true
+    docker rm $BROKER_CONTAINER 2>/dev/null || true
     log_success "Vox service stopped"
 }
 
@@ -801,6 +820,12 @@ show_status() {
         else
             echo -e "  vox-service:     ${RED}Stopped${NC}"
         fi
+        # Session broker sidecar (docker mode only)
+        if docker ps --format '{{.Names}}' | grep -q "^${BROKER_CONTAINER}$"; then
+            echo -e "  session-broker:  ${GREEN}Running${NC} (Docker)"
+        else
+            echo -e "  session-broker:  ${RED}Stopped${NC}"
+        fi
     else
         if [ -f /tmp/vox-server.pid ] && kill -0 $(cat /tmp/vox-server.pid) 2>/dev/null; then
             echo -e "  vox-service:     ${GREEN}Running${NC} (PID: $(cat /tmp/vox-server.pid))"
@@ -943,8 +968,13 @@ do_start_docker() {
     # 1. Start PostgreSQL (Docker)
     start_postgres
 
-    # 2. Push database schema
-    push_schema
+    # 2. Schema is applied by the vox-service container itself: `npm start`
+    #    runs `node dist/migrate.cjs` (version-based runner) before the app,
+    #    migrating an empty DB v1→v30 the same way production does. We must
+    #    NOT run `db:push` here — it pre-creates the full current schema, after
+    #    which the migrate runner detects "existing DB", assumes baseline v1,
+    #    and collides replaying v2→v30 (e.g. "type clash_event_status already
+    #    exists"). Let the container self-migrate on the clean volume.
 
     # 3. Start Vox service (Docker)
     start_service_docker

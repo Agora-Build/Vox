@@ -316,7 +316,7 @@ export type JobSnapshot = {
   // dispatch (see the shared-agents plugin). Core never inspects it; the plugin
   // reads it back in settle(). TS-only — `snapshot` is a jsonb column.
   settlementContext?: unknown;
-  // Phase C: the IMMUTABLE session-injection stamp. Present iff the workflow
+  // the IMMUTABLE session-injection stamp. Present iff the workflow
   // needed a Core-minted login session at dispatch time. The /session endpoint
   // derives BOTH the session need and the credential-trust gate from this (and
   // from workflow.ownerId/organizationId) — never from the live workflow, which
@@ -699,7 +699,7 @@ export const insertSecretSchema = createInsertSchema(secrets).omit({
 export type InsertSecret = z.infer<typeof insertSecretSchema>;
 export type Secret = typeof secrets.$inferSelect;
 
-// ==================== WEB SESSIONS (Phase C session broker) ====================
+// ==================== WEB SESSIONS ====================
 // Core-minted login sessions (Playwright storageState), cached per owner scope
 // (user XOR org) + platform. The broker sidecar mints; agents only ever see the
 // decrypted storageState via GET /api/eval-agent/jobs/:id/session.
