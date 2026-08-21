@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { isKnownBrokerType, isInternalBrokerUrl, KNOWN_BROKER_TYPES, isBrokerFresh, cacheBrokerMintSecret, clearBrokerMintSecret, routeToBrokerWith } from "../server/broker-registry";
+import { isKnownBrokerType, isInternalBrokerUrl, KNOWN_BROKER_TYPES, isBrokerFresh, cacheBrokerMintSecret, clearBrokerMintSecret, routeToBrokerWith, validateRegisterPayload } from "../server/broker-registry";
 
 describe("isKnownBrokerType", () => {
   it("accepts auth-session", () => expect(isKnownBrokerType("auth-session")).toBe(true));
@@ -67,4 +67,13 @@ describe("routeToBrokerWith", () => {
     );
     expect(t).toEqual({ id: 2, url: "http://10.0.0.2:8200", mintSecret: "sekret" });
   });
+});
+
+describe("validateRegisterPayload", () => {
+  it("rejects unknown type", () =>
+    expect(validateRegisterPayload({ name: "b", brokerType: "x", url: "http://10.0.0.1:8200" }).ok).toBe(false));
+  it("rejects public url", () =>
+    expect(validateRegisterPayload({ name: "b", brokerType: "auth-session", url: "http://x.example.com" }).ok).toBe(false));
+  it("accepts internal auth-session", () =>
+    expect(validateRegisterPayload({ name: "b", brokerType: "auth-session", url: "http://vox-auth-session-broker:8200" }).ok).toBe(true));
 });

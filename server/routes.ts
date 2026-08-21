@@ -12,6 +12,7 @@ import { generateSignedUrlForUser } from "./s3";
 import { validateTierChoice, resolveTargetedDispatch, filterDispatchableAgents } from "./dispatch";
 import { getMarketplace } from "./marketplace";
 import { parsePlatformSetup, sessionScopeForWorkflow, evaluateSessionRequirement, getBrokeredSecretNames, ensureSession, stampOwnerSession, credentialKeyFor, SESSION_FRESH_MARGIN_SECONDS, classifyReferencedSecrets, findBrokeredMisuse, defaultBrokerTypeForName, resolveBrokerType, type SessionNeed } from "./auth-session";
+import { isKnownBrokerType, isInternalBrokerUrl, validateRegisterPayload, cacheBrokerMintSecret, hasBrokerMintSecret } from "./broker-registry";
 import {
   hashPassword,
   verifyPassword,
@@ -2865,6 +2866,118 @@ export async function registerRoutes(
     } catch (error) {
       console.error("Error revoking eval agent token:", error);
       res.status(500).json({ error: "Failed to revoke eval agent token" });
+    }
+  });
+
+  // ==================== BROKER REGISTRY ROUTES ====================
+
+  app.get("/api/admin/broker-tokens", requireAuth, requireAdmin, async (req, res) => {
+    try {
+      const tokens = await storage.getAllBrokerRegistrationTokens();
+      res.json(tokens.map(t => ({
+        id: t.id,
+        name: t.name,
+        brokerType: t.brokerType,
+        isRevoked: t.isRevoked,
+        lastUsedAt: t.lastUsedAt,
+        createdAt: t.createdAt,
+      })));
+    } catch (error) {
+      console.error("Error fetching broker registration tokens:", error);
+      res.status(500).json({ error: "Failed to fetch broker registration tokens" });
+    }
+  });
+
+  app.post("/api/admin/broker-tokens", requireAuth, requireAdmin, async (req, res) => {
+    try {
+      const { name, brokerType } = req.body ?? {};
+      if (typeof name !== "string" || !name) return res.status(400).json({ error: "name required" });
+      if (!isKnownBrokerType(brokerType)) return res.status(400).json({ error: "unknown brokerType" });
+      const token = generateSecureToken(32);
+      const row = await storage.createBrokerRegistrationToken({
+        name, brokerType, tokenHash: hashToken(token), createdBy: (await getCurrentUser(req))!.id, isRevoked: false, expiresAt: null,
+      });
+      res.json({ id: row.id, name: row.name, brokerType: row.brokerType, token }); // plaintext once
+    } catch (error) {
+      console.error("Error creating broker registration token:", error);
+      res.status(500).json({ error: "Failed to create broker registration token" });
+    }
+  });
+
+  app.post("/api/admin/broker-tokens/:id/revoke", requireAuth, requireAdmin, async (req, res) => {
+    try {
+      const { id } = req.params;
+      await storage.revokeBrokerRegistrationToken(parseInt(id));
+      res.json({ message: "Broker registration token revoked" });
+    } catch (error) {
+      console.error("Error revoking broker registration token:", error);
+      res.status(500).json({ error: "Failed to revoke broker registration token" });
+    }
+  });
+
+  app.get("/api/admin/brokers", requireAuth, requireAdmin, async (req, res) => {
+    try {
+      const brokers = await storage.getAllBrokers();
+      res.json(brokers.map(b => ({
+        id: b.id,
+        name: b.name,
+        tokenId: b.tokenId,
+        brokerType: b.brokerType,
+        url: b.url,
+        state: b.state,
+        currentLeaseId: b.currentLeaseId,
+        lastSeenAt: b.lastSeenAt,
+        createdAt: b.createdAt,
+        updatedAt: b.updatedAt,
+      })));
+    } catch (error) {
+      console.error("Error fetching brokers:", error);
+      res.status(500).json({ error: "Failed to fetch brokers" });
+    }
+  });
+
+  app.post("/api/brokers/register", async (req, res) => {
+    try {
+      const bearer = (req.headers.authorization || "").replace(/^Bearer\s+/i, "");
+      if (!bearer) return res.status(401).json({ error: "missing token" });
+      const tok = await storage.getBrokerRegistrationTokenByHash(hashToken(bearer));
+      if (!tok || tok.isRevoked) return res.status(401).json({ error: "invalid token" });
+      const v = validateRegisterPayload(req.body ?? {});
+      if (!v.ok) return res.status(400).json({ error: v.error });
+      if (v.brokerType !== tok.brokerType) return res.status(400).json({ error: "brokerType mismatch" });
+      const mintSecret = generateSecureToken(32);
+      const leaseId = generateSecureToken(16);
+      const broker = await storage.createBroker({
+        name: v.name, tokenId: tok.id, brokerType: v.brokerType, url: v.url,
+        state: "idle", currentLeaseId: leaseId, lastSeenAt: new Date(),
+      });
+      cacheBrokerMintSecret(broker.id, mintSecret);
+      storage.updateBrokerObservedIp(broker.id, req.ip ?? ""); // fire-and-forget
+      storage.updateBrokerRegistrationTokenLastUsed(tok.id);
+      res.json({ brokerId: broker.id, leaseId, mintSecret }); // mintSecret returned once
+    } catch (error) {
+      console.error("Error registering broker:", error);
+      res.status(500).json({ error: "Failed to register broker" });
+    }
+  });
+
+  app.post("/api/brokers/heartbeat", async (req, res) => {
+    try {
+      const bearer = (req.headers.authorization || "").replace(/^Bearer\s+/i, "");
+      const tok = bearer ? await storage.getBrokerRegistrationTokenByHash(hashToken(bearer)) : undefined;
+      if (!tok || tok.isRevoked) return res.status(401).json({ error: "invalid token" });
+      const { brokerId, leaseId, state } = req.body ?? {};
+      const broker = await storage.getBroker(brokerId);
+      if (!broker) return res.status(404).json({ error: "unknown broker" });
+      if (broker.currentLeaseId && leaseId !== broker.currentLeaseId) return res.json({ superseded: true });
+      if (!hasBrokerMintSecret(broker.id)) return res.json({ reregister: true }); // Core cold-cache
+      await storage.updateBrokerHeartbeat(broker.id);
+      if (state && state !== broker.state) await storage.updateBroker(broker.id, { state });
+      storage.updateBrokerObservedIp(broker.id, req.ip ?? "");
+      res.json({ ok: true });
+    } catch (error) {
+      console.error("Error processing broker heartbeat:", error);
+      res.status(500).json({ error: "Failed to process broker heartbeat" });
     }
   });
 

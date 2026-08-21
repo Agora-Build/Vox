@@ -7,6 +7,14 @@ export function isKnownBrokerType(v: unknown): v is BrokerType {
   return typeof v === "string" && (KNOWN_BROKER_TYPES as readonly string[]).includes(v);
 }
 
+export function validateRegisterPayload(p: { name?: unknown; brokerType?: unknown; url?: unknown }):
+  { ok: true; brokerType: BrokerType; url: string; name: string } | { ok: false; error: string } {
+  if (typeof p.name !== "string" || !p.name) return { ok: false, error: "name required" };
+  if (!isKnownBrokerType(p.brokerType)) return { ok: false, error: "unknown brokerType" };
+  if (typeof p.url !== "string" || !isInternalBrokerUrl(p.url)) return { ok: false, error: "url must be internal http" };
+  return { ok: true, brokerType: p.brokerType, url: p.url, name: p.name };
+}
+
 function isPrivateIpv4(host: string): boolean {
   const m = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
   if (!m) return false;
