@@ -137,7 +137,7 @@ export function staleMintThresholdSeconds(): number {
   return mintTimeoutSeconds() + 30;
 }
 export function ttlHours(): number {
-  return parseInt(process.env.WEB_SESSION_TTL_HOURS || "12", 10);
+  return parseInt(process.env.WEB_SESSION_TTL_HOURS || "1", 10);
 }
 export function brokerConfigured(): boolean {
   return !!process.env.SESSION_BROKER_URL && !!process.env.SESSION_BROKER_SECRET;

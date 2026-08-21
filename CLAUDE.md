@@ -103,7 +103,7 @@ Optional:
 - `GITHUB_CALLBACK_URL` - OAuth callback URL (default: `/auth/github/callback`)
 - `SESSION_BROKER_URL` - Base URL of the session-broker sidecar (enables login-class secret injection via the Phase C session broker)
 - `SESSION_BROKER_SECRET` - Shared bearer secret authenticating Core → broker mint requests
-- `WEB_SESSION_TTL_HOURS` - How long a minted `storageState` session stays fresh before re-minting (default: 12)
+- `WEB_SESSION_TTL_HOURS` - How long a minted `storageState` session stays fresh before re-minting (default: 1)
 - `WEB_SESSION_MINT_TIMEOUT_SECONDS` - Max time to wait for a broker mint before failing the request (default: 180)
 
 ## Architecture
