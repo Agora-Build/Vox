@@ -31,4 +31,10 @@ describe("isInternalBrokerUrl", () => {
   });
   it("rejects public RFC1918-lookalike (172.32)", () => expect(isInternalBrokerUrl("http://172.32.0.1")).toBe(false));
   it("rejects garbage", () => expect(isInternalBrokerUrl("not a url")).toBe(false));
+  it("rejects public IPv6 literal", () =>
+    expect(isInternalBrokerUrl("http://[2001:4860:4860::8888]:8200")).toBe(false));
+  it("rejects IPv6 loopback literal (use localhost/IPv4 instead)", () =>
+    expect(isInternalBrokerUrl("http://[::1]:8200")).toBe(false));
+  it("rejects IPv6 ULA literal", () =>
+    expect(isInternalBrokerUrl("http://[fc00::1]:8200")).toBe(false));
 });

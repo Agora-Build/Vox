@@ -24,6 +24,7 @@ export function isInternalBrokerUrl(raw: string): boolean {
   try { u = new URL(raw); } catch { return false; }
   if (u.protocol !== "http:") return false;
   const host = u.hostname.toLowerCase();
+  if (host.includes(":")) return false; // reject IPv6 literals (e.g. [2001:db8::1]); brokers use IPv4 / DNS aliases
   if (host === "localhost") return true;
   if (isPrivateIpv4(host)) return true;
   if (host.endsWith(".internal") || host.endsWith(".local")) return true;
