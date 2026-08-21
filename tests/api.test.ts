@@ -4585,4 +4585,45 @@ describe('Vox API Tests', () => {
       });
     });
   });
+
+  describe('Broker Registry', () => {
+    it('should reuse the broker row on re-registration (upsert by tokenId)', async () => {
+      // Mint a broker registration token (admin-only).
+      const tokenRes = await authFetch(adminSession, `${BASE_URL}/api/admin/broker-tokens`, {
+        method: 'POST',
+        body: JSON.stringify({ name: 'Test Broker Token', brokerType: 'auth-session' }),
+      });
+      expect(tokenRes.ok).toBe(true);
+      const { id: tokenId, token } = await tokenRes.json();
+      expect(typeof token).toBe('string');
+
+      const registerBody = { name: 'broker-x', brokerType: 'auth-session', url: 'http://broker-x:8200' };
+      const reg1 = await fetch(`${BASE_URL}/api/brokers/register`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+        body: JSON.stringify(registerBody),
+      });
+      expect(reg1.ok).toBe(true);
+      const { brokerId, leaseId } = await reg1.json();
+
+      // Re-register with the SAME token + body (simulates a broker/Core restart).
+      const reg2 = await fetch(`${BASE_URL}/api/brokers/register`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+        body: JSON.stringify(registerBody),
+      });
+      expect(reg2.ok).toBe(true);
+      const reReg = await reg2.json();
+      expect(reReg.brokerId).toBe(brokerId);        // reused row, not a new one
+      expect(reReg.leaseId).not.toBe(leaseId);       // rotated lease
+
+      // Exactly one brokers row for this token — the upsert did not duplicate.
+      const listRes = await authFetch(adminSession, `${BASE_URL}/api/admin/brokers`);
+      expect(listRes.ok).toBe(true);
+      const allBrokers = await listRes.json();
+      const matching = allBrokers.filter((b: { id: number; tokenId: number }) => b.tokenId === tokenId);
+      expect(matching.length).toBe(1);
+      expect(matching[0].id).toBe(brokerId);
+    });
+  });
 });

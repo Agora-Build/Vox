@@ -788,6 +788,9 @@ export class DatabaseStorage {
     const [row] = await db.select().from(brokers).where(eq(brokers.id, id));
     return row;
   }
+  async getBrokersByTokenId(tokenId: number): Promise<Broker[]> {
+    return db.select().from(brokers).where(eq(brokers.tokenId, tokenId)).orderBy(desc(brokers.createdAt)).limit(1);
+  }
   async getAllBrokers(): Promise<Broker[]> {
     return db.select().from(brokers).orderBy(desc(brokers.createdAt));
   }
@@ -804,7 +807,9 @@ export class DatabaseStorage {
     try {
       await db.update(brokers).set({ observedIp: ip, observedIpAt: new Date() })
         .where(eq(brokers.id, id));
-    } catch { /* fire-and-forget, mirrors updateEvalAgentObservedIp */ }
+    } catch (err) {
+      console.error(`[Broker] Failed to record observed IP for broker ${id}:`, err instanceof Error ? err.message : err);
+    }
   }
   async getRoutableBrokers(brokerType: string, offlineThresholdSeconds: number): Promise<Broker[]> {
     const cutoff = new Date(Date.now() - offlineThresholdSeconds * 1000);

@@ -12,7 +12,7 @@ import { generateSignedUrlForUser } from "./s3";
 import { validateTierChoice, resolveTargetedDispatch, filterDispatchableAgents } from "./dispatch";
 import { getMarketplace } from "./marketplace";
 import { parsePlatformSetup, sessionScopeForWorkflow, evaluateSessionRequirement, getBrokeredSecretNames, ensureSession, stampOwnerSession, credentialKeyFor, SESSION_FRESH_MARGIN_SECONDS, classifyReferencedSecrets, findBrokeredMisuse, defaultBrokerTypeForName, resolveBrokerType, type SessionNeed } from "./auth-session";
-import { isKnownBrokerType, isInternalBrokerUrl, validateRegisterPayload, cacheBrokerMintSecret, hasBrokerMintSecret } from "./broker-registry";
+import { isKnownBrokerType, validateRegisterPayload, cacheBrokerMintSecret, hasBrokerMintSecret } from "./broker-registry";
 import {
   hashPassword,
   verifyPassword,
@@ -2941,16 +2941,28 @@ export async function registerRoutes(
       const bearer = (req.headers.authorization || "").replace(/^Bearer\s+/i, "");
       if (!bearer) return res.status(401).json({ error: "missing token" });
       const tok = await storage.getBrokerRegistrationTokenByHash(hashToken(bearer));
-      if (!tok || tok.isRevoked) return res.status(401).json({ error: "invalid token" });
+      if (!tok || tok.isRevoked || (tok.expiresAt && tok.expiresAt < new Date())) return res.status(401).json({ error: "invalid token" });
       const v = validateRegisterPayload(req.body ?? {});
       if (!v.ok) return res.status(400).json({ error: v.error });
       if (v.brokerType !== tok.brokerType) return res.status(400).json({ error: "brokerType mismatch" });
       const mintSecret = generateSecureToken(32);
       const leaseId = generateSecureToken(16);
-      const broker = await storage.createBroker({
-        name: v.name, tokenId: tok.id, brokerType: v.brokerType, url: v.url,
-        state: "idle", currentLeaseId: leaseId, lastSeenAt: new Date(),
-      });
+      // Upsert by tokenId: reuse this token's broker row on re-register instead of
+      // inserting a duplicate (Core restart / broker restart / superseded lease all
+      // re-register). Mirrors the eval-agent register upsert.
+      const existing = await storage.getBrokersByTokenId(tok.id);
+      let broker;
+      if (existing.length > 0) {
+        broker = existing[0];
+        await storage.updateBroker(broker.id, {
+          name: v.name, url: v.url, state: "idle", currentLeaseId: leaseId, lastSeenAt: new Date(),
+        });
+      } else {
+        broker = await storage.createBroker({
+          name: v.name, tokenId: tok.id, brokerType: v.brokerType, url: v.url,
+          state: "idle", currentLeaseId: leaseId, lastSeenAt: new Date(),
+        });
+      }
       cacheBrokerMintSecret(broker.id, mintSecret);
       storage.updateBrokerObservedIp(broker.id, req.ip ?? ""); // fire-and-forget
       storage.updateBrokerRegistrationTokenLastUsed(tok.id);
@@ -2965,7 +2977,7 @@ export async function registerRoutes(
     try {
       const bearer = (req.headers.authorization || "").replace(/^Bearer\s+/i, "");
       const tok = bearer ? await storage.getBrokerRegistrationTokenByHash(hashToken(bearer)) : undefined;
-      if (!tok || tok.isRevoked) return res.status(401).json({ error: "invalid token" });
+      if (!tok || tok.isRevoked || (tok.expiresAt && tok.expiresAt < new Date())) return res.status(401).json({ error: "invalid token" });
       const { brokerId, leaseId, state } = req.body ?? {};
       const broker = await storage.getBroker(brokerId);
       if (!broker) return res.status(404).json({ error: "unknown broker" });
