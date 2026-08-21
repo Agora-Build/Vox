@@ -656,7 +656,7 @@ Moves the login-session logic into `server/auth-session.ts`, wires it to `broker
 - Modify: `server/routes.ts` (import @14; call sites @2346/3717/3726/3733/3948)
 - Modify: `server/index.ts` (import @16; call @408)
 - Modify: `server/routes-api-v1.ts` (import @13; call @329)
-- Modify: `tests/session-broker-core.test.ts` (import → `../server/auth-session`; renamed symbols)
+- Modify: `tests/session-broker-core.test.ts` (import → `../server/auth-session`; renamed symbols; **direct-storage opts** `storage.createOrUpdateSecret(..., { class: "protected" })` → `{ brokerType: "auth-session" }` at all 6 sites — this is a direct storage call, retargeted to the Task-1 opts shape, not an API-shape change)
 - Modify: `tests/session-endpoint.test.ts` (import → `../server/auth-session`)
 - Modify: `tests/protected-misuse.test.ts` (`findProtectedMisuse` → `findBrokeredMisuse`; import → `../server/auth-session`)
 
@@ -718,7 +718,7 @@ git rm server/session-broker.ts
 - `server/routes.ts:14` — import `evaluateSessionRequirement`, `getBrokeredSecretNames`, `classifyReferencedSecrets`, `findBrokeredMisuse`, `ensureSession`, `stampOwnerSession`, `defaultBrokerTypeForName` from `./auth-session`. (Task 6 uses `defaultBrokerTypeForName`; import it now.) Rename call-site identifiers `getProtectedSecretNames`→`getBrokeredSecretNames` (@3717) and `findProtectedMisuse`→`findBrokeredMisuse` (@3733).
 - `server/index.ts:16` — import `stampOwnerSession` from `./auth-session`.
 - `server/routes-api-v1.ts:13` — import `evaluateSessionRequirement` (and any others it uses) from `./auth-session`; rename `getProtectedSecretNames`→`getBrokeredSecretNames` @329 if referenced.
-- Test files: update import paths to `../server/auth-session` and rename `findProtectedMisuse`→`findBrokeredMisuse` in `tests/protected-misuse.test.ts`.
+- Test files: update import paths to `../server/auth-session` and rename `findProtectedMisuse`→`findBrokeredMisuse` in `tests/protected-misuse.test.ts`. In `tests/session-broker-core.test.ts`, also retarget the 6 direct-storage opts `storage.createOrUpdateSecret(..., { class: "protected" })` → `{ brokerType: "auth-session" }` (the Task-1 opts shape; these are direct storage calls, not API bodies).
 
 - [ ] **Step 6: Type-check and run the session tests**
 
@@ -745,7 +745,9 @@ Now that helpers exist, change the secret-create request shape from `secretClass
 
 **Files:**
 - Modify: `server/routes.ts` (`/api/secrets` POST @~2450; `/api/org-secrets` POST @~2549; both GET listings)
-- Test: `tests/protected-misuse.test.ts` or a new small route-logic unit — see Step 1 (validate the pure default+validate helper).
+- Modify: `client/src/pages/console-secrets.tsx` — the **client half** of this API change (create form request shape + listing badge). After Task 1 the GET listing already returns `brokerType`, so the current `secret.class` badge silently renders nothing; this task fixes it.
+- Test (unit): `tests/protected-misuse.test.ts` — the pure `resolveBrokerType` helper (Step 1).
+- Test (API-surface migration, Step 4): `tests/secrets-class-api.test.ts`, `tests/session-endpoint.test.ts`, `tests/session-dispatch.test.ts`, `tests/session-capability-gate.test.ts`, `tests/practical-shared-agents-credits.test.ts`, `tests/session-secrets-class.test.ts` — all still send `secretClass` / assert the old `class` shape.
 
 **Interfaces consumed:** `defaultBrokerTypeForName` (Task 5), `isKnownBrokerType` (Task 2), `storage.createOrUpdateSecret`/`upsertOrgSecret` (Task 1).
 
@@ -800,14 +802,37 @@ Return `brokerType` in the response and in the GET listing.
 
 `/api/org-secrets` POST (@~2549): identical treatment with `storage.upsertOrgSecret`. GET listing returns `brokerType`.
 
-- [ ] **Step 4: Type-check and run the test**
+**UPDATE must preserve existing brokerType** (the Task-1 Minor-finding fix): on a value-only update where the body omits `brokerType`, `resolveBrokerType(name, undefined)` returns the name-default — which for an existing brokered secret whose name is non-auth would wrongly clear it. Guard it: if the secret already exists, and `req.body.brokerType === undefined`, **keep the stored `brokerType`** (pass the existing value through) instead of recomputing the name-default. Only an explicit `null`/string in the body reclassifies, and that reclassification still runs through the existing @2486 guard (retargeted to compare stored-vs-resolved `brokerType`).
+
+- [ ] **Step 4: Migrate every `secretClass`/`class` API-surface caller and the client to `brokerType`.**
+
+The API field is now `brokerType`; update all callers in the same task so the branch is actually correct (mirrors Task 1's atomic column flip). These are largely DB-gated tests (they skip without a live DB), so `npm test` locally may not exercise them — the migration keeps them correct for CI's live-DB run and clears the Task 9 grep sweep. Do NOT rename any test file here (Task 9 owns renames) — migrate contents only.
+
+**Client — `client/src/pages/console-secrets.tsx`:**
+- Local interfaces (lines 24, 37): `class: "runtime" | "protected"` → `brokerType: string | null`.
+- Personal form state (line 67): `const [brokerType, setBrokerType] = useState<string | null>("auth-session");` (replaces `secretClass`). Org form (line 119): same as `orgBrokerType`.
+- POST bodies (lines 82–83, 132–133): send `brokerType` (not `secretClass`); gate `isTestAccount` on `brokerType === "auth-session"` (not `=== "protected"`).
+- Resets (lines 90, 139): reset to `"auth-session"`.
+- Select controls (lines 245–258 personal, 391–404 org): the two options carry values `"auth-session"` ("Brokered — login/session (Recommended)") and `"runtime"` ("Runtime"); when building the request body map `"runtime"` → `null` (`brokerType: sel === "runtime" ? null : sel`). Description: brokered = "Materialized by a broker; the agent never sees the stored value."; runtime = keep existing "Sent directly to the agent at runtime. Only use with agents you trust."
+- Listing badge (lines 309–311, 456–458): render the badge when `secret.brokerType != null`; label it `secret.brokerType`.
+
+**Tests — replace request/assert shape `secretClass`/`class` → `brokerType`:**
+- `tests/secrets-class-api.test.ts`: response interface (line 15) `class: string` → `brokerType: string | null`; POST bodies `secretClass: 'protected'` → `brokerType: 'auth-session'`, `secretClass: 'runtime'` → `brokerType: null` (lines 81, 94, 108, 131, 164, …); the "defaults when omitted" case (line 117) asserts a non-auth `name` → `brokerType: null` and an auth-ish name → `"auth-session"`; read `body.brokerType` where it read `body.class`.
+- `tests/session-endpoint.test.ts`, `tests/session-dispatch.test.ts`, `tests/session-capability-gate.test.ts`, `tests/practical-shared-agents-credits.test.ts`: the local `createSecret` helper opt `secretClass?: "runtime" | "protected"` → `brokerType?: string | null`; callers `{ secretClass: "protected" }` → `{ brokerType: "auth-session" }`; drop `{ secretClass: "runtime" }` (omit → runtime default) or pass `{ brokerType: null }`.
+- `tests/session-dispatch.test.ts:499`: classify assert `{ name, class: "runtime", present: true }` → `{ name, brokerType: null, present: true }` (matches Task 1's `classifyReferencedSecrets` shape).
+- `tests/session-secrets-class.test.ts`: direct insert literals `class: "runtime"` → `brokerType: null`, `class: "protected"` → `brokerType: "auth-session"` (lines 30, 33, 73, 76).
+
+- [ ] **Step 5: Type-check and run the unit test**
 
 Run: `npm run check && npx vitest run tests/protected-misuse.test.ts`
-Expected: clean + PASS.
+Expected: clean (client + server compile) + PASS.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 ```bash
-git add server/auth-session.ts server/routes.ts tests/protected-misuse.test.ts
+git add server/auth-session.ts server/routes.ts client/src/pages/console-secrets.tsx \
+  tests/protected-misuse.test.ts tests/secrets-class-api.test.ts tests/session-endpoint.test.ts \
+  tests/session-dispatch.test.ts tests/session-capability-gate.test.ts \
+  tests/practical-shared-agents-credits.test.ts tests/session-secrets-class.test.ts
 git commit -m "feat(secrets): brokerType create/update API with name-based default + validation
 
 🤖 Built with SMT <smt@agora.build>"
@@ -1049,7 +1074,7 @@ grep -rniE "session-broker|SESSION_BROKER_URL|SESSION_BROKER_SECRET|secretClass|
   --include=*.ts --include=*.md --include=*.yml --include=*.yaml --include=Dockerfile . \
   | grep -v node_modules | grep -v migrations/0029
 ```
-Expected: only intended references (the historical migration `0029` and any progress-ledger history). Everything in live code/docs should be gone or renamed.
+Expected: only intended references (the historical migration `0029` and any progress-ledger history). Everything in live code/docs/tests should be gone or renamed — the API-surface callers, client, and DB-gated tests were already migrated in Tasks 5–6, so this sweep is a backstop, not the primary fix. Any live-code hit here is a regression to fix now.
 
 - [ ] **Step 2: Update `CLAUDE.md`**
 
@@ -1075,7 +1100,7 @@ git commit -m "docs(broker): document brokerType + dynamic broker registry; reti
 ## Self-Review
 
 **1. Spec coverage** — checked against `designs/2026-08-21-broker-registry-design.md`:
-- §A Secret model (`class`→`brokerType`, name-default, both-or-neither) → Tasks 1, 5, 6.
+- §A Secret model (`class`→`brokerType`, name-default, both-or-neither) → Tasks 1, 5, 6. All `secretClass`/`class` API-surface callers + `console-secrets.tsx` + the DB-gated tests migrate in Task 6 (direct-storage opts in `session-broker-core.test.ts` in Task 5); Task 9 grep is the backstop. UPDATE-preserves-existing-brokerType (Task-1 Minor finding) fixed in Task 6 Step 3.
 - §B Broker registry (two tables, `brokerStateEnum`, endpoints, `isInternalBrokerUrl`, `routeToBroker`, `brokerAvailable`, cold-cache `reregister`, lease fencing) → Tasks 1, 2, 3, 4, 7.
 - §C `auth-session-broker` service registration client + per-broker `/mint` auth → Task 8.
 - §D Rename map (DB/code/docs/image/tests) → Tasks 1, 5, 8, 9.
