@@ -22,7 +22,7 @@ import { GradientAvatar } from "@/components/gradient-avatar";
 import { ProfileDialog } from "@/components/profile-dialog";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import { Users, Workflow, FileText, LogOut, Shield, Gem, Sparkles, Rocket, Server, Building2, CreditCard, Settings, FolderKanban, ClipboardList, KeyRound, Swords, HardDrive, Box, ChevronsUpDown, Mail, UserCog, MapPinned } from "lucide-react";
+import { Users, Workflow, FileText, LogOut, Shield, Gem, Sparkles, Rocket, Server, Building2, CreditCard, Settings, FolderKanban, ClipboardList, KeyRound, Swords, HardDrive, Box, ChevronsUpDown, Mail, UserCog, MapPinned, Radio } from "lucide-react";
 import { ThemeToggle } from "@/components/theme-toggle";
 
 interface AuthStatus {
@@ -169,6 +169,15 @@ export default function ConsoleLayout({ children }: ConsoleLayoutProps) {
     icon: Swords,
     active: location === "/console/clash",
   });
+
+  if (user?.isAdmin) {
+    navItems.push({
+      title: "Brokers",
+      url: "/console/brokers",
+      icon: Radio,
+      active: location === "/console/brokers",
+    });
+  }
 
   navItems.push({
     title: "Secrets",
