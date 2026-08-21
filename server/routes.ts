@@ -3852,7 +3852,7 @@ export async function registerRoutes(
         // throws synchronously on conflicting shared workflow/eval-set keys, and if a
         // shared-tier authorizeDispatch above already placed an escrow hold, that throw
         // must still hit the catch below so voidDispatch runs — otherwise the hold leaks
-        // until the 26h reaper (review finding, Task 6 fix wave).
+        // until the 26h reaper.
         const jobConfig = mergeEvalConfig(workflow.config, evalSet.config);
         delete (jobConfig as Record<string, unknown>).sessionInjection; // server-stamped only
         if (sessionNeed) {

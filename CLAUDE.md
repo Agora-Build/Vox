@@ -2,6 +2,12 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Working Conventions
+
+- **Reviewing design files:** whenever you need the user to review a design doc, spec, plan, or any markdown deliverable, serve it with `atem serv files <path>` (renders markdown → HTML over HTTPS and prints the URLs) rather than only citing the file path. Use `--background` to keep it running while iterating; manage with `atem serv list` / `atem serv kill files-<port>`.
+- **Dev vs test scripts:** `scripts/dev-local-run.sh` is for local **service setup** (PostgreSQL + Vox service + eval agent — start/stop/reset/status/logs); `scripts/full-tests-run.sh` is the **test runner** (unit/Vitest + audio pipeline + E2E/Playwright). They are not interchangeable.
+- **Pre-merge gate:** run `./scripts/full-tests-run.sh` before every PR merge — the full suite (unit + audio + E2E), not just `npm test`.
+
 ## Project Overview
 
 Vox is an AI latency evaluation platform for conversational AI products. It runs automated evaluation tests across multiple regions (NA, APAC, EU) to monitor response latency, interrupt latency, network resilience, naturalness, and noise reduction for AI voice agents.
@@ -101,7 +107,7 @@ Optional:
 - `GITHUB_CLIENT_ID` - GitHub OAuth client ID (enables GitHub sign-in)
 - `GITHUB_CLIENT_SECRET` - GitHub OAuth client secret
 - `GITHUB_CALLBACK_URL` - OAuth callback URL (default: `/auth/github/callback`)
-- `SESSION_BROKER_URL` - Base URL of the session-broker sidecar (enables login-class secret injection via the Phase C session broker)
+- `SESSION_BROKER_URL` - Base URL of the session-broker sidecar (enables login-class secret injection via the session broker)
 - `SESSION_BROKER_SECRET` - Shared bearer secret authenticating Core → broker mint requests
 - `WEB_SESSION_TTL_HOURS` - How long a minted `storageState` session stays fresh before re-minting (default: 1)
 - `WEB_SESSION_MINT_TIMEOUT_SECONDS` - Max time to wait for a broker mint before failing the request (default: 180)
@@ -138,7 +144,7 @@ The entire data model is defined in `shared/schema.ts` using Drizzle ORM. All ta
 - `evalJobStatusEnum`: `pending`, `running`, `completed`, `failed`
 - `visibilityEnum`: `public`, `private`
 
-#### Eval Agent System (Renamed from Workers)
+#### Eval Agent System
 The system uses distributed eval agents to run evaluation tests:
 1. Admin or non-basic users create eval agent tokens with region assignments (admin can set public/private visibility; non-admin tokens are always private)
 2. Eval agents register using tokens (`evalAgentTokens` table, which includes a `visibility` column)
@@ -159,16 +165,16 @@ Results are classified from each job's snapshot flags — not the live workflow/
 - **Community**: snapshot workflow + eval set both public, but NOT fully mainline → `/api/metrics/community`
 - **My Evals**: snapshot workflow or eval set private, owned by the requesting user (`snapshot.*.ownerId`) → `/api/metrics/my-evals` (requires auth)
 
-**Important:** The codebase recently underwent a refactor where "workers" were renamed to "eval agents" and "testSets" to "evalSets". Some UI text may still reference old terminology.
+**Note:** Some UI text may still reference old terminology ("workers" for eval agents, "testSets" for eval sets).
 
-#### Session Broker (Phase C)
-Some target agents require an authenticated web login before an eval can run. Login-class secrets (`secretClass: "login"`) are **Core-only** — structurally withheld from the job-secrets path (`server/routes.ts`) at every dispatch tier, so a login credential is never handed to a target agent directly; the agent runs against a pre-minted session instead.
+#### Session Broker
+Some target agents require an authenticated web login before an eval can run. Protected (login-class) secrets (`class: "protected"`) are **Core-only** — structurally withheld from the job-secrets path (`server/routes.ts`) at every dispatch tier, so a login credential is never handed to a target agent directly; the agent runs against a pre-minted session instead.
 - **Broker sidecar**: a stateless service built from the agentd image (`vox_eval_agentd/`, CMD override `node session-broker.js`) that mints a `storageState` (cookies/localStorage) by driving aeval's `setup:account` flow with the decrypted login credential. It sits on an **internal-only network** and authenticates Core's mint requests with `SESSION_BROKER_SECRET` — the login password never leaves Core → broker → target site.
 - **Agents run `setup:storage`, never `setup:account`**: the daemon (`vox_eval_agentd/vox-agentd.ts`) forces `mode: storage` on any session-injected job and strips credential fields from the config before the agent process ever sees them — the agent only ever consumes the pre-minted `storageState`.
 - **Server-stamped injection**: job creation (the run route in `server/routes.ts` and the scheduler in `server/index.ts`) stamps `config.sessionInjection` onto the job (strip-then-stamp, so a caller-supplied value is never trusted) once `session-broker.ts`'s `workflowNeedsSession()` detects a login-class secret referenced by the workflow's `platform.setup`.
-- **Session endpoint state machine**: `GET /api/eval-agent/jobs/:jobId/session` (lease-fenced, same guards as `/secrets`) returns `200 ready` (decrypted `storageState`), `202 minting` (fire-and-forget re-mint in flight), or `503 failed`. A `failed`/timed-out mint fails the job **before** any eval runs, so Phase B's escrow refund path (not a wasted capture) applies to shared-tier jobs.
+- **Session endpoint state machine**: `GET /api/eval-agent/jobs/:jobId/session` (lease-fenced, same guards as `/secrets`) returns `200 ready` (decrypted `storageState`), `202 minting` (fire-and-forget re-mint in flight), or `503 failed`. A `failed`/timed-out mint fails the job **before** any eval runs, so the escrow refund path (not a wasted capture) applies to shared-tier jobs.
 - **Shared-tier gates**: a shared-tier dispatch additionally requires `isTestAccount` attestation on the login secret and `credentialConsent` recorded on the job snapshot — both checked before `authorizeDispatch`, so an un-attested or non-consented login secret never reaches a marketplace agent.
-- **`eval_agents.observed_ip`** (Task 11) is a Core-internal layer-2/3 foundation column — the IP Core observes at register/heartbeat, written fire-and-forget and never exposed on any agent-listing endpoint. Future network-instinct labeling (e.g. residential vs. datacenter) derives from it; the raw IP itself is never surfaced.
+- **`eval_agents.observed_ip`** is a Core-internal layer-2/3 foundation column — the IP Core observes at register/heartbeat, written fire-and-forget and never exposed on any agent-listing endpoint. Future network-instinct labeling (e.g. residential vs. datacenter) derives from it; the raw IP itself is never surfaced.
 
 #### User & Organization System
 - **User Plans:** `basic` (free), `premium` (paid), `principal` (Scout, internal), `fellow` (external prestige)
@@ -426,7 +432,7 @@ npx playwright test --headed     # Run in headed browser mode
 | `tests/api.test.ts` | Integration | 107+ | API endpoints (auth, workflows, jobs, organizations) |
 | `tests/auth.test.ts` | Unit | 26 | Password hashing, token generation |
 | `tests/cron.test.ts` | Unit | 32 | Cron expression parsing and validation |
-| `tests/eval-agent-daemon.test.ts` | Unit | 86 | Eval agent result parsing, metrics calculation, API communication |
+| `tests/eval-agent-daemon.test.ts` | Unit | 91 | Eval agent result parsing, metrics calculation, API communication |
 | `tests/agora.test.ts` | Unit | 45 | Agora token gen, ConvoAI payload, UID reservation |
 | `tests/agora-e2e.test.ts` | E2E | 13 | Real ConvoAI API: start/speak/stop (requires .env.dev credentials) |
 | `tests/clash-runner.test.ts` | Unit | 44 | Runner logic, secret resolution, Elo calculation |
@@ -471,22 +477,7 @@ When adding new features, write tests for critical paths like authentication, jo
 3. Use `ConsoleLayout` wrapper for protected console pages
 4. Use TanStack Query hooks for API calls (see existing pages for patterns)
 
-## Project Roadmap
-
-**All phases complete!** See `designs/IMPLEMENTATION_PLAN.md` for details.
-
-| Phase | Description | Status |
-|-------|-------------|--------|
-| Phase 1 | Core system (database schema, routes, seed data) | ✅ Complete |
-| Phase 2 | API key security (prefix-based keys, rate limiting) | ✅ Complete |
-| Phase 3 | Google OAuth integration (Passport.js) | ✅ Complete |
-| Phase 4 | Organization system + Stripe payments | ✅ Complete |
-| Phase 5 | Eval agent concurrency + scheduling | ✅ Complete |
-| Phase 6 | Frontend updates (dashboard, leaderboard) | ✅ Complete |
-| Phase 7 | API documentation (OpenAPI/Swagger) | ✅ Complete |
-| Phase 8 | Comprehensive tests (unit, integration, E2E) | ✅ Complete |
-
-### API Documentation
+## API Documentation
 - **Swagger UI**: `/api/docs` - Interactive API documentation
 - **OpenAPI Spec**: `/api/v1/openapi.json` - Machine-readable spec
 - **Source**: `docs/openapi.yaml` - Full OpenAPI 3.0 specification
@@ -494,8 +485,8 @@ When adding new features, write tests for critical paths like authentication, jo
 ## Important Files
 
 ### Core
-- `shared/schema.ts` - Single source of truth for all data models (18 tables, 6 enums)
-- `server/routes.ts` - All API endpoints (~1200 lines, monolithic by design)
+- `shared/schema.ts` - Single source of truth for all data models (all tables, enums, and Zod insert/select schemas)
+- `server/routes.ts` - All API endpoints (large and monolithic by design)
 - `server/routes-api-v1.ts` - Versioned API v1 endpoints
 - `server/storage.ts` - Database abstraction layer (DatabaseStorage class)
 - `server/auth.ts` - Authentication utilities and middleware
@@ -514,12 +505,14 @@ When adding new features, write tests for critical paths like authentication, jo
 
 ### Tests
 - `tests/tests.dev.data` - Test accounts for local dev (gitignored)
-- `tests/api.test.ts` - API integration tests (107+ tests)
-- `tests/auth.test.ts` - Auth utilities unit tests (26 tests)
-- `tests/cron.test.ts` - Cron parsing unit tests (32 tests)
-- `tests/eval-agent-daemon.test.ts` - Eval agent daemon tests (18 tests)
-- `tests/e2e/*.spec.ts` - Playwright E2E tests (39 tests)
+- `tests/api.test.ts` - API integration tests
+- `tests/auth.test.ts` - Auth utilities unit tests
+- `tests/cron.test.ts` - Cron parsing unit tests
+- `tests/eval-agent-daemon.test.ts` - Eval agent daemon tests
+- `tests/e2e/*.spec.ts` - Playwright E2E tests
 - `playwright.config.ts` - Playwright configuration
+
+See the **Test Files** table above for the full per-file inventory.
 
 ### Eval Agent Daemon
 - `vox_eval_agentd/vox-agentd.ts` - Eval agent daemon (single source for Docker & local dev)
