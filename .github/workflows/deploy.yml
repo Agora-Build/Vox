@@ -9,6 +9,18 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-      - name: Trigger Webhook
+      # Main Vox service (Core). Redeploys on every merge to main.
+      - name: Trigger vox-service redeploy
         run: |
           curl -sf -X GET "${{ secrets.COOLIFY_WEBHOOK_URL }}" -H "Authorization: Bearer ${{ secrets.COOLIFY_TOKEN }}"
+
+      # Auth-session broker sidecar (separate Coolify application, separate
+      # webhook). Without this step the broker is never redeployed on merge —
+      # it lives in the same "Vox" Coolify project but is its own resource.
+      # The webhook only QUEUES a deploy; the broker still needs its
+      # dynamic-registry env (VOX_CORE_URL / BROKER_REG_TOKEN /
+      # BROKER_ADVERTISE_URL) configured on the Coolify app, or the new
+      # container fails its healthcheck and Coolify rolls back.
+      - name: Trigger vox-auth-session-broker redeploy
+        run: |
+          curl -sf -X GET "${{ secrets.COOLIFY_BROKER_WEBHOOK_URL }}" -H "Authorization: Bearer ${{ secrets.COOLIFY_TOKEN }}"
