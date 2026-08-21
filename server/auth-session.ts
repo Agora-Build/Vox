@@ -176,7 +176,7 @@ export async function ensureSession(
         | { storageState?: unknown }
         | undefined;
       const storageState = mintResult?.storageState;
-      if (storageState === undefined) throw new Error("broker mint response missing storageState");
+      if (!storageState || typeof storageState !== "object") throw new Error("broker mint response missing or invalid storageState");
       // Fenced write: if our claim was stale-reclaimed while we minted, this is
       // a no-op and the current claim-holder's mint proceeds undisturbed.
       const stored = await storage.storeWebSessionReady(

@@ -205,6 +205,34 @@ d("ensureSession (DB + mock fetch)", () => {
     expect(got?.lastError).toContain("502");
   });
 
+  it("broker response with a non-object storageState (e.g. null) is rejected, not stored as ready", async () => {
+    const { storage } = await import("../server/storage");
+    const { ensureSession } = await import("../server/auth-session");
+    const stamp = Date.now();
+    const emailSecret = `TEST_SB_E3_${stamp}`;
+    const passwordSecret = `TEST_SB_P3_${stamp}`;
+    const { encryptValue } = await import("../server/storage");
+    await storage.createOrUpdateSecret(1, emailSecret, encryptValue(`e3-${stamp}@example.com`), { brokerType: "auth-session" });
+    await storage.createOrUpdateSecret(1, passwordSecret, encryptValue(`pw3-${stamp}`), { brokerType: "auth-session" });
+
+    const platformId = `t-mint-badshape-${stamp}`;
+    const mockFetch = (async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ storageState: null }),
+    })) as unknown as typeof fetch;
+
+    await ensureSession(
+      { userId: 1 },
+      { platformId, emailSecret, passwordSecret },
+      mockFetch,
+    );
+
+    const got = await storage.getWebSession({ userId: 1 }, platformId, credentialKeyFor({ platformId, emailSecret, passwordSecret }));
+    expect(got?.status).toBe("failed");
+    expect(got?.lastError).toContain("missing or invalid storageState");
+  });
+
   it("fresh short-circuit: a ready session for the SAME credential pair skips the broker entirely", async () => {
     const { storage, encryptValue } = await import("../server/storage");
     const { ensureSession, credentialKeyFor } = await import("../server/auth-session");
