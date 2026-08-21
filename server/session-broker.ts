@@ -104,10 +104,10 @@ export function evaluateSessionRequirement(
 export async function getProtectedSecretNames(scope: SessionScope): Promise<Set<string>> {
   if ("userId" in scope) {
     const rows = await storage.getSecretsByUserId(scope.userId);
-    return new Set(rows.filter(s => s.class === "protected").map(s => s.name));
+    return new Set(rows.filter(s => s.brokerType != null).map(s => s.name));
   }
   const rows = await storage.getOrgSecrets(scope.organizationId);
-  return new Set(rows.filter(s => s.class === "protected").map(s => s.name));
+  return new Set(rows.filter(s => s.brokerType != null).map(s => s.name));
 }
 
 async function resolveScopeSecret(scope: SessionScope, name: string): Promise<string | undefined> {
@@ -260,31 +260,31 @@ export async function stampOwnerSession(
 
 /**
  * Join referenced secret NAMES against the scope's secret rows, attaching each
- * name's class and whether it exists. Names with no matching row default to
- * class "runtime" / present:false (a dangling ref delivers nothing).
+ * name's brokerType and whether it exists. Names with no matching row default to
+ * brokerType null / present:false (a dangling ref delivers nothing).
  */
 export async function classifyReferencedSecrets(
   scope: SessionScope,
   names: Set<string>,
-): Promise<Array<{ name: string; class: "runtime" | "protected"; present: boolean }>> {
+): Promise<Array<{ name: string; brokerType: string | null; present: boolean }>> {
   const rows = "userId" in scope
     ? await storage.getSecretsByUserId(scope.userId)
     : await storage.getOrgSecrets(scope.organizationId);
   return Array.from(names).map((name) => {
     const row = rows.find((r) => r.name === name);
-    return { name, class: (row?.class ?? "runtime") as "runtime" | "protected", present: !!row };
+    return { name, brokerType: row?.brokerType ?? null, present: !!row };
   });
 }
 
 /**
- * A Protected secret is only meaningful as a platform.setup login credential.
- * Returns the names of Protected secrets referenced anywhere OTHER than the
+ * A brokered secret is only meaningful as a platform.setup login credential.
+ * Returns the names of brokered secrets referenced anywhere OTHER than the
  * given login pair — i.e. misconfigurations the run route must reject.
  */
 export function findProtectedMisuse(
-  classified: Array<{ name: string; class: string }>,
+  classified: Array<{ name: string; brokerType: string | null }>,
   loginPair: { emailSecret: string; passwordSecret: string } | null,
 ): string[] {
   const allowed = new Set(loginPair ? [loginPair.emailSecret, loginPair.passwordSecret] : []);
-  return classified.filter((c) => c.class === "protected" && !allowed.has(c.name)).map((c) => c.name);
+  return classified.filter((c) => c.brokerType === "auth-session" && !allowed.has(c.name)).map((c) => c.name);
 }

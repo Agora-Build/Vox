@@ -2434,7 +2434,7 @@ export async function registerRoutes(
         secrets: userSecrets.map(s => ({
           id: s.id,
           name: s.name,
-          class: s.class,
+          brokerType: s.brokerType,
           isTestAccount: s.isTestAccount,
           createdAt: s.createdAt,
           updatedAt: s.updatedAt,
@@ -2483,13 +2483,16 @@ export async function registerRoutes(
       }
 
       const existingRow = existing.find(s => s.name === trimmedName);
-      if (existingRow && existingRow.class === "protected" && secretClass === "runtime") {
+      if (existingRow && existingRow.brokerType === "auth-session" && secretClass === "runtime") {
         return res.status(400).json({ error: "A protected secret cannot be reclassified to runtime — delete and recreate it instead" });
       }
 
       const encrypted = encryptValue(value);
-      const secret = await storage.createOrUpdateSecret(user.id, trimmedName, encrypted, { class: secretClass, isTestAccount });
-      res.json({ id: secret.id, name: secret.name, class: secret.class, isTestAccount: secret.isTestAccount, createdAt: secret.createdAt, updatedAt: secret.updatedAt });
+      const secret = await storage.createOrUpdateSecret(user.id, trimmedName, encrypted, {
+        brokerType: secretClass === "protected" ? "auth-session" : null,
+        isTestAccount,
+      });
+      res.json({ id: secret.id, name: secret.name, brokerType: secret.brokerType, isTestAccount: secret.isTestAccount, createdAt: secret.createdAt, updatedAt: secret.updatedAt });
     } catch (error) {
       console.error("Error creating secret:", error);
       if (error instanceof Error && error.message.includes("CREDENTIAL_ENCRYPTION_KEY")) {
@@ -2528,7 +2531,7 @@ export async function registerRoutes(
       const secrets = await storage.getOrgSecrets(user.organizationId);
       res.json(secrets.map(s => ({
         name: s.name,
-        class: s.class,
+        brokerType: s.brokerType,
         isTestAccount: s.isTestAccount,
         createdAt: s.createdAt,
         updatedAt: s.updatedAt,
@@ -2570,13 +2573,16 @@ export async function registerRoutes(
       const isTestAccount = req.body.isTestAccount === undefined ? undefined : req.body.isTestAccount === true;
 
       const existingRow = (await storage.getOrgSecrets(user.organizationId)).find(s => s.name === trimmedName);
-      if (existingRow && existingRow.class === "protected" && secretClass === "runtime") {
+      if (existingRow && existingRow.brokerType === "auth-session" && secretClass === "runtime") {
         return res.status(400).json({ error: "A protected secret cannot be reclassified to runtime — delete and recreate it instead" });
       }
 
       const encrypted = encryptValue(value);
-      const secret = await storage.upsertOrgSecret(user.organizationId, trimmedName, encrypted, user.id, { class: secretClass, isTestAccount });
-      res.json({ message: "Org secret saved", class: secret.class, isTestAccount: secret.isTestAccount });
+      const secret = await storage.upsertOrgSecret(user.organizationId, trimmedName, encrypted, user.id, {
+        brokerType: secretClass === "protected" ? "auth-session" : null,
+        isTestAccount,
+      });
+      res.json({ message: "Org secret saved", brokerType: secret.brokerType, isTestAccount: secret.isTestAccount });
     } catch (error) {
       console.error("Error saving org secret:", error);
       res.status(500).json({ error: "Failed to save org secret" });
@@ -3767,7 +3773,7 @@ export async function registerRoutes(
           // dispatcher to acknowledge that exposure BEFORE any escrow hold is
           // placed. Server-authoritative so a direct API caller can't skip the
           // UI checkbox. Only present runtime secrets actually get delivered.
-          const runtimeExposed = classified.filter((c) => c.class === "runtime" && c.present).map((c) => c.name);
+          const runtimeExposed = classified.filter((c) => c.brokerType == null && c.present).map((c) => c.name);
           if (runtimeExposed.length > 0) {
             if (req.body.runtimeSecretConsent !== true) {
               return res.status(400).json({
@@ -6134,7 +6140,7 @@ export async function registerRoutes(
       let decryptErrors = 0;
       let protectedWithheld = 0;
       for (const s of userSecrets) {
-        if (s.class === "protected") { protectedWithheld++; continue; }
+        if (s.brokerType != null) { protectedWithheld++; continue; }
         try {
           decrypted[s.name] = decryptValue(s.encryptedValue);
         } catch {

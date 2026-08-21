@@ -16,7 +16,7 @@ export const scheduleTypeEnum = pgEnum("schedule_type", ["once", "recurring"]);
 export const clashEventStatusEnum = pgEnum("clash_event_status", ["upcoming", "live", "completed", "cancelled"]);
 export const clashRunnerStateEnum = pgEnum("clash_runner_state", ["idle", "assigned", "running", "draining"]);
 export const orgRoleEnum = pgEnum("org_role", ["owner", "admin", "member"]);
-export const secretClassEnum = pgEnum("secret_class", ["runtime", "protected"]);
+export const brokerStateEnum = pgEnum("broker_state", ["idle", "offline", "busy"]);
 export const webSessionStatusEnum = pgEnum("web_session_status", ["minting", "ready", "failed"]);
 
 // Helper function to generate 12-char random ID for providers
@@ -467,9 +467,10 @@ export const orgSecrets = pgTable("org_secrets", {
   organizationId: integer("organization_id").notNull().references(() => organizations.id),
   name: text("name").notNull(),
   encryptedValue: text("encrypted_value").notNull(),
-  // 'protected' rows are Core-only: structurally excluded from the job-secrets path
-  // (getSecretsForJob) so username/password never reach an eval agent, any tier.
-  class: secretClassEnum("class").default("runtime").notNull(),
+  // brokered rows (broker_type != null) are Core-only: structurally excluded from
+  // the job-secrets path (getSecretsForJob) so username/password never reach an
+  // eval agent, any tier.
+  brokerType: text("broker_type"),
   // Owner's attestation that this login identity is a dedicated, disposable
   // test account — required before shared-tier dispatch of session workflows.
   isTestAccount: boolean("is_test_account").default(false).notNull(),
@@ -678,9 +679,10 @@ export const secrets = pgTable("secrets", {
   userId: integer("user_id").notNull().references(() => users.id),
   name: text("name").notNull(),
   encryptedValue: text("encrypted_value").notNull(),
-  // 'protected' rows are Core-only: structurally excluded from the job-secrets path
-  // (getSecretsForJob) so username/password never reach an eval agent, any tier.
-  class: secretClassEnum("class").default("runtime").notNull(),
+  // brokered rows (broker_type != null) are Core-only: structurally excluded from
+  // the job-secrets path (getSecretsForJob) so username/password never reach an
+  // eval agent, any tier.
+  brokerType: text("broker_type"),
   // Owner's attestation that this login identity is a dedicated, disposable
   // test account — required before shared-tier dispatch of session workflows.
   isTestAccount: boolean("is_test_account").default(false).notNull(),
@@ -698,6 +700,52 @@ export const insertSecretSchema = createInsertSchema(secrets).omit({
 
 export type InsertSecret = z.infer<typeof insertSecretSchema>;
 export type Secret = typeof secrets.$inferSelect;
+
+// ==================== BROKER REGISTRY ====================
+// Dynamic session-broker registry (mirrors evalAgentTokens/evalAgents). Brokers
+// register with a token, then Core dispatches mint requests to a live broker by
+// (broker_type, state).
+
+export const brokerRegistrationTokens = pgTable("broker_registration_tokens", {
+  id: serial("id").primaryKey(),
+  name: text("name").notNull(),
+  tokenHash: text("token_hash").notNull().unique(),
+  brokerType: text("broker_type").notNull(),
+  createdBy: integer("created_by").notNull().references(() => users.id),
+  isRevoked: boolean("is_revoked").notNull().default(false),
+  expiresAt: timestamp("expires_at"),
+  lastUsedAt: timestamp("last_used_at"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+export const brokers = pgTable("brokers", {
+  id: serial("id").primaryKey(),
+  name: text("name").notNull(),
+  tokenId: integer("token_id").notNull().references(() => brokerRegistrationTokens.id),
+  brokerType: text("broker_type").notNull(),
+  url: text("url").notNull(),
+  state: brokerStateEnum("state").notNull().default("offline"),
+  currentLeaseId: text("current_lease_id"),
+  lastSeenAt: timestamp("last_seen_at"),
+  observedIp: text("observed_ip"),
+  observedIpAt: timestamp("observed_ip_at"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+}, (table) => ({
+  typeStateIdx: index("brokers_type_state_idx").on(table.brokerType, table.state),
+}));
+
+export const insertBrokerRegistrationTokenSchema = createInsertSchema(brokerRegistrationTokens).omit({
+  id: true, createdAt: true, lastUsedAt: true,
+});
+export type InsertBrokerRegistrationToken = z.infer<typeof insertBrokerRegistrationTokenSchema>;
+export type BrokerRegistrationToken = typeof brokerRegistrationTokens.$inferSelect;
+
+export const insertBrokerSchema = createInsertSchema(brokers).omit({
+  id: true, createdAt: true, updatedAt: true,
+});
+export type InsertBroker = z.infer<typeof insertBrokerSchema>;
+export type Broker = typeof brokers.$inferSelect;
 
 // ==================== WEB SESSIONS ====================
 // Core-minted login sessions (Playwright storageState), cached per owner scope

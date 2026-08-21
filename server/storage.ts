@@ -1965,13 +1965,13 @@ export class DatabaseStorage {
     userId: number,
     name: string,
     encryptedValue: string,
-    opts?: { class?: "runtime" | "protected"; isTestAccount?: boolean }
+    opts?: { brokerType?: string | null; isTestAccount?: boolean }
   ): Promise<Secret> {
     const existing = await db.select().from(secrets)
       .where(and(eq(secrets.userId, userId), eq(secrets.name, name)));
     if (existing[0]) {
       const updates: Partial<typeof secrets.$inferInsert> = { encryptedValue, updatedAt: new Date() };
-      if (opts?.class !== undefined) updates.class = opts.class;
+      if (opts?.brokerType !== undefined) updates.brokerType = opts.brokerType;
       if (opts?.isTestAccount !== undefined) updates.isTestAccount = opts.isTestAccount;
       const result = await db.update(secrets)
         .set(updates)
@@ -1983,7 +1983,7 @@ export class DatabaseStorage {
       userId,
       name,
       encryptedValue,
-      ...(opts?.class !== undefined ? { class: opts.class } : {}),
+      brokerType: opts?.brokerType ?? null,
       ...(opts?.isTestAccount !== undefined ? { isTestAccount: opts.isTestAccount } : {}),
     }).returning();
     return result[0];
@@ -2008,10 +2008,10 @@ export class DatabaseStorage {
     const workflow = await this.getWorkflow(job.workflowId);
     if (!workflow) { console.log(`[Secrets] getSecretsForJob: workflow ${job.workflowId} not found`); return []; }
     console.log(`[Secrets] getSecretsForJob: job ${jobId} → workflow ${workflow.id} → owner ${workflow.ownerId}`);
-    // Structural withhold: 'protected'-class rows are Core-only. They feed
-    // the session broker's mint and must never reach an eval agent, any tier.
+    // Structural withhold: brokered rows (broker_type != null) are Core-only. They
+    // feed the session broker's mint and must never reach an eval agent, any tier.
     const all = await this.getSecretsByUserId(workflow.ownerId);
-    return all.filter((s) => s.class !== "protected");
+    return all.filter((s) => s.brokerType == null);
   }
 
   // ==================== CLASH AGENT PROFILES ====================
@@ -2419,12 +2419,12 @@ export class DatabaseStorage {
     name: string,
     encryptedValue: string,
     createdBy: number,
-    opts?: { class?: "runtime" | "protected"; isTestAccount?: boolean }
+    opts?: { brokerType?: string | null; isTestAccount?: boolean }
   ): Promise<OrgSecret> {
     const existing = await this.getOrgSecret(organizationId, name);
     if (existing) {
       const updates: Partial<typeof orgSecrets.$inferInsert> = { encryptedValue, updatedAt: new Date() };
-      if (opts?.class !== undefined) updates.class = opts.class;
+      if (opts?.brokerType !== undefined) updates.brokerType = opts.brokerType;
       if (opts?.isTestAccount !== undefined) updates.isTestAccount = opts.isTestAccount;
       const result = await db.update(orgSecrets)
         .set(updates)
@@ -2438,7 +2438,7 @@ export class DatabaseStorage {
         name,
         encryptedValue,
         createdBy,
-        ...(opts?.class !== undefined ? { class: opts.class } : {}),
+        brokerType: opts?.brokerType ?? null,
         ...(opts?.isTestAccount !== undefined ? { isTestAccount: opts.isTestAccount } : {}),
       })
       .returning();
@@ -2479,7 +2479,7 @@ export class DatabaseStorage {
     const secrets = await this.getOrgSecrets(workflow.organizationId);
     const result: Record<string, string> = {};
     for (const s of secrets) {
-      if (s.class === "protected") continue; // Core-only — never sent to agents
+      if (s.brokerType != null) continue; // Core-only — never sent to agents
       result[s.name] = decryptValue(s.encryptedValue);
     }
     return result;
@@ -2519,7 +2519,7 @@ export class DatabaseStorage {
     const rows = "userId" in scope
       ? await this.getSecretsByUserId(scope.userId)
       : await this.getOrgSecrets(scope.organizationId);
-    return names.every(n => rows.some(r => r.name === n && r.class === "protected" && r.isTestAccount));
+    return names.every(n => rows.some(r => r.name === n && r.brokerType === "auth-session" && r.isTestAccount));
   }
 
   private webSessionScopeWhere(scope: SessionScope) {
