@@ -10,7 +10,7 @@
 import { createHash } from "crypto";
 import yaml from "js-yaml";
 import { storage, encryptValue, decryptValue, type SessionScope } from "./storage";
-import { brokerAvailable, routeToBroker, mintViaBroker } from "./broker-registry";
+import { brokerAvailable, routeToBroker, mintViaBroker, isKnownBrokerType } from "./broker-registry";
 
 export interface PlatformSetupInfo {
   platformId: string;
@@ -274,4 +274,16 @@ const AUTH_FIELD_RE = /USERNAME|PASSWORD|ACCOUNT|EMAIL/i;
 /** Default brokerType suggestion for a secret name (Task 6: pre-selects the UI toggle). */
 export function defaultBrokerTypeForName(name: string): "auth-session" | null {
   return AUTH_FIELD_RE.test(name) ? "auth-session" : null;
+}
+
+// Resolve the brokerType for a secret at create time.
+// - undefined body value → name-based default
+// - explicit null → runtime (allowed override)
+// - explicit string → must be a known type
+export function resolveBrokerType(name: string, provided: string | null | undefined):
+  { ok: true; brokerType: string | null } | { ok: false; error: string } {
+  if (provided === undefined) return { ok: true, brokerType: defaultBrokerTypeForName(name) };
+  if (provided === null) return { ok: true, brokerType: null };
+  if (!isKnownBrokerType(provided)) return { ok: false, error: `unknown brokerType: ${provided}` };
+  return { ok: true, brokerType: provided };
 }

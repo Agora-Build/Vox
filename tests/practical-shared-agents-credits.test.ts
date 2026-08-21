@@ -160,7 +160,7 @@ async function createEvalSet(session: AuthSession, name: string, config: Record<
 
 async function createSecret(
   session: AuthSession, name: string, value: string,
-  opts?: { secretClass?: "runtime" | "protected"; isTestAccount?: boolean },
+  opts?: { brokerType?: string | null; isTestAccount?: boolean },
 ): Promise<void> {
   const res = await authFetch(session, `${BASE_URL}/api/secrets`, {
     method: "POST", body: JSON.stringify({ name, value, ...opts }),
@@ -469,10 +469,10 @@ describe("Task 13: practical shared-agents marketplace + credits e2e", () => {
       expect(tier.ok).toBe(true);
 
       // rich owns both the secrets AND the workflow: session scope is keyed
-      // to the WORKFLOW OWNER (server/session-broker.ts sessionScopeForWorkflow),
+      // to the WORKFLOW OWNER (server/auth-session.ts sessionScopeForWorkflow),
       // so keeping owner==caller avoids cross-user scope mismatches.
-      await createSecret(rich.session, emailSecret, "t13-test-user@example.com", { secretClass: "protected" });
-      await createSecret(rich.session, passwordSecret, "t13-test-password-1", { secretClass: "protected" });
+      await createSecret(rich.session, emailSecret, "t13-test-user@example.com", { brokerType: "auth-session" });
+      await createSecret(rich.session, passwordSecret, "t13-test-password-1", { brokerType: "auth-session" });
 
       const setupSteps = `- type: platform.setup\n  platform_id: vapi\n  params:\n    email: \${secrets.${emailSecret}}\n    password: \${secrets.${passwordSecret}}`;
       sessionWorkflowId = await createWorkflow(rich.session, `t13-session-wf-${stamp}`, providerId, { framework: "aeval", stepsPrefix: setupSteps });

@@ -12,7 +12,7 @@ interface AuthSession {
 interface SecretEntry {
   id: number;
   name: string;
-  class: string;
+  brokerType: string | null;
   isTestAccount: boolean;
   createdAt: string;
   updatedAt: string;
@@ -75,46 +75,46 @@ describe('Secrets class + attestation API', () => {
     return body.secrets.find((s) => s.name === name);
   }
 
-  it('1. creates a protected-class secret with test-account attestation', async () => {
+  it('1. creates a brokered secret with test-account attestation', async () => {
     const res = await authFetch(adminSession, `${BASE_URL}/api/secrets`, {
       method: 'POST',
-      body: JSON.stringify({ name: loginName, value: 'x', secretClass: 'protected', isTestAccount: true }),
+      body: JSON.stringify({ name: loginName, value: 'x', brokerType: 'auth-session', isTestAccount: true }),
     });
     expect(res.status).toBe(200);
 
     const row = await getSecret(loginName);
     expect(row).toBeDefined();
-    expect(row?.class).toBe('protected');
+    expect(row?.brokerType).toBe('auth-session');
     expect(row?.isTestAccount).toBe(true);
   });
 
-  it('2. rejects reclassifying an existing protected secret to runtime (one-way rule)', async () => {
+  it('2. rejects reclassifying an existing brokered secret to runtime (one-way rule)', async () => {
     const res = await authFetch(adminSession, `${BASE_URL}/api/secrets`, {
       method: 'POST',
-      body: JSON.stringify({ name: loginName, value: 'x2', secretClass: 'runtime' }),
+      body: JSON.stringify({ name: loginName, value: 'x2', brokerType: null }),
     });
     expect(res.status).toBe(400);
     const body = await res.json();
     expect(body.error).toBe('A protected secret cannot be reclassified to runtime — delete and recreate it instead');
 
-    // class must remain unchanged
+    // brokerType must remain unchanged
     const row = await getSecret(loginName);
-    expect(row?.class).toBe('protected');
+    expect(row?.brokerType).toBe('auth-session');
   });
 
-  it('3. allows re-attesting an existing protected secret (attestation is editable)', async () => {
+  it('3. allows re-attesting an existing brokered secret (attestation is editable)', async () => {
     const res = await authFetch(adminSession, `${BASE_URL}/api/secrets`, {
       method: 'POST',
-      body: JSON.stringify({ name: loginName, value: 'x3', secretClass: 'protected', isTestAccount: false }),
+      body: JSON.stringify({ name: loginName, value: 'x3', brokerType: 'auth-session', isTestAccount: false }),
     });
     expect(res.status).toBe(200);
 
     const row = await getSecret(loginName);
-    expect(row?.class).toBe('protected');
+    expect(row?.brokerType).toBe('auth-session');
     expect(row?.isTestAccount).toBe(false);
   });
 
-  it('4. defaults to runtime class when secretClass is omitted', async () => {
+  it('4. defaults to runtime (null) when brokerType is omitted', async () => {
     const res = await authFetch(adminSession, `${BASE_URL}/api/secrets`, {
       method: 'POST',
       body: JSON.stringify({ name: runtimeName, value: 'y' }),
@@ -122,18 +122,18 @@ describe('Secrets class + attestation API', () => {
     expect(res.status).toBe(200);
 
     const row = await getSecret(runtimeName);
-    expect(row?.class).toBe('runtime');
+    expect(row?.brokerType).toBeNull();
   });
 
-  it('5. allows upgrading a runtime secret to protected', async () => {
+  it('5. allows upgrading a runtime secret to brokered', async () => {
     const res = await authFetch(adminSession, `${BASE_URL}/api/secrets`, {
       method: 'POST',
-      body: JSON.stringify({ name: runtimeName, value: 'y2', secretClass: 'protected' }),
+      body: JSON.stringify({ name: runtimeName, value: 'y2', brokerType: 'auth-session' }),
     });
     expect(res.status).toBe(200);
 
     const row = await getSecret(runtimeName);
-    expect(row?.class).toBe('protected');
+    expect(row?.brokerType).toBe('auth-session');
   });
 });
 
@@ -158,10 +158,10 @@ describe('Secrets class — job-secrets withhold', () => {
   beforeAll(async () => {
     adminSession = await login(ADMIN_EMAIL, ADMIN_PASSWORD);
 
-    // A protected-class secret and a runtime-class secret, both owned by admin.
+    // A brokered secret and a runtime secret, both owned by admin.
     await authFetch(adminSession, `${BASE_URL}/api/secrets`, {
       method: 'POST',
-      body: JSON.stringify({ name: protectedName, value: 'admin@example.com', secretClass: 'protected', isTestAccount: true }),
+      body: JSON.stringify({ name: protectedName, value: 'admin@example.com', brokerType: 'auth-session', isTestAccount: true }),
     });
     await authFetch(adminSession, `${BASE_URL}/api/secrets`, {
       method: 'POST',

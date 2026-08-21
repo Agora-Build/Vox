@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { findBrokeredMisuse, defaultBrokerTypeForName } from "../server/auth-session";
+import { findBrokeredMisuse, defaultBrokerTypeForName, resolveBrokerType } from "../server/auth-session";
 
 describe("findBrokeredMisuse", () => {
   const pair = { emailSecret: "LOGIN_EMAIL", passwordSecret: "LOGIN_PW" };
@@ -35,4 +35,15 @@ describe("defaultBrokerTypeForName", () => {
     for (const n of ["openai_api_key", "region", "PROMPT"])
       expect(defaultBrokerTypeForName(n)).toBeNull();
   });
+});
+
+describe("resolveBrokerType", () => {
+  it("defaults by name when unspecified", () =>
+    expect(resolveBrokerType("PASSWORD", undefined)).toEqual({ ok: true, brokerType: "auth-session" }));
+  it("honors explicit null override", () =>
+    expect(resolveBrokerType("PASSWORD", null)).toEqual({ ok: true, brokerType: null }));
+  it("rejects unknown type", () =>
+    expect(resolveBrokerType("x", "openai-key")).toEqual({ ok: false, error: "unknown brokerType: openai-key" }));
+  it("passes runtime name through as null", () =>
+    expect(resolveBrokerType("region", undefined)).toEqual({ ok: true, brokerType: null }));
 });

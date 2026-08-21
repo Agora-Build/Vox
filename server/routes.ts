@@ -11,7 +11,7 @@ import { registerApiV1Routes } from "./routes-api-v1";
 import { generateSignedUrlForUser } from "./s3";
 import { validateTierChoice, resolveTargetedDispatch, filterDispatchableAgents } from "./dispatch";
 import { getMarketplace } from "./marketplace";
-import { parsePlatformSetup, sessionScopeForWorkflow, evaluateSessionRequirement, getBrokeredSecretNames, ensureSession, stampOwnerSession, credentialKeyFor, SESSION_FRESH_MARGIN_SECONDS, classifyReferencedSecrets, findBrokeredMisuse, defaultBrokerTypeForName, type SessionNeed } from "./auth-session";
+import { parsePlatformSetup, sessionScopeForWorkflow, evaluateSessionRequirement, getBrokeredSecretNames, ensureSession, stampOwnerSession, credentialKeyFor, SESSION_FRESH_MARGIN_SECONDS, classifyReferencedSecrets, findBrokeredMisuse, defaultBrokerTypeForName, resolveBrokerType, type SessionNeed } from "./auth-session";
 import {
   hashPassword,
   verifyPassword,
@@ -2469,10 +2469,7 @@ export async function registerRoutes(
       if (value.length > 10000) {
         return res.status(400).json({ error: "Secret value too large (max 10KB)" });
       }
-      const secretClass = req.body.secretClass === undefined ? undefined : req.body.secretClass;
-      if (secretClass !== undefined && secretClass !== "runtime" && secretClass !== "protected") {
-        return res.status(400).json({ error: "secretClass must be 'runtime' or 'protected'" });
-      }
+      const bodyBrokerType = req.body.brokerType === undefined ? undefined : req.body.brokerType;
       const isTestAccount = req.body.isTestAccount === undefined ? undefined : req.body.isTestAccount === true;
 
       // Per-user limit: check if this is a new secret (not an upsert of existing)
@@ -2483,13 +2480,21 @@ export async function registerRoutes(
       }
 
       const existingRow = existing.find(s => s.name === trimmedName);
-      if (existingRow && existingRow.brokerType === "auth-session" && secretClass === "runtime") {
+      let resolvedBrokerType: string | null;
+      if (existingRow && bodyBrokerType === undefined) {
+        resolvedBrokerType = existingRow.brokerType; // preserve on value-only update
+      } else {
+        const resolved = resolveBrokerType(trimmedName, bodyBrokerType);
+        if (!resolved.ok) return res.status(400).json({ error: resolved.error });
+        resolvedBrokerType = resolved.brokerType;
+      }
+      if (existingRow && existingRow.brokerType === "auth-session" && resolvedBrokerType === null) {
         return res.status(400).json({ error: "A protected secret cannot be reclassified to runtime — delete and recreate it instead" });
       }
 
       const encrypted = encryptValue(value);
       const secret = await storage.createOrUpdateSecret(user.id, trimmedName, encrypted, {
-        brokerType: secretClass === "protected" ? "auth-session" : null,
+        brokerType: resolvedBrokerType,
         isTestAccount,
       });
       res.json({ id: secret.id, name: secret.name, brokerType: secret.brokerType, isTestAccount: secret.isTestAccount, createdAt: secret.createdAt, updatedAt: secret.updatedAt });
@@ -2566,20 +2571,25 @@ export async function registerRoutes(
       if (!isEncryptionConfigured()) {
         return res.status(503).json({ error: "Encryption not configured on server" });
       }
-      const secretClass = req.body.secretClass === undefined ? undefined : req.body.secretClass;
-      if (secretClass !== undefined && secretClass !== "runtime" && secretClass !== "protected") {
-        return res.status(400).json({ error: "secretClass must be 'runtime' or 'protected'" });
-      }
+      const bodyBrokerType = req.body.brokerType === undefined ? undefined : req.body.brokerType;
       const isTestAccount = req.body.isTestAccount === undefined ? undefined : req.body.isTestAccount === true;
 
       const existingRow = (await storage.getOrgSecrets(user.organizationId)).find(s => s.name === trimmedName);
-      if (existingRow && existingRow.brokerType === "auth-session" && secretClass === "runtime") {
+      let resolvedBrokerType: string | null;
+      if (existingRow && bodyBrokerType === undefined) {
+        resolvedBrokerType = existingRow.brokerType; // preserve on value-only update
+      } else {
+        const resolved = resolveBrokerType(trimmedName, bodyBrokerType);
+        if (!resolved.ok) return res.status(400).json({ error: resolved.error });
+        resolvedBrokerType = resolved.brokerType;
+      }
+      if (existingRow && existingRow.brokerType === "auth-session" && resolvedBrokerType === null) {
         return res.status(400).json({ error: "A protected secret cannot be reclassified to runtime — delete and recreate it instead" });
       }
 
       const encrypted = encryptValue(value);
       const secret = await storage.upsertOrgSecret(user.organizationId, trimmedName, encrypted, user.id, {
-        brokerType: secretClass === "protected" ? "auth-session" : null,
+        brokerType: resolvedBrokerType,
         isTestAccount,
       });
       res.json({ message: "Org secret saved", brokerType: secret.brokerType, isTestAccount: secret.isTestAccount });
