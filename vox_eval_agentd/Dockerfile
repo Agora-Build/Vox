@@ -1,23 +1,26 @@
-# vox_eval_agentd - Vox Evaluation Agent Daemon
+# vox_eval_agentd — Vox Evaluation Agent Daemon + Session Broker
 #
-# A Docker image that combines aeval and voice-agent-tester with Vox API
-# integration for running automated voice agent evaluations.
+# One Dockerfile, three stages:
+#   base   — shared: Ubuntu + Node + Chromium deps + aeval + Playwright + aeval-data
+#   broker — FROM base: session-broker.js only  (published as vox-session-broker)
+#   daemon — FROM base: voice-agent-tester + vox-agentd.js  (published as vox-eval-agentd)
+#
+# `daemon` is the LAST stage, so it is the default --target:
+#   docker build -f vox_eval_agentd/Dockerfile -t vox_eval_agentd .                       # → daemon
+#   docker build --target broker -f vox_eval_agentd/Dockerfile -t vox-session-broker .    # → broker
 #
 # Base: Ubuntu 24.04 (GLIBC 2.39) — required by aeval's bundled Python runtime.
-# Chromium: Puppeteer downloads its own (Ubuntu 24.04 only offers snap Chromium).
-#
-# Build (from repo root):
-#   docker build -f vox_eval_agentd/Dockerfile -t vox_eval_agentd .
-#
-# Run:
-#   docker run -e AGENT_TOKEN=xxx -e VOX_SERVER=http://host.docker.internal:5000 vox_eval_agentd
+# Chromium: Puppeteer/Playwright download their own (Ubuntu 24.04 only offers snap Chromium).
 
-FROM ubuntu:24.04
+# ============================================================================
+# Stage: base — everything both roles share (~all the image weight)
+# ============================================================================
+FROM ubuntu:24.04 AS base
 
 # Prevent interactive prompts during apt install
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install Node.js 22 and Chromium system dependencies (Puppeteer downloads its own binary)
+# Install Node.js 22 and Chromium system dependencies (browser binaries downloaded per-target)
 RUN apt-get update && apt-get install -y \
     curl \
     ca-certificates \
@@ -85,20 +88,61 @@ RUN apt-get update && apt-get install -y python3-pip --no-install-recommends \
 # Copy aeval runtime data from submodule: config/, examples/, corpus/
 COPY vox_eval_agentd/aeval-data/ /app/aeval-data/
 
-# --- voice-agent-tester framework ---
-COPY vox_eval_agentd/voice-agent-tester/ /app/voice-agent-tester/
+# Build metadata (injected at build time via --build-arg), shared by both targets
+ARG BUILD_TAG=dev
+ARG BUILD_DATE=unknown
+ARG AEVAL_DATA_COMMIT=unknown
+ARG AEVAL_DATA_DATE=unknown
+ENV BUILD_TAG=${BUILD_TAG}
+ENV BUILD_DATE=${BUILD_DATE}
+ENV AEVAL_DATA_COMMIT=${AEVAL_DATA_COMMIT}
+ENV AEVAL_DATA_DATE=${AEVAL_DATA_DATE}
 
-# Install voice-agent-tester dependencies and Puppeteer's Chrome
+# Both roles drive Chromium headless by default
+ENV HEADLESS=true
+
+# ============================================================================
+# Stage: broker — trusted login sidecar (published as vox-session-broker)
+# Lean tip: session-broker.js only. No voice-agent-tester, no daemon code,
+# no shared/, no node_modules at runtime (esbuild bundles builtins-only).
+# ============================================================================
+FROM base AS broker
+WORKDIR /app
+
+COPY vox_eval_agentd/session-broker.ts /app/
+COPY vox_eval_agentd/package.json /app/
+
+# npm install only to obtain esbuild (a devDep). session-broker.ts imports only
+# Node builtins, so the bundle needs no node_modules at runtime — drop it after compile.
+RUN npm install \
+    && npx esbuild session-broker.ts --bundle --platform=node --format=esm --outfile=session-broker.js \
+       --external:child_process --external:fs --external:os --external:path --external:url --external:http \
+       --external:@aws-sdk/client-s3 \
+    && rm -rf node_modules
+
+EXPOSE 8200
+
+# Run the session broker
+CMD ["node", "session-broker.js"]
+
+# ============================================================================
+# Stage: daemon — eval-agent daemon (published as vox-eval-agentd)
+# LAST stage → the default --target. Current image content, minus the broker.
+# ============================================================================
+FROM base AS daemon
+WORKDIR /app
+
+# --- voice-agent-tester framework (daemon-only) ---
+COPY vox_eval_agentd/voice-agent-tester/ /app/voice-agent-tester/
 WORKDIR /app/voice-agent-tester
 RUN npm install && npx puppeteer browsers install chrome
 
-# Copy vox integration files
+# --- vox integration files ---
 WORKDIR /app
 COPY vox_eval_agentd/applications/ /app/applications/
 COPY vox_eval_agentd/scenarios/ /app/scenarios/
 COPY vox_eval_agentd/assets/ /app/assets/
 COPY vox_eval_agentd/vox-agentd.ts /app/
-COPY vox_eval_agentd/session-broker.ts /app/
 COPY vox_eval_agentd/session-inject.ts /app/
 COPY vox_eval_agentd/chunking.ts /app/
 COPY vox_eval_agentd/package.json /app/
@@ -113,30 +157,13 @@ RUN npx esbuild vox-agentd.ts --bundle --platform=node --format=esm --outfile=vo
     --external:child_process --external:fs --external:os --external:path --external:url --external:http \
     --external:@aws-sdk/client-s3
 
-# Compile session-broker TS → JS (sidecar; default CMD stays the daemon above)
-RUN npx esbuild session-broker.ts --bundle --platform=node --format=esm --outfile=session-broker.js \
-    --external:child_process --external:fs --external:os --external:path --external:url --external:http \
-    --external:@aws-sdk/client-s3
-
-# Build metadata (injected at build time via --build-arg)
-ARG BUILD_TAG=dev
-ARG BUILD_DATE=unknown
-ARG AEVAL_DATA_COMMIT=unknown
-ARG AEVAL_DATA_DATE=unknown
-ENV BUILD_TAG=${BUILD_TAG}
-ENV BUILD_DATE=${BUILD_DATE}
-ENV AEVAL_DATA_COMMIT=${AEVAL_DATA_COMMIT}
-ENV AEVAL_DATA_DATE=${AEVAL_DATA_DATE}
-
-# Environment variables (will be overridden at runtime)
+# Daemon runtime env (overridden at runtime)
 ENV VOX_SERVER=http://localhost:5000
-ENV HEADLESS=true
 ENV EVAL_FRAMEWORK=aeval
 
-# Unified output directory. Both frameworks write to their own subdir by
-# default (aeval → /app/aeval-data/output, VAT → /app/voice-agent-tester/output);
-# symlink both to /app/output so sessions always land in one place regardless
-# of framework choice at runtime.
+# Unified output directory. Both frameworks write to their own subdir by default
+# (aeval → /app/aeval-data/output, VAT → /app/voice-agent-tester/output); symlink
+# both to /app/output so sessions always land in one place.
 RUN mkdir -p /app/output \
  && ln -sfn /app/output /app/aeval-data/output \
  && ln -sfn /app/output /app/voice-agent-tester/output

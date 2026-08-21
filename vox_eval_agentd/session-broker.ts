@@ -4,7 +4,7 @@
  * Runs aeval's own per-platform `setup:account` flow (config/platforms/<id>.yaml
  * in aeval-data) and returns the captured Playwright storageState. Stateless:
  * every request gets a fresh temp dir, and nothing is persisted or logged.
- * Deployed from the vox_eval_agentd image with CMD ["node", "session-broker.js"].
+ * Shipped as its own image (vox-session-broker, the Dockerfile's `broker` target).
  * Internal network ONLY — auth is a single shared secret with Core.
  */
 import http from 'http';

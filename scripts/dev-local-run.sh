@@ -246,10 +246,10 @@ start_service_docker() {
     # Build and run Core via docker compose
     docker compose up -d --build vox-service
 
-    # Bring up the session broker sidecar. No --build: it shares the
-    # vox_eval_agentd:latest image with the eval agent, so compose only builds
-    # it when that image is absent (a subsequent `docker rmi vox_eval_agentd`
-    # forces a rebuild). Started here so a login-class eval can mint a session.
+    # Bring up the session broker sidecar. It builds the Dockerfile's `broker`
+    # target into vox-session-broker:latest on first use (compose only rebuilds
+    # when the image is absent; `docker rmi vox-session-broker` forces a rebuild).
+    # Started here so a login-class eval can mint a session.
     log_info "Starting session broker (Docker sidecar)..."
     docker compose up -d session-broker
 
