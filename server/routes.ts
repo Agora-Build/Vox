@@ -1,7 +1,7 @@
 import type { Express } from "express";
 import { type Server } from "http";
 import { z } from "zod";
-import { storage, hashToken, generateSecureToken, generateEvalAgentToken, mergeEvalConfig, buildJobSnapshot, validateWorkflowConfig, validateEvalSetConfig, encryptValue, decryptValue, isEncryptionConfigured, type MetricSourceRow, type RegionQueryScope } from "./storage";
+import { storage, hashToken, generateSecureToken, generateEvalAgentToken, generateBrokerRegistrationToken, mergeEvalConfig, buildJobSnapshot, validateWorkflowConfig, validateEvalSetConfig, encryptValue, decryptValue, isEncryptionConfigured, type MetricSourceRow, type RegionQueryScope } from "./storage";
 import { parseNextCronRun } from "./cron";
 import { compareVersions } from "./aeval-seed";
 import { SECRET_NAME_PATTERN, collectSecretRefs } from "@shared/secrets";
@@ -2893,7 +2893,7 @@ export async function registerRoutes(
       const { name, brokerType } = req.body ?? {};
       if (typeof name !== "string" || !name) return res.status(400).json({ error: "name required" });
       if (!isKnownBrokerType(brokerType)) return res.status(400).json({ error: "unknown brokerType" });
-      const token = generateSecureToken(32);
+      const token = generateBrokerRegistrationToken();
       const row = await storage.createBrokerRegistrationToken({
         name, brokerType, tokenHash: hashToken(token), createdBy: (await getCurrentUser(req))!.id, isRevoked: false, expiresAt: null,
       });

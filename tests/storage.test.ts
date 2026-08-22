@@ -2,6 +2,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
   hashToken,
   generateSecureToken,
+  generateEvalAgentToken,
+  generateBrokerRegistrationToken,
   validateWorkflowConfig,
   validateEvalSetConfig,
   mergeEvalConfig,
@@ -105,6 +107,29 @@ describe('Storage Utilities', () => {
 
       // With 100 tokens, we should have multiple different first characters
       expect(uniqueFirstChars.size).toBeGreaterThan(5);
+    });
+  });
+
+  describe('typed token generators', () => {
+    it('eval agent tokens are "ev" + 30 hex (32 chars)', () => {
+      const token = generateEvalAgentToken();
+      expect(token).toHaveLength(32);
+      expect(token).toMatch(/^ev[a-f0-9]{30}$/);
+    });
+
+    it('broker registration tokens are "bk" + 30 hex (32 chars)', () => {
+      const token = generateBrokerRegistrationToken();
+      expect(token).toHaveLength(32);
+      expect(token).toMatch(/^bk[a-f0-9]{30}$/);
+    });
+
+    it('eval agent and broker tokens share the same length', () => {
+      expect(generateBrokerRegistrationToken().length).toBe(generateEvalAgentToken().length);
+    });
+
+    it('generates unique tokens each time', () => {
+      const tokens = new Set(Array.from({ length: 100 }, () => generateBrokerRegistrationToken()));
+      expect(tokens.size).toBe(100);
     });
   });
 });

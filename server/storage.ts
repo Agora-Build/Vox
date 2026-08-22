@@ -153,6 +153,13 @@ export function generateEvalAgentToken(): string {
   return "ev" + crypto.randomBytes(15).toString('hex');
 }
 
+// Broker registration token — same shape as an eval agent token so both read
+// as a short typed prefix + 30 hex chars (32 total): "ev" for eval agents,
+// "bk" for brokers.
+export function generateBrokerRegistrationToken(): string {
+  return "bk" + crypto.randomBytes(15).toString('hex');
+}
+
 // AES-256-GCM encryption for secrets
 // CREDENTIAL_ENCRYPTION_KEY must be a 32-byte hex string (64 hex chars)
 // Ciphertext format: v1:iv:authTag:data (versioned for future key rotation)
