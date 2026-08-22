@@ -495,6 +495,14 @@ export const apiKeys = pgTable("api_keys", {
   lastUsedAt: timestamp("last_used_at"),
   expiresAt: timestamp("expires_at"),
   isRevoked: boolean("is_revoked").default(false).notNull(),
+  revokedAt: timestamp("revoked_at"),
+  // Soft-delete: rows are never hard-deleted (critical for future auditing).
+  isDeleted: boolean("is_deleted").default(false).notNull(),
+  deletedAt: timestamp("deleted_at"),
+  // Lightweight operation tracking (full audit log is a future system).
+  lastOperation: text("last_operation"),
+  lastOperationAt: timestamp("last_operation_at"),
+  lastOperationBy: integer("last_operation_by").references(() => users.id),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
@@ -503,6 +511,12 @@ export const insertApiKeySchema = createInsertSchema(apiKeys).omit({
   createdAt: true,
   usageCount: true,
   lastUsedAt: true,
+  revokedAt: true,
+  isDeleted: true,
+  deletedAt: true,
+  lastOperation: true,
+  lastOperationAt: true,
+  lastOperationBy: true,
 });
 
 export type InsertApiKey = z.infer<typeof insertApiKeySchema>;

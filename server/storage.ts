@@ -1659,7 +1659,12 @@ export class DatabaseStorage {
   }
 
   async createApiKey(apiKey: InsertApiKey): Promise<ApiKey> {
-    const result = await db.insert(apiKeys).values(apiKey).returning();
+    const result = await db.insert(apiKeys).values({
+      ...apiKey,
+      lastOperation: "create",
+      lastOperationAt: new Date(),
+      lastOperationBy: apiKey.createdBy,
+    }).returning();
     return result[0];
   }
 
@@ -1673,12 +1678,21 @@ export class DatabaseStorage {
     return result[0];
   }
 
+  // Excludes soft-deleted keys — deleted rows are kept for auditing but never listed.
   async getApiKeysByUser(userId: number): Promise<ApiKey[]> {
-    return db.select().from(apiKeys).where(eq(apiKeys.createdBy, userId)).orderBy(desc(apiKeys.createdAt));
+    return db.select().from(apiKeys)
+      .where(and(eq(apiKeys.createdBy, userId), eq(apiKeys.isDeleted, false)))
+      .orderBy(desc(apiKeys.createdAt));
   }
 
-  async revokeApiKey(id: number): Promise<void> {
-    await db.update(apiKeys).set({ isRevoked: true }).where(eq(apiKeys.id, id));
+  async revokeApiKey(id: number, operatorId?: number): Promise<void> {
+    await db.update(apiKeys).set({
+      isRevoked: true,
+      revokedAt: new Date(),
+      lastOperation: "revoke",
+      lastOperationAt: new Date(),
+      lastOperationBy: operatorId ?? null,
+    }).where(eq(apiKeys.id, id));
   }
 
   async incrementApiKeyUsage(id: number): Promise<void> {
@@ -1688,8 +1702,15 @@ export class DatabaseStorage {
     }).where(eq(apiKeys.id, id));
   }
 
-  async deleteApiKey(id: number): Promise<void> {
-    await db.delete(apiKeys).where(eq(apiKeys.id, id));
+  // Soft-delete: mark deleted (row retained for auditing), never DELETE.
+  async deleteApiKey(id: number, operatorId?: number): Promise<void> {
+    await db.update(apiKeys).set({
+      isDeleted: true,
+      deletedAt: new Date(),
+      lastOperation: "delete",
+      lastOperationAt: new Date(),
+      lastOperationBy: operatorId ?? null,
+    }).where(eq(apiKeys.id, id));
   }
 
   async getPricingConfig(id: number): Promise<PricingConfig | undefined> {

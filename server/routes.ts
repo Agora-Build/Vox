@@ -13,6 +13,8 @@ import { validateTierChoice, resolveTargetedDispatch, filterDispatchableAgents }
 import { getMarketplace } from "./marketplace";
 import { parsePlatformSetup, sessionScopeForWorkflow, evaluateSessionRequirement, getBrokeredSecretNames, ensureSession, stampOwnerSession, credentialKeyFor, SESSION_FRESH_MARGIN_SECONDS, classifyReferencedSecrets, findBrokeredMisuse, defaultBrokerTypeForName, resolveBrokerType, type SessionNeed } from "./auth-session";
 import { validateRegisterPayload, cacheBrokerMintSecret, hasBrokerMintSecret } from "./broker-registry";
+import { deriveApiKeyStatus } from "./api-key-status";
+import { isStaleOfflineAgent } from "./agent-liveness";
 import {
   hashPassword,
   verifyPassword,
@@ -1122,6 +1124,7 @@ export async function registerRoutes(
         lastUsedAt: k.lastUsedAt,
         expiresAt: k.expiresAt,
         isRevoked: k.isRevoked,
+        status: deriveApiKeyStatus(k),
         createdAt: k.createdAt,
       })));
     } catch (error) {
@@ -1190,7 +1193,7 @@ export async function registerRoutes(
       const { id } = req.params;
       const apiKey = await storage.getApiKey(parseInt(id));
 
-      if (!apiKey) {
+      if (!apiKey || apiKey.isDeleted) {
         return res.status(404).json({ error: "API key not found" });
       }
 
@@ -1199,7 +1202,7 @@ export async function registerRoutes(
         return res.status(403).json({ error: "Not authorized to revoke this key" });
       }
 
-      await storage.revokeApiKey(parseInt(id));
+      await storage.revokeApiKey(parseInt(id), user.id);
       res.json({ message: "API key revoked successfully" });
     } catch (error) {
       console.error("Error revoking API key:", error);
@@ -1207,7 +1210,7 @@ export async function registerRoutes(
     }
   });
 
-  // Delete an API key (hard delete)
+  // Delete an API key (soft delete — row retained for auditing)
   app.delete("/api/user/api-keys/:id", requireAuth, async (req, res) => {
     try {
       const user = await getCurrentUser(req);
@@ -1218,7 +1221,7 @@ export async function registerRoutes(
       const { id } = req.params;
       const apiKey = await storage.getApiKey(parseInt(id));
 
-      if (!apiKey) {
+      if (!apiKey || apiKey.isDeleted) {
         return res.status(404).json({ error: "API key not found" });
       }
 
@@ -1227,7 +1230,7 @@ export async function registerRoutes(
         return res.status(403).json({ error: "Not authorized to delete this key" });
       }
 
-      await storage.deleteApiKey(parseInt(id));
+      await storage.deleteApiKey(parseInt(id), user.id);
       res.json({ message: "API key deleted successfully" });
     } catch (error) {
       console.error("Error deleting API key:", error);
@@ -3012,10 +3015,15 @@ export async function registerRoutes(
     try {
       const user = await getCurrentUser(req);
       const agents = await storage.getEvalAgentsWithTokenTier();
-      // public-tier agents visible to all; others only to their owner or admins
+      const now = new Date();
+      // public-tier agents visible to all; others only to their owner or admins.
+      // Stale-offline agents (offline + unseen >24h) are hidden from the list and
+      // its derived counts — the row is kept in the DB, never deleted.
       const visible = agents.filter(a =>
-        a.tokenDispatchTier === "public" ||
-        (user && (user.id === a.tokenCreatedBy || user.isAdmin))
+        !isStaleOfflineAgent(a, now) && (
+          a.tokenDispatchTier === "public" ||
+          (user && (user.id === a.tokenCreatedBy || user.isAdmin))
+        )
       );
       res.json(visible.map(a => ({
         id: a.id,
@@ -4734,7 +4742,11 @@ export async function registerRoutes(
 
   app.get("/api/health", async (_req, res) => {
     try {
-      const agents = await storage.getAllEvalAgents();
+      const allAgents = await storage.getAllEvalAgents();
+      const now = new Date();
+      // Exclude stale-offline agents (offline + unseen >24h) from counts — kept
+      // in the DB but not counted here or in the console list. Never deleted.
+      const agents = allAgents.filter(a => !isStaleOfflineAgent(a, now));
       const online = agents.filter(a => a.state !== "offline");
       const total = agents.length;
       const onlineCount = online.length;
