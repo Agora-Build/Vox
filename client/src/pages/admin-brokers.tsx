@@ -7,15 +7,10 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-
-// Mirrors server/broker-registry.ts KNOWN_BROKER_TYPES. Kept as an array so the
-// mint dialog is ready to grow if more broker types are added server-side.
-const BROKER_TYPES = ["auth-session"] as const;
 
 type Broker = {
   id: number;
@@ -33,13 +28,12 @@ type Broker = {
 type BrokerToken = {
   id: number;
   name: string;
-  brokerType: string;
   isRevoked: boolean;
   lastUsedAt: string | null;
   createdAt: string;
 };
 
-type MintResponse = { id: number; name: string; brokerType: string; token: string };
+type MintResponse = { id: number; name: string; token: string };
 
 const fmt = (value: string | null) => (value ? new Date(value).toLocaleString() : "—");
 
@@ -64,21 +58,19 @@ export default function AdminBrokers() {
 
   const [mintOpen, setMintOpen] = useState(false);
   const [mintName, setMintName] = useState("");
-  const [mintType, setMintType] = useState<string>("auth-session");
   const [minted, setMinted] = useState<MintResponse | null>(null);
   const [copied, setCopied] = useState(false);
   const [revokeId, setRevokeId] = useState<number | null>(null);
 
   const mintMutation = useMutation({
     mutationFn: async () => {
-      const res = await apiRequest("POST", "/api/admin/broker-tokens", { name: mintName, brokerType: mintType });
+      const res = await apiRequest("POST", "/api/admin/broker-tokens", { name: mintName });
       return res.json() as Promise<MintResponse>;
     },
     onSuccess: (data) => {
       setMinted(data);
       setMintOpen(false);
       setMintName("");
-      setMintType("auth-session");
       queryClient.invalidateQueries({ queryKey: ["/api/admin/broker-tokens"] });
     },
     onError: (error: Error) => {
@@ -176,7 +168,6 @@ export default function AdminBrokers() {
               <TableHeader>
                 <TableRow>
                   <TableHead>Name</TableHead>
-                  <TableHead>Type</TableHead>
                   <TableHead>Status</TableHead>
                   <TableHead>Last Used</TableHead>
                   <TableHead>Created</TableHead>
@@ -187,7 +178,6 @@ export default function AdminBrokers() {
                 {tokens?.map((token) => (
                   <TableRow key={token.id}>
                     <TableCell className="font-medium">{token.name}</TableCell>
-                    <TableCell><Badge variant="outline">{token.brokerType}</Badge></TableCell>
                     <TableCell>
                       {token.isRevoked
                         ? <Badge variant="outline" className="text-muted-foreground">revoked</Badge>
@@ -231,15 +221,6 @@ export default function AdminBrokers() {
                 placeholder="prod-auth-session-broker"
                 onChange={(e) => setMintName(e.target.value)}
               />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="broker-token-type">Broker type</Label>
-              <Select value={mintType} onValueChange={setMintType}>
-                <SelectTrigger id="broker-token-type"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  {BROKER_TYPES.map((t) => <SelectItem key={t} value={t}>{t}</SelectItem>)}
-                </SelectContent>
-              </Select>
             </div>
           </div>
           <DialogFooter>

@@ -710,7 +710,9 @@ export const brokerRegistrationTokens = pgTable("broker_registration_tokens", {
   id: serial("id").primaryKey(),
   name: text("name").notNull(),
   tokenHash: text("token_hash").notNull().unique(),
-  brokerType: text("broker_type").notNull(),
+  // A registration token is type-agnostic — it only authorizes a broker to
+  // register. The broker declares its own brokerType at register time, which is
+  // what lands on the `brokers` row (the routing key).
   createdBy: integer("created_by").notNull().references(() => users.id),
   isRevoked: boolean("is_revoked").notNull().default(false),
   expiresAt: timestamp("expires_at"),

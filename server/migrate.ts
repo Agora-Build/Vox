@@ -53,6 +53,7 @@ const MIGRATIONS: Array<{ version: number; description: string; file: string | n
   { version: 29, description: "drop eval_agent_tokens.visibility (dispatch_tier is sole classifier)", file: "0028_drop_token_visibility.sql" },
   { version: 30, description: "rename secret_class value login → protected", file: "0029_secret_class_protected.sql" },
   { version: 31, description: "broker registry + brokerType secrets", file: "0030_broker_registry.sql" },
+  { version: 32, description: "drop broker_registration_tokens.broker_type (type is broker-reported)", file: "0031_drop_broker_token_type.sql" },
 ];
 
 const TARGET_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version;
