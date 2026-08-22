@@ -147,7 +147,7 @@ export async function authenticateApiKey(req: Request, res: Response, next: Next
   const keyHash = hashToken(token);
   const apiKey = await storage.getApiKeyByHash(keyHash);
 
-  if (!apiKey) {
+  if (!apiKey || apiKey.isDeleted) {
     return res.status(401).json({ error: "Invalid API key" });
   }
 

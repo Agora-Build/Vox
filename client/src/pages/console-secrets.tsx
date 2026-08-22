@@ -40,6 +40,12 @@ interface OrgSecretEntry {
   updatedAt: string;
 }
 
+// Friendly label for a broker type in the secret-class dropdown.
+function brokerTypeLabel(t: string): string {
+  if (t === "auth-session") return "Brokered — login/session";
+  return t;
+}
+
 interface AuthStatus {
   user: {
     organizationId: number | null;
@@ -64,12 +70,17 @@ export default function ConsoleSecrets() {
   const [createOpen, setCreateOpen] = useState(false);
   const [name, setName] = useState("");
   const [value, setValue] = useState("");
-  const [brokerType, setBrokerType] = useState<string | null>("auth-session");
+  const [brokerType, setBrokerType] = useState<string | null>("runtime");
   const [isTestAccount, setIsTestAccount] = useState(false);
 
   const { data: response, isLoading } = useQuery<SecretsResponse>({
     queryKey: ["/api/secrets"],
   });
+
+  // Broker types serviceable right now (live, non-offline brokers). Runtime
+  // (null) is always offered; each live type is added as a brokered option.
+  const { data: liveBrokerTypes } = useQuery<string[]>({ queryKey: ["/api/broker-types"] });
+  const brokerTypeOptions = liveBrokerTypes ?? [];
 
   const encryptionConfigured = response?.encryptionConfigured ?? true;
   const secrets = response?.secrets;
@@ -87,7 +98,7 @@ export default function ConsoleSecrets() {
     onSuccess: () => {
       setName("");
       setValue("");
-      setBrokerType("auth-session");
+      setBrokerType("runtime");
       setIsTestAccount(false);
       setCreateOpen(false);
       queryClient.invalidateQueries({ queryKey: ["/api/secrets"] });
@@ -116,7 +127,7 @@ export default function ConsoleSecrets() {
   const [orgCreateOpen, setOrgCreateOpen] = useState(false);
   const [orgName, setOrgName] = useState("");
   const [orgValue, setOrgValue] = useState("");
-  const [orgBrokerType, setOrgBrokerType] = useState<string | null>("auth-session");
+  const [orgBrokerType, setOrgBrokerType] = useState<string | null>("runtime");
   const [orgIsTestAccount, setOrgIsTestAccount] = useState(false);
 
   const { data: orgSecrets, isLoading: orgLoading } = useQuery<OrgSecretEntry[]>({
@@ -136,7 +147,7 @@ export default function ConsoleSecrets() {
     onSuccess: () => {
       setOrgName("");
       setOrgValue("");
-      setOrgBrokerType("auth-session");
+      setOrgBrokerType("runtime");
       setOrgIsTestAccount(false);
       setOrgCreateOpen(false);
       queryClient.invalidateQueries({ queryKey: ["/api/org-secrets"] });
@@ -248,8 +259,10 @@ export default function ConsoleSecrets() {
                             <SelectValue />
                           </SelectTrigger>
                           <SelectContent>
-                            <SelectItem value="auth-session">Brokered — login/session (Recommended)</SelectItem>
                             <SelectItem value="runtime">Runtime</SelectItem>
+                            {brokerTypeOptions.map((t) => (
+                              <SelectItem key={t} value={t}>{brokerTypeLabel(t)}</SelectItem>
+                            ))}
                           </SelectContent>
                         </Select>
                         <p className="text-xs text-muted-foreground">
@@ -394,8 +407,10 @@ export default function ConsoleSecrets() {
                                 <SelectValue />
                               </SelectTrigger>
                               <SelectContent>
-                                <SelectItem value="auth-session">Brokered — login/session (Recommended)</SelectItem>
                                 <SelectItem value="runtime">Runtime</SelectItem>
+                                {brokerTypeOptions.map((t) => (
+                                  <SelectItem key={t} value={t}>{brokerTypeLabel(t)}</SelectItem>
+                                ))}
                               </SelectContent>
                             </Select>
                             <p className="text-xs text-muted-foreground">

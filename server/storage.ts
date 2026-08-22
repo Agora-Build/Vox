@@ -801,6 +801,13 @@ export class DatabaseStorage {
   async getAllBrokers(): Promise<Broker[]> {
     return db.select().from(brokers).orderBy(desc(brokers.createdAt));
   }
+  // Distinct brokerType of LIVE (non-offline) brokers — drives the secret
+  // broker-type dropdown so it only offers types actually serviceable right now.
+  async getLiveBrokerTypes(): Promise<string[]> {
+    const rows = await db.selectDistinct({ brokerType: brokers.brokerType })
+      .from(brokers).where(sql`${brokers.state} != 'offline'::broker_state`);
+    return rows.map((r) => r.brokerType);
+  }
   async updateBroker(id: number, data: Partial<InsertBroker>): Promise<Broker | undefined> {
     const [row] = await db.update(brokers).set({ ...data, updatedAt: new Date() })
       .where(eq(brokers.id, id)).returning();
@@ -1266,6 +1273,21 @@ export class DatabaseStorage {
     return (result as unknown as { rowCount: number }).rowCount || 0;
   }
 
+  // Mark brokers offline after prolonged silence. Mirrors markOfflineAgents but
+  // also treats a NULL lastSeenAt as stale, and keeps the row (never deletes).
+  async markStaleBrokersOffline(staleThresholdMinutes: number = 5): Promise<number> {
+    const staleThreshold = new Date(Date.now() - staleThresholdMinutes * 60 * 1000);
+
+    const result = await db.update(brokers)
+      .set({ state: "offline", updatedAt: new Date() })
+      .where(and(
+        sql`(${brokers.lastSeenAt} IS NULL OR ${brokers.lastSeenAt} < ${staleThreshold})`,
+        sql`${brokers.state} != 'offline'::broker_state`
+      ));
+
+    return (result as unknown as { rowCount: number }).rowCount || 0;
+  }
+
   // Atomically finalize a RUNNING job (running → completed/failed) in a single
   // UPDATE. Only the first caller gets a row back; a concurrent duplicate
   // completion or an already-terminal job returns undefined — so exactly one
@@ -1637,7 +1659,12 @@ export class DatabaseStorage {
   }
 
   async createApiKey(apiKey: InsertApiKey): Promise<ApiKey> {
-    const result = await db.insert(apiKeys).values(apiKey).returning();
+    const result = await db.insert(apiKeys).values({
+      ...apiKey,
+      lastOperation: "create",
+      lastOperationAt: new Date(),
+      lastOperationBy: apiKey.createdBy,
+    }).returning();
     return result[0];
   }
 
@@ -1651,12 +1678,21 @@ export class DatabaseStorage {
     return result[0];
   }
 
+  // Excludes soft-deleted keys — deleted rows are kept for auditing but never listed.
   async getApiKeysByUser(userId: number): Promise<ApiKey[]> {
-    return db.select().from(apiKeys).where(eq(apiKeys.createdBy, userId)).orderBy(desc(apiKeys.createdAt));
+    return db.select().from(apiKeys)
+      .where(and(eq(apiKeys.createdBy, userId), eq(apiKeys.isDeleted, false)))
+      .orderBy(desc(apiKeys.createdAt));
   }
 
-  async revokeApiKey(id: number): Promise<void> {
-    await db.update(apiKeys).set({ isRevoked: true }).where(eq(apiKeys.id, id));
+  async revokeApiKey(id: number, operatorId?: number): Promise<void> {
+    await db.update(apiKeys).set({
+      isRevoked: true,
+      revokedAt: new Date(),
+      lastOperation: "revoke",
+      lastOperationAt: new Date(),
+      lastOperationBy: operatorId ?? null,
+    }).where(eq(apiKeys.id, id));
   }
 
   async incrementApiKeyUsage(id: number): Promise<void> {
@@ -1666,8 +1702,15 @@ export class DatabaseStorage {
     }).where(eq(apiKeys.id, id));
   }
 
-  async deleteApiKey(id: number): Promise<void> {
-    await db.delete(apiKeys).where(eq(apiKeys.id, id));
+  // Soft-delete: mark deleted (row retained for auditing), never DELETE.
+  async deleteApiKey(id: number, operatorId?: number): Promise<void> {
+    await db.update(apiKeys).set({
+      isDeleted: true,
+      deletedAt: new Date(),
+      lastOperation: "delete",
+      lastOperationAt: new Date(),
+      lastOperationBy: operatorId ?? null,
+    }).where(eq(apiKeys.id, id));
   }
 
   async getPricingConfig(id: number): Promise<PricingConfig | undefined> {

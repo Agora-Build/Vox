@@ -24,6 +24,7 @@ interface ApiKeyEntry {
   lastUsedAt: string | null;
   expiresAt: string | null;
   isRevoked: boolean;
+  status: "active" | "expired" | "revoked";
   createdAt: string;
 }
 
@@ -100,8 +101,9 @@ export default function ConsoleApiKeys() {
     setTimeout(() => setCopied(false), 2000);
   };
 
-  const activeKeys = apiKeys?.filter(k => !k.isRevoked) ?? [];
-  const revokedKeys = apiKeys?.filter(k => k.isRevoked) ?? [];
+  const activeKeys = apiKeys?.filter(k => k.status === "active") ?? [];
+  const expiredKeys = apiKeys?.filter(k => k.status === "expired") ?? [];
+  const revokedKeys = apiKeys?.filter(k => k.status === "revoked") ?? [];
 
   return (
     <div className="space-y-6">
@@ -123,6 +125,7 @@ export default function ConsoleApiKeys() {
           </CardTitle>
           <CardDescription>
             {activeKeys.length} active key{activeKeys.length !== 1 ? "s" : ""}
+            {expiredKeys.length > 0 && ` / ${expiredKeys.length} expired`}
             {revokedKeys.length > 0 && ` / ${revokedKeys.length} revoked`}
           </CardDescription>
         </CardHeader>
@@ -146,7 +149,7 @@ export default function ConsoleApiKeys() {
               </TableHeader>
               <TableBody>
                 {apiKeys.map(k => (
-                  <TableRow key={k.id} className={k.isRevoked ? "opacity-50" : ""}>
+                  <TableRow key={k.id} className={k.status !== "active" ? "opacity-50" : ""}>
                     <TableCell className="font-medium">{k.name}</TableCell>
                     <TableCell className="font-mono text-sm text-muted-foreground">{k.keyPrefix}...</TableCell>
                     <TableCell className="font-mono">{k.usageCount}</TableCell>
@@ -157,8 +160,10 @@ export default function ConsoleApiKeys() {
                       {k.expiresAt ? format(new Date(k.expiresAt), "yyyy-MM-dd HH:mm:ss") + " UTC" : "Never"}
                     </TableCell>
                     <TableCell>
-                      {k.isRevoked ? (
+                      {k.status === "revoked" ? (
                         <Badge variant="destructive">Revoked</Badge>
+                      ) : k.status === "expired" ? (
+                        <Badge variant="secondary">Expired</Badge>
                       ) : (
                         <Badge variant="default">Active</Badge>
                       )}
@@ -271,7 +276,8 @@ export default function ConsoleApiKeys() {
           <AlertDialogHeader>
             <AlertDialogTitle>Delete API Key</AlertDialogTitle>
             <AlertDialogDescription>
-              This will permanently remove this API key record.
+              This immediately disables the key and removes it from your list. The
+              record is retained internally for auditing and cannot be reactivated.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
