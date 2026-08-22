@@ -168,7 +168,7 @@ export default function AdminBrokers() {
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
             <KeyRound className="h-5 w-5" />
-            <h2 className="text-lg font-semibold">Registration Tokens</h2>
+            <h2 className="text-lg font-semibold">Manage Brokers</h2>
           </div>
           <Button onClick={() => setMintOpen(true)}><Plus className="mr-2 h-4 w-4" />Create Broker</Button>
         </div>
