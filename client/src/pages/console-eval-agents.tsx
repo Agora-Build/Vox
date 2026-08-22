@@ -313,14 +313,14 @@ export default function ConsoleEvalAgents() {
         </CardContent>
       </Card>
 
-      {/* Create Your Own Agents section */}
+      {/* Manage Agents section */}
       <Card className={isBasic ? "opacity-60" : undefined}>
         <CardHeader>
           <div className="flex items-center justify-between gap-4">
             <div>
               <CardTitle className="flex items-center gap-2">
                 <Key className="h-5 w-5" />
-                Create Your Own Agents
+                Manage Agents
                 <Badge variant="secondary" className="gap-1 text-xs font-normal">
                   <Lock className="h-3 w-3" />
                   Premium+
