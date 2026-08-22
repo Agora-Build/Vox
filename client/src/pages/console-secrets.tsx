@@ -15,7 +15,7 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import { KeyRound, Plus, Trash2, ShieldAlert, Building2 } from "lucide-react";
 import { useState } from "react";
 import { useLocation, useSearch } from "wouter";
-import { formatSmartTimestamp } from "@/lib/utils";
+import { formatSmartTimestamp, brokerTypeLabel } from "@/lib/utils";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 
 interface SecretEntry {
@@ -38,12 +38,6 @@ interface OrgSecretEntry {
   isTestAccount: boolean;
   createdAt: string;
   updatedAt: string;
-}
-
-// Friendly label for a broker type in the secret-class dropdown.
-function brokerTypeLabel(t: string): string {
-  if (t === "auth-session") return "Brokered — login/session";
-  return t;
 }
 
 interface AuthStatus {

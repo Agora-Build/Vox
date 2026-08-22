@@ -8,6 +8,16 @@ export function cn(...inputs: ClassValue[]) {
 }
 
 /**
+ * Friendly display label for a broker type. Shared by the secrets
+ * broker-class dropdown and the Registered Brokers list so both render
+ * the same wording for a given type.
+ */
+export function brokerTypeLabel(t: string): string {
+  if (t === "auth-session") return "Brokered — login/session";
+  return t;
+}
+
+/**
  * Smart timestamp: relative for recent, absolute for older.
  * < 60 min: "X minutes ago"
  * 1–8 hours: "X hours ago"

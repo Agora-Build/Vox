@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { Radio, Plus, Copy, Check, Ban, KeyRound, Wifi, WifiOff } from "lucide-react";
+import { Radio, Plus, Copy, Check, Ban, KeyRound } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -11,6 +11,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
+import { brokerTypeLabel } from "@/lib/utils";
 
 type Broker = {
   id: number;
@@ -37,11 +38,19 @@ type MintResponse = { id: number; name: string; token: string };
 
 const fmt = (value: string | null) => (value ? new Date(value).toLocaleString() : "—");
 
+// Live broker state — styled to match the eval-agents' state badges
+// (see console-eval-agents.tsx getStateBadge). Broker states are
+// idle / busy / offline (offline rows are filtered out of the list).
 function StateBadge({ state }: { state: string }) {
-  if (state === "idle" || state === "occupied") {
-    return <Badge className="gap-1"><Wifi className="h-3 w-3" />{state}</Badge>;
+  switch (state) {
+    case "idle":
+      return <Badge className="bg-green-500">Idle</Badge>;
+    case "busy":
+      return <Badge className="bg-yellow-500">Busy</Badge>;
+    case "offline":
+    default:
+      return <Badge variant="secondary">Offline</Badge>;
   }
-  return <Badge variant="outline" className="gap-1 text-muted-foreground"><WifiOff className="h-3 w-3" />{state}</Badge>;
 }
 
 export default function AdminBrokers() {
@@ -137,7 +146,7 @@ export default function AdminBrokers() {
                 {visibleBrokers?.map((broker) => (
                   <TableRow key={broker.id}>
                     <TableCell className="font-medium">{broker.name}</TableCell>
-                    <TableCell><Badge variant="outline">{broker.brokerType}</Badge></TableCell>
+                    <TableCell><Badge variant="outline">{brokerTypeLabel(broker.brokerType)}</Badge></TableCell>
                     <TableCell className="font-mono text-xs break-all">{broker.url}</TableCell>
                     <TableCell><StateBadge state={broker.state} /></TableCell>
                     <TableCell className="text-xs text-muted-foreground">{fmt(broker.lastSeenAt)}</TableCell>
@@ -183,8 +192,8 @@ export default function AdminBrokers() {
                     <TableCell className="font-medium">{token.name}</TableCell>
                     <TableCell>
                       {token.isRevoked
-                        ? <Badge variant="outline" className="text-muted-foreground">revoked</Badge>
-                        : <Badge>active</Badge>}
+                        ? <Badge className="bg-red-700">Revoked</Badge>
+                        : <Badge className="bg-blue-500">Active</Badge>}
                     </TableCell>
                     <TableCell className="text-xs text-muted-foreground">{fmt(token.lastUsedAt)}</TableCell>
                     <TableCell className="text-xs text-muted-foreground">{fmt(token.createdAt)}</TableCell>
