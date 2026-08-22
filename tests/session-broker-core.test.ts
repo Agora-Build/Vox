@@ -106,7 +106,6 @@ d("ensureSession (DB + mock fetch)", () => {
     const token = await storage.createBrokerRegistrationToken({
       name: "test-auth-session-broker-token",
       tokenHash: `test-hash-${Date.now()}`,
-      brokerType: "auth-session",
       createdBy: 1,
       isRevoked: false,
       expiresAt: null,

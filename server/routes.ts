@@ -12,7 +12,7 @@ import { generateSignedUrlForUser } from "./s3";
 import { validateTierChoice, resolveTargetedDispatch, filterDispatchableAgents } from "./dispatch";
 import { getMarketplace } from "./marketplace";
 import { parsePlatformSetup, sessionScopeForWorkflow, evaluateSessionRequirement, getBrokeredSecretNames, ensureSession, stampOwnerSession, credentialKeyFor, SESSION_FRESH_MARGIN_SECONDS, classifyReferencedSecrets, findBrokeredMisuse, defaultBrokerTypeForName, resolveBrokerType, type SessionNeed } from "./auth-session";
-import { isKnownBrokerType, validateRegisterPayload, cacheBrokerMintSecret, hasBrokerMintSecret } from "./broker-registry";
+import { validateRegisterPayload, cacheBrokerMintSecret, hasBrokerMintSecret } from "./broker-registry";
 import {
   hashPassword,
   verifyPassword,
@@ -2877,7 +2877,6 @@ export async function registerRoutes(
       res.json(tokens.map(t => ({
         id: t.id,
         name: t.name,
-        brokerType: t.brokerType,
         isRevoked: t.isRevoked,
         lastUsedAt: t.lastUsedAt,
         createdAt: t.createdAt,
@@ -2890,14 +2889,13 @@ export async function registerRoutes(
 
   app.post("/api/admin/broker-tokens", requireAuth, requireAdmin, async (req, res) => {
     try {
-      const { name, brokerType } = req.body ?? {};
+      const { name } = req.body ?? {};
       if (typeof name !== "string" || !name) return res.status(400).json({ error: "name required" });
-      if (!isKnownBrokerType(brokerType)) return res.status(400).json({ error: "unknown brokerType" });
       const token = generateBrokerRegistrationToken();
       const row = await storage.createBrokerRegistrationToken({
-        name, brokerType, tokenHash: hashToken(token), createdBy: (await getCurrentUser(req))!.id, isRevoked: false, expiresAt: null,
+        name, tokenHash: hashToken(token), createdBy: (await getCurrentUser(req))!.id, isRevoked: false, expiresAt: null,
       });
-      res.json({ id: row.id, name: row.name, brokerType: row.brokerType, token }); // plaintext once
+      res.json({ id: row.id, name: row.name, token }); // plaintext once
     } catch (error) {
       console.error("Error creating broker registration token:", error);
       res.status(500).json({ error: "Failed to create broker registration token" });
@@ -2944,7 +2942,9 @@ export async function registerRoutes(
       if (!tok || tok.isRevoked || (tok.expiresAt && tok.expiresAt < new Date())) return res.status(401).json({ error: "invalid token" });
       const v = validateRegisterPayload(req.body ?? {});
       if (!v.ok) return res.status(400).json({ error: v.error });
-      if (v.brokerType !== tok.brokerType) return res.status(400).json({ error: "brokerType mismatch" });
+      // The token is type-agnostic; the broker declares its own type here
+      // (validateRegisterPayload already rejects unknown types). That
+      // self-reported type is what lands on the brokers row (the routing key).
       const mintSecret = generateSecureToken(32);
       const leaseId = generateSecureToken(16);
       // Upsert by tokenId: reuse this token's broker row on re-register instead of

@@ -4591,7 +4591,7 @@ describe('Vox API Tests', () => {
       // Mint a broker registration token (admin-only).
       const tokenRes = await authFetch(adminSession, `${BASE_URL}/api/admin/broker-tokens`, {
         method: 'POST',
-        body: JSON.stringify({ name: 'Test Broker Token', brokerType: 'auth-session' }),
+        body: JSON.stringify({ name: 'Test Broker Token' }),
       });
       expect(tokenRes.ok).toBe(true);
       const { id: tokenId, token } = await tokenRes.json();
