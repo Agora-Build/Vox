@@ -192,7 +192,7 @@ export default function AdminBrokers() {
                     <TableCell className="font-medium">{token.name}</TableCell>
                     <TableCell>
                       {token.isRevoked
-                        ? <Badge className="bg-red-700">Revoked</Badge>
+                        ? <Badge variant="destructive">Revoked</Badge>
                         : <Badge className="bg-blue-500">Active</Badge>}
                     </TableCell>
                     <TableCell className="text-xs text-muted-foreground">{fmt(token.lastUsedAt)}</TableCell>
