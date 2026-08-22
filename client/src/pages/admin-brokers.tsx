@@ -82,7 +82,7 @@ export default function AdminBrokers() {
       queryClient.invalidateQueries({ queryKey: ["/api/admin/broker-tokens"] });
     },
     onError: (error: Error) => {
-      toast({ title: "Could not mint token", description: error.message, variant: "destructive" });
+      toast({ title: "Could not create broker", description: error.message, variant: "destructive" });
     },
   });
 
@@ -166,7 +166,7 @@ export default function AdminBrokers() {
             <KeyRound className="h-5 w-5" />
             <h2 className="text-lg font-semibold">Registration Tokens</h2>
           </div>
-          <Button onClick={() => setMintOpen(true)}><Plus className="mr-2 h-4 w-4" />Mint Token</Button>
+          <Button onClick={() => setMintOpen(true)}><Plus className="mr-2 h-4 w-4" />Create Broker</Button>
         </div>
         <div className="border">
           {tokensLoading ? (
@@ -217,7 +217,7 @@ export default function AdminBrokers() {
       <Dialog open={mintOpen} onOpenChange={setMintOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Mint Registration Token</DialogTitle>
+            <DialogTitle>Create Broker</DialogTitle>
             <DialogDescription>
               A broker registers against Core with this token. The plaintext value is shown once.
             </DialogDescription>
@@ -245,7 +245,7 @@ export default function AdminBrokers() {
           <DialogFooter>
             <Button variant="outline" onClick={() => setMintOpen(false)}>Cancel</Button>
             <Button disabled={!mintName.trim() || mintMutation.isPending} onClick={() => mintMutation.mutate()}>
-              Mint Token
+              Create Broker
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -255,7 +255,7 @@ export default function AdminBrokers() {
       <Dialog open={!!minted} onOpenChange={(open) => { if (!open) setMinted(null); }}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Registration Token Minted</DialogTitle>
+            <DialogTitle>Broker Created</DialogTitle>
             <DialogDescription>Copy this token now. It will not be shown again.</DialogDescription>
           </DialogHeader>
           <div className="space-y-3 py-2">
