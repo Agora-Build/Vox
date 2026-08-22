@@ -490,8 +490,7 @@ describe("dispatch integration — session stamping, pre-warm, shared-tier gates
     });
 
     it("run-targets lists own tokens and referenced-secret classes", async () => {
-      const q = tok.region ? `region=${encodeURIComponent(tok.region)}&` : "";
-      const res = await authFetch(admin, `${BASE_URL}/api/workflows/${noSessionWorkflowId}/run-targets?${q}evalSetId=${evalSetId}`);
+      const res = await authFetch(admin, `${BASE_URL}/api/workflows/${noSessionWorkflowId}/run-targets?evalSetId=${evalSetId}`);
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.agents.mine.map((a: any) => a.tokenId)).toContain(tok.id);

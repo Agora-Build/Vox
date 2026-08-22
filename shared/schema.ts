@@ -206,7 +206,7 @@ export const evalAgentTokens = pgTable("eval_agent_tokens", {
   id: serial("id").primaryKey(),
   name: text("name").notNull(),
   tokenHash: text("token_hash").notNull().unique(),
-  region: varchar("region", { length: 64 }).notNull(),
+  siteId: varchar("site_id", { length: 64 }).notNull(),
   dispatchTier: dispatchTierEnum("dispatch_tier").default("public").notNull(),
   createdBy: integer("created_by").notNull().references(() => users.id),
   isRevoked: boolean("is_revoked").default(false).notNull(),
@@ -230,7 +230,7 @@ export const evalAgents = pgTable("eval_agents", {
   id: serial("id").primaryKey(),
   name: text("name").notNull(),
   tokenId: integer("token_id").notNull().references(() => evalAgentTokens.id),
-  region: varchar("region", { length: 64 }).notNull(),
+  siteId: varchar("site_id", { length: 64 }).notNull(),
   state: evalAgentStateEnum("state").default("offline").notNull(),
   // Per-process lease issued at registration. Only the current lease holder may
   // heartbeat/claim/complete; a superseded (restarted or duplicate) instance is
@@ -268,7 +268,7 @@ export const evalSchedules = pgTable("eval_schedules", {
   // (it's then skipped by the scheduler). Avoids a FK error when either is deleted.
   workflowId: integer("workflow_id").references(() => workflows.id, { onDelete: "set null" }),
   evalSetId: integer("eval_set_id").references(() => evalSets.id, { onDelete: "set null" }),
-  region: varchar("region", { length: 64 }).notNull(),
+  siteId: varchar("site_id", { length: 64 }).notNull(),
   scheduleType: scheduleTypeEnum("schedule_type").default("once").notNull(),
   cronExpression: varchar("cron_expression", { length: 100 }), // e.g., "0 * * * *" for hourly
   timezone: varchar("timezone", { length: 50 }).default("UTC").notNull(),
@@ -348,7 +348,7 @@ export const evalJobs = pgTable("eval_jobs", {
   targetTokenId: integer("target_token_id").references(() => evalAgentTokens.id, { onDelete: "set null" }),
   evalAgentId: integer("eval_agent_id").references(() => evalAgents.id),
   createdBy: integer("created_by").references(() => users.id),
-  region: varchar("region", { length: 64 }).notNull(),
+  siteId: varchar("site_id", { length: 64 }).notNull(),
   status: evalJobStatusEnum("status").default("pending").notNull(),
   priority: integer("priority").default(0).notNull(),
   retryCount: integer("retry_count").default(0).notNull(),
@@ -366,7 +366,7 @@ export const evalJobs = pgTable("eval_jobs", {
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 }, (table) => ({
-  statusRegionIdx: index("eval_jobs_status_region_idx").on(table.status, table.region),
+  statusSiteIdx: index("eval_jobs_status_site_idx").on(table.status, table.siteId),
   evalAgentIdx: index("eval_jobs_eval_agent_idx").on(table.evalAgentId),
   scheduleIdx: index("eval_jobs_schedule_idx").on(table.scheduleId),
   // Serves the shared-dispatch reap-settle sweep (storage.getReapableSharedJobs):
@@ -396,7 +396,7 @@ export const evalResults = pgTable("eval_results", {
   id: serial("id").primaryKey(),
   evalJobId: integer("eval_job_id").notNull().references(() => evalJobs.id, { onDelete: "cascade" }),
   providerId: varchar("provider_id", { length: 12 }).notNull().references(() => providers.id),
-  region: varchar("region", { length: 64 }).notNull(),
+  siteId: varchar("site_id", { length: 64 }).notNull(),
   // Latency columns are nullable: null = NA (not measurable). When the target
   // agent doesn't respond, aeval produces no turn-level latency, so these are
   // NULL rather than 0 — a 0 ms "response" would rank a dead agent as fastest
@@ -426,7 +426,7 @@ export const evalResults = pgTable("eval_results", {
   artifactFiles: jsonb("artifact_files"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 }, (table) => ({
-  providerRegionIdx: index("eval_results_provider_region_idx").on(table.providerId, table.region),
+  providerSiteIdx: index("eval_results_provider_site_idx").on(table.providerId, table.siteId),
 }));
 
 export const insertEvalResultSchema = createInsertSchema(evalResults).omit({
@@ -839,7 +839,7 @@ export const clashEvents = pgTable("clash_events", {
   name: text("name").notNull(),
   description: text("description"),
   createdBy: integer("created_by").notNull().references(() => users.id),
-  region: varchar("region", { length: 64 }).notNull(),
+  siteId: varchar("site_id", { length: 64 }).notNull(),
   status: clashEventStatusEnum("status").default("upcoming").notNull(),
   visibility: visibilityEnum("visibility").default("public").notNull(),
   scheduledAt: timestamp("scheduled_at"),
@@ -962,7 +962,7 @@ export const clashRunnerIssuedTokens = pgTable("clash_runner_issued_tokens", {
   id: serial("id").primaryKey(),
   name: text("name").notNull(),
   tokenHash: text("token_hash").notNull().unique(),
-  region: varchar("region", { length: 64 }).notNull(),
+  siteId: varchar("site_id", { length: 64 }).notNull(),
   createdBy: integer("created_by").notNull().references(() => users.id),
   isRevoked: boolean("is_revoked").default(false).notNull(),
   lastUsedAt: timestamp("last_used_at"),
@@ -984,7 +984,7 @@ export const clashRunnerPool = pgTable("clash_runner_pool", {
   id: serial("id").primaryKey(),
   runnerId: text("runner_id").notNull().unique(),
   tokenHash: text("token_hash").notNull().unique(),
-  region: varchar("region", { length: 64 }).notNull(),
+  siteId: varchar("site_id", { length: 64 }).notNull(),
   state: clashRunnerStateEnum("state").default("idle").notNull(),
   currentMatchId: integer("current_match_id").references(() => clashMatches.id),
   lastHeartbeatAt: timestamp("last_heartbeat_at"),
@@ -1018,7 +1018,7 @@ export const clashSchedules = pgTable("clash_schedules", {
   eventName: text("event_name").notNull(),
   createdBy: integer("created_by").notNull().references(() => users.id),
   matchups: jsonb("matchups").notNull(),
-  region: varchar("region", { length: 64 }).notNull(),
+  siteId: varchar("site_id", { length: 64 }).notNull(),
   maxDurationSeconds: integer("max_duration_seconds").default(300).notNull(),
   scheduledAt: timestamp("scheduled_at"),
   cronExpression: varchar("cron_expression", { length: 100 }),

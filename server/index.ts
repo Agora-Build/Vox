@@ -429,7 +429,7 @@ function startBackgroundWorker() {
             workflowId: schedule.workflowId,
             evalSetId: schedule.evalSetId,
             createdBy: schedule.createdBy,
-            region: schedule.region,
+            siteId: schedule.siteId,
             config: jobConfig,
             snapshot,
             status: "pending",

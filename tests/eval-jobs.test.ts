@@ -10,7 +10,7 @@ describe('Eval Job Queue', () => {
     workflowId: number;
     evalSetId: number;
     evalAgentId: number | null;
-    region: Region;
+    siteId: Region;
     status: JobStatus;
     priority: number;
     retryCount: number;
@@ -28,7 +28,7 @@ describe('Eval Job Queue', () => {
     workflowId: 1,
     evalSetId: 1,
     evalAgentId: null,
-    region: 'na',
+    siteId: 'na',
     status: 'pending',
     priority: 0,
     retryCount: 0,
@@ -64,13 +64,13 @@ describe('Eval Job Queue', () => {
     });
 
     it('should assign region from workflow or default', () => {
-      const naJob = createMockJob({ region: 'na' });
-      const apacJob = createMockJob({ region: 'apac' });
-      const euJob = createMockJob({ region: 'eu' });
+      const naJob = createMockJob({ siteId: 'na' });
+      const apacJob = createMockJob({ siteId: 'apac' });
+      const euJob = createMockJob({ siteId: 'eu' });
 
-      expect(naJob.region).toBe('na');
-      expect(apacJob.region).toBe('apac');
-      expect(euJob.region).toBe('eu');
+      expect(naJob.siteId).toBe('na');
+      expect(apacJob.siteId).toBe('apac');
+      expect(euJob.siteId).toBe('eu');
     });
   });
 
@@ -110,13 +110,13 @@ describe('Eval Job Queue', () => {
     });
 
     it('should match job to agent region', () => {
-      const naJob = createMockJob({ region: 'na' });
-      const apacJob = createMockJob({ region: 'apac' });
+      const naJob = createMockJob({ siteId: 'na' });
+      const apacJob = createMockJob({ siteId: 'apac' });
 
       const agent = { id: 1, region: 'na' as Region };
 
       const canAgentClaim = (job: EvalJob, agentRegion: Region) => {
-        return job.region === agentRegion && job.status === 'pending';
+        return job.siteId === agentRegion && job.status === 'pending';
       };
 
       expect(canAgentClaim(naJob, agent.region)).toBe(true);
@@ -272,23 +272,23 @@ describe('Eval Job Queue', () => {
 
     it('should filter jobs by region', () => {
       const jobs = [
-        createMockJob({ id: 1, region: 'na' }),
-        createMockJob({ id: 2, region: 'apac' }),
-        createMockJob({ id: 3, region: 'na' }),
+        createMockJob({ id: 1, siteId: 'na' }),
+        createMockJob({ id: 2, siteId: 'apac' }),
+        createMockJob({ id: 3, siteId: 'na' }),
       ];
 
-      const naJobs = jobs.filter(j => j.region === 'na');
+      const naJobs = jobs.filter(j => j.siteId === 'na');
       expect(naJobs).toHaveLength(2);
     });
 
     it('should get pending jobs for specific region', () => {
       const jobs = [
-        createMockJob({ id: 1, status: 'pending', region: 'na' }),
-        createMockJob({ id: 2, status: 'running', region: 'na' }),
-        createMockJob({ id: 3, status: 'pending', region: 'apac' }),
+        createMockJob({ id: 1, status: 'pending', siteId: 'na' }),
+        createMockJob({ id: 2, status: 'running', siteId: 'na' }),
+        createMockJob({ id: 3, status: 'pending', siteId: 'apac' }),
       ];
 
-      const pendingNaJobs = jobs.filter(j => j.status === 'pending' && j.region === 'na');
+      const pendingNaJobs = jobs.filter(j => j.status === 'pending' && j.siteId === 'na');
       expect(pendingNaJobs).toHaveLength(1);
       expect(pendingNaJobs[0].id).toBe(1);
     });

@@ -55,7 +55,7 @@ function buildApiHeaders(token: string): Record<string, string> {
 
 interface AssignmentResponse {
   assigned: boolean;
-  match?: { id: number; topic: string; region: string };
+  match?: { id: number; topic: string; siteId: string };
   agentA?: { id: number; name: string; agentUrl: string };
   agentB?: { id: number; name: string; agentUrl: string };
 }
@@ -329,7 +329,7 @@ describe("Clash Runner", () => {
     it("returns isAssigned=true and matchId when assigned", () => {
       const result = parseAssignmentResponse({
         assigned: true,
-        match: { id: 42, topic: "Test topic", region: "na" },
+        match: { id: 42, topic: "Test topic", siteId: "na" },
         agentA: { id: 1, name: "Agent A", agentUrl: "https://a.example.com" },
         agentB: { id: 2, name: "Agent B", agentUrl: "https://b.example.com" },
       });
@@ -346,7 +346,7 @@ describe("Clash Runner", () => {
     it("extracts correct matchId from nested match object", () => {
       const result = parseAssignmentResponse({
         assigned: true,
-        match: { id: 99, topic: "Another topic", region: "eu" },
+        match: { id: 99, topic: "Another topic", siteId: "eu" },
       });
       expect(result.matchId).toBe(99);
     });

@@ -119,7 +119,7 @@ const METRICS_ALL_MAX_DAYS = 3 * 365; // "all time" shows at most the last 3 yea
 export type MetricTier = "mainline" | "community" | "myEvals";
 export type MetricsMode = "raw" | "bucketDay";
 export type RegionQueryScope = {
-  region?: string;
+  siteId?: string;
   baseIds?: string[];
 };
 
@@ -131,7 +131,7 @@ export function resolveMetricsMode(spanDays: number): MetricsMode {
 // The subset of eval-result columns the metrics dashboard consumes. Raw rows
 // (full EvalResult) and daily-bucket aggregates both satisfy this shape.
 export type MetricSourceRow = Pick<EvalResult,
-  | "id" | "providerId" | "region"
+  | "id" | "providerId" | "siteId"
   | "responseLatencyMedian" | "responseLatencySd" | "responseLatencyP95"
   | "interruptLatencyMedian" | "interruptLatencySd" | "interruptLatencyP95"
   | "turnSuccessRate"
@@ -475,16 +475,16 @@ export class DatabaseStorage {
       .find((location) => regionSiteSequence(region, location.baseId) !== null);
   }
 
-  async isAllocatedRegion(region: string, activeOnly = true): Promise<boolean> {
-    const location = await this.resolveRegionLocation(region);
+  async isAllocatedSite(siteId: string, activeOnly = true): Promise<boolean> {
+    const location = await this.resolveRegionLocation(siteId);
     if (!location || (activeOnly && !location.isActive)) return false;
-    const sequence = regionSiteSequence(region, location.baseId);
+    const sequence = regionSiteSequence(siteId, location.baseId);
     return sequence !== null && sequence < location.nextSequence;
   }
 
   async createEvalAgentTokenForLocation(
     baseId: string,
-    token: Omit<InsertEvalAgentToken, "region">,
+    token: Omit<InsertEvalAgentToken, "siteId">,
   ): Promise<EvalAgentToken> {
     const client = await pool.connect();
     try {
@@ -500,16 +500,16 @@ export class DatabaseStorage {
       if (!selected.rows[0].is_active) throw new Error("Region location is inactive");
 
       const sequence = Number(selected.rows[0].next_sequence);
-      const region = `${selected.rows[0].base_id}-${String(sequence).padStart(2, "0")}`;
+      const siteId = `${selected.rows[0].base_id}-${String(sequence).padStart(2, "0")}`;
       const inserted = await client.query(
         `INSERT INTO eval_agent_tokens
-          (name, token_hash, region, dispatch_tier, created_by, is_revoked, expires_at)
+          (name, token_hash, site_id, dispatch_tier, created_by, is_revoked, expires_at)
          VALUES ($1, $2, $3, $4, $5, $6, $7)
          RETURNING *`,
         [
           token.name,
           token.tokenHash,
-          region,
+          siteId,
           token.dispatchTier,
           token.createdBy,
           token.isRevoked,
@@ -525,7 +525,7 @@ export class DatabaseStorage {
       await client.query("COMMIT");
       const row = inserted.rows[0];
       return {
-        id: row.id, name: row.name, tokenHash: row.token_hash, region: row.region,
+        id: row.id, name: row.name, tokenHash: row.token_hash, siteId: row.site_id,
         dispatchTier: row.dispatch_tier, createdBy: row.created_by,
         isRevoked: row.is_revoked, expiresAt: row.expires_at, lastUsedAt: row.last_used_at,
         createdAt: row.created_at,
@@ -702,7 +702,7 @@ export class DatabaseStorage {
   }
 
   async getEvalAgentsByRegion(region: string): Promise<EvalAgent[]> {
-    return db.select().from(evalAgents).where(eq(evalAgents.region, region)).orderBy(desc(evalAgents.createdAt));
+    return db.select().from(evalAgents).where(eq(evalAgents.siteId, region)).orderBy(desc(evalAgents.createdAt));
   }
 
   async getEvalAgentsByTokenId(tokenId: number): Promise<EvalAgent[]> {
@@ -720,7 +720,7 @@ export class DatabaseStorage {
       id: evalAgents.id,
       name: evalAgents.name,
       tokenId: evalAgents.tokenId,
-      region: evalAgents.region,
+      siteId: evalAgents.siteId,
       state: evalAgents.state,
       lastSeenAt: evalAgents.lastSeenAt,
       lastJobAt: evalAgents.lastJobAt,
@@ -859,7 +859,7 @@ export class DatabaseStorage {
 
   async getPendingEvalJobsByRegion(region: string): Promise<EvalJob[]> {
     return db.select().from(evalJobs).where(
-      and(eq(evalJobs.region, region), eq(evalJobs.status, "pending"))
+      and(eq(evalJobs.siteId, region), eq(evalJobs.status, "pending"))
     ).orderBy(desc(evalJobs.priority), evalJobs.createdAt);
   }
 
@@ -921,11 +921,11 @@ export class DatabaseStorage {
   }
 
   async getClaimableJobsForToken(token: {
-    id: number; region: string; dispatchTier: string; createdBy: number;
+    id: number; siteId: string; dispatchTier: string; createdBy: number;
   }): Promise<EvalJob[]> {
     const result = await pool.query(
       `SELECT * FROM eval_jobs
-        WHERE status = 'pending'::eval_job_status AND region = $1
+        WHERE status = 'pending'::eval_job_status AND site_id = $1
           AND (
             target_token_id = $2
             OR ( target_token_id IS NULL AND (
@@ -934,7 +934,7 @@ export class DatabaseStorage {
             ) )
           )
         ORDER BY priority DESC, created_at ASC`,
-      [token.region, token.id, token.dispatchTier, token.createdBy],
+      [token.siteId, token.id, token.dispatchTier, token.createdBy],
     );
     return result.rows.map((r) => snakeToCamel(r) as EvalJob);
   }
@@ -948,7 +948,7 @@ export class DatabaseStorage {
       // Select and lock the next available job, skipping locked rows
       const selectResult = await client.query(
         `SELECT * FROM eval_jobs
-         WHERE status = 'pending'::eval_job_status AND region = $1
+         WHERE status = 'pending'::eval_job_status AND site_id = $1
          ORDER BY priority DESC, created_at ASC
          LIMIT 1
          FOR UPDATE SKIP LOCKED`,
@@ -1061,14 +1061,14 @@ export class DatabaseStorage {
     const result = await db.execute(sql`
       UPDATE eval_jobs
       SET status = 'failed'::eval_job_status,
-          error = ${prefix} || region || ${suffix},
+          error = ${prefix} || site_id || ${suffix},
           completed_at = NOW(),
           updated_at = NOW()
       WHERE status = 'pending'::eval_job_status
       AND GREATEST(created_at, updated_at) < ${timeoutCutoff}
       AND NOT EXISTS (
         SELECT 1 FROM eval_agents ea
-        WHERE ea.region = eval_jobs.region
+        WHERE ea.site_id = eval_jobs.site_id
         AND ea.last_seen_at >= ${onlineCutoff}
       )
     `);
@@ -1189,7 +1189,7 @@ export class DatabaseStorage {
       conditions.push(eq(evalJobs.status, filters.status));
     }
     if (filters?.region) {
-      conditions.push(eq(evalJobs.region, filters.region));
+      conditions.push(eq(evalJobs.siteId, filters.region));
     }
     if (filters?.hoursBack) {
       const cutoff = new Date(Date.now() - filters.hoursBack * 60 * 60 * 1000);
@@ -1396,7 +1396,7 @@ export class DatabaseStorage {
         id: evalResults.id,
         evalJobId: evalResults.evalJobId,
         providerId: evalResults.providerId,
-        region: evalResults.region,
+        siteId: evalResults.siteId,
         responseLatencyMedian: evalResults.responseLatencyMedian,
         responseLatencySd: evalResults.responseLatencySd,
         responseLatencyP95: evalResults.responseLatencyP95,
@@ -1460,10 +1460,10 @@ export class DatabaseStorage {
   // run-time tier even after its workflow/eval-set is edited or deleted, and the
   // join chain collapses to just eval_results → eval_jobs.
   private regionScopeCondition(scope?: RegionQueryScope) {
-    if (scope?.region) return eq(evalResults.region, scope.region);
+    if (scope?.siteId) return eq(evalResults.siteId, scope.siteId);
     if (scope?.baseIds) {
       if (scope.baseIds.length === 0) return sql<boolean>`false`;
-      return or(...scope.baseIds.map((baseId) => sql<boolean>`${evalResults.region} LIKE ${baseId + "-%"}`));
+      return or(...scope.baseIds.map((baseId) => sql<boolean>`${evalResults.siteId} LIKE ${baseId + "-%"}`));
     }
     return undefined;
   }
@@ -1568,7 +1568,7 @@ export class DatabaseStorage {
     const base = db.select({
       id: sql<number>`min(${evalResults.id})::int`,
       providerId: evalResults.providerId,
-      region: evalResults.region,
+      siteId: evalResults.siteId,
       responseLatencyMedian: sql<number>`round(avg(${evalResults.responseLatencyMedian}))::int`,
       responseLatencySd: sql<number>`avg(${evalResults.responseLatencySd})::real`,
       responseLatencyP95: sql<number>`round(avg(${evalResults.responseLatencyP95}))::int`,
@@ -1583,7 +1583,7 @@ export class DatabaseStorage {
     }).from(evalResults);
     const rows = await this.applyTierJoins(tier, base)
       .where(and(...this.tierConditions(tier, hoursBack, userId, scope)))
-      .groupBy(day, evalResults.providerId, evalResults.region)
+      .groupBy(day, evalResults.providerId, evalResults.siteId)
       .orderBy(day);
     return rows as MetricSourceRow[];
   }
@@ -2029,7 +2029,7 @@ export class DatabaseStorage {
       name: evalSchedules.name,
       workflowId: evalSchedules.workflowId,
       evalSetId: evalSchedules.evalSetId,
-      region: evalSchedules.region,
+      siteId: evalSchedules.siteId,
       scheduleType: evalSchedules.scheduleType,
       cronExpression: evalSchedules.cronExpression,
       timezone: evalSchedules.timezone,
@@ -2310,12 +2310,12 @@ export class DatabaseStorage {
 
   async getIdleClashRunner(region: string): Promise<ClashRunner | undefined> {
     const result = await db.select().from(clashRunnerPool)
-      .where(and(eq(clashRunnerPool.state, "idle"), eq(clashRunnerPool.region, region as any)))
+      .where(and(eq(clashRunnerPool.state, "idle"), eq(clashRunnerPool.siteId, region as any)))
       .limit(1);
     return result[0];
   }
 
-  async registerClashRunner(data: { runnerId: string; tokenHash: string; region: string }): Promise<ClashRunner> {
+  async registerClashRunner(data: { runnerId: string; tokenHash: string; siteId: string }): Promise<ClashRunner> {
     // Upsert on tokenHash — one token = one runner slot; runnerId updates on restart
     const existing = await db.select().from(clashRunnerPool).where(eq(clashRunnerPool.tokenHash, data.tokenHash));
     if (existing[0]) {
@@ -2337,7 +2337,7 @@ export class DatabaseStorage {
         .where(eq(clashRunnerPool.tokenHash, data.tokenHash)).returning();
       return result[0];
     }
-    const result = await db.insert(clashRunnerPool).values({ ...data, region: data.region as any, state: "idle", lastHeartbeatAt: new Date() }).returning();
+    const result = await db.insert(clashRunnerPool).values({ ...data, siteId: data.siteId as any, state: "idle", lastHeartbeatAt: new Date() }).returning();
     return result[0];
   }
 

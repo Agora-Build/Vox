@@ -16,7 +16,7 @@ describe("Job Recovery - Stale Job Detection", () => {
   interface EvalAgent {
     id: number;
     name: string;
-    region: string;
+    siteId: string;
     state: "idle" | "occupied" | "offline";
     lastSeenAt: Date;
   }
@@ -34,7 +34,7 @@ describe("Job Recovery - Stale Job Detection", () => {
   const createAgent = (overrides: Partial<EvalAgent> = {}): EvalAgent => ({
     id: 1,
     name: "test-agent",
-    region: "na",
+    siteId: "na",
     state: "idle",
     lastSeenAt: new Date(),
     ...overrides,
@@ -317,7 +317,7 @@ describe("Job Recovery - Full Recovery Flow", () => {
     id: number;
     state: "idle" | "occupied" | "offline";
     lastSeenAt: Date;
-    region: string;
+    siteId: string;
   }
 
   interface Job {
@@ -326,14 +326,14 @@ describe("Job Recovery - Full Recovery Flow", () => {
     status: "pending" | "running" | "completed" | "failed";
     retryCount: number;
     maxRetries: number;
-    region: string;
+    siteId: string;
   }
 
   it("should allow another agent to pick up released job", () => {
     // Initial state: Job running on Agent 1
     let agents: Agent[] = [
-      { id: 1, state: "occupied", lastSeenAt: new Date(), region: "na" },
-      { id: 2, state: "idle", lastSeenAt: new Date(), region: "na" },
+      { id: 1, state: "occupied", lastSeenAt: new Date(), siteId: "na" },
+      { id: 2, state: "idle", lastSeenAt: new Date(), siteId: "na" },
     ];
 
     let job: Job = {
@@ -342,7 +342,7 @@ describe("Job Recovery - Full Recovery Flow", () => {
       status: "running",
       retryCount: 0,
       maxRetries: 3,
-      region: "na",
+      siteId: "na",
     };
 
     // Agent 1 crashes (simulate by making lastSeenAt old)
@@ -367,7 +367,7 @@ describe("Job Recovery - Full Recovery Flow", () => {
     // Agent 2 claims the job
     const canClaim = (agent: Agent, j: Job) =>
       agent.state === "idle" &&
-      agent.region === j.region &&
+      agent.siteId === j.siteId &&
       j.status === "pending";
 
     expect(canClaim(agents[1], job)).toBe(true);
@@ -388,7 +388,7 @@ describe("Job Recovery - Full Recovery Flow", () => {
       status: "pending",
       retryCount: 0,
       maxRetries: 2,
-      region: "na",
+      siteId: "na",
     };
 
     const simulateCrash = (j: Job): Job => {
@@ -566,12 +566,12 @@ describe("Job Recovery - Unclaimed Pending Jobs", () => {
   const ONLINE_WITHIN_MINUTES = 5; // = STALE_THRESHOLD_MINUTES
 
   interface Agent {
-    region: string;
+    siteId: string;
     lastSeenAt: Date;
   }
   interface Job {
     status: "pending" | "running" | "completed" | "failed";
-    region: string;
+    siteId: string;
     createdAt: Date;
     // Set when a job is requeued (releaseStaleJobs / releaseAgentRunningJobs bump
     // updated_at = NOW() on the way back to pending). Both reapers age from
@@ -587,60 +587,60 @@ describe("Job Recovery - Unclaimed Pending Jobs", () => {
   const pendingSince = (job: Job): Date =>
     job.updatedAt && job.updatedAt > job.createdAt ? job.updatedAt : job.createdAt;
 
-  // Region has an online agent = at least one agent for that exact region whose
+  // Site has an online agent = at least one agent for that exact site ID whose
   // last heartbeat is within the online window (idle OR busy both count).
-  const regionHasOnlineAgent = (region: string, agents: Agent[]): boolean => {
+  const siteHasOnlineAgent = (siteId: string, agents: Agent[]): boolean => {
     const onlineCutoff = minsAgo(ONLINE_WITHIN_MINUTES);
-    return agents.some((a) => a.region === region && a.lastSeenAt >= onlineCutoff);
+    return agents.some((a) => a.siteId === siteId && a.lastSeenAt >= onlineCutoff);
   };
 
   const shouldFailNoAgent = (job: Job, agents: Agent[]): boolean =>
     job.status === "pending" &&
     pendingSince(job) < minsAgo(PENDING_NO_AGENT_TIMEOUT_MINUTES) &&
-    !regionHasOnlineAgent(job.region, agents);
+    !siteHasOnlineAgent(job.siteId, agents);
 
   const shouldFailExpired = (job: Job): boolean =>
     job.status === "pending" &&
     pendingSince(job) < minsAgo(PENDING_MAX_WAIT_MINUTES);
 
   describe("no-agent fast-fail", () => {
-    it("fails a pending job past the timeout when its region has no agent", () => {
-      const job: Job = { status: "pending", region: "apac-sg-01", createdAt: minsAgo(20) };
+    it("fails a pending job past the timeout when its site has no agent", () => {
+      const job: Job = { status: "pending", siteId: "apac-sg-01", createdAt: minsAgo(20) };
       expect(shouldFailNoAgent(job, [])).toBe(true);
     });
 
     it("does NOT fail before the timeout, even with no agent (survives restarts/reboots)", () => {
-      const job: Job = { status: "pending", region: "apac-sg-01", createdAt: minsAgo(10) };
+      const job: Job = { status: "pending", siteId: "apac-sg-01", createdAt: minsAgo(10) };
       expect(shouldFailNoAgent(job, [])).toBe(false);
     });
 
-    it("does NOT fail when an idle agent serves the region", () => {
-      const job: Job = { status: "pending", region: "na-us-sea-01", createdAt: minsAgo(30) };
-      const agents: Agent[] = [{ region: "na-us-sea-01", lastSeenAt: minsAgo(1) }];
+    it("does NOT fail when an idle agent serves the site", () => {
+      const job: Job = { status: "pending", siteId: "na-us-sea-01", createdAt: minsAgo(30) };
+      const agents: Agent[] = [{ siteId: "na-us-sea-01", lastSeenAt: minsAgo(1) }];
       expect(shouldFailNoAgent(job, agents)).toBe(false);
     });
 
     it("does NOT fail when the only agent is busy but heartbeating (queued, not unstaffed)", () => {
       // Busy agents still heartbeat, so lastSeenAt is recent — the job waits.
-      const job: Job = { status: "pending", region: "na-us-sea-01", createdAt: minsAgo(30) };
-      const agents: Agent[] = [{ region: "na-us-sea-01", lastSeenAt: minsAgo(2) }];
+      const job: Job = { status: "pending", siteId: "na-us-sea-01", createdAt: minsAgo(30) };
+      const agents: Agent[] = [{ siteId: "na-us-sea-01", lastSeenAt: minsAgo(2) }];
       expect(shouldFailNoAgent(job, agents)).toBe(false);
     });
 
-    it("fails when the region's only agent went offline (stale heartbeat)", () => {
-      const job: Job = { status: "pending", region: "eu-de-fra-01", createdAt: minsAgo(30) };
-      const agents: Agent[] = [{ region: "eu-de-fra-01", lastSeenAt: minsAgo(10) }];
+    it("fails when the site's only agent went offline (stale heartbeat)", () => {
+      const job: Job = { status: "pending", siteId: "eu-de-fra-01", createdAt: minsAgo(30) };
+      const agents: Agent[] = [{ siteId: "eu-de-fra-01", lastSeenAt: minsAgo(10) }];
       expect(shouldFailNoAgent(job, agents)).toBe(true);
     });
 
-    it("ignores online agents in other regions", () => {
-      const job: Job = { status: "pending", region: "apac-in-mumbai-01", createdAt: minsAgo(30) };
-      const agents: Agent[] = [{ region: "na-us-sea-01", lastSeenAt: minsAgo(1) }];
+    it("ignores online agents at other sites", () => {
+      const job: Job = { status: "pending", siteId: "apac-in-mumbai-01", createdAt: minsAgo(30) };
+      const agents: Agent[] = [{ siteId: "na-us-sea-01", lastSeenAt: minsAgo(1) }];
       expect(shouldFailNoAgent(job, agents)).toBe(true);
     });
 
     it("never touches a running job", () => {
-      const job: Job = { status: "running", region: "apac-sg-01", createdAt: minsAgo(60) };
+      const job: Job = { status: "running", siteId: "apac-sg-01", createdAt: minsAgo(60) };
       expect(shouldFailNoAgent(job, [])).toBe(false);
     });
 
@@ -649,7 +649,7 @@ describe("Job Recovery - Unclaimed Pending Jobs", () => {
       // ago (updated_at = now), so the 15-min grace restarts and the retry survives.
       const job: Job = {
         status: "pending",
-        region: "eu-de-fra-01",
+        siteId: "eu-de-fra-01",
         createdAt: minsAgo(40),
         updatedAt: minsAgo(0),
       };
@@ -659,7 +659,7 @@ describe("Job Recovery - Unclaimed Pending Jobs", () => {
     it("fails a requeued job once the grace window elapses again from the requeue", () => {
       const job: Job = {
         status: "pending",
-        region: "eu-de-fra-01",
+        siteId: "eu-de-fra-01",
         createdAt: minsAgo(90),
         updatedAt: minsAgo(20),
       };
@@ -669,27 +669,27 @@ describe("Job Recovery - Unclaimed Pending Jobs", () => {
 
   describe("max-wait backstop", () => {
     it("fails a pending job older than 24h regardless of agents", () => {
-      const job: Job = { status: "pending", region: "na-us-sea-01", createdAt: minsAgo(25 * 60) };
-      const agents: Agent[] = [{ region: "na-us-sea-01", lastSeenAt: minsAgo(1) }];
+      const job: Job = { status: "pending", siteId: "na-us-sea-01", createdAt: minsAgo(25 * 60) };
+      const agents: Agent[] = [{ siteId: "na-us-sea-01", lastSeenAt: minsAgo(1) }];
       // No-agent path spares it (agent online), but the backstop catches it.
       expect(shouldFailNoAgent(job, agents)).toBe(false);
       expect(shouldFailExpired(job)).toBe(true);
     });
 
     it("does NOT fail a pending job younger than 24h", () => {
-      const job: Job = { status: "pending", region: "na-us-sea-01", createdAt: minsAgo(23 * 60) };
+      const job: Job = { status: "pending", siteId: "na-us-sea-01", createdAt: minsAgo(23 * 60) };
       expect(shouldFailExpired(job)).toBe(false);
     });
 
     it("never touches a completed job", () => {
-      const job: Job = { status: "completed", region: "na-us-sea-01", createdAt: minsAgo(48 * 60) };
+      const job: Job = { status: "completed", siteId: "na-us-sea-01", createdAt: minsAgo(48 * 60) };
       expect(shouldFailExpired(job)).toBe(false);
     });
 
     it("does NOT expire a day-old job that was just requeued (clock resets)", () => {
       const job: Job = {
         status: "pending",
-        region: "na-us-sea-01",
+        siteId: "na-us-sea-01",
         createdAt: minsAgo(25 * 60),
         updatedAt: minsAgo(5),
       };
@@ -697,10 +697,10 @@ describe("Job Recovery - Unclaimed Pending Jobs", () => {
     });
   });
 
-  it("fast-fail fires before the backstop for an old unstaffed region", () => {
+  it("fast-fail fires before the backstop for an old unstaffed site", () => {
     // A day-old pending job with no agent is caught by the no-agent reaper (run
-    // first), so the user gets the clearer 'no agent for region' reason.
-    const job: Job = { status: "pending", region: "apac-sg-01", createdAt: minsAgo(25 * 60) };
+    // first), so the user gets the clearer 'no agent for site' reason.
+    const job: Job = { status: "pending", siteId: "apac-sg-01", createdAt: minsAgo(25 * 60) };
     expect(shouldFailNoAgent(job, [])).toBe(true);
   });
 });

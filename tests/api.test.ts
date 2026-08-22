@@ -59,7 +59,7 @@ interface EvalAgentToken {
 interface EvalAgent {
   id: number;
   name: string;
-  region: string;
+  siteId: string;
   state: string;
   leaseId?: string;
 }
@@ -68,7 +68,7 @@ interface EvalJob {
   id: number;
   workflowId: number;
   status: string;
-  region: string;
+  siteId: string;
   scheduleId?: number | null;
   config?: Record<string, unknown>;
 }
@@ -78,7 +78,7 @@ interface EvalSchedule {
   name: string;
   workflowId: number;
   evalSetId: number | null;
-  region: string;
+  siteId: string;
   scheduleType: string;
   cronExpression: string | null;
   isEnabled: boolean;
@@ -802,7 +802,7 @@ describe('Vox API Tests', () => {
       expect(response.ok).toBe(true);
       const schedule: EvalSchedule = await response.json();
       expect(schedule.scheduleType).toBe('once');
-      expect(schedule.region).toBe(REGION_EU);
+      expect(schedule.siteId).toBe(REGION_EU);
       expect(new Date(schedule.nextRunAt!).getTime()).toBeGreaterThan(Date.now());
 
       // Cleanup
@@ -899,7 +899,7 @@ describe('Vox API Tests', () => {
       const response = await agentPost('/api/eval-agent/register', { name: 'Test Agent NA-1' });
       expect(response.ok).toBe(true);
       const agent: EvalAgent = await response.json();
-      expect(agent.region).toBe(testAgentRegion);
+      expect(agent.siteId).toBe(testAgentRegion);
       expect(agent.state).toBe('idle');
       expect(typeof agent.leaseId).toBe('string');
       expect(agent.leaseId!.length).toBeGreaterThan(0);
@@ -997,7 +997,7 @@ describe('Vox API Tests', () => {
     });
 
     it('should get pending jobs for a region', async () => {
-      const response = await fetch(`${BASE_URL}/api/eval-agent/jobs?region=${testAgentRegion}`, {
+      const response = await fetch(`${BASE_URL}/api/eval-agent/jobs`, {
         headers: {
           'Authorization': `Bearer ${testEvalAgentToken}`,
         },
@@ -1255,18 +1255,18 @@ describe('Vox API Tests', () => {
       const { data, meta } = await response.json();
       expect(Array.isArray(data)).toBe(true);
       expect(meta).toHaveProperty('timestamp');
-      expect(meta).toHaveProperty('region');
+      expect(meta).toHaveProperty('siteId');
     });
 
     it('should filter leaderboard by region', async () => {
-      const response = await fetch(`${BASE_URL}/api/v1/metrics/leaderboard?region=${REGION_NA}`);
+      const response = await fetch(`${BASE_URL}/api/v1/metrics/leaderboard?siteId=${REGION_NA}`);
       expect(response.ok).toBe(true);
       const { data, meta } = await response.json();
       expect(Array.isArray(data)).toBe(true);
-      expect(meta.region).toBe(REGION_NA);
+      expect(meta.siteId).toBe(REGION_NA);
       // All results should be from NA region
       for (const item of data) {
-        expect(item.region).toBe(REGION_NA);
+        expect(item.siteId).toBe(REGION_NA);
       }
     });
   });
@@ -1359,7 +1359,7 @@ describe('Vox API Tests', () => {
       const agent = await response.json();
       flowAgentId = agent.id;
       flowLeaseId = agent.leaseId;
-      expect(agent.region).toBe(flowAgentRegion);
+      expect(agent.siteId).toBe(flowAgentRegion);
     });
 
     it('should create job by running workflow', async () => {
@@ -1691,7 +1691,7 @@ describe('Vox API Tests', () => {
       const naAgent = await naResponse.json();
       naAgentId = naAgent.id;
       naLeaseId = naAgent.leaseId;
-      expect(naAgent.region).toBe(naRegion);
+      expect(naAgent.siteId).toBe(naRegion);
 
       // Register APAC agent
       const apacResponse = await fetch(`${BASE_URL}/api/eval-agent/register`, {
@@ -1706,7 +1706,7 @@ describe('Vox API Tests', () => {
       const apacAgent = await apacResponse.json();
       apacAgentId = apacAgent.id;
       apacLeaseId = apacAgent.leaseId;
-      expect(apacAgent.region).toBe(apacRegion);
+      expect(apacAgent.siteId).toBe(apacRegion);
 
       // Register EU agent
       const euResponse = await fetch(`${BASE_URL}/api/eval-agent/register`, {
@@ -1720,7 +1720,7 @@ describe('Vox API Tests', () => {
       expect(euResponse.ok).toBe(true);
       const euAgent = await euResponse.json();
       euAgentId = euAgent.id;
-      expect(euAgent.region).toBe(euRegion);
+      expect(euAgent.siteId).toBe(euRegion);
     });
 
     it('should create workflow and eval set for multi-region testing', async () => {
@@ -1755,7 +1755,7 @@ describe('Vox API Tests', () => {
       expect(naResponse.ok).toBe(true);
       const naResult = await naResponse.json();
       naJobId = naResult.job.id;
-      expect(naResult.job.region).toBe(naRegion);
+      expect(naResult.job.siteId).toBe(naRegion);
 
       // Create APAC job
       const apacResponse = await authFetch(adminSession, `${BASE_URL}/api/workflows/${multiRegionWorkflowId}/run`, {
@@ -1765,7 +1765,7 @@ describe('Vox API Tests', () => {
       expect(apacResponse.ok).toBe(true);
       const apacResult = await apacResponse.json();
       apacJobId = apacResult.job.id;
-      expect(apacResult.job.region).toBe(apacRegion);
+      expect(apacResult.job.siteId).toBe(apacRegion);
 
       // Create EU job
       const euResponse = await authFetch(adminSession, `${BASE_URL}/api/workflows/${multiRegionWorkflowId}/run`, {
@@ -1775,7 +1775,7 @@ describe('Vox API Tests', () => {
       expect(euResponse.ok).toBe(true);
       const euResult = await euResponse.json();
       euJobId = euResult.job.id;
-      expect(euResult.job.region).toBe(euRegion);
+      expect(euResult.job.siteId).toBe(euRegion);
     });
 
     it('should only show jobs matching agent region', async () => {
@@ -1785,7 +1785,7 @@ describe('Vox API Tests', () => {
       });
       expect(naResponse.ok).toBe(true);
       const naJobs = await naResponse.json();
-      const naJobRegions = naJobs.map((j: any) => j.region);
+      const naJobRegions = naJobs.map((j: any) => j.siteId);
       expect(naJobRegions.every((r: string) => r === naRegion)).toBe(true);
 
       // APAC agent should only see APAC jobs
@@ -1794,7 +1794,7 @@ describe('Vox API Tests', () => {
       });
       expect(apacResponse.ok).toBe(true);
       const apacJobs = await apacResponse.json();
-      const apacJobRegions = apacJobs.map((j: any) => j.region);
+      const apacJobRegions = apacJobs.map((j: any) => j.siteId);
       expect(apacJobRegions.every((r: string) => r === apacRegion)).toBe(true);
     });
 

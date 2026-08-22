@@ -15,12 +15,12 @@ import { regionSiteSequence } from "@shared/regions";
 
 type ApiRegionLocation = Awaited<ReturnType<typeof storage.getAllRegionLocations>>[number];
 
-function apiRegionMetadata(region: string, locations: ApiRegionLocation[]) {
+function apiRegionMetadata(siteId: string, locations: ApiRegionLocation[]) {
   const location = [...locations]
     .sort((a, b) => b.baseId.length - a.baseId.length)
-    .find((entry) => regionSiteSequence(region, entry.baseId) !== null);
+    .find((entry) => regionSiteSequence(siteId, entry.baseId) !== null);
   if (!location) return {
-    regionLabel: region,
+    regionLabel: siteId,
     regionBaseId: null,
     city: null,
     countryCode: null,
@@ -28,7 +28,7 @@ function apiRegionMetadata(region: string, locations: ApiRegionLocation[]) {
     macroRegionCode: null,
     macroRegionName: null,
   };
-  const sequence = region.slice(location.baseId.length + 1);
+  const sequence = siteId.slice(location.baseId.length + 1);
   return {
     regionLabel: `${location.displayName} ${sequence.padStart(2, "0")}`,
     regionBaseId: location.baseId,
@@ -42,10 +42,10 @@ function apiRegionMetadata(region: string, locations: ApiRegionLocation[]) {
 
 function apiRegionScope(
   locations: ApiRegionLocation[],
-  query: { region?: unknown; location?: unknown; country?: unknown; macroRegion?: unknown; regionScope?: unknown },
+  query: { siteId?: unknown; location?: unknown; country?: unknown; macroRegion?: unknown; regionScope?: unknown },
 ) {
   if (query.regionScope !== undefined) {
-    if ([query.region, query.location, query.country, query.macroRegion].some((value) => value !== undefined && value !== "")) {
+    if ([query.siteId, query.location, query.country, query.macroRegion].some((value) => value !== undefined && value !== "")) {
       return { error: "regionScope cannot be combined with other region filters" };
     }
     const rawScopes = Array.isArray(query.regionScope) ? query.regionScope : [query.regionScope];
@@ -68,18 +68,18 @@ function apiRegionScope(
     return baseIds.size > 0 ? { scope: { baseIds: Array.from(baseIds).sort() } } : { error: "regionScope cannot be empty" };
   }
   const supplied = [
-    ["region", query.region],
+    ["siteId", query.siteId],
     ["location", query.location],
     ["country", query.country],
     ["macroRegion", query.macroRegion],
   ].filter(([, value]) => value !== undefined && value !== "");
-  if (supplied.length > 1) return { error: "Use only one region filter: region, location, country, or macroRegion" };
+  if (supplied.length > 1) return { error: "Use only one region filter: siteId, location, country, or macroRegion" };
   if (supplied.length === 0) return {};
 
   const [kind, rawValue] = supplied[0];
   if (typeof rawValue !== "string" || !rawValue.trim()) return { error: `${kind} must be a non-empty string` };
   const value = rawValue.trim();
-  if (kind === "region") return { scope: { region: value } };
+  if (kind === "siteId") return { scope: { siteId: value } };
   if (kind === "location") {
     const match = locations.find((entry) => entry.baseId === value);
     return match ? { scope: { baseIds: [match.baseId] } } : { error: "Unknown region location" };
@@ -297,7 +297,7 @@ export function registerApiV1Routes(app: Express): void {
       }
 
       const { id } = req.params;
-      const { region, evalSetId, priority } = req.body;
+      const { siteId, evalSetId, priority } = req.body;
 
       const workflow = await storage.getWorkflow(parseInt(id));
 
@@ -335,11 +335,11 @@ export function registerApiV1Routes(app: Express): void {
       // Create eval job (merge configs + capture the immutable snapshot, same as the
       // console run path — otherwise these jobs lose provenance/attribution/tiering).
       const provider = await storage.getProvider(workflow.providerId);
-      if (!region) {
-        return res.status(400).json({ error: "An exact region site ID is required" });
+      if (!siteId) {
+        return res.status(400).json({ error: "An exact site ID is required" });
       }
-      const requestedRegion = String(region);
-      if (!(await storage.isAllocatedRegion(requestedRegion))) {
+      const requestedSiteId = String(siteId);
+      if (!(await storage.isAllocatedSite(requestedSiteId))) {
         return res.status(400).json({ error: "Region must be an active allocated site ID" });
       }
 
@@ -366,7 +366,7 @@ export function registerApiV1Routes(app: Express): void {
         triggerType: 2, // manual (API v1 run)
         evalSetId,
         createdBy: user.id,
-        region: requestedRegion,
+        siteId: requestedSiteId,
         config: jobConfig,
         snapshot,
         status: "pending",
@@ -756,8 +756,8 @@ export function registerApiV1Routes(app: Express): void {
       const locations = await storage.getAllRegionLocations();
       const regionScope = apiRegionScope(locations, req.query);
       if ("error" in regionScope) return res.status(400).json({ error: regionScope.error });
-      if (regionScope.scope?.region && !(await storage.isAllocatedRegion(regionScope.scope.region, false))) {
-        return res.status(400).json({ error: "region must be an exact allocated site ID" });
+      if (regionScope.scope?.siteId && !(await storage.isAllocatedSite(regionScope.scope.siteId, false))) {
+        return res.status(400).json({ error: "siteId must be an exact allocated site ID" });
       }
       const results = await storage.getMainlineEvalResults(50, undefined, regionScope.scope);
 
@@ -765,8 +765,8 @@ export function registerApiV1Routes(app: Express): void {
       const metrics = results.map((r) => ({
         id: r.id,
         provider: r.providerId,
-        region: r.region,
-        ...apiRegionMetadata(r.region, locations),
+        siteId: r.siteId,
+        ...apiRegionMetadata(r.siteId, locations),
         responseLatency: r.responseLatencyMedian,
         interruptLatency: r.interruptLatencyMedian,
         networkResilience: r.networkResilience,
@@ -794,19 +794,19 @@ export function registerApiV1Routes(app: Express): void {
    */
   app.get("/api/v1/metrics/leaderboard", async (req: Request, res: Response) => {
     try {
-      const { region, location, country, macroRegion, regionScope: requestedScopes } = req.query;
+      const { siteId, location, country, macroRegion, regionScope: requestedScopes } = req.query;
       const locations = await storage.getAllRegionLocations();
-      const regionScope = apiRegionScope(locations, { region, location, country, macroRegion, regionScope: requestedScopes });
+      const regionScope = apiRegionScope(locations, { siteId, location, country, macroRegion, regionScope: requestedScopes });
       if ("error" in regionScope) return res.status(400).json({ error: regionScope.error });
-      if (regionScope.scope?.region && !(await storage.isAllocatedRegion(regionScope.scope.region, false))) {
-        return res.status(400).json({ error: "region must be an exact allocated site ID" });
+      if (regionScope.scope?.siteId && !(await storage.isAllocatedSite(regionScope.scope.siteId, false))) {
+        return res.status(400).json({ error: "siteId must be an exact allocated site ID" });
       }
       const results = await storage.getMainlineEvalResults(1000, undefined, regionScope.scope);
 
       // Aggregate by provider and region
       const providerRegionMap = new Map<string, {
         providerId: string;
-        region: string;
+        siteId: string;
         responseLatencies: number[];
         interruptLatencies: number[];
         turnSuccessRates: number[];
@@ -816,11 +816,11 @@ export function registerApiV1Routes(app: Express): void {
       }>();
 
       for (const result of results) {
-        const key = `${result.providerId}-${result.region}`;
+        const key = `${result.providerId}-${result.siteId}`;
         if (!providerRegionMap.has(key)) {
           providerRegionMap.set(key, {
             providerId: result.providerId,
-            region: result.region,
+            siteId: result.siteId,
             responseLatencies: [],
             interruptLatencies: [],
             turnSuccessRates: [],
@@ -850,8 +850,8 @@ export function registerApiV1Routes(app: Express): void {
         const avgRate = (arr: number[]): number | null => arr.length > 0 ? Math.round((arr.reduce((a, b) => a + b, 0) / arr.length) * 10000) / 10000 : null;
         return {
           provider: entry.providerId,
-          region: entry.region,
-          ...apiRegionMetadata(entry.region, locations),
+          siteId: entry.siteId,
+          ...apiRegionMetadata(entry.siteId, locations),
           responseLatency: avg(entry.responseLatencies),
           interruptLatency: avg(entry.interruptLatencies),
           turnSuccessRate: avgRate(entry.turnSuccessRates),
@@ -880,7 +880,7 @@ export function registerApiV1Routes(app: Express): void {
         data: rankedLeaderboard,
         meta: {
           timestamp: new Date().toISOString(),
-          region: region || "all",
+          siteId: siteId || "all",
           location: location || "all",
           country: country || "all",
           macroRegion: macroRegion || "all",
