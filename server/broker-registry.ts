@@ -1,7 +1,7 @@
 export const KNOWN_BROKER_TYPES = ["auth-session"] as const;
 export type BrokerType = (typeof KNOWN_BROKER_TYPES)[number];
 
-export const BROKER_OFFLINE_THRESHOLD_SECONDS = 90; // 3 missed 30s heartbeats
+export const BROKER_OFFLINE_THRESHOLD_SECONDS = 300; // 5 missed 60s heartbeats
 
 export function isKnownBrokerType(v: unknown): v is BrokerType {
   return typeof v === "string" && (KNOWN_BROKER_TYPES as readonly string[]).includes(v);

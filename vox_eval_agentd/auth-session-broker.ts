@@ -159,7 +159,7 @@ export function createBrokerServer(deps: { mint: MintFn; getSecret: () => string
 }
 
 // Registration client: this broker registers itself with Core on startup and
-// heartbeats every HEARTBEAT_MS. The `/mint` bearer secret is NOT a static
+// heartbeats every HEARTBEAT_MS (60s). The `/mint` bearer secret is NOT a static
 // env var — it is the per-broker `mintSecret` handed back by Core at
 // registration, held only in this module's `state`.
 let state: { brokerId: number; leaseId: string; mintSecret: string } | null = null;
@@ -167,7 +167,7 @@ const CORE_URL = process.env.VOX_CORE_URL!;        // e.g. http://vox-service:50
 const REG_TOKEN = process.env.BROKER_REG_TOKEN!;   // admin-issued registration token
 const ADVERTISE_URL = process.env.BROKER_ADVERTISE_URL!; // internal URL Core will call
 const BROKER_NAME = process.env.BROKER_NAME || 'auth-session-broker';
-const HEARTBEAT_MS = 30000;
+const HEARTBEAT_MS = 60000;
 
 async function register(): Promise<void> {
   const res = await fetch(`${CORE_URL}/api/brokers/register`, {

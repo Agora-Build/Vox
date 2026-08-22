@@ -312,6 +312,12 @@ function startBackgroundWorker() {
         log(`Marked ${offlineAgents} agent(s) as offline`, "worker");
       }
 
+      // Mark offline brokers (row kept — never deleted)
+      const offlineBrokers = await storage.markStaleBrokersOffline(STALE_THRESHOLD_MINUTES);
+      if (offlineBrokers > 0) {
+        log(`Marked ${offlineBrokers} broker(s) as offline`, "worker");
+      }
+
       // Promptly settle shared-dispatch escrow for recently-terminal targeted jobs:
       // capture on `completed`, release on `failed`. This is the prompt path so a
       // completed-but-unsettled job (complete-route settle threw) is captured here,

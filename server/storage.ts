@@ -1266,6 +1266,21 @@ export class DatabaseStorage {
     return (result as unknown as { rowCount: number }).rowCount || 0;
   }
 
+  // Mark brokers offline after prolonged silence. Mirrors markOfflineAgents but
+  // also treats a NULL lastSeenAt as stale, and keeps the row (never deletes).
+  async markStaleBrokersOffline(staleThresholdMinutes: number = 5): Promise<number> {
+    const staleThreshold = new Date(Date.now() - staleThresholdMinutes * 60 * 1000);
+
+    const result = await db.update(brokers)
+      .set({ state: "offline", updatedAt: new Date() })
+      .where(and(
+        sql`(${brokers.lastSeenAt} IS NULL OR ${brokers.lastSeenAt} < ${staleThreshold})`,
+        sql`${brokers.state} != 'offline'::broker_state`
+      ));
+
+    return (result as unknown as { rowCount: number }).rowCount || 0;
+  }
+
   // Atomically finalize a RUNNING job (running → completed/failed) in a single
   // UPDATE. Only the first caller gets a row back; a concurrent duplicate
   // completion or an already-terminal job returns undefined — so exactly one
