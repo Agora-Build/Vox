@@ -49,9 +49,12 @@ export default function AdminBrokers() {
 
   const { data: brokers, isLoading: brokersLoading } = useQuery<Broker[]>({
     queryKey: ["/api/admin/brokers"],
-    // Live registry — brokers heartbeat every 30s, so keep it fresh.
+    // Live registry — brokers heartbeat every 60s, so keep it fresh.
     refetchInterval: 15000,
   });
+  // Hide offline brokers — the reaper marks them offline after prolonged
+  // silence; the row is kept in the DB but not shown in the live registry.
+  const visibleBrokers = brokers?.filter((b) => b.state !== "offline");
   const { data: tokens, isLoading: tokensLoading } = useQuery<BrokerToken[]>({
     queryKey: ["/api/admin/broker-tokens"],
   });
@@ -131,7 +134,7 @@ export default function AdminBrokers() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {brokers?.map((broker) => (
+                {visibleBrokers?.map((broker) => (
                   <TableRow key={broker.id}>
                     <TableCell className="font-medium">{broker.name}</TableCell>
                     <TableCell><Badge variant="outline">{broker.brokerType}</Badge></TableCell>
@@ -143,7 +146,7 @@ export default function AdminBrokers() {
               </TableBody>
             </Table>
           )}
-          {!brokersLoading && (brokers?.length ?? 0) === 0 && (
+          {!brokersLoading && (visibleBrokers?.length ?? 0) === 0 && (
             <div className="py-12 text-center text-muted-foreground">
               No brokers registered. Mint a token below and deploy a broker with it.
             </div>

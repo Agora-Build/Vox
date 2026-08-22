@@ -2934,6 +2934,19 @@ export async function registerRoutes(
     }
   });
 
+  // Broker types currently serviceable (distinct type of live, non-offline
+  // brokers). Drives the secret broker-type dropdown so it never offers a type
+  // no live broker can mint for. Empty list → UI falls back to Runtime only.
+  app.get("/api/broker-types", requireAuth, async (_req, res) => {
+    try {
+      const types = await storage.getLiveBrokerTypes();
+      res.json(types);
+    } catch (error) {
+      console.error("Error fetching broker types:", error);
+      res.status(500).json({ error: "Failed to fetch broker types" });
+    }
+  });
+
   app.post("/api/brokers/register", async (req, res) => {
     try {
       const bearer = (req.headers.authorization || "").replace(/^Bearer\s+/i, "");

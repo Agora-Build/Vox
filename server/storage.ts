@@ -801,6 +801,13 @@ export class DatabaseStorage {
   async getAllBrokers(): Promise<Broker[]> {
     return db.select().from(brokers).orderBy(desc(brokers.createdAt));
   }
+  // Distinct brokerType of LIVE (non-offline) brokers — drives the secret
+  // broker-type dropdown so it only offers types actually serviceable right now.
+  async getLiveBrokerTypes(): Promise<string[]> {
+    const rows = await db.selectDistinct({ brokerType: brokers.brokerType })
+      .from(brokers).where(sql`${brokers.state} != 'offline'::broker_state`);
+    return rows.map((r) => r.brokerType);
+  }
   async updateBroker(id: number, data: Partial<InsertBroker>): Promise<Broker | undefined> {
     const [row] = await db.update(brokers).set({ ...data, updatedAt: new Date() })
       .where(eq(brokers.id, id)).returning();
