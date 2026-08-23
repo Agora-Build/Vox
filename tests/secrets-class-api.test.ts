@@ -223,7 +223,7 @@ describe('Secrets class — job-secrets withhold', () => {
     if (workflowId && evalSetId && agentToken && agentId) {
       const runRes = await authFetch(adminSession, `${BASE_URL}/api/workflows/${workflowId}/run`, {
         method: 'POST',
-        body: JSON.stringify({ region: agentRegion, evalSetId }),
+        body: JSON.stringify({ siteId: agentRegion, evalSetId }),
       });
       if (runRes.ok) {
         const runData = await runRes.json();

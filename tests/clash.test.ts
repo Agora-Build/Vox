@@ -171,7 +171,7 @@ describe('Clash v2 API Tests', () => {
         method: 'POST',
         body: JSON.stringify({
           name: 'Test Clash Event',
-          region: REGION_NA,
+          siteId: REGION_NA,
           visibility: 'public',
           matchups: [
             {
@@ -235,7 +235,7 @@ describe('Clash v2 API Tests', () => {
         method: 'POST',
         body: JSON.stringify({
           name: 'Event To Cancel',
-          region: REGION_NA,
+          siteId: REGION_NA,
           matchups: [
             {
               agentAProfileId: profileAId,
@@ -263,7 +263,7 @@ describe('Clash v2 API Tests', () => {
         method: 'POST',
         body: JSON.stringify({
           name: 'Self Clash Event',
-          region: REGION_NA,
+          siteId: REGION_NA,
           matchups: [
             {
               agentAProfileId: profileAId,
@@ -284,7 +284,7 @@ describe('Clash v2 API Tests', () => {
         method: 'POST',
         body: JSON.stringify({
           name: 'Multi-Match Event',
-          region: REGION_NA,
+          siteId: REGION_NA,
           matchups: [
             {
               agentAProfileId: profileAId,
@@ -376,7 +376,7 @@ describe('Clash v2 API Tests', () => {
         method: 'POST',
         body: JSON.stringify({
           eventName: 'Scheduled Clash Event',
-          region: REGION_NA,
+          siteId: REGION_NA,
           matchups: [
             {
               agentAProfileId: profileAId,

@@ -2122,8 +2122,7 @@ export async function registerRoutes(
       }
 
       const { name, workflowId, evalSetId, scheduleType, cronExpression, timezone, runAt, maxRuns, organizationId } = req.body;
-      // `region` is the legacy body key for the site ID — accepted as an alias.
-      const region = req.body.siteId ?? req.body.region;
+      const region = req.body.siteId;
 
       if (!name || !workflowId || !region) {
         return res.status(400).json({ error: "Name, workflowId, and siteId are required" });
@@ -2662,8 +2661,8 @@ export async function registerRoutes(
         return res.status(403).json({ error: "Premium or higher plan required to create eval agent tokens" });
       }
 
-      const { name, regionLocationBaseId, region, dispatchTier: requestedTier, pricePerUnit } = req.body;
-      const requestedLocation = regionLocationBaseId || region;
+      const { name, regionLocationBaseId, dispatchTier: requestedTier, pricePerUnit } = req.body;
+      const requestedLocation = regionLocationBaseId;
 
       if (!name || !requestedLocation) {
         return res.status(400).json({ error: "Name and region location required" });
@@ -2814,8 +2813,8 @@ export async function registerRoutes(
         return res.status(401).json({ error: "Not authenticated" });
       }
 
-      const { name, regionLocationBaseId, region, dispatchTier: requestedTier, pricePerUnit } = req.body;
-      const requestedLocation = regionLocationBaseId || region;
+      const { name, regionLocationBaseId, dispatchTier: requestedTier, pricePerUnit } = req.body;
+      const requestedLocation = regionLocationBaseId;
       if (!name || !requestedLocation) {
         return res.status(400).json({ error: "Name and region location required" });
       }
@@ -3828,8 +3827,7 @@ export async function registerRoutes(
 
       const { workflowId } = req.params;
       const { evalSetId } = req.body;
-      // `region` is the legacy body key for the site ID — accepted as an alias.
-      const region = req.body.siteId ?? req.body.region;
+      const region = req.body.siteId;
       const targetTokenId = req.body.targetTokenId != null ? Number(req.body.targetTokenId) : null;
       if (targetTokenId != null && !Number.isFinite(targetTokenId)) {
         return res.status(400).json({ error: "Invalid target agent token id" });
@@ -5877,8 +5875,7 @@ export async function registerRoutes(
       if (!user) return res.status(401).json({ error: "Not authenticated" });
 
       const { name, description, visibility, scheduledAt, matchups } = req.body;
-      // `region` is the legacy body key for the site ID — accepted as an alias.
-      const region = req.body.siteId ?? req.body.region;
+      const region = req.body.siteId;
       if (!name || !region || !matchups || !Array.isArray(matchups) || matchups.length === 0) {
         return res.status(400).json({ error: "name, siteId, and matchups array are required" });
       }
@@ -6063,8 +6060,7 @@ export async function registerRoutes(
       if (!user) return res.status(401).json({ error: "Not authenticated" });
 
       const { name } = req.body;
-      // `region` is the legacy body key for the site ID — accepted as an alias.
-      const region = req.body.siteId ?? req.body.region;
+      const region = req.body.siteId;
       if (!name || !region) return res.status(400).json({ error: "Name and siteId required" });
       const normalizedRegion = String(region);
       if (!(await storage.isAllocatedSite(normalizedRegion))) {
@@ -6145,9 +6141,7 @@ export async function registerRoutes(
 
       const runner = await storage.registerClashRunner({ runnerId, tokenHash, siteId: issuedToken.siteId });
       await storage.updateClashRunnerIssuedTokenLastUsed(issuedToken.id);
-      // Deployed clash-runner daemons still read `region`; keep the alias
-      // beside `siteId` until the next runner redeploy (vox-upgrade.sh).
-      res.json({ id: runner.id, state: runner.state, siteId: runner.siteId, region: runner.siteId });
+      res.json({ id: runner.id, state: runner.state, siteId: runner.siteId });
     } catch (error) {
       console.error("Error registering clash runner:", error);
       res.status(500).json({ error: "Failed to register runner" });
@@ -6254,10 +6248,7 @@ export async function registerRoutes(
         match: {
           id: match.id,
           topic: match.topic,
-          // Deployed clash-runner daemons still read `region`; keep the alias
-          // beside `siteId` until the next runner redeploy (vox-upgrade.sh).
           siteId: event.siteId,
-          region: event.siteId,
           maxDurationSeconds: match.maxDurationSeconds,
           config: match.config,
         },
@@ -6265,7 +6256,6 @@ export async function registerRoutes(
           id: event.id,
           name: event.name,
           siteId: event.siteId,
-          region: event.siteId,
         },
         agentA: {
           id: profileA.id,
@@ -6666,8 +6656,7 @@ export async function registerRoutes(
       if (!user) return res.status(401).json({ error: "Not authenticated" });
 
       const { eventName, matchups, maxDurationSeconds, scheduledAt, cronExpression } = req.body;
-      // `region` is the legacy body key for the site ID — accepted as an alias.
-      const region = req.body.siteId ?? req.body.region;
+      const region = req.body.siteId;
       if (!eventName || !region || !matchups || !Array.isArray(matchups) || matchups.length === 0) {
         return res.status(400).json({ error: "eventName, siteId, and matchups array are required" });
       }

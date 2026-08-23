@@ -67,7 +67,7 @@ describe("Clash Runner Lifecycle", () => {
     it("creates a runner token with region", async () => {
       const res = await authFetch(admin, `${BASE_URL}/api/admin/clash-runner-tokens`, {
         method: "POST",
-        body: JSON.stringify({ name: "lifecycle-test-runner", region: REGION_NA }),
+        body: JSON.stringify({ name: "lifecycle-test-runner", siteId: REGION_NA }),
       });
       expect(res.status).toBe(200);
       const data = await res.json();
@@ -82,7 +82,7 @@ describe("Clash Runner Lifecycle", () => {
     it("rejects token creation with invalid region", async () => {
       const res = await authFetch(admin, `${BASE_URL}/api/admin/clash-runner-tokens`, {
         method: "POST",
-        body: JSON.stringify({ name: "bad", region: "invalid" }),
+        body: JSON.stringify({ name: "bad", siteId: "invalid" }),
       });
       expect(res.status).toBe(400);
     });
@@ -90,7 +90,7 @@ describe("Clash Runner Lifecycle", () => {
     it("rejects token creation without name", async () => {
       const res = await authFetch(admin, `${BASE_URL}/api/admin/clash-runner-tokens`, {
         method: "POST",
-        body: JSON.stringify({ region: REGION_NA }),
+        body: JSON.stringify({ siteId: REGION_NA }),
       });
       expect(res.status).toBe(400);
     });
@@ -118,9 +118,7 @@ describe("Clash Runner Lifecycle", () => {
       const data = await res.json();
       expect(data.state).toBe("idle");
       expect(data.siteId).toBe(REGION_NA);
-      // Legacy alias: deployed runner daemons still read `region` — the
-      // register response dual-keys until the next runner redeploy.
-      expect(data.region).toBe(REGION_NA);
+      expect(data).not.toHaveProperty('region'); // alias dropped
       expect(data.id).toBeTypeOf("number");
     });
 
@@ -149,7 +147,7 @@ describe("Clash Runner Lifecycle", () => {
       // Create + revoke a token
       const createRes = await authFetch(admin, `${BASE_URL}/api/admin/clash-runner-tokens`, {
         method: "POST",
-        body: JSON.stringify({ name: "to-revoke", region: REGION_NA }),
+        body: JSON.stringify({ name: "to-revoke", siteId: REGION_NA }),
       });
       const { token: revokeToken, id: revokeId } = await createRes.json();
 
@@ -267,7 +265,7 @@ describe("Clash Runner Lifecycle", () => {
         method: "POST",
         body: JSON.stringify({
           name: "Lifecycle Test Event",
-          region: REGION_NA,
+          siteId: REGION_NA,
           visibility: "private",
           matchups: [
             {
@@ -391,7 +389,7 @@ describe("Clash Runner Lifecycle", () => {
         method: "POST",
         body: JSON.stringify({
           name: "Failure Test Event",
-          region: REGION_NA,
+          siteId: REGION_NA,
           visibility: "private",
           matchups: [{
             agentAProfileId: profileAId,
@@ -433,7 +431,7 @@ describe("Clash Runner Lifecycle", () => {
         method: "POST",
         body: JSON.stringify({
           name: "Draw Test Event",
-          region: REGION_NA,
+          siteId: REGION_NA,
           visibility: "private",
           matchups: [{
             agentAProfileId: profileAId,
@@ -470,7 +468,7 @@ describe("Clash Runner Lifecycle", () => {
         method: "POST",
         body: JSON.stringify({
           name: "Moderator Test Event",
-          region: REGION_NA,
+          siteId: REGION_NA,
           visibility: "private",
           matchups: [{
             agentAProfileId: profileAId,
@@ -518,7 +516,7 @@ describe("Clash Runner Lifecycle", () => {
         method: "POST",
         body: JSON.stringify({
           name: "Phase Test",
-          region: REGION_NA,
+          siteId: REGION_NA,
           visibility: "private",
           matchups: [{
             agentAProfileId: profileAId,
@@ -643,7 +641,7 @@ describe("Clash Runner Lifecycle", () => {
         method: "POST",
         body: JSON.stringify({
           name: "Stream Info Test",
-          region: REGION_NA,
+          siteId: REGION_NA,
           visibility: "private",
           matchups: [{
             agentAProfileId: profileAId,

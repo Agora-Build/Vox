@@ -562,7 +562,7 @@ describe('Secrets - Agent Endpoint', () => {
       if (workflowId && agentToken && agentId) {
         const runRes = await authFetch(adminSession, `${BASE_URL}/api/workflows/${workflowId}/run`, {
           method: 'POST',
-          body: JSON.stringify({ region: agentRegion }),
+          body: JSON.stringify({ siteId: agentRegion }),
         });
         if (runRes.ok) {
           const runData = await runRes.json();
