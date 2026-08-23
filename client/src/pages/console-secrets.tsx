@@ -76,6 +76,21 @@ export default function ConsoleSecrets() {
   const { data: liveBrokerTypes } = useQuery<string[]>({ queryKey: ["/api/broker-types"] });
   const brokerTypeOptions = liveBrokerTypes ?? [];
 
+  // A secret whose name reads like a login identifier (email/account/user/name)
+  // should default to the auth-session broker type — but only when such a broker
+  // is actually live. If none is, Runtime stays the default. Names are uppercased,
+  // so USER/NAME also cover USERNAME.
+  const AUTH_NAME_HINT = /EMAIL|ACCOUNT|USER|NAME/;
+  const authBrokerType = brokerTypeOptions.find((t) => /auth|session|login/i.test(t)) ?? null;
+  // Toggle only between Runtime and the auth type — never clobber a different
+  // broker type the user picked manually.
+  function nextBrokerTypeForName(newName: string, current: string | null): string | null {
+    if (!authBrokerType) return current;
+    if (AUTH_NAME_HINT.test(newName)) return authBrokerType;
+    if (current === authBrokerType) return "runtime";
+    return current;
+  }
+
   const encryptionConfigured = response?.encryptionConfigured ?? true;
   const secrets = response?.secrets;
 
@@ -229,7 +244,11 @@ export default function ConsoleSecrets() {
                           id="secret-name"
                           placeholder="YOUR_EMAIL"
                           value={name}
-                          onChange={(e) => setName(e.target.value.toUpperCase().replace(/[^A-Z0-9_]/g, ""))}
+                          onChange={(e) => {
+                            const next = e.target.value.toUpperCase().replace(/[^A-Z0-9_]/g, "");
+                            setName(next);
+                            setBrokerType((cur) => nextBrokerTypeForName(next, cur));
+                          }}
                           className="font-mono"
                         />
                         <p className="text-xs text-muted-foreground">
@@ -380,7 +399,11 @@ export default function ConsoleSecrets() {
                               id="org-secret-name"
                               placeholder="AGORA_CONSOLE_EMAIL"
                               value={orgName}
-                              onChange={(e) => setOrgName(e.target.value.toUpperCase().replace(/[^A-Z0-9_]/g, ""))}
+                              onChange={(e) => {
+                                const next = e.target.value.toUpperCase().replace(/[^A-Z0-9_]/g, "");
+                                setOrgName(next);
+                                setOrgBrokerType((cur) => nextBrokerTypeForName(next, cur));
+                              }}
                               className="font-mono"
                             />
                           </div>
