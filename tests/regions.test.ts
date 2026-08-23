@@ -4,6 +4,8 @@ import {
   appendRegionScopes,
   compressRegionScopeSelection,
   formatRegion,
+  formatSite,
+  regionOf,
   formatRegionScopeSelection,
   resolveRegionScopeBaseIds,
   toggleRegionScopeSelection,
@@ -56,9 +58,9 @@ describe("region hierarchy", () => {
   });
 
   it("formats exact built-in site IDs", () => {
-    expect(formatRegion("apac-sg-01")).toBe("Singapore 01");
-    expect(formatRegion("apac-in-mumbai-02")).toBe("Mumbai 02");
-    expect(formatRegion("eu-de-frankfurt-01")).toBe("Frankfurt 01");
+    expect(formatSite("apac-sg-01")).toBe("Singapore 01");
+    expect(formatSite("apac-in-mumbai-02")).toBe("Mumbai 02");
+    expect(formatSite("eu-de-frankfurt-01")).toBe("Frankfurt 01");
   });
 
   it("resolves macro-region, country, and city scopes", () => {
@@ -139,6 +141,27 @@ describe("region hierarchy", () => {
     const allParams = new URLSearchParams();
     appendRegionScopes(allParams, ["all"]);
     expect(allParams.has("regionScope")).toBe(false);
+  });
+});
+
+describe("site / region helpers", () => {
+  it("regionOf strips the -NN sequence", () => {
+    expect(regionOf("na-us-seattle-02")).toBe("na-us-seattle");
+    expect(regionOf("apac-in-mumbai-01")).toBe("apac-in-mumbai");
+  });
+  it("regionOf returns the input unchanged when there is no sequence", () => {
+    expect(regionOf("na-us-seattle")).toBe("na-us-seattle");
+  });
+  it("formatRegion shows the area only", () => {
+    expect(formatRegion("apac-sg")).toBe("Singapore");
+    expect(formatRegion("eu-de-frankfurt")).toBe("Frankfurt");
+  });
+  it("formatSite shows area + sequence", () => {
+    expect(formatSite("apac-sg-01")).toBe("Singapore 01");
+    expect(formatSite("eu-de-frankfurt-01")).toBe("Frankfurt 01");
+  });
+  it("compose: formatRegion(regionOf(siteId)) yields the area", () => {
+    expect(formatRegion(regionOf("na-us-seattle-02"))).toBe("Seattle");
   });
 });
 

@@ -16,8 +16,8 @@ import { Switch } from "@/components/ui/switch";
 import { Swords, Plus, Trash2, Play, X, Calendar, Copy, Check, Server, Pencil, Eye } from "lucide-react";
 import { useState } from "react";
 import { useLocation, useSearch } from "wouter";
-import { formatSmartTimestamp, formatRegion } from "@/lib/utils";
-import { useRegionOptions } from "@/hooks/use-regions";
+import { formatSmartTimestamp, formatSite } from "@/lib/utils";
+import { useSiteOptions } from "@/hooks/use-regions";
 
 interface ClashAgentProfile {
   id: number;
@@ -33,7 +33,7 @@ interface ClashEvent {
   id: number;
   name: string;
   description: string | null;
-  region: string;
+  siteId: string;
   status: string;
   scheduledAt: string | null;
   createdAt: string;
@@ -43,7 +43,7 @@ interface ClashSchedule {
   id: number;
   eventName: string;
   matchups: { agentAProfileId: number; agentBProfileId: number; topic?: string }[];
-  region: string;
+  siteId: string;
   maxDurationSeconds: number;
   scheduledAt: string | null;
   cronExpression: string | null;
@@ -82,7 +82,7 @@ const VALID_TABS = ["profiles", "events", "schedules", "runners"];
 
 export default function ConsoleClash() {
   const { toast } = useToast();
-  const { options: regionOptions } = useRegionOptions();
+  const { options: regionOptions } = useSiteOptions();
   const [, setLocation] = useLocation();
   const search = useSearch();
   const tabParam = new URLSearchParams(search).get("tab");
@@ -830,7 +830,7 @@ export default function ConsoleClash() {
                     {events.map((event) => (
                       <TableRow key={event.id}>
                         <TableCell className="font-medium">{event.name}</TableCell>
-                        <TableCell>{formatRegion(event.region)}</TableCell>
+                        <TableCell>{formatSite(event.siteId)}</TableCell>
                         <TableCell>
                           <Badge className={statusColors[event.status] || ""} variant="outline">
                             {event.status}
@@ -1041,7 +1041,7 @@ export default function ConsoleClash() {
                       {schedules.map((schedule) => (
                         <TableRow key={schedule.id}>
                           <TableCell className="font-medium">{schedule.eventName}</TableCell>
-                          <TableCell>{formatRegion(schedule.region)}</TableCell>
+                          <TableCell>{formatSite(schedule.siteId)}</TableCell>
                           <TableCell className="text-muted-foreground text-sm">{schedule.matchups?.length ?? 0}</TableCell>
                           <TableCell className="text-muted-foreground text-sm">
                             {schedule.cronExpression ? (
@@ -1150,7 +1150,7 @@ export default function ConsoleClash() {
                       {clashRunners.map(r => (
                         <TableRow key={r.id}>
                           <TableCell className="font-mono text-xs">{r.runnerId}</TableCell>
-                          <TableCell><Badge variant="outline">{formatRegion(r.region)}</Badge></TableCell>
+                          <TableCell><Badge variant="outline">{formatSite(r.region)}</Badge></TableCell>
                           <TableCell>
                             <Badge className={
                               r.state === "idle" ? "bg-green-500/10 text-green-500" :
@@ -1268,7 +1268,7 @@ export default function ConsoleClash() {
                         {runnerTokens.map((t) => (
                           <TableRow key={t.id}>
                             <TableCell className="font-medium">{t.name}</TableCell>
-                            <TableCell><Badge variant="outline">{formatRegion(t.region)}</Badge></TableCell>
+                            <TableCell><Badge variant="outline">{formatSite(t.region)}</Badge></TableCell>
                             <TableCell>
                               <Badge className={t.isRevoked ? "bg-muted text-muted-foreground" : "bg-green-500/10 text-green-500"}>
                                 {t.isRevoked ? "Revoked" : "Active"}

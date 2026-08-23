@@ -1,7 +1,7 @@
 import { useEffect, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
-  REGIONS,
+  SITES,
   cacheRegionLocations,
   type RegionLocation,
 } from "@/lib/utils";
@@ -18,10 +18,10 @@ export function useRegionLocations(admin = false) {
   return query;
 }
 
-export function useRegionOptions() {
+export function useSiteOptions() {
   const query = useRegionLocations();
   const options = useMemo(() => {
-    if (!query.data) return [...REGIONS];
+    if (!query.data) return [...SITES];
     return query.data.filter((location) => location.isActive).flatMap((location) =>
       location.allocatedRegions.map((region) => {
         const sequence = region.slice(location.baseId.length + 1);

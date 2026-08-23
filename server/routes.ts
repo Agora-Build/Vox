@@ -4126,14 +4126,14 @@ export async function registerRoutes(
         return res.status(401).json({ error: "Not authenticated" });
       }
 
-      const { status, region, workflowId, limit, offset, hours } = req.query;
+      const { status, siteId, workflowId, limit, offset, hours } = req.query;
 
       const pageLimit = Math.min(Math.max(parseInt(limit as string) || 50, 1), 200);
       const pageOffset = Math.max(parseInt(offset as string) || 0, 0);
 
       const filters: {
         status?: "pending" | "running" | "completed" | "failed";
-        region?: string;
+        siteId?: string;
         workflowId?: number;
         hoursBack?: number;
       } = {};
@@ -4141,12 +4141,12 @@ export async function registerRoutes(
       if (status && ["pending", "running", "completed", "failed"].includes(status as string)) {
         filters.status = status as "pending" | "running" | "completed" | "failed";
       }
-      if (region) {
-        const normalizedRegion = String(region);
-        if (!(await storage.isAllocatedSite(normalizedRegion, false))) {
-          return res.status(400).json({ error: "Invalid region site ID" });
+      if (siteId) {
+        const normalizedSiteId = String(siteId);
+        if (!(await storage.isAllocatedSite(normalizedSiteId, false))) {
+          return res.status(400).json({ error: "Invalid site ID" });
         }
-        filters.region = normalizedRegion;
+        filters.siteId = normalizedSiteId;
       }
       if (workflowId) {
         const parsed = parseInt(workflowId as string, 10);

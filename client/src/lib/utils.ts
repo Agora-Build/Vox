@@ -23,7 +23,7 @@ export function brokerTypeLabel(t: string): string {
  * 1–8 hours: "X hours ago"
  * >= 8 hours: "2026-03-04 09:00:42"
  */
-export const REGIONS = [
+export const SITES = [
   { value: "na-us-seattle-01", label: "Seattle 01" },
   { value: "apac-sg-01", label: "Singapore 01" },
   { value: "eu-de-frankfurt-01", label: "Frankfurt 01" },
@@ -60,24 +60,43 @@ export function cacheRegionLocations(locations: RegionLocation[]): void {
   cachedRegionLocations = locations;
 }
 
-export function formatRegion(region: string, locations = cachedRegionLocations): string {
-  const normalized = region.toLowerCase();
-  const legacy = {
-    na: "North America",
-    apac: "Asia Pacific",
-    eu: "Europe",
-    sa: "South America",
-  }[normalized];
-  if (legacy) return legacy;
+export type SiteId = string;   // "na-us-seattle-02"
+export type Region = string;   // "na-us-seattle" (a region_locations.baseId)
 
+// Longest-prefix match of a site-id against the known region_locations, extracting
+// its trailing numeric sequence. Returns null when the id does not resolve to a
+// known region + numeric sequence. Shared by regionOf and formatSite.
+function matchSite(
+  siteId: SiteId,
+  locations: Pick<RegionLocation, "baseId" | "displayName">[],
+): { baseId: string; displayName: string; sequence: string } | null {
+  const normalized = siteId.toLowerCase();
   const location = [...locations]
     .sort((a, b) => b.baseId.length - a.baseId.length)
     .find((entry) => normalized.startsWith(entry.baseId + "-"));
-  if (!location) return region;
+  if (!location) return null;
   const sequence = normalized.slice(location.baseId.length + 1);
-  return /^\d+$/.test(sequence)
-    ? `${location.displayName} ${sequence.padStart(2, "0")}`
-    : region;
+  if (!/^\d+$/.test(sequence)) return null;
+  return { baseId: location.baseId, displayName: location.displayName, sequence };
+}
+
+// "na-us-seattle-02" -> "na-us-seattle": strip the trailing -NN sequence.
+// Returns the input unchanged when it has no -NN sequence.
+export function regionOf(siteId: SiteId, locations = cachedRegionLocations): Region {
+  const match = matchSite(siteId, locations);
+  return match ? match.baseId : siteId;
+}
+
+// "na-us-seattle" -> "Seattle": region display name (area only, no sequence).
+export function formatRegion(region: Region, locations = cachedRegionLocations): string {
+  const match = locations.find((loc) => loc.baseId === region.toLowerCase());
+  return match ? match.displayName : region;
+}
+
+// "na-us-seattle-02" -> "Seattle 02": site label (region display name + sequence).
+export function formatSite(siteId: SiteId, locations = cachedRegionLocations): string {
+  const match = matchSite(siteId, locations);
+  return match ? `${match.displayName} ${match.sequence.padStart(2, "0")}` : siteId;
 }
 
 export function resolveRegionScopeBaseIds(locations: RegionLocation[], scopes: string[]): Set<string> {

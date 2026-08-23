@@ -15,8 +15,8 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import { ArrowLeft, Play, Settings, History, Clock, CheckCircle, XCircle, Loader2, RefreshCw } from "lucide-react";
 import { useState } from "react";
 import type { Workflow as WorkflowType, Provider, EvalJob, EvalSet } from "@shared/schema";
-import { formatSmartTimestamp, formatRegion, toYaml } from "@/lib/utils";
-import { useRegionOptions } from "@/hooks/use-regions";
+import { formatSmartTimestamp, formatSite, toYaml } from "@/lib/utils";
+import { useSiteOptions } from "@/hooks/use-regions";
 
 interface AuthStatus {
   user: {
@@ -42,7 +42,7 @@ interface RunTargetsResponse {
 
 export default function ConsoleWorkflowDetail() {
   const { toast } = useToast();
-  const { options: regionOptions } = useRegionOptions();
+  const { options: regionOptions } = useSiteOptions();
   const params = useParams<{ id: string }>();
   const [, setLocation] = useLocation();
   const workflowId = parseInt(params.id || "0");
@@ -84,7 +84,7 @@ export default function ConsoleWorkflowDetail() {
   const { data: runTargets } = useQuery<RunTargetsResponse>({
     queryKey: [`/api/workflows/${workflowId}/run-targets`, runRegion, runEvalSetId],
     queryFn: async () => (await apiRequest("GET",
-      `/api/workflows/${workflowId}/run-targets?region=${encodeURIComponent(runRegion)}&evalSetId=${runEvalSetId}`)).json(),
+      `/api/workflows/${workflowId}/run-targets?siteId=${encodeURIComponent(runRegion)}&evalSetId=${runEvalSetId}`)).json(),
     enabled: runDialogOpen && !!runRegion && !!runEvalSetId,
   });
 
@@ -383,7 +383,7 @@ export default function ConsoleWorkflowDetail() {
                   <TableRow key={job.id}>
                     <TableCell className="font-mono">#{job.id}</TableCell>
                     <TableCell>
-                      <Badge variant="outline">{formatRegion(job.region)}</Badge>
+                      <Badge variant="outline">{formatSite(job.siteId)}</Badge>
                     </TableCell>
                     <TableCell>
                       <Badge

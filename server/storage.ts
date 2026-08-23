@@ -1176,7 +1176,7 @@ export class DatabaseStorage {
   // Get all jobs with optional filters
   async getEvalJobs(filters?: {
     status?: "pending" | "running" | "completed" | "failed";
-    region?: string;
+    siteId?: string;
     workflowId?: number;
     agentId?: number;
     ownerId?: number;
@@ -1188,8 +1188,8 @@ export class DatabaseStorage {
     if (filters?.status) {
       conditions.push(eq(evalJobs.status, filters.status));
     }
-    if (filters?.region) {
-      conditions.push(eq(evalJobs.siteId, filters.region));
+    if (filters?.siteId) {
+      conditions.push(eq(evalJobs.siteId, filters.siteId));
     }
     if (filters?.hoursBack) {
       const cutoff = new Date(Date.now() - filters.hoursBack * 60 * 60 * 1000);

@@ -1,5 +1,5 @@
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { useRegionOptions } from "@/hooks/use-regions";
+import { useSiteOptions } from "@/hooks/use-regions";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -38,7 +38,7 @@ type WorkflowWithPerms = WorkflowType & { canSchedule?: boolean };
 
 export default function ConsoleEvalSets() {
   const { toast } = useToast();
-  const { options: regionOptions } = useRegionOptions();
+  const { options: regionOptions } = useSiteOptions();
 
   // Create dialog state
   const [createOpen, setCreateOpen] = useState(false);

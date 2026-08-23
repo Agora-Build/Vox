@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect } from "react";
-import { formatRegion } from "@/lib/utils";
+import { formatSite } from "@/lib/utils";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle, CardFooter, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -18,7 +18,7 @@ import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { Link } from "wouter";
 import generatedImage from '@assets/generated_images/abstract_digital_network_visualization_dark_blue.png';
-import { useRegionOptions } from "@/hooks/use-regions";
+import { useSiteOptions } from "@/hooks/use-regions";
 
 interface AuthStatus {
   user: {
@@ -44,7 +44,7 @@ interface Workflow {
 interface EvalJob {
   id: number;
   status: "pending" | "running" | "completed" | "failed";
-  region: string;
+  siteId: string;
   createdAt: string;
   startedAt: string | null;
   completedAt: string | null;
@@ -79,7 +79,7 @@ export default function SelfTest() {
   const [workflowName, setWorkflowName] = useState("");
   const [workflowUrl, setWorkflowUrl] = useState("");
   const [region, setRegion] = useState<string>("");
-  const { options: regionOptions } = useRegionOptions();
+  const { options: regionOptions } = useSiteOptions();
   const [selectedWorkflowId, setSelectedWorkflowId] = useState<string>("");
   const [selectedEvalSetId, setSelectedEvalSetId] = useState<string>("");
   const [targetTokenId, setTargetTokenId] = useState<string>("any");
@@ -178,7 +178,7 @@ export default function SelfTest() {
   const { data: runTargets } = useQuery<RunTargetsResponse>({
     queryKey: [`/api/workflows/${selectedWorkflowId}/run-targets`, region, selectedEvalSetId],
     queryFn: async () => (await apiRequest("GET",
-      `/api/workflows/${selectedWorkflowId}/run-targets?region=${encodeURIComponent(region)}&evalSetId=${selectedEvalSetId}`)).json(),
+      `/api/workflows/${selectedWorkflowId}/run-targets?siteId=${encodeURIComponent(region)}&evalSetId=${selectedEvalSetId}`)).json(),
     enabled: !!selectedWorkflowId && !!region && !!selectedEvalSetId,
   });
 
@@ -627,7 +627,7 @@ curl -H "Authorization: Bearer vox_live_xxx" \\
                       <div>
                         <div className="font-medium">{getJobStatusLabel(activeJob.status, activeJob.id)}</div>
                         <div className="text-sm text-muted-foreground">
-                          Region: {formatRegion(activeJob.region)}
+                          Region: {formatSite(activeJob.siteId)}
                         </div>
                       </div>
                     </div>

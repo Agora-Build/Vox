@@ -4471,11 +4471,11 @@ describe('Vox API Tests', () => {
       // Invalid status is silently ignored
     });
 
-    it('should reject invalid region', async () => {
-      // Unlike status/workflowId (silently ignored), the region param is strictly
-      // validated against allocated site IDs post-migration 0023 — a bogus region
+    it('should reject invalid siteId', async () => {
+      // Unlike status/workflowId (silently ignored), the siteId param is strictly
+      // validated against allocated site IDs post-migration 0023 — a bogus siteId
       // ("mars") is rejected with 400 rather than silently ignored.
-      const res = await authFetch(adminSession, `${BASE_URL}/api/eval-jobs?hours=720&region=mars`);
+      const res = await authFetch(adminSession, `${BASE_URL}/api/eval-jobs?hours=720&siteId=mars`);
       expect(res.status).toBe(400);
     });
 

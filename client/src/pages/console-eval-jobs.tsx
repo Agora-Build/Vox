@@ -16,8 +16,8 @@ import { ClipboardList, CheckCircle, XCircle, Loader2, Clock, CalendarClock, Cal
 import { useState } from "react";
 import { useToast } from "@/hooks/use-toast";
 import { useLocation, useSearch, Link } from "wouter";
-import { formatSmartTimestamp, formatRegion } from "@/lib/utils";
-import { useRegionOptions } from "@/hooks/use-regions";
+import { formatSmartTimestamp, formatSite } from "@/lib/utils";
+import { useSiteOptions } from "@/hooks/use-regions";
 import { format } from "date-fns";
 import type { EvalJob, EvalSchedule, Workflow as WorkflowType } from "@shared/schema";
 
@@ -55,10 +55,10 @@ const TIME_RANGES = [
 
 const PAGE_SIZE = 50;
 
-function buildJobsUrl(filters: { status: string; region: string; workflowId: string; hours: string; limit: number; offset: number }) {
+function buildJobsUrl(filters: { status: string; siteId: string; workflowId: string; hours: string; limit: number; offset: number }) {
   const params = new URLSearchParams();
   if (filters.status !== "all") params.set("status", filters.status);
-  if (filters.region !== "all") params.set("region", filters.region);
+  if (filters.siteId !== "all") params.set("siteId", filters.siteId);
   if (filters.workflowId !== "all") params.set("workflowId", filters.workflowId);
   params.set("hours", filters.hours);
   params.set("limit", String(filters.limit));
@@ -227,7 +227,7 @@ function ScheduledJobsBlock() {
                   <TableRow key={s.id}>
                     <TableCell className="font-medium">{s.name}</TableCell>
                     <TableCell>{s.workflowName}</TableCell>
-                    <TableCell><Badge variant="outline">{formatRegion(s.region)}</Badge></TableCell>
+                    <TableCell><Badge variant="outline">{formatSite(s.siteId)}</Badge></TableCell>
                     <TableCell>
                       <Badge variant="secondary">{s.scheduleType}</Badge>
                     </TableCell>
@@ -412,7 +412,7 @@ function ScheduledJobsBlock() {
 }
 
 function JobsTab() {
-  const { options: regionOptions } = useRegionOptions();
+  const { options: regionOptions } = useSiteOptions();
   const [statusFilter, setStatusFilter] = useState("all");
   const [regionFilter, setRegionFilter] = useState("all");
   const [workflowFilter, setWorkflowFilter] = useState("all");
@@ -420,7 +420,7 @@ function JobsTab() {
   const [page, setPage] = useState(1);
 
   const offset = (page - 1) * PAGE_SIZE;
-  const url = buildJobsUrl({ status: statusFilter, region: regionFilter, workflowId: workflowFilter, hours: timeFilter, limit: PAGE_SIZE, offset });
+  const url = buildJobsUrl({ status: statusFilter, siteId: regionFilter, workflowId: workflowFilter, hours: timeFilter, limit: PAGE_SIZE, offset });
 
   const { data, isLoading } = useQuery<{ data: EnrichedEvalJob[]; total: number }>({
     queryKey: [url],
@@ -618,7 +618,7 @@ function JobsTab() {
                           )}
                         </TableCell>
                         <TableCell>
-                          <Badge variant="outline">{formatRegion(job.region)}</Badge>
+                          <Badge variant="outline">{formatSite(job.siteId)}</Badge>
                         </TableCell>
                         <TableCell>
                           <div className="flex flex-wrap items-center gap-1">

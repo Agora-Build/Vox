@@ -13,7 +13,7 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { Server, MapPin, Activity, Clock, Eye, EyeOff, Plus, Key, Copy, Check, Ban, Lock } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
-import { formatSmartTimestamp, formatRegion } from "@/lib/utils";
+import { formatSmartTimestamp, formatSite } from "@/lib/utils";
 import { useRegionLocationOptions } from "@/hooks/use-regions";
 
 interface AuthStatus {
@@ -31,7 +31,7 @@ interface AuthStatus {
 interface EvalAgent {
   id: number;
   name: string;
-  region: string;
+  siteId: string;
   state: "idle" | "offline" | "occupied";
   dispatchTier: "private" | "team" | "public" | "shared";
   metadata: Record<string, string> | null;
@@ -253,7 +253,7 @@ export default function ConsoleEvalAgents() {
                     <TableCell>
                       <Badge variant="secondary" className="gap-1">
                         <MapPin className="h-3 w-3" />
-                        {formatRegion(agent.region)}
+                        {formatSite(agent.siteId)}
                       </Badge>
                     </TableCell>
                     <TableCell>
@@ -506,7 +506,7 @@ export default function ConsoleEvalAgents() {
                     <TableCell>
                       <Badge variant="secondary" className="gap-1">
                         <MapPin className="h-3 w-3" />
-                        {formatRegion(token.region)}
+                        {formatSite(token.region)}
                       </Badge>
                     </TableCell>
                     <TableCell>

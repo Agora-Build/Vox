@@ -23,7 +23,7 @@ interface EvalResult {
   id: number;
   providerId: string;
   provider: string;
-  region: string;
+  siteId: string;
   regionLabel?: string;
   countryCode?: string | null;
   countryName?: string | null;

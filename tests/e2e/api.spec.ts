@@ -39,17 +39,17 @@ test.describe("Public API Endpoints", () => {
     expect(body.data).toBeDefined();
     expect(Array.isArray(body.data)).toBeTruthy();
     expect(body.meta.timestamp).toBeDefined();
-    expect(body.meta.region).toBeDefined();
+    expect(body.meta.siteId).toBeDefined();
   });
 
-  test("GET /api/v1/metrics/leaderboard?region=na - should filter by region", async ({
+  test("GET /api/v1/metrics/leaderboard?siteId=na-us-seattle-01 - should filter by siteId", async ({
     request,
   }) => {
-    const response = await request.get("/api/v1/metrics/leaderboard?region=na");
+    const response = await request.get("/api/v1/metrics/leaderboard?siteId=na-us-seattle-01");
     expect(response.ok()).toBeTruthy();
 
     const body = await response.json();
-    expect(body.meta.region).toBe("na");
+    expect(body.meta.siteId).toBe("na-us-seattle-01");
   });
 });
 
