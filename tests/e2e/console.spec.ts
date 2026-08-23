@@ -1,4 +1,4 @@
-import { test, expect } from "@playwright/test";
+import { test, expect, type Page } from "@playwright/test";
 
 /**
  * Console Pages E2E Tests
@@ -6,6 +6,22 @@ import { test, expect } from "@playwright/test";
  * Tests the authenticated console pages.
  * These tests verify that pages require authentication and redirect or show auth prompt.
  */
+
+// The redirect is client-side: React must fetch /api/auth/status before it
+// navigates to /login, so a one-shot content snapshot after domcontentloaded
+// races the auth check. Poll until the redirect (or a login prompt) shows up.
+async function expectRequiresAuth(page: Page) {
+  await expect
+    .poll(
+      async () => {
+        const url = page.url();
+        const content = (await page.content()).toLowerCase();
+        return url.includes("login") || content.includes("sign in") || content.includes("login");
+      },
+      { timeout: 10000 },
+    )
+    .toBeTruthy();
+}
 
 test.describe("Console Access Control", () => {
   test.beforeEach(async ({ page }) => {
@@ -17,42 +33,17 @@ test.describe("Console Access Control", () => {
     page,
   }) => {
     await page.goto("/console");
-    await page.waitForLoadState("domcontentloaded");
-
-    // Should either redirect to login or show login prompt
-    const url = page.url();
-    const content = await page.content();
-    const requiresAuth =
-      url.includes("login") ||
-      content.toLowerCase().includes("sign in") ||
-      content.toLowerCase().includes("login");
-    expect(requiresAuth).toBeTruthy();
+    await expectRequiresAuth(page);
   });
 
   test("should redirect /console/projects to login", async ({ page }) => {
     await page.goto("/console/projects");
-    await page.waitForLoadState("domcontentloaded");
-
-    const url = page.url();
-    const content = await page.content();
-    const requiresAuth =
-      url.includes("login") ||
-      content.toLowerCase().includes("sign in") ||
-      content.toLowerCase().includes("login");
-    expect(requiresAuth).toBeTruthy();
+    await expectRequiresAuth(page);
   });
 
   test("should redirect /console/workflows to login", async ({ page }) => {
     await page.goto("/console/workflows");
-    await page.waitForLoadState("domcontentloaded");
-
-    const url = page.url();
-    const content = await page.content();
-    const requiresAuth =
-      url.includes("login") ||
-      content.toLowerCase().includes("sign in") ||
-      content.toLowerCase().includes("login");
-    expect(requiresAuth).toBeTruthy();
+    await expectRequiresAuth(page);
   });
 
   test("should handle /console/settings access", async ({ page }) => {
@@ -90,17 +81,9 @@ test.describe("Admin Console Access Control", () => {
 
   test("should redirect /admin/console to admin login", async ({ page }) => {
     await page.goto("/admin/console");
-    await page.waitForLoadState("domcontentloaded");
-
-    // Should redirect to login or show admin login
-    const url = page.url();
-    const content = await page.content();
-    const requiresAuth =
-      url.includes("login") ||
-      content.toLowerCase().includes("sign in") ||
-      content.toLowerCase().includes("login") ||
-      content.toLowerCase().includes("admin");
-    expect(requiresAuth).toBeTruthy();
+    // /admin/console content itself mentions "admin", so this poll accepts
+    // either the login redirect or the admin-login prompt.
+    await expectRequiresAuth(page);
   });
 
   test("should show admin login page", async ({ page }) => {

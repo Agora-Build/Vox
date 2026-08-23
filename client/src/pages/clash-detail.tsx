@@ -4,7 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Swords, Radio, Clock, BarChart3 } from "lucide-react";
-import { formatSmartTimestamp, formatRegion } from "@/lib/utils";
+import { formatSmartTimestamp } from "@/lib/utils";
 import AgoraSpectator from "@/components/agora-spectator";
 
 interface ClashResult {
@@ -26,7 +26,6 @@ interface ClashDetail {
   agentA: { id: number; name: string; providerId: string | null } | null;
   agentB: { id: number; name: string; providerId: string | null } | null;
   topic: string;
-  region: string;
   status: string;
   maxDurationSeconds: number;
   durationSeconds: number | null;
@@ -100,6 +99,19 @@ export default function ClashDetail() {
     },
   });
 
+  // Must run before the early returns below — hooks after a conditional
+  // return change hook order between renders and crash once `match` loads.
+  const { data: streamInfo } = useQuery<StreamInfo>({
+    queryKey: [`/api/clash/matches/${matchId}/stream-info`],
+    queryFn: async () => {
+      const res = await fetch(`/api/clash/matches/${matchId}/stream-info`);
+      if (!res.ok) return null;
+      return res.json();
+    },
+    enabled: !!match && match.status === "live",
+    staleTime: 5 * 60 * 1000,
+  });
+
   if (isLoading) {
     return (
       <div className="space-y-6">
@@ -113,17 +125,6 @@ export default function ClashDetail() {
     return <div className="text-center py-12 text-muted-foreground">Match not found.</div>;
   }
 
-  const { data: streamInfo } = useQuery<StreamInfo>({
-    queryKey: [`/api/clash/matches/${matchId}/stream-info`],
-    queryFn: async () => {
-      const res = await fetch(`/api/clash/matches/${matchId}/stream-info`);
-      if (!res.ok) return null;
-      return res.json();
-    },
-    enabled: !!match && match.status === "live",
-    staleTime: 5 * 60 * 1000,
-  });
-
   const resultA = match.results.find(r => r.agentProfileId === match.agentA?.id);
   const resultB = match.results.find(r => r.agentProfileId === match.agentB?.id);
 
@@ -136,7 +137,6 @@ export default function ClashDetail() {
             {match.status === "live" && <Radio className="h-3 w-3 mr-1 animate-pulse" />}
             {match.status.toUpperCase()}
           </Badge>
-          <span className="text-sm text-muted-foreground">{formatRegion(match.region)}</span>
           <span className="text-sm text-muted-foreground">{formatSmartTimestamp(match.createdAt)}</span>
         </div>
         <h1 className="text-2xl font-bold flex items-center gap-3">
@@ -266,10 +266,6 @@ export default function ClashDetail() {
                   ? `${Math.floor(match.durationSeconds / 60)}m ${match.durationSeconds % 60}s`
                   : `${Math.floor(match.maxDurationSeconds / 60)}m max`}
               </dd>
-            </div>
-            <div>
-              <dt className="text-muted-foreground">Region</dt>
-              <dd className="font-medium">{formatRegion(match.region)}</dd>
             </div>
             {match.startedAt && (
               <div>

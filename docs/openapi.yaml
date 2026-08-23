@@ -96,9 +96,8 @@ components:
           type: integer
         name:
           type: string
-        region:
+        siteId:
           type: string
-          enum: [na, apac, eu, sa]
         visibility:
           type: string
           enum: [public, private]
@@ -286,10 +285,9 @@ components:
           type: integer
           nullable: true
           example: 1
-        region:
+        siteId:
           type: string
-          enum: [na, apac, eu, sa]
-          example: "na"
+          example: "na-us-seattle-02"
         status:
           type: string
           enum: [pending, running, completed, failed]
@@ -324,10 +322,9 @@ components:
     RunWorkflowRequest:
       type: object
       properties:
-        region:
+        siteId:
           type: string
-          enum: [na, apac, eu, sa]
-          default: "na"
+          default: "na-us-seattle-02"
         evalSetId:
           type: integer
           nullable: true
@@ -347,10 +344,9 @@ components:
         providerId:
           type: string
           example: "abc123def456"
-        region:
+        siteId:
           type: string
-          enum: [na, apac, eu, sa]
-          example: "na"
+          example: "na-us-seattle-02"
         responseLatencyMedian:
           type: integer
           description: "Median response latency in milliseconds"
@@ -463,10 +459,9 @@ components:
         provider:
           type: string
           example: "abc123def456"
-        region:
+        siteId:
           type: string
-          enum: [na, apac, eu, sa]
-          example: "na"
+          example: "na-us-seattle-02"
         responseLatency:
           type: integer
           example: 250
@@ -498,10 +493,9 @@ components:
         provider:
           type: string
           example: "abc123def456"
-        region:
+        siteId:
           type: string
-          enum: [na, apac, eu, sa]
-          example: "na"
+          example: "na-us-seattle-02"
         responseLatency:
           type: integer
           example: 250
@@ -1361,15 +1355,14 @@ paths:
               type: object
               required:
                 - name
-                - region
+                - siteId
               properties:
                 name:
                   type: string
                   description: Display name for the token
-                region:
+                siteId:
                   type: string
-                  enum: [na, apac, eu, sa]
-                  description: Region assignment
+                  description: An exact allocated site id, e.g. na-us-seattle-02
                 visibility:
                   type: string
                   enum: [public, private]
@@ -1390,7 +1383,7 @@ paths:
                   token:
                     type: string
                     description: The raw token value (only shown once)
-                  region:
+                  siteId:
                     type: string
                   visibility:
                     type: string
@@ -1429,12 +1422,11 @@ paths:
       summary: Get leaderboard
       description: Returns aggregated provider rankings (public endpoint)
       parameters:
-        - name: region
+        - name: siteId
           in: query
           schema:
             type: string
-            enum: [na, apac, eu, sa]
-          description: Filter by region (optional)
+          description: An exact allocated site id, e.g. na-us-seattle-02
       responses:
         '200':
           description: Leaderboard data
@@ -1453,7 +1445,7 @@ paths:
                       timestamp:
                         type: string
                         format: date-time
-                      region:
+                      siteId:
                         type: string
                       count:
                         type: integer

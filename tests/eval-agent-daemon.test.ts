@@ -232,7 +232,7 @@ describe("Eval Agent Daemon - API Communication", () => {
       res.json({
         id: registeredAgentId,
         name: req.body.name || "test-agent",
-        region: "na",
+        siteId: "na",
         state: "idle",
       });
     });
@@ -256,14 +256,10 @@ describe("Eval Agent Daemon - API Communication", () => {
         return res.status(401).json({ error: "Invalid token" });
       }
 
-      const region = req.query.region;
-      if (region === "na") {
-        res.json([
-          { id: 1, workflowId: 1, region: "na", status: "pending" },
-        ]);
-      } else {
-        res.json([]);
-      }
+      // Core derives the site from the auth token — no query param involved.
+      res.json([
+        { id: 1, workflowId: 1, siteId: "na", status: "pending" },
+      ]);
     });
 
     app.post("/api/eval-agent/jobs/:id/claim", (req, res) => {
@@ -316,7 +312,7 @@ describe("Eval Agent Daemon - API Communication", () => {
     expect(res.status).toBe(200);
     expect(res.body.id).toBeDefined();
     expect(res.body.name).toBe("test-agent");
-    expect(res.body.region).toBe("na");
+    expect(res.body.siteId).toBe("na");
   });
 
   it("should reject registration with invalid token", async () => {
@@ -347,25 +343,15 @@ describe("Eval Agent Daemon - API Communication", () => {
     expect(res.body.success).toBe(true);
   });
 
-  it("should fetch jobs for registered region", async () => {
+  it("should fetch jobs for registered site (no site query param)", async () => {
     const res = await request(app)
-      .get("/api/eval-agent/jobs?region=na")
+      .get("/api/eval-agent/jobs")
       .set("Authorization", `Bearer ${testToken}`);
 
     expect(res.status).toBe(200);
     expect(Array.isArray(res.body)).toBe(true);
     expect(res.body.length).toBeGreaterThan(0);
-    expect(res.body[0].region).toBe("na");
-  });
-
-  it("should return empty array for other regions", async () => {
-    const res = await request(app)
-      .get("/api/eval-agent/jobs?region=eu")
-      .set("Authorization", `Bearer ${testToken}`);
-
-    expect(res.status).toBe(200);
-    expect(Array.isArray(res.body)).toBe(true);
-    expect(res.body.length).toBe(0);
+    expect(res.body[0].siteId).toBe("na");
   });
 
   it("should claim a job", async () => {

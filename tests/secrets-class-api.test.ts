@@ -230,7 +230,7 @@ describe('Secrets class — job-secrets withhold', () => {
         jobId = runData.job?.id || runData.jobs?.[0]?.id || runData.id || 0;
       }
       if (!jobId) {
-        const jobsRes = await fetch(`${BASE_URL}/api/eval-agent/jobs?region=${agentRegion}`, {
+        const jobsRes = await fetch(`${BASE_URL}/api/eval-agent/jobs`, {
           headers: { 'Authorization': `Bearer ${agentToken}` },
         });
         if (jobsRes.ok) {

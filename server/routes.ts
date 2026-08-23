@@ -81,16 +81,16 @@ const SCHEDULE_TTL_MS = 90 * 24 * 60 * 60 * 1000;
 
 type RegionLocationRecord = Awaited<ReturnType<typeof storage.getAllRegionLocations>>[number];
 
-function locationForRegion(region: string, locations: RegionLocationRecord[]): RegionLocationRecord | undefined {
+function locationForRegion(siteId: string, locations: RegionLocationRecord[]): RegionLocationRecord | undefined {
   return [...locations]
     .sort((a, b) => b.baseId.length - a.baseId.length)
-    .find((location) => regionSiteSequence(region, location.baseId) !== null);
+    .find((location) => regionSiteSequence(siteId, location.baseId) !== null);
 }
 
-function regionMetadata(region: string, locations: RegionLocationRecord[]) {
-  const location = locationForRegion(region, locations);
+function regionMetadata(siteId: string, locations: RegionLocationRecord[]) {
+  const location = locationForRegion(siteId, locations);
   if (!location) return {
-    regionLabel: region,
+    regionLabel: siteId,
     regionBaseId: null,
     city: null,
     countryCode: null,
@@ -98,7 +98,7 @@ function regionMetadata(region: string, locations: RegionLocationRecord[]) {
     macroRegionCode: null,
     macroRegionName: null,
   };
-  const sequence = region.slice(location.baseId.length + 1);
+  const sequence = siteId.slice(location.baseId.length + 1);
   return {
     regionLabel: `${location.displayName} ${sequence.padStart(2, "0")}`,
     regionBaseId: location.baseId,
@@ -121,15 +121,15 @@ function serializeRegionLocation(location: RegionLocationRecord) {
 }
 
 async function parseRegionQueryScope(query: {
-  region?: unknown;
+  siteId?: unknown;
   location?: unknown;
   country?: unknown;
   macroRegion?: unknown;
   regionScope?: unknown;
 }): Promise<{ scope?: RegionQueryScope; cacheKey: string } | { error: string }> {
   if (query.regionScope !== undefined) {
-    if ([query.region, query.location, query.country, query.macroRegion].some((value) => value !== undefined && value !== "")) {
-      return { error: "regionScope cannot be combined with region, location, country, or macroRegion" };
+    if ([query.siteId, query.location, query.country, query.macroRegion].some((value) => value !== undefined && value !== "")) {
+      return { error: "regionScope cannot be combined with siteId, location, country, or macroRegion" };
     }
     const rawScopes = Array.isArray(query.regionScope) ? query.regionScope : [query.regionScope];
     const scopes = rawScopes.flatMap((value) => typeof value === "string" ? value.split(",") : []);
@@ -161,13 +161,13 @@ async function parseRegionQueryScope(query: {
   }
 
   const supplied = [
-    ["region", query.region],
+    ["siteId", query.siteId],
     ["location", query.location],
     ["country", query.country],
     ["macroRegion", query.macroRegion],
   ].filter(([, value]) => value !== undefined && value !== "");
   if (supplied.length > 1) {
-    return { error: "Use only one region filter: region, location, country, or macroRegion" };
+    return { error: "Use only one region filter: siteId, location, country, or macroRegion" };
   }
   if (supplied.length === 0) return { cacheKey: "all" };
 
@@ -176,11 +176,11 @@ async function parseRegionQueryScope(query: {
   const value = rawValue.trim();
   if (!value) return { error: `${kind} cannot be empty` };
 
-  if (kind === "region") {
-    if (!(await storage.isAllocatedRegion(value, false))) {
-      return { error: "region must be an exact allocated site ID" };
+  if (kind === "siteId") {
+    if (!(await storage.isAllocatedSite(value, false))) {
+      return { error: "siteId must be an exact allocated site ID" };
     }
-    return { scope: { region: value }, cacheKey: `region:${value}` };
+    return { scope: { siteId: value }, cacheKey: `siteId:${value}` };
   }
 
   const locations = await storage.getAllRegionLocations();
@@ -2128,7 +2128,7 @@ export async function registerRoutes(
       }
 
       const normalizedRegion = String(region);
-      if (!(await storage.isAllocatedRegion(normalizedRegion))) {
+      if (!(await storage.isAllocatedSite(normalizedRegion))) {
         return res.status(400).json({ error: "Region must be an active allocated site ID" });
       }
 
@@ -2181,7 +2181,7 @@ export async function registerRoutes(
         name,
         workflowId,
         evalSetId,
-        region: normalizedRegion,
+        siteId: normalizedRegion,
         scheduleType: type,
         cronExpression: cronExpression || null,
         timezone: timezone || "UTC",
@@ -2363,7 +2363,7 @@ export async function registerRoutes(
         workflowId: schedule.workflowId,
         evalSetId: schedule.evalSetId,
         createdBy: user.id,
-        region: schedule.region,
+        siteId: schedule.siteId,
         config: jobConfig,
         snapshot,
         status: "pending",
@@ -2635,7 +2635,7 @@ export async function registerRoutes(
       res.json(tokens.map(t => ({
         id: t.id,
         name: t.name,
-        region: t.region,
+        region: t.siteId,
         dispatchTier: t.dispatchTier,
         isRevoked: t.isRevoked,
         lastUsedAt: t.lastUsedAt,
@@ -2700,14 +2700,14 @@ export async function registerRoutes(
 
       // Shared: register the marketplace listing (mirrors the PATCH path).
       if (marketplace && dispatchTier === "shared") {
-        await marketplace.setListing(evalAgentToken.id, pricePerUnit ?? null, { ownerId: user.id, region: evalAgentToken.region });
+        await marketplace.setListing(evalAgentToken.id, pricePerUnit ?? null, { ownerId: user.id, region: evalAgentToken.siteId });
       }
 
       res.json({
         id: evalAgentToken.id,
         name: evalAgentToken.name,
         token,
-        region: evalAgentToken.region,
+        region: evalAgentToken.siteId,
         dispatchTier: evalAgentToken.dispatchTier,
         createdAt: evalAgentToken.createdAt,
       });
@@ -2776,7 +2776,7 @@ export async function registerRoutes(
     // Money lives only in the plugin: set/clear the listing via the seam.
     if (marketplace) {
       if (dispatchTier === "shared") {
-        await marketplace.setListing(id, pricePerUnit ?? null, { ownerId: token.createdBy, region: token.region });
+        await marketplace.setListing(id, pricePerUnit ?? null, { ownerId: token.createdBy, region: token.siteId });
       } else {
         await marketplace.setListing(id, null); // switching away from shared deactivates the listing
       }
@@ -2793,7 +2793,7 @@ export async function registerRoutes(
       res.json(tokens.map(t => ({
         id: t.id,
         name: t.name,
-        region: t.region,
+        region: t.siteId,
         dispatchTier: t.dispatchTier,
         isRevoked: t.isRevoked,
         lastUsedAt: t.lastUsedAt,
@@ -2845,13 +2845,13 @@ export async function registerRoutes(
         isRevoked: false,
       });
       if (marketplace && dispatchTier === "shared") {
-        await marketplace.setListing(evalAgentToken.id, pricePerUnit ?? null, { ownerId: user.id, region: evalAgentToken.region });
+        await marketplace.setListing(evalAgentToken.id, pricePerUnit ?? null, { ownerId: user.id, region: evalAgentToken.siteId });
       }
       res.json({
         id: evalAgentToken.id,
         name: evalAgentToken.name,
         token,
-        region: evalAgentToken.region,
+        region: evalAgentToken.siteId,
         dispatchTier: evalAgentToken.dispatchTier,
         createdAt: evalAgentToken.createdAt,
       });
@@ -3028,7 +3028,7 @@ export async function registerRoutes(
       res.json(visible.map(a => ({
         id: a.id,
         name: a.name,
-        region: a.region,
+        siteId: a.siteId,
         state: a.state,
         metadata: a.metadata,
         lastSeenAt: a.lastSeenAt,
@@ -3050,7 +3050,7 @@ export async function registerRoutes(
       const agents = await storage.getEvalAgentsWithTokenTier();
       const rows = agents.map((a) => ({
         tokenId: a.tokenId,
-        region: a.region,
+        region: a.siteId,
         dispatchTier: a.tokenDispatchTier,
         ownerId: a.tokenCreatedBy,
         ownerOrgId: a.tokenOwnerOrgId,
@@ -3062,7 +3062,7 @@ export async function registerRoutes(
       const shared = marketplace ? await marketplace.listDispatchable(user.id) : [];
 
       return res.json({
-        free: free.map((a) => ({ tokenId: a.tokenId, region: a.region, dispatchTier: a.dispatchTier, state: a.state })),
+        free: free.map((a) => ({ tokenId: a.tokenId, siteId: a.region, dispatchTier: a.dispatchTier, state: a.state })),
         shared, // AgentSummary[] with pricePerUnit; [] when the seam is absent
       });
     } catch (error) {
@@ -3156,7 +3156,7 @@ export async function registerRoutes(
         agent = await storage.createEvalAgent({
           name: agentName,
           tokenId: evalAgentToken.id,
-          region: evalAgentToken.region,
+          siteId: evalAgentToken.siteId,
           state: "idle",
           metadata: metadata || {},
           currentLeaseId: leaseId,
@@ -3169,7 +3169,7 @@ export async function registerRoutes(
       res.json({
         id: agent.id,
         name: agent.name,
-        region: agent.region,
+        siteId: agent.siteId,
         state: agent.state,
         leaseId,
       });
@@ -3250,7 +3250,7 @@ export async function registerRoutes(
 
       let jobs = await storage.getClaimableJobsForToken({
         id: evalAgentToken.id,
-        region: evalAgentToken.region,
+        siteId: evalAgentToken.siteId,
         dispatchTier: evalAgentToken.dispatchTier,
         createdBy: evalAgentToken.createdBy,
       });
@@ -3320,7 +3320,7 @@ export async function registerRoutes(
       if (!existingJob) {
         return res.status(404).json({ error: "Job not found" });
       }
-      if (existingJob.region !== agent.region) {
+      if (existingJob.siteId !== agent.siteId) {
         return res.status(403).json({ error: "Job region does not match agent region" });
       }
 
@@ -3420,7 +3420,7 @@ export async function registerRoutes(
             await storage.createEvalResult({
               evalJobId: parseInt(jobId),
               providerId,
-              region: job.region,
+              siteId: job.siteId,
               // Pass latencies through as-is: null = NA (agent didn't respond).
               // Do NOT coerce to 0 — a 0 ms "response" would rank a dead agent as
               // the fastest and poison latency averages. responseRate carries the
@@ -3524,7 +3524,7 @@ export async function registerRoutes(
             await storage.createEvalResult({
               evalJobId: jobId,
               providerId,
-              region: job.region,
+              siteId: job.siteId,
               responseLatencyMedian: 0,
               responseLatencySd: 0,
               responseLatencyP95: 0,
@@ -3941,7 +3941,7 @@ export async function registerRoutes(
           const authz = await marketplace.authorizeDispatch(user.id, token.id, {
             workflowId: parseInt(workflowId, 10),
             evalSetId: evalSetId ?? null,
-            region: token.region,
+            region: token.siteId,
             createdBy: user.id,
           });
           if (!authz.ok) return res.status(402).json({ error: authz.reason ?? "Dispatch not authorized" });
@@ -3950,7 +3950,7 @@ export async function registerRoutes(
           const owner = await storage.getUser(token.createdBy);
           const decision = resolveTargetedDispatch(
             { id: user.id, organizationId: user.organizationId },
-            { id: token.id, dispatchTier: token.dispatchTier, createdBy: token.createdBy, region: token.region },
+            { id: token.id, dispatchTier: token.dispatchTier, createdBy: token.createdBy, region: token.siteId },
             { organizationId: owner?.organizationId ?? null },
           );
           if (!decision.ok) return res.status(403).json({ error: "Not allowed to dispatch to this agent" });
@@ -3969,7 +3969,7 @@ export async function registerRoutes(
             }
           }
         }
-        jobRegion = token.region; // targeted: region derived from token (body region ignored)
+        jobRegion = token.siteId; // targeted: region derived from token (body region ignored)
         targeting = token.id;
       } else {
         // Untargeted (region-pool) dispatch. A session-injected job here must
@@ -3987,7 +3987,7 @@ export async function registerRoutes(
           }
         }
         const normalizedRegion = region ? String(region) : "";
-        if (!normalizedRegion || !(await storage.isAllocatedRegion(normalizedRegion))) {
+        if (!normalizedRegion || !(await storage.isAllocatedSite(normalizedRegion))) {
           return res.status(400).json({ error: "An active allocated region site is required" });
         }
         jobRegion = normalizedRegion;
@@ -4028,7 +4028,7 @@ export async function registerRoutes(
           triggerType: 2, // manual (Run Workflow)
           evalSetId,
           createdBy: user.id,
-          region: jobRegion,
+          siteId: jobRegion,
           targetTokenId: targeting,
           config: jobConfig,
           snapshot,
@@ -4074,7 +4074,7 @@ export async function registerRoutes(
         return res.status(403).json({ error: "Not authorized to run this workflow" });
       }
 
-      const region = req.query.region ? String(req.query.region) : null;
+      const region = req.query.siteId ? String(req.query.siteId) : null;
       const evalSetIdRaw = req.query.evalSetId ? Number(req.query.evalSetId) : null;
 
       type Agent = { tokenId: number; name: string; region: string; dispatchTier: string; price: number | null };
@@ -4082,8 +4082,8 @@ export async function registerRoutes(
       // My agents: own tokens, any tier, not revoked, region-filtered when given.
       const ownTokens = await storage.getEvalAgentTokensByUser(user.id);
       const mine: Agent[] = ownTokens
-        .filter((t) => !t.isRevoked && (!region || t.region === region))
-        .map((t) => ({ tokenId: t.id, name: t.name, region: t.region, dispatchTier: t.dispatchTier, price: null }));
+        .filter((t) => !t.isRevoked && (!region || t.siteId === region))
+        .map((t) => ({ tokenId: t.id, name: t.name, region: t.siteId, dispatchTier: t.dispatchTier, price: null }));
 
       // Shared marketplace: dispatchable listings from the plugin, if present.
       // AgentSummary has no name, so join the token row for a display name.
@@ -4126,14 +4126,14 @@ export async function registerRoutes(
         return res.status(401).json({ error: "Not authenticated" });
       }
 
-      const { status, region, workflowId, limit, offset, hours } = req.query;
+      const { status, siteId, workflowId, limit, offset, hours } = req.query;
 
       const pageLimit = Math.min(Math.max(parseInt(limit as string) || 50, 1), 200);
       const pageOffset = Math.max(parseInt(offset as string) || 0, 0);
 
       const filters: {
         status?: "pending" | "running" | "completed" | "failed";
-        region?: string;
+        siteId?: string;
         workflowId?: number;
         hoursBack?: number;
       } = {};
@@ -4141,12 +4141,12 @@ export async function registerRoutes(
       if (status && ["pending", "running", "completed", "failed"].includes(status as string)) {
         filters.status = status as "pending" | "running" | "completed" | "failed";
       }
-      if (region) {
-        const normalizedRegion = String(region);
-        if (!(await storage.isAllocatedRegion(normalizedRegion, false))) {
-          return res.status(400).json({ error: "Invalid region site ID" });
+      if (siteId) {
+        const normalizedSiteId = String(siteId);
+        if (!(await storage.isAllocatedSite(normalizedSiteId, false))) {
+          return res.status(400).json({ error: "Invalid site ID" });
         }
-        filters.region = normalizedRegion;
+        filters.siteId = normalizedSiteId;
       }
       if (workflowId) {
         const parsed = parseInt(workflowId as string, 10);
@@ -4436,8 +4436,8 @@ export async function registerRoutes(
       id: r.id,
       providerId: r.providerId,
       provider: providerCache.get(r.providerId) || r.providerId,
-      region: r.region,
-      ...regionMetadata(r.region, locations),
+      siteId: r.siteId,
+      ...regionMetadata(r.siteId, locations),
       responseLatency: r.responseLatencyMedian,
       responseLatencySd: r.responseLatencySd,
       responseLatencyP95: r.responseLatencyP95,
@@ -4561,10 +4561,10 @@ export async function registerRoutes(
       const results = await storage.getMainlineEvalResults(1000, hoursBack, regionScope.scope);
       const locations = await storage.getAllRegionLocations();
 
-      // Group results by (provider, region)
+      // Group results by (provider, site)
       const providerRegionMap = new Map<string, {
         providerId: string;
-        region: string;
+        siteId: string;
         responseLatencies: number[];
         responseLatenciesP95: number[];
         interruptLatencies: number[];
@@ -4576,11 +4576,11 @@ export async function registerRoutes(
       }>();
 
       for (const result of results) {
-        const key = `${result.providerId}-${result.region}`;
+        const key = `${result.providerId}-${result.siteId}`;
         if (!providerRegionMap.has(key)) {
           providerRegionMap.set(key, {
             providerId: result.providerId,
-            region: result.region,
+            siteId: result.siteId,
             responseLatencies: [],
             responseLatenciesP95: [],
             interruptLatencies: [],
@@ -4624,8 +4624,8 @@ export async function registerRoutes(
           return {
             providerId: group.providerId,
             provider: provider?.name || "Unknown",
-            region: group.region,
-            ...regionMetadata(group.region, locations),
+            siteId: group.siteId,
+            ...regionMetadata(group.siteId, locations),
             responseLatency: avgRound(group.responseLatencies),
             responseLatencyP95: avgRound(group.responseLatenciesP95),
             interruptLatency: avgRound(group.interruptLatencies),
@@ -5875,7 +5875,7 @@ export async function registerRoutes(
         return res.status(400).json({ error: "name, region, and matchups array are required" });
       }
       const normalizedRegion = String(region);
-      if (!(await storage.isAllocatedRegion(normalizedRegion))) {
+      if (!(await storage.isAllocatedSite(normalizedRegion))) {
         return res.status(400).json({ error: "Region must be an active allocated site ID" });
       }
 
@@ -5905,7 +5905,7 @@ export async function registerRoutes(
         name,
         description: description || null,
         createdBy: user.id,
-        region: normalizedRegion,
+        siteId: normalizedRegion,
         status: "upcoming",
         visibility: visibility || "public",
         scheduledAt: scheduledAt ? new Date(scheduledAt) : null,
@@ -6037,7 +6037,7 @@ export async function registerRoutes(
       res.json(tokens.map(t => ({
         id: t.id,
         name: t.name,
-        region: t.region,
+        region: t.siteId,
         isRevoked: t.isRevoked,
         lastUsedAt: t.lastUsedAt,
         createdAt: t.createdAt,
@@ -6057,7 +6057,7 @@ export async function registerRoutes(
       const { name, region } = req.body;
       if (!name || !region) return res.status(400).json({ error: "Name and region required" });
       const normalizedRegion = String(region);
-      if (!(await storage.isAllocatedRegion(normalizedRegion))) {
+      if (!(await storage.isAllocatedSite(normalizedRegion))) {
         return res.status(400).json({ error: "Region must be an active allocated site ID" });
       }
 
@@ -6067,12 +6067,12 @@ export async function registerRoutes(
       const issued = await storage.createClashRunnerIssuedToken({
         name,
         tokenHash,
-        region: normalizedRegion,
+        siteId: normalizedRegion,
         createdBy: user.id,
         isRevoked: false,
       });
 
-      res.json({ id: issued.id, name: issued.name, token, region: issued.region, createdAt: issued.createdAt });
+      res.json({ id: issued.id, name: issued.name, token, region: issued.siteId, createdAt: issued.createdAt });
     } catch (error) {
       console.error("Error creating clash runner token:", error);
       res.status(500).json({ error: "Failed to create clash runner token" });
@@ -6101,7 +6101,7 @@ export async function registerRoutes(
       res.json(runners.map(r => ({
         id: r.id,
         runnerId: r.runnerId,
-        region: r.region,
+        region: r.siteId,
         state: r.state,
         currentMatchId: r.currentMatchId,
         lastHeartbeatAt: r.lastHeartbeatAt,
@@ -6133,9 +6133,9 @@ export async function registerRoutes(
       const { runnerId } = req.body;
       if (!runnerId) return res.status(400).json({ error: "runnerId is required" });
 
-      const runner = await storage.registerClashRunner({ runnerId, tokenHash, region: issuedToken.region });
+      const runner = await storage.registerClashRunner({ runnerId, tokenHash, siteId: issuedToken.siteId });
       await storage.updateClashRunnerIssuedTokenLastUsed(issuedToken.id);
-      res.json({ id: runner.id, state: runner.state, region: runner.region });
+      res.json({ id: runner.id, state: runner.state, region: runner.siteId });
     } catch (error) {
       console.error("Error registering clash runner:", error);
       res.status(500).json({ error: "Failed to register runner" });
@@ -6242,14 +6242,14 @@ export async function registerRoutes(
         match: {
           id: match.id,
           topic: match.topic,
-          region: event.region,
+          region: event.siteId,
           maxDurationSeconds: match.maxDurationSeconds,
           config: match.config,
         },
         event: {
           id: event.id,
           name: event.name,
-          region: event.region,
+          region: event.siteId,
         },
         agentA: {
           id: profileA.id,
@@ -6654,7 +6654,7 @@ export async function registerRoutes(
         return res.status(400).json({ error: "eventName, region, and matchups array are required" });
       }
       const normalizedRegion = String(region);
-      if (!(await storage.isAllocatedRegion(normalizedRegion))) {
+      if (!(await storage.isAllocatedSite(normalizedRegion))) {
         return res.status(400).json({ error: "Region must be an active allocated site ID" });
       }
 
@@ -6670,7 +6670,7 @@ export async function registerRoutes(
         eventName,
         createdBy: user.id,
         matchups,
-        region: normalizedRegion,
+        siteId: normalizedRegion,
         maxDurationSeconds: maxDurationSeconds || 300,
         scheduledAt: scheduledAt ? new Date(scheduledAt) : null,
         cronExpression: cronExpression || null,
@@ -6768,7 +6768,7 @@ export async function registerRoutes(
           if (!pending) continue;
 
           // Find an idle runner in the event's region
-          const runner = await storage.getIdleClashRunner(event.region);
+          const runner = await storage.getIdleClashRunner(event.siteId);
           if (!runner) continue;
 
           // Assign match to runner atomically — mark both in one scheduler tick
@@ -6811,7 +6811,7 @@ export async function registerRoutes(
             name: schedule.eventName,
             description: null,
             createdBy: schedule.createdBy,
-            region: schedule.region,
+            siteId: schedule.siteId,
             status: "live",
             visibility: "public",
             scheduledAt: null,

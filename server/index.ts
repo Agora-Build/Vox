@@ -23,12 +23,12 @@ const MAX_JOB_RUN_MINUTES = 90;
 
 // A "pending" job is one no agent has claimed yet. Two reapers keep it from
 // hanging forever (nothing else touches the pending state):
-//   - PENDING_NO_AGENT_TIMEOUT_MINUTES: fast-fail when the job's region has no
-//     online agent — an unstaffed/misconfigured region. Long enough to survive a
+//   - PENDING_NO_AGENT_TIMEOUT_MINUTES: fast-fail when the job's site has no
+//     online agent — an unstaffed/misconfigured site. Long enough to survive a
 //     routine agent restart or host reboot, short enough to give the user an
-//     actionable "no agent for region X" result in minutes, not a full day.
+//     actionable "no agent for site X" result in minutes, not a full day.
 //   - PENDING_MAX_WAIT_MINUTES: absolute backstop for anything the fast-fail
-//     misses (region has an online agent that somehow never claims the job).
+//     misses (site has an online agent that somehow never claims the job).
 const PENDING_NO_AGENT_TIMEOUT_MINUTES = 15;
 const PENDING_MAX_WAIT_MINUTES = 24 * 60;
 const REAP_SETTLE_LOOKBACK_MINUTES = 15; // window for the prompt reap-settle sweep
@@ -290,14 +290,14 @@ function startBackgroundWorker() {
         log(`Failed ${timedOut} job(s) exceeding ${MAX_JOB_RUN_MINUTES}min run time`, "worker");
       }
 
-      // Fast-fail pending jobs whose region has no online agent (run before the
-      // backstop so those get the clearer "no agent for region" reason).
+      // Fast-fail pending jobs whose site has no online agent (run before the
+      // backstop so those get the clearer "no agent for site" reason).
       const noAgent = await storage.failPendingJobsWithNoAgent(
         PENDING_NO_AGENT_TIMEOUT_MINUTES,
         STALE_THRESHOLD_MINUTES,
       );
       if (noAgent > 0) {
-        log(`Failed ${noAgent} pending job(s) with no agent for their region`, "worker");
+        log(`Failed ${noAgent} pending job(s) with no agent for their site`, "worker");
       }
 
       // Backstop: fail any pending job that has waited past the hard cap.
@@ -429,7 +429,7 @@ function startBackgroundWorker() {
             workflowId: schedule.workflowId,
             evalSetId: schedule.evalSetId,
             createdBy: schedule.createdBy,
-            region: schedule.region,
+            siteId: schedule.siteId,
             config: jobConfig,
             snapshot,
             status: "pending",

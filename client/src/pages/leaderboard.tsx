@@ -1,5 +1,5 @@
 import { useState, useMemo } from "react";
-import { appendRegionScopes, formatRegion, formatRegionScopeSelection } from "@/lib/utils";
+import { appendRegionScopes, formatSite, formatRegionScopeSelection } from "@/lib/utils";
 import { RegionScopeSelector } from "@/components/region-scope-selector";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -23,7 +23,7 @@ import { useRegionLocations } from "@/hooks/use-regions";
 interface LeaderboardEntry {
   rank: number;
   provider: string;
-  region: string;
+  siteId: string;
   regionLabel?: string;
   countryCode?: string | null;
   countryName?: string | null;
@@ -286,7 +286,7 @@ export default function Leaderboard() {
               <TableBody>
                 {filteredAndSortedData.map((entry) => (
                   <TableRow
-                    key={`${entry.provider}-${entry.region}`}
+                    key={`${entry.provider}-${entry.siteId}`}
                     data-testid={`row-leaderboard-${entry.rank}`}
                     className="cursor-pointer hover:bg-muted/50"
                     onClick={() => setSelectedEntry(entry)}
@@ -301,7 +301,7 @@ export default function Leaderboard() {
                     </TableCell>
                     <TableCell>
                       <Badge variant="outline" className="text-muted-foreground" data-testid={`text-region-${entry.rank}`}>
-                        {entry.regionLabel || formatRegion(entry.region)}
+                        {entry.regionLabel || formatSite(entry.siteId)}
                       </Badge>
                     </TableCell>
                     <TableCell className="text-right font-mono" data-testid={`text-response-${entry.rank}`}>
@@ -370,7 +370,7 @@ export default function Leaderboard() {
               )}
             </DialogTitle>
             <DialogDescription>
-              Performance metrics for {selectedEntry ? selectedEntry.regionLabel || formatRegion(selectedEntry.region) : ""} region
+              Performance metrics for {selectedEntry ? selectedEntry.regionLabel || formatSite(selectedEntry.siteId) : ""} region
             </DialogDescription>
           </DialogHeader>
           {selectedEntry && (

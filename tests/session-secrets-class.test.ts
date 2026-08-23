@@ -34,7 +34,7 @@ d("login-class secrets are withheld from the job path", () => {
     });
     const job = await storage.createEvalJob({
       workflowId: wf.id, triggerType: 2, evalSetId: null, createdBy: 1,
-      region: "na-us-ashburn-01", config: {},
+      siteId: "na-us-ashburn-01", config: {},
       snapshot: { provider: null, workflow: null, evalSet: null, creatorPlan: null } as any,
       status: "pending", priority: 0, retryCount: 0, maxRetries: 3,
     } as any);
@@ -77,7 +77,7 @@ d("login-class secrets are withheld from the job path", () => {
     });
     const job = await storage.createEvalJob({
       workflowId: wf.id, triggerType: 2, evalSetId: null, createdBy: user.id,
-      region: "na-us-ashburn-01", config: {},
+      siteId: "na-us-ashburn-01", config: {},
       snapshot: { provider: null, workflow: null, evalSet: null, creatorPlan: null } as any,
       status: "pending", priority: 0, retryCount: 0, maxRetries: 3,
     } as any);

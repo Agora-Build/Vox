@@ -571,7 +571,7 @@ describe('Secrets - Agent Endpoint', () => {
 
         // If direct job ID wasn't returned, fetch pending jobs
         if (!jobId) {
-          const jobsRes = await fetch(`${BASE_URL}/api/eval-agent/jobs?region=${agentRegion}`, {
+          const jobsRes = await fetch(`${BASE_URL}/api/eval-agent/jobs`, {
             headers: { 'Authorization': `Bearer ${agentToken}` },
           });
           if (jobsRes.ok) {

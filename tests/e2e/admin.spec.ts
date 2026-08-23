@@ -22,24 +22,25 @@ test.describe("Admin Authentication", () => {
     expect(title).toContain("Admin");
   });
 
-  test("should redirect admin to /admin/console after login via /admin/login", async ({ page }) => {
+  // Admin login lands on User Management, moved under /console in #52.
+  test("should redirect admin to /console/users after login via /admin/login", async ({ page }) => {
     await page.goto("/admin/login");
     await page.waitForSelector('[data-testid="input-email"]', { timeout: 10000 });
     await page.fill('[data-testid="input-email"]', "admin@vox.local");
     await page.fill('[data-testid="input-password"]', "admin123456");
     await page.click('[data-testid="button-login"]');
 
-    await expect(page).toHaveURL(/\/admin\/console/, { timeout: 15000 });
+    await expect(page).toHaveURL(/\/console\/users/, { timeout: 15000 });
   });
 
-  test("should redirect admin to /admin/console after login via /login", async ({ page }) => {
+  test("should redirect admin to /console/users after login via /login", async ({ page }) => {
     await page.goto("/login");
     await page.waitForSelector('[data-testid="input-email"]', { timeout: 10000 });
     await page.fill('[data-testid="input-email"]', "admin@vox.local");
     await page.fill('[data-testid="input-password"]', "admin123456");
     await page.click('[data-testid="button-login"]');
 
-    await expect(page).toHaveURL(/\/admin\/console/, { timeout: 15000 });
+    await expect(page).toHaveURL(/\/console\/users/, { timeout: 15000 });
   });
 
   test("should stay on /login with bad credentials", async ({ page }) => {

@@ -66,7 +66,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 interface EvalAgent {
   id: number;
   name: string;
-  region: string;
+  siteId: string;
   state: string;
   leaseId?: string;
 }
@@ -75,7 +75,7 @@ interface EvalJob {
   id: number;
   workflowId: number;
   evalSetId: number | null;
-  region: string;
+  siteId: string;
   status: string;
   config: Record<string, unknown> | null;
 }
@@ -214,7 +214,7 @@ class VoxEvalAgentDaemon {
   private config: DaemonConfig;
   private agentId: number | null = null;
   private leaseId: string | null = null;
-  private region: string | null = null;
+  private siteId: string | null = null;
   private heartbeatTimer: NodeJS.Timeout | null = null;
   private jobPollTimer: NodeJS.Timeout | null = null;
   private isRunningJob = false;
@@ -333,13 +333,13 @@ class VoxEvalAgentDaemon {
 
       const agent: EvalAgent = await response.json();
       this.agentId = agent.id;
-      this.region = agent.region;
+      this.siteId = agent.siteId;
       this.leaseId = agent.leaseId ?? null;
 
       console.log(`[Daemon] Registered successfully!`);
       console.log(`  - Agent ID: ${agent.id}`);
       console.log(`  - Name: ${agent.name}`);
-      console.log(`  - Region: ${agent.region}`);
+      console.log(`  - Site: ${agent.siteId}`);
 
       // Reset any artifact uploads stuck in 'uploading' from a previous run
       try {
@@ -405,10 +405,10 @@ class VoxEvalAgentDaemon {
   // -------------------------------------------------------------------------
 
   async fetchJobs(): Promise<EvalJob[]> {
-    if (!this.region) return [];
+    if (!this.siteId) return [];
 
     try {
-      const response = await this.fetch(`/api/eval-agent/jobs?region=${this.region}`);
+      const response = await this.fetch(`/api/eval-agent/jobs`);
       if (!response.ok) return [];
       return await response.json();
     } catch (error: unknown) {
@@ -1816,7 +1816,7 @@ class VoxEvalAgentDaemon {
   async executeJob(job: EvalJob): Promise<EvalResult> {
     console.log(`[Daemon] Executing job ${job.id}`);
     console.log(`  - Workflow ID: ${job.workflowId}`);
-    console.log(`  - Region: ${job.region}`);
+    console.log(`  - Site: ${job.siteId}`);
 
     const config = (job.config || {}) as { framework?: string; app?: string; scenario?: string; stepsPrefix?: string; stepsSuffix?: string };
 

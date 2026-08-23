@@ -26,8 +26,9 @@ test.describe("Public Clash Page", () => {
     const content = await page.content();
     expect(content.length).toBeGreaterThan(100);
 
-    // Should show the main heading
-    await expect(page.locator("text=Clash")).toBeVisible();
+    // Should show the main heading (role-based: bare text= collides with
+    // the nav link and event names)
+    await expect(page.getByRole("heading", { name: "Clash", exact: true })).toBeVisible();
   });
 
   test("should show Live Now section", async ({ page }) => {
@@ -35,28 +36,28 @@ test.describe("Public Clash Page", () => {
     await page.waitForLoadState("domcontentloaded");
 
     // Should have the Live Now heading
-    await expect(page.locator("text=Live Now")).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Live Now" })).toBeVisible();
   });
 
   test("should show Upcoming section", async ({ page }) => {
     await page.goto("/clash");
     await page.waitForLoadState("domcontentloaded");
 
-    await expect(page.locator("text=Upcoming")).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Upcoming" })).toBeVisible();
   });
 
   test("should show Recent section", async ({ page }) => {
     await page.goto("/clash");
     await page.waitForLoadState("domcontentloaded");
 
-    await expect(page.locator("text=Recent")).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Recent" })).toBeVisible();
   });
 
   test("should show Leaderboard section", async ({ page }) => {
     await page.goto("/clash");
     await page.waitForLoadState("domcontentloaded");
 
-    await expect(page.locator("text=Leaderboard")).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Leaderboard" })).toBeVisible();
   });
 });
 
@@ -92,8 +93,9 @@ test.describe("Console Clash (Protected)", () => {
     await page.waitForLoadState("domcontentloaded");
     await page.waitForTimeout(1000);
 
-    // Should show Agent Profiles tab
-    await expect(page.locator("text=Agent Profiles")).toBeVisible();
+    // Should show Agent Profiles tab (role-based: text= also matches the
+    // CardTitle inside the tab panel)
+    await expect(page.getByRole("tab", { name: "Agent Profiles" })).toBeVisible();
   });
 
   test("should show Events tab (not 'My Clashes')", async ({ page }) => {
@@ -102,7 +104,7 @@ test.describe("Console Clash (Protected)", () => {
     await page.waitForLoadState("domcontentloaded");
     await page.waitForTimeout(1000);
 
-    await expect(page.locator("text=Events")).toBeVisible();
+    await expect(page.getByRole("tab", { name: "Events" })).toBeVisible();
   });
 
   test("should show Schedules tab for admin/scout", async ({ page }) => {
@@ -112,7 +114,7 @@ test.describe("Console Clash (Protected)", () => {
     await page.waitForTimeout(1000);
 
     // Admin user should see Schedules tab
-    await expect(page.locator("text=Schedules")).toBeVisible();
+    await expect(page.getByRole("tab", { name: "Schedules" })).toBeVisible();
   });
 
   test("should open New Profile dialog", async ({ page }) => {

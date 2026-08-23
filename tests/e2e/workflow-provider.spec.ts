@@ -146,7 +146,7 @@ test.describe("Eval-jobs provenance columns", () => {
   test("jobs table shows Provider + Eval Set columns when jobs exist", async ({ page }) => {
     await page.goto("/console/eval-jobs?tab=jobs");
     // Widen the window to 30 days to maximize the chance of finding jobs.
-    await page.waitForLoadState("networkidle");
+    await page.waitForLoadState("domcontentloaded");
 
     const table = page.locator("table");
     if (await table.isVisible().catch(() => false)) {
@@ -168,7 +168,7 @@ test.describe("Eval-sets My/Public tabs", () => {
 
   test("defaults to My Eval Sets and can switch to Public", async ({ page }) => {
     await page.goto("/console/eval-sets");
-    await page.waitForLoadState("networkidle");
+    await page.waitForLoadState("domcontentloaded");
 
     const myTab = page.getByTestId("tab-my-evalsets");
     const publicTab = page.getByTestId("tab-public-evalsets");
@@ -200,7 +200,7 @@ test.describe("Job snapshot", () => {
     test.skip(!job, "no jobs in the DB to inspect");
 
     await page.goto(`/console/eval-jobs/${job.id}`);
-    await page.waitForLoadState("networkidle");
+    await page.waitForLoadState("domcontentloaded");
 
     const btn = page.getByTestId("button-view-snapshot");
     await expect(btn).toBeVisible();
