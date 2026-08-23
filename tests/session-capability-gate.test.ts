@@ -122,7 +122,7 @@ describe("GET /api/eval-agent/jobs — session-capability gate", () => {
     expect(tokenRes.ok).toBe(true);
     const tokenData = await tokenRes.json();
     tokenValue = tokenData.token;
-    region = tokenData.region;
+    region = tokenData.siteId;
   });
 
   // Release the login-class secrets so admin's per-user cap (50) isn't exhausted

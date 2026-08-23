@@ -26,7 +26,7 @@ async function makeTokenAndAgent(cookie: string, name: string, regionBaseId: str
     body: JSON.stringify({ name, regionLocationBaseId: regionBaseId, visibility: "public" }),
   });
   expect(tRes.ok).toBe(true);
-  const created = await tRes.json(); // { id, name, token, region, visibility, createdAt }
+  const created = await tRes.json(); // { id, name, token, siteId, dispatchTier, createdAt }
 
   // High sentinel version so the jobs route's version-gate never filters our
   // job out: the seeded eval set this test picks (es[0]) may merge a
@@ -43,7 +43,7 @@ async function makeTokenAndAgent(cookie: string, name: string, regionBaseId: str
   // lease; claim/complete fence out a superseded lease by requiring it back in the body.
   const agent = await rRes.json();
 
-  return { id: created.id as number, token: created.token as string, region: created.region as string, agent };
+  return { id: created.id as number, token: created.token as string, region: created.siteId as string, agent };
 }
 
 describe("targeted dispatch isolation", () => {
@@ -93,8 +93,6 @@ describe("targeted dispatch isolation", () => {
     })).json();
     const targeted = aJobs.find((j: any) => j.targetTokenId === A.id);
     expect(targeted).toBeDefined();
-    // Job rows are raw eval_jobs rows and carry siteId; the token-create
-    // response still uses the `region` key (documented half-migration).
     expect(targeted.siteId).toBe(A.region);
 
     const claim = await fetch(`${BASE_URL}/api/eval-agent/jobs/${targeted.id}/claim`, {

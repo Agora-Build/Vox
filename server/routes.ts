@@ -2121,10 +2121,12 @@ export async function registerRoutes(
         return res.status(401).json({ error: "Not authenticated" });
       }
 
-      const { name, workflowId, evalSetId, region, scheduleType, cronExpression, timezone, runAt, maxRuns, organizationId } = req.body;
+      const { name, workflowId, evalSetId, scheduleType, cronExpression, timezone, runAt, maxRuns, organizationId } = req.body;
+      // `region` is the legacy body key for the site ID — accepted as an alias.
+      const region = req.body.siteId ?? req.body.region;
 
       if (!name || !workflowId || !region) {
-        return res.status(400).json({ error: "Name, workflowId, and region are required" });
+        return res.status(400).json({ error: "Name, workflowId, and siteId are required" });
       }
 
       const normalizedRegion = String(region);
@@ -2635,7 +2637,7 @@ export async function registerRoutes(
       res.json(tokens.map(t => ({
         id: t.id,
         name: t.name,
-        region: t.siteId,
+        siteId: t.siteId,
         dispatchTier: t.dispatchTier,
         isRevoked: t.isRevoked,
         lastUsedAt: t.lastUsedAt,
@@ -2707,7 +2709,7 @@ export async function registerRoutes(
         id: evalAgentToken.id,
         name: evalAgentToken.name,
         token,
-        region: evalAgentToken.siteId,
+        siteId: evalAgentToken.siteId,
         dispatchTier: evalAgentToken.dispatchTier,
         createdAt: evalAgentToken.createdAt,
       });
@@ -2793,7 +2795,7 @@ export async function registerRoutes(
       res.json(tokens.map(t => ({
         id: t.id,
         name: t.name,
-        region: t.siteId,
+        siteId: t.siteId,
         dispatchTier: t.dispatchTier,
         isRevoked: t.isRevoked,
         lastUsedAt: t.lastUsedAt,
@@ -2851,7 +2853,7 @@ export async function registerRoutes(
         id: evalAgentToken.id,
         name: evalAgentToken.name,
         token,
-        region: evalAgentToken.siteId,
+        siteId: evalAgentToken.siteId,
         dispatchTier: evalAgentToken.dispatchTier,
         createdAt: evalAgentToken.createdAt,
       });
@@ -3063,7 +3065,9 @@ export async function registerRoutes(
 
       return res.json({
         free: free.map((a) => ({ tokenId: a.tokenId, siteId: a.region, dispatchTier: a.dispatchTier, state: a.state })),
-        shared, // AgentSummary[] with pricePerUnit; [] when the seam is absent
+        // Seam AgentSummary rows carry `region` internally — remap to the
+        // public `siteId` wire key.
+        shared: shared.map((l) => ({ tokenId: l.tokenId, siteId: l.region, dispatchTier: "shared", pricePerUnit: l.pricePerUnit })),
       });
     } catch (error) {
       console.error("Error fetching dispatchable agents:", error);
@@ -3823,7 +3827,9 @@ export async function registerRoutes(
       }
 
       const { workflowId } = req.params;
-      const { region, evalSetId } = req.body;
+      const { evalSetId } = req.body;
+      // `region` is the legacy body key for the site ID — accepted as an alias.
+      const region = req.body.siteId ?? req.body.region;
       const targetTokenId = req.body.targetTokenId != null ? Number(req.body.targetTokenId) : null;
       if (targetTokenId != null && !Number.isFinite(targetTokenId)) {
         return res.status(400).json({ error: "Invalid target agent token id" });
@@ -4077,13 +4083,13 @@ export async function registerRoutes(
       const region = req.query.siteId ? String(req.query.siteId) : null;
       const evalSetIdRaw = req.query.evalSetId ? Number(req.query.evalSetId) : null;
 
-      type Agent = { tokenId: number; name: string; region: string; dispatchTier: string; price: number | null };
+      type Agent = { tokenId: number; name: string; siteId: string; dispatchTier: string; price: number | null };
 
       // My agents: own tokens, any tier, not revoked, region-filtered when given.
       const ownTokens = await storage.getEvalAgentTokensByUser(user.id);
       const mine: Agent[] = ownTokens
         .filter((t) => !t.isRevoked && (!region || t.siteId === region))
-        .map((t) => ({ tokenId: t.id, name: t.name, region: t.siteId, dispatchTier: t.dispatchTier, price: null }));
+        .map((t) => ({ tokenId: t.id, name: t.name, siteId: t.siteId, dispatchTier: t.dispatchTier, price: null }));
 
       // Shared marketplace: dispatchable listings from the plugin, if present.
       // AgentSummary has no name, so join the token row for a display name.
@@ -4095,7 +4101,7 @@ export async function registerRoutes(
           if (region && l.region !== region) continue;
           const tok = await storage.getEvalAgentToken(l.tokenId);
           if (!tok || tok.isRevoked) continue;
-          shared.push({ tokenId: l.tokenId, name: tok.name, region: l.region, dispatchTier: "shared", price: l.pricePerUnit });
+          shared.push({ tokenId: l.tokenId, name: tok.name, siteId: l.region, dispatchTier: "shared", price: l.pricePerUnit });
         }
       }
 
@@ -5870,9 +5876,11 @@ export async function registerRoutes(
       const user = await getCurrentUser(req);
       if (!user) return res.status(401).json({ error: "Not authenticated" });
 
-      const { name, description, region, visibility, scheduledAt, matchups } = req.body;
+      const { name, description, visibility, scheduledAt, matchups } = req.body;
+      // `region` is the legacy body key for the site ID — accepted as an alias.
+      const region = req.body.siteId ?? req.body.region;
       if (!name || !region || !matchups || !Array.isArray(matchups) || matchups.length === 0) {
-        return res.status(400).json({ error: "name, region, and matchups array are required" });
+        return res.status(400).json({ error: "name, siteId, and matchups array are required" });
       }
       const normalizedRegion = String(region);
       if (!(await storage.isAllocatedSite(normalizedRegion))) {
@@ -6037,7 +6045,7 @@ export async function registerRoutes(
       res.json(tokens.map(t => ({
         id: t.id,
         name: t.name,
-        region: t.siteId,
+        siteId: t.siteId,
         isRevoked: t.isRevoked,
         lastUsedAt: t.lastUsedAt,
         createdAt: t.createdAt,
@@ -6054,8 +6062,10 @@ export async function registerRoutes(
       const user = await getCurrentUser(req);
       if (!user) return res.status(401).json({ error: "Not authenticated" });
 
-      const { name, region } = req.body;
-      if (!name || !region) return res.status(400).json({ error: "Name and region required" });
+      const { name } = req.body;
+      // `region` is the legacy body key for the site ID — accepted as an alias.
+      const region = req.body.siteId ?? req.body.region;
+      if (!name || !region) return res.status(400).json({ error: "Name and siteId required" });
       const normalizedRegion = String(region);
       if (!(await storage.isAllocatedSite(normalizedRegion))) {
         return res.status(400).json({ error: "Region must be an active allocated site ID" });
@@ -6072,7 +6082,7 @@ export async function registerRoutes(
         isRevoked: false,
       });
 
-      res.json({ id: issued.id, name: issued.name, token, region: issued.siteId, createdAt: issued.createdAt });
+      res.json({ id: issued.id, name: issued.name, token, siteId: issued.siteId, createdAt: issued.createdAt });
     } catch (error) {
       console.error("Error creating clash runner token:", error);
       res.status(500).json({ error: "Failed to create clash runner token" });
@@ -6101,7 +6111,7 @@ export async function registerRoutes(
       res.json(runners.map(r => ({
         id: r.id,
         runnerId: r.runnerId,
-        region: r.siteId,
+        siteId: r.siteId,
         state: r.state,
         currentMatchId: r.currentMatchId,
         lastHeartbeatAt: r.lastHeartbeatAt,
@@ -6135,7 +6145,9 @@ export async function registerRoutes(
 
       const runner = await storage.registerClashRunner({ runnerId, tokenHash, siteId: issuedToken.siteId });
       await storage.updateClashRunnerIssuedTokenLastUsed(issuedToken.id);
-      res.json({ id: runner.id, state: runner.state, region: runner.siteId });
+      // Deployed clash-runner daemons still read `region`; keep the alias
+      // beside `siteId` until the next runner redeploy (vox-upgrade.sh).
+      res.json({ id: runner.id, state: runner.state, siteId: runner.siteId, region: runner.siteId });
     } catch (error) {
       console.error("Error registering clash runner:", error);
       res.status(500).json({ error: "Failed to register runner" });
@@ -6242,6 +6254,9 @@ export async function registerRoutes(
         match: {
           id: match.id,
           topic: match.topic,
+          // Deployed clash-runner daemons still read `region`; keep the alias
+          // beside `siteId` until the next runner redeploy (vox-upgrade.sh).
+          siteId: event.siteId,
           region: event.siteId,
           maxDurationSeconds: match.maxDurationSeconds,
           config: match.config,
@@ -6249,6 +6264,7 @@ export async function registerRoutes(
         event: {
           id: event.id,
           name: event.name,
+          siteId: event.siteId,
           region: event.siteId,
         },
         agentA: {
@@ -6649,9 +6665,11 @@ export async function registerRoutes(
       const user = await getCurrentUser(req);
       if (!user) return res.status(401).json({ error: "Not authenticated" });
 
-      const { eventName, region, matchups, maxDurationSeconds, scheduledAt, cronExpression } = req.body;
+      const { eventName, matchups, maxDurationSeconds, scheduledAt, cronExpression } = req.body;
+      // `region` is the legacy body key for the site ID — accepted as an alias.
+      const region = req.body.siteId ?? req.body.region;
       if (!eventName || !region || !matchups || !Array.isArray(matchups) || matchups.length === 0) {
-        return res.status(400).json({ error: "eventName, region, and matchups array are required" });
+        return res.status(400).json({ error: "eventName, siteId, and matchups array are required" });
       }
       const normalizedRegion = String(region);
       if (!(await storage.isAllocatedSite(normalizedRegion))) {

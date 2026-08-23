@@ -50,7 +50,7 @@ interface Provider {
 interface EvalAgentToken {
   id: number;
   name: string;
-  region: string;
+  siteId: string;
   dispatchTier: string;
   token?: string;
   isRevoked: boolean;
@@ -865,8 +865,8 @@ describe('Vox API Tests', () => {
       // The server allocates the next sequence for the base and returns the
       // resolved site region (e.g. "na-us-seattle-02"); capture it so jobs and
       // assertions use the token's actual region rather than assuming a value.
-      testAgentRegion = agentToken.region;
-      expect(agentToken.region).toContain(BASE_NA);
+      testAgentRegion = agentToken.siteId;
+      expect(agentToken.siteId).toContain(BASE_NA);
       expect(agentToken.token).toBeDefined();
       expect(agentToken.token!.length).toBeGreaterThan(20);
       testEvalAgentTokenId = agentToken.id;
@@ -1221,7 +1221,7 @@ describe('Vox API Tests', () => {
       // Mainline results should have required fields
       if (data.length > 0) {
         expect(data[0]).toHaveProperty('provider');
-        expect(data[0]).toHaveProperty('region');
+        expect(data[0]).toHaveProperty('siteId');
         expect(data[0]).toHaveProperty('responseLatency');
       }
     });
@@ -1343,7 +1343,7 @@ describe('Vox API Tests', () => {
       expect(response.ok).toBe(true);
       const token = await response.json();
       flowAgentToken = token.token;
-      flowAgentRegion = token.region;
+      flowAgentRegion = token.siteId;
     });
 
     it('should register eval agent for job flow', async () => {
@@ -1654,7 +1654,7 @@ describe('Vox API Tests', () => {
       expect(naResponse.ok).toBe(true);
       const naData = await naResponse.json();
       naToken = naData.token;
-      naRegion = naData.region;
+      naRegion = naData.siteId;
 
       // Create APAC token
       const apacResponse = await authFetch(adminSession, `${BASE_URL}/api/admin/eval-agent-tokens`, {
@@ -1664,7 +1664,7 @@ describe('Vox API Tests', () => {
       expect(apacResponse.ok).toBe(true);
       const apacData = await apacResponse.json();
       apacToken = apacData.token;
-      apacRegion = apacData.region;
+      apacRegion = apacData.siteId;
 
       // Create EU token
       const euResponse = await authFetch(adminSession, `${BASE_URL}/api/admin/eval-agent-tokens`, {
@@ -1674,7 +1674,7 @@ describe('Vox API Tests', () => {
       expect(euResponse.ok).toBe(true);
       const euData = await euResponse.json();
       euToken = euData.token;
-      euRegion = euData.region;
+      euRegion = euData.siteId;
     });
 
     it('should register eval agents for all regions', async () => {
@@ -2078,7 +2078,7 @@ describe('Vox API Tests', () => {
       expect(tokenResponse.ok).toBe(true);
       const tokenData = await tokenResponse.json();
       concurrentAgentToken = tokenData.token;
-      const concurrentRegion = tokenData.region;
+      const concurrentRegion = tokenData.siteId;
 
       // Register the agent
       const agentResponse = await fetch(`${BASE_URL}/api/eval-agent/register`, {
@@ -2388,7 +2388,7 @@ describe('Vox API Tests', () => {
       const data = await response.json();
       expect(data.token).toBeDefined();
       expect(data.dispatchTier).toBe('private');
-      expect(data.region).toContain(BASE_NA);
+      expect(data.siteId).toContain(BASE_NA);
       premiumTokenId = data.id;
     });
 
@@ -3427,7 +3427,7 @@ describe('Vox API Tests', () => {
       expect(tokenRes.ok).toBe(true);
       const tokenData: EvalAgentToken = await tokenRes.json();
       versionTestToken = tokenData.token!;
-      versionTestRegion = tokenData.region!;
+      versionTestRegion = tokenData.siteId!;
 
       // Register agent with frameworkVersion metadata
       const agentRes = await fetch(`${BASE_URL}/api/eval-agent/register`, {
@@ -3602,7 +3602,7 @@ describe('Vox API Tests', () => {
       });
       const tokenData: EvalAgentToken = await tokenRes.json();
       const legacyToken = tokenData.token!;
-      const legacyRegion = tokenData.region!;
+      const legacyRegion = tokenData.siteId!;
 
       // Register without metadata
       const agentRes = await fetch(`${BASE_URL}/api/eval-agent/register`, {
@@ -3971,7 +3971,7 @@ describe('Vox API Tests', () => {
         method: 'POST', body: JSON.stringify({ regionLocationBaseId: BASE_SA, name: `complete-test-${Date.now()}` }),
       });
       expect(tokRes.ok).toBe(true);
-      const { token, region: agentRegion } = await tokRes.json();
+      const { token, siteId: agentRegion } = await tokRes.json();
       const regRes = await fetch(`${BASE_URL}/api/eval-agent/register`, {
         method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ name: 'complete-test-agent' }),
       });

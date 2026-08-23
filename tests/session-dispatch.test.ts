@@ -478,7 +478,7 @@ describe("dispatch integration — session stamping, pre-warm, shared-tier gates
   });
 
   describe("10. run-targets endpoint", () => {
-    let tok: { id: number; region: string | null };
+    let tok: { id: number; siteId: string | null };
 
     beforeAll(async () => {
       const tRes = await authFetch(admin, `${BASE_URL}/api/eval-agent-tokens`, {
