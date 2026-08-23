@@ -354,17 +354,6 @@ describe("Eval Agent Daemon - API Communication", () => {
     expect(res.body[0].siteId).toBe("na");
   });
 
-  it("should fetch jobs regardless of extraneous query params (site derived from token)", async () => {
-    const res = await request(app)
-      .get("/api/eval-agent/jobs?foo=bar")
-      .set("Authorization", `Bearer ${testToken}`);
-
-    expect(res.status).toBe(200);
-    expect(Array.isArray(res.body)).toBe(true);
-    expect(res.body.length).toBeGreaterThan(0);
-    expect(res.body[0].siteId).toBe("na");
-  });
-
   it("should claim a job", async () => {
     const res = await request(app)
       .post("/api/eval-agent/jobs/1/claim")

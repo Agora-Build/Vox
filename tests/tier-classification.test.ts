@@ -18,7 +18,7 @@ const mainlineSnapshot = (ownerId: number) => ({
 });
 
 d("frozen agent tier gates the leaderboard bucket (tier as restriction)", () => {
-  const region = `${BASE_NA}-01`;
+  const siteId = `${BASE_NA}-01`;
   const createdIds: number[] = [];
 
   afterAll(async () => {
@@ -28,7 +28,7 @@ d("frozen agent tier gates the leaderboard bucket (tier as restriction)", () => 
   async function seedCompletedJob(tokenDispatchTier: string): Promise<number> {
     const [provider] = await db.select().from(providers).limit(1);
     const [job] = await db.insert(evalJobs).values({
-      region,
+      siteId,
       status: "completed",
       createdBy: 1,
       config: {},
@@ -39,7 +39,7 @@ d("frozen agent tier gates the leaderboard bucket (tier as restriction)", () => 
     await db.insert(evalResults).values({
       evalJobId: job.id,
       providerId: provider.id,
-      region,
+      siteId,
       responseLatencyMedian: 500,
     } as any);
     return job.id;

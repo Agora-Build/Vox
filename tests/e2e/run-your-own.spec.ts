@@ -35,9 +35,13 @@ async function loginAndNavigate(page: Page) {
   await page.click('[data-testid="button-login"]');
   // Wait for login to complete (redirects to /admin/console)
   await page.waitForURL(/\/(admin\/)?console/, { timeout: 15000 });
-  // Now navigate to Run Your Own
+  // Now navigate to Run Your Own. Wait for the page's own heading instead of
+  // networkidle — the Vite dev server + react-query background traffic rarely
+  // give 500ms of network silence, making networkidle time out flakily.
   await page.goto("/run-your-own");
-  await page.waitForLoadState("networkidle");
+  await page
+    .getByRole("heading", { name: "Run Your Own Evaluation" })
+    .waitFor({ timeout: 15000 });
 }
 
 // ---------------------------------------------------------------------------
@@ -96,9 +100,9 @@ test.describe("Run Your Own — Authenticated Form", () => {
     ).toBeVisible({ timeout: 10000 });
   });
 
-  test("should show New Product and Existing tabs", async ({ page }) => {
-    await expect(page.locator("text=New Product")).toBeVisible({ timeout: 10000 });
-    await expect(page.locator("text=Existing")).toBeVisible();
+  test("should show Select Workflow and Create New tabs", async ({ page }) => {
+    await expect(page.getByRole("tab", { name: "Select Workflow" })).toBeVisible({ timeout: 10000 });
+    await expect(page.getByRole("tab", { name: "Create New" })).toBeVisible();
   });
 
   test("should show eval set selector", async ({ page }) => {
@@ -120,14 +124,15 @@ test.describe("Run Your Own — Authenticated Form", () => {
     await expect(eyeButton).toBeDisabled();
   });
 
-  test("should show region selector with default NA", async ({ page }) => {
+  test("should show region selector with site placeholder", async ({ page }) => {
     await expect(
       page.locator("text=Target Region").first()
     ).toBeVisible({ timeout: 10000 });
 
-    // Default region is NA
+    // No site is pre-selected; the trigger shows the placeholder until the
+    // user picks a concrete site (e.g. "Seattle 01 · United States").
     await expect(
-      page.locator("text=/North America/i").first()
+      page.locator("text=Select a site").first()
     ).toBeVisible();
   });
 

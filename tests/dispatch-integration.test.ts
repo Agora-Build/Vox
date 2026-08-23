@@ -93,7 +93,9 @@ describe("targeted dispatch isolation", () => {
     })).json();
     const targeted = aJobs.find((j: any) => j.targetTokenId === A.id);
     expect(targeted).toBeDefined();
-    expect(targeted.region).toBe(A.region);
+    // Job rows are raw eval_jobs rows and carry siteId; the token-create
+    // response still uses the `region` key (documented half-migration).
+    expect(targeted.siteId).toBe(A.region);
 
     const claim = await fetch(`${BASE_URL}/api/eval-agent/jobs/${targeted.id}/claim`, {
       method: "POST",

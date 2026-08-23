@@ -20,7 +20,7 @@ interface ClashEvent {
   id: number;
   name: string;
   status: string;
-  region: string;
+  siteId: string;
   matches?: any[];
 }
 
@@ -188,7 +188,7 @@ describe('Clash v2 API Tests', () => {
       const event: ClashEvent = await response.json();
       expect(event.name).toBe('Test Clash Event');
       expect(event.status).toBe('upcoming');
-      expect(event.region).toBe(REGION_NA);
+      expect(event.siteId).toBe(REGION_NA);
       expect(event.matches).toBeDefined();
       expect(Array.isArray(event.matches)).toBe(true);
       expect(event.matches!.length).toBe(1);
