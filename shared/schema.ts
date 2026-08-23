@@ -99,7 +99,7 @@ export type Provider = typeof providers.$inferSelect;
 
 // ==================== REGION LOCATIONS ====================
 
-// Admin-managed city definitions. Runtime region IDs append an allocated
+// Admin-managed city definitions. Runtime site IDs append an allocated
 // sequence to baseId, for example apac-in-mumbai-01.
 export const regionLocations = pgTable("region_locations", {
   id: serial("id").primaryKey(),

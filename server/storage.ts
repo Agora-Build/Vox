@@ -1034,15 +1034,15 @@ export class DatabaseStorage {
     return (result as unknown as { rowCount: number }).rowCount || 0;
   }
 
-  // Fast-fail pending jobs whose region has NO online eval agent. "Online" = an
-  // agent for that region heartbeated within onlineWithinMinutes. A job is failed
+  // Fast-fail pending jobs whose site has NO online eval agent. "Online" = an
+  // agent for that site heartbeated within onlineWithinMinutes. A job is failed
   // only once it has waited timeoutMinutes AND no such agent exists — so a brief
   // agent restart/redeploy (host reboot, vox-upgrade) doesn't trip it, but a
-  // genuinely unstaffed region gives the user an actionable result in minutes
+  // genuinely unstaffed site gives the user an actionable result in minutes
   // instead of hanging "pending" forever. Terminal (failed): retrying can't
-  // summon an agent that isn't there. Job pickup is exact region-equality and an
-  // agent registers under its token's region, so eval_agents.region = the job's
-  // region is the correct "an agent serves this region" signal.
+  // summon an agent that isn't there. Job pickup is exact site-equality and an
+  // agent registers under its token's site, so eval_agents.site_id = the job's
+  // site_id is the correct "an agent serves this site" signal.
   //
   // Age from GREATEST(created_at, updated_at), NOT created_at alone: releaseStaleJobs
   // / releaseAgentRunningJobs requeue a job (status → pending, retry_count++) and set
@@ -1561,7 +1561,7 @@ export class DatabaseStorage {
     return (Date.now() - new Date(minAt).getTime()) / (24 * 60 * 60 * 1000);
   }
 
-  // One averaged point per (day, provider, region). Same shape formatMetricsResults
+  // One averaged point per (day, provider, site). Same shape formatMetricsResults
   // consumes; SD/P95/secondary metrics are averages-of-aggregates (trend overview).
   private async tierBucketedDaily(tier: MetricTier, hoursBack?: number, userId?: number, scope?: RegionQueryScope): Promise<MetricSourceRow[]> {
     const day = sql`date_trunc('day', ${evalResults.createdAt})`;

@@ -228,6 +228,11 @@ main() {
         log_info "Loaded .env.dev"
     fi
 
+    # DB-backed integration tests (storage-level: session-endpoint, credits,
+    # observed-ip, reap-query, ...) open their own pg connection and need
+    # DATABASE_URL. Default to the local dev DB dev-local-run.sh provisions.
+    export DATABASE_URL="${DATABASE_URL:-postgresql://vox:vox123@localhost:5432/vox}"
+
     verify_env
 
     # Check server

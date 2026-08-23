@@ -803,7 +803,7 @@ export function registerApiV1Routes(app: Express): void {
       }
       const results = await storage.getMainlineEvalResults(1000, undefined, regionScope.scope);
 
-      // Aggregate by provider and region
+      // Aggregate by provider and site
       const providerRegionMap = new Map<string, {
         providerId: string;
         siteId: string;
