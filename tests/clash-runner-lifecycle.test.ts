@@ -73,7 +73,7 @@ describe("Clash Runner Lifecycle", () => {
       const data = await res.json();
       expect(data.token).toBeTruthy();
       expect(data.token).toMatch(/^cr/);
-      expect(data.region).toBe(REGION_NA);
+      expect(data.siteId).toBe(REGION_NA);
       expect(data.name).toBe("lifecycle-test-runner");
       runnerToken = data.token;
       runnerTokenId = data.id;
@@ -117,6 +117,9 @@ describe("Clash Runner Lifecycle", () => {
       expect(res.status).toBe(200);
       const data = await res.json();
       expect(data.state).toBe("idle");
+      expect(data.siteId).toBe(REGION_NA);
+      // Legacy alias: deployed runner daemons still read `region` — the
+      // register response dual-keys until the next runner redeploy.
       expect(data.region).toBe(REGION_NA);
       expect(data.id).toBeTypeOf("number");
     });
@@ -220,7 +223,7 @@ describe("Clash Runner Lifecycle", () => {
       expect(Array.isArray(runners)).toBe(true);
       const found = runners.find((r: any) => r.runnerId === `test-host-${testId}-2`);
       expect(found).toBeTruthy();
-      expect(found.region).toBe(REGION_NA);
+      expect(found.siteId).toBe(REGION_NA);
       expect(found.state).toBe("idle");
     });
 

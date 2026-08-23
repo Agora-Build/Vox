@@ -129,7 +129,7 @@ export default function ConsoleEvalSets() {
   const runOnceMutation = useMutation({
     mutationFn: async () => {
       const res = await apiRequest("POST", `/api/workflows/${runWorkflowId}/run`, {
-        region: runRegion,
+        siteId: runRegion,
         evalSetId: runEvalSet!.id,
       });
       return res.json();
@@ -149,7 +149,7 @@ export default function ConsoleEvalSets() {
         name: scheduleName || `${runEvalSet!.name} schedule`,
         workflowId: parseInt(runWorkflowId),
         evalSetId: runEvalSet!.id,
-        region: runRegion,
+        siteId: runRegion,
         scheduleType: "recurring",
         cronExpression,
       });

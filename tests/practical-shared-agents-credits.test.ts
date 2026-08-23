@@ -105,7 +105,7 @@ async function createToken(session: AuthSession, name: string, regionLocationBas
   expect(res.ok).toBe(true);
   const body = await res.json();
   createdTokenIds.push(body.id);
-  return { id: body.id, token: body.token, region: body.region };
+  return { id: body.id, token: body.token, region: body.siteId };
 }
 
 async function setDispatchTier(session: AuthSession, tokenId: number, dispatchTier: string, pricePerUnit?: number): Promise<Response> {

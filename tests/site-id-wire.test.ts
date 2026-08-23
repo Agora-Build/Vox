@@ -8,11 +8,12 @@ import { REGION_NA, BASE_NA } from './helpers/regions';
  * key flip (which type-checks fine on hand-rolled client interfaces but renders
  * `undefined` at runtime) is caught here instead of in the browser.
  *
- * Two contracts coexist by design:
- *  - RENAMED surfaces emit `siteId` (eval-agents, eval-jobs rows, clash events).
- *  - BACK-COMPAT surfaces still emit the `region` key carrying a site-id value
- *    (eval-agent-tokens list/create) — the documented half-migration. If that
- *    is ever closed, update these assertions together with the client readers.
+ * Contract:
+ *  - Response surfaces emit `siteId`, never `region` (the sole exception is
+ *    the clash-runner daemon wire, which dual-keys `siteId` + `region` until
+ *    deployed runners are upgraded — covered in clash-runner-lifecycle).
+ *  - Request bodies canonically take `siteId`; the legacy `region` body key
+ *    is still ACCEPTED as an alias so scripted API users don't break.
  */
 
 const BASE_URL = process.env.TEST_BASE_URL || 'http://localhost:5000';
@@ -76,27 +77,44 @@ describe('site-id wire contract', () => {
     expect(bad.status).toBe(400);
   });
 
-  it('eval-agent-token create/list keep the back-compat region key carrying a site-id', async () => {
+  it('eval-agent-token create/list emit siteId (not region)', async () => {
     const create = await authFetch('/api/eval-agent-tokens', {
       method: 'POST',
       body: JSON.stringify({ name: `wire-contract-${Date.now()}`, regionLocationBaseId: BASE_NA }),
     });
     expect(create.status).toBe(200);
     const created = await create.json();
-    // The response key is `region`, but the VALUE is a fully-qualified site id.
-    expect(created.region).toMatch(SITE_ID_RE);
-    expect(created).not.toHaveProperty('siteId');
+    expect(created.siteId).toMatch(SITE_ID_RE);
+    expect(created).not.toHaveProperty('region');
 
     const list = await authFetch('/api/eval-agent-tokens');
     expect(list.status).toBe(200);
     const tokens = await list.json();
     const mine = tokens.find((t: { id: number }) => t.id === created.id);
     expect(mine).toBeDefined();
-    expect(mine.region).toBe(created.region);
-    expect(mine).not.toHaveProperty('siteId');
+    expect(mine.siteId).toBe(created.siteId);
+    expect(mine).not.toHaveProperty('region');
 
     // Clean up so repeated runs don't accumulate live tokens.
     const revoke = await authFetch(`/api/eval-agent-tokens/${created.id}/revoke`, { method: 'POST' });
+    expect(revoke.status).toBe(200);
+  });
+
+  it('request bodies accept the legacy region key as an alias for siteId', async () => {
+    // A SUCCESSFUL create through the legacy key unambiguously proves the
+    // alias is read: with a valid site under `region` the token is created
+    // and the response carries the canonical siteId key.
+    const create = await authFetch('/api/admin/clash-runner-tokens', {
+      method: 'POST',
+      body: JSON.stringify({ name: `wire-alias-${Date.now()}`, region: REGION_NA }),
+    });
+    expect(create.status).toBe(200);
+    const created = await create.json();
+    expect(created.siteId).toBe(REGION_NA);
+    expect(created).not.toHaveProperty('region');
+
+    // Clean up: revoke so repeated runs don't accumulate live runner tokens.
+    const revoke = await authFetch(`/api/admin/clash-runner-tokens/${created.id}/revoke`, { method: 'POST' });
     expect(revoke.status).toBe(200);
   });
 

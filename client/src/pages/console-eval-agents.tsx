@@ -43,7 +43,7 @@ interface EvalAgentToken {
   id: number;
   name: string;
   token: string;
-  region: string;
+  siteId: string;
   dispatchTier: "private" | "team" | "public" | "shared";
   isRevoked: boolean;
   lastUsedAt: string | null;
@@ -132,7 +132,7 @@ export default function ConsoleEvalAgents() {
     },
     onSuccess: (data) => {
       setNewToken(data.token);
-      setNewRegion(data.region);
+      setNewRegion(data.siteId);
       setName("");
       setRegion("");
       setDispatchTier(isAdmin ? "public" : "private");
@@ -506,7 +506,7 @@ export default function ConsoleEvalAgents() {
                     <TableCell>
                       <Badge variant="secondary" className="gap-1">
                         <MapPin className="h-3 w-3" />
-                        {formatSite(token.region)}
+                        {formatSite(token.siteId)}
                       </Badge>
                     </TableCell>
                     <TableCell>

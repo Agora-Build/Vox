@@ -30,7 +30,7 @@ interface AuthStatus {
 interface RunTargetAgent {
   tokenId: number;
   name: string;
-  region: string;
+  siteId: string;
   dispatchTier: string;
   price: number | null;
 }
@@ -100,7 +100,7 @@ export default function ConsoleWorkflowDetail() {
   const runWorkflowMutation = useMutation({
     mutationFn: async () => {
       const res = await apiRequest("POST", `/api/workflows/${workflowId}/run`, {
-        region: runRegion,
+        siteId: runRegion,
         evalSetId: parseInt(runEvalSetId),
         ...(targetTokenId !== "any" ? { targetTokenId: Number(targetTokenId) } : {}),
         ...(showRuntimeWarning ? { runtimeSecretConsent: ackRuntime } : {}),

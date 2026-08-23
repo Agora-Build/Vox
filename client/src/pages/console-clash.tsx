@@ -162,14 +162,14 @@ export default function ConsoleClash() {
   const [copiedToken, setCopiedToken] = useState(false);
 
   const { data: runnerTokens, isLoading: loadingRunnerTokens } = useQuery<
-    { id: number; name: string; region: string; isRevoked: boolean; lastUsedAt: string | null; createdAt: string }[]
+    { id: number; name: string; siteId: string; isRevoked: boolean; lastUsedAt: string | null; createdAt: string }[]
   >({
     queryKey: ["/api/admin/clash-runner-tokens"],
     enabled: isAdmin,
   });
 
   const { data: clashRunners, isLoading: loadingClashRunners } = useQuery<
-    { id: number; runnerId: string; region: string; state: string; currentMatchId: number | null; lastHeartbeatAt: string | null; createdAt: string }[]
+    { id: number; runnerId: string; siteId: string; state: string; currentMatchId: number | null; lastHeartbeatAt: string | null; createdAt: string }[]
   >({
     queryKey: ["/api/admin/clash-runners"],
     enabled: isScout,
@@ -180,7 +180,7 @@ export default function ConsoleClash() {
     mutationFn: async () => {
       const res = await apiRequest("POST", "/api/admin/clash-runner-tokens", {
         name: runnerTokenName,
-        region: runnerTokenRegion,
+        siteId: runnerTokenRegion,
       });
       return res.json();
     },
@@ -308,7 +308,7 @@ export default function ConsoleClash() {
       const name = getAutoEventName();
       const res = await apiRequest("POST", "/api/clash/events", {
         name,
-        region: eventRegion,
+        siteId: eventRegion,
         scheduledAt: eventScheduledAt || undefined,
         matchups: eventMatchups.map((m) => ({
           agentAProfileId: parseInt(m.agentAProfileId),
@@ -367,7 +367,7 @@ export default function ConsoleClash() {
           agentBProfileId: parseInt(m.agentBProfileId),
           topic: m.topic || undefined,
         })),
-        region: scheduleRegion,
+        siteId: scheduleRegion,
         maxDurationSeconds: parseInt(scheduleDuration) || 300,
         scheduledAt: scheduleAt || undefined,
         cronExpression: scheduleCron || undefined,
@@ -1150,7 +1150,7 @@ export default function ConsoleClash() {
                       {clashRunners.map(r => (
                         <TableRow key={r.id}>
                           <TableCell className="font-mono text-xs">{r.runnerId}</TableCell>
-                          <TableCell><Badge variant="outline">{formatSite(r.region)}</Badge></TableCell>
+                          <TableCell><Badge variant="outline">{formatSite(r.siteId)}</Badge></TableCell>
                           <TableCell>
                             <Badge className={
                               r.state === "idle" ? "bg-green-500/10 text-green-500" :
@@ -1268,7 +1268,7 @@ export default function ConsoleClash() {
                         {runnerTokens.map((t) => (
                           <TableRow key={t.id}>
                             <TableCell className="font-medium">{t.name}</TableCell>
-                            <TableCell><Badge variant="outline">{formatSite(t.region)}</Badge></TableCell>
+                            <TableCell><Badge variant="outline">{formatSite(t.siteId)}</Badge></TableCell>
                             <TableCell>
                               <Badge className={t.isRevoked ? "bg-muted text-muted-foreground" : "bg-green-500/10 text-green-500"}>
                                 {t.isRevoked ? "Revoked" : "Active"}

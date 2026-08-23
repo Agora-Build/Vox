@@ -532,7 +532,7 @@ describe('Secrets - Agent Endpoint', () => {
       if (tokenRes.ok) {
         const tokenData = await tokenRes.json();
         agentToken = tokenData.token;
-        agentRegion = tokenData.region;
+        agentRegion = tokenData.siteId;
       }
 
       // Register an agent

@@ -176,7 +176,7 @@ describe('Secrets class — job-secrets withhold', () => {
     if (tokenRes.ok) {
       const tokenData = await tokenRes.json();
       agentToken = tokenData.token;
-      agentRegion = tokenData.region;
+      agentRegion = tokenData.siteId;
       tokenId = tokenData.id;
     }
 

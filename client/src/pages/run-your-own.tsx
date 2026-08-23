@@ -62,7 +62,7 @@ interface EvalSetFull {
 interface RunTargetAgent {
   tokenId: number;
   name: string;
-  region: string;
+  siteId: string;
   dispatchTier: string;
   price: number | null;
 }
@@ -194,7 +194,7 @@ export default function SelfTest() {
   const runEvalMutation = useMutation({
     mutationFn: async (workflowId: number) => {
       const res = await apiRequest("POST", `/api/workflows/${workflowId}/run`, {
-        region,
+        siteId: region,
         evalSetId: parseInt(selectedEvalSetId),
         ...(targetTokenId !== "any" ? { targetTokenId: Number(targetTokenId) } : {}),
         ...(showRuntimeWarning ? { runtimeSecretConsent: ackRuntime } : {}),
@@ -593,7 +593,7 @@ export default function SelfTest() {
 {`# Run a workflow
 curl -X POST -H "Authorization: Bearer vox_live_xxx" \\
   -H "Content-Type: application/json" \\
-  -d '{"region": "na-us-seattle-01"}' \\
+  -d '{"siteId": "na-us-seattle-01"}' \\
   ${window.location.origin}/api/v1/workflows/1/run
 
 # Get evaluation results
