@@ -166,7 +166,7 @@ test.describe("Admin Eval Agent Token Management", () => {
     const response = await adminRequest.post("/api/admin/eval-agent-tokens", {
       data: {
         name: `Test Token ${Date.now()}`,
-        region: "na",
+        regionLocationBaseId: "na",
       },
     });
 
@@ -182,7 +182,7 @@ test.describe("Admin Eval Agent Token Management", () => {
     const response = await adminRequest.post("/api/admin/eval-agent-tokens", {
       data: {
         name: "Invalid Region Token",
-        region: "invalid",
+        regionLocationBaseId: "invalid",
       },
     });
 
@@ -195,7 +195,7 @@ test.describe("Admin Eval Agent Token Management", () => {
     const createResponse = await adminRequest.post("/api/admin/eval-agent-tokens", {
       data: {
         name: `Revoke Test ${Date.now()}`,
-        region: "na",
+        regionLocationBaseId: "na",
       },
     });
 

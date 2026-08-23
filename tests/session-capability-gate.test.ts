@@ -145,7 +145,7 @@ describe("GET /api/eval-agent/jobs — session-capability gate", () => {
     // Session-stamped job.
     const sessionRunRes = await authFetch(admin, `${BASE_URL}/api/workflows/${sessionWorkflowId}/run`, {
       method: "POST",
-      body: JSON.stringify({ region, evalSetId }),
+      body: JSON.stringify({ siteId: region, evalSetId }),
     });
     expect(sessionRunRes.ok).toBe(true);
     const sessionJob = (await sessionRunRes.json()).job;
@@ -154,7 +154,7 @@ describe("GET /api/eval-agent/jobs — session-capability gate", () => {
     // Plain job (no login secrets referenced — no stamp).
     const plainRunRes = await authFetch(admin, `${BASE_URL}/api/workflows/${plainWorkflowId}/run`, {
       method: "POST",
-      body: JSON.stringify({ region, evalSetId }),
+      body: JSON.stringify({ siteId: region, evalSetId }),
     });
     expect(plainRunRes.ok).toBe(true);
     const plainJob = (await plainRunRes.json()).job;

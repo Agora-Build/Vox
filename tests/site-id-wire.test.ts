@@ -12,8 +12,8 @@ import { REGION_NA, BASE_NA } from './helpers/regions';
  *  - Response surfaces emit `siteId`, never `region` (the sole exception is
  *    the clash-runner daemon wire, which dual-keys `siteId` + `region` until
  *    deployed runners are upgraded — covered in clash-runner-lifecycle).
- *  - Request bodies canonically take `siteId`; the legacy `region` body key
- *    is still ACCEPTED as an alias so scripted API users don't break.
+ *  - Request bodies take `siteId` ONLY — the legacy `region` body key is
+ *    dead and must be rejected, not silently read.
  */
 
 const BASE_URL = process.env.TEST_BASE_URL || 'http://localhost:5000';
@@ -100,18 +100,24 @@ describe('site-id wire contract', () => {
     expect(revoke.status).toBe(200);
   });
 
-  it('request bodies accept the legacy region key as an alias for siteId', async () => {
-    // A SUCCESSFUL create through the legacy key unambiguously proves the
-    // alias is read: with a valid site under `region` the token is created
-    // and the response carries the canonical siteId key.
-    const create = await authFetch('/api/admin/clash-runner-tokens', {
+  it('request bodies REJECT the dead legacy region key', async () => {
+    // The alias was dropped: a valid site under `region` must NOT create a
+    // token — the server only reads `siteId` now.
+    const viaLegacy = await authFetch('/api/admin/clash-runner-tokens', {
       method: 'POST',
-      body: JSON.stringify({ name: `wire-alias-${Date.now()}`, region: REGION_NA }),
+      body: JSON.stringify({ name: `wire-dead-alias-${Date.now()}`, region: REGION_NA }),
     });
-    expect(create.status).toBe(200);
-    const created = await create.json();
+    expect(viaLegacy.status).toBe(400);
+
+    // Same request through the canonical key succeeds — proves the 400 above
+    // is the missing key, not something else about the request.
+    const viaCanonical = await authFetch('/api/admin/clash-runner-tokens', {
+      method: 'POST',
+      body: JSON.stringify({ name: `wire-canonical-${Date.now()}`, siteId: REGION_NA }),
+    });
+    expect(viaCanonical.status).toBe(200);
+    const created = await viaCanonical.json();
     expect(created.siteId).toBe(REGION_NA);
-    expect(created).not.toHaveProperty('region');
 
     // Clean up: revoke so repeated runs don't accumulate live runner tokens.
     const revoke = await authFetch(`/api/admin/clash-runner-tokens/${created.id}/revoke`, { method: 'POST' });

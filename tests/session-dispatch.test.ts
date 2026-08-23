@@ -133,7 +133,7 @@ describe("dispatch integration — session stamping, pre-warm, shared-tier gates
   it("1. stamps config.sessionInjection when the workflow's platform.setup references login secrets", async () => {
     const res = await authFetch(admin, `${BASE_URL}/api/workflows/${sessionWorkflowId}/run`, {
       method: "POST",
-      body: JSON.stringify({ region: REGION_NA, evalSetId }),
+      body: JSON.stringify({ siteId: REGION_NA, evalSetId }),
     });
     expect(res.ok).toBe(true);
     const body = await res.json();
@@ -143,7 +143,7 @@ describe("dispatch integration — session stamping, pre-warm, shared-tier gates
   it("2. leaves config.sessionInjection undefined when referenced secrets are runtime-class", async () => {
     const res = await authFetch(admin, `${BASE_URL}/api/workflows/${noSessionWorkflowId}/run`, {
       method: "POST",
-      body: JSON.stringify({ region: REGION_NA, evalSetId }),
+      body: JSON.stringify({ siteId: REGION_NA, evalSetId }),
     });
     expect(res.ok).toBe(true);
     const body = await res.json();
@@ -153,7 +153,7 @@ describe("dispatch integration — session stamping, pre-warm, shared-tier gates
   it("3. strips a user-supplied sessionInjection and stamps the server value instead", async () => {
     const res = await authFetch(admin, `${BASE_URL}/api/workflows/${injectionWorkflowId}/run`, {
       method: "POST",
-      body: JSON.stringify({ region: REGION_NA, evalSetId }),
+      body: JSON.stringify({ siteId: REGION_NA, evalSetId }),
     });
     expect(res.ok).toBe(true);
     const body = await res.json();
@@ -265,7 +265,7 @@ describe("dispatch integration — session stamping, pre-warm, shared-tier gates
     it("untargeted run with conflicting shared config keys surfaces a controlled 500, not a crash", async () => {
       const res = await authFetch(admin, `${BASE_URL}/api/workflows/${conflictWorkflowId}/run`, {
         method: "POST",
-        body: JSON.stringify({ region: REGION_NA, evalSetId: conflictEvalSetId }),
+        body: JSON.stringify({ siteId: REGION_NA, evalSetId: conflictEvalSetId }),
       });
       expect(res.status).toBe(500);
       const body = await res.json();
@@ -351,7 +351,7 @@ describe("dispatch integration — session stamping, pre-warm, shared-tier gates
       // stranger's own agent pull the OWNER's minted test-account session.
       const res = await authFetch(stranger, `${BASE_URL}/api/workflows/${guardWorkflowId}/run`, {
         method: "POST",
-        body: JSON.stringify({ region: REGION_NA, evalSetId }),
+        body: JSON.stringify({ siteId: REGION_NA, evalSetId }),
       });
       expect(res.status).toBe(403);
       const body = await res.json();
@@ -378,7 +378,7 @@ describe("dispatch integration — session stamping, pre-warm, shared-tier gates
     it("7c. split-class credential pair (one login, one runtime) -> 400, never a silent runtime leak", async () => {
       const res = await authFetch(admin, `${BASE_URL}/api/workflows/${splitWorkflowId}/run`, {
         method: "POST",
-        body: JSON.stringify({ region: REGION_NA, evalSetId }),
+        body: JSON.stringify({ siteId: REGION_NA, evalSetId }),
       });
       expect(res.status).toBe(400);
       const body = await res.json();
@@ -419,7 +419,7 @@ describe("dispatch integration — session stamping, pre-warm, shared-tier gates
     it("rejects a run when a Brokered secret is used outside platform.setup login", async () => {
       const res = await authFetch(admin, `${BASE_URL}/api/workflows/${misuseWorkflowId}/run`, {
         method: "POST",
-        body: JSON.stringify({ region: REGION_NA, evalSetId }),
+        body: JSON.stringify({ siteId: REGION_NA, evalSetId }),
       });
       expect(res.status).toBe(400);
       const body = await res.json();

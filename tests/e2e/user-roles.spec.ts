@@ -124,7 +124,7 @@ test.describe("Basic User E2E Tests", () => {
     const response = await basicRequest.post("/api/admin/eval-agent-tokens", {
       data: {
         name: "Unauthorized Token",
-        region: "na",
+        regionLocationBaseId: "na",
       },
     });
     expect(response.status()).toBe(401);

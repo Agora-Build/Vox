@@ -562,7 +562,7 @@ describe("Task 13: practical shared-agents marketplace + credits e2e", () => {
         const workflowId = await createWorkflow(broke.session, `t13-free-wf-${stamp}-${attempt}`, providerId);
         const evalSetId = await createEvalSet(broke.session, `t13-free-es-${stamp}-${attempt}`);
         const runRes = await authFetch(broke.session, `${BASE_URL}/api/workflows/${workflowId}/run`, {
-          method: "POST", body: JSON.stringify({ region: freeTokenRegion, evalSetId }),
+          method: "POST", body: JSON.stringify({ siteId: freeTokenRegion, evalSetId }),
         });
         expect(runRes.status).toBe(200);
         ({ job } = await runRes.json());

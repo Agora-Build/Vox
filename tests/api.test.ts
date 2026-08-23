@@ -341,14 +341,14 @@ describe('Vox API Tests', () => {
 
     it('non-owner CAN run a PUBLIC workflow they do not own', async () => {
       const res = await authFetch(nonOwner, `${BASE_URL}/api/workflows/${testWorkflowId}/run`, {
-        method: 'POST', body: JSON.stringify({ region: REGION_NA, evalSetId: publicEvalSetId }),
+        method: 'POST', body: JSON.stringify({ siteId: REGION_NA, evalSetId: publicEvalSetId }),
       });
       expect(res.ok).toBe(true); // testWorkflowId is public
     });
 
     it('non-owner CANNOT run a PRIVATE workflow they do not own (403)', async () => {
       const res = await authFetch(nonOwner, `${BASE_URL}/api/workflows/${adminPrivateWfId}/run`, {
-        method: 'POST', body: JSON.stringify({ region: REGION_NA, evalSetId: publicEvalSetId }),
+        method: 'POST', body: JSON.stringify({ siteId: REGION_NA, evalSetId: publicEvalSetId }),
       });
       expect(res.status).toBe(403);
     });
@@ -362,7 +362,7 @@ describe('Vox API Tests', () => {
       expect(wfRes.ok).toBe(true);
       const id = (await wfRes.json()).id;
       const res = await authFetch(adminSession, `${BASE_URL}/api/workflows/${id}/run`, {
-        method: 'POST', body: JSON.stringify({ region: REGION_NA, evalSetId: publicEvalSetId }),
+        method: 'POST', body: JSON.stringify({ siteId: REGION_NA, evalSetId: publicEvalSetId }),
       });
       expect(res.status).toBe(403);
       // ...but admin CAN still delete it via API (moderation preserved).
@@ -502,7 +502,7 @@ describe('Vox API Tests', () => {
           name: 'Test One-Time Schedule',
           workflowId: testWorkflowId,
           evalSetId: testEvalSetId,
-          region: REGION_NA,
+          siteId: REGION_NA,
           scheduleType: 'once',
         }),
       });
@@ -523,7 +523,7 @@ describe('Vox API Tests', () => {
           name: 'Test Recurring Schedule',
           workflowId: testWorkflowId,
           evalSetId: testEvalSetId,
-          region: REGION_NA,
+          siteId: REGION_NA,
           scheduleType: 'recurring',
           cronExpression: '0 * * * *', // Every hour
           maxRuns: 10,
@@ -543,7 +543,7 @@ describe('Vox API Tests', () => {
     it('sets a ~90-day expiry on new schedules and reports status active', async () => {
       const created = await authFetch(adminSession, `${BASE_URL}/api/eval-schedules`, {
         method: 'POST',
-        body: JSON.stringify({ name: 'Expiry Create', workflowId: testWorkflowId, evalSetId: testEvalSetId, region: REGION_NA, scheduleType: 'recurring', cronExpression: '0 * * * *' }),
+        body: JSON.stringify({ name: 'Expiry Create', workflowId: testWorkflowId, evalSetId: testEvalSetId, siteId: REGION_NA, scheduleType: 'recurring', cronExpression: '0 * * * *' }),
       });
       expect(created.ok).toBe(true);
       const s = await created.json();
@@ -566,7 +566,7 @@ describe('Vox API Tests', () => {
       });
       const wfId = (await wfRes.json()).id;
       const scRes = await authFetch(adminSession, `${BASE_URL}/api/eval-schedules`, {
-        method: 'POST', body: JSON.stringify({ name: 'guard', workflowId: wfId, evalSetId: testEvalSetId, region: REGION_NA, scheduleType: 'recurring', cronExpression: '0 * * * *' }),
+        method: 'POST', body: JSON.stringify({ name: 'guard', workflowId: wfId, evalSetId: testEvalSetId, siteId: REGION_NA, scheduleType: 'recurring', cronExpression: '0 * * * *' }),
       });
       const scId = (await scRes.json()).id;
       // Active schedule blocks deletion (409).
@@ -621,7 +621,7 @@ describe('Vox API Tests', () => {
           name: 'should-be-denied',
           workflowId: testWorkflowId,
           evalSetId: testEvalSetId,
-          region: REGION_NA,
+          siteId: REGION_NA,
           scheduleType: 'recurring',
           cronExpression: '0 * * * *',
         }),
@@ -636,7 +636,7 @@ describe('Vox API Tests', () => {
           name: 'Invalid Schedule',
           workflowId: testWorkflowId,
           evalSetId: testEvalSetId,
-          region: REGION_NA,
+          siteId: REGION_NA,
           scheduleType: 'recurring',
           // Missing cronExpression
         }),
@@ -654,7 +654,7 @@ describe('Vox API Tests', () => {
           name: 'Invalid Cron Schedule',
           workflowId: testWorkflowId,
           evalSetId: testEvalSetId,
-          region: REGION_NA,
+          siteId: REGION_NA,
           scheduleType: 'recurring',
           cronExpression: '0 0 * *', // Invalid - only 4 parts
         }),
@@ -750,7 +750,7 @@ describe('Vox API Tests', () => {
         body: JSON.stringify({
           name: 'Invalid Workflow Schedule',
           workflowId: 999999,
-          region: REGION_NA,
+          siteId: REGION_NA,
           scheduleType: 'once',
         }),
       });
@@ -764,7 +764,7 @@ describe('Vox API Tests', () => {
         body: JSON.stringify({
           name: 'Invalid Region Schedule',
           workflowId: testWorkflowId,
-          region: 'invalid',
+          siteId: 'invalid',
           scheduleType: 'once',
         }),
       });
@@ -777,7 +777,7 @@ describe('Vox API Tests', () => {
         method: 'POST',
         body: JSON.stringify({
           workflowId: testWorkflowId,
-          region: REGION_NA,
+          siteId: REGION_NA,
           scheduleType: 'once',
         }),
       });
@@ -793,7 +793,7 @@ describe('Vox API Tests', () => {
           name: 'Future One-Time Schedule',
           workflowId: testWorkflowId,
           evalSetId: testEvalSetId,
-          region: REGION_EU,
+          siteId: REGION_EU,
           scheduleType: 'once',
           runAt: futureTime,
         }),
@@ -818,7 +818,7 @@ describe('Vox API Tests', () => {
           name: 'Daily Schedule',
           workflowId: testWorkflowId,
           evalSetId: testEvalSetId,
-          region: REGION_APAC,
+          siteId: REGION_APAC,
           scheduleType: 'recurring',
           cronExpression: '0 8 * * *', // Daily at 8 AM
         }),
@@ -985,7 +985,7 @@ describe('Vox API Tests', () => {
         method: 'POST',
         body: JSON.stringify({
           evalSetId: testEvalSetId,
-          region: testAgentRegion,
+          siteId: testAgentRegion,
         }),
       });
 
@@ -1013,7 +1013,7 @@ describe('Vox API Tests', () => {
         method: 'POST',
         body: JSON.stringify({
           evalSetId: testEvalSetId,
-          region: 'invalid',
+          siteId: 'invalid',
         }),
       });
 
@@ -1286,7 +1286,7 @@ describe('Vox API Tests', () => {
     const runClaimComplete = async (completeBody: Record<string, unknown>): Promise<number> => {
       const runRes = await authFetch(adminSession, `${BASE_URL}/api/workflows/${flowWorkflowId}/run`, {
         method: 'POST',
-        body: JSON.stringify({ evalSetId: flowEvalSetId, region: flowAgentRegion }),
+        body: JSON.stringify({ evalSetId: flowEvalSetId, siteId: flowAgentRegion }),
       });
       const { job } = await runRes.json();
       const claim = await fetch(`${BASE_URL}/api/eval-agent/jobs/${job.id}/claim`, {
@@ -1367,7 +1367,7 @@ describe('Vox API Tests', () => {
         method: 'POST',
         body: JSON.stringify({
           evalSetId: flowEvalSetId,
-          region: flowAgentRegion,
+          siteId: flowAgentRegion,
         }),
       });
       expect(response.ok).toBe(true);
@@ -1618,7 +1618,7 @@ describe('Vox API Tests', () => {
         method: 'POST',
         body: JSON.stringify({
           name: 'Invalid Region Token',
-          region: 'invalid',
+          siteId: 'invalid',
         }),
       });
 
@@ -1750,7 +1750,7 @@ describe('Vox API Tests', () => {
       // Create NA job
       const naResponse = await authFetch(adminSession, `${BASE_URL}/api/workflows/${multiRegionWorkflowId}/run`, {
         method: 'POST',
-        body: JSON.stringify({ region: naRegion, evalSetId: multiRegionEvalSetId }),
+        body: JSON.stringify({ siteId: naRegion, evalSetId: multiRegionEvalSetId }),
       });
       expect(naResponse.ok).toBe(true);
       const naResult = await naResponse.json();
@@ -1760,7 +1760,7 @@ describe('Vox API Tests', () => {
       // Create APAC job
       const apacResponse = await authFetch(adminSession, `${BASE_URL}/api/workflows/${multiRegionWorkflowId}/run`, {
         method: 'POST',
-        body: JSON.stringify({ region: apacRegion, evalSetId: multiRegionEvalSetId }),
+        body: JSON.stringify({ siteId: apacRegion, evalSetId: multiRegionEvalSetId }),
       });
       expect(apacResponse.ok).toBe(true);
       const apacResult = await apacResponse.json();
@@ -1770,7 +1770,7 @@ describe('Vox API Tests', () => {
       // Create EU job
       const euResponse = await authFetch(adminSession, `${BASE_URL}/api/workflows/${multiRegionWorkflowId}/run`, {
         method: 'POST',
-        body: JSON.stringify({ region: euRegion, evalSetId: multiRegionEvalSetId }),
+        body: JSON.stringify({ siteId: euRegion, evalSetId: multiRegionEvalSetId }),
       });
       expect(euResponse.ok).toBe(true);
       const euResult = await euResponse.json();
@@ -1900,7 +1900,7 @@ describe('Vox API Tests', () => {
           name: 'Invalid Cron Schedule',
           workflowId: scheduleWorkflowId,
           evalSetId: scheduleEvalSetId,
-          region: REGION_NA,
+          siteId: REGION_NA,
           scheduleType: 'recurring',
           cronExpression: 'invalid cron',
         }),
@@ -1915,7 +1915,7 @@ describe('Vox API Tests', () => {
           name: 'Missing Cron Schedule',
           workflowId: scheduleWorkflowId,
           evalSetId: scheduleEvalSetId,
-          region: REGION_NA,
+          siteId: REGION_NA,
           scheduleType: 'recurring',
         }),
       });
@@ -1930,7 +1930,7 @@ describe('Vox API Tests', () => {
           name: 'Valid One-Time Schedule',
           workflowId: scheduleWorkflowId,
           evalSetId: scheduleEvalSetId,
-          region: REGION_NA,
+          siteId: REGION_NA,
           scheduleType: 'once',
           nextRunAt: futureDate.toISOString(),
         }),
@@ -1947,7 +1947,7 @@ describe('Vox API Tests', () => {
           name: 'Valid Recurring Schedule',
           workflowId: scheduleWorkflowId,
           evalSetId: scheduleEvalSetId,
-          region: REGION_EU,
+          siteId: REGION_EU,
           scheduleType: 'recurring',
           cronExpression: '0 0 * * *', // Daily at midnight
         }),
@@ -2097,7 +2097,7 @@ describe('Vox API Tests', () => {
       // Create a single job in the agent's region
       const jobResponse = await authFetch(adminSession, `${BASE_URL}/api/workflows/${concurrentWorkflowId}/run`, {
         method: 'POST',
-        body: JSON.stringify({ region: concurrentRegion, evalSetId: concurrentEvalSetId }),
+        body: JSON.stringify({ siteId: concurrentRegion, evalSetId: concurrentEvalSetId }),
       });
       expect(jobResponse.ok).toBe(true);
       const jobResult = await jobResponse.json();
@@ -2483,7 +2483,7 @@ describe('Vox API Tests', () => {
     it('should reject token creation with invalid region', async () => {
       const response = await authFetch(premiumSession, `${BASE_URL}/api/eval-agent-tokens`, {
         method: 'POST',
-        body: JSON.stringify({ name: 'Bad Region', region: 'invalid' }),
+        body: JSON.stringify({ name: 'Bad Region', regionLocationBaseId: 'invalid' }),
       });
       expect(response.status).toBe(400);
     });
@@ -2524,7 +2524,7 @@ describe('Vox API Tests', () => {
       const response = await fetch(`${BASE_URL}/api/eval-agent-tokens`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: 'Unauth Token', region: 'na' }),
+        body: JSON.stringify({ name: 'Unauth Token', regionLocationBaseId: 'na' }),
       });
       expect(response.status).toBe(401);
     });
@@ -2835,7 +2835,7 @@ describe('Vox API Tests', () => {
         method: 'POST',
         body: JSON.stringify({
           evalSetId: mergeEvalSetId,
-          region: REGION_NA,
+          siteId: REGION_NA,
         }),
       });
 
@@ -2878,7 +2878,7 @@ describe('Vox API Tests', () => {
         method: 'POST',
         body: JSON.stringify({
           evalSetId: es.id,
-          region: REGION_NA,
+          siteId: REGION_NA,
         }),
       });
 
@@ -3077,7 +3077,7 @@ describe('Vox API Tests', () => {
           name: 'RunNow Config Schedule',
           workflowId: wf.id,
           evalSetId: es.id,
-          region: REGION_NA,
+          siteId: REGION_NA,
           scheduleType: 'once',
         }),
       });
@@ -3189,14 +3189,14 @@ describe('Vox API Tests', () => {
       // Run same eval set against both workflows
       const job1Res = await authFetch(adminSession, `${BASE_URL}/api/workflows/${wf1.id}/run`, {
         method: 'POST',
-        body: JSON.stringify({ evalSetId: evalSet.id, region: REGION_NA }),
+        body: JSON.stringify({ evalSetId: evalSet.id, siteId: REGION_NA }),
       });
       expect(job1Res.ok).toBe(true);
       const job1 = await job1Res.json();
 
       const job2Res = await authFetch(adminSession, `${BASE_URL}/api/workflows/${wf2.id}/run`, {
         method: 'POST',
-        body: JSON.stringify({ evalSetId: evalSet.id, region: REGION_NA }),
+        body: JSON.stringify({ evalSetId: evalSet.id, siteId: REGION_NA }),
       });
       expect(job2Res.ok).toBe(true);
       const job2 = await job2Res.json();
@@ -3504,7 +3504,7 @@ describe('Vox API Tests', () => {
       // Create a v0.1.0 job
       const runRes = await authFetch(adminSession, `${BASE_URL}/api/workflows/${versionedWorkflowId}/run`, {
         method: 'POST',
-        body: JSON.stringify({ region: versionTestRegion, evalSetId: versionedEvalSetId }),
+        body: JSON.stringify({ siteId: versionTestRegion, evalSetId: versionedEvalSetId }),
       });
       expect(runRes.ok).toBe(true);
 
@@ -3526,7 +3526,7 @@ describe('Vox API Tests', () => {
       // Create an unversioned job
       const runRes = await authFetch(adminSession, `${BASE_URL}/api/workflows/${unversionedWorkflowId}/run`, {
         method: 'POST',
-        body: JSON.stringify({ region: versionTestRegion, evalSetId: unversionedEvalSetId }),
+        body: JSON.stringify({ siteId: versionTestRegion, evalSetId: unversionedEvalSetId }),
       });
       expect(runRes.ok).toBe(true);
 
@@ -3576,7 +3576,7 @@ describe('Vox API Tests', () => {
 
       const runRes = await authFetch(adminSession, `${BASE_URL}/api/workflows/${wf.id}/run`, {
         method: 'POST',
-        body: JSON.stringify({ region: versionTestRegion, evalSetId: es.id }),
+        body: JSON.stringify({ siteId: versionTestRegion, evalSetId: es.id }),
       });
       expect(runRes.ok).toBe(true);
 
@@ -3621,7 +3621,7 @@ describe('Vox API Tests', () => {
       // assertion has a same-region future job to find.
       const futureRunRes = await authFetch(adminSession, `${BASE_URL}/api/workflows/${futureWorkflowId}/run`, {
         method: 'POST',
-        body: JSON.stringify({ region: legacyRegion, evalSetId: futureEvalSetId }),
+        body: JSON.stringify({ siteId: legacyRegion, evalSetId: futureEvalSetId }),
       });
       expect(futureRunRes.ok).toBe(true);
 
@@ -3734,7 +3734,7 @@ describe('Vox API Tests', () => {
 
       const runRes = await authFetch(adminSession, `${BASE_URL}/api/workflows/${wf.id}/run`, {
         method: 'POST',
-        body: JSON.stringify({ region: REGION_NA, evalSetId: es.id }),
+        body: JSON.stringify({ siteId: REGION_NA, evalSetId: es.id }),
       });
       expect(runRes.ok).toBe(true);
       const data = await runRes.json();
@@ -3989,7 +3989,7 @@ describe('Vox API Tests', () => {
       });
       const esId = (await es.json()).id;
       const jobRes = await authFetch(adminSession, `${BASE_URL}/api/workflows/${wfId}/run`, {
-        method: 'POST', body: JSON.stringify({ region: agentRegion, evalSetId: esId }),
+        method: 'POST', body: JSON.stringify({ siteId: agentRegion, evalSetId: esId }),
       });
       expect(jobRes.ok).toBe(true);
       const jobBody = await jobRes.json();
