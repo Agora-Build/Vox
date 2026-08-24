@@ -80,4 +80,49 @@ d("pooled claim SQL mirrors isClaimable", () => {
     const arg = { id: tok.id, siteId: tok.siteId, region: tok.region, dispatchTier: tok.dispatchTier, createdBy: tok.createdBy, ownerOrgId: null };
     expect((await storage.getClaimableJobsForToken(arg)).map(j => j.id)).toContain(job.id);
   });
+
+  // Fix round 2, item 1: the pooled SQL arm must carry its own `target_token_id
+  // IS NULL` guard (the arms are OR'd in SQL, unlike isClaimable()'s early
+  // return) — otherwise a malformed row with BOTH targetTokenId and
+  // targetRegion/targetTier set would leak to any in-region pool claimer.
+  // App-level invariant only (no CHECK constraint), hence the direct insert.
+  it("divergence guard: a row with BOTH targetTokenId and targetRegion is never claimed via the pool arm", async () => {
+    const otherTok = await mkToken(`tp-other-${Date.now()}`, "na-us-ashburn-01");
+    const pubTok = await mkToken(`tp-divpub-${Date.now()}`, "na-us-ashburn-01");
+    const job = await storage.createEvalJob({
+      workflowId: null, triggerType: 2, evalSetId: null, createdBy: 2,
+      siteId: null, targetTokenId: otherTok.id, targetRegion: "na-us-ashburn", targetTier: "public",
+      config: {}, snapshot: { provider: null, workflow: null, evalSet: null, creatorPlan: null } as any,
+      status: "pending", priority: 0, retryCount: 0, maxRetries: 3,
+    } as any);
+    const arg = { id: pubTok.id, siteId: pubTok.siteId, region: pubTok.region, dispatchTier: pubTok.dispatchTier, createdBy: pubTok.createdBy, ownerOrgId: null };
+    expect((await storage.getClaimableJobsForToken(arg)).map(j => j.id)).not.toContain(job.id);
+    const agent = await storage.createEvalAgent({ tokenId: pubTok.id, name: `tp-divagent-${Date.now()}`, siteId: pubTok.siteId, state: "idle", metadata: {} } as any);
+    expect(await storage.claimEvalJob(job.id, agent.id, arg)).toBeUndefined();
+  });
+
+  // Fix round 2, item 3: the team arm is security-critical (org-boundary
+  // mutual consent) and had no SQL-level test.
+  it("team pool: mutual consent at the SQL layer — org-mate's team token claims; org-mate's private token does not", async () => {
+    const suffix = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+    const org = await storage.createOrganization({ name: `tp-org-${suffix}` } as any);
+    const userA = await storage.createUser({ username: `tpA${suffix}`, email: `tpA${suffix}@example.com`, organizationId: org.id } as any);
+    const userB = await storage.createUser({ username: `tpB${suffix}`, email: `tpB${suffix}@example.com`, organizationId: org.id } as any);
+
+    // (a) B's TEAM-tier token, in-region, ownerOrgId = the shared org: lists + claims.
+    const teamJob = await mkPooledJob("na-us-ashburn", "team", userA.id);
+    const teamTok = await mkToken(`tp-team-${suffix}`, "na-us-ashburn-01", "team", userB.id);
+    const teamArg = { id: teamTok.id, siteId: teamTok.siteId, region: teamTok.region, dispatchTier: teamTok.dispatchTier, createdBy: teamTok.createdBy, ownerOrgId: org.id };
+    expect((await storage.getClaimableJobsForToken(teamArg)).map(j => j.id)).toContain(teamJob.id);
+    const teamAgent = await storage.createEvalAgent({ tokenId: teamTok.id, name: `tp-teamagent-${suffix}`, siteId: teamTok.siteId, state: "idle", metadata: {} } as any);
+    const claimed = await storage.claimEvalJob(teamJob.id, teamAgent.id, teamArg);
+    expect(claimed).toBeDefined();
+
+    // (b) B's PRIVATE-tier token, same org, same region: does NOT (mutual consent —
+    // the owner offered only 'private', which isn't in the job's team/public ask).
+    const privJob = await mkPooledJob("na-us-ashburn", "team", userA.id);
+    const privTok = await mkToken(`tp-teampriv-${suffix}`, "na-us-ashburn-01", "private", userB.id);
+    const privArg = { id: privTok.id, siteId: privTok.siteId, region: privTok.region, dispatchTier: privTok.dispatchTier, createdBy: privTok.createdBy, ownerOrgId: org.id };
+    expect((await storage.getClaimableJobsForToken(privArg)).map(j => j.id)).not.toContain(privJob.id);
+  });
 });

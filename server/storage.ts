@@ -886,7 +886,7 @@ export class DatabaseStorage {
          WHERE ej.id = $1 AND ej.status = 'pending'::eval_job_status
            AND (
              ej.target_token_id = $2
-             OR ( ej.target_region IS NOT NULL AND ej.target_region = $3 AND (
+             OR ( ej.target_token_id IS NULL AND ej.target_region IS NOT NULL AND ej.target_region = $3 AND (
                     ( ej.target_tier = 'private'::dispatch_tier AND ej.created_by = $5 )
                  OR ( ej.target_tier = 'team'::dispatch_tier
                       AND $4 IN ('team', 'public')
@@ -937,7 +937,7 @@ export class DatabaseStorage {
         WHERE ej.status = 'pending'::eval_job_status
           AND (
             ej.target_token_id = $1
-            OR ( ej.target_region IS NOT NULL AND ej.target_region = $2 AND (
+            OR ( ej.target_token_id IS NULL AND ej.target_region IS NOT NULL AND ej.target_region = $2 AND (
                    ( ej.target_tier = 'private'::dispatch_tier AND ej.created_by = $5 )
                 OR ( ej.target_tier = 'team'::dispatch_tier
                      AND $4 IN ('team', 'public')
@@ -1065,7 +1065,7 @@ export class DatabaseStorage {
       SET status = 'failed'::eval_job_status,
           error = CASE
             WHEN target_region IS NOT NULL
-              THEN 'No eligible ' || target_tier || ' agent in ' || target_region || ' claimed the job within ' || ${maxWaitMinutes} || ' min'
+              THEN 'No eligible ' || COALESCE(target_tier::text, 'eligible') || ' agent in ' || target_region || ' claimed the job within ' || ${maxWaitMinutes} || ' min'
             ELSE ${message}
           END,
           completed_at = NOW(),
