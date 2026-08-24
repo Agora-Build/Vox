@@ -207,6 +207,9 @@ export const evalAgentTokens = pgTable("eval_agent_tokens", {
   name: text("name").notNull(),
   tokenHash: text("token_hash").notNull().unique(),
   siteId: varchar("site_id", { length: 64 }).notNull(),
+  // Region baseId (e.g. "na-us-seattle") — the pool an agent serves. Stamped at
+  // mint (siteId = region + allocated sequence), backfilled in migration 0034.
+  region: varchar("region", { length: 64 }).notNull(),
   dispatchTier: dispatchTierEnum("dispatch_tier").default("public").notNull(),
   createdBy: integer("created_by").notNull().references(() => users.id),
   isRevoked: boolean("is_revoked").default(false).notNull(),
@@ -219,6 +222,7 @@ export const insertEvalAgentTokenSchema = createInsertSchema(evalAgentTokens).om
   id: true,
   createdAt: true,
   lastUsedAt: true,
+  region: true,
 });
 
 export type InsertEvalAgentToken = z.infer<typeof insertEvalAgentTokenSchema>;
@@ -268,7 +272,9 @@ export const evalSchedules = pgTable("eval_schedules", {
   // (it's then skipped by the scheduler). Avoids a FK error when either is deleted.
   workflowId: integer("workflow_id").references(() => workflows.id, { onDelete: "set null" }),
   evalSetId: integer("eval_set_id").references(() => evalSets.id, { onDelete: "set null" }),
-  siteId: varchar("site_id", { length: 64 }).notNull(),
+  // Pool the schedule dispatches into: region baseId + tier (spec §4/§5).
+  region: varchar("region", { length: 64 }).notNull(),
+  targetTier: dispatchTierEnum("target_tier").default("public").notNull(),
   scheduleType: scheduleTypeEnum("schedule_type").default("once").notNull(),
   cronExpression: varchar("cron_expression", { length: 100 }), // e.g., "0 * * * *" for hourly
   timezone: varchar("timezone", { length: 50 }).default("UTC").notNull(),
@@ -346,9 +352,16 @@ export const evalJobs = pgTable("eval_jobs", {
   workflowId: integer("workflow_id").references(() => workflows.id, { onDelete: "set null" }),
   evalSetId: integer("eval_set_id").references(() => evalSets.id, { onDelete: "set null" }),
   targetTokenId: integer("target_token_id").references(() => evalAgentTokens.id, { onDelete: "set null" }),
+  // Pooled targeting: (targetRegion, targetTier) — "any agent of this tier in
+  // this region". Exactly one of targetTokenId / (targetRegion+targetTier) is
+  // set on new rows; legacy rows have siteId set and all three null.
+  targetRegion: varchar("target_region", { length: 64 }),
+  targetTier: dispatchTierEnum("target_tier"),
   evalAgentId: integer("eval_agent_id").references(() => evalAgents.id),
   createdBy: integer("created_by").references(() => users.id),
-  siteId: varchar("site_id", { length: 64 }).notNull(),
+  // Concrete site that ran (or will run) the job. Pooled jobs are born null;
+  // the claiming agent stamps it atomically inside claimEvalJob.
+  siteId: varchar("site_id", { length: 64 }),
   status: evalJobStatusEnum("status").default("pending").notNull(),
   priority: integer("priority").default(0).notNull(),
   retryCount: integer("retry_count").default(0).notNull(),

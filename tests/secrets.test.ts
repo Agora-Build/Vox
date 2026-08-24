@@ -513,10 +513,6 @@ describe('Secrets - Agent Endpoint', () => {
 
       adminSession = await login(ADMIN_EMAIL, ADMIN_PASSWORD);
 
-      // Resolved site region for the agent token; the job must be created in the
-      // same region for this token's agent to see and claim it.
-      let agentRegion = '';
-
       // Create a secret to test with
       const secretRes = await authFetch(adminSession, `${BASE_URL}/api/secrets`, {
         method: 'POST',
@@ -532,7 +528,6 @@ describe('Secrets - Agent Endpoint', () => {
       if (tokenRes.ok) {
         const tokenData = await tokenRes.json();
         agentToken = tokenData.token;
-        agentRegion = tokenData.siteId;
       }
 
       // Register an agent
@@ -549,24 +544,48 @@ describe('Secrets - Agent Endpoint', () => {
         }
       }
 
-      // Get a workflow to create a job from
-      const wfRes = await authFetch(adminSession, `${BASE_URL}/api/workflows`);
+      // Create a dedicated admin-owned workflow rather than borrowing
+      // workflows[0] off a GET list — list order isn't stable across
+      // concurrently-running test files sharing the same dev DB, and
+      // getSecretsForJob resolves by the workflow's actual ownerId.
+      const providers = await (await fetch(`${BASE_URL}/api/providers`)).json();
+      const providerId = providers[0]?.id;
+      const wfRes = await authFetch(adminSession, `${BASE_URL}/api/workflows`, {
+        method: 'POST',
+        body: JSON.stringify({ name: `Secrets Agent Test WF ${Date.now()}`, providerId, config: { framework: 'aeval' } }),
+      });
       if (wfRes.ok) {
-        const workflows = await wfRes.json();
-        if (workflows.length > 0) {
-          workflowId = workflows[0].id;
-        }
+        workflowId = (await wfRes.json()).id;
+      }
+
+      // Eval set required by the run route — the original beforeAll omitted
+      // this, so the run always 400'd ("Eval set required") and jobId stayed
+      // 0, silently no-op'ing the two tests below via their `!jobId` guard.
+      let evalSetId = 0;
+      const esRes = await authFetch(adminSession, `${BASE_URL}/api/eval-sets`, {
+        method: 'POST',
+        body: JSON.stringify({ name: `Secrets Agent Test ES ${Date.now()}`, config: {} }),
+      });
+      if (esRes.ok) {
+        evalSetId = (await esRes.json()).id;
       }
 
       // Create and claim a job
-      if (workflowId && agentToken && agentId) {
+      if (workflowId && agentToken && agentId && evalSetId) {
         const runRes = await authFetch(adminSession, `${BASE_URL}/api/workflows/${workflowId}/run`, {
           method: 'POST',
-          body: JSON.stringify({ siteId: agentRegion }),
+          body: JSON.stringify({ region: BASE_NA, targetTier: 'public', evalSetId }),
         });
         if (runRes.ok) {
           const runData = await runRes.json();
-          jobId = runData.jobs?.[0]?.id || runData.id || 0;
+          // Response shape is { message, job } (a singular job object) — not
+          // a `jobs` array or a top-level `id`. Reading the wrong shape left
+          // jobId permanently 0, which silently fell through to the "fetch
+          // pending jobs" fallback below; in the pooled dispatch model that
+          // fallback lists EVERY pending job in the shared region+tier pool,
+          // so under `npm test`'s parallel file execution it could grab a
+          // different test file's job instead of this one's.
+          jobId = runData.job?.id || 0;
         }
 
         // If direct job ID wasn't returned, fetch pending jobs

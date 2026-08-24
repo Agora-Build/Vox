@@ -12,8 +12,11 @@ import { REGION_NA, BASE_NA } from './helpers/regions';
  *  - Response surfaces emit `siteId`, never `region` (the sole exception is
  *    the clash-runner daemon wire, which dual-keys `siteId` + `region` until
  *    deployed runners are upgraded — covered in clash-runner-lifecycle).
- *  - Request bodies take `siteId` ONLY — the legacy `region` body key is
- *    dead and must be rejected, not silently read.
+ *  - Run and schedule request bodies (workflow run, v1 run, eval-schedules
+ *    create/PATCH) take `region` + `targetTier` (pooled dispatch, spec
+ *    2026-08-24-tier-targeting) — the exact-site `siteId` body key is dead on
+ *    those routes and must be rejected, not silently read. CLASH-token /
+ *    clash-runner bodies are unaffected and still take `siteId`.
  */
 
 const BASE_URL = process.env.TEST_BASE_URL || 'http://localhost:5000';
@@ -122,6 +125,25 @@ describe('site-id wire contract', () => {
     // Clean up: revoke so repeated runs don't accumulate live runner tokens.
     const revoke = await authFetch(`/api/admin/clash-runner-tokens/${created.id}/revoke`, { method: 'POST' });
     expect(revoke.status).toBe(200);
+  });
+
+  it('run body takes region+targetTier; the siteId body key is dead', async () => {
+    const wf = await (await authFetch('/api/workflows?includePublic=true')).json();
+    const es = await (await authFetch('/api/eval-sets?includePublic=true')).json();
+    const viaSite = await authFetch(`/api/workflows/${wf[0].id}/run`, {
+      method: 'POST',
+      body: JSON.stringify({ siteId: REGION_NA, evalSetId: es[0].id }),
+    });
+    expect(viaSite.status).toBe(400); // siteId body key no longer read
+
+    const viaPool = await authFetch(`/api/workflows/${wf[0].id}/run`, {
+      method: 'POST',
+      body: JSON.stringify({ region: BASE_NA, targetTier: 'public', evalSetId: es[0].id }),
+    });
+    expect(viaPool.status).toBe(200);
+    const { job } = await viaPool.json();
+    expect(job.siteId).toBeNull();
+    expect(job.targetRegion).toBe(BASE_NA);
   });
 
   it('GET /api/metrics/leaderboard entries carry siteId when present', async () => {

@@ -503,13 +503,14 @@ export class DatabaseStorage {
       const siteId = `${selected.rows[0].base_id}-${String(sequence).padStart(2, "0")}`;
       const inserted = await client.query(
         `INSERT INTO eval_agent_tokens
-          (name, token_hash, site_id, dispatch_tier, created_by, is_revoked, expires_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)
+          (name, token_hash, site_id, region, dispatch_tier, created_by, is_revoked, expires_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
          RETURNING *`,
         [
           token.name,
           token.tokenHash,
           siteId,
+          selected.rows[0].base_id,
           token.dispatchTier,
           token.createdBy,
           token.isRevoked,
@@ -526,6 +527,7 @@ export class DatabaseStorage {
       const row = inserted.rows[0];
       return {
         id: row.id, name: row.name, tokenHash: row.token_hash, siteId: row.site_id,
+        region: row.region,
         dispatchTier: row.dispatch_tier, createdBy: row.created_by,
         isRevoked: row.is_revoked, expiresAt: row.expires_at, lastUsedAt: row.last_used_at,
         createdAt: row.created_at,
@@ -655,7 +657,9 @@ export class DatabaseStorage {
   }
 
   async createEvalAgentToken(token: InsertEvalAgentToken): Promise<EvalAgentToken> {
-    const result = await db.insert(evalAgentTokens).values(token).returning();
+    // Fixtures/tests pass a bare siteId; region is derivable (strip -NN).
+    const values = { ...token, region: (token as { region?: string }).region ?? token.siteId.replace(/-\d+$/, "") };
+    const result = await db.insert(evalAgentTokens).values(values).returning();
     return result[0];
   }
 
@@ -714,7 +718,7 @@ export class DatabaseStorage {
   }
 
   async getEvalAgentsWithTokenTier(): Promise<
-    (EvalAgent & { tokenCreatedBy: number; tokenDispatchTier: string; tokenOwnerOrgId: number | null })[]
+    (EvalAgent & { tokenCreatedBy: number; tokenDispatchTier: string; tokenOwnerOrgId: number | null; tokenRegion: string })[]
   > {
     const results = await db.select({
       id: evalAgents.id,
@@ -730,13 +734,14 @@ export class DatabaseStorage {
       tokenCreatedBy: evalAgentTokens.createdBy,
       tokenDispatchTier: evalAgentTokens.dispatchTier,
       tokenOwnerOrgId: users.organizationId,
+      tokenRegion: evalAgentTokens.region,
     })
       .from(evalAgents)
       .innerJoin(evalAgentTokens, eq(evalAgents.tokenId, evalAgentTokens.id))
       .leftJoin(users, eq(evalAgentTokens.createdBy, users.id))
       .orderBy(desc(evalAgents.createdAt));
     return results as (EvalAgent & {
-      tokenCreatedBy: number; tokenDispatchTier: string; tokenOwnerOrgId: number | null;
+      tokenCreatedBy: number; tokenDispatchTier: string; tokenOwnerOrgId: number | null; tokenRegion: string;
     })[];
   }
 
@@ -870,46 +875,49 @@ export class DatabaseStorage {
   async claimEvalJob(
     jobId: number,
     agentId: number,
-    token: { id: number; dispatchTier: string; createdBy: number },
+    token: { id: number; siteId: string; region: string; dispatchTier: string; createdBy: number; ownerOrgId: number | null },
   ): Promise<EvalJob | undefined> {
-    // Use atomic claim with SELECT FOR UPDATE SKIP LOCKED to prevent race conditions
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
-
-      // Try to lock and select the specific job. The WHERE predicate mirrors the
-      // pure isClaimable() predicate in server/permissions.ts bit for bit.
+      // WHERE mirrors permissions.isClaimable() bit for bit.
       const selectResult = await client.query(
-        `SELECT * FROM eval_jobs
-         WHERE id = $1 AND status = 'pending'::eval_job_status
+        `SELECT ej.* FROM eval_jobs ej
+         LEFT JOIN users creator ON ej.created_by = creator.id
+         WHERE ej.id = $1 AND ej.status = 'pending'::eval_job_status
            AND (
-             target_token_id = $2
-             OR ( target_token_id IS NULL AND (
-                    created_by = $4
-                    OR ( $3 = 'public' AND (config -> 'sessionInjection') IS NULL )
+             ej.target_token_id = $2
+             OR ( ej.target_token_id IS NULL AND ej.target_region IS NOT NULL AND ej.target_region = $3 AND (
+                    ( ej.target_tier = 'private'::dispatch_tier AND ej.created_by = $5 )
+                 OR ( ej.target_tier = 'team'::dispatch_tier
+                      AND $4 IN ('team', 'public')
+                      AND $6::integer IS NOT NULL AND creator.organization_id = $6 )
+                 OR ( ej.target_tier = 'public'::dispatch_tier AND $4 = 'public'
+                      AND (ej.config -> 'sessionInjection') IS NULL )
+             ) )
+             OR ( ej.target_token_id IS NULL AND ej.target_region IS NULL AND ej.site_id = $7 AND (
+                    ej.created_by = $5
+                    OR ( $4 = 'public' AND (ej.config -> 'sessionInjection') IS NULL )
              ) )
            )
-         FOR UPDATE SKIP LOCKED`,
-        [jobId, token.id, token.dispatchTier, token.createdBy]
+         FOR UPDATE OF ej SKIP LOCKED`,
+        [jobId, token.id, token.region, token.dispatchTier, token.createdBy, token.ownerOrgId, token.siteId]
       );
-
       if (selectResult.rows.length === 0) {
         await client.query('ROLLBACK');
         return undefined;
       }
-
-      // Update the job. token_dispatch_tier is frozen here — in the same atomic
-      // update as the claim — so a completed result can never be mis-tiered by a
-      // lost write. dispatchTier is NOT NULL on the token, so it is never null.
+      // token_dispatch_tier frozen + site stamped in the same atomic update:
+      // a pooled job (site_id NULL) records the claiming agent's concrete site.
       const updateResult = await client.query(
         `UPDATE eval_jobs
          SET eval_agent_id = $1, status = 'running'::eval_job_status, started_at = NOW(), updated_at = NOW(),
-             token_dispatch_tier = $3
+             token_dispatch_tier = $3,
+             site_id = COALESCE(site_id, $4)
          WHERE id = $2
          RETURNING *`,
-        [agentId, jobId, token.dispatchTier]
+        [agentId, jobId, token.dispatchTier, token.siteId]
       );
-
       await client.query('COMMIT');
       return snakeToCamel(updateResult.rows[0]) as EvalJob;
     } catch (error) {
@@ -921,64 +929,32 @@ export class DatabaseStorage {
   }
 
   async getClaimableJobsForToken(token: {
-    id: number; siteId: string; dispatchTier: string; createdBy: number;
+    id: number; siteId: string; region: string; dispatchTier: string; createdBy: number; ownerOrgId: number | null;
   }): Promise<EvalJob[]> {
+    // Mirrors permissions.isClaimable() bit for bit (targeted / pooled / legacy).
     const result = await pool.query(
-      `SELECT * FROM eval_jobs
-        WHERE status = 'pending'::eval_job_status AND site_id = $1
+      `SELECT ej.* FROM eval_jobs ej
+        LEFT JOIN users creator ON ej.created_by = creator.id
+        WHERE ej.status = 'pending'::eval_job_status
           AND (
-            target_token_id = $2
-            OR ( target_token_id IS NULL AND (
-                   created_by = $4
-                   OR ( $3 = 'public' AND (config -> 'sessionInjection') IS NULL )
+            ej.target_token_id = $1
+            OR ( ej.target_token_id IS NULL AND ej.target_region IS NOT NULL AND ej.target_region = $2 AND (
+                   ( ej.target_tier = 'private'::dispatch_tier AND ej.created_by = $5 )
+                OR ( ej.target_tier = 'team'::dispatch_tier
+                     AND $4 IN ('team', 'public')
+                     AND $6::integer IS NOT NULL AND creator.organization_id = $6 )
+                OR ( ej.target_tier = 'public'::dispatch_tier AND $4 = 'public'
+                     AND (ej.config -> 'sessionInjection') IS NULL )
+            ) )
+            OR ( ej.target_token_id IS NULL AND ej.target_region IS NULL AND ej.site_id = $3 AND (
+                   ej.created_by = $5
+                   OR ( $4 = 'public' AND (ej.config -> 'sessionInjection') IS NULL )
             ) )
           )
-        ORDER BY priority DESC, created_at ASC`,
-      [token.siteId, token.id, token.dispatchTier, token.createdBy],
+        ORDER BY ej.priority DESC, ej.created_at ASC`,
+      [token.id, token.region, token.siteId, token.dispatchTier, token.createdBy, token.ownerOrgId],
     );
     return result.rows.map((r) => snakeToCamel(r) as EvalJob);
-  }
-
-  // Atomic claim for next available job in region
-  async claimNextAvailableJob(agentId: number, region: string): Promise<EvalJob | undefined> {
-    const client = await pool.connect();
-    try {
-      await client.query('BEGIN');
-
-      // Select and lock the next available job, skipping locked rows
-      const selectResult = await client.query(
-        `SELECT * FROM eval_jobs
-         WHERE status = 'pending'::eval_job_status AND site_id = $1
-         ORDER BY priority DESC, created_at ASC
-         LIMIT 1
-         FOR UPDATE SKIP LOCKED`,
-        [region]
-      );
-
-      if (selectResult.rows.length === 0) {
-        await client.query('ROLLBACK');
-        return undefined;
-      }
-
-      const job = selectResult.rows[0];
-
-      // Update the job
-      const updateResult = await client.query(
-        `UPDATE eval_jobs
-         SET eval_agent_id = $1, status = 'running'::eval_job_status, started_at = NOW(), updated_at = NOW()
-         WHERE id = $2
-         RETURNING *`,
-        [agentId, job.id]
-      );
-
-      await client.query('COMMIT');
-      return snakeToCamel(updateResult.rows[0]) as EvalJob;
-    } catch (error) {
-      await client.query('ROLLBACK');
-      throw error;
-    } finally {
-      client.release();
-    }
   }
 
   // Release stale jobs where agent hasn't sent heartbeat
@@ -1065,6 +1041,8 @@ export class DatabaseStorage {
           completed_at = NOW(),
           updated_at = NOW()
       WHERE status = 'pending'::eval_job_status
+      AND site_id IS NOT NULL
+      AND target_region IS NULL
       AND GREATEST(created_at, updated_at) < ${timeoutCutoff}
       AND NOT EXISTS (
         SELECT 1 FROM eval_agents ea
@@ -1083,10 +1061,19 @@ export class DatabaseStorage {
   async failExpiredPendingJobs(maxWaitMinutes: number): Promise<number> {
     const cutoff = new Date(Date.now() - maxWaitMinutes * 60 * 1000);
     const message = `Not claimed by any eval agent within ${maxWaitMinutes} min`;
+    // Pooled backstop message (24h by default): render hours when the window is
+    // an even number of hours ("within 24h") instead of the always-minutes form
+    // ("within 1440 min"), and avoid the "eligible eligible agent" repeat when
+    // target_tier is somehow null on a pooled row.
+    const pooledWaitLabel = maxWaitMinutes % 60 === 0 ? `${maxWaitMinutes / 60}h` : `${maxWaitMinutes} min`;
     const result = await db.execute(sql`
       UPDATE eval_jobs
       SET status = 'failed'::eval_job_status,
-          error = ${message},
+          error = CASE
+            WHEN target_region IS NOT NULL
+              THEN 'No eligible ' || COALESCE(target_tier::text, 'matching') || ' agent in ' || target_region || ' claimed the job within ' || ${pooledWaitLabel}
+            ELSE ${message}
+          END,
           completed_at = NOW(),
           updated_at = NOW()
       WHERE status = 'pending'::eval_job_status
@@ -2029,7 +2016,8 @@ export class DatabaseStorage {
       name: evalSchedules.name,
       workflowId: evalSchedules.workflowId,
       evalSetId: evalSchedules.evalSetId,
-      siteId: evalSchedules.siteId,
+      region: evalSchedules.region,
+      targetTier: evalSchedules.targetTier,
       scheduleType: evalSchedules.scheduleType,
       cronExpression: evalSchedules.cronExpression,
       timezone: evalSchedules.timezone,

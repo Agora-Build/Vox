@@ -1,5 +1,5 @@
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { useSiteOptions } from "@/hooks/use-regions";
+import { useRegionLocationOptions } from "@/hooks/use-regions";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -27,6 +27,7 @@ interface AuthStatus {
     username: string;
     plan: string;
     isAdmin: boolean;
+    organizationId: number | null;
   } | null;
 }
 
@@ -38,7 +39,7 @@ type WorkflowWithPerms = WorkflowType & { canSchedule?: boolean };
 
 export default function ConsoleEvalSets() {
   const { toast } = useToast();
-  const { options: regionOptions } = useSiteOptions();
+  const { options: regionOptions } = useRegionLocationOptions();
 
   // Create dialog state
   const [createOpen, setCreateOpen] = useState(false);
@@ -52,6 +53,7 @@ export default function ConsoleEvalSets() {
   const [runEvalSet, setRunEvalSet] = useState<EvalSet | null>(null);
   const [runWorkflowId, setRunWorkflowId] = useState("");
   const [runRegion, setRunRegion] = useState("");
+  const [targetTier, setTargetTier] = useState<string>("public");
   const [runMode, setRunMode] = useState<"once" | "recurring">("once");
   const [cronExpression, setCronExpression] = useState("");
   const [scheduleName, setScheduleName] = useState("");
@@ -129,7 +131,8 @@ export default function ConsoleEvalSets() {
   const runOnceMutation = useMutation({
     mutationFn: async () => {
       const res = await apiRequest("POST", `/api/workflows/${runWorkflowId}/run`, {
-        siteId: runRegion,
+        region: runRegion,
+        targetTier,
         evalSetId: runEvalSet!.id,
       });
       return res.json();
@@ -149,7 +152,8 @@ export default function ConsoleEvalSets() {
         name: scheduleName || `${runEvalSet!.name} schedule`,
         workflowId: parseInt(runWorkflowId),
         evalSetId: runEvalSet!.id,
-        siteId: runRegion,
+        region: runRegion,
+        targetTier,
         scheduleType: "recurring",
         cronExpression,
       });
@@ -224,6 +228,7 @@ export default function ConsoleEvalSets() {
     setRunEvalSet(evalSet);
     setRunWorkflowId("");
     setRunRegion("");
+    setTargetTier("public");
     setRunMode("once");
     setCronExpression("");
     setScheduleName("");
@@ -235,6 +240,7 @@ export default function ConsoleEvalSets() {
     setRunEvalSet(null);
     setRunWorkflowId("");
     setRunRegion("");
+    setTargetTier("public");
     setRunMode("once");
     setCronExpression("");
     setScheduleName("");
@@ -548,6 +554,22 @@ export default function ConsoleEvalSets() {
                       {r.label}
                     </SelectItem>
                   ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="space-y-2">
+              <Label>Run on</Label>
+              <Select value={targetTier} onValueChange={setTargetTier}>
+                <SelectTrigger data-testid="select-target-tier">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="private">My agents</SelectItem>
+                  <SelectItem value="team" disabled={!authStatus?.user?.organizationId}>
+                    Team agents{!authStatus?.user?.organizationId ? " — join an organization" : ""}
+                  </SelectItem>
+                  <SelectItem value="public">Any public agent</SelectItem>
                 </SelectContent>
               </Select>
             </div>

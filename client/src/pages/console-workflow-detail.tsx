@@ -15,8 +15,8 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import { ArrowLeft, Play, Settings, History, Clock, CheckCircle, XCircle, Loader2, RefreshCw } from "lucide-react";
 import { useState } from "react";
 import type { Workflow as WorkflowType, Provider, EvalJob, EvalSet } from "@shared/schema";
-import { formatSmartTimestamp, formatSite, toYaml } from "@/lib/utils";
-import { useSiteOptions } from "@/hooks/use-regions";
+import { formatSmartTimestamp, formatSite, formatRegion, toYaml } from "@/lib/utils";
+import { useRegionLocationOptions } from "@/hooks/use-regions";
 
 interface AuthStatus {
   user: {
@@ -24,6 +24,7 @@ interface AuthStatus {
     username: string;
     plan: string;
     isAdmin: boolean;
+    organizationId?: number | null;
   } | null;
 }
 
@@ -38,11 +39,12 @@ interface RunTargetAgent {
 interface RunTargetsResponse {
   agents: { mine: RunTargetAgent[]; shared: RunTargetAgent[] };
   referencedSecrets: Array<{ name: string; class: "runtime" | "protected"; present: boolean }>;
+  tiers: { tier: string; available: boolean; onlineAgents?: number; reason?: string }[];
 }
 
 export default function ConsoleWorkflowDetail() {
   const { toast } = useToast();
-  const { options: regionOptions } = useSiteOptions();
+  const { options: regionOptions } = useRegionLocationOptions();
   const params = useParams<{ id: string }>();
   const [, setLocation] = useLocation();
   const workflowId = parseInt(params.id || "0");
@@ -50,6 +52,7 @@ export default function ConsoleWorkflowDetail() {
   const [runDialogOpen, setRunDialogOpen] = useState(false);
   const [runRegion, setRunRegion] = useState("");
   const [runEvalSetId, setRunEvalSetId] = useState("");
+  const [targetTier, setTargetTier] = useState<string>("public");
   const [targetTokenId, setTargetTokenId] = useState<string>("any");
   const [ackRuntime, setAckRuntime] = useState(false);
 
@@ -84,9 +87,18 @@ export default function ConsoleWorkflowDetail() {
   const { data: runTargets } = useQuery<RunTargetsResponse>({
     queryKey: [`/api/workflows/${workflowId}/run-targets`, runRegion, runEvalSetId],
     queryFn: async () => (await apiRequest("GET",
-      `/api/workflows/${workflowId}/run-targets?siteId=${encodeURIComponent(runRegion)}&evalSetId=${runEvalSetId}`)).json(),
+      `/api/workflows/${workflowId}/run-targets?region=${encodeURIComponent(runRegion)}&evalSetId=${runEvalSetId}`)).json(),
     enabled: runDialogOpen && !!runRegion && !!runEvalSetId,
   });
+
+  // Fallback tier list (no online counts yet) so the "Run on" selector is
+  // populated immediately, before a region/eval set is chosen and the
+  // run-targets query has loaded.
+  const tierOptions = runTargets?.tiers ?? [
+    { tier: "private", available: true },
+    { tier: "team", available: !!authStatus?.user?.organizationId, reason: authStatus?.user?.organizationId ? undefined : "no-org" },
+    { tier: "public", available: true },
+  ];
 
   const pickerShared = (runTargets?.agents.shared ?? []).filter(
     (s) => !(runTargets?.agents.mine ?? []).some((m) => m.tokenId === s.tokenId)
@@ -100,9 +112,8 @@ export default function ConsoleWorkflowDetail() {
   const runWorkflowMutation = useMutation({
     mutationFn: async () => {
       const res = await apiRequest("POST", `/api/workflows/${workflowId}/run`, {
-        siteId: runRegion,
         evalSetId: parseInt(runEvalSetId),
-        ...(targetTokenId !== "any" ? { targetTokenId: Number(targetTokenId) } : {}),
+        ...(targetTokenId !== "any" ? { targetTokenId: Number(targetTokenId) } : { region: runRegion, targetTier }),
         ...(showRuntimeWarning ? { runtimeSecretConsent: ackRuntime } : {}),
       });
       return res.json();
@@ -111,6 +122,7 @@ export default function ConsoleWorkflowDetail() {
       setRunDialogOpen(false);
       setRunRegion("");
       setRunEvalSetId("");
+      setTargetTier("public");
       setTargetTokenId("any");
       setAckRuntime(false);
       refetchJobs();
@@ -168,6 +180,7 @@ export default function ConsoleWorkflowDetail() {
           onOpenChange={(open) => {
             setRunDialogOpen(open);
             if (!open) {
+              setTargetTier("public");
               setTargetTokenId("any");
               setAckRuntime(false);
             }
@@ -201,6 +214,27 @@ export default function ConsoleWorkflowDetail() {
                     ))}
                   </SelectContent>
                 </Select>
+              </div>
+              <div className="space-y-2">
+                <Label>Run on</Label>
+                <Select value={targetTier} onValueChange={setTargetTier}>
+                  <SelectTrigger data-testid="select-target-tier">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {tierOptions.filter((t) => t.tier !== "shared").map((t) => (
+                      <SelectItem key={t.tier} value={t.tier} disabled={!t.available}>
+                        {t.tier === "public" ? "Any public agent" : t.tier === "private" ? "My agents" : "Team agents"}
+                        {t.available ? (typeof t.onlineAgents === "number" ? ` (${t.onlineAgents} online)` : "") : t.reason === "no-org" ? " — join an organization" : ""}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                {tierOptions.find((t) => t.tier === targetTier)?.onlineAgents === 0 && (
+                  <p className="text-xs text-muted-foreground">
+                    No matching agent is online right now; the job will wait in the pool (up to 24h).
+                  </p>
+                )}
               </div>
               <div className="space-y-2">
                 <Label htmlFor="run-eval-set">Eval Set</Label>
@@ -383,7 +417,14 @@ export default function ConsoleWorkflowDetail() {
                   <TableRow key={job.id}>
                     <TableCell className="font-mono">#{job.id}</TableCell>
                     <TableCell>
-                      <Badge variant="outline">{formatSite(job.siteId)}</Badge>
+                      <div className="flex items-center gap-1">
+                        <Badge variant="outline">
+                          {job.siteId ? formatSite(job.siteId) : formatRegion(job.targetRegion ?? "")}
+                        </Badge>
+                        {!job.siteId && job.targetTier && (
+                          <Badge variant="secondary" className="text-xs">{job.targetTier}</Badge>
+                        )}
+                      </div>
                     </TableCell>
                     <TableCell>
                       <Badge

@@ -321,10 +321,29 @@ components:
 
     RunWorkflowRequest:
       type: object
+      required:
+        - region
+        - targetTier
+        - evalSetId
       properties:
-        siteId:
+        region:
           type: string
-          default: "na-us-seattle-02"
+          description: >-
+            Region location baseId to dispatch into (must be an active
+            region_locations.baseId). The job waits in this region×tier pool
+            until a qualified agent claims it (no fast-fail — bounded only by
+            the 24h pending backstop).
+          example: "na-us-seattle"
+        targetTier:
+          type: string
+          description: >-
+            Which pool of agents may claim the job. `private` = only your own
+            agents. `team` = your organization's agents (requires org
+            membership). `public` = any public agent. `shared` (paid,
+            marketplace) is not yet available for pooled dispatch and is
+            rejected with 400.
+          enum: [private, team, public, shared]
+          example: "public"
         evalSetId:
           type: integer
           nullable: true

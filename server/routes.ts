@@ -73,6 +73,7 @@ import {
   canScheduleWorkflow,
   sameOrg,
   isSessionServable,
+  hasOrg,
 } from "./permissions";
 
 // Schedule lifecycle: a schedule is created with a 90-day expiry and can be
@@ -2122,15 +2123,21 @@ export async function registerRoutes(
       }
 
       const { name, workflowId, evalSetId, scheduleType, cronExpression, timezone, runAt, maxRuns, organizationId } = req.body;
-      const region = req.body.siteId;
+      const region = req.body.region != null ? String(req.body.region) : null;
+      const targetTier = req.body.targetTier != null ? String(req.body.targetTier) : null;
 
-      if (!name || !workflowId || !region) {
-        return res.status(400).json({ error: "Name, workflowId, and siteId are required" });
+      if (!name || !workflowId || !region || !targetTier) {
+        return res.status(400).json({ error: "Name, workflowId, region, and targetTier are required" });
       }
-
-      const normalizedRegion = String(region);
-      if (!(await storage.isAllocatedSite(normalizedRegion))) {
-        return res.status(400).json({ error: "Region must be an active allocated site ID" });
+      if (targetTier === "shared" || !["private", "team", "public"].includes(targetTier)) {
+        return res.status(400).json({ error: targetTier === "shared" ? "Pooled shared dispatch is not available" : "Invalid targetTier" });
+      }
+      if (targetTier === "team" && !hasOrg(user)) {
+        return res.status(400).json({ error: "Join an organization to use team agents" });
+      }
+      const regionLoc = (await storage.getAllRegionLocations()).find((l) => l.baseId === region && l.isActive);
+      if (!regionLoc) {
+        return res.status(400).json({ error: "region must be an active region" });
       }
 
       // A recurring schedule runs the workflow repeatedly on the OWNER's bound
@@ -2158,6 +2165,25 @@ export async function registerRoutes(
         return res.status(403).json({ error: "Access denied to eval set" });
       }
 
+      // Session-injection composition (spec §5): scheduled session workflows may
+      // only use private/team pools — same rule as the run route.
+      {
+        const wfConfig = (workflow.config ?? {}) as Record<string, unknown>;
+        const setupInfo = parsePlatformSetup(wfConfig.stepsPrefix as string | undefined);
+        const scope = sessionScopeForWorkflow(workflow);
+        const schedSessionReq = evaluateSessionRequirement(setupInfo, await getBrokeredSecretNames(scope));
+        if (schedSessionReq.kind === "need" && targetTier === "public") {
+          return res.status(403).json({ error: "Credential-injected workflows can only use your own or team agent pools" });
+        }
+        // See run route: a personal (non-org) session workflow scheduled into a
+        // team pool would let an org-mate's token claim it, then be refused the
+        // session — guaranteed-failure dispatch. Require org ownership.
+        if (schedSessionReq.kind === "need" && targetTier === "team" &&
+            !(workflow.organizationId != null && sameOrg({ organizationId: user.organizationId }, { organizationId: workflow.organizationId }))) {
+          return res.status(403).json({ error: "Credential-injected workflows can only use a team pool when the workflow belongs to your organization" });
+        }
+      }
+
       const type = scheduleType || "once";
       let nextRunAt: Date | null = null;
 
@@ -2182,7 +2208,8 @@ export async function registerRoutes(
         name,
         workflowId,
         evalSetId,
-        siteId: normalizedRegion,
+        region,
+        targetTier: targetTier as "private" | "team" | "public",
         scheduleType: type,
         cronExpression: cronExpression || null,
         timezone: timezone || "UTC",
@@ -2220,24 +2247,62 @@ export async function registerRoutes(
       }
 
       const { name, isEnabled, cronExpression, maxRuns, nextRunAt } = req.body;
+      const region = req.body.region != null ? String(req.body.region) : undefined;
+      const targetTier = req.body.targetTier != null ? String(req.body.targetTier) : undefined;
 
-      // Enabling, rescheduling, advancing nextRunAt, or changing the run cap all
-      // affect how many times runs execute on the workflow OWNER's secrets, so
-      // they need owner rights (a system admin isn't exempt). Gate on an ACTUAL
-      // change, not mere presence — the Edit dialog resends cron/maxRuns even on a
-      // name-only edit, and disable/rename must stay open to the schedule's
-      // manager for cleanup.
+      // Same validation as schedule create (spec §4/§5) for the pool being
+      // requested — applied whenever the field is present, before the
+      // owner-gate below (which needs the workflow to check session composition).
+      if (targetTier !== undefined) {
+        if (targetTier === "shared" || !["private", "team", "public"].includes(targetTier)) {
+          return res.status(400).json({ error: targetTier === "shared" ? "Pooled shared dispatch is not available" : "Invalid targetTier" });
+        }
+        if (targetTier === "team" && !hasOrg(user)) {
+          return res.status(400).json({ error: "Join an organization to use team agents" });
+        }
+      }
+      if (region !== undefined) {
+        const regionLoc = (await storage.getAllRegionLocations()).find((l) => l.baseId === region && l.isActive);
+        if (!regionLoc) {
+          return res.status(400).json({ error: "region must be an active region" });
+        }
+      }
+
+      // Enabling, rescheduling, advancing nextRunAt, changing the run cap, or
+      // repointing the target pool all affect how/where runs execute on the
+      // workflow OWNER's secrets, so they need owner rights (a system admin
+      // isn't exempt). Gate on an ACTUAL change, not mere presence — the Edit
+      // dialog resends cron/maxRuns even on a name-only edit, and
+      // disable/rename must stay open to the schedule's manager for cleanup.
       const wantsEnable = isEnabled === true && !schedule.isEnabled;
       const cronChanged = cronExpression !== undefined && cronExpression !== schedule.cronExpression;
       const capChanged = maxRuns !== undefined && (maxRuns ?? null) !== (schedule.maxRuns ?? null);
       const nextRunChanged = nextRunAt !== undefined; // an explicit override always advances the schedule
-      if (wantsEnable || cronChanged || capChanged || nextRunChanged) {
+      const regionChanged = region !== undefined && region !== schedule.region;
+      const tierChanged = targetTier !== undefined && targetTier !== schedule.targetTier;
+      if (wantsEnable || cronChanged || capChanged || nextRunChanged || regionChanged || tierChanged) {
         const wf = schedule.workflowId != null ? await storage.getWorkflow(schedule.workflowId) : undefined;
         if (!wf) {
           return res.status(409).json({ error: "This schedule's workflow was deleted, so it can't be resumed or rescheduled. Delete the schedule instead." });
         }
         if (!canScheduleWorkflow(user, wf)) {
           return res.status(403).json({ error: "Only the workflow owner can enable or reschedule this schedule" });
+        }
+        // Session-injection composition (spec §5, item 2 tightening): re-check
+        // against the EFFECTIVE tier this update would leave the schedule with.
+        if (tierChanged) {
+          const effectiveTier = targetTier as "private" | "team" | "public";
+          const wfConfig = (wf.config ?? {}) as Record<string, unknown>;
+          const setupInfo = parsePlatformSetup(wfConfig.stepsPrefix as string | undefined);
+          const scope = sessionScopeForWorkflow(wf);
+          const schedSessionReq = evaluateSessionRequirement(setupInfo, await getBrokeredSecretNames(scope));
+          if (schedSessionReq.kind === "need" && effectiveTier === "public") {
+            return res.status(403).json({ error: "Credential-injected workflows can only use your own or team agent pools" });
+          }
+          if (schedSessionReq.kind === "need" && effectiveTier === "team" &&
+              !(wf.organizationId != null && sameOrg({ organizationId: user.organizationId }, { organizationId: wf.organizationId }))) {
+            return res.status(403).json({ error: "Credential-injected workflows can only use a team pool when the workflow belongs to your organization" });
+          }
         }
       }
 
@@ -2246,6 +2311,8 @@ export async function registerRoutes(
       if (name !== undefined) updates.name = name;
       if (isEnabled !== undefined) updates.isEnabled = isEnabled;
       if (maxRuns !== undefined) updates.maxRuns = maxRuns;
+      if (region !== undefined) updates.region = region;
+      if (targetTier !== undefined) updates.targetTier = targetTier;
 
       // If enabling a disabled schedule, recalculate next run time
       if (isEnabled === true && !schedule.isEnabled) {
@@ -2364,7 +2431,9 @@ export async function registerRoutes(
         workflowId: schedule.workflowId,
         evalSetId: schedule.evalSetId,
         createdBy: user.id,
-        siteId: schedule.siteId,
+        siteId: null,
+        targetRegion: schedule.region,
+        targetTier: schedule.targetTier,
         config: jobConfig,
         snapshot,
         status: "pending",
@@ -3058,12 +3127,13 @@ export async function registerRoutes(
         state: a.state,
       }));
       const free = filterDispatchableAgents({ id: user.id, organizationId: user.organizationId }, rows);
+      const regionRowByTokenId = new Map(agents.map((a) => [a.tokenId, a.tokenRegion]));
 
       const marketplace = getMarketplace();
       const shared = marketplace ? await marketplace.listDispatchable(user.id) : [];
 
       return res.json({
-        free: free.map((a) => ({ tokenId: a.tokenId, siteId: a.region, dispatchTier: a.dispatchTier, state: a.state })),
+        free: free.map((a) => ({ tokenId: a.tokenId, siteId: a.region, region: regionRowByTokenId.get(a.tokenId) ?? null, dispatchTier: a.dispatchTier, state: a.state })),
         // Seam AgentSummary rows carry `region` internally — remap to the
         // public `siteId` wire key.
         shared: shared.map((l) => ({ tokenId: l.tokenId, siteId: l.region, dispatchTier: "shared", pricePerUnit: l.pricePerUnit })),
@@ -3251,11 +3321,14 @@ export async function registerRoutes(
         return res.status(401).json({ error: "Invalid or revoked eval agent token" });
       }
 
+      const tokenOwner = await storage.getUser(evalAgentToken.createdBy);
       let jobs = await storage.getClaimableJobsForToken({
         id: evalAgentToken.id,
         siteId: evalAgentToken.siteId,
+        region: evalAgentToken.region,
         dispatchTier: evalAgentToken.dispatchTier,
         createdBy: evalAgentToken.createdBy,
+        ownerOrgId: tokenOwner?.organizationId ?? null,
       });
 
       // Version-gate: if the requesting agent has a frameworkVersion, filter out
@@ -3323,17 +3396,23 @@ export async function registerRoutes(
       if (!existingJob) {
         return res.status(404).json({ error: "Job not found" });
       }
-      if (existingJob.siteId !== agent.siteId) {
-        return res.status(403).json({ error: "Job region does not match agent region" });
+      // Site fence for site-pinned rows only (targeted + legacy). Pooled jobs
+      // (siteId null) are fenced by region+tier inside claimEvalJob's predicate.
+      if (existingJob.siteId != null && existingJob.siteId !== agent.siteId) {
+        return res.status(403).json({ error: "Job site does not match agent site" });
       }
 
       // Freeze the claiming agent's token dispatch tier onto the job in the SAME
       // atomic claim update — the one tier input not known at creation. Completes
       // the immutable metric-tier snapshot (no separate write to lose on a crash).
+      const tokenOwner = await storage.getUser(evalAgentToken.createdBy);
       const job = await storage.claimEvalJob(parseInt(jobId, 10), agentId, {
         id: evalAgentToken.id,
+        siteId: evalAgentToken.siteId,
+        region: evalAgentToken.region,
         dispatchTier: evalAgentToken.dispatchTier,
         createdBy: evalAgentToken.createdBy,
+        ownerOrgId: tokenOwner?.organizationId ?? null,
       });
       if (!job) {
         return res.status(409).json({ error: "Job already claimed or not found" });
@@ -3407,7 +3486,11 @@ export async function registerRoutes(
       // measurement failure — no result row, so failed runs never enter metrics.
       // A run that completed but got no agent response is NOT a failure: it comes
       // through here with results (NA latencies + responseRate 0) and is stored.
-      if (results && !jobError) {
+      // A job with no siteId never got claimed by any agent (a pooled job's site
+      // is stamped at claim) — it ran nowhere, so it measured nothing. Skip the
+      // synthetic result row rather than writing the region baseId into the site
+      // dimension, which would poison per-site metrics.
+      if (results && !jobError && job.siteId != null) {
         // Attribute the result to the provider snapshotted on the job at creation —
         // not the live workflow, which may have been re-pointed since. Fall back to a
         // default provider only for legacy jobs with no snapshot.
@@ -3519,7 +3602,9 @@ export async function registerRoutes(
       const existing = await storage.getEvalResultsByJob(jobId);
       if (existing.length === 0) {
         const job = await storage.getEvalJob(jobId);
-        if (job) {
+        // A never-claimed pooled job (siteId null) ran nowhere — skip the
+        // synthetic row rather than poisoning the site metrics dimension.
+        if (job && job.siteId != null) {
           // Attribute to the snapshotted provider (immutable), not the live workflow.
           const providers = await storage.getAllProviders();
           const providerId = job.snapshot?.provider?.id || providers[0]?.id;
@@ -3827,10 +3912,16 @@ export async function registerRoutes(
 
       const { workflowId } = req.params;
       const { evalSetId } = req.body;
-      const region = req.body.siteId;
+      // Pooled targeting: region baseId + tier (spec §5). Exactly one of
+      // targetTokenId / (region+targetTier) may be supplied.
+      const region = req.body.region != null ? String(req.body.region) : null;
+      const targetTier = req.body.targetTier != null ? String(req.body.targetTier) : null;
       const targetTokenId = req.body.targetTokenId != null ? Number(req.body.targetTokenId) : null;
       if (targetTokenId != null && !Number.isFinite(targetTokenId)) {
         return res.status(400).json({ error: "Invalid target agent token id" });
+      }
+      if (targetTokenId != null && (region != null || targetTier != null)) {
+        return res.status(400).json({ error: "Provide either targetTokenId or region+targetTier, not both" });
       }
 
       const workflow = await storage.getWorkflow(parseInt(workflowId));
@@ -3906,7 +3997,7 @@ export async function registerRoutes(
         });
       }
 
-      let jobRegion: string;
+      let jobRegion: string | null;
       let targeting: number | null = null;
       let settlementContext: unknown = undefined;
       let consentRecorded = false;
@@ -3990,11 +4081,40 @@ export async function registerRoutes(
             return res.status(403).json({ error: "Credential-injected workflows can only be run untargeted by the owner or an org member; dispatch to a shared agent with consent to run it elsewhere" });
           }
         }
-        const normalizedRegion = region ? String(region) : "";
-        if (!normalizedRegion || !(await storage.isAllocatedSite(normalizedRegion))) {
-          return res.status(400).json({ error: "An active allocated region site is required" });
+        if (!region || !targetTier) {
+          return res.status(400).json({ error: "region and targetTier are required for pooled dispatch" });
         }
-        jobRegion = normalizedRegion;
+        if (targetTier === "shared") {
+          return res.status(400).json({ error: "Pooled shared dispatch is not available" });
+        }
+        if (!["private", "team", "public"].includes(targetTier)) {
+          return res.status(400).json({ error: "Invalid targetTier" });
+        }
+        if (targetTier === "team" && !hasOrg(user)) {
+          return res.status(400).json({ error: "Join an organization to use team agents" });
+        }
+        const regionLoc = (await storage.getAllRegionLocations()).find((l) => l.baseId === region && l.isActive);
+        if (!regionLoc) {
+          return res.status(400).json({ error: "region must be an active region" });
+        }
+        // Session-injection composition (spec §5): the serve gate admits owner +
+        // team agents only, so a public-pool claim would take the job and then be
+        // refused the session. Reject up front. (The existing owner-or-org guard
+        // above already limits WHO may dispatch a session workflow untargeted.)
+        if (sessionNeed && targetTier === "public") {
+          return res.status(403).json({ error: "Credential-injected workflows can only use your own or team agent pools" });
+        }
+        // A personal (non-org) session workflow dispatched into a team pool would
+        // let an org-mate's token claim the job, but the session serve gate only
+        // admits the workflow owner's/org's agents — a personal workflow has no
+        // org, so the claim would be a guaranteed-failure dispatch (claims, then
+        // 403s on the session). Require the workflow to actually belong to the
+        // dispatcher's org before allowing the team pool.
+        if (sessionNeed && targetTier === "team" &&
+            !(workflow.organizationId != null && sameOrg({ organizationId: user.organizationId }, { organizationId: workflow.organizationId }))) {
+          return res.status(403).json({ error: "Credential-injected workflows can only use a team pool when the workflow belongs to your organization" });
+        }
+        jobRegion = null; // pooled: site stamped at claim
       }
 
       const provider = await storage.getProvider(workflow.providerId);
@@ -4033,6 +4153,8 @@ export async function registerRoutes(
           evalSetId,
           createdBy: user.id,
           siteId: jobRegion,
+          targetRegion: targeting == null ? region : null,
+          targetTier: targeting == null ? (targetTier as "private" | "team" | "public") : null,
           targetTokenId: targeting,
           config: jobConfig,
           snapshot,
@@ -4078,7 +4200,7 @@ export async function registerRoutes(
         return res.status(403).json({ error: "Not authorized to run this workflow" });
       }
 
-      const region = req.query.siteId ? String(req.query.siteId) : null;
+      const region = req.query.region ? String(req.query.region) : null;
       const evalSetIdRaw = req.query.evalSetId ? Number(req.query.evalSetId) : null;
 
       type Agent = { tokenId: number; name: string; siteId: string; dispatchTier: string; price: number | null };
@@ -4086,17 +4208,19 @@ export async function registerRoutes(
       // My agents: own tokens, any tier, not revoked, region-filtered when given.
       const ownTokens = await storage.getEvalAgentTokensByUser(user.id);
       const mine: Agent[] = ownTokens
-        .filter((t) => !t.isRevoked && (!region || t.siteId === region))
+        .filter((t) => !t.isRevoked && (!region || t.region === region))
         .map((t) => ({ tokenId: t.id, name: t.name, siteId: t.siteId, dispatchTier: t.dispatchTier, price: null }));
 
       // Shared marketplace: dispatchable listings from the plugin, if present.
       // AgentSummary has no name, so join the token row for a display name.
+      // NOTE: the seam's AgentSummary `region` field actually carries a SITE id
+      // (from `setListing`), not a region base id — filter by prefix.
       const marketplace = getMarketplace();
       const shared: Agent[] = [];
       if (marketplace) {
         const listings = await marketplace.listDispatchable(user.id);
         for (const l of listings) {
-          if (region && l.region !== region) continue;
+          if (region && !l.region.startsWith(region + "-")) continue;
           const tok = await storage.getEvalAgentToken(l.tokenId);
           if (!tok || tok.isRevoked) continue;
           shared.push({ tokenId: l.tokenId, name: tok.name, siteId: l.region, dispatchTier: "shared", price: l.pricePerUnit });
@@ -4113,7 +4237,30 @@ export async function registerRoutes(
       const scope = sessionScopeForWorkflow(workflow);
       const referencedSecrets = await classifyReferencedSecrets(scope, collectSecretRefs(configs));
 
-      res.json({ agents: { mine, shared }, referencedSecrets });
+      const needsSession = referencedSecrets.some((s: { brokerType: string | null }) => s.brokerType != null);
+      const agents = await storage.getEvalAgentsWithTokenTier();
+      const online = agents.filter((a) =>
+        a.state !== "offline" && (!region || a.tokenRegion === region));
+      const countFor = (tier: "private" | "team" | "public"): number =>
+        online.filter((a) => {
+          if (tier === "private") return a.tokenCreatedBy === user.id;
+          if (tier === "team")
+            return (a.tokenDispatchTier === "team" || a.tokenDispatchTier === "public")
+              && sameOrg({ organizationId: user.organizationId }, { organizationId: a.tokenOwnerOrgId });
+          return a.tokenDispatchTier === "public";
+        }).length;
+      const tiers = [
+        { tier: "private", available: true, onlineAgents: countFor("private") },
+        hasOrg(user)
+          ? { tier: "team", available: true, onlineAgents: countFor("team") }
+          : { tier: "team", available: false, reason: "no-org" },
+        needsSession
+          ? { tier: "public", available: false, reason: "session-injected" }
+          : { tier: "public", available: true, onlineAgents: countFor("public") },
+        { tier: "shared", available: false, reason: "not-pooled-yet" },
+      ];
+
+      res.json({ agents: { mine, shared }, referencedSecrets, tiers });
     } catch (error) {
       console.error("Error listing run targets:", error);
       res.status(500).json({ error: "Failed to list run targets" });

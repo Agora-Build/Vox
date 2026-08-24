@@ -168,7 +168,6 @@ describe('Secrets class — job-secrets withhold', () => {
       body: JSON.stringify({ name: runtimeName, value: 'runtime-value' }),
     });
 
-    let agentRegion = '';
     const tokenRes = await authFetch(adminSession, `${BASE_URL}/api/admin/eval-agent-tokens`, {
       method: 'POST',
       body: JSON.stringify({ name: 'Secrets Class Withhold Token', regionLocationBaseId: BASE_NA }),
@@ -176,7 +175,6 @@ describe('Secrets class — job-secrets withhold', () => {
     if (tokenRes.ok) {
       const tokenData = await tokenRes.json();
       agentToken = tokenData.token;
-      agentRegion = tokenData.siteId;
       tokenId = tokenData.id;
     }
 
@@ -223,7 +221,7 @@ describe('Secrets class — job-secrets withhold', () => {
     if (workflowId && evalSetId && agentToken && agentId) {
       const runRes = await authFetch(adminSession, `${BASE_URL}/api/workflows/${workflowId}/run`, {
         method: 'POST',
-        body: JSON.stringify({ siteId: agentRegion, evalSetId }),
+        body: JSON.stringify({ region: BASE_NA, targetTier: 'public', evalSetId }),
       });
       if (runRes.ok) {
         const runData = await runRes.json();

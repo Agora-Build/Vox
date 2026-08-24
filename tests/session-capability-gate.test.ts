@@ -65,7 +65,6 @@ describe("GET /api/eval-agent/jobs — session-capability gate", () => {
   let evalSetId: number;
 
   let tokenValue: string;
-  let region: string;
 
   beforeAll(async () => {
     admin = await login(ADMIN_EMAIL, ADMIN_PASSWORD);
@@ -113,8 +112,8 @@ describe("GET /api/eval-agent/jobs — session-capability gate", () => {
     expect(esRes.ok).toBe(true);
     evalSetId = (await esRes.json()).id;
 
-    // Token + region: capture the server-resolved site region rather than
-    // assuming one, same idiom as tests/api.test.ts's version-gate suite.
+    // Token created against BASE_NA; jobs are pooled by region base + tier
+    // now, so no need to capture the resolved concrete site.
     const tokenRes = await authFetch(admin, `${BASE_URL}/api/admin/eval-agent-tokens`, {
       method: "POST",
       body: JSON.stringify({ name: `SCG Token ${stamp}`, regionLocationBaseId: BASE_NA }),
@@ -122,7 +121,6 @@ describe("GET /api/eval-agent/jobs — session-capability gate", () => {
     expect(tokenRes.ok).toBe(true);
     const tokenData = await tokenRes.json();
     tokenValue = tokenData.token;
-    region = tokenData.siteId;
   });
 
   // Release the login-class secrets so admin's per-user cap (50) isn't exhausted
@@ -145,7 +143,7 @@ describe("GET /api/eval-agent/jobs — session-capability gate", () => {
     // Session-stamped job.
     const sessionRunRes = await authFetch(admin, `${BASE_URL}/api/workflows/${sessionWorkflowId}/run`, {
       method: "POST",
-      body: JSON.stringify({ siteId: region, evalSetId }),
+      body: JSON.stringify({ region: BASE_NA, targetTier: "private", evalSetId }),
     });
     expect(sessionRunRes.ok).toBe(true);
     const sessionJob = (await sessionRunRes.json()).job;
@@ -154,7 +152,7 @@ describe("GET /api/eval-agent/jobs — session-capability gate", () => {
     // Plain job (no login secrets referenced — no stamp).
     const plainRunRes = await authFetch(admin, `${BASE_URL}/api/workflows/${plainWorkflowId}/run`, {
       method: "POST",
-      body: JSON.stringify({ siteId: region, evalSetId }),
+      body: JSON.stringify({ region: BASE_NA, targetTier: "private", evalSetId }),
     });
     expect(plainRunRes.ok).toBe(true);
     const plainJob = (await plainRunRes.json()).job;

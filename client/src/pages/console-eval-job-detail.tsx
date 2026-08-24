@@ -11,7 +11,7 @@ import { ArrowLeft, Download, CheckCircle, XCircle, Loader2, Clock, Play, Upload
 import { Link } from "wouter";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import { formatSmartTimestamp, formatSite, toYaml } from "@/lib/utils";
+import { formatSmartTimestamp, formatSite, formatRegion, toYaml } from "@/lib/utils";
 import type { EvalJob, EvalResult } from "@shared/schema";
 
 interface AuthStatus {
@@ -201,7 +201,8 @@ export default function ConsoleEvalJobDetail({ jobId }: { jobId: number }) {
               ) : (
                 <span title="Eval set deleted">{jobEvalSetName}</span>
               )}
-              {" · "}{formatSite(job.siteId)}
+              {" · "}
+              {job.siteId ? formatSite(job.siteId) : `${formatRegion(job.targetRegion ?? "")}${job.targetTier ? ` · ${job.targetTier} pool` : ""}`}
               {creatorName && ` · by ${creatorName}`}
             </p>
           </div>
