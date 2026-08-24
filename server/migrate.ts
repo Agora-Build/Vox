@@ -56,6 +56,7 @@ const MIGRATIONS: Array<{ version: number; description: string; file: string | n
   { version: 32, description: "drop broker_registration_tokens.broker_type (type is broker-reported)", file: "0031_drop_broker_token_type.sql" },
   { version: 33, description: "api_keys soft-delete + operation-tracking columns", file: "0032_api_key_soft_delete.sql" },
   { version: 34, description: "rename region → site_id (9 tables + 2 indexes)", file: "0033_region_to_site_id.sql" },
+  { version: 35, description: "tier-targeting: token region, job target_region/target_tier (site_id nullable), schedule region+target_tier", file: "0034_tier_targeting.sql" },
 ];
 
 const TARGET_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version;

@@ -503,13 +503,14 @@ export class DatabaseStorage {
       const siteId = `${selected.rows[0].base_id}-${String(sequence).padStart(2, "0")}`;
       const inserted = await client.query(
         `INSERT INTO eval_agent_tokens
-          (name, token_hash, site_id, dispatch_tier, created_by, is_revoked, expires_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)
+          (name, token_hash, site_id, region, dispatch_tier, created_by, is_revoked, expires_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
          RETURNING *`,
         [
           token.name,
           token.tokenHash,
           siteId,
+          selected.rows[0].base_id,
           token.dispatchTier,
           token.createdBy,
           token.isRevoked,
@@ -526,6 +527,7 @@ export class DatabaseStorage {
       const row = inserted.rows[0];
       return {
         id: row.id, name: row.name, tokenHash: row.token_hash, siteId: row.site_id,
+        region: row.region,
         dispatchTier: row.dispatch_tier, createdBy: row.created_by,
         isRevoked: row.is_revoked, expiresAt: row.expires_at, lastUsedAt: row.last_used_at,
         createdAt: row.created_at,
@@ -655,7 +657,9 @@ export class DatabaseStorage {
   }
 
   async createEvalAgentToken(token: InsertEvalAgentToken): Promise<EvalAgentToken> {
-    const result = await db.insert(evalAgentTokens).values(token).returning();
+    // Fixtures/tests pass a bare siteId; region is derivable (strip -NN).
+    const values = { ...token, region: (token as { region?: string }).region ?? token.siteId.replace(/-\d+$/, "") };
+    const result = await db.insert(evalAgentTokens).values(values).returning();
     return result[0];
   }
 
