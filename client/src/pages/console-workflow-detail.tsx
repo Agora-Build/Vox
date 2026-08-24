@@ -24,6 +24,7 @@ interface AuthStatus {
     username: string;
     plan: string;
     isAdmin: boolean;
+    organizationId?: number | null;
   } | null;
 }
 
@@ -89,6 +90,15 @@ export default function ConsoleWorkflowDetail() {
       `/api/workflows/${workflowId}/run-targets?region=${encodeURIComponent(runRegion)}&evalSetId=${runEvalSetId}`)).json(),
     enabled: runDialogOpen && !!runRegion && !!runEvalSetId,
   });
+
+  // Fallback tier list (no online counts yet) so the "Run on" selector is
+  // populated immediately, before a region/eval set is chosen and the
+  // run-targets query has loaded.
+  const tierOptions = runTargets?.tiers ?? [
+    { tier: "private", available: true },
+    { tier: "team", available: !!authStatus?.user?.organizationId, reason: authStatus?.user?.organizationId ? undefined : "no-org" },
+    { tier: "public", available: true },
+  ];
 
   const pickerShared = (runTargets?.agents.shared ?? []).filter(
     (s) => !(runTargets?.agents.mine ?? []).some((m) => m.tokenId === s.tokenId)
@@ -212,15 +222,15 @@ export default function ConsoleWorkflowDetail() {
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    {(runTargets?.tiers ?? []).filter((t) => t.tier !== "shared").map((t) => (
+                    {tierOptions.filter((t) => t.tier !== "shared").map((t) => (
                       <SelectItem key={t.tier} value={t.tier} disabled={!t.available}>
                         {t.tier === "public" ? "Any public agent" : t.tier === "private" ? "My agents" : "Team agents"}
-                        {t.available ? ` (${t.onlineAgents} online)` : t.reason === "no-org" ? " — join an organization" : ""}
+                        {t.available ? (typeof t.onlineAgents === "number" ? ` (${t.onlineAgents} online)` : "") : t.reason === "no-org" ? " — join an organization" : ""}
                       </SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
-                {(runTargets?.tiers ?? []).find((t) => t.tier === targetTier)?.onlineAgents === 0 && (
+                {tierOptions.find((t) => t.tier === targetTier)?.onlineAgents === 0 && (
                   <p className="text-xs text-muted-foreground">
                     No matching agent is online right now; the job will wait in the pool (up to 24h).
                   </p>
