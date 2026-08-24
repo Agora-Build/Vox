@@ -4249,11 +4249,19 @@ export async function registerRoutes(
               && sameOrg({ organizationId: user.organizationId }, { organizationId: a.tokenOwnerOrgId });
           return a.tokenDispatchTier === "public";
         }).length;
+      // Team availability must mirror the run route exactly: for a
+      // session-injected workflow the team pool additionally requires the
+      // workflow to belong to the dispatcher's org — otherwise the UI offers
+      // "Team agents" and the run 403s.
+      const teamBlockedBySession = needsSession &&
+        !(workflow.organizationId != null && sameOrg({ organizationId: user.organizationId }, { organizationId: workflow.organizationId }));
       const tiers = [
         { tier: "private", available: true, onlineAgents: countFor("private") },
-        hasOrg(user)
-          ? { tier: "team", available: true, onlineAgents: countFor("team") }
-          : { tier: "team", available: false, reason: "no-org" },
+        !hasOrg(user)
+          ? { tier: "team", available: false, reason: "no-org" }
+          : teamBlockedBySession
+            ? { tier: "team", available: false, reason: "session-injected" }
+            : { tier: "team", available: true, onlineAgents: countFor("team") },
         needsSession
           ? { tier: "public", available: false, reason: "session-injected" }
           : { tier: "public", available: true, onlineAgents: countFor("public") },
@@ -4277,14 +4285,14 @@ export async function registerRoutes(
         return res.status(401).json({ error: "Not authenticated" });
       }
 
-      const { status, siteId, workflowId, limit, offset, hours } = req.query;
+      const { status, region, workflowId, limit, offset, hours } = req.query;
 
       const pageLimit = Math.min(Math.max(parseInt(limit as string) || 50, 1), 200);
       const pageOffset = Math.max(parseInt(offset as string) || 0, 0);
 
       const filters: {
         status?: "pending" | "running" | "completed" | "failed";
-        siteId?: string;
+        region?: string;
         workflowId?: number;
         hoursBack?: number;
       } = {};
@@ -4292,12 +4300,13 @@ export async function registerRoutes(
       if (status && ["pending", "running", "completed", "failed"].includes(status as string)) {
         filters.status = status as "pending" | "running" | "completed" | "failed";
       }
-      if (siteId) {
-        const normalizedSiteId = String(siteId);
-        if (!(await storage.isAllocatedSite(normalizedSiteId, false))) {
-          return res.status(400).json({ error: "Invalid site ID" });
+      if (region) {
+        const normalizedRegion = String(region);
+        const loc = (await storage.getAllRegionLocations()).find((l) => l.baseId === normalizedRegion);
+        if (!loc) {
+          return res.status(400).json({ error: "Invalid region" });
         }
-        filters.siteId = normalizedSiteId;
+        filters.region = normalizedRegion;
       }
       if (workflowId) {
         const parsed = parseInt(workflowId as string, 10);

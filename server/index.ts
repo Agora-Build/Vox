@@ -8,7 +8,7 @@ import connectPgSimple from "connect-pg-simple";
 import rateLimit from "express-rate-limit";
 import { authenticateApiKey, passport, initializeGoogleOAuth } from "./auth";
 import { storage, mergeEvalConfig, buildJobSnapshot, pool } from "./storage";
-import { canScheduleWorkflow } from "./permissions";
+import { canScheduleWorkflow, sessionPoolViolation } from "./permissions";
 import { parseNextCronRun } from "./cron";
 import { setupClashWebSocket } from "./clash-ws";
 import { loadPlugins } from "./plugins/loader";
@@ -416,6 +416,19 @@ function startBackgroundWorker() {
             log(`Schedule "${schedule.name}" workflow has a split-class credential pair (${stamp.reason}) — disabling`, "scheduler");
             await storage.updateEvalSchedule(schedule.id, { isEnabled: false });
             continue;
+          }
+          // The workflow's secrets are mutable after schedule creation: a
+          // public/team schedule whose workflow LATER gained a login-class
+          // secret would emit an unclaimable session job every tick (the claim
+          // predicate refuses them, and pooled rows ride the 24h backstop).
+          // Mirror the misconfigured handling: disable instead of queueing.
+          if (stamp.snapshotInjection) {
+            const violation = sessionPoolViolation(schedule.targetTier, workflow, creator);
+            if (violation) {
+              log(`Schedule "${schedule.name}" would dispatch into a disallowed pool (${violation}) — disabling`, "scheduler");
+              await storage.updateEvalSchedule(schedule.id, { isEnabled: false });
+              continue;
+            }
           }
           const baseSnapshot = buildJobSnapshot(workflow, evalSet, provider, creator?.plan ?? null);
           const snapshot = stamp.snapshotInjection

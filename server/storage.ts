@@ -104,7 +104,7 @@ import { regionSiteSequence } from "@shared/regions";
 import { drizzle } from "drizzle-orm/node-postgres";
 import pkg from "pg";
 const { Pool } = pkg;
-import { asc, desc, eq, and, or, not, sql, gte, lte, inArray, isNotNull, isNull } from "drizzle-orm";
+import { asc, desc, eq, and, or, not, sql, gte, lte, like, inArray, isNotNull, isNull } from "drizzle-orm";
 import crypto from "crypto";
 
 // Realtime-metrics windowing policy (server-owned; the client never sets these).
@@ -1163,7 +1163,7 @@ export class DatabaseStorage {
   // Get all jobs with optional filters
   async getEvalJobs(filters?: {
     status?: "pending" | "running" | "completed" | "failed";
-    siteId?: string;
+    region?: string;
     workflowId?: number;
     agentId?: number;
     ownerId?: number;
@@ -1175,8 +1175,16 @@ export class DatabaseStorage {
     if (filters?.status) {
       conditions.push(eq(evalJobs.status, filters.status));
     }
-    if (filters?.siteId) {
-      conditions.push(eq(evalJobs.siteId, filters.siteId));
+    if (filters?.region) {
+      // A claimed job carries a concrete site under the region (base-NN); a
+      // pending pooled job carries only targetRegion. Match both so pending
+      // pooled rows don't vanish under the filter.
+      conditions.push(
+        or(
+          like(evalJobs.siteId, `${filters.region}-%`),
+          and(isNull(evalJobs.siteId), eq(evalJobs.targetRegion, filters.region)),
+        )!,
+      );
     }
     if (filters?.hoursBack) {
       const cutoff = new Date(Date.now() - filters.hoursBack * 60 * 60 * 1000);

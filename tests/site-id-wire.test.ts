@@ -70,13 +70,21 @@ describe('site-id wire contract', () => {
     }
   });
 
-  it('GET /api/eval-jobs?siteId= filters by exact site and rejects garbage', async () => {
-    const ok = await authFetch(`/api/eval-jobs?siteId=${REGION_NA}&limit=5`);
+  it('GET /api/eval-jobs?region= filters by region, keeps pending pooled rows, rejects garbage', async () => {
+    const ok = await authFetch(`/api/eval-jobs?region=${BASE_NA}&limit=20`);
     expect(ok.status).toBe(200);
     const { data } = await ok.json();
-    for (const job of data) expect(job.siteId).toBe(REGION_NA);
+    for (const job of data) {
+      // Claimed rows carry a concrete site under the region; pending pooled
+      // rows carry a null site with targetRegion — BOTH must match the filter.
+      if (job.siteId != null) {
+        expect(job.siteId.startsWith(`${BASE_NA}-`)).toBe(true);
+      } else {
+        expect(job.targetRegion).toBe(BASE_NA);
+      }
+    }
 
-    const bad = await authFetch('/api/eval-jobs?siteId=not-a-real-site-zz');
+    const bad = await authFetch('/api/eval-jobs?region=not-a-real-region-zz');
     expect(bad.status).toBe(400);
   });
 

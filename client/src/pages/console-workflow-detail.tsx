@@ -13,7 +13,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { ArrowLeft, Play, Settings, History, Clock, CheckCircle, XCircle, Loader2, RefreshCw } from "lucide-react";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import type { Workflow as WorkflowType, Provider, EvalJob, EvalSet } from "@shared/schema";
 import { formatSmartTimestamp, formatSite, formatRegion, toYaml } from "@/lib/utils";
 import { useRegionLocationOptions } from "@/hooks/use-regions";
@@ -99,6 +99,19 @@ export default function ConsoleWorkflowDetail() {
     { tier: "team", available: !!authStatus?.user?.organizationId, reason: authStatus?.user?.organizationId ? undefined : "no-org" },
     { tier: "public", available: true },
   ];
+
+  // When live tier data arrives and the currently-selected tier is
+  // unavailable (e.g. "public" on a credential-injected workflow), hop to the
+  // first available tier so the default action never 403s.
+  useEffect(() => {
+    if (!runTargets?.tiers) return;
+    const current = runTargets.tiers.find((t) => t.tier === targetTier);
+    if (current && !current.available) {
+      const firstAvailable = runTargets.tiers.find((t) => t.tier !== "shared" && t.available);
+      if (firstAvailable) setTargetTier(firstAvailable.tier);
+    }
+  }, [runTargets, targetTier]);
+
 
   const pickerShared = (runTargets?.agents.shared ?? []).filter(
     (s) => !(runTargets?.agents.mine ?? []).some((m) => m.tokenId === s.tokenId)

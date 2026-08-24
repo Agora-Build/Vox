@@ -196,6 +196,19 @@ export default function SelfTest() {
     { tier: "public", available: true },
   ];
 
+  // When live tier data arrives and the currently-selected tier is
+  // unavailable (e.g. "public" on a credential-injected workflow), hop to the
+  // first available tier so the default action never 403s.
+  useEffect(() => {
+    if (!runTargets?.tiers) return;
+    const current = runTargets.tiers.find((t) => t.tier === targetTier);
+    if (current && !current.available) {
+      const firstAvailable = runTargets.tiers.find((t) => t.tier !== "shared" && t.available);
+      if (firstAvailable) setTargetTier(firstAvailable.tier);
+    }
+  }, [runTargets, targetTier]);
+
+
   const pickerShared = (runTargets?.agents.shared ?? []).filter(
     (s) => !(runTargets?.agents.mine ?? []).some((m) => m.tokenId === s.tokenId)
   );
