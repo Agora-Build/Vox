@@ -3273,11 +3273,14 @@ export async function registerRoutes(
         return res.status(401).json({ error: "Invalid or revoked eval agent token" });
       }
 
+      const tokenOwner = await storage.getUser(evalAgentToken.createdBy);
       let jobs = await storage.getClaimableJobsForToken({
         id: evalAgentToken.id,
         siteId: evalAgentToken.siteId,
+        region: evalAgentToken.region,
         dispatchTier: evalAgentToken.dispatchTier,
         createdBy: evalAgentToken.createdBy,
+        ownerOrgId: tokenOwner?.organizationId ?? null,
       });
 
       // Version-gate: if the requesting agent has a frameworkVersion, filter out
@@ -3352,10 +3355,14 @@ export async function registerRoutes(
       // Freeze the claiming agent's token dispatch tier onto the job in the SAME
       // atomic claim update — the one tier input not known at creation. Completes
       // the immutable metric-tier snapshot (no separate write to lose on a crash).
+      const tokenOwner = await storage.getUser(evalAgentToken.createdBy);
       const job = await storage.claimEvalJob(parseInt(jobId, 10), agentId, {
         id: evalAgentToken.id,
+        siteId: evalAgentToken.siteId,
+        region: evalAgentToken.region,
         dispatchTier: evalAgentToken.dispatchTier,
         createdBy: evalAgentToken.createdBy,
+        ownerOrgId: tokenOwner?.organizationId ?? null,
       });
       if (!job) {
         return res.status(409).json({ error: "Job already claimed or not found" });

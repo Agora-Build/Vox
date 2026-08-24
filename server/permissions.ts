@@ -128,10 +128,43 @@ export function canDispatchToToken(
  * off the queue and sit on it.
  */
 export function isClaimable(
-  job: { targetTokenId: number | null; createdBy: number | null; sessionInjected?: boolean },
-  token: Pick<DispatchToken, "id" | "dispatchTier" | "createdBy">,
+  job: {
+    targetTokenId: number | null;
+    targetRegion?: string | null;
+    targetTier?: "private" | "team" | "public" | "shared" | null;
+    siteId?: string | null;
+    createdBy: number | null;
+    sessionInjected?: boolean;
+  },
+  token: Pick<DispatchToken, "id" | "dispatchTier" | "createdBy"> & { region?: string; siteId?: string },
+  orgs?: { tokenOwnerOrgId: number | null; creatorOrgId: number | null },
 ): boolean {
+  // Targeted: only the aimed token, ever.
   if (job.targetTokenId != null) return job.targetTokenId === token.id;
+
+  // Pooled: region match + mutual consent (dispatcher's requested pool ∩
+  // the owner's offered dispatchTier). Spec §6.
+  if (job.targetRegion != null) {
+    if (token.region !== job.targetRegion) return false;
+    switch (job.targetTier) {
+      case "private":
+        return job.createdBy === token.createdBy;
+      case "team":
+        return (token.dispatchTier === "team" || token.dispatchTier === "public")
+          && sameOrg(
+            { organizationId: orgs?.tokenOwnerOrgId ?? null },
+            { organizationId: orgs?.creatorOrgId ?? null },
+          );
+      case "public":
+        return token.dispatchTier === "public" && !job.sessionInjected;
+      default:
+        return false; // 'shared' reserved; null malformed
+    }
+  }
+
+  // Legacy site-pinned rows (pre-tier-targeting), until drained: site equality
+  // + the old public-or-mine arm.
+  if (job.siteId == null || job.siteId !== token.siteId) return false;
   if (job.createdBy === token.createdBy) return true;
   return token.dispatchTier === "public" && !job.sessionInjected;
 }

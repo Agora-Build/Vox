@@ -41,21 +41,21 @@ describe("canDispatchToToken (free tiers)", () => {
 });
 
 describe("isClaimable", () => {
-  const publicTok = { id: 100, dispatchTier: "public", createdBy: 7 };
-  const privateTok = { id: 200, dispatchTier: "private", createdBy: 7 };
+  const publicTok = { id: 100, dispatchTier: "public", createdBy: 7, siteId: "na-us-seattle-01" };
+  const privateTok = { id: 200, dispatchTier: "private", createdBy: 7, siteId: "na-us-seattle-01" };
 
   it("targeted job: only the aimed token claims", () => {
-    const job = { targetTokenId: 100, createdBy: 3 };
+    const job = { targetTokenId: 100, targetRegion: null, targetTier: null, siteId: "na-us-seattle-01", createdBy: 3 };
     expect(isClaimable(job, publicTok)).toBe(true);
-    expect(isClaimable(job, { id: 101, dispatchTier: "public", createdBy: 7 })).toBe(false);
+    expect(isClaimable(job, { id: 101, dispatchTier: "public", createdBy: 7, siteId: "na-us-seattle-01" })).toBe(false);
   });
   it("untargeted job: public-tier token may claim any", () => {
-    const job = { targetTokenId: null, createdBy: 3 };
+    const job = { targetTokenId: null, targetRegion: null, targetTier: null, siteId: "na-us-seattle-01", createdBy: 3 };
     expect(isClaimable(job, publicTok)).toBe(true);
   });
   it("untargeted job: non-public token claims only its owner's jobs", () => {
-    const ownJob = { targetTokenId: null, createdBy: 7 };
-    const otherJob = { targetTokenId: null, createdBy: 3 };
+    const ownJob = { targetTokenId: null, targetRegion: null, targetTier: null, siteId: "na-us-seattle-01", createdBy: 7 };
+    const otherJob = { targetTokenId: null, targetRegion: null, targetTier: null, siteId: "na-us-seattle-01", createdBy: 3 };
     expect(isClaimable(ownJob, privateTok)).toBe(true);
     expect(isClaimable(otherJob, privateTok)).toBe(false);
   });
@@ -63,17 +63,61 @@ describe("isClaimable", () => {
   it("session-injected untargeted job: a PUBLIC stranger token may NOT claim it (HIGH-1)", () => {
     // A stranger's public agent must never pull a session-injected job off the
     // region pool — it would sit on the owner's minted test-account session.
-    const job = { targetTokenId: null, createdBy: 3, sessionInjected: true };
+    const job = { targetTokenId: null, targetRegion: null, targetTier: null, siteId: "na-us-seattle-01", createdBy: 3, sessionInjected: true };
     expect(isClaimable(job, publicTok)).toBe(false);
   });
   it("session-injected untargeted job: the owner's OWN token still claims it", () => {
-    const job = { targetTokenId: null, createdBy: 7, sessionInjected: true };
+    const job = { targetTokenId: null, targetRegion: null, targetTier: null, siteId: "na-us-seattle-01", createdBy: 7, sessionInjected: true };
     expect(isClaimable(job, privateTok)).toBe(true); // createdBy match
-    expect(isClaimable(job, { id: 100, dispatchTier: "public", createdBy: 7 })).toBe(true);
+    expect(isClaimable(job, { id: 100, dispatchTier: "public", createdBy: 7, siteId: "na-us-seattle-01" })).toBe(true);
   });
   it("session-injected TARGETED job: the aimed token still claims regardless of tier", () => {
-    const job = { targetTokenId: 100, createdBy: 3, sessionInjected: true };
+    const job = { targetTokenId: 100, targetRegion: null, targetTier: null, siteId: "na-us-seattle-01", createdBy: 3, sessionInjected: true };
     expect(isClaimable(job, publicTok)).toBe(true); // aimed at 100
+  });
+});
+
+describe("isClaimable — pooled arms (tier-targeting)", () => {
+  const T = (over: Partial<{ id: number; region: string; siteId: string; dispatchTier: string; createdBy: number }> = {}) =>
+    ({ id: 1, region: "na-us-seattle", siteId: "na-us-seattle-01", dispatchTier: "public", createdBy: 7, ...over }) as any;
+  const pooled = (tier: string, over: Record<string, unknown> = {}) =>
+    ({ targetTokenId: null, targetRegion: "na-us-seattle", targetTier: tier, siteId: null, createdBy: 9, ...over }) as any;
+
+  it("public pool: public token in region claims; region mismatch refused", () => {
+    expect(isClaimable(pooled("public"), T())).toBe(true);
+    expect(isClaimable(pooled("public"), T({ region: "eu-de-frankfurt" }))).toBe(false);
+  });
+  it("public pool: private/team tokens refused; session-injected refused", () => {
+    expect(isClaimable(pooled("public"), T({ dispatchTier: "private" }))).toBe(false);
+    expect(isClaimable(pooled("public"), T({ dispatchTier: "team" }))).toBe(false);
+    expect(isClaimable(pooled("public", { sessionInjected: true }), T())).toBe(false);
+  });
+  it("private pool: only the dispatcher's own tokens, any tier", () => {
+    expect(isClaimable(pooled("private", { createdBy: 7 }), T({ dispatchTier: "private" }))).toBe(true);
+    expect(isClaimable(pooled("private", { createdBy: 7 }), T({ dispatchTier: "public" }))).toBe(true);
+    expect(isClaimable(pooled("private", { createdBy: 9 }), T())).toBe(false);
+  });
+  it("team pool: mutual consent — org-mate's team/public token yes, private token NO", () => {
+    const orgs = { tokenOwnerOrgId: 5, creatorOrgId: 5 };
+    expect(isClaimable(pooled("team"), T({ dispatchTier: "team" }), orgs)).toBe(true);
+    expect(isClaimable(pooled("team"), T({ dispatchTier: "public" }), orgs)).toBe(true);
+    expect(isClaimable(pooled("team"), T({ dispatchTier: "private" }), orgs)).toBe(false);
+    expect(isClaimable(pooled("team"), T({ dispatchTier: "team" }), { tokenOwnerOrgId: 5, creatorOrgId: 6 })).toBe(false);
+    expect(isClaimable(pooled("team"), T({ dispatchTier: "team" }), { tokenOwnerOrgId: null, creatorOrgId: null })).toBe(false);
+  });
+  it("shared pool: nothing claims it this cycle", () => {
+    expect(isClaimable(pooled("shared"), T())).toBe(false);
+  });
+  it("legacy site-pinned rows keep the old arm (site equality + public-or-mine)", () => {
+    const legacy = { targetTokenId: null, targetRegion: null, targetTier: null, siteId: "na-us-seattle-01", createdBy: 9 } as any;
+    expect(isClaimable(legacy, T())).toBe(true);
+    expect(isClaimable(legacy, T({ siteId: "na-us-seattle-02" }))).toBe(false);
+    expect(isClaimable({ ...legacy, createdBy: 7 }, T({ dispatchTier: "private" }))).toBe(true);
+  });
+  it("targeted jobs match ONLY the aimed token — never a pool/legacy arm", () => {
+    const targeted = { targetTokenId: 42, targetRegion: null, targetTier: null, siteId: "na-us-seattle-01", createdBy: 7 } as any;
+    expect(isClaimable(targeted, T({ id: 42 }))).toBe(true);
+    expect(isClaimable(targeted, T({ id: 1 }))).toBe(false);
   });
 });
 
