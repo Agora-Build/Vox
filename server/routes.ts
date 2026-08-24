@@ -4267,7 +4267,7 @@ export async function registerRoutes(
           : { tier: "private", available: false, reason: "session-injected" },
         !hasOrg(user)
           ? { tier: "team", available: false, reason: "no-org" }
-          : (teamBlockedBySession || !sessionDispatchAllowed)
+          : teamBlockedBySession
             ? { tier: "team", available: false, reason: "session-injected" }
             : { tier: "team", available: true, onlineAgents: countFor("team") },
         needsSession

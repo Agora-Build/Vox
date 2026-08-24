@@ -116,6 +116,10 @@ export default function ConsoleWorkflowDetail() {
   const pickerShared = (runTargets?.agents.shared ?? []).filter(
     (s) => !(runTargets?.agents.mine ?? []).some((m) => m.tokenId === s.tokenId)
   );
+  // Pooled dispatch with every tier unavailable can only 403 — gate the submit.
+  const noPoolAvailable = targetTokenId === "any" &&
+    (runTargets?.tiers ?? []).length > 0 && (runTargets?.tiers ?? []).every((t) => !t.available);
+
   const selectedAgent = targetTokenId === "any" ? null :
     [...(runTargets?.agents.mine ?? []), ...pickerShared].find((a) => String(a.tokenId) === targetTokenId);
   const runtimeExposed = (runTargets?.referencedSecrets ?? [])
@@ -238,7 +242,7 @@ export default function ConsoleWorkflowDetail() {
                     {tierOptions.filter((t) => t.tier !== "shared").map((t) => (
                       <SelectItem key={t.tier} value={t.tier} disabled={!t.available}>
                         {t.tier === "public" ? "Any public agent" : t.tier === "private" ? "My agents" : "Team agents"}
-                        {t.available ? (typeof t.onlineAgents === "number" ? ` (${t.onlineAgents} online)` : "") : t.reason === "no-org" ? " — join an organization" : ""}
+                        {t.available ? (typeof t.onlineAgents === "number" ? ` (${t.onlineAgents} online)` : "") : t.reason === "no-org" ? " — join an organization" : t.reason === "session-injected" ? " — not allowed for credential-injected workflows" : ""}
                       </SelectItem>
                     ))}
                   </SelectContent>
@@ -311,7 +315,7 @@ export default function ConsoleWorkflowDetail() {
             <DialogFooter>
               <Button
                 onClick={() => runWorkflowMutation.mutate()}
-                disabled={runWorkflowMutation.isPending || !runRegion || !runEvalSetId || (showRuntimeWarning && !ackRuntime)}
+                disabled={runWorkflowMutation.isPending || !runRegion || !runEvalSetId || noPoolAvailable || (showRuntimeWarning && !ackRuntime)}
               >
                 Run Evaluation
               </Button>

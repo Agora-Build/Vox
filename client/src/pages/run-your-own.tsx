@@ -212,6 +212,11 @@ export default function SelfTest() {
   const pickerShared = (runTargets?.agents.shared ?? []).filter(
     (s) => !(runTargets?.agents.mine ?? []).some((m) => m.tokenId === s.tokenId)
   );
+  // Pooled dispatch with every tier unavailable (e.g. a non-owner on a
+  // credential-injected public workflow) can only 403 — gate the submit.
+  const noPoolAvailable = targetTokenId === "any" &&
+    (runTargets?.tiers ?? []).length > 0 && (runTargets?.tiers ?? []).every((t) => !t.available);
+
   const selectedAgent = targetTokenId === "any" ? null :
     [...(runTargets?.agents.mine ?? []), ...pickerShared].find((a) => String(a.tokenId) === targetTokenId);
   const runtimeExposed = (runTargets?.referencedSecrets ?? [])
@@ -543,7 +548,7 @@ export default function SelfTest() {
                       {tierOptions.filter((t) => t.tier !== "shared").map((t) => (
                         <SelectItem key={t.tier} value={t.tier} disabled={!t.available}>
                           {t.tier === "public" ? "Any public agent" : t.tier === "private" ? "My agents" : "Team agents"}
-                          {t.available ? (typeof t.onlineAgents === "number" ? ` (${t.onlineAgents} online)` : "") : t.reason === "no-org" ? " — join an organization" : ""}
+                          {t.available ? (typeof t.onlineAgents === "number" ? ` (${t.onlineAgents} online)` : "") : t.reason === "no-org" ? " — join an organization" : t.reason === "session-injected" ? " — not allowed for credential-injected workflows" : ""}
                         </SelectItem>
                       ))}
                     </SelectContent>
@@ -605,7 +610,7 @@ export default function SelfTest() {
                 className="w-full"
                 size="lg"
                 onClick={handleRunEval}
-                disabled={runEvalMutation.isPending || isJobRunning || !selectedWorkflowId || !selectedEvalSetId || !region || (showRuntimeWarning && !ackRuntime)}
+                disabled={runEvalMutation.isPending || isJobRunning || !selectedWorkflowId || !selectedEvalSetId || !region || noPoolAvailable || (showRuntimeWarning && !ackRuntime)}
               >
                 {runEvalMutation.isPending ? (
                   <><Loader2 className="mr-2 h-4 w-4 animate-spin" /> Starting...</>
