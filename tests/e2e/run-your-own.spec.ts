@@ -129,10 +129,10 @@ test.describe("Run Your Own — Authenticated Form", () => {
       page.locator("text=Target Region").first()
     ).toBeVisible({ timeout: 10000 });
 
-    // No site is pre-selected; the trigger shows the placeholder until the
-    // user picks a concrete site (e.g. "Seattle 01 · United States").
+    // No region is pre-selected; the trigger shows the placeholder until the
+    // user picks a concrete region (e.g. "Seattle, United States · North America").
     await expect(
-      page.locator("text=Select a site").first()
+      page.locator("text=Select a region").first()
     ).toBeVisible();
   });
 
@@ -140,6 +140,11 @@ test.describe("Run Your Own — Authenticated Form", () => {
     await expect(
       page.locator("text=/Start Evaluation/i").first()
     ).toBeVisible({ timeout: 10000 });
+  });
+
+  test("should show Run on tier selector defaulting to public", async ({ page }) => {
+    await expect(page.getByTestId("select-target-tier")).toBeVisible({ timeout: 10000 });
+    await expect(page.getByTestId("select-target-tier")).toContainText(/Any public agent/);
   });
 });
 

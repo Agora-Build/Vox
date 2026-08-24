@@ -16,7 +16,7 @@ import { ClipboardList, CheckCircle, XCircle, Loader2, Clock, CalendarClock, Cal
 import { useState } from "react";
 import { useToast } from "@/hooks/use-toast";
 import { useLocation, useSearch, Link } from "wouter";
-import { formatSmartTimestamp, formatSite } from "@/lib/utils";
+import { formatSmartTimestamp, formatSite, formatRegion } from "@/lib/utils";
 import { useSiteOptions } from "@/hooks/use-regions";
 import { format } from "date-fns";
 import type { EvalJob, EvalSchedule, Workflow as WorkflowType } from "@shared/schema";
@@ -227,7 +227,12 @@ function ScheduledJobsBlock() {
                   <TableRow key={s.id}>
                     <TableCell className="font-medium">{s.name}</TableCell>
                     <TableCell>{s.workflowName}</TableCell>
-                    <TableCell><Badge variant="outline">{formatSite(s.siteId)}</Badge></TableCell>
+                    <TableCell>
+                      <div className="flex items-center gap-1">
+                        <Badge variant="outline">{formatRegion(s.region)}</Badge>
+                        <Badge variant="secondary" className="text-xs">{s.targetTier}</Badge>
+                      </div>
+                    </TableCell>
                     <TableCell>
                       <Badge variant="secondary">{s.scheduleType}</Badge>
                     </TableCell>
@@ -618,7 +623,14 @@ function JobsTab() {
                           )}
                         </TableCell>
                         <TableCell>
-                          <Badge variant="outline">{formatSite(job.siteId)}</Badge>
+                          <div className="flex items-center gap-1">
+                            <Badge variant="outline">
+                              {job.siteId ? formatSite(job.siteId) : formatRegion(job.targetRegion ?? "")}
+                            </Badge>
+                            {!job.siteId && job.targetTier && (
+                              <Badge variant="secondary" className="text-xs">{job.targetTier}</Badge>
+                            )}
+                          </div>
                         </TableCell>
                         <TableCell>
                           <div className="flex flex-wrap items-center gap-1">

@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect } from "react";
-import { formatSite } from "@/lib/utils";
+import { formatSite, formatRegion } from "@/lib/utils";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle, CardFooter, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -18,12 +18,13 @@ import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { Link } from "wouter";
 import generatedImage from '@assets/generated_images/abstract_digital_network_visualization_dark_blue.png';
-import { useSiteOptions } from "@/hooks/use-regions";
+import { useRegionLocationOptions } from "@/hooks/use-regions";
 
 interface AuthStatus {
   user: {
     id: string;
     plan: string;
+    organizationId?: number | null;
   } | null;
   initialized?: boolean;
 }
@@ -44,7 +45,9 @@ interface Workflow {
 interface EvalJob {
   id: number;
   status: "pending" | "running" | "completed" | "failed";
-  siteId: string;
+  siteId: string | null;
+  targetRegion: string | null;
+  targetTier: string | null;
   createdAt: string;
   startedAt: string | null;
   completedAt: string | null;
@@ -70,6 +73,7 @@ interface RunTargetAgent {
 interface RunTargetsResponse {
   agents: { mine: RunTargetAgent[]; shared: RunTargetAgent[] };
   referencedSecrets: Array<{ name: string; class: "runtime" | "protected"; present: boolean }>;
+  tiers: { tier: string; available: boolean; onlineAgents?: number; reason?: string }[];
 }
 
 export default function SelfTest() {
@@ -79,7 +83,8 @@ export default function SelfTest() {
   const [workflowName, setWorkflowName] = useState("");
   const [workflowUrl, setWorkflowUrl] = useState("");
   const [region, setRegion] = useState<string>("");
-  const { options: regionOptions } = useSiteOptions();
+  const [targetTier, setTargetTier] = useState<string>("public");
+  const { options: regionOptions } = useRegionLocationOptions();
   const [selectedWorkflowId, setSelectedWorkflowId] = useState<string>("");
   const [selectedEvalSetId, setSelectedEvalSetId] = useState<string>("");
   const [targetTokenId, setTargetTokenId] = useState<string>("any");
@@ -178,9 +183,18 @@ export default function SelfTest() {
   const { data: runTargets } = useQuery<RunTargetsResponse>({
     queryKey: [`/api/workflows/${selectedWorkflowId}/run-targets`, region, selectedEvalSetId],
     queryFn: async () => (await apiRequest("GET",
-      `/api/workflows/${selectedWorkflowId}/run-targets?siteId=${encodeURIComponent(region)}&evalSetId=${selectedEvalSetId}`)).json(),
+      `/api/workflows/${selectedWorkflowId}/run-targets?region=${encodeURIComponent(region)}&evalSetId=${selectedEvalSetId}`)).json(),
     enabled: !!selectedWorkflowId && !!region && !!selectedEvalSetId,
   });
+
+  // Fallback tier list (no online counts yet) so the "Run on" selector is
+  // populated immediately, before a workflow/region/eval set is chosen and
+  // the run-targets query has loaded.
+  const tierOptions = runTargets?.tiers ?? [
+    { tier: "private", available: true },
+    { tier: "team", available: !!authStatus?.user?.organizationId, reason: authStatus?.user?.organizationId ? undefined : "no-org" },
+    { tier: "public", available: true },
+  ];
 
   const pickerShared = (runTargets?.agents.shared ?? []).filter(
     (s) => !(runTargets?.agents.mine ?? []).some((m) => m.tokenId === s.tokenId)
@@ -194,9 +208,8 @@ export default function SelfTest() {
   const runEvalMutation = useMutation({
     mutationFn: async (workflowId: number) => {
       const res = await apiRequest("POST", `/api/workflows/${workflowId}/run`, {
-        siteId: region,
         evalSetId: parseInt(selectedEvalSetId),
-        ...(targetTokenId !== "any" ? { targetTokenId: Number(targetTokenId) } : {}),
+        ...(targetTokenId !== "any" ? { targetTokenId: Number(targetTokenId) } : { region, targetTier }),
         ...(showRuntimeWarning ? { runtimeSecretConsent: ackRuntime } : {}),
       });
       return res.json();
@@ -497,7 +510,7 @@ export default function SelfTest() {
                   <Label>Target Region</Label>
                   <Select value={region} onValueChange={setRegion}>
                     <SelectTrigger>
-                      <SelectValue placeholder="Select a site" />
+                      <SelectValue placeholder="Select a region" />
                     </SelectTrigger>
                     <SelectContent>
                       {regionOptions.map((option) => (
@@ -505,6 +518,28 @@ export default function SelfTest() {
                       ))}
                     </SelectContent>
                   </Select>
+                </div>
+
+                <div className="space-y-2">
+                  <Label>Run on</Label>
+                  <Select value={targetTier} onValueChange={setTargetTier}>
+                    <SelectTrigger data-testid="select-target-tier">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {tierOptions.filter((t) => t.tier !== "shared").map((t) => (
+                        <SelectItem key={t.tier} value={t.tier} disabled={!t.available}>
+                          {t.tier === "public" ? "Any public agent" : t.tier === "private" ? "My agents" : "Team agents"}
+                          {t.available ? (typeof t.onlineAgents === "number" ? ` (${t.onlineAgents} online)` : "") : t.reason === "no-org" ? " — join an organization" : ""}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  {tierOptions.find((t) => t.tier === targetTier)?.onlineAgents === 0 && (
+                    <p className="text-xs text-muted-foreground">
+                      No matching agent is online right now; the job will wait in the pool (up to 24h).
+                    </p>
+                  )}
                 </div>
 
                 <div className="space-y-2">
@@ -593,7 +628,7 @@ export default function SelfTest() {
 {`# Run a workflow
 curl -X POST -H "Authorization: Bearer vox_live_xxx" \\
   -H "Content-Type: application/json" \\
-  -d '{"siteId": "na-us-seattle-01"}' \\
+  -d '{"region": "na-us-seattle", "targetTier": "public"}' \\
   ${window.location.origin}/api/v1/workflows/1/run
 
 # Get evaluation results
@@ -627,7 +662,7 @@ curl -H "Authorization: Bearer vox_live_xxx" \\
                       <div>
                         <div className="font-medium">{getJobStatusLabel(activeJob.status, activeJob.id)}</div>
                         <div className="text-sm text-muted-foreground">
-                          Region: {formatSite(activeJob.siteId)}
+                          Region: {activeJob.siteId ? formatSite(activeJob.siteId) : `${formatRegion(activeJob.targetRegion ?? "")} · ${activeJob.targetTier} pool`}
                         </div>
                       </div>
                     </div>
