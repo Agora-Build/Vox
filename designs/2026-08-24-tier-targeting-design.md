@@ -136,10 +136,17 @@ The three arms are **mutually exclusive by job shape** — a targeted job
 - **targeted** (`J.targetTokenId IS NOT NULL`): claimable iff
   `J.targetTokenId == T.id`.
 - **pooled** (`J.targetRegion IS NOT NULL`): claimable iff
-  `T.region == J.targetRegion` AND
-  - `J.targetTier == 'private'` → `T.createdBy == J.createdBy`
-  - `J.targetTier == 'team'`    → `sameOrg(T.owner, J.creator)`
-  - `J.targetTier == 'public'`  → `T.dispatchTier == 'public'`.
+  `T.region == J.targetRegion` AND the tier arm expresses **mutual consent**
+  (the dispatcher's requested pool ∩ the owner's offered `dispatchTier`):
+  - `J.targetTier == 'private'` → `T.createdBy == J.createdBy` (any tier of
+    the dispatcher's OWN tokens — owner consent is trivially the dispatcher's).
+  - `J.targetTier == 'team'`    → `sameOrg(T.owner, J.creator)` **AND**
+    `T.dispatchTier IN ('team', 'public')` — an org-mate's `private` token is
+    excluded: its owner offered it to nobody else, and the targeted path
+    (`canDispatchToToken`) already forbids team dispatch to a private token.
+    (The creator's own private tokens serve their jobs via the private pool.)
+  - `J.targetTier == 'public'`  → `T.dispatchTier == 'public'` (owner offered
+    it to anyone — already consent-correct).
 - **legacy** (`J.targetTokenId IS NULL AND J.targetRegion IS NULL`, until
   drained): claimable iff `J.siteId == T.siteId` AND
   (`T.dispatchTier == 'public'` OR `T.createdBy == J.createdBy`).
@@ -245,7 +252,10 @@ stamps the site before execution.
 ## 12. Testing
 
 - **Predicate matrix (unit):** `isClaimable` over targeted × pooled × legacy ×
-  each tier × region match/mismatch × org membership variants.
+  each tier × region match/mismatch × org membership variants × the token's
+  own `dispatchTier` (mutual-consent cases: an org-mate's `private` token must
+  NOT claim a `team`-pool job; an org-mate's `team` or `public` token must; the
+  dispatcher's own token of any tier claims their `private`-pool job).
 - **SQL mirror (integration):** `getClaimableJobsForToken`/`claimEvalJob` agree
   with the predicate bit-for-bit; claim stamps `site_id`; `SKIP LOCKED`
   atomicity unchanged.
