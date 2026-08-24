@@ -73,6 +73,7 @@ import {
   canScheduleWorkflow,
   sameOrg,
   isSessionServable,
+  hasOrg,
 } from "./permissions";
 
 // Schedule lifecycle: a schedule is created with a 90-day expiry and can be
@@ -2122,15 +2123,21 @@ export async function registerRoutes(
       }
 
       const { name, workflowId, evalSetId, scheduleType, cronExpression, timezone, runAt, maxRuns, organizationId } = req.body;
-      const region = req.body.siteId;
+      const region = req.body.region != null ? String(req.body.region) : null;
+      const targetTier = req.body.targetTier != null ? String(req.body.targetTier) : null;
 
-      if (!name || !workflowId || !region) {
-        return res.status(400).json({ error: "Name, workflowId, and siteId are required" });
+      if (!name || !workflowId || !region || !targetTier) {
+        return res.status(400).json({ error: "Name, workflowId, region, and targetTier are required" });
       }
-
-      const normalizedRegion = String(region);
-      if (!(await storage.isAllocatedSite(normalizedRegion))) {
-        return res.status(400).json({ error: "Region must be an active allocated site ID" });
+      if (targetTier === "shared" || !["private", "team", "public"].includes(targetTier)) {
+        return res.status(400).json({ error: targetTier === "shared" ? "Pooled shared dispatch is not available" : "Invalid targetTier" });
+      }
+      if (targetTier === "team" && !hasOrg(user)) {
+        return res.status(400).json({ error: "Join an organization to use team agents" });
+      }
+      const regionLoc = (await storage.getAllRegionLocations()).find((l) => l.baseId === region && l.isActive);
+      if (!regionLoc) {
+        return res.status(400).json({ error: "region must be an active region" });
       }
 
       // A recurring schedule runs the workflow repeatedly on the OWNER's bound
@@ -2158,6 +2165,18 @@ export async function registerRoutes(
         return res.status(403).json({ error: "Access denied to eval set" });
       }
 
+      // Session-injection composition (spec §5): scheduled session workflows may
+      // only use private/team pools — same rule as the run route.
+      {
+        const wfConfig = (workflow.config ?? {}) as Record<string, unknown>;
+        const setupInfo = parsePlatformSetup(wfConfig.stepsPrefix as string | undefined);
+        const scope = sessionScopeForWorkflow(workflow);
+        const schedSessionReq = evaluateSessionRequirement(setupInfo, await getBrokeredSecretNames(scope));
+        if (schedSessionReq.kind === "need" && targetTier === "public") {
+          return res.status(403).json({ error: "Credential-injected workflows can only use your own or team agent pools" });
+        }
+      }
+
       const type = scheduleType || "once";
       let nextRunAt: Date | null = null;
 
@@ -2182,7 +2201,8 @@ export async function registerRoutes(
         name,
         workflowId,
         evalSetId,
-        siteId: normalizedRegion,
+        region,
+        targetTier: targetTier as "private" | "team" | "public",
         scheduleType: type,
         cronExpression: cronExpression || null,
         timezone: timezone || "UTC",
@@ -2364,7 +2384,9 @@ export async function registerRoutes(
         workflowId: schedule.workflowId,
         evalSetId: schedule.evalSetId,
         createdBy: user.id,
-        siteId: schedule.siteId,
+        siteId: null,
+        targetRegion: schedule.region,
+        targetTier: schedule.targetTier,
         config: jobConfig,
         snapshot,
         status: "pending",
@@ -3423,7 +3445,7 @@ export async function registerRoutes(
             await storage.createEvalResult({
               evalJobId: parseInt(jobId),
               providerId,
-              siteId: job.siteId,
+              siteId: job.siteId ?? job.targetRegion ?? "unknown",
               // Pass latencies through as-is: null = NA (agent didn't respond).
               // Do NOT coerce to 0 — a 0 ms "response" would rank a dead agent as
               // the fastest and poison latency averages. responseRate carries the
@@ -3527,7 +3549,7 @@ export async function registerRoutes(
             await storage.createEvalResult({
               evalJobId: jobId,
               providerId,
-              siteId: job.siteId,
+              siteId: job.siteId ?? job.targetRegion ?? "unknown",
               responseLatencyMedian: 0,
               responseLatencySd: 0,
               responseLatencyP95: 0,
