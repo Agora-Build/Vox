@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { REGION_NA, BASE_NA } from "./helpers/regions";
+import { BASE_NA } from "./helpers/regions";
 
 const BASE_URL = process.env.TEST_BASE_URL || "http://localhost:5000";
 const ADMIN_EMAIL = process.env.TEST_ADMIN_EMAIL || "admin@vox.local";
@@ -351,7 +351,7 @@ describe("dispatch integration — session stamping, pre-warm, shared-tier gates
       // stranger's own agent pull the OWNER's minted test-account session.
       const res = await authFetch(stranger, `${BASE_URL}/api/workflows/${guardWorkflowId}/run`, {
         method: "POST",
-        body: JSON.stringify({ siteId: REGION_NA, evalSetId }),
+        body: JSON.stringify({ region: BASE_NA, targetTier: "private", evalSetId }),
       });
       expect(res.status).toBe(403);
       const body = await res.json();
@@ -378,13 +378,28 @@ describe("dispatch integration — session stamping, pre-warm, shared-tier gates
     it("7c. split-class credential pair (one login, one runtime) -> 400, never a silent runtime leak", async () => {
       const res = await authFetch(admin, `${BASE_URL}/api/workflows/${splitWorkflowId}/run`, {
         method: "POST",
-        body: JSON.stringify({ siteId: REGION_NA, evalSetId }),
+        body: JSON.stringify({ region: BASE_NA, targetTier: "private", evalSetId }),
       });
       expect(res.status).toBe(400);
       const body = await res.json();
       expect(body.error).toBe(
         "Login requires BOTH email and password to be dedicated login-class secrets (mark both, or neither)",
       );
+    });
+
+    it("7d. owner untargeted public-pool dispatch of a session-injected workflow -> 403", async () => {
+      // Even the owner can't pool a credential-injected job into the public
+      // tier — a public-pool claim would be admitted by the untargeted-owner
+      // check above but then refused the minted session by the serve gate.
+      // Reject up front instead. Only private/team pools (or a targeted
+      // shared agent with consent) may carry a session-injected job.
+      const res = await authFetch(admin, `${BASE_URL}/api/workflows/${guardWorkflowId}/run`, {
+        method: "POST",
+        body: JSON.stringify({ region: BASE_NA, targetTier: "public", evalSetId }),
+      });
+      expect(res.status).toBe(403);
+      const body = await res.json();
+      expect(body.error).toBe("Credential-injected workflows can only use your own or team agent pools");
     });
   });
 
@@ -419,7 +434,7 @@ describe("dispatch integration — session stamping, pre-warm, shared-tier gates
     it("rejects a run when a Brokered secret is used outside platform.setup login", async () => {
       const res = await authFetch(admin, `${BASE_URL}/api/workflows/${misuseWorkflowId}/run`, {
         method: "POST",
-        body: JSON.stringify({ siteId: REGION_NA, evalSetId }),
+        body: JSON.stringify({ region: BASE_NA, targetTier: "private", evalSetId }),
       });
       expect(res.status).toBe(400);
       const body = await res.json();

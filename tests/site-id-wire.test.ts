@@ -124,6 +124,25 @@ describe('site-id wire contract', () => {
     expect(revoke.status).toBe(200);
   });
 
+  it('run body takes region+targetTier; the siteId body key is dead', async () => {
+    const wf = await (await authFetch('/api/workflows?includePublic=true')).json();
+    const es = await (await authFetch('/api/eval-sets?includePublic=true')).json();
+    const viaSite = await authFetch(`/api/workflows/${wf[0].id}/run`, {
+      method: 'POST',
+      body: JSON.stringify({ siteId: REGION_NA, evalSetId: es[0].id }),
+    });
+    expect(viaSite.status).toBe(400); // siteId body key no longer read
+
+    const viaPool = await authFetch(`/api/workflows/${wf[0].id}/run`, {
+      method: 'POST',
+      body: JSON.stringify({ region: BASE_NA, targetTier: 'public', evalSetId: es[0].id }),
+    });
+    expect(viaPool.status).toBe(200);
+    const { job } = await viaPool.json();
+    expect(job.siteId).toBeNull();
+    expect(job.targetRegion).toBe(BASE_NA);
+  });
+
   it('GET /api/metrics/leaderboard entries carry siteId when present', async () => {
     const res = await fetch(`${BASE_URL}/api/metrics/leaderboard`);
     expect(res.status).toBe(200);

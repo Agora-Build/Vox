@@ -536,14 +536,12 @@ describe("Task 13: practical shared-agents marketplace + credits e2e", () => {
   describe("6. Free tiers (public untargeted + private targeted) never touch credits", () => {
     let freeTokenId: number;
     let freeTokenPlain: string;
-    let freeTokenRegion: string;
-
     beforeAll(async () => {
       const t = await createToken(broke.session, `t13-free-${stamp}`, BASE_NA);
-      freeTokenId = t.id; freeTokenPlain = t.token; freeTokenRegion = t.region;
+      freeTokenId = t.id; freeTokenPlain = t.token;
     });
 
-    it("6a. public-tier untargeted run completes with a zero-credits dispatcher — no 402, no movement", async () => {
+    it("6a. free-tier untargeted (pooled) run completes with a zero-credits dispatcher — no 402, no movement", async () => {
       const before = await getBalance(broke.session);
       expect(before).toBe(0);
 
@@ -554,6 +552,13 @@ describe("Task 13: practical shared-agents marketplace + credits e2e", () => {
       // a 409 here — a benign race, not a product bug. Mitigate pragmatically by
       // recreating the job and retrying (up to 2 extra attempts) rather than faking
       // the claim.
+      //
+      // Dispatched at "private" tier, not "public": public dispatchTier is
+      // admin-only (server/dispatch.ts validateTierChoice), and `broke` is a
+      // non-admin premium user, so freeTokenPlain is created private by
+      // default. The pooled private-tier claim branch matches on the job's
+      // creator, which is what makes this an "own agent, untargeted region
+      // pool" path — distinct from 6b's explicitly-targeted dispatch below.
       const agent = await registerAgent(freeTokenPlain, `t13-free-agent-${stamp}`);
 
       let job: { id: number } | undefined;
@@ -562,7 +567,7 @@ describe("Task 13: practical shared-agents marketplace + credits e2e", () => {
         const workflowId = await createWorkflow(broke.session, `t13-free-wf-${stamp}-${attempt}`, providerId);
         const evalSetId = await createEvalSet(broke.session, `t13-free-es-${stamp}-${attempt}`);
         const runRes = await authFetch(broke.session, `${BASE_URL}/api/workflows/${workflowId}/run`, {
-          method: "POST", body: JSON.stringify({ siteId: freeTokenRegion, evalSetId }),
+          method: "POST", body: JSON.stringify({ region: BASE_NA, targetTier: "private", evalSetId }),
         });
         expect(runRes.status).toBe(200);
         ({ job } = await runRes.json());
