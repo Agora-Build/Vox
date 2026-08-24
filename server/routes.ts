@@ -3858,10 +3858,16 @@ export async function registerRoutes(
 
       const { workflowId } = req.params;
       const { evalSetId } = req.body;
-      const region = req.body.siteId;
+      // Pooled targeting: region baseId + tier (spec §5). Exactly one of
+      // targetTokenId / (region+targetTier) may be supplied.
+      const region = req.body.region != null ? String(req.body.region) : null;
+      const targetTier = req.body.targetTier != null ? String(req.body.targetTier) : null;
       const targetTokenId = req.body.targetTokenId != null ? Number(req.body.targetTokenId) : null;
       if (targetTokenId != null && !Number.isFinite(targetTokenId)) {
         return res.status(400).json({ error: "Invalid target agent token id" });
+      }
+      if (targetTokenId != null && (region != null || targetTier != null)) {
+        return res.status(400).json({ error: "Provide either targetTokenId or region+targetTier, not both" });
       }
 
       const workflow = await storage.getWorkflow(parseInt(workflowId));
@@ -3937,7 +3943,7 @@ export async function registerRoutes(
         });
       }
 
-      let jobRegion: string;
+      let jobRegion: string | null;
       let targeting: number | null = null;
       let settlementContext: unknown = undefined;
       let consentRecorded = false;
@@ -4021,11 +4027,30 @@ export async function registerRoutes(
             return res.status(403).json({ error: "Credential-injected workflows can only be run untargeted by the owner or an org member; dispatch to a shared agent with consent to run it elsewhere" });
           }
         }
-        const normalizedRegion = region ? String(region) : "";
-        if (!normalizedRegion || !(await storage.isAllocatedSite(normalizedRegion))) {
-          return res.status(400).json({ error: "An active allocated region site is required" });
+        if (!region || !targetTier) {
+          return res.status(400).json({ error: "region and targetTier are required for pooled dispatch" });
         }
-        jobRegion = normalizedRegion;
+        if (targetTier === "shared") {
+          return res.status(400).json({ error: "Pooled shared dispatch is not available" });
+        }
+        if (!["private", "team", "public"].includes(targetTier)) {
+          return res.status(400).json({ error: "Invalid targetTier" });
+        }
+        if (targetTier === "team" && !hasOrg(user)) {
+          return res.status(400).json({ error: "Join an organization to use team agents" });
+        }
+        const regionLoc = (await storage.getAllRegionLocations()).find((l) => l.baseId === region && l.isActive);
+        if (!regionLoc) {
+          return res.status(400).json({ error: "region must be an active region" });
+        }
+        // Session-injection composition (spec §5): the serve gate admits owner +
+        // team agents only, so a public-pool claim would take the job and then be
+        // refused the session. Reject up front. (The existing owner-or-org guard
+        // above already limits WHO may dispatch a session workflow untargeted.)
+        if (sessionNeed && targetTier === "public") {
+          return res.status(403).json({ error: "Credential-injected workflows can only use your own or team agent pools" });
+        }
+        jobRegion = null; // pooled: site stamped at claim
       }
 
       const provider = await storage.getProvider(workflow.providerId);
@@ -4064,6 +4089,8 @@ export async function registerRoutes(
           evalSetId,
           createdBy: user.id,
           siteId: jobRegion,
+          targetRegion: targeting == null ? region : null,
+          targetTier: targeting == null ? (targetTier as "private" | "team" | "public") : null,
           targetTokenId: targeting,
           config: jobConfig,
           snapshot,
