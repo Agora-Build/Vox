@@ -4249,17 +4249,25 @@ export async function registerRoutes(
               && sameOrg({ organizationId: user.organizationId }, { organizationId: a.tokenOwnerOrgId });
           return a.tokenDispatchTier === "public";
         }).length;
-      // Team availability must mirror the run route exactly: for a
-      // session-injected workflow the team pool additionally requires the
-      // workflow to belong to the dispatcher's org — otherwise the UI offers
-      // "Team agents" and the run 403s.
+      // Availability must mirror the run route exactly: its untargeted branch
+      // gates ALL pooled tiers on owner-or-org for session-injected workflows
+      // (a non-owner running a public login workflow gets 403 on every pool),
+      // and the team pool additionally requires the workflow to belong to the
+      // dispatcher's org. Advertising a tier the run would 403 defeats the
+      // never-offer-a-403 contract — and the dialogs auto-hop to the first
+      // available tier, so a mis-advertised one would be auto-selected.
+      const sessionDispatchAllowed = !needsSession ||
+        workflow.ownerId === user.id ||
+        (workflow.organizationId != null && sameOrg({ organizationId: user.organizationId }, { organizationId: workflow.organizationId }));
       const teamBlockedBySession = needsSession &&
         !(workflow.organizationId != null && sameOrg({ organizationId: user.organizationId }, { organizationId: workflow.organizationId }));
       const tiers = [
-        { tier: "private", available: true, onlineAgents: countFor("private") },
+        sessionDispatchAllowed
+          ? { tier: "private", available: true, onlineAgents: countFor("private") }
+          : { tier: "private", available: false, reason: "session-injected" },
         !hasOrg(user)
           ? { tier: "team", available: false, reason: "no-org" }
-          : teamBlockedBySession
+          : (teamBlockedBySession || !sessionDispatchAllowed)
             ? { tier: "team", available: false, reason: "session-injected" }
             : { tier: "team", available: true, onlineAgents: countFor("team") },
         needsSession
@@ -4286,6 +4294,9 @@ export async function registerRoutes(
       }
 
       const { status, region, workflowId, limit, offset, hours } = req.query;
+      if (req.query.siteId !== undefined) {
+        return res.status(400).json({ error: "The siteId filter was replaced by region (a region base ID, e.g. na-us-seattle)" });
+      }
 
       const pageLimit = Math.min(Math.max(parseInt(limit as string) || 50, 1), 200);
       const pageOffset = Math.max(parseInt(offset as string) || 0, 0);

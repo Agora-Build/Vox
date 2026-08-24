@@ -173,4 +173,7 @@ describe("sessionPoolViolation — scheduler tier-composition gate", () => {
   it("private pool is never a violation", () => {
     expect(sessionPoolViolation("private", { organizationId: null }, undefined)).toBeNull();
   });
+  it("reserved/unknown tiers fail CLOSED (allowlist shape)", () => {
+    expect(sessionPoolViolation("shared", { organizationId: 5 }, { organizationId: 5 })).toMatch(/shared pool/);
+  });
 });

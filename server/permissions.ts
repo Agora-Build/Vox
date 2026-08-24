@@ -110,17 +110,17 @@ export function sessionPoolViolation(
   workflow: { organizationId: number | null },
   creator: { organizationId: number | null } | undefined,
 ): string | null {
-  if (targetTier === "public") {
-    return "credential-injected jobs cannot use the public pool";
-  }
-  if (
-    targetTier === "team" &&
-    !(workflow.organizationId != null &&
-      sameOrg({ organizationId: creator?.organizationId ?? null }, { organizationId: workflow.organizationId }))
-  ) {
+  // Allowlist shape: only tiers we affirmatively trust return null, so a
+  // future enum member (or the reserved 'shared') fails CLOSED here.
+  if (targetTier === "private") return null;
+  if (targetTier === "team") {
+    if (workflow.organizationId != null &&
+        sameOrg({ organizationId: creator?.organizationId ?? null }, { organizationId: workflow.organizationId })) {
+      return null;
+    }
     return "credential-injected jobs can use a team pool only when the workflow belongs to the creator's organization";
   }
-  return null;
+  return `credential-injected jobs cannot use the ${targetTier} pool`;
 }
 
 /** Free-tier dispatch authz. `shared` is NOT decided here — the marketplace seam handles it. */

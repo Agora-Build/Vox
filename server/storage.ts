@@ -104,7 +104,7 @@ import { regionSiteSequence } from "@shared/regions";
 import { drizzle } from "drizzle-orm/node-postgres";
 import pkg from "pg";
 const { Pool } = pkg;
-import { asc, desc, eq, and, or, not, sql, gte, lte, like, inArray, isNotNull, isNull } from "drizzle-orm";
+import { asc, desc, eq, and, or, not, sql, gte, lte, inArray, isNotNull, isNull } from "drizzle-orm";
 import crypto from "crypto";
 
 // Realtime-metrics windowing policy (server-owned; the client never sets these).
@@ -1179,9 +1179,14 @@ export class DatabaseStorage {
       // A claimed job carries a concrete site under the region (base-NN); a
       // pending pooled job carries only targetRegion. Match both so pending
       // pooled rows don't vanish under the filter.
+      // Sites are strictly <base>-NN; a bare LIKE 'base-%' would also match a
+      // longer dash-delimited baseId (na-us-seattle vs na-us-seattle-north).
+      // Anchor the suffix to digits. The value is whitelist-validated against
+      // region_locations baseIds ([a-z0-9-]) by the route, so it carries no
+      // regex metacharacters.
       conditions.push(
         or(
-          like(evalJobs.siteId, `${filters.region}-%`),
+          sql`${evalJobs.siteId} ~ ${"^" + filters.region + "-[0-9]+$"}`,
           and(isNull(evalJobs.siteId), eq(evalJobs.targetRegion, filters.region)),
         )!,
       );
