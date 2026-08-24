@@ -718,7 +718,7 @@ export class DatabaseStorage {
   }
 
   async getEvalAgentsWithTokenTier(): Promise<
-    (EvalAgent & { tokenCreatedBy: number; tokenDispatchTier: string; tokenOwnerOrgId: number | null })[]
+    (EvalAgent & { tokenCreatedBy: number; tokenDispatchTier: string; tokenOwnerOrgId: number | null; tokenRegion: string })[]
   > {
     const results = await db.select({
       id: evalAgents.id,
@@ -734,13 +734,14 @@ export class DatabaseStorage {
       tokenCreatedBy: evalAgentTokens.createdBy,
       tokenDispatchTier: evalAgentTokens.dispatchTier,
       tokenOwnerOrgId: users.organizationId,
+      tokenRegion: evalAgentTokens.region,
     })
       .from(evalAgents)
       .innerJoin(evalAgentTokens, eq(evalAgents.tokenId, evalAgentTokens.id))
       .leftJoin(users, eq(evalAgentTokens.createdBy, users.id))
       .orderBy(desc(evalAgents.createdAt));
     return results as (EvalAgent & {
-      tokenCreatedBy: number; tokenDispatchTier: string; tokenOwnerOrgId: number | null;
+      tokenCreatedBy: number; tokenDispatchTier: string; tokenOwnerOrgId: number | null; tokenRegion: string;
     })[];
   }
 

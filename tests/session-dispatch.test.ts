@@ -133,7 +133,7 @@ describe("dispatch integration — session stamping, pre-warm, shared-tier gates
   it("1. stamps config.sessionInjection when the workflow's platform.setup references login secrets", async () => {
     const res = await authFetch(admin, `${BASE_URL}/api/workflows/${sessionWorkflowId}/run`, {
       method: "POST",
-      body: JSON.stringify({ siteId: REGION_NA, evalSetId }),
+      body: JSON.stringify({ region: BASE_NA, targetTier: "private", evalSetId }),
     });
     expect(res.ok).toBe(true);
     const body = await res.json();
@@ -143,7 +143,7 @@ describe("dispatch integration — session stamping, pre-warm, shared-tier gates
   it("2. leaves config.sessionInjection undefined when referenced secrets are runtime-class", async () => {
     const res = await authFetch(admin, `${BASE_URL}/api/workflows/${noSessionWorkflowId}/run`, {
       method: "POST",
-      body: JSON.stringify({ siteId: REGION_NA, evalSetId }),
+      body: JSON.stringify({ region: BASE_NA, targetTier: "private", evalSetId }),
     });
     expect(res.ok).toBe(true);
     const body = await res.json();
@@ -153,7 +153,7 @@ describe("dispatch integration — session stamping, pre-warm, shared-tier gates
   it("3. strips a user-supplied sessionInjection and stamps the server value instead", async () => {
     const res = await authFetch(admin, `${BASE_URL}/api/workflows/${injectionWorkflowId}/run`, {
       method: "POST",
-      body: JSON.stringify({ siteId: REGION_NA, evalSetId }),
+      body: JSON.stringify({ region: BASE_NA, targetTier: "private", evalSetId }),
     });
     expect(res.ok).toBe(true);
     const body = await res.json();
@@ -265,7 +265,7 @@ describe("dispatch integration — session stamping, pre-warm, shared-tier gates
     it("untargeted run with conflicting shared config keys surfaces a controlled 500, not a crash", async () => {
       const res = await authFetch(admin, `${BASE_URL}/api/workflows/${conflictWorkflowId}/run`, {
         method: "POST",
-        body: JSON.stringify({ siteId: REGION_NA, evalSetId: conflictEvalSetId }),
+        body: JSON.stringify({ region: BASE_NA, targetTier: "private", evalSetId: conflictEvalSetId }),
       });
       expect(res.status).toBe(500);
       const body = await res.json();

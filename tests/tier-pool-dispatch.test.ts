@@ -105,4 +105,28 @@ describe("pooled dispatch API", () => {
     expect((await post({ ...base, region: "not-a-region", targetTier: "public" })).status).toBe(400);
     expect((await post({ ...base, region: BASE_NA })).status).toBe(400);
   });
+
+  // Reuses this describe's own admin-owned workflow/eval-set (created in its
+  // beforeAll above) rather than fetching `?includePublic=true` and taking
+  // index 0 — that global listing is shared across every test file hitting
+  // this dev DB (vitest runs files in parallel), so index 0 can flakily land
+  // on a session-injected workflow from a concurrently-running suite (e.g.
+  // session-dispatch.test.ts's login-secret workflows), which would flip
+  // needsSession and make the public-tier assertion flaky. The workflow this
+  // describe owns has an empty config (no platform.setup), so it never needs
+  // a session — deterministic.
+  it("run-targets advertises per-tier availability with online counts for the region", async () => {
+    const res = await authFetch(cookie, `${BASE_URL}/api/workflows/${workflowId}/run-targets?region=${BASE_NA}&evalSetId=${evalSetId}`);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(Array.isArray(body.tiers)).toBe(true);
+    const byTier = Object.fromEntries(body.tiers.map((t: any) => [t.tier, t]));
+    expect(byTier.public.available).toBe(true);
+    expect(typeof byTier.public.onlineAgents).toBe("number");
+    expect(byTier.private.available).toBe(true);
+    expect(byTier.team.available).toBe(false); // admin has no org in dev seed
+    expect(byTier.team.reason).toBe("no-org");
+    expect(byTier.shared.available).toBe(false);
+    expect(byTier.shared.reason).toBe("not-pooled-yet");
+  });
 });

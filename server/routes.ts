@@ -3080,12 +3080,13 @@ export async function registerRoutes(
         state: a.state,
       }));
       const free = filterDispatchableAgents({ id: user.id, organizationId: user.organizationId }, rows);
+      const regionRowByTokenId = new Map(agents.map((a) => [a.tokenId, a.tokenRegion]));
 
       const marketplace = getMarketplace();
       const shared = marketplace ? await marketplace.listDispatchable(user.id) : [];
 
       return res.json({
-        free: free.map((a) => ({ tokenId: a.tokenId, siteId: a.region, dispatchTier: a.dispatchTier, state: a.state })),
+        free: free.map((a) => ({ tokenId: a.tokenId, siteId: a.region, region: regionRowByTokenId.get(a.tokenId) ?? null, dispatchTier: a.dispatchTier, state: a.state })),
         // Seam AgentSummary rows carry `region` internally — remap to the
         // public `siteId` wire key.
         shared: shared.map((l) => ({ tokenId: l.tokenId, siteId: l.region, dispatchTier: "shared", pricePerUnit: l.pricePerUnit })),
@@ -4136,7 +4137,7 @@ export async function registerRoutes(
         return res.status(403).json({ error: "Not authorized to run this workflow" });
       }
 
-      const region = req.query.siteId ? String(req.query.siteId) : null;
+      const region = req.query.region ? String(req.query.region) : null;
       const evalSetIdRaw = req.query.evalSetId ? Number(req.query.evalSetId) : null;
 
       type Agent = { tokenId: number; name: string; siteId: string; dispatchTier: string; price: number | null };
@@ -4144,17 +4145,19 @@ export async function registerRoutes(
       // My agents: own tokens, any tier, not revoked, region-filtered when given.
       const ownTokens = await storage.getEvalAgentTokensByUser(user.id);
       const mine: Agent[] = ownTokens
-        .filter((t) => !t.isRevoked && (!region || t.siteId === region))
+        .filter((t) => !t.isRevoked && (!region || t.region === region))
         .map((t) => ({ tokenId: t.id, name: t.name, siteId: t.siteId, dispatchTier: t.dispatchTier, price: null }));
 
       // Shared marketplace: dispatchable listings from the plugin, if present.
       // AgentSummary has no name, so join the token row for a display name.
+      // NOTE: the seam's AgentSummary `region` field actually carries a SITE id
+      // (from `setListing`), not a region base id — filter by prefix.
       const marketplace = getMarketplace();
       const shared: Agent[] = [];
       if (marketplace) {
         const listings = await marketplace.listDispatchable(user.id);
         for (const l of listings) {
-          if (region && l.region !== region) continue;
+          if (region && !l.region.startsWith(region + "-")) continue;
           const tok = await storage.getEvalAgentToken(l.tokenId);
           if (!tok || tok.isRevoked) continue;
           shared.push({ tokenId: l.tokenId, name: tok.name, siteId: l.region, dispatchTier: "shared", price: l.pricePerUnit });
@@ -4171,7 +4174,30 @@ export async function registerRoutes(
       const scope = sessionScopeForWorkflow(workflow);
       const referencedSecrets = await classifyReferencedSecrets(scope, collectSecretRefs(configs));
 
-      res.json({ agents: { mine, shared }, referencedSecrets });
+      const needsSession = referencedSecrets.some((s: { brokerType: string | null }) => s.brokerType != null);
+      const agents = await storage.getEvalAgentsWithTokenTier();
+      const online = agents.filter((a) =>
+        a.state !== "offline" && (!region || a.tokenRegion === region));
+      const countFor = (tier: "private" | "team" | "public"): number =>
+        online.filter((a) => {
+          if (tier === "private") return a.tokenCreatedBy === user.id;
+          if (tier === "team")
+            return (a.tokenDispatchTier === "team" || a.tokenDispatchTier === "public")
+              && sameOrg({ organizationId: user.organizationId }, { organizationId: a.tokenOwnerOrgId });
+          return a.tokenDispatchTier === "public";
+        }).length;
+      const tiers = [
+        { tier: "private", available: true, onlineAgents: countFor("private") },
+        hasOrg(user)
+          ? { tier: "team", available: true, onlineAgents: countFor("team") }
+          : { tier: "team", available: false, reason: "no-org" },
+        needsSession
+          ? { tier: "public", available: false, reason: "session-injected" }
+          : { tier: "public", available: true, onlineAgents: countFor("public") },
+        { tier: "shared", available: false, reason: "not-pooled-yet" },
+      ];
+
+      res.json({ agents: { mine, shared }, referencedSecrets, tiers });
     } catch (error) {
       console.error("Error listing run targets:", error);
       res.status(500).json({ error: "Failed to list run targets" });
