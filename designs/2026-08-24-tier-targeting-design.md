@@ -109,6 +109,13 @@ Body accepts **exactly one** targeting form (400 otherwise):
     `team` → `hasOrg(user)` (400 "join an organization to use team agents"
     otherwise); `public` → anyone; `shared` → 400 "pooled shared dispatch is
     not available".
+  - **Session-injection composition:** when `workflowNeedsSession()` detects a
+    login-class secret (the run route already stamps `sessionInjection`), the
+    pooled form is restricted to `targetTier` `private` or `team` — `public`
+    is rejected 403 (the session serve gate admits owner + team agents only;
+    a public-pool claim would take the job and then be refused the session).
+    Belt-and-braces: the pooled `public` claim arm also excludes
+    session-injected jobs (§6), mirroring today's untargeted rule.
   - Job row: `site_id = NULL`, `target_region`, `target_tier`,
     `target_token_id = NULL`.
 
@@ -145,8 +152,9 @@ The three arms are **mutually exclusive by job shape** — a targeted job
     excluded: its owner offered it to nobody else, and the targeted path
     (`canDispatchToToken`) already forbids team dispatch to a private token.
     (The creator's own private tokens serve their jobs via the private pool.)
-  - `J.targetTier == 'public'`  → `T.dispatchTier == 'public'` (owner offered
-    it to anyone — already consent-correct).
+  - `J.targetTier == 'public'`  → `T.dispatchTier == 'public'` AND the job is
+    not session-injected (`config -> 'sessionInjection' IS NULL`, exactly the
+    guard today's untargeted arm applies).
 - **legacy** (`J.targetTokenId IS NULL AND J.targetRegion IS NULL`, until
   drained): claimable iff `J.siteId == T.siteId` AND
   (`T.dispatchTier == 'public'` OR `T.createdBy == J.createdBy`).
@@ -264,8 +272,9 @@ stamps the site before execution.
   `'public'`, `site_id` dropped).
 - **Dispatch API:** per-tier pooled dispatch end-to-end (private / team with
   org fixtures / public); 400s: missing tier, both targeting forms at once,
-  `team` without org, `shared`, inactive region; legacy in-flight job (null
-  targetTier) still claimable under the old arm.
+  `team` without org, `shared`, inactive region; 403: session-injected
+  workflow into the `public` pool; legacy in-flight job (null targetTier)
+  still claimable under the old arm.
 - **Scheduler:** stamps region+tier onto created jobs.
 - **Reaper:** pooled job survives the 15-min window with no online agent;
   targeted job still fast-fails; 24h backstop reason names the pool.
