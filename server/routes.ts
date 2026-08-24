@@ -3348,8 +3348,10 @@ export async function registerRoutes(
       if (!existingJob) {
         return res.status(404).json({ error: "Job not found" });
       }
-      if (existingJob.siteId !== agent.siteId) {
-        return res.status(403).json({ error: "Job region does not match agent region" });
+      // Site fence for site-pinned rows only (targeted + legacy). Pooled jobs
+      // (siteId null) are fenced by region+tier inside claimEvalJob's predicate.
+      if (existingJob.siteId != null && existingJob.siteId !== agent.siteId) {
+        return res.status(403).json({ error: "Job site does not match agent site" });
       }
 
       // Freeze the claiming agent's token dispatch tier onto the job in the SAME
