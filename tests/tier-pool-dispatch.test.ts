@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { BASE_NA } from "./helpers/regions";
+import { BASE_NA, BASE_EU } from "./helpers/regions";
 
 const BASE_URL = process.env.TEST_BASE_URL || "http://localhost:5000";
 const ADMIN_EMAIL = process.env.TEST_ADMIN_EMAIL || "admin@vox.local";
@@ -104,6 +104,35 @@ describe("pooled dispatch API", () => {
     expect((await post({ ...base, region: BASE_NA, targetTier: "team" })).status).toBe(400); // admin has no org
     expect((await post({ ...base, region: "not-a-region", targetTier: "public" })).status).toBe(400);
     expect((await post({ ...base, region: BASE_NA })).status).toBe(400);
+  });
+
+  it("schedule PATCH accepts region+targetTier with the same validation as create, and round-trips", async () => {
+    const createRes = await authFetch(cookie, `${BASE_URL}/api/eval-schedules`, {
+      method: "POST",
+      body: JSON.stringify({
+        name: `tt-patch-sched-${Date.now()}`, workflowId, evalSetId,
+        region: BASE_NA, targetTier: "public", scheduleType: "recurring", cronExpression: "0 3 * * *",
+      }),
+    });
+    expect(createRes.status).toBe(200);
+    const sched = await createRes.json();
+
+    const patchRes = await authFetch(cookie, `${BASE_URL}/api/eval-schedules/${sched.id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ region: BASE_EU, targetTier: "private" }),
+    });
+    expect(patchRes.status).toBe(200);
+    const updated = await patchRes.json();
+    expect(updated.region).toBe(BASE_EU);
+    expect(updated.targetTier).toBe("private");
+
+    const badRes = await authFetch(cookie, `${BASE_URL}/api/eval-schedules/${sched.id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ targetTier: "shared" }),
+    });
+    expect(badRes.status).toBe(400);
+
+    await authFetch(cookie, `${BASE_URL}/api/eval-schedules/${sched.id}`, { method: "DELETE" });
   });
 
   // Reuses this describe's own admin-owned workflow/eval-set (created in its

@@ -2045,6 +2045,49 @@ describe('Vox API Tests', () => {
       testUserWorkflowId = data.id;
     });
 
+    it('should run a workflow via v1 API with region+targetTier pooled dispatch', async () => {
+      const esResponse = await fetch(`${BASE_URL}/api/v1/eval-sets`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${testUserApiKey}`,
+        },
+        body: JSON.stringify({ name: 'V1 Run Eval Set', visibility: 'public', config: {} }),
+      });
+      expect(esResponse.ok).toBe(true);
+      const { data: evalSet } = await esResponse.json();
+
+      const response = await fetch(`${BASE_URL}/api/v1/workflows/${testUserWorkflowId}/run`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${testUserApiKey}`,
+        },
+        body: JSON.stringify({ region: BASE_NA, targetTier: 'public', evalSetId: evalSet.id }),
+      });
+      expect(response.status).toBe(201);
+      const { data } = await response.json();
+      expect(data.job.siteId).toBeNull();
+      expect(data.job.targetRegion).toBe(BASE_NA);
+      expect(data.job.targetTier).toBe('public');
+
+      await authFetch(adminSession, `${BASE_URL}/api/eval-sets/${evalSet.id}`, { method: 'DELETE' });
+    });
+
+    it('should reject a v1 run with the old exact-site siteId body key', async () => {
+      const response = await fetch(`${BASE_URL}/api/v1/workflows/${testUserWorkflowId}/run`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${testUserApiKey}`,
+        },
+        body: JSON.stringify({ siteId: 'na-us-seattle-01', evalSetId: 1 }),
+      });
+      expect(response.status).toBe(400);
+      const body = await response.json();
+      expect(body.error).toMatch(/region and targetTier/i);
+    });
+
     it('should reject revoked API key', async () => {
       // Get all API keys to find the one we just created
       const keysResponse = await authFetch(adminSession, `${BASE_URL}/api/user/api-keys`);

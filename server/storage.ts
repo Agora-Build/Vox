@@ -1061,12 +1061,17 @@ export class DatabaseStorage {
   async failExpiredPendingJobs(maxWaitMinutes: number): Promise<number> {
     const cutoff = new Date(Date.now() - maxWaitMinutes * 60 * 1000);
     const message = `Not claimed by any eval agent within ${maxWaitMinutes} min`;
+    // Pooled backstop message (24h by default): render hours when the window is
+    // an even number of hours ("within 24h") instead of the always-minutes form
+    // ("within 1440 min"), and avoid the "eligible eligible agent" repeat when
+    // target_tier is somehow null on a pooled row.
+    const pooledWaitLabel = maxWaitMinutes % 60 === 0 ? `${maxWaitMinutes / 60}h` : `${maxWaitMinutes} min`;
     const result = await db.execute(sql`
       UPDATE eval_jobs
       SET status = 'failed'::eval_job_status,
           error = CASE
             WHEN target_region IS NOT NULL
-              THEN 'No eligible ' || COALESCE(target_tier::text, 'eligible') || ' agent in ' || target_region || ' claimed the job within ' || ${maxWaitMinutes} || ' min'
+              THEN 'No eligible ' || COALESCE(target_tier::text, 'matching') || ' agent in ' || target_region || ' claimed the job within ' || ${pooledWaitLabel}
             ELSE ${message}
           END,
           completed_at = NOW(),

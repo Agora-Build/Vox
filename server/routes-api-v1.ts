@@ -12,6 +12,7 @@ import { storage, mergeEvalConfig, buildJobSnapshot } from "./storage";
 import { requireAuthOrApiKey, getCurrentUserOrApiKeyUser } from "./auth";
 import { parsePlatformSetup, sessionScopeForWorkflow, evaluateSessionRequirement, getBrokeredSecretNames, ensureSession } from "./auth-session";
 import { regionSiteSequence } from "@shared/regions";
+import { hasOrg, sameOrg } from "./permissions";
 
 type ApiRegionLocation = Awaited<ReturnType<typeof storage.getAllRegionLocations>>[number];
 
@@ -297,7 +298,12 @@ export function registerApiV1Routes(app: Express): void {
       }
 
       const { id } = req.params;
-      const { siteId, evalSetId, priority } = req.body;
+      const { evalSetId, priority } = req.body;
+      // Pooled targeting: region baseId + tier (spec §5), mirroring the console
+      // run route's pooled validation exactly. v1 does not support targetTokenId
+      // (precision) dispatch — it never has; only the pool contract is migrated.
+      const region = req.body.region != null ? String(req.body.region) : null;
+      const targetTier = req.body.targetTier != null ? String(req.body.targetTier) : null;
 
       const workflow = await storage.getWorkflow(parseInt(id));
 
@@ -318,11 +324,29 @@ export function registerApiV1Routes(app: Express): void {
         return res.status(404).json({ error: "Eval set not found" });
       }
 
+      if (!region || !targetTier) {
+        return res.status(400).json({ error: "region and targetTier are required for pooled dispatch" });
+      }
+      if (targetTier === "shared") {
+        return res.status(400).json({ error: "Pooled shared dispatch is not available" });
+      }
+      if (!["private", "team", "public"].includes(targetTier)) {
+        return res.status(400).json({ error: "Invalid targetTier" });
+      }
+      if (targetTier === "team" && !hasOrg(user)) {
+        return res.status(400).json({ error: "Join an organization to use team agents" });
+      }
+      const regionLoc = (await storage.getAllRegionLocations()).find((l) => l.baseId === region && l.isActive);
+      if (!regionLoc) {
+        return res.status(400).json({ error: "region must be an active region" });
+      }
+
       // does this workflow need a Core-minted login session? This route
       // is owner-only (untargeted run on the caller's own workflow), so the
-      // untargeted owner/team gate the console run route applies is satisfied
-      // structurally — only the misconfigured-pair rejection and the immutable
-      // session stamp are needed here.
+      // untargeted owner/team WHO-may-dispatch gate the console run route
+      // applies is satisfied structurally — only the misconfigured-pair
+      // rejection, the tier-composition guards (mirroring the console route),
+      // and the immutable session stamp are needed here.
       const wfConfig = (workflow.config ?? {}) as Record<string, unknown>;
       const setupInfo = parsePlatformSetup(wfConfig.stepsPrefix as string | undefined);
       const scope = sessionScopeForWorkflow(workflow);
@@ -331,17 +355,21 @@ export function registerApiV1Routes(app: Express): void {
         return res.status(400).json({ error: sessionReq.reason });
       }
       const sessionNeed = sessionReq.kind === "need" ? sessionReq.need : null;
+      // Session-injection composition (spec §5 + item 2 tightening): the serve
+      // gate admits owner + team agents only, so a public-pool claim would take
+      // the job and then be refused the session; and a team-pool claim on a
+      // personal (non-org) workflow is a guaranteed-failure dispatch.
+      if (sessionNeed && targetTier === "public") {
+        return res.status(403).json({ error: "Credential-injected workflows can only use your own or team agent pools" });
+      }
+      if (sessionNeed && targetTier === "team" &&
+          !(workflow.organizationId != null && sameOrg({ organizationId: user.organizationId }, { organizationId: workflow.organizationId }))) {
+        return res.status(403).json({ error: "Credential-injected workflows can only use a team pool when the workflow belongs to your organization" });
+      }
 
       // Create eval job (merge configs + capture the immutable snapshot, same as the
       // console run path — otherwise these jobs lose provenance/attribution/tiering).
       const provider = await storage.getProvider(workflow.providerId);
-      if (!siteId) {
-        return res.status(400).json({ error: "An exact site ID is required" });
-      }
-      const requestedSiteId = String(siteId);
-      if (!(await storage.isAllocatedSite(requestedSiteId))) {
-        return res.status(400).json({ error: "Region must be an active allocated site ID" });
-      }
 
       const jobConfig = mergeEvalConfig(workflow.config, evalSet.config);
       delete (jobConfig as Record<string, unknown>).sessionInjection; // server-stamped only
@@ -366,11 +394,15 @@ export function registerApiV1Routes(app: Express): void {
         triggerType: 2, // manual (API v1 run)
         evalSetId,
         createdBy: user.id,
-        siteId: requestedSiteId,
+        siteId: null,
+        targetRegion: region,
+        targetTier: targetTier as "private" | "team" | "public",
         config: jobConfig,
         snapshot,
         status: "pending",
         priority: priority || 0,
+        retryCount: 0,
+        maxRetries: 3,
       });
 
       res.status(201).json({

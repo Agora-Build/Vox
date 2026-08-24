@@ -533,7 +533,7 @@ describe("Task 13: practical shared-agents marketplace + credits e2e", () => {
   });
 
   // ── 6. Free tiers never touch credits ────────────────────────────────
-  describe("6. Free tiers (public untargeted + private targeted) never touch credits", () => {
+  describe("6. Free tiers (private pooled + private targeted) never touch credits", () => {
     let freeTokenId: number;
     let freeTokenPlain: string;
     beforeAll(async () => {

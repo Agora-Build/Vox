@@ -12,8 +12,11 @@ import { REGION_NA, BASE_NA } from './helpers/regions';
  *  - Response surfaces emit `siteId`, never `region` (the sole exception is
  *    the clash-runner daemon wire, which dual-keys `siteId` + `region` until
  *    deployed runners are upgraded — covered in clash-runner-lifecycle).
- *  - Request bodies take `siteId` ONLY — the legacy `region` body key is
- *    dead and must be rejected, not silently read.
+ *  - Run and schedule request bodies (workflow run, v1 run, eval-schedules
+ *    create/PATCH) take `region` + `targetTier` (pooled dispatch, spec
+ *    2026-08-24-tier-targeting) — the exact-site `siteId` body key is dead on
+ *    those routes and must be rejected, not silently read. CLASH-token /
+ *    clash-runner bodies are unaffected and still take `siteId`.
  */
 
 const BASE_URL = process.env.TEST_BASE_URL || 'http://localhost:5000';

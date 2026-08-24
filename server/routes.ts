@@ -2175,6 +2175,13 @@ export async function registerRoutes(
         if (schedSessionReq.kind === "need" && targetTier === "public") {
           return res.status(403).json({ error: "Credential-injected workflows can only use your own or team agent pools" });
         }
+        // See run route: a personal (non-org) session workflow scheduled into a
+        // team pool would let an org-mate's token claim it, then be refused the
+        // session — guaranteed-failure dispatch. Require org ownership.
+        if (schedSessionReq.kind === "need" && targetTier === "team" &&
+            !(workflow.organizationId != null && sameOrg({ organizationId: user.organizationId }, { organizationId: workflow.organizationId }))) {
+          return res.status(403).json({ error: "Credential-injected workflows can only use a team pool when the workflow belongs to your organization" });
+        }
       }
 
       const type = scheduleType || "once";
@@ -2240,24 +2247,62 @@ export async function registerRoutes(
       }
 
       const { name, isEnabled, cronExpression, maxRuns, nextRunAt } = req.body;
+      const region = req.body.region != null ? String(req.body.region) : undefined;
+      const targetTier = req.body.targetTier != null ? String(req.body.targetTier) : undefined;
 
-      // Enabling, rescheduling, advancing nextRunAt, or changing the run cap all
-      // affect how many times runs execute on the workflow OWNER's secrets, so
-      // they need owner rights (a system admin isn't exempt). Gate on an ACTUAL
-      // change, not mere presence — the Edit dialog resends cron/maxRuns even on a
-      // name-only edit, and disable/rename must stay open to the schedule's
-      // manager for cleanup.
+      // Same validation as schedule create (spec §4/§5) for the pool being
+      // requested — applied whenever the field is present, before the
+      // owner-gate below (which needs the workflow to check session composition).
+      if (targetTier !== undefined) {
+        if (targetTier === "shared" || !["private", "team", "public"].includes(targetTier)) {
+          return res.status(400).json({ error: targetTier === "shared" ? "Pooled shared dispatch is not available" : "Invalid targetTier" });
+        }
+        if (targetTier === "team" && !hasOrg(user)) {
+          return res.status(400).json({ error: "Join an organization to use team agents" });
+        }
+      }
+      if (region !== undefined) {
+        const regionLoc = (await storage.getAllRegionLocations()).find((l) => l.baseId === region && l.isActive);
+        if (!regionLoc) {
+          return res.status(400).json({ error: "region must be an active region" });
+        }
+      }
+
+      // Enabling, rescheduling, advancing nextRunAt, changing the run cap, or
+      // repointing the target pool all affect how/where runs execute on the
+      // workflow OWNER's secrets, so they need owner rights (a system admin
+      // isn't exempt). Gate on an ACTUAL change, not mere presence — the Edit
+      // dialog resends cron/maxRuns even on a name-only edit, and
+      // disable/rename must stay open to the schedule's manager for cleanup.
       const wantsEnable = isEnabled === true && !schedule.isEnabled;
       const cronChanged = cronExpression !== undefined && cronExpression !== schedule.cronExpression;
       const capChanged = maxRuns !== undefined && (maxRuns ?? null) !== (schedule.maxRuns ?? null);
       const nextRunChanged = nextRunAt !== undefined; // an explicit override always advances the schedule
-      if (wantsEnable || cronChanged || capChanged || nextRunChanged) {
+      const regionChanged = region !== undefined && region !== schedule.region;
+      const tierChanged = targetTier !== undefined && targetTier !== schedule.targetTier;
+      if (wantsEnable || cronChanged || capChanged || nextRunChanged || regionChanged || tierChanged) {
         const wf = schedule.workflowId != null ? await storage.getWorkflow(schedule.workflowId) : undefined;
         if (!wf) {
           return res.status(409).json({ error: "This schedule's workflow was deleted, so it can't be resumed or rescheduled. Delete the schedule instead." });
         }
         if (!canScheduleWorkflow(user, wf)) {
           return res.status(403).json({ error: "Only the workflow owner can enable or reschedule this schedule" });
+        }
+        // Session-injection composition (spec §5, item 2 tightening): re-check
+        // against the EFFECTIVE tier this update would leave the schedule with.
+        if (tierChanged) {
+          const effectiveTier = targetTier as "private" | "team" | "public";
+          const wfConfig = (wf.config ?? {}) as Record<string, unknown>;
+          const setupInfo = parsePlatformSetup(wfConfig.stepsPrefix as string | undefined);
+          const scope = sessionScopeForWorkflow(wf);
+          const schedSessionReq = evaluateSessionRequirement(setupInfo, await getBrokeredSecretNames(scope));
+          if (schedSessionReq.kind === "need" && effectiveTier === "public") {
+            return res.status(403).json({ error: "Credential-injected workflows can only use your own or team agent pools" });
+          }
+          if (schedSessionReq.kind === "need" && effectiveTier === "team" &&
+              !(wf.organizationId != null && sameOrg({ organizationId: user.organizationId }, { organizationId: wf.organizationId }))) {
+            return res.status(403).json({ error: "Credential-injected workflows can only use a team pool when the workflow belongs to your organization" });
+          }
         }
       }
 
@@ -2266,6 +2311,8 @@ export async function registerRoutes(
       if (name !== undefined) updates.name = name;
       if (isEnabled !== undefined) updates.isEnabled = isEnabled;
       if (maxRuns !== undefined) updates.maxRuns = maxRuns;
+      if (region !== undefined) updates.region = region;
+      if (targetTier !== undefined) updates.targetTier = targetTier;
 
       // If enabling a disabled schedule, recalculate next run time
       if (isEnabled === true && !schedule.isEnabled) {
@@ -3439,7 +3486,11 @@ export async function registerRoutes(
       // measurement failure — no result row, so failed runs never enter metrics.
       // A run that completed but got no agent response is NOT a failure: it comes
       // through here with results (NA latencies + responseRate 0) and is stored.
-      if (results && !jobError) {
+      // A job with no siteId never got claimed by any agent (a pooled job's site
+      // is stamped at claim) — it ran nowhere, so it measured nothing. Skip the
+      // synthetic result row rather than writing the region baseId into the site
+      // dimension, which would poison per-site metrics.
+      if (results && !jobError && job.siteId != null) {
         // Attribute the result to the provider snapshotted on the job at creation —
         // not the live workflow, which may have been re-pointed since. Fall back to a
         // default provider only for legacy jobs with no snapshot.
@@ -3455,7 +3506,7 @@ export async function registerRoutes(
             await storage.createEvalResult({
               evalJobId: parseInt(jobId),
               providerId,
-              siteId: job.siteId ?? job.targetRegion ?? "unknown",
+              siteId: job.siteId,
               // Pass latencies through as-is: null = NA (agent didn't respond).
               // Do NOT coerce to 0 — a 0 ms "response" would rank a dead agent as
               // the fastest and poison latency averages. responseRate carries the
@@ -3551,7 +3602,9 @@ export async function registerRoutes(
       const existing = await storage.getEvalResultsByJob(jobId);
       if (existing.length === 0) {
         const job = await storage.getEvalJob(jobId);
-        if (job) {
+        // A never-claimed pooled job (siteId null) ran nowhere — skip the
+        // synthetic row rather than poisoning the site metrics dimension.
+        if (job && job.siteId != null) {
           // Attribute to the snapshotted provider (immutable), not the live workflow.
           const providers = await storage.getAllProviders();
           const providerId = job.snapshot?.provider?.id || providers[0]?.id;
@@ -3559,7 +3612,7 @@ export async function registerRoutes(
             await storage.createEvalResult({
               evalJobId: jobId,
               providerId,
-              siteId: job.siteId ?? job.targetRegion ?? "unknown",
+              siteId: job.siteId,
               responseLatencyMedian: 0,
               responseLatencySd: 0,
               responseLatencyP95: 0,
@@ -4050,6 +4103,16 @@ export async function registerRoutes(
         // above already limits WHO may dispatch a session workflow untargeted.)
         if (sessionNeed && targetTier === "public") {
           return res.status(403).json({ error: "Credential-injected workflows can only use your own or team agent pools" });
+        }
+        // A personal (non-org) session workflow dispatched into a team pool would
+        // let an org-mate's token claim the job, but the session serve gate only
+        // admits the workflow owner's/org's agents — a personal workflow has no
+        // org, so the claim would be a guaranteed-failure dispatch (claims, then
+        // 403s on the session). Require the workflow to actually belong to the
+        // dispatcher's org before allowing the team pool.
+        if (sessionNeed && targetTier === "team" &&
+            !(workflow.organizationId != null && sameOrg({ organizationId: user.organizationId }, { organizationId: workflow.organizationId }))) {
+          return res.status(403).json({ error: "Credential-injected workflows can only use a team pool when the workflow belongs to your organization" });
         }
         jobRegion = null; // pooled: site stamped at claim
       }
