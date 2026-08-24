@@ -74,6 +74,7 @@ import {
   sameOrg,
   isSessionServable,
   hasOrg,
+  sessionPoolViolation,
 } from "./permissions";
 
 // Schedule lifecycle: a schedule is created with a 90-day expiry and can be
@@ -2415,6 +2416,23 @@ export async function registerRoutes(
       // runtime-class secret. No cross-user dispatch-trust gates here: run-now
       // is canScheduleWorkflow-gated (owner/creator only).
       const jobConfig = mergeEvalConfig(workflow.config, evalSet?.config);
+      // Same TOCTOU as the scheduler tick: the schedule's targetTier was
+      // validated at write time, but the workflow's secrets are mutable — a
+      // later-added login-class secret makes a public/team pool invalid. Check
+      // with the PURE detector BEFORE stampOwnerSession (which pre-warms a
+      // broker mint) and reject interactively instead of minting + queueing an
+      // unclaimable job.
+      {
+        const wfConfig = (workflow.config ?? {}) as Record<string, unknown>;
+        const setupInfo = parsePlatformSetup(wfConfig.stepsPrefix as string | undefined);
+        const runNowSessionReq = evaluateSessionRequirement(setupInfo, await getBrokeredSecretNames(sessionScopeForWorkflow(workflow)));
+        if (runNowSessionReq.kind === "need") {
+          const violation = sessionPoolViolation(schedule.targetTier, workflow, user);
+          if (violation) {
+            return res.status(400).json({ error: `This schedule's pool is no longer valid: ${violation}. Edit the schedule's tier first.` });
+          }
+        }
+      }
       const stamp = await stampOwnerSession(workflow, jobConfig as Record<string, unknown>);
       if (stamp.kind === "misconfigured") {
         return res.status(400).json({ error: stamp.reason });
@@ -4256,11 +4274,10 @@ export async function registerRoutes(
       // dispatcher's org. Advertising a tier the run would 403 defeats the
       // never-offer-a-403 contract — and the dialogs auto-hop to the first
       // available tier, so a mis-advertised one would be auto-selected.
-      const sessionDispatchAllowed = !needsSession ||
-        workflow.ownerId === user.id ||
-        (workflow.organizationId != null && sameOrg({ organizationId: user.organizationId }, { organizationId: workflow.organizationId }));
-      const teamBlockedBySession = needsSession &&
-        !(workflow.organizationId != null && sameOrg({ organizationId: user.organizationId }, { organizationId: workflow.organizationId }));
+      const isTeamWorkflow = workflow.organizationId != null &&
+        sameOrg({ organizationId: user.organizationId }, { organizationId: workflow.organizationId });
+      const sessionDispatchAllowed = !needsSession || workflow.ownerId === user.id || isTeamWorkflow;
+      const teamBlockedBySession = needsSession && !isTeamWorkflow;
       const tiers = [
         sessionDispatchAllowed
           ? { tier: "private", available: true, onlineAgents: countFor("private") }

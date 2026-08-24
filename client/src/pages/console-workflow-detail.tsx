@@ -84,7 +84,7 @@ export default function ConsoleWorkflowDetail() {
     refetchInterval: 10000, // Auto-refresh every 10s to update running job status
   });
 
-  const { data: runTargets } = useQuery<RunTargetsResponse>({
+  const { data: runTargets, isFetching: runTargetsFetching } = useQuery<RunTargetsResponse>({
     queryKey: [`/api/workflows/${workflowId}/run-targets`, runRegion, runEvalSetId],
     queryFn: async () => (await apiRequest("GET",
       `/api/workflows/${workflowId}/run-targets?region=${encodeURIComponent(runRegion)}&evalSetId=${runEvalSetId}`)).json(),
@@ -112,13 +112,13 @@ export default function ConsoleWorkflowDetail() {
     }
   }, [runTargets, targetTier]);
 
-
   const pickerShared = (runTargets?.agents.shared ?? []).filter(
     (s) => !(runTargets?.agents.mine ?? []).some((m) => m.tokenId === s.tokenId)
   );
   // Pooled dispatch with every tier unavailable can only 403 — gate the submit.
   const noPoolAvailable = targetTokenId === "any" &&
-    (runTargets?.tiers ?? []).length > 0 && (runTargets?.tiers ?? []).every((t) => !t.available);
+    (runTargets?.tiers ?? []).some((t) => t.tier !== "shared") &&
+    (runTargets?.tiers ?? []).filter((t) => t.tier !== "shared").every((t) => !t.available);
 
   const selectedAgent = targetTokenId === "any" ? null :
     [...(runTargets?.agents.mine ?? []), ...pickerShared].find((a) => String(a.tokenId) === targetTokenId);
@@ -315,7 +315,7 @@ export default function ConsoleWorkflowDetail() {
             <DialogFooter>
               <Button
                 onClick={() => runWorkflowMutation.mutate()}
-                disabled={runWorkflowMutation.isPending || !runRegion || !runEvalSetId || noPoolAvailable || (showRuntimeWarning && !ackRuntime)}
+                disabled={runWorkflowMutation.isPending || !runRegion || !runEvalSetId || runTargetsFetching || noPoolAvailable || (showRuntimeWarning && !ackRuntime)}
               >
                 Run Evaluation
               </Button>

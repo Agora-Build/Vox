@@ -180,7 +180,7 @@ export default function SelfTest() {
     },
   });
 
-  const { data: runTargets } = useQuery<RunTargetsResponse>({
+  const { data: runTargets, isFetching: runTargetsFetching } = useQuery<RunTargetsResponse>({
     queryKey: [`/api/workflows/${selectedWorkflowId}/run-targets`, region, selectedEvalSetId],
     queryFn: async () => (await apiRequest("GET",
       `/api/workflows/${selectedWorkflowId}/run-targets?region=${encodeURIComponent(region)}&evalSetId=${selectedEvalSetId}`)).json(),
@@ -208,14 +208,14 @@ export default function SelfTest() {
     }
   }, [runTargets, targetTier]);
 
-
   const pickerShared = (runTargets?.agents.shared ?? []).filter(
     (s) => !(runTargets?.agents.mine ?? []).some((m) => m.tokenId === s.tokenId)
   );
   // Pooled dispatch with every tier unavailable (e.g. a non-owner on a
   // credential-injected public workflow) can only 403 — gate the submit.
   const noPoolAvailable = targetTokenId === "any" &&
-    (runTargets?.tiers ?? []).length > 0 && (runTargets?.tiers ?? []).every((t) => !t.available);
+    (runTargets?.tiers ?? []).some((t) => t.tier !== "shared") &&
+    (runTargets?.tiers ?? []).filter((t) => t.tier !== "shared").every((t) => !t.available);
 
   const selectedAgent = targetTokenId === "any" ? null :
     [...(runTargets?.agents.mine ?? []), ...pickerShared].find((a) => String(a.tokenId) === targetTokenId);
@@ -610,7 +610,7 @@ export default function SelfTest() {
                 className="w-full"
                 size="lg"
                 onClick={handleRunEval}
-                disabled={runEvalMutation.isPending || isJobRunning || !selectedWorkflowId || !selectedEvalSetId || !region || noPoolAvailable || (showRuntimeWarning && !ackRuntime)}
+                disabled={runEvalMutation.isPending || isJobRunning || !selectedWorkflowId || !selectedEvalSetId || !region || runTargetsFetching || noPoolAvailable || (showRuntimeWarning && !ackRuntime)}
               >
                 {runEvalMutation.isPending ? (
                   <><Loader2 className="mr-2 h-4 w-4 animate-spin" /> Starting...</>

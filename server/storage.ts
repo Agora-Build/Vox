@@ -1184,9 +1184,17 @@ export class DatabaseStorage {
       // Anchor the suffix to digits. The value is whitelist-validated against
       // region_locations baseIds ([a-z0-9-]) by the route, so it carries no
       // regex metacharacters.
+      // Sargable range narrows via the (status, site_id) b-tree first ('-' <
+      // site chars < ':'), then the regex enforces exactness on the narrowed
+      // set (a bare prefix match would also hit a longer dash-delimited baseId
+      // like na-us-seattle-north).
       conditions.push(
         or(
-          sql`${evalJobs.siteId} ~ ${"^" + filters.region + "-[0-9]+$"}`,
+          and(
+            gte(evalJobs.siteId, `${filters.region}-`),
+            lte(evalJobs.siteId, `${filters.region}-￿`),
+            sql`${evalJobs.siteId} ~ ${"^" + filters.region + "-[0-9]+$"}`,
+          ),
           and(isNull(evalJobs.siteId), eq(evalJobs.targetRegion, filters.region)),
         )!,
       );
