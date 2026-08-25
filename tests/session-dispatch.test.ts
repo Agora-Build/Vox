@@ -399,7 +399,7 @@ describe("dispatch integration — session stamping, pre-warm, shared-tier gates
       });
       expect(res.status).toBe(403);
       const body = await res.json();
-      expect(body.error).toBe("Credential-injected workflows can only use your own or team agent pools");
+      expect(body.error).toBe("Credential-injected workflows: credential-injected jobs cannot use the public pool");
     });
 
     it("7e. owner team-pool dispatch of a session-injected PERSONAL (non-org) workflow -> 403", async () => {
@@ -458,7 +458,7 @@ describe("dispatch integration — session stamping, pre-warm, shared-tier gates
       });
       expect(res.status).toBe(403);
       const body = await res.json();
-      expect(body.error).toBe("Credential-injected workflows can only use a team pool when the workflow belongs to your organization");
+      expect(body.error).toBe("Credential-injected workflows: credential-injected jobs can use a team pool only when the workflow belongs to the creator's organization");
 
       await authFetch(orgOwner, `${BASE_URL}/api/workflows/${personalWfId}`, { method: "DELETE" });
       for (const name of [oEmail, oPass]) {

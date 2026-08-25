@@ -1163,7 +1163,7 @@ export class DatabaseStorage {
   // Get all jobs with optional filters
   async getEvalJobs(filters?: {
     status?: "pending" | "running" | "completed" | "failed";
-    siteId?: string;
+    region?: string;
     workflowId?: number;
     agentId?: number;
     ownerId?: number;
@@ -1175,8 +1175,27 @@ export class DatabaseStorage {
     if (filters?.status) {
       conditions.push(eq(evalJobs.status, filters.status));
     }
-    if (filters?.siteId) {
-      conditions.push(eq(evalJobs.siteId, filters.siteId));
+    if (filters?.region) {
+      // A claimed job carries a concrete site under the region (base-NN); a
+      // pending pooled job carries only targetRegion. Match both so pending
+      // pooled rows don't vanish under the filter.
+      // Sites are strictly <base>-NN; a bare LIKE 'base-%' would also match a
+      // longer dash-delimited baseId (na-us-seattle vs na-us-seattle-north).
+      // Anchor the suffix to digits. The value is whitelist-validated against
+      // region_locations baseIds ([a-z0-9-]) by the route, so it carries no
+      // regex metacharacters.
+      // Regex only — NO sort-order range bounds: sentinel tricks like
+      // `<= 'base-\uFFFF'` are collation-dependent (glibc locales sort U+FFFF
+      // before digits, silently dropping every claimed row; alpine's C
+      // collation masks it locally). The regex is exact under all collations —
+      // migration 0023 guarantees every site_id is <base>-NN — and also guards
+      // the prefix-colliding-baseId case (na-us-seattle vs na-us-seattle-north).
+      conditions.push(
+        or(
+          sql`${evalJobs.siteId} ~ ${"^" + filters.region + "-[0-9]+$"}`,
+          and(isNull(evalJobs.siteId), eq(evalJobs.targetRegion, filters.region)),
+        )!,
+      );
     }
     if (filters?.hoursBack) {
       const cutoff = new Date(Date.now() - filters.hoursBack * 60 * 60 * 1000);

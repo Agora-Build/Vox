@@ -13,7 +13,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { ArrowLeft, Play, Settings, History, Clock, CheckCircle, XCircle, Loader2, RefreshCw } from "lucide-react";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import type { Workflow as WorkflowType, Provider, EvalJob, EvalSet } from "@shared/schema";
 import { formatSmartTimestamp, formatSite, formatRegion, toYaml } from "@/lib/utils";
 import { useRegionLocationOptions } from "@/hooks/use-regions";
@@ -84,7 +84,7 @@ export default function ConsoleWorkflowDetail() {
     refetchInterval: 10000, // Auto-refresh every 10s to update running job status
   });
 
-  const { data: runTargets } = useQuery<RunTargetsResponse>({
+  const { data: runTargets, isFetching: runTargetsFetching } = useQuery<RunTargetsResponse>({
     queryKey: [`/api/workflows/${workflowId}/run-targets`, runRegion, runEvalSetId],
     queryFn: async () => (await apiRequest("GET",
       `/api/workflows/${workflowId}/run-targets?region=${encodeURIComponent(runRegion)}&evalSetId=${runEvalSetId}`)).json(),
@@ -100,9 +100,26 @@ export default function ConsoleWorkflowDetail() {
     { tier: "public", available: true },
   ];
 
+  // When live tier data arrives and the currently-selected tier is
+  // unavailable (e.g. "public" on a credential-injected workflow), hop to the
+  // first available tier so the default action never 403s.
+  useEffect(() => {
+    if (!runTargets?.tiers) return;
+    const current = runTargets.tiers.find((t) => t.tier === targetTier);
+    if (current && !current.available) {
+      const firstAvailable = runTargets.tiers.find((t) => t.tier !== "shared" && t.available);
+      if (firstAvailable) setTargetTier(firstAvailable.tier);
+    }
+  }, [runTargets, targetTier]);
+
   const pickerShared = (runTargets?.agents.shared ?? []).filter(
     (s) => !(runTargets?.agents.mine ?? []).some((m) => m.tokenId === s.tokenId)
   );
+  // Pooled dispatch with every tier unavailable can only 403 — gate the submit.
+  const noPoolAvailable = targetTokenId === "any" &&
+    (runTargets?.tiers ?? []).some((t) => t.tier !== "shared") &&
+    (runTargets?.tiers ?? []).filter((t) => t.tier !== "shared").every((t) => !t.available);
+
   const selectedAgent = targetTokenId === "any" ? null :
     [...(runTargets?.agents.mine ?? []), ...pickerShared].find((a) => String(a.tokenId) === targetTokenId);
   const runtimeExposed = (runTargets?.referencedSecrets ?? [])
@@ -225,7 +242,7 @@ export default function ConsoleWorkflowDetail() {
                     {tierOptions.filter((t) => t.tier !== "shared").map((t) => (
                       <SelectItem key={t.tier} value={t.tier} disabled={!t.available}>
                         {t.tier === "public" ? "Any public agent" : t.tier === "private" ? "My agents" : "Team agents"}
-                        {t.available ? (typeof t.onlineAgents === "number" ? ` (${t.onlineAgents} online)` : "") : t.reason === "no-org" ? " — join an organization" : ""}
+                        {t.available ? (typeof t.onlineAgents === "number" ? ` (${t.onlineAgents} online)` : "") : t.reason === "no-org" ? " — join an organization" : t.reason === "session-injected" ? " — not allowed for credential-injected workflows" : ""}
                       </SelectItem>
                     ))}
                   </SelectContent>
@@ -298,7 +315,7 @@ export default function ConsoleWorkflowDetail() {
             <DialogFooter>
               <Button
                 onClick={() => runWorkflowMutation.mutate()}
-                disabled={runWorkflowMutation.isPending || !runRegion || !runEvalSetId || (showRuntimeWarning && !ackRuntime)}
+                disabled={runWorkflowMutation.isPending || !runRegion || !runEvalSetId || runTargetsFetching || noPoolAvailable || (showRuntimeWarning && !ackRuntime)}
               >
                 Run Evaluation
               </Button>

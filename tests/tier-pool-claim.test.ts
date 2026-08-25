@@ -126,3 +126,29 @@ d("pooled claim SQL mirrors isClaimable", () => {
     expect((await storage.getClaimableJobsForToken(privArg)).map(j => j.id)).not.toContain(privJob.id);
   });
 });
+
+d("getEvalJobs region filter", () => {
+  it("matches exact-region sites and pending pooled rows, NOT prefix-colliding baseIds", async () => {
+    // Storage-level rows bypass catalog validation, so a prefix-colliding
+    // sibling baseId (na-us-ashburn vs na-us-ashburn-west) can be simulated
+    // directly. A bare LIKE 'base-%' would wrongly match the sibling's site.
+    const mk = (siteId: string | null, targetRegion: string | null) =>
+      storage.createEvalJob({
+        workflowId: null, triggerType: 2, evalSetId: null, createdBy: 1,
+        siteId, targetRegion, targetTier: targetRegion ? "public" : null,
+        config: {}, snapshot: { provider: null, workflow: null, evalSet: null, creatorPlan: null } as any,
+        status: "pending", priority: 0, retryCount: 0, maxRetries: 3,
+      } as any);
+    const claimed = await mk("na-us-ashburn-01", null);
+    const pooled = await mk(null, "na-us-ashburn");
+    const collider = await mk("na-us-ashburn-west-01", null);
+    const otherPool = await mk(null, "na-us-ashburn-west");
+
+    const rows = await storage.getEvalJobs({ region: "na-us-ashburn", limit: 1000 });
+    const ids = rows.map((r) => r.id);
+    expect(ids).toContain(claimed.id);
+    expect(ids).toContain(pooled.id);
+    expect(ids).not.toContain(collider.id);   // prefix collision guarded
+    expect(ids).not.toContain(otherPool.id);
+  });
+});

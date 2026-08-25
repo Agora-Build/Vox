@@ -287,7 +287,20 @@ components:
           example: 1
         siteId:
           type: string
+          nullable: true
+          description: Concrete site that ran (or will run) the job. Null while a pooled job is pending; stamped by the claiming agent.
           example: "na-us-seattle-02"
+        targetRegion:
+          type: string
+          nullable: true
+          description: Region baseId of the pool this job targets (null for targeted or legacy jobs).
+          example: "na-us-seattle"
+        targetTier:
+          type: string
+          nullable: true
+          enum: [private, team, public, shared]
+          description: Agent tier of the pool this job targets (null for targeted or legacy jobs; "shared" is reserved).
+          example: "public"
         status:
           type: string
           enum: [pending, running, completed, failed]

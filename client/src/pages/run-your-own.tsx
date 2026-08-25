@@ -180,7 +180,7 @@ export default function SelfTest() {
     },
   });
 
-  const { data: runTargets } = useQuery<RunTargetsResponse>({
+  const { data: runTargets, isFetching: runTargetsFetching } = useQuery<RunTargetsResponse>({
     queryKey: [`/api/workflows/${selectedWorkflowId}/run-targets`, region, selectedEvalSetId],
     queryFn: async () => (await apiRequest("GET",
       `/api/workflows/${selectedWorkflowId}/run-targets?region=${encodeURIComponent(region)}&evalSetId=${selectedEvalSetId}`)).json(),
@@ -196,9 +196,27 @@ export default function SelfTest() {
     { tier: "public", available: true },
   ];
 
+  // When live tier data arrives and the currently-selected tier is
+  // unavailable (e.g. "public" on a credential-injected workflow), hop to the
+  // first available tier so the default action never 403s.
+  useEffect(() => {
+    if (!runTargets?.tiers) return;
+    const current = runTargets.tiers.find((t) => t.tier === targetTier);
+    if (current && !current.available) {
+      const firstAvailable = runTargets.tiers.find((t) => t.tier !== "shared" && t.available);
+      if (firstAvailable) setTargetTier(firstAvailable.tier);
+    }
+  }, [runTargets, targetTier]);
+
   const pickerShared = (runTargets?.agents.shared ?? []).filter(
     (s) => !(runTargets?.agents.mine ?? []).some((m) => m.tokenId === s.tokenId)
   );
+  // Pooled dispatch with every tier unavailable (e.g. a non-owner on a
+  // credential-injected public workflow) can only 403 — gate the submit.
+  const noPoolAvailable = targetTokenId === "any" &&
+    (runTargets?.tiers ?? []).some((t) => t.tier !== "shared") &&
+    (runTargets?.tiers ?? []).filter((t) => t.tier !== "shared").every((t) => !t.available);
+
   const selectedAgent = targetTokenId === "any" ? null :
     [...(runTargets?.agents.mine ?? []), ...pickerShared].find((a) => String(a.tokenId) === targetTokenId);
   const runtimeExposed = (runTargets?.referencedSecrets ?? [])
@@ -530,7 +548,7 @@ export default function SelfTest() {
                       {tierOptions.filter((t) => t.tier !== "shared").map((t) => (
                         <SelectItem key={t.tier} value={t.tier} disabled={!t.available}>
                           {t.tier === "public" ? "Any public agent" : t.tier === "private" ? "My agents" : "Team agents"}
-                          {t.available ? (typeof t.onlineAgents === "number" ? ` (${t.onlineAgents} online)` : "") : t.reason === "no-org" ? " — join an organization" : ""}
+                          {t.available ? (typeof t.onlineAgents === "number" ? ` (${t.onlineAgents} online)` : "") : t.reason === "no-org" ? " — join an organization" : t.reason === "session-injected" ? " — not allowed for credential-injected workflows" : ""}
                         </SelectItem>
                       ))}
                     </SelectContent>
@@ -592,7 +610,7 @@ export default function SelfTest() {
                 className="w-full"
                 size="lg"
                 onClick={handleRunEval}
-                disabled={runEvalMutation.isPending || isJobRunning || !selectedWorkflowId || !selectedEvalSetId || !region || (showRuntimeWarning && !ackRuntime)}
+                disabled={runEvalMutation.isPending || isJobRunning || !selectedWorkflowId || !selectedEvalSetId || !region || runTargetsFetching || noPoolAvailable || (showRuntimeWarning && !ackRuntime)}
               >
                 {runEvalMutation.isPending ? (
                   <><Loader2 className="mr-2 h-4 w-4 animate-spin" /> Starting...</>

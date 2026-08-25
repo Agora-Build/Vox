@@ -17,7 +17,7 @@ import { useState } from "react";
 import { useToast } from "@/hooks/use-toast";
 import { useLocation, useSearch, Link } from "wouter";
 import { formatSmartTimestamp, formatSite, formatRegion } from "@/lib/utils";
-import { useSiteOptions } from "@/hooks/use-regions";
+import { useRegionLocationOptions } from "@/hooks/use-regions";
 import { format } from "date-fns";
 import type { EvalJob, EvalSchedule, Workflow as WorkflowType } from "@shared/schema";
 
@@ -55,10 +55,10 @@ const TIME_RANGES = [
 
 const PAGE_SIZE = 50;
 
-function buildJobsUrl(filters: { status: string; siteId: string; workflowId: string; hours: string; limit: number; offset: number }) {
+function buildJobsUrl(filters: { status: string; region: string; workflowId: string; hours: string; limit: number; offset: number }) {
   const params = new URLSearchParams();
   if (filters.status !== "all") params.set("status", filters.status);
-  if (filters.siteId !== "all") params.set("siteId", filters.siteId);
+  if (filters.region !== "all") params.set("region", filters.region);
   if (filters.workflowId !== "all") params.set("workflowId", filters.workflowId);
   params.set("hours", filters.hours);
   params.set("limit", String(filters.limit));
@@ -417,7 +417,7 @@ function ScheduledJobsBlock() {
 }
 
 function JobsTab() {
-  const { options: regionOptions } = useSiteOptions();
+  const { options: regionOptions } = useRegionLocationOptions();
   const [statusFilter, setStatusFilter] = useState("all");
   const [regionFilter, setRegionFilter] = useState("all");
   const [workflowFilter, setWorkflowFilter] = useState("all");
@@ -425,7 +425,7 @@ function JobsTab() {
   const [page, setPage] = useState(1);
 
   const offset = (page - 1) * PAGE_SIZE;
-  const url = buildJobsUrl({ status: statusFilter, siteId: regionFilter, workflowId: workflowFilter, hours: timeFilter, limit: PAGE_SIZE, offset });
+  const url = buildJobsUrl({ status: statusFilter, region: regionFilter, workflowId: workflowFilter, hours: timeFilter, limit: PAGE_SIZE, offset });
 
   const { data, isLoading } = useQuery<{ data: EnrichedEvalJob[]; total: number }>({
     queryKey: [url],

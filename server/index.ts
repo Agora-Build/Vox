@@ -8,12 +8,12 @@ import connectPgSimple from "connect-pg-simple";
 import rateLimit from "express-rate-limit";
 import { authenticateApiKey, passport, initializeGoogleOAuth } from "./auth";
 import { storage, mergeEvalConfig, buildJobSnapshot, pool } from "./storage";
-import { canScheduleWorkflow } from "./permissions";
+import { canScheduleWorkflow, sessionPoolViolation } from "./permissions";
 import { parseNextCronRun } from "./cron";
 import { setupClashWebSocket } from "./clash-ws";
 import { loadPlugins } from "./plugins/loader";
 import { setMarketplace, getMarketplace, type EvalMarketplace } from "./marketplace";
-import { stampOwnerSession } from "./auth-session";
+import { stampOwnerSession, parsePlatformSetup, sessionScopeForWorkflow, evaluateSessionRequirement, getBrokeredSecretNames } from "./auth-session";
 import pkg from "pg";
 const { Pool } = pkg;
 
@@ -411,6 +411,27 @@ function startBackgroundWorker() {
           // can never run safely (it would leak the runtime-class secret) — disable
           // the schedule so it stops firing failing/unsafe jobs every tick.
           const jobConfig = mergeEvalConfig(workflow.config, evalSet?.config);
+          // The workflow's secrets are mutable after schedule creation: a
+          // public/team schedule whose workflow LATER gained a login-class
+          // secret would emit an unclaimable session job every tick (the claim
+          // predicate refuses them, and pooled rows ride the 24h backstop).
+          // Check with the PURE detector BEFORE stampOwnerSession — the stamp
+          // helper mutates config and pre-warms a broker mint (ensureSession),
+          // and a schedule we are about to disable must not burn a login
+          // attempt first.
+          {
+            const wfConfig = (workflow.config ?? {}) as Record<string, unknown>;
+            const setupInfo = parsePlatformSetup(wfConfig.stepsPrefix as string | undefined);
+            const schedSessionReq = evaluateSessionRequirement(setupInfo, await getBrokeredSecretNames(sessionScopeForWorkflow(workflow)));
+            if (schedSessionReq.kind === "need") {
+              const violation = sessionPoolViolation(schedule.targetTier, workflow, creator);
+              if (violation) {
+                log(`Schedule "${schedule.name}" would dispatch into a disallowed pool (${violation}) — disabling`, "scheduler");
+                await storage.updateEvalSchedule(schedule.id, { isEnabled: false });
+                continue;
+              }
+            }
+          }
           const stamp = await stampOwnerSession(workflow, jobConfig as Record<string, unknown>);
           if (stamp.kind === "misconfigured") {
             log(`Schedule "${schedule.name}" workflow has a split-class credential pair (${stamp.reason}) — disabling`, "scheduler");

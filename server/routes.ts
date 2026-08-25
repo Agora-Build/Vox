@@ -74,6 +74,7 @@ import {
   sameOrg,
   isSessionServable,
   hasOrg,
+  sessionPoolViolation,
 } from "./permissions";
 
 // Schedule lifecycle: a schedule is created with a 90-day expiry and can be
@@ -2135,8 +2136,8 @@ export async function registerRoutes(
       if (targetTier === "team" && !hasOrg(user)) {
         return res.status(400).json({ error: "Join an organization to use team agents" });
       }
-      const regionLoc = (await storage.getAllRegionLocations()).find((l) => l.baseId === region && l.isActive);
-      if (!regionLoc) {
+      const regionLoc = await storage.getRegionLocationByBaseId(region);
+      if (!regionLoc || !regionLoc.isActive) {
         return res.status(400).json({ error: "region must be an active region" });
       }
 
@@ -2262,8 +2263,8 @@ export async function registerRoutes(
         }
       }
       if (region !== undefined) {
-        const regionLoc = (await storage.getAllRegionLocations()).find((l) => l.baseId === region && l.isActive);
-        if (!regionLoc) {
+        const regionLoc = await storage.getRegionLocationByBaseId(region);
+        if (!regionLoc || !regionLoc.isActive) {
           return res.status(400).json({ error: "region must be an active region" });
         }
       }
@@ -2415,6 +2416,23 @@ export async function registerRoutes(
       // runtime-class secret. No cross-user dispatch-trust gates here: run-now
       // is canScheduleWorkflow-gated (owner/creator only).
       const jobConfig = mergeEvalConfig(workflow.config, evalSet?.config);
+      // Same TOCTOU as the scheduler tick: the schedule's targetTier was
+      // validated at write time, but the workflow's secrets are mutable — a
+      // later-added login-class secret makes a public/team pool invalid. Check
+      // with the PURE detector BEFORE stampOwnerSession (which pre-warms a
+      // broker mint) and reject interactively instead of minting + queueing an
+      // unclaimable job.
+      {
+        const wfConfig = (workflow.config ?? {}) as Record<string, unknown>;
+        const setupInfo = parsePlatformSetup(wfConfig.stepsPrefix as string | undefined);
+        const runNowSessionReq = evaluateSessionRequirement(setupInfo, await getBrokeredSecretNames(sessionScopeForWorkflow(workflow)));
+        if (runNowSessionReq.kind === "need") {
+          const violation = sessionPoolViolation(schedule.targetTier, workflow, user);
+          if (violation) {
+            return res.status(400).json({ error: `This schedule's pool is no longer valid: ${violation}. Edit the schedule's tier first.` });
+          }
+        }
+      }
       const stamp = await stampOwnerSession(workflow, jobConfig as Record<string, unknown>);
       if (stamp.kind === "misconfigured") {
         return res.status(400).json({ error: stamp.reason });
@@ -4093,26 +4111,21 @@ export async function registerRoutes(
         if (targetTier === "team" && !hasOrg(user)) {
           return res.status(400).json({ error: "Join an organization to use team agents" });
         }
-        const regionLoc = (await storage.getAllRegionLocations()).find((l) => l.baseId === region && l.isActive);
-        if (!regionLoc) {
+        const regionLoc = await storage.getRegionLocationByBaseId(region);
+        if (!regionLoc || !regionLoc.isActive) {
           return res.status(400).json({ error: "region must be an active region" });
         }
-        // Session-injection composition (spec §5): the serve gate admits owner +
-        // team agents only, so a public-pool claim would take the job and then be
-        // refused the session. Reject up front. (The existing owner-or-org guard
-        // above already limits WHO may dispatch a session workflow untargeted.)
-        if (sessionNeed && targetTier === "public") {
-          return res.status(403).json({ error: "Credential-injected workflows can only use your own or team agent pools" });
-        }
-        // A personal (non-org) session workflow dispatched into a team pool would
-        // let an org-mate's token claim the job, but the session serve gate only
-        // admits the workflow owner's/org's agents — a personal workflow has no
-        // org, so the claim would be a guaranteed-failure dispatch (claims, then
-        // 403s on the session). Require the workflow to actually belong to the
-        // dispatcher's org before allowing the team pool.
-        if (sessionNeed && targetTier === "team" &&
-            !(workflow.organizationId != null && sameOrg({ organizationId: user.organizationId }, { organizationId: workflow.organizationId }))) {
-          return res.status(403).json({ error: "Credential-injected workflows can only use a team pool when the workflow belongs to your organization" });
+        // Session-injection composition (spec §5): single source of truth is
+        // sessionPoolViolation — public pools can never serve a session job
+        // (the serve gate refuses strangers post-claim), and a team pool needs
+        // the workflow to belong to the dispatcher's org. (The owner-or-org
+        // guard above separately limits WHO may dispatch a session workflow
+        // untargeted; the helper deliberately does not encode that.)
+        if (sessionNeed) {
+          const violation = sessionPoolViolation(targetTier as "private" | "team" | "public" | "shared", workflow, user);
+          if (violation) {
+            return res.status(403).json({ error: `Credential-injected workflows: ${violation}` });
+          }
         }
         jobRegion = null; // pooled: site stamped at claim
       }
@@ -4249,11 +4262,26 @@ export async function registerRoutes(
               && sameOrg({ organizationId: user.organizationId }, { organizationId: a.tokenOwnerOrgId });
           return a.tokenDispatchTier === "public";
         }).length;
+      // Availability must mirror the run route exactly: its untargeted branch
+      // gates ALL pooled tiers on owner-or-org for session-injected workflows
+      // (a non-owner running a public login workflow gets 403 on every pool),
+      // and the team pool additionally requires the workflow to belong to the
+      // dispatcher's org. Advertising a tier the run would 403 defeats the
+      // never-offer-a-403 contract — and the dialogs auto-hop to the first
+      // available tier, so a mis-advertised one would be auto-selected.
+      const isTeamWorkflow = workflow.organizationId != null &&
+        sameOrg({ organizationId: user.organizationId }, { organizationId: workflow.organizationId });
+      const sessionDispatchAllowed = !needsSession || workflow.ownerId === user.id || isTeamWorkflow;
+      const teamBlockedBySession = needsSession && !isTeamWorkflow;
       const tiers = [
-        { tier: "private", available: true, onlineAgents: countFor("private") },
-        hasOrg(user)
-          ? { tier: "team", available: true, onlineAgents: countFor("team") }
-          : { tier: "team", available: false, reason: "no-org" },
+        sessionDispatchAllowed
+          ? { tier: "private", available: true, onlineAgents: countFor("private") }
+          : { tier: "private", available: false, reason: "session-injected" },
+        !hasOrg(user)
+          ? { tier: "team", available: false, reason: "no-org" }
+          : teamBlockedBySession
+            ? { tier: "team", available: false, reason: "session-injected" }
+            : { tier: "team", available: true, onlineAgents: countFor("team") },
         needsSession
           ? { tier: "public", available: false, reason: "session-injected" }
           : { tier: "public", available: true, onlineAgents: countFor("public") },
@@ -4277,14 +4305,17 @@ export async function registerRoutes(
         return res.status(401).json({ error: "Not authenticated" });
       }
 
-      const { status, siteId, workflowId, limit, offset, hours } = req.query;
+      const { status, region, workflowId, limit, offset, hours } = req.query;
+      if (req.query.siteId !== undefined) {
+        return res.status(400).json({ error: "The siteId filter was replaced by region (a region base ID, e.g. na-us-seattle)" });
+      }
 
       const pageLimit = Math.min(Math.max(parseInt(limit as string) || 50, 1), 200);
       const pageOffset = Math.max(parseInt(offset as string) || 0, 0);
 
       const filters: {
         status?: "pending" | "running" | "completed" | "failed";
-        siteId?: string;
+        region?: string;
         workflowId?: number;
         hoursBack?: number;
       } = {};
@@ -4292,12 +4323,13 @@ export async function registerRoutes(
       if (status && ["pending", "running", "completed", "failed"].includes(status as string)) {
         filters.status = status as "pending" | "running" | "completed" | "failed";
       }
-      if (siteId) {
-        const normalizedSiteId = String(siteId);
-        if (!(await storage.isAllocatedSite(normalizedSiteId, false))) {
-          return res.status(400).json({ error: "Invalid site ID" });
+      if (region) {
+        const normalizedRegion = String(region);
+        const loc = await storage.getRegionLocationByBaseId(normalizedRegion);
+        if (!loc) {
+          return res.status(400).json({ error: "Invalid region" });
         }
-        filters.siteId = normalizedSiteId;
+        filters.region = normalizedRegion;
       }
       if (workflowId) {
         const parsed = parseInt(workflowId as string, 10);

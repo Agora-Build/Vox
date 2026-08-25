@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { sameOrg, canDispatchToToken, isClaimable, isSessionServable } from "../server/permissions";
+import { sameOrg, canDispatchToToken, isClaimable, isSessionServable, sessionPoolViolation } from "../server/permissions";
 
 describe("sameOrg", () => {
   it("true when both share a non-null org", () => {
@@ -157,5 +157,23 @@ describe("isSessionServable (owner + team + attested-shared)", () => {
     const noConsent = { targetTokenId: 100, workflowOwnerId: 7, workflowOrgId: null, consent: false };
     const token = { id: 100, createdBy: 3 };
     expect(isSessionServable(noConsent, token, { organizationId: null })).toBe(false);
+  });
+});
+
+describe("sessionPoolViolation — scheduler tier-composition gate", () => {
+  it("public pool is always a violation for session-injected dispatch", () => {
+    expect(sessionPoolViolation("public", { organizationId: 5 }, { organizationId: 5 })).toMatch(/public pool/);
+  });
+  it("team pool allowed only when the workflow belongs to the creator's org", () => {
+    expect(sessionPoolViolation("team", { organizationId: 5 }, { organizationId: 5 })).toBeNull();
+    expect(sessionPoolViolation("team", { organizationId: 5 }, { organizationId: 6 })).toMatch(/organization/);
+    expect(sessionPoolViolation("team", { organizationId: null }, { organizationId: 5 })).toMatch(/organization/);
+    expect(sessionPoolViolation("team", { organizationId: 5 }, undefined)).toMatch(/organization/);
+  });
+  it("private pool is never a violation", () => {
+    expect(sessionPoolViolation("private", { organizationId: null }, undefined)).toBeNull();
+  });
+  it("reserved/unknown tiers fail CLOSED (allowlist shape)", () => {
+    expect(sessionPoolViolation("shared", { organizationId: 5 }, { organizationId: 5 })).toMatch(/shared pool/);
   });
 });

@@ -95,6 +95,36 @@ export function hasOrg(user: { organizationId: number | null }): boolean {
   return user.organizationId != null;
 }
 
+/**
+ * Pool-tier composition gate for session-injected dispatch (spec §5): a
+ * session-injected job may only enter the dispatcher's own pool, or a team
+ * pool when the workflow belongs to that same org. The routes enforce this at
+ * write time, but the workflow's secrets/config are MUTABLE afterward — a
+ * public-tier schedule whose workflow later gains a login-class secret would
+ * emit an unclaimable session job every tick. The scheduler re-checks through
+ * here each tick and disables violating schedules. Returns null when allowed,
+ * else a human-readable reason.
+ */
+// SCOPE: encodes only the pool-composition arm; the dispatcher owner-or-org
+// gate for session workflows is separate (see the run route).
+export function sessionPoolViolation(
+  targetTier: "private" | "team" | "public" | "shared",
+  workflow: { organizationId: number | null },
+  creator: { organizationId: number | null } | undefined,
+): string | null {
+  // Allowlist shape: only tiers we affirmatively trust return null, so a
+  // future enum member (or the reserved 'shared') fails CLOSED here.
+  if (targetTier === "private") return null;
+  if (targetTier === "team") {
+    if (workflow.organizationId != null &&
+        sameOrg({ organizationId: creator?.organizationId ?? null }, { organizationId: workflow.organizationId })) {
+      return null;
+    }
+    return "credential-injected jobs can use a team pool only when the workflow belongs to the creator's organization";
+  }
+  return `credential-injected jobs cannot use the ${targetTier} pool`;
+}
+
 /** Free-tier dispatch authz. `shared` is NOT decided here — the marketplace seam handles it. */
 export function canDispatchToToken(
   user: { id: number; organizationId: number | null },
