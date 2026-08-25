@@ -2136,8 +2136,8 @@ export async function registerRoutes(
       if (targetTier === "team" && !hasOrg(user)) {
         return res.status(400).json({ error: "Join an organization to use team agents" });
       }
-      const regionLoc = (await storage.getAllRegionLocations()).find((l) => l.baseId === region && l.isActive);
-      if (!regionLoc) {
+      const regionLoc = await storage.getRegionLocationByBaseId(region);
+      if (!regionLoc || !regionLoc.isActive) {
         return res.status(400).json({ error: "region must be an active region" });
       }
 
@@ -2263,8 +2263,8 @@ export async function registerRoutes(
         }
       }
       if (region !== undefined) {
-        const regionLoc = (await storage.getAllRegionLocations()).find((l) => l.baseId === region && l.isActive);
-        if (!regionLoc) {
+        const regionLoc = await storage.getRegionLocationByBaseId(region);
+        if (!regionLoc || !regionLoc.isActive) {
           return res.status(400).json({ error: "region must be an active region" });
         }
       }
@@ -4111,26 +4111,21 @@ export async function registerRoutes(
         if (targetTier === "team" && !hasOrg(user)) {
           return res.status(400).json({ error: "Join an organization to use team agents" });
         }
-        const regionLoc = (await storage.getAllRegionLocations()).find((l) => l.baseId === region && l.isActive);
-        if (!regionLoc) {
+        const regionLoc = await storage.getRegionLocationByBaseId(region);
+        if (!regionLoc || !regionLoc.isActive) {
           return res.status(400).json({ error: "region must be an active region" });
         }
-        // Session-injection composition (spec §5): the serve gate admits owner +
-        // team agents only, so a public-pool claim would take the job and then be
-        // refused the session. Reject up front. (The existing owner-or-org guard
-        // above already limits WHO may dispatch a session workflow untargeted.)
-        if (sessionNeed && targetTier === "public") {
-          return res.status(403).json({ error: "Credential-injected workflows can only use your own or team agent pools" });
-        }
-        // A personal (non-org) session workflow dispatched into a team pool would
-        // let an org-mate's token claim the job, but the session serve gate only
-        // admits the workflow owner's/org's agents — a personal workflow has no
-        // org, so the claim would be a guaranteed-failure dispatch (claims, then
-        // 403s on the session). Require the workflow to actually belong to the
-        // dispatcher's org before allowing the team pool.
-        if (sessionNeed && targetTier === "team" &&
-            !(workflow.organizationId != null && sameOrg({ organizationId: user.organizationId }, { organizationId: workflow.organizationId }))) {
-          return res.status(403).json({ error: "Credential-injected workflows can only use a team pool when the workflow belongs to your organization" });
+        // Session-injection composition (spec §5): single source of truth is
+        // sessionPoolViolation — public pools can never serve a session job
+        // (the serve gate refuses strangers post-claim), and a team pool needs
+        // the workflow to belong to the dispatcher's org. (The owner-or-org
+        // guard above separately limits WHO may dispatch a session workflow
+        // untargeted; the helper deliberately does not encode that.)
+        if (sessionNeed) {
+          const violation = sessionPoolViolation(targetTier as "private" | "team" | "public" | "shared", workflow, user);
+          if (violation) {
+            return res.status(403).json({ error: `Credential-injected workflows: ${violation}` });
+          }
         }
         jobRegion = null; // pooled: site stamped at claim
       }
@@ -4330,7 +4325,7 @@ export async function registerRoutes(
       }
       if (region) {
         const normalizedRegion = String(region);
-        const loc = (await storage.getAllRegionLocations()).find((l) => l.baseId === normalizedRegion);
+        const loc = await storage.getRegionLocationByBaseId(normalizedRegion);
         if (!loc) {
           return res.status(400).json({ error: "Invalid region" });
         }

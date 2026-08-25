@@ -1184,17 +1184,15 @@ export class DatabaseStorage {
       // Anchor the suffix to digits. The value is whitelist-validated against
       // region_locations baseIds ([a-z0-9-]) by the route, so it carries no
       // regex metacharacters.
-      // Sargable range narrows via the (status, site_id) b-tree first ('-' <
-      // site chars < ':'), then the regex enforces exactness on the narrowed
-      // set (a bare prefix match would also hit a longer dash-delimited baseId
-      // like na-us-seattle-north).
+      // Regex only — NO sort-order range bounds: sentinel tricks like
+      // `<= 'base-\uFFFF'` are collation-dependent (glibc locales sort U+FFFF
+      // before digits, silently dropping every claimed row; alpine's C
+      // collation masks it locally). The regex is exact under all collations —
+      // migration 0023 guarantees every site_id is <base>-NN — and also guards
+      // the prefix-colliding-baseId case (na-us-seattle vs na-us-seattle-north).
       conditions.push(
         or(
-          and(
-            gte(evalJobs.siteId, `${filters.region}-`),
-            lte(evalJobs.siteId, `${filters.region}-￿`),
-            sql`${evalJobs.siteId} ~ ${"^" + filters.region + "-[0-9]+$"}`,
-          ),
+          sql`${evalJobs.siteId} ~ ${"^" + filters.region + "-[0-9]+$"}`,
           and(isNull(evalJobs.siteId), eq(evalJobs.targetRegion, filters.region)),
         )!,
       );

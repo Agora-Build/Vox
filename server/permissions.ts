@@ -105,6 +105,8 @@ export function hasOrg(user: { organizationId: number | null }): boolean {
  * here each tick and disables violating schedules. Returns null when allowed,
  * else a human-readable reason.
  */
+// SCOPE: encodes only the pool-composition arm; the dispatcher owner-or-org
+// gate for session workflows is separate (see the run route).
 export function sessionPoolViolation(
   targetTier: "private" | "team" | "public" | "shared",
   workflow: { organizationId: number | null },
