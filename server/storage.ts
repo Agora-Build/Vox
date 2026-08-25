@@ -1190,10 +1190,15 @@ export class DatabaseStorage {
       // collation masks it locally). The regex is exact under all collations —
       // migration 0023 guarantees every site_id is <base>-NN — and also guards
       // the prefix-colliding-baseId case (na-us-seattle vs na-us-seattle-north).
+      // target_region is stamped on every pooled row and never cleared at
+      // claim, so the eq arm covers pooled rows (pending AND claimed) with an
+      // indexable predicate; the regex arm remains only for site-pinned rows
+      // (targeted + legacy), staying exact under all collations and immune to
+      // prefix-colliding baseIds (na-us-seattle vs na-us-seattle-north).
       conditions.push(
         or(
+          eq(evalJobs.targetRegion, filters.region),
           sql`${evalJobs.siteId} ~ ${"^" + filters.region + "-[0-9]+$"}`,
-          and(isNull(evalJobs.siteId), eq(evalJobs.targetRegion, filters.region)),
         )!,
       );
     }

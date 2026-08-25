@@ -204,9 +204,17 @@ export default function SelfTest() {
     const current = runTargets.tiers.find((t) => t.tier === targetTier);
     if (current && !current.available) {
       const firstAvailable = runTargets.tiers.find((t) => t.tier !== "shared" && t.available);
-      if (firstAvailable) setTargetTier(firstAvailable.tier);
+      if (firstAvailable) {
+        setTargetTier(firstAvailable.tier);
+        const label = (tier: string) =>
+          tier === "public" ? "Any public agent" : tier === "private" ? "My agents" : "Team agents";
+        toast({
+          title: "Run target adjusted",
+          description: `${label(current.tier)} isn't available for this workflow — switched to ${label(firstAvailable.tier)}.`,
+        });
+      }
     }
-  }, [runTargets, targetTier]);
+  }, [runTargets, targetTier, toast]);
 
   const pickerShared = (runTargets?.agents.shared ?? []).filter(
     (s) => !(runTargets?.agents.mine ?? []).some((m) => m.tokenId === s.tokenId)

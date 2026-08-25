@@ -220,14 +220,30 @@ export type OwnerSessionStampResult =
  * (the caller rejects/disables), or the immutable `snapshotInjection` to fold
  * into the job snapshot (null when no session is needed).
  */
-export async function stampOwnerSession(
+/**
+ * One-stop session-need detection for a workflow: parse the platform setup,
+ * resolve the owner scope, and evaluate against the scope's brokered secrets.
+ * PURE with respect to side effects (one read query, no config mutation, no
+ * mint pre-warm) — safe to call before deciding whether a dispatch may happen
+ * at all. Every caller that needs "does this workflow need a session?" derives
+ * it from HERE so the answer can't drift between routes.
+ */
+export async function detectSessionNeed(
   workflow: { ownerId: number; organizationId: number | null; config: unknown },
-  jobConfig: Record<string, unknown>,
-): Promise<OwnerSessionStampResult> {
+): Promise<SessionRequirement> {
   const wfConfig = (workflow.config ?? {}) as Record<string, unknown>;
   const setup = parsePlatformSetup(wfConfig.stepsPrefix as string | undefined);
   const scope = sessionScopeForWorkflow(workflow);
-  const req = evaluateSessionRequirement(setup, await getBrokeredSecretNames(scope));
+  return evaluateSessionRequirement(setup, await getBrokeredSecretNames(scope));
+}
+
+export async function stampOwnerSession(
+  workflow: { ownerId: number; organizationId: number | null; config: unknown },
+  jobConfig: Record<string, unknown>,
+  precomputedReq?: SessionRequirement,
+): Promise<OwnerSessionStampResult> {
+  const scope = sessionScopeForWorkflow(workflow);
+  const req = precomputedReq ?? await detectSessionNeed(workflow);
   if (req.kind === "misconfigured") return { kind: "misconfigured", reason: req.reason };
 
   delete jobConfig.sessionInjection; // server-stamped only — never trust a caller value

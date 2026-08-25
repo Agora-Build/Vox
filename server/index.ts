@@ -13,7 +13,7 @@ import { parseNextCronRun } from "./cron";
 import { setupClashWebSocket } from "./clash-ws";
 import { loadPlugins } from "./plugins/loader";
 import { setMarketplace, getMarketplace, type EvalMarketplace } from "./marketplace";
-import { stampOwnerSession, parsePlatformSetup, sessionScopeForWorkflow, evaluateSessionRequirement, getBrokeredSecretNames } from "./auth-session";
+import { stampOwnerSession, detectSessionNeed } from "./auth-session";
 import pkg from "pg";
 const { Pool } = pkg;
 
@@ -419,20 +419,16 @@ function startBackgroundWorker() {
           // helper mutates config and pre-warms a broker mint (ensureSession),
           // and a schedule we are about to disable must not burn a login
           // attempt first.
-          {
-            const wfConfig = (workflow.config ?? {}) as Record<string, unknown>;
-            const setupInfo = parsePlatformSetup(wfConfig.stepsPrefix as string | undefined);
-            const schedSessionReq = evaluateSessionRequirement(setupInfo, await getBrokeredSecretNames(sessionScopeForWorkflow(workflow)));
-            if (schedSessionReq.kind === "need") {
-              const violation = sessionPoolViolation(schedule.targetTier, workflow, creator);
-              if (violation) {
-                log(`Schedule "${schedule.name}" would dispatch into a disallowed pool (${violation}) — disabling`, "scheduler");
-                await storage.updateEvalSchedule(schedule.id, { isEnabled: false });
-                continue;
-              }
+          const schedSessionReq = await detectSessionNeed(workflow);
+          if (schedSessionReq.kind === "need") {
+            const violation = sessionPoolViolation(schedule.targetTier, workflow, creator);
+            if (violation) {
+              log(`Schedule "${schedule.name}" would dispatch into a disallowed pool (${violation}) — disabling`, "scheduler");
+              await storage.updateEvalSchedule(schedule.id, { isEnabled: false });
+              continue;
             }
           }
-          const stamp = await stampOwnerSession(workflow, jobConfig as Record<string, unknown>);
+          const stamp = await stampOwnerSession(workflow, jobConfig as Record<string, unknown>, schedSessionReq);
           if (stamp.kind === "misconfigured") {
             log(`Schedule "${schedule.name}" workflow has a split-class credential pair (${stamp.reason}) — disabling`, "scheduler");
             await storage.updateEvalSchedule(schedule.id, { isEnabled: false });
