@@ -2166,22 +2166,20 @@ export async function registerRoutes(
         return res.status(403).json({ error: "Access denied to eval set" });
       }
 
-      // Session-injection composition (spec §5): scheduled session workflows may
-      // only use private/team pools — same rule as the run route.
+      // Session-injection composition (spec §5): single source of truth is
+      // sessionPoolViolation — same rule the run route and the scheduler tick
+      // enforce. (canScheduleWorkflow above already guarantees creator ==
+      // owner, so the dispatcher gate the helper deliberately omits holds.)
       {
         const wfConfig = (workflow.config ?? {}) as Record<string, unknown>;
         const setupInfo = parsePlatformSetup(wfConfig.stepsPrefix as string | undefined);
         const scope = sessionScopeForWorkflow(workflow);
         const schedSessionReq = evaluateSessionRequirement(setupInfo, await getBrokeredSecretNames(scope));
-        if (schedSessionReq.kind === "need" && targetTier === "public") {
-          return res.status(403).json({ error: "Credential-injected workflows can only use your own or team agent pools" });
-        }
-        // See run route: a personal (non-org) session workflow scheduled into a
-        // team pool would let an org-mate's token claim it, then be refused the
-        // session — guaranteed-failure dispatch. Require org ownership.
-        if (schedSessionReq.kind === "need" && targetTier === "team" &&
-            !(workflow.organizationId != null && sameOrg({ organizationId: user.organizationId }, { organizationId: workflow.organizationId }))) {
-          return res.status(403).json({ error: "Credential-injected workflows can only use a team pool when the workflow belongs to your organization" });
+        if (schedSessionReq.kind === "need") {
+          const violation = sessionPoolViolation(targetTier as "private" | "team" | "public" | "shared", workflow, user);
+          if (violation) {
+            return res.status(403).json({ error: `Credential-injected workflows: ${violation}` });
+          }
         }
       }
 
@@ -2289,20 +2287,24 @@ export async function registerRoutes(
         if (!canScheduleWorkflow(user, wf)) {
           return res.status(403).json({ error: "Only the workflow owner can enable or reschedule this schedule" });
         }
-        // Session-injection composition (spec §5, item 2 tightening): re-check
-        // against the EFFECTIVE tier this update would leave the schedule with.
-        if (tierChanged) {
-          const effectiveTier = targetTier as "private" | "team" | "public";
+        // Session-injection composition (spec §5): re-check against the
+        // EFFECTIVE tier this update leaves the schedule with — on a tier
+        // change AND on re-enable. Without the re-enable arm, a schedule the
+        // scheduler auto-disabled for a pool violation could be re-enabled and
+        // silently disabled again next tick (a flap whose only signal is a
+        // server log); this returns the actionable 403 instead. Single source
+        // of truth: sessionPoolViolation.
+        if (tierChanged || wantsEnable) {
+          const effectiveTier = (targetTier ?? schedule.targetTier) as "private" | "team" | "public" | "shared";
           const wfConfig = (wf.config ?? {}) as Record<string, unknown>;
           const setupInfo = parsePlatformSetup(wfConfig.stepsPrefix as string | undefined);
           const scope = sessionScopeForWorkflow(wf);
           const schedSessionReq = evaluateSessionRequirement(setupInfo, await getBrokeredSecretNames(scope));
-          if (schedSessionReq.kind === "need" && effectiveTier === "public") {
-            return res.status(403).json({ error: "Credential-injected workflows can only use your own or team agent pools" });
-          }
-          if (schedSessionReq.kind === "need" && effectiveTier === "team" &&
-              !(wf.organizationId != null && sameOrg({ organizationId: user.organizationId }, { organizationId: wf.organizationId }))) {
-            return res.status(403).json({ error: "Credential-injected workflows can only use a team pool when the workflow belongs to your organization" });
+          if (schedSessionReq.kind === "need") {
+            const violation = sessionPoolViolation(effectiveTier, wf, user);
+            if (violation) {
+              return res.status(403).json({ error: `Credential-injected workflows: ${violation}. Change the schedule's tier before re-enabling.` });
+            }
           }
         }
       }
