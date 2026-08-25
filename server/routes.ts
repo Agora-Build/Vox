@@ -11,7 +11,7 @@ import { registerApiV1Routes } from "./routes-api-v1";
 import { generateSignedUrlForUser } from "./s3";
 import { validateTierChoice, resolveTargetedDispatch, filterDispatchableAgents } from "./dispatch";
 import { getMarketplace } from "./marketplace";
-import { parsePlatformSetup, sessionScopeForWorkflow, evaluateSessionRequirement, getBrokeredSecretNames, ensureSession, stampOwnerSession, credentialKeyFor, SESSION_FRESH_MARGIN_SECONDS, classifyReferencedSecrets, findBrokeredMisuse, defaultBrokerTypeForName, resolveBrokerType, type SessionNeed } from "./auth-session";
+import { parsePlatformSetup, sessionScopeForWorkflow, evaluateSessionRequirement, getBrokeredSecretNames, ensureSession, stampOwnerSession, credentialKeyFor, SESSION_FRESH_MARGIN_SECONDS, classifyReferencedSecrets, findBrokeredMisuse, defaultBrokerTypeForName, resolveBrokerType, type SessionNeed, detectSessionNeed } from "./auth-session";
 import { validateRegisterPayload, cacheBrokerMintSecret, hasBrokerMintSecret } from "./broker-registry";
 import { deriveApiKeyStatus } from "./api-key-status";
 import { isStaleOfflineAgent } from "./agent-liveness";
@@ -2171,10 +2171,7 @@ export async function registerRoutes(
       // enforce. (canScheduleWorkflow above already guarantees creator ==
       // owner, so the dispatcher gate the helper deliberately omits holds.)
       {
-        const wfConfig = (workflow.config ?? {}) as Record<string, unknown>;
-        const setupInfo = parsePlatformSetup(wfConfig.stepsPrefix as string | undefined);
-        const scope = sessionScopeForWorkflow(workflow);
-        const schedSessionReq = evaluateSessionRequirement(setupInfo, await getBrokeredSecretNames(scope));
+        const schedSessionReq = await detectSessionNeed(workflow);
         if (schedSessionReq.kind === "need") {
           const violation = sessionPoolViolation(targetTier as "private" | "team" | "public" | "shared", workflow, user);
           if (violation) {
@@ -2296,10 +2293,7 @@ export async function registerRoutes(
         // of truth: sessionPoolViolation.
         if (tierChanged || wantsEnable) {
           const effectiveTier = (targetTier ?? schedule.targetTier) as "private" | "team" | "public" | "shared";
-          const wfConfig = (wf.config ?? {}) as Record<string, unknown>;
-          const setupInfo = parsePlatformSetup(wfConfig.stepsPrefix as string | undefined);
-          const scope = sessionScopeForWorkflow(wf);
-          const schedSessionReq = evaluateSessionRequirement(setupInfo, await getBrokeredSecretNames(scope));
+          const schedSessionReq = await detectSessionNeed(wf);
           if (schedSessionReq.kind === "need") {
             const violation = sessionPoolViolation(effectiveTier, wf, user);
             if (violation) {
@@ -2424,18 +2418,14 @@ export async function registerRoutes(
       // with the PURE detector BEFORE stampOwnerSession (which pre-warms a
       // broker mint) and reject interactively instead of minting + queueing an
       // unclaimable job.
-      {
-        const wfConfig = (workflow.config ?? {}) as Record<string, unknown>;
-        const setupInfo = parsePlatformSetup(wfConfig.stepsPrefix as string | undefined);
-        const runNowSessionReq = evaluateSessionRequirement(setupInfo, await getBrokeredSecretNames(sessionScopeForWorkflow(workflow)));
-        if (runNowSessionReq.kind === "need") {
-          const violation = sessionPoolViolation(schedule.targetTier, workflow, user);
-          if (violation) {
-            return res.status(400).json({ error: `This schedule's pool is no longer valid: ${violation}. Edit the schedule's tier first.` });
-          }
+      const runNowSessionReq = await detectSessionNeed(workflow);
+      if (runNowSessionReq.kind === "need") {
+        const violation = sessionPoolViolation(schedule.targetTier, workflow, user);
+        if (violation) {
+          return res.status(400).json({ error: `This schedule's pool is no longer valid: ${violation}. Edit the schedule's tier first.` });
         }
       }
-      const stamp = await stampOwnerSession(workflow, jobConfig as Record<string, unknown>);
+      const stamp = await stampOwnerSession(workflow, jobConfig as Record<string, unknown>, runNowSessionReq);
       if (stamp.kind === "misconfigured") {
         return res.status(400).json({ error: stamp.reason });
       }
@@ -3988,10 +3978,8 @@ export async function registerRoutes(
       // its platform.setup references login-class secrets (owner opt-in). A
       // split-class pair (one login, one runtime) is rejected outright — never
       // fall back to a path that would leak the runtime-class credential.
-      const wfConfig = (workflow.config ?? {}) as Record<string, unknown>;
-      const setupInfo = parsePlatformSetup(wfConfig.stepsPrefix as string | undefined);
       const scope = sessionScopeForWorkflow(workflow);
-      const sessionReq = evaluateSessionRequirement(setupInfo, await getBrokeredSecretNames(scope));
+      const sessionReq = await detectSessionNeed(workflow);
       if (sessionReq.kind === "misconfigured") {
         return res.status(400).json({ error: sessionReq.reason });
       }
@@ -4222,7 +4210,18 @@ export async function registerRoutes(
 
       // My agents: own tokens, any tier, not revoked, region-filtered when given.
       const ownTokens = await storage.getEvalAgentTokensByUser(user.id);
-      const mine: Agent[] = ownTokens
+      // Session trust, computed ONCE from the same detector the run route
+      // enforces with. For a session-injected workflow, a dispatcher who is
+      // neither the owner nor a workflow-org member cannot receive the minted
+      // session on ANY of their own tokens (the targeted branch's ownerTrusted
+      // gate 403s them) — so offering `mine` would violate the
+      // never-offer-a-403 contract. Shared listings stay: targeted shared with
+      // attestation + consent is the sanctioned cross-user path.
+      const sessionReqForTargets = await detectSessionNeed(workflow);
+      const sessionTrusted = sessionReqForTargets.kind !== "need" ||
+        workflow.ownerId === user.id ||
+        (workflow.organizationId != null && sameOrg({ organizationId: user.organizationId }, { organizationId: workflow.organizationId }));
+      const mine: Agent[] = !sessionTrusted ? [] : ownTokens
         .filter((t) => !t.isRevoked && (!region || t.region === region))
         .map((t) => ({ tokenId: t.id, name: t.name, siteId: t.siteId, dispatchTier: t.dispatchTier, price: null }));
 
@@ -4252,7 +4251,12 @@ export async function registerRoutes(
       const scope = sessionScopeForWorkflow(workflow);
       const referencedSecrets = await classifyReferencedSecrets(scope, collectSecretRefs(configs));
 
-      const needsSession = referencedSecrets.some((s: { brokerType: string | null }) => s.brokerType != null);
+      // Same detector the run route enforces with — not "any brokered secret
+      // anywhere" (the two only coincide because findBrokeredMisuse rejects
+      // strays, and a second brokerType would silently split them). A
+      // misconfigured pair does NOT mark tiers unavailable: dispatch fails
+      // with the real misuse error, which is the actionable message.
+      const needsSession = sessionReqForTargets.kind === "need";
       const agents = await storage.getEvalAgentsWithTokenTier();
       const online = agents.filter((a) =>
         a.state !== "offline" && (!region || a.tokenRegion === region));
@@ -4273,7 +4277,7 @@ export async function registerRoutes(
       // available tier, so a mis-advertised one would be auto-selected.
       const isTeamWorkflow = workflow.organizationId != null &&
         sameOrg({ organizationId: user.organizationId }, { organizationId: workflow.organizationId });
-      const sessionDispatchAllowed = !needsSession || workflow.ownerId === user.id || isTeamWorkflow;
+      const sessionDispatchAllowed = sessionTrusted; // same predicate, computed above
       const teamBlockedBySession = needsSession && !isTeamWorkflow;
       const tiers = [
         sessionDispatchAllowed

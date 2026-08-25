@@ -78,7 +78,9 @@ export default function ConsoleWorkflowDetail() {
     queryFn: async () => {
       const res = await fetch(`/api/eval-jobs?workflowId=${workflowId}&limit=20`);
       if (!res.ok) throw new Error("Failed to fetch jobs");
-      return res.json();
+      // The endpoint returns { data, total } — the Job History table wants the rows.
+      const body = await res.json();
+      return body.data ?? [];
     },
     enabled: workflowId > 0,
     refetchInterval: 10000, // Auto-refresh every 10s to update running job status
@@ -108,9 +110,17 @@ export default function ConsoleWorkflowDetail() {
     const current = runTargets.tiers.find((t) => t.tier === targetTier);
     if (current && !current.available) {
       const firstAvailable = runTargets.tiers.find((t) => t.tier !== "shared" && t.available);
-      if (firstAvailable) setTargetTier(firstAvailable.tier);
+      if (firstAvailable) {
+        setTargetTier(firstAvailable.tier);
+        const label = (tier: string) =>
+          tier === "public" ? "Any public agent" : tier === "private" ? "My agents" : "Team agents";
+        toast({
+          title: "Run target adjusted",
+          description: `${label(current.tier)} isn't available for this workflow — switched to ${label(firstAvailable.tier)}.`,
+        });
+      }
     }
-  }, [runTargets, targetTier]);
+  }, [runTargets, targetTier, toast]);
 
   const pickerShared = (runTargets?.agents.shared ?? []).filter(
     (s) => !(runTargets?.agents.mine ?? []).some((m) => m.tokenId === s.tokenId)

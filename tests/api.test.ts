@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import {
   REGION_NA,
   REGION_EU,
@@ -4218,6 +4218,16 @@ describe('Vox API Tests', () => {
 
   // ==================== Organization Roles ====================
   describe('Organization Roles', () => {
+    afterAll(async () => {
+      // This suite may create an org with admin as OWNER, and an owner cannot
+      // leave via the API (asserted below) — so without cleanup, "admin is in
+      // an org" leaks into the shared dev DB and breaks sibling suites that
+      // assume an org-less admin (team-tier negative tests). Clear it directly.
+      if (!process.env.DATABASE_URL) return;
+      const { pool } = await import('../server/storage');
+      await pool.query('UPDATE users SET organization_id = NULL, org_role = NULL WHERE id = 1');
+    });
+
     it('should return orgRole in auth status', async () => {
       const res = await authFetch(adminSession, `${BASE_URL}/api/auth/status`);
       expect(res.ok).toBe(true);
