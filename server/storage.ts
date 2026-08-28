@@ -1533,6 +1533,18 @@ export class DatabaseStorage {
       or(
         sql`${snap}->'workflow'->>'visibility' = 'private' AND (${snap}->'workflow'->>'ownerId')::int = ${userId}`,
         sql`${snap}->'evalSet'->>'visibility' = 'private' AND (${snap}->'evalSet'->>'ownerId')::int = ${userId}`,
+        // Own job on own private/team agent. Without this arm such a result is
+        // ORPHANED: the two public boards exclude private/team agents by design
+        // ("tier as restriction"), and the content arms above only fire when the
+        // workflow or eval set is private — so running a PUBLIC workflow on your
+        // OWN private agent produced a result visible nowhere. Fenced by
+        // created_by, so this shows a user only their own dispatches (a team
+        // agent serving an org-mate's job stays in that dispatcher's My Evals,
+        // not the agent owner's).
+        and(
+          inArray(evalJobs.tokenDispatchTier, ["private", "team"]),
+          eq(evalJobs.createdBy, userId),
+        ),
       ),
     ];
     if (hoursBack) {
