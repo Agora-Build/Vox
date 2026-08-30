@@ -1863,25 +1863,6 @@ class VoxEvalAgentDaemon {
       if (stepsSuffix) stepsSuffix = this.resolveSecrets(stepsSuffix, jobSecrets);
     }
 
-    // Fail fast on any placeholder that survived substitution. aeval aborts on
-    // an unresolved ${secrets.X} with "Unknown variable source: secrets", and
-    // its PyInstaller wrapper then prints a generic banner as the LAST stderr
-    // line — so without this the job's recorded error is a packaging artifact
-    // instead of the cause. Scanned post-substitution (not inside
-    // resolveSecrets) so it also covers the case above where the secrets map is
-    // empty and substitution is skipped entirely. Core rejects this at dispatch;
-    // this catches a secret deleted between dispatch and claim.
-    const unresolved = collectSecretRefs([scenario, app, stepsPrefix, stepsSuffix]);
-    if (unresolved.size > 0) {
-      const names = Array.from(unresolved).sort();
-      throw new Error(
-        `Unresolved secret placeholder(s): ${names.join(', ')}. ` +
-        `The workflow references ${names.length > 1 ? 'these secrets' : 'this secret'} but ` +
-        `${names.length > 1 ? 'they are' : 'it is'} not configured for the workflow owner — create ` +
-        `${names.length > 1 ? 'them' : 'it'} under Console → Secrets (names must match exactly).`,
-      );
-    }
-
     const tempFiles: (string | null)[] = [];
 
     try {
@@ -1908,6 +1889,33 @@ class VoxEvalAgentDaemon {
         } else if (bundle && !stepsPrefix) {
           throw new Error('Session bundle received but the job has no stepsPrefix to inject into — refusing to run without applying the Core-minted session');
         }
+      }
+
+      // Fail fast on any ${secrets.X} that survived substitution. aeval aborts
+      // on an unresolved placeholder with "Unknown variable source: secrets",
+      // and its PyInstaller wrapper prints a generic banner as the LAST stderr
+      // line — so without this the job's recorded error is a packaging
+      // artifact instead of the cause.
+      //
+      // Placed AFTER session injection, deliberately: a session-injected job's
+      // brokered login secrets are structurally withheld from /jobs/:id/secrets
+      // (the agent must never hold durable credentials), and injectStorageSession
+      // rewrites platform.setup to storage mode — removing those references. A
+      // scan before that rewrite would fail every brokered-login job.
+      //
+      // Scanned post-substitution rather than inside resolveSecrets because
+      // substitution is skipped entirely when the secrets map is empty. Core
+      // rejects this at dispatch; this catches a secret deleted in between.
+      const unresolved = collectSecretRefs([scenario, app, stepsPrefix, stepsSuffix]);
+      if (unresolved.size > 0) {
+        const names = Array.from(unresolved).sort();
+        const plural = names.length > 1;
+        throw new Error(
+          `Unresolved secret placeholder(s): ${names.join(', ')}. ` +
+          `The workflow references ${plural ? 'these secrets' : 'this secret'} but ` +
+          `${plural ? 'they are' : 'it is'} not configured for the workflow owner — create ` +
+          `${plural ? 'them' : 'it'} under Console → Secrets (names must match exactly).`,
+        );
       }
 
       let results: EvalResult;

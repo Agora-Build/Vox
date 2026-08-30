@@ -73,3 +73,28 @@ steps:
     expect(result.yaml).toBe(doc);
   });
 });
+
+describe("injectStorageSession — invariant the daemon's unresolved-secret scan depends on", () => {
+  // The daemon fails a job that still contains ${secrets.X} after substitution.
+  // For a session-injected job, brokered login secrets are STRUCTURALLY withheld
+  // from /jobs/:id/secrets (the agent must never hold durable credentials), so
+  // those placeholders are still literal when substitution runs — and are only
+  // removed here. That is why the scan must run AFTER injection; running it
+  // before failed every brokered-login job. This pins the property that makes
+  // the ordering correct: post-injection, no secret placeholder survives.
+  it("leaves NO ${secrets.*} placeholder behind in a credential-bearing setup", () => {
+    const src = `- type: platform.setup
+  platform_id: vapi
+  mode: account
+  params:
+    mode: account
+    email: \${secrets.LOGIN_EMAIL}
+    password: \${secrets.LOGIN_PASSWORD}
+- type: audio.start_recording`;
+    expect(src).toMatch(/\$\{secrets\./); // precondition: the input really has them
+
+    const result = injectStorageSession(src, "/tmp/s.json");
+    expect(result.injected).toBe(true);
+    expect(result.yaml).not.toMatch(/\$\{secrets\./);
+  });
+});
