@@ -2311,7 +2311,11 @@ export async function registerRoutes(
         // the same flap PR #123 closed for pool violations. Includes the EVAL
         // SET config: the scheduler checks both, so omitting it here would
         // leave exactly the flap this is meant to close.
-        if (wantsEnable || regionChanged || tierChanged) {
+        // Keyed on wantsEnable ALONE: secret resolution has nothing to do with
+        // region or tier, and blocking those would stop an owner from
+        // repointing an already-broken (already disabled) schedule — i.e. from
+        // fixing the very thing they came for.
+        if (wantsEnable) {
           const schedEvalSet = schedule.evalSetId != null ? await storage.getEvalSet(schedule.evalSetId) : undefined;
           const missing = await missingSecretNames(sessionScopeForWorkflow(wf), resolvableSecretSources([wf.config, schedEvalSet?.config]));
           if (missing.length > 0) {

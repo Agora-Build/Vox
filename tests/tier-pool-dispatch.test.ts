@@ -202,6 +202,33 @@ describe("missing secrets are rejected at dispatch, not discovered by a failed r
     if (evalSetId) await authFetch(cookie, `${BASE_URL}/api/eval-sets/${evalSetId}`, { method: "DELETE" });
   });
 
+  it("gates a workflow that OMITS framework (the reported job #31006 shape)", async () => {
+    // No `framework` key and no `app`: the run can only be aeval, so the gate
+    // must still cover stepsPrefix. Previously this slipped through entirely.
+    const providers = await (await fetch(`${BASE_URL}/api/providers`)).json();
+    const ghost = `GHOST_NOFW_${Date.now()}`;
+    const wfRes = await authFetch(cookie, `${BASE_URL}/api/workflows`, {
+      method: "POST",
+      body: JSON.stringify({
+        name: `missing-secret-nofw-${Date.now()}`,
+        visibility: "private",
+        providerId: providers[0].id,
+        config: { stepsPrefix: `platform:\n  setup:\n    - type: control.log\n      message: \${secrets.${ghost}}\n` },
+      }),
+    });
+    expect(wfRes.ok).toBe(true);
+    const wfId = (await wfRes.json()).id;
+
+    const res = await authFetch(cookie, `${BASE_URL}/api/workflows/${wfId}/run`, {
+      method: "POST",
+      body: JSON.stringify({ region: BASE_NA, targetTier: "private", evalSetId }),
+    });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toContain(ghost);
+
+    await authFetch(cookie, `${BASE_URL}/api/workflows/${wfId}`, { method: "DELETE" });
+  });
+
   it("run route 400s and NAMES the missing secret (no job created)", async () => {
     const res = await authFetch(cookie, `${BASE_URL}/api/workflows/${brokenWorkflowId}/run`, {
       method: "POST",
