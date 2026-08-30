@@ -1755,6 +1755,20 @@ describe("summarizeAevalFailure", () => {
     expect(summary).toContain("boom");
   });
 
+  it("redacts a MULTI-LINE secret value (PEM/JSON) line by line", () => {
+    // The summary is built from already-split lines, so no single line holds a
+    // multi-line value — each of its lines has to be redacted individually or
+    // fragments survive into the persisted error.
+    const pem = "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BA\n-----END PRIVATE KEY-----";
+    const log = [
+      "2026-01-01 00:00:00 | ERROR    | setup failed with key -----BEGIN PRIVATE KEY-----",
+      "2026-01-01 00:00:00 | ERROR    | MIIEvQIBADANBgkqhkiG9w0BA",
+    ].join("\n");
+    const summary = summarizeAevalFailure(log, "", [pem]);
+    expect(summary).not.toContain("MIIEvQIBADANBgkqhkiG9w0BA");
+    expect(summary).not.toContain("BEGIN PRIVATE KEY");
+  });
+
   it("prefers the LAST errors so an early recoverable one can't bury the fatal one", () => {
     const log = [
       "2026-01-01 00:00:00 | ERROR    | transient retryable glitch",

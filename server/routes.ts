@@ -11,7 +11,7 @@ import { registerApiV1Routes } from "./routes-api-v1";
 import { generateSignedUrlForUser } from "./s3";
 import { validateTierChoice, resolveTargetedDispatch, filterDispatchableAgents } from "./dispatch";
 import { getMarketplace } from "./marketplace";
-import { parsePlatformSetup, sessionScopeForWorkflow, evaluateSessionRequirement, getBrokeredSecretNames, ensureSession, stampOwnerSession, credentialKeyFor, SESSION_FRESH_MARGIN_SECONDS, classifyReferencedSecrets, findBrokeredMisuse, defaultBrokerTypeForName, resolveBrokerType, type SessionNeed, detectSessionNeed, missingSecretNames } from "./auth-session";
+import { parsePlatformSetup, sessionScopeForWorkflow, evaluateSessionRequirement, getBrokeredSecretNames, ensureSession, stampOwnerSession, credentialKeyFor, SESSION_FRESH_MARGIN_SECONDS, classifyReferencedSecrets, findBrokeredMisuse, defaultBrokerTypeForName, resolveBrokerType, type SessionNeed, detectSessionNeed, missingSecretNames, resolvableSecretSources } from "./auth-session";
 import { validateRegisterPayload, cacheBrokerMintSecret, hasBrokerMintSecret } from "./broker-registry";
 import { deriveApiKeyStatus } from "./api-key-status";
 import { isStaleOfflineAgent } from "./agent-liveness";
@@ -2189,7 +2189,7 @@ export async function registerRoutes(
       // Same guaranteed-failure gate as the run route: a schedule referencing an
       // unconfigured secret would emit a doomed job on every tick.
       {
-        const missing = await missingSecretNames(sessionScopeForWorkflow(workflow), [workflow.config, evalSet?.config]);
+        const missing = await missingSecretNames(sessionScopeForWorkflow(workflow), resolvableSecretSources([workflow.config, evalSet?.config]));
         if (missing.length > 0) {
           return res.status(400).json({ error: MISSING_SECRETS_MSG(missing) });
         }
@@ -2442,7 +2442,7 @@ export async function registerRoutes(
       }
       // Secrets can be deleted after the schedule was created — re-check.
       {
-        const missing = await missingSecretNames(sessionScopeForWorkflow(workflow), [workflow.config, evalSet?.config]);
+        const missing = await missingSecretNames(sessionScopeForWorkflow(workflow), resolvableSecretSources([workflow.config, evalSet?.config]));
         if (missing.length > 0) {
           return res.status(400).json({ error: MISSING_SECRETS_MSG(missing) });
         }
@@ -4030,7 +4030,13 @@ export async function registerRoutes(
       // A referenced-but-unconfigured secret is a guaranteed-failure dispatch:
       // the daemon leaves the placeholder verbatim and aeval aborts on it with
       // an opaque PyInstaller exit. Reject with the exact names instead.
-      const missingSecrets = classified.filter((c) => !c.present).map((c) => c.name);
+      // Narrowed to the fields the daemon actually resolves, so the gate and the
+      // daemon agree by construction. Filters the already-computed `classified`
+      // rather than re-querying.
+      const resolvableRefs = collectSecretRefs(resolvableSecretSources([workflow.config, evalSet.config]));
+      const missingSecrets = classified
+        .filter((c) => !c.present && resolvableRefs.has(c.name))
+        .map((c) => c.name);
       if (missingSecrets.length > 0) {
         return res.status(400).json({ error: MISSING_SECRETS_MSG(missingSecrets) });
       }

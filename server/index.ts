@@ -13,7 +13,7 @@ import { parseNextCronRun } from "./cron";
 import { setupClashWebSocket } from "./clash-ws";
 import { loadPlugins } from "./plugins/loader";
 import { setMarketplace, getMarketplace, type EvalMarketplace } from "./marketplace";
-import { stampOwnerSession, detectSessionNeed, missingSecretNames, sessionScopeForWorkflow } from "./auth-session";
+import { stampOwnerSession, detectSessionNeed, missingSecretNames, sessionScopeForWorkflow, resolvableSecretSources } from "./auth-session";
 import pkg from "pg";
 const { Pool } = pkg;
 
@@ -437,7 +437,7 @@ function startBackgroundWorker() {
           // exists is fine (Core mints from it), and one that doesn't is
           // correctly flagged, since the mint would fail too.
           {
-            const missing = await missingSecretNames(sessionScopeForWorkflow(workflow), [workflow.config, evalSet?.config]);
+            const missing = await missingSecretNames(sessionScopeForWorkflow(workflow), resolvableSecretSources([workflow.config, evalSet?.config]));
             if (missing.length > 0) {
               log(`Schedule "${schedule.name}" references unconfigured secret(s) ${missing.join(", ")} — disabling`, "scheduler");
               await storage.updateEvalSchedule(schedule.id, { isEnabled: false });

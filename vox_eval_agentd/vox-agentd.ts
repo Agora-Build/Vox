@@ -1857,7 +1857,6 @@ class VoxEvalAgentDaemon {
 
     // Fetch secrets for this job and resolve ${secrets.*} placeholders
     const jobSecrets = await this.fetchSecrets(job.id);
-    this.activeSecretValues = Object.values(jobSecrets);
     if (Object.keys(jobSecrets).length > 0) {
       scenario = this.resolveSecrets(scenario, jobSecrets);
       if (app) app = this.resolveSecrets(app, jobSecrets);
@@ -1868,6 +1867,10 @@ class VoxEvalAgentDaemon {
     const tempFiles: (string | null)[] = [];
 
     try {
+      // Assigned INSIDE the try whose finally clears it: set before the try, a
+      // throw in between would leave decrypted values resident until the next
+      // job overwrote them.
+      this.activeSecretValues = Object.values(jobSecrets);
       // session-injected jobs get a Core-minted storageState instead of
       // login credentials (which the server structurally withholds).
       const sessionCfg = (job.config as Record<string, unknown> | null)?.sessionInjection;

@@ -266,6 +266,23 @@ export async function stampOwnerSession(
  * Scope is the WORKFLOW OWNER's (secrets follow workflow ownership), which is
  * the same scope the job-secrets endpoint resolves against at claim time.
  */
+/**
+ * The only config fields whose ${secrets.X} placeholders the daemon actually
+ * resolves: scenario, app, stepsPrefix, stepsSuffix (vox-agentd executeJob).
+ * Gating on anything wider would reject runs that work today — and, worse,
+ * silently disable a recurring schedule on its next tick. Picked from each
+ * config separately rather than via mergeEvalConfig, which throws on
+ * conflicting keys and would turn a clean 400 into a 500.
+ */
+export function resolvableSecretSources(configs: unknown[]): unknown[] {
+  const out: unknown[] = [];
+  for (const cfg of configs) {
+    const c = (cfg ?? {}) as Record<string, unknown>;
+    out.push(c.scenario, c.app, c.stepsPrefix, c.stepsSuffix);
+  }
+  return out;
+}
+
 export async function missingSecretNames(
   scope: SessionScope,
   configs: unknown[],

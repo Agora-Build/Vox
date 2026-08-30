@@ -35,11 +35,17 @@ export function summarizeAevalFailure(stdout: string, stderr: string, redact: st
   // so any ERROR line echoing step params can carry a live credential — and this
   // string is persisted as the job's error, visible in the console. Scrub every
   // known value before anything is returned.
+  // A value may span lines (PEM key, JSON blob) while `lines` above is already
+  // split+trimmed, so no single line contains the whole thing — redact each of
+  // its lines too, or fragments would survive. Floor of 8 chars: short values
+  // like "8080" or "prod" would otherwise shred unrelated text.
+  const needles = Array.from(
+    new Set(redact.flatMap((v) => (v ? [v, ...v.split('\n')] : []).map((x) => x.trim()))),
+  )
+    .filter((v) => v.length >= 8)
+    .sort((a, b) => b.length - a.length); // longest first, so wholes beat fragments
   const scrub = (text: string) =>
-    redact.reduce(
-      (acc, value) => (value && value.length >= 4 ? acc.split(value).join('[redacted]') : acc),
-      text,
-    );
+    needles.reduce((acc, value) => acc.split(value).join('[redacted]'), text);
 
   const errors = lines.filter((l) => /\|\s*(ERROR|CRITICAL)\s*\|/.test(l)).map(strip);
   if (errors.length > 0) {
