@@ -15,6 +15,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { summarizeAevalFailure } from './aeval-output';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const AEVAL_DATA_PATH = path.resolve(__dirname, 'aeval-data');
@@ -103,7 +104,16 @@ export async function mintWithAeval(req: MintRequest, timeoutMs: number): Promis
       proc.on('close', (code) => finish(() => {
         if (code === 0) resolve();
         else {
-          const tail = scrubCredentials(stderr.trim().split('\n').pop() || 'login failed', [req.email, req.password]);
+          // Last-line-of-stderr is the wrong line by construction: aeval's
+          // final line is an INFO "Artifacts saved to: ..." banner printed
+          // after the diagnosis, so a real failure ("Error waiting for URL
+          // pattern ... current URL: <sso login page>" — i.e. wrong password)
+          // was reported as a path. summarizeAevalFailure prefers the loguru
+          // ERROR lines; scrubCredentials still runs after it because its
+          // redaction has no minimum length (a <4-char password would slip
+          // the summarizer's floor).
+          const summary = summarizeAevalFailure('', stderr, [req.email, req.password]);
+          const tail = scrubCredentials(summary || 'login failed', [req.email, req.password]);
           reject(new Error(`aeval exited ${code}: ${tail}`));
         }
       }));

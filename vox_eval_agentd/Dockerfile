@@ -110,6 +110,7 @@ FROM base AS broker
 WORKDIR /app
 
 COPY vox_eval_agentd/auth-session-broker.ts /app/
+COPY vox_eval_agentd/aeval-output.ts /app/
 COPY vox_eval_agentd/package.json /app/
 
 # npm install only to obtain esbuild (a devDep). auth-session-broker.ts imports only

@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import type { AddressInfo } from "net";
 import type { Server } from "http";
 import { createBrokerServer, scrubCredentials, secretMatches, heartbeat, type MintRequest } from "../vox_eval_agentd/auth-session-broker";
+import { summarizeAevalFailure } from "../vox_eval_agentd/aeval-output";
 
 describe("secretMatches (constant-time bearer check)", () => {
   it("true only on an exact match", () => {
@@ -36,6 +37,36 @@ describe("scrubCredentials", () => {
   it("leaves a message without credentials unchanged", () => {
     const result = scrubCredentials("login timed out after 180000ms", ["a@b.c", "hunter2"]);
     expect(result).toBe("login timed out after 180000ms");
+  });
+});
+
+// Verbatim tail of a real failed mint (job 31072): a rejected login leaves the
+// browser sitting on the SSO page, and aeval's LAST line is an INFO banner. The
+// broker used to report that banner as the failure, so an operator saw a
+// directory path instead of "the login was rejected".
+const REAL_FAILED_MINT_STDERR = [
+  "2026-08-30 17:49:50.860 | ERROR | Error waiting for URL pattern: https://conversational-ai.agora.io/, current URL: https://sso2.agora.io/en/login?redirectUri=...",
+  "2026-08-30 17:49:50.860 | ERROR | Step 1 failed: platform.setup - Timeout 60000ms exceeded.",
+  "2026-08-30 17:49:51.010 | WARNING | Session finished with status: failed (not all tests passed)",
+  "2026-08-30 17:49:51.109 | INFO     | Artifacts saved to: output/mint/20260830_174839_2119",
+].join("\n");
+
+describe("mint failure summary (what the broker reports)", () => {
+  it("names the login failure rather than aeval's trailing artifacts banner", () => {
+    const summary = summarizeAevalFailure("", REAL_FAILED_MINT_STDERR, ["brent@agora.op", "hunter2"]);
+    expect(summary).toContain("Step 1 failed: platform.setup");
+    expect(summary).toContain("Error waiting for URL pattern");
+    expect(summary).not.toContain("Artifacts saved to");
+  });
+
+  it("keeps the credential out of the reported message", () => {
+    const summary = summarizeAevalFailure(
+      "",
+      `${REAL_FAILED_MINT_STDERR}\n2026-08-30 17:49:51.010 | ERROR | login rejected for brent@agora.op`,
+      ["brent@agora.op", "hunter2"],
+    );
+    expect(summary).not.toContain("brent@agora.op");
+    expect(summary).toContain("[redacted]");
   });
 });
 
