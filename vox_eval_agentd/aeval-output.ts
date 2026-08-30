@@ -21,7 +21,7 @@
  *  2. Otherwise the last few non-noise lines, so we surface a traceback tail
  *     rather than the packaging banner.
  */
-export function summarizeAevalFailure(stdout: string, stderr: string): string {
+export function summarizeAevalFailure(stdout: string, stderr: string, redact: string[] = []): string {
   const NOISE = /^\s*(\[PYI-\d+[^\]]*\]|Traceback \(most recent call last\):)/;
   const lines = `${stdout}\n${stderr}`
     .split('\n')
@@ -31,14 +31,25 @@ export function summarizeAevalFailure(stdout: string, stderr: string): string {
   // Strip loguru's "TIMESTAMP | LEVEL | " prefix for a compact message.
   const strip = (l: string) => l.replace(/^\S+\s+\S+\s*\|\s*\w+\s*\|\s*/, '').trim();
 
+  // resolveSecrets substitutes DECRYPTED values into the YAML handed to aeval,
+  // so any ERROR line echoing step params can carry a live credential — and this
+  // string is persisted as the job's error, visible in the console. Scrub every
+  // known value before anything is returned.
+  const scrub = (text: string) =>
+    redact.reduce(
+      (acc, value) => (value && value.length >= 4 ? acc.split(value).join('[redacted]') : acc),
+      text,
+    );
+
   const errors = lines.filter((l) => /\|\s*(ERROR|CRITICAL)\s*\|/.test(l)).map(strip);
   if (errors.length > 0) {
-    // The most specific diagnosis is usually the FIRST error; later ones are
-    // cascades ("Test 1 failed: Step 1 failed: ...").
-    return errors.slice(0, 3).join(' | ').slice(0, 500);
+    // Take the LAST errors, not the first: in a long run an early recoverable
+    // ERROR would otherwise bury the fatal one — the same "wrong line wins"
+    // failure this helper exists to fix. For a short trace the two coincide.
+    return scrub(errors.slice(-3).join(' | ')).slice(0, 500);
   }
 
   const meaningful = lines.filter((l) => !NOISE.test(l));
   const tail = (meaningful.length > 0 ? meaningful : lines).slice(-3).join(' | ');
-  return (tail || 'unknown error').slice(0, 500);
+  return scrub(tail || 'unknown error').slice(0, 500);
 }

@@ -211,8 +211,6 @@ function getSystemS3Config(): S3Config | null {
   };
 }
 
-
-
 class VoxEvalAgentDaemon {
   private config: DaemonConfig;
   private agentId: number | null = null;
@@ -232,6 +230,9 @@ class VoxEvalAgentDaemon {
   private healthServer: HttpServer | null = null;
   private startTime = Date.now();
   private currentJobId: number | null = null;
+  // Decrypted values of the ACTIVE job's secrets, used only to scrub them out of
+  // any error text we persist. The daemon runs one job at a time.
+  private activeSecretValues: string[] = [];
 
   constructor(config: DaemonConfig) {
     this.config = config;
@@ -861,7 +862,7 @@ class VoxEvalAgentDaemon {
           // run's numbers are statistically unreliable and would pollute metrics.
           const reason = timedOut
             ? `aeval timed out after ${AEVAL_RUN_TIMEOUT_MS}ms`
-            : `aeval exited with code ${code}: ${summarizeAevalFailure(stdout, stderr)}`;
+            : `aeval exited with code ${code}: ${summarizeAevalFailure(stdout, stderr, this.activeSecretValues)}`;
           fail(new Error(reason));
           return;
         }
@@ -1856,6 +1857,7 @@ class VoxEvalAgentDaemon {
 
     // Fetch secrets for this job and resolve ${secrets.*} placeholders
     const jobSecrets = await this.fetchSecrets(job.id);
+    this.activeSecretValues = Object.values(jobSecrets);
     if (Object.keys(jobSecrets).length > 0) {
       scenario = this.resolveSecrets(scenario, jobSecrets);
       if (app) app = this.resolveSecrets(app, jobSecrets);
@@ -1910,11 +1912,15 @@ class VoxEvalAgentDaemon {
       if (unresolved.size > 0) {
         const names = Array.from(unresolved).sort();
         const plural = names.length > 1;
+        // Deliberately scope-agnostic: the daemon cannot distinguish "no such
+        // secret" from "the server withheld it for this job" (e.g. an org
+        // secret fenced on the job creator's membership), so it must not tell
+        // the user to go create one.
         throw new Error(
           `Unresolved secret placeholder(s): ${names.join(', ')}. ` +
-          `The workflow references ${plural ? 'these secrets' : 'this secret'} but ` +
-          `${plural ? 'they are' : 'it is'} not configured for the workflow owner — create ` +
-          `${plural ? 'them' : 'it'} under Console → Secrets (names must match exactly).`,
+          `The server did not supply ${plural ? 'these secrets' : 'this secret'} for this job — ` +
+          `${plural ? 'they are' : 'it is'} either not configured for the workflow owner, or not ` +
+          `available to whoever started the run.`,
         );
       }
 
@@ -1949,6 +1955,7 @@ class VoxEvalAgentDaemon {
       throw error;
     } finally {
       this.cleanupTempFiles(...tempFiles);
+      this.activeSecretValues = []; // don't retain decrypted values past the job
     }
   }
 

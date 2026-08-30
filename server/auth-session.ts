@@ -257,11 +257,6 @@ export async function stampOwnerSession(
 }
 
 /**
- * Join referenced secret NAMES against the scope's secret rows, attaching each
- * name's brokerType and whether it exists. Names with no matching row default to
- * brokerType null / present:false (a dangling ref delivers nothing).
- */
-/**
  * Names of ${secrets.X} placeholders a workflow/eval-set references that have
  * NO secret row in the owner's scope. Such a run is a GUARANTEED failure: the
  * daemon leaves an unresolved placeholder verbatim, and aeval then aborts on
@@ -279,6 +274,11 @@ export async function missingSecretNames(
   return classified.filter((c) => !c.present).map((c) => c.name);
 }
 
+/**
+ * Join referenced secret NAMES against the scope's secret rows, attaching each
+ * name's brokerType and whether it exists. Names with no matching row default to
+ * brokerType null / present:false (a dangling ref delivers nothing).
+ */
 export async function classifyReferencedSecrets(
   scope: SessionScope,
   names: Set<string>,

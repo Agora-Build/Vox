@@ -272,8 +272,11 @@ async function updateClashEloRatings(
   });
 }
 
+// Deliberately avoids "you have not configured": secrets resolve in the WORKFLOW
+// OWNER's scope, so someone running another user's public workflow cannot fix
+// this themselves.
 const MISSING_SECRETS_MSG = (names: string[]) =>
-  `This workflow references secret(s) ${names.join(", ")} that you have not configured. Create them under Console → Secrets (names must match exactly), then run again.`;
+  `This workflow references secret(s) ${names.join(", ")} that are not configured for its owner. If the workflow is yours, create them under Console → Secrets (names must match exactly); otherwise ask its owner to.`;
 
 export async function registerRoutes(
   httpServer: Server,

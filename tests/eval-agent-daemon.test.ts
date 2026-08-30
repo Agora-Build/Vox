@@ -1738,6 +1738,33 @@ describe("summarizeAevalFailure", () => {
     expect(summary).not.toContain("pyi_entrypoint");
   });
 
+  it("redacts decrypted secret VALUES that aeval echoed back", () => {
+    // resolveSecrets substitutes real values into the YAML, so an aeval ERROR
+    // line can echo a live credential — and this string is persisted as the
+    // job's user-visible error.
+    const secret = "sk-live-abcdef123456";
+    const log = `2026-01-01 00:00:00 | ERROR    | step failed: password="${secret}" rejected`;
+    const summary = summarizeAevalFailure(log, "", [secret]);
+    expect(summary).not.toContain(secret);
+    expect(summary).toContain("[redacted]");
+    expect(summary).toContain("rejected"); // surrounding diagnosis is preserved
+  });
+
+  it("ignores very short secret values when redacting (would shred the message)", () => {
+    const summary = summarizeAevalFailure("2026-01-01 00:00:00 | ERROR    | boom", "", ["a"]);
+    expect(summary).toContain("boom");
+  });
+
+  it("prefers the LAST errors so an early recoverable one can't bury the fatal one", () => {
+    const log = [
+      "2026-01-01 00:00:00 | ERROR    | transient retryable glitch",
+      ...Array.from({ length: 5 }, (_, i) => `2026-01-01 00:00:0${i} | INFO     | retrying ${i}`),
+      "2026-01-01 00:00:09 | ERROR    | fatal: the real cause",
+    ].join("\n");
+    const summary = summarizeAevalFailure(log, "");
+    expect(summary).toContain("fatal: the real cause");
+  });
+
   it("never returns an empty string", () => {
     expect(summarizeAevalFailure("", "")).toBe("unknown error");
   });

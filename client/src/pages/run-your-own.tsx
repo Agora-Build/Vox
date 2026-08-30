@@ -612,8 +612,8 @@ export default function SelfTest() {
                   <AlertTitle>Missing secrets — this run would fail</AlertTitle>
                   <AlertDescription>
                     This workflow references {missingSecrets.length > 1 ? "secrets" : "a secret"} that {missingSecrets.length > 1 ? "are" : "is"} not
-                    configured: {missingSecrets.join(", ")}. Create {missingSecrets.length > 1 ? "them" : "it"} under Console → Secrets
-                    (names must match exactly), then try again.
+                    configured for its owner: {missingSecrets.join(", ")}. If the workflow is yours, create
+                    {missingSecrets.length > 1 ? "them" : "it"} under Console → Secrets (names must match exactly); otherwise ask its owner to.
                   </AlertDescription>
                 </Alert>
               )}

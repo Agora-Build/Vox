@@ -370,7 +370,7 @@ export function registerApiV1Routes(app: Express): void {
       // Guaranteed-failure gate, same as the console run path: an unconfigured
       // secret means the daemon ships an unresolved placeholder and aeval aborts
       // with an opaque exit. Reject with the exact names instead.
-      const missingSecrets = await missingSecretNames(sessionScopeForWorkflow(workflow), [workflow.config, evalSet.config]);
+      const missingSecrets = await missingSecretNames(scope, [workflow.config, evalSet.config]);
       if (missingSecrets.length > 0) {
         return res.status(400).json({
           error: `This workflow references secret(s) ${missingSecrets.join(", ")} that are not configured. Create them (names must match exactly), then run again.`,
