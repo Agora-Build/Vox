@@ -33,7 +33,8 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { SECRET_PLACEHOLDER_REGEX } from '../shared/secrets';
+import { SECRET_PLACEHOLDER_REGEX, collectSecretRefs } from '../shared/secrets';
+import { summarizeAevalFailure } from '../shared/aeval-output';
 import yaml from 'js-yaml';
 import { injectStorageSession } from './session-inject';
 import {
@@ -209,6 +210,8 @@ function getSystemS3Config(): S3Config | null {
     secretAccessKey,
   };
 }
+
+
 
 class VoxEvalAgentDaemon {
   private config: DaemonConfig;
@@ -858,7 +861,7 @@ class VoxEvalAgentDaemon {
           // run's numbers are statistically unreliable and would pollute metrics.
           const reason = timedOut
             ? `aeval timed out after ${AEVAL_RUN_TIMEOUT_MS}ms`
-            : `aeval exited with code ${code}: ${stderr.trim().split('\n').pop() || 'unknown error'}`;
+            : `aeval exited with code ${code}: ${summarizeAevalFailure(stdout, stderr)}`;
           fail(new Error(reason));
           return;
         }
@@ -1858,6 +1861,25 @@ class VoxEvalAgentDaemon {
       if (app) app = this.resolveSecrets(app, jobSecrets);
       if (stepsPrefix) stepsPrefix = this.resolveSecrets(stepsPrefix, jobSecrets);
       if (stepsSuffix) stepsSuffix = this.resolveSecrets(stepsSuffix, jobSecrets);
+    }
+
+    // Fail fast on any placeholder that survived substitution. aeval aborts on
+    // an unresolved ${secrets.X} with "Unknown variable source: secrets", and
+    // its PyInstaller wrapper then prints a generic banner as the LAST stderr
+    // line — so without this the job's recorded error is a packaging artifact
+    // instead of the cause. Scanned post-substitution (not inside
+    // resolveSecrets) so it also covers the case above where the secrets map is
+    // empty and substitution is skipped entirely. Core rejects this at dispatch;
+    // this catches a secret deleted between dispatch and claim.
+    const unresolved = collectSecretRefs([scenario, app, stepsPrefix, stepsSuffix]);
+    if (unresolved.size > 0) {
+      const names = Array.from(unresolved).sort();
+      throw new Error(
+        `Unresolved secret placeholder(s): ${names.join(', ')}. ` +
+        `The workflow references ${names.length > 1 ? 'these secrets' : 'this secret'} but ` +
+        `${names.length > 1 ? 'they are' : 'it is'} not configured for the workflow owner — create ` +
+        `${names.length > 1 ? 'them' : 'it'} under Console → Secrets (names must match exactly).`,
+      );
     }
 
     const tempFiles: (string | null)[] = [];

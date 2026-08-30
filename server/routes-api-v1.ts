@@ -10,7 +10,7 @@
 import { Express, Request, Response } from "express";
 import { storage, mergeEvalConfig, buildJobSnapshot } from "./storage";
 import { requireAuthOrApiKey, getCurrentUserOrApiKeyUser } from "./auth";
-import { parsePlatformSetup, sessionScopeForWorkflow, evaluateSessionRequirement, getBrokeredSecretNames, ensureSession } from "./auth-session";
+import { parsePlatformSetup, sessionScopeForWorkflow, evaluateSessionRequirement, getBrokeredSecretNames, ensureSession, missingSecretNames } from "./auth-session";
 import { regionSiteSequence } from "@shared/regions";
 import { hasOrg, sameOrg } from "./permissions";
 
@@ -365,6 +365,16 @@ export function registerApiV1Routes(app: Express): void {
       if (sessionNeed && targetTier === "team" &&
           !(workflow.organizationId != null && sameOrg({ organizationId: user.organizationId }, { organizationId: workflow.organizationId }))) {
         return res.status(403).json({ error: "Credential-injected workflows can only use a team pool when the workflow belongs to your organization" });
+      }
+
+      // Guaranteed-failure gate, same as the console run path: an unconfigured
+      // secret means the daemon ships an unresolved placeholder and aeval aborts
+      // with an opaque exit. Reject with the exact names instead.
+      const missingSecrets = await missingSecretNames(sessionScopeForWorkflow(workflow), [workflow.config, evalSet.config]);
+      if (missingSecrets.length > 0) {
+        return res.status(400).json({
+          error: `This workflow references secret(s) ${missingSecrets.join(", ")} that are not configured. Create them (names must match exactly), then run again.`,
+        });
       }
 
       // Create eval job (merge configs + capture the immutable snapshot, same as the

@@ -15,6 +15,7 @@ import { execSync } from "child_process";
 import path from "path";
 import fs from "fs";
 import os from "os";
+import { summarizeAevalFailure } from "../shared/aeval-output";
 
 // Mock the parseResults function logic for testing
 function parseResults(csvContent: string): {
@@ -1698,5 +1699,51 @@ describe("Eval Agent Daemon - Script Validation", () => {
       `node -e "require('esbuild').transformSync(require('fs').readFileSync('${daemonTsPath}','utf8'),{loader:'ts'})"`,
       { stdio: "pipe", timeout: 15000, cwd: projectRoot },
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// aeval failure summarization (job #31006 regression)
+// ---------------------------------------------------------------------------
+
+describe("summarizeAevalFailure", () => {
+  // Verbatim shape of the run that produced job #31006: aeval's real diagnosis
+  // is mid-stream, and PyInstaller's generic banner is the LAST stderr line —
+  // which the old "last line of stderr" heuristic always picked.
+  const AEVAL_STDOUT = [
+    "2026-08-30 05:45:11.252 | INFO     | Loaded platform: agora",
+    "2026-08-30 05:45:11.336 | ERROR    | Unknown variable source: secrets",
+    "2026-08-30 05:45:11.337 | ERROR    | Step 1 failed: platform.setup - Unknown variable source: secrets",
+    "2026-08-30 05:45:11.411 | ERROR    | Test 1 failed: Step 1 (platform.setup) failed: Unknown variable source: secrets",
+    "2026-08-30 05:45:11.413 | INFO     | === Ending Session ===",
+  ].join("\n");
+  const PYI_BANNER = "[PYI-3739:ERROR] Failed to execute script 'pyi_entrypoint' due to unhandled exception!";
+
+  it("surfaces aeval's own diagnosis instead of the PyInstaller banner", () => {
+    const summary = summarizeAevalFailure(AEVAL_STDOUT, PYI_BANNER);
+    expect(summary).toContain("Unknown variable source: secrets");
+    expect(summary).not.toContain("pyi_entrypoint");
+    // loguru's "timestamp | LEVEL |" prefix is stripped for compactness
+    expect(summary).not.toContain("| ERROR    |");
+  });
+
+  it("finds ERROR lines on stderr too (loguru's sink may be either stream)", () => {
+    const summary = summarizeAevalFailure("", `${AEVAL_STDOUT}\n${PYI_BANNER}`);
+    expect(summary).toContain("Unknown variable source: secrets");
+  });
+
+  it("falls back to the tail with noise filtered when there is no ERROR line", () => {
+    const summary = summarizeAevalFailure("", `Traceback (most recent call last):\nValueError: boom\n${PYI_BANNER}`);
+    expect(summary).toContain("ValueError: boom");
+    expect(summary).not.toContain("pyi_entrypoint");
+  });
+
+  it("never returns an empty string", () => {
+    expect(summarizeAevalFailure("", "")).toBe("unknown error");
+  });
+
+  it("caps length so one bad run can't bloat the job's error column", () => {
+    const flood = Array.from({ length: 200 }, (_, i) => `2026-01-01 00:00:00 | ERROR    | line ${i}`).join("\n");
+    expect(summarizeAevalFailure(flood, "").length).toBeLessThanOrEqual(500);
   });
 });

@@ -38,7 +38,7 @@ interface RunTargetAgent {
 
 interface RunTargetsResponse {
   agents: { mine: RunTargetAgent[]; shared: RunTargetAgent[] };
-  referencedSecrets: Array<{ name: string; class: "runtime" | "protected"; present: boolean }>;
+  referencedSecrets: Array<{ name: string; brokerType: string | null; present: boolean }>;
   tiers: { tier: string; available: boolean; onlineAgents?: number; reason?: string }[];
 }
 
@@ -133,7 +133,12 @@ export default function ConsoleWorkflowDetail() {
   const selectedAgent = targetTokenId === "any" ? null :
     [...(runTargets?.agents.mine ?? []), ...pickerShared].find((a) => String(a.tokenId) === targetTokenId);
   const runtimeExposed = (runTargets?.referencedSecrets ?? [])
-    .filter((s) => s.class === "runtime" && s.present).map((s) => s.name);
+    .filter((s) => s.brokerType == null && s.present).map((s) => s.name);
+  // Referenced but not configured for the workflow owner → the run would fail
+  // with an unresolved ${secrets.X} placeholder. The server rejects it too;
+  // surfacing it here means the user never spends an agent run to find out.
+  const missingSecrets = (runTargets?.referencedSecrets ?? [])
+    .filter((s) => !s.present).map((s) => s.name);
   const showRuntimeWarning = selectedAgent?.dispatchTier === "shared" && runtimeExposed.length > 0;
 
   const runWorkflowMutation = useMutation({
@@ -309,6 +314,16 @@ export default function ConsoleWorkflowDetail() {
                   </SelectContent>
                 </Select>
               </div>
+              {missingSecrets.length > 0 && (
+                <Alert variant="destructive">
+                  <AlertTitle>Missing secrets — this run would fail</AlertTitle>
+                  <AlertDescription>
+                    This workflow references {missingSecrets.length > 1 ? "secrets" : "a secret"} that {missingSecrets.length > 1 ? "are" : "is"} not
+                    configured: {missingSecrets.join(", ")}. Create {missingSecrets.length > 1 ? "them" : "it"} under Console → Secrets
+                    (names must match exactly), then try again.
+                  </AlertDescription>
+                </Alert>
+              )}
               {showRuntimeWarning && (
                 <Alert variant="destructive">
                   <AlertTitle>This workflow uses runtime secrets</AlertTitle>
@@ -325,7 +340,7 @@ export default function ConsoleWorkflowDetail() {
             <DialogFooter>
               <Button
                 onClick={() => runWorkflowMutation.mutate()}
-                disabled={runWorkflowMutation.isPending || !runRegion || !runEvalSetId || runTargetsFetching || noPoolAvailable || (showRuntimeWarning && !ackRuntime)}
+                disabled={runWorkflowMutation.isPending || !runRegion || !runEvalSetId || runTargetsFetching || noPoolAvailable || missingSecrets.length > 0 || (showRuntimeWarning && !ackRuntime)}
               >
                 Run Evaluation
               </Button>
