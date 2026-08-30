@@ -257,18 +257,36 @@ export async function stampOwnerSession(
 }
 
 /**
- * The only config fields whose ${secrets.X} placeholders the daemon actually
- * resolves: scenario, app, stepsPrefix, stepsSuffix (vox-agentd executeJob).
- * Gating on anything wider would reject runs that work today — and, worse,
- * silently disable a recurring schedule on its next tick. Picked from each
- * config separately rather than via mergeEvalConfig, which throws on
+ * The config fields whose ${secrets.X} placeholders the daemon actually feeds
+ * to the selected framework, per vox-agentd executeJob:
+ *   aeval               → scenario, stepsPrefix, stepsSuffix
+ *   voice-agent-tester  → scenario, app
+ * Gating on anything wider rejects runs that work today — and, worse, can
+ * silently disable a recurring schedule on its next tick. A stale placeholder
+ * in a field the chosen framework ignores must not block.
+ *
+ * NOT exhaustive: executeJob expands ${config.X} BEFORE ${secrets.X}, so a
+ * secret reached only through config indirection (config.url = "${secrets.K}",
+ * used as ${config.url}) is invisible here. That direction is fail-safe — the
+ * run is accepted and the daemon's own scan reports it clearly — whereas
+ * widening this is what risks false positives.
+ *
+ * Picked per config rather than via mergeEvalConfig, which throws on
  * conflicting keys and would turn a clean 400 into a 500.
  */
 export function resolvableSecretSources(configs: unknown[]): unknown[] {
+  const merged = configs.reduce<Record<string, unknown>>(
+    (acc, cfg) => ({ ...acc, ...((cfg ?? {}) as Record<string, unknown>) }),
+    {},
+  );
+  // Mirrors the daemon's own fallback (config.framework || daemon default aeval).
+  const framework = typeof merged.framework === "string" ? merged.framework : "aeval";
   const out: unknown[] = [];
   for (const cfg of configs) {
     const c = (cfg ?? {}) as Record<string, unknown>;
-    out.push(c.scenario, c.app, c.stepsPrefix, c.stepsSuffix);
+    out.push(c.scenario);
+    if (framework === "voice-agent-tester") out.push(c.app);
+    else out.push(c.stepsPrefix, c.stepsSuffix);
   }
   return out;
 }

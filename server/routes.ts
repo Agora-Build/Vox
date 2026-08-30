@@ -2308,9 +2308,12 @@ export async function registerRoutes(
         // of truth: sessionPoolViolation.
         // Re-enabling with a missing secret would 200 here and be silently
         // disabled again on the next tick (only a server log to show for it) —
-        // the same flap PR #123 closed for pool violations.
+        // the same flap PR #123 closed for pool violations. Includes the EVAL
+        // SET config: the scheduler checks both, so omitting it here would
+        // leave exactly the flap this is meant to close.
         if (wantsEnable || regionChanged || tierChanged) {
-          const missing = await missingSecretNames(sessionScopeForWorkflow(wf), resolvableSecretSources([wf.config]));
+          const schedEvalSet = schedule.evalSetId != null ? await storage.getEvalSet(schedule.evalSetId) : undefined;
+          const missing = await missingSecretNames(sessionScopeForWorkflow(wf), resolvableSecretSources([wf.config, schedEvalSet?.config]));
           if (missing.length > 0) {
             return res.status(400).json({ error: MISSING_SECRETS_MSG(missing) });
           }

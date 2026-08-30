@@ -37,12 +37,17 @@ export function summarizeAevalFailure(stdout: string, stderr: string, redact: st
   // known value before anything is returned.
   // A value may span lines (PEM key, JSON blob) while `lines` above is already
   // split+trimmed, so no single line contains the whole thing — redact each of
-  // its lines too, or fragments would survive. Floor of 8 chars: short values
-  // like "8080" or "prod" would otherwise shred unrelated text.
+  // its lines too, or fragments would survive.
+  //
+  // Floor is 4, deliberately low: the failure modes are asymmetric. Over-
+  // redacting is cosmetic (a secret whose value is literally "prod" garbles a
+  // word); under-redacting puts a live credential in a persisted, user-visible
+  // job error. Short PINs and account IDs are exactly the values a higher floor
+  // would leak.
   const needles = Array.from(
     new Set(redact.flatMap((v) => (v ? [v, ...v.split('\n')] : []).map((x) => x.trim()))),
   )
-    .filter((v) => v.length >= 8)
+    .filter((v) => v.length >= 4)
     .sort((a, b) => b.length - a.length); // longest first, so wholes beat fragments
   const scrub = (text: string) =>
     needles.reduce((acc, value) => acc.split(value).join('[redacted]'), text);

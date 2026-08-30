@@ -1911,7 +1911,13 @@ class VoxEvalAgentDaemon {
       // Scanned post-substitution rather than inside resolveSecrets because
       // substitution is skipped entirely when the secrets map is empty. Core
       // rejects this at dispatch; this catches a secret deleted in between.
-      const unresolved = collectSecretRefs([scenario, app, stepsPrefix, stepsSuffix]);
+      // Framework-aware, matching the dispatch below: aeval never reads `app`,
+      // voice-agent-tester never reads stepsPrefix/stepsSuffix. A stale
+      // placeholder in a field this framework ignores ran fine before and must
+      // keep doing so.
+      const unresolved = collectSecretRefs(
+        framework === 'voice-agent-tester' ? [scenario, app] : [scenario, stepsPrefix, stepsSuffix],
+      );
       if (unresolved.size > 0) {
         const names = Array.from(unresolved).sort();
         const plural = names.length > 1;
