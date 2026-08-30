@@ -1862,6 +1862,13 @@ class VoxEvalAgentDaemon {
 
     // Fetch secrets for this job and resolve ${secrets.*} placeholders
     const jobSecrets = await this.fetchSecrets(job.id);
+    // Names referenced BEFORE substitution that the server did not supply. Taken
+    // pre-substitution deliberately: scanning the substituted text would treat a
+    // secret whose VALUE happens to contain "${secrets.X}" as an unresolved
+    // placeholder and fail a perfectly good job.
+    const unsuppliedNames = Array.from(
+      collectSecretRefs([scenario, app, stepsPrefix, stepsSuffix]),
+    ).filter((name) => !(name in jobSecrets));
     if (Object.keys(jobSecrets).length > 0) {
       scenario = this.resolveSecrets(scenario, jobSecrets);
       if (app) app = this.resolveSecrets(app, jobSecrets);
@@ -1919,15 +1926,19 @@ class VoxEvalAgentDaemon {
       // Scanned post-substitution rather than inside resolveSecrets because
       // substitution is skipped entirely when the secrets map is empty. Core
       // rejects this at dispatch; this catches a secret deleted in between.
-      // Framework-aware, matching the dispatch below: aeval never reads `app`,
-      // voice-agent-tester never reads stepsPrefix/stepsSuffix. A stale
-      // placeholder in a field this framework ignores ran fine before and must
-      // keep doing so.
-      const unresolved = collectSecretRefs(
-        framework === 'voice-agent-tester' ? [scenario, app] : [scenario, stepsPrefix, stepsSuffix],
+      // Of the names the server didn't supply, which still remain in the strings
+      // this framework will actually read? Framework-aware because aeval never
+      // reads `app` and voice-agent-tester never reads stepsPrefix/stepsSuffix —
+      // a stale placeholder in an ignored field ran fine before. Checked AFTER
+      // session injection, which legitimately strips brokered login refs.
+      const active = framework === 'voice-agent-tester'
+        ? [scenario, app]
+        : [scenario, stepsPrefix, stepsSuffix];
+      const unresolved = unsuppliedNames.filter((name) =>
+        active.some((text) => typeof text === 'string' && text.includes('${secrets.' + name + '}')),
       );
-      if (unresolved.size > 0) {
-        const names = Array.from(unresolved).sort();
+      if (unresolved.length > 0) {
+        const names = [...unresolved].sort();
         const plural = names.length > 1;
         // Deliberately scope-agnostic: the daemon cannot distinguish "no such
         // secret" from "the server withheld it for this job" (e.g. an org
