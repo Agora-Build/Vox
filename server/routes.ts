@@ -2306,6 +2306,15 @@ export async function registerRoutes(
         // silently disabled again next tick (a flap whose only signal is a
         // server log); this returns the actionable 403 instead. Single source
         // of truth: sessionPoolViolation.
+        // Re-enabling with a missing secret would 200 here and be silently
+        // disabled again on the next tick (only a server log to show for it) —
+        // the same flap PR #123 closed for pool violations.
+        if (wantsEnable || regionChanged || tierChanged) {
+          const missing = await missingSecretNames(sessionScopeForWorkflow(wf), resolvableSecretSources([wf.config]));
+          if (missing.length > 0) {
+            return res.status(400).json({ error: MISSING_SECRETS_MSG(missing) });
+          }
+        }
         if (tierChanged || wantsEnable) {
           const effectiveTier = (targetTier ?? schedule.targetTier) as "private" | "team" | "public" | "shared";
           const schedSessionReq = await detectSessionNeed(wf);
@@ -4285,7 +4294,14 @@ export async function registerRoutes(
         if (es && canAccessResource(user, es)) configs.push(es.config);
       }
       const scope = sessionScopeForWorkflow(workflow);
-      const referencedSecrets = await classifyReferencedSecrets(scope, collectSecretRefs(configs));
+      const classifiedRefs = await classifyReferencedSecrets(scope, collectSecretRefs(configs));
+      // `resolvable` = the daemon would actually substitute this one (it only
+      // touches scenario/app/stepsPrefix/stepsSuffix). The run gate narrows to
+      // exactly these, so the UI must too — otherwise it disables Run for a
+      // placeholder sitting in some unresolved config key that the server would
+      // happily accept.
+      const resolvableHere = collectSecretRefs(resolvableSecretSources(configs));
+      const referencedSecrets = classifiedRefs.map((c) => ({ ...c, resolvable: resolvableHere.has(c.name) }));
 
       // Same detector the run route enforces with — not "any brokered secret
       // anywhere" (the two only coincide because findBrokeredMisuse rejects

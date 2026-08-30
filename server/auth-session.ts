@@ -257,16 +257,6 @@ export async function stampOwnerSession(
 }
 
 /**
- * Names of ${secrets.X} placeholders a workflow/eval-set references that have
- * NO secret row in the owner's scope. Such a run is a GUARANTEED failure: the
- * daemon leaves an unresolved placeholder verbatim, and aeval then aborts on
- * it ("Unknown variable source: secrets") with an opaque PyInstaller exit —
- * so every dispatch path rejects up front instead of burning an agent run.
- *
- * Scope is the WORKFLOW OWNER's (secrets follow workflow ownership), which is
- * the same scope the job-secrets endpoint resolves against at claim time.
- */
-/**
  * The only config fields whose ${secrets.X} placeholders the daemon actually
  * resolves: scenario, app, stepsPrefix, stepsSuffix (vox-agentd executeJob).
  * Gating on anything wider would reject runs that work today — and, worse,
@@ -283,6 +273,16 @@ export function resolvableSecretSources(configs: unknown[]): unknown[] {
   return out;
 }
 
+/**
+ * Names of ${secrets.X} placeholders a workflow/eval-set references that have
+ * NO secret row in the owner's scope. Such a run is a GUARANTEED failure: the
+ * daemon leaves an unresolved placeholder verbatim, and aeval then aborts on
+ * it ("Unknown variable source: secrets") with an opaque PyInstaller exit —
+ * so every dispatch path rejects up front instead of burning an agent run.
+ *
+ * Scope is the WORKFLOW OWNER's (secrets follow workflow ownership), which is
+ * the same scope the job-secrets endpoint resolves against at claim time.
+ */
 export async function missingSecretNames(
   scope: SessionScope,
   configs: unknown[],

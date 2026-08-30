@@ -38,7 +38,7 @@ interface RunTargetAgent {
 
 interface RunTargetsResponse {
   agents: { mine: RunTargetAgent[]; shared: RunTargetAgent[] };
-  referencedSecrets: Array<{ name: string; brokerType: string | null; present: boolean }>;
+  referencedSecrets: Array<{ name: string; brokerType: string | null; present: boolean; resolvable?: boolean }>;
   tiers: { tier: string; available: boolean; onlineAgents?: number; reason?: string }[];
 }
 
@@ -138,7 +138,9 @@ export default function ConsoleWorkflowDetail() {
   // with an unresolved ${secrets.X} placeholder. The server rejects it too;
   // surfacing it here means the user never spends an agent run to find out.
   const missingSecrets = (runTargets?.referencedSecrets ?? [])
-    .filter((s) => !s.present).map((s) => s.name);
+    // `resolvable` mirrors the server gate exactly — a placeholder in a config
+    // key the daemon never substitutes must NOT disable the Run button.
+    .filter((s) => !s.present && s.resolvable !== false).map((s) => s.name);
   const showRuntimeWarning = selectedAgent?.dispatchTier === "shared" && runtimeExposed.length > 0;
 
   const runWorkflowMutation = useMutation({

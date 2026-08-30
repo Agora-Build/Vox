@@ -574,7 +574,9 @@ describe("dispatch integration — session stamping, pre-warm, shared-tier gates
       const body = await res.json();
       expect(body.agents.mine.map((a: any) => a.tokenId)).toContain(tok.id);
       expect(body.referencedSecrets).toEqual(
-        expect.arrayContaining([{ name: runtimeEmailSecret, brokerType: null, present: true }]),
+        // `resolvable` was added so the UI can gate on exactly what the server
+        // gates on; this secret lives in stepsPrefix, which the daemon resolves.
+        expect.arrayContaining([{ name: runtimeEmailSecret, brokerType: null, present: true, resolvable: true }]),
       );
     });
   });
