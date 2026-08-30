@@ -547,17 +547,22 @@ class VoxEvalAgentDaemon {
     }
   }
 
+  /** Escape a secret value for embedding in double-quoted YAML. */
+  private static yamlEscape(value: string): string {
+    return value
+      .replace(/\\/g, '\\\\')
+      .replace(/"/g, '\\"')
+      .replace(/\n/g, '\\n')
+      .replace(/\r/g, '\\r')
+      .replace(/\t/g, '\\t')
+      .replace(/\0/g, '\\0');
+  }
+
   private resolveSecrets(content: string, secrets: Record<string, string>): string {
     return content.replace(SECRET_PLACEHOLDER_REGEX, (_match, key) => {
       if (key in secrets) {
         // Always double-quote and escape for valid YAML
-        const escaped = secrets[key]
-          .replace(/\\/g, '\\\\')
-          .replace(/"/g, '\\"')
-          .replace(/\n/g, '\\n')
-          .replace(/\r/g, '\\r')
-          .replace(/\t/g, '\\t')
-          .replace(/\0/g, '\\0');
+        const escaped = VoxEvalAgentDaemon.yamlEscape(secrets[key]);
         return `"${escaped}"`;
       }
       console.warn(`[Daemon] Secret placeholder \${secrets.${key}} not found — leaving as-is`);
@@ -1870,7 +1875,10 @@ class VoxEvalAgentDaemon {
       // Assigned INSIDE the try whose finally clears it: set before the try, a
       // throw in between would leave decrypted values resident until the next
       // job overwrote them.
-      this.activeSecretValues = Object.values(jobSecrets);
+      // Both forms: the YAML handed to aeval carries the ESCAPED value, so a
+      // secret containing a quote or backslash would appear escaped in its
+      // output and slip past a raw-value scrub.
+      this.activeSecretValues = Object.values(jobSecrets).flatMap((v) => [v, VoxEvalAgentDaemon.yamlEscape(v)]);
       // session-injected jobs get a Core-minted storageState instead of
       // login credentials (which the server structurally withholds).
       const sessionCfg = (job.config as Record<string, unknown> | null)?.sessionInjection;

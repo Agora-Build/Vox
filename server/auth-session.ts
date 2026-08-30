@@ -279,14 +279,19 @@ export function resolvableSecretSources(configs: unknown[]): unknown[] {
     (acc, cfg) => ({ ...acc, ...((cfg ?? {}) as Record<string, unknown>) }),
     {},
   );
-  // Mirrors the daemon's own fallback (config.framework || daemon default aeval).
-  const framework = typeof merged.framework === "string" ? merged.framework : "aeval";
+  // When the config doesn't pin a framework the daemon falls back to its OWN
+  // env default (EVAL_FRAMEWORK, a per-agent knob the server cannot see), so
+  // guessing here would block runs on an agent that reads different fields.
+  // Per this module's asymmetry rule — over-blocking can permanently disable a
+  // schedule, under-blocking merely defers to the daemon's clear error — an
+  // unknown framework narrows to the INTERSECTION.
+  const framework = typeof merged.framework === "string" ? merged.framework : null;
   const out: unknown[] = [];
   for (const cfg of configs) {
     const c = (cfg ?? {}) as Record<string, unknown>;
-    out.push(c.scenario);
+    out.push(c.scenario); // read by every framework
     if (framework === "voice-agent-tester") out.push(c.app);
-    else out.push(c.stepsPrefix, c.stepsSuffix);
+    else if (framework === "aeval") out.push(c.stepsPrefix, c.stepsSuffix);
   }
   return out;
 }
@@ -305,7 +310,9 @@ export async function missingSecretNames(
   scope: SessionScope,
   configs: unknown[],
 ): Promise<string[]> {
-  const classified = await classifyReferencedSecrets(scope, collectSecretRefs(configs));
+  const refs = collectSecretRefs(configs);
+  if (refs.size === 0) return []; // nothing referenced — don't query the scope's secrets
+  const classified = await classifyReferencedSecrets(scope, refs);
   return classified.filter((c) => !c.present).map((c) => c.name);
 }
 

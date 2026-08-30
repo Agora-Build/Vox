@@ -1769,6 +1769,19 @@ describe("summarizeAevalFailure", () => {
     expect(summary).not.toContain("BEGIN PRIVATE KEY");
   });
 
+  it("redacts the YAML-ESCAPED form too (that is what aeval actually receives)", () => {
+    // resolveSecrets embeds values double-quoted and escaped, so a secret with
+    // a quote or backslash appears escaped in aeval's output — a raw-value-only
+    // scrub would miss it and persist the credential.
+    const raw = 'pa"ss\\word-1234';
+    const escaped = raw.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+    const log = `2026-01-01 00:00:00 | ERROR    | login rejected for "${escaped}"`;
+    const summary = summarizeAevalFailure(log, "", [raw, escaped]);
+    expect(summary).not.toContain(escaped);
+    expect(summary).not.toContain(raw);
+    expect(summary).toContain("login rejected");
+  });
+
   it("prefers the LAST errors so an early recoverable one can't bury the fatal one", () => {
     const log = [
       "2026-01-01 00:00:00 | ERROR    | transient retryable glitch",
