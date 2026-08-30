@@ -1,7 +1,8 @@
 /**
  * Pure helpers for interpreting an aeval run's console output.
- * Lives in shared/ (like shared/secrets.ts) so the daemon and its tests can
- * both use it without importing the daemon entrypoint, which runs main().
+ * Kept in its own module (not vox-agentd.ts) so tests can import it without
+ * pulling in the daemon entrypoint, which runs main() and calls process.exit.
+ * Daemon-local rather than shared/: nothing outside the daemon uses it.
  */
 
 /**

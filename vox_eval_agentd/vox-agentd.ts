@@ -34,7 +34,7 @@ import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { SECRET_PLACEHOLDER_REGEX, collectSecretRefs } from '../shared/secrets';
-import { summarizeAevalFailure } from '../shared/aeval-output';
+import { summarizeAevalFailure } from './aeval-output';
 import yaml from 'js-yaml';
 import { injectStorageSession } from './session-inject';
 import {

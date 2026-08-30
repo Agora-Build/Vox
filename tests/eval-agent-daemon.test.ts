@@ -15,7 +15,7 @@ import { execSync } from "child_process";
 import path from "path";
 import fs from "fs";
 import os from "os";
-import { summarizeAevalFailure } from "../shared/aeval-output";
+import { summarizeAevalFailure } from "../vox_eval_agentd/aeval-output";
 
 // Mock the parseResults function logic for testing
 function parseResults(csvContent: string): {

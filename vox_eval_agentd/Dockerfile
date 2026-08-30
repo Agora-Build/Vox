@@ -145,6 +145,7 @@ COPY vox_eval_agentd/assets/ /app/assets/
 COPY vox_eval_agentd/vox-agentd.ts /app/
 COPY vox_eval_agentd/session-inject.ts /app/
 COPY vox_eval_agentd/chunking.ts /app/
+COPY vox_eval_agentd/aeval-output.ts /app/
 COPY vox_eval_agentd/package.json /app/
 COPY shared/secrets.ts /shared/secrets.ts
 COPY shared/metrics.ts /shared/metrics.ts
