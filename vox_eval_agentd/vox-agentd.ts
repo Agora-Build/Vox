@@ -33,7 +33,8 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { SECRET_PLACEHOLDER_REGEX } from '../shared/secrets';
+import { SECRET_PLACEHOLDER_REGEX, collectSecretRefs } from '../shared/secrets';
+import { summarizeAevalFailure } from './aeval-output';
 import yaml from 'js-yaml';
 import { injectStorageSession } from './session-inject';
 import {
@@ -229,6 +230,9 @@ class VoxEvalAgentDaemon {
   private healthServer: HttpServer | null = null;
   private startTime = Date.now();
   private currentJobId: number | null = null;
+  // Decrypted values of the ACTIVE job's secrets, used only to scrub them out of
+  // any error text we persist. The daemon runs one job at a time.
+  private activeSecretValues: string[] = [];
 
   constructor(config: DaemonConfig) {
     this.config = config;
@@ -543,17 +547,22 @@ class VoxEvalAgentDaemon {
     }
   }
 
+  /** Escape a secret value for embedding in double-quoted YAML. */
+  private static yamlEscape(value: string): string {
+    return value
+      .replace(/\\/g, '\\\\')
+      .replace(/"/g, '\\"')
+      .replace(/\n/g, '\\n')
+      .replace(/\r/g, '\\r')
+      .replace(/\t/g, '\\t')
+      .replace(/\0/g, '\\0');
+  }
+
   private resolveSecrets(content: string, secrets: Record<string, string>): string {
     return content.replace(SECRET_PLACEHOLDER_REGEX, (_match, key) => {
       if (key in secrets) {
         // Always double-quote and escape for valid YAML
-        const escaped = secrets[key]
-          .replace(/\\/g, '\\\\')
-          .replace(/"/g, '\\"')
-          .replace(/\n/g, '\\n')
-          .replace(/\r/g, '\\r')
-          .replace(/\t/g, '\\t')
-          .replace(/\0/g, '\\0');
+        const escaped = VoxEvalAgentDaemon.yamlEscape(secrets[key]);
         return `"${escaped}"`;
       }
       console.warn(`[Daemon] Secret placeholder \${secrets.${key}} not found — leaving as-is`);
@@ -858,7 +867,7 @@ class VoxEvalAgentDaemon {
           // run's numbers are statistically unreliable and would pollute metrics.
           const reason = timedOut
             ? `aeval timed out after ${AEVAL_RUN_TIMEOUT_MS}ms`
-            : `aeval exited with code ${code}: ${stderr.trim().split('\n').pop() || 'unknown error'}`;
+            : `aeval exited with code ${code}: ${summarizeAevalFailure(stdout, stderr, this.activeSecretValues)}`;
           fail(new Error(reason));
           return;
         }
@@ -1853,6 +1862,13 @@ class VoxEvalAgentDaemon {
 
     // Fetch secrets for this job and resolve ${secrets.*} placeholders
     const jobSecrets = await this.fetchSecrets(job.id);
+    // Names referenced BEFORE substitution that the server did not supply. Taken
+    // pre-substitution deliberately: scanning the substituted text would treat a
+    // secret whose VALUE happens to contain "${secrets.X}" as an unresolved
+    // placeholder and fail a perfectly good job.
+    const unsuppliedNames = Array.from(
+      collectSecretRefs([scenario, app, stepsPrefix, stepsSuffix]),
+    ).filter((name) => !(name in jobSecrets));
     if (Object.keys(jobSecrets).length > 0) {
       scenario = this.resolveSecrets(scenario, jobSecrets);
       if (app) app = this.resolveSecrets(app, jobSecrets);
@@ -1863,6 +1879,13 @@ class VoxEvalAgentDaemon {
     const tempFiles: (string | null)[] = [];
 
     try {
+      // Assigned INSIDE the try whose finally clears it: set before the try, a
+      // throw in between would leave decrypted values resident until the next
+      // job overwrote them.
+      // Both forms: the YAML handed to aeval carries the ESCAPED value, so a
+      // secret containing a quote or backslash would appear escaped in its
+      // output and slip past a raw-value scrub.
+      this.activeSecretValues = Object.values(jobSecrets).flatMap((v) => [v, VoxEvalAgentDaemon.yamlEscape(v)]);
       // session-injected jobs get a Core-minted storageState instead of
       // login credentials (which the server structurally withholds).
       const sessionCfg = (job.config as Record<string, unknown> | null)?.sessionInjection;
@@ -1886,6 +1909,47 @@ class VoxEvalAgentDaemon {
         } else if (bundle && !stepsPrefix) {
           throw new Error('Session bundle received but the job has no stepsPrefix to inject into — refusing to run without applying the Core-minted session');
         }
+      }
+
+      // Fail fast on any ${secrets.X} that survived substitution. aeval aborts
+      // on an unresolved placeholder with "Unknown variable source: secrets",
+      // and its PyInstaller wrapper prints a generic banner as the LAST stderr
+      // line — so without this the job's recorded error is a packaging
+      // artifact instead of the cause.
+      //
+      // Placed AFTER session injection, deliberately: a session-injected job's
+      // brokered login secrets are structurally withheld from /jobs/:id/secrets
+      // (the agent must never hold durable credentials), and injectStorageSession
+      // rewrites platform.setup to storage mode — removing those references. A
+      // scan before that rewrite would fail every brokered-login job.
+      //
+      // Scanned post-substitution rather than inside resolveSecrets because
+      // substitution is skipped entirely when the secrets map is empty. Core
+      // rejects this at dispatch; this catches a secret deleted in between.
+      // Of the names the server didn't supply, which still remain in the strings
+      // this framework will actually read? Framework-aware because aeval never
+      // reads `app` and voice-agent-tester never reads stepsPrefix/stepsSuffix —
+      // a stale placeholder in an ignored field ran fine before. Checked AFTER
+      // session injection, which legitimately strips brokered login refs.
+      const active = framework === 'voice-agent-tester'
+        ? [scenario, app]
+        : [scenario, stepsPrefix, stepsSuffix];
+      const unresolved = unsuppliedNames.filter((name) =>
+        active.some((text) => typeof text === 'string' && text.includes('${secrets.' + name + '}')),
+      );
+      if (unresolved.length > 0) {
+        const names = [...unresolved].sort();
+        const plural = names.length > 1;
+        // Deliberately scope-agnostic: the daemon cannot distinguish "no such
+        // secret" from "the server withheld it for this job" (e.g. an org
+        // secret fenced on the job creator's membership), so it must not tell
+        // the user to go create one.
+        throw new Error(
+          `Unresolved secret placeholder(s): ${names.join(', ')}. ` +
+          `The server did not supply ${plural ? 'these secrets' : 'this secret'} for this job — ` +
+          `${plural ? 'they are' : 'it is'} either not configured for the workflow owner, or not ` +
+          `available to whoever started the run.`,
+        );
       }
 
       let results: EvalResult;
@@ -1919,6 +1983,7 @@ class VoxEvalAgentDaemon {
       throw error;
     } finally {
       this.cleanupTempFiles(...tempFiles);
+      this.activeSecretValues = []; // don't retain decrypted values past the job
     }
   }
 

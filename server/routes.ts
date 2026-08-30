@@ -11,7 +11,7 @@ import { registerApiV1Routes } from "./routes-api-v1";
 import { generateSignedUrlForUser } from "./s3";
 import { validateTierChoice, resolveTargetedDispatch, filterDispatchableAgents } from "./dispatch";
 import { getMarketplace } from "./marketplace";
-import { parsePlatformSetup, sessionScopeForWorkflow, evaluateSessionRequirement, getBrokeredSecretNames, ensureSession, stampOwnerSession, credentialKeyFor, SESSION_FRESH_MARGIN_SECONDS, classifyReferencedSecrets, findBrokeredMisuse, defaultBrokerTypeForName, resolveBrokerType, type SessionNeed, detectSessionNeed } from "./auth-session";
+import { parsePlatformSetup, sessionScopeForWorkflow, evaluateSessionRequirement, getBrokeredSecretNames, ensureSession, stampOwnerSession, credentialKeyFor, SESSION_FRESH_MARGIN_SECONDS, classifyReferencedSecrets, findBrokeredMisuse, defaultBrokerTypeForName, resolveBrokerType, type SessionNeed, detectSessionNeed, missingSecretNames, resolvableSecretSources } from "./auth-session";
 import { validateRegisterPayload, cacheBrokerMintSecret, hasBrokerMintSecret } from "./broker-registry";
 import { deriveApiKeyStatus } from "./api-key-status";
 import { isStaleOfflineAgent } from "./agent-liveness";
@@ -271,6 +271,12 @@ async function updateClashEloRatings(
     drawCount: (ratingB?.drawCount ?? 0) + bDraw,
   });
 }
+
+// Deliberately avoids "you have not configured": secrets resolve in the WORKFLOW
+// OWNER's scope, so someone running another user's public workflow cannot fix
+// this themselves.
+const MISSING_SECRETS_MSG = (names: string[]) =>
+  `This workflow references secret(s) ${names.join(", ")} that are not configured for its owner. If the workflow is yours, create them under Console → Secrets (names must match exactly); otherwise ask its owner to.`;
 
 export async function registerRoutes(
   httpServer: Server,
@@ -2180,6 +2186,15 @@ export async function registerRoutes(
         }
       }
 
+      // Same guaranteed-failure gate as the run route: a schedule referencing an
+      // unconfigured secret would emit a doomed job on every tick.
+      {
+        const missing = await missingSecretNames(sessionScopeForWorkflow(workflow), resolvableSecretSources([workflow.config, evalSet?.config]));
+        if (missing.length > 0) {
+          return res.status(400).json({ error: MISSING_SECRETS_MSG(missing) });
+        }
+      }
+
       const type = scheduleType || "once";
       let nextRunAt: Date | null = null;
 
@@ -2291,6 +2306,22 @@ export async function registerRoutes(
         // silently disabled again next tick (a flap whose only signal is a
         // server log); this returns the actionable 403 instead. Single source
         // of truth: sessionPoolViolation.
+        // Re-enabling with a missing secret would 200 here and be silently
+        // disabled again on the next tick (only a server log to show for it) —
+        // the same flap PR #123 closed for pool violations. Includes the EVAL
+        // SET config: the scheduler checks both, so omitting it here would
+        // leave exactly the flap this is meant to close.
+        // Keyed on wantsEnable ALONE: secret resolution has nothing to do with
+        // region or tier, and blocking those would stop an owner from
+        // repointing an already-broken (already disabled) schedule — i.e. from
+        // fixing the very thing they came for.
+        if (wantsEnable) {
+          const schedEvalSet = schedule.evalSetId != null ? await storage.getEvalSet(schedule.evalSetId) : undefined;
+          const missing = await missingSecretNames(sessionScopeForWorkflow(wf), resolvableSecretSources([wf.config, schedEvalSet?.config]));
+          if (missing.length > 0) {
+            return res.status(400).json({ error: MISSING_SECRETS_MSG(missing) });
+          }
+        }
         if (tierChanged || wantsEnable) {
           const effectiveTier = (targetTier ?? schedule.targetTier) as "private" | "team" | "public" | "shared";
           const schedSessionReq = await detectSessionNeed(wf);
@@ -2423,6 +2454,13 @@ export async function registerRoutes(
         const violation = sessionPoolViolation(schedule.targetTier, workflow, user);
         if (violation) {
           return res.status(400).json({ error: `This schedule's pool is no longer valid: ${violation}. Edit the schedule's tier first.` });
+        }
+      }
+      // Secrets can be deleted after the schedule was created — re-check.
+      {
+        const missing = await missingSecretNames(sessionScopeForWorkflow(workflow), resolvableSecretSources([workflow.config, evalSet?.config]));
+        if (missing.length > 0) {
+          return res.status(400).json({ error: MISSING_SECRETS_MSG(missing) });
         }
       }
       const stamp = await stampOwnerSession(workflow, jobConfig as Record<string, unknown>, runNowSessionReq);
@@ -4005,6 +4043,20 @@ export async function registerRoutes(
         });
       }
 
+      // A referenced-but-unconfigured secret is a guaranteed-failure dispatch:
+      // the daemon leaves the placeholder verbatim and aeval aborts on it with
+      // an opaque PyInstaller exit. Reject with the exact names instead.
+      // Narrowed to the fields the daemon actually resolves, so the gate and the
+      // daemon agree by construction. Filters the already-computed `classified`
+      // rather than re-querying.
+      const resolvableRefs = collectSecretRefs(resolvableSecretSources([workflow.config, evalSet.config]));
+      const missingSecrets = classified
+        .filter((c) => !c.present && resolvableRefs.has(c.name))
+        .map((c) => c.name);
+      if (missingSecrets.length > 0) {
+        return res.status(400).json({ error: MISSING_SECRETS_MSG(missingSecrets) });
+      }
+
       let jobRegion: string | null;
       let targeting: number | null = null;
       let settlementContext: unknown = undefined;
@@ -4249,7 +4301,14 @@ export async function registerRoutes(
         if (es && canAccessResource(user, es)) configs.push(es.config);
       }
       const scope = sessionScopeForWorkflow(workflow);
-      const referencedSecrets = await classifyReferencedSecrets(scope, collectSecretRefs(configs));
+      const classifiedRefs = await classifyReferencedSecrets(scope, collectSecretRefs(configs));
+      // `resolvable` = the daemon would actually substitute this one (it only
+      // touches scenario/app/stepsPrefix/stepsSuffix). The run gate narrows to
+      // exactly these, so the UI must too — otherwise it disables Run for a
+      // placeholder sitting in some unresolved config key that the server would
+      // happily accept.
+      const resolvableHere = collectSecretRefs(resolvableSecretSources(configs));
+      const referencedSecrets = classifiedRefs.map((c) => ({ ...c, resolvable: resolvableHere.has(c.name) }));
 
       // Same detector the run route enforces with — not "any brokered secret
       // anywhere" (the two only coincide because findBrokeredMisuse rejects

@@ -15,6 +15,7 @@ import { execSync } from "child_process";
 import path from "path";
 import fs from "fs";
 import os from "os";
+import { summarizeAevalFailure } from "../vox_eval_agentd/aeval-output";
 
 // Mock the parseResults function logic for testing
 function parseResults(csvContent: string): {
@@ -1698,5 +1699,105 @@ describe("Eval Agent Daemon - Script Validation", () => {
       `node -e "require('esbuild').transformSync(require('fs').readFileSync('${daemonTsPath}','utf8'),{loader:'ts'})"`,
       { stdio: "pipe", timeout: 15000, cwd: projectRoot },
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// aeval failure summarization (job #31006 regression)
+// ---------------------------------------------------------------------------
+
+describe("summarizeAevalFailure", () => {
+  // Verbatim shape of the run that produced job #31006: aeval's real diagnosis
+  // is mid-stream, and PyInstaller's generic banner is the LAST stderr line —
+  // which the old "last line of stderr" heuristic always picked.
+  const AEVAL_STDOUT = [
+    "2026-08-30 05:45:11.252 | INFO     | Loaded platform: agora",
+    "2026-08-30 05:45:11.336 | ERROR    | Unknown variable source: secrets",
+    "2026-08-30 05:45:11.337 | ERROR    | Step 1 failed: platform.setup - Unknown variable source: secrets",
+    "2026-08-30 05:45:11.411 | ERROR    | Test 1 failed: Step 1 (platform.setup) failed: Unknown variable source: secrets",
+    "2026-08-30 05:45:11.413 | INFO     | === Ending Session ===",
+  ].join("\n");
+  const PYI_BANNER = "[PYI-3739:ERROR] Failed to execute script 'pyi_entrypoint' due to unhandled exception!";
+
+  it("surfaces aeval's own diagnosis instead of the PyInstaller banner", () => {
+    const summary = summarizeAevalFailure(AEVAL_STDOUT, PYI_BANNER);
+    expect(summary).toContain("Unknown variable source: secrets");
+    expect(summary).not.toContain("pyi_entrypoint");
+    // loguru's "timestamp | LEVEL |" prefix is stripped for compactness
+    expect(summary).not.toContain("| ERROR    |");
+  });
+
+  it("finds ERROR lines on stderr too (loguru's sink may be either stream)", () => {
+    const summary = summarizeAevalFailure("", `${AEVAL_STDOUT}\n${PYI_BANNER}`);
+    expect(summary).toContain("Unknown variable source: secrets");
+  });
+
+  it("falls back to the tail with noise filtered when there is no ERROR line", () => {
+    const summary = summarizeAevalFailure("", `Traceback (most recent call last):\nValueError: boom\n${PYI_BANNER}`);
+    expect(summary).toContain("ValueError: boom");
+    expect(summary).not.toContain("pyi_entrypoint");
+  });
+
+  it("redacts decrypted secret VALUES that aeval echoed back", () => {
+    // resolveSecrets substitutes real values into the YAML, so an aeval ERROR
+    // line can echo a live credential — and this string is persisted as the
+    // job's user-visible error.
+    const secret = "sk-live-abcdef123456";
+    const log = `2026-01-01 00:00:00 | ERROR    | step failed: password="${secret}" rejected`;
+    const summary = summarizeAevalFailure(log, "", [secret]);
+    expect(summary).not.toContain(secret);
+    expect(summary).toContain("[redacted]");
+    expect(summary).toContain("rejected"); // surrounding diagnosis is preserved
+  });
+
+  it("ignores very short secret values when redacting (would shred the message)", () => {
+    const summary = summarizeAevalFailure("2026-01-01 00:00:00 | ERROR    | boom", "", ["a"]);
+    expect(summary).toContain("boom");
+  });
+
+  it("redacts a MULTI-LINE secret value (PEM/JSON) line by line", () => {
+    // The summary is built from already-split lines, so no single line holds a
+    // multi-line value — each of its lines has to be redacted individually or
+    // fragments survive into the persisted error.
+    const pem = "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BA\n-----END PRIVATE KEY-----";
+    const log = [
+      "2026-01-01 00:00:00 | ERROR    | setup failed with key -----BEGIN PRIVATE KEY-----",
+      "2026-01-01 00:00:00 | ERROR    | MIIEvQIBADANBgkqhkiG9w0BA",
+    ].join("\n");
+    const summary = summarizeAevalFailure(log, "", [pem]);
+    expect(summary).not.toContain("MIIEvQIBADANBgkqhkiG9w0BA");
+    expect(summary).not.toContain("BEGIN PRIVATE KEY");
+  });
+
+  it("redacts the YAML-ESCAPED form too (that is what aeval actually receives)", () => {
+    // resolveSecrets embeds values double-quoted and escaped, so a secret with
+    // a quote or backslash appears escaped in aeval's output — a raw-value-only
+    // scrub would miss it and persist the credential.
+    const raw = 'pa"ss\\word-1234';
+    const escaped = raw.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+    const log = `2026-01-01 00:00:00 | ERROR    | login rejected for "${escaped}"`;
+    const summary = summarizeAevalFailure(log, "", [raw, escaped]);
+    expect(summary).not.toContain(escaped);
+    expect(summary).not.toContain(raw);
+    expect(summary).toContain("login rejected");
+  });
+
+  it("prefers the LAST errors so an early recoverable one can't bury the fatal one", () => {
+    const log = [
+      "2026-01-01 00:00:00 | ERROR    | transient retryable glitch",
+      ...Array.from({ length: 5 }, (_, i) => `2026-01-01 00:00:0${i} | INFO     | retrying ${i}`),
+      "2026-01-01 00:00:09 | ERROR    | fatal: the real cause",
+    ].join("\n");
+    const summary = summarizeAevalFailure(log, "");
+    expect(summary).toContain("fatal: the real cause");
+  });
+
+  it("never returns an empty string", () => {
+    expect(summarizeAevalFailure("", "")).toBe("unknown error");
+  });
+
+  it("caps length so one bad run can't bloat the job's error column", () => {
+    const flood = Array.from({ length: 200 }, (_, i) => `2026-01-01 00:00:00 | ERROR    | line ${i}`).join("\n");
+    expect(summarizeAevalFailure(flood, "").length).toBeLessThanOrEqual(500);
   });
 });

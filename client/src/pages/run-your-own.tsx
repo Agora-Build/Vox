@@ -72,7 +72,7 @@ interface RunTargetAgent {
 
 interface RunTargetsResponse {
   agents: { mine: RunTargetAgent[]; shared: RunTargetAgent[] };
-  referencedSecrets: Array<{ name: string; class: "runtime" | "protected"; present: boolean }>;
+  referencedSecrets: Array<{ name: string; brokerType: string | null; present: boolean; resolvable?: boolean }>;
   tiers: { tier: string; available: boolean; onlineAgents?: number; reason?: string }[];
 }
 
@@ -228,7 +228,14 @@ export default function SelfTest() {
   const selectedAgent = targetTokenId === "any" ? null :
     [...(runTargets?.agents.mine ?? []), ...pickerShared].find((a) => String(a.tokenId) === targetTokenId);
   const runtimeExposed = (runTargets?.referencedSecrets ?? [])
-    .filter((s) => s.class === "runtime" && s.present).map((s) => s.name);
+    .filter((s) => s.brokerType == null && s.present).map((s) => s.name);
+  // Referenced but not configured for the workflow owner → the run would fail
+  // with an unresolved ${secrets.X} placeholder. The server rejects it too;
+  // surfacing it here means the user never spends an agent run to find out.
+  const missingSecrets = (runTargets?.referencedSecrets ?? [])
+    // `resolvable` mirrors the server gate exactly — a placeholder in a config
+    // key the daemon never substitutes must NOT disable the Run button.
+    .filter((s) => !s.present && s.resolvable !== false).map((s) => s.name);
   const showRuntimeWarning = selectedAgent?.dispatchTier === "shared" && runtimeExposed.length > 0;
 
   const runEvalMutation = useMutation({
@@ -602,6 +609,16 @@ export default function SelfTest() {
               </div>
             </CardContent>
             <CardFooter className="relative z-10 flex-col items-stretch gap-3">
+              {missingSecrets.length > 0 && (
+                <Alert variant="destructive">
+                  <AlertTitle>Missing secrets — this run would fail</AlertTitle>
+                  <AlertDescription>
+                    This workflow references {missingSecrets.length > 1 ? "secrets" : "a secret"} that {missingSecrets.length > 1 ? "are" : "is"} not
+                    configured for its owner: {missingSecrets.join(", ")}. If the workflow is yours, create
+                    {missingSecrets.length > 1 ? "them" : "it"} under Console → Secrets (names must match exactly); otherwise ask its owner to.
+                  </AlertDescription>
+                </Alert>
+              )}
               {showRuntimeWarning && (
                 <Alert variant="destructive">
                   <AlertTitle>This workflow uses runtime secrets</AlertTitle>
@@ -618,7 +635,7 @@ export default function SelfTest() {
                 className="w-full"
                 size="lg"
                 onClick={handleRunEval}
-                disabled={runEvalMutation.isPending || isJobRunning || !selectedWorkflowId || !selectedEvalSetId || !region || runTargetsFetching || noPoolAvailable || (showRuntimeWarning && !ackRuntime)}
+                disabled={runEvalMutation.isPending || isJobRunning || !selectedWorkflowId || !selectedEvalSetId || !region || runTargetsFetching || noPoolAvailable || missingSecrets.length > 0 || (showRuntimeWarning && !ackRuntime)}
               >
                 {runEvalMutation.isPending ? (
                   <><Loader2 className="mr-2 h-4 w-4 animate-spin" /> Starting...</>

@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { BASE_NA, BASE_EU } from "./helpers/regions";
+import { eq } from "drizzle-orm";
 
 const BASE_URL = process.env.TEST_BASE_URL || "http://localhost:5000";
 const ADMIN_EMAIL = process.env.TEST_ADMIN_EMAIL || "admin@vox.local";
@@ -157,5 +158,125 @@ describe("pooled dispatch API", () => {
     expect(byTier.team.reason).toBe("no-org");
     expect(byTier.shared.available).toBe(false);
     expect(byTier.shared.reason).toBe("not-pooled-yet");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Missing-secret dispatch gate (job #31006 regression)
+// ---------------------------------------------------------------------------
+
+describe("missing secrets are rejected at dispatch, not discovered by a failed run", () => {
+  let cookie: string;
+  let brokenWorkflowId: number;
+  let evalSetId: number;
+  const GHOST = `GHOST_SECRET_${Date.now()}`;
+
+  beforeAll(async () => {
+    cookie = await login();
+    const providers = await (await fetch(`${BASE_URL}/api/providers`)).json();
+    // A workflow whose scenario references a secret nobody has configured.
+    const wfRes = await authFetch(cookie, `${BASE_URL}/api/workflows`, {
+      method: "POST",
+      body: JSON.stringify({
+        name: `missing-secret-wf-${Date.now()}`,
+        visibility: "private",
+        providerId: providers[0].id,
+        // stepsPrefix is the workflow's platform.setup — exactly where the
+        // reported failure (job #31006) referenced its secrets.
+        config: { framework: "aeval", stepsPrefix: `platform:\n  setup:\n    - type: control.log\n      message: \${secrets.${GHOST}}\n` },
+      }),
+    });
+    expect(wfRes.ok).toBe(true);
+    brokenWorkflowId = (await wfRes.json()).id;
+
+    const esRes = await authFetch(cookie, `${BASE_URL}/api/eval-sets`, {
+      method: "POST",
+      body: JSON.stringify({ name: `ms-es-${Date.now()}`, visibility: "private", config: { scenario: "name: y" } }),
+    });
+    expect(esRes.ok).toBe(true);
+    evalSetId = (await esRes.json()).id;
+  });
+
+  afterAll(async () => {
+    if (brokenWorkflowId) await authFetch(cookie, `${BASE_URL}/api/workflows/${brokenWorkflowId}`, { method: "DELETE" });
+    if (evalSetId) await authFetch(cookie, `${BASE_URL}/api/eval-sets/${evalSetId}`, { method: "DELETE" });
+  });
+
+  it("gates a workflow that OMITS framework (the reported job #31006 shape)", async () => {
+    // No `framework` key and no `app`: the run can only be aeval, so the gate
+    // must still cover stepsPrefix. Previously this slipped through entirely.
+    const providers = await (await fetch(`${BASE_URL}/api/providers`)).json();
+    const ghost = `GHOST_NOFW_${Date.now()}`;
+    const wfRes = await authFetch(cookie, `${BASE_URL}/api/workflows`, {
+      method: "POST",
+      body: JSON.stringify({
+        name: `missing-secret-nofw-${Date.now()}`,
+        visibility: "private",
+        providerId: providers[0].id,
+        config: { stepsPrefix: `platform:\n  setup:\n    - type: control.log\n      message: \${secrets.${ghost}}\n` },
+      }),
+    });
+    expect(wfRes.ok).toBe(true);
+    const wfId = (await wfRes.json()).id;
+
+    const res = await authFetch(cookie, `${BASE_URL}/api/workflows/${wfId}/run`, {
+      method: "POST",
+      body: JSON.stringify({ region: BASE_NA, targetTier: "private", evalSetId }),
+    });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toContain(ghost);
+
+    await authFetch(cookie, `${BASE_URL}/api/workflows/${wfId}`, { method: "DELETE" });
+  });
+
+  it("run route 400s and NAMES the missing secret (no job created)", async () => {
+    const res = await authFetch(cookie, `${BASE_URL}/api/workflows/${brokenWorkflowId}/run`, {
+      method: "POST",
+      body: JSON.stringify({ region: BASE_NA, targetTier: "private", evalSetId }),
+    });
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    // The whole point: the operator learns WHICH secret, before burning a run.
+    expect(body.error).toContain(GHOST);
+  });
+
+  it("re-enabling a schedule with a missing secret 400s instead of flapping", async () => {
+    // A schedule created while the secret existed, then the secret deleted:
+    // re-enable used to 200 and be silently disabled again on the next tick.
+    // We can't create one through the gated route, so insert directly.
+    const { db } = await import("../server/storage");
+    const { evalSchedules } = await import("../shared/schema");
+    const [sched] = await db.insert(evalSchedules).values({
+      name: `ms-reenable-${Date.now()}`,
+      workflowId: brokenWorkflowId,
+      evalSetId,
+      createdBy: 1,
+      region: BASE_NA,
+      targetTier: "public",
+      scheduleType: "recurring",
+      cronExpression: "0 3 * * *",
+      isEnabled: false,
+    } as any).returning();
+
+    const res = await authFetch(cookie, `${BASE_URL}/api/eval-schedules/${sched.id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ isEnabled: true }),
+    });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toContain(GHOST);
+
+    await db.delete(evalSchedules).where(eq(evalSchedules.id, sched.id));
+  });
+
+  it("schedule create 400s on the same workflow", async () => {
+    const res = await authFetch(cookie, `${BASE_URL}/api/eval-schedules`, {
+      method: "POST",
+      body: JSON.stringify({
+        name: `ms-sched-${Date.now()}`, workflowId: brokenWorkflowId, evalSetId,
+        region: BASE_NA, targetTier: "private", scheduleType: "recurring", cronExpression: "0 3 * * *",
+      }),
+    });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toContain(GHOST);
   });
 });

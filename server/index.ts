@@ -13,7 +13,7 @@ import { parseNextCronRun } from "./cron";
 import { setupClashWebSocket } from "./clash-ws";
 import { loadPlugins } from "./plugins/loader";
 import { setMarketplace, getMarketplace, type EvalMarketplace } from "./marketplace";
-import { stampOwnerSession, detectSessionNeed } from "./auth-session";
+import { stampOwnerSession, detectSessionNeed, missingSecretNames, sessionScopeForWorkflow, resolvableSecretSources } from "./auth-session";
 import pkg from "pg";
 const { Pool } = pkg;
 
@@ -424,6 +424,22 @@ function startBackgroundWorker() {
             const violation = sessionPoolViolation(schedule.targetTier, workflow, creator);
             if (violation) {
               log(`Schedule "${schedule.name}" would dispatch into a disallowed pool (${violation}) — disabling`, "scheduler");
+              await storage.updateEvalSchedule(schedule.id, { isEnabled: false });
+              continue;
+            }
+          }
+          // A secret the workflow references can be deleted AFTER the schedule
+          // was created; every tick would then emit a job that can only fail on
+          // an unresolved ${secrets.X}. Mirror the misconfigured/pool handling:
+          // disable the schedule with a named reason instead of queueing doomed
+          // work forever. This keys on whether the secret ROW exists, not on
+          // whether it reaches the agent — so a brokered login secret that
+          // exists is fine (Core mints from it), and one that doesn't is
+          // correctly flagged, since the mint would fail too.
+          {
+            const missing = await missingSecretNames(sessionScopeForWorkflow(workflow), resolvableSecretSources([workflow.config, evalSet?.config]));
+            if (missing.length > 0) {
+              log(`Schedule "${schedule.name}" references unconfigured secret(s) ${missing.join(", ")} — disabling`, "scheduler");
               await storage.updateEvalSchedule(schedule.id, { isEnabled: false });
               continue;
             }
