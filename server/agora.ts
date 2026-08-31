@@ -102,6 +102,24 @@ export function generateEventChannelName(eventId: number): string {
   return `clash-event-${eventId}`;
 }
 
+/**
+ * The ConvoAI session name for a moderator on `channelName`.
+ *
+ * ConvoAI treats `name` as the session's unique key — starting a second session
+ * under a name already in use returns `409 TaskConflict: A session with the
+ * same name already exists`. This used to be the constant "clash-moderator",
+ * which meant only ONE moderator could exist account-wide: two concurrent
+ * matches collided, and a session leaked by a crashed or interrupted run
+ * blocked every later start until it idled out.
+ *
+ * Scoping it to the channel makes the dedup key match the real invariant — a
+ * channel IS a match, so one moderator per channel — while letting separate
+ * matches run at the same time.
+ */
+export function moderatorSessionName(channelName: string): string {
+  return `clash-moderator-${channelName}`;
+}
+
 // ---------------------------------------------------------------------------
 // ConvoAI Moderator lifecycle
 // ---------------------------------------------------------------------------
@@ -180,7 +198,7 @@ export async function startModerator(opts: StartModeratorOptions): Promise<strin
   };
 
   const payload = {
-    name: "clash-moderator",
+    name: moderatorSessionName(opts.channelName),
     properties: {
       channel: opts.channelName,
       token: opts.token,

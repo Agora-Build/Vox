@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { generateEventChannelName, moderatorSessionName } from "../server/agora";
 
 /**
  * Agora Integration Unit Tests
@@ -495,5 +496,28 @@ describe("Agora Integration", () => {
       expect(check("id", "cert", undefined, "secret", '{"llm":{}}')).toBe(false);
       expect(check(undefined, "cert", "key", "secret", '{"llm":{}}')).toBe(false);
     });
+  });
+});
+
+describe("moderatorSessionName", () => {
+  // ConvoAI treats the session `name` as a unique key: starting a second
+  // session under a name already in use returns 409 TaskConflict. The name was
+  // once the constant "clash-moderator", so only ONE moderator could exist
+  // account-wide — concurrent matches collided, and a session leaked by an
+  // interrupted run blocked every later start until it idled out.
+  it("is distinct for distinct channels, so concurrent matches don't collide", () => {
+    const a = moderatorSessionName(generateEventChannelName(1));
+    const b = moderatorSessionName(generateEventChannelName(2));
+    expect(a).not.toBe(b);
+  });
+
+  it("is stable for the same channel, so a duplicate start on one match still conflicts", () => {
+    const channel = generateEventChannelName(42);
+    expect(moderatorSessionName(channel)).toBe(moderatorSessionName(channel));
+    expect(moderatorSessionName(channel)).toBe("clash-moderator-clash-event-42");
+  });
+
+  it("is never the bare constant that caused the account-wide collision", () => {
+    expect(moderatorSessionName(generateEventChannelName(7))).not.toBe("clash-moderator");
   });
 });

@@ -42,6 +42,12 @@ const hasCredentials = isAgoraConfigured() && isModeratorConfigured();
 
 describe.skipIf(!hasCredentials)("Agora E2E (real API calls)", () => {
   const testChannelName = `test-e2e-${Date.now()}`;
+  // Per-run event id, matching testChannelName's convention above. The 409
+  // TaskConflict that used to red this suite came from the session name being a
+  // constant in server/agora.ts (fixed there, and pinned in agora.test.ts), not
+  // from the channel — but a fixed channel would still let two suites running
+  // at once collide, since the session name derives from it.
+  const testEventId = 90000 + (Date.now() % 10000);
   let agentId: string | null = null;
 
   describe("RTC Token Generation", () => {
@@ -69,7 +75,7 @@ describe.skipIf(!hasCredentials)("Agora E2E (real API calls)", () => {
 
   describe("ConvoAI Moderator Lifecycle", () => {
     it("starts a moderator agent", async () => {
-      const channelName = generateEventChannelName(99999);
+      const channelName = generateEventChannelName(testEventId);
       const token = generateRtcToken(channelName, 500, "publisher");
       const prompt = buildAnnouncementPrompt("TestAgentA", "TestAgentB", "Testing", 60);
 
