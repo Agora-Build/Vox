@@ -157,10 +157,17 @@ export function createBoundedCapture(limit = CAPTURE_LIMIT) {
  * strings, putting raw stdout into the persisted error.
  */
 export function selectDiagnosisSource(stdout: string, stderr: string): string {
+  if (hasAevalDiagnosis(stderr)) return '';
   // Admission of the untrusted stream uses the STRICT loguru-shaped predicate:
   // a bare "| ERROR |" is trivially present in a page dump, which would hand
   // the quarantined stream a free pass into the persisted error.
-  return !hasAevalDiagnosis(stderr) && hasLoguruDiagnosis(stdout) ? stdout : '';
+  if (!hasLoguruDiagnosis(stdout)) return '';
+  // Admitted — but hand over ONLY the loguru-shaped lines. The summarizer picks
+  // lines with the LENIENT predicate and keeps the last three, so passing the
+  // whole stream would let page-dump text containing a bare "| ERROR |" both
+  // reach the persisted error and bury the real line that earned admission.
+  // Selection is now as strict as admission.
+  return stdout.split('\n').filter((l) => hasLoguruDiagnosis(l)).join('\n');
 }
 
 /**
@@ -173,15 +180,14 @@ export function describeMintFailure(stdout: string, stderr: string, forms: strin
   // Short-circuit rather than concatenating up to 2×CAPTURE_LIMIT just to test
   // for emptiness.
   if (!source.trim() && !stderr.trim()) return 'login failed with no output';
-  // Scrub the INPUTS, not just the result. summarizeAevalFailure ignores needles
-  // shorter than 4 chars and truncates to 500, so a 1-3 char password sitting on
-  // that boundary could be cut into a prefix the floorless scrub can no longer
-  // match. Redacting before the summarizer ever sees the text removes the whole
-  // class; the scrub on the way out stays as defense in depth.
-  return scrubCredentials(
-    summarizeAevalFailure(scrubCredentials(source, forms), scrubCredentials(stderr, forms), forms),
-    forms,
-  );
+  // Pass minNeedleLength 0 rather than pre-scrubbing the inputs. The summarizer
+  // redacts AFTER choosing lines and BEFORE truncating, so dropping its 4-char
+  // floor covers a short password without the truncation gap — and, unlike an
+  // input pre-scrub, cannot rewrite the very tokens classification depends on
+  // (a password of "E" would turn every "ERROR" into "[redacted]RROR", so no
+  // line matches and the artifacts banner wins again). The outer scrub stays as
+  // defense in depth.
+  return scrubCredentials(summarizeAevalFailure(source, stderr, forms, 0), forms);
 }
 
 /** Real mint: one-step aeval scenario running setup:account → save_storage_state. */

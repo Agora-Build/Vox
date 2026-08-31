@@ -182,15 +182,47 @@ describe("mint failure summary (what the broker reports)", () => {
     expect(selectDiagnosisSource(realLoguru, "")).toBe(realLoguru);
   });
 
-  it("redacts a credential shorter than the summarizer's 4-char floor", () => {
-    // The summarizer ignores needles under 4 chars and truncates to 500, so a
-    // short password on that boundary could be cut into an unmatchable prefix.
-    // Scrubbing the inputs first removes the class entirely.
+  it("redacts a credential shorter than the summarizer's default floor", () => {
     const pw = "ab1";
     const stderr = `2026-08-30 17:49:50.860 | ERROR | login failed with password=${pw} end`;
     const summary = describeMintFailure("", stderr, credentialForms(["a@b.co", pw]));
     expect(summary).not.toContain("password=ab1");
     expect(summary).toContain("[redacted]");
+  });
+
+  it("still finds the ERROR line when the password is a substring of 'ERROR'", () => {
+    // Pre-scrubbing the INPUT would rewrite the word ERROR itself, so no line
+    // would classify and the artifacts banner would win again — the exact
+    // regression this PR exists to prevent. Redaction must happen after
+    // classification, never before it.
+    for (const pw of ["E", "R", "|", "ERROR"]) {
+      const summary = describeMintFailure("", REAL_FAILED_MINT_STDERR, credentialForms(["a@b.co", pw]));
+      expect(summary).not.toContain("Artifacts saved to");
+      expect(summary.toLowerCase()).toContain("platform.setup");
+    }
+  });
+
+  it("never lets an empty needle shred the message", () => {
+    // A floor of 0 admits "" unless guarded, and "".split("") splits between
+    // every character.
+    const summary = describeMintFailure("", REAL_FAILED_MINT_STDERR, ["", "  "]);
+    expect(summary).toContain("Step 1 failed: platform.setup");
+    expect(summary).not.toContain("[redacted][redacted]");
+  });
+
+  it("hands the summarizer only loguru-shaped lines from admitted stdout", () => {
+    // Once stdout is admitted, page-dump text with a bare "| ERROR |" must not
+    // be selectable — it would both reach the persisted error and bury the real
+    // loguru line that earned admission (the summarizer keeps the LAST three).
+    const stdout = [
+      "2026-08-30 17:49:50.860 | ERROR | Step 1 failed: platform.setup",
+      "page dump | ERROR | cookie=SESSIONVALUE123",
+      "more page text | ERROR | storageState fragment",
+    ].join("\n");
+    const summary = describeMintFailure(stdout, "", []);
+    expect(summary).toContain("Step 1 failed: platform.setup");
+    expect(summary).not.toContain("SESSIONVALUE123");
+    expect(summary).not.toContain("storageState fragment");
   });
 
   it("credentialForms derives the escaped form from the same stringify the scenario uses", () => {

@@ -61,7 +61,25 @@ export function hasLoguruDiagnosis(text: string): boolean {
   return LOGURU_DIAGNOSIS_LINE.test(text);
 }
 
-export function summarizeAevalFailure(stdout: string, stderr: string, redact: string[] = []): string {
+/**
+ * Shortest redaction needle honored. 4 by default; the broker passes 0.
+ *
+ * Scrubbing happens AFTER line classification and BEFORE truncation, which is
+ * what makes a floor of 0 safe to offer: a one-character credential would
+ * otherwise have to be scrubbed out of the INPUT, and rewriting the input can
+ * destroy the very tokens classification depends on — a password of "E" turns
+ * every "ERROR" into "[redacted]RROR", DIAGNOSIS_LINE stops matching, and the
+ * summarizer falls back to the tail path and reports the artifacts banner
+ * again. Redacting the already-chosen lines cannot do that.
+ */
+export const DEFAULT_MIN_NEEDLE_LENGTH = 4;
+
+export function summarizeAevalFailure(
+  stdout: string,
+  stderr: string,
+  redact: string[] = [],
+  minNeedleLength: number = DEFAULT_MIN_NEEDLE_LENGTH,
+): string {
   const NOISE = /^\s*(\[PYI-\d+[^\]]*\]|Traceback \(most recent call last\):)/;
   const lines = `${stdout}\n${stderr}`
     .split('\n')
@@ -79,15 +97,19 @@ export function summarizeAevalFailure(stdout: string, stderr: string, redact: st
   // split+trimmed, so no single line contains the whole thing — redact each of
   // its lines too, or fragments would survive.
   //
-  // Floor is 4, deliberately low: the failure modes are asymmetric. Over-
-  // redacting is cosmetic (a secret whose value is literally "prod" garbles a
-  // word); under-redacting puts a live credential in a persisted, user-visible
-  // job error. Short PINs and account IDs are exactly the values a higher floor
-  // would leak.
+  // Default floor is 4, deliberately low: the failure modes are asymmetric.
+  // Over-redacting is cosmetic (a secret whose value is literally "prod"
+  // garbles a word); under-redacting puts a live credential in a persisted,
+  // user-visible job error. Short PINs and account IDs are exactly the values a
+  // higher floor would leak. Callers that can accept the cosmetic damage — the
+  // broker, where the only needles are one login pair — pass 0 for no floor.
   const needles = Array.from(
     new Set(redact.flatMap((v) => (v ? [v, ...v.split('\n')] : []).map((x) => x.trim()))),
   )
-    .filter((v) => v.length >= 4)
+    // `v.length >= 1` is not redundant with the floor: a floor of 0 would admit
+    // the empty string, and "".split("") splits between every character, which
+    // would replace the entire message with [redacted] separators.
+    .filter((v) => v.length >= 1 && v.length >= minNeedleLength)
     .sort((a, b) => b.length - a.length); // longest first, so wholes beat fragments
   const scrub = (text: string) =>
     needles.reduce((acc, value) => acc.split(value).join('[redacted]'), text);
