@@ -42,6 +42,22 @@ const hasCredentials = isAgoraConfigured() && isModeratorConfigured();
 
 describe.skipIf(!hasCredentials)("Agora E2E (real API calls)", () => {
   const testChannelName = `test-e2e-${Date.now()}`;
+  // Per-run event id, matching testChannelName's convention above. The 409
+  // TaskConflict that used to red this suite came from the session name being a
+  // constant in server/agora.ts (fixed there, and pinned in agora.test.ts), not
+  // from the channel — but a fixed channel would still let two suites running
+  // at once collide, since the session name derives from it.
+  //
+  // Random over Date.now()-derived: a leaked session lives for ConvoAI's 600s
+  // idle_timeout, so the id has to stay unique across a 10-MINUTE window, not a
+  // few seconds. A narrow timestamp window would recreate the exact 409 this
+  // suite exists to avoid.
+  // Offset clear of the clash_events id serial. A bare random in [0, 1e9) can
+  // land on a REAL event id, and since the session name derives from the
+  // channel, the suite would then start a moderator on a live event's channel
+  // in the same Agora project — publishing audio into it, or 409ing against its
+  // moderator and blocking it.
+  const testEventId = 2_000_000_000 + Math.floor(Math.random() * 1_000_000);
   let agentId: string | null = null;
 
   describe("RTC Token Generation", () => {
@@ -69,7 +85,7 @@ describe.skipIf(!hasCredentials)("Agora E2E (real API calls)", () => {
 
   describe("ConvoAI Moderator Lifecycle", () => {
     it("starts a moderator agent", async () => {
-      const channelName = generateEventChannelName(99999);
+      const channelName = generateEventChannelName(testEventId);
       const token = generateRtcToken(channelName, 500, "publisher");
       const prompt = buildAnnouncementPrompt("TestAgentA", "TestAgentB", "Testing", 60);
 
