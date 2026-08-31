@@ -8,24 +8,16 @@
 /**
  * A loguru ERROR/CRITICAL line — aeval's own diagnosis of what went wrong.
  *
- * `[^\S\n]` (horizontal whitespace), never `\s`: `\s` matches newlines, so the
- * old `/\|\s*(ERROR|CRITICAL)\s*\|/` could match ACROSS a line break. That made
+ * `[ \t]`, never `\s` and not even `[^\S\n]`: `\s` matches every line
+ * terminator, and `[^\S\n]` still matches \r, \u2028 and \u2029 (whitespace
+ * that isn't \n) — so both could match ACROSS a line break, exactly the
+ * disagreement this anchoring exists to remove. That made
  * hasAevalDiagnosis (run over a whole buffer) disagree with the per-line filter
  * below — "dump: foo |\nERROR |x| y" satisfied the former and no line satisfied
  * the latter. Anchored per line with /m so the two agree by construction.
  */
-const DIAGNOSIS_LINE = /^[^\n]*\|[^\S\n]*(ERROR|CRITICAL)[^\S\n]*\|/m;
+const DIAGNOSIS_LINE = /^[^\n]*\|[ \t]*(ERROR|CRITICAL)[ \t]*\|/m;
 
-/**
- * A diagnosis line carrying loguru's full `TIMESTAMP | LEVEL |` prefix.
- *
- * Deliberately stricter than DIAGNOSIS_LINE, for deciding whether UNTRUSTED
- * output may be surfaced. A page dump or target-site text can easily contain
- * "| ERROR |"; reproducing a loguru timestamp prefix by accident is far less
- * likely. The lenient form stays in use for the stream we already trust, so
- * tightening admission cannot regress the primary fix if aeval's log format
- * shifts.
- */
 /**
  * Every JS LineTerminator, not just \n.
  *
@@ -41,13 +33,22 @@ const DIAGNOSIS_LINE = /^[^\n]*\|[^\S\n]*(ERROR|CRITICAL)[^\S\n]*\|/m;
 export const LINE_TERMINATORS = /\r?\n|[\r\u2028\u2029]/;
 
 /**
+ * A diagnosis line carrying loguru's full `TIMESTAMP | LEVEL |` prefix.
+ *
+ * Deliberately stricter than DIAGNOSIS_LINE, for deciding whether UNTRUSTED
+ * output may be surfaced. A page dump or target-site text can easily contain
+ * "| ERROR |"; reproducing a loguru timestamp prefix by accident is far less
+ * likely. The lenient form stays in use for the stream we already trust, so
+ * tightening admission cannot regress the primary fix if aeval's log format
+ * shifts.
+ *
  * NOTE: anchored on a leading digit, so a future aeval build that colorizes
  * non-TTY output (ANSI prefix before the timestamp) would stop matching. That
  * degrades safely — the stdout hedge simply admits nothing and we fall back to
  * stderr — but it is worth knowing before debugging a silent hedge.
  */
 const LOGURU_DIAGNOSIS_LINE =
-  /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:[.,]\d+)?[^\S\n]*\|[^\S\n]*(ERROR|CRITICAL)[^\S\n]*\|/m;
+  /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:[.,]\d+)?[ \t]*\|[ \t]*(ERROR|CRITICAL)[ \t]*\|/m;
 
 /**
  * Whether a stream carries aeval's own diagnosis. Exported so callers can
@@ -120,7 +121,10 @@ export function summarizeAevalFailure(
   // known value before anything is returned.
   // A value may span lines (PEM key, JSON blob) while `lines` above is already
   // split+trimmed, so no single line contains the whole thing — redact each of
-  // its lines too, or fragments would survive.
+  // its lines too, or fragments would survive. Split on LINE_TERMINATORS, the
+  // same definition `lines` uses: a secret broken by a bare \r would otherwise
+  // be split by the text and not by the needles, and its fragments would match
+  // nothing.
   //
   // Default floor is 4, deliberately low: the failure modes are asymmetric.
   // Over-redacting is cosmetic (a secret whose value is literally "prod"
@@ -129,7 +133,7 @@ export function summarizeAevalFailure(
   // higher floor would leak. Callers that can accept the cosmetic damage — the
   // broker, where the only needles are one login pair — pass 0 for no floor.
   const needles = Array.from(
-    new Set(redact.flatMap((v) => (v ? [v, ...v.split('\n')] : []).map((x) => x.trim()))),
+    new Set(redact.flatMap((v) => (v ? [v, ...v.split(LINE_TERMINATORS)] : []).map((x) => x.trim()))),
   )
     // `v.length >= 1` is not redundant with the floor: a floor of 0 would admit
     // the empty string, and "".split("") splits between every character, which

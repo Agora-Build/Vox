@@ -254,10 +254,49 @@ describe("mint failure summary (what the broker reports)", () => {
     expect(fresh.completeText).toBe("");
   });
 
-  it("credentialForms derives the escaped form from the same stringify the scenario uses", () => {
-    expect(credentialForms(['a"b'])).toEqual(['a"b', 'a\\"b']);
-    expect(credentialForms(["plain"])).toEqual(["plain"]); // no duplicate when escaping is a no-op
+  it("redacts the percent-encoded credential an SSO redirect URL carries", () => {
+    // The whole point of this change is to report aeval's "current URL:" line,
+    // and SSO redirects carry the account in a query param — so the raw form
+    // never appears and the raw-only needle set matched nothing.
+    const email = "a b@agora.io";
+    const enc = encodeURIComponent(email);          // a%20b%40agora.io
+    const form = enc.replace(/%20/g, "+");          // a+b%40agora.io
+    const stderr = "2026-08-30 17:49:50.860 | ERROR | Error waiting for URL pattern: "
+      + `https://x/, current URL: https://sso2.agora.io/login?login_hint=${enc}&alt=${form}`;
+    const summary = describeMintFailure("", stderr, credentialForms([email, "pw123456"]));
+    expect(summary).not.toContain(enc);
+    expect(summary).not.toContain(form);
+    expect(summary).toContain("[redacted]");
+  });
+
+  it("agrees between the whole-buffer predicate and the per-line filter across a bare CR", () => {
+    // [^\S\n] still matched \r, so the buffer predicate could match across a
+    // line break while no individual line did — silently disabling the stdout
+    // hedge. [ \t] makes the claim in the comment actually true.
+    const crossCr = "page dump pw=X |\rERROR | boom";
+    expect(hasAevalDiagnosis(crossCr)).toBe(
+      crossCr.split(/\r?\n|[\r\u2028\u2029]/).some((l) => hasAevalDiagnosis(l)),
+    );
+  });
+
+  it("redacts a secret whose own line breaks are bare CRs", () => {
+    // The needle set split on "\n" while the text split on LINE_TERMINATORS, so
+    // a multi-line secret broken by \r produced fragments that matched nothing.
+    const secret = "line-one-of-key\rline-two-of-key";
+    const stderr = `2026-08-30 17:49:50.860 | ERROR | bad key: line-two-of-key here`;
+    const summary = describeMintFailure("", stderr, credentialForms([secret]));
+    expect(summary).not.toContain("line-two-of-key");
+    expect(summary).toContain("[redacted]");
+  });
+
+  it("credentialForms derives every encoding a credential can appear in", () => {
+    // Raw, the YAML/JSON scalar the scenario writes, and the two URL encodings
+    // an SSO redirect uses. Deduped, so a value that survives an encoding
+    // unchanged contributes only once.
+    expect(credentialForms(['a"b'])).toEqual(['a"b', 'a\\"b', 'a%22b']);
+    expect(credentialForms(["plain"])).toEqual(["plain"]);
     expect(credentialForms([""])).toEqual([]);
+    expect(credentialForms(["a b"])).toEqual(["a b", "a%20b", "a+b"]);
   });
 
   it("keeps the credential out of the reported message", () => {

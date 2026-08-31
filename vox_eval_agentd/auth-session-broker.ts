@@ -76,7 +76,24 @@ export function scrubCredentials(message: string, values: string[]): string {
  */
 export function credentialForms(values: string[]): string[] {
   return Array.from(
-    new Set(values.filter((v) => v.length > 0).flatMap((v) => [v, JSON.stringify(v).slice(1, -1)])),
+    new Set(
+      values
+        .filter((v) => v.length > 0)
+        .flatMap((v) => [
+          v,
+          // YAML/JSON scalar, as the scenario writes it.
+          JSON.stringify(v).slice(1, -1),
+          // Percent-encoded, as an SSO redirect carries it. The whole point of
+          // this PR is to report aeval's "current URL: <sso login page>" line,
+          // and those URLs routinely carry the account in a query param
+          // (login_hint=a%40b.com), so the raw form would never match.
+          encodeURIComponent(v),
+          // application/x-www-form-urlencoded differs from encodeURIComponent
+          // only in spaces (+ vs %20) — cheap to cover, and passwords have
+          // spaces.
+          encodeURIComponent(v).replace(/%20/g, '+'),
+        ]),
+    ),
   );
 }
 
@@ -105,7 +122,11 @@ export const CAPTURE_LIMIT = 64 * 1024;
  */
 export function createBoundedCapture(limit = CAPTURE_LIMIT) {
   let buf = '';
-  let dropping = false; // inside an abandoned overlong line
+  // Inside an abandoned overlong line. Resumes on '\n' only, NOT on the wider
+  // LINE_TERMINATORS this module uses elsewhere: a '\n' is a line boundary
+  // under the wider set too, so the "never begins mid-line" property still
+  // holds — \r-terminated output would just over-discard, which is safe.
+  let dropping = false;
 
   return {
     push(chunk: string): void {
@@ -183,14 +204,14 @@ export function selectDiagnosisSource(stdout: string, stderr: string): string {
   return stdout.split(LINE_TERMINATORS).filter((l) => hasLoguruDiagnosis(l)).join('\n');
 }
 
+/** Reported when aeval produced nothing usable. Exported so callers can gate on it. */
+export const NO_OUTPUT_MESSAGE = 'login failed with no output';
+
 /**
  * The full failure-message pipeline for a non-zero aeval exit: pick the stream,
  * summarize it, scrub it. Pure, so the security-relevant selection is testable
  * without spawning aeval.
  */
-/** Reported when aeval produced nothing usable. Exported so callers can gate on it. */
-export const NO_OUTPUT_MESSAGE = 'login failed with no output';
-
 export function describeMintFailure(stdout: string, stderr: string, forms: string[]): string {
   const source = selectDiagnosisSource(stdout, stderr);
   // Short-circuit rather than concatenating up to 2×CAPTURE_LIMIT just to test
@@ -267,13 +288,21 @@ export async function mintWithAeval(req: MintRequest, timeoutMs: number): Promis
         try { if (proc.pid) { process.kill(-proc.pid, signal); return; } } catch { /* fall through */ }
         try { proc.kill(signal); } catch { /* already gone */ }
       };
-      // Flush both decoders into their captures and summarize. Used by the
-      // close path only — the timeout path deliberately reads completeText and
-      // skips the flush, because the child is still mid-write there.
-      const capturedFailure = (): string => {
+      // Summarize for the close path. `cleanExit` is false when the child was
+      // KILLED by a signal (code === null: OOM killer, external SIGKILL,
+      // Chromium taking the process down). That child died mid-write, so its
+      // last line can be half-emitted — the same hazard completeText exists for
+      // on the timeout path — and outDec.end() would flush an incomplete UTF-8
+      // sequence as U+FFFD, breaking needle matching on exactly that line.
+      // Prefer complete lines always; fall back to the raw text only when there
+      // are none AND the exit was clean. loguru terminates its lines, so that
+      // fallback should effectively never fire.
+      const capturedFailure = (cleanExit: boolean): string => {
         outCap.push(outDec.end());
         errCap.push(errDec.end());
-        return describeMintFailure(outCap.text, errCap.text, credentialForms([req.email, req.password]));
+        const out = outCap.completeText || (cleanExit ? outCap.text : '');
+        const err = errCap.completeText || (cleanExit ? errCap.text : '');
+        return describeMintFailure(out, err, credentialForms([req.email, req.password]));
       };
       const timer = setTimeout(() => {
         killTree('SIGTERM');
@@ -307,7 +336,7 @@ export async function mintWithAeval(req: MintRequest, timeoutMs: number): Promis
           // pattern ... current URL: <sso login page>" — i.e. wrong password)
           // was reported as a path. capturedFailure() prefers the loguru ERROR
           // lines and redacts them before truncation.
-          const summary = capturedFailure();
+          const summary = capturedFailure(typeof code === 'number');
           reject(new Error(`aeval exited ${code}: ${summary}`));
         }
       }));
