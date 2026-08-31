@@ -52,7 +52,12 @@ describe.skipIf(!hasCredentials)("Agora E2E (real API calls)", () => {
   // idle_timeout, so the id has to stay unique across a 10-MINUTE window, not a
   // few seconds. A narrow timestamp window would recreate the exact 409 this
   // suite exists to avoid.
-  const testEventId = Math.floor(Math.random() * 1_000_000_000);
+  // Offset clear of the clash_events id serial. A bare random in [0, 1e9) can
+  // land on a REAL event id, and since the session name derives from the
+  // channel, the suite would then start a moderator on a live event's channel
+  // in the same Agora project — publishing audio into it, or 409ing against its
+  // moderator and blocking it.
+  const testEventId = 2_000_000_000 + Math.floor(Math.random() * 1_000_000);
   let agentId: string | null = null;
 
   describe("RTC Token Generation", () => {
