@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import type { AddressInfo } from "net";
 import type { Server } from "http";
 import { createBrokerServer, scrubCredentials, credentialForms, createBoundedCapture, selectDiagnosisSource, describeMintFailure, secretMatches, heartbeat, type MintRequest } from "../vox_eval_agentd/auth-session-broker";
-import { summarizeAevalFailure, hasAevalDiagnosis } from "../vox_eval_agentd/aeval-output";
+import { summarizeAevalFailure, hasAevalDiagnosis, hasLoguruDiagnosis } from "../vox_eval_agentd/aeval-output";
 
 describe("secretMatches (constant-time bearer check)", () => {
   it("true only on an exact match", () => {
@@ -149,6 +149,48 @@ describe("mint failure summary (what the broker reports)", () => {
     cap.push("_tail\nERROR | recovered");
     expect(cap.text).toBe("ERROR | recovered");
     expect(cap.text).not.toContain("_tail");
+  });
+
+  it("keeps an already-captured diagnosis when a later line is overlong", () => {
+    // Dropping the unsafe partial line must not discard the complete lines
+    // already in hand, or a real diagnosis becomes "login failed with no output".
+    const cap = createBoundedCapture(64);
+    cap.push("2026-08-30 17:49:50.860 | ERROR | the real cause\n");
+    cap.push("X".repeat(100_000));
+    expect(cap.text).toContain("ERROR | the real cause");
+    expect(cap.text).not.toContain("XXXX");
+    expect(describeMintFailure("", cap.text, [])).toContain("the real cause");
+  });
+
+  it("does not let a cross-newline match sneak stdout past the quarantine", () => {
+    // \s matches newlines, so an unanchored /\|\s*(ERROR|CRITICAL)\s*\|/ matched
+    // this whole-buffer while NO single line matched — the summarizer then fell
+    // through to a raw tail over both streams, leaking stdout.
+    const crossLine = "dump: foo |\nERROR |x| y";
+    expect(hasAevalDiagnosis(crossLine)).toBe(false);
+    expect(selectDiagnosisSource(crossLine, "")).toBe("");
+
+    // A bare "| ERROR |" in untrusted output is not enough either: admission of
+    // stdout requires loguru's full timestamped line shape.
+    const bareError = "page text | ERROR | Something went wrong on the site";
+    expect(hasAevalDiagnosis(bareError)).toBe(true);
+    expect(hasLoguruDiagnosis(bareError)).toBe(false);
+    expect(selectDiagnosisSource(bareError, "")).toBe("");
+
+    const realLoguru = "2026-08-30 17:49:50.860 | ERROR | Step 1 failed: platform.setup";
+    expect(hasLoguruDiagnosis(realLoguru)).toBe(true);
+    expect(selectDiagnosisSource(realLoguru, "")).toBe(realLoguru);
+  });
+
+  it("redacts a credential shorter than the summarizer's 4-char floor", () => {
+    // The summarizer ignores needles under 4 chars and truncates to 500, so a
+    // short password on that boundary could be cut into an unmatchable prefix.
+    // Scrubbing the inputs first removes the class entirely.
+    const pw = "ab1";
+    const stderr = `2026-08-30 17:49:50.860 | ERROR | login failed with password=${pw} end`;
+    const summary = describeMintFailure("", stderr, credentialForms(["a@b.co", pw]));
+    expect(summary).not.toContain("password=ab1");
+    expect(summary).toContain("[redacted]");
   });
 
   it("credentialForms derives the escaped form from the same stringify the scenario uses", () => {

@@ -16,7 +16,7 @@ import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { StringDecoder } from 'string_decoder';
-import { summarizeAevalFailure, hasAevalDiagnosis } from './aeval-output';
+import { summarizeAevalFailure, hasAevalDiagnosis, hasLoguruDiagnosis } from './aeval-output';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const AEVAL_DATA_PATH = path.resolve(__dirname, 'aeval-data');
@@ -120,14 +120,23 @@ export function createBoundedCapture(limit = CAPTURE_LIMIT) {
       if (buf.length <= limit) return;
       const cut = buf.length - limit;
       const nl = buf.indexOf('\n', cut);
-      if (nl === -1) {
-        // Everything we would retain is one overlong partial line. Drop it
-        // rather than cut inside it, and keep dropping until it ends.
-        buf = '';
-        dropping = true;
+      if (nl !== -1) {
+        buf = buf.slice(nl + 1);
         return;
       }
-      buf = buf.slice(nl + 1);
+      // The tail we would retain is one overlong partial line. Abandon that
+      // line — but KEEP the complete lines already captured. Discarding
+      // everything would throw away a diagnosis we had in hand and report
+      // "login failed with no output", the very failure this change removes.
+      const lastNl = buf.lastIndexOf('\n');
+      buf = lastNl === -1 ? '' : buf.slice(0, lastNl + 1);
+      if (buf.length > limit) {
+        // Those kept lines can themselves exceed the cap; trim them at a line
+        // boundary too. buf ends in '\n' and is line-aligned, so this is safe.
+        const nl2 = buf.indexOf('\n', buf.length - limit);
+        buf = nl2 === -1 ? '' : buf.slice(nl2 + 1);
+      }
+      dropping = true;
     },
     get text(): string {
       return buf;
@@ -148,7 +157,10 @@ export function createBoundedCapture(limit = CAPTURE_LIMIT) {
  * strings, putting raw stdout into the persisted error.
  */
 export function selectDiagnosisSource(stdout: string, stderr: string): string {
-  return !hasAevalDiagnosis(stderr) && hasAevalDiagnosis(stdout) ? stdout : '';
+  // Admission of the untrusted stream uses the STRICT loguru-shaped predicate:
+  // a bare "| ERROR |" is trivially present in a page dump, which would hand
+  // the quarantined stream a free pass into the persisted error.
+  return !hasAevalDiagnosis(stderr) && hasLoguruDiagnosis(stdout) ? stdout : '';
 }
 
 /**
@@ -161,7 +173,15 @@ export function describeMintFailure(stdout: string, stderr: string, forms: strin
   // Short-circuit rather than concatenating up to 2×CAPTURE_LIMIT just to test
   // for emptiness.
   if (!source.trim() && !stderr.trim()) return 'login failed with no output';
-  return scrubCredentials(summarizeAevalFailure(source, stderr, forms), forms);
+  // Scrub the INPUTS, not just the result. summarizeAevalFailure ignores needles
+  // shorter than 4 chars and truncates to 500, so a 1-3 char password sitting on
+  // that boundary could be cut into a prefix the floorless scrub can no longer
+  // match. Redacting before the summarizer ever sees the text removes the whole
+  // class; the scrub on the way out stays as defense in depth.
+  return scrubCredentials(
+    summarizeAevalFailure(scrubCredentials(source, forms), scrubCredentials(stderr, forms), forms),
+    forms,
+  );
 }
 
 /** Real mint: one-step aeval scenario running setup:account → save_storage_state. */

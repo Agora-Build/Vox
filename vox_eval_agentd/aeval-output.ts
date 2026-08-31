@@ -21,17 +21,44 @@
  *  2. Otherwise the last few non-noise lines, so we surface a traceback tail
  *     rather than the packaging banner.
  */
-/** A loguru ERROR/CRITICAL line — aeval's own diagnosis of what went wrong. */
-const DIAGNOSIS_LINE = /\|\s*(ERROR|CRITICAL)\s*\|/;
+/**
+ * A loguru ERROR/CRITICAL line — aeval's own diagnosis of what went wrong.
+ *
+ * `[^\S\n]` (horizontal whitespace), never `\s`: `\s` matches newlines, so the
+ * old `/\|\s*(ERROR|CRITICAL)\s*\|/` could match ACROSS a line break. That made
+ * hasAevalDiagnosis (run over a whole buffer) disagree with the per-line filter
+ * below — "dump: foo |\nERROR |x| y" satisfied the former and no line satisfied
+ * the latter. Anchored per line with /m so the two agree by construction.
+ */
+const DIAGNOSIS_LINE = /^[^\n]*\|[^\S\n]*(ERROR|CRITICAL)[^\S\n]*\|/m;
+
+/**
+ * A diagnosis line carrying loguru's full `TIMESTAMP | LEVEL |` prefix.
+ *
+ * Deliberately stricter than DIAGNOSIS_LINE, for deciding whether UNTRUSTED
+ * output may be surfaced. A page dump or target-site text can easily contain
+ * "| ERROR |"; reproducing a loguru timestamp prefix by accident is far less
+ * likely. The lenient form stays in use for the stream we already trust, so
+ * tightening admission cannot regress the primary fix if aeval's log format
+ * shifts.
+ */
+const LOGURU_DIAGNOSIS_LINE =
+  /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}[.,]\d+[^\S\n]*\|[^\S\n]*(ERROR|CRITICAL)[^\S\n]*\|/m;
 
 /**
  * Whether a stream carries aeval's own diagnosis. Exported so callers can
- * decide WHICH stream to summarize without restating the regex — the broker
- * uses it to consult stdout only when stderr yielded nothing, keeping stdout
- * out of the reported text in the normal case.
+ * decide WHICH stream to summarize without restating the regex.
  */
 export function hasAevalDiagnosis(text: string): boolean {
   return DIAGNOSIS_LINE.test(text);
+}
+
+/**
+ * Whether a stream carries a diagnosis in loguru's own line format. Used to
+ * admit an untrusted stream (the broker's stdout) into a user-visible error.
+ */
+export function hasLoguruDiagnosis(text: string): boolean {
+  return LOGURU_DIAGNOSIS_LINE.test(text);
 }
 
 export function summarizeAevalFailure(stdout: string, stderr: string, redact: string[] = []): string {
