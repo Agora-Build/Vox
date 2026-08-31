@@ -114,7 +114,8 @@ COPY vox_eval_agentd/aeval-output.ts /app/
 COPY vox_eval_agentd/package.json /app/
 
 # npm install only to obtain esbuild (a devDep). auth-session-broker.ts imports only
-# Node builtins, so the bundle needs no node_modules at runtime — drop it after compile.
+# Node builtins plus ./aeval-output (COPYed above, itself import-free), so the bundle
+# needs no node_modules at runtime — drop it after compile.
 RUN npm install \
     && npx esbuild auth-session-broker.ts --bundle --platform=node --format=esm --outfile=auth-session-broker.js \
        --external:child_process --external:fs --external:os --external:path --external:url --external:http \

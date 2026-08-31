@@ -227,6 +227,25 @@ export function selectDiagnosisSource(stdout: string, stderr: string): string {
   return stdout.split(LINE_TERMINATORS).filter((l) => hasLoguruDiagnosis(l)).join('\n');
 }
 
+/**
+ * Strip the query and fragment from every URL in `text`.
+ *
+ * The line this module exists to surface is aeval's
+ *   "Error waiting for URL pattern: ..., current URL: <sso page>"
+ * and a mid-flow SSO URL carries material no credential needle can model: an
+ * OAuth `?code=`, `state=`, or an implicit-flow `#id_token=`. Those are not the
+ * email or the password, so credentialForms cannot cover them, and the message
+ * is logged, returned in the 502 body, and persisted by Core as a user-visible
+ * job error.
+ *
+ * The diagnostic value of the line is WHICH HOST the browser ended up on —
+ * "still on sso2.agora.io" is the whole finding — and that survives dropping
+ * everything after the path.
+ */
+export function stripUrlQueries(text: string): string {
+  return text.replace(/(https?:\/\/[^\s"'<>]*?)[?#][^\s"'<>]*/gi, '$1…');
+}
+
 /** Reported when aeval produced nothing usable. Exported so callers can gate on it. */
 export const NO_OUTPUT_MESSAGE = 'login failed with no output';
 
@@ -247,7 +266,7 @@ export function describeMintFailure(stdout: string, stderr: string, forms: strin
   // (a password of "E" would turn every "ERROR" into "[redacted]RROR", so no
   // line matches and the artifacts banner wins again). The outer scrub stays as
   // defense in depth.
-  return scrubCredentials(summarizeAevalFailure(source, stderr, forms, 0), forms);
+  return scrubCredentials(stripUrlQueries(summarizeAevalFailure(source, stderr, forms, 0)), forms);
 }
 
 /** Real mint: one-step aeval scenario running setup:account → save_storage_state. */
@@ -344,7 +363,9 @@ export async function mintWithAeval(req: MintRequest, timeoutMs: number): Promis
             outCap.completeText, errCap.completeText, credentialForms([req.email, req.password]));
           // Gate on the summarizer's own verdict rather than re-testing the raw
           // buffers: quarantined-but-non-empty stdout would otherwise append a
-          // redundant ": login failed with no output".
+          // redundant ": login failed with no output". NOTE the coupling — this
+          // holds because describeMintFailure early-returns the constant before
+          // any scrub can touch it. Keep it that way.
           const detail = summary === NO_OUTPUT_MESSAGE ? '' : `: ${summary}`;
           reject(new Error(`login timed out after ${timeoutMs}ms${detail}`));
         });

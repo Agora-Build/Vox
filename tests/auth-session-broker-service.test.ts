@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import type { AddressInfo } from "net";
 import type { Server } from "http";
-import { createBrokerServer, scrubCredentials, credentialForms, createBoundedCapture, selectDiagnosisSource, describeMintFailure, secretMatches, heartbeat, type MintRequest } from "../vox_eval_agentd/auth-session-broker";
+import { createBrokerServer, scrubCredentials, credentialForms, createBoundedCapture, selectDiagnosisSource, describeMintFailure, stripUrlQueries, secretMatches, heartbeat, type MintRequest } from "../vox_eval_agentd/auth-session-broker";
 import { summarizeAevalFailure, hasAevalDiagnosis, hasLoguruDiagnosis } from "../vox_eval_agentd/aeval-output";
 
 describe("secretMatches (constant-time bearer check)", () => {
@@ -266,7 +266,14 @@ describe("mint failure summary (what the broker reports)", () => {
     const summary = describeMintFailure("", stderr, credentialForms([email, "pw123456"]));
     expect(summary).not.toContain(enc);
     expect(summary).not.toContain(form);
-    expect(summary).toContain("[redacted]");
+    // No "[redacted]" assertion: stripUrlQueries removes the query string before
+    // the scrub runs, so in a URL the encoded value is gone rather than masked.
+    // The encoded needles still matter for encoded values echoed OUTSIDE a URL
+    // (a form body in a Playwright error), which the next assertion covers.
+    const bodyEcho = `2026-08-30 17:49:50.860 | ERROR | posted form: login_hint=${enc}`;
+    const masked = describeMintFailure("", bodyEcho, credentialForms([email, "pw123456"]));
+    expect(masked).not.toContain(enc);
+    expect(masked).toContain("[redacted]");
   });
 
   it("agrees between the whole-buffer predicate and the per-line filter across a bare CR", () => {
@@ -287,6 +294,31 @@ describe("mint failure summary (what the broker reports)", () => {
     const summary = describeMintFailure("", stderr, credentialForms([secret]));
     expect(summary).not.toContain("line-two-of-key");
     expect(summary).toContain("[redacted]");
+  });
+
+  it("drops OAuth material from the reported URL but keeps the host", () => {
+    // The reported line is aeval's "current URL: <sso page>". A mid-flow SSO URL
+    // can carry ?code=, state= or #id_token= — none of which any credential
+    // needle models, since they are not the email or the password — and the
+    // message is persisted as a user-visible job error. The finding the line
+    // carries is WHICH HOST we ended up on, which survives the strip.
+    const stderr = "2026-08-30 17:49:50.860 | ERROR | Error waiting for URL pattern: "
+      + "https://conversational-ai.agora.io/, current URL: "
+      + "https://sso2.agora.io/en/login?code=AUTHCODE123&state=STATE456#id_token=JWTVALUE789";
+    const summary = describeMintFailure("", stderr, credentialForms(["a@b.co", "pw123456"]));
+
+    expect(summary).not.toContain("AUTHCODE123");
+    expect(summary).not.toContain("STATE456");
+    expect(summary).not.toContain("JWTVALUE789");
+    // ...while the diagnosis stays legible.
+    expect(summary).toContain("sso2.agora.io/en/login");
+    expect(summary).toContain("Error waiting for URL pattern");
+  });
+
+  it("stripUrlQueries leaves non-URL text and bare URLs alone", () => {
+    expect(stripUrlQueries("no urls here?x=1")).toBe("no urls here?x=1");
+    expect(stripUrlQueries("https://h/p")).toBe("https://h/p");
+    expect(stripUrlQueries("https://h/p?a=1 then more")).toBe("https://h/p… then more");
   });
 
   it("credentialForms derives every encoding a credential can appear in", () => {
