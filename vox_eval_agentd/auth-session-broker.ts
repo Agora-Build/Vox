@@ -3,7 +3,9 @@
  *
  * Runs aeval's own per-platform `setup:account` flow (config/platforms/<id>.yaml
  * in aeval-data) and returns the captured Playwright storageState. Stateless:
- * every request gets a fresh temp dir, and nothing is persisted or logged.
+ * every request gets a fresh temp dir and nothing is persisted. A FAILED mint
+ * does log a summarized, scrubbed message (and returns it in the 502 body) —
+ * see the boundary note below for what that can and cannot contain.
  * Shipped as its own image (vox-auth-session-broker, the Dockerfile's `broker` target).
  * Internal network ONLY. Registers itself with Core on startup and heartbeats;
  * `/mint` auth is the per-broker mint secret handed back at registration.
@@ -262,11 +264,16 @@ export function selectDiagnosisSource(stdout: string, stderr: string): string {
   // whole stream would let page-dump text containing a bare "| ERROR |" both
   // reach the persisted error and bury the real line that earned admission.
   // Selection is now as strict as admission.
-  return stdout.split(LINE_TERMINATORS).filter((l) => hasLoguruDiagnosis(l)).join('\n');
+  // .trim() before testing, because LOGURU_DIAGNOSIS_LINE is anchored at ^\d{4}
+  // and summarizeAevalFailure trims before it tests. Without this a loguru line
+  // arriving with a leading space is dropped by the hedge even though the
+  // summarizer would have accepted it — the same predicate disagreement this
+  // module spends its length eliminating.
+  return stdout.split(LINE_TERMINATORS).filter((l) => hasLoguruDiagnosis(l.trim())).join('\n');
 }
 
 /**
- * Strip the query and fragment from every URL in `text`.
+ * Reduce every URL in `text` to scheme + authority.
  *
  * The line this module exists to surface is aeval's
  *   "Error waiting for URL pattern: ..., current URL: <sso page>"
@@ -276,12 +283,21 @@ export function selectDiagnosisSource(stdout: string, stderr: string): string {
  * is logged, returned in the 502 body, and persisted by Core as a user-visible
  * job error.
  *
- * The diagnostic value of the line is WHICH HOST the browser ended up on —
- * "still on sso2.agora.io" is the whole finding — and that survives dropping
- * everything after the path.
+ * Cutting at the first `/` after the authority, not merely at `?` or `#`:
+ * SSO and magic-link flows routinely put the sensitive material in the PATH
+ * (/oauth2/callback/<jwt>, /reset/<token>, /auth/verify/<nonce>), which is the
+ * same unmodellable class as a query `?code=`. The diagnostic value of the line
+ * is WHICH HOST the browser ended up on — "still on sso2.agora.io rather than
+ * conversational-ai.agora.io" is the entire finding — so the path costs nothing
+ * to drop.
+ *
+ * Excluding `/` from the authority class also bounds the scan: the previous
+ * lazy `[^\s"'<>]*?` with no `[?#]` later in the run made the engine rescan to
+ * end-of-run from every `http://` start, and this runs twice per failure over
+ * text that can be attacker-influenced.
  */
 export function stripUrlQueries(text: string): string {
-  return text.replace(/(https?:\/\/[^\s"'<>]*?)[?#][^\s"'<>]*/gi, '$1…');
+  return text.replace(/(https?:\/\/[^\s"'<>/?#]*)[/?#][^\s"'<>]*/gi, '$1/…');
 }
 
 /** Reported when aeval produced nothing usable. Exported so callers can gate on it. */

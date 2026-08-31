@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import type { AddressInfo } from "net";
 import type { Server } from "http";
-import { createBrokerServer, scrubCredentials, credentialForms, createBoundedCapture, selectDiagnosisSource, describeMintFailure, stripUrlQueries, secretMatches, heartbeat, type MintRequest } from "../vox_eval_agentd/auth-session-broker";
+import { createBrokerServer, scrubCredentials, credentialForms, createBoundedCapture, selectDiagnosisSource, describeMintFailure, stripUrlQueries, NO_OUTPUT_MESSAGE, secretMatches, heartbeat, type MintRequest } from "../vox_eval_agentd/auth-session-broker";
 import { summarizeAevalFailure, hasAevalDiagnosis, hasLoguruDiagnosis } from "../vox_eval_agentd/aeval-output";
 
 describe("secretMatches (constant-time bearer check)", () => {
@@ -326,8 +326,11 @@ describe("mint failure summary (what the broker reports)", () => {
     expect(summary).not.toContain("AUTHCODE123");
     expect(summary).not.toContain("STATE456");
     expect(summary).not.toContain("JWTVALUE789");
-    // ...while the diagnosis stays legible.
-    expect(summary).toContain("sso2.agora.io/en/login");
+    // ...while the diagnosis stays legible: the finding is WHICH HOST we ended
+    // up on, and the path is dropped too because magic-link and OAuth callback
+    // flows carry material there (/reset/<token>, /oauth2/callback/<jwt>).
+    expect(summary).toContain("sso2.agora.io");
+    expect(summary).not.toContain("/en/login");
     expect(summary).toContain("Error waiting for URL pattern");
   });
 
@@ -344,7 +347,7 @@ describe("mint failure summary (what the broker reports)", () => {
     const summary = describeMintFailure("", stderr, credentialForms(["a@b.co", "pw123456"]));
 
     expect(summary).toContain("Step 1 failed: platform.setup");
-    expect(summary).toContain("sso2.agora.io/en/login");
+    expect(summary).toContain("sso2.agora.io");
     expect(summary).not.toContain("aaaa");
     expect(summary).not.toContain("bbbb");
   });
@@ -361,8 +364,19 @@ describe("mint failure summary (what the broker reports)", () => {
 
   it("stripUrlQueries leaves non-URL text and bare URLs alone", () => {
     expect(stripUrlQueries("no urls here?x=1")).toBe("no urls here?x=1");
-    expect(stripUrlQueries("https://h/p")).toBe("https://h/p");
-    expect(stripUrlQueries("https://h/p?a=1 then more")).toBe("https://h/p… then more");
+    expect(stripUrlQueries("https://host")).toBe("https://host");
+    expect(stripUrlQueries("https://h/p?a=1 then more")).toBe("https://h/… then more");
+    // Path-embedded material goes too — a magic-link token is as unmodellable
+    // by credentialForms as an OAuth ?code=.
+    expect(stripUrlQueries("https://h/reset/SECRETTOKEN")).toBe("https://h/…");
+  });
+
+  it("returns the no-output sentinel unscrubbed, so the timeout gate keeps working", () => {
+    // The timeout path compares against NO_OUTPUT_MESSAGE by string equality.
+    // That holds only because describeMintFailure early-returns the constant
+    // BEFORE any scrub runs — a needle matching one of its words would
+    // otherwise rewrite it and silently break the gate.
+    expect(describeMintFailure("", "", credentialForms(["login", "output"]))).toBe(NO_OUTPUT_MESSAGE);
   });
 
   it("credentialForms derives every encoding a credential can appear in", () => {
