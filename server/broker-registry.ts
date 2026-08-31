@@ -47,6 +47,10 @@ export function isInternalBrokerUrl(raw: string): boolean {
 
 import { storage } from "./storage";
 import type { Broker } from "@shared/schema";
+import { credentialForms, redactValues } from "@shared/credentials";
+
+export { mintTimeoutSeconds } from "@shared/mint-timeout";
+import { mintTimeoutSeconds } from "@shared/mint-timeout";
 
 const mintSecretCache = new Map<number, string>();
 export function cacheBrokerMintSecret(id: number, secret: string): void { mintSecretCache.set(id, secret); }
@@ -82,11 +86,50 @@ export async function mintViaBroker(
   req: { platformId: string; email: string; password: string },
   fetchImpl: typeof fetch = fetch,
 ): Promise<unknown> {
+  // Bound the call. auth-session.ts's staleMintThresholdSeconds() is derived
+  // from "mintTimeoutSeconds() + 15s, see mintViaBroker's AbortSignal" — that
+  // signal did not exist, so a hung broker left this promise pending forever,
+  // the row stuck in 'minting' until stale-reclaim, and ensureSession's catch
+  // never fired.
+  const abortMs = (mintTimeoutSeconds() + 15) * 1000;
   const res = await fetchImpl(`${target.url}/mint`, {
     method: "POST",
     headers: { "content-type": "application/json", authorization: `Bearer ${target.mintSecret}` },
     body: JSON.stringify(req),
+    signal: AbortSignal.timeout(abortMs),
   });
-  if (!res.ok) throw new Error(`broker mint failed: ${res.status}`);
+  if (!res.ok) {
+    // Fold the broker's own diagnosis into the message. Without this the whole
+    // selection/scrub/URL-reduction pipeline in auth-session-broker.ts only
+    // ever reaches the sidecar's container log, and Core — plus everything
+    // downstream of webSessions.lastError — still says only "502".
+    // The body is already summarized, scrubbed and URL-reduced broker-side; cap
+    // it anyway, since it is third-party text on a durable field.
+    let detail = "";
+    try {
+      // Bounds what is RETAINED, not what is allocated: res.text() buffers the
+      // whole body first. The peer is an internal, authenticated sidecar and
+      // AbortSignal.timeout bounds the read, so that is an accepted limit — the
+      // cap is here to keep a large body out of the durable error, not to
+      // defend Core's heap. 8 KiB is far more than a summarized error needs.
+      const raw = (await res.text()).slice(0, 8192);
+      const body = JSON.parse(raw) as { error?: unknown };
+      if (typeof body?.error === "string") detail = body.error;
+    } catch {
+      /* non-JSON or truncated body — the status alone is all we can report */
+    }
+    // Re-redact with OUR copies rather than trusting the broker's scrub. Core
+    // holds the plaintext pair and is the one writing the durable field, so a
+    // stale or buggy broker echoing a credential must not become a leak here.
+    // credentialForms, not the raw pair: a backstop that covers fewer encodings
+    // than the layer it backstops is weakest exactly when it is needed — the
+    // broker failing to scrub is the case where an escaped or URL-encoded
+    // spelling arrives.
+    // Redact BEFORE truncating, the ordering this whole change argues for
+    // elsewhere: slicing first can leave a partial credential that matches no
+    // whole needle, and this string is persisted to web_sessions.last_error.
+    detail = redactValues(detail, credentialForms([req.email, req.password])).slice(0, 500);
+    throw new Error(`broker mint failed: ${res.status}${detail ? `: ${detail}` : ""}`);
+  }
   return res.json();
 }

@@ -215,8 +215,29 @@ export function isSessionServable(
   token: { id: number; createdBy: number },
   tokenOwner: { organizationId: number | null },
 ): boolean {
+  if (isOwnerOperatedAgent(job, token, tokenOwner)) return true;
+  // Third arm: a consented, attested marketplace agent this job was aimed at.
+  if (job.consent === true && job.targetTokenId != null && job.targetTokenId === token.id) return true;
+  return false;
+}
+
+/**
+ * The first two arms of isSessionServable: the claiming agent belongs to the
+ * workflow's owner, or to their organization.
+ *
+ * Separate from isSessionServable because the third arm is different in kind. A
+ * consented attested shared agent may legitimately receive a storageState — but
+ * it is still a THIRD PARTY, so it must not receive login-failure DETAIL, which
+ * can quote page state (a Playwright error naming a selector, a DOM fragment
+ * with a hidden token). Serving the session and explaining why minting it
+ * failed are different disclosures.
+ */
+export function isOwnerOperatedAgent(
+  job: { workflowOwnerId: number | null; workflowOrgId: number | null },
+  token: { createdBy: number },
+  tokenOwner: { organizationId: number | null },
+): boolean {
   if (job.workflowOwnerId != null && token.createdBy === job.workflowOwnerId) return true;
   if (job.workflowOrgId != null && sameOrg({ organizationId: tokenOwner.organizationId }, { organizationId: job.workflowOrgId })) return true;
-  if (job.consent === true && job.targetTokenId != null && job.targetTokenId === token.id) return true;
   return false;
 }

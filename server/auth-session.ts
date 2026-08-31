@@ -11,7 +11,7 @@ import { createHash } from "crypto";
 import { collectSecretRefs, isAuthFieldName } from "@shared/secrets";
 import yaml from "js-yaml";
 import { storage, encryptValue, decryptValue, type SessionScope } from "./storage";
-import { brokerAvailable, routeToBroker, mintViaBroker, isKnownBrokerType } from "./broker-registry";
+import { brokerAvailable, routeToBroker, mintViaBroker, isKnownBrokerType, mintTimeoutSeconds } from "./broker-registry";
 
 export interface PlatformSetupInfo {
   platformId: string;
@@ -125,16 +125,19 @@ async function resolveScopeSecret(scope: SessionScope, name: string): Promise<st
 }
 
 export const SESSION_FRESH_MARGIN_SECONDS = 300;
-export function mintTimeoutSeconds(): number {
-  return parseInt(process.env.WEB_SESSION_MINT_TIMEOUT_SECONDS || "180", 10);
-}
+// Re-exported, not re-implemented: staleMintThresholdSeconds() below is derived
+// from the same number that bounds mintViaBroker's AbortSignal, so a second
+// (and, as it was, unvalidated) copy here would silently disagree with it.
+export { mintTimeoutSeconds };
 /**
  * When another instance's 'minting' claim is considered abandoned and may be
  * stolen. This MUST exceed the client-side mint-abort deadline
  * (mintTimeoutSeconds() + 15s, see mintViaBroker's AbortSignal) — otherwise a
  * mint still legitimately in flight gets reclaimed, causing a wasteful
- * double-mint (harmless thanks to the fence, but avoidable). +30s of headroom
- * over the abort keeps the single-flight actually single.
+ * double-mint (harmless thanks to the fence, but avoidable). The abort is
+ * mintTimeoutSeconds() + 15, so this leaves 15s of headroom beyond it — enough
+ * for the rejection to land and the row to be marked failed before anyone else
+ * may steal the claim.
  */
 export function staleMintThresholdSeconds(): number {
   return mintTimeoutSeconds() + 30;

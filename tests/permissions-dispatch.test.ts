@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { sameOrg, canDispatchToToken, isClaimable, isSessionServable, sessionPoolViolation } from "../server/permissions";
+import { sameOrg, canDispatchToToken, isClaimable, isSessionServable, isOwnerOperatedAgent, sessionPoolViolation } from "../server/permissions";
 
 describe("sameOrg", () => {
   it("true when both share a non-null org", () => {
@@ -175,5 +175,37 @@ describe("sessionPoolViolation — scheduler tier-composition gate", () => {
   });
   it("reserved/unknown tiers fail CLOSED (allowlist shape)", () => {
     expect(sessionPoolViolation("shared", { organizationId: 5 }, { organizationId: 5 })).toMatch(/shared pool/);
+  });
+});
+
+describe("isOwnerOperatedAgent (who may see a mint failure's detail)", () => {
+  // The whole security value of splitting this out of isSessionServable: a
+  // consented attested marketplace agent may receive the storageState but must
+  // NOT receive the failure detail, which can quote page state. A refactor
+  // flipping this to always-true would ship that to marketplace agents with a
+  // green suite, so it is asserted directly.
+  const ownerJob = { workflowOwnerId: 7, workflowOrgId: null };
+  const orgJob = { workflowOwnerId: 7, workflowOrgId: 42 };
+
+  it("true for the workflow owner's own agent", () => {
+    expect(isOwnerOperatedAgent(ownerJob, { createdBy: 7 }, { organizationId: null })).toBe(true);
+  });
+
+  it("true for an agent belonging to the workflow's org", () => {
+    expect(isOwnerOperatedAgent(orgJob, { createdBy: 99 }, { organizationId: 42 })).toBe(true);
+  });
+
+  it("false for an attested third-party agent, even one the job was aimed at", () => {
+    // This is the case isSessionServable's third arm ADMITS for the session
+    // bundle — so the two predicates must disagree here, or the split is a no-op.
+    const shared = { targetTokenId: 5, workflowOwnerId: 7, workflowOrgId: null, consent: true };
+    const token = { id: 5, createdBy: 99 };
+    const tokenOwner = { organizationId: null };
+    expect(isSessionServable(shared, token, tokenOwner)).toBe(true);
+    expect(isOwnerOperatedAgent(shared, token, tokenOwner)).toBe(false);
+  });
+
+  it("false for an unrelated agent", () => {
+    expect(isOwnerOperatedAgent(ownerJob, { createdBy: 99 }, { organizationId: 3 })).toBe(false);
   });
 });
