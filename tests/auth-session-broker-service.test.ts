@@ -151,6 +151,22 @@ describe("mint failure summary (what the broker reports)", () => {
     expect(cap.text).not.toContain("_tail");
   });
 
+  it("keeps an already-captured diagnosis when the overlong line is newline-terminated", () => {
+    // The mirror of the case below: evicting from the front to make room would
+    // drop the earlier ERROR line, reporting "login failed with no output" —
+    // exactly what this module exists to prevent. The overlong LINE is what
+    // gets dropped, not the diagnosis already in hand.
+    const cap = createBoundedCapture(64);
+    cap.push("2026-08-30 17:49:50.860 | ERROR | the real cause\n");
+    cap.push("X".repeat(100_000) + "\n");
+    expect(cap.text).toContain("ERROR | the real cause");
+    expect(cap.text).not.toContain("XXXX");
+
+    // ...and a following normal line is still captured after the drop.
+    cap.push("tail line\n");
+    expect(cap.text).toContain("tail line");
+  });
+
   it("keeps an already-captured diagnosis when a later line is overlong", () => {
     // Dropping the unsafe partial line must not discard the complete lines
     // already in hand, or a real diagnosis becomes "login failed with no output".

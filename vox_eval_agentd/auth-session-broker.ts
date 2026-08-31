@@ -144,56 +144,71 @@ export const CAPTURE_LIMIT = 64 * 1024;
  * chunk.
  */
 export function createBoundedCapture(limit = CAPTURE_LIMIT) {
-  let buf = '';
-  // Inside an abandoned overlong line. Resumes on '\n' only, NOT on the wider
-  // LINE_TERMINATORS this module uses elsewhere: a '\n' is a line boundary
-  // under the wider set too, so the "never begins mid-line" property still
-  // holds — \r-terminated output would just over-discard, which is safe.
-  let dropping = false;
+  let complete = '';   // retained whole lines; '' or ends with '\n'
+  let partial = '';    // the line currently being written
+  let dropping = false; // the current line is overlong; discard through its end
+
+  // Evict whole lines from the FRONT until the retained text fits. Never cuts
+  // inside a line, which is the redaction property: scrubCredentials matches
+  // whole credential forms, so text beginning mid-`password=<secret>` would
+  // leave an unmatchable suffix in a logged, persisted, user-visible message.
+  const evictOldest = () => {
+    while (complete.length + partial.length > limit && complete.length > 0) {
+      const nl = complete.indexOf('\n');
+      complete = nl === -1 ? '' : complete.slice(nl + 1);
+    }
+  };
 
   return {
     push(chunk: string): void {
       let s = chunk;
-      if (dropping) {
+      while (s.length > 0) {
         const nl = s.indexOf('\n');
-        if (nl === -1) return; // still inside the abandoned line
+        if (nl === -1) {
+          if (dropping) return; // still inside the abandoned line
+          partial += s;
+          // A single line larger than the whole budget has no safe cut point:
+          // abandon it, and keep abandoning until it ends, so the next chunk's
+          // continuation cannot come back as if it were a fresh line.
+          if (partial.length > limit) {
+            partial = '';
+            dropping = true;
+          } else {
+            evictOldest();
+          }
+          return;
+        }
+        const seg = s.slice(0, nl + 1);
         s = s.slice(nl + 1);
-        dropping = false;
+        if (dropping) {
+          dropping = false; // the abandoned line ends here
+          continue;
+        }
+        partial += seg;
+        if (partial.length > limit) {
+          // Drop just this overlong line. Evicting from the front instead would
+          // throw away the diagnosis already captured — one ERROR line followed
+          // by a 100 KB blob reported "login failed with no output", the very
+          // failure this module exists to remove.
+          partial = '';
+          continue;
+        }
+        complete += partial;
+        partial = '';
+        evictOldest();
       }
-      buf += s;
-      if (buf.length <= limit) return;
-      const cut = buf.length - limit;
-      const nl = buf.indexOf('\n', cut);
-      if (nl !== -1) {
-        buf = buf.slice(nl + 1);
-        return;
-      }
-      // The tail we would retain is one overlong partial line. Abandon that
-      // line — but KEEP the complete lines already captured. Discarding
-      // everything would throw away a diagnosis we had in hand and report
-      // "login failed with no output", the very failure this change removes.
-      const lastNl = buf.lastIndexOf('\n');
-      buf = lastNl === -1 ? '' : buf.slice(0, lastNl + 1);
-      if (buf.length > limit) {
-        // Those kept lines can themselves exceed the cap; trim them at a line
-        // boundary too. buf ends in '\n' here, so a newline always exists at or
-        // after the cut and indexOf cannot miss.
-        buf = buf.slice(buf.indexOf('\n', buf.length - limit) + 1);
-      }
-      dropping = true;
     },
     get text(): string {
-      return buf;
+      return complete + partial;
     },
     /**
-     * Only the COMPLETE lines captured so far — everything up to the last
-     * newline. `text` can end mid-line while the child is still writing, and a
-     * half-written `password=<secret>` no longer matches its redaction needle.
-     * Read this whenever the summary is taken before the child has exited.
+     * Only the COMPLETE lines — `text` can end mid-line while the child is
+     * still writing, and a half-written `password=<secret>` no longer matches
+     * its redaction needle. Read this whenever the summary is taken before the
+     * child has exited.
      */
     get completeText(): string {
-      const lastNl = buf.lastIndexOf('\n');
-      return lastNl === -1 ? '' : buf.slice(0, lastNl + 1);
+      return complete;
     },
   };
 }
