@@ -112,9 +112,14 @@ export function generateEventChannelName(eventId: number): string {
  * matches collided, and a session leaked by a crashed or interrupted run
  * blocked every later start until it idled out.
  *
- * Scoping it to the channel makes the dedup key match the real invariant — a
- * channel IS a match, so one moderator per channel — while letting separate
- * matches run at the same time.
+ * Scoping it to the channel makes the key one moderator per CHANNEL. Be precise
+ * about what that is: a channel belongs to a clash EVENT
+ * (`clashEvents.agoraChannelName`), and an event holds N matches that the
+ * scheduler runs sequentially on that one channel. So this is one moderator per
+ * event, shared across its matches — not one per match. That removes the
+ * cross-event collision; within an event, a moderator left behind by a died
+ * runner would still block the next match, which the start route reconciles by
+ * stopping any already-recorded agent first.
  */
 export function moderatorSessionName(channelName: string): string {
   return `clash-moderator-${channelName}`;

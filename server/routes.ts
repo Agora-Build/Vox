@@ -6787,6 +6787,16 @@ export async function registerRoutes(
         match.maxDurationSeconds,
       );
 
+      // Reconcile a moderator left behind by an earlier match in this event.
+      // The session name is per channel and a channel is per event, so a runner
+      // that died before /moderator/stop leaves a session holding the name —
+      // and the next match in the same event would 409 until ConvoAI's 600s
+      // idle_timeout expired. stopModerator tolerates a 404, so this is safe
+      // when the recorded agent is already gone.
+      if (event.moderatorAgentId) {
+        await stopModerator(event.moderatorAgentId).catch(() => {});
+      }
+
       const agentId = await startModerator({
         channelName,
         token: modToken,

@@ -194,7 +194,7 @@ describe("Agora Integration", () => {
       };
 
       const payload = {
-        name: "clash-moderator",
+        name: moderatorSessionName("clash-event-42"),
         properties: {
           channel: { channel_name: "clash-event-42", token: "test-token", uid: "500" },
           llm: {
@@ -208,7 +208,7 @@ describe("Agora Integration", () => {
         },
       };
 
-      expect(payload.name).toBe("clash-moderator");
+      expect(payload.name).toBe("clash-moderator-clash-event-42");
       expect(payload.properties.channel.uid).toBe("500");
       expect(payload.properties.llm.url).toContain("groq.com");
       expect((payload.properties.llm as any).params.model).toBe("openai/gpt-oss-120b");
@@ -222,7 +222,7 @@ describe("Agora Integration", () => {
       const eventId = 7;
       const channelName = `clash-event-${eventId}`;
       const payload = {
-        name: "clash-moderator",
+        name: moderatorSessionName("clash-event-42"),
         properties: {
           channel: channelName,
           token: "test-token",
@@ -276,7 +276,7 @@ describe("Agora Integration", () => {
   describe("ConvoAI Join Payload", () => {
     it("properties uses flat channel/token/agent_rtc_uid (not nested object)", () => {
       const payload = {
-        name: "clash-moderator",
+        name: moderatorSessionName("clash-event-42"),
         properties: {
           channel: "clash-event-42",
           token: "rtc-token",
