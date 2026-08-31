@@ -77,7 +77,7 @@ export function hasLoguruDiagnosis(text: string): boolean {
  * summarizer falls back to the tail path and reports the artifacts banner
  * again. Redacting the already-chosen lines cannot do that.
  */
-export const DEFAULT_MIN_NEEDLE_LENGTH = 4;
+const DEFAULT_MIN_NEEDLE_LENGTH = 4;
 
 /**
  * Pick the most informative line from a failed aeval run.
@@ -119,6 +119,11 @@ export function summarizeAevalFailure(
   // nothing and the line is reported with its prefix un-stripped. Making the
   // second token optional covers both spellings. Cosmetic, but the two patterns
   // should agree on what a loguru prefix looks like.
+  //
+  // Making the second token optional also strips a whitespace-free prefix like
+  // "cookie=abc|ERROR|x" down to "x". That is wider than the T-spelling this
+  // was aimed at, and deliberate to keep: such a line only reaches here from an
+  // untrusted stream, and removing the prefix is the safer direction.
   const strip = (l: string) => l.replace(/^\S+(?:\s+\S+)?\s*\|\s*\w+\s*\|\s*/, '').trim();
 
   // resolveSecrets substitutes DECRYPTED values into the YAML handed to aeval,
