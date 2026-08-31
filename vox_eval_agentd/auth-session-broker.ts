@@ -186,8 +186,11 @@ export function createBrokerServer(deps: { mint: MintFn; getSecret: () => string
         const raw = err instanceof Error ? err.message : String(err);
         // Defense-in-depth: scrub again here so even a future mint
         // implementation that forgets to scrub can't leak credentials
-        // through logs or the 502 response body.
-        const msg = scrubCredentials(raw, [body.email ?? '', body.password ?? '']);
+        // through logs or the 502 response body. Uses credentialForms, not the
+        // raw pair: a mint that forgot to scrub is precisely the case where the
+        // ESCAPED form arrives here, so a raw-only backstop would miss the one
+        // thing it exists to catch.
+        const msg = scrubCredentials(raw, credentialForms([body.email ?? '', body.password ?? '']));
         console.error(`[Broker] Mint failed for platform ${body.platformId}: ${msg}`);
         return json(502, { error: msg });
       }

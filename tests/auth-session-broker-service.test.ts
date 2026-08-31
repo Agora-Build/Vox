@@ -196,6 +196,29 @@ describe("auth-session-broker HTTP service", () => {
     expect(body.error).not.toContain("secret-email@x.com");
     expect(body.error).not.toContain("hunter2-pass");
   });
+
+  it("the defense-in-depth scrub catches the ESCAPED credential a forgetful mint would leak", async () => {
+    // This layer exists for a mint that failed to scrub — and that is exactly
+    // the case where the JSON/YAML-escaped form arrives, since the scenario
+    // embeds credentials via JSON.stringify. A raw-only backstop would miss it.
+    const password = 'pa"ss\\word';
+    const escaped = JSON.stringify(password).slice(1, -1);
+    expect(escaped).not.toBe(password); // guard: fixture must actually differ
+
+    mintImpl = async () => {
+      throw new Error(`aeval exited 1: bad params: password="${escaped}"`);
+    };
+    const res = await fetch(`${baseUrl}/mint`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: "Bearer s3" },
+      body: JSON.stringify({ platformId: "vapi", email: "a@b.com", password }),
+    });
+    expect(res.status).toBe(502);
+    const body = await res.json();
+    expect(body.error).not.toContain(escaped);
+    expect(body.error).not.toContain(password);
+    expect(body.error).toContain("[redacted]");
+  });
 });
 
 describe("auth-session-broker HTTP service (no mint secret registered yet)", () => {
