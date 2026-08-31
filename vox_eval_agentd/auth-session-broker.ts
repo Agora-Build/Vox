@@ -48,6 +48,13 @@ export function secretMatches(presented: string | undefined, expected: string): 
 export function scrubCredentials(message: string, values: string[]): string {
   return values
     .filter((v) => v.length > 0)
+    // Longest first, matching summarizeAevalFailure. Order is load-bearing when
+    // one credential contains another: with password "brent@agora.op-2026!" and
+    // email "brent@agora.op", redacting the email first destroys the password's
+    // only occurrence and leaks the "-2026!" remainder. Replacing the longest
+    // needle first makes whole values win over their substrings, so overlapping
+    // credentials can't shred each other.
+    .sort((a, b) => b.length - a.length)
     .reduce((acc, v) => acc.split(v).join('[redacted]'), message);
 }
 
@@ -106,10 +113,18 @@ export async function mintWithAeval(req: MintRequest, timeoutMs: number): Promis
         stdio: ['ignore', 'pipe', 'pipe'],
         detached: true,
       });
+      // BOTH streams are buffered, never logged. aeval's loguru sink is stderr
+      // in the build we run (the original bug was its trailing INFO banner
+      // winning a stderr tail), but that is a property of a version and a TTY,
+      // not a guarantee: if a future aeval routes loguru to stdout, discarding
+      // stdout would silently put us back to an uninformative error — the exact
+      // failure this change exists to remove. Buffering both costs nothing.
+      // Either stream may echo step params, which is why every use below goes
+      // through summarizeAevalFailure(forms) and then scrubCredentials(forms).
+      let stdout = '';
       let stderr = '';
+      proc.stdout!.on('data', (d) => { stdout += d.toString(); });
       proc.stderr!.on('data', (d) => { stderr += d.toString(); });
-      // stdout intentionally discarded — may echo step params. Never log it.
-      proc.stdout!.on('data', () => {});
       let settled = false;
       const finish = (fn: () => void) => { if (!settled) { settled = true; clearTimeout(timer); fn(); } };
       const killTree = (signal: NodeJS.Signals) => {
@@ -133,16 +148,11 @@ export async function mintWithAeval(req: MintRequest, timeoutMs: number): Promis
           // ERROR lines; scrubCredentials still runs after it because its
           // redaction has no minimum length (a <4-char password would slip
           // the summarizer's floor).
-          //
-          // stdout is passed as '' DELIBERATELY — it is discarded above rather
-          // than buffered, because it may echo step params verbatim. The
-          // helper's both-streams scan simply doesn't apply here; do not "fix"
-          // this by wiring stdout through.
           const forms = credentialForms([req.email, req.password]);
           // A silent aeval exit leaves nothing to summarize; say so in the
           // broker's own terms instead of the helper's generic sentinel.
-          const summary = stderr.trim()
-            ? scrubCredentials(summarizeAevalFailure('', stderr, forms), forms)
+          const summary = (stdout + stderr).trim()
+            ? scrubCredentials(summarizeAevalFailure(stdout, stderr, forms), forms)
             : 'login failed with no output';
           reject(new Error(`aeval exited ${code}: ${summary}`));
         }

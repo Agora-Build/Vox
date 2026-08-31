@@ -77,6 +77,21 @@ describe("mint failure summary (what the broker reports)", () => {
     expect(summary).toContain("[redacted]");
   });
 
+  it("redacts a password that CONTAINS the email without leaking the remainder", () => {
+    // Order is load-bearing: redacting the shorter email first would destroy
+    // the password's only occurrence, leaving "-2026!" — a live fragment of the
+    // password — in a logged, persisted, user-visible message.
+    const email = "brent@agora.op";
+    const password = "brent@agora.op-2026!";
+    const scrubbed = scrubCredentials(
+      `login rejected for ${email} with password ${password}`,
+      credentialForms([email, password]),
+    );
+    expect(scrubbed).not.toContain("-2026!");
+    expect(scrubbed).not.toContain(password);
+    expect(scrubbed).toBe("login rejected for [redacted] with password [redacted]");
+  });
+
   it("credentialForms derives the escaped form from the same stringify the scenario uses", () => {
     expect(credentialForms(['a"b'])).toEqual(['a"b', 'a\\"b']);
     expect(credentialForms(["plain"])).toEqual(["plain"]); // no duplicate when escaping is a no-op
