@@ -528,6 +528,12 @@ class VoxEvalAgentDaemon {
    * running a login-gated target unauthenticated would produce garbage metrics).
    */
   async fetchSession(jobId: number): Promise<{ storageState: unknown; platformId: string } | null> {
+    // 240s, deliberately the LONGEST link in the mint chain: the broker's child
+    // timeout is clamped to 200 (shared/mint-timeout.ts), Core aborts at +15 and
+    // reclaims a stale claim at +30. The agent must outlast all three, or it
+    // fails the job with a generic "timed out waiting for session mint" while
+    // Core is still working and the real diagnosis never lands. Raising
+    // MAX_MINT_TIMEOUT_SECONDS means raising this too.
     const deadline = Date.now() + 240_000;
     for (;;) {
       const response = await this.fetch(`/api/eval-agent/jobs/${jobId}/session?leaseId=${encodeURIComponent(this.leaseId ?? '')}`);
@@ -875,6 +881,11 @@ class VoxEvalAgentDaemon {
           }
         } catch { /* best effort */ }
 
+        // Flush each decoder's held bytes, matching the broker's close path, so
+        // a trailing multi-byte character isn't dropped from text we redact.
+        outCap.push(outDec.end());
+        errCap.push(errDec.end());
+
         if (timedOut || code !== 0) {
           // A non-zero aeval exit means we did NOT measure the product — the job
           // fails and records NO result. (A run that completes but the agent
@@ -936,8 +947,8 @@ class VoxEvalAgentDaemon {
         const results = this.parseAevalResults(outputDir, allOutput);
         if (this.lastResultsFromStdout && (outCap.truncated || errCap.truncated)) {
           fail(new Error(
-            'aeval produced no usable metrics file and its console output exceeded the capture limit — ' +
-            'refusing to derive latencies from a truncated log',
+            'aeval produced no usable metrics file and part of its console output was discarded ' +
+            '(capture limit, or a single overlong line) — refusing to derive latencies from a partial log',
           ));
           return;
         }

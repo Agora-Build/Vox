@@ -217,7 +217,12 @@ function escapeForRegExp(v: string): string {
 }
 
 /**
- * Max characters retained per captured stream.
+ * Retention target per captured stream — NOT a hard ceiling.
+ *
+ * The eviction hysteresis below lets `complete` reach 2x this before trimming
+ * back to 1x, and `partial` holds up to another 1x, so worst-case retention is
+ * ~3x per stream and ~6x per in-flight run or mint. Size a sidecar against that
+ * number, not this one.
  *
  * 1 MiB, not something tighter: this exists as an OOM bound, and a multi-minute
  * voice eval emits well past 64 KiB on stdout. Too small a cap makes the

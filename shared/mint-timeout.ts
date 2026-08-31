@@ -20,8 +20,24 @@
 
 export const DEFAULT_MINT_TIMEOUT_SECONDS = 180;
 
-/** One hour. Past this a mint is a hung browser, not a slow login. */
-export const MAX_MINT_TIMEOUT_SECONDS = 3600;
+/**
+ * Upper clamp, chosen to keep the four deadlines in order rather than as a
+ * round number:
+ *
+ *   broker child timeout   = T                    (this value)
+ *   Core abort             = T + 15
+ *   stale-mint reclaim     = T + 30
+ *   daemon session poll    = 240s, HARD-CODED in vox-agentd.ts fetchSession
+ *
+ * The daemon's deadline is not configurable from here — it runs on a different
+ * host and cannot read Core's env — so T must stay low enough that the agent
+ * outlasts the mint it is waiting on. At 200 the chain is 200 < 215 < 230 < 240.
+ * A larger ceiling would let an operator invert it: the agent would give up
+ * first, fail the job with "timed out waiting for session mint", and the real
+ * diagnosis would never reach the job error while Core was still legitimately
+ * working. Raising this means raising that poll deadline too.
+ */
+export const MAX_MINT_TIMEOUT_SECONDS = 200;
 
 export function mintTimeoutSeconds(): number {
   // parseInt never returns Infinity, so isFinite here is exactly a NaN check.

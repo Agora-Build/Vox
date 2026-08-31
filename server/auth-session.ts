@@ -134,8 +134,10 @@ export { mintTimeoutSeconds };
  * stolen. This MUST exceed the client-side mint-abort deadline
  * (mintTimeoutSeconds() + 15s, see mintViaBroker's AbortSignal) — otherwise a
  * mint still legitimately in flight gets reclaimed, causing a wasteful
- * double-mint (harmless thanks to the fence, but avoidable). +30s of headroom
- * over the abort keeps the single-flight actually single.
+ * double-mint (harmless thanks to the fence, but avoidable). The abort is
+ * mintTimeoutSeconds() + 15, so this leaves 15s of headroom beyond it — enough
+ * for the rejection to land and the row to be marked failed before anyone else
+ * may steal the claim.
  */
 export function staleMintThresholdSeconds(): number {
   return mintTimeoutSeconds() + 30;
