@@ -331,6 +331,34 @@ describe("mint failure summary (what the broker reports)", () => {
     expect(summary).toContain("Error waiting for URL pattern");
   });
 
+  it("keeps the second ERROR line when a long SSO URL precedes it", () => {
+    // A real redirect with redirectUri/state/PKCE runs 300-800 chars. Stripping
+    // AFTER the summarizer's 500-char truncation let the query eat the budget,
+    // cut away the "Step 1 failed" line, and only then delete the material that
+    // displaced it — leaving a shorter message missing the diagnosis.
+    const longQuery = "redirectUri=" + "a".repeat(400) + "&state=" + "b".repeat(200);
+    const stderr = [
+      `2026-08-30 17:49:50.860 | ERROR | Error waiting for URL pattern: https://x/, current URL: https://sso2.agora.io/en/login?${longQuery}`,
+      "2026-08-30 17:49:50.860 | ERROR | Step 1 failed: platform.setup - Timeout 60000ms exceeded.",
+    ].join("\n");
+    const summary = describeMintFailure("", stderr, credentialForms(["a@b.co", "pw123456"]));
+
+    expect(summary).toContain("Step 1 failed: platform.setup");
+    expect(summary).toContain("sso2.agora.io/en/login");
+    expect(summary).not.toContain("aaaa");
+    expect(summary).not.toContain("bbbb");
+  });
+
+  it("captures lines terminated by a bare CR", () => {
+    // Chromium/Playwright progress output can terminate with \r alone. Splitting
+    // on "\n" only meant such output accumulated until it tripped the
+    // overlong-line guard and was discarded wholesale.
+    const cap = createBoundedCapture(200);
+    cap.push("first line\rsecond line\r");
+    expect(cap.completeText).toContain("first line");
+    expect(cap.completeText).toContain("second line");
+  });
+
   it("stripUrlQueries leaves non-URL text and bare URLs alone", () => {
     expect(stripUrlQueries("no urls here?x=1")).toBe("no urls here?x=1");
     expect(stripUrlQueries("https://h/p")).toBe("https://h/p");

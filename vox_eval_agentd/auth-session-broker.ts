@@ -7,6 +7,17 @@
  * Shipped as its own image (vox-auth-session-broker, the Dockerfile's `broker` target).
  * Internal network ONLY. Registers itself with Core on startup and heartbeats;
  * `/mint` auth is the per-broker mint secret handed back at registration.
+ *
+ * BOUNDARY, so the next reader does not over-trust it: a failed mint's reported
+ * message is scrubbed of the login pair in every encoding we model (see
+ * credentialForms) and has URL queries removed (stripUrlQueries), and stdout is
+ * quarantined behind a strict loguru-shaped predicate. stderr is NOT held to
+ * that bar — it is admitted whenever it carries a diagnosis, because that is
+ * the whole point. Playwright's errors quote page state, so a DOM snapshot or
+ * an `<input value="...">` carrying a CSRF token or a hidden id_token can reach
+ * the 502 body and Core's persisted job error. Those are modelled by no needle
+ * and are not URLs. The exposure is to the job's own owner, which is why it is
+ * accepted here rather than solved; see GitHub #138.
  */
 import http from 'http';
 import { spawn } from 'child_process';
@@ -143,8 +154,20 @@ export const CAPTURE_LIMIT = 64 * 1024;
  * "slice at cut" would reintroduce the partial-credential leak on the very next
  * chunk.
  */
+/** First line terminator in `s`, or null. Non-global regex, so exec is stateless. */
+function nextTerminator(s: string): { idx: number; len: number } | null {
+  const m = LINE_TERMINATORS.exec(s);
+  return m ? { idx: m.index, len: m[0].length } : null;
+}
+
 export function createBoundedCapture(limit = CAPTURE_LIMIT) {
-  let complete = '';   // retained whole lines; '' or ends with '\n'
+  // Retained whole lines; '' or ends with a line terminator. Terminators are
+  // the module's LINE_TERMINATORS set, not '\n' alone: a writer that ends lines
+  // with a bare \r (Chromium/Playwright progress output inheriting the child's
+  // stdio) would otherwise accumulate into `partial` until it tripped the
+  // overlong-line guard and got discarded wholesale, swallowing a diagnosis
+  // that arrived on the same run of text.
+  let complete = '';
   let partial = '';    // the line currently being written
   let dropping = false; // the current line is overlong; discard through its end
 
@@ -154,8 +177,8 @@ export function createBoundedCapture(limit = CAPTURE_LIMIT) {
   // leave an unmatchable suffix in a logged, persisted, user-visible message.
   const evictOldest = () => {
     while (complete.length + partial.length > limit && complete.length > 0) {
-      const nl = complete.indexOf('\n');
-      complete = nl === -1 ? '' : complete.slice(nl + 1);
+      const t = nextTerminator(complete);
+      complete = t === null ? '' : complete.slice(t.idx + t.len);
     }
   };
 
@@ -163,8 +186,8 @@ export function createBoundedCapture(limit = CAPTURE_LIMIT) {
     push(chunk: string): void {
       let s = chunk;
       while (s.length > 0) {
-        const nl = s.indexOf('\n');
-        if (nl === -1) {
+        const t = nextTerminator(s);
+        if (t === null) {
           if (dropping) return; // still inside the abandoned line
           partial += s;
           // A single line larger than the whole budget has no safe cut point:
@@ -178,8 +201,8 @@ export function createBoundedCapture(limit = CAPTURE_LIMIT) {
           }
           return;
         }
-        const seg = s.slice(0, nl + 1);
-        s = s.slice(nl + 1);
+        const seg = s.slice(0, t.idx + t.len);
+        s = s.slice(t.idx + t.len);
         if (dropping) {
           dropping = false; // the abandoned line ends here
           continue;
@@ -281,7 +304,19 @@ export function describeMintFailure(stdout: string, stderr: string, forms: strin
   // (a password of "E" would turn every "ERROR" into "[redacted]RROR", so no
   // line matches and the artifacts banner wins again). The outer scrub stays as
   // defense in depth.
-  return scrubCredentials(stripUrlQueries(summarizeAevalFailure(source, stderr, forms, 0)), forms);
+  // Strip URLs BEFORE summarizing, not after. summarizeAevalFailure joins the
+  // last three ERROR lines and truncates to 500 chars, and a real SSO redirect
+  // with redirectUri/state/PKCE runs 300-800 chars — so stripping afterwards
+  // let the query consume the budget, truncate away the SECOND ERROR line (the
+  // actual "Step 1 failed" diagnosis), and only then delete the material that
+  // displaced it. Unlike pre-SCRUBBING, this is safe for classification: it
+  // only rewrites text after `https?://...[?#]`, and a loguru timestamp/level
+  // prefix never lives inside a URL. It also shortens the window in which a
+  // ?code= is present at all.
+  return scrubCredentials(
+    summarizeAevalFailure(stripUrlQueries(source), stripUrlQueries(stderr), forms, 0),
+    forms,
+  );
 }
 
 /** Real mint: one-step aeval scenario running setup:account → save_storage_state. */

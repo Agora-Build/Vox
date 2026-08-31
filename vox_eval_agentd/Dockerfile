@@ -160,8 +160,9 @@ COPY shared/metrics.ts /shared/metrics.ts
 RUN npm install
 
 # Compile daemon TS → JS
+# As in the broker stage: --platform=node externalizes every Node builtin, so
+# listing them was decorative. @aws-sdk/client-s3 is NOT a builtin and stays.
 RUN npx esbuild vox-agentd.ts --bundle --platform=node --format=esm --outfile=vox-agentd.js \
-    --external:child_process --external:fs --external:os --external:path --external:url --external:http \
     --external:@aws-sdk/client-s3
 
 # Daemon runtime env (overridden at runtime)
