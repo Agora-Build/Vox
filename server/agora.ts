@@ -117,9 +117,14 @@ export function generateEventChannelName(eventId: number): string {
  * (`clashEvents.agoraChannelName`), and an event holds N matches that the
  * scheduler runs sequentially on that one channel. So this is one moderator per
  * event, shared across its matches — not one per match. That removes the
- * cross-event collision; within an event, a moderator left behind by a died
- * runner would still block the next match, which the start route reconciles by
- * stopping any already-recorded agent first.
+ * cross-event collision, which is the account-wide blast radius.
+ *
+ * NOT fixed here: within one event, a moderator left behind by a runner that
+ * died before /moderator/stop still blocks the next match until ConvoAI's 600s
+ * idle_timeout. Reconciling that needs a way to tell "leftover from a previous
+ * match" from "duplicate start for this one" — blindly stopping the recorded
+ * agent would tear down a live moderator mid-match — which needs the moderator
+ * to record its match. Tracked separately.
  */
 export function moderatorSessionName(channelName: string): string {
   return `clash-moderator-${channelName}`;

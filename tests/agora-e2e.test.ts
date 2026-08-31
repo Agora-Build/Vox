@@ -47,7 +47,12 @@ describe.skipIf(!hasCredentials)("Agora E2E (real API calls)", () => {
   // constant in server/agora.ts (fixed there, and pinned in agora.test.ts), not
   // from the channel — but a fixed channel would still let two suites running
   // at once collide, since the session name derives from it.
-  const testEventId = 90000 + (Date.now() % 10000);
+  //
+  // Random over Date.now()-derived: a leaked session lives for ConvoAI's 600s
+  // idle_timeout, so the id has to stay unique across a 10-MINUTE window, not a
+  // few seconds. A narrow timestamp window would recreate the exact 409 this
+  // suite exists to avoid.
+  const testEventId = Math.floor(Math.random() * 1_000_000_000);
   let agentId: string | null = null;
 
   describe("RTC Token Generation", () => {
