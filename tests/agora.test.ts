@@ -222,7 +222,7 @@ describe("Agora Integration", () => {
       const eventId = 7;
       const channelName = `clash-event-${eventId}`;
       const payload = {
-        name: moderatorSessionName("clash-event-42"),
+        name: moderatorSessionName(channelName),
         properties: {
           channel: channelName,
           token: "test-token",
