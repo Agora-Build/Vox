@@ -26,6 +26,26 @@ const DIAGNOSIS_LINE = /^[^\n]*\|[^\S\n]*(ERROR|CRITICAL)[^\S\n]*\|/m;
  * tightening admission cannot regress the primary fix if aeval's log format
  * shifts.
  */
+/**
+ * Every JS LineTerminator, not just \n.
+ *
+ * The regexes above carry /m, whose `^` anchors after \n, \r, \u2028 and
+ * \u2029 — but String.split('\n') breaks on \n alone. Splitting on the
+ * narrower set while testing with the wider one lets a chunk like
+ *   "cookie=SESSIONVALUE123\r2026-08-30 ... | ERROR | boom"
+ * count as ONE line that DIAGNOSIS_LINE matches (anchored after the \r) and
+ * that strip() cannot clean, since its prefix pattern is not at index 0. The
+ * untrusted prefix then rides out in the reported text. Exported so every
+ * caller splitting output shares one definition of "line" with the regexes.
+ */
+export const LINE_TERMINATORS = /\r?\n|[\r\u2028\u2029]/;
+
+/**
+ * NOTE: anchored on a leading digit, so a future aeval build that colorizes
+ * non-TTY output (ANSI prefix before the timestamp) would stop matching. That
+ * degrades safely — the stdout hedge simply admits nothing and we fall back to
+ * stderr — but it is worth knowing before debugging a silent hedge.
+ */
 const LOGURU_DIAGNOSIS_LINE =
   /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:[.,]\d+)?[^\S\n]*\|[^\S\n]*(ERROR|CRITICAL)[^\S\n]*\|/m;
 
@@ -87,7 +107,7 @@ export function summarizeAevalFailure(
 ): string {
   const NOISE = /^\s*(\[PYI-\d+[^\]]*\]|Traceback \(most recent call last\):)/;
   const lines = `${stdout}\n${stderr}`
-    .split('\n')
+    .split(LINE_TERMINATORS)
     .map((l) => l.trim())
     .filter((l) => l.length > 0);
 

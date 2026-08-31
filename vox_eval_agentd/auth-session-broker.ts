@@ -16,7 +16,7 @@ import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { StringDecoder } from 'string_decoder';
-import { summarizeAevalFailure, hasAevalDiagnosis, hasLoguruDiagnosis } from './aeval-output';
+import { summarizeAevalFailure, hasAevalDiagnosis, hasLoguruDiagnosis, LINE_TERMINATORS } from './aeval-output';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const AEVAL_DATA_PATH = path.resolve(__dirname, 'aeval-data');
@@ -132,9 +132,9 @@ export function createBoundedCapture(limit = CAPTURE_LIMIT) {
       buf = lastNl === -1 ? '' : buf.slice(0, lastNl + 1);
       if (buf.length > limit) {
         // Those kept lines can themselves exceed the cap; trim them at a line
-        // boundary too. buf ends in '\n' and is line-aligned, so this is safe.
-        const nl2 = buf.indexOf('\n', buf.length - limit);
-        buf = nl2 === -1 ? '' : buf.slice(nl2 + 1);
+        // boundary too. buf ends in '\n' here, so a newline always exists at or
+        // after the cut and indexOf cannot miss.
+        buf = buf.slice(buf.indexOf('\n', buf.length - limit) + 1);
       }
       dropping = true;
     },
@@ -153,19 +153,6 @@ export function createBoundedCapture(limit = CAPTURE_LIMIT) {
     },
   };
 }
-
-/**
- * Every JS LineTerminator, not just \n.
- *
- * `/m` anchors `^` after \n, \r, \u2028 and \u2029, but String.split('\n')
- * breaks on \n alone. Splitting on the narrower set while testing with the
- * wider one lets a single \n-delimited chunk like
- *   "cookie=SESSIONVALUE123\r2026-08-30 ... | ERROR | boom"
- * satisfy the loguru predicate and be retained WHOLE — carrying the untrusted
- * prefix into the persisted error. Split on everything /m recognizes so a
- * "line" here means the same thing it means to the regex.
- */
-const LINE_TERMINATORS = /\r?\n|[\r\u2028\u2029]/;
 
 /**
  * Which stream to summarize. stderr is aeval's loguru sink in the build we run,
@@ -201,11 +188,14 @@ export function selectDiagnosisSource(stdout: string, stderr: string): string {
  * summarize it, scrub it. Pure, so the security-relevant selection is testable
  * without spawning aeval.
  */
+/** Reported when aeval produced nothing usable. Exported so callers can gate on it. */
+export const NO_OUTPUT_MESSAGE = 'login failed with no output';
+
 export function describeMintFailure(stdout: string, stderr: string, forms: string[]): string {
   const source = selectDiagnosisSource(stdout, stderr);
   // Short-circuit rather than concatenating up to 2×CAPTURE_LIMIT just to test
   // for emptiness.
-  if (!source.trim() && !stderr.trim()) return 'login failed with no output';
+  if (!source.trim() && !stderr.trim()) return NO_OUTPUT_MESSAGE;
   // Pass minNeedleLength 0 rather than pre-scrubbing the inputs. The summarizer
   // redacts AFTER choosing lines and BEFORE truncating, so dropping its 4-char
   // floor covers a short password without the truncation gap — and, unlike an
@@ -277,9 +267,9 @@ export async function mintWithAeval(req: MintRequest, timeoutMs: number): Promis
         try { if (proc.pid) { process.kill(-proc.pid, signal); return; } } catch { /* fall through */ }
         try { proc.kill(signal); } catch { /* already gone */ }
       };
-      // Flush both decoders into their captures and return whatever aeval had
-      // said by then. Shared by the timeout and non-zero-exit paths so neither
-      // can drift from the other.
+      // Flush both decoders into their captures and summarize. Used by the
+      // close path only — the timeout path deliberately reads completeText and
+      // skips the flush, because the child is still mid-write there.
       const capturedFailure = (): string => {
         outCap.push(outDec.end());
         errCap.push(errDec.end());
@@ -298,11 +288,12 @@ export async function mintWithAeval(req: MintRequest, timeoutMs: number): Promis
           // the child is still mid-write, so its last line can be half-emitted.
           // A half-written `password=<secret>` matches no needle and would ride
           // out in the 502 body. The close path below has no such hazard.
-          const out = outCap.completeText;
-          const err = errCap.completeText;
-          const detail = (out + err).trim()
-            ? `: ${describeMintFailure(out, err, credentialForms([req.email, req.password]))}`
-            : '';
+          const summary = describeMintFailure(
+            outCap.completeText, errCap.completeText, credentialForms([req.email, req.password]));
+          // Gate on the summarizer's own verdict rather than re-testing the raw
+          // buffers: quarantined-but-non-empty stdout would otherwise append a
+          // redundant ": login failed with no output".
+          const detail = summary === NO_OUTPUT_MESSAGE ? '' : `: ${summary}`;
           reject(new Error(`login timed out after ${timeoutMs}ms${detail}`));
         });
       }, timeoutMs);

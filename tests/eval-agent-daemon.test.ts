@@ -1706,6 +1706,22 @@ describe("Eval Agent Daemon - Script Validation", () => {
 // aeval failure summarization (job #31006 regression)
 // ---------------------------------------------------------------------------
 
+describe("summarizeAevalFailure line splitting", () => {
+  it("does not retain an untrusted prefix hidden behind a bare CR", () => {
+    // The daemon passes RAW stdout and stderr here with no quarantine, and
+    // daemon stdout can echo step params. /m anchors ^ after \r, \u2028 and
+    // \u2029, so splitting on "\n" alone made this ONE line that
+    // DIAGNOSIS_LINE matched and strip() could not clean — its prefix pattern
+    // is not at index 0 — so the whole thing was retained.
+    for (const sep of ["\r", "\u2028", "\u2029"]) {
+      const line = `leaked=SECRETVALUE123${sep}2026-08-30 17:49:50.860 | ERROR | boom`;
+      const summary = summarizeAevalFailure("", line);
+      expect(summary).toContain("boom");
+      expect(summary).not.toContain("SECRETVALUE123");
+    }
+  });
+});
+
 describe("summarizeAevalFailure", () => {
   // Verbatim shape of the run that produced job #31006: aeval's real diagnosis
   // is mid-stream, and PyInstaller's generic banner is the LAST stderr line —
