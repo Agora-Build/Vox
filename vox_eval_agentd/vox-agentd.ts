@@ -923,25 +923,24 @@ class VoxEvalAgentDaemon {
         // exit-code-0 path, which contradicts the no-partial-metrics policy
         // above. metrics.json is unaffected (it is read from disk), so only the
         // fallback is refused.
-        // Every DISK source parseAevalResults accepts, not just the first:
-        // metrics.json, analysis/metrics.json (priority 1) and report.json
-        // (priority 2) are all read from files and so are unaffected by a
-        // truncated console capture. Checking only the first would fail a
-        // perfectly good run whose analysis output landed under analysis/.
-        const diskSources = [
-          path.join(outputDir, 'metrics.json'),
-          path.join(outputDir, 'analysis', 'metrics.json'),
-          path.join(outputDir, 'report.json'),
-        ];
-        const metricsOnDisk = diskSources.some((f) => fs.existsSync(f));
-        if (!metricsOnDisk && (outCap.truncated || errCap.truncated)) {
+        // Refuse to derive metrics from a truncated log — but decide on what
+        // parseAevalResults actually USED, not on whether a file exists. A
+        // present-but-structureless metrics.json (failing hasLatency() and
+        // isAnalysisOutput()) or a report.json without latency both fall
+        // through to parseAevalStdout, so an existsSync check would wave
+        // through exactly the case this guards. A disk source is immune to
+        // truncation; the stdout walk is not — its phase state machine defaults
+        // to 'response' until it sees a marker, so an evicted prefix makes it
+        // resume in the wrong phase and count interrupt turns as response
+        // latencies, silently, on the exit-code-0 path.
+        const results = this.parseAevalResults(outputDir, allOutput);
+        if (this.lastResultsFromStdout && (outCap.truncated || errCap.truncated)) {
           fail(new Error(
-            'aeval produced no metrics.json and its console output exceeded the capture limit — ' +
+            'aeval produced no usable metrics file and its console output exceeded the capture limit — ' +
             'refusing to derive latencies from a truncated log',
           ));
           return;
         }
-        const results = this.parseAevalResults(outputDir, allOutput);
         finish(resolve, results);
       });
 
@@ -1016,7 +1015,16 @@ class VoxEvalAgentDaemon {
    *   2. report.json   — session report (may contain step execution timing)
    *   3. stdout        — extract timing from step execution logs
    */
+  /**
+   * True when the most recent parseAevalResults() fell through to the stdout
+   * fallback rather than committing to an on-disk source. The caller pairs this
+   * with the capture's `truncated` flag: a disk source is immune to truncation,
+   * the stdout walk is not.
+   */
+  private lastResultsFromStdout = false;
+
   private parseAevalResults(outputDir: string, stdout: string): EvalResult {
+    this.lastResultsFromStdout = false;
     // List session dir contents for debugging
     if (fs.existsSync(outputDir)) {
       try {
@@ -1066,6 +1074,7 @@ class VoxEvalAgentDaemon {
     // Priority 3: stdout — extract timing from step execution logs
     console.warn(`[Daemon] No metrics in output files — falling back to stdout parsing`);
     console.warn(`[Daemon] (This likely means aeval's analysis pipeline failed)`);
+    this.lastResultsFromStdout = true;
     return this.parseAevalStdout(stdout);
   }
 
