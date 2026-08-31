@@ -31,7 +31,7 @@ import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { StringDecoder } from 'string_decoder';
-import { summarizeAevalFailure, hasAevalDiagnosis, hasLoguruDiagnosis, LINE_TERMINATORS } from './aeval-output';
+import { summarizeAevalFailure, hasAevalDiagnosis, hasLoguruDiagnosis, LINE_TERMINATORS, urlForms, reduceUrlsToHost } from './aeval-output';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const AEVAL_DATA_PATH = path.resolve(__dirname, 'aeval-data');
@@ -89,33 +89,6 @@ export function scrubCredentials(message: string, values: string[]): string {
  * redact. The daemon solves this with a parallel `yamlEscape` list
  * (vox-agentd.ts `activeSecretValues`).
  */
-/**
- * Percent-encoded spellings of `v`, best-effort.
- *
- * encodeURIComponent throws URIError on an unpaired surrogate, and "\ud800" is
- * legal JSON — so a credential containing one reaches here from the request
- * body. Both call sites are inside child-process handlers (the 'close' listener
- * and the timeout callback) where the promise executor has already returned, so
- * a throw is NOT converted into a rejection: it surfaces as an uncaught
- * exception and takes the whole sidecar down, killing every in-flight mint.
- * Returning [] on failure keeps the raw and JSON forms, which still apply.
- *
- * Both hex casings are emitted: encodeURIComponent produces uppercase, but a
- * URL echoed back from a target site may use lowercase, and the needle has to
- * match the text as the site wrote it.
- */
-function urlForms(v: string): string[] {
-  let enc: string;
-  try {
-    enc = encodeURIComponent(v);
-  } catch {
-    return []; // lone surrogate
-  }
-  const lower = enc.replace(/%[0-9A-F]{2}/g, (m) => m.toLowerCase());
-  // application/x-www-form-urlencoded differs only in spaces (+ vs %20).
-  return [enc, enc.replace(/%20/g, '+'), lower, lower.replace(/%20/gi, '+')];
-}
-
 export function credentialForms(values: string[]): string[] {
   return Array.from(
     new Set(
@@ -280,32 +253,6 @@ export function selectDiagnosisSource(stdout: string, stderr: string): string {
   return stdout.split(LINE_TERMINATORS).filter((l) => hasLoguruDiagnosis(l.trim())).join('\n');
 }
 
-/**
- * Reduce every URL in `text` to scheme + host, dropping userinfo, path, query
- * and fragment.
- *
- * The line this module exists to surface is aeval's
- *   "Error waiting for URL pattern: ..., current URL: <sso page>"
- * and a mid-flow SSO URL carries material no credential needle can model: an
- * OAuth `?code=`, `state=`, an implicit-flow `#id_token=`, a magic-link
- * `/reset/<token>`, or basic-auth `user:secret@` userinfo. The message is
- * logged, returned in the 502 body, and persisted by Core as a user-visible
- * job error, so all of it has to go.
- *
- * The diagnostic value of the line is WHICH HOST the browser ended up on —
- * "still on sso2.agora.io rather than conversational-ai.agora.io" is the entire
- * finding — so nothing useful is lost.
- *
- * Excluding `/` from the host class also bounds the scan: a lazy class with no
- * required terminator makes the engine rescan to end-of-run from every
- * `http://` start, over text that can be attacker-influenced, twice per failure.
- */
-export function reduceUrlsToHost(text: string): string {
-  return text.replace(
-    /(https?:\/\/)(?:[^\s"'<>/?#]*@)?([^\s"'<>/?#]*)(?:[/?#][^\s"'<>]*)?/gi,
-    '$1$2/…',
-  );
-}
 
 /** Reported when aeval produced nothing usable. Exported so callers can gate on it. */
 export const NO_OUTPUT_MESSAGE = 'login failed with no output';
@@ -336,8 +283,16 @@ export function describeMintFailure(stdout: string, stderr: string, forms: strin
   // only rewrites text after `https?://...[?#]`, and a loguru timestamp/level
   // prefix never lives inside a URL. It also shortens the window in which a
   // ?code= is present at all.
+  // A credential whose VALUE is a URL (a reset link, a webhook secret) would be
+  // rewritten by reduceUrlsToHost into something no needle matches, leaking its
+  // host. Redact those needles first. Safe to pre-scrub with this subset
+  // specifically — a needle containing "://" cannot occur inside a loguru
+  // timestamp/level prefix, so classification is untouched, which is the reason
+  // pre-scrubbing with ALL needles is avoided (see minNeedleLength's docs).
+  const urlish = forms.filter((f) => f.includes('://'));
+  const pre = (t: string) => (urlish.length > 0 ? scrubCredentials(t, urlish) : t);
   return scrubCredentials(
-    summarizeAevalFailure(reduceUrlsToHost(source), reduceUrlsToHost(stderr), forms, 0),
+    summarizeAevalFailure(reduceUrlsToHost(pre(source)), reduceUrlsToHost(pre(stderr)), forms, 0),
     forms,
   );
 }

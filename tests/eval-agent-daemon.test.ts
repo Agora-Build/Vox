@@ -15,7 +15,7 @@ import { execSync } from "child_process";
 import path from "path";
 import fs from "fs";
 import os from "os";
-import { summarizeAevalFailure } from "../vox_eval_agentd/aeval-output";
+import { summarizeAevalFailure, reduceUrlsToHost, urlForms } from "../vox_eval_agentd/aeval-output";
 
 // Mock the parseResults function logic for testing
 function parseResults(csvContent: string): {
@@ -1705,6 +1705,27 @@ describe("Eval Agent Daemon - Script Validation", () => {
 // ---------------------------------------------------------------------------
 // aeval failure summarization (job #31006 regression)
 // ---------------------------------------------------------------------------
+
+describe("daemon failure-message hardening (shared with the broker)", () => {
+  it("reduces URLs so a token in a query or path can't reach the job error", () => {
+    // The daemon persists this string as the job's user-visible error, and an
+    // aeval/Playwright error can echo a signaling or redirect URL carrying
+    // material no needle models.
+    const stderr = "2026-08-30 17:49:50.860 | ERROR | connect failed: wss://sig.livekit.io/rtc?access_token=JWTVALUE";
+    const summary = summarizeAevalFailure("", reduceUrlsToHost(stderr));
+    expect(summary).not.toContain("JWTVALUE");
+    expect(summary).toContain("sig.livekit.io");
+  });
+
+  it("urlForms covers the encodings a secret takes inside a URL", () => {
+    // activeSecretValues now includes these, so a runtime secret echoed in a
+    // query string is redacted rather than surviving as %40/%20.
+    const forms = urlForms("a b@agora.io");
+    expect(forms).toContain("a%20b%40agora.io");
+    expect(forms).toContain("a+b%40agora.io");
+    expect(urlForms("pw\ud800end")).toEqual([]); // lone surrogate: best-effort, never throws
+  });
+});
 
 describe("summarizeAevalFailure line splitting", () => {
   it("does not retain an untrusted prefix hidden behind a bare CR", () => {

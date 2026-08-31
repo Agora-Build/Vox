@@ -34,7 +34,7 @@ import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { SECRET_PLACEHOLDER_REGEX, collectSecretRefs } from '../shared/secrets';
-import { summarizeAevalFailure } from './aeval-output';
+import { summarizeAevalFailure, reduceUrlsToHost, urlForms } from './aeval-output';
 import yaml from 'js-yaml';
 import { injectStorageSession } from './session-inject';
 import {
@@ -867,7 +867,12 @@ class VoxEvalAgentDaemon {
           // run's numbers are statistically unreliable and would pollute metrics.
           const reason = timedOut
             ? `aeval timed out after ${AEVAL_RUN_TIMEOUT_MS}ms`
-            : `aeval exited with code ${code}: ${summarizeAevalFailure(stdout, stderr, this.activeSecretValues)}`;
+            // reduceUrlsToHost before summarizing, matching the broker: an aeval
+            // or Playwright error can echo a URL whose query/path carries
+            // material no needle models (?access_token=, an OAuth ?code=, a
+            // magic-link path token), and this string is persisted as the job's
+            // user-visible error.
+            : `aeval exited with code ${code}: ${summarizeAevalFailure(reduceUrlsToHost(stdout), reduceUrlsToHost(stderr), this.activeSecretValues)}`;
           fail(new Error(reason));
           return;
         }
@@ -1885,7 +1890,10 @@ class VoxEvalAgentDaemon {
       // Both forms: the YAML handed to aeval carries the ESCAPED value, so a
       // secret containing a quote or backslash would appear escaped in its
       // output and slip past a raw-value scrub.
-      this.activeSecretValues = Object.values(jobSecrets).flatMap((v) => [v, VoxEvalAgentDaemon.yamlEscape(v)]);
+      // Raw + the YAML spelling resolveSecrets substitutes + the URL encodings
+      // a redirect or signaling URL would carry. urlForms is shared with the
+      // broker so the two redaction sets cannot drift.
+      this.activeSecretValues = Object.values(jobSecrets).flatMap((v) => [v, VoxEvalAgentDaemon.yamlEscape(v), ...urlForms(v)]);
       // session-injected jobs get a Core-minted storageState instead of
       // login credentials (which the server structurally withholds).
       const sessionCfg = (job.config as Record<string, unknown> | null)?.sessionInjection;

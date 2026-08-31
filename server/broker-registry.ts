@@ -82,10 +82,18 @@ export async function mintViaBroker(
   req: { platformId: string; email: string; password: string },
   fetchImpl: typeof fetch = fetch,
 ): Promise<unknown> {
+  // Bound the call. auth-session.ts's staleMintThresholdSeconds() is derived
+  // from "mintTimeoutSeconds() + 15s, see mintViaBroker's AbortSignal" — that
+  // signal did not exist, so a hung broker left this promise pending forever,
+  // the row stuck in 'minting' until stale-reclaim, and ensureSession's catch
+  // never fired. The env read is duplicated rather than imported because
+  // auth-session.ts imports this module; keep the two in step.
+  const abortMs = (parseInt(process.env.WEB_SESSION_MINT_TIMEOUT_SECONDS || "180", 10) + 15) * 1000;
   const res = await fetchImpl(`${target.url}/mint`, {
     method: "POST",
     headers: { "content-type": "application/json", authorization: `Bearer ${target.mintSecret}` },
     body: JSON.stringify(req),
+    signal: AbortSignal.timeout(abortMs),
   });
   if (!res.ok) {
     // Fold the broker's own diagnosis into the message. Without this the whole

@@ -1,8 +1,8 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import type { AddressInfo } from "net";
 import type { Server } from "http";
-import { createBrokerServer, scrubCredentials, credentialForms, createBoundedCapture, selectDiagnosisSource, describeMintFailure, reduceUrlsToHost, NO_OUTPUT_MESSAGE, secretMatches, heartbeat, type MintRequest } from "../vox_eval_agentd/auth-session-broker";
-import { summarizeAevalFailure, hasAevalDiagnosis, hasLoguruDiagnosis } from "../vox_eval_agentd/aeval-output";
+import { createBrokerServer, scrubCredentials, credentialForms, createBoundedCapture, selectDiagnosisSource, describeMintFailure, NO_OUTPUT_MESSAGE, secretMatches, heartbeat, type MintRequest } from "../vox_eval_agentd/auth-session-broker";
+import { summarizeAevalFailure, hasAevalDiagnosis, hasLoguruDiagnosis, reduceUrlsToHost, urlForms } from "../vox_eval_agentd/aeval-output";
 
 describe("secretMatches (constant-time bearer check)", () => {
   it("true only on an exact match", () => {
@@ -384,6 +384,9 @@ describe("mint failure summary (what the broker reports)", () => {
     // A second '@' — a percent-encoded one in the password — must not let the
     // userinfo remainder survive into the host.
     expect(reduceUrlsToHost("http://user:p%40ss@host/x")).toBe("http://host/…");
+    // ws/wss too: on the daemon path a LiveKit/Agora signaling URL carrying
+    // ?access_token=<JWT> is routine in an aeval error.
+    expect(reduceUrlsToHost("wss://sig.livekit.io/rtc?access_token=JWTV")).toBe("wss://sig.livekit.io/…");
   });
 
   it("returns the no-output sentinel unscrubbed, so the timeout gate keeps working", () => {

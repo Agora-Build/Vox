@@ -3947,7 +3947,8 @@ export async function registerRoutes(
         return res.status(503).json({
           required: true,
           status: "failed",
-          error: (ownerOperated ? session.lastError : null) ?? "session mint failed",
+          // `||` not `??`: an empty-string lastError should fall back too.
+          error: (ownerOperated ? session.lastError : null) || "session mint failed",
         });
       }
       // Cold or stale or currently minting: (re)trigger and tell the agent to poll.

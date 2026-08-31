@@ -166,3 +166,59 @@ export function summarizeAevalFailure(
   const tail = (meaningful.length > 0 ? meaningful : lines).slice(-3).join(' | ');
   return scrub(tail || 'unknown error').slice(0, 500);
 }
+
+/**
+ * Percent-encoded spellings of `v`, best-effort.
+ *
+ * encodeURIComponent throws URIError on an unpaired surrogate, and "\ud800" is
+ * legal JSON — so a credential containing one reaches here from the request
+ * body. Both call sites are inside child-process handlers (the 'close' listener
+ * and the timeout callback) where the promise executor has already returned, so
+ * a throw is NOT converted into a rejection: it surfaces as an uncaught
+ * exception and takes the whole sidecar down, killing every in-flight mint.
+ * Returning [] on failure keeps the raw and JSON forms, which still apply.
+ *
+ * Both hex casings are emitted: encodeURIComponent produces uppercase, but a
+ * URL echoed back from a target site may use lowercase, and the needle has to
+ * match the text as the site wrote it.
+ */
+export function urlForms(v: string): string[] {
+  let enc: string;
+  try {
+    enc = encodeURIComponent(v);
+  } catch {
+    return []; // lone surrogate
+  }
+  const lower = enc.replace(/%[0-9A-F]{2}/g, (m) => m.toLowerCase());
+  // application/x-www-form-urlencoded differs only in spaces (+ vs %20).
+  return [enc, enc.replace(/%20/g, '+'), lower, lower.replace(/%20/gi, '+')];
+}
+
+/**
+ * Reduce every URL in `text` to scheme + host, dropping userinfo, path, query
+ * and fragment. Covers ws/wss as well as http/https: on the DAEMON path a
+ * LiveKit/Agora signaling URL with ?access_token=<JWT> is routine in an aeval
+ * or Playwright error.
+ *
+ * The line this module exists to surface is aeval's
+ *   "Error waiting for URL pattern: ..., current URL: <sso page>"
+ * and a mid-flow SSO URL carries material no credential needle can model: an
+ * OAuth `?code=`, `state=`, an implicit-flow `#id_token=`, a magic-link
+ * `/reset/<token>`, or basic-auth `user:secret@` userinfo. The message is
+ * logged, returned in the 502 body, and persisted by Core as a user-visible
+ * job error, so all of it has to go.
+ *
+ * The diagnostic value of the line is WHICH HOST the browser ended up on —
+ * "still on sso2.agora.io rather than conversational-ai.agora.io" is the entire
+ * finding — so nothing useful is lost.
+ *
+ * Excluding `/` from the host class also bounds the scan: a lazy class with no
+ * required terminator makes the engine rescan to end-of-run from every
+ * `http://` start, over text that can be attacker-influenced, twice per failure.
+ */
+export function reduceUrlsToHost(text: string): string {
+  return text.replace(
+    /((?:https?|wss?):\/\/)(?:[^\s"'<>/?#]*@)?([^\s"'<>/?#]*)(?:[/?#][^\s"'<>]*)?/gi,
+    '$1$2/…',
+  );
+}
