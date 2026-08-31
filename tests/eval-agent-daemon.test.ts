@@ -15,7 +15,7 @@ import { execSync } from "child_process";
 import path from "path";
 import fs from "fs";
 import os from "os";
-import { summarizeAevalFailure, reduceUrlsToHost, reduceUrlsSafely, urlForms } from "../vox_eval_agentd/aeval-output";
+import { summarizeAevalFailure, reduceUrlsToHost, reduceUrlsSafely, urlForms, createBoundedCapture } from "../vox_eval_agentd/aeval-output";
 
 // Mock the parseResults function logic for testing
 function parseResults(csvContent: string): {
@@ -1730,6 +1730,19 @@ describe("daemon failure-message hardening (shared with the broker)", () => {
     // ...and a URL that is NOT a secret is still reduced rather than redacted.
     const other = reduceUrlsSafely("see https://docs.example.com/a?b=1", [secret]);
     expect(other).toBe("see https://docs.example.com/…");
+  });
+
+  it("reports truncation, so a parser can refuse a partial log", () => {
+    // parseAevalStdout walks the WHOLE event log with a phase state machine
+    // defaulting to 'response'. Fed a tail-truncated buffer it resumes mid-run
+    // in the wrong phase and reports wrong latencies on the exit-code-0 path —
+    // silently, which is worse than failing. The daemon checks this flag before
+    // falling back to stdout parsing.
+    const cap = createBoundedCapture(50);
+    cap.push("Phase 1 (response) completed\n");
+    expect(cap.truncated).toBe(false);
+    cap.push("x".repeat(500) + "\n");
+    expect(cap.truncated).toBe(true);
   });
 
   it("urlForms covers the encodings a secret takes inside a URL", () => {

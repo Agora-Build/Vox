@@ -205,7 +205,7 @@ export function reduceUrlsSafely(text: string, needles: string[]): string {
   // "[redacted]?access_token=JWT", which reduceUrlsToHost no longer recognizes
   // as a URL, so the query survives.
   const pre = urlish.reduce(
-    (acc, v) => acc.replace(new RegExp(escapeForRegExp(v) + '[^\\s"\'<>]*', 'g'), '[redacted]'),
+    (acc, v) => acc.replace(new RegExp(escapeForRegExp(v) + '[^\\s"\'<>|]*', 'g'), '[redacted]'),
     text,
   );
   return reduceUrlsToHost(pre);
@@ -246,6 +246,10 @@ function nextTerminator(s: string): { idx: number; len: number } | null {
 }
 
 export function createBoundedCapture(limit = CAPTURE_LIMIT) {
+  // Whether anything has been discarded. Callers that PARSE the capture (rather
+  // than summarizing a failure from it) must check this: a tail-truncated
+  // buffer silently changes their answer instead of failing.
+  let truncated = false;
   // Retained whole lines; '' or ends with a line terminator. Terminators are
   // the module's LINE_TERMINATORS set, not '\n' alone: a writer that ends lines
   // with a bare \r (Chromium/Playwright progress output inheriting the child's
@@ -271,6 +275,7 @@ export function createBoundedCapture(limit = CAPTURE_LIMIT) {
     while (complete.length + partial.length > limit && complete.length > 0) {
       const t = nextTerminator(complete);
       complete = t === null ? '' : complete.slice(t.idx + t.len);
+      truncated = true;
     }
   };
 
@@ -295,6 +300,7 @@ export function createBoundedCapture(limit = CAPTURE_LIMIT) {
           if (partial.length > limit) {
             partial = '';
             dropping = true;
+            truncated = true;
           } else {
             evictOldest();
           }
@@ -313,6 +319,7 @@ export function createBoundedCapture(limit = CAPTURE_LIMIT) {
           // would discard the diagnosis already captured, so one ERROR line
           // followed by a 100 KB blob would report nothing useful.
           partial = '';
+          truncated = true;
           continue;
         }
         complete += partial;
@@ -331,6 +338,10 @@ export function createBoundedCapture(limit = CAPTURE_LIMIT) {
      */
     get completeText(): string {
       return complete;
+    },
+    /** True once any output has been discarded. See the note above. */
+    get truncated(): boolean {
+      return truncated;
     },
   };
 }

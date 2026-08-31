@@ -62,8 +62,17 @@ import { credentialForms, redactValues } from "@shared/credentials";
  */
 export function mintTimeoutSeconds(): number {
   const configured = Number.parseInt(process.env.WEB_SESSION_MINT_TIMEOUT_SECONDS || "180", 10);
-  return Number.isFinite(configured) && configured > 0 ? configured : 180;
+  // NaN check (parseInt never returns Infinity) plus BOTH bounds. An unclamped
+  // upper end still overflows [EnforceRange] unsigned long long — 1e20 passes a
+  // "finite and positive" test and throws at AbortSignal.timeout, failing every
+  // mint with an opaque error — so the doc above would be claiming a guarantee
+  // the code did not provide.
+  if (!Number.isFinite(configured) || configured <= 0) return 180;
+  return Math.min(configured, MAX_MINT_TIMEOUT_SECONDS);
 }
+
+/** One hour. Past this a mint is a hung browser, not a slow login. */
+const MAX_MINT_TIMEOUT_SECONDS = 3600;
 
 const mintSecretCache = new Map<number, string>();
 export function cacheBrokerMintSecret(id: number, secret: string): void { mintSecretCache.set(id, secret); }

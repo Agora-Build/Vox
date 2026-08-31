@@ -881,8 +881,18 @@ class VoxEvalAgentDaemon {
           // didn't respond exits 0 and IS reported, with NA latencies + response
           // rate 0.) We deliberately don't salvage partial metrics here: a failed
           // run's numbers are statistically unreliable and would pollute metrics.
+          // On the timeout path read completeText, not text: the child is
+          // still mid-write, and a half-written line can hold a fragment of a
+          // secret that matches no whole needle. Same reasoning as the broker.
+          const timeoutDetail = summarizeAevalFailure(
+            reduceUrlsSafely(outCap.completeText, this.activeSecretValues),
+            reduceUrlsSafely(errCap.completeText, this.activeSecretValues),
+            this.activeSecretValues,
+          );
           const reason = timedOut
-            ? `aeval timed out after ${AEVAL_RUN_TIMEOUT_MS}ms`
+            // Say what aeval had reached before it hung — which step, which
+            // selector — instead of only the deadline.
+            ? `aeval timed out after ${AEVAL_RUN_TIMEOUT_MS}ms${(outCap.completeText + errCap.completeText).trim() ? `: ${timeoutDetail}` : ''}`
             // Reduce URLs before summarizing, matching the broker: an aeval or
             // Playwright error can echo a URL whose query/path carries material
             // no needle models (?access_token=, an OAuth ?code=, a magic-link
@@ -897,6 +907,23 @@ class VoxEvalAgentDaemon {
         }
 
         const outputDir = this.lastOutputDir!;
+        // A truncated capture must not reach the stdout metrics fallback.
+        // parseAevalStdout walks the WHOLE event log with a phase state machine
+        // that defaults to 'response' until it sees a phase marker — so on a
+        // capture whose early markers were evicted it resumes mid-run in the
+        // wrong phase, counting interrupt turns as response latencies and
+        // dropping early turns. That is silently wrong numbers on the
+        // exit-code-0 path, which contradicts the no-partial-metrics policy
+        // above. metrics.json is unaffected (it is read from disk), so only the
+        // fallback is refused.
+        const metricsOnDisk = fs.existsSync(path.join(outputDir, 'metrics.json'));
+        if (!metricsOnDisk && (outCap.truncated || errCap.truncated)) {
+          fail(new Error(
+            'aeval produced no metrics.json and its console output exceeded the capture limit — ' +
+            'refusing to derive latencies from a truncated log',
+          ));
+          return;
+        }
         const results = this.parseAevalResults(outputDir, allOutput);
         finish(resolve, results);
       });
