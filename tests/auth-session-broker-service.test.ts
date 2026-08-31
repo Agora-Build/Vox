@@ -225,6 +225,35 @@ describe("mint failure summary (what the broker reports)", () => {
     expect(summary).not.toContain("storageState fragment");
   });
 
+  it("rejects an untrusted prefix hidden behind a bare CR", () => {
+    // /m anchors ^ after \r, \u2028 and \u2029 as well as \n, but split("\n")
+    // breaks on \n alone. Testing with the wider set while splitting on the
+    // narrower one let a whole \n-line carry an untrusted prefix into the
+    // persisted error, since strip() cannot remove a prefix that isn't at the
+    // start of the line.
+    for (const sep of ["\r", "\u2028", "\u2029"]) {
+      const line = `cookie=SESSIONVALUE123${sep}2026-08-30 17:49:50.860 | ERROR | boom`;
+      const summary = describeMintFailure(line, "", []);
+      expect(summary).not.toContain("SESSIONVALUE123");
+    }
+  });
+
+  it("completeText excludes a line the child is still writing", () => {
+    // Reported before the child exits, a half-written credential matches no
+    // needle and would survive the scrub.
+    const cap = createBoundedCapture(1000);
+    cap.push("2026-08-30 17:49:50.860 | ERROR | boom\n");
+    cap.push("2026-08-30 17:49:51.000 | ERROR | password=SUPERSEC");
+    expect(cap.text).toContain("SUPERSEC");
+    expect(cap.completeText).not.toContain("SUPERSEC");
+    expect(cap.completeText).toContain("boom");
+
+    // No complete line yet → nothing to report.
+    const fresh = createBoundedCapture(1000);
+    fresh.push("half a line, no newline");
+    expect(fresh.completeText).toBe("");
+  });
+
   it("credentialForms derives the escaped form from the same stringify the scenario uses", () => {
     expect(credentialForms(['a"b'])).toEqual(['a"b', 'a\\"b']);
     expect(credentialForms(["plain"])).toEqual(["plain"]); // no duplicate when escaping is a no-op

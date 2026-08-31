@@ -141,8 +141,31 @@ export function createBoundedCapture(limit = CAPTURE_LIMIT) {
     get text(): string {
       return buf;
     },
+    /**
+     * Only the COMPLETE lines captured so far — everything up to the last
+     * newline. `text` can end mid-line while the child is still writing, and a
+     * half-written `password=<secret>` no longer matches its redaction needle.
+     * Read this whenever the summary is taken before the child has exited.
+     */
+    get completeText(): string {
+      const lastNl = buf.lastIndexOf('\n');
+      return lastNl === -1 ? '' : buf.slice(0, lastNl + 1);
+    },
   };
 }
+
+/**
+ * Every JS LineTerminator, not just \n.
+ *
+ * `/m` anchors `^` after \n, \r, \u2028 and \u2029, but String.split('\n')
+ * breaks on \n alone. Splitting on the narrower set while testing with the
+ * wider one lets a single \n-delimited chunk like
+ *   "cookie=SESSIONVALUE123\r2026-08-30 ... | ERROR | boom"
+ * satisfy the loguru predicate and be retained WHOLE — carrying the untrusted
+ * prefix into the persisted error. Split on everything /m recognizes so a
+ * "line" here means the same thing it means to the regex.
+ */
+const LINE_TERMINATORS = /\r?\n|[\r\u2028\u2029]/;
 
 /**
  * Which stream to summarize. stderr is aeval's loguru sink in the build we run,
@@ -170,7 +193,7 @@ export function selectDiagnosisSource(stdout: string, stderr: string): string {
   // whole stream would let page-dump text containing a bare "| ERROR |" both
   // reach the persisted error and bury the real line that earned admission.
   // Selection is now as strict as admission.
-  return stdout.split('\n').filter((l) => hasLoguruDiagnosis(l)).join('\n');
+  return stdout.split(LINE_TERMINATORS).filter((l) => hasLoguruDiagnosis(l)).join('\n');
 }
 
 /**
@@ -270,8 +293,17 @@ export async function mintWithAeval(req: MintRequest, timeoutMs: number): Promis
           // the same complaint this module exists to fix, one branch over. If
           // aeval logged anything before it hung (which step it reached, which
           // selector it was waiting on), say so.
-          const captured = (outCap.text + errCap.text).trim() ? `: ${capturedFailure()}` : '';
-          reject(new Error(`login timed out after ${timeoutMs}ms${captured}`));
+          //
+          // COMPLETE lines only, and no decoder flush: we are reporting while
+          // the child is still mid-write, so its last line can be half-emitted.
+          // A half-written `password=<secret>` matches no needle and would ride
+          // out in the 502 body. The close path below has no such hazard.
+          const out = outCap.completeText;
+          const err = errCap.completeText;
+          const detail = (out + err).trim()
+            ? `: ${describeMintFailure(out, err, credentialForms([req.email, req.password]))}`
+            : '';
+          reject(new Error(`login timed out after ${timeoutMs}ms${detail}`));
         });
       }, timeoutMs);
       proc.on('error', (err) => finish(() => reject(err)));
