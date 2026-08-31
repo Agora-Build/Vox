@@ -8,7 +8,7 @@
  * storageState. Broker addressing/routing lives in `./broker-registry`.
  */
 import { createHash } from "crypto";
-import { collectSecretRefs } from "@shared/secrets";
+import { collectSecretRefs, isAuthFieldName } from "@shared/secrets";
 import yaml from "js-yaml";
 import { storage, encryptValue, decryptValue, type SessionScope } from "./storage";
 import { brokerAvailable, routeToBroker, mintViaBroker, isKnownBrokerType, mintTimeoutSeconds } from "./broker-registry";
@@ -357,10 +357,13 @@ export function findBrokeredMisuse(
   return classified.filter((c) => c.brokerType === "auth-session" && !allowed.has(c.name)).map((c) => c.name);
 }
 
-const AUTH_FIELD_RE = /USERNAME|PASSWORD|ACCOUNT|EMAIL/i;
-/** Default brokerType suggestion for a secret name (Task 6: pre-selects the UI toggle). */
+/**
+ * Default brokerType suggestion for a secret name (pre-selects the UI toggle).
+ * The name heuristic itself lives in @shared/secrets so the console cannot
+ * drift from it — see AUTH_FIELD_NAME_PATTERN.
+ */
 export function defaultBrokerTypeForName(name: string): "auth-session" | null {
-  return AUTH_FIELD_RE.test(name) ? "auth-session" : null;
+  return isAuthFieldName(name) ? "auth-session" : null;
 }
 
 // Resolve the brokerType for a secret at create time.
