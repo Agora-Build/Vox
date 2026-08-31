@@ -47,6 +47,7 @@ export function isInternalBrokerUrl(raw: string): boolean {
 
 import { storage } from "./storage";
 import type { Broker } from "@shared/schema";
+import { credentialForms, redactValues } from "@shared/credentials";
 
 const mintSecretCache = new Map<number, string>();
 export function cacheBrokerMintSecret(id: number, secret: string): void { mintSecretCache.set(id, secret); }
@@ -117,14 +118,13 @@ export async function mintViaBroker(
       /* non-JSON body — the status alone is all we can report */
     }
     // Re-redact with OUR copies rather than trusting the broker's scrub. Core
-    // holds the plaintext pair, this string is persisted to
-    // webSessions.lastError, and a stale or buggy broker echoing a credential
-    // should not become a durable leak here. Longest first so a password
-    // containing the email can't be shredded into an unmatchable remainder.
-    detail = [req.email, req.password]
-      .filter((v) => typeof v === "string" && v.length > 0)
-      .sort((a, b) => b.length - a.length)
-      .reduce((acc, v) => acc.split(v).join("[redacted]"), detail);
+    // holds the plaintext pair and is the one writing the durable field, so a
+    // stale or buggy broker echoing a credential must not become a leak here.
+    // credentialForms, not the raw pair: a backstop that covers fewer encodings
+    // than the layer it backstops is weakest exactly when it is needed — the
+    // broker failing to scrub is the case where an escaped or URL-encoded
+    // spelling arrives.
+    detail = redactValues(detail, credentialForms([req.email, req.password]));
     throw new Error(`broker mint failed: ${res.status}${detail ? `: ${detail}` : ""}`);
   }
   return res.json();

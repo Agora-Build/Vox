@@ -111,6 +111,7 @@ WORKDIR /app
 
 COPY vox_eval_agentd/auth-session-broker.ts /app/
 COPY vox_eval_agentd/aeval-output.ts /app/
+COPY shared/credentials.ts /shared/credentials.ts
 COPY vox_eval_agentd/package.json /app/
 
 # npm install only to obtain esbuild (a devDep). auth-session-broker.ts imports only
@@ -154,6 +155,7 @@ COPY vox_eval_agentd/chunking.ts /app/
 COPY vox_eval_agentd/aeval-output.ts /app/
 COPY vox_eval_agentd/package.json /app/
 COPY shared/secrets.ts /shared/secrets.ts
+COPY shared/credentials.ts /shared/credentials.ts
 COPY shared/metrics.ts /shared/metrics.ts
 
 # Install daemon dependencies (esbuild for TS compilation)

@@ -1,3 +1,6 @@
+import { urlForms, redactValues } from '../shared/credentials';
+export { urlForms, credentialForms, redactValues } from '../shared/credentials';
+
 /**
  * Pure helpers for interpreting an aeval run's console output.
  * Kept in its own module (not vox-agentd.ts) so tests can import it without
@@ -167,55 +170,6 @@ export function summarizeAevalFailure(
   return scrub(tail || 'unknown error').slice(0, 500);
 }
 
-/**
- * Percent-encoded spellings of `v`, best-effort.
- *
- * encodeURIComponent throws URIError on an unpaired surrogate, and "\ud800" is
- * legal JSON — so a credential containing one reaches here from the request
- * body. Both call sites are inside child-process handlers (the 'close' listener
- * and the timeout callback) where the promise executor has already returned, so
- * a throw is NOT converted into a rejection: it surfaces as an uncaught
- * exception and takes the whole sidecar down, killing every in-flight mint.
- * Returning [] on failure keeps the raw and JSON forms, which still apply.
- *
- * Both hex casings are emitted: encodeURIComponent produces uppercase, but a
- * URL echoed back from a target site may use lowercase, and the needle has to
- * match the text as the site wrote it.
- */
-export function urlForms(v: string): string[] {
-  let enc: string;
-  try {
-    enc = encodeURIComponent(v);
-  } catch {
-    return []; // lone surrogate
-  }
-  const lower = enc.replace(/%[0-9A-F]{2}/g, (m) => m.toLowerCase());
-  // application/x-www-form-urlencoded differs only in spaces (+ vs %20).
-  return [enc, enc.replace(/%20/g, '+'), lower, lower.replace(/%20/gi, '+')];
-}
-
-/**
- * Reduce every URL in `text` to scheme + host, dropping userinfo, path, query
- * and fragment. Covers ws/wss as well as http/https: on the DAEMON path a
- * LiveKit/Agora signaling URL with ?access_token=<JWT> is routine in an aeval
- * or Playwright error.
- *
- * The line this module exists to surface is aeval's
- *   "Error waiting for URL pattern: ..., current URL: <sso page>"
- * and a mid-flow SSO URL carries material no credential needle can model: an
- * OAuth `?code=`, `state=`, an implicit-flow `#id_token=`, a magic-link
- * `/reset/<token>`, or basic-auth `user:secret@` userinfo. The message is
- * logged, returned in the 502 body, and persisted by Core as a user-visible
- * job error, so all of it has to go.
- *
- * The diagnostic value of the line is WHICH HOST the browser ended up on —
- * "still on sso2.agora.io rather than conversational-ai.agora.io" is the entire
- * finding — so nothing useful is lost.
- *
- * Excluding `/` from the host class also bounds the scan: a lazy class with no
- * required terminator makes the engine rescan to end-of-run from every
- * `http://` start, over text that can be attacker-influenced, twice per failure.
- */
 export function reduceUrlsToHost(text: string): string {
   return text.replace(
     /((?:https?|wss?):\/\/)(?:[^\s"'<>/?#]*@)?([^\s"'<>/?#]*)(?:[/?#][^\s"'<>]*)?/gi,
@@ -243,6 +197,138 @@ export function reduceUrlsSafely(text: string, needles: string[]): string {
   const urlish = needles
     .filter((n) => n.length > 0 && n.includes('://'))
     .sort((a, b) => b.length - a.length); // longest first, so wholes beat substrings
-  const pre = urlish.reduce((acc, v) => acc.split(v).join('[redacted]'), text);
+  // Consume the REST of the URL run, not just the needle. A URL-valued secret
+  // is typically a PREFIX of what gets echoed — secret "wss://h/rtc" appearing
+  // as "wss://h/rtc?access_token=JWT" — and replacing only the needle leaves
+  // "[redacted]?access_token=JWT", which reduceUrlsToHost no longer recognizes
+  // as a URL, so the query survives.
+  const pre = urlish.reduce(
+    (acc, v) => acc.replace(new RegExp(escapeForRegExp(v) + '[^\\s"\'<>]*', 'g'), '[redacted]'),
+    text,
+  );
   return reduceUrlsToHost(pre);
+}
+
+/** Escape a literal for embedding in a RegExp. */
+function escapeForRegExp(v: string): string {
+  return v.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/** Max characters retained per captured stream. See createBoundedCapture. */
+export const CAPTURE_LIMIT = 64 * 1024;
+
+/**
+ * Bounded, line-aligned capture of one child stream.
+ *
+ * /mint is a long-running authenticated endpoint driving a browser, so an
+ * unbounded buffer is an OOM waiting for a stuck or noisy run. Keeps the TAIL
+ * rather than the head — that is where aeval's diagnosis lives, and
+ * summarizeAevalFailure reads the LAST error lines anyway.
+ *
+ * The retained text NEVER begins mid-line, which is a redaction property, not
+ * cosmetics: `scrubCredentials` matches whole credential forms, so a buffer
+ * that began inside `password=<secret>` would leave an unmatchable suffix in a
+ * string that is logged, returned in the 502 body, and persisted by Core as a
+ * user-visible job error.
+ *
+ * Enforcing that needs state, not a pure append: when the overlong tail has no
+ * newline at all there is no safe place to cut, so the line is abandoned AND
+ * its continuation must be dropped until the next newline arrives. A pure
+ * "slice at cut" would reintroduce the partial-credential leak on the very next
+ * chunk.
+ */
+/** First line terminator in `s`, or null. Non-global regex, so exec is stateless. */
+function nextTerminator(s: string): { idx: number; len: number } | null {
+  const m = LINE_TERMINATORS.exec(s);
+  return m ? { idx: m.index, len: m[0].length } : null;
+}
+
+export function createBoundedCapture(limit = CAPTURE_LIMIT) {
+  // Retained whole lines; '' or ends with a line terminator. Terminators are
+  // the module's LINE_TERMINATORS set, not '\n' alone: a writer that ends lines
+  // with a bare \r (Chromium/Playwright progress output inheriting the child's
+  // stdio) would otherwise accumulate into `partial` until it tripped the
+  // overlong-line guard and got discarded wholesale, swallowing a diagnosis
+  // that arrived on the same run of text.
+  let complete = '';
+  let partial = '';    // the line currently being written
+  let dropping = false; // the current line is overlong; discard through its end
+
+  // Evict whole lines from the FRONT until the retained text fits. Never cuts
+  // inside a line, which is the redaction property: scrubCredentials matches
+  // whole credential forms, so text beginning mid-`password=<secret>` would
+  // leave an unmatchable suffix in a logged, persisted, user-visible message.
+  // Evicting on every line once `complete` is full is O(limit) per line — the
+  // exec and the slice both flatten a 64 KiB ConsString, so a child emitting
+  // megabytes of short lines (Chromium debug spew, and /mint drives a browser)
+  // costs gigabytes of memcpy. Let it run to 2x before trimming back to 1x, so
+  // eviction is amortized O(1). Retained text is therefore bounded by 2*limit,
+  // not limit — still bounded, which is the property that matters.
+  const evictOldest = () => {
+    if (complete.length + partial.length <= limit * 2) return;
+    while (complete.length + partial.length > limit && complete.length > 0) {
+      const t = nextTerminator(complete);
+      complete = t === null ? '' : complete.slice(t.idx + t.len);
+    }
+  };
+
+  return {
+    push(chunk: string): void {
+      // Scan with a sticky index rather than re-slicing `chunk` per line. The
+      // slice-per-line form was O(lines x chunk): a 64 KiB pipe read of 80-char
+      // lines meant ~800 iterations each copying ~32 KiB, reintroducing at this
+      // level exactly the memcpy volume the eviction hysteresis below removes.
+      const scan = new RegExp(LINE_TERMINATORS.source, 'g');
+      let pos = 0;
+      while (pos < chunk.length) {
+        scan.lastIndex = pos;
+        const m = scan.exec(chunk);
+        if (m === null) {
+          const rest = chunk.slice(pos);
+          if (dropping) return; // still inside the abandoned line
+          partial += rest;
+          // A single line larger than the whole budget has no safe cut point:
+          // abandon it, and keep abandoning until it ends, so the next chunk's
+          // continuation cannot come back as if it were a fresh line.
+          if (partial.length > limit) {
+            partial = '';
+            dropping = true;
+          } else {
+            evictOldest();
+          }
+          return;
+        }
+        const lineEnd = m.index + m[0].length;
+        const seg = chunk.slice(pos, lineEnd);
+        pos = lineEnd;
+        if (dropping) {
+          dropping = false; // the abandoned line ends here
+          continue;
+        }
+        partial += seg;
+        if (partial.length > limit) {
+          // Drop just this overlong line: evicting from the front instead
+          // would discard the diagnosis already captured, so one ERROR line
+          // followed by a 100 KB blob would report nothing useful.
+          partial = '';
+          continue;
+        }
+        complete += partial;
+        partial = '';
+        evictOldest();
+      }
+    },
+    get text(): string {
+      return complete + partial;
+    },
+    /**
+     * Only the COMPLETE lines — `text` can end mid-line while the child is
+     * still writing, and a half-written `password=<secret>` no longer matches
+     * its redaction needle. Read this whenever the summary is taken before the
+     * child has exited.
+     */
+    get completeText(): string {
+      return complete;
+    },
+  };
 }

@@ -31,7 +31,9 @@ import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { StringDecoder } from 'string_decoder';
-import { summarizeAevalFailure, hasAevalDiagnosis, hasLoguruDiagnosis, LINE_TERMINATORS, urlForms, reduceUrlsSafely } from './aeval-output';
+import { summarizeAevalFailure, hasAevalDiagnosis, hasLoguruDiagnosis, reduceUrlsSafely, createBoundedCapture, LINE_TERMINATORS } from './aeval-output';
+import { credentialForms, redactValues } from '../shared/credentials';
+export { credentialForms } from '../shared/credentials';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const AEVAL_DATA_PATH = path.resolve(__dirname, 'aeval-data');
@@ -55,177 +57,13 @@ export function secretMatches(presented: string | undefined, expected: string): 
 }
 
 /**
- * Strip any of `values` (raw credentials) out of `message` before it can
- * reach a log line or the durable `web_sessions.last_error` column.
- * aeval's stderr is third-party output and the scenario params carry raw
- * email/password, so any stderr-derived text is untrusted until scrubbed.
- * Empty values are ignored (never redact on an empty-string match).
+ * Strip credential values out of a message before it can reach a log line, the
+ * 502 body, or Core's durable `web_sessions.last_error`. aeval's output is
+ * third-party text and the scenario params carry the raw pair, so anything
+ * derived from it is untrusted until scrubbed. Thin alias over the shared
+ * primitive, kept because it names the intent at these call sites.
  */
-export function scrubCredentials(message: string, values: string[]): string {
-  return values
-    .filter((v) => v.length > 0)
-    // Longest first, matching summarizeAevalFailure. Order is load-bearing when
-    // one credential contains another: with password "brent@agora.op-2026!" and
-    // email "brent@agora.op", redacting the email first destroys the password's
-    // only occurrence and leaks the "-2026!" remainder. Replacing the longest
-    // needle first makes whole values win over their substrings, so overlapping
-    // credentials can't shred each other.
-    .sort((a, b) => b.length - a.length)
-    .reduce((acc, v) => acc.split(v).join('[redacted]'), message);
-}
-
-/**
- * Every form a credential can take in aeval's output, so a scrub can match it.
- *
- * The mint scenario embeds credentials as `JSON.stringify(value)` (valid YAML
- * double-quoted scalars), so a password like `pa"ss\word` reaches aeval — and
- * can be echoed back in an ERROR line — as `pa\"ss\\word`. Scrubbing only the
- * raw value would miss that entirely, and the message is both logged and
- * returned to Core, where it is persisted as a user-visible job error.
- *
- * The escaped form is derived from the SAME `JSON.stringify` that writes the
- * YAML (minus its surrounding quotes) rather than a hand-rolled escaper, so the
- * two cannot drift: whatever the scenario emits is, by construction, what we
- * redact. The daemon solves this with a parallel `yamlEscape` list
- * (vox-agentd.ts `activeSecretValues`).
- */
-export function credentialForms(values: string[]): string[] {
-  return Array.from(
-    new Set(
-      values
-        .filter((v) => v.length > 0)
-        .flatMap((v) => [
-          v,
-          // YAML/JSON scalar, as the scenario writes it.
-          JSON.stringify(v).slice(1, -1),
-          // Percent-encoded, as an SSO redirect carries it. Reporting aeval's
-          // "current URL: <sso login page>" line is the point of this module,
-          // and those URLs routinely carry the account in a query param
-          // (login_hint=a%40b.com), so the raw form would never match.
-          ...urlForms(v),
-        ]),
-    ),
-  );
-}
-
-/** Max characters retained per captured stream. See createBoundedCapture. */
-export const CAPTURE_LIMIT = 64 * 1024;
-
-/**
- * Bounded, line-aligned capture of one child stream.
- *
- * /mint is a long-running authenticated endpoint driving a browser, so an
- * unbounded buffer is an OOM waiting for a stuck or noisy run. Keeps the TAIL
- * rather than the head — that is where aeval's diagnosis lives, and
- * summarizeAevalFailure reads the LAST error lines anyway.
- *
- * The retained text NEVER begins mid-line, which is a redaction property, not
- * cosmetics: `scrubCredentials` matches whole credential forms, so a buffer
- * that began inside `password=<secret>` would leave an unmatchable suffix in a
- * string that is logged, returned in the 502 body, and persisted by Core as a
- * user-visible job error.
- *
- * Enforcing that needs state, not a pure append: when the overlong tail has no
- * newline at all there is no safe place to cut, so the line is abandoned AND
- * its continuation must be dropped until the next newline arrives. A pure
- * "slice at cut" would reintroduce the partial-credential leak on the very next
- * chunk.
- */
-/** First line terminator in `s`, or null. Non-global regex, so exec is stateless. */
-function nextTerminator(s: string): { idx: number; len: number } | null {
-  const m = LINE_TERMINATORS.exec(s);
-  return m ? { idx: m.index, len: m[0].length } : null;
-}
-
-export function createBoundedCapture(limit = CAPTURE_LIMIT) {
-  // Retained whole lines; '' or ends with a line terminator. Terminators are
-  // the module's LINE_TERMINATORS set, not '\n' alone: a writer that ends lines
-  // with a bare \r (Chromium/Playwright progress output inheriting the child's
-  // stdio) would otherwise accumulate into `partial` until it tripped the
-  // overlong-line guard and got discarded wholesale, swallowing a diagnosis
-  // that arrived on the same run of text.
-  let complete = '';
-  let partial = '';    // the line currently being written
-  let dropping = false; // the current line is overlong; discard through its end
-
-  // Evict whole lines from the FRONT until the retained text fits. Never cuts
-  // inside a line, which is the redaction property: scrubCredentials matches
-  // whole credential forms, so text beginning mid-`password=<secret>` would
-  // leave an unmatchable suffix in a logged, persisted, user-visible message.
-  // Evicting on every line once `complete` is full is O(limit) per line — the
-  // exec and the slice both flatten a 64 KiB ConsString, so a child emitting
-  // megabytes of short lines (Chromium debug spew, and /mint drives a browser)
-  // costs gigabytes of memcpy. Let it run to 2x before trimming back to 1x, so
-  // eviction is amortized O(1). Retained text is therefore bounded by 2*limit,
-  // not limit — still bounded, which is the property that matters.
-  const evictOldest = () => {
-    if (complete.length + partial.length <= limit * 2) return;
-    while (complete.length + partial.length > limit && complete.length > 0) {
-      const t = nextTerminator(complete);
-      complete = t === null ? '' : complete.slice(t.idx + t.len);
-    }
-  };
-
-  return {
-    push(chunk: string): void {
-      // Scan with a sticky index rather than re-slicing `chunk` per line. The
-      // slice-per-line form was O(lines x chunk): a 64 KiB pipe read of 80-char
-      // lines meant ~800 iterations each copying ~32 KiB, reintroducing at this
-      // level exactly the memcpy volume the eviction hysteresis below removes.
-      const scan = new RegExp(LINE_TERMINATORS.source, 'g');
-      let pos = 0;
-      while (pos < chunk.length) {
-        scan.lastIndex = pos;
-        const m = scan.exec(chunk);
-        if (m === null) {
-          const rest = chunk.slice(pos);
-          if (dropping) return; // still inside the abandoned line
-          partial += rest;
-          // A single line larger than the whole budget has no safe cut point:
-          // abandon it, and keep abandoning until it ends, so the next chunk's
-          // continuation cannot come back as if it were a fresh line.
-          if (partial.length > limit) {
-            partial = '';
-            dropping = true;
-          } else {
-            evictOldest();
-          }
-          return;
-        }
-        const lineEnd = m.index + m[0].length;
-        const seg = chunk.slice(pos, lineEnd);
-        pos = lineEnd;
-        if (dropping) {
-          dropping = false; // the abandoned line ends here
-          continue;
-        }
-        partial += seg;
-        if (partial.length > limit) {
-          // Drop just this overlong line: evicting from the front instead
-          // would discard the diagnosis already captured, so one ERROR line
-          // followed by a 100 KB blob would report nothing useful.
-          partial = '';
-          continue;
-        }
-        complete += partial;
-        partial = '';
-        evictOldest();
-      }
-    },
-    get text(): string {
-      return complete + partial;
-    },
-    /**
-     * Only the COMPLETE lines — `text` can end mid-line while the child is
-     * still writing, and a half-written `password=<secret>` no longer matches
-     * its redaction needle. Read this whenever the summary is taken before the
-     * child has exited.
-     */
-    get completeText(): string {
-      return complete;
-    },
-  };
-}
+export const scrubCredentials = redactValues;
 
 /**
  * Which stream to summarize. stderr is aeval's loguru sink in the build we run,

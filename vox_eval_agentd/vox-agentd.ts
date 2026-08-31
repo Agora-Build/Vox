@@ -34,7 +34,8 @@ import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { SECRET_PLACEHOLDER_REGEX, collectSecretRefs } from '../shared/secrets';
-import { summarizeAevalFailure, reduceUrlsSafely, urlForms } from './aeval-output';
+import { summarizeAevalFailure, reduceUrlsSafely, urlForms, createBoundedCapture } from './aeval-output';
+import { StringDecoder } from 'string_decoder';
 import yaml from 'js-yaml';
 import { injectStorageSession } from './session-inject';
 import {
@@ -782,8 +783,17 @@ class VoxEvalAgentDaemon {
         detached: true,
       });
 
-      let stdout = '';
-      let stderr = '';
+      // A StringDecoder per stream, not data.toString(): a UTF-8 sequence split
+      // across two pipe reads decodes to U+FFFD on each side, so a non-ASCII
+      // secret stops matching its needle in activeSecretValues and the fragment
+      // survives into the job's persisted, user-visible error. This path
+      // carries far more secret material than the broker's single login pair.
+      // Capture is bounded for the same reason it is there: an unbounded buffer
+      // is an OOM waiting for a noisy or stuck run.
+      const outDec = new StringDecoder('utf8');
+      const errDec = new StringDecoder('utf8');
+      const outCap = createBoundedCapture();
+      const errCap = createBoundedCapture();
 
       // Signal the whole process group (negative pid); if the group send fails
       // (unsupported / already gone), fall back to signalling the direct child.
@@ -827,7 +837,7 @@ class VoxEvalAgentDaemon {
             // Best-effort: record the output dir so processJobs still uploads the
             // run's artifacts — the most useful evidence for diagnosing the hang.
             try {
-              const dir = this.resolveAevalOutputDir(scenarioConfig, stdout + stderr);
+              const dir = this.resolveAevalOutputDir(scenarioConfig, outCap.text + errCap.text);
               if (dir && !this.jobOutputDirs.includes(dir)) this.jobOutputDirs.push(dir);
             } catch { /* best effort */ }
             console.error(`[Daemon] aeval did not exit after SIGKILL — forcing job failure`);
@@ -837,12 +847,12 @@ class VoxEvalAgentDaemon {
       }, AEVAL_RUN_TIMEOUT_MS);
 
       proc.stdout.on('data', (data) => {
-        stdout += data.toString();
+        outCap.push(outDec.write(data));
         console.log(`[aeval] ${data.toString().trim()}`);
       });
 
       proc.stderr.on('data', (data) => {
-        stderr += data.toString();
+        errCap.push(errDec.write(data));
         console.error(`[aeval] ${data.toString().trim()}`);
       });
 
@@ -851,7 +861,7 @@ class VoxEvalAgentDaemon {
         console.log(`[Daemon] aeval exited with code ${code}${timedOut ? ' (timed out)' : ''}`);
 
         // Always resolve output dir (artifacts exist even on failure)
-        const allOutput = stdout + stderr;
+        const allOutput = outCap.text + errCap.text;
         try {
           this.lastOutputDir = this.resolveAevalOutputDir(scenarioConfig, allOutput);
           if (this.lastOutputDir && !this.jobOutputDirs.includes(this.lastOutputDir)) {
@@ -875,7 +885,7 @@ class VoxEvalAgentDaemon {
             // secrets on this path are routinely URLs themselves (a LiveKit
             // server URL, a webhook endpoint), and reducing one destroys the
             // needle that would have redacted it.
-            : `aeval exited with code ${code}: ${summarizeAevalFailure(reduceUrlsSafely(stdout, this.activeSecretValues), reduceUrlsSafely(stderr, this.activeSecretValues), this.activeSecretValues)}`;
+            : `aeval exited with code ${code}: ${summarizeAevalFailure(reduceUrlsSafely(outCap.text, this.activeSecretValues), reduceUrlsSafely(errCap.text, this.activeSecretValues), this.activeSecretValues)}`;
           fail(new Error(reason));
           return;
         }
