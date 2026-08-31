@@ -119,19 +119,13 @@ export function generateEventChannelName(eventId: number): string {
  * event, shared across its matches — not one per match. That removes the
  * cross-event collision, which is the account-wide blast radius.
  *
- * NOT fixed here: within one event, a moderator left behind still blocks the
- * next match until ConvoAI's 600s idle_timeout. `failStuckMatches` never stops
- * the moderator, so this is reachable in normal operation, not only on a runner
- * crash.
+ * Event-scoped is the right granularity, not merely a lesser fix: MODERATOR_UID
+ * is a fixed 500 and an event's matches share one channel, so a per-match name
+ * would let two moderators contend for the same RTC uid on that channel.
  *
- * To be precise about why it is deferred rather than fixed with a one-line
- * `stopModerator(event.moderatorAgentId)` in the start route: the scheduler
- * will not assign a new match while any match in the event is live or starting,
- * so a leftover really is safe to stop when the NEXT match starts. What that
- * guard does not cover is a duplicate or retried start for the match already
- * running — there, stopping the recorded agent tears down a live moderator
- * mid-match and replays its greeting. Telling those two apart needs the
- * moderator to record its match. Tracked separately.
+ * NOT fixed here: within one event, a leftover moderator blocks the next match
+ * until ConvoAI's 600s idle_timeout. See GitHub #137 for why the one-line
+ * reconcile in the start route is not safe on its own.
  */
 export function moderatorSessionName(channelName: string): string {
   return `clash-moderator-${channelName}`;

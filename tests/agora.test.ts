@@ -1,5 +1,5 @@
-import { describe, it, expect } from "vitest";
-import { generateEventChannelName, moderatorSessionName } from "../server/agora";
+import { describe, it, expect, vi } from "vitest";
+import { generateEventChannelName, moderatorSessionName, startModerator } from "../server/agora";
 
 /**
  * Agora Integration Unit Tests
@@ -519,5 +519,49 @@ describe("moderatorSessionName", () => {
 
   it("is never the bare constant that caused the account-wide collision", () => {
     expect(moderatorSessionName(generateEventChannelName(7))).not.toBe("clash-moderator");
+  });
+});
+
+describe("startModerator request body", () => {
+  // The other payload assertions in this file are against hand-built literals —
+  // startModerator is never invoked — so reverting server/agora.ts to the
+  // constant `name: "clash-moderator"` would leave them all green. This one
+  // drives the real function and reads the body it actually sends, so it is the
+  // only test here that can catch that regression.
+  it("sends a channel-scoped session name", async () => {
+    const saved = {
+      id: process.env.AGORA_APP_ID,
+      cert: process.env.AGORA_APP_CERTIFICATE,
+      cfg: process.env.AGORA_CONVOAI_CONFIG,
+    };
+    process.env.AGORA_APP_ID = "0123456789abcdef0123456789abcdef";
+    process.env.AGORA_APP_CERTIFICATE = "fedcba9876543210fedcba9876543210";
+    process.env.AGORA_CONVOAI_CONFIG = JSON.stringify({
+      llm: { url: "https://llm.example/v1/chat", api_key: "k" },
+      tts: { vendor: "minimax", params: {} },
+      asr: { language: "en-US", vendor: "ares", params: {} },
+    });
+    const spy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ agent_id: "a1", create_ts: 0, status: "RUNNING" }), { status: 200 }),
+    );
+    try {
+      await startModerator({
+        channelName: "clash-event-42",
+        token: "rtc-token",
+        uid: "500",
+        systemPrompt: "s",
+        greetingMessage: "g",
+      });
+      const sent = JSON.parse((spy.mock.calls[0][1] as RequestInit).body as string);
+      expect(sent.name).toBe("clash-moderator-clash-event-42");
+      // The bug: one account-wide name meant two concurrent events collided.
+      expect(sent.name).not.toBe("clash-moderator");
+      expect(sent.properties.channel).toBe("clash-event-42");
+    } finally {
+      spy.mockRestore();
+      if (saved.id === undefined) delete process.env.AGORA_APP_ID; else process.env.AGORA_APP_ID = saved.id;
+      if (saved.cert === undefined) delete process.env.AGORA_APP_CERTIFICATE; else process.env.AGORA_APP_CERTIFICATE = saved.cert;
+      if (saved.cfg === undefined) delete process.env.AGORA_CONVOAI_CONFIG; else process.env.AGORA_CONVOAI_CONFIG = saved.cfg;
+    }
   });
 });
