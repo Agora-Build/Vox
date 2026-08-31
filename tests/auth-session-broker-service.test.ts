@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import type { AddressInfo } from "net";
 import type { Server } from "http";
-import { createBrokerServer, scrubCredentials, credentialForms, createBoundedCapture, selectDiagnosisSource, describeMintFailure, stripUrlQueries, NO_OUTPUT_MESSAGE, secretMatches, heartbeat, type MintRequest } from "../vox_eval_agentd/auth-session-broker";
+import { createBrokerServer, scrubCredentials, credentialForms, createBoundedCapture, selectDiagnosisSource, describeMintFailure, reduceUrlsToHost, NO_OUTPUT_MESSAGE, secretMatches, heartbeat, type MintRequest } from "../vox_eval_agentd/auth-session-broker";
 import { summarizeAevalFailure, hasAevalDiagnosis, hasLoguruDiagnosis } from "../vox_eval_agentd/aeval-output";
 
 describe("secretMatches (constant-time bearer check)", () => {
@@ -119,13 +119,21 @@ describe("mint failure summary (what the broker reports)", () => {
     expect(describeMintFailure("", "   \n  ", [])).toBe("login failed with no output");
   });
 
-  it("bounded capture keeps the tail, stays line-aligned, and never exceeds the limit", () => {
-    const cap = createBoundedCapture(30);
-    cap.push(["line-one", "line-two", "line-three", "ERROR | the real cause"].join("\n"));
-    expect(cap.text.length).toBeLessThanOrEqual(30);
+  it("bounded capture keeps the tail, stays line-aligned, and stays bounded", () => {
+    // Eviction has slack: it lets `complete` run to 2x the limit before
+    // trimming back to 1x, so it is amortized O(1) rather than an O(limit)
+    // flatten-and-copy on every line. Retained text is therefore bounded by
+    // 2*limit, which is the property that matters.
+    const limit = 30;
+    const cap = createBoundedCapture(limit);
+    for (let i = 0; i < 20; i++) cap.push(`line-${i}-padding\n`);
+    cap.push("ERROR | the real cause\n");
+
+    expect(cap.text.length).toBeLessThanOrEqual(limit * 2);
     expect(cap.text).toContain("ERROR | the real cause");
-    expect(cap.text).not.toContain("line-one");
-    expect(cap.text.startsWith("line-") || cap.text.startsWith("ERROR")).toBe(true);
+    expect(cap.text).not.toContain("line-0-padding");
+    // Never begins mid-line: whatever survived starts at a line start.
+    expect(/^(line-\d+-padding|ERROR )/.test(cap.text)).toBe(true);
 
     const small = createBoundedCapture(100);
     small.push("abc");
@@ -282,7 +290,7 @@ describe("mint failure summary (what the broker reports)", () => {
     const summary = describeMintFailure("", stderr, credentialForms([email, "pw123456"]));
     expect(summary).not.toContain(enc);
     expect(summary).not.toContain(form);
-    // No "[redacted]" assertion: stripUrlQueries removes the query string before
+    // No "[redacted]" assertion: reduceUrlsToHost removes the query string before
     // the scrub runs, so in a URL the encoded value is gone rather than masked.
     // The encoded needles still matter for encoded values echoed OUTSIDE a URL
     // (a form body in a Playwright error), which the next assertion covers.
@@ -362,13 +370,17 @@ describe("mint failure summary (what the broker reports)", () => {
     expect(cap.completeText).toContain("second line");
   });
 
-  it("stripUrlQueries leaves non-URL text and bare URLs alone", () => {
-    expect(stripUrlQueries("no urls here?x=1")).toBe("no urls here?x=1");
-    expect(stripUrlQueries("https://host")).toBe("https://host");
-    expect(stripUrlQueries("https://h/p?a=1 then more")).toBe("https://h/… then more");
+  it("reduceUrlsToHost keeps the host and drops everything else", () => {
+    expect(reduceUrlsToHost("no urls here?x=1")).toBe("no urls here?x=1");
+    expect(reduceUrlsToHost("https://h/p?a=1 then more")).toBe("https://h/… then more");
     // Path-embedded material goes too — a magic-link token is as unmodellable
     // by credentialForms as an OAuth ?code=.
-    expect(stripUrlQueries("https://h/reset/SECRETTOKEN")).toBe("https://h/…");
+    expect(reduceUrlsToHost("https://h/reset/SECRETTOKEN")).toBe("https://h/…");
+    // ...as does basic-auth userinfo, including on a URL with no path at all,
+    // which a query/fragment-only rule would not have matched.
+    expect(reduceUrlsToHost("https://user:s3cret@sso.example.com/cb?code=X"))
+      .toBe("https://sso.example.com/…");
+    expect(reduceUrlsToHost("https://user:s3cret@sso.example.com")).toBe("https://sso.example.com/…");
   });
 
   it("returns the no-output sentinel unscrubbed, so the timeout gate keeps working", () => {

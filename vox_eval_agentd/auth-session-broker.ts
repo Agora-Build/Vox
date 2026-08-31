@@ -177,7 +177,14 @@ export function createBoundedCapture(limit = CAPTURE_LIMIT) {
   // inside a line, which is the redaction property: scrubCredentials matches
   // whole credential forms, so text beginning mid-`password=<secret>` would
   // leave an unmatchable suffix in a logged, persisted, user-visible message.
+  // Evicting on every line once `complete` is full is O(limit) per line — the
+  // exec and the slice both flatten a 64 KiB ConsString, so a child emitting
+  // megabytes of short lines (Chromium debug spew, and /mint drives a browser)
+  // costs gigabytes of memcpy. Let it run to 2x before trimming back to 1x, so
+  // eviction is amortized O(1). Retained text is therefore bounded by 2*limit,
+  // not limit — still bounded, which is the property that matters.
   const evictOldest = () => {
+    if (complete.length + partial.length <= limit * 2) return;
     while (complete.length + partial.length > limit && complete.length > 0) {
       const t = nextTerminator(complete);
       complete = t === null ? '' : complete.slice(t.idx + t.len);
@@ -211,10 +218,9 @@ export function createBoundedCapture(limit = CAPTURE_LIMIT) {
         }
         partial += seg;
         if (partial.length > limit) {
-          // Drop just this overlong line. Evicting from the front instead would
-          // throw away the diagnosis already captured — one ERROR line followed
-          // by a 100 KB blob reported "login failed with no output", the very
-          // failure this module exists to remove.
+          // Drop just this overlong line: evicting from the front instead
+          // would discard the diagnosis already captured, so one ERROR line
+          // followed by a 100 KB blob would report nothing useful.
           partial = '';
           continue;
         }
@@ -273,31 +279,30 @@ export function selectDiagnosisSource(stdout: string, stderr: string): string {
 }
 
 /**
- * Reduce every URL in `text` to scheme + authority.
+ * Reduce every URL in `text` to scheme + host, dropping userinfo, path, query
+ * and fragment.
  *
  * The line this module exists to surface is aeval's
  *   "Error waiting for URL pattern: ..., current URL: <sso page>"
  * and a mid-flow SSO URL carries material no credential needle can model: an
- * OAuth `?code=`, `state=`, or an implicit-flow `#id_token=`. Those are not the
- * email or the password, so credentialForms cannot cover them, and the message
- * is logged, returned in the 502 body, and persisted by Core as a user-visible
- * job error.
+ * OAuth `?code=`, `state=`, an implicit-flow `#id_token=`, a magic-link
+ * `/reset/<token>`, or basic-auth `user:secret@` userinfo. The message is
+ * logged, returned in the 502 body, and persisted by Core as a user-visible
+ * job error, so all of it has to go.
  *
- * Cutting at the first `/` after the authority, not merely at `?` or `#`:
- * SSO and magic-link flows routinely put the sensitive material in the PATH
- * (/oauth2/callback/<jwt>, /reset/<token>, /auth/verify/<nonce>), which is the
- * same unmodellable class as a query `?code=`. The diagnostic value of the line
- * is WHICH HOST the browser ended up on — "still on sso2.agora.io rather than
- * conversational-ai.agora.io" is the entire finding — so the path costs nothing
- * to drop.
+ * The diagnostic value of the line is WHICH HOST the browser ended up on —
+ * "still on sso2.agora.io rather than conversational-ai.agora.io" is the entire
+ * finding — so nothing useful is lost.
  *
- * Excluding `/` from the authority class also bounds the scan: the previous
- * lazy `[^\s"'<>]*?` with no `[?#]` later in the run made the engine rescan to
- * end-of-run from every `http://` start, and this runs twice per failure over
- * text that can be attacker-influenced.
+ * Excluding `/` from the host class also bounds the scan: a lazy class with no
+ * required terminator makes the engine rescan to end-of-run from every
+ * `http://` start, over text that can be attacker-influenced, twice per failure.
  */
-export function stripUrlQueries(text: string): string {
-  return text.replace(/(https?:\/\/[^\s"'<>/?#]*)[/?#][^\s"'<>]*/gi, '$1/…');
+export function reduceUrlsToHost(text: string): string {
+  return text.replace(
+    /(https?:\/\/)(?:[^\s"'<>/?#@]*@)?([^\s"'<>/?#]*)(?:[/?#][^\s"'<>]*)?/gi,
+    '$1$2/…',
+  );
 }
 
 /** Reported when aeval produced nothing usable. Exported so callers can gate on it. */
@@ -330,7 +335,7 @@ export function describeMintFailure(stdout: string, stderr: string, forms: strin
   // prefix never lives inside a URL. It also shortens the window in which a
   // ?code= is present at all.
   return scrubCredentials(
-    summarizeAevalFailure(stripUrlQueries(source), stripUrlQueries(stderr), forms, 0),
+    summarizeAevalFailure(reduceUrlsToHost(source), reduceUrlsToHost(stderr), forms, 0),
     forms,
   );
 }
@@ -409,11 +414,8 @@ export async function mintWithAeval(req: MintRequest, timeoutMs: number): Promis
         outCap.push(outDec.end());
         errCap.push(errDec.end());
         // On a clean exit the stream is finished, so an unterminated tail is a
-        // WHOLE line, not a half-written one — take .text. Only a signal-killed
-        // child needs the mid-write line dropped. (`completeText || .text` was
-        // wrong: it kept .text only when there were no complete lines at all,
-        // so a clean exit whose output lacked a trailing newline silently lost
-        // its last line — the one most likely to hold the diagnosis.)
+        // WHOLE line — take .text. Only a signal-killed child needs its
+        // mid-write last line dropped.
         const out = cleanExit ? outCap.text : outCap.completeText;
         const err = cleanExit ? errCap.text : errCap.completeText;
         return describeMintFailure(out, err, credentialForms([req.email, req.password]));
