@@ -3,10 +3,25 @@
  *
  * Runs aeval's own per-platform `setup:account` flow (config/platforms/<id>.yaml
  * in aeval-data) and returns the captured Playwright storageState. Stateless:
- * every request gets a fresh temp dir, and nothing is persisted or logged.
+ * every request gets a fresh temp dir and nothing is persisted. A FAILED mint
+ * does log a summarized, scrubbed message (and returns it in the 502 body) —
+ * see the boundary note below for what that can and cannot contain.
  * Shipped as its own image (vox-auth-session-broker, the Dockerfile's `broker` target).
  * Internal network ONLY. Registers itself with Core on startup and heartbeats;
  * `/mint` auth is the per-broker mint secret handed back at registration.
+ *
+ * BOUNDARY, so the next reader does not over-trust it: a failed mint's reported
+ * message is scrubbed of the login pair in every encoding we model (see
+ * credentialForms) and has URL queries removed (stripUrlQueries), and stdout is
+ * quarantined behind a strict loguru-shaped predicate. stderr is NOT held to
+ * that bar — it is admitted whenever it carries a diagnosis, because that is
+ * the whole point. Playwright's errors quote page state, so a DOM snapshot or
+ * an `<input value="...">` carrying a CSRF token or a hidden id_token can reach
+ * the 502 body, Core's log, and webSessions.lastError. Those are modelled by no
+ * needle and are not URLs. Core serves that detail onward only to an
+ * owner-tier (private/team) agent — a marketplace agent gets the status alone —
+ * so the exposure stays with the job's owner. Accepted rather than solved; see
+ * GitHub #138.
  */
 import http from 'http';
 import { spawn } from 'child_process';
@@ -15,6 +30,11 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { StringDecoder } from 'string_decoder';
+import { summarizeAevalFailure, hasAevalDiagnosis, hasLoguruDiagnosis, reduceUrlsSafely, createBoundedCapture, LINE_TERMINATORS } from './aeval-output';
+import { credentialForms, redactValues } from '../shared/credentials';
+import { mintTimeoutSeconds } from '../shared/mint-timeout';
+export { credentialForms } from '../shared/credentials';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const AEVAL_DATA_PATH = path.resolve(__dirname, 'aeval-data');
@@ -38,16 +58,82 @@ export function secretMatches(presented: string | undefined, expected: string): 
 }
 
 /**
- * Strip any of `values` (raw credentials) out of `message` before it can
- * reach a log line or the durable `web_sessions.last_error` column.
- * aeval's stderr is third-party output and the scenario params carry raw
- * email/password, so any stderr-derived text is untrusted until scrubbed.
- * Empty values are ignored (never redact on an empty-string match).
+ * Strip credential values out of a message before it can reach a log line, the
+ * 502 body, or Core's durable `web_sessions.last_error`. aeval's output is
+ * third-party text and the scenario params carry the raw pair, so anything
+ * derived from it is untrusted until scrubbed. Thin alias over the shared
+ * primitive, kept because it names the intent at these call sites.
  */
-export function scrubCredentials(message: string, values: string[]): string {
-  return values
-    .filter((v) => v.length > 0)
-    .reduce((acc, v) => acc.split(v).join('[redacted]'), message);
+export const scrubCredentials = redactValues;
+
+/**
+ * Which stream to summarize. stderr is aeval's loguru sink in the build we run,
+ * and stdout may echo step params in encodings the scrub does not model
+ * (URL-encoded form bodies, HTML page dumps, Python reprs with \uXXXX escapes),
+ * so stdout is consulted ONLY when it carries a diagnosis that stderr lacks —
+ * the "a future aeval routed loguru to stdout" case this hedge exists for.
+ *
+ * Gating on "stderr has no diagnosis" alone was a strict superset: when NEITHER
+ * stream has an ERROR line (segfault, PyInstaller bootstrap failure, Chromium
+ * crash) summarizeAevalFailure falls through to its tail path over both
+ * strings, putting raw stdout into the persisted error.
+ */
+// Returns '' for BOTH "stdout is empty" and "stdout is rejected". The caller
+// treats them identically — neither may contribute to the message — so the
+// overload is deliberate rather than a lost distinction.
+export function selectDiagnosisSource(stdout: string, stderr: string): string {
+  if (hasAevalDiagnosis(stderr)) return '';
+  // Admission of the untrusted stream uses the STRICT loguru-shaped predicate:
+  // a bare "| ERROR |" is trivially present in a page dump, which would hand
+  // the quarantined stream a free pass into the persisted error.
+  if (!hasLoguruDiagnosis(stdout)) return '';
+  // Admitted — but hand over ONLY the loguru-shaped lines. The summarizer picks
+  // lines with the LENIENT predicate and keeps the last three, so passing the
+  // whole stream would let page-dump text containing a bare "| ERROR |" both
+  // reach the persisted error and bury the real line that earned admission.
+  // Selection is now as strict as admission.
+  // .trim() before testing, because LOGURU_DIAGNOSIS_LINE is anchored at ^\d{4}
+  // and summarizeAevalFailure trims before it tests. Without this a loguru line
+  // arriving with a leading space is dropped by the hedge even though the
+  // summarizer would have accepted it — the same predicate disagreement this
+  // module spends its length eliminating.
+  return stdout.split(LINE_TERMINATORS).filter((l) => hasLoguruDiagnosis(l.trim())).join('\n');
+}
+
+
+/** Reported when aeval produced nothing usable. Exported so callers can gate on it. */
+export const NO_OUTPUT_MESSAGE = 'login failed with no output';
+
+/**
+ * The full failure-message pipeline for a non-zero aeval exit: pick the stream,
+ * summarize it, scrub it. Pure, so the security-relevant selection is testable
+ * without spawning aeval.
+ */
+export function describeMintFailure(stdout: string, stderr: string, forms: string[]): string {
+  const source = selectDiagnosisSource(stdout, stderr);
+  // Short-circuit rather than concatenating up to 2×CAPTURE_LIMIT just to test
+  // for emptiness.
+  if (!source.trim() && !stderr.trim()) return NO_OUTPUT_MESSAGE;
+  // Pass minNeedleLength 0 rather than pre-scrubbing the inputs. The summarizer
+  // redacts AFTER choosing lines and BEFORE truncating, so dropping its 4-char
+  // floor covers a short password without the truncation gap — and, unlike an
+  // input pre-scrub, cannot rewrite the very tokens classification depends on
+  // (a password of "E" would turn every "ERROR" into "[redacted]RROR", so no
+  // line matches and the artifacts banner wins again). The outer scrub stays as
+  // defense in depth.
+  // Strip URLs BEFORE summarizing, not after. summarizeAevalFailure joins the
+  // last three ERROR lines and truncates to 500 chars, and a real SSO redirect
+  // with redirectUri/state/PKCE runs 300-800 chars — so stripping afterwards
+  // let the query consume the budget, truncate away the SECOND ERROR line (the
+  // actual "Step 1 failed" diagnosis), and only then delete the material that
+  // displaced it. Unlike pre-SCRUBBING, this is safe for classification: it
+  // only rewrites text after `https?://...[?#]`, and a loguru timestamp/level
+  // prefix never lives inside a URL. It also shortens the window in which a
+  // ?code= is present at all.
+  return scrubCredentials(
+    summarizeAevalFailure(reduceUrlsSafely(source, forms), reduceUrlsSafely(stderr, forms), forms, 0),
+    forms,
+  );
 }
 
 /** Real mint: one-step aeval scenario running setup:account → save_storage_state. */
@@ -84,27 +170,88 @@ export async function mintWithAeval(req: MintRequest, timeoutMs: number): Promis
         stdio: ['ignore', 'pipe', 'pipe'],
         detached: true,
       });
-      let stderr = '';
-      proc.stderr!.on('data', (d) => { stderr += d.toString(); });
-      // stdout intentionally discarded — may echo step params. Never log it.
-      proc.stdout!.on('data', () => {});
+      // BOTH streams are buffered, never logged. aeval's loguru sink is stderr
+      // in the build we run (the original bug was its trailing INFO banner
+      // winning a stderr tail), but that is a property of a version and a TTY,
+      // not a guarantee: if a future aeval routes loguru to stdout, discarding
+      // stdout would silently put us back to an uninformative error — the exact
+      // failure this change exists to remove. stdout is only ever CONSULTED
+      // when stderr carried no diagnosis (see hasAevalDiagnosis below), so in
+      // the normal case it never reaches the reported text.
+      //
+      // A StringDecoder per stream, not d.toString(): a UTF-8 sequence split
+      // across two pipe reads decodes to U+FFFD independently, and a mangled
+      // non-ASCII password no longer matches its redaction needle — a scrub
+      // bypass. The decoder holds the partial sequence across chunks.
+      //
+      // Each stream is capped and line-aligned — see createBoundedCapture.
+      const outDec = new StringDecoder('utf8');
+      const errDec = new StringDecoder('utf8');
+      const outCap = createBoundedCapture();
+      const errCap = createBoundedCapture();
+      proc.stdout!.on('data', (d) => outCap.push(outDec.write(d)));
+      proc.stderr!.on('data', (d) => errCap.push(errDec.write(d)));
       let settled = false;
       const finish = (fn: () => void) => { if (!settled) { settled = true; clearTimeout(timer); fn(); } };
       const killTree = (signal: NodeJS.Signals) => {
         try { if (proc.pid) { process.kill(-proc.pid, signal); return; } } catch { /* fall through */ }
         try { proc.kill(signal); } catch { /* already gone */ }
       };
+      // Summarize for the close path. `cleanExit` is false when the child was
+      // KILLED by a signal (code === null: OOM killer, external SIGKILL,
+      // Chromium taking the process down). That child died mid-write, so its
+      // last line can be half-emitted — the same hazard completeText exists for
+      // on the timeout path — and outDec.end() would flush an incomplete UTF-8
+      // sequence as U+FFFD, breaking needle matching on exactly that line.
+      // Prefer complete lines always; fall back to the raw text only when there
+      // are none AND the exit was clean. loguru terminates its lines, so that
+      // fallback should effectively never fire.
+      const capturedFailure = (cleanExit: boolean): string => {
+        outCap.push(outDec.end());
+        errCap.push(errDec.end());
+        // On a clean exit the stream is finished, so an unterminated tail is a
+        // WHOLE line — take .text. Only a signal-killed child needs its
+        // mid-write last line dropped.
+        const out = cleanExit ? outCap.text : outCap.completeText;
+        const err = cleanExit ? errCap.text : errCap.completeText;
+        return describeMintFailure(out, err, credentialForms([req.email, req.password]));
+      };
       const timer = setTimeout(() => {
         killTree('SIGTERM');
         setTimeout(() => killTree('SIGKILL'), 5000);
-        finish(() => reject(new Error(`login timed out after ${timeoutMs}ms`)));
+        finish(() => {
+          // A hung login was the one path still telling the operator nothing —
+          // the same complaint this module exists to fix, one branch over. If
+          // aeval logged anything before it hung (which step it reached, which
+          // selector it was waiting on), say so.
+          //
+          // COMPLETE lines only, and no decoder flush: we are reporting while
+          // the child is still mid-write, so its last line can be half-emitted.
+          // A half-written `password=<secret>` matches no needle and would ride
+          // out in the 502 body. The close path below has no such hazard.
+          const summary = describeMintFailure(
+            outCap.completeText, errCap.completeText, credentialForms([req.email, req.password]));
+          // Gate on the summarizer's own verdict rather than re-testing the raw
+          // buffers: quarantined-but-non-empty stdout would otherwise append a
+          // redundant ": login failed with no output". NOTE the coupling — this
+          // holds because describeMintFailure early-returns the constant before
+          // any scrub can touch it. Keep it that way.
+          const detail = summary === NO_OUTPUT_MESSAGE ? '' : `: ${summary}`;
+          reject(new Error(`login timed out after ${timeoutMs}ms${detail}`));
+        });
       }, timeoutMs);
       proc.on('error', (err) => finish(() => reject(err)));
       proc.on('close', (code) => finish(() => {
         if (code === 0) resolve();
         else {
-          const tail = scrubCredentials(stderr.trim().split('\n').pop() || 'login failed', [req.email, req.password]);
-          reject(new Error(`aeval exited ${code}: ${tail}`));
+          // Last-line-of-stderr is the wrong line by construction: aeval's
+          // final line is an INFO "Artifacts saved to: ..." banner printed
+          // after the diagnosis, so a real failure ("Error waiting for URL
+          // pattern ... current URL: <sso login page>" — i.e. wrong password)
+          // was reported as a path. capturedFailure() prefers the loguru ERROR
+          // lines and redacts them before truncation.
+          const summary = capturedFailure(typeof code === 'number');
+          reject(new Error(`aeval exited ${code}: ${summary}`));
         }
       }));
     });
@@ -146,8 +293,11 @@ export function createBrokerServer(deps: { mint: MintFn; getSecret: () => string
         const raw = err instanceof Error ? err.message : String(err);
         // Defense-in-depth: scrub again here so even a future mint
         // implementation that forgets to scrub can't leak credentials
-        // through logs or the 502 response body.
-        const msg = scrubCredentials(raw, [body.email ?? '', body.password ?? '']);
+        // through logs or the 502 response body. Uses credentialForms, not the
+        // raw pair: a mint that forgot to scrub is precisely the case where the
+        // ESCAPED form arrives here, so a raw-only backstop would miss the one
+        // thing it exists to catch.
+        const msg = scrubCredentials(raw, credentialForms([body.email ?? '', body.password ?? '']));
         console.error(`[Broker] Mint failed for platform ${body.platformId}: ${msg}`);
         return json(502, { error: msg });
       }
@@ -198,7 +348,7 @@ export async function heartbeat(): Promise<void> {
 // Entrypoint (skipped under vitest import)
 if (process.argv[1] && process.argv[1].endsWith('auth-session-broker.js')) {
   const port = parseInt(process.env.BROKER_PORT || '8200', 10);
-  const timeoutMs = parseInt(process.env.WEB_SESSION_MINT_TIMEOUT_SECONDS || '180', 10) * 1000;
+  const timeoutMs = mintTimeoutSeconds() * 1000;
   const server = createBrokerServer({ mint: (r) => mintWithAeval(r, timeoutMs), getSecret: () => state?.mintSecret });
   (async () => {
     try {

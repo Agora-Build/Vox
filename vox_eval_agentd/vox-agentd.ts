@@ -34,7 +34,8 @@ import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { SECRET_PLACEHOLDER_REGEX, collectSecretRefs } from '../shared/secrets';
-import { summarizeAevalFailure } from './aeval-output';
+import { summarizeAevalFailure, reduceUrlsSafely, urlForms, createBoundedCapture } from './aeval-output';
+import { StringDecoder } from 'string_decoder';
 import yaml from 'js-yaml';
 import { injectStorageSession } from './session-inject';
 import {
@@ -527,6 +528,12 @@ class VoxEvalAgentDaemon {
    * running a login-gated target unauthenticated would produce garbage metrics).
    */
   async fetchSession(jobId: number): Promise<{ storageState: unknown; platformId: string } | null> {
+    // 240s, deliberately the LONGEST link in the mint chain: the broker's child
+    // timeout is clamped to 200 (shared/mint-timeout.ts), Core aborts at +15 and
+    // reclaims a stale claim at +30. The agent must outlast all three, or it
+    // fails the job with a generic "timed out waiting for session mint" while
+    // Core is still working and the real diagnosis never lands. Raising
+    // MAX_MINT_TIMEOUT_SECONDS means raising this too.
     const deadline = Date.now() + 240_000;
     for (;;) {
       const response = await this.fetch(`/api/eval-agent/jobs/${jobId}/session?leaseId=${encodeURIComponent(this.leaseId ?? '')}`);
@@ -782,8 +789,17 @@ class VoxEvalAgentDaemon {
         detached: true,
       });
 
-      let stdout = '';
-      let stderr = '';
+      // A StringDecoder per stream, not data.toString(): a UTF-8 sequence split
+      // across two pipe reads decodes to U+FFFD on each side, so a non-ASCII
+      // secret stops matching its needle in activeSecretValues and the fragment
+      // survives into the job's persisted, user-visible error. This path
+      // carries far more secret material than the broker's single login pair.
+      // Capture is bounded for the same reason it is there: an unbounded buffer
+      // is an OOM waiting for a noisy or stuck run.
+      const outDec = new StringDecoder('utf8');
+      const errDec = new StringDecoder('utf8');
+      const outCap = createBoundedCapture();
+      const errCap = createBoundedCapture();
 
       // Signal the whole process group (negative pid); if the group send fails
       // (unsupported / already gone), fall back to signalling the direct child.
@@ -827,7 +843,13 @@ class VoxEvalAgentDaemon {
             // Best-effort: record the output dir so processJobs still uploads the
             // run's artifacts — the most useful evidence for diagnosing the hang.
             try {
-              const dir = this.resolveAevalOutputDir(scenarioConfig, stdout + stderr);
+              // NOTE: aeval prints "Session directory: ..." EARLY, and the
+              // capture keeps the tail, so on a run exceeding the cap that line
+              // is evicted and resolveAevalOutputDir falls back to newest-by-name.
+              // That fallback is right for a single in-flight run, so this
+              // degrades rather than breaks — but it is a change from the
+              // previously unbounded buffer.
+              const dir = this.resolveAevalOutputDir(scenarioConfig, outCap.text + errCap.text);
               if (dir && !this.jobOutputDirs.includes(dir)) this.jobOutputDirs.push(dir);
             } catch { /* best effort */ }
             console.error(`[Daemon] aeval did not exit after SIGKILL — forcing job failure`);
@@ -837,12 +859,12 @@ class VoxEvalAgentDaemon {
       }, AEVAL_RUN_TIMEOUT_MS);
 
       proc.stdout.on('data', (data) => {
-        stdout += data.toString();
+        outCap.push(outDec.write(data));
         console.log(`[aeval] ${data.toString().trim()}`);
       });
 
       proc.stderr.on('data', (data) => {
-        stderr += data.toString();
+        errCap.push(errDec.write(data));
         console.error(`[aeval] ${data.toString().trim()}`);
       });
 
@@ -851,7 +873,7 @@ class VoxEvalAgentDaemon {
         console.log(`[Daemon] aeval exited with code ${code}${timedOut ? ' (timed out)' : ''}`);
 
         // Always resolve output dir (artifacts exist even on failure)
-        const allOutput = stdout + stderr;
+        const allOutput = outCap.text + errCap.text;
         try {
           this.lastOutputDir = this.resolveAevalOutputDir(scenarioConfig, allOutput);
           if (this.lastOutputDir && !this.jobOutputDirs.includes(this.lastOutputDir)) {
@@ -859,21 +881,77 @@ class VoxEvalAgentDaemon {
           }
         } catch { /* best effort */ }
 
+        // Flush each decoder's held bytes, matching the broker's close path, so
+        // a trailing multi-byte character isn't dropped from text we redact.
+        outCap.push(outDec.end());
+        errCap.push(errDec.end());
+
         if (timedOut || code !== 0) {
           // A non-zero aeval exit means we did NOT measure the product — the job
           // fails and records NO result. (A run that completes but the agent
           // didn't respond exits 0 and IS reported, with NA latencies + response
           // rate 0.) We deliberately don't salvage partial metrics here: a failed
           // run's numbers are statistically unreliable and would pollute metrics.
+          // Say what aeval had reached before it hung — which step, which
+          // selector — instead of only the deadline. Computed INSIDE the branch:
+          // summarizing is a full pass over both buffers per needle, and the
+          // non-timeout branch below does its own. completeText, not text: the
+          // child is still mid-write, and a half-written line can hold a
+          // fragment of a secret that matches no whole needle.
+          const timeoutReason = () => {
+            const out = outCap.completeText;
+            const err = errCap.completeText;
+            if (!out.trim() && !err.trim()) return `aeval timed out after ${AEVAL_RUN_TIMEOUT_MS}ms`;
+            const detail = summarizeAevalFailure(
+              reduceUrlsSafely(out, this.activeSecretValues),
+              reduceUrlsSafely(err, this.activeSecretValues),
+              this.activeSecretValues,
+            );
+            return `aeval timed out after ${AEVAL_RUN_TIMEOUT_MS}ms: ${detail}`;
+          };
           const reason = timedOut
-            ? `aeval timed out after ${AEVAL_RUN_TIMEOUT_MS}ms`
-            : `aeval exited with code ${code}: ${summarizeAevalFailure(stdout, stderr, this.activeSecretValues)}`;
+            ? timeoutReason()
+            // Reduce URLs before summarizing, matching the broker: an aeval or
+            // Playwright error can echo a URL whose query/path carries material
+            // no needle models (?access_token=, an OAuth ?code=, a magic-link
+            // path token), and this string is persisted as the job's
+            // user-visible error. reduceUrlsSafely, not reduceUrlsToHost —
+            // secrets on this path are routinely URLs themselves (a LiveKit
+            // server URL, a webhook endpoint), and reducing one destroys the
+            // needle that would have redacted it.
+            : `aeval exited with code ${code}: ${summarizeAevalFailure(reduceUrlsSafely(outCap.text, this.activeSecretValues), reduceUrlsSafely(errCap.text, this.activeSecretValues), this.activeSecretValues)}`;
           fail(new Error(reason));
           return;
         }
 
         const outputDir = this.lastOutputDir!;
+        // A truncated capture must not reach the stdout metrics fallback.
+        // parseAevalStdout walks the WHOLE event log with a phase state machine
+        // that defaults to 'response' until it sees a phase marker — so on a
+        // capture whose early markers were evicted it resumes mid-run in the
+        // wrong phase, counting interrupt turns as response latencies and
+        // dropping early turns. That is silently wrong numbers on the
+        // exit-code-0 path, which contradicts the no-partial-metrics policy
+        // above. metrics.json is unaffected (it is read from disk), so only the
+        // fallback is refused.
+        // Refuse to derive metrics from a truncated log — but decide on what
+        // parseAevalResults actually USED, not on whether a file exists. A
+        // present-but-structureless metrics.json (failing hasLatency() and
+        // isAnalysisOutput()) or a report.json without latency both fall
+        // through to parseAevalStdout, so an existsSync check would wave
+        // through exactly the case this guards. A disk source is immune to
+        // truncation; the stdout walk is not — its phase state machine defaults
+        // to 'response' until it sees a marker, so an evicted prefix makes it
+        // resume in the wrong phase and count interrupt turns as response
+        // latencies, silently, on the exit-code-0 path.
         const results = this.parseAevalResults(outputDir, allOutput);
+        if (this.lastResultsFromStdout && (outCap.truncated || errCap.truncated)) {
+          fail(new Error(
+            'aeval produced no usable metrics file and part of its console output was discarded ' +
+            '(capture limit, or a single overlong line) — refusing to derive latencies from a partial log',
+          ));
+          return;
+        }
         finish(resolve, results);
       });
 
@@ -948,7 +1026,16 @@ class VoxEvalAgentDaemon {
    *   2. report.json   — session report (may contain step execution timing)
    *   3. stdout        — extract timing from step execution logs
    */
+  /**
+   * True when the most recent parseAevalResults() fell through to the stdout
+   * fallback rather than committing to an on-disk source. The caller pairs this
+   * with the capture's `truncated` flag: a disk source is immune to truncation,
+   * the stdout walk is not.
+   */
+  private lastResultsFromStdout = false;
+
   private parseAevalResults(outputDir: string, stdout: string): EvalResult {
+    this.lastResultsFromStdout = false;
     // List session dir contents for debugging
     if (fs.existsSync(outputDir)) {
       try {
@@ -998,6 +1085,7 @@ class VoxEvalAgentDaemon {
     // Priority 3: stdout — extract timing from step execution logs
     console.warn(`[Daemon] No metrics in output files — falling back to stdout parsing`);
     console.warn(`[Daemon] (This likely means aeval's analysis pipeline failed)`);
+    this.lastResultsFromStdout = true;
     return this.parseAevalStdout(stdout);
   }
 
@@ -1885,7 +1973,16 @@ class VoxEvalAgentDaemon {
       // Both forms: the YAML handed to aeval carries the ESCAPED value, so a
       // secret containing a quote or backslash would appear escaped in its
       // output and slip past a raw-value scrub.
-      this.activeSecretValues = Object.values(jobSecrets).flatMap((v) => [v, VoxEvalAgentDaemon.yamlEscape(v)]);
+      // Raw + the YAML spelling resolveSecrets substitutes + the URL encodings
+      // a redirect or signaling URL would carry. urlForms is shared with the
+      // broker so the two redaction sets cannot drift.
+      // Deduped: for an alphanumeric secret the yamlEscape and all four
+      // urlForms spellings equal the raw value, so this would otherwise be ~6
+      // identical needles. summarizeAevalFailure dedupes internally, but
+      // reduceUrlsSafely and redactValues do not.
+      this.activeSecretValues = Array.from(new Set(
+        Object.values(jobSecrets).flatMap((v) => [v, VoxEvalAgentDaemon.yamlEscape(v), ...urlForms(v)]),
+      ));
       // session-injected jobs get a Core-minted storageState instead of
       // login credentials (which the server structurally withholds).
       const sessionCfg = (job.config as Record<string, unknown> | null)?.sessionInjection;
