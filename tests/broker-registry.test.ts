@@ -105,6 +105,32 @@ describe("mintViaBroker error propagation", () => {
     await expect(mintViaBroker(target, req, respond(502, null, false))).rejects.toThrow("broker mint failed: 502");
   });
 
+  it("re-redacts with Core's own credentials rather than trusting the broker", async () => {
+    // Core holds the plaintext pair and persists this string to
+    // webSessions.lastError, so a stale or buggy broker echoing a credential
+    // must not become a durable leak here.
+    await expect(
+      mintViaBroker({ url: "http://broker:8200", mintSecret: "s3" } as never,
+        { platformId: "agora", email: "a@b.co", password: "hunter2pw" },
+        respond(502, { error: "login failed for a@b.co with hunter2pw" })),
+    ).rejects.toThrow(/\[redacted\].*\[redacted\]/);
+  });
+
+  it("falls back to the default when the mint timeout env is unusable", async () => {
+    // AbortSignal.timeout takes an unsigned long long, so a NaN would throw
+    // synchronously and take the whole mint path down.
+    const prev = process.env.WEB_SESSION_MINT_TIMEOUT_SECONDS;
+    try {
+      for (const bad of ["not-a-number", "0", "-5"]) {
+        process.env.WEB_SESSION_MINT_TIMEOUT_SECONDS = bad;
+        await expect(mintViaBroker(target, req, respond(200, { storageState: {} }))).resolves.toBeDefined();
+      }
+    } finally {
+      if (prev === undefined) delete process.env.WEB_SESSION_MINT_TIMEOUT_SECONDS;
+      else process.env.WEB_SESSION_MINT_TIMEOUT_SECONDS = prev;
+    }
+  });
+
   it("caps third-party detail before it reaches a durable field", async () => {
     const huge = "x".repeat(5000);
     await expect(mintViaBroker(target, req, respond(502, { error: huge }))).rejects.toThrow(

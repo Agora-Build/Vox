@@ -15,7 +15,7 @@ import { execSync } from "child_process";
 import path from "path";
 import fs from "fs";
 import os from "os";
-import { summarizeAevalFailure, reduceUrlsToHost, urlForms } from "../vox_eval_agentd/aeval-output";
+import { summarizeAevalFailure, reduceUrlsToHost, reduceUrlsSafely, urlForms } from "../vox_eval_agentd/aeval-output";
 
 // Mock the parseResults function logic for testing
 function parseResults(csvContent: string): {
@@ -1712,9 +1712,24 @@ describe("daemon failure-message hardening (shared with the broker)", () => {
     // aeval/Playwright error can echo a signaling or redirect URL carrying
     // material no needle models.
     const stderr = "2026-08-30 17:49:50.860 | ERROR | connect failed: wss://sig.livekit.io/rtc?access_token=JWTVALUE";
-    const summary = summarizeAevalFailure("", reduceUrlsToHost(stderr));
+    const summary = summarizeAevalFailure("", reduceUrlsSafely(stderr, []));
     expect(summary).not.toContain("JWTVALUE");
     expect(summary).toContain("sig.livekit.io");
+  });
+
+  it("redacts a secret whose VALUE is a URL before reducing it", () => {
+    // Secrets that are themselves URLs are routine here — a LiveKit server URL,
+    // a webhook endpoint. reduceUrlsToHost alone would rewrite the echoed value
+    // to scheme://host/… and destroy the needle that would have redacted it,
+    // leaving the host in a persisted, user-visible job error.
+    const secret = "wss://acme-project.livekit.cloud/rtc";
+    const stderr = `2026-08-30 17:49:50.860 | ERROR | connect failed: ${secret}?t=1`;
+    const summary = summarizeAevalFailure("", reduceUrlsSafely(stderr, [secret]), [secret]);
+    expect(summary).not.toContain("acme-project.livekit.cloud");
+    expect(summary).toContain("[redacted]");
+    // ...and a URL that is NOT a secret is still reduced rather than redacted.
+    const other = reduceUrlsSafely("see https://docs.example.com/a?b=1", [secret]);
+    expect(other).toBe("see https://docs.example.com/…");
   });
 
   it("urlForms covers the encodings a secret takes inside a URL", () => {

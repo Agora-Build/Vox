@@ -31,7 +31,7 @@ import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { StringDecoder } from 'string_decoder';
-import { summarizeAevalFailure, hasAevalDiagnosis, hasLoguruDiagnosis, LINE_TERMINATORS, urlForms, reduceUrlsToHost } from './aeval-output';
+import { summarizeAevalFailure, hasAevalDiagnosis, hasLoguruDiagnosis, LINE_TERMINATORS, urlForms, reduceUrlsSafely } from './aeval-output';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const AEVAL_DATA_PATH = path.resolve(__dirname, 'aeval-data');
@@ -168,12 +168,19 @@ export function createBoundedCapture(limit = CAPTURE_LIMIT) {
 
   return {
     push(chunk: string): void {
-      let s = chunk;
-      while (s.length > 0) {
-        const t = nextTerminator(s);
-        if (t === null) {
+      // Scan with a sticky index rather than re-slicing `chunk` per line. The
+      // slice-per-line form was O(lines x chunk): a 64 KiB pipe read of 80-char
+      // lines meant ~800 iterations each copying ~32 KiB, reintroducing at this
+      // level exactly the memcpy volume the eviction hysteresis below removes.
+      const scan = new RegExp(LINE_TERMINATORS.source, 'g');
+      let pos = 0;
+      while (pos < chunk.length) {
+        scan.lastIndex = pos;
+        const m = scan.exec(chunk);
+        if (m === null) {
+          const rest = chunk.slice(pos);
           if (dropping) return; // still inside the abandoned line
-          partial += s;
+          partial += rest;
           // A single line larger than the whole budget has no safe cut point:
           // abandon it, and keep abandoning until it ends, so the next chunk's
           // continuation cannot come back as if it were a fresh line.
@@ -185,8 +192,9 @@ export function createBoundedCapture(limit = CAPTURE_LIMIT) {
           }
           return;
         }
-        const seg = s.slice(0, t.idx + t.len);
-        s = s.slice(t.idx + t.len);
+        const lineEnd = m.index + m[0].length;
+        const seg = chunk.slice(pos, lineEnd);
+        pos = lineEnd;
         if (dropping) {
           dropping = false; // the abandoned line ends here
           continue;
@@ -283,16 +291,8 @@ export function describeMintFailure(stdout: string, stderr: string, forms: strin
   // only rewrites text after `https?://...[?#]`, and a loguru timestamp/level
   // prefix never lives inside a URL. It also shortens the window in which a
   // ?code= is present at all.
-  // A credential whose VALUE is a URL (a reset link, a webhook secret) would be
-  // rewritten by reduceUrlsToHost into something no needle matches, leaking its
-  // host. Redact those needles first. Safe to pre-scrub with this subset
-  // specifically — a needle containing "://" cannot occur inside a loguru
-  // timestamp/level prefix, so classification is untouched, which is the reason
-  // pre-scrubbing with ALL needles is avoided (see minNeedleLength's docs).
-  const urlish = forms.filter((f) => f.includes('://'));
-  const pre = (t: string) => (urlish.length > 0 ? scrubCredentials(t, urlish) : t);
   return scrubCredentials(
-    summarizeAevalFailure(reduceUrlsToHost(pre(source)), reduceUrlsToHost(pre(stderr)), forms, 0),
+    summarizeAevalFailure(reduceUrlsSafely(source, forms), reduceUrlsSafely(stderr, forms), forms, 0),
     forms,
   );
 }

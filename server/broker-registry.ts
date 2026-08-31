@@ -88,7 +88,14 @@ export async function mintViaBroker(
   // the row stuck in 'minting' until stale-reclaim, and ensureSession's catch
   // never fired. The env read is duplicated rather than imported because
   // auth-session.ts imports this module; keep the two in step.
-  const abortMs = (parseInt(process.env.WEB_SESSION_MINT_TIMEOUT_SECONDS || "180", 10) + 15) * 1000;
+  // Validate: AbortSignal.timeout takes [EnforceRange] unsigned long long, so a
+  // NaN from a non-numeric env value throws a TypeError synchronously and would
+  // take the whole mint path down — worse than the skewed
+  // staleMintThresholdSeconds() a malformed value used to cause. A zero or
+  // negative value would abort instantly, so both fall back to the default.
+  const configured = Number.parseInt(process.env.WEB_SESSION_MINT_TIMEOUT_SECONDS || "180", 10);
+  const seconds = Number.isFinite(configured) && configured > 0 ? configured : 180;
+  const abortMs = (seconds + 15) * 1000;
   const res = await fetchImpl(`${target.url}/mint`, {
     method: "POST",
     headers: { "content-type": "application/json", authorization: `Bearer ${target.mintSecret}` },
@@ -109,6 +116,15 @@ export async function mintViaBroker(
     } catch {
       /* non-JSON body — the status alone is all we can report */
     }
+    // Re-redact with OUR copies rather than trusting the broker's scrub. Core
+    // holds the plaintext pair, this string is persisted to
+    // webSessions.lastError, and a stale or buggy broker echoing a credential
+    // should not become a durable leak here. Longest first so a password
+    // containing the email can't be shredded into an unmatchable remainder.
+    detail = [req.email, req.password]
+      .filter((v) => typeof v === "string" && v.length > 0)
+      .sort((a, b) => b.length - a.length)
+      .reduce((acc, v) => acc.split(v).join("[redacted]"), detail);
     throw new Error(`broker mint failed: ${res.status}${detail ? `: ${detail}` : ""}`);
   }
   return res.json();

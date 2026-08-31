@@ -34,7 +34,7 @@ import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { SECRET_PLACEHOLDER_REGEX, collectSecretRefs } from '../shared/secrets';
-import { summarizeAevalFailure, reduceUrlsToHost, urlForms } from './aeval-output';
+import { summarizeAevalFailure, reduceUrlsSafely, urlForms } from './aeval-output';
 import yaml from 'js-yaml';
 import { injectStorageSession } from './session-inject';
 import {
@@ -867,12 +867,15 @@ class VoxEvalAgentDaemon {
           // run's numbers are statistically unreliable and would pollute metrics.
           const reason = timedOut
             ? `aeval timed out after ${AEVAL_RUN_TIMEOUT_MS}ms`
-            // reduceUrlsToHost before summarizing, matching the broker: an aeval
-            // or Playwright error can echo a URL whose query/path carries
-            // material no needle models (?access_token=, an OAuth ?code=, a
-            // magic-link path token), and this string is persisted as the job's
-            // user-visible error.
-            : `aeval exited with code ${code}: ${summarizeAevalFailure(reduceUrlsToHost(stdout), reduceUrlsToHost(stderr), this.activeSecretValues)}`;
+            // Reduce URLs before summarizing, matching the broker: an aeval or
+            // Playwright error can echo a URL whose query/path carries material
+            // no needle models (?access_token=, an OAuth ?code=, a magic-link
+            // path token), and this string is persisted as the job's
+            // user-visible error. reduceUrlsSafely, not reduceUrlsToHost —
+            // secrets on this path are routinely URLs themselves (a LiveKit
+            // server URL, a webhook endpoint), and reducing one destroys the
+            // needle that would have redacted it.
+            : `aeval exited with code ${code}: ${summarizeAevalFailure(reduceUrlsSafely(stdout, this.activeSecretValues), reduceUrlsSafely(stderr, this.activeSecretValues), this.activeSecretValues)}`;
           fail(new Error(reason));
           return;
         }
