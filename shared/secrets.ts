@@ -32,16 +32,29 @@ export const SECRET_PLACEHOLDER_REGEX = /\$\{secrets\.([A-Z][A-Z0-9_]*)\}/g;
  * positive marks a runtime secret Core-only and withholds it from the agent,
  * which breaks a working run.
  *
- * Matched on UNDERSCORE-DELIMITED TOKENS, not as substrings. Secret names are
- * validated as UPPER_SNAKE (SECRET_NAME_PATTERN above), so a token boundary is
- * exactly the right unit and there is no camelCase blind spot. Substring
- * matching is what made the two old copies wrong in opposite directions: the
- * console's bare `NAME` classified APP_NAME / CHANNEL_NAME as logins, and bare
- * `USER` would classify USER_AGENT, USER_ID and SUPERUSER_KEY the same way.
- * Neither token appears below — USERNAME is matched directly, which is all
- * either was ever reaching for.
+ * Anchored at the END of a token rather than matched as a bare substring, with
+ * an optional digit suffix. Secret names are validated UPPER_SNAKE
+ * (SECRET_NAME_PATTERN above), so `_`/end is the right unit and there is no
+ * camelCase blind spot.
+ *
+ * The two failure directions are NOT symmetric, and the anchoring is chosen for
+ * that:
+ *  - A false POSITIVE breaks availability — Core marks the secret login-class
+ *    and withholds it from the agent, so a working run starts failing. Plain
+ *    substring matching caused this in both old copies: the console's bare
+ *    `NAME` swept up APP_NAME / CHANNEL_NAME, and a bare `USER` would sweep up
+ *    USER_AGENT, USER_ID, SUPERUSER_KEY. Both tokens are therefore absent;
+ *    USERNAME is matched directly, which is all either was reaching for.
+ *  - A false NEGATIVE is worse HERE: it defaults a credential to the runtime
+ *    class, which IS the agent-exposed one. So the trailing `\d*` is not
+ *    cosmetic — PASSWORD2 and EMAIL2 are ordinary second-test-account names
+ *    that a start-and-end boundary would silently ship to a marketplace agent.
+ *
+ * Leaving off a leading `(?:^|_)` is deliberate for the same reason: MYPASSWORD
+ * and AGORAEMAIL end in a credential word and must match, while EMAILER_API_KEY
+ * (EMAIL followed by a letter) and USER_AGENT still do not.
  */
-export const AUTH_FIELD_NAME_PATTERN = /(?:^|_)(?:USERNAME|PASSWORD|ACCOUNT|EMAIL)(?:_|$)/i;
+export const AUTH_FIELD_NAME_PATTERN = /(?:USERNAME|PASSWORD|ACCOUNT|EMAIL)\d*(?:_|$)/i;
 
 /** True when a secret name reads like a login credential. See the pattern above. */
 export function isAuthFieldName(name: string): boolean {

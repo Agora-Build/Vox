@@ -44,7 +44,10 @@ describe("defaultBrokerTypeForName", () => {
   // ..._PASSWORD on Runtime, and evaluateSessionRequirement rejects a split
   // pair outright — so the UI's own default produced an unrunnable workflow.
   // Both halves of a real login pair must classify the same way.
-  it("classifies BOTH halves of a login pair identically", () => {
+  // NOT a general property of the pattern — a pair can still split (e.g. a
+  // password named without any of the four tokens). These are the shapes
+  // actually used, including the pair from the bug report.
+  it("classifies both halves of the common login-pair shapes identically", () => {
     for (const pair of [
       ["AGORA_CONSOLE_EMAIL", "AGORA_CONSOLE_PASSWORD"],
       ["VAPI_USERNAME", "VAPI_PASSWORD"],
@@ -68,6 +71,16 @@ describe("isAuthFieldName (shared client/server heuristic)", () => {
     expect(isAuthFieldName("USER")).toBe(false);
   });
 
+  it("still matches a digit-suffixed credential name", () => {
+    // A false negative defaults a credential to the RUNTIME class, which is the
+    // agent-exposed one — so this direction leaks, while a false positive only
+    // breaks availability. PASSWORD2/EMAIL2 are ordinary second-test-account
+    // names, and MYPASSWORD ends in a credential word.
+    for (const n of ["PASSWORD2", "EMAIL2", "ACCOUNT1", "MYPASSWORD", "AGORAEMAIL", "USERNAME2"]) {
+      expect(isAuthFieldName(n)).toBe(true);
+    }
+  });
+
   it("matches on token boundaries, not substrings", () => {
     // Both old copies were wrong in opposite directions because they matched
     // substrings. A false positive is the damaging direction: Core withholds
@@ -76,6 +89,7 @@ describe("isAuthFieldName (shared client/server heuristic)", () => {
       "APP_NAME", "CHANNEL_NAME", "AGENT_NAME",   // console's bare NAME
       "USER_AGENT", "USER_ID", "CURRENT_USER_ID", // bare USER
       "END_USER_TOKEN", "SUPERUSER_KEY",
+      "EMAILER_API_KEY",                          // EMAIL followed by a letter
     ]) {
       expect(isAuthFieldName(n)).toBe(false);
     }
