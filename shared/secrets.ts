@@ -32,8 +32,8 @@ export const SECRET_PLACEHOLDER_REGEX = /\$\{secrets\.([A-Z][A-Z0-9_]*)\}/g;
  * positive marks a runtime secret Core-only and withholds it from the agent,
  * which breaks a working run.
  *
- * Matched at the END of a token, never as a bare substring, and with a
- * deliberately narrow USER arm. Secret names are validated UPPER_SNAKE
+ * Matched at a token boundary rather than as a bare substring, and with
+ * deliberately narrow USER and abbreviation arms. Secret names are validated UPPER_SNAKE
  * (SECRET_NAME_PATTERN above), so `_`/end is the right unit and there is no
  * camelCase blind spot.
  *
@@ -55,8 +55,18 @@ export const SECRET_PLACEHOLDER_REGEX = /\$\{secrets\.([A-Z][A-Z0-9_]*)\}/g;
  *
  * Hence: `\d*` for second-account names (PASSWORD2), a plural `S` only at the
  * END (SUPPORT_EMAILS, LOGIN_PASSWORDS — but NOT ACCOUNTS_URL or MAX_USERS,
- * where the plural is followed by more name), and `USER_?NAME` for both
- * spellings of that field without letting bare NAME back in to catch APP_NAME.
+ * where the plural is followed by more name), `USER_?NAME` for both spellings
+ * of that field without letting bare NAME back in to catch APP_NAME, and a
+ * prefix-anchored PASS/PWD/PW arm so LOGIN_PW does not silently split from
+ * LOGIN_EMAIL. Anchored, because an unanchored PASS would match BYPASS.
+ *
+ * KNOWN false positives, inherited from the original server regex and left in
+ * deliberately: the ACCOUNT/EMAIL/PASSWORD arms end a TOKEN, not the name, so
+ * TWILIO_ACCOUNT_SID, SERVICE_ACCOUNT_JSON, EMAIL_FROM and PASSWORD_RESET_URL
+ * all match. Requiring end-of-name would drop them, but it would also drop
+ * EMAIL_ADDRESS and USER_PASSWORD_HASH, which are more often real login
+ * fields than the above are not. The trade is kept as-is rather than silently
+ * changed; the tests list this class explicitly.
  *
  * Known residual, and a NARROWING versus the old server-side substring regex:
  * an unseparated trailing word (EMAILADDRESS, ACCOUNTNAME, PASSWORDHASH) used
@@ -65,7 +75,7 @@ export const SECRET_PLACEHOLDER_REGEX = /\$\{secrets\.([A-Z][A-Z0-9_]*)\}/g;
  * EMAILER_API_KEY.
  */
 export const AUTH_FIELD_NAME_PATTERN =
-  /(?:USER_?NAME|PASSWORD|ACCOUNT|EMAIL)\d*(?:S$|_|$)|(?:^|_)(?:LOGIN|ACCOUNT|CONSOLE|WEB|PORTAL|SIGNIN)_USER\d*$|^USER\d*$/i;
+  /(?:USER_?NAME|PASSWORD|ACCOUNT|EMAIL)\d*(?:S$|_|$)|(?:^|_)(?:PASS|PWD|PW)\d*(?:S$|_|$)|(?:^|_)(?:LOGIN|ACCOUNT|CONSOLE|WEB|PORTAL|SIGNIN)_USER\d*$|^USER\d*$/i;
 
 /** True when a secret name reads like a login credential. See the pattern above. */
 export function isAuthFieldName(name: string): boolean {

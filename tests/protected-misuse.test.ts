@@ -76,6 +76,18 @@ describe("isAuthFieldName (shared client/server heuristic)", () => {
     expect(isAuthFieldName("USER_AGENT")).toBe(false);
   });
 
+  it("documents the inherited mid-name matches rather than implying they are excluded", () => {
+    // The ACCOUNT/EMAIL/PASSWORD arms end a TOKEN, not the name, so these match
+    // — as they did under the original server regex. Requiring end-of-name
+    // would drop them but also drop EMAIL_ADDRESS, which is more often a real
+    // login field than these are not. Listed so the trade is visible: a false
+    // positive here makes findBrokeredMisuse reject the whole workflow.
+    for (const n of ["TWILIO_ACCOUNT_SID", "SERVICE_ACCOUNT_JSON", "EMAIL_FROM", "PASSWORD_RESET_URL"]) {
+      expect(isAuthFieldName(n)).toBe(true);
+    }
+    expect(isAuthFieldName("EMAIL_ADDRESS")).toBe(true); // the reason the trade is kept
+  });
+
   it("still matches a digit-suffixed credential name", () => {
     // A false negative defaults a credential to the RUNTIME class, which is the
     // agent-exposed one — so this direction leaks, while a false positive only
@@ -105,6 +117,8 @@ describe("isAuthFieldName (shared client/server heuristic)", () => {
       "DB_USER", "SMTP_USER", "POSTGRES_USER", "REDIS_USER",
       // Plural followed by more name, rather than ending the name.
       "MAX_USERS", "ACTIVE_USERS", "ACCOUNTS_URL", "EMAILS_SENT_COUNT",
+      // Anchored abbreviations: an unanchored PASS would match these.
+      "BYPASS", "BYPASS_SSL", "CLIENT_SECRET",
     ]) {
       expect(isAuthFieldName(n)).toBe(false);
     }
@@ -114,6 +128,10 @@ describe("isAuthFieldName (shared client/server heuristic)", () => {
       // The USER family, anchored at the end so it pairs with a password
       // without dragging in USER_AGENT above.
       "USER_NAME", "LOGIN_USER", "CONSOLE_USER", "USER",
+      // Abbreviations. LOGIN_PW is this file's own fixture, and leaving it
+      // uncovered meant LOGIN_EMAIL flipped while LOGIN_PW did not — the split
+      // pair this heuristic exists to prevent, in its silent direction.
+      "LOGIN_PW", "LOGIN_PWD", "LOGIN_PASS",
     ]) {
       expect(isAuthFieldName(n)).toBe(true);
     }
