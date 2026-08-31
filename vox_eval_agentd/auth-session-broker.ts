@@ -51,6 +51,27 @@ export function scrubCredentials(message: string, values: string[]): string {
     .reduce((acc, v) => acc.split(v).join('[redacted]'), message);
 }
 
+/**
+ * Every form a credential can take in aeval's output, so a scrub can match it.
+ *
+ * The mint scenario embeds credentials as `JSON.stringify(value)` (valid YAML
+ * double-quoted scalars), so a password like `pa"ss\word` reaches aeval — and
+ * can be echoed back in an ERROR line — as `pa\"ss\\word`. Scrubbing only the
+ * raw value would miss that entirely, and the message is both logged and
+ * returned to Core, where it is persisted as a user-visible job error.
+ *
+ * The escaped form is derived from the SAME `JSON.stringify` that writes the
+ * YAML (minus its surrounding quotes) rather than a hand-rolled escaper, so the
+ * two cannot drift: whatever the scenario emits is, by construction, what we
+ * redact. The daemon solves this with a parallel `yamlEscape` list
+ * (vox-agentd.ts `activeSecretValues`).
+ */
+export function credentialForms(values: string[]): string[] {
+  return Array.from(
+    new Set(values.filter((v) => v.length > 0).flatMap((v) => [v, JSON.stringify(v).slice(1, -1)])),
+  );
+}
+
 /** Real mint: one-step aeval scenario running setup:account → save_storage_state. */
 export async function mintWithAeval(req: MintRequest, timeoutMs: number): Promise<unknown> {
   const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vox-mint-'));
@@ -112,9 +133,18 @@ export async function mintWithAeval(req: MintRequest, timeoutMs: number): Promis
           // ERROR lines; scrubCredentials still runs after it because its
           // redaction has no minimum length (a <4-char password would slip
           // the summarizer's floor).
-          const summary = summarizeAevalFailure('', stderr, [req.email, req.password]);
-          const tail = scrubCredentials(summary || 'login failed', [req.email, req.password]);
-          reject(new Error(`aeval exited ${code}: ${tail}`));
+          //
+          // stdout is passed as '' DELIBERATELY — it is discarded above rather
+          // than buffered, because it may echo step params verbatim. The
+          // helper's both-streams scan simply doesn't apply here; do not "fix"
+          // this by wiring stdout through.
+          const forms = credentialForms([req.email, req.password]);
+          // A silent aeval exit leaves nothing to summarize; say so in the
+          // broker's own terms instead of the helper's generic sentinel.
+          const summary = stderr.trim()
+            ? scrubCredentials(summarizeAevalFailure('', stderr, forms), forms)
+            : 'login failed with no output';
+          reject(new Error(`aeval exited ${code}: ${summary}`));
         }
       }));
     });

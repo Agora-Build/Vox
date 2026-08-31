@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import type { AddressInfo } from "net";
 import type { Server } from "http";
-import { createBrokerServer, scrubCredentials, secretMatches, heartbeat, type MintRequest } from "../vox_eval_agentd/auth-session-broker";
+import { createBrokerServer, scrubCredentials, credentialForms, secretMatches, heartbeat, type MintRequest } from "../vox_eval_agentd/auth-session-broker";
 import { summarizeAevalFailure } from "../vox_eval_agentd/aeval-output";
 
 describe("secretMatches (constant-time bearer check)", () => {
@@ -57,6 +57,30 @@ describe("mint failure summary (what the broker reports)", () => {
     expect(summary).toContain("Step 1 failed: platform.setup");
     expect(summary).toContain("Error waiting for URL pattern");
     expect(summary).not.toContain("Artifacts saved to");
+  });
+
+  it("redacts the YAML/JSON-escaped form aeval actually sees, not just the raw value", () => {
+    // The scenario embeds the password as JSON.stringify(value), so a password
+    // with a quote or backslash reaches aeval — and comes back in an ERROR
+    // line — escaped. Scrubbing only the raw value leaks it into a persisted,
+    // user-visible job error.
+    const password = 'pa"ss\\word';
+    const escaped = JSON.stringify(password).slice(1, -1); // pa\"ss\\word
+    expect(escaped).not.toBe(password); // guard: the fixture must actually differ
+
+    const stderr = `2026-08-30 17:49:50.860 | ERROR | Step 1 failed: platform.setup - bad params: password="${escaped}"`;
+    const forms = credentialForms(["a@b.co", password]);
+    const summary = scrubCredentials(summarizeAevalFailure("", stderr, forms), forms);
+
+    expect(summary).not.toContain(escaped);
+    expect(summary).not.toContain(password);
+    expect(summary).toContain("[redacted]");
+  });
+
+  it("credentialForms derives the escaped form from the same stringify the scenario uses", () => {
+    expect(credentialForms(['a"b'])).toEqual(['a"b', 'a\\"b']);
+    expect(credentialForms(["plain"])).toEqual(["plain"]); // no duplicate when escaping is a no-op
+    expect(credentialForms([""])).toEqual([]);
   });
 
   it("keeps the credential out of the reported message", () => {
