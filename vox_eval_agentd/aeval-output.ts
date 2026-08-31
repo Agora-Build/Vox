@@ -113,11 +113,12 @@ export function summarizeAevalFailure(
     .filter((l) => l.length > 0);
 
   // Strip loguru's "TIMESTAMP | LEVEL | " prefix for a compact message.
-  // `\S+[ T]?\S*` rather than `\S+\s+\S+`: LOGURU_DIAGNOSIS_LINE accepts a `T`
+  // `\S+(?:\s+\S+)?` rather than `\S+\s+\S+`: LOGURU_DIAGNOSIS_LINE accepts a `T`
   // between date and time, and with "2026-08-30T17:49:50 | ERROR | ..." the
-  // whitespace-separated form matches nothing, so the line is reported with its
-  // prefix un-stripped. Cosmetic, but the two patterns should agree on what a
-  // loguru prefix looks like.
+  // date and time are ONE \S+ token — the mandatory second token then matches
+  // nothing and the line is reported with its prefix un-stripped. Making the
+  // second token optional covers both spellings. Cosmetic, but the two patterns
+  // should agree on what a loguru prefix looks like.
   const strip = (l: string) => l.replace(/^\S+(?:\s+\S+)?\s*\|\s*\w+\s*\|\s*/, '').trim();
 
   // resolveSecrets substitutes DECRYPTED values into the YAML handed to aeval,

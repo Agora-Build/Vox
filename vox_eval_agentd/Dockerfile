@@ -119,6 +119,7 @@ COPY vox_eval_agentd/package.json /app/
 RUN npm install \
     && npx esbuild auth-session-broker.ts --bundle --platform=node --format=esm --outfile=auth-session-broker.js \
        --external:child_process --external:fs --external:os --external:path --external:url --external:http \
+       --external:string_decoder \
        --external:@aws-sdk/client-s3 \
     && rm -rf node_modules
 
