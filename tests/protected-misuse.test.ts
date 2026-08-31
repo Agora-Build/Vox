@@ -119,6 +119,12 @@ describe("isAuthFieldName (shared client/server heuristic)", () => {
       "MAX_USERS", "ACTIVE_USERS", "ACCOUNTS_URL", "EMAILS_SENT_COUNT",
       // Anchored abbreviations: an unanchored PASS would match these.
       "BYPASS", "BYPASS_SSL", "CLIENT_SECRET",
+      // ACCEPTED split pairs, not oversights: these are excluded while
+      // ADMIN_PASSWORD/TEST_PASSWORD match, so such a pair splits. Widening the
+      // USER prefix list would reopen DB_USER, whose false positive rejects the
+      // whole workflow; a split pair instead fails loudly at run time with
+      // "mark both, or neither", which the user can act on.
+      "ADMIN_USER", "TEST_USER", "APP_USER", "AGORA_USER",
     ]) {
       expect(isAuthFieldName(n)).toBe(false);
     }
@@ -131,7 +137,7 @@ describe("isAuthFieldName (shared client/server heuristic)", () => {
       // Abbreviations. LOGIN_PW is this file's own fixture, and leaving it
       // uncovered meant LOGIN_EMAIL flipped while LOGIN_PW did not — the split
       // pair this heuristic exists to prevent, in its silent direction.
-      "LOGIN_PW", "LOGIN_PWD", "LOGIN_PASS",
+      "LOGIN_PW", "LOGIN_PWD", "LOGIN_PASS", "LOGIN_PASSWD",
     ]) {
       expect(isAuthFieldName(n)).toBe(true);
     }

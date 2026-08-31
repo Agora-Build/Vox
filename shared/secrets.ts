@@ -57,8 +57,15 @@ export const SECRET_PLACEHOLDER_REGEX = /\$\{secrets\.([A-Z][A-Z0-9_]*)\}/g;
  * END (SUPPORT_EMAILS, LOGIN_PASSWORDS — but NOT ACCOUNTS_URL or MAX_USERS,
  * where the plural is followed by more name), `USER_?NAME` for both spellings
  * of that field without letting bare NAME back in to catch APP_NAME, and a
- * prefix-anchored PASS/PWD/PW arm so LOGIN_PW does not silently split from
- * LOGIN_EMAIL. Anchored, because an unanchored PASS would match BYPASS.
+ * prefix-anchored PASSWD/PASS/PWD/PW arm so LOGIN_PW does not silently split
+ * from LOGIN_EMAIL. Anchored, because an unanchored PASS would match BYPASS.
+ *
+ * ACCEPTED split pairs: the USER prefix list excludes ADMIN_USER, TEST_USER and
+ * APP_USER, while ADMIN_PASSWORD and TEST_PASSWORD match — so those pairs
+ * split. Widening the list is the wrong trade, because it reopens
+ * DB_USER/SMTP_USER, and a false positive there rejects the whole workflow.
+ * A split pair fails LOUDLY at run time with the "mark both, or neither"
+ * message, which is recoverable; the silent runtime-path fallback is not.
  *
  * KNOWN false positives, inherited from the original server regex and left in
  * deliberately: the ACCOUNT/EMAIL/PASSWORD arms end a TOKEN, not the name, so
@@ -75,7 +82,7 @@ export const SECRET_PLACEHOLDER_REGEX = /\$\{secrets\.([A-Z][A-Z0-9_]*)\}/g;
  * EMAILER_API_KEY.
  */
 export const AUTH_FIELD_NAME_PATTERN =
-  /(?:USER_?NAME|PASSWORD|ACCOUNT|EMAIL)\d*(?:S$|_|$)|(?:^|_)(?:PASS|PWD|PW)\d*(?:S$|_|$)|(?:^|_)(?:LOGIN|ACCOUNT|CONSOLE|WEB|PORTAL|SIGNIN)_USER\d*$|^USER\d*$/i;
+  /(?:USER_?NAME|PASSWORD|ACCOUNT|EMAIL)\d*(?:S$|_|$)|(?:^|_)(?:PASSWD|PASS|PWD|PW)\d*(?:S$|_|$)|(?:^|_)(?:LOGIN|ACCOUNT|CONSOLE|WEB|PORTAL|SIGNIN)_USER\d*$|^USER\d*$/i;
 
 /** True when a secret name reads like a login credential. See the pattern above. */
 export function isAuthFieldName(name: string): boolean {
