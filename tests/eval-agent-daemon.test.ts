@@ -15,7 +15,7 @@ import { execSync } from "child_process";
 import path from "path";
 import fs from "fs";
 import os from "os";
-import { summarizeAevalFailure } from "../vox_eval_agentd/aeval-output";
+import { summarizeAevalFailure, reduceUrlsToHost, reduceUrlsSafely, urlForms, createBoundedCapture } from "../vox_eval_agentd/aeval-output";
 
 // Mock the parseResults function logic for testing
 function parseResults(csvContent: string): {
@@ -1705,6 +1705,81 @@ describe("Eval Agent Daemon - Script Validation", () => {
 // ---------------------------------------------------------------------------
 // aeval failure summarization (job #31006 regression)
 // ---------------------------------------------------------------------------
+
+describe("daemon failure-message hardening (shared with the broker)", () => {
+  it("reduces URLs so a token in a query or path can't reach the job error", () => {
+    // The daemon persists this string as the job's user-visible error, and an
+    // aeval/Playwright error can echo a signaling or redirect URL carrying
+    // material no needle models.
+    const stderr = "2026-08-30 17:49:50.860 | ERROR | connect failed: wss://sig.livekit.io/rtc?access_token=JWTVALUE";
+    const summary = summarizeAevalFailure("", reduceUrlsSafely(stderr, []));
+    expect(summary).not.toContain("JWTVALUE");
+    expect(summary).toContain("sig.livekit.io");
+  });
+
+  it("redacts a secret whose VALUE is a URL before reducing it", () => {
+    // Secrets that are themselves URLs are routine here — a LiveKit server URL,
+    // a webhook endpoint. reduceUrlsToHost alone would rewrite the echoed value
+    // to scheme://host/… and destroy the needle that would have redacted it,
+    // leaving the host in a persisted, user-visible job error.
+    const secret = "wss://acme-project.livekit.cloud/rtc";
+    const stderr = `2026-08-30 17:49:50.860 | ERROR | connect failed: ${secret}?t=1`;
+    const summary = summarizeAevalFailure("", reduceUrlsSafely(stderr, [secret]), [secret]);
+    expect(summary).not.toContain("acme-project.livekit.cloud");
+    expect(summary).toContain("[redacted]");
+    // ...and a URL that is NOT a secret is still reduced rather than redacted.
+    const other = reduceUrlsSafely("see https://docs.example.com/a?b=1", [secret]);
+    expect(other).toBe("see https://docs.example.com/…");
+  });
+
+  it("keeps a captured diagnosis while a huge single line streams in", () => {
+    // The blob arrives across many chunks, each under the cap. Evicting on
+    // those would empty the buffer to make room for a line that is then
+    // discarded anyway — losing the diagnosis to output that never lands.
+    const cap = createBoundedCapture(100);
+    cap.push("2026-08-30 17:49:50.860 | ERROR | the real cause\n");
+    for (let i = 0; i < 40; i++) cap.push("X".repeat(50));
+    expect(cap.text).toContain("ERROR | the real cause");
+  });
+
+  it("reports truncation, so a parser can refuse a partial log", () => {
+    // parseAevalStdout walks the WHOLE event log with a phase state machine
+    // defaulting to 'response'. Fed a tail-truncated buffer it resumes mid-run
+    // in the wrong phase and reports wrong latencies on the exit-code-0 path —
+    // silently, which is worse than failing. The daemon checks this flag before
+    // falling back to stdout parsing.
+    const cap = createBoundedCapture(50);
+    cap.push("Phase 1 (response) completed\n");
+    expect(cap.truncated).toBe(false);
+    cap.push("x".repeat(500) + "\n");
+    expect(cap.truncated).toBe(true);
+  });
+
+  it("urlForms covers the encodings a secret takes inside a URL", () => {
+    // activeSecretValues now includes these, so a runtime secret echoed in a
+    // query string is redacted rather than surviving as %40/%20.
+    const forms = urlForms("a b@agora.io");
+    expect(forms).toContain("a%20b%40agora.io");
+    expect(forms).toContain("a+b%40agora.io");
+    expect(urlForms("pw\ud800end")).toEqual([]); // lone surrogate: best-effort, never throws
+  });
+});
+
+describe("summarizeAevalFailure line splitting", () => {
+  it("does not retain an untrusted prefix hidden behind a bare CR", () => {
+    // The daemon passes RAW stdout and stderr here with no quarantine, and
+    // daemon stdout can echo step params. /m anchors ^ after \r, \u2028 and
+    // \u2029, so splitting on "\n" alone made this ONE line that
+    // DIAGNOSIS_LINE matched and strip() could not clean — its prefix pattern
+    // is not at index 0 — so the whole thing was retained.
+    for (const sep of ["\r", "\u2028", "\u2029"]) {
+      const line = `leaked=SECRETVALUE123${sep}2026-08-30 17:49:50.860 | ERROR | boom`;
+      const summary = summarizeAevalFailure("", line);
+      expect(summary).toContain("boom");
+      expect(summary).not.toContain("SECRETVALUE123");
+    }
+  });
+});
 
 describe("summarizeAevalFailure", () => {
   // Verbatim shape of the run that produced job #31006: aeval's real diagnosis

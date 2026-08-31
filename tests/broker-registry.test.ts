@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { isKnownBrokerType, isInternalBrokerUrl, KNOWN_BROKER_TYPES, isBrokerFresh, cacheBrokerMintSecret, clearBrokerMintSecret, routeToBrokerWith, validateRegisterPayload } from "../server/broker-registry";
+import { isKnownBrokerType, isInternalBrokerUrl, KNOWN_BROKER_TYPES, isBrokerFresh, cacheBrokerMintSecret, clearBrokerMintSecret, routeToBrokerWith, validateRegisterPayload, mintViaBroker } from "../server/broker-registry";
 
 describe("isKnownBrokerType", () => {
   it("accepts auth-session", () => expect(isKnownBrokerType("auth-session")).toBe(true));
@@ -76,4 +76,83 @@ describe("validateRegisterPayload", () => {
     expect(validateRegisterPayload({ name: "b", brokerType: "auth-session", url: "http://x.example.com" }).ok).toBe(false));
   it("accepts internal auth-session", () =>
     expect(validateRegisterPayload({ name: "b", brokerType: "auth-session", url: "http://vox-auth-session-broker:8200" }).ok).toBe(true));
+});
+
+describe("mintViaBroker error propagation", () => {
+  const target = { url: "http://broker:8200", mintSecret: "s3" } as Parameters<typeof mintViaBroker>[0];
+  const req = { platformId: "agora", email: "a@b.co", password: "pw" };
+  // mintViaBroker reads text() on the error path (bounded before parsing) and
+  // json() on success.
+  const respond = (status: number, body: unknown, json = true) =>
+    (async () =>
+      ({
+        ok: status >= 200 && status < 300,
+        status,
+        text: async () => (json ? JSON.stringify(body) : "<html>not json</html>"),
+        json: async () => {
+          if (!json) throw new SyntaxError("not json");
+          return body;
+        },
+      })) as unknown as typeof fetch;
+
+  it("folds the broker's diagnosis into the thrown message", async () => {
+    // Without this the whole broker-side summarize/scrub pipeline reaches only
+    // the sidecar's own container log: Core, webSessions.lastError and the
+    // eval-agent 503 all said just "broker mint failed: 502".
+    await expect(
+      mintViaBroker(target, req, respond(502, { error: "aeval exited 1: Step 1 failed: platform.setup" })),
+    ).rejects.toThrow("Step 1 failed: platform.setup");
+  });
+
+  it("still reports the status when the body is not JSON", async () => {
+    await expect(mintViaBroker(target, req, respond(502, null, false))).rejects.toThrow("broker mint failed: 502");
+  });
+
+  it("re-redacts with Core's own credentials rather than trusting the broker", async () => {
+    // Core holds the plaintext pair and persists this string to
+    // webSessions.lastError, so a stale or buggy broker echoing a credential
+    // must not become a durable leak here.
+    await expect(
+      mintViaBroker(target, { platformId: "agora", email: "a@b.co", password: "hunter2pw" },
+        respond(502, { error: "login failed for a@b.co with hunter2pw" })),
+    ).rejects.toThrow(/\[redacted\].*\[redacted\]/);
+  });
+
+  it("falls back to the default when the mint timeout env is unusable", async () => {
+    // AbortSignal.timeout takes an unsigned long long, so a NaN would throw
+    // synchronously and take the whole mint path down.
+    const prev = process.env.WEB_SESSION_MINT_TIMEOUT_SECONDS;
+    try {
+      for (const bad of ["not-a-number", "0", "-5"]) {
+        process.env.WEB_SESSION_MINT_TIMEOUT_SECONDS = bad;
+        await expect(mintViaBroker(target, req, respond(200, { storageState: {} }))).resolves.toBeDefined();
+      }
+    } finally {
+      if (prev === undefined) delete process.env.WEB_SESSION_MINT_TIMEOUT_SECONDS;
+      else process.env.WEB_SESSION_MINT_TIMEOUT_SECONDS = prev;
+    }
+  });
+
+  it("caps third-party detail before it reaches a durable field", async () => {
+    const huge = "x".repeat(5000);
+    await expect(mintViaBroker(target, req, respond(502, { error: huge }))).rejects.toThrow(
+      /^broker mint failed: 502: x{500}$/,
+    );
+  });
+
+  it("redacts BEFORE truncating, so a credential straddling the cap can't survive", async () => {
+    // Slicing first leaves a partial value that matches no whole needle, and
+    // this string is persisted to web_sessions.last_error. The credential is
+    // placed so that offset 500 falls inside it.
+    const password = "hunter2-and-a-long-tail-value";
+    const filler = "y".repeat(500 - Math.floor(password.length / 2));
+    const body = { error: `${filler}${password} trailing` };
+    let thrown = "";
+    await mintViaBroker(target, { platformId: "agora", email: "a@b.co", password },
+      respond(502, body)).catch((e: Error) => { thrown = e.message; });
+    expect(thrown).not.toContain(password);
+    // ...and no prefix of it survives either.
+    expect(thrown).not.toContain(password.slice(0, 12));
+    expect(thrown).toContain("[redacted]");
+  });
 });

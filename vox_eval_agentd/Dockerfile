@@ -104,19 +104,29 @@ ENV HEADLESS=true
 # ============================================================================
 # Stage: broker — trusted login sidecar (published as vox-auth-session-broker)
 # Lean tip: auth-session-broker.js only. No voice-agent-tester, no daemon code,
-# no shared/, no node_modules at runtime (esbuild bundles builtins-only).
+# no node_modules at runtime. The two shared/ modules it imports are COPYed in
+# and bundled by esbuild; nothing else from shared/ is present.
 # ============================================================================
 FROM base AS broker
 WORKDIR /app
 
 COPY vox_eval_agentd/auth-session-broker.ts /app/
+COPY vox_eval_agentd/aeval-output.ts /app/
+COPY shared/credentials.ts /shared/credentials.ts
+COPY shared/mint-timeout.ts /shared/mint-timeout.ts
 COPY vox_eval_agentd/package.json /app/
 
 # npm install only to obtain esbuild (a devDep). auth-session-broker.ts imports only
-# Node builtins, so the bundle needs no node_modules at runtime — drop it after compile.
+# Node builtins plus ./aeval-output and the two shared/ modules COPYed above
+# (aeval-output itself imports ../shared/credentials — that COPY is load-bearing,
+# not incidental), so the bundle needs no node_modules at runtime.
+# No --external for Node builtins: --platform=node already marks every builtin
+# external, which is why crypto/string_decoder resolve without being listed. A
+# partial enumeration reads as authoritative and invites someone to diagnose a
+# future missing builtin as a build break. @aws-sdk/client-s3 stays — it is NOT
+# a builtin, and the flag keeps a transitive import from pulling it in.
 RUN npm install \
     && npx esbuild auth-session-broker.ts --bundle --platform=node --format=esm --outfile=auth-session-broker.js \
-       --external:child_process --external:fs --external:os --external:path --external:url --external:http \
        --external:@aws-sdk/client-s3 \
     && rm -rf node_modules
 
@@ -148,14 +158,16 @@ COPY vox_eval_agentd/chunking.ts /app/
 COPY vox_eval_agentd/aeval-output.ts /app/
 COPY vox_eval_agentd/package.json /app/
 COPY shared/secrets.ts /shared/secrets.ts
+COPY shared/credentials.ts /shared/credentials.ts
 COPY shared/metrics.ts /shared/metrics.ts
 
 # Install daemon dependencies (esbuild for TS compilation)
 RUN npm install
 
 # Compile daemon TS → JS
+# As in the broker stage: --platform=node externalizes every Node builtin, so
+# listing them was decorative. @aws-sdk/client-s3 is NOT a builtin and stays.
 RUN npx esbuild vox-agentd.ts --bundle --platform=node --format=esm --outfile=vox-agentd.js \
-    --external:child_process --external:fs --external:os --external:path --external:url --external:http \
     --external:@aws-sdk/client-s3
 
 # Daemon runtime env (overridden at runtime)

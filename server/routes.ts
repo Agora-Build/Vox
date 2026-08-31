@@ -72,7 +72,7 @@ import {
   canRunWorkflow,
   canScheduleWorkflow,
   sameOrg,
-  isSessionServable,
+  isSessionServable, isOwnerOperatedAgent,
   hasOrg,
   sessionPoolViolation,
 } from "./permissions";
@@ -3899,16 +3899,15 @@ export async function registerRoutes(
       // CLAIMING token from snapshot-frozen owner/org + consent. This is the
       // credential-authoritative check; the claim-SQL gate is the first line.
       const tokenOwner = await storage.getUser(evalAgentToken.createdBy);
-      const servable = isSessionServable(
-        {
-          targetTokenId: auth.job.targetTokenId ?? null,
-          workflowOwnerId: snapWorkflow.ownerId ?? null,
-          workflowOrgId: snapWorkflow.organizationId ?? null,
-          consent: snap?.credentialConsent === true,
-        },
-        { id: evalAgentToken.id, createdBy: evalAgentToken.createdBy },
-        { organizationId: tokenOwner?.organizationId ?? null },
-      );
+      const serveJob = {
+        targetTokenId: auth.job.targetTokenId ?? null,
+        workflowOwnerId: snapWorkflow.ownerId ?? null,
+        workflowOrgId: snapWorkflow.organizationId ?? null,
+        consent: snap?.credentialConsent === true,
+      };
+      const serveToken = { id: evalAgentToken.id, createdBy: evalAgentToken.createdBy };
+      const serveTokenOwner = { organizationId: tokenOwner?.organizationId ?? null };
+      const servable = isSessionServable(serveJob, serveToken, serveTokenOwner);
       if (!servable) {
         console.warn(`[Session] Job ${auth.job.id}: DENIED session bundle to token ${evalAgentToken.id} (not owner/team/attested-shared)`);
         return res.status(403).json({ error: "This agent is not authorized to receive the login session for this job" });
@@ -3936,7 +3935,21 @@ export async function registerRoutes(
         });
       }
       if (session?.status === "failed") {
-        return res.status(503).json({ required: true, status: "failed", error: session.lastError ?? "session mint failed" });
+        // lastError now carries the broker's own diagnosis, which can quote page
+        // state (a Playwright error naming a selector, a DOM fragment) — see the
+        // boundary note in auth-session-broker.ts. An agent the owner or their
+        // org operates may see it; a consented attested MARKETPLACE agent — the
+        // third arm of isSessionServable — may receive the storageState but not
+        // an explanation quoting the login page. Serving the session and
+        // explaining why minting it failed are different disclosures. The full
+        // text is on the session row and in Core's log either way.
+        const ownerOperated = isOwnerOperatedAgent(serveJob, serveToken, serveTokenOwner);
+        return res.status(503).json({
+          required: true,
+          status: "failed",
+          // `||` not `??`: an empty-string lastError should fall back too.
+          error: (ownerOperated ? session.lastError : null) || "session mint failed",
+        });
       }
       // Cold or stale or currently minting: (re)trigger and tell the agent to poll.
       void ensureSession(scope, need);
