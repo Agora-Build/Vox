@@ -6768,10 +6768,15 @@ export async function registerRoutes(
 
   app.post("/api/clash/moderator/start", async (req, res) => {
     try {
-      const authHeader = req.headers.authorization;
-      if (!authHeader || !authHeader.startsWith("Bearer ")) {
-        return res.status(401).json({ error: "Runner token required" });
-      }
+      // Real token validation, not just "the header starts with Bearer": these
+      // three routes accepted any such header, so the token was never hashed,
+      // looked up, or checked for revocation. Scoping the ConvoAI session name
+      // per channel removed the constant name that had been acting as an
+      // accidental account-wide mutex, so an unauthenticated caller could go
+      // from starting one session to starting one per event — burning LLM/TTS
+      // spend and publishing synthesized audio into live spectator channels —
+      // while /stop let anyone kill any event's moderator.
+      if (!(await authenticateClashRunner(req, res))) return;
       const { matchId } = req.body;
       if (!matchId) return res.status(400).json({ error: "matchId required" });
 
@@ -6822,10 +6827,15 @@ export async function registerRoutes(
 
   app.post("/api/clash/moderator/announce", async (req, res) => {
     try {
-      const authHeader = req.headers.authorization;
-      if (!authHeader || !authHeader.startsWith("Bearer ")) {
-        return res.status(401).json({ error: "Runner token required" });
-      }
+      // Real token validation, not just "the header starts with Bearer": these
+      // three routes accepted any such header, so the token was never hashed,
+      // looked up, or checked for revocation. Scoping the ConvoAI session name
+      // per channel removed the constant name that had been acting as an
+      // accidental account-wide mutex, so an unauthenticated caller could go
+      // from starting one session to starting one per event — burning LLM/TTS
+      // spend and publishing synthesized audio into live spectator channels —
+      // while /stop let anyone kill any event's moderator.
+      if (!(await authenticateClashRunner(req, res))) return;
       const { matchId, phase } = req.body;
       if (!matchId || !phase) return res.status(400).json({ error: "matchId and phase required" });
 
@@ -6869,10 +6879,15 @@ export async function registerRoutes(
 
   app.post("/api/clash/moderator/stop", async (req, res) => {
     try {
-      const authHeader = req.headers.authorization;
-      if (!authHeader || !authHeader.startsWith("Bearer ")) {
-        return res.status(401).json({ error: "Runner token required" });
-      }
+      // Real token validation, not just "the header starts with Bearer": these
+      // three routes accepted any such header, so the token was never hashed,
+      // looked up, or checked for revocation. Scoping the ConvoAI session name
+      // per channel removed the constant name that had been acting as an
+      // accidental account-wide mutex, so an unauthenticated caller could go
+      // from starting one session to starting one per event — burning LLM/TTS
+      // spend and publishing synthesized audio into live spectator channels —
+      // while /stop let anyone kill any event's moderator.
+      if (!(await authenticateClashRunner(req, res))) return;
       const { matchId } = req.body;
       if (!matchId) return res.status(400).json({ error: "matchId required" });
 

@@ -500,11 +500,8 @@ describe("Agora Integration", () => {
 });
 
 describe("moderatorSessionName", () => {
-  // ConvoAI treats the session `name` as a unique key: starting a second
-  // session under a name already in use returns 409 TaskConflict. The name was
-  // once the constant "clash-moderator", so only ONE moderator could exist
-  // account-wide — concurrent matches collided, and a session leaked by an
-  // interrupted run blocked every later start until it idled out.
+  // Why the name is channel-scoped: see moderatorSessionName's docstring in
+  // server/agora.ts. In short, ConvoAI treats `name` as a unique key.
   it("is distinct for distinct channels, so concurrent matches don't collide", () => {
     const a = moderatorSessionName(generateEventChannelName(1));
     const b = moderatorSessionName(generateEventChannelName(2));
@@ -552,10 +549,10 @@ describe("startModerator request body", () => {
         systemPrompt: "s",
         greetingMessage: "g",
       });
+      expect(spy).toHaveBeenCalledOnce();
       const sent = JSON.parse((spy.mock.calls[0][1] as RequestInit).body as string);
       expect(sent.name).toBe("clash-moderator-clash-event-42");
-      // The bug: one account-wide name meant two concurrent events collided.
-      expect(sent.name).not.toBe("clash-moderator");
+      expect(sent.name).not.toBe("clash-moderator"); // the account-wide constant
       expect(sent.properties.channel).toBe("clash-event-42");
     } finally {
       spy.mockRestore();
