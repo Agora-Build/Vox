@@ -16,6 +16,7 @@ import { KeyRound, Plus, Trash2, ShieldAlert, Building2 } from "lucide-react";
 import { useState } from "react";
 import { useLocation, useSearch } from "wouter";
 import { formatSmartTimestamp, brokerTypeLabel } from "@/lib/utils";
+import { isAuthFieldName } from "@shared/secrets";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 
 interface SecretEntry {
@@ -76,17 +77,18 @@ export default function ConsoleSecrets() {
   const { data: liveBrokerTypes } = useQuery<string[]>({ queryKey: ["/api/broker-types"] });
   const brokerTypeOptions = liveBrokerTypes ?? [];
 
-  // A secret whose name reads like a login identifier (email/account/user/name)
-  // should default to the auth-session broker type — but only when such a broker
-  // is actually live. If none is, Runtime stays the default. Names are uppercased,
-  // so USER/NAME also cover USERNAME.
-  const AUTH_NAME_HINT = /EMAIL|ACCOUNT|USER|NAME/;
+  // A secret whose name reads like a login credential should default to the
+  // auth-session broker type — but only when such a broker is actually live.
+  // If none is, Runtime stays the default. The name heuristic is imported from
+  // @shared/secrets rather than restated here: a local copy drifted from the
+  // server's and left PASSWORD on Runtime while EMAIL flipped to the broker,
+  // which the server then rejects as a split login pair.
   const authBrokerType = brokerTypeOptions.find((t) => /auth|session|login/i.test(t)) ?? null;
   // Toggle only between Runtime and the auth type — never clobber a different
   // broker type the user picked manually.
   function nextBrokerTypeForName(newName: string, current: string | null): string | null {
     if (!authBrokerType) return current;
-    if (AUTH_NAME_HINT.test(newName)) return authBrokerType;
+    if (isAuthFieldName(newName)) return authBrokerType;
     if (current === authBrokerType) return "runtime";
     return current;
   }

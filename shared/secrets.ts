@@ -16,6 +16,31 @@ export const SECRET_NAME_PATTERN = /^[A-Z][A-Z0-9_]*$/;
 export const SECRET_PLACEHOLDER_REGEX = /\$\{secrets\.([A-Z][A-Z0-9_]*)\}/g;
 
 /**
+ * Names that read like a web-login credential, and so should DEFAULT to a
+ * brokered (login-class) secret rather than a runtime one.
+ *
+ * Lives here, not in server/ or in the console, because both sides pre-select
+ * the same toggle and MUST agree. When they drifted, the console defaulted
+ * `AGORA_CONSOLE_EMAIL` to the auth-session broker but left
+ * `AGORA_CONSOLE_PASSWORD` on Runtime — and a split pair is rejected outright
+ * by evaluateSessionRequirement ("Login requires BOTH email and password to be
+ * dedicated login-class secrets"), so the UI's own default produced a workflow
+ * that could never run.
+ *
+ * This is only a DEFAULT; both the console dropdown and the API's explicit
+ * `brokerType` override it. It is deliberately a small, boring list — a false
+ * positive marks a runtime secret Core-only and withholds it from the agent,
+ * which breaks a working run. That is why bare `NAME` is absent: it was only
+ * ever there to reach USERNAME, which is matched directly.
+ */
+export const AUTH_FIELD_NAME_PATTERN = /USERNAME|PASSWORD|ACCOUNT|EMAIL|USER/i;
+
+/** True when a secret name reads like a login credential. See the pattern above. */
+export function isAuthFieldName(name: string): boolean {
+  return AUTH_FIELD_NAME_PATTERN.test(name);
+}
+
+/**
  * Resolve ${secrets.KEY} placeholders in a string.
  * Unresolved placeholders are left as-is.
  */
