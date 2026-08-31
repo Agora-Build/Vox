@@ -52,6 +52,8 @@ describe("defaultBrokerTypeForName", () => {
       ["AGORA_CONSOLE_EMAIL", "AGORA_CONSOLE_PASSWORD"],
       ["VAPI_USERNAME", "VAPI_PASSWORD"],
       ["MY_ACCOUNT", "MY_PASSWORD"],
+      ["LOGIN_USER", "LOGIN_PASSWORD"],
+      ["USER_NAME", "USER_PASSWORD"],
     ]) {
       const [email, password] = pair.map(defaultBrokerTypeForName);
       expect(password).toBe("auth-session");
@@ -66,9 +68,11 @@ describe("isAuthFieldName (shared client/server heuristic)", () => {
   it("matches the login fields both sides agreed on", () => {
     for (const n of ["USERNAME", "PASSWORD", "ACCOUNT", "EMAIL"])
       expect(isAuthFieldName(n)).toBe(true);
-    // Bare USER is deliberately NOT here: it only ever existed to reach
-    // USERNAME, which is matched directly, and it would drag in USER_AGENT.
-    expect(isAuthFieldName("USER")).toBe(false);
+    // USER matches only at the END of a name — LOGIN_USER is an identifier
+    // paired with a password; USER_AGENT is not.
+    expect(isAuthFieldName("USER")).toBe(true);
+    expect(isAuthFieldName("LOGIN_USER")).toBe(true);
+    expect(isAuthFieldName("USER_AGENT")).toBe(false);
   });
 
   it("still matches a digit-suffixed credential name", () => {
@@ -98,7 +102,12 @@ describe("isAuthFieldName (shared client/server heuristic)", () => {
       expect(isAuthFieldName(n)).toBe(false);
     }
     // ...while the names those tokens were reaching for still match directly.
-    for (const n of ["USERNAME", "VAPI_USERNAME", "MY_ACCOUNT", "LOGIN_EMAIL"]) {
+    for (const n of [
+      "USERNAME", "VAPI_USERNAME", "MY_ACCOUNT", "LOGIN_EMAIL",
+      // The USER family, anchored at the end so it pairs with a password
+      // without dragging in USER_AGENT above.
+      "USER_NAME", "LOGIN_USER", "API_USER", "USER",
+    ]) {
       expect(isAuthFieldName(n)).toBe(true);
     }
   });

@@ -58,9 +58,18 @@ export const SECRET_PLACEHOLDER_REGEX = /\$\{secrets\.([A-Z][A-Z0-9_]*)\}/g;
  *
  * Leaving off a leading `(?:^|_)` is deliberate for the same reason: MYPASSWORD
  * and AGORAEMAIL end in a credential word and must match, while EMAILER_API_KEY
- * (EMAIL followed by a letter) and USER_AGENT still do not.
+ * (EMAIL followed by a letter) still does not.
+ *
+ * The USER family needs its own arm. A bare `USER` token would sweep up
+ * USER_AGENT, USER_ID, CURRENT_USER_ID and SUPERUSER_KEY — ordinary runtime
+ * values — so it is anchored to the END of the name: LOGIN_USER and API_USER
+ * are identifiers paired with a password, while USER_AGENT is not. `USER_?NAME`
+ * covers both spellings of the same field without letting bare NAME back in to
+ * catch APP_NAME. Without this arm, LOGIN_USER + LOGIN_PASSWORD still split —
+ * the exact bug this file exists to fix, one name-shape over.
  */
-export const AUTH_FIELD_NAME_PATTERN = /(?:USERNAME|PASSWORD|ACCOUNT|EMAIL)\d*S?(?:_|$)/i;
+export const AUTH_FIELD_NAME_PATTERN =
+  /(?:USER_?NAME|PASSWORD|ACCOUNT|EMAIL)\d*S?(?:_|$)|(?:^|_)USER\d*S?$/i;
 
 /** True when a secret name reads like a login credential. See the pattern above. */
 export function isAuthFieldName(name: string): boolean {
