@@ -6,22 +6,6 @@
  */
 
 /**
- * Pick the most informative line from a failed aeval run.
- *
- * The old heuristic — last line of stderr — is actively wrong for a
- * PyInstaller-packaged binary: its generic
- * "[PYI-####:ERROR] Failed to execute script 'pyi_entrypoint'..." banner is
- * printed AFTER the real traceback, so the one line we kept was structurally
- * guaranteed to be the least useful one.
- *
- * Order of preference:
- *  1. aeval's own loguru ERROR lines (its actual diagnosis, e.g.
- *     "Step 1 failed: platform.setup - Unknown variable source: secrets").
- *     Scans BOTH streams — loguru's sink may be either.
- *  2. Otherwise the last few non-noise lines, so we surface a traceback tail
- *     rather than the packaging banner.
- */
-/**
  * A loguru ERROR/CRITICAL line — aeval's own diagnosis of what went wrong.
  *
  * `[^\S\n]` (horizontal whitespace), never `\s`: `\s` matches newlines, so the
@@ -43,7 +27,7 @@ const DIAGNOSIS_LINE = /^[^\n]*\|[^\S\n]*(ERROR|CRITICAL)[^\S\n]*\|/m;
  * shifts.
  */
 const LOGURU_DIAGNOSIS_LINE =
-  /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}[.,]\d+[^\S\n]*\|[^\S\n]*(ERROR|CRITICAL)[^\S\n]*\|/m;
+  /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:[.,]\d+)?[^\S\n]*\|[^\S\n]*(ERROR|CRITICAL)[^\S\n]*\|/m;
 
 /**
  * Whether a stream carries aeval's own diagnosis. Exported so callers can
@@ -74,6 +58,27 @@ export function hasLoguruDiagnosis(text: string): boolean {
  */
 export const DEFAULT_MIN_NEEDLE_LENGTH = 4;
 
+/**
+ * Pick the most informative line from a failed aeval run.
+ *
+ * The old heuristic — last line of stderr — is actively wrong for a
+ * PyInstaller-packaged binary: its generic
+ * "[PYI-####:ERROR] Failed to execute script 'pyi_entrypoint'..." banner is
+ * printed AFTER the real traceback, so the one line we kept was structurally
+ * guaranteed to be the least useful one. aeval does the same thing with its
+ * trailing "Artifacts saved to: <path>" INFO banner.
+ *
+ * Order of preference:
+ *  1. aeval's own loguru ERROR lines (its actual diagnosis, e.g.
+ *     "Step 1 failed: platform.setup - Unknown variable source: secrets"),
+ *     taking the LAST few so an early recoverable error can't bury the fatal
+ *     one. Scans both arguments — loguru's sink may be either stream.
+ *  2. Otherwise the last few non-noise lines, so we surface a traceback tail
+ *     rather than the packaging banner.
+ *
+ * Callers that must not feed untrusted output into (1) should pass '' for that
+ * stream — see the broker's selectDiagnosisSource.
+ */
 export function summarizeAevalFailure(
   stdout: string,
   stderr: string,

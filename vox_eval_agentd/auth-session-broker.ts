@@ -156,6 +156,9 @@ export function createBoundedCapture(limit = CAPTURE_LIMIT) {
  * crash) summarizeAevalFailure falls through to its tail path over both
  * strings, putting raw stdout into the persisted error.
  */
+// Returns '' for BOTH "stdout is empty" and "stdout is rejected". The caller
+// treats them identically — neither may contribute to the message — so the
+// overload is deliberate rather than a lost distinction.
 export function selectDiagnosisSource(stdout: string, stderr: string): string {
   if (hasAevalDiagnosis(stderr)) return '';
   // Admission of the untrusted stream uses the STRICT loguru-shaped predicate:
@@ -251,10 +254,25 @@ export async function mintWithAeval(req: MintRequest, timeoutMs: number): Promis
         try { if (proc.pid) { process.kill(-proc.pid, signal); return; } } catch { /* fall through */ }
         try { proc.kill(signal); } catch { /* already gone */ }
       };
+      // Flush both decoders into their captures and return whatever aeval had
+      // said by then. Shared by the timeout and non-zero-exit paths so neither
+      // can drift from the other.
+      const capturedFailure = (): string => {
+        outCap.push(outDec.end());
+        errCap.push(errDec.end());
+        return describeMintFailure(outCap.text, errCap.text, credentialForms([req.email, req.password]));
+      };
       const timer = setTimeout(() => {
         killTree('SIGTERM');
         setTimeout(() => killTree('SIGKILL'), 5000);
-        finish(() => reject(new Error(`login timed out after ${timeoutMs}ms`)));
+        finish(() => {
+          // A hung login was the one path still telling the operator nothing —
+          // the same complaint this module exists to fix, one branch over. If
+          // aeval logged anything before it hung (which step it reached, which
+          // selector it was waiting on), say so.
+          const captured = (outCap.text + errCap.text).trim() ? `: ${capturedFailure()}` : '';
+          reject(new Error(`login timed out after ${timeoutMs}ms${captured}`));
+        });
       }, timeoutMs);
       proc.on('error', (err) => finish(() => reject(err)));
       proc.on('close', (code) => finish(() => {
@@ -264,16 +282,9 @@ export async function mintWithAeval(req: MintRequest, timeoutMs: number): Promis
           // final line is an INFO "Artifacts saved to: ..." banner printed
           // after the diagnosis, so a real failure ("Error waiting for URL
           // pattern ... current URL: <sso login page>" — i.e. wrong password)
-          // was reported as a path. summarizeAevalFailure prefers the loguru
-          // ERROR lines; scrubCredentials still runs after it because its
-          // redaction has no minimum length (a <4-char password would slip
-          // the summarizer's floor).
-          const forms = credentialForms([req.email, req.password]);
-          // Flush each decoder's held bytes so a trailing multi-byte character
-          // isn't dropped from the text we are about to scrub.
-          outCap.push(outDec.end());
-          errCap.push(errDec.end());
-          const summary = describeMintFailure(outCap.text, errCap.text, forms);
+          // was reported as a path. capturedFailure() prefers the loguru ERROR
+          // lines and redacts them before truncation.
+          const summary = capturedFailure();
           reject(new Error(`aeval exited ${code}: ${summary}`));
         }
       }));
