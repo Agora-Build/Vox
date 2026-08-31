@@ -1939,7 +1939,13 @@ class VoxEvalAgentDaemon {
       // Raw + the YAML spelling resolveSecrets substitutes + the URL encodings
       // a redirect or signaling URL would carry. urlForms is shared with the
       // broker so the two redaction sets cannot drift.
-      this.activeSecretValues = Object.values(jobSecrets).flatMap((v) => [v, VoxEvalAgentDaemon.yamlEscape(v), ...urlForms(v)]);
+      // Deduped: for an alphanumeric secret the yamlEscape and all four
+      // urlForms spellings equal the raw value, so this would otherwise be ~6
+      // identical needles. summarizeAevalFailure dedupes internally, but
+      // reduceUrlsSafely and redactValues do not.
+      this.activeSecretValues = Array.from(new Set(
+        Object.values(jobSecrets).flatMap((v) => [v, VoxEvalAgentDaemon.yamlEscape(v), ...urlForms(v)]),
+      ));
       // session-injected jobs get a Core-minted storageState instead of
       // login credentials (which the server structurally withholds).
       const sessionCfg = (job.config as Record<string, unknown> | null)?.sessionInjection;

@@ -1732,6 +1732,16 @@ describe("daemon failure-message hardening (shared with the broker)", () => {
     expect(other).toBe("see https://docs.example.com/…");
   });
 
+  it("keeps a captured diagnosis while a huge single line streams in", () => {
+    // The blob arrives across many chunks, each under the cap. Evicting on
+    // those would empty the buffer to make room for a line that is then
+    // discarded anyway — losing the diagnosis to output that never lands.
+    const cap = createBoundedCapture(100);
+    cap.push("2026-08-30 17:49:50.860 | ERROR | the real cause\n");
+    for (let i = 0; i < 40; i++) cap.push("X".repeat(50));
+    expect(cap.text).toContain("ERROR | the real cause");
+  });
+
   it("reports truncation, so a parser can refuse a partial log", () => {
     // parseAevalStdout walks the WHOLE event log with a phase state machine
     // defaulting to 'response'. Fed a tail-truncated buffer it resumes mid-run

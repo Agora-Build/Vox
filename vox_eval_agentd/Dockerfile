@@ -104,7 +104,8 @@ ENV HEADLESS=true
 # ============================================================================
 # Stage: broker — trusted login sidecar (published as vox-auth-session-broker)
 # Lean tip: auth-session-broker.js only. No voice-agent-tester, no daemon code,
-# no shared/, no node_modules at runtime (esbuild bundles builtins-only).
+# no node_modules at runtime. The two shared/ modules it imports are COPYed in
+# and bundled by esbuild; nothing else from shared/ is present.
 # ============================================================================
 FROM base AS broker
 WORKDIR /app
@@ -112,6 +113,7 @@ WORKDIR /app
 COPY vox_eval_agentd/auth-session-broker.ts /app/
 COPY vox_eval_agentd/aeval-output.ts /app/
 COPY shared/credentials.ts /shared/credentials.ts
+COPY shared/mint-timeout.ts /shared/mint-timeout.ts
 COPY vox_eval_agentd/package.json /app/
 
 # npm install only to obtain esbuild (a devDep). auth-session-broker.ts imports only

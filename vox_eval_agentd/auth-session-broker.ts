@@ -33,6 +33,7 @@ import { fileURLToPath } from 'url';
 import { StringDecoder } from 'string_decoder';
 import { summarizeAevalFailure, hasAevalDiagnosis, hasLoguruDiagnosis, reduceUrlsSafely, createBoundedCapture, LINE_TERMINATORS } from './aeval-output';
 import { credentialForms, redactValues } from '../shared/credentials';
+import { mintTimeoutSeconds } from '../shared/mint-timeout';
 export { credentialForms } from '../shared/credentials';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -347,7 +348,7 @@ export async function heartbeat(): Promise<void> {
 // Entrypoint (skipped under vitest import)
 if (process.argv[1] && process.argv[1].endsWith('auth-session-broker.js')) {
   const port = parseInt(process.env.BROKER_PORT || '8200', 10);
-  const timeoutMs = parseInt(process.env.WEB_SESSION_MINT_TIMEOUT_SECONDS || '180', 10) * 1000;
+  const timeoutMs = mintTimeoutSeconds() * 1000;
   const server = createBrokerServer({ mint: (r) => mintWithAeval(r, timeoutMs), getSecret: () => state?.mintSecret });
   (async () => {
     try {

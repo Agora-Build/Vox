@@ -301,9 +301,14 @@ export function createBoundedCapture(limit = CAPTURE_LIMIT) {
             partial = '';
             dropping = true;
             truncated = true;
-          } else {
-            evictOldest();
           }
+          // Deliberately NOT evicting here. A huge single line arrives across
+          // many chunks, each landing in this branch while still under the cap;
+          // evicting would empty `complete` to make room for a line that is
+          // then discarded anyway — destroying the diagnosis for a blob that
+          // never enters the buffer, which is the exact outcome the
+          // overlong-line drop below exists to prevent. `partial` is capped
+          // independently, so retained text stays bounded by 3*limit.
           return;
         }
         const lineEnd = m.index + m[0].length;

@@ -49,30 +49,8 @@ import { storage } from "./storage";
 import type { Broker } from "@shared/schema";
 import { credentialForms, redactValues } from "@shared/credentials";
 
-/**
- * How long a mint may take, in seconds.
- *
- * Validated, and defined HERE rather than in auth-session.ts because that
- * module imports this one — so this is the side both can share. A NaN from a
- * non-numeric env value would reach AbortSignal.timeout, which takes
- * [EnforceRange] unsigned long long and throws a TypeError synchronously,
- * taking the whole mint path down; zero or negative would abort instantly.
- * auth-session.ts's staleMintThresholdSeconds() is derived from this, so a
- * second unvalidated copy there would silently disagree.
- */
-export function mintTimeoutSeconds(): number {
-  const configured = Number.parseInt(process.env.WEB_SESSION_MINT_TIMEOUT_SECONDS || "180", 10);
-  // NaN check (parseInt never returns Infinity) plus BOTH bounds. An unclamped
-  // upper end still overflows [EnforceRange] unsigned long long — 1e20 passes a
-  // "finite and positive" test and throws at AbortSignal.timeout, failing every
-  // mint with an opaque error — so the doc above would be claiming a guarantee
-  // the code did not provide.
-  if (!Number.isFinite(configured) || configured <= 0) return 180;
-  return Math.min(configured, MAX_MINT_TIMEOUT_SECONDS);
-}
-
-/** One hour. Past this a mint is a hung browser, not a slow login. */
-const MAX_MINT_TIMEOUT_SECONDS = 3600;
+export { mintTimeoutSeconds } from "@shared/mint-timeout";
+import { mintTimeoutSeconds } from "@shared/mint-timeout";
 
 const mintSecretCache = new Map<number, string>();
 export function cacheBrokerMintSecret(id: number, secret: string): void { mintSecretCache.set(id, secret); }
@@ -112,8 +90,7 @@ export async function mintViaBroker(
   // from "mintTimeoutSeconds() + 15s, see mintViaBroker's AbortSignal" — that
   // signal did not exist, so a hung broker left this promise pending forever,
   // the row stuck in 'minting' until stale-reclaim, and ensureSession's catch
-  // never fired. The env read is duplicated rather than imported because
-  // auth-session.ts imports this module; keep the two in step.
+  // never fired.
   const abortMs = (mintTimeoutSeconds() + 15) * 1000;
   const res = await fetchImpl(`${target.url}/mint`, {
     method: "POST",
@@ -130,10 +107,14 @@ export async function mintViaBroker(
     // it anyway, since it is third-party text on a durable field.
     let detail = "";
     try {
-      const body = (await res.json()) as { error?: unknown };
+      // text() + slice before parsing, so a failing broker cannot make Core
+      // buffer an unbounded body. 8 KiB is far more than a summarized error
+      // needs and still leaves the JSON parseable in every realistic case.
+      const raw = (await res.text()).slice(0, 8192);
+      const body = JSON.parse(raw) as { error?: unknown };
       if (typeof body?.error === "string") detail = body.error;
     } catch {
-      /* non-JSON body — the status alone is all we can report */
+      /* non-JSON or truncated body — the status alone is all we can report */
     }
     // Re-redact with OUR copies rather than trusting the broker's scrub. Core
     // holds the plaintext pair and is the one writing the durable field, so a

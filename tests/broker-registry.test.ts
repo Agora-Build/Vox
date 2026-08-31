@@ -81,11 +81,14 @@ describe("validateRegisterPayload", () => {
 describe("mintViaBroker error propagation", () => {
   const target = { url: "http://broker:8200", mintSecret: "s3" } as Parameters<typeof mintViaBroker>[0];
   const req = { platformId: "agora", email: "a@b.co", password: "pw" };
+  // mintViaBroker reads text() on the error path (bounded before parsing) and
+  // json() on success.
   const respond = (status: number, body: unknown, json = true) =>
     (async () =>
       ({
         ok: status >= 200 && status < 300,
         status,
+        text: async () => (json ? JSON.stringify(body) : "<html>not json</html>"),
         json: async () => {
           if (!json) throw new SyntaxError("not json");
           return body;
