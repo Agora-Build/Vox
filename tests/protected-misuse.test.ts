@@ -76,7 +76,10 @@ describe("isAuthFieldName (shared client/server heuristic)", () => {
     // agent-exposed one — so this direction leaks, while a false positive only
     // breaks availability. PASSWORD2/EMAIL2 are ordinary second-test-account
     // names, and MYPASSWORD ends in a credential word.
-    for (const n of ["PASSWORD2", "EMAIL2", "ACCOUNT1", "MYPASSWORD", "AGORAEMAIL", "USERNAME2"]) {
+    for (const n of [
+      "PASSWORD2", "EMAIL2", "ACCOUNT1", "MYPASSWORD", "AGORAEMAIL", "USERNAME2",
+      "SUPPORT_EMAILS", "LOGIN_PASSWORDS",         // plurals
+    ]) {
       expect(isAuthFieldName(n)).toBe(true);
     }
   });
@@ -90,6 +93,7 @@ describe("isAuthFieldName (shared client/server heuristic)", () => {
       "USER_AGENT", "USER_ID", "CURRENT_USER_ID", // bare USER
       "END_USER_TOKEN", "SUPERUSER_KEY",
       "EMAILER_API_KEY",                          // EMAIL followed by a letter
+      "EMAILADDRESS", "ACCOUNTNAME",              // trailing word: deliberate residual
     ]) {
       expect(isAuthFieldName(n)).toBe(false);
     }

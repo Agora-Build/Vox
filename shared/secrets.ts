@@ -46,15 +46,21 @@ export const SECRET_PLACEHOLDER_REGEX = /\$\{secrets\.([A-Z][A-Z0-9_]*)\}/g;
  *    USER_AGENT, USER_ID, SUPERUSER_KEY. Both tokens are therefore absent;
  *    USERNAME is matched directly, which is all either was reaching for.
  *  - A false NEGATIVE is worse HERE: it defaults a credential to the runtime
- *    class, which IS the agent-exposed one. So the trailing `\d*` is not
- *    cosmetic — PASSWORD2 and EMAIL2 are ordinary second-test-account names
- *    that a start-and-end boundary would silently ship to a marketplace agent.
+ *    class, which IS the agent-exposed one, and it fails SILENTLY — if both
+ *    halves miss, evaluateSessionRequirement returns "none" and takes the
+ *    runtime path with no misconfiguration error to notice. So the trailing
+ *    `\d*S?` is not cosmetic: PASSWORD2 and EMAIL2 are ordinary
+ *    second-test-account names, and SUPPORT_EMAILS / LOGIN_PASSWORDS are
+ *    ordinary plurals, all of which a bare boundary would ship to an agent.
+ *    Residual: a trailing WORD still misses (EMAILADDRESS, ACCOUNTNAME).
+ *    Admitting those means going back to substrings, which re-admits
+ *    USER_AGENT and EMAILER_API_KEY — so they stay out deliberately.
  *
  * Leaving off a leading `(?:^|_)` is deliberate for the same reason: MYPASSWORD
  * and AGORAEMAIL end in a credential word and must match, while EMAILER_API_KEY
  * (EMAIL followed by a letter) and USER_AGENT still do not.
  */
-export const AUTH_FIELD_NAME_PATTERN = /(?:USERNAME|PASSWORD|ACCOUNT|EMAIL)\d*(?:_|$)/i;
+export const AUTH_FIELD_NAME_PATTERN = /(?:USERNAME|PASSWORD|ACCOUNT|EMAIL)\d*S?(?:_|$)/i;
 
 /** True when a secret name reads like a login credential. See the pattern above. */
 export function isAuthFieldName(name: string): boolean {
