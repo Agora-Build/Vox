@@ -29,7 +29,10 @@ describe("findBrokeredMisuse", () => {
 
 describe("defaultBrokerTypeForName", () => {
   it("defaults auth fields to auth-session", () => {
-    for (const n of ["USERNAME", "login_password", "accountId", "user_email"])
+    // Valid secret names are UPPER_SNAKE (SECRET_NAME_PATTERN), which is what
+    // the token-boundary match is built for. "accountId" was in this list
+    // before but is not a name the API would ever accept.
+    for (const n of ["USERNAME", "LOGIN_PASSWORD", "ACCOUNT_ID", "USER_EMAIL"])
       expect(defaultBrokerTypeForName(n)).toBe("auth-session");
   });
   it("returns null for non-auth names", () => {
@@ -57,19 +60,29 @@ describe("defaultBrokerTypeForName", () => {
 describe("isAuthFieldName (shared client/server heuristic)", () => {
   // The console and the API both pre-select the brokerType toggle from this
   // one predicate. A second copy is what drifted; these cases pin the union.
-  it("matches every name either side used to match", () => {
-    for (const n of ["USERNAME", "PASSWORD", "ACCOUNT", "EMAIL", "USER"])
+  it("matches the login fields both sides agreed on", () => {
+    for (const n of ["USERNAME", "PASSWORD", "ACCOUNT", "EMAIL"])
       expect(isAuthFieldName(n)).toBe(true);
+    // Bare USER is deliberately NOT here: it only ever existed to reach
+    // USERNAME, which is matched directly, and it would drag in USER_AGENT.
+    expect(isAuthFieldName("USER")).toBe(false);
   });
 
-  it("does NOT match a bare NAME", () => {
-    // The console's old list carried bare NAME only to reach USERNAME, which is
-    // matched directly. Keeping it would mark APP_NAME/CHANNEL_NAME as login
-    // credentials, making Core withhold them from the agent and breaking runs
-    // that work today — a false positive is more damaging than a false negative.
-    for (const n of ["APP_NAME", "CHANNEL_NAME", "AGENT_NAME"])
+  it("matches on token boundaries, not substrings", () => {
+    // Both old copies were wrong in opposite directions because they matched
+    // substrings. A false positive is the damaging direction: Core withholds
+    // the secret from the agent and a working run breaks.
+    for (const n of [
+      "APP_NAME", "CHANNEL_NAME", "AGENT_NAME",   // console's bare NAME
+      "USER_AGENT", "USER_ID", "CURRENT_USER_ID", // bare USER
+      "END_USER_TOKEN", "SUPERUSER_KEY",
+    ]) {
       expect(isAuthFieldName(n)).toBe(false);
-    expect(isAuthFieldName("USERNAME")).toBe(true);
+    }
+    // ...while the names those tokens were reaching for still match directly.
+    for (const n of ["USERNAME", "VAPI_USERNAME", "MY_ACCOUNT", "LOGIN_EMAIL"]) {
+      expect(isAuthFieldName(n)).toBe(true);
+    }
   });
 });
 

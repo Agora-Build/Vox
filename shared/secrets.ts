@@ -30,10 +30,18 @@ export const SECRET_PLACEHOLDER_REGEX = /\$\{secrets\.([A-Z][A-Z0-9_]*)\}/g;
  * This is only a DEFAULT; both the console dropdown and the API's explicit
  * `brokerType` override it. It is deliberately a small, boring list — a false
  * positive marks a runtime secret Core-only and withholds it from the agent,
- * which breaks a working run. That is why bare `NAME` is absent: it was only
- * ever there to reach USERNAME, which is matched directly.
+ * which breaks a working run.
+ *
+ * Matched on UNDERSCORE-DELIMITED TOKENS, not as substrings. Secret names are
+ * validated as UPPER_SNAKE (SECRET_NAME_PATTERN above), so a token boundary is
+ * exactly the right unit and there is no camelCase blind spot. Substring
+ * matching is what made the two old copies wrong in opposite directions: the
+ * console's bare `NAME` classified APP_NAME / CHANNEL_NAME as logins, and bare
+ * `USER` would classify USER_AGENT, USER_ID and SUPERUSER_KEY the same way.
+ * Neither token appears below — USERNAME is matched directly, which is all
+ * either was ever reaching for.
  */
-export const AUTH_FIELD_NAME_PATTERN = /USERNAME|PASSWORD|ACCOUNT|EMAIL|USER/i;
+export const AUTH_FIELD_NAME_PATTERN = /(?:^|_)(?:USERNAME|PASSWORD|ACCOUNT|EMAIL)(?:_|$)/i;
 
 /** True when a secret name reads like a login credential. See the pattern above. */
 export function isAuthFieldName(name: string): boolean {
