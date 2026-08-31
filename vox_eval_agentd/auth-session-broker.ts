@@ -15,7 +15,8 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { summarizeAevalFailure } from './aeval-output';
+import { StringDecoder } from 'string_decoder';
+import { summarizeAevalFailure, hasAevalDiagnosis } from './aeval-output';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const AEVAL_DATA_PATH = path.resolve(__dirname, 'aeval-data');
@@ -79,6 +80,29 @@ export function credentialForms(values: string[]): string[] {
   );
 }
 
+/** Max characters retained per captured stream. See appendBounded. */
+export const CAPTURE_LIMIT = 64 * 1024;
+
+/**
+ * Append `chunk` to `buf`, retaining at most CAPTURE_LIMIT characters.
+ *
+ * /mint is a long-running authenticated endpoint and aeval drives a browser,
+ * so an unbounded capture is an OOM waiting for a stuck or noisy run. Keeps the
+ * TAIL rather than the head: that is where aeval's diagnosis lives, and
+ * summarizeAevalFailure reads the LAST error lines anyway.
+ *
+ * Trims forward to the next newline when it cuts, so the retained text never
+ * begins mid-line. A partial line could otherwise strand a fragment of a
+ * credential that no longer matches its redaction needle.
+ */
+export function appendBounded(buf: string, chunk: string, limit = CAPTURE_LIMIT): string {
+  const next = buf + chunk;
+  if (next.length <= limit) return next;
+  const cut = next.length - limit;
+  const nl = next.indexOf('\n', cut);
+  return next.slice(nl === -1 ? cut : nl + 1);
+}
+
 /** Real mint: one-step aeval scenario running setup:account → save_storage_state. */
 export async function mintWithAeval(req: MintRequest, timeoutMs: number): Promise<unknown> {
   const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vox-mint-'));
@@ -118,13 +142,27 @@ export async function mintWithAeval(req: MintRequest, timeoutMs: number): Promis
       // winning a stderr tail), but that is a property of a version and a TTY,
       // not a guarantee: if a future aeval routes loguru to stdout, discarding
       // stdout would silently put us back to an uninformative error — the exact
-      // failure this change exists to remove. Buffering both costs nothing.
-      // Either stream may echo step params, which is why every use below goes
-      // through summarizeAevalFailure(forms) and then scrubCredentials(forms).
+      // failure this change exists to remove. stdout is only ever CONSULTED
+      // when stderr carried no diagnosis (see hasAevalDiagnosis below), so in
+      // the normal case it never reaches the reported text.
+      //
+      // A StringDecoder per stream, not d.toString(): a UTF-8 sequence split
+      // across two pipe reads decodes to U+FFFD independently, and a mangled
+      // non-ASCII password no longer matches its redaction needle — a scrub
+      // bypass. The decoder holds the partial sequence across chunks.
+      //
+      // Each stream is capped: /mint is a long-running authenticated endpoint,
+      // and aeval + a browser can be arbitrarily chatty, so an uncapped buffer
+      // is an OOM waiting for a stuck run. Keep the TAIL, which is where the
+      // diagnosis lives and what summarizeAevalFailure reads (it takes the LAST
+      // errors), and cut on a line boundary so a partial line can't strand a
+      // credential fragment the scrub would miss.
+      const outDec = new StringDecoder('utf8');
+      const errDec = new StringDecoder('utf8');
       let stdout = '';
       let stderr = '';
-      proc.stdout!.on('data', (d) => { stdout += d.toString(); });
-      proc.stderr!.on('data', (d) => { stderr += d.toString(); });
+      proc.stdout!.on('data', (d) => { stdout = appendBounded(stdout, outDec.write(d)); });
+      proc.stderr!.on('data', (d) => { stderr = appendBounded(stderr, errDec.write(d)); });
       let settled = false;
       const finish = (fn: () => void) => { if (!settled) { settled = true; clearTimeout(timer); fn(); } };
       const killTree = (signal: NodeJS.Signals) => {
@@ -149,10 +187,20 @@ export async function mintWithAeval(req: MintRequest, timeoutMs: number): Promis
           // redaction has no minimum length (a <4-char password would slip
           // the summarizer's floor).
           const forms = credentialForms([req.email, req.password]);
+          // Flush each decoder's held bytes so a trailing multi-byte character
+          // isn't dropped from the text we are about to scrub.
+          stdout = appendBounded(stdout, outDec.end());
+          stderr = appendBounded(stderr, errDec.end());
+          // stdout is consulted ONLY when stderr carried no diagnosis — i.e.
+          // exactly the "a future aeval moved loguru to stdout" case. Normally
+          // stdout contributes nothing to a string that gets logged, returned
+          // in the 502 body, and persisted by Core as a user-visible job error,
+          // which keeps the redaction surface down to the stream we understand.
+          const diagnosisSource = hasAevalDiagnosis(stderr) ? '' : stdout;
           // A silent aeval exit leaves nothing to summarize; say so in the
           // broker's own terms instead of the helper's generic sentinel.
-          const summary = (stdout + stderr).trim()
-            ? scrubCredentials(summarizeAevalFailure(stdout, stderr, forms), forms)
+          const summary = (diagnosisSource + stderr).trim()
+            ? scrubCredentials(summarizeAevalFailure(diagnosisSource, stderr, forms), forms)
             : 'login failed with no output';
           reject(new Error(`aeval exited ${code}: ${summary}`));
         }

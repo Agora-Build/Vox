@@ -1,8 +1,8 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import type { AddressInfo } from "net";
 import type { Server } from "http";
-import { createBrokerServer, scrubCredentials, credentialForms, secretMatches, heartbeat, type MintRequest } from "../vox_eval_agentd/auth-session-broker";
-import { summarizeAevalFailure } from "../vox_eval_agentd/aeval-output";
+import { createBrokerServer, scrubCredentials, credentialForms, appendBounded, secretMatches, heartbeat, type MintRequest } from "../vox_eval_agentd/auth-session-broker";
+import { summarizeAevalFailure, hasAevalDiagnosis } from "../vox_eval_agentd/aeval-output";
 
 describe("secretMatches (constant-time bearer check)", () => {
   it("true only on an exact match", () => {
@@ -90,6 +90,44 @@ describe("mint failure summary (what the broker reports)", () => {
     expect(scrubbed).not.toContain("-2026!");
     expect(scrubbed).not.toContain(password);
     expect(scrubbed).toBe("login rejected for [redacted] with password [redacted]");
+  });
+
+  it("consults stdout ONLY when stderr carried no diagnosis", () => {
+    // Normal case: stderr has the ERROR lines, so stdout — which may echo step
+    // params in encodings the scrub does not model — stays out of the message.
+    const stderrWithDiagnosis = "2026-08-30 17:49:50.860 | ERROR | Step 1 failed: platform.setup";
+    expect(hasAevalDiagnosis(stderrWithDiagnosis)).toBe(true);
+    expect(hasAevalDiagnosis("2026-08-30 17:49:51.109 | INFO | Artifacts saved to: out/x")).toBe(false);
+    expect(hasAevalDiagnosis("")).toBe(false);
+
+    // Hedge case: loguru routed to stdout. stderr yields nothing, so stdout is
+    // used and the real diagnosis still surfaces.
+    const summary = summarizeAevalFailure(
+      "2026-08-30 17:49:50.860 | ERROR | Step 1 failed: platform.setup - Timeout",
+      "",
+      [],
+    );
+    expect(summary).toContain("Step 1 failed: platform.setup");
+  });
+
+  it("appendBounded keeps the tail, cuts on a line boundary, and never exceeds the limit", () => {
+    // Under the limit: untouched.
+    expect(appendBounded("abc", "def", 100)).toBe("abcdef");
+
+    // Over the limit: keeps the END (where aeval's diagnosis is), not the start.
+    const lines = ["line-one", "line-two", "line-three", "ERROR | the real cause"].join("\n");
+    const bounded = appendBounded("", lines, 30);
+    expect(bounded.length).toBeLessThanOrEqual(30);
+    expect(bounded).toContain("ERROR | the real cause");
+    expect(bounded).not.toContain("line-one");
+
+    // Cuts forward to a newline, so the retained text never starts mid-line —
+    // a partial line could strand an unmatchable credential fragment.
+    expect(bounded.startsWith("line-") || bounded.startsWith("ERROR")).toBe(true);
+
+    // A single line longer than the limit still gets bounded (no newline to find).
+    const huge = "x".repeat(500);
+    expect(appendBounded("", huge, 50).length).toBe(50);
   });
 
   it("credentialForms derives the escaped form from the same stringify the scenario uses", () => {

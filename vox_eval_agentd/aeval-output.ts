@@ -21,6 +21,19 @@
  *  2. Otherwise the last few non-noise lines, so we surface a traceback tail
  *     rather than the packaging banner.
  */
+/** A loguru ERROR/CRITICAL line — aeval's own diagnosis of what went wrong. */
+const DIAGNOSIS_LINE = /\|\s*(ERROR|CRITICAL)\s*\|/;
+
+/**
+ * Whether a stream carries aeval's own diagnosis. Exported so callers can
+ * decide WHICH stream to summarize without restating the regex — the broker
+ * uses it to consult stdout only when stderr yielded nothing, keeping stdout
+ * out of the reported text in the normal case.
+ */
+export function hasAevalDiagnosis(text: string): boolean {
+  return DIAGNOSIS_LINE.test(text);
+}
+
 export function summarizeAevalFailure(stdout: string, stderr: string, redact: string[] = []): string {
   const NOISE = /^\s*(\[PYI-\d+[^\]]*\]|Traceback \(most recent call last\):)/;
   const lines = `${stdout}\n${stderr}`
@@ -52,7 +65,7 @@ export function summarizeAevalFailure(stdout: string, stderr: string, redact: st
   const scrub = (text: string) =>
     needles.reduce((acc, value) => acc.split(value).join('[redacted]'), text);
 
-  const errors = lines.filter((l) => /\|\s*(ERROR|CRITICAL)\s*\|/.test(l)).map(strip);
+  const errors = lines.filter((l) => DIAGNOSIS_LINE.test(l)).map(strip);
   if (errors.length > 0) {
     // Take the LAST errors, not the first: in a long run an early recoverable
     // ERROR would otherwise bury the fatal one — the same "wrong line wins"
