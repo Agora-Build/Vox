@@ -881,18 +881,25 @@ class VoxEvalAgentDaemon {
           // didn't respond exits 0 and IS reported, with NA latencies + response
           // rate 0.) We deliberately don't salvage partial metrics here: a failed
           // run's numbers are statistically unreliable and would pollute metrics.
-          // On the timeout path read completeText, not text: the child is
-          // still mid-write, and a half-written line can hold a fragment of a
-          // secret that matches no whole needle. Same reasoning as the broker.
-          const timeoutDetail = summarizeAevalFailure(
-            reduceUrlsSafely(outCap.completeText, this.activeSecretValues),
-            reduceUrlsSafely(errCap.completeText, this.activeSecretValues),
-            this.activeSecretValues,
-          );
+          // Say what aeval had reached before it hung — which step, which
+          // selector — instead of only the deadline. Computed INSIDE the branch:
+          // summarizing is a full pass over both buffers per needle, and the
+          // non-timeout branch below does its own. completeText, not text: the
+          // child is still mid-write, and a half-written line can hold a
+          // fragment of a secret that matches no whole needle.
+          const timeoutReason = () => {
+            const out = outCap.completeText;
+            const err = errCap.completeText;
+            if (!out.trim() && !err.trim()) return `aeval timed out after ${AEVAL_RUN_TIMEOUT_MS}ms`;
+            const detail = summarizeAevalFailure(
+              reduceUrlsSafely(out, this.activeSecretValues),
+              reduceUrlsSafely(err, this.activeSecretValues),
+              this.activeSecretValues,
+            );
+            return `aeval timed out after ${AEVAL_RUN_TIMEOUT_MS}ms: ${detail}`;
+          };
           const reason = timedOut
-            // Say what aeval had reached before it hung — which step, which
-            // selector — instead of only the deadline.
-            ? `aeval timed out after ${AEVAL_RUN_TIMEOUT_MS}ms${(outCap.completeText + errCap.completeText).trim() ? `: ${timeoutDetail}` : ''}`
+            ? timeoutReason()
             // Reduce URLs before summarizing, matching the broker: an aeval or
             // Playwright error can echo a URL whose query/path carries material
             // no needle models (?access_token=, an OAuth ?code=, a magic-link
@@ -916,7 +923,17 @@ class VoxEvalAgentDaemon {
         // exit-code-0 path, which contradicts the no-partial-metrics policy
         // above. metrics.json is unaffected (it is read from disk), so only the
         // fallback is refused.
-        const metricsOnDisk = fs.existsSync(path.join(outputDir, 'metrics.json'));
+        // Every DISK source parseAevalResults accepts, not just the first:
+        // metrics.json, analysis/metrics.json (priority 1) and report.json
+        // (priority 2) are all read from files and so are unaffected by a
+        // truncated console capture. Checking only the first would fail a
+        // perfectly good run whose analysis output landed under analysis/.
+        const diskSources = [
+          path.join(outputDir, 'metrics.json'),
+          path.join(outputDir, 'analysis', 'metrics.json'),
+          path.join(outputDir, 'report.json'),
+        ];
+        const metricsOnDisk = diskSources.some((f) => fs.existsSync(f));
         if (!metricsOnDisk && (outCap.truncated || errCap.truncated)) {
           fail(new Error(
             'aeval produced no metrics.json and its console output exceeded the capture limit — ' +

@@ -216,8 +216,17 @@ function escapeForRegExp(v: string): string {
   return v.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-/** Max characters retained per captured stream. See createBoundedCapture. */
-export const CAPTURE_LIMIT = 64 * 1024;
+/**
+ * Max characters retained per captured stream.
+ *
+ * 1 MiB, not something tighter: this exists as an OOM bound, and a multi-minute
+ * voice eval emits well past 64 KiB on stdout. Too small a cap makes the
+ * daemon's early "Session directory:" line get evicted on ordinary runs — so
+ * resolveAevalOutputDir's primary path would be effectively dead in production
+ * rather than a rare fallback — and makes the truncation guard on the metrics
+ * fallback fire routinely instead of only on runaway output.
+ */
+export const CAPTURE_LIMIT = 1024 * 1024;
 
 /**
  * Bounded, line-aligned capture of one child stream.

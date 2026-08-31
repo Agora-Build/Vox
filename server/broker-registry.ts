@@ -107,9 +107,11 @@ export async function mintViaBroker(
     // it anyway, since it is third-party text on a durable field.
     let detail = "";
     try {
-      // text() + slice before parsing, so a failing broker cannot make Core
-      // buffer an unbounded body. 8 KiB is far more than a summarized error
-      // needs and still leaves the JSON parseable in every realistic case.
+      // Bounds what is RETAINED, not what is allocated: res.text() buffers the
+      // whole body first. The peer is an internal, authenticated sidecar and
+      // AbortSignal.timeout bounds the read, so that is an accepted limit — the
+      // cap is here to keep a large body out of the durable error, not to
+      // defend Core's heap. 8 KiB is far more than a summarized error needs.
       const raw = (await res.text()).slice(0, 8192);
       const body = JSON.parse(raw) as { error?: unknown };
       if (typeof body?.error === "string") detail = body.error;
