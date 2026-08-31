@@ -299,6 +299,32 @@ describe("mint failure summary (what the broker reports)", () => {
     expect(credentialForms(["a b"])).toEqual(["a b", "a%20b", "a+b"]);
   });
 
+  it("never throws on a lone surrogate — that would kill the sidecar", () => {
+    // encodeURIComponent throws URIError on an unpaired surrogate, and "\ud800"
+    // is legal JSON, so such a password reaches credentialForms from the request
+    // body. Both call sites are inside child-process handlers where the promise
+    // executor has already returned, so a throw is an UNCAUGHT exception that
+    // takes the broker down with every in-flight mint.
+    const lone = "pw\ud800end";
+    expect(() => credentialForms([lone])).not.toThrow();
+    expect(credentialForms([lone])).toContain(lone); // raw form still redacts
+    expect(() => describeMintFailure("", "boom", credentialForms([lone]))).not.toThrow();
+  });
+
+  it("redacts a percent-encoded credential in either hex casing", () => {
+    // encodeURIComponent emits uppercase, but a URL echoed back from a target
+    // site may use lowercase, and the needle must match the text as written.
+    const email = "a+b@agora.io";
+    const upper = encodeURIComponent(email);
+    const lower = upper.replace(/%[0-9A-F]{2}/g, (m) => m.toLowerCase());
+    expect(upper).not.toBe(lower); // guard: fixture must actually differ
+    for (const enc of [upper, lower]) {
+      const stderr = `2026-08-30 17:49:50.860 | ERROR | current URL: https://sso/?login_hint=${enc}`;
+      const summary = describeMintFailure("", stderr, credentialForms([email, "pw123456"]));
+      expect(summary).not.toContain(enc);
+    }
+  });
+
   it("keeps the credential out of the reported message", () => {
     const summary = summarizeAevalFailure(
       "",

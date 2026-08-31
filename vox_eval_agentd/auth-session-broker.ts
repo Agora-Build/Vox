@@ -74,6 +74,33 @@ export function scrubCredentials(message: string, values: string[]): string {
  * redact. The daemon solves this with a parallel `yamlEscape` list
  * (vox-agentd.ts `activeSecretValues`).
  */
+/**
+ * Percent-encoded spellings of `v`, best-effort.
+ *
+ * encodeURIComponent throws URIError on an unpaired surrogate, and "\ud800" is
+ * legal JSON — so a credential containing one reaches here from the request
+ * body. Both call sites are inside child-process handlers (the 'close' listener
+ * and the timeout callback) where the promise executor has already returned, so
+ * a throw is NOT converted into a rejection: it surfaces as an uncaught
+ * exception and takes the whole sidecar down, killing every in-flight mint.
+ * Returning [] on failure keeps the raw and JSON forms, which still apply.
+ *
+ * Both hex casings are emitted: encodeURIComponent produces uppercase, but a
+ * URL echoed back from a target site may use lowercase, and the needle has to
+ * match the text as the site wrote it.
+ */
+function urlForms(v: string): string[] {
+  let enc: string;
+  try {
+    enc = encodeURIComponent(v);
+  } catch {
+    return []; // lone surrogate
+  }
+  const lower = enc.replace(/%[0-9A-F]{2}/g, (m) => m.toLowerCase());
+  // application/x-www-form-urlencoded differs only in spaces (+ vs %20).
+  return [enc, enc.replace(/%20/g, '+'), lower, lower.replace(/%20/gi, '+')];
+}
+
 export function credentialForms(values: string[]): string[] {
   return Array.from(
     new Set(
@@ -83,15 +110,11 @@ export function credentialForms(values: string[]): string[] {
           v,
           // YAML/JSON scalar, as the scenario writes it.
           JSON.stringify(v).slice(1, -1),
-          // Percent-encoded, as an SSO redirect carries it. The whole point of
-          // this PR is to report aeval's "current URL: <sso login page>" line,
+          // Percent-encoded, as an SSO redirect carries it. Reporting aeval's
+          // "current URL: <sso login page>" line is the point of this module,
           // and those URLs routinely carry the account in a query param
           // (login_hint=a%40b.com), so the raw form would never match.
-          encodeURIComponent(v),
-          // application/x-www-form-urlencoded differs from encodeURIComponent
-          // only in spaces (+ vs %20) — cheap to cover, and passwords have
-          // spaces.
-          encodeURIComponent(v).replace(/%20/g, '+'),
+          ...urlForms(v),
         ]),
     ),
   );
