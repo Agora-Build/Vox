@@ -87,6 +87,21 @@ export async function mintViaBroker(
     headers: { "content-type": "application/json", authorization: `Bearer ${target.mintSecret}` },
     body: JSON.stringify(req),
   });
-  if (!res.ok) throw new Error(`broker mint failed: ${res.status}`);
+  if (!res.ok) {
+    // Fold the broker's own diagnosis into the message. Without this the whole
+    // selection/scrub/URL-reduction pipeline in auth-session-broker.ts only
+    // ever reaches the sidecar's container log, and Core — plus everything
+    // downstream of webSessions.lastError — still says only "502".
+    // The body is already summarized, scrubbed and URL-reduced broker-side; cap
+    // it anyway, since it is third-party text on a durable field.
+    let detail = "";
+    try {
+      const body = (await res.json()) as { error?: unknown };
+      if (typeof body?.error === "string") detail = body.error.slice(0, 500);
+    } catch {
+      /* non-JSON body — the status alone is all we can report */
+    }
+    throw new Error(`broker mint failed: ${res.status}${detail ? `: ${detail}` : ""}`);
+  }
   return res.json();
 }

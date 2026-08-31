@@ -381,6 +381,9 @@ describe("mint failure summary (what the broker reports)", () => {
     expect(reduceUrlsToHost("https://user:s3cret@sso.example.com/cb?code=X"))
       .toBe("https://sso.example.com/…");
     expect(reduceUrlsToHost("https://user:s3cret@sso.example.com")).toBe("https://sso.example.com/…");
+    // A second '@' — a percent-encoded one in the password — must not let the
+    // userinfo remainder survive into the host.
+    expect(reduceUrlsToHost("http://user:p%40ss@host/x")).toBe("http://host/…");
   });
 
   it("returns the no-output sentinel unscrubbed, so the timeout gate keeps working", () => {

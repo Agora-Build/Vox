@@ -17,9 +17,11 @@
  * that bar — it is admitted whenever it carries a diagnosis, because that is
  * the whole point. Playwright's errors quote page state, so a DOM snapshot or
  * an `<input value="...">` carrying a CSRF token or a hidden id_token can reach
- * the 502 body and Core's persisted job error. Those are modelled by no needle
- * and are not URLs. The exposure is to the job's own owner, which is why it is
- * accepted here rather than solved; see GitHub #138.
+ * the 502 body, Core's log, and webSessions.lastError. Those are modelled by no
+ * needle and are not URLs. Core serves that detail onward only to an
+ * owner-tier (private/team) agent — a marketplace agent gets the status alone —
+ * so the exposure stays with the job's owner. Accepted rather than solved; see
+ * GitHub #138.
  */
 import http from 'http';
 import { spawn } from 'child_process';
@@ -300,7 +302,7 @@ export function selectDiagnosisSource(stdout: string, stderr: string): string {
  */
 export function reduceUrlsToHost(text: string): string {
   return text.replace(
-    /(https?:\/\/)(?:[^\s"'<>/?#@]*@)?([^\s"'<>/?#]*)(?:[/?#][^\s"'<>]*)?/gi,
+    /(https?:\/\/)(?:[^\s"'<>/?#]*@)?([^\s"'<>/?#]*)(?:[/?#][^\s"'<>]*)?/gi,
     '$1$2/…',
   );
 }

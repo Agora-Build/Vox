@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { isKnownBrokerType, isInternalBrokerUrl, KNOWN_BROKER_TYPES, isBrokerFresh, cacheBrokerMintSecret, clearBrokerMintSecret, routeToBrokerWith, validateRegisterPayload } from "../server/broker-registry";
+import { isKnownBrokerType, isInternalBrokerUrl, KNOWN_BROKER_TYPES, isBrokerFresh, cacheBrokerMintSecret, clearBrokerMintSecret, routeToBrokerWith, validateRegisterPayload, mintViaBroker } from "../server/broker-registry";
 
 describe("isKnownBrokerType", () => {
   it("accepts auth-session", () => expect(isKnownBrokerType("auth-session")).toBe(true));
@@ -76,4 +76,39 @@ describe("validateRegisterPayload", () => {
     expect(validateRegisterPayload({ name: "b", brokerType: "auth-session", url: "http://x.example.com" }).ok).toBe(false));
   it("accepts internal auth-session", () =>
     expect(validateRegisterPayload({ name: "b", brokerType: "auth-session", url: "http://vox-auth-session-broker:8200" }).ok).toBe(true));
+});
+
+describe("mintViaBroker error propagation", () => {
+  const target = { url: "http://broker:8200", mintSecret: "s3" } as Parameters<typeof mintViaBroker>[0];
+  const req = { platformId: "agora", email: "a@b.co", password: "pw" };
+  const respond = (status: number, body: unknown, json = true) =>
+    (async () =>
+      ({
+        ok: status >= 200 && status < 300,
+        status,
+        json: async () => {
+          if (!json) throw new SyntaxError("not json");
+          return body;
+        },
+      })) as unknown as typeof fetch;
+
+  it("folds the broker's diagnosis into the thrown message", async () => {
+    // Without this the whole broker-side summarize/scrub pipeline reaches only
+    // the sidecar's own container log: Core, webSessions.lastError and the
+    // eval-agent 503 all said just "broker mint failed: 502".
+    await expect(
+      mintViaBroker(target, req, respond(502, { error: "aeval exited 1: Step 1 failed: platform.setup" })),
+    ).rejects.toThrow("Step 1 failed: platform.setup");
+  });
+
+  it("still reports the status when the body is not JSON", async () => {
+    await expect(mintViaBroker(target, req, respond(502, null, false))).rejects.toThrow("broker mint failed: 502");
+  });
+
+  it("caps third-party detail before it reaches a durable field", async () => {
+    const huge = "x".repeat(5000);
+    await expect(mintViaBroker(target, req, respond(502, { error: huge }))).rejects.toThrow(
+      /^broker mint failed: 502: x{500}$/,
+    );
+  });
 });
