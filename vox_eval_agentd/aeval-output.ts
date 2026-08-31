@@ -16,7 +16,7 @@
  * below — "dump: foo |\nERROR |x| y" satisfied the former and no line satisfied
  * the latter. Anchored per line with /m so the two agree by construction.
  */
-const DIAGNOSIS_LINE = /^[^\n]*\|[ \t]*(ERROR|CRITICAL)[ \t]*\|/m;
+const DIAGNOSIS_LINE = /^[^\r\n\u2028\u2029]*\|[ \t]*(ERROR|CRITICAL)[ \t]*\|/m;
 
 /**
  * Every JS LineTerminator, not just \n.

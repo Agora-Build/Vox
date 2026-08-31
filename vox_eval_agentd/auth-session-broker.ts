@@ -342,8 +342,14 @@ export async function mintWithAeval(req: MintRequest, timeoutMs: number): Promis
       const capturedFailure = (cleanExit: boolean): string => {
         outCap.push(outDec.end());
         errCap.push(errDec.end());
-        const out = outCap.completeText || (cleanExit ? outCap.text : '');
-        const err = errCap.completeText || (cleanExit ? errCap.text : '');
+        // On a clean exit the stream is finished, so an unterminated tail is a
+        // WHOLE line, not a half-written one — take .text. Only a signal-killed
+        // child needs the mid-write line dropped. (`completeText || .text` was
+        // wrong: it kept .text only when there were no complete lines at all,
+        // so a clean exit whose output lacked a trailing newline silently lost
+        // its last line — the one most likely to hold the diagnosis.)
+        const out = cleanExit ? outCap.text : outCap.completeText;
+        const err = cleanExit ? errCap.text : errCap.completeText;
         return describeMintFailure(out, err, credentialForms([req.email, req.password]));
       };
       const timer = setTimeout(() => {

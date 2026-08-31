@@ -116,10 +116,13 @@ COPY vox_eval_agentd/package.json /app/
 # npm install only to obtain esbuild (a devDep). auth-session-broker.ts imports only
 # Node builtins plus ./aeval-output (COPYed above, itself import-free), so the bundle
 # needs no node_modules at runtime — drop it after compile.
+# No --external for Node builtins: --platform=node already marks every builtin
+# external, which is why crypto/string_decoder resolve without being listed. A
+# partial enumeration reads as authoritative and invites someone to diagnose a
+# future missing builtin as a build break. @aws-sdk/client-s3 stays — it is NOT
+# a builtin, and the flag keeps a transitive import from pulling it in.
 RUN npm install \
     && npx esbuild auth-session-broker.ts --bundle --platform=node --format=esm --outfile=auth-session-broker.js \
-       --external:child_process --external:fs --external:os --external:path --external:url --external:http \
-       --external:string_decoder \
        --external:@aws-sdk/client-s3 \
     && rm -rf node_modules
 
