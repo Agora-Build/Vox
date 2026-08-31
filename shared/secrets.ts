@@ -32,44 +32,40 @@ export const SECRET_PLACEHOLDER_REGEX = /\$\{secrets\.([A-Z][A-Z0-9_]*)\}/g;
  * positive marks a runtime secret Core-only and withholds it from the agent,
  * which breaks a working run.
  *
- * Anchored at the END of a token rather than matched as a bare substring, with
- * an optional digit suffix. Secret names are validated UPPER_SNAKE
+ * Matched at the END of a token, never as a bare substring, and with a
+ * deliberately narrow USER arm. Secret names are validated UPPER_SNAKE
  * (SECRET_NAME_PATTERN above), so `_`/end is the right unit and there is no
  * camelCase blind spot.
  *
- * The two failure directions are NOT symmetric, and the anchoring is chosen for
- * that:
- *  - A false POSITIVE breaks availability — Core marks the secret login-class
- *    and withholds it from the agent, so a working run starts failing. Plain
- *    substring matching caused this in both old copies: the console's bare
- *    `NAME` swept up APP_NAME / CHANNEL_NAME, and a bare `USER` would sweep up
- *    USER_AGENT, USER_ID, SUPERUSER_KEY. Both tokens are therefore absent;
- *    USERNAME is matched directly, which is all either was reaching for.
- *  - A false NEGATIVE is worse HERE: it defaults a credential to the runtime
- *    class, which IS the agent-exposed one, and it fails SILENTLY — if both
- *    halves miss, evaluateSessionRequirement returns "none" and takes the
- *    runtime path with no misconfiguration error to notice. So the trailing
- *    `\d*S?` is not cosmetic: PASSWORD2 and EMAIL2 are ordinary
- *    second-test-account names, and SUPPORT_EMAILS / LOGIN_PASSWORDS are
- *    ordinary plurals, all of which a bare boundary would ship to an agent.
- *    Residual: a trailing WORD still misses (EMAILADDRESS, ACCOUNTNAME).
- *    Admitting those means going back to substrings, which re-admits
- *    USER_AGENT and EMAILER_API_KEY — so they stay out deliberately.
+ * The two failure directions are NOT symmetric, and both are worse than they
+ * first look:
  *
- * Leaving off a leading `(?:^|_)` is deliberate for the same reason: MYPASSWORD
- * and AGORAEMAIL end in a credential word and must match, while EMAILER_API_KEY
- * (EMAIL followed by a letter) still does not.
+ *  - A false POSITIVE does not merely withhold the secret from the agent. Two
+ *    brokered secrets that are not the workflow's platform.setup login pair are
+ *    caught by findBrokeredMisuse, and the run route rejects the ENTIRE
+ *    workflow. So DB_USER + DB_PASSWORD defaulting to brokered would leave a
+ *    user with a workflow that cannot run at all. That is why the USER arm
+ *    lists login-ish prefixes rather than accepting any `*_USER`:
+ *    DB_USER / SMTP_USER / POSTGRES_USER are far more common in a secrets store
+ *    than API_USER, and USER_AGENT / USER_ID / MAX_USERS must not match either.
+ *  - A false NEGATIVE defaults a credential to the runtime class, which IS the
+ *    agent-exposed one, and it fails SILENTLY: if both halves of a pair miss,
+ *    evaluateSessionRequirement returns "none" and takes the runtime path with
+ *    no misconfiguration error to notice.
  *
- * The USER family needs its own arm. A bare `USER` token would sweep up
- * USER_AGENT, USER_ID, CURRENT_USER_ID and SUPERUSER_KEY — ordinary runtime
- * values — so it is anchored to the END of the name: LOGIN_USER and API_USER
- * are identifiers paired with a password, while USER_AGENT is not. `USER_?NAME`
- * covers both spellings of the same field without letting bare NAME back in to
- * catch APP_NAME. Without this arm, LOGIN_USER + LOGIN_PASSWORD still split —
- * the exact bug this file exists to fix, one name-shape over.
+ * Hence: `\d*` for second-account names (PASSWORD2), a plural `S` only at the
+ * END (SUPPORT_EMAILS, LOGIN_PASSWORDS — but NOT ACCOUNTS_URL or MAX_USERS,
+ * where the plural is followed by more name), and `USER_?NAME` for both
+ * spellings of that field without letting bare NAME back in to catch APP_NAME.
+ *
+ * Known residual, and a NARROWING versus the old server-side substring regex:
+ * an unseparated trailing word (EMAILADDRESS, ACCOUNTNAME, PASSWORDHASH) used
+ * to match and no longer does. Rare under the UPPER_SNAKE convention, and
+ * admitting it means returning to substrings, which re-admits USER_AGENT and
+ * EMAILER_API_KEY.
  */
 export const AUTH_FIELD_NAME_PATTERN =
-  /(?:USER_?NAME|PASSWORD|ACCOUNT|EMAIL)\d*S?(?:_|$)|(?:^|_)USER\d*S?$/i;
+  /(?:USER_?NAME|PASSWORD|ACCOUNT|EMAIL)\d*(?:S$|_|$)|(?:^|_)(?:LOGIN|ACCOUNT|CONSOLE|WEB|PORTAL|SIGNIN)_USER\d*$|^USER\d*$/i;
 
 /** True when a secret name reads like a login credential. See the pattern above. */
 export function isAuthFieldName(name: string): boolean {

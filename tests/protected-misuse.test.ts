@@ -68,10 +68,11 @@ describe("isAuthFieldName (shared client/server heuristic)", () => {
   it("matches the login fields both sides agreed on", () => {
     for (const n of ["USERNAME", "PASSWORD", "ACCOUNT", "EMAIL"])
       expect(isAuthFieldName(n)).toBe(true);
-    // USER matches only at the END of a name — LOGIN_USER is an identifier
-    // paired with a password; USER_AGENT is not.
+    // USER needs a login-ish prefix and must end the name: LOGIN_USER is an
+    // identifier paired with a password, DB_USER and USER_AGENT are not.
     expect(isAuthFieldName("USER")).toBe(true);
     expect(isAuthFieldName("LOGIN_USER")).toBe(true);
+    expect(isAuthFieldName("DB_USER")).toBe(false);
     expect(isAuthFieldName("USER_AGENT")).toBe(false);
   });
 
@@ -98,6 +99,12 @@ describe("isAuthFieldName (shared client/server heuristic)", () => {
       "END_USER_TOKEN", "SUPERUSER_KEY",
       "EMAILER_API_KEY",                          // EMAIL followed by a letter
       "EMAILADDRESS", "ACCOUNTNAME",              // trailing word: deliberate residual
+      // Infra credentials. A false positive here is not "withheld from the
+      // agent" — findBrokeredMisuse rejects the WHOLE workflow, so accepting
+      // the console's pre-selection on DB_USER would make it unrunnable.
+      "DB_USER", "SMTP_USER", "POSTGRES_USER", "REDIS_USER",
+      // Plural followed by more name, rather than ending the name.
+      "MAX_USERS", "ACTIVE_USERS", "ACCOUNTS_URL", "EMAILS_SENT_COUNT",
     ]) {
       expect(isAuthFieldName(n)).toBe(false);
     }
@@ -106,7 +113,7 @@ describe("isAuthFieldName (shared client/server heuristic)", () => {
       "USERNAME", "VAPI_USERNAME", "MY_ACCOUNT", "LOGIN_EMAIL",
       // The USER family, anchored at the end so it pairs with a password
       // without dragging in USER_AGENT above.
-      "USER_NAME", "LOGIN_USER", "API_USER", "USER",
+      "USER_NAME", "LOGIN_USER", "CONSOLE_USER", "USER",
     ]) {
       expect(isAuthFieldName(n)).toBe(true);
     }
