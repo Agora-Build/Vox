@@ -49,6 +49,22 @@ import { storage } from "./storage";
 import type { Broker } from "@shared/schema";
 import { credentialForms, redactValues } from "@shared/credentials";
 
+/**
+ * How long a mint may take, in seconds.
+ *
+ * Validated, and defined HERE rather than in auth-session.ts because that
+ * module imports this one — so this is the side both can share. A NaN from a
+ * non-numeric env value would reach AbortSignal.timeout, which takes
+ * [EnforceRange] unsigned long long and throws a TypeError synchronously,
+ * taking the whole mint path down; zero or negative would abort instantly.
+ * auth-session.ts's staleMintThresholdSeconds() is derived from this, so a
+ * second unvalidated copy there would silently disagree.
+ */
+export function mintTimeoutSeconds(): number {
+  const configured = Number.parseInt(process.env.WEB_SESSION_MINT_TIMEOUT_SECONDS || "180", 10);
+  return Number.isFinite(configured) && configured > 0 ? configured : 180;
+}
+
 const mintSecretCache = new Map<number, string>();
 export function cacheBrokerMintSecret(id: number, secret: string): void { mintSecretCache.set(id, secret); }
 export function getCachedBrokerMintSecret(id: number): string | undefined { return mintSecretCache.get(id); }
@@ -89,14 +105,7 @@ export async function mintViaBroker(
   // the row stuck in 'minting' until stale-reclaim, and ensureSession's catch
   // never fired. The env read is duplicated rather than imported because
   // auth-session.ts imports this module; keep the two in step.
-  // Validate: AbortSignal.timeout takes [EnforceRange] unsigned long long, so a
-  // NaN from a non-numeric env value throws a TypeError synchronously and would
-  // take the whole mint path down — worse than the skewed
-  // staleMintThresholdSeconds() a malformed value used to cause. A zero or
-  // negative value would abort instantly, so both fall back to the default.
-  const configured = Number.parseInt(process.env.WEB_SESSION_MINT_TIMEOUT_SECONDS || "180", 10);
-  const seconds = Number.isFinite(configured) && configured > 0 ? configured : 180;
-  const abortMs = (seconds + 15) * 1000;
+  const abortMs = (mintTimeoutSeconds() + 15) * 1000;
   const res = await fetchImpl(`${target.url}/mint`, {
     method: "POST",
     headers: { "content-type": "application/json", authorization: `Bearer ${target.mintSecret}` },
@@ -113,7 +122,7 @@ export async function mintViaBroker(
     let detail = "";
     try {
       const body = (await res.json()) as { error?: unknown };
-      if (typeof body?.error === "string") detail = body.error.slice(0, 500);
+      if (typeof body?.error === "string") detail = body.error;
     } catch {
       /* non-JSON body — the status alone is all we can report */
     }
@@ -124,7 +133,10 @@ export async function mintViaBroker(
     // than the layer it backstops is weakest exactly when it is needed — the
     // broker failing to scrub is the case where an escaped or URL-encoded
     // spelling arrives.
-    detail = redactValues(detail, credentialForms([req.email, req.password]));
+    // Redact BEFORE truncating, the ordering this whole change argues for
+    // elsewhere: slicing first can leave a partial credential that matches no
+    // whole needle, and this string is persisted to web_sessions.last_error.
+    detail = redactValues(detail, credentialForms([req.email, req.password])).slice(0, 500);
     throw new Error(`broker mint failed: ${res.status}${detail ? `: ${detail}` : ""}`);
   }
   return res.json();

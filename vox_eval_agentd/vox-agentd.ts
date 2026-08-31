@@ -837,6 +837,12 @@ class VoxEvalAgentDaemon {
             // Best-effort: record the output dir so processJobs still uploads the
             // run's artifacts — the most useful evidence for diagnosing the hang.
             try {
+              // NOTE: aeval prints "Session directory: ..." EARLY, and the
+              // capture keeps the tail, so on a run exceeding the cap that line
+              // is evicted and resolveAevalOutputDir falls back to newest-by-name.
+              // That fallback is right for a single in-flight run, so this
+              // degrades rather than breaks — but it is a change from the
+              // previously unbounded buffer.
               const dir = this.resolveAevalOutputDir(scenarioConfig, outCap.text + errCap.text);
               if (dir && !this.jobOutputDirs.includes(dir)) this.jobOutputDirs.push(dir);
             } catch { /* best effort */ }

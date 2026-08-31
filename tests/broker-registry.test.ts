@@ -110,8 +110,7 @@ describe("mintViaBroker error propagation", () => {
     // webSessions.lastError, so a stale or buggy broker echoing a credential
     // must not become a durable leak here.
     await expect(
-      mintViaBroker({ url: "http://broker:8200", mintSecret: "s3" } as never,
-        { platformId: "agora", email: "a@b.co", password: "hunter2pw" },
+      mintViaBroker(target, { platformId: "agora", email: "a@b.co", password: "hunter2pw" },
         respond(502, { error: "login failed for a@b.co with hunter2pw" })),
     ).rejects.toThrow(/\[redacted\].*\[redacted\]/);
   });
@@ -136,5 +135,21 @@ describe("mintViaBroker error propagation", () => {
     await expect(mintViaBroker(target, req, respond(502, { error: huge }))).rejects.toThrow(
       /^broker mint failed: 502: x{500}$/,
     );
+  });
+
+  it("redacts BEFORE truncating, so a credential straddling the cap can't survive", async () => {
+    // Slicing first leaves a partial value that matches no whole needle, and
+    // this string is persisted to web_sessions.last_error. The credential is
+    // placed so that offset 500 falls inside it.
+    const password = "hunter2-and-a-long-tail-value";
+    const filler = "y".repeat(500 - Math.floor(password.length / 2));
+    const body = { error: `${filler}${password} trailing` };
+    let thrown = "";
+    await mintViaBroker(target, { platformId: "agora", email: "a@b.co", password },
+      respond(502, body)).catch((e: Error) => { thrown = e.message; });
+    expect(thrown).not.toContain(password);
+    // ...and no prefix of it survives either.
+    expect(thrown).not.toContain(password.slice(0, 12));
+    expect(thrown).toContain("[redacted]");
   });
 });

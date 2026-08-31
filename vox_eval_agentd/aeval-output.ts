@@ -1,4 +1,4 @@
-import { urlForms, redactValues } from '../shared/credentials';
+import { redactValues } from '../shared/credentials';
 export { urlForms, credentialForms, redactValues } from '../shared/credentials';
 
 /**
@@ -154,8 +154,10 @@ export function summarizeAevalFailure(
     // would replace the entire message with [redacted] separators.
     .filter((v) => v.length >= 1 && v.length >= minNeedleLength)
     .sort((a, b) => b.length - a.length); // longest first, so wholes beat fragments
-  const scrub = (text: string) =>
-    needles.reduce((acc, value) => acc.split(value).join('[redacted]'), text);
+  // redactValues, not a local reduce: it is the same logic (longest-first,
+  // empty dropped) and a second copy is the drift this module argues against.
+  // The floor is applied above, since it is specific to this caller.
+  const scrub = (text: string) => redactValues(text, needles);
 
   const errors = lines.filter((l) => DIAGNOSIS_LINE.test(l)).map(strip);
   if (errors.length > 0) {
