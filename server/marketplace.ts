@@ -50,7 +50,7 @@ export interface EvalMarketplace {
    * the leak-reaper. Idempotent; no-op if already terminal (review M4).
    */
   voidDispatch(settlementContext: unknown): Promise<void>;
-  setListing(tokenId: number, pricePerUnit: number | null, meta?: { ownerId: number; region: string }): Promise<void>;
+  setListing(tokenId: number, pricePerUnit: number | null, meta?: { ownerId: number; region: string | null }): Promise<void>;
 }
 
 let current: EvalMarketplace | null = null;

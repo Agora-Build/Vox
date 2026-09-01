@@ -2865,10 +2865,7 @@ export async function registerRoutes(
       });
 
       // Shared: register the marketplace listing (mirrors the PATCH path).
-      // siteId is always allocated by createEvalAgentTokenForLocation above; the
-      // guard is type-safety only (siteId is nullable at the schema level for
-      // non-public tiers introduced later).
-      if (marketplace && dispatchTier === "shared" && evalAgentToken.siteId) {
+      if (marketplace && dispatchTier === "shared") {
         await marketplace.setListing(evalAgentToken.id, pricePerUnit ?? null, { ownerId: user.id, region: evalAgentToken.siteId });
       }
 
@@ -2944,12 +2941,9 @@ export async function registerRoutes(
 
     // Money lives only in the plugin: set/clear the listing via the seam.
     if (marketplace) {
-      // siteId is nullable at the schema level for non-public tiers introduced
-      // later; today every existing token still carries the siteId it was
-      // created with, so this inner guard is type-safety only.
-      if (dispatchTier === "shared" && token.siteId) {
+      if (dispatchTier === "shared") {
         await marketplace.setListing(id, pricePerUnit ?? null, { ownerId: token.createdBy, region: token.siteId });
-      } else if (dispatchTier !== "shared") {
+      } else {
         await marketplace.setListing(id, null); // switching away from shared deactivates the listing
       }
     }
@@ -3016,10 +3010,7 @@ export async function registerRoutes(
         createdBy: user.id,
         isRevoked: false,
       });
-      // siteId is always allocated by createEvalAgentTokenForLocation above; the
-      // guard is type-safety only (siteId is nullable at the schema level for
-      // non-public tiers introduced later).
-      if (marketplace && dispatchTier === "shared" && evalAgentToken.siteId) {
+      if (marketplace && dispatchTier === "shared") {
         await marketplace.setListing(evalAgentToken.id, pricePerUnit ?? null, { ownerId: user.id, region: evalAgentToken.siteId });
       }
       res.json({
