@@ -1,4 +1,8 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { eq } from "drizzle-orm";
+import { db } from "../server/storage";
+import { evalAgents } from "../shared/schema";
+import { BASE_NA } from "./helpers/regions";
 
 const BASE_URL = process.env.TEST_BASE_URL || "http://localhost:5000";
 const ADMIN_EMAIL = process.env.TEST_ADMIN_EMAIL || "admin@vox.local";
@@ -115,5 +119,115 @@ describe("register/heartbeat location detection", () => {
     expect(mine.region).toBeNull();
     expect(mine).not.toHaveProperty("locationSource");
     expect(mine).not.toHaveProperty("observedIp");
+  });
+});
+
+const describeDb = process.env.DATABASE_URL ? describe : describe.skip;
+
+describeDb("run-targets: two-level tree fields (Task 12)", () => {
+  let cookie: string;
+  let workflowId: number;
+  let evalSetId: number;
+  let privateTokenId: number;
+  let sharedTokenId: number;
+
+  beforeAll(async () => {
+    cookie = await login();
+
+    const providers = await (await authFetch(cookie, `${BASE_URL}/api/providers`)).json();
+    const providerId = providers[0].id;
+    const wfRes = await authFetch(cookie, `${BASE_URL}/api/workflows`, {
+      method: "POST",
+      body: JSON.stringify({ name: `zt-rt-wf-${Date.now()}`, visibility: "public", providerId, config: {} }),
+    });
+    expect(wfRes.ok).toBe(true);
+    workflowId = (await wfRes.json()).id;
+    const es = await (await authFetch(cookie, `${BASE_URL}/api/eval-sets?includePublic=true`)).json();
+    evalSetId = es[0].id;
+
+    // A private token whose agent registers and lands Unverified (localhost →
+    // "unknown" trust, siteId null) — exercises the "mine" row shape.
+    const privRes = await authFetch(cookie, `${BASE_URL}/api/eval-agent-tokens`, {
+      method: "POST",
+      body: JSON.stringify({ name: `zt-rt-priv-${Date.now()}`, dispatchTier: "private" }),
+    });
+    expect(privRes.ok).toBe(true);
+    const privBody = await privRes.json();
+    privateTokenId = privBody.id;
+    const privRegRes = await fetch(`${BASE_URL}/api/eval-agent/register`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${privBody.token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ name: "zt-rt-priv-agent" }),
+    });
+    expect(privRegRes.ok).toBe(true);
+
+    // A shared agent that goes Unverified after listing — must never appear
+    // in the shared marketplace list (not dispatchable at all), even though
+    // its (stale) listing region is still non-null. A "shared" dispatchTier
+    // token can only be minted with a region already attached (the plugin's
+    // `listings.region` column is NOT NULL), so: mint public (gets a site),
+    // register (agent inherits the site), flip to shared via PATCH, then
+    // directly null the agent's detected siteId — simulating a live
+    // re-detection dropping it to Unverified without the listing following.
+    const sharedRes = await authFetch(cookie, `${BASE_URL}/api/eval-agent-tokens`, {
+      method: "POST",
+      body: JSON.stringify({ name: `zt-rt-shared-${Date.now()}`, regionLocationBaseId: BASE_NA, dispatchTier: "public" }),
+    });
+    expect(sharedRes.ok).toBe(true);
+    const sharedBody = await sharedRes.json();
+    sharedTokenId = sharedBody.id;
+    const sharedRegRes = await fetch(`${BASE_URL}/api/eval-agent/register`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${sharedBody.token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ name: "zt-rt-shared-agent" }),
+    });
+    expect(sharedRegRes.ok).toBe(true);
+    const patchRes = await authFetch(cookie, `${BASE_URL}/api/eval-agent-tokens/${sharedTokenId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ dispatchTier: "shared", pricePerUnit: 5 }),
+    });
+    expect(patchRes.ok).toBe(true);
+    await db.update(evalAgents).set({ siteId: null, locationTrust: "anonymized" }).where(eq(evalAgents.tokenId, sharedTokenId));
+  });
+
+  afterAll(async () => {
+    await authFetch(cookie, `${BASE_URL}/api/eval-agent-tokens/${privateTokenId}/revoke`, { method: "POST" });
+    await authFetch(cookie, `${BASE_URL}/api/eval-agent-tokens/${sharedTokenId}/revoke`, { method: "POST" });
+    await authFetch(cookie, `${BASE_URL}/api/workflows/${workflowId}`, { method: "DELETE" });
+  });
+
+  it("every agent row carries siteId/region/dispatchTier/locationTrust, with no locationSource/observedIp leak", async () => {
+    const res = await authFetch(cookie, `${BASE_URL}/api/workflows/${workflowId}/run-targets?evalSetId=${evalSetId}`);
+    expect(res.ok).toBe(true);
+    const body = await res.json();
+
+    const mine = body.agents.mine.find((a: { tokenId: number }) => a.tokenId === privateTokenId);
+    expect(mine).toBeDefined();
+    expect(mine).toHaveProperty("siteId");
+    expect(mine).toHaveProperty("region");
+    expect(mine).toHaveProperty("dispatchTier");
+    expect(mine).toHaveProperty("locationTrust");
+    expect(mine.dispatchTier).toBe("private");
+    expect(mine.siteId).toBeNull();
+    expect(mine.region).toBeNull();
+    expect(mine.locationTrust).toBe("unknown");
+
+    for (const row of [...body.agents.mine, ...body.agents.shared]) {
+      expect(row).toHaveProperty("siteId");
+      expect(row).toHaveProperty("region");
+      expect(row).toHaveProperty("dispatchTier");
+      expect(row).toHaveProperty("locationTrust");
+      expect(row).not.toHaveProperty("locationSource");
+      expect(row).not.toHaveProperty("observedIp");
+    }
+  });
+
+  it("shared agents with siteId null (Unverified) are filtered out server-side", async () => {
+    const res = await authFetch(cookie, `${BASE_URL}/api/workflows/${workflowId}/run-targets?evalSetId=${evalSetId}`);
+    expect(res.ok).toBe(true);
+    const body = await res.json();
+    expect(body.agents.shared.find((a: { tokenId: number }) => a.tokenId === sharedTokenId)).toBeUndefined();
+    // Also never smuggled through under "mine" (the token is admin-owned too).
+    expect(body.agents.mine.find((a: { tokenId: number }) => a.tokenId === sharedTokenId)).toBeUndefined();
   });
 });

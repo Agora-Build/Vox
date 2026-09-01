@@ -4461,10 +4461,22 @@ export async function registerRoutes(
       const region = req.query.region ? String(req.query.region) : null;
       const evalSetIdRaw = req.query.evalSetId ? Number(req.query.evalSetId) : null;
 
-      type Agent = { tokenId: number; name: string; siteId: string | null; dispatchTier: string; price: number | null };
+      type Agent = {
+        tokenId: number; name: string;
+        siteId: string | null; region: string | null; dispatchTier: string; locationTrust: string | null;
+        price: number | null;
+      };
 
       // My agents: own tokens, any tier, not revoked, region-filtered when given.
       const ownTokens = await storage.getEvalAgentTokensByUser(user.id);
+      // Detected location per token, sourced from the same agent rows the
+      // tier counts below already load — no extra DB round-trip. A token
+      // whose agent hasn't (re-)registered has no row here; siteId/region/
+      // locationTrust fall back to null, same as a freshly-minted Unverified
+      // agent (never location_source/observed_ip — those columns aren't
+      // selected by getEvalAgentsWithTokenTier at all).
+      const agentRows = await storage.getEvalAgentsWithTokenTier();
+      const agentByTokenId = new Map(agentRows.map((a) => [a.tokenId, a]));
       // Session trust, computed ONCE from the same detector the run route
       // enforces with. For a session-injected workflow, a dispatcher who is
       // neither the owner nor a workflow-org member cannot receive the minted
@@ -4478,7 +4490,19 @@ export async function registerRoutes(
         (workflow.organizationId != null && sameOrg({ organizationId: user.organizationId }, { organizationId: workflow.organizationId }));
       const mine: Agent[] = !sessionTrusted ? [] : ownTokens
         .filter((t) => !t.isRevoked && (!region || t.region === region))
-        .map((t) => ({ tokenId: t.id, name: t.name, siteId: t.siteId, dispatchTier: t.dispatchTier, price: null }));
+        .map((t) => {
+          const a = agentByTokenId.get(t.id);
+          return {
+            tokenId: t.id, name: t.name,
+            siteId: a?.siteId ?? null, region: a?.region ?? null,
+            dispatchTier: t.dispatchTier, locationTrust: a?.locationTrust ?? null,
+            price: null,
+          };
+        })
+        // A shared-tier agent with no detected site is Unverified and not
+        // dispatchable at all (the marketplace delists it too) — never offer
+        // it, even under "my agents".
+        .filter((a) => !(a.dispatchTier === "shared" && a.siteId == null));
 
       // Shared marketplace: dispatchable listings from the plugin, if present.
       // AgentSummary has no name, so join the token row for a display name.
@@ -4492,7 +4516,18 @@ export async function registerRoutes(
           if (region && !l.region.startsWith(region + "-")) continue;
           const tok = await storage.getEvalAgentToken(l.tokenId);
           if (!tok || tok.isRevoked) continue;
-          shared.push({ tokenId: l.tokenId, name: tok.name, siteId: l.region, dispatchTier: "shared", price: l.pricePerUnit });
+          const a = agentByTokenId.get(l.tokenId);
+          const siteId = a?.siteId ?? null;
+          // Unverified shared agent: not dispatchable at all (a re-detection
+          // can drop this even after listing, ahead of the listing's own
+          // region catching up) — filter it out here rather than trust the
+          // listing's (possibly stale) region.
+          if (siteId == null) continue;
+          shared.push({
+            tokenId: l.tokenId, name: tok.name,
+            siteId, region: a?.region ?? null, dispatchTier: "shared", locationTrust: a?.locationTrust ?? null,
+            price: l.pricePerUnit,
+          });
         }
       }
 
@@ -4519,8 +4554,7 @@ export async function registerRoutes(
       // misconfigured pair does NOT mark tiers unavailable: dispatch fails
       // with the real misuse error, which is the actionable message.
       const needsSession = sessionReqForTargets.kind === "need";
-      const agents = await storage.getEvalAgentsWithTokenTier();
-      const online = agents.filter((a) =>
+      const online = agentRows.filter((a) =>
         a.state !== "offline" && (!region || a.tokenRegion === region));
       const countFor = (tier: "private" | "team" | "public"): number =>
         online.filter((a) => {

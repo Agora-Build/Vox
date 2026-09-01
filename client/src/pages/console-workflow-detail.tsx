@@ -13,7 +13,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { ArrowLeft, Play, Settings, History, Clock, CheckCircle, XCircle, Loader2, RefreshCw } from "lucide-react";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import type { Workflow as WorkflowType, Provider, EvalJob, EvalSet } from "@shared/schema";
 import { formatSmartTimestamp, formatSite, formatRegion, toYaml } from "@/lib/utils";
 import { useRegionLocationOptions } from "@/hooks/use-regions";
@@ -31,8 +31,10 @@ interface AuthStatus {
 interface RunTargetAgent {
   tokenId: number;
   name: string;
-  siteId: string;
+  siteId: string | null;
+  region: string | null;
   dispatchTier: string;
+  locationTrust: string | null;
   price: number | null;
 }
 
@@ -42,6 +44,38 @@ interface RunTargetsResponse {
   tiers: { tier: string; available: boolean; onlineAgents?: number; reason?: string }[];
 }
 
+/**
+ * The run dialog's picker collapses to one selectable value: either a
+ * region+tier pool ("run on any agent of this tier in this region") or a
+ * specific site ("run on the agent occupying this site" — resolved to its
+ * tokenId, since that's the only thing the wire contract accepts). Encoded
+ * as a single string so it drops straight into a shadcn <Select>.
+ */
+type PickerSelection =
+  | { kind: "region"; region: string; targetTier: string }
+  | { kind: "site"; tokenId: number };
+
+function encodePickerValue(sel: PickerSelection): string {
+  return sel.kind === "region" ? `region:${sel.region}:${sel.targetTier}` : `site:${sel.tokenId}`;
+}
+
+function decodePickerValue(value: string): PickerSelection | null {
+  if (!value) return null;
+  if (value.startsWith("region:")) {
+    const rest = value.slice("region:".length);
+    const sep = rest.lastIndexOf(":");
+    if (sep < 0) return null;
+    return { kind: "region", region: rest.slice(0, sep), targetTier: rest.slice(sep + 1) };
+  }
+  if (value.startsWith("site:")) {
+    const tokenId = Number(value.slice("site:".length));
+    return Number.isFinite(tokenId) ? { kind: "site", tokenId } : null;
+  }
+  return null;
+}
+
+const TIER_LABEL: Record<string, string> = { public: "public", private: "private", team: "team", shared: "shared" };
+
 export default function ConsoleWorkflowDetail() {
   const { toast } = useToast();
   const { options: regionOptions } = useRegionLocationOptions();
@@ -50,10 +84,8 @@ export default function ConsoleWorkflowDetail() {
   const workflowId = parseInt(params.id || "0");
 
   const [runDialogOpen, setRunDialogOpen] = useState(false);
-  const [runRegion, setRunRegion] = useState("");
   const [runEvalSetId, setRunEvalSetId] = useState("");
-  const [targetTier, setTargetTier] = useState<string>("public");
-  const [targetTokenId, setTargetTokenId] = useState<string>("any");
+  const [pickerValue, setPickerValue] = useState("");
   const [ackRuntime, setAckRuntime] = useState(false);
 
   const { data: authStatus } = useQuery<AuthStatus>({
@@ -86,52 +118,106 @@ export default function ConsoleWorkflowDetail() {
     refetchInterval: 10000, // Auto-refresh every 10s to update running job status
   });
 
+  // No region filter: the two-level tree needs every region's agents at
+  // once (it's the region-picking UI now), not one region's worth per
+  // round-trip. `tiers[].onlineAgents` becomes a global-across-regions count
+  // as a result — an accepted trade-off since it's informational only (see
+  // task-12-report.md); tier *eligibility* (`available`/`reason`) never
+  // depended on region to begin with.
   const { data: runTargets, isFetching: runTargetsFetching } = useQuery<RunTargetsResponse>({
-    queryKey: [`/api/workflows/${workflowId}/run-targets`, runRegion, runEvalSetId],
+    queryKey: [`/api/workflows/${workflowId}/run-targets`, runEvalSetId],
     queryFn: async () => (await apiRequest("GET",
-      `/api/workflows/${workflowId}/run-targets?region=${encodeURIComponent(runRegion)}&evalSetId=${runEvalSetId}`)).json(),
-    enabled: runDialogOpen && !!runRegion && !!runEvalSetId,
+      `/api/workflows/${workflowId}/run-targets?evalSetId=${runEvalSetId}`)).json(),
+    enabled: runDialogOpen && !!runEvalSetId,
   });
 
-  // Fallback tier list (no online counts yet) so the "Run on" selector is
-  // populated immediately, before a region/eval set is chosen and the
-  // run-targets query has loaded.
-  const tierOptions = runTargets?.tiers ?? [
-    { tier: "private", available: true },
-    { tier: "team", available: !!authStatus?.user?.organizationId, reason: authStatus?.user?.organizationId ? undefined : "no-org" },
-    { tier: "public", available: true },
-  ];
-
-  // When live tier data arrives and the currently-selected tier is
-  // unavailable (e.g. "public" on a credential-injected workflow), hop to the
-  // first available tier so the default action never 403s.
-  useEffect(() => {
-    if (!runTargets?.tiers) return;
-    const current = runTargets.tiers.find((t) => t.tier === targetTier);
-    if (current && !current.available) {
-      const firstAvailable = runTargets.tiers.find((t) => t.tier !== "shared" && t.available);
-      if (firstAvailable) {
-        setTargetTier(firstAvailable.tier);
-        const label = (tier: string) =>
-          tier === "public" ? "Any public agent" : tier === "private" ? "My agents" : "Team agents";
-        toast({
-          title: "Run target adjusted",
-          description: `${label(current.tier)} isn't available for this workflow — switched to ${label(firstAvailable.tier)}.`,
-        });
-      }
-    }
-  }, [runTargets, targetTier, toast]);
+  const tierAvailable = (tier: string) => (runTargets?.tiers ?? []).find((t) => t.tier === tier)?.available ?? false;
+  const tierOnline = (tier: string) => (runTargets?.tiers ?? []).find((t) => t.tier === tier)?.onlineAgents;
 
   const pickerShared = (runTargets?.agents.shared ?? []).filter(
     (s) => !(runTargets?.agents.mine ?? []).some((m) => m.tokenId === s.tokenId)
   );
-  // Pooled dispatch with every tier unavailable can only 403 — gate the submit.
-  const noPoolAvailable = targetTokenId === "any" &&
-    (runTargets?.tiers ?? []).some((t) => t.tier !== "shared") &&
-    (runTargets?.tiers ?? []).filter((t) => t.tier !== "shared").every((t) => !t.available);
+  const allAgents = useMemo(
+    () => [...(runTargets?.agents.mine ?? []), ...pickerShared],
+    [runTargets, pickerShared]
+  );
 
-  const selectedAgent = targetTokenId === "any" ? null :
-    [...(runTargets?.agents.mine ?? []), ...pickerShared].find((a) => String(a.tokenId) === targetTokenId);
+  // Two-level tree data: region -> agents in that region, grouped by tier.
+  // Only regions with at least one row reachable from `mine`/`shared` show
+  // up here (private/team/shared leaves); a region with only a theoretical
+  // public pool is added separately below since public pool eligibility
+  // isn't tied to any concrete agent the caller can see.
+  const regionGroups = useMemo(() => {
+    const byRegion = new Map<string, RunTargetAgent[]>();
+    for (const a of allAgents) {
+      if (a.region == null) continue;
+      if (!byRegion.has(a.region)) byRegion.set(a.region, []);
+      byRegion.get(a.region)!.push(a);
+    }
+    return Array.from(byRegion.entries())
+      .map(([region, rows]) => ({
+        region,
+        label: regionOptions.find((r) => r.value === region)?.label ?? formatRegion(region),
+        private: rows.filter((r) => r.dispatchTier === "private"),
+        team: rows.filter((r) => r.dispatchTier === "team"),
+        public: rows.filter((r) => r.dispatchTier === "public"),
+        shared: rows.filter((r) => r.dispatchTier === "shared"),
+      }))
+      .sort((a, b) => a.label.localeCompare(b.label));
+  }, [allAgents, regionOptions]);
+
+  // Catalog regions with no visible mine/shared row at all — still offered
+  // as a public pool target if public dispatch is eligible for this
+  // workflow, since the server accepts any catalog region for a public pool
+  // run regardless of what agents the caller happens to own there.
+  const publicOnlyRegions = tierAvailable("public")
+    ? regionOptions.filter((r) => !regionGroups.some((g) => g.region === r.value))
+    : [];
+
+  // private/team rows with no detected site (siteId null → Unverified).
+  // Shared-tier Unverified rows never reach the client at all — filtered
+  // server-side in run-targets (siteId null shared agents aren't
+  // dispatchable, full stop) — so this group never needs to special-case them.
+  const unverifiedAgents = allAgents.filter(
+    (a) => a.region == null && (a.dispatchTier === "private" || a.dispatchTier === "team")
+  );
+
+  const selection = decodePickerValue(pickerValue);
+
+  // If the tree is rebuilt (new run-targets data) and the current selection
+  // no longer resolves — a region-pool tier became unavailable, or a picked
+  // site's agent vanished — clear it and say why, so the default action
+  // never silently 403s.
+  useEffect(() => {
+    if (!runTargets || !selection) return;
+    if (selection.kind === "region") {
+      if (!tierAvailable(selection.targetTier)) {
+        setPickerValue("");
+        toast({
+          title: "Run target adjusted",
+          description: `That agent pool isn't available for this workflow anymore — pick another target.`,
+        });
+      }
+    } else {
+      if (!allAgents.some((a) => a.tokenId === selection.tokenId)) {
+        setPickerValue("");
+        toast({
+          title: "Run target adjusted",
+          description: "That agent is no longer available — pick another target.",
+        });
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [runTargets]);
+
+  // Pooled dispatch aimed at a tier the workflow can't use (e.g. every
+  // non-shared tier blocked) can only 403 — gate the submit. In practice the
+  // tree never renders a region-pool option for an unavailable tier, so this
+  // is defense in depth rather than something reachable through the UI.
+  const nonSharedTiers = (runTargets?.tiers ?? []).filter((t) => t.tier !== "shared");
+  const noPoolAvailable = nonSharedTiers.length > 0 && nonSharedTiers.every((t) => !t.available);
+
+  const selectedAgent = selection?.kind === "site" ? allAgents.find((a) => a.tokenId === selection.tokenId) ?? null : null;
   const runtimeExposed = (runTargets?.referencedSecrets ?? [])
     .filter((s) => s.brokerType == null && s.present).map((s) => s.name);
   // Referenced but not configured for the workflow owner → the run would fail
@@ -145,19 +231,20 @@ export default function ConsoleWorkflowDetail() {
 
   const runWorkflowMutation = useMutation({
     mutationFn: async () => {
+      if (!selection) throw new Error("No run target selected");
       const res = await apiRequest("POST", `/api/workflows/${workflowId}/run`, {
         evalSetId: parseInt(runEvalSetId),
-        ...(targetTokenId !== "any" ? { targetTokenId: Number(targetTokenId) } : { region: runRegion, targetTier }),
+        ...(selection.kind === "site"
+          ? { targetTokenId: selection.tokenId }
+          : { region: selection.region, targetTier: selection.targetTier }),
         ...(showRuntimeWarning ? { runtimeSecretConsent: ackRuntime } : {}),
       });
       return res.json();
     },
     onSuccess: (data) => {
       setRunDialogOpen(false);
-      setRunRegion("");
       setRunEvalSetId("");
-      setTargetTier("public");
-      setTargetTokenId("any");
+      setPickerValue("");
       setAckRuntime(false);
       refetchJobs();
       toast({ title: "Workflow started", description: `Job created: ${data.job?.id}` });
@@ -214,8 +301,7 @@ export default function ConsoleWorkflowDetail() {
           onOpenChange={(open) => {
             setRunDialogOpen(open);
             if (!open) {
-              setTargetTier("public");
-              setTargetTokenId("any");
+              setPickerValue("");
               setAckRuntime(false);
             }
           }}
@@ -235,42 +321,6 @@ export default function ConsoleWorkflowDetail() {
             </DialogHeader>
             <div className="space-y-4 py-4">
               <div className="space-y-2">
-                <Label htmlFor="run-region">Region</Label>
-                <Select value={runRegion} onValueChange={setRunRegion}>
-                  <SelectTrigger>
-                    <SelectValue placeholder="Select region" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {regionOptions.map((region) => (
-                      <SelectItem key={region.value} value={region.value}>
-                        {region.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="space-y-2">
-                <Label>Run on</Label>
-                <Select value={targetTier} onValueChange={setTargetTier}>
-                  <SelectTrigger data-testid="select-target-tier">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {tierOptions.filter((t) => t.tier !== "shared").map((t) => (
-                      <SelectItem key={t.tier} value={t.tier} disabled={!t.available}>
-                        {t.tier === "public" ? "Any public agent" : t.tier === "private" ? "My agents" : "Team agents"}
-                        {t.available ? (typeof t.onlineAgents === "number" ? ` (${t.onlineAgents} online)` : "") : t.reason === "no-org" ? " — join an organization" : t.reason === "session-injected" ? " — not allowed for credential-injected workflows" : ""}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                {tierOptions.find((t) => t.tier === targetTier)?.onlineAgents === 0 && (
-                  <p className="text-xs text-muted-foreground">
-                    No matching agent is online right now; the job will wait in the pool (up to 24h).
-                  </p>
-                )}
-              </div>
-              <div className="space-y-2">
                 <Label htmlFor="run-eval-set">Eval Set</Label>
                 <Select value={runEvalSetId} onValueChange={setRunEvalSetId}>
                   <SelectTrigger>
@@ -286,35 +336,89 @@ export default function ConsoleWorkflowDetail() {
                 </Select>
               </div>
               <div className="space-y-2">
-                <Label htmlFor="run-agent">Agent</Label>
-                <Select value={targetTokenId} onValueChange={setTargetTokenId}>
-                  <SelectTrigger>
-                    <SelectValue placeholder="Any available in region" />
+                <Label htmlFor="run-agent">Run on</Label>
+                <Select
+                  value={pickerValue}
+                  onValueChange={setPickerValue}
+                  disabled={!runEvalSetId}
+                >
+                  <SelectTrigger data-testid="select-run-target">
+                    <SelectValue placeholder="Choose a region or agent" />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="any">Any available in region</SelectItem>
-                    {(runTargets?.agents.mine ?? []).length > 0 && (
+                    {regionGroups.map((group) => (
+                      <SelectGroup key={group.region}>
+                        <SelectLabel>{group.label}</SelectLabel>
+                        {tierAvailable("public") && (
+                          <SelectItem value={encodePickerValue({ kind: "region", region: group.region, targetTier: "public" })}>
+                            Any public agent
+                            {typeof tierOnline("public") === "number" ? ` (${tierOnline("public")} online)` : ""}
+                          </SelectItem>
+                        )}
+                        {group.public.map((a) => (
+                          <SelectItem key={a.tokenId} value={encodePickerValue({ kind: "site", tokenId: a.tokenId })} disabled>
+                            {formatSite(a.siteId!)} — public (informational only)
+                          </SelectItem>
+                        ))}
+                        {tierAvailable("private") && group.private.length > 0 && (
+                          <SelectItem value={encodePickerValue({ kind: "region", region: group.region, targetTier: "private" })}>
+                            Any of my agents here
+                          </SelectItem>
+                        )}
+                        {group.private.map((a) => (
+                          <SelectItem key={a.tokenId} value={encodePickerValue({ kind: "site", tokenId: a.tokenId })}>
+                            {a.name} · {formatSite(a.siteId!)}
+                          </SelectItem>
+                        ))}
+                        {tierAvailable("team") && group.team.length > 0 && (
+                          <SelectItem value={encodePickerValue({ kind: "region", region: group.region, targetTier: "team" })}>
+                            Any team agent here
+                          </SelectItem>
+                        )}
+                        {group.team.map((a) => (
+                          <SelectItem key={a.tokenId} value={encodePickerValue({ kind: "site", tokenId: a.tokenId })}>
+                            {a.name} · {formatSite(a.siteId!)} (team)
+                          </SelectItem>
+                        ))}
+                        {group.shared.map((a) => (
+                          <SelectItem key={a.tokenId} value={encodePickerValue({ kind: "site", tokenId: a.tokenId })}>
+                            {a.name} · {formatSite(a.siteId!)}{a.price != null ? ` ($${a.price})` : ""}
+                          </SelectItem>
+                        ))}
+                      </SelectGroup>
+                    ))}
+                    {publicOnlyRegions.length > 0 && (
                       <SelectGroup>
-                        <SelectLabel>My agents</SelectLabel>
-                        {runTargets!.agents.mine.map((agent) => (
-                          <SelectItem key={agent.tokenId} value={String(agent.tokenId)}>
-                            {agent.name}
+                        <SelectLabel>Other regions</SelectLabel>
+                        {publicOnlyRegions.map((r) => (
+                          <SelectItem key={r.value} value={encodePickerValue({ kind: "region", region: r.value, targetTier: "public" })}>
+                            {r.label} — Any public agent
                           </SelectItem>
                         ))}
                       </SelectGroup>
                     )}
-                    {pickerShared.length > 0 && (
+                    {unverifiedAgents.length > 0 && (
                       <SelectGroup>
-                        <SelectLabel>Shared marketplace</SelectLabel>
-                        {pickerShared.map((agent) => (
-                          <SelectItem key={agent.tokenId} value={String(agent.tokenId)}>
-                            {agent.name}{agent.price != null ? ` ($${agent.price})` : ""}
+                        <SelectLabel>Unverified</SelectLabel>
+                        {unverifiedAgents.map((a) => (
+                          <SelectItem key={a.tokenId} value={encodePickerValue({ kind: "site", tokenId: a.tokenId })}>
+                            {a.name} ({TIER_LABEL[a.dispatchTier] ?? a.dispatchTier})
                           </SelectItem>
                         ))}
                       </SelectGroup>
                     )}
                   </SelectContent>
                 </Select>
+                {selection?.kind === "region" && tierOnline(selection.targetTier) === 0 && (
+                  <p className="text-xs text-muted-foreground">
+                    No matching agent is online right now; the job will wait in the pool (up to 24h).
+                  </p>
+                )}
+                {noPoolAvailable && (
+                  <p className="text-xs text-muted-foreground">
+                    No agent pool is available for this workflow — pick a specific agent instead.
+                  </p>
+                )}
               </div>
               {missingSecrets.length > 0 && (
                 <Alert variant="destructive">
@@ -342,7 +446,11 @@ export default function ConsoleWorkflowDetail() {
             <DialogFooter>
               <Button
                 onClick={() => runWorkflowMutation.mutate()}
-                disabled={runWorkflowMutation.isPending || !runRegion || !runEvalSetId || runTargetsFetching || noPoolAvailable || missingSecrets.length > 0 || (showRuntimeWarning && !ackRuntime)}
+                disabled={
+                  runWorkflowMutation.isPending || !runEvalSetId || !selection || runTargetsFetching ||
+                  (selection?.kind === "region" && noPoolAvailable) ||
+                  missingSecrets.length > 0 || (showRuntimeWarning && !ackRuntime)
+                }
               >
                 Run Evaluation
               </Button>
