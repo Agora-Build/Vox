@@ -121,6 +121,7 @@ export type MetricsMode = "raw" | "bucketDay";
 export type RegionQueryScope = {
   siteId?: string;
   baseIds?: string[];
+  unverified?: boolean;
 };
 
 // Pure raw-vs-bucket decision for a window of `spanDays`. Exported for testing.
@@ -1541,12 +1542,16 @@ export class DatabaseStorage {
   // run-time tier even after its workflow/eval-set is edited or deleted, and the
   // join chain collapses to just eval_results → eval_jobs.
   private regionScopeCondition(scope?: RegionQueryScope) {
-    if (scope?.siteId) return eq(evalResults.siteId, scope.siteId);
-    if (scope?.baseIds) {
-      if (scope.baseIds.length === 0) return sql<boolean>`false`;
-      return or(...scope.baseIds.map((baseId) => sql<boolean>`${evalResults.siteId} LIKE ${baseId + "-%"}`));
+    if (!scope) return undefined;
+    if (scope.siteId) return eq(evalResults.siteId, scope.siteId);
+    const parts: any[] = [];
+    if (scope.baseIds && scope.baseIds.length > 0) {
+      parts.push(or(...scope.baseIds.map((baseId) => sql<boolean>`${evalResults.siteId} LIKE ${baseId + "-%"}`)));
     }
-    return undefined;
+    if (scope.unverified) parts.push(isNull(evalResults.siteId));
+    if (scope.baseIds && scope.baseIds.length === 0 && !scope.unverified) return sql<boolean>`false`;
+    if (parts.length === 0) return undefined;
+    return parts.length === 1 ? parts[0] : or(...parts);
   }
 
   private mainlineConditions(hoursBack?: number, scope?: RegionQueryScope) {
@@ -1586,6 +1591,14 @@ export class DatabaseStorage {
         sql`${snap}->'evalSet'->>'isMainline' IS DISTINCT FROM 'true'`,
         sql`${evalJobs.tokenDispatchTier} IS DISTINCT FROM 'public'`,
         sql`${snap}->>'creatorPlan' IS NULL OR ${snap}->>'creatorPlan' NOT IN ('principal', 'fellow')`,
+      ),
+      // Zero-trust gate: only region-trusted agents feed the public community
+      // board; public agents are configured (admin-trusted); NULL grandfathers
+      // pre-feature rows (history never reclassifies).
+      or(
+        eq(evalJobs.tokenDispatchTier, "public"),
+        sql`${evalJobs.locationTrust} IS NULL`,
+        inArray(evalJobs.locationTrust, ["trusted", "datacenter"]),
       ),
     ];
     if (hoursBack) {
@@ -1723,6 +1736,28 @@ export class DatabaseStorage {
   }
   getMyEvalMetrics(userId: number, hoursBack?: number, scope?: RegionQueryScope): Promise<MetricSourceRow[]> {
     return this.tierMetrics("myEvals", hoursBack, userId, scope);
+  }
+
+  // Available regions for a tier's picker: same tier conditions as the metrics
+  // queries above, NO scope (the picker needs to show every region the tier
+  // could be narrowed to, not just the currently-selected one). Site IDs are
+  // stripped to their base ("<base>-NN" -> "<base>") and deduped/counted;
+  // a NULL siteId (unverified/self-hosted agent) is reported separately via
+  // hasUnverified rather than mixed into baseIds.
+  async getAvailableRegions(tier: MetricTier, hoursBack?: number, userId?: number): Promise<{ baseIds: string[]; hasUnverified: boolean }> {
+    const conditions = this.tierConditions(tier, hoursBack, userId);
+    const rows = await this.applyTierJoins(tier, db
+      .select({
+        baseId: sql<string | null>`regexp_replace(${evalResults.siteId}, '-\\d+$', '')`,
+        n: sql<number>`count(*)`,
+      })
+      .from(evalResults))
+      .where(and(...conditions))
+      .groupBy(sql`regexp_replace(${evalResults.siteId}, '-\\d+$', '')`);
+    return {
+      baseIds: rows.filter((r: { baseId: string | null }) => r.baseId != null).map((r: { baseId: string | null }) => r.baseId as string).sort(),
+      hasUnverified: rows.some((r: { baseId: string | null }) => r.baseId == null),
+    };
   }
 
   // Raw, limit-controlled tier queries — kept for the leaderboard / API v1

@@ -1,7 +1,7 @@
 import type { Express } from "express";
 import { type Server } from "http";
 import { z } from "zod";
-import { storage, hashToken, generateSecureToken, generateEvalAgentToken, generateBrokerRegistrationToken, mergeEvalConfig, buildJobSnapshot, validateWorkflowConfig, validateEvalSetConfig, encryptValue, decryptValue, isEncryptionConfigured, type MetricSourceRow, type RegionQueryScope } from "./storage";
+import { storage, hashToken, generateSecureToken, generateEvalAgentToken, generateBrokerRegistrationToken, mergeEvalConfig, buildJobSnapshot, validateWorkflowConfig, validateEvalSetConfig, encryptValue, decryptValue, isEncryptionConfigured, type MetricSourceRow, type RegionQueryScope, type MetricTier } from "./storage";
 import { parseNextCronRun } from "./cron";
 import { compareVersions } from "./aeval-seed";
 import { SECRET_NAME_PATTERN, collectSecretRefs } from "@shared/secrets";
@@ -150,12 +150,26 @@ async function parseRegionQueryScope(query: {
       return { error: "regionScope must contain one or more hierarchy scopes" };
     }
 
+    // "unverified" is a literal scope entry (no level:value pair) selecting
+    // results with no siteId at all — self-hosted/unverified agents. It can
+    // stand alone or combine with hierarchy scopes (OR'd together).
+    let unverified = false;
+    const hierScopes = scopes.filter((s) => {
+      if (s.trim() === "unverified") { unverified = true; return false; }
+      return true;
+    });
+
+    if (hierScopes.length === 0) {
+      if (!unverified) return { error: "regionScope must contain one or more hierarchy scopes" };
+      return { scope: { unverified: true }, cacheKey: "unverified" };
+    }
+
     const locations = await storage.getAllRegionLocations();
     const baseIds = new Set<string>();
-    for (const rawScope of scopes) {
+    for (const rawScope of hierScopes) {
       const [level, rawValue, extra] = rawScope.trim().split(":");
       if (extra !== undefined || !rawValue || !["macro", "country", "location"].includes(level)) {
-        return { error: "regionScope entries must be macro:<code>, country:<code>, or location:<baseId>" };
+        return { error: "regionScope entries must be macro:<code>, country:<code>, location:<baseId>, or unverified" };
       }
       const value = level === "country" ? rawValue.toUpperCase() : rawValue.toLowerCase();
       const matches = locations.filter((entry) =>
@@ -168,8 +182,8 @@ async function parseRegionQueryScope(query: {
     }
     const sortedBaseIds = Array.from(baseIds).sort();
     return {
-      scope: { baseIds: sortedBaseIds },
-      cacheKey: `scopes:${sortedBaseIds.join(",")}`,
+      scope: { baseIds: sortedBaseIds, ...(unverified ? { unverified } : {}) },
+      cacheKey: `scopes:${sortedBaseIds.join(",")}${unverified ? "+unverified" : ""}`,
     };
   }
 
@@ -4972,6 +4986,38 @@ export async function registerRoutes(
     } catch (error) {
       console.error("Error fetching my eval metrics:", error);
       res.status(500).json({ error: "Failed to fetch my eval metrics" });
+    }
+  });
+
+  // Sibling to /api/metrics/{realtime,community,my-evals}: same tier data, but
+  // returns just the set of regions (+ whether any unverified/self-hosted
+  // agents contributed) that tier's picker should offer. Ships as a separate
+  // endpoint rather than growing the metrics response shapes (spec deviation,
+  // recorded in the plan ledger) so existing clients/tests are unaffected.
+  app.get("/api/metrics/available-regions", async (req, res) => {
+    try {
+      const tierParam = String(req.query.tier ?? "");
+      const tierMap: Record<string, MetricTier> = { realtime: "mainline", community: "community", "my-evals": "myEvals" };
+      const tier = tierMap[tierParam];
+      if (!tier) return res.status(400).json({ error: "tier must be realtime, community, or my-evals" });
+      const win = parseMetricsWindow(req.query.hours);
+      if ("error" in win) return res.status(400).json({ error: win.error });
+      let userId: number | undefined;
+      if (tier === "myEvals") {
+        const user = await getCurrentUser(req);
+        if (!user) return res.status(401).json({ error: "Not authenticated" });
+        userId = user.id;
+      }
+      const cacheKey = `avail:${tierParam}:${win.hoursBack ?? "all"}:${userId ?? ""}`;
+      const cached = getCached(cacheKey);
+      if (cached) return res.json(cached);
+      const { baseIds, hasUnverified } = await storage.getAvailableRegions(tier, win.hoursBack, userId);
+      const data = { availableRegions: baseIds, hasUnverified: tier === "myEvals" ? hasUnverified : false };
+      setCache(cacheKey, data);
+      res.json(data);
+    } catch (error) {
+      console.error("Error fetching available regions:", error);
+      res.status(500).json({ error: "Failed to fetch available regions" });
     }
   });
 
