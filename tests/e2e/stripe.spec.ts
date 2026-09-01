@@ -57,7 +57,6 @@ test.describe("Stripe Payment Flow (Authenticated)", () => {
 
   let authenticatedRequest: APIRequestContext;
   let adminRequest: APIRequestContext;
-  let orgName = "Stripe Test Org";
 
   /**
    * These tests need a user who OWNS an organization, and they used to get one
@@ -78,9 +77,21 @@ test.describe("Stripe Payment Flow (Authenticated)", () => {
    * failures point at server code that is fine, in suites that never ran this
    * file, and only after a full gate that appeared to pass.
    *
-   * So provision a throwaway user per run and make it the org owner. Admin is
-   * only borrowed to mint the invite, and its own row is never written.
+   * So the org owner is a dedicated fixture account instead of admin, and it is
+   * REUSED rather than recreated. Reuse is the point: because nothing can
+   * delete an org, a fresh user per run would leave one more user and one more
+   * organization behind every time. Provisioning is therefore idempotent — log
+   * in, and only invite/register/create when that fails — so the whole file
+   * costs exactly one user and one organization no matter how often it runs.
+   * Admin is borrowed only to mint the invite, and its own row is never written.
    */
+  const FIXTURE = {
+    email: "stripe-e2e-fixture@test.local",
+    username: "stripe-e2e-fixture",
+    password: "stripe-e2e-fixture-pass-123",
+    orgName: "Stripe E2E Fixture Org",
+  };
+
   test.beforeAll(async ({ playwright }) => {
     adminRequest = await playwright.request.newContext({
       baseURL: "http://localhost:5000",
@@ -89,45 +100,60 @@ test.describe("Stripe Payment Flow (Authenticated)", () => {
       baseURL: "http://localhost:5000",
     });
 
-    const adminLogin = await adminRequest.post("/api/auth/login", {
-      data: { email: "admin@vox.local", password: "admin123456" },
-    });
-    if (!adminLogin.ok()) {
-      console.log("Admin login failed - may be rate limited. Status:", adminLogin.status());
-      return;
+    const login = () =>
+      authenticatedRequest.post("/api/auth/login", {
+        data: { email: FIXTURE.email, password: FIXTURE.password },
+      });
+
+    // Existing fixture account (every run after the first) — nothing to create.
+    if (!(await login()).ok()) {
+      const adminLogin = await adminRequest.post("/api/auth/login", {
+        data: { email: "admin@vox.local", password: "admin123456" },
+      });
+      if (!adminLogin.ok()) {
+        console.log("Admin login failed - may be rate limited. Status:", adminLogin.status());
+        return;
+      }
+
+      // Registration is invite-gated, so admin mints one for the fixture user.
+      const inviteResponse = await adminRequest.post("/api/admin/invite", {
+        data: { email: FIXTURE.email, plan: "premium" },
+      });
+      if (!inviteResponse.ok()) {
+        console.log("Invite creation failed. Status:", inviteResponse.status());
+        return;
+      }
+      const { token } = await inviteResponse.json();
+
+      // Register, then log in explicitly: register opens a session on whichever
+      // context issued it, so do not rely on that side effect for this one.
+      const registerResponse = await authenticatedRequest.post("/api/auth/register", {
+        data: { username: FIXTURE.username, password: FIXTURE.password, token },
+      });
+      if (!registerResponse.ok()) {
+        console.log("Registration failed. Status:", registerResponse.status());
+        return;
+      }
+
+      const loginResponse = await login();
+      if (!loginResponse.ok()) {
+        console.log("Login failed - may be rate limited. Status:", loginResponse.status());
+        return;
+      }
     }
 
-    // Registration is invite-gated, so admin mints one for the throwaway user.
-    const stamp = Date.now();
-    const email = `stripe-e2e-${stamp}@test.local`;
-    const password = "stripe-e2e-pass-123";
-    orgName = `Stripe Test Org ${stamp}`;
-
-    const inviteResponse = await adminRequest.post("/api/admin/invite", {
-      data: { email, plan: "premium" },
-    });
-    if (!inviteResponse.ok()) {
-      console.log("Invite creation failed. Status:", inviteResponse.status());
-      return;
-    }
-    const { token } = await inviteResponse.json();
-
-    // Register, then log the org-owner context in as that user. Register also
-    // opens a session on adminRequest's context, so log in explicitly on the
-    // context the tests actually use rather than relying on the side effect.
-    const registerResponse = await authenticatedRequest.post("/api/auth/register", {
-      data: { username: `stripe-e2e-${stamp}`, password, token },
-    });
-    if (!registerResponse.ok()) {
-      console.log("Registration failed. Status:", registerResponse.status());
-      return;
-    }
-
-    const loginResponse = await authenticatedRequest.post("/api/auth/login", {
-      data: { email, password },
-    });
-    if (!loginResponse.ok()) {
-      console.log("Login failed - may be rate limited. Status:", loginResponse.status());
+    // Same idempotence for the org: present on later runs, created on the first.
+    const me = await (await authenticatedRequest.get("/api/auth/status")).json();
+    if (!me.user?.organizationId) {
+      const createResponse = await authenticatedRequest.post("/api/organizations", {
+        data: {
+          name: FIXTURE.orgName,
+          description: "Organization for Stripe payment testing",
+        },
+      });
+      if (!createResponse.ok()) {
+        console.log("Org creation failed. Status:", createResponse.status());
+      }
     }
   });
 
@@ -152,26 +178,26 @@ test.describe("Stripe Payment Flow (Authenticated)", () => {
     }
   });
 
-  test("should create organization for payment tests", async () => {
-    // The user was registered fresh in beforeAll, so it has no organization and
-    // creation must succeed. This used to be wrapped in `if (createResponse.ok())`,
-    // which silently passed the test when the org was never created and left the
-    // rest of this describe quietly skipping on `if (me.user?.organizationId)`.
+  test("should have an organization for payment tests", async () => {
+    // Asserts the END STATE, not the act of creating, because beforeAll only
+    // creates on the first run — a "was it created?" assertion would pass once
+    // and be meaningless afterwards. This is the gate for the rest of the file:
+    // the three tests below read the org id from here, and each still guards on
+    // `if (me.user?.organizationId)`, so without a hard assertion at this point
+    // a broken fixture would make them silently skip and the file would go green
+    // having tested nothing.
     const meResponse = await authenticatedRequest.get("/api/auth/status");
     const me = await meResponse.json();
-    expect(me.user?.organizationId ?? null).toBeNull();
+    expect(typeof me.user?.organizationId).toBe("number");
 
-    const createResponse = await authenticatedRequest.post("/api/organizations", {
-      data: {
-        name: orgName,
-        description: "Organization for Stripe payment testing",
-      },
-    });
-    expect(createResponse.ok()).toBeTruthy();
+    const orgResponse = await authenticatedRequest.get(
+      `/api/organizations/${me.user.organizationId}`
+    );
+    expect(orgResponse.ok()).toBeTruthy();
 
-    const org = await createResponse.json();
-    expect(org.id).toBeDefined();
-    expect(org.name).toBe(orgName);
+    const org = await orgResponse.json();
+    expect(org.id).toBe(me.user.organizationId);
+    expect(org.name).toBe(FIXTURE.orgName);
   });
 
   test("should calculate seat pricing for organization", async () => {
