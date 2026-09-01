@@ -1,5 +1,6 @@
 import express, { type Request, Response, NextFunction } from "express";
 import helmet from "helmet";
+import { isSensitiveResponsePath } from "./sensitive-paths";
 import { registerRoutes } from "./routes";
 import { serveStatic } from "./static";
 import { createServer } from "http";
@@ -171,15 +172,6 @@ export function log(message: string, source = "express") {
   console.log(`${formattedTime} [${source}] ${message}`);
 }
 
-const SENSITIVE_PATHS = new Set([
-  "/api/user/api-keys",
-  "/api/admin/eval-agent-tokens",
-  "/api/admin/invite",
-  "/api/secrets",
-  "/api/eval-agent/jobs",       // /jobs/:id/secrets matched by startsWith
-  "/api/clash-runner/secrets",
-  "/api/admin/clash-runner-tokens",
-]);
 
 app.use((req, res, next) => {
   const start = Date.now();
@@ -196,8 +188,7 @@ app.use((req, res, next) => {
     const duration = Date.now() - start;
     if (path.startsWith("/api")) {
       let logLine = `${req.method} ${path} ${res.statusCode} in ${duration}ms`;
-      const isSensitive = SENSITIVE_PATHS.has(path) ||
-        Array.from(SENSITIVE_PATHS).some(p => path.startsWith(p));
+      const isSensitive = isSensitiveResponsePath(path);
       if (capturedJsonResponse && !isSensitive) {
         logLine += ` :: ${JSON.stringify(capturedJsonResponse)}`;
       }
