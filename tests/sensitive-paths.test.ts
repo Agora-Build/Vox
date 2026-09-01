@@ -18,6 +18,18 @@ describe("response-body redaction list", () => {
     expect(isSensitiveResponsePath("/api/eval-agent/jobs/123/secrets")).toBe(true);
   });
 
+  it("covers every route that returns a credential, not just the secrets pages", () => {
+    // These two return one-time plaintext — a broker registration token and a
+    // per-broker mint secret. Both predate the fingerprint work and were being
+    // written to the container log by the response-body logger, which is the
+    // one place a value handed out "once" becomes permanently recoverable.
+    expect(isSensitiveResponsePath("/api/admin/broker-tokens")).toBe(true);
+    expect(isSensitiveResponsePath("/api/brokers/register")).toBe(true);
+    expect(isSensitiveResponsePath("/api/user/api-keys")).toBe(true);
+    expect(isSensitiveResponsePath("/api/admin/invite")).toBe(true);
+    expect(isSensitiveResponsePath("/api/clash-runner/secrets")).toBe(true);
+  });
+
   it("does not redact ordinary routes", () => {
     for (const p of ["/api/workflows", "/api/metrics/realtime", "/api/eval-agents", "/api/config"]) {
       expect(isSensitiveResponsePath(p)).toBe(false);

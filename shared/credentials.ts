@@ -139,3 +139,25 @@ export function fingerprintForLog(identifier: string, secret: string): string {
 function md5Prefix(value: string): string {
   return createHash("md5").update(value, "utf8").digest("hex").slice(0, 10);
 }
+
+/**
+ * The "last failed request HTTP NNN" marker, formatted in the broker and parsed
+ * back out in Core.
+ *
+ * One definition because the two live in different packages and communicate
+ * through a formatted string: the broker builds the mint error, Core extracts
+ * the status from `webSessions.lastError` to give a non-owner agent the code
+ * without the prose. Two hand-written regexes would drift silently — the status
+ * would simply vanish from the 503 body with nothing going red, which is the
+ * "looks wired but isn't" failure this codebase has already produced once.
+ */
+const LAST_FAILED_HTTP = /\(last failed request HTTP (\d{3})\)/;
+
+export function formatLastFailedHttpStatus(status: number): string {
+  return ` (last failed request HTTP ${status})`;
+}
+
+export function parseLastFailedHttpStatus(message: string): number | null {
+  const m = LAST_FAILED_HTTP.exec(message);
+  return m ? Number(m[1]) : null;
+}

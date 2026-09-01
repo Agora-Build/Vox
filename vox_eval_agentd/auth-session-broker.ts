@@ -32,7 +32,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { StringDecoder } from 'string_decoder';
 import { summarizeAevalFailure, hasAevalDiagnosis, hasLoguruDiagnosis, reduceUrlsSafely, createBoundedCapture, LINE_TERMINATORS } from './aeval-output';
-import { credentialForms, redactValues, fingerprintForLog } from '../shared/credentials';
+import { credentialForms, redactValues, fingerprintForLog, formatLastFailedHttpStatus } from '../shared/credentials';
 import { mintTimeoutSeconds } from '../shared/mint-timeout';
 export { credentialForms } from '../shared/credentials';
 
@@ -166,7 +166,10 @@ export function describeMintFailure(stdout: string, stderr: string, forms: strin
  *
  * The resolved path is then confined under one of the permitted roots, so a
  * crafted `../../..` cannot escape even if the trusted stream is somehow
- * influenced. Two roots are accepted deliberately: against aeval 0.3.0 the
+ * influenced. Lexical containment only — it does not resolve symlinks, so a
+ * link planted INSIDE a permitted root would still be followed. That needs the
+ * trusted stream to be compromised first, which is why it is left as
+ * defence-in-depth rather than a guarantee. Two roots are accepted deliberately: against aeval 0.3.0 the
  * banner is RELATIVE and resolves under the data root — verified in production,
  * `Artifacts saved to: output/mint/20260831_230019_7219` landing at
  * `/app/aeval-data/output/mint/...` — but the mint scenario configures an
@@ -183,6 +186,7 @@ export function readLastFailedHttpStatus(aevalStderr: string, ...roots: string[]
   const banners = [...aevalStderr.matchAll(/Artifacts saved to:[^\S\r\n]*(\S+)/g)];
   const dir = banners.length > 0 ? banners[banners.length - 1][1] : undefined;
   if (!dir) return null;
+  if (roots.length === 0) return null; // every other failure mode here is soft
   const permitted = roots.map((r) => path.resolve(r));
   const consoleLog = path.resolve(permitted[0], dir, 'logs', 'console.log');
   const contained = permitted.some((r) => consoleLog === r || consoleLog.startsWith(r + path.sep));
@@ -196,8 +200,10 @@ export function readLastFailedHttpStatus(aevalStderr: string, ...roots: string[]
     const fd = fs.openSync(consoleLog, 'r');
     try {
       const buf = Buffer.alloc(size - start);
-      fs.readSync(fd, buf, 0, buf.length, start);
-      text = buf.toString('utf8');
+      // subarray: if the file shrank between statSync and the read, the tail of
+      // buf is still zero-filled and would land in `text`.
+      const bytesRead = fs.readSync(fd, buf, 0, buf.length, start);
+      text = buf.subarray(0, bytesRead).toString('utf8');
     } finally {
       fs.closeSync(fd);
     }
@@ -314,7 +320,7 @@ export async function mintWithAeval(req: MintRequest, timeoutMs: number): Promis
           // handler below — but a broker-level hang that nonetheless wrote
           // artifacts should not lose the status for free. Fails soft to null.
           const status = readLastFailedHttpStatus(errCap.completeText, AEVAL_DATA_PATH, workDir);
-          const httpNote = status === null ? '' : ` (last failed request HTTP ${status})`;
+          const httpNote = status === null ? '' : formatLastFailedHttpStatus(status);
           reject(new Error(`login timed out after ${timeoutMs}ms${httpNote}${detail}`));
         });
       }, timeoutMs);
@@ -329,8 +335,12 @@ export async function mintWithAeval(req: MintRequest, timeoutMs: number): Promis
           // was reported as a path. capturedFailure() prefers the loguru ERROR
           // lines and redacts them before truncation.
           const summary = capturedFailure(typeof code === 'number');
-          const status = readLastFailedHttpStatus(errCap.text, AEVAL_DATA_PATH, workDir);
-          reject(new Error(`aeval exited ${code}${status === null ? '' : ` (last failed request HTTP ${status})`}: ${summary}`));
+          // completeText when the child was KILLED: its last line can be
+          // half-emitted, and the banner IS the last line. Same rule
+          // capturedFailure applies two lines up.
+          const status = readLastFailedHttpStatus(
+            code === null ? errCap.completeText : errCap.text, AEVAL_DATA_PATH, workDir);
+          reject(new Error(`aeval exited ${code}${status === null ? '' : formatLastFailedHttpStatus(status)}: ${summary}`));
         }
       }));
     });

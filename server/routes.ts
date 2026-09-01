@@ -11,7 +11,7 @@ import { registerApiV1Routes } from "./routes-api-v1";
 import { generateSignedUrlForUser } from "./s3";
 import { validateTierChoice, resolveTargetedDispatch, filterDispatchableAgents } from "./dispatch";
 import { getMarketplace } from "./marketplace";
-import { fingerprintCredential } from "@shared/credentials";
+import { fingerprintCredential, formatLastFailedHttpStatus, parseLastFailedHttpStatus } from "@shared/credentials";
 import { parsePlatformSetup, sessionScopeForWorkflow, evaluateSessionRequirement, getBrokeredSecretNames, ensureSession, stampOwnerSession, credentialKeyFor, SESSION_FRESH_MARGIN_SECONDS, classifyReferencedSecrets, findBrokeredMisuse, defaultBrokerTypeForName, resolveBrokerType, type SessionNeed, detectSessionNeed, missingSecretNames, resolvableSecretSources } from "./auth-session";
 import { validateRegisterPayload, cacheBrokerMintSecret, hasBrokerMintSecret } from "./broker-registry";
 import { deriveApiKeyStatus } from "./api-key-status";
@@ -2686,21 +2686,25 @@ export async function registerRoutes(
         return res.status(403).json({ error: "Organization membership required" });
       }
       const secrets = await storage.getOrgSecrets(user.organizationId);
-      // Fingerprints go to org MANAGERS only, matching this route's existing
-      // "all members see names, admins see full" split.
+      // Fingerprints go to the secret's OWN CREATOR, not to org managers.
       //
-      // A plain member can spend an org secret inside a workflow, but that is
-      // USE, not KNOWLEDGE: until now they could learn nothing about its value.
-      // An unsalted MD5 plus an exact length is the very artifact
-      // shared/credentials.ts argues must be withheld, and a shared org login
-      // is exactly the kind of password worth attacking. Being an org rather
-      // than a log aggregator does not change that.
-      const isOrgManager = user.orgRole === "owner" || user.orgRole === "admin";
+      // Before this feature nobody could learn anything about an org secret's
+      // value — this route returned names, and requireOrgAdmin gated write, not
+      // read. So handing managers a length plus an unsalted MD5 would be a new
+      // READ capability over a credential they may not own, and a shared org
+      // login is exactly the password worth taking offline against a wordlist.
+      // "They could already overwrite it" is not the same as "they could
+      // already learn it".
+      //
+      // Creator-scoped keeps the whole diagnostic — the point is letting whoever
+      // entered a value check it against their own copy — while widening
+      // nothing. A plain member spending the secret in a workflow is USE, not
+      // KNOWLEDGE, and stays that way.
       res.json(secrets.map(s => ({
         name: s.name,
         brokerType: s.brokerType,
         isTestAccount: s.isTestAccount,
-        ...(isOrgManager ? secretFingerprint(s.encryptedValue) : {}),
+        ...(s.createdBy === user.id ? secretFingerprint(s.encryptedValue) : {}),
         createdAt: s.createdAt,
         updatedAt: s.updatedAt,
       })));
@@ -3992,8 +3996,10 @@ export async function registerRoutes(
         // safety and costs the whole diagnostic. Parsed back out of lastError
         // rather than stored separately, which would need a column and a
         // migration for one integer.
-        const httpStatus = /\(last failed request HTTP (\d{3})\)/.exec(session.lastError ?? "")?.[1];
-        const genericError = httpStatus ? `session mint failed (last failed request HTTP ${httpStatus})` : "session mint failed";
+        const httpStatus = parseLastFailedHttpStatus(session.lastError ?? "");
+        const genericError = httpStatus === null
+          ? "session mint failed"
+          : `session mint failed${formatLastFailedHttpStatus(httpStatus)}`;
         return res.status(503).json({
           required: true,
           status: "failed",

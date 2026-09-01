@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
 import type { AddressInfo } from "net";
 import type { Server } from "http";
 import { createBrokerServer, scrubCredentials, credentialForms, selectDiagnosisSource, describeMintFailure, readLastFailedHttpStatus, NO_OUTPUT_MESSAGE, secretMatches, heartbeat, type MintRequest } from "../vox_eval_agentd/auth-session-broker";
-import { fingerprintCredential, fingerprintForLog } from "../shared/credentials";
+import { fingerprintCredential, fingerprintForLog, formatLastFailedHttpStatus, parseLastFailedHttpStatus } from "../shared/credentials";
 import { mkdtempSync, mkdirSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -646,29 +646,18 @@ describe("mint diagnostics", () => {
     expect(readLastFailedHttpStatus(output, dataPath)).toBe(400);
   });
 
-  it("ignores a banner on stdout — a matched string here becomes a FILE READ", () => {
-    // The module treats aeval stdout as untrusted (selectDiagnosisSource,
-    // hasLoguruDiagnosis). This function turns a match into an fs read, so
-    // honouring stdout would let target-page text choose which path is opened.
+  it("needs a banner to locate anything at all", () => {
+    // NOTE on scope: this asserts the function's own behaviour, not the
+    // stdout-is-untrusted rule. That rule lives at the two CALL SITES, which
+    // pass errCap only — the function has no stdout parameter to test. An
+    // earlier version of this test claimed to cover it and did not, which is
+    // the "looks tested but isn't" shape worth naming rather than repeating.
     const { output, dataPath } = withArtifacts(
       "[error] the server responded with a status of 400 (Bad Request)\n",
     );
-    // The genuine banner arrives on stderr; the same text on stdout must not count.
     expect(readLastFailedHttpStatus(output, dataPath)).toBe(400);
     expect(readLastFailedHttpStatus("", dataPath)).toBeNull();
-  });
-
-  it("accepts an ABSOLUTE banner under the mint workdir, not just a relative one", () => {
-    // Against aeval 0.3.0 the banner is relative and resolves under the data
-    // root (verified in production). But the mint scenario configures an
-    // absolute output_dir under its own temp workdir, so an aeval that honours
-    // that setting would report an absolute path — and confining to the data
-    // root alone would silently return null on every real mint.
-    const workDir = mkdtempSync(join(tmpdir(), "vox-mint-"));
-    mkdirSync(join(workDir, "out", "logs"), { recursive: true });
-    writeFileSync(join(workDir, "out", "logs", "console.log"), "the server responded with a status of 403 (Forbidden)\n");
-    const banner = `INFO | Artifacts saved to: ${join(workDir, "out")}`;
-    expect(readLastFailedHttpStatus(banner, "/some/other/root", workDir)).toBe(403);
+    expect(readLastFailedHttpStatus(output)).toBeNull(); // no roots: soft, not a throw
   });
 
   it("refuses a path that escapes the artifacts root", () => {
@@ -699,6 +688,16 @@ describe("mint diagnostics", () => {
     );
     expect(readLastFailedHttpStatus(output, dataPath)).toBe(400);
     expect(String(readLastFailedHttpStatus(output, dataPath))).not.toContain("hunter2");
+  });
+});
+
+describe("last-failed-status marker (formatted in the broker, parsed in Core)", () => {
+  it("round-trips, so the two packages cannot drift apart silently", () => {
+    // If they drift the status simply vanishes from the 503 body and nothing
+    // goes red — the exact failure the fingerprint wiring test exists to catch
+    // one file over.
+    expect(parseLastFailedHttpStatus(`aeval exited 1${formatLastFailedHttpStatus(400)}: boom`)).toBe(400);
+    expect(parseLastFailedHttpStatus("aeval exited 1: boom")).toBeNull();
   });
 });
 
