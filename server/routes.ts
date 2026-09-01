@@ -11,6 +11,7 @@ import { registerApiV1Routes } from "./routes-api-v1";
 import { generateSignedUrlForUser } from "./s3";
 import { validateTierChoice, resolveTargetedDispatch, filterDispatchableAgents } from "./dispatch";
 import { getMarketplace } from "./marketplace";
+import { fingerprintCredential, formatLastFailedHttpStatus, parseLastFailedHttpStatus } from "@shared/credentials";
 import { parsePlatformSetup, sessionScopeForWorkflow, evaluateSessionRequirement, getBrokeredSecretNames, ensureSession, stampOwnerSession, credentialKeyFor, SESSION_FRESH_MARGIN_SECONDS, classifyReferencedSecrets, findBrokeredMisuse, defaultBrokerTypeForName, resolveBrokerType, type SessionNeed, detectSessionNeed, missingSecretNames, resolvableSecretSources } from "./auth-session";
 import { validateRegisterPayload, cacheBrokerMintSecret, hasBrokerMintSecret } from "./broker-registry";
 import { deriveApiKeyStatus } from "./api-key-status";
@@ -2540,6 +2541,29 @@ export async function registerRoutes(
   // ==================== SECRETS ROUTES ====================
 
   // List user's secrets (names + timestamps only, never values)
+  /**
+   * Fingerprint a stored secret for display to its owner: length + a truncated
+   * MD5 they can reproduce locally with
+   *   printf %s 'value' | md5sum | cut -c1-10
+   *
+   * Decryption happens here rather than at write time deliberately: storing the
+   * fingerprint would need a column, a migration, and a backfill that decrypts
+   * every existing row anyway. Listing is owner-scoped and capped at 50 secrets
+   * per user, so the cost is bounded.
+   *
+   * Fails soft. A secret encrypted under a rotated key must still LIST — the
+   * whole point of the page is to let the owner see and replace it — so a
+   * decrypt failure yields no fingerprint rather than a 500.
+   */
+  function secretFingerprint(encryptedValue: string): { valueLength: number; valueFingerprint: string } | Record<string, never> {
+    try {
+      const fp = fingerprintCredential(decryptValue(encryptedValue));
+      return { valueLength: fp.length, valueFingerprint: fp.md5_10 };
+    } catch {
+      return {};
+    }
+  }
+
   app.get("/api/secrets", requireAuth, async (req, res) => {
     try {
       const user = await getCurrentUser(req);
@@ -2558,6 +2582,12 @@ export async function registerRoutes(
           name: s.name,
           brokerType: s.brokerType,
           isTestAccount: s.isTestAccount,
+          // Comparison fingerprint, never the value. Answers "is the value I
+          // stored the one that actually works?" without anyone decrypting a
+          // secret in a production container, which is how every login failure
+          // has had to be diagnosed so far. Safe here because the query is
+          // keyed by user.id: these are the caller's OWN secrets.
+          ...secretFingerprint(s.encryptedValue),
           createdAt: s.createdAt,
           updatedAt: s.updatedAt,
         })),
@@ -2656,6 +2686,15 @@ export async function registerRoutes(
         return res.status(403).json({ error: "Organization membership required" });
       }
       const secrets = await storage.getOrgSecrets(user.organizationId);
+      // NO fingerprint here, deliberately. Personal secrets are unambiguous —
+      // the row is keyed by user_id, so the caller entered the value. Org
+      // secrets are not: upsertOrgSecret preserves the ORIGINAL createdBy on
+      // update, so after a rotation the first creator would be shown a hash of
+      // a value they never set and would "verify" it against their stale copy,
+      // getting a false mismatch — which causes exactly the wrong action, and
+      // is the failure this whole feature exists to prevent. Meanwhile whoever
+      // actually set the current value would see nothing. Needs an updatedBy
+      // column to do correctly; tracked separately.
       res.json(secrets.map(s => ({
         name: s.name,
         brokerType: s.brokerType,
@@ -3944,11 +3983,22 @@ export async function registerRoutes(
         // explaining why minting it failed are different disclosures. The full
         // text is on the session row and in Core's log either way.
         const ownerOperated = isOwnerOperatedAgent(serveJob, serveToken, serveTokenOwner);
+        // A non-owner agent still gets the login HTTP STATUS, just not the
+        // prose. A three-digit code cannot carry page state or a credential,
+        // and it is the one field that tells an operator whether the login was
+        // rejected or the browser was challenged — so withholding it buys no
+        // safety and costs the whole diagnostic. Parsed back out of lastError
+        // rather than stored separately, which would need a column and a
+        // migration for one integer.
+        const httpStatus = parseLastFailedHttpStatus(session.lastError ?? "");
+        const genericError = httpStatus === null
+          ? "session mint failed"
+          : `session mint failed${formatLastFailedHttpStatus(httpStatus)}`;
         return res.status(503).json({
           required: true,
           status: "failed",
           // `||` not `??`: an empty-string lastError should fall back too.
-          error: (ownerOperated ? session.lastError : null) || "session mint failed",
+          error: (ownerOperated ? session.lastError : null) || genericError,
         });
       }
       // Cold or stale or currently minting: (re)trigger and tell the agent to poll.

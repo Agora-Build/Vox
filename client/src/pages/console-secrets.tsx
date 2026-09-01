@@ -26,6 +26,9 @@ interface SecretEntry {
   isTestAccount: boolean;
   createdAt: string;
   updatedAt: string;
+  // Absent when the value cannot be decrypted (e.g. after a key rotation).
+  valueLength?: number;
+  valueFingerprint?: string;
 }
 
 interface SecretsResponse {
@@ -46,6 +49,28 @@ interface AuthStatus {
     organizationId: number | null;
     orgRole: string | null;
   } | null;
+}
+
+/**
+ * Length + truncated MD5 of the stored value, so an owner can confirm the
+ * secret Vox holds is the one that actually works:
+ *
+ *   printf %s 'the-value' | md5sum | cut -c1-10
+ *
+ * `printf %s`, not `echo` — a trailing newline changes the hash, and a false
+ * mismatch sends you chasing the wrong problem.
+ */
+function ValueFingerprint({ length, fingerprint }: { length?: number; fingerprint?: string }) {
+  if (length === undefined || !fingerprint) return null;
+  return (
+    <span
+      className="text-xs text-muted-foreground font-mono"
+      title={`Compare with:  printf %s 'value' | md5sum | cut -c1-10`}
+      data-testid="secret-fingerprint"
+    >
+      {length} chars · md5 {fingerprint}
+    </span>
+  );
 }
 
 export default function ConsoleSecrets() {
@@ -340,6 +365,7 @@ export default function ConsoleSecrets() {
                                 {secret.isTestAccount && <Badge variant="secondary">test account</Badge>}
                               </>
                             )}
+                            <ValueFingerprint length={secret.valueLength} fingerprint={secret.valueFingerprint} />
                           </div>
                         </TableCell>
                         <TableCell className="text-muted-foreground">••••••••</TableCell>

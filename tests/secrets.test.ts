@@ -369,6 +369,32 @@ describe('Secrets API', () => {
     expect(Array.isArray(data.secrets)).toBe(true);
   });
 
+  it('exposes a value fingerprint the owner can reproduce locally', async () => {
+    if (!serverAvailable) return;
+    // The point: confirming "is the stored value the one that works?" without
+    // decrypting a secret inside a production container, which is how every
+    // login failure has had to be diagnosed until now.
+    const name = `FP_TEST_${Date.now()}`;
+    const value = 'a-known-secret-value';
+    const expected = crypto.createHash('md5').update(value, 'utf8').digest('hex').slice(0, 10);
+
+    const created = await authFetch(adminSession, `${BASE_URL}/api/secrets`, {
+      method: 'POST',
+      body: JSON.stringify({ name, value, brokerType: null }),
+    });
+    expect(created.ok).toBe(true);
+
+    const list = await authFetch(adminSession, `${BASE_URL}/api/secrets`);
+    const row = (await list.json()).secrets.find((r: { name: string }) => r.name === name);
+    expect(row).toBeDefined();
+    expect(row.valueLength).toBe(value.length);
+    expect(row.valueFingerprint).toBe(expected);
+    // ...and the value itself is still never returned.
+    expect(JSON.stringify(row)).not.toContain(value);
+
+    await authFetch(adminSession, `${BASE_URL}/api/secrets/${name}`, { method: 'DELETE' });
+  });
+
   it('should reject invalid secret names', async () => {
     if (!serverAvailable) return;
     const badNames = ['lowercase', '123start', '', 'has-dash', 'has space'];

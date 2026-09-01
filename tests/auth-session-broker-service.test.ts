@@ -1,7 +1,11 @@
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
 import type { AddressInfo } from "net";
 import type { Server } from "http";
-import { createBrokerServer, scrubCredentials, credentialForms, selectDiagnosisSource, describeMintFailure, NO_OUTPUT_MESSAGE, secretMatches, heartbeat, type MintRequest } from "../vox_eval_agentd/auth-session-broker";
+import { createBrokerServer, scrubCredentials, credentialForms, selectDiagnosisSource, describeMintFailure, readLastFailedHttpStatus, NO_OUTPUT_MESSAGE, secretMatches, heartbeat, type MintRequest } from "../vox_eval_agentd/auth-session-broker";
+import { fingerprintCredential, fingerprintForLog, formatLastFailedHttpStatus, parseLastFailedHttpStatus } from "../shared/credentials";
+import { mkdtempSync, mkdirSync, writeFileSync } from "fs";
+import { tmpdir } from "os";
+import { join } from "path";
 import { summarizeAevalFailure, hasAevalDiagnosis, hasLoguruDiagnosis, reduceUrlsToHost, createBoundedCapture } from "../vox_eval_agentd/aeval-output";
 
 describe("secretMatches (constant-time bearer check)", () => {
@@ -611,5 +615,142 @@ describe("heartbeat resilience", () => {
     } finally {
       globalThis.fetch = originalFetch;
     }
+  });
+});
+
+describe("mint diagnostics", () => {
+  // The field that distinguishes "the password is wrong" (server rejects the
+  // sign-in) from "this browser is being challenged" (refused before
+  // credentials matter). Both otherwise look identical, which is what made the
+  // production diagnosis take three rounds.
+  const withArtifacts = (consoleLines: string): { output: string; dataPath: string } => {
+    const dataPath = mkdtempSync(join(tmpdir(), "mint-artifacts-"));
+    const rel = join("output", "mint", "20260831_230019_7219");
+    mkdirSync(join(dataPath, rel, "logs"), { recursive: true });
+    writeFileSync(join(dataPath, rel, "logs", "console.log"), consoleLines);
+    return { output: `2026-08-31 23:01:30.041 | INFO | Artifacts saved to: ${rel}`, dataPath };
+  };
+
+  it("reads the failing HTTP status out of aeval's own artifacts", () => {
+    const { output, dataPath } = withArtifacts(
+      "[log] something benign\n[error] Failed to load resource: the server responded with a status of 400 (Bad Request)\n",
+    );
+    expect(readLastFailedHttpStatus(output, dataPath)).toBe(400);
+  });
+
+  it("takes the LAST status, since the failing request is the final one", () => {
+    const { output, dataPath } = withArtifacts(
+      "[error] the server responded with a status of 404 (Not Found)\n" +
+      "[error] the server responded with a status of 400 (Bad Request)\n",
+    );
+    expect(readLastFailedHttpStatus(output, dataPath)).toBe(400);
+  });
+
+  it("needs a banner to locate anything at all", () => {
+    // NOTE on scope: this asserts the function's own behaviour, not the
+    // stdout-is-untrusted rule. That rule lives at the two CALL SITES, which
+    // pass errCap only — the function has no stdout parameter to test. An
+    // earlier version of this test claimed to cover it and did not, which is
+    // the "looks tested but isn't" shape worth naming rather than repeating.
+    const { output, dataPath } = withArtifacts(
+      "[error] the server responded with a status of 400 (Bad Request)\n",
+    );
+    expect(readLastFailedHttpStatus(output, dataPath)).toBe(400);
+    expect(readLastFailedHttpStatus("", dataPath)).toBeNull();
+    expect(readLastFailedHttpStatus(output)).toBeNull(); // no roots: soft, not a throw
+  });
+
+  it("refuses a path that escapes the artifacts root", () => {
+    const dataPath = mkdtempSync(join(tmpdir(), "mint-escape-"));
+    const outside = join(dataPath, "..", `escape-${Date.now()}`);
+    mkdirSync(join(outside, "logs"), { recursive: true });
+    writeFileSync(join(outside, "logs", "console.log"), "the server responded with a status of 500 (x)\n");
+    const banner = `INFO | Artifacts saved to: ../${outside.split("/").pop()}`;
+    expect(readLastFailedHttpStatus(banner, dataPath)).toBeNull();
+  });
+
+  it("takes the LAST banner, so an earlier line cannot preempt the real one", () => {
+    const { output, dataPath } = withArtifacts("the server responded with a status of 400 (Bad Request)\n");
+    const withDecoy = `INFO | Artifacts saved to: /tmp/decoy-does-not-exist\n${output}`;
+    expect(readLastFailedHttpStatus(withDecoy, dataPath)).toBe(400);
+  });
+
+  it("returns null rather than throwing when there are no artifacts", () => {
+    // The timeout path kills the child before aeval writes anything.
+    expect(readLastFailedHttpStatus("no banner here", "/nonexistent")).toBeNull();
+    const { dataPath } = withArtifacts("");
+    expect(readLastFailedHttpStatus("no banner here", dataPath)).toBeNull();
+  });
+
+  it("propagates only digits, so nothing from the console log can ride along", () => {
+    const { output, dataPath } = withArtifacts(
+      "[error] password=hunter2 leaked here; the server responded with a status of 400 (Bad Request)\n",
+    );
+    expect(readLastFailedHttpStatus(output, dataPath)).toBe(400);
+    expect(String(readLastFailedHttpStatus(output, dataPath))).not.toContain("hunter2");
+  });
+});
+
+describe("last-failed-status marker (formatted in the broker, parsed in Core)", () => {
+  it("round-trips, so the two packages cannot drift apart silently", () => {
+    // If they drift the status simply vanishes from the 503 body and nothing
+    // goes red — the exact failure the fingerprint wiring test exists to catch
+    // one file over.
+    expect(parseLastFailedHttpStatus(`aeval exited 1${formatLastFailedHttpStatus(400)}: boom`)).toBe(400);
+    expect(parseLastFailedHttpStatus("aeval exited 1: boom")).toBeNull();
+  });
+});
+
+describe("credential fingerprints", () => {
+  it("is reproducible with printf | md5sum, which is the entire point", () => {
+    // Anything keyed or salted would be unreproducible by the owner and so
+    // useless for comparison. Pinning the exact algorithm on purpose.
+    expect(fingerprintCredential("brent@agora.io")).toEqual({ length: 14, md5_10: "0d9dbace81" });
+  });
+
+  it("is actually WIRED into the broker's mint-request log, not merely defined", async () => {
+    // The first version of this shipped fingerprintForLog imported but never
+    // called: the helper had tests, the log line did not, and grepping for the
+    // symbol matched only the import. Assert against real captured output.
+    const logs: string[] = [];
+    const spy = vi.spyOn(console, "log").mockImplementation((...a: unknown[]) => { logs.push(a.join(" ")); });
+    const srv = createBrokerServer({ getSecret: () => "s3", mint: async () => ({ cookies: [] }) });
+    await new Promise<void>((r) => srv.listen(0, "127.0.0.1", r));
+    const { port } = srv.address() as AddressInfo;
+    try {
+      await fetch(`http://127.0.0.1:${port}/mint`, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: "Bearer s3" },
+        body: JSON.stringify({ platformId: "agora", email: "brent@agora.io", password: "hunter2-password" }),
+      });
+    } finally {
+      spy.mockRestore();
+      await new Promise<void>((r, j) => srv.close((e) => (e ? j(e) : r())));
+    }
+    const line = logs.find((l) => l.includes("Mint request for platform agora"));
+    expect(line).toBeDefined();
+    expect(line).toContain("identifier len=14 md5=0d9dbace81");
+    expect(line).toContain("secret len=16");
+    // ...and still never the secret's own hash or either raw value.
+    expect(line).not.toContain(fingerprintCredential("hunter2-password").md5_10);
+    expect(line).not.toContain("hunter2-password");
+    expect(line).not.toContain("brent@agora.io");
+  });
+
+  it("never puts the secret's hash in a log line", () => {
+    // Container logs get shipped, screen-shared and pasted into chat. An
+    // unsalted MD5 plus an exact length is a practical cracking aid, so the
+    // secret contributes its LENGTH only; its hash is console-only.
+    const line = fingerprintForLog("brent@agora.io", "hunter2-password");
+    expect(line).toContain("md5=0d9dbace81");                       // identifier: full fingerprint
+    expect(line).toContain("secret len=16");                        // secret: length only
+    expect(line).not.toContain(fingerprintCredential("hunter2-password").md5_10);
+    expect(line).not.toContain("hunter2-password");
+  });
+
+  it("still catches the real-world case: a value that changed length", () => {
+    // The production password went from 20 characters to 16. Length alone
+    // flags that without any hash at all.
+    expect(fingerprintCredential("x".repeat(20)).length).not.toBe(fingerprintCredential("x".repeat(16)).length);
   });
 });

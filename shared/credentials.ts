@@ -1,6 +1,12 @@
+import { createHash } from "crypto";
+
 /**
  * Credential redaction primitives, shared by Core, the eval-agent daemon and
  * the auth-session broker.
+ *
+ * Node-only: it imports `crypto`. That is safe because every consumer runs
+ * under Node (Core, the daemon, the broker). The CLIENT-safe shared module is
+ * `shared/secrets.ts`; keep it that way, or the browser bundle breaks.
  *
  * All three redact decrypted secret values out of third-party process output
  * before it reaches a log line, an HTTP body, or a durable column
@@ -78,4 +84,80 @@ export function redactValues(message: string, values: string[]): string {
     .filter((v) => v.length > 0)
     .sort((a, b) => b.length - a.length)
     .reduce((acc, v) => acc.split(v).join("[redacted]"), message);
+}
+
+/**
+ * A comparison fingerprint for a credential: its length and a truncated MD5.
+ *
+ * Exists because diagnosing a failed login means answering "is the value we
+ * stored the same one that works?", and the only way to answer it so far was
+ * decrypting the secret inside a production container. The owner can now
+ * compare against their own copy in one line:
+ *
+ *   printf %s 'the-password' | md5sum | cut -c1-10
+ *
+ * (`printf %s`, not `echo` — a trailing newline changes the hash.)
+ *
+ * MD5 and a 10-hex-digit prefix are deliberate. This is a comparison aid, not
+ * a security primitive: it must be reproducible with tools an operator already
+ * has, so a keyed or salted hash would defeat the entire purpose. That choice
+ * is exactly why WHERE a fingerprint may appear is constrained — see
+ * fingerprintForLog below. Length is included because it is often enough on its
+ * own: a password that changed from 20 characters to 16 is visibly a different
+ * value without any hash at all.
+ */
+export interface CredentialFingerprint {
+  length: number;
+  md5_10: string;
+}
+
+export function fingerprintCredential(value: string): CredentialFingerprint {
+  return { length: value.length, md5_10: md5Prefix(value) };
+}
+
+/**
+ * What may be written to a LOG, as opposed to shown to an authenticated owner.
+ *
+ * The distinction is not fussiness. Container logs are shipped to aggregators,
+ * screen-shared, and pasted into chat threads; an unsalted MD5 plus an exact
+ * length is a practical cracking aid for a weak password. So:
+ *
+ *  - identifiers (an email) get a full fingerprint — the value is already
+ *    visible in aeval's own masked output and in its error screenshots, so the
+ *    hash adds diagnostic power without adding meaningful exposure;
+ *  - secrets (a password) get their LENGTH only, which still catches the common
+ *    "wrong value stored" case, without publishing a hash to crack.
+ *
+ * The password's full fingerprint is available to its owner in the console,
+ * behind authentication, where it is their own credential.
+ */
+export function fingerprintForLog(identifier: string, secret: string): string {
+  const id = fingerprintCredential(identifier);
+  return `identifier len=${id.length} md5=${id.md5_10}, secret len=${secret.length}`;
+}
+
+function md5Prefix(value: string): string {
+  return createHash("md5").update(value, "utf8").digest("hex").slice(0, 10);
+}
+
+/**
+ * The "last failed request HTTP NNN" marker, formatted in the broker and parsed
+ * back out in Core.
+ *
+ * One definition because the two live in different packages and communicate
+ * through a formatted string: the broker builds the mint error, Core extracts
+ * the status from `webSessions.lastError` to give a non-owner agent the code
+ * without the prose. Two hand-written regexes would drift silently — the status
+ * would simply vanish from the 503 body with nothing going red, which is the
+ * "looks wired but isn't" failure this codebase has already produced once.
+ */
+const LAST_FAILED_HTTP = /\(last failed request HTTP (\d{3})\)/;
+
+export function formatLastFailedHttpStatus(status: number): string {
+  return ` (last failed request HTTP ${status})`;
+}
+
+export function parseLastFailedHttpStatus(message: string): number | null {
+  const m = LAST_FAILED_HTTP.exec(message);
+  return m ? Number(m[1]) : null;
 }
