@@ -32,7 +32,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { StringDecoder } from 'string_decoder';
 import { summarizeAevalFailure, hasAevalDiagnosis, hasLoguruDiagnosis, reduceUrlsSafely, createBoundedCapture, LINE_TERMINATORS } from './aeval-output';
-import { credentialForms, redactValues } from '../shared/credentials';
+import { credentialForms, redactValues, fingerprintForLog } from '../shared/credentials';
 import { mintTimeoutSeconds } from '../shared/mint-timeout';
 export { credentialForms } from '../shared/credentials';
 
@@ -134,6 +134,47 @@ export function describeMintFailure(stdout: string, stderr: string, forms: strin
     summarizeAevalFailure(reduceUrlsSafely(source, forms), reduceUrlsSafely(stderr, forms), forms, 0),
     forms,
   );
+}
+
+/**
+ * The HTTP status of the last failed request in an aeval run, or null.
+ *
+ * This is the field that distinguishes "the password is wrong" (the server
+ * rejects the sign-in) from "this browser is being challenged" (the request is
+ * refused before credentials matter). Both look identical otherwise: same
+ * timeout, same screenshot, same message — which is why diagnosing it has meant
+ * reading the browser console inside the container by hand.
+ *
+ * Located via aeval's own "Artifacts saved to: <dir>" line — the banner that
+ * used to be reported AS the error. It is relative to aeval's cwd.
+ *
+ * Returns only the digits. Nothing else from console.log is propagated, so no
+ * credential can ride along and no scrubbing is required — which is what makes
+ * it safe to append after the redaction pipeline has already run.
+ */
+export function readLoginHttpStatus(aevalOutput: string, dataPath: string): number | null {
+  const dir = /Artifacts saved to:\s*(\S+)/.exec(aevalOutput)?.[1];
+  if (!dir) return null;
+  const consoleLog = path.resolve(dataPath, dir, 'logs', 'console.log');
+  let text: string;
+  try {
+    // Tail only: the console log of a browser session is unbounded, and the
+    // failing request is at the end.
+    const { size } = fs.statSync(consoleLog);
+    const start = Math.max(0, size - 256 * 1024);
+    const fd = fs.openSync(consoleLog, 'r');
+    try {
+      const buf = Buffer.alloc(size - start);
+      fs.readSync(fd, buf, 0, buf.length, start);
+      text = buf.toString('utf8');
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch {
+    return null; // no artifacts (e.g. killed before they were written)
+  }
+  const codes = [...text.matchAll(/responded with a status of (\d{3})/g)].map((m) => Number(m[1]));
+  return codes.length > 0 ? codes[codes.length - 1] : null;
 }
 
 /** Real mint: one-step aeval scenario running setup:account → save_storage_state. */
@@ -251,7 +292,8 @@ export async function mintWithAeval(req: MintRequest, timeoutMs: number): Promis
           // was reported as a path. capturedFailure() prefers the loguru ERROR
           // lines and redacts them before truncation.
           const summary = capturedFailure(typeof code === 'number');
-          reject(new Error(`aeval exited ${code}: ${summary}`));
+          const status = readLoginHttpStatus(outCap.text + errCap.text, AEVAL_DATA_PATH);
+          reject(new Error(`aeval exited ${code}${status === null ? '' : ` (login HTTP ${status})`}: ${summary}`));
         }
       }));
     });

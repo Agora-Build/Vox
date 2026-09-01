@@ -11,6 +11,7 @@ import { registerApiV1Routes } from "./routes-api-v1";
 import { generateSignedUrlForUser } from "./s3";
 import { validateTierChoice, resolveTargetedDispatch, filterDispatchableAgents } from "./dispatch";
 import { getMarketplace } from "./marketplace";
+import { fingerprintCredential } from "@shared/credentials";
 import { parsePlatformSetup, sessionScopeForWorkflow, evaluateSessionRequirement, getBrokeredSecretNames, ensureSession, stampOwnerSession, credentialKeyFor, SESSION_FRESH_MARGIN_SECONDS, classifyReferencedSecrets, findBrokeredMisuse, defaultBrokerTypeForName, resolveBrokerType, type SessionNeed, detectSessionNeed, missingSecretNames, resolvableSecretSources } from "./auth-session";
 import { validateRegisterPayload, cacheBrokerMintSecret, hasBrokerMintSecret } from "./broker-registry";
 import { deriveApiKeyStatus } from "./api-key-status";
@@ -2540,6 +2541,29 @@ export async function registerRoutes(
   // ==================== SECRETS ROUTES ====================
 
   // List user's secrets (names + timestamps only, never values)
+  /**
+   * Fingerprint a stored secret for display to its owner: length + a truncated
+   * MD5 they can reproduce locally with
+   *   printf %s 'value' | md5sum | cut -c1-10
+   *
+   * Decryption happens here rather than at write time deliberately: storing the
+   * fingerprint would need a column, a migration, and a backfill that decrypts
+   * every existing row anyway. Listing is owner-scoped and capped at 50 secrets
+   * per user, so the cost is bounded.
+   *
+   * Fails soft. A secret encrypted under a rotated key must still LIST — the
+   * whole point of the page is to let the owner see and replace it — so a
+   * decrypt failure yields no fingerprint rather than a 500.
+   */
+  function secretFingerprint(encryptedValue: string): { valueLength: number; valueFingerprint: string } | Record<string, never> {
+    try {
+      const fp = fingerprintCredential(decryptValue(encryptedValue));
+      return { valueLength: fp.length, valueFingerprint: fp.md5_10 };
+    } catch {
+      return {};
+    }
+  }
+
   app.get("/api/secrets", requireAuth, async (req, res) => {
     try {
       const user = await getCurrentUser(req);
@@ -2558,6 +2582,11 @@ export async function registerRoutes(
           name: s.name,
           brokerType: s.brokerType,
           isTestAccount: s.isTestAccount,
+          // Comparison fingerprint, never the value. Answers "is the value I
+          // stored the one that actually works?" without anyone decrypting a
+          // secret in a production container, which is how every login failure
+          // has had to be diagnosed so far. Owner-scoped by the query above.
+          ...secretFingerprint(s.encryptedValue),
           createdAt: s.createdAt,
           updatedAt: s.updatedAt,
         })),
@@ -2660,6 +2689,9 @@ export async function registerRoutes(
         name: s.name,
         brokerType: s.brokerType,
         isTestAccount: s.isTestAccount,
+        // Visible to org members, who can already spend these secrets in a
+        // workflow — so a fingerprint discloses nothing they cannot already use.
+        ...secretFingerprint(s.encryptedValue),
         createdAt: s.createdAt,
         updatedAt: s.updatedAt,
       })));

@@ -1,7 +1,11 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import type { AddressInfo } from "net";
 import type { Server } from "http";
-import { createBrokerServer, scrubCredentials, credentialForms, selectDiagnosisSource, describeMintFailure, NO_OUTPUT_MESSAGE, secretMatches, heartbeat, type MintRequest } from "../vox_eval_agentd/auth-session-broker";
+import { createBrokerServer, scrubCredentials, credentialForms, selectDiagnosisSource, describeMintFailure, readLoginHttpStatus, NO_OUTPUT_MESSAGE, secretMatches, heartbeat, type MintRequest } from "../vox_eval_agentd/auth-session-broker";
+import { fingerprintCredential, fingerprintForLog } from "../shared/credentials";
+import { mkdtempSync, mkdirSync, writeFileSync } from "fs";
+import { tmpdir } from "os";
+import { join } from "path";
 import { summarizeAevalFailure, hasAevalDiagnosis, hasLoguruDiagnosis, reduceUrlsToHost, createBoundedCapture } from "../vox_eval_agentd/aeval-output";
 
 describe("secretMatches (constant-time bearer check)", () => {
@@ -611,5 +615,74 @@ describe("heartbeat resilience", () => {
     } finally {
       globalThis.fetch = originalFetch;
     }
+  });
+});
+
+describe("mint diagnostics", () => {
+  // The field that distinguishes "the password is wrong" (server rejects the
+  // sign-in) from "this browser is being challenged" (refused before
+  // credentials matter). Both otherwise look identical, which is what made the
+  // production diagnosis take three rounds.
+  const withArtifacts = (consoleLines: string): { output: string; dataPath: string } => {
+    const dataPath = mkdtempSync(join(tmpdir(), "mint-artifacts-"));
+    const rel = join("output", "mint", "20260831_230019_7219");
+    mkdirSync(join(dataPath, rel, "logs"), { recursive: true });
+    writeFileSync(join(dataPath, rel, "logs", "console.log"), consoleLines);
+    return { output: `2026-08-31 23:01:30.041 | INFO | Artifacts saved to: ${rel}`, dataPath };
+  };
+
+  it("reads the failing HTTP status out of aeval's own artifacts", () => {
+    const { output, dataPath } = withArtifacts(
+      "[log] something benign\n[error] Failed to load resource: the server responded with a status of 400 (Bad Request)\n",
+    );
+    expect(readLoginHttpStatus(output, dataPath)).toBe(400);
+  });
+
+  it("takes the LAST status, since the failing request is the final one", () => {
+    const { output, dataPath } = withArtifacts(
+      "[error] the server responded with a status of 404 (Not Found)\n" +
+      "[error] the server responded with a status of 400 (Bad Request)\n",
+    );
+    expect(readLoginHttpStatus(output, dataPath)).toBe(400);
+  });
+
+  it("returns null rather than throwing when there are no artifacts", () => {
+    // The timeout path kills the child before aeval writes anything.
+    expect(readLoginHttpStatus("no banner here", "/nonexistent")).toBeNull();
+    const { dataPath } = withArtifacts("");
+    expect(readLoginHttpStatus("no banner here", dataPath)).toBeNull();
+  });
+
+  it("propagates only digits, so nothing from the console log can ride along", () => {
+    const { output, dataPath } = withArtifacts(
+      "[error] password=hunter2 leaked here; the server responded with a status of 400 (Bad Request)\n",
+    );
+    expect(readLoginHttpStatus(output, dataPath)).toBe(400);
+    expect(String(readLoginHttpStatus(output, dataPath))).not.toContain("hunter2");
+  });
+});
+
+describe("credential fingerprints", () => {
+  it("is reproducible with printf | md5sum, which is the entire point", () => {
+    // Anything keyed or salted would be unreproducible by the owner and so
+    // useless for comparison. Pinning the exact algorithm on purpose.
+    expect(fingerprintCredential("brent@agora.io")).toEqual({ length: 14, md5_10: "0d9dbace81" });
+  });
+
+  it("never puts the secret's hash in a log line", () => {
+    // Container logs get shipped, screen-shared and pasted into chat. An
+    // unsalted MD5 plus an exact length is a practical cracking aid, so the
+    // secret contributes its LENGTH only; its hash is console-only.
+    const line = fingerprintForLog("brent@agora.io", "hunter2-password");
+    expect(line).toContain("md5=0d9dbace81");                       // identifier: full fingerprint
+    expect(line).toContain("secret len=16");                        // secret: length only
+    expect(line).not.toContain(fingerprintCredential("hunter2-password").md5_10);
+    expect(line).not.toContain("hunter2-password");
+  });
+
+  it("still catches the real-world case: a value that changed length", () => {
+    // The production password went from 20 characters to 16. Length alone
+    // flags that without any hash at all.
+    expect(fingerprintCredential("x".repeat(20)).length).not.toBe(fingerprintCredential("x".repeat(16)).length);
   });
 });
