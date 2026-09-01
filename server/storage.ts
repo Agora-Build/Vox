@@ -100,7 +100,7 @@ import {
   brokerRegistrationTokens,
   brokers,
 } from "@shared/schema";
-import { regionSiteSequence } from "@shared/regions";
+import { regionSiteSequence, haversineKm, type RegionCandidate } from "@shared/regions";
 import { drizzle } from "drizzle-orm/node-postgres";
 import pkg from "pg";
 const { Pool } = pkg;
@@ -458,6 +458,44 @@ export class DatabaseStorage {
   async createRegionLocation(location: InsertRegionLocation): Promise<RegionLocation> {
     const result = await db.insert(regionLocations).values(location).returning();
     return result[0];
+  }
+
+  async findNearestActiveRegion(lat: number, lon: number, maxKm: number): Promise<RegionLocation | undefined> {
+    // Catalog is small (tens of rows) — fetch and haversine in JS.
+    const rows = await db.select().from(regionLocations)
+      .where(eq(regionLocations.isActive, true));
+    let best: { row: RegionLocation; km: number } | undefined;
+    for (const row of rows) {
+      if (row.latitude == null || row.longitude == null) continue;
+      const km = haversineKm(lat, lon, row.latitude, row.longitude);
+      if (km <= maxKm && (!best || km < best.km)) best = { row, km };
+    }
+    return best?.row;
+  }
+
+  async createDetectedRegionLocation(candidate: RegionCandidate): Promise<RegionLocation> {
+    try {
+      const result = await db.insert(regionLocations).values({
+        baseId: candidate.baseId,
+        displayName: candidate.displayName,
+        city: candidate.city,
+        countryCode: candidate.countryCode,
+        countryName: candidate.countryName,
+        macroRegionCode: candidate.macroRegionCode,
+        macroRegionName: candidate.macroRegionName,
+        latitude: candidate.latitude,
+        longitude: candidate.longitude,
+        source: "detected",
+        isMainline: false,
+        isActive: true,
+      }).returning();
+      return result[0];
+    } catch (err) {
+      // Unique base_id race: another agent created it first — reuse.
+      const existing = await this.getRegionLocationByBaseId(candidate.baseId);
+      if (existing) return existing;
+      throw err;
+    }
   }
 
   async updateRegionLocation(id: number, data: Partial<RegionLocation>): Promise<RegionLocation | undefined> {

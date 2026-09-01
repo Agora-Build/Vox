@@ -9,6 +9,7 @@ import connectPgSimple from "connect-pg-simple";
 import rateLimit from "express-rate-limit";
 import { authenticateApiKey, passport, initializeGoogleOAuth } from "./auth";
 import { storage, mergeEvalConfig, buildJobSnapshot, pool } from "./storage";
+import { startLocationServices } from "./location";
 import { canScheduleWorkflow, sessionPoolViolation } from "./permissions";
 import { parseNextCronRun } from "./cron";
 import { setupClashWebSocket } from "./clash-ws";
@@ -201,6 +202,11 @@ app.use((req, res, next) => {
 });
 
 (async () => {
+  // storage (imported above) is ready as soon as the module graph loads;
+  // start mmdb/Tor/ASN loaders before routes so early requests still get a
+  // (possibly still-loading) detection shell rather than a crash.
+  startLocationServices();
+
   await registerRoutes(httpServer, app);
   setupClashWebSocket(httpServer);
 

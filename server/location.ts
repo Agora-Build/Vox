@@ -1,4 +1,11 @@
 import { REGION_ELIGIBLE_TRUST, type LocationTrust } from "@shared/schema";
+import { open as maxmindOpen, type Reader, type CityResponse, type AsnResponse } from "maxmind";
+import { readFileSync } from "fs";
+import path from "path";
+import { storage } from "./storage";
+import type { RegionCandidate } from "@shared/regions";
+
+export type { RegionCandidate };
 
 export interface GeoLookup {
   city?: string; countryCode?: string; countryName?: string; continentCode?: string;
@@ -10,12 +17,6 @@ export interface LocationSignals {
   asn: AsnLookup | null;
   isTorExit: boolean;
   asnClass: "vpn" | "hosting" | null;
-}
-export interface RegionCandidate {
-  baseId: string; displayName: string; city: string;
-  countryCode: string; countryName: string;
-  macroRegionCode: string; macroRegionName: string;
-  latitude: number; longitude: number;
 }
 export interface Detection {
   trust: LocationTrust;
@@ -171,4 +172,92 @@ export function decideLocationTransition(
     return { region: det.baseId, changed: true, pendingRegion: null, pendingRegionCount: 0 };
   }
   return { region: agent.region, changed: false, pendingRegion: det.baseId, pendingRegionCount: count };
+}
+
+// ==================== DETECTION SHELL ====================
+// Live mmdb/Tor/ASN loaders + injectable deps for tests. Missing GeoIP DBs or
+// Tor fetch failures must degrade gracefully — never crash startup/registration.
+
+export interface DetectionDeps {
+  geo: (ip: string) => GeoLookup | null;
+  asn: (ip: string) => AsnLookup | null;
+  torExits: ReadonlySet<string>;
+  asnClass: Readonly<Record<string, "vpn" | "hosting">>;
+}
+
+const GEOIP_DIR = process.env.GEOIP_DB_DIR || path.join(process.cwd(), "geoip");
+let cityReader: Reader<CityResponse> | null = null;
+let asnReader: Reader<AsnResponse> | null = null;
+let torExits: Set<string> = new Set();
+let asnClassification: Record<string, "vpn" | "hosting"> = {};
+let warnedPrivateIp = false;
+
+export function startLocationServices(): void {
+  void (async () => {
+    try { cityReader = await maxmindOpen<CityResponse>(path.join(GEOIP_DIR, "GeoLite2-City.mmdb")); }
+    catch { console.log("[location] GeoLite2-City.mmdb not found — geolocation disabled (all agents Unverified)"); }
+    try { asnReader = await maxmindOpen<AsnResponse>(path.join(GEOIP_DIR, "GeoLite2-ASN.mmdb")); }
+    catch { console.log("[location] GeoLite2-ASN.mmdb not found — ASN signals disabled"); }
+  })();
+  try {
+    asnClassification = JSON.parse(readFileSync(path.join(process.cwd(), "server/data/asn-classification.json"), "utf8"));
+    delete (asnClassification as Record<string, unknown>)._comment;
+  } catch { console.log("[location] asn-classification.json not readable — ASN class signals disabled"); }
+  const refreshTor = async () => {
+    try {
+      const res = await fetch("https://check.torproject.org/torbulkexitlist");
+      if (res.ok) torExits = new Set((await res.text()).split("\n").map(l => l.trim()).filter(Boolean));
+    } catch { /* keep previous list */ }
+  };
+  void refreshTor();
+  setInterval(refreshTor, 12 * 60 * 60 * 1000).unref();
+}
+
+function liveDeps(): DetectionDeps {
+  return {
+    geo: (ip) => {
+      const hit = cityReader?.get(ip);
+      if (!hit) return null;
+      return {
+        city: hit.city?.names?.en,
+        countryCode: hit.country?.iso_code,
+        countryName: hit.country?.names?.en,
+        continentCode: hit.continent?.code,
+        lat: hit.location?.latitude,
+        lon: hit.location?.longitude,
+        accuracyKm: hit.location?.accuracy_radius,
+      };
+    },
+    asn: (ip) => {
+      const hit = asnReader?.get(ip);
+      return hit ? { asn: hit.autonomous_system_number, org: hit.autonomous_system_organization } : null;
+    },
+    torExits,
+    asnClass: asnClassification,
+  };
+}
+
+export function detectLocation(ip: string, deps: DetectionDeps = liveDeps()): Detection {
+  if (!isPublicIp(ip)) {
+    // Deployment tripwire (spec): a private IP in production means the proxy
+    // hop count is likely wrong — every agent would geolocate to nothing.
+    if (process.env.NODE_ENV === "production" && !warnedPrivateIp) {
+      warnedPrivateIp = true;
+      console.warn(`[location] observed a private client IP (${ip}) in production — trust-proxy hop count likely misconfigured; agents will stay Unverified`);
+    }
+    return classifyLocation(ip, { geo: null, asn: null, isTorExit: false, asnClass: null });
+  }
+  const asnInfo = deps.asn(ip);
+  return classifyLocation(ip, {
+    geo: deps.geo(ip),
+    asn: asnInfo,
+    isTorExit: deps.torExits.has(ip),
+    asnClass: asnInfo?.asn !== undefined ? deps.asnClass[String(asnInfo.asn)] ?? null : null,
+  });
+}
+
+export async function resolveCatalogRegion(candidate: RegionCandidate): Promise<string> {
+  const near = await storage.findNearestActiveRegion(candidate.latitude, candidate.longitude, CATALOG_MATCH_KM);
+  if (near) return near.baseId;
+  return (await storage.createDetectedRegionLocation(candidate)).baseId;
 }

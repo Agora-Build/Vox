@@ -1,0 +1,8 @@
+{
+  "_comment": "ASN -> vpn|hosting. Curated from public lists (X4BNet lists_vpn, ipcat). 'hosting' = location-trusted datacenter; 'vpn' = anonymizer, never region-attributed.",
+  "16509": "hosting", "14618": "hosting", "15169": "hosting", "396982": "hosting",
+  "8075": "hosting", "14061": "hosting", "24940": "hosting", "16276": "hosting",
+  "63949": "hosting", "20473": "hosting", "13335": "hosting", "54825": "hosting",
+  "9009": "vpn", "60068": "vpn", "212238": "vpn", "206092": "vpn",
+  "207137": "vpn", "62240": "vpn", "136787": "vpn"
+}

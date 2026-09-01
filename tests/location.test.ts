@@ -1,8 +1,8 @@
 import { describe, it, expect } from "vitest";
 import {
   isPublicIp, classifyLocation, slugCity, macroForContinent, deriveRegionCandidate,
-  haversineKm, decideLocationTransition, REGION_CHANGE_STABILITY,
-  type LocationSignals, type GeoLookup,
+  haversineKm, decideLocationTransition, REGION_CHANGE_STABILITY, detectLocation,
+  type LocationSignals, type GeoLookup, type DetectionDeps,
 } from "../server/location";
 
 const geoMumbai: GeoLookup = {
@@ -149,5 +149,29 @@ describe("decideLocationTransition", () => {
   it("upgrade from Unverified on heartbeat also uses hysteresis", () => {
     const s = decideLocationTransition(fresh, { trust: "trusted", baseId: "apac-in-mumbai" }, { immediate: false });
     expect(s).toEqual({ region: null, changed: false, pendingRegion: "apac-in-mumbai", pendingRegionCount: 1 });
+  });
+});
+
+describe("detectLocation with injected deps", () => {
+  const deps: DetectionDeps = {
+    geo: (ip) => ip === "49.36.100.1" ? geoMumbai : null,
+    asn: (ip) => ip === "49.36.100.1" ? { asn: 55836, org: "Jio" } : { asn: 9009, org: "M247" },
+    torExits: new Set(["185.220.101.1"]),
+    asnClass: { "9009": "vpn", "16509": "hosting" },
+  };
+  it("resolves geo+asn through deps", () => {
+    const d = detectLocation("49.36.100.1", deps);
+    expect(d.trust).toBe("trusted");
+    expect(d.candidate?.baseId).toBe("apac-in-mumbai");
+  });
+  it("Tor exit set is consulted", () => {
+    expect(detectLocation("185.220.101.1", deps).trust).toBe("anonymized");
+  });
+  it("vpn ASN via classification map", () => {
+    expect(detectLocation("1.2.3.4", deps).trust).toBe("anonymized"); // asn 9009 → vpn
+  });
+  it("no deps and no mmdbs on disk → graceful unknown/low_confidence, never throws", () => {
+    const d = detectLocation("8.8.8.8"); // live loaders; CI/dev has no geoip/ dir
+    expect(["low_confidence", "unknown"]).toContain(d.trust);
   });
 });
