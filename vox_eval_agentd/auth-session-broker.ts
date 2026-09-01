@@ -148,14 +148,27 @@ export function describeMintFailure(stdout: string, stderr: string, forms: strin
  * Located via aeval's own "Artifacts saved to: <dir>" line — the banner that
  * used to be reported AS the error. It is relative to aeval's cwd.
  *
+ * Takes the banner from STDERR ONLY, and the LAST one. This module treats
+ * aeval's stdout as untrusted — that is the entire reason selectDiagnosisSource
+ * and hasLoguruDiagnosis exist — and this function turns a matched string into
+ * a FILE READ, so honouring stdout here would let target-page text echoed by
+ * the browser choose which path the broker opens. The banner is a loguru line,
+ * so stderr is where it genuinely is.
+ *
+ * The resolved path is then confined under dataPath, so a crafted `../../..`
+ * cannot escape even if the trusted stream is somehow influenced.
+ *
  * Returns only the digits. Nothing else from console.log is propagated, so no
  * credential can ride along and no scrubbing is required — which is what makes
  * it safe to append after the redaction pipeline has already run.
  */
-export function readLoginHttpStatus(aevalOutput: string, dataPath: string): number | null {
-  const dir = /Artifacts saved to:\s*(\S+)/.exec(aevalOutput)?.[1];
+export function readLoginHttpStatus(aevalStderr: string, dataPath: string): number | null {
+  const banners = [...aevalStderr.matchAll(/Artifacts saved to:[^\S\r\n]*(\S+)/g)];
+  const dir = banners.length > 0 ? banners[banners.length - 1][1] : undefined;
   if (!dir) return null;
-  const consoleLog = path.resolve(dataPath, dir, 'logs', 'console.log');
+  const root = path.resolve(dataPath);
+  const consoleLog = path.resolve(root, dir, 'logs', 'console.log');
+  if (consoleLog !== root && !consoleLog.startsWith(root + path.sep)) return null; // escaped the artifacts root
   let text: string;
   try {
     // Tail only: the console log of a browser session is unbounded, and the
@@ -278,7 +291,13 @@ export async function mintWithAeval(req: MintRequest, timeoutMs: number): Promis
           // holds because describeMintFailure early-returns the constant before
           // any scrub can touch it. Keep it that way.
           const detail = summary === NO_OUTPUT_MESSAGE ? '' : `: ${summary}`;
-          reject(new Error(`login timed out after ${timeoutMs}ms${detail}`));
+          // Also try here. The motivating production failure is aeval's OWN 60s
+          // wait_for_url timeout, which exits non-zero and lands in the close
+          // handler below — but a broker-level hang that nonetheless wrote
+          // artifacts should not lose the status for free. Fails soft to null.
+          const status = readLoginHttpStatus(errCap.completeText, AEVAL_DATA_PATH);
+          const httpNote = status === null ? '' : ` (login HTTP ${status})`;
+          reject(new Error(`login timed out after ${timeoutMs}ms${httpNote}${detail}`));
         });
       }, timeoutMs);
       proc.on('error', (err) => finish(() => reject(err)));
@@ -292,7 +311,7 @@ export async function mintWithAeval(req: MintRequest, timeoutMs: number): Promis
           // was reported as a path. capturedFailure() prefers the loguru ERROR
           // lines and redacts them before truncation.
           const summary = capturedFailure(typeof code === 'number');
-          const status = readLoginHttpStatus(outCap.text + errCap.text, AEVAL_DATA_PATH);
+          const status = readLoginHttpStatus(errCap.text, AEVAL_DATA_PATH);
           reject(new Error(`aeval exited ${code}${status === null ? '' : ` (login HTTP ${status})`}: ${summary}`));
         }
       }));

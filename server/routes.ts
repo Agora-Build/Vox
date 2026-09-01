@@ -3985,11 +3985,20 @@ export async function registerRoutes(
         // explaining why minting it failed are different disclosures. The full
         // text is on the session row and in Core's log either way.
         const ownerOperated = isOwnerOperatedAgent(serveJob, serveToken, serveTokenOwner);
+        // A non-owner agent still gets the login HTTP STATUS, just not the
+        // prose. A three-digit code cannot carry page state or a credential,
+        // and it is the one field that tells an operator whether the login was
+        // rejected or the browser was challenged — so withholding it buys no
+        // safety and costs the whole diagnostic. Parsed back out of lastError
+        // rather than stored separately, which would need a column and a
+        // migration for one integer.
+        const httpStatus = /\(login HTTP (\d{3})\)/.exec(session.lastError ?? "")?.[1];
+        const genericError = httpStatus ? `session mint failed (login HTTP ${httpStatus})` : "session mint failed";
         return res.status(503).json({
           required: true,
           status: "failed",
           // `||` not `??`: an empty-string lastError should fall back too.
-          error: (ownerOperated ? session.lastError : null) || "session mint failed",
+          error: (ownerOperated ? session.lastError : null) || genericError,
         });
       }
       // Cold or stale or currently minting: (re)trigger and tell the agent to poll.

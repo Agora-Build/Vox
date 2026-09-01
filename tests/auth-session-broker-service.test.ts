@@ -646,6 +646,33 @@ describe("mint diagnostics", () => {
     expect(readLoginHttpStatus(output, dataPath)).toBe(400);
   });
 
+  it("ignores a banner on stdout — a matched string here becomes a FILE READ", () => {
+    // The module treats aeval stdout as untrusted (selectDiagnosisSource,
+    // hasLoguruDiagnosis). This function turns a match into an fs read, so
+    // honouring stdout would let target-page text choose which path is opened.
+    const { output, dataPath } = withArtifacts(
+      "[error] the server responded with a status of 400 (Bad Request)\n",
+    );
+    // The genuine banner arrives on stderr; the same text on stdout must not count.
+    expect(readLoginHttpStatus(output, dataPath)).toBe(400);
+    expect(readLoginHttpStatus("", dataPath)).toBeNull();
+  });
+
+  it("refuses a path that escapes the artifacts root", () => {
+    const dataPath = mkdtempSync(join(tmpdir(), "mint-escape-"));
+    const outside = join(dataPath, "..", `escape-${Date.now()}`);
+    mkdirSync(join(outside, "logs"), { recursive: true });
+    writeFileSync(join(outside, "logs", "console.log"), "the server responded with a status of 500 (x)\n");
+    const banner = `INFO | Artifacts saved to: ../${outside.split("/").pop()}`;
+    expect(readLoginHttpStatus(banner, dataPath)).toBeNull();
+  });
+
+  it("takes the LAST banner, so an earlier line cannot preempt the real one", () => {
+    const { output, dataPath } = withArtifacts("the server responded with a status of 400 (Bad Request)\n");
+    const withDecoy = `INFO | Artifacts saved to: /tmp/decoy-does-not-exist\n${output}`;
+    expect(readLoginHttpStatus(withDecoy, dataPath)).toBe(400);
+  });
+
   it("returns null rather than throwing when there are no artifacts", () => {
     // The timeout path kills the child before aeval writes anything.
     expect(readLoginHttpStatus("no banner here", "/nonexistent")).toBeNull();
