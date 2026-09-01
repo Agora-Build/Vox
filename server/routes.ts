@@ -2686,25 +2686,19 @@ export async function registerRoutes(
         return res.status(403).json({ error: "Organization membership required" });
       }
       const secrets = await storage.getOrgSecrets(user.organizationId);
-      // Fingerprints go to the secret's OWN CREATOR, not to org managers.
-      //
-      // Before this feature nobody could learn anything about an org secret's
-      // value — this route returned names, and requireOrgAdmin gated write, not
-      // read. So handing managers a length plus an unsalted MD5 would be a new
-      // READ capability over a credential they may not own, and a shared org
-      // login is exactly the password worth taking offline against a wordlist.
-      // "They could already overwrite it" is not the same as "they could
-      // already learn it".
-      //
-      // Creator-scoped keeps the whole diagnostic — the point is letting whoever
-      // entered a value check it against their own copy — while widening
-      // nothing. A plain member spending the secret in a workflow is USE, not
-      // KNOWLEDGE, and stays that way.
+      // NO fingerprint here, deliberately. Personal secrets are unambiguous —
+      // the row is keyed by user_id, so the caller entered the value. Org
+      // secrets are not: upsertOrgSecret preserves the ORIGINAL createdBy on
+      // update, so after a rotation the first creator would be shown a hash of
+      // a value they never set and would "verify" it against their stale copy,
+      // getting a false mismatch — which causes exactly the wrong action, and
+      // is the failure this whole feature exists to prevent. Meanwhile whoever
+      // actually set the current value would see nothing. Needs an updatedBy
+      // column to do correctly; tracked separately.
       res.json(secrets.map(s => ({
         name: s.name,
         brokerType: s.brokerType,
         isTestAccount: s.isTestAccount,
-        ...(s.createdBy === user.id ? secretFingerprint(s.encryptedValue) : {}),
         createdAt: s.createdAt,
         updatedAt: s.updatedAt,
       })));

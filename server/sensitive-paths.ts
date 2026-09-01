@@ -12,19 +12,30 @@
  * `/api/secrets/:name`. Note that prefix matching does NOT relate
  * `/api/org-secrets` to `/api/secrets` — they are separate entries on purpose.
  *
- * The test beside this file asserts that every route returning a credential is
- * listed. Add the entry in the SAME commit as any such route: a one-time
- * plaintext token is exactly the thing that must not be recoverable from a log
- * afterwards, and nothing else in the codebase will catch the omission.
+ * The test beside this file SCANS server/routes.ts and asserts that every
+ * handler returning a plaintext credential resolves sensitive — it does not
+ * merely re-list what is here, because a hand-written list cannot detect the
+ * route nobody added to either file. That is not hypothetical: it is how
+ * /api/eval-agent-tokens and /api/admin/users/:id/activation-link stayed
+ * missing while the suite was green.
  */
 export const SENSITIVE_PATHS = new Set([
   "/api/user/api-keys",
   "/api/admin/eval-agent-tokens",
   "/api/admin/invite",
-  "/api/secrets",
-  "/api/org-secrets",            // returns valueFingerprint for org managers
-  "/api/admin/broker-tokens",    // POST returns the registration token in plaintext, once
+  "/api/secrets",                // returns valueFingerprint to the owner
+  "/api/org-secrets",            // sibling path: NOT covered by the entry above
+  "/api/eval-agent-tokens",      // POST returns the agent token in plaintext, once
+  "/api/admin/broker-tokens",    // POST returns the registration token, once
   "/api/brokers/register",       // returns the per-broker mintSecret, once
+  // These three carry the credential in a LATER path segment, so a prefix is
+  // the only way to reach them. Deliberately broad: redacting a response body
+  // costs log detail, whereas an activation link or an org invite recovered
+  // from a log is account takeover.
+  "/api/admin/users",            // /:id/activation-link returns token + activationUrl
+  "/api/organizations",          // /:id/invite returns the invite token
+  "/api/clash/matches",          // /:id/stream-info returns a spectator RTC token
+  "/api/clash/moderator",        // /start returns the moderator's RTC token
   "/api/eval-agent/jobs",        // /jobs/:id/secrets matched by startsWith
   "/api/clash-runner/secrets",
   "/api/admin/clash-runner-tokens",

@@ -42,8 +42,6 @@ interface OrgSecretEntry {
   isTestAccount: boolean;
   createdAt: string;
   updatedAt: string;
-  valueLength?: number;
-  valueFingerprint?: string;
 }
 
 interface AuthStatus {
@@ -521,7 +519,6 @@ export default function ConsoleSecrets() {
                                   {secret.isTestAccount && <Badge variant="secondary">test account</Badge>}
                                 </>
                               )}
-                              <ValueFingerprint length={secret.valueLength} fingerprint={secret.valueFingerprint} />
                             </div>
                           </TableCell>
                           <TableCell className="text-muted-foreground">••••••••</TableCell>
