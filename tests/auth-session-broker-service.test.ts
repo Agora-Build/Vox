@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
 import type { AddressInfo } from "net";
 import type { Server } from "http";
-import { createBrokerServer, scrubCredentials, credentialForms, selectDiagnosisSource, describeMintFailure, readLoginHttpStatus, NO_OUTPUT_MESSAGE, secretMatches, heartbeat, type MintRequest } from "../vox_eval_agentd/auth-session-broker";
+import { createBrokerServer, scrubCredentials, credentialForms, selectDiagnosisSource, describeMintFailure, readLastFailedHttpStatus, NO_OUTPUT_MESSAGE, secretMatches, heartbeat, type MintRequest } from "../vox_eval_agentd/auth-session-broker";
 import { fingerprintCredential, fingerprintForLog } from "../shared/credentials";
 import { mkdtempSync, mkdirSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
@@ -635,7 +635,7 @@ describe("mint diagnostics", () => {
     const { output, dataPath } = withArtifacts(
       "[log] something benign\n[error] Failed to load resource: the server responded with a status of 400 (Bad Request)\n",
     );
-    expect(readLoginHttpStatus(output, dataPath)).toBe(400);
+    expect(readLastFailedHttpStatus(output, dataPath)).toBe(400);
   });
 
   it("takes the LAST status, since the failing request is the final one", () => {
@@ -643,7 +643,7 @@ describe("mint diagnostics", () => {
       "[error] the server responded with a status of 404 (Not Found)\n" +
       "[error] the server responded with a status of 400 (Bad Request)\n",
     );
-    expect(readLoginHttpStatus(output, dataPath)).toBe(400);
+    expect(readLastFailedHttpStatus(output, dataPath)).toBe(400);
   });
 
   it("ignores a banner on stdout — a matched string here becomes a FILE READ", () => {
@@ -654,8 +654,21 @@ describe("mint diagnostics", () => {
       "[error] the server responded with a status of 400 (Bad Request)\n",
     );
     // The genuine banner arrives on stderr; the same text on stdout must not count.
-    expect(readLoginHttpStatus(output, dataPath)).toBe(400);
-    expect(readLoginHttpStatus("", dataPath)).toBeNull();
+    expect(readLastFailedHttpStatus(output, dataPath)).toBe(400);
+    expect(readLastFailedHttpStatus("", dataPath)).toBeNull();
+  });
+
+  it("accepts an ABSOLUTE banner under the mint workdir, not just a relative one", () => {
+    // Against aeval 0.3.0 the banner is relative and resolves under the data
+    // root (verified in production). But the mint scenario configures an
+    // absolute output_dir under its own temp workdir, so an aeval that honours
+    // that setting would report an absolute path — and confining to the data
+    // root alone would silently return null on every real mint.
+    const workDir = mkdtempSync(join(tmpdir(), "vox-mint-"));
+    mkdirSync(join(workDir, "out", "logs"), { recursive: true });
+    writeFileSync(join(workDir, "out", "logs", "console.log"), "the server responded with a status of 403 (Forbidden)\n");
+    const banner = `INFO | Artifacts saved to: ${join(workDir, "out")}`;
+    expect(readLastFailedHttpStatus(banner, "/some/other/root", workDir)).toBe(403);
   });
 
   it("refuses a path that escapes the artifacts root", () => {
@@ -664,28 +677,28 @@ describe("mint diagnostics", () => {
     mkdirSync(join(outside, "logs"), { recursive: true });
     writeFileSync(join(outside, "logs", "console.log"), "the server responded with a status of 500 (x)\n");
     const banner = `INFO | Artifacts saved to: ../${outside.split("/").pop()}`;
-    expect(readLoginHttpStatus(banner, dataPath)).toBeNull();
+    expect(readLastFailedHttpStatus(banner, dataPath)).toBeNull();
   });
 
   it("takes the LAST banner, so an earlier line cannot preempt the real one", () => {
     const { output, dataPath } = withArtifacts("the server responded with a status of 400 (Bad Request)\n");
     const withDecoy = `INFO | Artifacts saved to: /tmp/decoy-does-not-exist\n${output}`;
-    expect(readLoginHttpStatus(withDecoy, dataPath)).toBe(400);
+    expect(readLastFailedHttpStatus(withDecoy, dataPath)).toBe(400);
   });
 
   it("returns null rather than throwing when there are no artifacts", () => {
     // The timeout path kills the child before aeval writes anything.
-    expect(readLoginHttpStatus("no banner here", "/nonexistent")).toBeNull();
+    expect(readLastFailedHttpStatus("no banner here", "/nonexistent")).toBeNull();
     const { dataPath } = withArtifacts("");
-    expect(readLoginHttpStatus("no banner here", dataPath)).toBeNull();
+    expect(readLastFailedHttpStatus("no banner here", dataPath)).toBeNull();
   });
 
   it("propagates only digits, so nothing from the console log can ride along", () => {
     const { output, dataPath } = withArtifacts(
       "[error] password=hunter2 leaked here; the server responded with a status of 400 (Bad Request)\n",
     );
-    expect(readLoginHttpStatus(output, dataPath)).toBe(400);
-    expect(String(readLoginHttpStatus(output, dataPath))).not.toContain("hunter2");
+    expect(readLastFailedHttpStatus(output, dataPath)).toBe(400);
+    expect(String(readLastFailedHttpStatus(output, dataPath))).not.toContain("hunter2");
   });
 });
 

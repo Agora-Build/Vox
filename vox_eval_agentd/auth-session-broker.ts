@@ -137,13 +137,22 @@ export function describeMintFailure(stdout: string, stderr: string, forms: strin
 }
 
 /**
- * The HTTP status of the last failed request in an aeval run, or null.
+ * The HTTP status of the LAST FAILED REQUEST in an aeval run, or null.
  *
- * This is the field that distinguishes "the password is wrong" (the server
- * rejects the sign-in) from "this browser is being challenged" (the request is
- * refused before credentials matter). Both look identical otherwise: same
- * timeout, same screenshot, same message — which is why diagnosing it has meant
- * reading the browser console inside the container by hand.
+ * Named for what it measures, not what we hope it is. A browser console log
+ * for an SSO flow routinely carries resource failures unrelated to the sign-in
+ * — a favicon 404, a blocked analytics beacon, a CSP-refused script — and any
+ * of them can be emitted after the auth POST. It is also page-influenceable: a
+ * target page can print the same sentence itself. Reported honestly, it points
+ * an operator at the right question; reported as "the login status" it could
+ * point them at the wrong diagnosis, which is worse than no status at all.
+ *
+ * In practice it is usually the one that matters, and it is the field that
+ * separates "the password is wrong" (server rejects the sign-in) from "this
+ * browser is being challenged" (refused before credentials matter). Both look
+ * identical otherwise: same timeout, same screenshot, same message — which is
+ * why diagnosing it has meant reading the browser console inside the container
+ * by hand.
  *
  * Located via aeval's own "Artifacts saved to: <dir>" line — the banner that
  * used to be reported AS the error. It is relative to aeval's cwd.
@@ -155,20 +164,29 @@ export function describeMintFailure(stdout: string, stderr: string, forms: strin
  * the browser choose which path the broker opens. The banner is a loguru line,
  * so stderr is where it genuinely is.
  *
- * The resolved path is then confined under dataPath, so a crafted `../../..`
- * cannot escape even if the trusted stream is somehow influenced.
+ * The resolved path is then confined under one of the permitted roots, so a
+ * crafted `../../..` cannot escape even if the trusted stream is somehow
+ * influenced. Two roots are accepted deliberately: against aeval 0.3.0 the
+ * banner is RELATIVE and resolves under the data root — verified in production,
+ * `Artifacts saved to: output/mint/20260831_230019_7219` landing at
+ * `/app/aeval-data/output/mint/...` — but the mint scenario configures an
+ * absolute `output_dir` under its own temp workdir, so a future aeval that
+ * honours that setting would report an absolute path there instead. Accepting
+ * both means such a change degrades to nothing rather than silently killing
+ * this feature.
  *
  * Returns only the digits. Nothing else from console.log is propagated, so no
  * credential can ride along and no scrubbing is required — which is what makes
  * it safe to append after the redaction pipeline has already run.
  */
-export function readLoginHttpStatus(aevalStderr: string, dataPath: string): number | null {
+export function readLastFailedHttpStatus(aevalStderr: string, ...roots: string[]): number | null {
   const banners = [...aevalStderr.matchAll(/Artifacts saved to:[^\S\r\n]*(\S+)/g)];
   const dir = banners.length > 0 ? banners[banners.length - 1][1] : undefined;
   if (!dir) return null;
-  const root = path.resolve(dataPath);
-  const consoleLog = path.resolve(root, dir, 'logs', 'console.log');
-  if (consoleLog !== root && !consoleLog.startsWith(root + path.sep)) return null; // escaped the artifacts root
+  const permitted = roots.map((r) => path.resolve(r));
+  const consoleLog = path.resolve(permitted[0], dir, 'logs', 'console.log');
+  const contained = permitted.some((r) => consoleLog === r || consoleLog.startsWith(r + path.sep));
+  if (!contained) return null; // escaped every permitted artifacts root
   let text: string;
   try {
     // Tail only: the console log of a browser session is unbounded, and the
@@ -295,8 +313,8 @@ export async function mintWithAeval(req: MintRequest, timeoutMs: number): Promis
           // wait_for_url timeout, which exits non-zero and lands in the close
           // handler below — but a broker-level hang that nonetheless wrote
           // artifacts should not lose the status for free. Fails soft to null.
-          const status = readLoginHttpStatus(errCap.completeText, AEVAL_DATA_PATH);
-          const httpNote = status === null ? '' : ` (login HTTP ${status})`;
+          const status = readLastFailedHttpStatus(errCap.completeText, AEVAL_DATA_PATH, workDir);
+          const httpNote = status === null ? '' : ` (last failed request HTTP ${status})`;
           reject(new Error(`login timed out after ${timeoutMs}ms${httpNote}${detail}`));
         });
       }, timeoutMs);
@@ -311,8 +329,8 @@ export async function mintWithAeval(req: MintRequest, timeoutMs: number): Promis
           // was reported as a path. capturedFailure() prefers the loguru ERROR
           // lines and redacts them before truncation.
           const summary = capturedFailure(typeof code === 'number');
-          const status = readLoginHttpStatus(errCap.text, AEVAL_DATA_PATH);
-          reject(new Error(`aeval exited ${code}${status === null ? '' : ` (login HTTP ${status})`}: ${summary}`));
+          const status = readLastFailedHttpStatus(errCap.text, AEVAL_DATA_PATH, workDir);
+          reject(new Error(`aeval exited ${code}${status === null ? '' : ` (last failed request HTTP ${status})`}: ${summary}`));
         }
       }));
     });

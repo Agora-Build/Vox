@@ -3992,8 +3992,8 @@ export async function registerRoutes(
         // safety and costs the whole diagnostic. Parsed back out of lastError
         // rather than stored separately, which would need a column and a
         // migration for one integer.
-        const httpStatus = /\(login HTTP (\d{3})\)/.exec(session.lastError ?? "")?.[1];
-        const genericError = httpStatus ? `session mint failed (login HTTP ${httpStatus})` : "session mint failed";
+        const httpStatus = /\(last failed request HTTP (\d{3})\)/.exec(session.lastError ?? "")?.[1];
+        const genericError = httpStatus ? `session mint failed (last failed request HTTP ${httpStatus})` : "session mint failed";
         return res.status(503).json({
           required: true,
           status: "failed",
