@@ -16,7 +16,11 @@ function credentialReturningRoutes(): { route: string; line: number; text: strin
   const lines = readFileSync("server/routes.ts", "utf8").split("\n");
   const CREDENTIAL = /\b(token|mintSecret|activationUrl|apiKey|secretKey)\b\s*[,:}]/;
   // tokenHash is a digest; tokenId/hasToken are references, not the value.
-  const NOT_A_VALUE = /tokenHash|hasToken|tokenId|token:\s*null/;
+  // `token: {` is an object literal/type-annotation shape (e.g. call-argument
+  // `token: { id: ..., dispatchTier: ... }` or a type annotation like
+  // `token: { siteId: ...; region: ...; dispatchTier: ... }`), never a
+  // plaintext credential value.
+  const NOT_A_VALUE = /tokenHash|hasToken|tokenId|token:\s*null|token:\s*\{/;
 
   const found: { route: string; line: number; text: string }[] = [];
   let route: string | null = null;

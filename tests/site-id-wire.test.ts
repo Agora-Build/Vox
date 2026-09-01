@@ -9,9 +9,13 @@ import { REGION_NA, BASE_NA } from './helpers/regions';
  * `undefined` at runtime) is caught here instead of in the browser.
  *
  * Contract:
- *  - Response surfaces emit `siteId`, never `region` (the sole exception is
- *    the clash-runner daemon wire, which dual-keys `siteId` + `region` until
- *    deployed runners are upgraded — covered in clash-runner-lifecycle).
+ *  - Response surfaces emit `siteId`, never `region`, with two sanctioned
+ *    exceptions: the clash-runner daemon wire, which dual-keys `siteId` +
+ *    `region` until deployed runners are upgraded (covered in
+ *    clash-runner-lifecycle); and `GET /api/eval-agents`, which deliberately
+ *    adds `region` (the Vox-detected baseId, nullable) and `locationTrust`
+ *    alongside `siteId` per the zero-trust agent-region design
+ *    (designs/2026-09-01-zero-trust-agent-region-design.md) — covered below.
  *  - Run and schedule request bodies (workflow run, v1 run, eval-schedules
  *    create/PATCH) take `region` + `targetTier` (pooled dispatch, spec
  *    2026-08-24-tier-targeting) — the exact-site `siteId` body key is dead on
@@ -46,15 +50,23 @@ beforeAll(async () => {
 });
 
 describe('site-id wire contract', () => {
-  it('GET /api/eval-agents emits siteId (not region)', async () => {
+  it('GET /api/eval-agents emits siteId, region, and locationTrust (sanctioned exception)', async () => {
+    // Zero-trust agent-region design: this surface deliberately carries the
+    // Vox-detected `region` (nullable baseId) and `locationTrust` alongside
+    // `siteId` — see the header comment above.
     const res = await fetch(`${BASE_URL}/api/eval-agents`);
     expect(res.status).toBe(200);
     const agents = await res.json();
     expect(Array.isArray(agents)).toBe(true);
     for (const a of agents) {
       expect(a).toHaveProperty('siteId');
-      expect(a.siteId).toMatch(SITE_ID_RE);
-      expect(a).not.toHaveProperty('region');
+      if (a.siteId != null) expect(a.siteId).toMatch(SITE_ID_RE);
+      expect(a).toHaveProperty('region');
+      if (a.region != null) expect(typeof a.region).toBe('string');
+      expect(a).toHaveProperty('locationTrust');
+      expect(typeof a.locationTrust).toBe('string');
+      expect(a).not.toHaveProperty('locationSource');
+      expect(a).not.toHaveProperty('observedIp');
     }
   });
 
