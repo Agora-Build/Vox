@@ -16,6 +16,7 @@ import { parsePlatformSetup, sessionScopeForWorkflow, evaluateSessionRequirement
 import { validateRegisterPayload, cacheBrokerMintSecret, hasBrokerMintSecret } from "./broker-registry";
 import { deriveApiKeyStatus } from "./api-key-status";
 import { isStaleOfflineAgent } from "./agent-liveness";
+import { runAgentLocationCheck, LOCATION_RECHECK_HOURS } from "./location";
 import {
   hashPassword,
   verifyPassword,
@@ -3228,6 +3229,8 @@ export async function registerRoutes(
         id: a.id,
         name: a.name,
         siteId: a.siteId,
+        region: a.region,
+        locationTrust: a.locationTrust,
         state: a.state,
         metadata: a.metadata,
         lastSeenAt: a.lastSeenAt,
@@ -3358,7 +3361,9 @@ export async function registerRoutes(
         agent = await storage.createEvalAgent({
           name: agentName,
           tokenId: evalAgentToken.id,
-          siteId: evalAgentToken.siteId,
+          // Public keeps the configured site; non-public starts null — detection
+          // (below) is the only region source for a non-public agent.
+          siteId: evalAgentToken.siteId ?? null,
           state: "idle",
           metadata: metadata || {},
           currentLeaseId: leaseId,
@@ -3368,10 +3373,27 @@ export async function registerRoutes(
       await storage.updateEvalAgentHeartbeat(agent.id);
       if (req.ip) void storage.updateEvalAgentObservedIp(agent.id, req.ip);
 
+      // Zero-trust location: detection is the ONLY region source for
+      // non-public agents; registration applies immediately (fresh process).
+      const loc = await runAgentLocationCheck({
+        agent: {
+          id: agent.id,
+          region: agent.region ?? null,
+          siteId: agent.siteId ?? null,
+          pendingRegion: agent.pendingRegion ?? null,
+          pendingRegionCount: agent.pendingRegionCount ?? 0,
+        },
+        token: { id: evalAgentToken.id, dispatchTier: evalAgentToken.dispatchTier },
+        ip: req.ip,
+        immediate: true,
+      });
+
       res.json({
         id: agent.id,
         name: agent.name,
-        siteId: agent.siteId,
+        siteId: loc.siteId,
+        region: loc.region,
+        locationTrust: loc.locationTrust,
         state: agent.state,
         leaseId,
       });
@@ -3412,7 +3434,30 @@ export async function registerRoutes(
       }
 
       await storage.updateEvalAgentHeartbeat(agentId);
+      const ipChanged = !!req.ip && req.ip !== agent.observedIp;
       if (req.ip) void storage.updateEvalAgentObservedIp(agentId, req.ip);
+
+      // Re-detect when the IP moved, the check is stale (>24h / never ran), or
+      // a pending region change is mid-hysteresis (every beat counts it down —
+      // the IP-change trigger alone would stall since observed_ip updates each
+      // beat). Fire-and-forget: a slow catalog write must not delay the beat.
+      const stale = !agent.locationCheckedAt
+        || (Date.now() - new Date(agent.locationCheckedAt).getTime()) > LOCATION_RECHECK_HOURS * 60 * 60 * 1000;
+      const pending = agent.pendingRegion != null;
+      if (ipChanged || stale || pending) {
+        void runAgentLocationCheck({
+          agent: {
+            id: agent.id,
+            region: agent.region ?? null,
+            siteId: agent.siteId ?? null,
+            pendingRegion: agent.pendingRegion ?? null,
+            pendingRegionCount: agent.pendingRegionCount ?? 0,
+          },
+          token: { id: evalAgentToken.id, dispatchTier: evalAgentToken.dispatchTier },
+          ip: req.ip,
+          immediate: false,
+        }).catch((err) => console.error(`[location] heartbeat check failed for agent ${agent.id}:`, err instanceof Error ? err.message : err));
+      }
 
       const updates: Record<string, unknown> = {};
       if (state && ["idle", "offline", "occupied"].includes(state)) {

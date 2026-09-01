@@ -68,3 +68,52 @@ describe("zero-trust token mint", () => {
     expect(mine.siteId).toBeNull();
   });
 });
+
+describe("register/heartbeat location detection", () => {
+  let cookie: string; let tokenSecret: string; let tokenId: number; let agentId: number; let leaseId: string;
+
+  beforeAll(async () => {
+    cookie = await login();
+    const res = await authFetch(cookie, `${BASE_URL}/api/eval-agent-tokens`, {
+      method: "POST",
+      body: JSON.stringify({ name: `zt-reg-${Date.now()}`, dispatchTier: "private" }),
+    });
+    const body = await res.json();
+    tokenSecret = body.token; tokenId = body.id;
+  });
+  afterAll(async () => {
+    await authFetch(cookie, `${BASE_URL}/api/eval-agent-tokens/${tokenId}/revoke`, { method: "POST" });
+  });
+
+  const agentFetch = (url: string, body: Record<string, unknown>) =>
+    fetch(`${BASE_URL}${url}`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${tokenSecret}`, "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+
+  it("register runs detection: localhost → unknown, siteId null, Unverified", async () => {
+    const res = await agentFetch("/api/eval-agent/register", { name: "zt-agent" });
+    expect(res.status).toBe(200);
+    const agent = await res.json();
+    agentId = agent.id; leaseId = agent.leaseId;
+    expect(agent.siteId).toBeNull();
+    expect(agent.region).toBeNull();
+    expect(agent.locationTrust).toBe("unknown"); // dev connects via 127.0.0.1
+  });
+
+  it("heartbeat keeps working for an Unverified agent", async () => {
+    const res = await agentFetch("/api/eval-agent/heartbeat", { agentId, leaseId, state: "idle" });
+    expect(res.status).toBe(200);
+  });
+
+  it("/api/eval-agents exposes locationTrust but never location_source", async () => {
+    const list = await (await authFetch(cookie, `${BASE_URL}/api/eval-agents`)).json();
+    const mine = list.find((a: { id: number }) => a.id === agentId);
+    expect(mine).toBeDefined();
+    expect(mine.locationTrust).toBe("unknown");
+    expect(mine.region).toBeNull();
+    expect(mine).not.toHaveProperty("locationSource");
+    expect(mine).not.toHaveProperty("observedIp");
+  });
+});

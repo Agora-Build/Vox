@@ -787,6 +787,8 @@ export class DatabaseStorage {
       name: evalAgents.name,
       tokenId: evalAgents.tokenId,
       siteId: evalAgents.siteId,
+      region: evalAgents.region,
+      locationTrust: evalAgents.locationTrust,
       state: evalAgents.state,
       lastSeenAt: evalAgents.lastSeenAt,
       lastJobAt: evalAgents.lastJobAt,
