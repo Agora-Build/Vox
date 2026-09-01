@@ -3375,18 +3375,27 @@ export async function registerRoutes(
 
       // Zero-trust location: detection is the ONLY region source for
       // non-public agents; registration applies immediately (fresh process).
-      const loc = await runAgentLocationCheck({
-        agent: {
-          id: agent.id,
-          region: agent.region ?? null,
-          siteId: agent.siteId ?? null,
-          pendingRegion: agent.pendingRegion ?? null,
-          pendingRegionCount: agent.pendingRegionCount ?? 0,
-        },
-        token: { id: evalAgentToken.id, dispatchTier: evalAgentToken.dispatchTier },
-        ip: req.ip,
-        immediate: true,
-      });
+      // The location subsystem must never break registration — an unexpected
+      // failure here (DB hiccup in resolveCatalogRegion/allocateSiteId/etc.)
+      // falls open to Unverified rather than 500ing the whole registration.
+      let loc: { region: string | null; siteId: string | null; locationTrust: string };
+      try {
+        loc = await runAgentLocationCheck({
+          agent: {
+            id: agent.id,
+            region: agent.region ?? null,
+            siteId: agent.siteId ?? null,
+            pendingRegion: agent.pendingRegion ?? null,
+            pendingRegionCount: agent.pendingRegionCount ?? 0,
+          },
+          token: { id: evalAgentToken.id, dispatchTier: evalAgentToken.dispatchTier },
+          ip: req.ip,
+          immediate: true,
+        });
+      } catch (err) {
+        console.error(`[location] register-time location check failed for agent ${agent.id}:`, err instanceof Error ? err.message : err);
+        loc = { region: agent.region ?? null, siteId: agent.siteId ?? null, locationTrust: "unknown" as const };
+      }
 
       res.json({
         id: agent.id,
