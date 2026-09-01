@@ -9,6 +9,7 @@ import {
   formatRegionScopeSelection,
   resolveRegionScopeBaseIds,
   toggleRegionScopeSelection,
+  toggleUnverifiedScope,
   type RegionLocation,
 } from "../client/src/lib/utils";
 import { regionSiteSequence } from "../shared/regions";
@@ -141,6 +142,54 @@ describe("region hierarchy", () => {
     const allParams = new URLSearchParams();
     appendRegionScopes(allParams, ["all"]);
     expect(allParams.has("regionScope")).toBe(false);
+  });
+});
+
+describe("unverified region scope", () => {
+  it("ignores the unverified literal when resolving geographic baseIds", () => {
+    expect(resolveRegionScopeBaseIds(locations, ["unverified"])).toEqual(new Set());
+    expect(resolveRegionScopeBaseIds(locations, ["location:apac-sg", "unverified"])).toEqual(
+      new Set(["apac-sg"]),
+    );
+  });
+
+  it("toggles unverified alone: All -> Unverified -> All", () => {
+    const withUnverified = toggleUnverifiedScope(["all"]);
+    expect(withUnverified).toEqual(["unverified"]);
+    expect(toggleUnverifiedScope(withUnverified)).toEqual(["all"]);
+  });
+
+  it("labels the unverified scope, alone and combined with geography", () => {
+    expect(formatRegionScopeSelection(locations, ["unverified"])).toBe("Unverified");
+    expect(formatRegionScopeSelection(locations, ["location:apac-sg", "unverified"])).toBe(
+      "Singapore + Unverified",
+    );
+  });
+
+  it("deselecting the last geographic pick while Unverified stays checked yields [\"unverified\"], not [\"all\", \"unverified\"]", () => {
+    // Select Unverified from the default "all" state.
+    const unverifiedOnly = toggleUnverifiedScope(["all"]);
+    expect(unverifiedOnly).toEqual(["unverified"]);
+
+    // Then select one geographic location alongside it.
+    const withLocation = toggleRegionScopeSelection(
+      locations,
+      unverifiedOnly,
+      ["apac-sg"],
+      "location:apac-sg",
+    );
+    expect(withLocation).toEqual(["location:apac-sg", "unverified"]);
+
+    // Deselecting that same location must leave Unverified as the sole scope —
+    // not fall back to ["all"], which would silently re-include every region
+    // while the UI still shows an Unverified-scoped selection.
+    const afterDeselect = toggleRegionScopeSelection(
+      locations,
+      withLocation,
+      ["apac-sg"],
+      "location:apac-sg",
+    );
+    expect(afterDeselect).toEqual(["unverified"]);
   });
 });
 

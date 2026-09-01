@@ -172,10 +172,20 @@ export function toggleRegionScopeSelection(
     if (allSelected) next.delete(baseId);
     else next.add(baseId);
   }
+
+  // No geography left selected: compressRegionScopeSelection's "empty" fallback
+  // is ["all"], which would silently re-include every region. When Unverified
+  // is still checked, that's a contradictory state (data scoped to unverified
+  // only, but the UI reads "All Regions") — the correct result here is
+  // Unverified alone, not All + Unverified.
+  if (next.size === 0 && unverifiedScopes.length > 0) {
+    return Array.from(new Set(unverifiedScopes));
+  }
+
   const retainedScopes = geoScopes.filter((currentScope) => currentScope !== "all");
   const preferredScopes = allSelected ? retainedScopes : [scope, ...retainedScopes];
   const result = compressRegionScopeSelection(locations, next, preferredScopes);
-  return [...result, ...unverifiedScopes];
+  return Array.from(new Set([...result, ...unverifiedScopes]));
 }
 
 export function formatRegionScopeSelection(locations: RegionLocation[], scopes: string[]): string {
