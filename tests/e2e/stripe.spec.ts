@@ -56,22 +56,76 @@ test.describe("Stripe Payment Flow (Authenticated)", () => {
   test.describe.configure({ mode: "serial" });
 
   let authenticatedRequest: APIRequestContext;
-  let organizationId: number | null = null;
+  let adminRequest: APIRequestContext;
+  let orgName = "Stripe Test Org";
 
+  /**
+   * These tests need a user who OWNS an organization, and they used to get one
+   * by putting `admin@vox.local` into a "Stripe Test Org".
+   *
+   * That is a one-way door. Creating an org sets `users.organization_id` and
+   * `orgRole: 'owner'`, and `POST /api/organizations/:id/leave` refuses an
+   * owner ("Transfer ownership first"), so with no second member there is no
+   * API that undoes it. The mutation therefore outlived the run, and admin
+   * (user id 1) is the account the whole test corpus shares.
+   *
+   * Four unit suites — tier-pool-dispatch, session-endpoint, agent-observed-ip
+   * and practical-shared-agents-credits — assert "admin has no organization in
+   * the dev seed". So this file left them failing on the NEXT `npm test`, with
+   * 12 failures reading `expected 200 to be 400`: an org-scoped request that
+   * SHOULD have been rejected now succeeds. That looks exactly like an authz
+   * regression in the code under test, which is the expensive part — the
+   * failures point at server code that is fine, in suites that never ran this
+   * file, and only after a full gate that appeared to pass.
+   *
+   * So provision a throwaway user per run and make it the org owner. Admin is
+   * only borrowed to mint the invite, and its own row is never written.
+   */
   test.beforeAll(async ({ playwright }) => {
-    // Create a single authenticated context for all tests
+    adminRequest = await playwright.request.newContext({
+      baseURL: "http://localhost:5000",
+    });
     authenticatedRequest = await playwright.request.newContext({
       baseURL: "http://localhost:5000",
     });
 
-    // Login once
-    const loginResponse = await authenticatedRequest.post("/api/auth/login", {
-      data: {
-        email: "admin@vox.local",
-        password: "admin123456",
-      },
+    const adminLogin = await adminRequest.post("/api/auth/login", {
+      data: { email: "admin@vox.local", password: "admin123456" },
     });
+    if (!adminLogin.ok()) {
+      console.log("Admin login failed - may be rate limited. Status:", adminLogin.status());
+      return;
+    }
 
+    // Registration is invite-gated, so admin mints one for the throwaway user.
+    const stamp = Date.now();
+    const email = `stripe-e2e-${stamp}@test.local`;
+    const password = "stripe-e2e-pass-123";
+    orgName = `Stripe Test Org ${stamp}`;
+
+    const inviteResponse = await adminRequest.post("/api/admin/invite", {
+      data: { email, plan: "premium" },
+    });
+    if (!inviteResponse.ok()) {
+      console.log("Invite creation failed. Status:", inviteResponse.status());
+      return;
+    }
+    const { token } = await inviteResponse.json();
+
+    // Register, then log the org-owner context in as that user. Register also
+    // opens a session on adminRequest's context, so log in explicitly on the
+    // context the tests actually use rather than relying on the side effect.
+    const registerResponse = await authenticatedRequest.post("/api/auth/register", {
+      data: { username: `stripe-e2e-${stamp}`, password, token },
+    });
+    if (!registerResponse.ok()) {
+      console.log("Registration failed. Status:", registerResponse.status());
+      return;
+    }
+
+    const loginResponse = await authenticatedRequest.post("/api/auth/login", {
+      data: { email, password },
+    });
     if (!loginResponse.ok()) {
       console.log("Login failed - may be rate limited. Status:", loginResponse.status());
     }
@@ -79,6 +133,7 @@ test.describe("Stripe Payment Flow (Authenticated)", () => {
 
   test.afterAll(async () => {
     await authenticatedRequest?.dispose();
+    await adminRequest?.dispose();
   });
 
   test("should get pricing configuration", async () => {
@@ -98,28 +153,25 @@ test.describe("Stripe Payment Flow (Authenticated)", () => {
   });
 
   test("should create organization for payment tests", async () => {
-    // First check if user has an organization
+    // The user was registered fresh in beforeAll, so it has no organization and
+    // creation must succeed. This used to be wrapped in `if (createResponse.ok())`,
+    // which silently passed the test when the org was never created and left the
+    // rest of this describe quietly skipping on `if (me.user?.organizationId)`.
     const meResponse = await authenticatedRequest.get("/api/auth/status");
     const me = await meResponse.json();
+    expect(me.user?.organizationId ?? null).toBeNull();
 
-    if (!me.user?.organizationId) {
-      // Create organization
-      const createResponse = await authenticatedRequest.post("/api/organizations", {
-        data: {
-          name: "Stripe Test Org",
-          description: "Organization for Stripe payment testing",
-        },
-      });
+    const createResponse = await authenticatedRequest.post("/api/organizations", {
+      data: {
+        name: orgName,
+        description: "Organization for Stripe payment testing",
+      },
+    });
+    expect(createResponse.ok()).toBeTruthy();
 
-      if (createResponse.ok()) {
-        const org = await createResponse.json();
-        expect(org.id).toBeDefined();
-        expect(org.name).toBe("Stripe Test Org");
-        organizationId = org.id;
-      }
-    } else {
-      organizationId = me.user.organizationId;
-    }
+    const org = await createResponse.json();
+    expect(org.id).toBeDefined();
+    expect(org.name).toBe(orgName);
   });
 
   test("should calculate seat pricing for organization", async () => {
