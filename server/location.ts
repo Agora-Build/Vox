@@ -206,8 +206,14 @@ export function startLocationServices(): void {
   const refreshTor = async () => {
     try {
       const res = await fetch("https://check.torproject.org/torbulkexitlist");
-      if (res.ok) torExits = new Set((await res.text()).split("\n").map(l => l.trim()).filter(Boolean));
-    } catch { /* keep previous list */ }
+      if (res.ok) {
+        torExits = new Set((await res.text()).split("\n").map(l => l.trim()).filter(Boolean));
+      } else {
+        console.warn(`[location] Tor exit list refresh failed (HTTP ${res.status}) — keeping previous list`);
+      }
+    } catch (err) {
+      console.warn(`[location] Tor exit list refresh failed (${err instanceof Error ? err.message : String(err)}) — keeping previous list`);
+    }
   };
   void refreshTor();
   setInterval(refreshTor, 12 * 60 * 60 * 1000).unref();
