@@ -2085,7 +2085,49 @@ git commit -m "feat(ops): geoip-refresh script, env docs, mint-dialog e2e
 
 ---
 
-### Task 12: Full gate
+### Task 12: Run-dialog agent picker — two-level region tree
+
+**Files:**
+- Modify: `client/src/pages/console-workflow-detail.tsx` (run dialog: region select ~238, tier select ~254, agent select ~290, submit body ~150)
+- Modify: `server/routes.ts` (the `/api/workflows/:id/run-targets` endpoint — locate with `grep -n "run-targets" server/routes.ts` and read the full handler before changing it)
+- Test: extend `tests/zero-trust-region-api.test.ts`
+
+**Interfaces:**
+- Consumes: agents carrying detected `region`/`siteId`/`locationTrust` (Task 6); effective-identity claim rules (Task 7); run body wire contract (UNCHANGED): `targetTokenId` XOR `{ region, targetTier }`.
+- Produces: `run-targets` response extended so the client can build the tree — each agent row must carry `siteId: string | null`, `region: string | null` (baseId), `dispatchTier`, `locationTrust`; plus whatever per-tier availability the handler already returns, untouched.
+
+**Spec section:** "Run dialog — agent picker (task creation)" in the design doc — read it first; it is the authority for this task. Requirements:
+
+1. The run dialog presents available agents as a **two-level tree**: region nodes → siteId leaves, only regions/sites with a dispatchable agent (derive from the run-targets response; group agents by `region` baseId, sites are the agents' `siteId`s).
+2. **Public tier:** region node selectable → submit `{ region, targetTier: "public" }`. Public siteId leaves are rendered but disabled (informational only).
+3. **Private/team/shared:** region node selectable (pool dispatch `{ region, targetTier }`) OR siteId leaf selectable (targeted dispatch → submit `{ targetTokenId }` of the token behind that agent; the run-targets rows already carry `tokenId`).
+4. **Unverified group:** private/team agents with `siteId === null` appear under an "Unverified" group at the bottom, selectable → targeted dispatch by `tokenId`. Shared agents with `siteId === null` are excluded entirely.
+5. The wire contract does not change — the server run route needs no edits; only run-targets (response fields) and the client change.
+
+- [ ] **Step 1: Read the current run-targets handler and the dialog code** (files above). Understand the existing response shape (`{ tiers: [...], agents: { mine: [...], shared: [...] } }` per the client's usage at console-workflow-detail.tsx:92–134) before touching it.
+
+- [ ] **Step 2: Write failing API test** — append to `tests/zero-trust-region-api.test.ts` a describe that calls run-targets for a workflow (create one in beforeAll like tests/tier-pool-dispatch.test.ts does) and asserts each returned agent row has `siteId`, `region`, `dispatchTier`, and `locationTrust` keys (null allowed), and that no `locationSource`/`observedIp` keys leak. Run it, verify it fails on the missing keys.
+
+- [ ] **Step 3: Extend run-targets** — add the four fields to each agent row from the agent rows the handler already loads (join through `getEvalAgentsWithTokenTier` fields; do NOT add new DB round-trips if the handler already has the data). Shared agents with `siteId === null` must be filtered out server-side (spec req 4).
+
+- [ ] **Step 4: Restart dev server, verify the test passes.**
+
+- [ ] **Step 5: Rebuild the dialog picker** — replace the flat region/tier/agent selects with the two-level tree per requirements 1–4. Reuse the grouping idiom from `region-scope-selector.tsx` (macro grouping optional — region → site is the required hierarchy; a flat list of region groups is acceptable). Selection state: either `{ kind: "region", region, targetTier }` or `{ kind: "site", tokenId }`; submit body per requirement 2/3. Keep the existing no-pool-available warning behavior (currently keyed off `runTargets.tiers`) working for region selections.
+
+- [ ] **Step 6: Verify** — `npm run check && npm run lint`; manual pass in the browser: public workflow run offers region nodes with disabled public leaves; a private agent's site leaf submits targetTokenId (confirm in the network tab).
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add client/src/pages/console-workflow-detail.tsx server/routes.ts tests/zero-trust-region-api.test.ts
+git commit -m "feat(run): two-level region/siteId agent picker, zero-trust aware
+
+🤖 Built with SMT <smt@agora.build>"
+```
+
+---
+
+### Task 13: Full gate
 
 - [ ] **Step 1: Clean pollution + restart** (per `CLAUDE.md` known-hazard block)
 

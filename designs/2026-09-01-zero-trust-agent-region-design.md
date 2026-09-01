@@ -216,6 +216,34 @@ today, so this is forward-wiring, not a behavior change.
 - **My Evals only:** an **Unverified** pseudo-node (outside the geographic
   hierarchy) toggling the `unverified` scope.
 
+**Run dialog — agent picker (task creation):**
+When running an eval set against agents (creating a job), the available
+agents are presented as a **two-level region tree**: region nodes with the
+concrete siteIds of available agents as leaves — the same macro → country →
+city hierarchy as the metrics tree, showing only regions/sites that have a
+dispatchable agent.
+
+- **Public agents: region-only.** The user picks a region node; the request
+  dispatches to the pool (`region + targetTier: public`). Individual public
+  siteIds are visible as informational leaves but not selectable — pinning a
+  specific public agent is not offered.
+- **Private / team / shared agents: region or siteId.** The user may pick a
+  region node (pool dispatch, `region + targetTier`) or a specific siteId
+  leaf (targeted dispatch — the wire contract stays `targetTokenId`; the
+  leaf maps to the token behind the agent occupying that site, the siteId is
+  just how it is presented).
+- **Unverified agents have no siteId**, so they cannot appear under any
+  region node. Private/team Unverified agents remain targetable (targeted
+  dispatch is trust-exempt) and are listed under an **Unverified** group at
+  the bottom of the picker. Shared Unverified agents are not dispatchable at
+  all and do not appear.
+
+This replaces the current flat Region-select + tier-select + "any/specific
+agent" dropdown in the run dialog: one tree answers both "where" (region
+pool) and "which" (exact site), and the selectable set is derived from the
+same effective-identity rules the claim path enforces — the UI never offers
+a dispatch the server would refuse.
+
 **Console:**
 - Token mint dialog: the region picker renders **only when tier = public**
   (admin). For private/team/shared it is replaced by static text: "Region:
