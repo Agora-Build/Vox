@@ -1031,6 +1031,16 @@ export async function registerRoutes(
       }
       // Hierarchy metadata is permanent because changing it would reclassify historical data.
       if (typeof req.body.isActive === "boolean") updates.isActive = req.body.isActive;
+      if (typeof req.body.isMainline === "boolean") updates.isMainline = req.body.isMainline;
+      for (const field of ["latitude", "longitude"] as const) {
+        if (req.body[field] !== undefined) {
+          if (req.body[field] !== null && typeof req.body[field] !== "number") {
+            return res.status(400).json({ error: `${field} must be a number or null` });
+          }
+          updates[field] = req.body[field];
+        }
+      }
+      // `source` stays server-controlled — never accepted from the client.
 
       const updated = await storage.updateRegionLocation(id, updates);
       res.json(serializeRegionLocation(updated!));
