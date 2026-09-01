@@ -44,6 +44,17 @@ d("shared-agents listings repo", () => {
     await repo.updateListingRegion(h.marketplaceDb, 111, null);
     row = await repo.getListing(h.marketplaceDb, 111);
     expect(row!.active).toBe(false);
+    let activeNow = await repo.listActiveListings(h.marketplaceDb);
+    expect(activeNow.some((l) => l.tokenId === 111)).toBe(false);
+
+    // Regaining a trusted region must self-heal the listing back to active —
+    // runAgentLocationCheck never calls setListing, so this is the only path back.
+    await repo.updateListingRegion(h.marketplaceDb, 111, "apac-in-mumbai-01");
+    row = await repo.getListing(h.marketplaceDb, 111);
+    expect(row!.active).toBe(true);
+    expect(row!.region).toBe("apac-in-mumbai-01");
+    activeNow = await repo.listActiveListings(h.marketplaceDb);
+    expect(activeNow.some((l) => l.tokenId === 111)).toBe(true);
 
     // No listing for this token: no-op, does not throw, does not create a row.
     await expect(repo.updateListingRegion(h.marketplaceDb, 999999, "na-us-ashburn-01")).resolves.toBeUndefined();

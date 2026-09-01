@@ -35,15 +35,19 @@ export async function deactivateListing(db: PluginDb, tokenId: number): Promise<
  * (server/marketplace.ts) — called whenever a shared agent's Vox-detected
  * region is (re)assigned or cleared. `region` is NOT NULL on this table, so a
  * clear (region === null, "Unverified") is expressed as deactivating the
- * listing — same delist-until-trusted precedent as `setListing(id, null)`.
- * No-op if the token has no listing row.
+ * listing — same delist-until-trusted precedent as `setListing(id, null)`. A
+ * non-null region reactivates the listing (mirrors `upsertListing`'s
+ * unconditional `active = true`) — otherwise a prior distrust-triggered
+ * deactivation would never self-heal once the agent regains a trusted region,
+ * since `runAgentLocationCheck` never calls `setListing`. No-op if the token
+ * has no listing row.
  */
 export async function updateListingRegion(db: PluginDb, tokenId: number, region: string | null): Promise<void> {
   if (region === null) {
     await db.query(`UPDATE listings SET active = false, updated_at = now() WHERE token_id = $1`, [tokenId]);
     return;
   }
-  await db.query(`UPDATE listings SET region = $2, updated_at = now() WHERE token_id = $1`, [tokenId, region]);
+  await db.query(`UPDATE listings SET region = $2, active = true, updated_at = now() WHERE token_id = $1`, [tokenId, region]);
 }
 
 function mapListing(r: {
