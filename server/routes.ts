@@ -2829,8 +2829,8 @@ export async function registerRoutes(
       const { name, regionLocationBaseId, dispatchTier: requestedTier, pricePerUnit } = req.body;
       const requestedLocation = regionLocationBaseId;
 
-      if (!name || !requestedLocation) {
-        return res.status(400).json({ error: "Name and region location required" });
+      if (!name) {
+        return res.status(400).json({ error: "Name required" });
       }
 
       // Default: admin → public (today's admin default), non-admin → private.
@@ -2849,20 +2849,36 @@ export async function registerRoutes(
       });
       if (!decision.ok) return res.status(decision.status).json({ error: decision.reason });
 
-      const location = await storage.getRegionLocationByBaseId(String(requestedLocation));
-      if (!location || !location.isActive) {
-        return res.status(400).json({ error: "Invalid or inactive region location" });
-      }
-
       const token = generateEvalAgentToken();
       const tokenHash = hashToken(token);
-      const evalAgentToken = await storage.createEvalAgentTokenForLocation(location.baseId, {
-        name,
-        tokenHash,
-        dispatchTier: dispatchTier as "private" | "team" | "public" | "shared",
-        createdBy: user.id,
-        isRevoked: false,
-      });
+
+      let evalAgentToken;
+      if (dispatchTier === "public") {
+        if (!requestedLocation) return res.status(400).json({ error: "Region location required for public agents" });
+        const location = await storage.getRegionLocationByBaseId(String(requestedLocation));
+        if (!location || !location.isActive) {
+          return res.status(400).json({ error: "Invalid or inactive region location" });
+        }
+        evalAgentToken = await storage.createEvalAgentTokenForLocation(location.baseId, {
+          name,
+          tokenHash,
+          dispatchTier: dispatchTier as "private" | "team" | "public" | "shared",
+          createdBy: user.id,
+          isRevoked: false,
+        });
+      } else {
+        // Zero trust: users never assert a region for non-public agents.
+        if (requestedLocation) {
+          return res.status(400).json({ error: "Region cannot be set for private/team/shared agents — it is detected automatically when the agent connects" });
+        }
+        evalAgentToken = await storage.createEvalAgentTokenWithoutLocation({
+          name,
+          tokenHash,
+          dispatchTier: dispatchTier as "private" | "team" | "public" | "shared",
+          createdBy: user.id,
+          isRevoked: false,
+        });
+      }
 
       // Shared: register the marketplace listing (mirrors the PATCH path).
       if (marketplace && dispatchTier === "shared") {
@@ -2980,8 +2996,8 @@ export async function registerRoutes(
 
       const { name, regionLocationBaseId, dispatchTier: requestedTier, pricePerUnit } = req.body;
       const requestedLocation = regionLocationBaseId;
-      if (!name || !requestedLocation) {
-        return res.status(400).json({ error: "Name and region location required" });
+      if (!name) {
+        return res.status(400).json({ error: "Name required" });
       }
       const dispatchTier = (requestedTier as string) || "public";
       if (!["private", "team", "public", "shared"].includes(dispatchTier)) {
@@ -2997,19 +3013,36 @@ export async function registerRoutes(
       });
       if (!decision.ok) return res.status(decision.status).json({ error: decision.reason });
 
-      const location = await storage.getRegionLocationByBaseId(String(requestedLocation));
-      if (!location || !location.isActive) {
-        return res.status(400).json({ error: "Invalid or inactive region location" });
-      }
       const token = generateEvalAgentToken();
       const tokenHash = hashToken(token);
-      const evalAgentToken = await storage.createEvalAgentTokenForLocation(location.baseId, {
-        name,
-        tokenHash,
-        dispatchTier: dispatchTier as "private" | "team" | "public" | "shared",
-        createdBy: user.id,
-        isRevoked: false,
-      });
+
+      let evalAgentToken;
+      if (dispatchTier === "public") {
+        if (!requestedLocation) return res.status(400).json({ error: "Region location required for public agents" });
+        const location = await storage.getRegionLocationByBaseId(String(requestedLocation));
+        if (!location || !location.isActive) {
+          return res.status(400).json({ error: "Invalid or inactive region location" });
+        }
+        evalAgentToken = await storage.createEvalAgentTokenForLocation(location.baseId, {
+          name,
+          tokenHash,
+          dispatchTier: dispatchTier as "private" | "team" | "public" | "shared",
+          createdBy: user.id,
+          isRevoked: false,
+        });
+      } else {
+        // Zero trust: users never assert a region for non-public agents.
+        if (requestedLocation) {
+          return res.status(400).json({ error: "Region cannot be set for private/team/shared agents — it is detected automatically when the agent connects" });
+        }
+        evalAgentToken = await storage.createEvalAgentTokenWithoutLocation({
+          name,
+          tokenHash,
+          dispatchTier: dispatchTier as "private" | "team" | "public" | "shared",
+          createdBy: user.id,
+          isRevoked: false,
+        });
+      }
       if (marketplace && dispatchTier === "shared") {
         await marketplace.setListing(evalAgentToken.id, pricePerUnit ?? null, { ownerId: user.id, region: evalAgentToken.siteId });
       }

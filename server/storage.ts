@@ -565,6 +565,13 @@ export class DatabaseStorage {
     return result[0];
   }
 
+  async createEvalAgentTokenWithoutLocation(token: Omit<InsertEvalAgentToken, "siteId">): Promise<EvalAgentToken> {
+    const result = await db.insert(evalAgentTokens).values({
+      ...token, siteId: null, region: null,
+    }).returning();
+    return result[0];
+  }
+
   async updateEvalAgentLocation(agentId: number, fields: {
     region: string | null; siteId: string | null; locationTrust: string;
     locationCheckedAt: Date; locationSource: unknown;
