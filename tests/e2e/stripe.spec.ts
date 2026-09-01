@@ -56,29 +56,110 @@ test.describe("Stripe Payment Flow (Authenticated)", () => {
   test.describe.configure({ mode: "serial" });
 
   let authenticatedRequest: APIRequestContext;
-  let organizationId: number | null = null;
+  let adminRequest: APIRequestContext;
+
+  /**
+   * These tests need a user who OWNS an organization, and they used to get one
+   * by putting `admin@vox.local` into a "Stripe Test Org".
+   *
+   * That is a one-way door. Creating an org sets `users.organization_id` and
+   * `orgRole: 'owner'`, and `POST /api/organizations/:id/leave` refuses an
+   * owner ("Transfer ownership first"), so with no second member there is no
+   * API that undoes it. The mutation therefore outlived the run, and admin
+   * (user id 1) is the account the whole test corpus shares.
+   *
+   * Four unit suites — tier-pool-dispatch, session-endpoint, agent-observed-ip
+   * and practical-shared-agents-credits — assert "admin has no organization in
+   * the dev seed". So this file left them failing on the NEXT `npm test`, with
+   * 12 failures reading `expected 200 to be 400`: an org-scoped request that
+   * SHOULD have been rejected now succeeds. That looks exactly like an authz
+   * regression in the code under test, which is the expensive part — the
+   * failures point at server code that is fine, in suites that never ran this
+   * file, and only after a full gate that appeared to pass.
+   *
+   * So the org owner is a dedicated fixture account instead of admin, and it is
+   * REUSED rather than recreated. Reuse is the point: because nothing can
+   * delete an org, a fresh user per run would leave one more user and one more
+   * organization behind every time. Provisioning is therefore idempotent — log
+   * in, and only invite/register/create when that fails — so the whole file
+   * costs exactly one user and one organization no matter how often it runs.
+   * Admin is borrowed only to mint the invite, and its own row is never written.
+   */
+  const FIXTURE = {
+    email: "stripe-e2e-fixture@test.local",
+    username: "stripe-e2e-fixture",
+    password: "stripe-e2e-fixture-pass-123",
+    orgName: "Stripe E2E Fixture Org",
+  };
 
   test.beforeAll(async ({ playwright }) => {
-    // Create a single authenticated context for all tests
+    adminRequest = await playwright.request.newContext({
+      baseURL: "http://localhost:5000",
+    });
     authenticatedRequest = await playwright.request.newContext({
       baseURL: "http://localhost:5000",
     });
 
-    // Login once
-    const loginResponse = await authenticatedRequest.post("/api/auth/login", {
-      data: {
-        email: "admin@vox.local",
-        password: "admin123456",
-      },
-    });
+    const login = () =>
+      authenticatedRequest.post("/api/auth/login", {
+        data: { email: FIXTURE.email, password: FIXTURE.password },
+      });
 
-    if (!loginResponse.ok()) {
-      console.log("Login failed - may be rate limited. Status:", loginResponse.status());
+    // Existing fixture account (every run after the first) — nothing to create.
+    if (!(await login()).ok()) {
+      const adminLogin = await adminRequest.post("/api/auth/login", {
+        data: { email: "admin@vox.local", password: "admin123456" },
+      });
+      if (!adminLogin.ok()) {
+        console.log("Admin login failed - may be rate limited. Status:", adminLogin.status());
+        return;
+      }
+
+      // Registration is invite-gated, so admin mints one for the fixture user.
+      const inviteResponse = await adminRequest.post("/api/admin/invite", {
+        data: { email: FIXTURE.email, plan: "premium" },
+      });
+      if (!inviteResponse.ok()) {
+        console.log("Invite creation failed. Status:", inviteResponse.status());
+        return;
+      }
+      const { token } = await inviteResponse.json();
+
+      // Register, then log in explicitly: register opens a session on whichever
+      // context issued it, so do not rely on that side effect for this one.
+      const registerResponse = await authenticatedRequest.post("/api/auth/register", {
+        data: { username: FIXTURE.username, password: FIXTURE.password, token },
+      });
+      if (!registerResponse.ok()) {
+        console.log("Registration failed. Status:", registerResponse.status());
+        return;
+      }
+
+      const loginResponse = await login();
+      if (!loginResponse.ok()) {
+        console.log("Login failed - may be rate limited. Status:", loginResponse.status());
+        return;
+      }
+    }
+
+    // Same idempotence for the org: present on later runs, created on the first.
+    const me = await (await authenticatedRequest.get("/api/auth/status")).json();
+    if (!me.user?.organizationId) {
+      const createResponse = await authenticatedRequest.post("/api/organizations", {
+        data: {
+          name: FIXTURE.orgName,
+          description: "Organization for Stripe payment testing",
+        },
+      });
+      if (!createResponse.ok()) {
+        console.log("Org creation failed. Status:", createResponse.status());
+      }
     }
   });
 
   test.afterAll(async () => {
     await authenticatedRequest?.dispose();
+    await adminRequest?.dispose();
   });
 
   test("should get pricing configuration", async () => {
@@ -97,29 +178,26 @@ test.describe("Stripe Payment Flow (Authenticated)", () => {
     }
   });
 
-  test("should create organization for payment tests", async () => {
-    // First check if user has an organization
+  test("should have an organization for payment tests", async () => {
+    // Asserts the END STATE, not the act of creating, because beforeAll only
+    // creates on the first run — a "was it created?" assertion would pass once
+    // and be meaningless afterwards. This is the gate for the rest of the file:
+    // the three tests below read the org id from here, and each still guards on
+    // `if (me.user?.organizationId)`, so without a hard assertion at this point
+    // a broken fixture would make them silently skip and the file would go green
+    // having tested nothing.
     const meResponse = await authenticatedRequest.get("/api/auth/status");
     const me = await meResponse.json();
+    expect(typeof me.user?.organizationId).toBe("number");
 
-    if (!me.user?.organizationId) {
-      // Create organization
-      const createResponse = await authenticatedRequest.post("/api/organizations", {
-        data: {
-          name: "Stripe Test Org",
-          description: "Organization for Stripe payment testing",
-        },
-      });
+    const orgResponse = await authenticatedRequest.get(
+      `/api/organizations/${me.user.organizationId}`
+    );
+    expect(orgResponse.ok()).toBeTruthy();
 
-      if (createResponse.ok()) {
-        const org = await createResponse.json();
-        expect(org.id).toBeDefined();
-        expect(org.name).toBe("Stripe Test Org");
-        organizationId = org.id;
-      }
-    } else {
-      organizationId = me.user.organizationId;
-    }
+    const org = await orgResponse.json();
+    expect(org.id).toBe(me.user.organizationId);
+    expect(org.name).toBe(FIXTURE.orgName);
   });
 
   test("should calculate seat pricing for organization", async () => {
