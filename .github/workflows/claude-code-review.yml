@@ -20,6 +20,10 @@ jobs:
       github.event.pull_request.author_association == 'MEMBER' ||
       github.event.pull_request.author_association == 'COLLABORATOR'
     runs-on: ubuntu-latest
+    # No hang observed here (30 runs, median 207s, max 394s) — this is a cap
+    # against the failure mode codex-code-review.yml actually hit, not a fix for
+    # a known problem. Without it GitHub's default is 60 minutes.
+    timeout-minutes: 15
     permissions:
       contents: read
       pull-requests: read
@@ -84,6 +88,7 @@ jobs:
   post:
     needs: review
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     permissions:
       pull-requests: write
 
