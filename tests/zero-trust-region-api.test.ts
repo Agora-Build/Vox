@@ -130,6 +130,8 @@ describeDb("run-targets: two-level tree fields (Task 12)", () => {
   let evalSetId: number;
   let privateTokenId: number;
   let sharedTokenId: number;
+  let publicTokenId: number;
+  let publicSiteId: string;
 
   beforeAll(async () => {
     cookie = await login();
@@ -188,11 +190,31 @@ describeDb("run-targets: two-level tree fields (Task 12)", () => {
     });
     expect(patchRes.ok).toBe(true);
     await db.update(evalAgents).set({ siteId: null, locationTrust: "anonymized" }).where(eq(evalAgents.tokenId, sharedTokenId));
+
+    // A plain public-tier token, left as public (never patched) — exercises
+    // the informational `agents.public` fleet row, whose region/siteId must
+    // come from the TOKEN (public's own detected agent.region is always
+    // null; effectiveDispatchIdentity sources public identity from the token).
+    const pubRes = await authFetch(cookie, `${BASE_URL}/api/eval-agent-tokens`, {
+      method: "POST",
+      body: JSON.stringify({ name: `zt-rt-pub-${Date.now()}`, regionLocationBaseId: BASE_NA, dispatchTier: "public" }),
+    });
+    expect(pubRes.ok).toBe(true);
+    const pubBody = await pubRes.json();
+    publicTokenId = pubBody.id;
+    publicSiteId = pubBody.siteId;
+    const pubRegRes = await fetch(`${BASE_URL}/api/eval-agent/register`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${pubBody.token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ name: "zt-rt-pub-agent" }),
+    });
+    expect(pubRegRes.ok).toBe(true);
   });
 
   afterAll(async () => {
     await authFetch(cookie, `${BASE_URL}/api/eval-agent-tokens/${privateTokenId}/revoke`, { method: "POST" });
     await authFetch(cookie, `${BASE_URL}/api/eval-agent-tokens/${sharedTokenId}/revoke`, { method: "POST" });
+    await authFetch(cookie, `${BASE_URL}/api/eval-agent-tokens/${publicTokenId}/revoke`, { method: "POST" });
     await authFetch(cookie, `${BASE_URL}/api/workflows/${workflowId}`, { method: "DELETE" });
   });
 
@@ -229,5 +251,32 @@ describeDb("run-targets: two-level tree fields (Task 12)", () => {
     expect(body.agents.shared.find((a: { tokenId: number }) => a.tokenId === sharedTokenId)).toBeUndefined();
     // Also never smuggled through under "mine" (the token is admin-owned too).
     expect(body.agents.mine.find((a: { tokenId: number }) => a.tokenId === sharedTokenId)).toBeUndefined();
+  });
+
+  it("agents.public carries token-sourced region/siteId+state, no tokenId, and no locationSource/observedIp leak", async () => {
+    const res = await authFetch(cookie, `${BASE_URL}/api/workflows/${workflowId}/run-targets?evalSetId=${evalSetId}`);
+    expect(res.ok).toBe(true);
+    const body = await res.json();
+
+    expect(Array.isArray(body.agents.public)).toBe(true);
+    const row = body.agents.public.find((r: { siteId: string }) => r.siteId === publicSiteId);
+    expect(row).toBeDefined();
+    // Region comes from the TOKEN (BASE_NA), never the agent's own detected
+    // region — which is permanently null for public-tier agents.
+    expect(row.region).toBe(BASE_NA);
+    expect(row.siteId).toBe(publicSiteId);
+    expect(typeof row.state).toBe("string");
+    // Never individually targetable: no tokenId on the informational row.
+    expect(row).not.toHaveProperty("tokenId");
+    expect(row).not.toHaveProperty("name");
+
+    for (const r of body.agents.public) {
+      expect(r).not.toHaveProperty("locationSource");
+      expect(r).not.toHaveProperty("observedIp");
+    }
+
+    // The admin's own public token must not be duplicated under "mine" —
+    // public sites are represented exactly once, via agents.public.
+    expect(body.agents.mine.find((a: { tokenId: number }) => a.tokenId === publicTokenId)).toBeUndefined();
   });
 });

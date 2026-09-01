@@ -781,7 +781,10 @@ export class DatabaseStorage {
   }
 
   async getEvalAgentsWithTokenTier(): Promise<
-    (EvalAgent & { tokenCreatedBy: number; tokenDispatchTier: string; tokenOwnerOrgId: number | null; tokenRegion: string })[]
+    (EvalAgent & {
+      tokenCreatedBy: number; tokenDispatchTier: string; tokenOwnerOrgId: number | null;
+      tokenRegion: string; tokenSiteId: string | null; tokenIsRevoked: boolean;
+    })[]
   > {
     const results = await db.select({
       id: evalAgents.id,
@@ -800,13 +803,21 @@ export class DatabaseStorage {
       tokenDispatchTier: evalAgentTokens.dispatchTier,
       tokenOwnerOrgId: users.organizationId,
       tokenRegion: evalAgentTokens.region,
+      // Public-tier tokens carry their admin-configured region/siteId on the
+      // TOKEN, not the agent (the agent's own detected region is permanently
+      // null for public — see effectiveDispatchIdentity). Selected here so
+      // callers can build public-fleet rows from this same join, no second
+      // round-trip.
+      tokenSiteId: evalAgentTokens.siteId,
+      tokenIsRevoked: evalAgentTokens.isRevoked,
     })
       .from(evalAgents)
       .innerJoin(evalAgentTokens, eq(evalAgents.tokenId, evalAgentTokens.id))
       .leftJoin(users, eq(evalAgentTokens.createdBy, users.id))
       .orderBy(desc(evalAgents.createdAt));
     return results as (EvalAgent & {
-      tokenCreatedBy: number; tokenDispatchTier: string; tokenOwnerOrgId: number | null; tokenRegion: string;
+      tokenCreatedBy: number; tokenDispatchTier: string; tokenOwnerOrgId: number | null;
+      tokenRegion: string; tokenSiteId: string | null; tokenIsRevoked: boolean;
     })[];
   }
 

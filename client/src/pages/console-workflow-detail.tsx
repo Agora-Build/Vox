@@ -17,6 +17,10 @@ import { useState, useEffect, useMemo } from "react";
 import type { Workflow as WorkflowType, Provider, EvalJob, EvalSet } from "@shared/schema";
 import { formatSmartTimestamp, formatSite, formatRegion, toYaml } from "@/lib/utils";
 import { useRegionLocationOptions } from "@/hooks/use-regions";
+import {
+  type RunTargetAgents,
+  encodePickerValue, decodePickerValue, dedupeSharedAgents, buildRegionGroups, buildUnverifiedAgents, countOnlinePublic,
+} from "@/lib/run-picker";
 
 interface AuthStatus {
   user: {
@@ -28,50 +32,10 @@ interface AuthStatus {
   } | null;
 }
 
-interface RunTargetAgent {
-  tokenId: number;
-  name: string;
-  siteId: string | null;
-  region: string | null;
-  dispatchTier: string;
-  locationTrust: string | null;
-  price: number | null;
-}
-
 interface RunTargetsResponse {
-  agents: { mine: RunTargetAgent[]; shared: RunTargetAgent[] };
+  agents: RunTargetAgents;
   referencedSecrets: Array<{ name: string; brokerType: string | null; present: boolean; resolvable?: boolean }>;
   tiers: { tier: string; available: boolean; onlineAgents?: number; reason?: string }[];
-}
-
-/**
- * The run dialog's picker collapses to one selectable value: either a
- * region+tier pool ("run on any agent of this tier in this region") or a
- * specific site ("run on the agent occupying this site" — resolved to its
- * tokenId, since that's the only thing the wire contract accepts). Encoded
- * as a single string so it drops straight into a shadcn <Select>.
- */
-type PickerSelection =
-  | { kind: "region"; region: string; targetTier: string }
-  | { kind: "site"; tokenId: number };
-
-function encodePickerValue(sel: PickerSelection): string {
-  return sel.kind === "region" ? `region:${sel.region}:${sel.targetTier}` : `site:${sel.tokenId}`;
-}
-
-function decodePickerValue(value: string): PickerSelection | null {
-  if (!value) return null;
-  if (value.startsWith("region:")) {
-    const rest = value.slice("region:".length);
-    const sep = rest.lastIndexOf(":");
-    if (sep < 0) return null;
-    return { kind: "region", region: rest.slice(0, sep), targetTier: rest.slice(sep + 1) };
-  }
-  if (value.startsWith("site:")) {
-    const tokenId = Number(value.slice("site:".length));
-    return Number.isFinite(tokenId) ? { kind: "site", tokenId } : null;
-  }
-  return null;
 }
 
 const TIER_LABEL: Record<string, string> = { public: "public", private: "private", team: "team", shared: "shared" };
@@ -132,66 +96,54 @@ export default function ConsoleWorkflowDetail() {
   });
 
   const tierAvailable = (tier: string) => (runTargets?.tiers ?? []).find((t) => t.tier === tier)?.available ?? false;
-  const tierOnline = (tier: string) => (runTargets?.tiers ?? []).find((t) => t.tier === tier)?.onlineAgents;
 
-  const pickerShared = (runTargets?.agents.shared ?? []).filter(
-    (s) => !(runTargets?.agents.mine ?? []).some((m) => m.tokenId === s.tokenId)
+  const pickerShared = useMemo(
+    () => dedupeSharedAgents(runTargets?.agents.mine ?? [], runTargets?.agents.shared ?? []),
+    [runTargets]
   );
-  const allAgents = useMemo(
+  // Everything except the public fleet — private/team/shared rows, each with
+  // a real tokenId and a detected (or null/Unverified) siteId+region.
+  const nonPublicAgents = useMemo(
     () => [...(runTargets?.agents.mine ?? []), ...pickerShared],
     [runTargets, pickerShared]
   );
 
   // Two-level tree data: region -> agents in that region, grouped by tier.
-  // Only regions with at least one row reachable from `mine`/`shared` show
-  // up here (private/team/shared leaves); a region with only a theoretical
-  // public pool is added separately below since public pool eligibility
-  // isn't tied to any concrete agent the caller can see.
-  const regionGroups = useMemo(() => {
-    const byRegion = new Map<string, RunTargetAgent[]>();
-    for (const a of allAgents) {
-      if (a.region == null) continue;
-      if (!byRegion.has(a.region)) byRegion.set(a.region, []);
-      byRegion.get(a.region)!.push(a);
-    }
-    return Array.from(byRegion.entries())
-      .map(([region, rows]) => ({
-        region,
-        label: regionOptions.find((r) => r.value === region)?.label ?? formatRegion(region),
-        private: rows.filter((r) => r.dispatchTier === "private"),
-        team: rows.filter((r) => r.dispatchTier === "team"),
-        public: rows.filter((r) => r.dispatchTier === "public"),
-        shared: rows.filter((r) => r.dispatchTier === "shared"),
-      }))
-      .sort((a, b) => a.label.localeCompare(b.label));
-  }, [allAgents, regionOptions]);
-
-  // Catalog regions with no visible mine/shared row at all — still offered
-  // as a public pool target if public dispatch is eligible for this
-  // workflow, since the server accepts any catalog region for a public pool
-  // run regardless of what agents the caller happens to own there.
-  const publicOnlyRegions = tierAvailable("public")
-    ? regionOptions.filter((r) => !regionGroups.some((g) => g.region === r.value))
-    : [];
-
-  // private/team rows with no detected site (siteId null → Unverified).
-  // Shared-tier Unverified rows never reach the client at all — filtered
-  // server-side in run-targets (siteId null shared agents aren't
-  // dispatchable, full stop) — so this group never needs to special-case them.
-  const unverifiedAgents = allAgents.filter(
-    (a) => a.region == null && (a.dispatchTier === "private" || a.dispatchTier === "team")
+  // Only regions with at least one actual row show up — private/team/shared
+  // from `nonPublicAgents`, or an informational public row from
+  // `agents.public` — never a catalog-only region with no dispatchable agent.
+  const regionGroups = useMemo(
+    () => buildRegionGroups(
+      nonPublicAgents,
+      runTargets?.agents.public ?? [],
+      (region) => regionOptions.find((r) => r.value === region)?.label ?? formatRegion(region),
+    ),
+    [nonPublicAgents, runTargets, regionOptions]
   );
 
+  // private/team rows with no detected site (siteId === null → Unverified).
+  // Shared-tier Unverified rows never reach the client at all — filtered
+  // server-side in run-targets (siteId null shared agents aren't
+  // dispatchable, full stop).
+  const unverifiedAgents = buildUnverifiedAgents(nonPublicAgents);
+
   const selection = decodePickerValue(pickerValue);
+  const selectedGroup = selection?.kind === "region" ? regionGroups.find((g) => g.region === selection.region) : undefined;
 
   // If the tree is rebuilt (new run-targets data) and the current selection
-  // no longer resolves — a region-pool tier became unavailable, or a picked
-  // site's agent vanished — clear it and say why, so the default action
-  // never silently 403s.
+  // no longer resolves — a region-pool tier became globally unavailable, the
+  // specific region+tier node it pointed at disappeared from the rebuilt
+  // tree, or a picked site's agent vanished — clear it and say why, so the
+  // default action never silently 403s.
   useEffect(() => {
     if (!runTargets || !selection) return;
     if (selection.kind === "region") {
-      if (!tierAvailable(selection.targetTier)) {
+      const group = regionGroups.find((g) => g.region === selection.region);
+      const nodeStillExists = selection.targetTier === "public" ? (group?.public.length ?? 0) > 0
+        : selection.targetTier === "private" ? (group?.private.length ?? 0) > 0
+        : selection.targetTier === "team" ? (group?.team.length ?? 0) > 0
+        : false;
+      if (!tierAvailable(selection.targetTier) || !nodeStillExists) {
         setPickerValue("");
         toast({
           title: "Run target adjusted",
@@ -199,7 +151,7 @@ export default function ConsoleWorkflowDetail() {
         });
       }
     } else {
-      if (!allAgents.some((a) => a.tokenId === selection.tokenId)) {
+      if (!nonPublicAgents.some((a) => a.tokenId === selection.tokenId)) {
         setPickerValue("");
         toast({
           title: "Run target adjusted",
@@ -208,7 +160,7 @@ export default function ConsoleWorkflowDetail() {
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [runTargets]);
+  }, [runTargets, regionGroups]);
 
   // Pooled dispatch aimed at a tier the workflow can't use (e.g. every
   // non-shared tier blocked) can only 403 — gate the submit. In practice the
@@ -217,7 +169,7 @@ export default function ConsoleWorkflowDetail() {
   const nonSharedTiers = (runTargets?.tiers ?? []).filter((t) => t.tier !== "shared");
   const noPoolAvailable = nonSharedTiers.length > 0 && nonSharedTiers.every((t) => !t.available);
 
-  const selectedAgent = selection?.kind === "site" ? allAgents.find((a) => a.tokenId === selection.tokenId) ?? null : null;
+  const selectedAgent = selection?.kind === "site" ? nonPublicAgents.find((a) => a.tokenId === selection.tokenId) ?? null : null;
   const runtimeExposed = (runTargets?.referencedSecrets ?? [])
     .filter((s) => s.brokerType == null && s.present).map((s) => s.name);
   // Referenced but not configured for the workflow owner → the run would fail
@@ -349,15 +301,14 @@ export default function ConsoleWorkflowDetail() {
                     {regionGroups.map((group) => (
                       <SelectGroup key={group.region}>
                         <SelectLabel>{group.label}</SelectLabel>
-                        {tierAvailable("public") && (
+                        {tierAvailable("public") && group.public.length > 0 && (
                           <SelectItem value={encodePickerValue({ kind: "region", region: group.region, targetTier: "public" })}>
-                            Any public agent
-                            {typeof tierOnline("public") === "number" ? ` (${tierOnline("public")} online)` : ""}
+                            Any public agent ({countOnlinePublic(group)} online)
                           </SelectItem>
                         )}
-                        {group.public.map((a) => (
-                          <SelectItem key={a.tokenId} value={encodePickerValue({ kind: "site", tokenId: a.tokenId })} disabled>
-                            {formatSite(a.siteId!)} — public (informational only)
+                        {group.public.map((r) => (
+                          <SelectItem key={r.siteId} value={`disabled-public:${r.siteId}`} disabled>
+                            {formatSite(r.siteId)} — public (informational only)
                           </SelectItem>
                         ))}
                         {tierAvailable("private") && group.private.length > 0 && (
@@ -387,16 +338,6 @@ export default function ConsoleWorkflowDetail() {
                         ))}
                       </SelectGroup>
                     ))}
-                    {publicOnlyRegions.length > 0 && (
-                      <SelectGroup>
-                        <SelectLabel>Other regions</SelectLabel>
-                        {publicOnlyRegions.map((r) => (
-                          <SelectItem key={r.value} value={encodePickerValue({ kind: "region", region: r.value, targetTier: "public" })}>
-                            {r.label} — Any public agent
-                          </SelectItem>
-                        ))}
-                      </SelectGroup>
-                    )}
                     {unverifiedAgents.length > 0 && (
                       <SelectGroup>
                         <SelectLabel>Unverified</SelectLabel>
@@ -409,7 +350,8 @@ export default function ConsoleWorkflowDetail() {
                     )}
                   </SelectContent>
                 </Select>
-                {selection?.kind === "region" && tierOnline(selection.targetTier) === 0 && (
+                {selection?.kind === "region" && selection.targetTier === "public" && selectedGroup &&
+                  countOnlinePublic(selectedGroup) === 0 && (
                   <p className="text-xs text-muted-foreground">
                     No matching agent is online right now; the job will wait in the pool (up to 24h).
                   </p>

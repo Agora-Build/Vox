@@ -4466,8 +4466,17 @@ export async function registerRoutes(
         siteId: string | null; region: string | null; dispatchTier: string; locationTrust: string | null;
         price: number | null;
       };
+      // Public-tier sites are never individually targetable (the run route
+      // only accepts {region, targetTier:"public"} for this tier — never a
+      // tokenId), so this row carries no tokenId, just the informational
+      // location + online state.
+      type PublicFleetRow = { siteId: string; region: string | null; state: string };
 
-      // My agents: own tokens, any tier, not revoked, region-filtered when given.
+      // My agents: own tokens, any tier EXCEPT public, not revoked,
+      // region-filtered when given. Public-tier tokens are represented once,
+      // uniformly, in `agents.public` below (not here) — public sites are
+      // never individually owned/targeted, so surfacing an admin's own
+      // public token under "mine" too would just duplicate that row.
       const ownTokens = await storage.getEvalAgentTokensByUser(user.id);
       // Detected location per token, sourced from the same agent rows the
       // tier counts below already load — no extra DB round-trip. A token
@@ -4489,13 +4498,13 @@ export async function registerRoutes(
         workflow.ownerId === user.id ||
         (workflow.organizationId != null && sameOrg({ organizationId: user.organizationId }, { organizationId: workflow.organizationId }));
       const mine: Agent[] = !sessionTrusted ? [] : ownTokens
-        .filter((t) => !t.isRevoked && (!region || t.region === region))
+        .filter((t) => !t.isRevoked && t.dispatchTier !== "public" && (!region || t.region === region))
         .map((t) => {
-          const a = agentByTokenId.get(t.id);
+          const eff = effectiveDispatchIdentity(t, agentByTokenId.get(t.id));
           return {
             tokenId: t.id, name: t.name,
-            siteId: a?.siteId ?? null, region: a?.region ?? null,
-            dispatchTier: t.dispatchTier, locationTrust: a?.locationTrust ?? null,
+            siteId: eff.siteId, region: eff.region,
+            dispatchTier: t.dispatchTier, locationTrust: eff.locationTrust,
             price: null,
           };
         })
@@ -4516,20 +4525,33 @@ export async function registerRoutes(
           if (region && !l.region.startsWith(region + "-")) continue;
           const tok = await storage.getEvalAgentToken(l.tokenId);
           if (!tok || tok.isRevoked) continue;
-          const a = agentByTokenId.get(l.tokenId);
-          const siteId = a?.siteId ?? null;
+          const eff = effectiveDispatchIdentity(tok, agentByTokenId.get(l.tokenId));
           // Unverified shared agent: not dispatchable at all (a re-detection
           // can drop this even after listing, ahead of the listing's own
           // region catching up) — filter it out here rather than trust the
           // listing's (possibly stale) region.
-          if (siteId == null) continue;
+          if (eff.siteId == null) continue;
           shared.push({
             tokenId: l.tokenId, name: tok.name,
-            siteId, region: a?.region ?? null, dispatchTier: "shared", locationTrust: a?.locationTrust ?? null,
+            siteId: eff.siteId, region: eff.region, dispatchTier: "shared", locationTrust: eff.locationTrust,
             price: l.pricePerUnit,
           });
         }
       }
+
+      // Public fleet: informational only — never individually targetable, so
+      // no tokenId. Sourced from the SAME agentRows already loaded for the
+      // tier online-counts below (no extra round-trip). Region/siteId come
+      // from the TOKEN side (effectiveDispatchIdentity's public branch)
+      // because a public agent's own detected region/siteId is permanently
+      // null; the admin-configured identity lives on the token instead.
+      const publicFleet: PublicFleetRow[] = agentRows
+        .filter((a) => a.tokenDispatchTier === "public" && !a.tokenIsRevoked)
+        .map((a): PublicFleetRow | null => a.tokenSiteId == null
+          ? null
+          : { siteId: a.tokenSiteId, region: a.tokenRegion ?? null, state: a.state })
+        .filter((r): r is PublicFleetRow => r != null)
+        .filter((r) => !region || r.region === region);
 
       // Referenced secrets + class (workflow config + the chosen eval set, when
       // supplied and visible to the caller).
@@ -4590,7 +4612,7 @@ export async function registerRoutes(
         { tier: "shared", available: false, reason: "not-pooled-yet" },
       ];
 
-      res.json({ agents: { mine, shared }, referencedSecrets, tiers });
+      res.json({ agents: { mine, shared, public: publicFleet }, referencedSecrets, tiers });
     } catch (error) {
       console.error("Error listing run targets:", error);
       res.status(500).json({ error: "Failed to list run targets" });
