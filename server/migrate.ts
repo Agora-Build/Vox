@@ -57,6 +57,7 @@ const MIGRATIONS: Array<{ version: number; description: string; file: string | n
   { version: 33, description: "api_keys soft-delete + operation-tracking columns", file: "0032_api_key_soft_delete.sql" },
   { version: 34, description: "rename region → site_id (9 tables + 2 indexes)", file: "0033_region_to_site_id.sql" },
   { version: 35, description: "tier-targeting: token region, job target_region/target_tier (site_id nullable), schedule region+target_tier", file: "0034_tier_targeting.sql" },
+  { version: 36, description: "zero-trust agent region: agent-side detected location, nullable token/agent/result site_id, job location_trust, catalog coords/source/is_mainline", file: "0035_zero_trust_agent_region.sql" },
 ];
 
 const TARGET_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version;

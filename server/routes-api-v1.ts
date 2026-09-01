@@ -16,7 +16,16 @@ import { hasOrg, sameOrg } from "./permissions";
 
 type ApiRegionLocation = Awaited<ReturnType<typeof storage.getAllRegionLocations>>[number];
 
-function apiRegionMetadata(siteId: string, locations: ApiRegionLocation[]) {
+function apiRegionMetadata(siteId: string | null, locations: ApiRegionLocation[]) {
+  if (!siteId) return {
+    regionLabel: siteId,
+    regionBaseId: null,
+    city: null,
+    countryCode: null,
+    countryName: null,
+    macroRegionCode: null,
+    macroRegionName: null,
+  };
   const location = [...locations]
     .sort((a, b) => b.baseId.length - a.baseId.length)
     .find((entry) => regionSiteSequence(siteId, entry.baseId) !== null);
@@ -848,7 +857,7 @@ export function registerApiV1Routes(app: Express): void {
       // Aggregate by provider and site
       const providerRegionMap = new Map<string, {
         providerId: string;
-        siteId: string;
+        siteId: string | null;
         responseLatencies: number[];
         interruptLatencies: number[];
         turnSuccessRates: number[];

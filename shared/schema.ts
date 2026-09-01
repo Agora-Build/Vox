@@ -1,4 +1,4 @@
-import { pgTable, text, varchar, integer, real, timestamp, serial, boolean, pgEnum, jsonb, index, uniqueIndex, check } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, integer, real, timestamp, serial, boolean, pgEnum, jsonb, index, uniqueIndex, check, doublePrecision } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
@@ -18,6 +18,12 @@ export const clashRunnerStateEnum = pgEnum("clash_runner_state", ["idle", "assig
 export const orgRoleEnum = pgEnum("org_role", ["owner", "admin", "member"]);
 export const brokerStateEnum = pgEnum("broker_state", ["idle", "offline", "busy"]);
 export const webSessionStatusEnum = pgEnum("web_session_status", ["minting", "ready", "failed"]);
+
+// Location trust — varchar column, values enforced in code (spec: trust model).
+export const locationTrustValues = ["trusted", "datacenter", "anonymized", "low_confidence", "unknown"] as const;
+export type LocationTrust = (typeof locationTrustValues)[number];
+// Only these may hold a region/siteId and contribute region-attributed data.
+export const REGION_ELIGIBLE_TRUST: readonly LocationTrust[] = ["trusted", "datacenter"];
 
 // Helper function to generate 12-char random ID for providers
 export function generateProviderId(): string {
@@ -112,6 +118,11 @@ export const regionLocations = pgTable("region_locations", {
   macroRegionName: text("macro_region_name").notNull(),
   nextSequence: integer("next_sequence").default(1).notNull(),
   isActive: boolean("is_active").default(true).notNull(),
+  latitude: doublePrecision("latitude"),
+  longitude: doublePrecision("longitude"),
+  // 'configured' = admin-created; 'detected' = auto-created from agent observation.
+  source: varchar("source", { length: 16 }).default("configured").notNull(),
+  isMainline: boolean("is_mainline").default(false).notNull(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 }, (table) => ({
@@ -206,10 +217,11 @@ export const evalAgentTokens = pgTable("eval_agent_tokens", {
   id: serial("id").primaryKey(),
   name: text("name").notNull(),
   tokenHash: text("token_hash").notNull().unique(),
-  siteId: varchar("site_id", { length: 64 }).notNull(),
+  // Nullable: region/siteId are now stamped at mint for public-tier tokens only.
+  siteId: varchar("site_id", { length: 64 }),
   // Region baseId (e.g. "na-us-seattle") — the pool an agent serves. Stamped at
   // mint (siteId = region + allocated sequence), backfilled in migration 0034.
-  region: varchar("region", { length: 64 }).notNull(),
+  region: varchar("region", { length: 64 }),
   dispatchTier: dispatchTierEnum("dispatch_tier").default("public").notNull(),
   createdBy: integer("created_by").notNull().references(() => users.id),
   isRevoked: boolean("is_revoked").default(false).notNull(),
@@ -234,7 +246,7 @@ export const evalAgents = pgTable("eval_agents", {
   id: serial("id").primaryKey(),
   name: text("name").notNull(),
   tokenId: integer("token_id").notNull().references(() => evalAgentTokens.id),
-  siteId: varchar("site_id", { length: 64 }).notNull(),
+  siteId: varchar("site_id", { length: 64 }),
   state: evalAgentStateEnum("state").default("offline").notNull(),
   // Per-process lease issued at registration. Only the current lease holder may
   // heartbeat/claim/complete; a superseded (restarted or duplicate) instance is
@@ -248,6 +260,18 @@ export const evalAgents = pgTable("eval_agents", {
   // expose raw in any public listing; only derived labels get exposed (future).
   observedIp: text("observed_ip"),
   observedIpAt: timestamp("observed_ip_at"),
+  // Zero-trust location (non-public agents): Vox-detected region baseId; NULL =
+  // Unverified. siteId above is allocated from this region at assignment time.
+  region: varchar("region", { length: 64 }),
+  locationTrust: varchar("location_trust", { length: 16 }).default("unknown").notNull(),
+  locationCheckedAt: timestamp("location_checked_at"),
+  // Full detection evidence (city/coords/asn/signals). Core-internal — never
+  // exposed on any API, same rule as observedIp.
+  locationSource: jsonb("location_source"),
+  // Hysteresis: a region CHANGE applies only after the same new observation on
+  // 3 consecutive re-detections. Trust drops apply immediately (no pending).
+  pendingRegion: varchar("pending_region", { length: 64 }),
+  pendingRegionCount: integer("pending_region_count").default(0).notNull(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
@@ -373,6 +397,10 @@ export const evalJobs = pgTable("eval_jobs", {
   // Agent-token dispatch tier captured when the job is claimed (the one tier input
   // not known at creation). Feeds the frozen mainline/community classification.
   tokenDispatchTier: text("token_dispatch_tier"),
+  // Frozen at claim alongside token_dispatch_tier: the claiming agent's
+  // location trust ('trusted' for public/configured agents). NULL = pre-feature
+  // row (grandfathered by the community gate).
+  locationTrust: varchar("location_trust", { length: 16 }),
   startedAt: timestamp("started_at"),
   completedAt: timestamp("completed_at"),
   error: text("error"),
@@ -409,7 +437,8 @@ export const evalResults = pgTable("eval_results", {
   id: serial("id").primaryKey(),
   evalJobId: integer("eval_job_id").notNull().references(() => evalJobs.id, { onDelete: "cascade" }),
   providerId: varchar("provider_id", { length: 12 }).notNull().references(() => providers.id),
-  siteId: varchar("site_id", { length: 64 }).notNull(),
+  // Nullable: NULL = ran without a verified region → the My Evals "Unverified" bucket.
+  siteId: varchar("site_id", { length: 64 }),
   // Latency columns are nullable: null = NA (not measurable). When the target
   // agent doesn't respond, aeval produces no turn-level latency, so these are
   // NULL rather than 0 — a 0 ms "response" would rank a dead agent as fastest

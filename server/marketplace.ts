@@ -10,7 +10,7 @@ export interface AgentSummary {
 export interface JobContext {
   workflowId: number | null;
   evalSetId: number | null;
-  region: string;
+  region: string | null;
   createdBy: number;
 }
 

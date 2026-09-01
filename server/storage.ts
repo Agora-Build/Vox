@@ -658,7 +658,7 @@ export class DatabaseStorage {
 
   async createEvalAgentToken(token: InsertEvalAgentToken): Promise<EvalAgentToken> {
     // Fixtures/tests pass a bare siteId; region is derivable (strip -NN).
-    const values = { ...token, region: (token as { region?: string }).region ?? token.siteId.replace(/-\d+$/, "") };
+    const values = { ...token, region: (token as { region?: string }).region ?? token.siteId?.replace(/-\d+$/, "") ?? null };
     const result = await db.insert(evalAgentTokens).values(values).returning();
     return result[0];
   }
@@ -875,7 +875,7 @@ export class DatabaseStorage {
   async claimEvalJob(
     jobId: number,
     agentId: number,
-    token: { id: number; siteId: string; region: string; dispatchTier: string; createdBy: number; ownerOrgId: number | null },
+    token: { id: number; siteId: string | null; region: string | null; dispatchTier: string; createdBy: number; ownerOrgId: number | null },
   ): Promise<EvalJob | undefined> {
     const client = await pool.connect();
     try {
@@ -929,7 +929,7 @@ export class DatabaseStorage {
   }
 
   async getClaimableJobsForToken(token: {
-    id: number; siteId: string; region: string; dispatchTier: string; createdBy: number; ownerOrgId: number | null;
+    id: number; siteId: string | null; region: string | null; dispatchTier: string; createdBy: number; ownerOrgId: number | null;
   }): Promise<EvalJob[]> {
     // Mirrors permissions.isClaimable() bit for bit (targeted / pooled / legacy).
     const result = await pool.query(

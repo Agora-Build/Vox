@@ -90,7 +90,16 @@ function locationForRegion(siteId: string, locations: RegionLocationRecord[]): R
     .find((location) => regionSiteSequence(siteId, location.baseId) !== null);
 }
 
-function regionMetadata(siteId: string, locations: RegionLocationRecord[]) {
+function regionMetadata(siteId: string | null, locations: RegionLocationRecord[]) {
+  if (!siteId) return {
+    regionLabel: siteId,
+    regionBaseId: null,
+    city: null,
+    countryCode: null,
+    countryName: null,
+    macroRegionCode: null,
+    macroRegionName: null,
+  };
   const location = locationForRegion(siteId, locations);
   if (!location) return {
     regionLabel: siteId,
@@ -2856,7 +2865,10 @@ export async function registerRoutes(
       });
 
       // Shared: register the marketplace listing (mirrors the PATCH path).
-      if (marketplace && dispatchTier === "shared") {
+      // siteId is always allocated by createEvalAgentTokenForLocation above; the
+      // guard is type-safety only (siteId is nullable at the schema level for
+      // non-public tiers introduced later).
+      if (marketplace && dispatchTier === "shared" && evalAgentToken.siteId) {
         await marketplace.setListing(evalAgentToken.id, pricePerUnit ?? null, { ownerId: user.id, region: evalAgentToken.siteId });
       }
 
@@ -2932,9 +2944,12 @@ export async function registerRoutes(
 
     // Money lives only in the plugin: set/clear the listing via the seam.
     if (marketplace) {
-      if (dispatchTier === "shared") {
+      // siteId is nullable at the schema level for non-public tiers introduced
+      // later; today every existing token still carries the siteId it was
+      // created with, so this inner guard is type-safety only.
+      if (dispatchTier === "shared" && token.siteId) {
         await marketplace.setListing(id, pricePerUnit ?? null, { ownerId: token.createdBy, region: token.siteId });
-      } else {
+      } else if (dispatchTier !== "shared") {
         await marketplace.setListing(id, null); // switching away from shared deactivates the listing
       }
     }
@@ -3001,7 +3016,10 @@ export async function registerRoutes(
         createdBy: user.id,
         isRevoked: false,
       });
-      if (marketplace && dispatchTier === "shared") {
+      // siteId is always allocated by createEvalAgentTokenForLocation above; the
+      // guard is type-safety only (siteId is nullable at the schema level for
+      // non-public tiers introduced later).
+      if (marketplace && dispatchTier === "shared" && evalAgentToken.siteId) {
         await marketplace.setListing(evalAgentToken.id, pricePerUnit ?? null, { ownerId: user.id, region: evalAgentToken.siteId });
       }
       res.json({
@@ -4321,7 +4339,7 @@ export async function registerRoutes(
       const region = req.query.region ? String(req.query.region) : null;
       const evalSetIdRaw = req.query.evalSetId ? Number(req.query.evalSetId) : null;
 
-      type Agent = { tokenId: number; name: string; siteId: string; dispatchTier: string; price: number | null };
+      type Agent = { tokenId: number; name: string; siteId: string | null; dispatchTier: string; price: number | null };
 
       // My agents: own tokens, any tier, not revoked, region-filtered when given.
       const ownTokens = await storage.getEvalAgentTokensByUser(user.id);
@@ -4875,7 +4893,7 @@ export async function registerRoutes(
       // Group results by (provider, site)
       const providerRegionMap = new Map<string, {
         providerId: string;
-        siteId: string;
+        siteId: string | null;
         responseLatencies: number[];
         responseLatenciesP95: number[];
         interruptLatencies: number[];
