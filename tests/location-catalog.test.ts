@@ -1,8 +1,9 @@
-import { describe, it, expect, afterAll, beforeAll } from "vitest";
+import { describe, it, expect, afterAll, beforeAll, vi } from "vitest";
 import { eq, like } from "drizzle-orm";
 import { storage, db, hashToken } from "../server/storage";
 import { evalAgents, evalAgentTokens, regionLocations } from "../shared/schema";
 import { resolveCatalogRegion, runAgentLocationCheck } from "../server/location";
+import { setMarketplace, getMarketplace, type EvalMarketplace } from "../server/marketplace";
 
 const describeDb = process.env.DATABASE_URL ? describe : describe.skip;
 
@@ -102,5 +103,37 @@ describeDb("allocateSiteId + runAgentLocationCheck", () => {
     expect(res.siteId).toBe("na-us-seattle-01"); // identity preserved
     const row = (await db.select().from(evalAgents).where(eq(evalAgents.id, agentId)))[0];
     expect(row.siteId).toBe("na-us-seattle-01");
+  });
+
+  it("shared tier: marketplace lacking updateListingRegion does not throw (warns instead)", async () => {
+    // Plugin/Core boundary is duck-typed (server/index.ts casts the registered
+    // service unchecked) — a marketplace build without this method must never
+    // 500 Core. Force `next.changed = true` via the "distrust fast" hysteresis
+    // branch (agent starts with a non-null region; no mmdb in dev → low_confidence
+    // / unknown, ineligible → region clears) rather than relying on a real geo hit.
+    const laggingMarketplace = {
+      async listDispatchable() { return []; },
+      async authorizeDispatch() { return { ok: true as const }; },
+      async settle() {},
+      async setListing() {},
+      // updateListingRegion intentionally omitted
+    } as unknown as EvalMarketplace;
+    setMarketplace(laggingMarketplace);
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const res = await runAgentLocationCheck({
+        agent: { id: agentId, region: "na-us-seattle", siteId: "na-us-seattle-01", pendingRegion: null, pendingRegionCount: 0 },
+        token: { id: tokenId, dispatchTier: "shared" },
+        ip: "8.8.8.8", immediate: true,
+      });
+      expect(res.region).toBeNull();
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining(`marketplace plugin lacks updateListingRegion — listing region not refreshed for token ${tokenId}`),
+      );
+      expect(getMarketplace()).toBe(laggingMarketplace);
+    } finally {
+      warnSpy.mockRestore();
+      setMarketplace(null);
+    }
   });
 });

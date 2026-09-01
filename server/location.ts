@@ -304,8 +304,16 @@ export async function runAgentLocationCheck(opts: {
   });
   if (next.changed && opts.token.dispatchTier === "shared") {
     // Shared listings advertise the agent's siteId; keep the plugin in sync.
+    // The Plugin/Core boundary is duck-typed by design (server/index.ts casts
+    // the registered service to EvalMarketplace unchecked) — a plugin build
+    // that hasn't shipped this method yet must never 500 Core; warn once and
+    // move on instead of throwing.
     const marketplace = getMarketplace();
-    if (marketplace) await marketplace.updateListingRegion(opts.token.id, siteId);
+    if (marketplace && typeof marketplace.updateListingRegion === "function") {
+      await marketplace.updateListingRegion(opts.token.id, siteId);
+    } else if (marketplace) {
+      console.warn(`[location] marketplace plugin lacks updateListingRegion — listing region not refreshed for token ${opts.token.id}`);
+    }
   }
   return { region: next.region, siteId, locationTrust: det.trust };
 }

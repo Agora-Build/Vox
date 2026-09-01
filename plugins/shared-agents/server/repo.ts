@@ -30,6 +30,22 @@ export async function deactivateListing(db: PluginDb, tokenId: number): Promise<
   await db.query(`UPDATE listings SET active = false, updated_at = now() WHERE token_id = $1`, [tokenId]);
 }
 
+/**
+ * Zero-trust region: mirrors Core's `EvalMarketplace.updateListingRegion`
+ * (server/marketplace.ts) — called whenever a shared agent's Vox-detected
+ * region is (re)assigned or cleared. `region` is NOT NULL on this table, so a
+ * clear (region === null, "Unverified") is expressed as deactivating the
+ * listing — same delist-until-trusted precedent as `setListing(id, null)`.
+ * No-op if the token has no listing row.
+ */
+export async function updateListingRegion(db: PluginDb, tokenId: number, region: string | null): Promise<void> {
+  if (region === null) {
+    await db.query(`UPDATE listings SET active = false, updated_at = now() WHERE token_id = $1`, [tokenId]);
+    return;
+  }
+  await db.query(`UPDATE listings SET region = $2, updated_at = now() WHERE token_id = $1`, [tokenId, region]);
+}
+
 function mapListing(r: {
   id: string; token_id: string; price_per_unit: string; owner_id: number; region: string; active: boolean;
 }): ListingRow {

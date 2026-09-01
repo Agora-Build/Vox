@@ -29,6 +29,8 @@ export interface MarketplaceService {
   reapLeaks(ttlMs: number, limit: number): Promise<number>;
   /** Health signal: settlements still `pending` past `ttlMs` that hold escrow (hold_id set). */
   countStuckPending(ttlMs: number): Promise<number>;
+  /** Mirrors Core's `EvalMarketplace.updateListingRegion` (see server/marketplace.ts). */
+  updateListingRegion(tokenId: number, region: string | null): Promise<void>;
 }
 
 /**
@@ -249,6 +251,10 @@ export function createMarketplaceService(db: PluginDb, credits: CreditsPort): Ma
 
     async countStuckPending(ttlMs: number): Promise<number> {
       return repo.countStuckPending(db, ttlMs);
+    },
+
+    async updateListingRegion(tokenId: number, region: string | null): Promise<void> {
+      await repo.updateListingRegion(db, tokenId, region);
     },
   };
 }
