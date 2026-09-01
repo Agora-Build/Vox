@@ -939,12 +939,14 @@ export class DatabaseStorage {
   async claimEvalJob(
     jobId: number,
     agentId: number,
-    token: { id: number; siteId: string | null; region: string | null; dispatchTier: string; createdBy: number; ownerOrgId: number | null },
+    identity: { id: number; siteId: string | null; region: string | null; dispatchTier: string; createdBy: number; ownerOrgId: number | null; locationTrust: string },
   ): Promise<EvalJob | undefined> {
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
-      // WHERE mirrors permissions.isClaimable() bit for bit.
+      // WHERE mirrors permissions.isClaimable() bit for bit. A NULL region/siteId
+      // (Unverified agent) simply never matches the pooled/legacy arms below —
+      // that IS the zero-trust gate; no explicit trust condition needed here.
       const selectResult = await client.query(
         `SELECT ej.* FROM eval_jobs ej
          LEFT JOIN users creator ON ej.created_by = creator.id
@@ -965,22 +967,24 @@ export class DatabaseStorage {
              ) )
            )
          FOR UPDATE OF ej SKIP LOCKED`,
-        [jobId, token.id, token.region, token.dispatchTier, token.createdBy, token.ownerOrgId, token.siteId]
+        [jobId, identity.id, identity.region, identity.dispatchTier, identity.createdBy, identity.ownerOrgId, identity.siteId]
       );
       if (selectResult.rows.length === 0) {
         await client.query('ROLLBACK');
         return undefined;
       }
-      // token_dispatch_tier frozen + site stamped in the same atomic update:
-      // a pooled job (site_id NULL) records the claiming agent's concrete site.
+      // token_dispatch_tier + location_trust frozen, site stamped, in the same
+      // atomic update: a pooled job (site_id NULL) records the claiming agent's
+      // concrete site, and the job's trust is fixed at the moment it's claimed.
       const updateResult = await client.query(
         `UPDATE eval_jobs
          SET eval_agent_id = $1, status = 'running'::eval_job_status, started_at = NOW(), updated_at = NOW(),
              token_dispatch_tier = $3,
-             site_id = COALESCE(site_id, $4)
+             site_id = COALESCE(site_id, $4),
+             location_trust = $5
          WHERE id = $2
          RETURNING *`,
-        [agentId, jobId, token.dispatchTier, token.siteId]
+        [agentId, jobId, identity.dispatchTier, identity.siteId, identity.locationTrust]
       );
       await client.query('COMMIT');
       return snakeToCamel(updateResult.rows[0]) as EvalJob;
@@ -992,10 +996,12 @@ export class DatabaseStorage {
     }
   }
 
-  async getClaimableJobsForToken(token: {
+  async getClaimableJobsForToken(identity: {
     id: number; siteId: string | null; region: string | null; dispatchTier: string; createdBy: number; ownerOrgId: number | null;
   }): Promise<EvalJob[]> {
     // Mirrors permissions.isClaimable() bit for bit (targeted / pooled / legacy).
+    // A NULL region/siteId (Unverified agent) never matches the pooled/legacy
+    // arms — that's the zero-trust gate; SQL is otherwise unchanged.
     const result = await pool.query(
       `SELECT ej.* FROM eval_jobs ej
         LEFT JOIN users creator ON ej.created_by = creator.id
@@ -1016,7 +1022,7 @@ export class DatabaseStorage {
             ) )
           )
         ORDER BY ej.priority DESC, ej.created_at ASC`,
-      [token.id, token.region, token.siteId, token.dispatchTier, token.createdBy, token.ownerOrgId],
+      [identity.id, identity.region, identity.siteId, identity.dispatchTier, identity.createdBy, identity.ownerOrgId],
     );
     return result.rows.map((r) => snakeToCamel(r) as EvalJob);
   }

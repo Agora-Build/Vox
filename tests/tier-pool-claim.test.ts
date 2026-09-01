@@ -24,7 +24,7 @@ d("pooled claim SQL mirrors isClaimable", () => {
   it("public pool: in-region public token lists+claims and stamps its site", async () => {
     const tok = await mkToken(`tp-pub-${Date.now()}`, "na-us-ashburn-01");
     const job = await mkPooledJob("na-us-ashburn", "public", 2); // creator 2 = scout
-    const arg = { id: tok.id, siteId: tok.siteId, region: tok.region, dispatchTier: tok.dispatchTier, createdBy: tok.createdBy, ownerOrgId: null };
+    const arg = { id: tok.id, siteId: tok.siteId, region: tok.region, dispatchTier: tok.dispatchTier, createdBy: tok.createdBy, ownerOrgId: null, locationTrust: "trusted" };
     const listed = await storage.getClaimableJobsForToken(arg);
     expect(listed.map(j => j.id)).toContain(job.id);
     const agent = await storage.createEvalAgent({ tokenId: tok.id, name: `tp-a-${Date.now()}`, siteId: tok.siteId, state: "idle", metadata: {} } as any);
@@ -37,7 +37,7 @@ d("pooled claim SQL mirrors isClaimable", () => {
   it("region mismatch: out-of-region token neither lists nor claims", async () => {
     const tok = await mkToken(`tp-eu-${Date.now()}`, "eu-de-frankfurt-01");
     const job = await mkPooledJob("na-us-ashburn", "public", 2);
-    const arg = { id: tok.id, siteId: tok.siteId, region: tok.region, dispatchTier: tok.dispatchTier, createdBy: tok.createdBy, ownerOrgId: null };
+    const arg = { id: tok.id, siteId: tok.siteId, region: tok.region, dispatchTier: tok.dispatchTier, createdBy: tok.createdBy, ownerOrgId: null, locationTrust: "trusted" };
     expect((await storage.getClaimableJobsForToken(arg)).map(j => j.id)).not.toContain(job.id);
     const agent = await storage.createEvalAgent({ tokenId: tok.id, name: `tp-ae-${Date.now()}`, siteId: tok.siteId, state: "idle", metadata: {} } as any);
     expect(await storage.claimEvalJob(job.id, agent.id, arg)).toBeUndefined();
@@ -95,7 +95,7 @@ d("pooled claim SQL mirrors isClaimable", () => {
       config: {}, snapshot: { provider: null, workflow: null, evalSet: null, creatorPlan: null } as any,
       status: "pending", priority: 0, retryCount: 0, maxRetries: 3,
     } as any);
-    const arg = { id: pubTok.id, siteId: pubTok.siteId, region: pubTok.region, dispatchTier: pubTok.dispatchTier, createdBy: pubTok.createdBy, ownerOrgId: null };
+    const arg = { id: pubTok.id, siteId: pubTok.siteId, region: pubTok.region, dispatchTier: pubTok.dispatchTier, createdBy: pubTok.createdBy, ownerOrgId: null, locationTrust: "trusted" };
     expect((await storage.getClaimableJobsForToken(arg)).map(j => j.id)).not.toContain(job.id);
     const agent = await storage.createEvalAgent({ tokenId: pubTok.id, name: `tp-divagent-${Date.now()}`, siteId: pubTok.siteId, state: "idle", metadata: {} } as any);
     expect(await storage.claimEvalJob(job.id, agent.id, arg)).toBeUndefined();
@@ -112,7 +112,7 @@ d("pooled claim SQL mirrors isClaimable", () => {
     // (a) B's TEAM-tier token, in-region, ownerOrgId = the shared org: lists + claims.
     const teamJob = await mkPooledJob("na-us-ashburn", "team", userA.id);
     const teamTok = await mkToken(`tp-team-${suffix}`, "na-us-ashburn-01", "team", userB.id);
-    const teamArg = { id: teamTok.id, siteId: teamTok.siteId, region: teamTok.region, dispatchTier: teamTok.dispatchTier, createdBy: teamTok.createdBy, ownerOrgId: org.id };
+    const teamArg = { id: teamTok.id, siteId: teamTok.siteId, region: teamTok.region, dispatchTier: teamTok.dispatchTier, createdBy: teamTok.createdBy, ownerOrgId: org.id, locationTrust: "trusted" };
     expect((await storage.getClaimableJobsForToken(teamArg)).map(j => j.id)).toContain(teamJob.id);
     const teamAgent = await storage.createEvalAgent({ tokenId: teamTok.id, name: `tp-teamagent-${suffix}`, siteId: teamTok.siteId, state: "idle", metadata: {} } as any);
     const claimed = await storage.claimEvalJob(teamJob.id, teamAgent.id, teamArg);

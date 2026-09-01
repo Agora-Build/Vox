@@ -3284,6 +3284,17 @@ export async function registerRoutes(
   const isSupersededLease = (agent: { currentLeaseId?: string | null }, leaseId: unknown): boolean =>
     !!agent.currentLeaseId && leaseId !== agent.currentLeaseId;
 
+  // Zero-trust effective dispatch identity: public agents carry their
+  // configured (admin-trusted) token region; everything else carries the
+  // agent's DETECTED region — NULL for Unverified, which structurally fails
+  // every region-pooled match. (spec: dispatch gating)
+  const effectiveDispatchIdentity = (
+    token: { siteId: string | null; region: string | null; dispatchTier: string },
+    agent: { siteId: string | null; region: string | null; locationTrust: string } | undefined,
+  ) => token.dispatchTier === "public"
+    ? { siteId: token.siteId, region: token.region, locationTrust: "trusted" }
+    : { siteId: agent?.siteId ?? null, region: agent?.region ?? null, locationTrust: agent?.locationTrust ?? "unknown" };
+
   // Authorize a job-scoped agent endpoint against the job's OWN assigned agent
   // (not the token's latest agent — token_id isn't unique, so duplicate rows
   // could otherwise validate the lease against the wrong agent). This both
@@ -3505,10 +3516,16 @@ export async function registerRoutes(
       }
 
       const tokenOwner = await storage.getUser(evalAgentToken.createdBy);
+      // Hoisted above the claimable-jobs lookup: the effective identity below
+      // needs the token's latest agent to resolve a non-public token's DETECTED
+      // region (Unverified → NULL, which structurally excludes pooled jobs).
+      const agents = await storage.getEvalAgentsByTokenId(evalAgentToken.id);
+      const latestAgent = agents[0]; // sorted by createdAt desc
+      const eff = effectiveDispatchIdentity(evalAgentToken, latestAgent);
       let jobs = await storage.getClaimableJobsForToken({
         id: evalAgentToken.id,
-        siteId: evalAgentToken.siteId,
-        region: evalAgentToken.region,
+        siteId: eff.siteId,
+        region: eff.region,
         dispatchTier: evalAgentToken.dispatchTier,
         createdBy: evalAgentToken.createdBy,
         ownerOrgId: tokenOwner?.organizationId ?? null,
@@ -3518,8 +3535,6 @@ export async function registerRoutes(
       // jobs whose config requires a newer version than the agent supports.
       // Also gate session-injected jobs to daemons whose registration
       // metadata declares the sessionInjection capability.
-      const agents = await storage.getEvalAgentsByTokenId(evalAgentToken.id);
-      const latestAgent = agents[0]; // sorted by createdAt desc
       const agentMeta = (latestAgent?.metadata as Record<string, unknown>) ?? {};
       const agentVersion = agentMeta.frameworkVersion as string | undefined;
       const supportsSessionInjection = agentMeta.sessionInjection === "1";
@@ -3579,9 +3594,13 @@ export async function registerRoutes(
       if (!existingJob) {
         return res.status(404).json({ error: "Job not found" });
       }
+      // Effective identity: public agents carry the token's configured (admin-
+      // trusted) site; everything else carries the claiming agent's DETECTED
+      // site — NULL for Unverified.
+      const eff = effectiveDispatchIdentity(evalAgentToken, agent);
       // Site fence for site-pinned rows only (targeted + legacy). Pooled jobs
       // (siteId null) are fenced by region+tier inside claimEvalJob's predicate.
-      if (existingJob.siteId != null && existingJob.siteId !== agent.siteId) {
+      if (existingJob.siteId != null && existingJob.siteId !== eff.siteId) {
         return res.status(403).json({ error: "Job site does not match agent site" });
       }
 
@@ -3591,11 +3610,12 @@ export async function registerRoutes(
       const tokenOwner = await storage.getUser(evalAgentToken.createdBy);
       const job = await storage.claimEvalJob(parseInt(jobId, 10), agentId, {
         id: evalAgentToken.id,
-        siteId: evalAgentToken.siteId,
-        region: evalAgentToken.region,
+        siteId: eff.siteId,
+        region: eff.region,
         dispatchTier: evalAgentToken.dispatchTier,
         createdBy: evalAgentToken.createdBy,
         ownerOrgId: tokenOwner?.organizationId ?? null,
+        locationTrust: eff.locationTrust,
       });
       if (!job) {
         return res.status(409).json({ error: "Job already claimed or not found" });
