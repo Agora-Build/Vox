@@ -1,8 +1,8 @@
-import { describe, it, expect, afterAll } from "vitest";
-import { like } from "drizzle-orm";
-import { storage, db } from "../server/storage";
-import { regionLocations } from "../shared/schema";
-import { resolveCatalogRegion } from "../server/location";
+import { describe, it, expect, afterAll, beforeAll } from "vitest";
+import { eq, like } from "drizzle-orm";
+import { storage, db, hashToken } from "../server/storage";
+import { evalAgents, evalAgentTokens, regionLocations } from "../shared/schema";
+import { resolveCatalogRegion, runAgentLocationCheck } from "../server/location";
 
 const describeDb = process.env.DATABASE_URL ? describe : describe.skip;
 
@@ -45,5 +45,62 @@ describeDb("catalog resolution", () => {
       macroRegionCode: "eu", macroRegionName: "Europe",
       latitude: 64.14, longitude: -21.94,
     })).toBe("zz-is-reykjavik");
+  });
+});
+
+describeDb("allocateSiteId + runAgentLocationCheck", () => {
+  let tokenId: number;
+  let agentId: number;
+
+  beforeAll(async () => {
+    const inserted = await db.insert(evalAgentTokens).values({
+      name: "zt-loc-test", tokenHash: hashToken(`zt-loc-${Date.now()}`),
+      dispatchTier: "private", createdBy: 1, isRevoked: false,
+      siteId: null, region: null,
+    }).returning();
+    tokenId = inserted[0].id;
+    const agent = await db.insert(evalAgents).values({
+      name: "zt-loc-agent", tokenId, siteId: null, state: "idle",
+    }).returning();
+    agentId = agent[0].id;
+  });
+  afterAll(async () => {
+    await db.delete(evalAgents).where(eq(evalAgents.id, agentId));
+    await db.delete(evalAgentTokens).where(eq(evalAgentTokens.id, tokenId));
+  });
+
+  it("allocateSiteId hands out sequential ids and bumps next_sequence", async () => {
+    const before = await storage.getRegionLocationByBaseId("eu-de-frankfurt");
+    const siteId = await storage.allocateSiteId("eu-de-frankfurt");
+    expect(siteId).toBe(`eu-de-frankfurt-${String(before!.nextSequence).padStart(2, "0")}`);
+    const after = await storage.getRegionLocationByBaseId("eu-de-frankfurt");
+    expect(after!.nextSequence).toBe(before!.nextSequence + 1);
+  });
+
+  it("runAgentLocationCheck immediate-assigns for a private agent (stub deps unavailable → uses stored detection path)", async () => {
+    // No mmdbs in dev: a public IP classifies low_confidence/unknown → stays Unverified.
+    const res = await runAgentLocationCheck({
+      agent: { id: agentId, region: null, siteId: null, pendingRegion: null, pendingRegionCount: 0 },
+      token: { id: tokenId, dispatchTier: "private" },
+      ip: "8.8.8.8", immediate: true,
+    });
+    expect(res.region).toBeNull();
+    expect(res.siteId).toBeNull();
+    expect(["low_confidence", "unknown"]).toContain(res.locationTrust);
+    const row = (await db.select().from(evalAgents).where(eq(evalAgents.id, agentId)))[0];
+    expect(row.locationTrust).toBe(res.locationTrust);
+    expect(row.locationCheckedAt).not.toBeNull();
+  });
+
+  it("public tier: observability only — region/siteId untouched", async () => {
+    await db.update(evalAgents).set({ siteId: "na-us-seattle-01" }).where(eq(evalAgents.id, agentId));
+    const res = await runAgentLocationCheck({
+      agent: { id: agentId, region: null, siteId: "na-us-seattle-01", pendingRegion: null, pendingRegionCount: 0 },
+      token: { id: tokenId, dispatchTier: "public" },
+      ip: "8.8.8.8", immediate: true,
+    });
+    expect(res.siteId).toBe("na-us-seattle-01"); // identity preserved
+    const row = (await db.select().from(evalAgents).where(eq(evalAgents.id, agentId)))[0];
+    expect(row.siteId).toBe("na-us-seattle-01");
   });
 });

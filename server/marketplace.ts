@@ -51,6 +51,13 @@ export interface EvalMarketplace {
    */
   voidDispatch(settlementContext: unknown): Promise<void>;
   setListing(tokenId: number, pricePerUnit: number | null, meta?: { ownerId: number; region: string | null }): Promise<void>;
+  /**
+   * Zero-trust region: a shared agent's advertised region (its siteId) is
+   * Vox-detected and mutable at runtime. Called whenever the agent's region is
+   * assigned, re-assigned, or cleared; null = Unverified (delist from regional
+   * pools until trusted).
+   */
+  updateListingRegion(tokenId: number, region: string | null): Promise<void>;
 }
 
 let current: EvalMarketplace | null = null;

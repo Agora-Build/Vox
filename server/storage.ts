@@ -520,62 +520,79 @@ export class DatabaseStorage {
     return sequence !== null && sequence < location.nextSequence;
   }
 
-  async createEvalAgentTokenForLocation(
-    baseId: string,
-    token: Omit<InsertEvalAgentToken, "siteId">,
-  ): Promise<EvalAgentToken> {
+  // Extracted from createEvalAgentTokenForLocation so any allocation-needing
+  // caller (agent location checks, not just token minting) can grab the next
+  // sequential siteId for a region without duplicating the locking transaction.
+  async allocateSiteId(baseId: string): Promise<string> {
     const client = await pool.connect();
     try {
       await client.query("BEGIN");
       const selected = await client.query(
-        `SELECT base_id, next_sequence, is_active
-         FROM region_locations
-         WHERE base_id = $1
-         FOR UPDATE`,
+        `SELECT base_id, next_sequence, is_active FROM region_locations WHERE base_id = $1 FOR UPDATE`,
         [baseId],
       );
       if (selected.rows.length === 0) throw new Error("Region location not found");
       if (!selected.rows[0].is_active) throw new Error("Region location is inactive");
-
       const sequence = Number(selected.rows[0].next_sequence);
       const siteId = `${selected.rows[0].base_id}-${String(sequence).padStart(2, "0")}`;
-      const inserted = await client.query(
-        `INSERT INTO eval_agent_tokens
-          (name, token_hash, site_id, region, dispatch_tier, created_by, is_revoked, expires_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-         RETURNING *`,
-        [
-          token.name,
-          token.tokenHash,
-          siteId,
-          selected.rows[0].base_id,
-          token.dispatchTier,
-          token.createdBy,
-          token.isRevoked,
-          token.expiresAt ?? null,
-        ],
-      );
       await client.query(
-        `UPDATE region_locations
-         SET next_sequence = next_sequence + 1, updated_at = NOW()
-         WHERE base_id = $1`,
+        `UPDATE region_locations SET next_sequence = next_sequence + 1, updated_at = NOW() WHERE base_id = $1`,
         [baseId],
       );
       await client.query("COMMIT");
-      const row = inserted.rows[0];
-      return {
-        id: row.id, name: row.name, tokenHash: row.token_hash, siteId: row.site_id,
-        region: row.region,
-        dispatchTier: row.dispatch_tier, createdBy: row.created_by,
-        isRevoked: row.is_revoked, expiresAt: row.expires_at, lastUsedAt: row.last_used_at,
-        createdAt: row.created_at,
-      };
+      return siteId;
     } catch (error) {
       await client.query("ROLLBACK");
       throw error;
     } finally {
       client.release();
     }
+  }
+
+  async createEvalAgentTokenForLocation(
+    baseId: string,
+    token: Omit<InsertEvalAgentToken, "siteId">,
+  ): Promise<EvalAgentToken> {
+    // Allocate first, then a plain insert. A burned sequence number on insert
+    // failure (e.g. a constraint violation on the token row) is harmless — the
+    // catalog just skips ahead one, no different from a rolled-back racer.
+    const siteId = await this.allocateSiteId(baseId);
+    const result = await db.insert(evalAgentTokens).values({
+      ...token,
+      siteId,
+      region: baseId,
+    }).returning();
+    return result[0];
+  }
+
+  async updateEvalAgentLocation(agentId: number, fields: {
+    region: string | null; siteId: string | null; locationTrust: string;
+    locationCheckedAt: Date; locationSource: unknown;
+    pendingRegion: string | null; pendingRegionCount: number;
+  }): Promise<void> {
+    await db.update(evalAgents).set({
+      region: fields.region,
+      siteId: fields.siteId,
+      locationTrust: fields.locationTrust,
+      locationCheckedAt: fields.locationCheckedAt,
+      locationSource: fields.locationSource,
+      pendingRegion: fields.pendingRegion,
+      pendingRegionCount: fields.pendingRegionCount,
+      updatedAt: new Date(),
+    }).where(eq(evalAgents.id, agentId));
+  }
+
+  // Public-tier agents: configured identity (region/siteId) is trusted and never
+  // touched here — only the observability fields are recorded.
+  async updateEvalAgentLocationObservability(agentId: number, fields: {
+    locationTrust: string; locationCheckedAt: Date; locationSource: unknown;
+  }): Promise<void> {
+    await db.update(evalAgents).set({
+      locationTrust: fields.locationTrust,
+      locationCheckedAt: fields.locationCheckedAt,
+      locationSource: fields.locationSource,
+      updatedAt: new Date(),
+    }).where(eq(evalAgents.id, agentId));
   }
 
   async createProject(project: InsertProject): Promise<Project> {

@@ -3,6 +3,7 @@ import { open as maxmindOpen, type Reader, type CityResponse, type AsnResponse }
 import { readFileSync } from "fs";
 import path from "path";
 import { storage } from "./storage";
+import { getMarketplace } from "./marketplace";
 import type { RegionCandidate } from "@shared/regions";
 
 export type { RegionCandidate };
@@ -266,4 +267,45 @@ export async function resolveCatalogRegion(candidate: RegionCandidate): Promise<
   const near = await storage.findNearestActiveRegion(candidate.latitude, candidate.longitude, CATALOG_MATCH_KM);
   if (near) return near.baseId;
   return (await storage.createDetectedRegionLocation(candidate)).baseId;
+}
+
+// ==================== ORCHESTRATOR ====================
+// Ties detection + the hysteresis state machine + catalog resolution + storage
+// application together. Called at agent registration (immediate=true) and on
+// periodic re-checks (immediate=false).
+
+export async function runAgentLocationCheck(opts: {
+  agent: { id: number; region: string | null; siteId: string | null; pendingRegion: string | null; pendingRegionCount: number };
+  token: { id: number; dispatchTier: string };
+  ip: string | undefined;
+  immediate: boolean;
+}): Promise<{ region: string | null; siteId: string | null; locationTrust: LocationTrust }> {
+  const det = detectLocation(opts.ip ?? "");
+  const now = new Date();
+
+  if (opts.token.dispatchTier === "public") {
+    // Configured identity is trusted; detection is observability only.
+    await storage.updateEvalAgentLocationObservability(opts.agent.id, {
+      locationTrust: det.trust, locationCheckedAt: now, locationSource: det.source,
+    });
+    return { region: opts.agent.region, siteId: opts.agent.siteId, locationTrust: det.trust };
+  }
+
+  const baseId = det.candidate ? await resolveCatalogRegion(det.candidate) : null;
+  const next = decideLocationTransition(opts.agent, { trust: det.trust, baseId }, { immediate: opts.immediate });
+  let siteId = opts.agent.siteId;
+  if (next.changed) {
+    siteId = next.region ? await storage.allocateSiteId(next.region) : null;
+  }
+  await storage.updateEvalAgentLocation(opts.agent.id, {
+    region: next.region, siteId, locationTrust: det.trust,
+    locationCheckedAt: now, locationSource: det.source,
+    pendingRegion: next.pendingRegion, pendingRegionCount: next.pendingRegionCount,
+  });
+  if (next.changed && opts.token.dispatchTier === "shared") {
+    // Shared listings advertise the agent's siteId; keep the plugin in sync.
+    const marketplace = getMarketplace();
+    if (marketplace) await marketplace.updateListingRegion(opts.token.id, siteId);
+  }
+  return { region: next.region, siteId, locationTrust: det.trust };
 }
