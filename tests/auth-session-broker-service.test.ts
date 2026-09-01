@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
 import type { AddressInfo } from "net";
 import type { Server } from "http";
 import { createBrokerServer, scrubCredentials, credentialForms, selectDiagnosisSource, describeMintFailure, readLoginHttpStatus, NO_OUTPUT_MESSAGE, secretMatches, heartbeat, type MintRequest } from "../vox_eval_agentd/auth-session-broker";
@@ -667,6 +667,35 @@ describe("credential fingerprints", () => {
     // Anything keyed or salted would be unreproducible by the owner and so
     // useless for comparison. Pinning the exact algorithm on purpose.
     expect(fingerprintCredential("brent@agora.io")).toEqual({ length: 14, md5_10: "0d9dbace81" });
+  });
+
+  it("is actually WIRED into the broker's mint-request log, not merely defined", async () => {
+    // The first version of this shipped fingerprintForLog imported but never
+    // called: the helper had tests, the log line did not, and grepping for the
+    // symbol matched only the import. Assert against real captured output.
+    const logs: string[] = [];
+    const spy = vi.spyOn(console, "log").mockImplementation((...a: unknown[]) => { logs.push(a.join(" ")); });
+    const srv = createBrokerServer({ getSecret: () => "s3", mint: async () => ({ cookies: [] }) });
+    await new Promise<void>((r) => srv.listen(0, "127.0.0.1", r));
+    const { port } = srv.address() as AddressInfo;
+    try {
+      await fetch(`http://127.0.0.1:${port}/mint`, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: "Bearer s3" },
+        body: JSON.stringify({ platformId: "agora", email: "brent@agora.io", password: "hunter2-password" }),
+      });
+    } finally {
+      spy.mockRestore();
+      await new Promise<void>((r, j) => srv.close((e) => (e ? j(e) : r())));
+    }
+    const line = logs.find((l) => l.includes("Mint request for platform agora"));
+    expect(line).toBeDefined();
+    expect(line).toContain("identifier len=14 md5=0d9dbace81");
+    expect(line).toContain("secret len=16");
+    // ...and still never the secret's own hash or either raw value.
+    expect(line).not.toContain(fingerprintCredential("hunter2-password").md5_10);
+    expect(line).not.toContain("hunter2-password");
+    expect(line).not.toContain("brent@agora.io");
   });
 
   it("never puts the secret's hash in a log line", () => {

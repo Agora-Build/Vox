@@ -179,7 +179,9 @@ Some target agents require an authenticated web login before an eval can run. Br
 - **Broker sidecar**: a stateless service shipped as its own lean image (`vox-auth-session-broker`, the Dockerfile's `broker` target — aeval + aeval-data + Chromium, no voice-agent-tester or daemon code) that mints a `storageState` (cookies/localStorage) by driving aeval's `setup:account` flow with the decrypted login credential. It sits on an internal-only network; Core's mint requests are authenticated with the per-broker mint secret issued at registration — the login password never leaves Core → broker → target site.
 - **Agents run `setup:storage`, never `setup:account`**: the daemon (`vox_eval_agentd/vox-agentd.ts`) forces `mode: storage` on any session-injected job and strips credential fields from the config before the agent process ever sees them — the agent only ever consumes the pre-minted `storageState`.
 - **Server-stamped injection**: job creation (the run route in `server/routes.ts` and the scheduler in `server/index.ts`) stamps `config.sessionInjection` onto the job (strip-then-stamp, so a caller-supplied value is never trusted) once `auth-session.ts`'s `workflowNeedsSession()` detects a login-class secret referenced by the workflow's `platform.setup`.
-- **Session endpoint state machine**: `GET /api/eval-agent/jobs/:jobId/session` (lease-fenced, same guards as `/secrets`) returns `200 ready` (decrypted `storageState`), `202 minting` (fire-and-forget re-mint in flight), or `503 failed`. A `failed`/timed-out mint fails the job **before** any eval runs, so the escrow refund path (not a wasted capture) applies to shared-tier jobs.
+- **Session endpoint state machine**: `GET /api/eval-agent/jobs/:jobId/session` (lease-fenced, same guards as `/secrets`) returns `200 ready` (decrypted `storageState`), `202 minting` (fire-and-forget re-mint in flight), or `503 failed`. A `failed`/timed-out mint fails the job **before** any eval runs, so the escrow refund path (not a wasted capture) applies to shared-tier jobs. The `503` body carries the mint's real cause only to an **owner-operated** agent (`isOwnerOperatedAgent` in `server/permissions.ts` — the workflow's owner or their org); a consented attested marketplace agent may receive the storageState but gets the status alone, because a mint error can quote page state. Serving the session and explaining why minting it failed are different disclosures.
+- **Diagnosing a failed mint** (no container access required): the broker folds aeval's own loguru `ERROR` lines into its 502 body, Core folds that into `webSessions.lastError`, and the daemon surfaces it as the job error — so one `docker logs` at any tier shows the cause. URLs are reduced to scheme+host (`reduceUrlsToHost`) so an OAuth `?code=`/`#id_token=` or a magic-link path token never rides along, and the failing login's **HTTP status** is extracted (digits only) from the browser console in aeval's artifacts. That status is what distinguishes a rejected credential from a challenged browser — otherwise the two are indistinguishable.
+- **Credential fingerprints**: `GET /api/secrets` and `/api/org-secrets` return `valueLength` + `valueFingerprint` (first 10 hex of MD5) so an owner can confirm the stored value matches theirs with `printf %s 'value' | md5sum | cut -c1-10`. MD5 is deliberate — a keyed or salted hash would be unreproducible by the owner and so useless for comparison — which is why **placement is constrained**: logs get lengths plus a fingerprint of the *identifier* only; the *secret's* hash appears solely in the authenticated console, to its owner. Org secrets expose fingerprints to org **managers** only (`orgRole` owner/admin), since spending a secret in a workflow is not the same as learning about its value. See `shared/credentials.ts`.
 - **Shared-tier gates**: a shared-tier dispatch additionally requires `isTestAccount` attestation on the login secret and `credentialConsent` recorded on the job snapshot — both checked before `authorizeDispatch`, so an un-attested or non-consented login secret never reaches a marketplace agent.
 - **`eval_agents.observed_ip`** is a Core-internal layer-2/3 foundation column — the IP Core observes at register/heartbeat, written fire-and-forget and never exposed on any agent-listing endpoint. Future network-instinct labeling (e.g. residential vs. datacenter) derives from it; the raw IP itself is never surfaced.
 
@@ -434,6 +436,8 @@ npx playwright test --headed     # Run in headed browser mode
 
 ### Test Files
 
+`tests/` holds 84 suite files; the table below is a **selection of the notable ones**, not an inventory — per-file counts drift as soon as anyone adds a case, so don't trust them as exact. For the real numbers run `npm test`; as of 2026-09-01 the unit/integration suite is **1671 tests across 88 files**, plus 29 audio-pipeline checks and 134 Playwright E2E.
+
 | File | Type | Tests | Description |
 |------|------|-------|-------------|
 | `tests/api.test.ts` | Integration | 107+ | API endpoints (auth, workflows, jobs, organizations) |
@@ -451,7 +455,17 @@ npx playwright test --headed     # Run in headed browser mode
 | `tests/e2e/public-pages.spec.ts` | E2E | 9 | Landing page, leaderboard, API docs |
 | `tests/e2e/console.spec.ts` | E2E | 9 | Console access control, admin routes |
 
-**Total: 400+ tests**
+A green gate means all three: unit/integration (`npm test`), audio (Docker), and E2E (Playwright). Run `./scripts/full-tests-run.sh` for all of them — see the pre-merge gate note at the top of this file.
+
+**Known gate hazard:** the suites leak resources into the local dev DB and trip per-user caps, which turns the gate red for reasons unrelated to any code change (GitHub #134). Before a full run:
+
+```sql
+DELETE FROM workflows WHERE owner_id=1;   -- 200-workflow cap
+DELETE FROM projects  WHERE owner_id=1;   -- 20-project cap
+DELETE FROM secrets   WHERE user_id=1;    -- 50-secret cap
+```
+
+Also: the integration suites hit the **already-running** dev server, so a change under `server/` is not exercised until `./scripts/dev-local-run.sh stop && start`.
 
 ### Test Coverage by Module
 
@@ -493,6 +507,9 @@ When adding new features, write tests for critical paths like authentication, jo
 
 ### Core
 - `shared/schema.ts` - Single source of truth for all data models (all tables, enums, and Zod insert/select schemas)
+- `shared/secrets.ts` - Secret naming convention + the login-name heuristic (`isAuthFieldName`). **Client-safe**: imported by the console, so it must stay dependency-free.
+- `shared/credentials.ts` - Credential redaction and fingerprinting, shared by Core, the daemon and the broker so their needle sets cannot drift. **Node-only** (imports `crypto`) — never import it from `client/`.
+- `shared/mint-timeout.ts` - The one clamped `WEB_SESSION_MINT_TIMEOUT_SECONDS` reader. The clamp keeps four deadlines ordered: broker child < Core abort (+15s) < stale reclaim (+30s) < the daemon's hard-coded 240s session poll. Raising `MAX_MINT_TIMEOUT_SECONDS` means raising that poll too, or the agent gives up before Core and the diagnosis never lands.
 - `server/routes.ts` - All API endpoints (large and monolithic by design)
 - `server/routes-api-v1.ts` - Versioned API v1 endpoints
 - `server/storage.ts` - Database abstraction layer (DatabaseStorage class)

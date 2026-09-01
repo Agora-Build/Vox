@@ -327,7 +327,13 @@ export function createBrokerServer(deps: { mint: MintFn; getSecret: () => string
       if (typeof body.platformId !== 'string' || !PLATFORM_ID_RE.test(body.platformId)) return json(400, { error: 'platformId is required' });
       if (typeof body.email !== 'string' || !body.email) return json(400, { error: 'email is required' });
       if (typeof body.password !== 'string' || !body.password) return json(400, { error: 'password is required' });
-      console.log(`[Broker] Mint request for platform ${body.platformId}`); // never log email/password
+      // Fingerprint, never the values: lengths plus a hash of the IDENTIFIER
+      // only. See fingerprintForLog for why the secret gets its length alone.
+      // Logged on the REQUEST rather than only on failure, so a mint that hangs
+      // still records which identifier was attempted.
+      console.log(
+        `[Broker] Mint request for platform ${body.platformId} (${fingerprintForLog(body.email, body.password)})`,
+      );
       try {
         const storageState = await deps.mint(body as MintRequest);
         return json(200, { storageState });

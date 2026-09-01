@@ -2585,7 +2585,8 @@ export async function registerRoutes(
           // Comparison fingerprint, never the value. Answers "is the value I
           // stored the one that actually works?" without anyone decrypting a
           // secret in a production container, which is how every login failure
-          // has had to be diagnosed so far. Owner-scoped by the query above.
+          // has had to be diagnosed so far. Safe here because the query is
+          // keyed by user.id: these are the caller's OWN secrets.
           ...secretFingerprint(s.encryptedValue),
           createdAt: s.createdAt,
           updatedAt: s.updatedAt,
@@ -2685,13 +2686,21 @@ export async function registerRoutes(
         return res.status(403).json({ error: "Organization membership required" });
       }
       const secrets = await storage.getOrgSecrets(user.organizationId);
+      // Fingerprints go to org MANAGERS only, matching this route's existing
+      // "all members see names, admins see full" split.
+      //
+      // A plain member can spend an org secret inside a workflow, but that is
+      // USE, not KNOWLEDGE: until now they could learn nothing about its value.
+      // An unsalted MD5 plus an exact length is the very artifact
+      // shared/credentials.ts argues must be withheld, and a shared org login
+      // is exactly the kind of password worth attacking. Being an org rather
+      // than a log aggregator does not change that.
+      const isOrgManager = user.orgRole === "owner" || user.orgRole === "admin";
       res.json(secrets.map(s => ({
         name: s.name,
         brokerType: s.brokerType,
         isTestAccount: s.isTestAccount,
-        // Visible to org members, who can already spend these secrets in a
-        // workflow — so a fingerprint discloses nothing they cannot already use.
-        ...secretFingerprint(s.encryptedValue),
+        ...(isOrgManager ? secretFingerprint(s.encryptedValue) : {}),
         createdAt: s.createdAt,
         updatedAt: s.updatedAt,
       })));
