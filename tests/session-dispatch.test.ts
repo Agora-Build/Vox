@@ -337,9 +337,13 @@ describe("dispatch integration — session stamping, pre-warm, shared-tier gates
       expect(regRes.ok).toBe(true);
       stranger = await login(`sdg-stranger-${stamp}@example.com`, "sdg-stranger-pass-123");
 
+      // Zero trust: region is public-tier-only. `stranger` is non-admin, so
+      // dispatchTier defaults to "private" — matching 7b's own comment that
+      // post tier-unification a stranger's token is necessarily private/team
+      // (public dispatch is admin-only).
       const tRes = await authFetch(stranger, `${BASE_URL}/api/eval-agent-tokens`, {
         method: "POST",
-        body: JSON.stringify({ name: `sdg-stranger-token-${stamp}`, regionLocationBaseId: BASE_NA, visibility: "public" }),
+        body: JSON.stringify({ name: `sdg-stranger-token-${stamp}` }),
       });
       expect(tRes.ok).toBe(true);
       strangerPublicTokenId = (await tRes.json()).id;
@@ -560,9 +564,13 @@ describe("dispatch integration — session stamping, pre-warm, shared-tier gates
     let tok: { id: number; siteId: string | null };
 
     beforeAll(async () => {
+      // Must be a non-public tier to show up under "mine" (server/routes.ts
+      // explicitly excludes dispatchTier === "public" from that list) — admin's
+      // default is public, so this needs an explicit dispatchTier. Zero trust
+      // also means non-public tokens never take a region.
       const tRes = await authFetch(admin, `${BASE_URL}/api/eval-agent-tokens`, {
         method: "POST",
-        body: JSON.stringify({ name: `rt-own-${stamp}`, regionLocationBaseId: BASE_NA, visibility: "public" }),
+        body: JSON.stringify({ name: `rt-own-${stamp}`, dispatchTier: "private" }),
       });
       expect(tRes.ok).toBe(true);
       tok = await tRes.json();

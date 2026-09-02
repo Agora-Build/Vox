@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { Pool } from "pg";
-import { BASE_NA, BASE_EU } from "./helpers/regions";
+import { BASE_NA } from "./helpers/regions";
 import { computeCharge, computeFee, PLATFORM_FEE_BPS } from "../plugins/shared-agents/server/pricing";
 
 // =====================================================================
@@ -98,9 +98,13 @@ async function deposit(admin: AuthSession, userId: number, credits: number, idem
   });
 }
 
-async function createToken(session: AuthSession, name: string, regionLocationBaseId: string): Promise<{ id: number; token: string; region: string }> {
+// Zero trust: region is public-tier-only, so a private-tier mint never takes
+// a regionLocationBaseId — siteId/region come back null and are only ever
+// populated later by a trusted detection (see the 6a beforeAll below, which
+// stamps the eval_agents row directly to simulate one for pooled dispatch).
+async function createToken(session: AuthSession, name: string): Promise<{ id: number; token: string; region: string | null }> {
   const res = await authFetch(session, `${BASE_URL}/api/eval-agent-tokens`, {
-    method: "POST", body: JSON.stringify({ name, regionLocationBaseId, visibility: "private" }),
+    method: "POST", body: JSON.stringify({ name, dispatchTier: "private" }),
   });
   expect(res.ok).toBe(true);
   const body = await res.json();
@@ -112,6 +116,25 @@ async function setDispatchTier(session: AuthSession, tokenId: number, dispatchTi
   return authFetch(session, `${BASE_URL}/api/eval-agent-tokens/${tokenId}`, {
     method: "PATCH", body: JSON.stringify({ dispatchTier, ...(pricePerUnit !== undefined ? { pricePerUnit } : {}) }),
   });
+}
+
+// The PATCH-to-"shared" route populates the marketplace listing's NOT-NULL
+// `region` straight from the TOKEN's own site_id column (server/routes.ts,
+// `marketplace.setListing(id, price, { region: token.siteId })`) — it does
+// NOT fall back to the agent's live-detected region the way pooled dispatch
+// does. Under zero trust a private-tier mint now has site_id = null (region
+// is public-tier-only at mint time), so switching straight to "shared"
+// would upsert a null region and crash on the listings table's NOT NULL
+// constraint. Simulate a trusted region assignment directly on the token
+// row (same "trusted detection" principle as tests/zero-trust-dispatch.test.ts
+// and the eval_agents stamp in 6a below, just applied to the column the
+// shared-listing path actually reads) so these credits/refund/gate tests —
+// whose point is money movement, not region validation — can exercise a
+// working shared listing.
+async function stampTokenSite(tokenId: number, suffix: string): Promise<void> {
+  await dbPool.query(`UPDATE eval_agent_tokens SET site_id = $1, region = $2 WHERE id = $3`, [
+    `${BASE_NA}-${suffix}`, BASE_NA, tokenId,
+  ]);
 }
 
 async function registerAgent(tokenPlain: string, name: string, metadata: Record<string, unknown> = {}): Promise<{ id: number; leaseId: string; region: string }> {
@@ -260,8 +283,9 @@ describe("Task 13: practical shared-agents marketplace + credits e2e", () => {
     let happyJobId: number;
 
     beforeAll(async () => {
-      const t = await createToken(owner.session, `t13-happy-${stamp}`, BASE_NA);
+      const t = await createToken(owner.session, `t13-happy-${stamp}`);
       happyTokenId = t.id; happyTokenPlain = t.token;
+      await stampTokenSite(happyTokenId, "80");
       const tier = await setDispatchTier(owner.session, happyTokenId, "shared", PRICE_PER_UNIT);
       expect(tier.ok).toBe(true);
 
@@ -379,8 +403,9 @@ describe("Task 13: practical shared-agents marketplace + credits e2e", () => {
     let evalSetId: number;
 
     beforeAll(async () => {
-      const t = await createToken(owner.session, `t13-refund-${stamp}`, BASE_EU);
+      const t = await createToken(owner.session, `t13-refund-${stamp}`);
       refundTokenId = t.id; refundTokenPlain = t.token;
+      await stampTokenSite(refundTokenId, "81");
       const tier = await setDispatchTier(owner.session, refundTokenId, "shared", PRICE_PER_UNIT);
       expect(tier.ok).toBe(true);
 
@@ -425,8 +450,9 @@ describe("Task 13: practical shared-agents marketplace + credits e2e", () => {
     let gateTokenId: number;
 
     beforeAll(async () => {
-      const t = await createToken(owner.session, `t13-gate402-${stamp}`, BASE_NA);
+      const t = await createToken(owner.session, `t13-gate402-${stamp}`);
       gateTokenId = t.id;
+      await stampTokenSite(gateTokenId, "82");
       const tier = await setDispatchTier(owner.session, gateTokenId, "shared", 500);
       expect(tier.ok).toBe(true);
     });
@@ -463,8 +489,9 @@ describe("Task 13: practical shared-agents marketplace + credits e2e", () => {
     const passwordSecret = `T13_P_${stamp.toUpperCase()}`;
 
     beforeAll(async () => {
-      const t = await createToken(owner.session, `t13-session-${stamp}`, BASE_NA);
+      const t = await createToken(owner.session, `t13-session-${stamp}`);
       sessionTokenId = t.id; sessionTokenPlain = t.token;
+      await stampTokenSite(sessionTokenId, "83");
       const tier = await setDispatchTier(owner.session, sessionTokenId, "shared", PRICE_PER_UNIT);
       expect(tier.ok).toBe(true);
 
@@ -537,7 +564,7 @@ describe("Task 13: practical shared-agents marketplace + credits e2e", () => {
     let freeTokenId: number;
     let freeTokenPlain: string;
     beforeAll(async () => {
-      const t = await createToken(broke.session, `t13-free-${stamp}`, BASE_NA);
+      const t = await createToken(broke.session, `t13-free-${stamp}`);
       freeTokenId = t.id; freeTokenPlain = t.token;
     });
 
@@ -560,6 +587,15 @@ describe("Task 13: practical shared-agents marketplace + credits e2e", () => {
       // creator, which is what makes this an "own agent, untargeted region
       // pool" path — distinct from 6b's explicitly-targeted dispatch below.
       const agent = await registerAgent(freeTokenPlain, `t13-free-agent-${stamp}`);
+      // Zero trust: a freshly-registered agent's region/siteId are NULL
+      // (Unverified) and would never match this region-pooled job (see
+      // storage.claimEvalJob's pooled arm). Simulate a trusted location
+      // detection directly on the eval_agents row — same pattern as
+      // tests/zero-trust-dispatch.test.ts — so the pooled claim below matches.
+      await dbPool.query(
+        `UPDATE eval_agents SET region = $1, site_id = $2, location_trust = 'trusted' WHERE id = $3`,
+        [BASE_NA, `${BASE_NA}-79`, agent.id],
+      );
 
       let job: { id: number } | undefined;
       let claim: Response | undefined;
@@ -617,8 +653,9 @@ describe("Task 13: practical shared-agents marketplace + credits e2e", () => {
     let conflictEvalSetId: number;
 
     beforeAll(async () => {
-      const t = await createToken(owner.session, `t13-holdvoid-${stamp}`, BASE_NA);
+      const t = await createToken(owner.session, `t13-holdvoid-${stamp}`);
       holdVoidTokenId = t.id;
+      await stampTokenSite(holdVoidTokenId, "84");
       const tier = await setDispatchTier(owner.session, holdVoidTokenId, "shared", 300);
       expect(tier.ok).toBe(true);
 
