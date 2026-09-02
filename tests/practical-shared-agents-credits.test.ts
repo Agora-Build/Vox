@@ -135,10 +135,21 @@ async function setDispatchTier(session: AuthSession, tokenId: number, dispatchTi
 // whose point is money movement, not region validation — can exercise a
 // working, ACTIVE shared listing. (See tests/zero-trust-region-api.test.ts
 // for the null-region/delisted-listing regression coverage itself.)
-async function stampTokenSite(tokenId: number, suffix: string): Promise<void> {
-  await dbPool.query(`UPDATE eval_agent_tokens SET site_id = $1, region = $2 WHERE id = $3`, [
-    `${BASE_NA}-${suffix}`, BASE_NA, tokenId,
-  ]);
+// Post zero-trust, the shared listing's region comes from the AGENT's detected
+// identity (effectiveDispatchIdentity in the PATCH route), not the token row —
+// so an active listing needs a registered agent stamped trusted BEFORE the tier
+// PATCH creates the listing. A later re-register wipes the stamp (localhost
+// detects `unknown`, and the stale-siteId rule clears it), which is fine for
+// these flows: every dispatch that needs the active listing happens before its
+// test re-registers, and targeted claims are trust-exempt by design.
+async function provisionTrustedAgent(tokenPlain: string, suffix: string): Promise<void> {
+  const reg = await bearerFetch(tokenPlain, "POST", "/api/eval-agent/register", { name: `t13-seed-${suffix}` });
+  expect(reg.ok).toBe(true);
+  const agent = await reg.json();
+  await dbPool.query(
+    `UPDATE eval_agents SET region = $1, site_id = $2, location_trust = 'trusted' WHERE id = $3`,
+    [BASE_NA, `${BASE_NA}-${suffix}`, agent.id],
+  );
 }
 
 async function registerAgent(tokenPlain: string, name: string, metadata: Record<string, unknown> = {}): Promise<{ id: number; leaseId: string; region: string }> {
@@ -289,7 +300,7 @@ describe("Task 13: practical shared-agents marketplace + credits e2e", () => {
     beforeAll(async () => {
       const t = await createToken(owner.session, `t13-happy-${stamp}`);
       happyTokenId = t.id; happyTokenPlain = t.token;
-      await stampTokenSite(happyTokenId, "80");
+      await provisionTrustedAgent(t.token, "80");
       const tier = await setDispatchTier(owner.session, happyTokenId, "shared", PRICE_PER_UNIT);
       expect(tier.ok).toBe(true);
 
@@ -409,7 +420,7 @@ describe("Task 13: practical shared-agents marketplace + credits e2e", () => {
     beforeAll(async () => {
       const t = await createToken(owner.session, `t13-refund-${stamp}`);
       refundTokenId = t.id; refundTokenPlain = t.token;
-      await stampTokenSite(refundTokenId, "81");
+      await provisionTrustedAgent(t.token, "81");
       const tier = await setDispatchTier(owner.session, refundTokenId, "shared", PRICE_PER_UNIT);
       expect(tier.ok).toBe(true);
 
@@ -456,7 +467,7 @@ describe("Task 13: practical shared-agents marketplace + credits e2e", () => {
     beforeAll(async () => {
       const t = await createToken(owner.session, `t13-gate402-${stamp}`);
       gateTokenId = t.id;
-      await stampTokenSite(gateTokenId, "82");
+      await provisionTrustedAgent(t.token, "82");
       const tier = await setDispatchTier(owner.session, gateTokenId, "shared", 500);
       expect(tier.ok).toBe(true);
     });
@@ -495,7 +506,7 @@ describe("Task 13: practical shared-agents marketplace + credits e2e", () => {
     beforeAll(async () => {
       const t = await createToken(owner.session, `t13-session-${stamp}`);
       sessionTokenId = t.id; sessionTokenPlain = t.token;
-      await stampTokenSite(sessionTokenId, "83");
+      await provisionTrustedAgent(t.token, "83");
       const tier = await setDispatchTier(owner.session, sessionTokenId, "shared", PRICE_PER_UNIT);
       expect(tier.ok).toBe(true);
 
@@ -659,7 +670,7 @@ describe("Task 13: practical shared-agents marketplace + credits e2e", () => {
     beforeAll(async () => {
       const t = await createToken(owner.session, `t13-holdvoid-${stamp}`);
       holdVoidTokenId = t.id;
-      await stampTokenSite(holdVoidTokenId, "84");
+      await provisionTrustedAgent(t.token, "84");
       const tier = await setDispatchTier(owner.session, holdVoidTokenId, "shared", 300);
       expect(tier.ok).toBe(true);
 
