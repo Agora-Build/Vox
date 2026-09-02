@@ -61,6 +61,29 @@ d("shared-agents listings repo", () => {
     expect(await repo.getListing(h.marketplaceDb, 999999)).toBeNull();
   });
 
+  it("upsertListing with a null region creates the row INACTIVE (delisted-until-trusted)", async () => {
+    // Zero trust: a private/team token can switch straight to "shared" before
+    // its agent has a detected region. The row MUST exist (not be skipped)
+    // so a later updateListingRegion(tokenId, region) has something to
+    // activate — but it must not be dispatchable while region is unknown.
+    await repo.upsertListing(h.marketplaceDb, { tokenId: 121, pricePerUnit: 10, ownerId: 7, region: null, createdBy: 7 });
+    let row = await repo.getListing(h.marketplaceDb, 121);
+    expect(row).not.toBeNull();
+    expect(row!.region).toBeNull();
+    expect(row!.active).toBe(false);
+    const activeNow = await repo.listActiveListings(h.marketplaceDb);
+    expect(activeNow.some((l) => l.tokenId === 121)).toBe(false);
+
+    // Detection later assigns a region: updateListingRegion must activate the
+    // existing row (not need a fresh upsert) with the region set.
+    await repo.updateListingRegion(h.marketplaceDb, 121, "na-us-ashburn-01");
+    row = await repo.getListing(h.marketplaceDb, 121);
+    expect(row!.active).toBe(true);
+    expect(row!.region).toBe("na-us-ashburn-01");
+    const activeAfter = await repo.listActiveListings(h.marketplaceDb);
+    expect(activeAfter.some((l) => l.tokenId === 121)).toBe(true);
+  });
+
   it("pending settlement round-trips and job_id backfills terminal", async () => {
     const sid = await repo.insertPendingSettlement(h.marketplaceDb, {
       payerUserId: 3, earnerUserId: 7, priceUnits: 1, pricePerUnit: 25, chargeCredits: 25, feeCredits: 5,

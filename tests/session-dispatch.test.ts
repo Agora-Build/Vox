@@ -166,7 +166,10 @@ describe("dispatch integration — session stamping, pre-warm, shared-tier gates
     beforeAll(async () => {
       const tRes = await authFetch(admin, `${BASE_URL}/api/eval-agent-tokens`, {
         method: "POST",
-        body: JSON.stringify({ name: `shared-agent-${stamp}`, regionLocationBaseId: BASE_NA, visibility: "public" }),
+        // Public tier: still mints WITH a region (zero trust is public-tier-only
+        // at mint — region is admin-configured/trusted here). `dispatchTier` is
+        // the live field the route reads; `visibility` was a dead legacy name.
+        body: JSON.stringify({ name: `shared-agent-${stamp}`, regionLocationBaseId: BASE_NA, dispatchTier: "public" }),
       });
       expect(tRes.ok).toBe(true);
       sharedTokenId = (await tRes.json()).id;
@@ -517,7 +520,9 @@ describe("dispatch integration — session stamping, pre-warm, shared-tier gates
     beforeAll(async () => {
       const tRes = await authFetch(admin, `${BASE_URL}/api/eval-agent-tokens`, {
         method: "POST",
-        body: JSON.stringify({ name: `runtime-shared-agent-${stamp}`, regionLocationBaseId: BASE_NA, visibility: "public" }),
+        // Public tier: still mints WITH a region — `dispatchTier` is the live
+        // field the route reads; `visibility` was a dead legacy name.
+        body: JSON.stringify({ name: `runtime-shared-agent-${stamp}`, regionLocationBaseId: BASE_NA, dispatchTier: "public" }),
       });
       expect(tRes.ok).toBe(true);
       runtimeSharedTokenId = (await tRes.json()).id;
