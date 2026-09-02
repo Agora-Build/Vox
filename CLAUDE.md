@@ -110,7 +110,7 @@ Optional:
 - `WEB_SESSION_TTL_HOURS` - How long a minted `storageState` session stays fresh before re-minting (default: 1)
 - `WEB_SESSION_MINT_TIMEOUT_SECONDS` - Max time to wait for a broker mint before failing the request (default: 180)
 - `GEOIP_DB_DIR` - Directory holding GeoLite2-City.mmdb + GeoLite2-ASN.mmdb (default: `./geoip`). Absent DBs = all non-public agents stay Unverified (safe default; local dev needs no MaxMind account)
-- `MAXMIND_LICENSE_KEY` - Free GeoLite2 license key, consumed by `scripts/geoip-refresh.sh` (run weekly) — not read by the server itself
+- `MAXMIND_LICENSE_KEY` - Free GeoLite2 license key (signup artifact, never a payment), consumed by `scripts/geoip-refresh.sh` (run weekly) — not read by the server itself. When unset, the script automatically falls back to DB-IP Lite (CC-BY-4.0, no account/key; slightly less accurate, no accuracy_radius); force with `--source dbip`
 
 Auth-session broker sidecar (registration env is broker-only, not read by Core — see Auth-Session Broker below):
 - `VOX_CORE_URL` - Core base URL the broker registers/heartbeats against

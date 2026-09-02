@@ -72,6 +72,12 @@ with mock readers.
   using `MAXMIND_LICENSE_KEY` (MaxMind free GeoLite2 account) — run weekly
   (ops: Coolify scheduled command / cron). **Missing DBs are graceful:** every
   lookup returns `unknown`, so local dev needs no MaxMind account.
+  The MaxMind key is a free-signup artifact, never a payment; when it is
+  unset the refresh script falls back to **DB-IP Lite** (CC-BY-4.0,
+  keyless download, same MMDB format, saved under the server's expected
+  filenames) — slightly less accurate and without `accuracy_radius`,
+  which the ladder tolerates (an absent radius is not a low-confidence
+  trigger). GeoLite2 stays the recommended primary.
 - **Anonymizer signals (free tier, per ruling):**
   - Tor exit list fetched from `check.torproject.org/torbulkexitlist` at
     startup and every 12 h, held in memory; fetch failure keeps the previous
