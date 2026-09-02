@@ -21,10 +21,29 @@ async function login(page: Page) {
   expect(res.ok(), "admin login").toBeTruthy();
 }
 
-// Radix Select: click the trigger, then the option by visible text.
+// Radix Select: open the trigger, then choose the option by exact visible text.
+//
+// We select via keyboard typeahead + Enter rather than clicking the option.
+// The provider list can be long — leaked test providers accumulate in the
+// shared dev DB (#134) — which pushes the target option below the viewport.
+// Playwright's scroll-into-view can't place an option inside Radix's popper
+// listbox, so a direct .click() on an off-screen option times out "outside of
+// the viewport" (it fails only when nothing is preselected, i.e. the create
+// dialog; the edit dialog opens scrolled to its current value and happens to
+// work). Typeahead scrolls Radix to the match via its own logic and Enter
+// selects it with no viewport dependence.
 async function selectOption(page: Page, testId: string, optionName: string) {
-  await page.getByTestId(testId).click();
-  await page.getByRole("option", { name: optionName, exact: true }).click();
+  const trigger = page.getByTestId(testId);
+  await trigger.click();
+  const option = page.getByRole("option", { name: optionName, exact: true });
+  await option.waitFor({ state: "attached" });
+  // The per-key delay lets each keydown register with Radix's typeahead; then
+  // wait for the match to actually be highlighted before pressing Enter, so we
+  // never select the auto-highlighted first row instead.
+  await page.keyboard.type(optionName, { delay: 50 });
+  await expect(option).toHaveAttribute("data-highlighted", "");
+  await page.keyboard.press("Enter");
+  await expect(trigger).toContainText(optionName);
 }
 
 async function providerIdByName(page: Page, name: string): Promise<string> {
