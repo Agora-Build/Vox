@@ -4713,4 +4713,44 @@ describe('Vox API Tests', () => {
       expect(matching[0].id).toBe(brokerId);
     });
   });
+
+  describe('GeoIP Admin API', () => {
+    it('should require admin for GET status', async () => {
+      const res = await fetch(`${BASE_URL}/api/admin/geoip/status`);
+      expect(res.status).toBe(401);
+    });
+
+    it('should require admin for POST refresh', async () => {
+      const res = await fetch(`${BASE_URL}/api/admin/geoip/refresh`, { method: 'POST' });
+      expect(res.status).toBe(401);
+    });
+
+    it('should require admin for PUT maxmind-key', async () => {
+      const res = await fetch(`${BASE_URL}/api/admin/geoip/maxmind-key`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ key: 'some-key' }),
+      });
+      expect(res.status).toBe(401);
+    });
+
+    it('should require admin for DELETE maxmind-key', async () => {
+      const res = await fetch(`${BASE_URL}/api/admin/geoip/maxmind-key`, { method: 'DELETE' });
+      expect(res.status).toBe(401);
+    });
+
+    it('admin GET status returns the expected shape without ever including a key value', async () => {
+      const res = await authFetch(adminSession, `${BASE_URL}/api/admin/geoip/status`);
+      expect(res.ok).toBe(true);
+      const body = await res.json();
+      expect(['geolite2', 'dbip']).toContain(body.source);
+      expect(typeof body.dir).toBe('string');
+      expect(['idle', 'refreshing']).toContain(body.state);
+      expect(Array.isArray(body.databases)).toBe(true);
+      expect(body.maxmindKey).toBeTruthy();
+      expect(typeof body.maxmindKey.configured).toBe('boolean');
+      // Never echoes a key value anywhere in the response.
+      expect(JSON.stringify(body)).not.toMatch(/"key"\s*:\s*"[^"]/);
+    });
+  });
 });

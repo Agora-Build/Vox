@@ -16,7 +16,20 @@ import { parsePlatformSetup, sessionScopeForWorkflow, evaluateSessionRequirement
 import { validateRegisterPayload, cacheBrokerMintSecret, hasBrokerMintSecret } from "./broker-registry";
 import { deriveApiKeyStatus } from "./api-key-status";
 import { isStaleOfflineAgent } from "./agent-liveness";
-import { runAgentLocationCheck, LOCATION_RECHECK_HOURS, getGeoipAttribution } from "./location";
+import { runAgentLocationCheck, LOCATION_RECHECK_HOURS, getGeoipAttribution, reloadGeoReaders } from "./location";
+import {
+  refreshGeoipDatabases,
+  getGeoipRefreshStatus,
+  getMaxmindKey,
+  resolveGeoipSource,
+  saveMaxmindKey,
+  clearMaxmindKey,
+  validateMaxmindKeyInput,
+  DBIP_ATTRIBUTION,
+  GEOIP_DIR,
+} from "./geoip-refresh";
+import { promises as fsp } from "fs";
+import path from "path";
 import {
   hashPassword,
   verifyPassword,
@@ -1061,6 +1074,86 @@ export async function registerRoutes(
     } catch (error) {
       console.error("Error removing region location:", error);
       res.status(500).json({ error: "Failed to remove region location" });
+    }
+  });
+
+  // ==================== GEOIP DATABASE REFRESH (ADMIN) ====================
+  // See server/geoip-refresh.ts for the source-resolution and download logic.
+  // The MaxMind key request bodies below are never echoed back and never
+  // logged — the request-logging middleware in server/index.ts only ever
+  // captures the RESPONSE json (see isSensitiveResponsePath), never the
+  // request body, so there is nothing to add to server/sensitive-paths.ts
+  // here: these routes' responses never carry the key value either.
+
+  app.get("/api/admin/geoip/status", requireAuth, requireAdmin, async (_req, res) => {
+    try {
+      const { key: maxmindKey, source: keySource } = await getMaxmindKey();
+      const source = resolveGeoipSource(maxmindKey);
+      const dbFiles: Array<{ label: "City" | "ASN"; names: string[] }> = [
+        { label: "City", names: ["City.mmdb", "GeoLite2-City.mmdb"] },
+        { label: "ASN", names: ["ASN.mmdb", "GeoLite2-ASN.mmdb"] },
+      ];
+      const databases = await Promise.all(dbFiles.map(async ({ label, names }) => {
+        for (const name of names) {
+          try {
+            const stat = await fsp.stat(path.join(GEOIP_DIR, name));
+            return { name: label, present: true, sizeBytes: stat.size, modifiedAt: stat.mtime.toISOString() };
+          } catch { /* try the next name */ }
+        }
+        return { name: label, present: false, sizeBytes: null, modifiedAt: null };
+      }));
+      const { state, lastResult } = getGeoipRefreshStatus();
+      res.json({
+        source,
+        dir: GEOIP_DIR,
+        state,
+        databases,
+        lastRefresh: lastResult,
+        attribution: source === "dbip" ? DBIP_ATTRIBUTION : null,
+        maxmindKey: { configured: !!maxmindKey, source: keySource },
+      });
+    } catch (error) {
+      console.error("Error fetching geoip status:", error);
+      res.status(500).json({ error: "Failed to fetch geoip status" });
+    }
+  });
+
+  app.post("/api/admin/geoip/refresh", requireAuth, requireAdmin, async (_req, res) => {
+    try {
+      const { state } = getGeoipRefreshStatus();
+      if (state === "refreshing") return res.status(409).json({ error: "A refresh is already in progress" });
+      void refreshGeoipDatabases({ reload: reloadGeoReaders });
+      res.status(202).json({ started: true });
+    } catch (error) {
+      console.error("Error starting geoip refresh:", error);
+      res.status(500).json({ error: "Failed to start geoip refresh" });
+    }
+  });
+
+  app.put("/api/admin/geoip/maxmind-key", requireAuth, requireAdmin, async (req, res) => {
+    try {
+      const validated = validateMaxmindKeyInput(req.body?.key);
+      if (!validated.ok) return res.status(400).json({ error: validated.error });
+      await saveMaxmindKey(validated.key);
+      const { state } = getGeoipRefreshStatus();
+      if (state === "refreshing") {
+        return res.status(202).json({ started: false, note: "A refresh is already in progress; the new key will be used on the next refresh." });
+      }
+      void refreshGeoipDatabases({ reload: reloadGeoReaders });
+      res.status(202).json({ started: true });
+    } catch (error) {
+      console.error("Error saving MaxMind key:", error);
+      res.status(500).json({ error: "Failed to save MaxMind key" });
+    }
+  });
+
+  app.delete("/api/admin/geoip/maxmind-key", requireAuth, requireAdmin, async (_req, res) => {
+    try {
+      await clearMaxmindKey();
+      res.json({ deleted: true });
+    } catch (error) {
+      console.error("Error clearing MaxMind key:", error);
+      res.status(500).json({ error: "Failed to clear MaxMind key" });
     }
   });
 

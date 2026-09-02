@@ -2002,6 +2002,10 @@ export class DatabaseStorage {
     return inserted[0];
   }
 
+  async deleteConfig(key: string): Promise<void> {
+    await db.delete(systemConfig).where(eq(systemConfig.key, key));
+  }
+
   async createFundReturnRequest(request: InsertFundReturnRequest): Promise<FundReturnRequest> {
     const result = await db.insert(fundReturnRequests).values(request).returning();
     return result[0];
