@@ -3734,11 +3734,17 @@ export async function registerRoutes(
       // measurement failure — no result row, so failed runs never enter metrics.
       // A run that completed but got no agent response is NOT a failure: it comes
       // through here with results (NA latencies + responseRate 0) and is stored.
-      // A job with no siteId never got claimed by any agent (a pooled job's site
-      // is stamped at claim) — it ran nowhere, so it measured nothing. Skip the
-      // synthetic result row rather than writing the region baseId into the site
-      // dimension, which would poison per-site metrics.
-      if (results && !jobError && job.siteId != null) {
+      // Gate on CLAIMED-ness (evalAgentId set — completion above already required
+      // the claiming agent's lease), not on siteId. This predates zero trust: a
+      // job's siteId used to be null only when it was never claimed (a pooled
+      // job's site is stamped at claim), so "siteId null" and "never ran" were the
+      // same condition. Under zero trust they're not — a job claimed by an
+      // Unverified agent has evalAgentId set but siteId still null (no trusted
+      // detection yet), and that measurement is real and belongs in the
+      // "Unverified" metrics bucket. Let siteId flow through as null into
+      // eval_results (the column is nullable and the unverified metrics scope
+      // already handles it) rather than silently dropping the result.
+      if (results && !jobError && job.evalAgentId != null) {
         // Attribute the result to the provider snapshotted on the job at creation —
         // not the live workflow, which may have been re-pointed since. Fall back to a
         // default provider only for legacy jobs with no snapshot.
