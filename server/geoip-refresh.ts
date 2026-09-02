@@ -43,6 +43,12 @@ export const GEOIP_DIR = process.env.GEOIP_DB_DIR || path.join(process.cwd(), "g
 
 export const MAXMIND_KEY_CONFIG_KEY = "maxmind_license_key";
 
+// City/ASN files run 50-90MB; 120s is the floor for a healthy connection to
+// finish, not a target. Without this, a hung fetch would leave module `state`
+// stuck at "refreshing" forever — every future POST /refresh would 409 until
+// the process restarts.
+export const DOWNLOAD_TIMEOUT_MS = 120_000;
+
 // CC BY 4.0 requires visible credit when DB-IP data ships in the product.
 export const DBIP_ATTRIBUTION = "IP Geolocation by DB-IP (db-ip.com), CC BY 4.0";
 
@@ -121,8 +127,16 @@ function withLicenseKey(url: string, key: string): string {
   return `${url}&license_key=${encodeURIComponent(key)}`;
 }
 
-/** Defense in depth: strip a license_key value out of any message we log or persist. */
-function sanitizeErrorMessage(msg: string): string {
+/**
+ * Defense in depth: strip a license_key value out of any message we log or
+ * persist. This is the SOLE guard against a key landing in error text that
+ * flows into `lastResult.error` — which GET /api/admin/geoip/status echoes
+ * verbatim, and whose response the request-logging middleware writes to the
+ * server log. Exported so tests can exercise it directly with a key-bearing
+ * message shaped like the real MaxMind fetch error (see
+ * tests/geoip-refresh.test.ts).
+ */
+export function sanitizeErrorMessage(msg: string): string {
   return msg.replace(/license_key=[^&\s]+/gi, "license_key=REDACTED");
 }
 
@@ -156,8 +170,10 @@ const TARGETS: DbTarget[] = [
   { name: "ASN", editionId: "GeoLite2-ASN" },
 ];
 
-async function downloadDefault(url: string): Promise<Buffer> {
-  const res = await fetch(url);
+// Exported for tests only — lets tests prove the AbortSignal timeout wiring
+// and its failure path without waiting out a real 120s timeout.
+export async function downloadDefault(url: string): Promise<Buffer> {
+  const res = await fetch(url, { signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS) });
   if (!res.ok) {
     const err = new Error(`HTTP ${res.status} downloading GeoIP database`) as Error & { status?: number };
     err.status = res.status;

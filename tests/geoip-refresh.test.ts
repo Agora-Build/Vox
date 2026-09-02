@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import {
   resolveGeoipSource,
   buildDownloadUrls,
@@ -6,6 +6,9 @@ import {
   getGeoipRefreshStatus,
   getMaxmindKey,
   validateMaxmindKeyInput,
+  sanitizeErrorMessage,
+  downloadDefault,
+  DOWNLOAD_TIMEOUT_MS,
   type RefreshDeps,
 } from "../server/geoip-refresh";
 import { isEncryptionConfigured } from "../server/storage";
@@ -130,6 +133,67 @@ describe("validateMaxmindKeyInput", () => {
   });
 });
 
+describe("sanitizeErrorMessage", () => {
+  it("redacts a license_key embedded in a real-shaped MaxMind fetch error", () => {
+    const msg =
+      "request to https://download.maxmind.com/app/geoip_download?edition_id=GeoLite2-City&license_key=SECRETVALUE123&suffix=tar.gz failed";
+    const out = sanitizeErrorMessage(msg);
+    expect(out).not.toContain("SECRETVALUE123");
+    expect(out).toContain("license_key=REDACTED");
+  });
+
+  it("redacts case-insensitively and regardless of what follows (& or end of string)", () => {
+    expect(sanitizeErrorMessage("LICENSE_KEY=abc123&suffix=tar.gz")).toBe("license_key=REDACTED&suffix=tar.gz");
+    expect(sanitizeErrorMessage("...license_key=abc123")).toBe("...license_key=REDACTED");
+  });
+
+  it("leaves key-free messages untouched", () => {
+    expect(sanitizeErrorMessage("network down")).toBe("network down");
+  });
+});
+
+describe("downloadDefault (network timeout bound)", () => {
+  const originalFetch = global.fetch;
+  afterEach(() => {
+    global.fetch = originalFetch;
+  });
+
+  it("passes an AbortSignal to fetch so a hung request cannot wedge state forever", async () => {
+    const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+      expect(init?.signal).toBeInstanceOf(AbortSignal);
+      return new Response(Buffer.from("ok"), { status: 200 });
+    });
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    const buf = await downloadDefault("https://example.com/x");
+    expect(buf.toString()).toBe("ok");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("DOWNLOAD_TIMEOUT_MS is at least 120s (files run 50-90MB)", () => {
+    expect(DOWNLOAD_TIMEOUT_MS).toBeGreaterThanOrEqual(120_000);
+  });
+
+  it("a timed-out fetch flows through refreshGeoipDatabases's normal failure handling: state returns to idle and the error is recorded (sanitized)", async () => {
+    global.fetch = vi.fn(async () => {
+      throw new DOMException("The operation was aborted due to timeout", "TimeoutError");
+    }) as unknown as typeof fetch;
+
+    // Deliberately don't override `download` — this exercises the real
+    // downloadDefault (and therefore the real AbortSignal.timeout wiring)
+    // through the full refresh pipeline, not a mock.
+    const result = await refreshGeoipDatabases({
+      getMaxmindKey: vi.fn(async () => ({ key: null, source: null as const })),
+      now: new Date("2026-09-02T00:00:00Z"),
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("aborted");
+    expect(result.error).not.toContain("license_key");
+    expect(getGeoipRefreshStatus().state).toBe("idle");
+  });
+});
+
 describe("refreshGeoipDatabases", () => {
   function makeDeps(overrides: Partial<RefreshDeps> = {}): RefreshDeps {
     return {
@@ -238,6 +302,37 @@ describe("refreshGeoipDatabases", () => {
     expect(result.ok).toBe(false);
     expect(result.error).toContain("network down");
     expect(deps.reload).not.toHaveBeenCalled();
+  });
+
+  it("a key-bearing download error is redacted in both lastResult.error and the logged line — GET /api/admin/geoip/status echoes lastResult.error verbatim, and the request-logging middleware writes that response to the server log, so this is the sole guard against a leak", async () => {
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const keyBearingMessage =
+        "request to https://download.maxmind.com/app/geoip_download?edition_id=GeoLite2-City&license_key=SECRETVALUE123&suffix=tar.gz failed";
+      const deps = makeDeps({
+        getMaxmindKey: vi.fn(async () => ({ key: "SECRETVALUE123", source: "env" as const })),
+        download: vi.fn(async () => { throw new Error(keyBearingMessage); }),
+      });
+      const result = await refreshGeoipDatabases(deps);
+
+      expect(result.ok).toBe(false);
+      expect(result.error).toBeTruthy();
+      expect(result.error).not.toContain("SECRETVALUE123");
+      expect(result.error).toContain("license_key=REDACTED");
+
+      // What GET /api/admin/geoip/status would actually serialize and what the
+      // request-logging middleware would write to the log — assert on the
+      // same JSON.stringify a real response body goes through.
+      expect(JSON.stringify(getGeoipRefreshStatus())).not.toContain("SECRETVALUE123");
+
+      // The one console.error line the module emits per failed refresh.
+      expect(consoleErrorSpy).toHaveBeenCalledTimes(1);
+      const loggedLine = consoleErrorSpy.mock.calls[0][0] as string;
+      expect(loggedLine).not.toContain("SECRETVALUE123");
+      expect(loggedLine).toContain("license_key=REDACTED");
+    } finally {
+      consoleErrorSpy.mockRestore();
+    }
   });
 
   it("a failing geolite2 download after a healthy dbip state leaves existing files/readers untouched", async () => {
