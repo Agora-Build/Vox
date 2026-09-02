@@ -1,8 +1,9 @@
 import { useState } from "react";
-import { useMutation } from "@tanstack/react-query";
-import { MapPin, Pencil, Plus, Trash2 } from "lucide-react";
+import { useMutation, useQuery } from "@tanstack/react-query";
+import { MapPin, Pencil, Plus, Trash2, RefreshCw, Database, ExternalLink } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -13,6 +14,32 @@ import { useToast } from "@/hooks/use-toast";
 import { useRegionLocations } from "@/hooks/use-regions";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import type { RegionLocation } from "@/lib/utils";
+
+type GeoipDatabaseInfo = {
+  name: "City" | "ASN";
+  present: boolean;
+  sizeBytes: number | null;
+  modifiedAt: string | null;
+};
+
+type GeoipStatus = {
+  source: "geolite2" | "dbip";
+  dir: string;
+  state: "idle" | "refreshing";
+  databases: GeoipDatabaseInfo[];
+  lastRefresh: { ok: boolean; source: string; at: string; error?: string } | null;
+  attribution: string | null;
+  maxmindKey: { configured: boolean; source: "console" | "env" | null };
+};
+
+function fmtBytes(bytes: number | null): string {
+  if (bytes === null) return "—";
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function fmtWhen(value: string | null | undefined): string {
+  return value ? new Date(value).toLocaleString() : "—";
+}
 
 type RegionForm = {
   baseId: string;
@@ -40,6 +67,46 @@ export default function AdminRegions() {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editing, setEditing] = useState<RegionLocation | null>(null);
   const [form, setForm] = useState<RegionForm>(EMPTY_FORM);
+
+  const { data: geoipStatus, isLoading: geoipLoading } = useQuery<GeoipStatus>({
+    queryKey: ["/api/admin/geoip/status"],
+    refetchInterval: (query) => (query.state.data?.state === "refreshing" ? 2000 : false),
+  });
+  const [maxmindKeyInput, setMaxmindKeyInput] = useState("");
+
+  const refreshGeoipMutation = useMutation({
+    mutationFn: async () => apiRequest("POST", "/api/admin/geoip/refresh"),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/geoip/status"] });
+      toast({ title: "GeoIP refresh started" });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Could not start refresh", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const saveMaxmindKeyMutation = useMutation({
+    mutationFn: async (key: string) => apiRequest("PUT", "/api/admin/geoip/maxmind-key", { key }),
+    onSuccess: () => {
+      setMaxmindKeyInput("");
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/geoip/status"] });
+      toast({ title: "MaxMind key saved", description: "A GeoIP refresh has been triggered." });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Could not save MaxMind key", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const clearMaxmindKeyMutation = useMutation({
+    mutationFn: async () => apiRequest("DELETE", "/api/admin/geoip/maxmind-key"),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/geoip/status"] });
+      toast({ title: "MaxMind key cleared" });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Could not clear MaxMind key", description: error.message, variant: "destructive" });
+    },
+  });
 
   const refresh = () => {
     queryClient.invalidateQueries({ queryKey: ["/api/admin/region-locations"] });
@@ -129,6 +196,115 @@ export default function AdminRegions() {
         </div>
         <Button onClick={openCreate}><Plus className="mr-2 h-4 w-4" />Add Location</Button>
       </div>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2"><Database className="h-4 w-4" />GeoIP databases</CardTitle>
+          <CardDescription>
+            City + ASN databases used for agent region detection. Downloaded from MaxMind GeoLite2 when a license
+            key is configured, otherwise from DB-IP Lite.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {geoipLoading || !geoipStatus ? (
+            <Skeleton className="h-32 w-full" />
+          ) : (
+            <>
+              <div className="flex flex-wrap items-center gap-3">
+                <Badge variant="secondary" className="uppercase">
+                  {geoipStatus.source === "geolite2" ? "GeoLite2" : "DB-IP Lite"}
+                </Badge>
+                {geoipStatus.state === "refreshing" && (
+                  <Badge className="bg-yellow-500"><RefreshCw className="mr-1 h-3 w-3 animate-spin" />Refreshing…</Badge>
+                )}
+                {geoipStatus.lastRefresh && (
+                  <span className="text-xs text-muted-foreground">
+                    Last refresh: {geoipStatus.lastRefresh.ok ? "success" : "failed"} at {fmtWhen(geoipStatus.lastRefresh.at)}
+                    {!geoipStatus.lastRefresh.ok && geoipStatus.lastRefresh.error ? ` — ${geoipStatus.lastRefresh.error}` : ""}
+                  </span>
+                )}
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="ml-auto"
+                  disabled={geoipStatus.state === "refreshing" || refreshGeoipMutation.isPending}
+                  onClick={() => refreshGeoipMutation.mutate()}
+                >
+                  <RefreshCw className="mr-2 h-4 w-4" />Refresh
+                </Button>
+              </div>
+
+              <div className="grid gap-2 sm:grid-cols-2">
+                {geoipStatus.databases.map((db) => (
+                  <div key={db.name} className="flex items-center justify-between border px-3 py-2 text-sm">
+                    <span className="font-medium">{db.name}</span>
+                    {db.present ? (
+                      <span className="text-xs text-muted-foreground">{fmtBytes(db.sizeBytes)} · {fmtWhen(db.modifiedAt)}</span>
+                    ) : (
+                      <Badge variant="destructive">Missing</Badge>
+                    )}
+                  </div>
+                ))}
+              </div>
+
+              {geoipStatus.source === "dbip" && geoipStatus.attribution && (
+                <p className="text-xs text-muted-foreground">
+                  {geoipStatus.attribution} —{" "}
+                  <a href="https://db-ip.com" target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 underline">
+                    db-ip.com<ExternalLink className="h-3 w-3" />
+                  </a>
+                </p>
+              )}
+
+              <div className="space-y-2 border-t pt-4">
+                <Label htmlFor="maxmind-key">MaxMind license key</Label>
+                {geoipStatus.maxmindKey.configured && geoipStatus.maxmindKey.source === "console" ? (
+                  <div className="flex items-center gap-2">
+                    <Badge variant="secondary">Configured (console)</Badge>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={clearMaxmindKeyMutation.isPending}
+                      onClick={() => clearMaxmindKeyMutation.mutate()}
+                    >
+                      Clear
+                    </Button>
+                  </div>
+                ) : (
+                  <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                    {geoipStatus.maxmindKey.configured && geoipStatus.maxmindKey.source === "env" && (
+                      <Badge variant="secondary" className="w-fit">Configured (env)</Badge>
+                    )}
+                    <Input
+                      id="maxmind-key"
+                      type="password"
+                      placeholder={
+                        geoipStatus.maxmindKey.configured && geoipStatus.maxmindKey.source === "env"
+                          ? "Override the env key…"
+                          : "Enter a GeoLite2 license key…"
+                      }
+                      value={maxmindKeyInput}
+                      onChange={(e) => setMaxmindKeyInput(e.target.value)}
+                      className="sm:max-w-xs"
+                    />
+                    <Button
+                      size="sm"
+                      disabled={!maxmindKeyInput.trim() || saveMaxmindKeyMutation.isPending}
+                      onClick={() => saveMaxmindKeyMutation.mutate(maxmindKeyInput.trim())}
+                    >
+                      Save
+                    </Button>
+                  </div>
+                )}
+                <p className="text-xs text-muted-foreground">
+                  Saving a key immediately triggers a refresh and switches the source to GeoLite2. Removing it falls
+                  back to the env var (if set) or DB-IP Lite.
+                </p>
+              </div>
+            </>
+          )}
+        </CardContent>
+      </Card>
 
       <div className="border">
         <Table>

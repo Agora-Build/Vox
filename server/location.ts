@@ -1,10 +1,11 @@
 import { REGION_ELIGIBLE_TRUST, type LocationTrust } from "@shared/schema";
-import { open as maxmindOpen, type Reader, type CityResponse, type AsnResponse } from "maxmind";
+import { open as maxmindOpen, type Reader, type Response as MmdbResponse, type CityResponse, type AsnResponse } from "maxmind";
 import { readFileSync } from "fs";
 import path from "path";
 import { storage } from "./storage";
 import { getMarketplace } from "./marketplace";
 import type { RegionCandidate } from "@shared/regions";
+import { refreshGeoipDatabases, DBIP_ATTRIBUTION, type GeoipSource } from "./geoip-refresh";
 
 export type { RegionCandidate };
 
@@ -207,33 +208,85 @@ export interface DetectionDeps {
   asnClassLoaded: boolean;
 }
 
+// Duplicated (not imported) from server/geoip-refresh.ts on purpose — see the
+// import-direction note at the top of that file. geoip-refresh.ts never
+// imports this module, so this module is the one that may import it back.
 const GEOIP_DIR = process.env.GEOIP_DB_DIR || path.join(process.cwd(), "geoip");
+const GEOIP_STALE_MS = 7 * 24 * 60 * 60 * 1000;
+const GEOIP_REFRESH_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000;
+
 let cityReader: Reader<CityResponse> | null = null;
 let asnReader: Reader<AsnResponse> | null = null;
 let torExits: Set<string> = new Set();
 let asnClassification: Record<string, "vpn" | "hosting"> = {};
 let asnClassificationLoaded = false;
 let warnedPrivateIp = false;
-// Set when the GeoIP data source requires public credit (DB-IP Lite is
-// CC-BY-4.0; scripts/geoip-refresh.sh writes geoip/ATTRIBUTION on that path
-// and removes it on the MaxMind path). Exposed via /api/config → footer.
+// Derived from geoip-meta.json's `source` field (written by refreshGeoipDatabases)
+// whenever a DB is (re)loaded. DB-IP Lite is CC-BY-4.0 and needs public
+// credit; GeoLite2 does not. Exposed via /api/config → footer.
 let geoipAttribution: string | null = null;
 
 export function getGeoipAttribution(): string | null {
   return geoipAttribution;
 }
 
+async function tryOpen<T extends MmdbResponse>(names: string[], opener: (p: string) => Promise<Reader<T>>): Promise<Reader<T> | null> {
+  for (const name of names) {
+    try { return await opener(path.join(GEOIP_DIR, name)); }
+    catch { /* try the next name */ }
+  }
+  return null;
+}
+
+function refreshAttributionFromMeta(): void {
+  try {
+    const meta = JSON.parse(readFileSync(path.join(GEOIP_DIR, "geoip-meta.json"), "utf8")) as { source?: GeoipSource };
+    geoipAttribution = meta.source === "dbip" ? DBIP_ATTRIBUTION : null;
+  } catch {
+    geoipAttribution = null; // no meta yet (fresh checkout, or DBs never refreshed) = no attribution required
+  }
+}
+
+/**
+ * Re-opens the mmdb readers from disk and swaps the module-level refs. Safe
+ * to call when the files are absent (readers become null; agents stay
+ * Unverified rather than the process crashing). Called once at startup and
+ * again after every successful refreshGeoipDatabases() call — it is the
+ * `reload` dependency startLocationServices() and the admin refresh route
+ * inject into refreshGeoipDatabases().
+ */
+export async function reloadGeoReaders(): Promise<void> {
+  // Canonical names first (City.mmdb/ASN.mmdb, written by the in-app
+  // refresher); GeoLite2-*.mmdb kept as a fallback for existing deployments
+  // that still have files under the old script's names.
+  const city = await tryOpen<CityResponse>(["City.mmdb", "GeoLite2-City.mmdb"], maxmindOpen);
+  if (!city) console.log("[location] no City mmdb found — geolocation disabled (all agents Unverified)");
+  cityReader = city;
+
+  const asn = await tryOpen<AsnResponse>(["ASN.mmdb", "GeoLite2-ASN.mmdb"], maxmindOpen);
+  if (!asn) console.log("[location] no ASN mmdb found — ASN signals disabled");
+  asnReader = asn;
+
+  refreshAttributionFromMeta();
+}
+
 export function startLocationServices(): void {
   void (async () => {
-    try { cityReader = await maxmindOpen<CityResponse>(path.join(GEOIP_DIR, "GeoLite2-City.mmdb")); }
-    catch { console.log("[location] GeoLite2-City.mmdb not found — geolocation disabled (all agents Unverified)"); }
-    try { asnReader = await maxmindOpen<AsnResponse>(path.join(GEOIP_DIR, "GeoLite2-ASN.mmdb")); }
-    catch { console.log("[location] GeoLite2-ASN.mmdb not found — ASN signals disabled"); }
+    await reloadGeoReaders();
+    let stale = true;
+    try {
+      const meta = JSON.parse(readFileSync(path.join(GEOIP_DIR, "geoip-meta.json"), "utf8")) as { fetchedAt?: string };
+      const fetchedAt = meta.fetchedAt ? new Date(meta.fetchedAt).getTime() : NaN;
+      stale = !(Number.isFinite(fetchedAt) && Date.now() - fetchedAt < GEOIP_STALE_MS);
+    } catch { stale = true; }
+    const missing = !cityReader || !asnReader;
+    if (missing || stale) {
+      console.log(`[location] geoip refresh triggered at startup (${missing ? "database(s) missing" : "data older than 7 days"})`);
+      void refreshGeoipDatabases({ reload: reloadGeoReaders });
+    }
   })();
-  try {
-    const text = readFileSync(path.join(GEOIP_DIR, "ATTRIBUTION"), "utf8").trim();
-    if (text) geoipAttribution = text;
-  } catch { /* no marker = no attribution required (MaxMind path or no DBs) */ }
+  setInterval(() => { void refreshGeoipDatabases({ reload: reloadGeoReaders }); }, GEOIP_REFRESH_INTERVAL_MS).unref();
+
   try {
     asnClassification = JSON.parse(readFileSync(path.join(process.cwd(), "server/data/asn-classification.json"), "utf8"));
     delete (asnClassification as Record<string, unknown>)._comment;
