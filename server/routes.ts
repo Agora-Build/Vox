@@ -16,7 +16,7 @@ import { parsePlatformSetup, sessionScopeForWorkflow, evaluateSessionRequirement
 import { validateRegisterPayload, cacheBrokerMintSecret, hasBrokerMintSecret } from "./broker-registry";
 import { deriveApiKeyStatus } from "./api-key-status";
 import { isStaleOfflineAgent } from "./agent-liveness";
-import { runAgentLocationCheck, LOCATION_RECHECK_HOURS } from "./location";
+import { runAgentLocationCheck, LOCATION_RECHECK_HOURS, getGeoipAttribution } from "./location";
 import {
   hashPassword,
   verifyPassword,
@@ -5298,6 +5298,10 @@ export async function registerRoutes(
           configObject[config.key] = config.value;
         }
       }
+      // CC-BY-4.0 credit line, present only when the loaded GeoIP data
+      // requires it (DB-IP Lite fallback) — rendered in the public footer.
+      const geoipAttribution = getGeoipAttribution();
+      if (geoipAttribution) configObject.geoipAttribution = geoipAttribution;
       res.json(configObject);
     } catch (error) {
       console.error("Error fetching config:", error);

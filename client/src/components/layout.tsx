@@ -38,6 +38,13 @@ export default function Layout({ children }: { children: React.ReactNode }) {
     queryFn: getQueryFn({ on401: "returnNull" }),
   });
 
+  // Public config; carries geoipAttribution when the server's GeoIP data
+  // source (DB-IP Lite, CC-BY-4.0) requires the footer credit.
+  const { data: publicConfig } = useQuery<{ geoipAttribution?: string }>({
+    queryKey: ["/api/config"],
+    staleTime: 60 * 60 * 1000,
+  });
+
   const logoutMutation = useMutation({
     mutationFn: async () => {
       await apiRequest("POST", "/api/auth/logout");
@@ -306,6 +313,14 @@ export default function Layout({ children }: { children: React.ReactNode }) {
                 <Link href="/terms" className="hover:text-foreground transition-colors" data-testid="link-footer-terms">Terms</Link>
               </div>
             </div>
+            {/* CC-BY-4.0 credit — present only when the server loaded DB-IP data */}
+            {publicConfig?.geoipAttribution && (
+              <p className="mt-2 text-center sm:text-left text-[11px] text-muted-foreground/70" data-testid="text-geoip-attribution">
+                This product includes IP geolocation data created by{" "}
+                <a href="https://db-ip.com" target="_blank" rel="noopener noreferrer" className="underline hover:text-foreground transition-colors">DB-IP</a>,
+                {" "}available from https://db-ip.com
+              </p>
+            )}
           </div>
         </div>
       </footer>

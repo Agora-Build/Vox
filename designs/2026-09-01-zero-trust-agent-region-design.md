@@ -77,7 +77,12 @@ with mock readers.
   keyless download, same MMDB format, saved under the server's expected
   filenames) — slightly less accurate and without `accuracy_radius`,
   which the ladder tolerates (an absent radius is not a low-confidence
-  trigger). GeoLite2 stays the recommended primary.
+  trigger). GeoLite2 stays the recommended primary. CC-BY-4.0 requires
+  visible credit: the refresh script writes a `geoip/ATTRIBUTION` marker
+  on the DB-IP path (removed on the MaxMind path), the server surfaces it
+  via `/api/config → geoipAttribution`, and the public footer renders
+  "This product includes IP geolocation data created by DB-IP, available
+  from https://db-ip.com" whenever DB-IP data is loaded.
 - **Anonymizer signals (free tier, per ruling):**
   - Tor exit list fetched from `check.torproject.org/torbulkexitlist` at
     startup and every 12 h, held in memory; fetch failure keeps the previous

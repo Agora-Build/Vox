@@ -29,8 +29,16 @@ verify_mmdb() {
   echo "  → ${GEOIP_DB_DIR}/$1.mmdb"
 }
 
+# CC-BY-4.0 requires visible credit when DB-IP data is in the product. The
+# marker file tells the server which source the mmdbs came from; the server
+# exposes the attribution via /api/config and the public footer renders it.
+# GeoLite2's EULA needs no public credit for server-side lookups → no marker.
+ATTRIBUTION_FILE="${GEOIP_DB_DIR}/ATTRIBUTION"
+DBIP_ATTRIBUTION="This product includes IP geolocation data created by DB-IP, available from https://db-ip.com"
+
 fetch_maxmind() {
   : "${MAXMIND_LICENSE_KEY:?Set MAXMIND_LICENSE_KEY (https://www.maxmind.com → GeoLite2 free account) or use --source dbip}"
+  rm -f "$ATTRIBUTION_FILE"
   for edition in GeoLite2-City GeoLite2-ASN; do
     echo "Fetching ${edition} (MaxMind GeoLite2)..."
     tmp=$(mktemp -d)
@@ -64,7 +72,9 @@ fetch_dbip_edition() {
 fetch_dbip() {
   fetch_dbip_edition "dbip-city-lite" "GeoLite2-City"
   fetch_dbip_edition "dbip-asn-lite" "GeoLite2-ASN"
-  echo "Note: DB-IP Lite data (CC-BY-4.0, https://db-ip.com) saved under the server's expected filenames."
+  printf '%s\n' "$DBIP_ATTRIBUTION" > "$ATTRIBUTION_FILE"
+  echo "Note: DB-IP Lite data (CC-BY-4.0) saved under the server's expected filenames."
+  echo "Attribution marker written — the server will surface: ${DBIP_ATTRIBUTION}"
 }
 
 case "$SOURCE" in

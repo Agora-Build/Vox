@@ -214,6 +214,14 @@ let torExits: Set<string> = new Set();
 let asnClassification: Record<string, "vpn" | "hosting"> = {};
 let asnClassificationLoaded = false;
 let warnedPrivateIp = false;
+// Set when the GeoIP data source requires public credit (DB-IP Lite is
+// CC-BY-4.0; scripts/geoip-refresh.sh writes geoip/ATTRIBUTION on that path
+// and removes it on the MaxMind path). Exposed via /api/config → footer.
+let geoipAttribution: string | null = null;
+
+export function getGeoipAttribution(): string | null {
+  return geoipAttribution;
+}
 
 export function startLocationServices(): void {
   void (async () => {
@@ -222,6 +230,10 @@ export function startLocationServices(): void {
     try { asnReader = await maxmindOpen<AsnResponse>(path.join(GEOIP_DIR, "GeoLite2-ASN.mmdb")); }
     catch { console.log("[location] GeoLite2-ASN.mmdb not found — ASN signals disabled"); }
   })();
+  try {
+    const text = readFileSync(path.join(GEOIP_DIR, "ATTRIBUTION"), "utf8").trim();
+    if (text) geoipAttribution = text;
+  } catch { /* no marker = no attribution required (MaxMind path or no DBs) */ }
   try {
     asnClassification = JSON.parse(readFileSync(path.join(process.cwd(), "server/data/asn-classification.json"), "utf8"));
     delete (asnClassification as Record<string, unknown>)._comment;
