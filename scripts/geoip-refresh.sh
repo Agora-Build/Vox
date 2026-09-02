@@ -17,6 +17,7 @@ for edition in GeoLite2-City GeoLite2-ASN; do
   tar -xzf "${tmp}/${edition}.tar.gz" -C "$tmp"
   find "$tmp" -name "${edition}.mmdb" -exec mv {} "${GEOIP_DB_DIR}/" \;
   rm -rf "$tmp"
+  test -s "${GEOIP_DB_DIR}/${edition}.mmdb" || { echo "ERROR: ${edition}.mmdb missing/empty after extraction"; exit 1; }
   echo "  → ${GEOIP_DB_DIR}/${edition}.mmdb"
 done
 echo "Done. Restart the Vox server to load the new databases."

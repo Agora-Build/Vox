@@ -40,11 +40,12 @@ export async function deactivateListing(db: PluginDb, tokenId: number): Promise<
 /**
  * Zero-trust region: mirrors Core's `EvalMarketplace.updateListingRegion`
  * (server/marketplace.ts) — called whenever a shared agent's Vox-detected
- * region is (re)assigned or cleared. `region` is NOT NULL on this table, so a
- * clear (region === null, "Unverified") is expressed as deactivating the
- * listing — same delist-until-trusted precedent as `setListing(id, null)`. A
- * non-null region reactivates the listing (mirrors `upsertListing`'s
- * unconditional `active = true`) — otherwise a prior distrust-triggered
+ * region is (re)assigned or cleared. `region` IS NULLABLE on this table (a
+ * token can switch straight to "shared" before it has a detected region), so
+ * a clear (region === null, "Unverified") is expressed as deactivating the
+ * listing — same delist-until-trusted precedent as `setListing(id, null)` and
+ * `upsertListing`'s own `active = a.region !== null`. A non-null region here
+ * reactivates the listing — otherwise a prior distrust-triggered
  * deactivation would never self-heal once the agent regains a trusted region,
  * since `runAgentLocationCheck` never calls `setListing`. No-op if the token
  * has no listing row.

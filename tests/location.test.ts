@@ -105,8 +105,8 @@ describe("haversineKm", () => {
 });
 
 describe("decideLocationTransition", () => {
-  const fresh = { region: null, pendingRegion: null, pendingRegionCount: 0 };
-  const inMumbai = { region: "apac-in-mumbai", pendingRegion: null, pendingRegionCount: 0 };
+  const fresh = { region: null, siteId: null, pendingRegion: null, pendingRegionCount: 0 };
+  const inMumbai = { region: "apac-in-mumbai", siteId: "apac-in-mumbai-01", pendingRegion: null, pendingRegionCount: 0 };
 
   it("eligible + immediate (registration) assigns at once", () => {
     expect(decideLocationTransition(fresh, { trust: "trusted", baseId: "apac-in-mumbai" }, { immediate: true }))
@@ -146,6 +146,13 @@ describe("decideLocationTransition", () => {
     expect(decideLocationTransition(fresh, { trust: "unknown", baseId: null }, { immediate: false }))
       .toEqual({ region: null, changed: false, pendingRegion: null, pendingRegionCount: 0 });
   });
+  it("ineligible with region already null but a stale siteId still forces a clearing change", () => {
+    // A formerly-public agent: region null (already cleared) but siteId still
+    // set from its old public-tier configuration. Must not look like a no-op.
+    const staleSite = { region: null, siteId: "na-us-santaclara-01", pendingRegion: null, pendingRegionCount: 0 };
+    expect(decideLocationTransition(staleSite, { trust: "unknown", baseId: null }, { immediate: false }))
+      .toEqual({ region: null, changed: true, pendingRegion: null, pendingRegionCount: 0 });
+  });
   it("upgrade from Unverified on heartbeat also uses hysteresis", () => {
     const s = decideLocationTransition(fresh, { trust: "trusted", baseId: "apac-in-mumbai" }, { immediate: false });
     expect(s).toEqual({ region: null, changed: false, pendingRegion: "apac-in-mumbai", pendingRegionCount: 1 });
@@ -158,6 +165,7 @@ describe("detectLocation with injected deps", () => {
     asn: (ip) => ip === "49.36.100.1" ? { asn: 55836, org: "Jio" } : { asn: 9009, org: "M247" },
     torExits: new Set(["185.220.101.1"]),
     asnClass: { "9009": "vpn", "16509": "hosting" },
+    asnClassLoaded: true,
   };
   it("resolves geo+asn through deps", () => {
     const d = detectLocation("49.36.100.1", deps);
@@ -173,5 +181,23 @@ describe("detectLocation with injected deps", () => {
   it("no deps and no mmdbs on disk → graceful unknown/low_confidence, never throws", () => {
     const d = detectLocation("8.8.8.8"); // live loaders; CI/dev has no geoip/ dir
     expect(["low_confidence", "unknown"]).toContain(d.trust);
+  });
+  it("v4-mapped v6 address is normalized before Tor/geo/ASN lookups", () => {
+    // Tor list, geo and ASN maps are keyed by bare v4 — a request arriving as
+    // ::ffff:185.220.101.1 must still hit the Tor exit entry for 185.220.101.1.
+    expect(detectLocation("::ffff:185.220.101.1", deps).trust).toBe("anonymized");
+    const d = detectLocation("::ffff:49.36.100.1", deps);
+    expect(d.trust).toBe("trusted");
+    expect(d.candidate?.baseId).toBe("apac-in-mumbai");
+  });
+  it("ASN classification not loaded caps trusted/datacenter down to low_confidence (fail closed)", () => {
+    const unloaded: DetectionDeps = { ...deps, asnClassLoaded: false };
+    // Clean geo, no asnClass hit — would otherwise read as "trusted".
+    const trustedLooking = detectLocation("49.36.100.1", unloaded);
+    expect(trustedLooking.trust).toBe("low_confidence");
+    expect(trustedLooking.candidate).toBeNull();
+    // Would-be "hosting" classification is also unavailable to trust.
+    const hostingLooking = detectLocation("1.2.3.4", { ...unloaded, asn: () => ({ asn: 16509, org: "AWS" }) });
+    expect(hostingLooking.trust).toBe("low_confidence");
   });
 });

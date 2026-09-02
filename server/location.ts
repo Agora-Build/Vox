@@ -62,9 +62,16 @@ function v4ToInt(ip: string): number | null {
   return out >>> 0;
 }
 
+// v4-mapped v6 (::ffff:a.b.c.d) reduced to its bare form, so callers matching
+// against a plain-v4 set (Tor exit list, geo/ASN mmdb lookups) don't silently
+// miss a hit just because the request arrived through a v4-mapped socket.
+export function normalizeIp(ip: string): string {
+  return ip.startsWith("::ffff:") ? ip.slice(7) : ip;
+}
+
 export function isPublicIp(ip: string): boolean {
   if (!ip) return false;
-  const bare = ip.startsWith("::ffff:") ? ip.slice(7) : ip; // v4-mapped v6
+  const bare = normalizeIp(ip);
   const v4 = v4ToInt(bare);
   if (v4 !== null) {
     return !PRIVATE_V4.some(([net, bits]) => (v4 >>> (32 - bits)) === (net >>> (32 - bits)));
@@ -152,14 +159,22 @@ export function classifyLocation(ip: string, signals: LocationSignals): Detectio
 }
 
 export function decideLocationTransition(
-  agent: { region: string | null; pendingRegion: string | null; pendingRegionCount: number },
+  agent: { region: string | null; siteId: string | null; pendingRegion: string | null; pendingRegionCount: number },
   det: { trust: LocationTrust; baseId: string | null },
   opts: { immediate: boolean },
 ): LocationNextState {
   const eligible = REGION_ELIGIBLE_TRUST.includes(det.trust) && det.baseId !== null;
   if (!eligible) {
-    // Distrust fast: clear at once; pending state is meaningless now.
-    return { region: null, changed: agent.region !== null, pendingRegion: null, pendingRegionCount: 0 };
+    // Distrust fast: clear at once; pending state is meaningless now. A
+    // formerly-public agent can have region already null while still
+    // carrying a REAL siteId from its old public-tier configuration — that
+    // stale site must be cleared too, or it survives and can match
+    // site-pinned claims even though the agent is now Unverified.
+    return {
+      region: null,
+      changed: agent.region !== null || agent.siteId !== null,
+      pendingRegion: null, pendingRegionCount: 0,
+    };
   }
   if (det.baseId === agent.region) {
     return { region: agent.region, changed: false, pendingRegion: null, pendingRegionCount: 0 };
@@ -184,6 +199,12 @@ export interface DetectionDeps {
   asn: (ip: string) => AsnLookup | null;
   torExits: ReadonlySet<string>;
   asnClass: Readonly<Record<string, "vpn" | "hosting">>;
+  // Whether the ASN classification map actually loaded. An EMPTY map looks
+  // identical to a LOADED-BUT-CLEAN map to every lookup below — without this
+  // flag, a failed/missing asn-classification.json fails open: a
+  // datacenter/VPN egress with clean geo would score "trusted" purely
+  // because there was nothing to classify it against. See detectLocation.
+  asnClassLoaded: boolean;
 }
 
 const GEOIP_DIR = process.env.GEOIP_DB_DIR || path.join(process.cwd(), "geoip");
@@ -191,6 +212,7 @@ let cityReader: Reader<CityResponse> | null = null;
 let asnReader: Reader<AsnResponse> | null = null;
 let torExits: Set<string> = new Set();
 let asnClassification: Record<string, "vpn" | "hosting"> = {};
+let asnClassificationLoaded = false;
 let warnedPrivateIp = false;
 
 export function startLocationServices(): void {
@@ -203,6 +225,7 @@ export function startLocationServices(): void {
   try {
     asnClassification = JSON.parse(readFileSync(path.join(process.cwd(), "server/data/asn-classification.json"), "utf8"));
     delete (asnClassification as Record<string, unknown>)._comment;
+    asnClassificationLoaded = true;
   } catch { console.log("[location] asn-classification.json not readable — ASN class signals disabled"); }
   const refreshTor = async () => {
     try {
@@ -241,26 +264,36 @@ function liveDeps(): DetectionDeps {
     },
     torExits,
     asnClass: asnClassification,
+    asnClassLoaded: asnClassificationLoaded,
   };
 }
 
 export function detectLocation(ip: string, deps: DetectionDeps = liveDeps()): Detection {
-  if (!isPublicIp(ip)) {
+  const bare = normalizeIp(ip);
+  if (!isPublicIp(bare)) {
     // Deployment tripwire (spec): a private IP in production means the proxy
     // hop count is likely wrong — every agent would geolocate to nothing.
     if (process.env.NODE_ENV === "production" && !warnedPrivateIp) {
       warnedPrivateIp = true;
       console.warn(`[location] observed a private client IP (${ip}) in production — trust-proxy hop count likely misconfigured; agents will stay Unverified`);
     }
-    return classifyLocation(ip, { geo: null, asn: null, isTorExit: false, asnClass: null });
+    return classifyLocation(bare, { geo: null, asn: null, isTorExit: false, asnClass: null });
   }
-  const asnInfo = deps.asn(ip);
-  return classifyLocation(ip, {
-    geo: deps.geo(ip),
+  const asnInfo = deps.asn(bare);
+  const det = classifyLocation(bare, {
+    geo: deps.geo(bare),
     asn: asnInfo,
-    isTorExit: deps.torExits.has(ip),
+    isTorExit: deps.torExits.has(bare),
     asnClass: asnInfo?.asn !== undefined ? deps.asnClass[String(asnInfo.asn)] ?? null : null,
   });
+  // ASN classification never loaded — an empty map is indistinguishable from
+  // a clean lookup, so "trusted"/"datacenter" here would be failing open on
+  // exactly the signal meant to catch VPN/hosting egress. Cap at
+  // low_confidence instead (never region-eligible — see REGION_ELIGIBLE_TRUST).
+  if (!deps.asnClassLoaded && (det.trust === "trusted" || det.trust === "datacenter")) {
+    return { trust: "low_confidence", candidate: null, source: det.source };
+  }
+  return det;
 }
 
 export async function resolveCatalogRegion(candidate: RegionCandidate): Promise<string> {

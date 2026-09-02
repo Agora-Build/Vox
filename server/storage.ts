@@ -783,7 +783,7 @@ export class DatabaseStorage {
   async getEvalAgentsWithTokenTier(): Promise<
     (EvalAgent & {
       tokenCreatedBy: number; tokenDispatchTier: string; tokenOwnerOrgId: number | null;
-      tokenRegion: string; tokenSiteId: string | null; tokenIsRevoked: boolean;
+      tokenRegion: string | null; tokenSiteId: string | null; tokenIsRevoked: boolean;
     })[]
   > {
     const results = await db.select({
@@ -817,7 +817,7 @@ export class DatabaseStorage {
       .orderBy(desc(evalAgents.createdAt));
     return results as (EvalAgent & {
       tokenCreatedBy: number; tokenDispatchTier: string; tokenOwnerOrgId: number | null;
-      tokenRegion: string; tokenSiteId: string | null; tokenIsRevoked: boolean;
+      tokenRegion: string | null; tokenSiteId: string | null; tokenIsRevoked: boolean;
     })[];
   }
 

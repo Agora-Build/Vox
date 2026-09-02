@@ -68,7 +68,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 interface EvalAgent {
   id: number;
   name: string;
-  siteId: string;
+  siteId: string | null;
   state: string;
   leaseId?: string;
 }
@@ -77,7 +77,7 @@ interface EvalJob {
   id: number;
   workflowId: number;
   evalSetId: number | null;
-  siteId: string;
+  siteId: string | null;
   status: string;
   config: Record<string, unknown> | null;
 }
@@ -410,7 +410,10 @@ class VoxEvalAgentDaemon {
   // -------------------------------------------------------------------------
 
   async fetchJobs(): Promise<EvalJob[]> {
-    if (!this.siteId) return [];
+    // Job polling requires a registered agent, not a resolved site — Unverified
+    // (non-public) agents legitimately register with siteId=null and must still
+    // poll to take targeted jobs once trusted.
+    if (!this.agentId) return [];
 
     try {
       const response = await this.fetch(`/api/eval-agent/jobs`);

@@ -3,7 +3,7 @@ import { eq } from "drizzle-orm";
 import { Pool } from "pg";
 import { db } from "../server/storage";
 import { evalAgents } from "../shared/schema";
-import { BASE_NA } from "./helpers/regions";
+import { BASE_NA, REGION_NA } from "./helpers/regions";
 
 // Direct-DB read of the plugin's own schema, same style as
 // tests/practical-shared-agents-credits.test.ts — used only to OBSERVE the
@@ -287,6 +287,104 @@ describeDb("run-targets: two-level tree fields (Task 12)", () => {
     // The admin's own public token must not be duplicated under "mine" —
     // public sites are represented exactly once, via agents.public.
     expect(body.agents.mine.find((a: { tokenId: number }) => a.tokenId === publicTokenId)).toBeUndefined();
+  });
+});
+
+describe("PATCH cannot promote a region-less token to public (I3)", () => {
+  let cookie: string;
+  let tokenId: number;
+
+  beforeAll(async () => { cookie = await login(); });
+  afterAll(async () => {
+    await authFetch(cookie, `${BASE_URL}/api/eval-agent-tokens/${tokenId}/revoke`, { method: "POST" });
+  });
+
+  it("private (region-less) token PATCHed to public → 400", async () => {
+    const mintRes = await authFetch(cookie, `${BASE_URL}/api/eval-agent-tokens`, {
+      method: "POST",
+      body: JSON.stringify({ name: `zt-i3-${Date.now()}`, dispatchTier: "private" }),
+    });
+    expect(mintRes.status).toBe(200);
+    const token = await mintRes.json();
+    tokenId = token.id;
+    expect(token.siteId).toBeNull();
+
+    const patchRes = await authFetch(cookie, `${BASE_URL}/api/eval-agent-tokens/${tokenId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ dispatchTier: "public" }),
+    });
+    expect(patchRes.status).toBe(400);
+    const body = await patchRes.json();
+    expect(body.error).toMatch(/region-less/i);
+  });
+});
+
+describeDb("PATCH keeping dispatchTier=shared must not clobber a trusted listing region (I2 regression)", () => {
+  // Regression: the PATCH handler used to populate the listing's region from
+  // token.siteId, which is ALWAYS null for non-public mints (region is
+  // public-tier-only at mint). A price-only PATCH on an already-trusted
+  // shared agent would silently overwrite its good region with null and
+  // delist it — with nothing to re-list, since updateListingRegion only
+  // fires on an actual region CHANGE. Fixed by sourcing the listing's region
+  // from effectiveDispatchIdentity(token, agent) instead of the token alone.
+  let cookie: string;
+  let tokenId: number;
+
+  beforeAll(async () => { cookie = await login(); });
+  afterAll(async () => {
+    await authFetch(cookie, `${BASE_URL}/api/eval-agent-tokens/${tokenId}/revoke`, { method: "POST" });
+  });
+
+  it("price-change PATCH on a trusted shared agent keeps its region and stays active", async () => {
+    const mintRes = await authFetch(cookie, `${BASE_URL}/api/eval-agent-tokens`, {
+      method: "POST",
+      body: JSON.stringify({ name: `zt-i2-${Date.now()}`, dispatchTier: "private" }),
+    });
+    expect(mintRes.status).toBe(200);
+    const token = await mintRes.json();
+    tokenId = token.id;
+
+    const regRes = await fetch(`${BASE_URL}/api/eval-agent/register`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token.token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ name: "zt-i2-agent" }),
+    });
+    expect(regRes.ok).toBe(true);
+
+    // Simulate the agent having already been detected/trusted at a real site
+    // (register on localhost always lands "unknown"/siteId null in dev).
+    await db.update(evalAgents)
+      .set({ siteId: REGION_NA, region: BASE_NA, locationTrust: "trusted" })
+      .where(eq(evalAgents.tokenId, tokenId));
+
+    // First PATCH: switch to shared — creates the listing from the agent's
+    // (now trusted) siteId, not the always-null token.siteId.
+    const firstPatch = await authFetch(cookie, `${BASE_URL}/api/eval-agent-tokens/${tokenId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ dispatchTier: "shared", pricePerUnit: 5 }),
+    });
+    expect(firstPatch.status).toBe(200);
+
+    let rows = (await dbPool.query<{ region: string | null; active: boolean }>(
+      `SELECT region, active FROM plugin_shared_agents.listings WHERE token_id = $1`, [tokenId])).rows;
+    expect(rows).toHaveLength(1);
+    expect(rows[0].region).toBe(REGION_NA);
+    expect(rows[0].active).toBe(true);
+
+    // Second PATCH: tier STAYS shared, only price changes. Must not clobber
+    // the region — updateListingRegion never fires here (no region change),
+    // so a wrong write here would leave the listing stuck delisted.
+    const secondPatch = await authFetch(cookie, `${BASE_URL}/api/eval-agent-tokens/${tokenId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ dispatchTier: "shared", pricePerUnit: 9 }),
+    });
+    expect(secondPatch.status).toBe(200);
+
+    rows = (await dbPool.query<{ region: string | null; active: boolean }>(
+      `SELECT region, active FROM plugin_shared_agents.listings WHERE token_id = $1`, [tokenId])).rows;
+    expect(rows).toHaveLength(1);
+    expect(rows[0].region).toBe(REGION_NA);
+    expect(rows[0].active).toBe(true);
   });
 });
 

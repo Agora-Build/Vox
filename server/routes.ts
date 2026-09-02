@@ -2968,6 +2968,14 @@ export async function registerRoutes(
       if (!parsed.success) return res.status(400).json({ error: "Invalid request" });
       const { dispatchTier, pricePerUnit } = parsed.data;
 
+      // A region-less token has no configured (admin-trusted) identity — public
+      // dispatch requires one, and there's no detection path that could
+      // backfill it after the fact. Refuse the promotion instead of minting a
+      // public token that structurally fails every region-pooled match.
+      if (dispatchTier === "public" && token.region == null) {
+        return res.status(400).json({ error: "Cannot switch a region-less token to public — public agents require a configured region; mint a public token instead" });
+      }
+
       const marketplace = getMarketplace();
       const decision = validateTierChoice({
         user: { id: user.id, isAdmin: user.isAdmin, plan: user.plan, organizationId: user.organizationId },
@@ -2982,13 +2990,17 @@ export async function registerRoutes(
       await storage.updateEvalAgentTokenDispatchTier(id, dispatchTier);
 
       // Money lives only in the plugin: set/clear the listing via the seam.
-      // NOTE: token.siteId may legitimately be null under zero-trust (region is
+      // NOTE: token.siteId is ALWAYS null for non-public mints (region is
       // public-tier-only at mint; other tiers are detected later via agent
-      // register/heartbeat) — the plugin upserts a delisted (active=false)
-      // listing in that case rather than rejecting it.
+      // register/heartbeat) — use the token's EFFECTIVE dispatch identity
+      // (the agent's detected siteId for non-public tiers) so a price-change
+      // PATCH on an already-trusted shared agent doesn't overwrite its good
+      // region with NULL and delist it.
       if (marketplace) {
         if (dispatchTier === "shared") {
-          await marketplace.setListing(id, pricePerUnit ?? null, { ownerId: token.createdBy, region: token.siteId });
+          const agents = await storage.getEvalAgentsByTokenId(id);
+          const eff = effectiveDispatchIdentity(token, agents[0]);
+          await marketplace.setListing(id, pricePerUnit ?? null, { ownerId: token.createdBy, region: eff.siteId });
         } else {
           await marketplace.setListing(id, null); // switching away from shared deactivates the listing
         }
@@ -4494,7 +4506,14 @@ export async function registerRoutes(
       // agent (never location_source/observed_ip — those columns aren't
       // selected by getEvalAgentsWithTokenTier at all).
       const agentRows = await storage.getEvalAgentsWithTokenTier();
-      const agentByTokenId = new Map(agentRows.map((a) => [a.tokenId, a]));
+      // agentRows is ordered createdAt DESC (newest first); a token can have
+      // more than one agent row (re-registrations), so only set on first sight
+      // per tokenId — otherwise a later (older) row for the same token would
+      // clobber the newest one already in the map.
+      const agentByTokenId = new Map<number, (typeof agentRows)[number]>();
+      for (const a of agentRows) {
+        if (!agentByTokenId.has(a.tokenId)) agentByTokenId.set(a.tokenId, a);
+      }
       // Session trust, computed ONCE from the same detector the run route
       // enforces with. For a session-injected workflow, a dispatcher who is
       // neither the owner nor a workflow-org member cannot receive the minted
