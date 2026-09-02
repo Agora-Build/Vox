@@ -801,6 +801,33 @@ export default function Dashboard() {
 
   const isLoggedIn = !!authStatus?.user;
 
+  const availabilityTier = activeTab === "mainline" ? "realtime" : activeTab === "community" ? "community" : "my-evals";
+  const { data: regionAvailability } = useQuery<{ availableRegions: string[]; hasUnverified: boolean }>({
+    queryKey: ["/api/metrics/available-regions", availabilityTier, timeRange],
+    queryFn: async () => {
+      const params = new URLSearchParams({ tier: availabilityTier });
+      if (timeRange !== "all") params.set("hours", timeRange);
+      const res = await fetch(`/api/metrics/available-regions?${params}`, { credentials: "include" });
+      if (!res.ok) throw new Error("available-regions failed");
+      return res.json();
+    },
+    enabled: activeTab !== "my-evals" || isLoggedIn,
+  });
+
+  const visibleLocations = useMemo(() => {
+    const all = regionLocations ?? [];
+    // Mainline: the fixed admin-curated set — shown even with no data (the gap
+    // IS the signal). Community/My Evals: only cities that actually have data.
+    if (activeTab === "mainline") return all.filter((l) => l.isMainline);
+    const avail = new Set(regionAvailability?.availableRegions ?? []);
+    return all.filter((l) => avail.has(l.baseId));
+  }, [regionLocations, activeTab, regionAvailability]);
+
+  // Region scopes are tab-specific (each tab has a different tree); reset on tab switch.
+  useEffect(() => {
+    setRegionScopes(["all"]);
+  }, [activeTab]);
+
   const regionScopeKey = [...regionScopes].sort().join(",");
   const { data: mainlineMetrics, isLoading: mainlineLoading, refetch: refetchMainline, isFetching: mainlineFetching } = useQuery<EvalResult[]>({
     queryKey: ['/api/metrics/realtime', timeRange, regionScopeKey],
@@ -946,9 +973,10 @@ export default function Dashboard() {
             </SelectContent>
           </Select>
           <RegionScopeSelector
-            locations={regionLocations ?? []}
+            locations={visibleLocations}
             value={regionScopes}
             onChange={setRegionScopes}
+            showUnverified={activeTab === "my-evals" && !!regionAvailability?.hasUnverified}
           />
           <Popover>
             <PopoverTrigger asChild>

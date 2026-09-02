@@ -1,7 +1,7 @@
 import type { PluginDb } from "@vox/plugin-sdk";
 
 export interface ListingRow {
-  id: number; tokenId: number; pricePerUnit: number; ownerId: number; region: string; active: boolean;
+  id: number; tokenId: number; pricePerUnit: number; ownerId: number; region: string | null; active: boolean;
 }
 export interface SettlementRow {
   id: number; jobId: number | null; holdId: number | null;
@@ -12,26 +12,54 @@ export interface SettlementRow {
 
 export async function upsertListing(
   db: PluginDb,
-  a: { tokenId: number; pricePerUnit: number; ownerId: number; region: string; createdBy: number },
+  a: { tokenId: number; pricePerUnit: number; ownerId: number; region: string | null; createdBy: number },
 ): Promise<void> {
+  // Zero-trust region: a token switching straight to "shared" may not have a
+  // detected region yet (region is public-tier-only at mint; other tiers are
+  // detected later via register/heartbeat — see updateListingRegion below). A
+  // null region here upserts the row delisted (active = false) rather than
+  // failing — same delist-until-trusted precedent as updateListingRegion(null).
+  // A later updateListingRegion(tokenId, region) reactivates once detected.
+  const active = a.region !== null;
   await db.query(
     `INSERT INTO listings (token_id, price_per_unit, owner_id, region, active, created_by)
-     VALUES ($1, $2, $3, $4, true, $5)
+     VALUES ($1, $2, $3, $4, $5, $6)
      ON CONFLICT (token_id) DO UPDATE SET
        price_per_unit = EXCLUDED.price_per_unit,
        owner_id       = EXCLUDED.owner_id,
        region         = EXCLUDED.region,
-       active         = true,
+       active         = EXCLUDED.active,
        updated_at     = now()`,
-    [a.tokenId, a.pricePerUnit, a.ownerId, a.region, a.createdBy]);
+    [a.tokenId, a.pricePerUnit, a.ownerId, a.region, active, a.createdBy]);
 }
 
 export async function deactivateListing(db: PluginDb, tokenId: number): Promise<void> {
   await db.query(`UPDATE listings SET active = false, updated_at = now() WHERE token_id = $1`, [tokenId]);
 }
 
+/**
+ * Zero-trust region: mirrors Core's `EvalMarketplace.updateListingRegion`
+ * (server/marketplace.ts) — called whenever a shared agent's Vox-detected
+ * region is (re)assigned or cleared. `region` IS NULLABLE on this table (a
+ * token can switch straight to "shared" before it has a detected region), so
+ * a clear (region === null, "Unverified") is expressed as deactivating the
+ * listing — same delist-until-trusted precedent as `setListing(id, null)` and
+ * `upsertListing`'s own `active = a.region !== null`. A non-null region here
+ * reactivates the listing — otherwise a prior distrust-triggered
+ * deactivation would never self-heal once the agent regains a trusted region,
+ * since `runAgentLocationCheck` never calls `setListing`. No-op if the token
+ * has no listing row.
+ */
+export async function updateListingRegion(db: PluginDb, tokenId: number, region: string | null): Promise<void> {
+  if (region === null) {
+    await db.query(`UPDATE listings SET active = false, updated_at = now() WHERE token_id = $1`, [tokenId]);
+    return;
+  }
+  await db.query(`UPDATE listings SET region = $2, active = true, updated_at = now() WHERE token_id = $1`, [tokenId, region]);
+}
+
 function mapListing(r: {
-  id: string; token_id: string; price_per_unit: string; owner_id: number; region: string; active: boolean;
+  id: string; token_id: string; price_per_unit: string; owner_id: number; region: string | null; active: boolean;
 }): ListingRow {
   return {
     id: Number(r.id), tokenId: Number(r.token_id), pricePerUnit: Number(r.price_per_unit),

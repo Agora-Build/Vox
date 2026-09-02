@@ -77,6 +77,19 @@ export default function AdminRegions() {
     },
   });
 
+  const mainlineMutation = useMutation({
+    mutationFn: async ({ location, isMainline }: { location: RegionLocation; isMainline: boolean }) => {
+      return apiRequest("PATCH", `/api/admin/region-locations/${location.id}`, { isMainline });
+    },
+    onSuccess: (_data, variables) => {
+      refresh();
+      toast({ title: variables.isMainline ? "Added to Mainline" : "Removed from Mainline" });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Could not update region", description: error.message, variant: "destructive" });
+    },
+  });
+
   const openCreate = () => {
     setEditing(null);
     setForm(EMPTY_FORM);
@@ -125,6 +138,8 @@ export default function AdminRegions() {
               <TableHead>Hierarchy</TableHead>
               <TableHead>Base ID</TableHead>
               <TableHead>Sites</TableHead>
+              <TableHead>Source</TableHead>
+              <TableHead>Mainline</TableHead>
               <TableHead>Active</TableHead>
               <TableHead className="w-[96px]">Actions</TableHead>
             </TableRow>
@@ -144,6 +159,16 @@ export default function AdminRegions() {
                 <TableCell>
                   <div>{location.allocatedRegions.length}</div>
                   <div className="font-mono text-xs text-muted-foreground">next {String(location.nextSequence).padStart(2, "0")}</div>
+                </TableCell>
+                <TableCell>
+                  <Badge variant="secondary" className="capitalize">{location.source ?? "configured"}</Badge>
+                </TableCell>
+                <TableCell>
+                  <Switch
+                    checked={!!location.isMainline}
+                    disabled={mainlineMutation.isPending}
+                    onCheckedChange={(isMainline) => mainlineMutation.mutate({ location, isMainline })}
+                  />
                 </TableCell>
                 <TableCell>
                   <Switch

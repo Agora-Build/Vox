@@ -2456,15 +2456,17 @@ describe('Vox API Tests', () => {
 
     // Premium user can create private tokens
     it('should allow premium user to create a private token', async () => {
+      // Zero trust: region is public-tier-only. Non-public tokens mint
+      // region-less (siteId/region are detected later, at registration).
       const response = await authFetch(premiumSession, `${BASE_URL}/api/eval-agent-tokens`, {
         method: 'POST',
-        body: JSON.stringify({ name: 'Premium Private Token', regionLocationBaseId: BASE_NA }),
+        body: JSON.stringify({ name: 'Premium Private Token' }),
       });
       expect(response.ok).toBe(true);
       const data = await response.json();
       expect(data.token).toBeDefined();
       expect(data.dispatchTier).toBe('private');
-      expect(data.siteId).toContain(BASE_NA);
+      expect(data.siteId).toBeNull();
       premiumTokenId = data.id;
     });
 
@@ -2513,9 +2515,11 @@ describe('Vox API Tests', () => {
 
     // Admin can create private tokens
     it('should allow admin to create a private token', async () => {
+      // Zero trust: region is public-tier-only, even for admin — a private
+      // token mints region-less regardless of who creates it.
       const response = await authFetch(adminSession, `${BASE_URL}/api/eval-agent-tokens`, {
         method: 'POST',
-        body: JSON.stringify({ name: 'Admin Private Token', regionLocationBaseId: BASE_NA, dispatchTier: 'private' }),
+        body: JSON.stringify({ name: 'Admin Private Token', dispatchTier: 'private' }),
       });
       expect(response.ok).toBe(true);
       const data = await response.json();
@@ -2573,14 +2577,11 @@ describe('Vox API Tests', () => {
       expect(response.status).toBe(400);
     });
 
-    // Token creation with missing region
-    it('should reject token creation with missing region', async () => {
-      const response = await authFetch(premiumSession, `${BASE_URL}/api/eval-agent-tokens`, {
-        method: 'POST',
-        body: JSON.stringify({ name: 'No Region' }),
-      });
-      expect(response.status).toBe(400);
-    });
+    // "should reject token creation with missing region" removed: under the
+    // zero-trust region contract (region is public-tier-only), a private-tier
+    // mint with no region now succeeds (200, siteId null) rather than 400 —
+    // already covered by tests/zero-trust-region-api.test.ts's "non-public
+    // mint without a region succeeds with siteId null".
 
     // Revoking non-existent token
     it('should return 404 when revoking non-existent token', async () => {

@@ -74,7 +74,7 @@ export function canScheduleWorkflow(user: Pick<AuthUser, 'id'>, resource: OrgRes
 
 // --- Shared-agents dispatch predicates ---
 
-export type DispatchToken = { id: number; dispatchTier: string; createdBy: number; region: string };
+export type DispatchToken = { id: number; dispatchTier: string; createdBy: number; region: string | null };
 
 /**
  * Two parties are "same org" iff both have the SAME non-null organizationId.

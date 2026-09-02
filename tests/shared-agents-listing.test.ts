@@ -33,6 +33,34 @@ d("shared-agents listings repo", () => {
     expect(activeAfter.some((l) => l.tokenId === 101)).toBe(false);
   });
 
+  it("updateListingRegion updates an existing listing's region; no-ops when no listing exists", async () => {
+    await repo.upsertListing(h.marketplaceDb, { tokenId: 111, pricePerUnit: 10, ownerId: 7, region: "na-us-ashburn-01", createdBy: 7 });
+    await repo.updateListingRegion(h.marketplaceDb, 111, "eu-de-frankfurt-01");
+    let row = await repo.getListing(h.marketplaceDb, 111);
+    expect(row!.region).toBe("eu-de-frankfurt-01");
+    expect(row!.active).toBe(true);
+
+    // region text NOT NULL: a null region delists (mirrors setListing(id, null)).
+    await repo.updateListingRegion(h.marketplaceDb, 111, null);
+    row = await repo.getListing(h.marketplaceDb, 111);
+    expect(row!.active).toBe(false);
+    let activeNow = await repo.listActiveListings(h.marketplaceDb);
+    expect(activeNow.some((l) => l.tokenId === 111)).toBe(false);
+
+    // Regaining a trusted region must self-heal the listing back to active —
+    // runAgentLocationCheck never calls setListing, so this is the only path back.
+    await repo.updateListingRegion(h.marketplaceDb, 111, "apac-in-mumbai-01");
+    row = await repo.getListing(h.marketplaceDb, 111);
+    expect(row!.active).toBe(true);
+    expect(row!.region).toBe("apac-in-mumbai-01");
+    activeNow = await repo.listActiveListings(h.marketplaceDb);
+    expect(activeNow.some((l) => l.tokenId === 111)).toBe(true);
+
+    // No listing for this token: no-op, does not throw, does not create a row.
+    await expect(repo.updateListingRegion(h.marketplaceDb, 999999, "na-us-ashburn-01")).resolves.toBeUndefined();
+    expect(await repo.getListing(h.marketplaceDb, 999999)).toBeNull();
+  });
+
   it("pending settlement round-trips and job_id backfills terminal", async () => {
     const sid = await repo.insertPendingSettlement(h.marketplaceDb, {
       payerUserId: 3, earnerUserId: 7, priceUnits: 1, pricePerUnit: 25, chargeCredits: 25, feeCredits: 5,
@@ -80,5 +108,14 @@ d("shared-agents service — setListing/listDispatchable", () => {
   it("activate without meta throws (Core always supplies it)", async () => {
     const svc = createMarketplaceService(h.marketplaceDb, h.credits as any);
     await expect(svc.setListing(203, 5)).rejects.toThrow();
+  });
+
+  it("updateListingRegion delegates through the service to repo", async () => {
+    const svc = createMarketplaceService(h.marketplaceDb, h.credits as any);
+    await svc.setListing(204, 12, { ownerId: 9, region: "na-us-ashburn-01" });
+    await svc.updateListingRegion(204, "apac-in-mumbai-01");
+    const list = await svc.listDispatchable(1);
+    const row = list.find((a) => a.tokenId === 204);
+    expect(row!.region).toBe("apac-in-mumbai-01");
   });
 });

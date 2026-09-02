@@ -43,19 +43,24 @@ d("POST /api/eval-agent-tokens dispatchTier rules", () => {
   });
 
   it("admin may create private", async () => {
+    // Zero trust: region is public-tier-only, even for admin — a private
+    // token mints region-less regardless of who creates it.
     const cookie = await login(ADMIN_EMAIL, ADMIN_PASSWORD);
-    const res = await createToken(cookie, { name: `t-admin-priv-${Date.now()}`, regionLocationBaseId: BASE_NA, dispatchTier: "private" });
+    const res = await createToken(cookie, { name: `t-admin-priv-${Date.now()}`, dispatchTier: "private" });
     expect(res.ok).toBe(true);
-    expect((await res.json()).dispatchTier).toBe("private");
+    const body = await res.json();
+    expect(body.dispatchTier).toBe("private");
+    expect(body.siteId).toBeNull();
   });
 
   it("admin team tier depends on org membership", async () => {
     // Seed admin's org membership is environment-dependent — branch on it
     // rather than assuming. With an org: team succeeds (200). Without: team
-    // requires org membership and is rejected (400).
+    // requires org membership and is rejected (400). Team is non-public, so
+    // (per the zero-trust region contract) it never takes a region either.
     const cookie = await login(ADMIN_EMAIL, ADMIN_PASSWORD);
     const status = await authStatus(cookie);
-    const res = await createToken(cookie, { name: `t-team-${Date.now()}`, regionLocationBaseId: BASE_NA, dispatchTier: "team" });
+    const res = await createToken(cookie, { name: `t-team-${Date.now()}`, dispatchTier: "team" });
     if (status.user?.organizationId) {
       expect(res.ok).toBe(true);
       expect((await res.json()).dispatchTier).toBe("team");
@@ -66,7 +71,7 @@ d("POST /api/eval-agent-tokens dispatchTier rules", () => {
 
   it("shared without price is rejected (400) or unavailable when no marketplace", async () => {
     const cookie = await login(ADMIN_EMAIL, ADMIN_PASSWORD);
-    const res = await createToken(cookie, { name: `t-shared-noprice-${Date.now()}`, regionLocationBaseId: BASE_NA, dispatchTier: "shared" });
+    const res = await createToken(cookie, { name: `t-shared-noprice-${Date.now()}`, dispatchTier: "shared" });
     expect(res.status).toBe(400);
   });
 });

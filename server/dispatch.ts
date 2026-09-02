@@ -45,7 +45,7 @@ export function validateTierChoice(ctx: TierChoiceContext): TierChangeResult {
 export interface TargetedDispatchDecision {
   ok: boolean;
   reason?: string;
-  region?: string;
+  region?: string | null;
 }
 
 /** Free-tier targeted-dispatch decision. `shared` is deferred to the marketplace seam. */
@@ -61,7 +61,7 @@ export function resolveTargetedDispatch(
 
 export interface DispatchableAgentRow {
   tokenId: number;
-  region: string;
+  region: string | null;
   dispatchTier: string;
   ownerId: number;
   ownerOrgId: number | null;

@@ -31,19 +31,21 @@ interface AuthStatus {
 interface EvalAgent {
   id: number;
   name: string;
-  siteId: string;
+  siteId: string | null;
   state: "idle" | "offline" | "occupied";
   dispatchTier: "private" | "team" | "public" | "shared";
   metadata: Record<string, string> | null;
   lastSeenAt: string | null;
   createdAt: string;
+  region?: string | null;
+  locationTrust?: string;
 }
 
 interface EvalAgentToken {
   id: number;
   name: string;
   token: string;
-  siteId: string;
+  siteId: string | null;
   dispatchTier: "private" | "team" | "public" | "shared";
   isRevoked: boolean;
   lastUsedAt: string | null;
@@ -65,6 +67,13 @@ function getTierBadge(tier: string) {
       {m.label}
     </Badge>
   );
+}
+
+function getTrustBadge(trust?: string, tier?: string) {
+  if (tier === "public") return null; // configured, no badge needed
+  if (trust === "trusted") return <Badge variant="outline" className="text-green-600 border-green-600">Verified</Badge>;
+  if (trust === "datacenter") return <Badge variant="outline" className="text-green-600 border-green-600">Verified · datacenter</Badge>;
+  return <Badge variant="outline" className="text-yellow-600 border-yellow-600">Unverified</Badge>;
 }
 
 function getStateBadge(state: string) {
@@ -123,7 +132,8 @@ export default function ConsoleEvalAgents() {
 
   const createMutation = useMutation({
     mutationFn: async () => {
-      const body: Record<string, unknown> = { name, regionLocationBaseId: region, dispatchTier };
+      const body: Record<string, unknown> = { name, dispatchTier };
+      if (dispatchTier === "public") body.regionLocationBaseId = region;
       if (dispatchTier === "shared") {
         body.pricePerUnit = Number(pricePerUnit);
       }
@@ -253,11 +263,14 @@ export default function ConsoleEvalAgents() {
                     <TableCell>
                       <Badge variant="secondary" className="gap-1">
                         <MapPin className="h-3 w-3" />
-                        {formatSite(agent.siteId)}
+                        {agent.siteId ? formatSite(agent.siteId) : "auto"}
                       </Badge>
                     </TableCell>
                     <TableCell>
-                      {getTierBadge(agent.dispatchTier)}
+                      <div className="flex items-center gap-1.5">
+                        {getTierBadge(agent.dispatchTier)}
+                        {getTrustBadge(agent.locationTrust, agent.dispatchTier)}
+                      </div>
                     </TableCell>
                     <TableCell>
                       {getStateBadge(agent.state)}
@@ -366,21 +379,27 @@ export default function ConsoleEvalAgents() {
                             onChange={(e) => setName(e.target.value)}
                           />
                         </div>
-                        <div className="space-y-2">
-                          <Label htmlFor="token-region">City</Label>
-                          <Select value={region} onValueChange={setRegion}>
-                            <SelectTrigger>
-                              <SelectValue placeholder="Select city" />
-                            </SelectTrigger>
-                            <SelectContent>
-                              {regionLocations.map((r) => (
-                                <SelectItem key={r.value} value={r.value}>
-                                  {r.label}
-                                </SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
-                        </div>
+                        {dispatchTier === "public" ? (
+                          <div className="space-y-2">
+                            <Label htmlFor="token-region">City</Label>
+                            <Select value={region} onValueChange={setRegion}>
+                              <SelectTrigger>
+                                <SelectValue placeholder="Select city" />
+                              </SelectTrigger>
+                              <SelectContent>
+                                {regionLocations.map((r) => (
+                                  <SelectItem key={r.value} value={r.value}>
+                                    {r.label}
+                                  </SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                          </div>
+                        ) : (
+                          <p className="text-xs text-muted-foreground" data-testid="text-region-auto">
+                            Region is detected automatically when the agent connects — it cannot be set manually.
+                          </p>
+                        )}
                         <div className="space-y-2">
                           <Label htmlFor="token-tier">Dispatch tier</Label>
                           <Select value={dispatchTier} onValueChange={setDispatchTier}>
@@ -416,7 +435,8 @@ export default function ConsoleEvalAgents() {
                         <Button
                           onClick={() => createMutation.mutate()}
                           disabled={
-                            createMutation.isPending || regionsLoading || !name || !region ||
+                            createMutation.isPending || !name ||
+                            (dispatchTier === "public" && (regionsLoading || !region)) ||
                             (dispatchTier === "shared" && !(Number(pricePerUnit) > 0))
                           }
                         >
@@ -506,7 +526,7 @@ export default function ConsoleEvalAgents() {
                     <TableCell>
                       <Badge variant="secondary" className="gap-1">
                         <MapPin className="h-3 w-3" />
-                        {formatSite(token.siteId)}
+                        {token.siteId ? formatSite(token.siteId) : "auto"}
                       </Badge>
                     </TableCell>
                     <TableCell>

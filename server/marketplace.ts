@@ -10,7 +10,7 @@ export interface AgentSummary {
 export interface JobContext {
   workflowId: number | null;
   evalSetId: number | null;
-  region: string;
+  region: string | null;
   createdBy: number;
 }
 
@@ -50,7 +50,14 @@ export interface EvalMarketplace {
    * the leak-reaper. Idempotent; no-op if already terminal (review M4).
    */
   voidDispatch(settlementContext: unknown): Promise<void>;
-  setListing(tokenId: number, pricePerUnit: number | null, meta?: { ownerId: number; region: string }): Promise<void>;
+  setListing(tokenId: number, pricePerUnit: number | null, meta?: { ownerId: number; region: string | null }): Promise<void>;
+  /**
+   * Zero-trust region: a shared agent's advertised region (its siteId) is
+   * Vox-detected and mutable at runtime. Called whenever the agent's region is
+   * assigned, re-assigned, or cleared; null = Unverified (delist from regional
+   * pools until trusted).
+   */
+  updateListingRegion(tokenId: number, region: string | null): Promise<void>;
 }
 
 let current: EvalMarketplace | null = null;

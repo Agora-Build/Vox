@@ -30,3 +30,5 @@ vox_eval_agentd/workflows/
 
 # Local ConvoAI config (LLM/TTS secrets) — never commit
 convo_config.json
+
+geoip/

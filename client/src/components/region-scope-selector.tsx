@@ -8,6 +8,7 @@ import {
   toggleRegionScopeSelection,
   formatRegionScopeSelection,
   resolveRegionScopeBaseIds,
+  toggleUnverifiedScope,
   type RegionLocation,
 } from "@/lib/utils";
 
@@ -16,11 +17,12 @@ interface RegionScopeSelectorProps {
   value: string[];
   onChange: (value: string[]) => void;
   className?: string;
+  showUnverified?: boolean;
 }
 
 type ScopeState = boolean | "indeterminate";
 
-export function RegionScopeSelector({ locations, value, onChange, className }: RegionScopeSelectorProps) {
+export function RegionScopeSelector({ locations, value, onChange, className, showUnverified }: RegionScopeSelectorProps) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
   const hierarchy = useMemo(() => {
@@ -105,6 +107,15 @@ export function RegionScopeSelector({ locations, value, onChange, className }: R
             state={value.includes("all")}
             onToggle={() => onChange(["all"])}
           />
+          {showUnverified && (
+            <label className="flex items-center gap-2 px-1 py-1 rounded hover:bg-accent cursor-pointer text-sm" data-testid="region-scope-unverified">
+              <Checkbox
+                checked={value.includes("unverified")}
+                onCheckedChange={() => onChange(toggleUnverifiedScope(value))}
+              />
+              <span className="flex items-center gap-1"><MapPin className="h-3.5 w-3.5 opacity-60" />Unverified</span>
+            </label>
+          )}
           <div className="my-1 border-t" />
           {hierarchy.map((macro) => {
             const macroKey = `macro:${macro.code}`;

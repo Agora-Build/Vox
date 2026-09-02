@@ -100,7 +100,7 @@ import {
   brokerRegistrationTokens,
   brokers,
 } from "@shared/schema";
-import { regionSiteSequence } from "@shared/regions";
+import { regionSiteSequence, haversineKm, type RegionCandidate } from "@shared/regions";
 import { drizzle } from "drizzle-orm/node-postgres";
 import pkg from "pg";
 const { Pool } = pkg;
@@ -121,6 +121,7 @@ export type MetricsMode = "raw" | "bucketDay";
 export type RegionQueryScope = {
   siteId?: string;
   baseIds?: string[];
+  unverified?: boolean;
 };
 
 // Pure raw-vs-bucket decision for a window of `spanDays`. Exported for testing.
@@ -460,6 +461,44 @@ export class DatabaseStorage {
     return result[0];
   }
 
+  async findNearestActiveRegion(lat: number, lon: number, maxKm: number): Promise<RegionLocation | undefined> {
+    // Catalog is small (tens of rows) — fetch and haversine in JS.
+    const rows = await db.select().from(regionLocations)
+      .where(eq(regionLocations.isActive, true));
+    let best: { row: RegionLocation; km: number } | undefined;
+    for (const row of rows) {
+      if (row.latitude == null || row.longitude == null) continue;
+      const km = haversineKm(lat, lon, row.latitude, row.longitude);
+      if (km <= maxKm && (!best || km < best.km)) best = { row, km };
+    }
+    return best?.row;
+  }
+
+  async createDetectedRegionLocation(candidate: RegionCandidate): Promise<RegionLocation> {
+    try {
+      const result = await db.insert(regionLocations).values({
+        baseId: candidate.baseId,
+        displayName: candidate.displayName,
+        city: candidate.city,
+        countryCode: candidate.countryCode,
+        countryName: candidate.countryName,
+        macroRegionCode: candidate.macroRegionCode,
+        macroRegionName: candidate.macroRegionName,
+        latitude: candidate.latitude,
+        longitude: candidate.longitude,
+        source: "detected",
+        isMainline: false,
+        isActive: true,
+      }).returning();
+      return result[0];
+    } catch (err) {
+      // Unique base_id race: another agent created it first — reuse.
+      const existing = await this.getRegionLocationByBaseId(candidate.baseId);
+      if (existing) return existing;
+      throw err;
+    }
+  }
+
   async updateRegionLocation(id: number, data: Partial<RegionLocation>): Promise<RegionLocation | undefined> {
     const result = await db.update(regionLocations)
       .set({ ...data, updatedAt: new Date() })
@@ -482,62 +521,86 @@ export class DatabaseStorage {
     return sequence !== null && sequence < location.nextSequence;
   }
 
-  async createEvalAgentTokenForLocation(
-    baseId: string,
-    token: Omit<InsertEvalAgentToken, "siteId">,
-  ): Promise<EvalAgentToken> {
+  // Extracted from createEvalAgentTokenForLocation so any allocation-needing
+  // caller (agent location checks, not just token minting) can grab the next
+  // sequential siteId for a region without duplicating the locking transaction.
+  async allocateSiteId(baseId: string): Promise<string> {
     const client = await pool.connect();
     try {
       await client.query("BEGIN");
       const selected = await client.query(
-        `SELECT base_id, next_sequence, is_active
-         FROM region_locations
-         WHERE base_id = $1
-         FOR UPDATE`,
+        `SELECT base_id, next_sequence, is_active FROM region_locations WHERE base_id = $1 FOR UPDATE`,
         [baseId],
       );
       if (selected.rows.length === 0) throw new Error("Region location not found");
       if (!selected.rows[0].is_active) throw new Error("Region location is inactive");
-
       const sequence = Number(selected.rows[0].next_sequence);
       const siteId = `${selected.rows[0].base_id}-${String(sequence).padStart(2, "0")}`;
-      const inserted = await client.query(
-        `INSERT INTO eval_agent_tokens
-          (name, token_hash, site_id, region, dispatch_tier, created_by, is_revoked, expires_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-         RETURNING *`,
-        [
-          token.name,
-          token.tokenHash,
-          siteId,
-          selected.rows[0].base_id,
-          token.dispatchTier,
-          token.createdBy,
-          token.isRevoked,
-          token.expiresAt ?? null,
-        ],
-      );
       await client.query(
-        `UPDATE region_locations
-         SET next_sequence = next_sequence + 1, updated_at = NOW()
-         WHERE base_id = $1`,
+        `UPDATE region_locations SET next_sequence = next_sequence + 1, updated_at = NOW() WHERE base_id = $1`,
         [baseId],
       );
       await client.query("COMMIT");
-      const row = inserted.rows[0];
-      return {
-        id: row.id, name: row.name, tokenHash: row.token_hash, siteId: row.site_id,
-        region: row.region,
-        dispatchTier: row.dispatch_tier, createdBy: row.created_by,
-        isRevoked: row.is_revoked, expiresAt: row.expires_at, lastUsedAt: row.last_used_at,
-        createdAt: row.created_at,
-      };
+      return siteId;
     } catch (error) {
       await client.query("ROLLBACK");
       throw error;
     } finally {
       client.release();
     }
+  }
+
+  async createEvalAgentTokenForLocation(
+    baseId: string,
+    token: Omit<InsertEvalAgentToken, "siteId">,
+  ): Promise<EvalAgentToken> {
+    // Allocate first, then a plain insert. A burned sequence number on insert
+    // failure (e.g. a constraint violation on the token row) is harmless — the
+    // catalog just skips ahead one, no different from a rolled-back racer.
+    const siteId = await this.allocateSiteId(baseId);
+    const result = await db.insert(evalAgentTokens).values({
+      ...token,
+      siteId,
+      region: baseId,
+    }).returning();
+    return result[0];
+  }
+
+  async createEvalAgentTokenWithoutLocation(token: Omit<InsertEvalAgentToken, "siteId">): Promise<EvalAgentToken> {
+    const result = await db.insert(evalAgentTokens).values({
+      ...token, siteId: null, region: null,
+    }).returning();
+    return result[0];
+  }
+
+  async updateEvalAgentLocation(agentId: number, fields: {
+    region: string | null; siteId: string | null; locationTrust: string;
+    locationCheckedAt: Date; locationSource: unknown;
+    pendingRegion: string | null; pendingRegionCount: number;
+  }): Promise<void> {
+    await db.update(evalAgents).set({
+      region: fields.region,
+      siteId: fields.siteId,
+      locationTrust: fields.locationTrust,
+      locationCheckedAt: fields.locationCheckedAt,
+      locationSource: fields.locationSource,
+      pendingRegion: fields.pendingRegion,
+      pendingRegionCount: fields.pendingRegionCount,
+      updatedAt: new Date(),
+    }).where(eq(evalAgents.id, agentId));
+  }
+
+  // Public-tier agents: configured identity (region/siteId) is trusted and never
+  // touched here — only the observability fields are recorded.
+  async updateEvalAgentLocationObservability(agentId: number, fields: {
+    locationTrust: string; locationCheckedAt: Date; locationSource: unknown;
+  }): Promise<void> {
+    await db.update(evalAgents).set({
+      locationTrust: fields.locationTrust,
+      locationCheckedAt: fields.locationCheckedAt,
+      locationSource: fields.locationSource,
+      updatedAt: new Date(),
+    }).where(eq(evalAgents.id, agentId));
   }
 
   async createProject(project: InsertProject): Promise<Project> {
@@ -658,7 +721,7 @@ export class DatabaseStorage {
 
   async createEvalAgentToken(token: InsertEvalAgentToken): Promise<EvalAgentToken> {
     // Fixtures/tests pass a bare siteId; region is derivable (strip -NN).
-    const values = { ...token, region: (token as { region?: string }).region ?? token.siteId.replace(/-\d+$/, "") };
+    const values = { ...token, region: (token as { region?: string }).region ?? token.siteId?.replace(/-\d+$/, "") ?? null };
     const result = await db.insert(evalAgentTokens).values(values).returning();
     return result[0];
   }
@@ -718,13 +781,18 @@ export class DatabaseStorage {
   }
 
   async getEvalAgentsWithTokenTier(): Promise<
-    (EvalAgent & { tokenCreatedBy: number; tokenDispatchTier: string; tokenOwnerOrgId: number | null; tokenRegion: string })[]
+    (EvalAgent & {
+      tokenCreatedBy: number; tokenDispatchTier: string; tokenOwnerOrgId: number | null;
+      tokenRegion: string | null; tokenSiteId: string | null; tokenIsRevoked: boolean;
+    })[]
   > {
     const results = await db.select({
       id: evalAgents.id,
       name: evalAgents.name,
       tokenId: evalAgents.tokenId,
       siteId: evalAgents.siteId,
+      region: evalAgents.region,
+      locationTrust: evalAgents.locationTrust,
       state: evalAgents.state,
       lastSeenAt: evalAgents.lastSeenAt,
       lastJobAt: evalAgents.lastJobAt,
@@ -735,13 +803,21 @@ export class DatabaseStorage {
       tokenDispatchTier: evalAgentTokens.dispatchTier,
       tokenOwnerOrgId: users.organizationId,
       tokenRegion: evalAgentTokens.region,
+      // Public-tier tokens carry their admin-configured region/siteId on the
+      // TOKEN, not the agent (the agent's own detected region is permanently
+      // null for public — see effectiveDispatchIdentity). Selected here so
+      // callers can build public-fleet rows from this same join, no second
+      // round-trip.
+      tokenSiteId: evalAgentTokens.siteId,
+      tokenIsRevoked: evalAgentTokens.isRevoked,
     })
       .from(evalAgents)
       .innerJoin(evalAgentTokens, eq(evalAgents.tokenId, evalAgentTokens.id))
       .leftJoin(users, eq(evalAgentTokens.createdBy, users.id))
       .orderBy(desc(evalAgents.createdAt));
     return results as (EvalAgent & {
-      tokenCreatedBy: number; tokenDispatchTier: string; tokenOwnerOrgId: number | null; tokenRegion: string;
+      tokenCreatedBy: number; tokenDispatchTier: string; tokenOwnerOrgId: number | null;
+      tokenRegion: string | null; tokenSiteId: string | null; tokenIsRevoked: boolean;
     })[];
   }
 
@@ -875,12 +951,14 @@ export class DatabaseStorage {
   async claimEvalJob(
     jobId: number,
     agentId: number,
-    token: { id: number; siteId: string; region: string; dispatchTier: string; createdBy: number; ownerOrgId: number | null },
+    identity: { id: number; siteId: string | null; region: string | null; dispatchTier: string; createdBy: number; ownerOrgId: number | null; locationTrust: string },
   ): Promise<EvalJob | undefined> {
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
-      // WHERE mirrors permissions.isClaimable() bit for bit.
+      // WHERE mirrors permissions.isClaimable() bit for bit. A NULL region/siteId
+      // (Unverified agent) simply never matches the pooled/legacy arms below —
+      // that IS the zero-trust gate; no explicit trust condition needed here.
       const selectResult = await client.query(
         `SELECT ej.* FROM eval_jobs ej
          LEFT JOIN users creator ON ej.created_by = creator.id
@@ -901,22 +979,24 @@ export class DatabaseStorage {
              ) )
            )
          FOR UPDATE OF ej SKIP LOCKED`,
-        [jobId, token.id, token.region, token.dispatchTier, token.createdBy, token.ownerOrgId, token.siteId]
+        [jobId, identity.id, identity.region, identity.dispatchTier, identity.createdBy, identity.ownerOrgId, identity.siteId]
       );
       if (selectResult.rows.length === 0) {
         await client.query('ROLLBACK');
         return undefined;
       }
-      // token_dispatch_tier frozen + site stamped in the same atomic update:
-      // a pooled job (site_id NULL) records the claiming agent's concrete site.
+      // token_dispatch_tier + location_trust frozen, site stamped, in the same
+      // atomic update: a pooled job (site_id NULL) records the claiming agent's
+      // concrete site, and the job's trust is fixed at the moment it's claimed.
       const updateResult = await client.query(
         `UPDATE eval_jobs
          SET eval_agent_id = $1, status = 'running'::eval_job_status, started_at = NOW(), updated_at = NOW(),
              token_dispatch_tier = $3,
-             site_id = COALESCE(site_id, $4)
+             site_id = COALESCE(site_id, $4),
+             location_trust = $5
          WHERE id = $2
          RETURNING *`,
-        [agentId, jobId, token.dispatchTier, token.siteId]
+        [agentId, jobId, identity.dispatchTier, identity.siteId, identity.locationTrust]
       );
       await client.query('COMMIT');
       return snakeToCamel(updateResult.rows[0]) as EvalJob;
@@ -928,10 +1008,12 @@ export class DatabaseStorage {
     }
   }
 
-  async getClaimableJobsForToken(token: {
-    id: number; siteId: string; region: string; dispatchTier: string; createdBy: number; ownerOrgId: number | null;
+  async getClaimableJobsForToken(identity: {
+    id: number; siteId: string | null; region: string | null; dispatchTier: string; createdBy: number; ownerOrgId: number | null;
   }): Promise<EvalJob[]> {
     // Mirrors permissions.isClaimable() bit for bit (targeted / pooled / legacy).
+    // A NULL region/siteId (Unverified agent) never matches the pooled/legacy
+    // arms — that's the zero-trust gate; SQL is otherwise unchanged.
     const result = await pool.query(
       `SELECT ej.* FROM eval_jobs ej
         LEFT JOIN users creator ON ej.created_by = creator.id
@@ -952,7 +1034,7 @@ export class DatabaseStorage {
             ) )
           )
         ORDER BY ej.priority DESC, ej.created_at ASC`,
-      [token.id, token.region, token.siteId, token.dispatchTier, token.createdBy, token.ownerOrgId],
+      [identity.id, identity.region, identity.siteId, identity.dispatchTier, identity.createdBy, identity.ownerOrgId],
     );
     return result.rows.map((r) => snakeToCamel(r) as EvalJob);
   }
@@ -1471,12 +1553,16 @@ export class DatabaseStorage {
   // run-time tier even after its workflow/eval-set is edited or deleted, and the
   // join chain collapses to just eval_results → eval_jobs.
   private regionScopeCondition(scope?: RegionQueryScope) {
-    if (scope?.siteId) return eq(evalResults.siteId, scope.siteId);
-    if (scope?.baseIds) {
-      if (scope.baseIds.length === 0) return sql<boolean>`false`;
-      return or(...scope.baseIds.map((baseId) => sql<boolean>`${evalResults.siteId} LIKE ${baseId + "-%"}`));
+    if (!scope) return undefined;
+    if (scope.siteId) return eq(evalResults.siteId, scope.siteId);
+    const parts: any[] = [];
+    if (scope.baseIds && scope.baseIds.length > 0) {
+      parts.push(or(...scope.baseIds.map((baseId) => sql<boolean>`${evalResults.siteId} LIKE ${baseId + "-%"}`)));
     }
-    return undefined;
+    if (scope.unverified) parts.push(isNull(evalResults.siteId));
+    if (scope.baseIds && scope.baseIds.length === 0 && !scope.unverified) return sql<boolean>`false`;
+    if (parts.length === 0) return undefined;
+    return parts.length === 1 ? parts[0] : or(...parts);
   }
 
   private mainlineConditions(hoursBack?: number, scope?: RegionQueryScope) {
@@ -1516,6 +1602,14 @@ export class DatabaseStorage {
         sql`${snap}->'evalSet'->>'isMainline' IS DISTINCT FROM 'true'`,
         sql`${evalJobs.tokenDispatchTier} IS DISTINCT FROM 'public'`,
         sql`${snap}->>'creatorPlan' IS NULL OR ${snap}->>'creatorPlan' NOT IN ('principal', 'fellow')`,
+      ),
+      // Zero-trust gate: only region-trusted agents feed the public community
+      // board; public agents are configured (admin-trusted); NULL grandfathers
+      // pre-feature rows (history never reclassifies).
+      or(
+        eq(evalJobs.tokenDispatchTier, "public"),
+        sql`${evalJobs.locationTrust} IS NULL`,
+        inArray(evalJobs.locationTrust, ["trusted", "datacenter"]),
       ),
     ];
     if (hoursBack) {
@@ -1653,6 +1747,28 @@ export class DatabaseStorage {
   }
   getMyEvalMetrics(userId: number, hoursBack?: number, scope?: RegionQueryScope): Promise<MetricSourceRow[]> {
     return this.tierMetrics("myEvals", hoursBack, userId, scope);
+  }
+
+  // Available regions for a tier's picker: same tier conditions as the metrics
+  // queries above, NO scope (the picker needs to show every region the tier
+  // could be narrowed to, not just the currently-selected one). Site IDs are
+  // stripped to their base ("<base>-NN" -> "<base>") and deduped/counted;
+  // a NULL siteId (unverified/self-hosted agent) is reported separately via
+  // hasUnverified rather than mixed into baseIds.
+  async getAvailableRegions(tier: MetricTier, hoursBack?: number, userId?: number): Promise<{ baseIds: string[]; hasUnverified: boolean }> {
+    const conditions = this.tierConditions(tier, hoursBack, userId);
+    const rows = await this.applyTierJoins(tier, db
+      .select({
+        baseId: sql<string | null>`regexp_replace(${evalResults.siteId}, '-\\d+$', '')`,
+        n: sql<number>`count(*)`,
+      })
+      .from(evalResults))
+      .where(and(...conditions))
+      .groupBy(sql`regexp_replace(${evalResults.siteId}, '-\\d+$', '')`);
+    return {
+      baseIds: rows.filter((r: { baseId: string | null }) => r.baseId != null).map((r: { baseId: string | null }) => r.baseId as string).sort(),
+      hasUnverified: rows.some((r: { baseId: string | null }) => r.baseId == null),
+    };
   }
 
   // Raw, limit-controlled tier queries — kept for the leaderboard / API v1

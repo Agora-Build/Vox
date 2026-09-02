@@ -1,7 +1,7 @@
 import type { Express } from "express";
 import { type Server } from "http";
 import { z } from "zod";
-import { storage, hashToken, generateSecureToken, generateEvalAgentToken, generateBrokerRegistrationToken, mergeEvalConfig, buildJobSnapshot, validateWorkflowConfig, validateEvalSetConfig, encryptValue, decryptValue, isEncryptionConfigured, type MetricSourceRow, type RegionQueryScope } from "./storage";
+import { storage, hashToken, generateSecureToken, generateEvalAgentToken, generateBrokerRegistrationToken, mergeEvalConfig, buildJobSnapshot, validateWorkflowConfig, validateEvalSetConfig, encryptValue, decryptValue, isEncryptionConfigured, type MetricSourceRow, type RegionQueryScope, type MetricTier } from "./storage";
 import { parseNextCronRun } from "./cron";
 import { compareVersions } from "./aeval-seed";
 import { SECRET_NAME_PATTERN, collectSecretRefs } from "@shared/secrets";
@@ -16,6 +16,7 @@ import { parsePlatformSetup, sessionScopeForWorkflow, evaluateSessionRequirement
 import { validateRegisterPayload, cacheBrokerMintSecret, hasBrokerMintSecret } from "./broker-registry";
 import { deriveApiKeyStatus } from "./api-key-status";
 import { isStaleOfflineAgent } from "./agent-liveness";
+import { runAgentLocationCheck, LOCATION_RECHECK_HOURS, getGeoipAttribution } from "./location";
 import {
   hashPassword,
   verifyPassword,
@@ -90,7 +91,16 @@ function locationForRegion(siteId: string, locations: RegionLocationRecord[]): R
     .find((location) => regionSiteSequence(siteId, location.baseId) !== null);
 }
 
-function regionMetadata(siteId: string, locations: RegionLocationRecord[]) {
+function regionMetadata(siteId: string | null, locations: RegionLocationRecord[]) {
+  if (!siteId) return {
+    regionLabel: siteId,
+    regionBaseId: null,
+    city: null,
+    countryCode: null,
+    countryName: null,
+    macroRegionCode: null,
+    macroRegionName: null,
+  };
   const location = locationForRegion(siteId, locations);
   if (!location) return {
     regionLabel: siteId,
@@ -140,12 +150,26 @@ async function parseRegionQueryScope(query: {
       return { error: "regionScope must contain one or more hierarchy scopes" };
     }
 
+    // "unverified" is a literal scope entry (no level:value pair) selecting
+    // results with no siteId at all — self-hosted/unverified agents. It can
+    // stand alone or combine with hierarchy scopes (OR'd together).
+    let unverified = false;
+    const hierScopes = scopes.filter((s) => {
+      if (s.trim() === "unverified") { unverified = true; return false; }
+      return true;
+    });
+
+    if (hierScopes.length === 0) {
+      if (!unverified) return { error: "regionScope must contain one or more hierarchy scopes" };
+      return { scope: { unverified: true }, cacheKey: "unverified" };
+    }
+
     const locations = await storage.getAllRegionLocations();
     const baseIds = new Set<string>();
-    for (const rawScope of scopes) {
+    for (const rawScope of hierScopes) {
       const [level, rawValue, extra] = rawScope.trim().split(":");
       if (extra !== undefined || !rawValue || !["macro", "country", "location"].includes(level)) {
-        return { error: "regionScope entries must be macro:<code>, country:<code>, or location:<baseId>" };
+        return { error: "regionScope entries must be macro:<code>, country:<code>, location:<baseId>, or unverified" };
       }
       const value = level === "country" ? rawValue.toUpperCase() : rawValue.toLowerCase();
       const matches = locations.filter((entry) =>
@@ -158,8 +182,8 @@ async function parseRegionQueryScope(query: {
     }
     const sortedBaseIds = Array.from(baseIds).sort();
     return {
-      scope: { baseIds: sortedBaseIds },
-      cacheKey: `scopes:${sortedBaseIds.join(",")}`,
+      scope: { baseIds: sortedBaseIds, ...(unverified ? { unverified } : {}) },
+      cacheKey: `scopes:${sortedBaseIds.join(",")}${unverified ? "+unverified" : ""}`,
     };
   }
 
@@ -1007,6 +1031,16 @@ export async function registerRoutes(
       }
       // Hierarchy metadata is permanent because changing it would reclassify historical data.
       if (typeof req.body.isActive === "boolean") updates.isActive = req.body.isActive;
+      if (typeof req.body.isMainline === "boolean") updates.isMainline = req.body.isMainline;
+      for (const field of ["latitude", "longitude"] as const) {
+        if (req.body[field] !== undefined) {
+          if (req.body[field] !== null && typeof req.body[field] !== "number") {
+            return res.status(400).json({ error: `${field} must be a number or null` });
+          }
+          updates[field] = req.body[field];
+        }
+      }
+      // `source` stays server-controlled — never accepted from the client.
 
       const updated = await storage.updateRegionLocation(id, updates);
       res.json(serializeRegionLocation(updated!));
@@ -2820,8 +2854,8 @@ export async function registerRoutes(
       const { name, regionLocationBaseId, dispatchTier: requestedTier, pricePerUnit } = req.body;
       const requestedLocation = regionLocationBaseId;
 
-      if (!name || !requestedLocation) {
-        return res.status(400).json({ error: "Name and region location required" });
+      if (!name) {
+        return res.status(400).json({ error: "Name required" });
       }
 
       // Default: admin → public (today's admin default), non-admin → private.
@@ -2840,20 +2874,36 @@ export async function registerRoutes(
       });
       if (!decision.ok) return res.status(decision.status).json({ error: decision.reason });
 
-      const location = await storage.getRegionLocationByBaseId(String(requestedLocation));
-      if (!location || !location.isActive) {
-        return res.status(400).json({ error: "Invalid or inactive region location" });
-      }
-
       const token = generateEvalAgentToken();
       const tokenHash = hashToken(token);
-      const evalAgentToken = await storage.createEvalAgentTokenForLocation(location.baseId, {
-        name,
-        tokenHash,
-        dispatchTier: dispatchTier as "private" | "team" | "public" | "shared",
-        createdBy: user.id,
-        isRevoked: false,
-      });
+
+      let evalAgentToken;
+      if (dispatchTier === "public") {
+        if (!requestedLocation) return res.status(400).json({ error: "Region location required for public agents" });
+        const location = await storage.getRegionLocationByBaseId(String(requestedLocation));
+        if (!location || !location.isActive) {
+          return res.status(400).json({ error: "Invalid or inactive region location" });
+        }
+        evalAgentToken = await storage.createEvalAgentTokenForLocation(location.baseId, {
+          name,
+          tokenHash,
+          dispatchTier: dispatchTier as "private" | "team" | "public" | "shared",
+          createdBy: user.id,
+          isRevoked: false,
+        });
+      } else {
+        // Zero trust: users never assert a region for non-public agents.
+        if (requestedLocation) {
+          return res.status(400).json({ error: "Region cannot be set for private/team/shared agents — it is detected automatically when the agent connects" });
+        }
+        evalAgentToken = await storage.createEvalAgentTokenWithoutLocation({
+          name,
+          tokenHash,
+          dispatchTier: dispatchTier as "private" | "team" | "public" | "shared",
+          createdBy: user.id,
+          isRevoked: false,
+        });
+      }
 
       // Shared: register the marketplace listing (mirrors the PATCH path).
       if (marketplace && dispatchTier === "shared") {
@@ -2902,44 +2952,65 @@ export async function registerRoutes(
   });
 
   app.patch("/api/eval-agent-tokens/:id", requireAuth, async (req, res) => {
-    const user = await getCurrentUser(req);
-    if (!user) return res.status(401).json({ error: "Not authenticated" });
+    try {
+      const user = await getCurrentUser(req);
+      if (!user) return res.status(401).json({ error: "Not authenticated" });
 
-    const id = parseInt(req.params.id, 10);
-    const token = await storage.getEvalAgentToken(id);
-    if (!token) return res.status(404).json({ error: "Token not found" });
+      const id = parseInt(req.params.id, 10);
+      const token = await storage.getEvalAgentToken(id);
+      if (!token) return res.status(404).json({ error: "Token not found" });
 
-    const bodySchema = z.object({
-      dispatchTier: z.enum(["private", "team", "public", "shared"]),
-      pricePerUnit: z.number().int().positive().nullable().optional(),
-    });
-    const parsed = bodySchema.safeParse(req.body);
-    if (!parsed.success) return res.status(400).json({ error: "Invalid request" });
-    const { dispatchTier, pricePerUnit } = parsed.data;
+      const bodySchema = z.object({
+        dispatchTier: z.enum(["private", "team", "public", "shared"]),
+        pricePerUnit: z.number().int().positive().nullable().optional(),
+      });
+      const parsed = bodySchema.safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ error: "Invalid request" });
+      const { dispatchTier, pricePerUnit } = parsed.data;
 
-    const marketplace = getMarketplace();
-    const decision = validateTierChoice({
-      user: { id: user.id, isAdmin: user.isAdmin, plan: user.plan, organizationId: user.organizationId },
-      isOwner: token.createdBy === user.id,
-      newTier: dispatchTier,
-      marketplacePresent: marketplace !== null,
-      pricePerUnit: pricePerUnit ?? null,
-    });
-    if (!decision.ok) return res.status(decision.status).json({ error: decision.reason });
-
-    // Core writes only its own column.
-    await storage.updateEvalAgentTokenDispatchTier(id, dispatchTier);
-
-    // Money lives only in the plugin: set/clear the listing via the seam.
-    if (marketplace) {
-      if (dispatchTier === "shared") {
-        await marketplace.setListing(id, pricePerUnit ?? null, { ownerId: token.createdBy, region: token.siteId });
-      } else {
-        await marketplace.setListing(id, null); // switching away from shared deactivates the listing
+      // A region-less token has no configured (admin-trusted) identity — public
+      // dispatch requires one, and there's no detection path that could
+      // backfill it after the fact. Refuse the promotion instead of minting a
+      // public token that structurally fails every region-pooled match.
+      if (dispatchTier === "public" && token.region == null) {
+        return res.status(400).json({ error: "Cannot switch a region-less token to public — public agents require a configured region; mint a public token instead" });
       }
-    }
 
-    return res.json({ id, dispatchTier });
+      const marketplace = getMarketplace();
+      const decision = validateTierChoice({
+        user: { id: user.id, isAdmin: user.isAdmin, plan: user.plan, organizationId: user.organizationId },
+        isOwner: token.createdBy === user.id,
+        newTier: dispatchTier,
+        marketplacePresent: marketplace !== null,
+        pricePerUnit: pricePerUnit ?? null,
+      });
+      if (!decision.ok) return res.status(decision.status).json({ error: decision.reason });
+
+      // Core writes only its own column.
+      await storage.updateEvalAgentTokenDispatchTier(id, dispatchTier);
+
+      // Money lives only in the plugin: set/clear the listing via the seam.
+      // NOTE: token.siteId is ALWAYS null for non-public mints (region is
+      // public-tier-only at mint; other tiers are detected later via agent
+      // register/heartbeat) — use the token's EFFECTIVE dispatch identity
+      // (the agent's detected siteId for non-public tiers) so a price-change
+      // PATCH on an already-trusted shared agent doesn't overwrite its good
+      // region with NULL and delist it.
+      if (marketplace) {
+        if (dispatchTier === "shared") {
+          const agents = await storage.getEvalAgentsByTokenId(id);
+          const eff = effectiveDispatchIdentity(token, agents[0]);
+          await marketplace.setListing(id, pricePerUnit ?? null, { ownerId: token.createdBy, region: eff.siteId });
+        } else {
+          await marketplace.setListing(id, null); // switching away from shared deactivates the listing
+        }
+      }
+
+      return res.json({ id, dispatchTier });
+    } catch (error) {
+      console.error("Error updating eval agent token dispatch tier:", error);
+      res.status(500).json({ error: "Failed to update eval agent token" });
+    }
   });
 
   // ==================== EVAL AGENT TOKEN ROUTES (Admin only) ====================
@@ -2971,8 +3042,8 @@ export async function registerRoutes(
 
       const { name, regionLocationBaseId, dispatchTier: requestedTier, pricePerUnit } = req.body;
       const requestedLocation = regionLocationBaseId;
-      if (!name || !requestedLocation) {
-        return res.status(400).json({ error: "Name and region location required" });
+      if (!name) {
+        return res.status(400).json({ error: "Name required" });
       }
       const dispatchTier = (requestedTier as string) || "public";
       if (!["private", "team", "public", "shared"].includes(dispatchTier)) {
@@ -2988,19 +3059,36 @@ export async function registerRoutes(
       });
       if (!decision.ok) return res.status(decision.status).json({ error: decision.reason });
 
-      const location = await storage.getRegionLocationByBaseId(String(requestedLocation));
-      if (!location || !location.isActive) {
-        return res.status(400).json({ error: "Invalid or inactive region location" });
-      }
       const token = generateEvalAgentToken();
       const tokenHash = hashToken(token);
-      const evalAgentToken = await storage.createEvalAgentTokenForLocation(location.baseId, {
-        name,
-        tokenHash,
-        dispatchTier: dispatchTier as "private" | "team" | "public" | "shared",
-        createdBy: user.id,
-        isRevoked: false,
-      });
+
+      let evalAgentToken;
+      if (dispatchTier === "public") {
+        if (!requestedLocation) return res.status(400).json({ error: "Region location required for public agents" });
+        const location = await storage.getRegionLocationByBaseId(String(requestedLocation));
+        if (!location || !location.isActive) {
+          return res.status(400).json({ error: "Invalid or inactive region location" });
+        }
+        evalAgentToken = await storage.createEvalAgentTokenForLocation(location.baseId, {
+          name,
+          tokenHash,
+          dispatchTier: dispatchTier as "private" | "team" | "public" | "shared",
+          createdBy: user.id,
+          isRevoked: false,
+        });
+      } else {
+        // Zero trust: users never assert a region for non-public agents.
+        if (requestedLocation) {
+          return res.status(400).json({ error: "Region cannot be set for private/team/shared agents — it is detected automatically when the agent connects" });
+        }
+        evalAgentToken = await storage.createEvalAgentTokenWithoutLocation({
+          name,
+          tokenHash,
+          dispatchTier: dispatchTier as "private" | "team" | "public" | "shared",
+          createdBy: user.id,
+          isRevoked: false,
+        });
+      }
       if (marketplace && dispatchTier === "shared") {
         await marketplace.setListing(evalAgentToken.id, pricePerUnit ?? null, { ownerId: user.id, region: evalAgentToken.siteId });
       }
@@ -3186,6 +3274,8 @@ export async function registerRoutes(
         id: a.id,
         name: a.name,
         siteId: a.siteId,
+        region: a.region,
+        locationTrust: a.locationTrust,
         state: a.state,
         metadata: a.metadata,
         lastSeenAt: a.lastSeenAt,
@@ -3238,6 +3328,17 @@ export async function registerRoutes(
   // on the lease-aware build; deploy after `vox-upgrade.sh`.)
   const isSupersededLease = (agent: { currentLeaseId?: string | null }, leaseId: unknown): boolean =>
     !!agent.currentLeaseId && leaseId !== agent.currentLeaseId;
+
+  // Zero-trust effective dispatch identity: public agents carry their
+  // configured (admin-trusted) token region; everything else carries the
+  // agent's DETECTED region — NULL for Unverified, which structurally fails
+  // every region-pooled match. (spec: dispatch gating)
+  const effectiveDispatchIdentity = (
+    token: { siteId: string | null; region: string | null; dispatchTier: string },
+    agent: { siteId: string | null; region: string | null; locationTrust: string } | undefined,
+  ) => token.dispatchTier === "public"
+    ? { siteId: token.siteId, region: token.region, locationTrust: "trusted" }
+    : { siteId: agent?.siteId ?? null, region: agent?.region ?? null, locationTrust: agent?.locationTrust ?? "unknown" };
 
   // Authorize a job-scoped agent endpoint against the job's OWN assigned agent
   // (not the token's latest agent — token_id isn't unique, so duplicate rows
@@ -3316,7 +3417,9 @@ export async function registerRoutes(
         agent = await storage.createEvalAgent({
           name: agentName,
           tokenId: evalAgentToken.id,
-          siteId: evalAgentToken.siteId,
+          // Public keeps the configured site; non-public starts null — detection
+          // (below) is the only region source for a non-public agent.
+          siteId: evalAgentToken.siteId ?? null,
           state: "idle",
           metadata: metadata || {},
           currentLeaseId: leaseId,
@@ -3326,10 +3429,36 @@ export async function registerRoutes(
       await storage.updateEvalAgentHeartbeat(agent.id);
       if (req.ip) void storage.updateEvalAgentObservedIp(agent.id, req.ip);
 
+      // Zero-trust location: detection is the ONLY region source for
+      // non-public agents; registration applies immediately (fresh process).
+      // The location subsystem must never break registration — an unexpected
+      // failure here (DB hiccup in resolveCatalogRegion/allocateSiteId/etc.)
+      // falls open to Unverified rather than 500ing the whole registration.
+      let loc: { region: string | null; siteId: string | null; locationTrust: string };
+      try {
+        loc = await runAgentLocationCheck({
+          agent: {
+            id: agent.id,
+            region: agent.region ?? null,
+            siteId: agent.siteId ?? null,
+            pendingRegion: agent.pendingRegion ?? null,
+            pendingRegionCount: agent.pendingRegionCount ?? 0,
+          },
+          token: { id: evalAgentToken.id, dispatchTier: evalAgentToken.dispatchTier },
+          ip: req.ip,
+          immediate: true,
+        });
+      } catch (err) {
+        console.error(`[location] register-time location check failed for agent ${agent.id}:`, err instanceof Error ? err.message : err);
+        loc = { region: agent.region ?? null, siteId: agent.siteId ?? null, locationTrust: "unknown" as const };
+      }
+
       res.json({
         id: agent.id,
         name: agent.name,
-        siteId: agent.siteId,
+        siteId: loc.siteId,
+        region: loc.region,
+        locationTrust: loc.locationTrust,
         state: agent.state,
         leaseId,
       });
@@ -3370,7 +3499,30 @@ export async function registerRoutes(
       }
 
       await storage.updateEvalAgentHeartbeat(agentId);
+      const ipChanged = !!req.ip && req.ip !== agent.observedIp;
       if (req.ip) void storage.updateEvalAgentObservedIp(agentId, req.ip);
+
+      // Re-detect when the IP moved, the check is stale (>24h / never ran), or
+      // a pending region change is mid-hysteresis (every beat counts it down —
+      // the IP-change trigger alone would stall since observed_ip updates each
+      // beat). Fire-and-forget: a slow catalog write must not delay the beat.
+      const stale = !agent.locationCheckedAt
+        || (Date.now() - new Date(agent.locationCheckedAt).getTime()) > LOCATION_RECHECK_HOURS * 60 * 60 * 1000;
+      const pending = agent.pendingRegion != null;
+      if (ipChanged || stale || pending) {
+        void runAgentLocationCheck({
+          agent: {
+            id: agent.id,
+            region: agent.region ?? null,
+            siteId: agent.siteId ?? null,
+            pendingRegion: agent.pendingRegion ?? null,
+            pendingRegionCount: agent.pendingRegionCount ?? 0,
+          },
+          token: { id: evalAgentToken.id, dispatchTier: evalAgentToken.dispatchTier },
+          ip: req.ip,
+          immediate: false,
+        }).catch((err) => console.error(`[location] heartbeat check failed for agent ${agent.id}:`, err instanceof Error ? err.message : err));
+      }
 
       const updates: Record<string, unknown> = {};
       if (state && ["idle", "offline", "occupied"].includes(state)) {
@@ -3409,10 +3561,16 @@ export async function registerRoutes(
       }
 
       const tokenOwner = await storage.getUser(evalAgentToken.createdBy);
+      // Hoisted above the claimable-jobs lookup: the effective identity below
+      // needs the token's latest agent to resolve a non-public token's DETECTED
+      // region (Unverified → NULL, which structurally excludes pooled jobs).
+      const agents = await storage.getEvalAgentsByTokenId(evalAgentToken.id);
+      const latestAgent = agents[0]; // sorted by createdAt desc
+      const eff = effectiveDispatchIdentity(evalAgentToken, latestAgent);
       let jobs = await storage.getClaimableJobsForToken({
         id: evalAgentToken.id,
-        siteId: evalAgentToken.siteId,
-        region: evalAgentToken.region,
+        siteId: eff.siteId,
+        region: eff.region,
         dispatchTier: evalAgentToken.dispatchTier,
         createdBy: evalAgentToken.createdBy,
         ownerOrgId: tokenOwner?.organizationId ?? null,
@@ -3422,8 +3580,6 @@ export async function registerRoutes(
       // jobs whose config requires a newer version than the agent supports.
       // Also gate session-injected jobs to daemons whose registration
       // metadata declares the sessionInjection capability.
-      const agents = await storage.getEvalAgentsByTokenId(evalAgentToken.id);
-      const latestAgent = agents[0]; // sorted by createdAt desc
       const agentMeta = (latestAgent?.metadata as Record<string, unknown>) ?? {};
       const agentVersion = agentMeta.frameworkVersion as string | undefined;
       const supportsSessionInjection = agentMeta.sessionInjection === "1";
@@ -3483,9 +3639,13 @@ export async function registerRoutes(
       if (!existingJob) {
         return res.status(404).json({ error: "Job not found" });
       }
+      // Effective identity: public agents carry the token's configured (admin-
+      // trusted) site; everything else carries the claiming agent's DETECTED
+      // site — NULL for Unverified.
+      const eff = effectiveDispatchIdentity(evalAgentToken, agent);
       // Site fence for site-pinned rows only (targeted + legacy). Pooled jobs
       // (siteId null) are fenced by region+tier inside claimEvalJob's predicate.
-      if (existingJob.siteId != null && existingJob.siteId !== agent.siteId) {
+      if (existingJob.siteId != null && existingJob.siteId !== eff.siteId) {
         return res.status(403).json({ error: "Job site does not match agent site" });
       }
 
@@ -3495,11 +3655,12 @@ export async function registerRoutes(
       const tokenOwner = await storage.getUser(evalAgentToken.createdBy);
       const job = await storage.claimEvalJob(parseInt(jobId, 10), agentId, {
         id: evalAgentToken.id,
-        siteId: evalAgentToken.siteId,
-        region: evalAgentToken.region,
+        siteId: eff.siteId,
+        region: eff.region,
         dispatchTier: evalAgentToken.dispatchTier,
         createdBy: evalAgentToken.createdBy,
         ownerOrgId: tokenOwner?.organizationId ?? null,
+        locationTrust: eff.locationTrust,
       });
       if (!job) {
         return res.status(409).json({ error: "Job already claimed or not found" });
@@ -4321,10 +4482,38 @@ export async function registerRoutes(
       const region = req.query.region ? String(req.query.region) : null;
       const evalSetIdRaw = req.query.evalSetId ? Number(req.query.evalSetId) : null;
 
-      type Agent = { tokenId: number; name: string; siteId: string; dispatchTier: string; price: number | null };
+      type Agent = {
+        tokenId: number; name: string;
+        siteId: string | null; region: string | null; dispatchTier: string; locationTrust: string | null;
+        price: number | null;
+      };
+      // Public-tier sites are never individually targetable (the run route
+      // only accepts {region, targetTier:"public"} for this tier — never a
+      // tokenId), so this row carries no tokenId, just the informational
+      // location + online state.
+      type PublicFleetRow = { siteId: string; region: string | null; state: string };
 
-      // My agents: own tokens, any tier, not revoked, region-filtered when given.
+      // My agents: own tokens, any tier EXCEPT public, not revoked,
+      // region-filtered when given. Public-tier tokens are represented once,
+      // uniformly, in `agents.public` below (not here) — public sites are
+      // never individually owned/targeted, so surfacing an admin's own
+      // public token under "mine" too would just duplicate that row.
       const ownTokens = await storage.getEvalAgentTokensByUser(user.id);
+      // Detected location per token, sourced from the same agent rows the
+      // tier counts below already load — no extra DB round-trip. A token
+      // whose agent hasn't (re-)registered has no row here; siteId/region/
+      // locationTrust fall back to null, same as a freshly-minted Unverified
+      // agent (never location_source/observed_ip — those columns aren't
+      // selected by getEvalAgentsWithTokenTier at all).
+      const agentRows = await storage.getEvalAgentsWithTokenTier();
+      // agentRows is ordered createdAt DESC (newest first); a token can have
+      // more than one agent row (re-registrations), so only set on first sight
+      // per tokenId — otherwise a later (older) row for the same token would
+      // clobber the newest one already in the map.
+      const agentByTokenId = new Map<number, (typeof agentRows)[number]>();
+      for (const a of agentRows) {
+        if (!agentByTokenId.has(a.tokenId)) agentByTokenId.set(a.tokenId, a);
+      }
       // Session trust, computed ONCE from the same detector the run route
       // enforces with. For a session-injected workflow, a dispatcher who is
       // neither the owner nor a workflow-org member cannot receive the minted
@@ -4337,8 +4526,20 @@ export async function registerRoutes(
         workflow.ownerId === user.id ||
         (workflow.organizationId != null && sameOrg({ organizationId: user.organizationId }, { organizationId: workflow.organizationId }));
       const mine: Agent[] = !sessionTrusted ? [] : ownTokens
-        .filter((t) => !t.isRevoked && (!region || t.region === region))
-        .map((t) => ({ tokenId: t.id, name: t.name, siteId: t.siteId, dispatchTier: t.dispatchTier, price: null }));
+        .filter((t) => !t.isRevoked && t.dispatchTier !== "public" && (!region || t.region === region))
+        .map((t) => {
+          const eff = effectiveDispatchIdentity(t, agentByTokenId.get(t.id));
+          return {
+            tokenId: t.id, name: t.name,
+            siteId: eff.siteId, region: eff.region,
+            dispatchTier: t.dispatchTier, locationTrust: eff.locationTrust,
+            price: null,
+          };
+        })
+        // A shared-tier agent with no detected site is Unverified and not
+        // dispatchable at all (the marketplace delists it too) — never offer
+        // it, even under "my agents".
+        .filter((a) => !(a.dispatchTier === "shared" && a.siteId == null));
 
       // Shared marketplace: dispatchable listings from the plugin, if present.
       // AgentSummary has no name, so join the token row for a display name.
@@ -4352,9 +4553,33 @@ export async function registerRoutes(
           if (region && !l.region.startsWith(region + "-")) continue;
           const tok = await storage.getEvalAgentToken(l.tokenId);
           if (!tok || tok.isRevoked) continue;
-          shared.push({ tokenId: l.tokenId, name: tok.name, siteId: l.region, dispatchTier: "shared", price: l.pricePerUnit });
+          const eff = effectiveDispatchIdentity(tok, agentByTokenId.get(l.tokenId));
+          // Unverified shared agent: not dispatchable at all (a re-detection
+          // can drop this even after listing, ahead of the listing's own
+          // region catching up) — filter it out here rather than trust the
+          // listing's (possibly stale) region.
+          if (eff.siteId == null) continue;
+          shared.push({
+            tokenId: l.tokenId, name: tok.name,
+            siteId: eff.siteId, region: eff.region, dispatchTier: "shared", locationTrust: eff.locationTrust,
+            price: l.pricePerUnit,
+          });
         }
       }
+
+      // Public fleet: informational only — never individually targetable, so
+      // no tokenId. Sourced from the SAME agentRows already loaded for the
+      // tier online-counts below (no extra round-trip). Region/siteId come
+      // from the TOKEN side (effectiveDispatchIdentity's public branch)
+      // because a public agent's own detected region/siteId is permanently
+      // null; the admin-configured identity lives on the token instead.
+      const publicFleet: PublicFleetRow[] = agentRows
+        .filter((a) => a.tokenDispatchTier === "public" && !a.tokenIsRevoked)
+        .map((a): PublicFleetRow | null => a.tokenSiteId == null
+          ? null
+          : { siteId: a.tokenSiteId, region: a.tokenRegion ?? null, state: a.state })
+        .filter((r): r is PublicFleetRow => r != null)
+        .filter((r) => !region || r.region === region);
 
       // Referenced secrets + class (workflow config + the chosen eval set, when
       // supplied and visible to the caller).
@@ -4379,8 +4604,7 @@ export async function registerRoutes(
       // misconfigured pair does NOT mark tiers unavailable: dispatch fails
       // with the real misuse error, which is the actionable message.
       const needsSession = sessionReqForTargets.kind === "need";
-      const agents = await storage.getEvalAgentsWithTokenTier();
-      const online = agents.filter((a) =>
+      const online = agentRows.filter((a) =>
         a.state !== "offline" && (!region || a.tokenRegion === region));
       const countFor = (tier: "private" | "team" | "public"): number =>
         online.filter((a) => {
@@ -4416,7 +4640,7 @@ export async function registerRoutes(
         { tier: "shared", available: false, reason: "not-pooled-yet" },
       ];
 
-      res.json({ agents: { mine, shared }, referencedSecrets, tiers });
+      res.json({ agents: { mine, shared, public: publicFleet }, referencedSecrets, tiers });
     } catch (error) {
       console.error("Error listing run targets:", error);
       res.status(500).json({ error: "Failed to list run targets" });
@@ -4859,6 +5083,38 @@ export async function registerRoutes(
     }
   });
 
+  // Sibling to /api/metrics/{realtime,community,my-evals}: same tier data, but
+  // returns just the set of regions (+ whether any unverified/self-hosted
+  // agents contributed) that tier's picker should offer. Ships as a separate
+  // endpoint rather than growing the metrics response shapes (spec deviation,
+  // recorded in the plan ledger) so existing clients/tests are unaffected.
+  app.get("/api/metrics/available-regions", async (req, res) => {
+    try {
+      const tierParam = String(req.query.tier ?? "");
+      const tierMap: Record<string, MetricTier> = { realtime: "mainline", community: "community", "my-evals": "myEvals" };
+      const tier = tierMap[tierParam];
+      if (!tier) return res.status(400).json({ error: "tier must be realtime, community, or my-evals" });
+      const win = parseMetricsWindow(req.query.hours);
+      if ("error" in win) return res.status(400).json({ error: win.error });
+      let userId: number | undefined;
+      if (tier === "myEvals") {
+        const user = await getCurrentUser(req);
+        if (!user) return res.status(401).json({ error: "Not authenticated" });
+        userId = user.id;
+      }
+      const cacheKey = `avail:${tierParam}:${win.hoursBack ?? "all"}:${userId ?? ""}`;
+      const cached = getCached(cacheKey);
+      if (cached) return res.json(cached);
+      const { baseIds, hasUnverified } = await storage.getAvailableRegions(tier, win.hoursBack, userId);
+      const data = { availableRegions: baseIds, hasUnverified: tier === "myEvals" ? hasUnverified : false };
+      setCache(cacheKey, data);
+      res.json(data);
+    } catch (error) {
+      console.error("Error fetching available regions:", error);
+      res.status(500).json({ error: "Failed to fetch available regions" });
+    }
+  });
+
   app.get("/api/metrics/leaderboard", async (req, res) => {
     try {
       const { hours } = req.query;
@@ -4875,7 +5131,7 @@ export async function registerRoutes(
       // Group results by (provider, site)
       const providerRegionMap = new Map<string, {
         providerId: string;
-        siteId: string;
+        siteId: string | null;
         responseLatencies: number[];
         responseLatenciesP95: number[];
         interruptLatencies: number[];
@@ -5042,6 +5298,10 @@ export async function registerRoutes(
           configObject[config.key] = config.value;
         }
       }
+      // CC-BY-4.0 credit line, present only when the loaded GeoIP data
+      // requires it (DB-IP Lite fallback) — rendered in the public footer.
+      const geoipAttribution = getGeoipAttribution();
+      if (geoipAttribution) configObject.geoipAttribution = geoipAttribution;
       res.json(configObject);
     } catch (error) {
       console.error("Error fetching config:", error);

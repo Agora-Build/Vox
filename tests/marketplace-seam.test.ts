@@ -8,6 +8,7 @@ const fakeMarketplace: EvalMarketplace = {
   async authorizeDispatch() { return { ok: true }; },
   async settle() {},
   async setListing() {},
+  async updateListingRegion() {},
 };
 
 describe("marketplace singleton", () => {

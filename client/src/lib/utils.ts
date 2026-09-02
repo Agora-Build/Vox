@@ -44,6 +44,10 @@ export interface RegionLocation {
   allocatedRegions: string[];
   createdAt: string;
   updatedAt: string;
+  latitude?: number | null;
+  longitude?: number | null;
+  source?: string;
+  isMainline?: boolean;
 }
 
 const DEFAULT_REGION_LOCATIONS: Pick<RegionLocation, "baseId" | "displayName">[] = [
@@ -104,6 +108,7 @@ export function resolveRegionScopeBaseIds(locations: RegionLocation[], scopes: s
 
   const selected = new Set<string>();
   for (const scope of scopes) {
+    if (scope === "unverified") continue; // not a geographic scope; resolved separately
     const [level, value] = scope.split(":", 2);
     for (const location of locations) {
       if (
@@ -155,24 +160,39 @@ export function toggleRegionScopeSelection(
   baseIds: string[],
   scope: string,
 ): string[] {
-  const wasAll = currentScopes.includes("all");
+  const unverifiedScopes = currentScopes.filter((s) => s === "unverified");
+  const geoScopes = currentScopes.filter((s) => s !== "unverified");
+
+  const wasAll = geoScopes.includes("all");
   const next = wasAll
     ? new Set<string>()
-    : resolveRegionScopeBaseIds(locations, currentScopes);
+    : resolveRegionScopeBaseIds(locations, geoScopes);
   const allSelected = baseIds.every((baseId) => next.has(baseId));
   for (const baseId of baseIds) {
     if (allSelected) next.delete(baseId);
     else next.add(baseId);
   }
-  const retainedScopes = currentScopes.filter((currentScope) => currentScope !== "all");
+
+  // No geography left selected: compressRegionScopeSelection's "empty" fallback
+  // is ["all"], which would silently re-include every region. When Unverified
+  // is still checked, that's a contradictory state (data scoped to unverified
+  // only, but the UI reads "All Regions") — the correct result here is
+  // Unverified alone, not All + Unverified.
+  if (next.size === 0 && unverifiedScopes.length > 0) {
+    return Array.from(new Set(unverifiedScopes));
+  }
+
+  const retainedScopes = geoScopes.filter((currentScope) => currentScope !== "all");
   const preferredScopes = allSelected ? retainedScopes : [scope, ...retainedScopes];
-  return compressRegionScopeSelection(locations, next, preferredScopes);
+  const result = compressRegionScopeSelection(locations, next, preferredScopes);
+  return Array.from(new Set([...result, ...unverifiedScopes]));
 }
 
 export function formatRegionScopeSelection(locations: RegionLocation[], scopes: string[]): string {
   if (scopes.length === 0 || scopes.includes("all")) return "All Regions";
 
   const labels = scopes.map((scope) => {
+    if (scope === "unverified") return "Unverified";
     const [level, value] = scope.split(":", 2);
     if (level === "macro") {
       return locations.find((location) => location.macroRegionCode === value)?.macroRegionName;
@@ -189,6 +209,13 @@ export function formatRegionScopeSelection(locations: RegionLocation[], scopes: 
   if (labels.length === 0) return "All Regions";
   if (labels.length <= 2) return labels.join(" + ");
   return `${labels.length} region groups`;
+}
+
+export function toggleUnverifiedScope(currentScopes: string[]): string[] {
+  const withoutAll = currentScopes.filter((s) => s !== "all");
+  return withoutAll.includes("unverified")
+    ? (withoutAll.filter((s) => s !== "unverified").length ? withoutAll.filter((s) => s !== "unverified") : ["all"])
+    : [...withoutAll, "unverified"];
 }
 
 export function appendRegionScopes(params: URLSearchParams, scopes: string[]): void {
