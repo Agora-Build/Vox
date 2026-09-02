@@ -20,7 +20,7 @@ export interface DispatchAuthorization { ok: boolean; reason?: string; settlemen
 export interface SettlementOutcome { jobId: number; status: string; hasResult: boolean; settlementContext: unknown; }
 
 export interface MarketplaceService {
-  setListing(tokenId: number, pricePerUnit: number | null, meta?: { ownerId: number; region: string }): Promise<void>;
+  setListing(tokenId: number, pricePerUnit: number | null, meta?: { ownerId: number; region: string | null }): Promise<void>;
   listDispatchable(userId: number): Promise<AgentSummary[]>;
   authorizeDispatch(userId: number, tokenId: number, jobContext: JobContext): Promise<DispatchAuthorization>;
   settle(outcome: SettlementOutcome): Promise<void>;
@@ -60,7 +60,10 @@ export function createMarketplaceService(db: PluginDb, credits: CreditsPort): Ma
 
     async listDispatchable(_userId): Promise<AgentSummary[]> {
       const rows = await repo.listActiveListings(db);
-      return rows.map((l) => ({ tokenId: l.tokenId, region: l.region, pricePerUnit: l.pricePerUnit, ownerId: l.ownerId }));
+      // listActiveListings only returns active=true rows, and both write paths
+      // (upsertListing, updateListingRegion) only ever set active=true together
+      // with a non-null region — so region is guaranteed set here.
+      return rows.map((l) => ({ tokenId: l.tokenId, region: l.region as string, pricePerUnit: l.pricePerUnit, ownerId: l.ownerId }));
     },
 
     async authorizeDispatch(userId, tokenId, _jobContext) {

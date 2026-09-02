@@ -118,19 +118,23 @@ async function setDispatchTier(session: AuthSession, tokenId: number, dispatchTi
   });
 }
 
-// The PATCH-to-"shared" route populates the marketplace listing's NOT-NULL
-// `region` straight from the TOKEN's own site_id column (server/routes.ts,
+// The PATCH-to-"shared" route populates the marketplace listing's `region`
+// straight from the TOKEN's own site_id column (server/routes.ts,
 // `marketplace.setListing(id, price, { region: token.siteId })`) — it does
 // NOT fall back to the agent's live-detected region the way pooled dispatch
 // does. Under zero trust a private-tier mint now has site_id = null (region
-// is public-tier-only at mint time), so switching straight to "shared"
-// would upsert a null region and crash on the listings table's NOT NULL
-// constraint. Simulate a trusted region assignment directly on the token
+// is public-tier-only at mint time), so switching straight to "shared" no
+// longer crashes (listings.region is nullable — see
+// plugins/shared-agents/migrations/0002_nullable_region.sql) but upserts the
+// listing delisted (active=false, "delisted until trusted" — same semantics
+// as updateListingRegion(null)), which is unusable for the dispatch these
+// tests exercise. Simulate a trusted region assignment directly on the token
 // row (same "trusted detection" principle as tests/zero-trust-dispatch.test.ts
 // and the eval_agents stamp in 6a below, just applied to the column the
 // shared-listing path actually reads) so these credits/refund/gate tests —
 // whose point is money movement, not region validation — can exercise a
-// working shared listing.
+// working, ACTIVE shared listing. (See tests/zero-trust-region-api.test.ts
+// for the null-region/delisted-listing regression coverage itself.)
 async function stampTokenSite(tokenId: number, suffix: string): Promise<void> {
   await dbPool.query(`UPDATE eval_agent_tokens SET site_id = $1, region = $2 WHERE id = $3`, [
     `${BASE_NA}-${suffix}`, BASE_NA, tokenId,

@@ -2952,44 +2952,53 @@ export async function registerRoutes(
   });
 
   app.patch("/api/eval-agent-tokens/:id", requireAuth, async (req, res) => {
-    const user = await getCurrentUser(req);
-    if (!user) return res.status(401).json({ error: "Not authenticated" });
+    try {
+      const user = await getCurrentUser(req);
+      if (!user) return res.status(401).json({ error: "Not authenticated" });
 
-    const id = parseInt(req.params.id, 10);
-    const token = await storage.getEvalAgentToken(id);
-    if (!token) return res.status(404).json({ error: "Token not found" });
+      const id = parseInt(req.params.id, 10);
+      const token = await storage.getEvalAgentToken(id);
+      if (!token) return res.status(404).json({ error: "Token not found" });
 
-    const bodySchema = z.object({
-      dispatchTier: z.enum(["private", "team", "public", "shared"]),
-      pricePerUnit: z.number().int().positive().nullable().optional(),
-    });
-    const parsed = bodySchema.safeParse(req.body);
-    if (!parsed.success) return res.status(400).json({ error: "Invalid request" });
-    const { dispatchTier, pricePerUnit } = parsed.data;
+      const bodySchema = z.object({
+        dispatchTier: z.enum(["private", "team", "public", "shared"]),
+        pricePerUnit: z.number().int().positive().nullable().optional(),
+      });
+      const parsed = bodySchema.safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ error: "Invalid request" });
+      const { dispatchTier, pricePerUnit } = parsed.data;
 
-    const marketplace = getMarketplace();
-    const decision = validateTierChoice({
-      user: { id: user.id, isAdmin: user.isAdmin, plan: user.plan, organizationId: user.organizationId },
-      isOwner: token.createdBy === user.id,
-      newTier: dispatchTier,
-      marketplacePresent: marketplace !== null,
-      pricePerUnit: pricePerUnit ?? null,
-    });
-    if (!decision.ok) return res.status(decision.status).json({ error: decision.reason });
+      const marketplace = getMarketplace();
+      const decision = validateTierChoice({
+        user: { id: user.id, isAdmin: user.isAdmin, plan: user.plan, organizationId: user.organizationId },
+        isOwner: token.createdBy === user.id,
+        newTier: dispatchTier,
+        marketplacePresent: marketplace !== null,
+        pricePerUnit: pricePerUnit ?? null,
+      });
+      if (!decision.ok) return res.status(decision.status).json({ error: decision.reason });
 
-    // Core writes only its own column.
-    await storage.updateEvalAgentTokenDispatchTier(id, dispatchTier);
+      // Core writes only its own column.
+      await storage.updateEvalAgentTokenDispatchTier(id, dispatchTier);
 
-    // Money lives only in the plugin: set/clear the listing via the seam.
-    if (marketplace) {
-      if (dispatchTier === "shared") {
-        await marketplace.setListing(id, pricePerUnit ?? null, { ownerId: token.createdBy, region: token.siteId });
-      } else {
-        await marketplace.setListing(id, null); // switching away from shared deactivates the listing
+      // Money lives only in the plugin: set/clear the listing via the seam.
+      // NOTE: token.siteId may legitimately be null under zero-trust (region is
+      // public-tier-only at mint; other tiers are detected later via agent
+      // register/heartbeat) — the plugin upserts a delisted (active=false)
+      // listing in that case rather than rejecting it.
+      if (marketplace) {
+        if (dispatchTier === "shared") {
+          await marketplace.setListing(id, pricePerUnit ?? null, { ownerId: token.createdBy, region: token.siteId });
+        } else {
+          await marketplace.setListing(id, null); // switching away from shared deactivates the listing
+        }
       }
-    }
 
-    return res.json({ id, dispatchTier });
+      return res.json({ id, dispatchTier });
+    } catch (error) {
+      console.error("Error updating eval agent token dispatch tier:", error);
+      res.status(500).json({ error: "Failed to update eval agent token" });
+    }
   });
 
   // ==================== EVAL AGENT TOKEN ROUTES (Admin only) ====================

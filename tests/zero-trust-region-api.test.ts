@@ -1,8 +1,15 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { eq } from "drizzle-orm";
+import { Pool } from "pg";
 import { db } from "../server/storage";
 import { evalAgents } from "../shared/schema";
 import { BASE_NA } from "./helpers/regions";
+
+// Direct-DB read of the plugin's own schema, same style as
+// tests/practical-shared-agents-credits.test.ts — used only to OBSERVE the
+// listing row the HTTP surface doesn't expose (no dispatchable-listing GET
+// distinguishes "no listing" from "delisted listing"), never to mutate state.
+const dbPool = new Pool({ connectionString: process.env.DATABASE_URL });
 
 const BASE_URL = process.env.TEST_BASE_URL || "http://localhost:5000";
 const ADMIN_EMAIL = process.env.TEST_ADMIN_EMAIL || "admin@vox.local";
@@ -165,12 +172,14 @@ describeDb("run-targets: two-level tree fields (Task 12)", () => {
 
     // A shared agent that goes Unverified after listing — must never appear
     // in the shared marketplace list (not dispatchable at all), even though
-    // its (stale) listing region is still non-null. A "shared" dispatchTier
-    // token can only be minted with a region already attached (the plugin's
-    // `listings.region` column is NOT NULL), so: mint public (gets a site),
-    // register (agent inherits the site), flip to shared via PATCH, then
-    // directly null the agent's detected siteId — simulating a live
-    // re-detection dropping it to Unverified without the listing following.
+    // its (stale) listing region is still non-null. (A "shared" dispatchTier
+    // token CAN now be minted straight from a null-site token — see "PATCH to
+    // shared with no detected region" below — but that upserts a delisted,
+    // inactive listing, which is not what this fixture wants.) So: mint
+    // public (gets a site), register (agent inherits the site), flip to
+    // shared via PATCH, then directly null the agent's detected siteId —
+    // simulating a live re-detection dropping it to Unverified without the
+    // listing following.
     const sharedRes = await authFetch(cookie, `${BASE_URL}/api/eval-agent-tokens`, {
       method: "POST",
       body: JSON.stringify({ name: `zt-rt-shared-${Date.now()}`, regionLocationBaseId: BASE_NA, dispatchTier: "public" }),
@@ -278,5 +287,73 @@ describeDb("run-targets: two-level tree fields (Task 12)", () => {
     // The admin's own public token must not be duplicated under "mine" —
     // public sites are represented exactly once, via agents.public.
     expect(body.agents.mine.find((a: { tokenId: number }) => a.tokenId === publicTokenId)).toBeUndefined();
+  });
+});
+
+describeDb("PATCH to shared with no detected region (crash regression)", () => {
+  // Regression coverage for a real branch bug found while migrating the
+  // legacy token-mint tests: PATCH /api/eval-agent-tokens/:id populates the
+  // marketplace listing's `region` straight from the TOKEN's own site_id
+  // column (server/routes.ts), never falling back to the agent's live
+  // detection. Under zero trust a private-tier mint legitimately has
+  // site_id = null (region is public-tier-only at mint), so switching
+  // straight to "shared" used to attempt an INSERT with a null region into a
+  // NOT NULL column — an unhandled DB exception with no try/catch around the
+  // route, which crashed the whole Node process. Fixed by: (1) a plugin
+  // migration dropping the NOT NULL constraint on listings.region
+  // (plugins/shared-agents/migrations/0002_nullable_region.sql), (2)
+  // upsertListing now upserts a null-region row delisted (active=false —
+  // same "delist until trusted" semantics as updateListingRegion(null)), and
+  // (3) a try/catch around the PATCH handler so any future failure here
+  // degrades to a 500 instead of taking the server down.
+  let cookie: string;
+  let tokenId: number;
+
+  beforeAll(async () => { cookie = await login(); });
+  afterAll(async () => {
+    await authFetch(cookie, `${BASE_URL}/api/eval-agent-tokens/${tokenId}/revoke`, { method: "POST" });
+    await dbPool.end();
+  });
+
+  it("mints a private (null-site) token and PATCHes it to shared without crashing", async () => {
+    const mintRes = await authFetch(cookie, `${BASE_URL}/api/eval-agent-tokens`, {
+      method: "POST",
+      body: JSON.stringify({ name: `zt-null-region-${Date.now()}`, dispatchTier: "private" }),
+    });
+    expect(mintRes.status).toBe(200);
+    const token = await mintRes.json();
+    tokenId = token.id;
+    expect(token.siteId).toBeNull();
+
+    const patchRes = await authFetch(cookie, `${BASE_URL}/api/eval-agent-tokens/${tokenId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ dispatchTier: "shared", pricePerUnit: 7 }),
+    });
+    expect(patchRes.status).toBe(200);
+    const patched = await patchRes.json();
+    expect(patched.dispatchTier).toBe("shared");
+
+    // Observe the listing the HTTP surface doesn't expose: it must exist
+    // (the PATCH didn't just silently drop the write) but sit delisted —
+    // region NULL, active false — rather than crash or fabricate a region.
+    const { rows } = await dbPool.query<{ region: string | null; active: boolean }>(
+      `SELECT region, active FROM plugin_shared_agents.listings WHERE token_id = $1`, [tokenId]);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].region).toBeNull();
+    expect(rows[0].active).toBe(false);
+
+    // Not dispatchable while delisted — the whole point of the "delist until
+    // trusted" convention is that an untrusted/undetected listing can never
+    // be rented out.
+    const dispatchableRes = await authFetch(cookie, `${BASE_URL}/api/eval-agents/dispatchable`);
+    expect(dispatchableRes.ok).toBe(true);
+    const dispatchable = await dispatchableRes.json();
+    expect(dispatchable.shared.some((a: { tokenId: number }) => a.tokenId === tokenId)).toBe(false);
+
+    // The server process must still be alive and responsive — this is the
+    // actual crash regression: an unhandled rejection here used to take the
+    // whole Node process down, so every request after it would fail too.
+    const followUp = await authFetch(cookie, `${BASE_URL}/api/config`);
+    expect(followUp.status).toBe(200);
   });
 });
