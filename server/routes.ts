@@ -4629,7 +4629,7 @@ export async function registerRoutes(
         workflow.ownerId === user.id ||
         (workflow.organizationId != null && sameOrg({ organizationId: user.organizationId }, { organizationId: workflow.organizationId }));
       const mine: Agent[] = !sessionTrusted ? [] : ownTokens
-        .filter((t) => !t.isRevoked && t.dispatchTier !== "public" && (!region || t.region === region))
+        .filter((t) => !t.isRevoked && t.dispatchTier !== "public")
         .map((t) => {
           const eff = effectiveDispatchIdentity(t, agentByTokenId.get(t.id));
           return {
@@ -4639,6 +4639,13 @@ export async function registerRoutes(
             price: null,
           };
         })
+        // Filter on the EFFECTIVE region (the same value the row carries in
+        // its `region` field above), not the raw token — `token.region` is
+        // stamped only for public-tier tokens, so filtering on it emptied
+        // `mine` for every non-public token whenever a region was passed. An
+        // Unverified row (effective region null) matches no region filter,
+        // same as everywhere else in this tree.
+        .filter((a) => !region || a.region === region)
         // A shared-tier agent with no detected site is Unverified and not
         // dispatchable at all (the marketplace delists it too) — never offer
         // it, even under "my agents".
