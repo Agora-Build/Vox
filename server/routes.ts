@@ -2916,10 +2916,12 @@ export async function registerRoutes(
         ? await storage.getAllEvalAgentTokens()
         : await storage.getEvalAgentTokensByUser(user.id);
 
+      const locations = await storage.getAllRegionLocations();
       res.json(tokens.map(t => ({
         id: t.id,
         name: t.name,
         siteId: t.siteId,
+        siteLabel: regionMetadata(t.siteId, locations).regionLabel,
         dispatchTier: t.dispatchTier,
         isRevoked: t.isRevoked,
         lastUsedAt: t.lastUsedAt,
@@ -3363,10 +3365,12 @@ export async function registerRoutes(
           (user && (user.id === a.tokenCreatedBy || user.isAdmin))
         )
       );
+      const locations = await storage.getAllRegionLocations();
       res.json(visible.map(a => ({
         id: a.id,
         name: a.name,
         siteId: a.siteId,
+        siteLabel: regionMetadata(a.siteId, locations).regionLabel,
         region: a.region,
         locationTrust: a.locationTrust,
         state: a.state,
@@ -3595,8 +3599,8 @@ export async function registerRoutes(
       const ipChanged = !!req.ip && req.ip !== agent.observedIp;
       if (req.ip) void storage.updateEvalAgentObservedIp(agentId, req.ip);
 
-      // Re-detect when the IP moved, the check is stale (>24h / never ran), or
-      // a pending region change is mid-hysteresis (every beat counts it down —
+      // Re-detect when the IP moved, the check is stale (> LOCATION_RECHECK_HOURS
+      // / never ran), or a pending region change is mid-hysteresis (every beat counts it down —
       // the IP-change trigger alone would stall since observed_ip updates each
       // beat). Fire-and-forget: a slow catalog write must not delay the beat.
       const stale = !agent.locationCheckedAt

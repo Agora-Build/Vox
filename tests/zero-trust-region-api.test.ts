@@ -50,6 +50,16 @@ describe("zero-trust token mint", () => {
     // accumulates across test runs (see CLAUDE.md "Known gate hazard"), so
     // assert only on the prefix + numeric suffix, not a specific digit count.
     expect(token.siteId).toMatch(/^na-us-seattle-\d+$/);
+
+    // Server-computed site label (item 5): a non-null siteId gets a
+    // "<displayName> <sequence>" label built from the region catalog —
+    // computed once per request in the list handler, never re-derived
+    // client-side from a possibly-stale catalog fetch.
+    const list = await (await authFetch(cookie, `${BASE_URL}/api/eval-agent-tokens`)).json();
+    const mine = list.find((t: { id: number }) => t.id === token.id);
+    expect(mine).toBeDefined();
+    expect(typeof mine.siteLabel).toBe("string");
+    expect(mine.siteLabel).toMatch(/^Seattle \d+$/);
   });
 
   it("public tier without a region → 400", async () => {
@@ -124,6 +134,11 @@ describe("register/heartbeat location detection", () => {
     expect(mine).toBeDefined();
     expect(mine.locationTrust).toBe("unknown");
     expect(mine.region).toBeNull();
+    // Server-computed site label (item 5): null for an agent with no siteId,
+    // a string built from the region catalog otherwise — never re-derived
+    // client-side from a possibly-stale catalog fetch.
+    expect(mine.siteId).toBeNull();
+    expect(mine.siteLabel).toBeNull();
     expect(mine).not.toHaveProperty("locationSource");
     expect(mine).not.toHaveProperty("observedIp");
   });
