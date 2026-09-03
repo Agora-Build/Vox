@@ -2916,10 +2916,12 @@ export async function registerRoutes(
         ? await storage.getAllEvalAgentTokens()
         : await storage.getEvalAgentTokensByUser(user.id);
 
+      const locations = await storage.getAllRegionLocations();
       res.json(tokens.map(t => ({
         id: t.id,
         name: t.name,
         siteId: t.siteId,
+        siteLabel: regionMetadata(t.siteId, locations).regionLabel,
         dispatchTier: t.dispatchTier,
         isRevoked: t.isRevoked,
         lastUsedAt: t.lastUsedAt,
@@ -3363,10 +3365,12 @@ export async function registerRoutes(
           (user && (user.id === a.tokenCreatedBy || user.isAdmin))
         )
       );
+      const locations = await storage.getAllRegionLocations();
       res.json(visible.map(a => ({
         id: a.id,
         name: a.name,
         siteId: a.siteId,
+        siteLabel: regionMetadata(a.siteId, locations).regionLabel,
         region: a.region,
         locationTrust: a.locationTrust,
         state: a.state,
@@ -3595,8 +3599,8 @@ export async function registerRoutes(
       const ipChanged = !!req.ip && req.ip !== agent.observedIp;
       if (req.ip) void storage.updateEvalAgentObservedIp(agentId, req.ip);
 
-      // Re-detect when the IP moved, the check is stale (>24h / never ran), or
-      // a pending region change is mid-hysteresis (every beat counts it down —
+      // Re-detect when the IP moved, the check is stale (> LOCATION_RECHECK_HOURS
+      // / never ran), or a pending region change is mid-hysteresis (every beat counts it down —
       // the IP-change trigger alone would stall since observed_ip updates each
       // beat). Fire-and-forget: a slow catalog write must not delay the beat.
       const stale = !agent.locationCheckedAt
@@ -4625,7 +4629,7 @@ export async function registerRoutes(
         workflow.ownerId === user.id ||
         (workflow.organizationId != null && sameOrg({ organizationId: user.organizationId }, { organizationId: workflow.organizationId }));
       const mine: Agent[] = !sessionTrusted ? [] : ownTokens
-        .filter((t) => !t.isRevoked && t.dispatchTier !== "public" && (!region || t.region === region))
+        .filter((t) => !t.isRevoked && t.dispatchTier !== "public")
         .map((t) => {
           const eff = effectiveDispatchIdentity(t, agentByTokenId.get(t.id));
           return {
@@ -4635,6 +4639,13 @@ export async function registerRoutes(
             price: null,
           };
         })
+        // Filter on the EFFECTIVE region (the same value the row carries in
+        // its `region` field above), not the raw token — `token.region` is
+        // stamped only for public-tier tokens, so filtering on it emptied
+        // `mine` for every non-public token whenever a region was passed. An
+        // Unverified row (effective region null) matches no region filter,
+        // same as everywhere else in this tree.
+        .filter((a) => !region || a.region === region)
         // A shared-tier agent with no detected site is Unverified and not
         // dispatchable at all (the marketplace delists it too) — never offer
         // it, even under "my agents".

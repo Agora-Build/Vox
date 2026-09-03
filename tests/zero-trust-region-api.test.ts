@@ -3,7 +3,7 @@ import { eq } from "drizzle-orm";
 import { Pool } from "pg";
 import { db } from "../server/storage";
 import { evalAgents } from "../shared/schema";
-import { BASE_NA, REGION_NA } from "./helpers/regions";
+import { BASE_NA, BASE_EU, REGION_NA } from "./helpers/regions";
 
 // Direct-DB read of the plugin's own schema, same style as
 // tests/practical-shared-agents-credits.test.ts — used only to OBSERVE the
@@ -50,6 +50,16 @@ describe("zero-trust token mint", () => {
     // accumulates across test runs (see CLAUDE.md "Known gate hazard"), so
     // assert only on the prefix + numeric suffix, not a specific digit count.
     expect(token.siteId).toMatch(/^na-us-seattle-\d+$/);
+
+    // Server-computed site label (item 5): a non-null siteId gets a
+    // "<displayName> <sequence>" label built from the region catalog —
+    // computed once per request in the list handler, never re-derived
+    // client-side from a possibly-stale catalog fetch.
+    const list = await (await authFetch(cookie, `${BASE_URL}/api/eval-agent-tokens`)).json();
+    const mine = list.find((t: { id: number }) => t.id === token.id);
+    expect(mine).toBeDefined();
+    expect(typeof mine.siteLabel).toBe("string");
+    expect(mine.siteLabel).toMatch(/^Seattle \d+$/);
   });
 
   it("public tier without a region → 400", async () => {
@@ -124,6 +134,11 @@ describe("register/heartbeat location detection", () => {
     expect(mine).toBeDefined();
     expect(mine.locationTrust).toBe("unknown");
     expect(mine.region).toBeNull();
+    // Server-computed site label (item 5): null for an agent with no siteId,
+    // a string built from the region catalog otherwise — never re-derived
+    // client-side from a possibly-stale catalog fetch.
+    expect(mine.siteId).toBeNull();
+    expect(mine.siteLabel).toBeNull();
     expect(mine).not.toHaveProperty("locationSource");
     expect(mine).not.toHaveProperty("observedIp");
   });
@@ -260,6 +275,38 @@ describeDb("run-targets: two-level tree fields (Task 12)", () => {
     expect(body.agents.shared.find((a: { tokenId: number }) => a.tokenId === sharedTokenId)).toBeUndefined();
     // Also never smuggled through under "mine" (the token is admin-owned too).
     expect(body.agents.mine.find((a: { tokenId: number }) => a.tokenId === sharedTokenId)).toBeUndefined();
+  });
+
+  it("mine's ?region= filter matches the EFFECTIVE region, not the (always-null) token region", async () => {
+    // Regression: the filter used to read token.region, which is stamped
+    // only for public-tier tokens (never for private/team/shared) — so a
+    // non-public "mine" row was silently dropped whenever a region filter
+    // was passed, even though run-your-own.tsx always sends one. Simulate
+    // a detected/trusted region on the private token's agent via the
+    // sanctioned db.update seam (register on localhost always lands
+    // Unverified in dev) and confirm the filter now tracks it.
+    await db.update(evalAgents)
+      .set({ siteId: REGION_NA, region: BASE_NA, locationTrust: "trusted" })
+      .where(eq(evalAgents.tokenId, privateTokenId));
+    try {
+      const matching = await authFetch(cookie, `${BASE_URL}/api/workflows/${workflowId}/run-targets?evalSetId=${evalSetId}&region=${BASE_NA}`);
+      expect(matching.ok).toBe(true);
+      const matchingBody = await matching.json();
+      const mineMatch = matchingBody.agents.mine.find((a: { tokenId: number }) => a.tokenId === privateTokenId);
+      expect(mineMatch).toBeDefined();
+      expect(mineMatch.region).toBe(BASE_NA);
+
+      const other = await authFetch(cookie, `${BASE_URL}/api/workflows/${workflowId}/run-targets?evalSetId=${evalSetId}&region=${BASE_EU}`);
+      expect(other.ok).toBe(true);
+      const otherBody = await other.json();
+      expect(otherBody.agents.mine.find((a: { tokenId: number }) => a.tokenId === privateTokenId)).toBeUndefined();
+    } finally {
+      // Restore Unverified so later tests in this file (and any that reuse
+      // this fixture) see the same state they set up.
+      await db.update(evalAgents)
+        .set({ siteId: null, region: null, locationTrust: "unknown" })
+        .where(eq(evalAgents.tokenId, privateTokenId));
+    }
   });
 
   it("agents.public carries token-sourced region/siteId+state, no tokenId, and no locationSource/observedIp leak", async () => {

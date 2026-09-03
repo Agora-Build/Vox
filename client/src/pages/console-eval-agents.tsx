@@ -13,7 +13,7 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { Server, MapPin, Activity, Clock, Eye, EyeOff, Plus, Key, Copy, Check, Ban, Lock } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
-import { formatSmartTimestamp, formatSite } from "@/lib/utils";
+import { formatSmartTimestamp } from "@/lib/utils";
 import { useRegionLocationOptions } from "@/hooks/use-regions";
 
 interface AuthStatus {
@@ -32,6 +32,7 @@ interface EvalAgent {
   id: number;
   name: string;
   siteId: string | null;
+  siteLabel: string | null;
   state: "idle" | "offline" | "occupied";
   dispatchTier: "private" | "team" | "public" | "shared";
   metadata: Record<string, string> | null;
@@ -46,6 +47,7 @@ interface EvalAgentToken {
   name: string;
   token: string;
   siteId: string | null;
+  siteLabel: string | null;
   dispatchTier: "private" | "team" | "public" | "shared";
   isRevoked: boolean;
   lastUsedAt: string | null;
@@ -263,7 +265,7 @@ export default function ConsoleEvalAgents() {
                     <TableCell>
                       <Badge variant="secondary" className="gap-1">
                         <MapPin className="h-3 w-3" />
-                        {agent.siteId ? formatSite(agent.siteId) : "auto"}
+                        {agent.siteLabel ?? (agent.siteId ?? "auto")}
                       </Badge>
                     </TableCell>
                     <TableCell>
@@ -526,7 +528,7 @@ export default function ConsoleEvalAgents() {
                     <TableCell>
                       <Badge variant="secondary" className="gap-1">
                         <MapPin className="h-3 w-3" />
-                        {token.siteId ? formatSite(token.siteId) : "auto"}
+                        {token.siteLabel ?? (token.siteId ?? "auto")}
                       </Badge>
                     </TableCell>
                     <TableCell>

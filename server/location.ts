@@ -41,8 +41,7 @@ export const REGION_CHANGE_STABILITY = 3;
 // How stale an agent's last location check may get before a heartbeat re-runs
 // detection (IP changes and pending hysteresis re-check regardless). A check is
 // a sub-ms local mmdb lookup + one row update, so a short window is cheap; flap
-// protection lives in REGION_CHANGE_STABILITY, not here. Was 24h — that made an
-// agent registered before the GeoIP DBs existed sit Unverified for up to a day.
+// protection lives in REGION_CHANGE_STABILITY, not here.
 export const LOCATION_RECHECK_HOURS = 2;
 
 const PRIVATE_V4: Array<[number, number]> = [

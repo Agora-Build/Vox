@@ -938,12 +938,6 @@ export class DatabaseStorage {
     return result[0];
   }
 
-  async getPendingEvalJobsByRegion(region: string): Promise<EvalJob[]> {
-    return db.select().from(evalJobs).where(
-      and(eq(evalJobs.siteId, region), eq(evalJobs.status, "pending"))
-    ).orderBy(desc(evalJobs.priority), evalJobs.createdAt);
-  }
-
   async getEvalJobsByAgent(agentId: number): Promise<EvalJob[]> {
     return db.select().from(evalJobs).where(eq(evalJobs.evalAgentId, agentId)).orderBy(desc(evalJobs.createdAt));
   }
@@ -1760,7 +1754,6 @@ export class DatabaseStorage {
     const rows = await this.applyTierJoins(tier, db
       .select({
         baseId: sql<string | null>`regexp_replace(${evalResults.siteId}, '-\\d+$', '')`,
-        n: sql<number>`count(*)`,
       })
       .from(evalResults))
       .where(and(...conditions))
