@@ -144,6 +144,7 @@ export interface RefreshDeps {
   dir: string;
   now: Date;
   getMaxmindKey: () => Promise<{ key: string | null; source: MaxmindKeySource }>;
+  mkdir: (dir: string) => Promise<void>;
   download: (url: string) => Promise<Buffer>;
   gunzip: (data: Buffer) => Promise<Buffer>;
   extractTarGz: (data: Buffer, editionId: string) => Promise<Buffer>;
@@ -228,6 +229,11 @@ function defaultDeps(): RefreshDeps {
     dir: GEOIP_DIR,
     now: new Date(),
     getMaxmindKey,
+    // recursive:true is a no-op (not an error) when the dir already exists —
+    // no separate existence check needed. Fresh containers (Coolify's
+    // ephemeral filesystem) have no GEOIP_DB_DIR yet, and the very first
+    // refresh used to ENOENT trying to write its .tmp-*.mmdb file there.
+    mkdir: (dir) => fsp.mkdir(dir, { recursive: true }).then(() => {}),
     download: downloadDefault,
     gunzip: gunzipDefault,
     extractTarGz: extractTarGzDefault,
@@ -262,6 +268,7 @@ export async function refreshGeoipDatabases(overrides: Partial<RefreshDeps> = {}
   const at = deps.now.toISOString();
   let source: GeoipSource = "dbip";
   try {
+    await deps.mkdir(deps.dir);
     const { key: maxmindKey } = await deps.getMaxmindKey();
     source = resolveGeoipSource(maxmindKey);
     const urls = buildDownloadUrls(source, deps.now);

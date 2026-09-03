@@ -1,4 +1,8 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
+import { promises as fsp } from "fs";
+import { rm } from "fs/promises";
+import path from "path";
+import { tmpdir } from "os";
 import {
   resolveGeoipSource,
   buildDownloadUrls,
@@ -200,6 +204,7 @@ describe("refreshGeoipDatabases", () => {
       dir: "/fake/geoip",
       now: new Date("2026-09-02T00:00:00Z"),
       getMaxmindKey: vi.fn(async () => ({ key: null, source: null as const })), // dbip path by default
+      mkdir: vi.fn(async () => {}),
       download: vi.fn(async () => Buffer.from("raw-bytes")),
       gunzip: vi.fn(async (data: Buffer) => Buffer.concat([Buffer.from("decompressed:"), data])),
       extractTarGz: vi.fn(async () => Buffer.from("extracted-mmdb-bytes")),
@@ -352,5 +357,36 @@ describe("refreshGeoipDatabases", () => {
     expect(result.source).toBe("geolite2");
     expect(rename).not.toHaveBeenCalled();
     expect(deps.reload).not.toHaveBeenCalled();
+  });
+
+  it("a fresh container (GEOIP_DB_DIR does not exist yet) still succeeds — the dir is created before the first temp-file write", async () => {
+    // Reproduces prod: a brand-new container has no GEOIP_DB_DIR, and the very
+    // first refresh used to ENOENT trying to write the .tmp-*.mmdb file into a
+    // directory that was never created. Uses the REAL fs for writeFile/rename/
+    // unlink (not the jest-mock versions makeDeps() gives every other test in
+    // this file) so this test exercises the actual filesystem write path, not
+    // a mock's assumption that the directory is already there.
+    const dir = path.join(tmpdir(), `vox-geoip-mkdir-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    await expect(fsp.access(dir)).rejects.toThrow(); // sanity: must not pre-exist
+
+    try {
+      const deps = makeDeps({
+        dir,
+        mkdir: (d) => fsp.mkdir(d, { recursive: true }).then(() => {}),
+        writeFile: (p, data) => fsp.writeFile(p, data),
+        rename: (from, to) => fsp.rename(from, to),
+        unlink: (p) => fsp.unlink(p).then(() => {}, () => {}),
+      });
+
+      const result = await refreshGeoipDatabases(deps);
+
+      expect(result.ok).toBe(true);
+      const stat = await fsp.stat(dir);
+      expect(stat.isDirectory()).toBe(true);
+      const entries = (await fsp.readdir(dir)).sort();
+      expect(entries).toEqual(["ASN.mmdb", "City.mmdb", "geoip-meta.json"]);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });
