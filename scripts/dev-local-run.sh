@@ -492,14 +492,19 @@ ensure_submodules() {
     log_success "Submodules ready"
 }
 
-# aeval's bundled Python Playwright expects its exact browser build under
-# ~/.cache/ms-playwright (aeval 0.4.x = playwright 1.57 = chromium-1200).
-# Keep in sync with the playwright pin in vox_eval_agentd/Dockerfile.
+# aeval's bundled Python Playwright expects its exact browser build in the
+# Playwright cache (aeval 0.4.x = playwright 1.57 = chromium-1200).
+# Keep both pins in sync with vox_eval_agentd/Dockerfile on aeval bumps.
+AEVAL_MIN_VERSION="0.4.1"
 AEVAL_PLAYWRIGHT_VERSION="1.57.0"
 AEVAL_CHROMIUM_BUILD="chromium-1200"
 
 ensure_aeval_browser() {
-    if [ -d "$HOME/.cache/ms-playwright/$AEVAL_CHROMIUM_BUILD" ]; then
+    local cache="$HOME/.cache/ms-playwright"
+    [ "$(uname -s)" = "Darwin" ] && cache="$HOME/Library/Caches/ms-playwright"
+    # Guard on the browser executable, not the directory: an interrupted
+    # install leaves the directory behind and would mask the breakage forever.
+    if ls "$cache/$AEVAL_CHROMIUM_BUILD"/*/[Cc]hrom* > /dev/null 2>&1; then
         return 0
     fi
     log_info "Installing Playwright Chromium for aeval ($AEVAL_CHROMIUM_BUILD)..."
@@ -510,9 +515,22 @@ ensure_aeval_browser() {
     fi
 }
 
+# A pre-existing binary is kept as-is, but its version is checked against the
+# branch's pinned data/browser (aeval-data submodule, chromium build) — a
+# stale binary against new data configs fails confusingly at job time.
+check_aeval_version() {
+    local v
+    v=$(aeval --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+    if [ -n "$v" ] && [ "$(printf '%s\n' "$AEVAL_MIN_VERSION" "$v" | sort -V | head -1)" != "$AEVAL_MIN_VERSION" ]; then
+        log_warn "aeval $v is older than expected $AEVAL_MIN_VERSION (aeval-data/browser are pinned for $AEVAL_MIN_VERSION)."
+        log_warn "  Upgrade: sudo rm /usr/local/bin/aeval && re-run this script"
+    fi
+}
+
 ensure_aeval_binary() {
     if command -v aeval &> /dev/null; then
         log_info "aeval binary found: $(which aeval)"
+        check_aeval_version
         ensure_aeval_browser
         return 0
     fi
@@ -520,6 +538,7 @@ ensure_aeval_binary() {
     # Check common install locations
     if [ -x "/usr/local/bin/aeval" ]; then
         log_info "aeval binary found: /usr/local/bin/aeval"
+        check_aeval_version
         ensure_aeval_browser
         return 0
     fi
@@ -575,8 +594,9 @@ ensure_virtual_audio() {
     command -v setfacl > /dev/null 2>&1 || missing_pkgs+=(acl)
     if [ ${#missing_pkgs[@]} -gt 0 ]; then
         log_info "Installing audio packages: ${missing_pkgs[*]}"
+        sudo apt-get update -qq || true
         if ! sudo apt-get install -y "${missing_pkgs[@]}"; then
-            log_warn "Failed to install ${missing_pkgs[*]} — install manually: sudo apt-get install -y alsa-utils libportaudio2 libsndfile1"
+            log_warn "Failed to install ${missing_pkgs[*]} — install manually: sudo apt-get update && sudo apt-get install -y alsa-utils libportaudio2 libsndfile1 acl"
         fi
     fi
 
@@ -597,10 +617,17 @@ ensure_virtual_audio() {
             || log_warn "Virtual audio works now but could not be persisted — reload after reboot: sudo modprobe snd-aloop id=VirtualAudio pcm_substreams=1"
         ensure_audio_device_access
     else
-        log_warn "Could not load snd-aloop — aeval jobs will fail in soundcard mode. Set up manually:"
-        log_warn "  sudo modprobe snd-aloop id=VirtualAudio pcm_substreams=1"
-        log_warn "  echo snd-aloop | sudo tee /etc/modules-load.d/vox-virtual-audio.conf"
-        log_warn "  echo 'options snd-aloop id=VirtualAudio pcm_substreams=1' | sudo tee /etc/modprobe.d/vox-virtual-audio.conf"
+        # modprobe on an already-loaded module is a silent no-op (its options
+        # are ignored), so a plain "Loopback" card blocks the VirtualAudio id
+        # until the module is unloaded.
+        if lsmod | grep -q '^snd_aloop'; then
+            log_warn "snd-aloop is already loaded WITHOUT id=VirtualAudio — unload it first: sudo rmmod snd-aloop, then re-run this script"
+        else
+            log_warn "Could not load snd-aloop — aeval jobs will fail in soundcard mode. Set up manually:"
+            log_warn "  sudo modprobe snd-aloop id=VirtualAudio pcm_substreams=1"
+            log_warn "  echo snd-aloop | sudo tee /etc/modules-load.d/vox-virtual-audio.conf"
+            log_warn "  echo 'options snd-aloop id=VirtualAudio pcm_substreams=1' | sudo tee /etc/modprobe.d/vox-virtual-audio.conf"
+        fi
     fi
 }
 
@@ -629,7 +656,10 @@ ensure_audio_device_access() {
             || log_warn "Could not add $USER to the audio group: sudo usermod -aG audio $USER"
     fi
     if command -v setfacl > /dev/null 2>&1; then
-        if sudo setfacl -m "u:${USER}:rw" /dev/snd/pcmC${card}D* "/dev/snd/controlC${card}" 2>/dev/null \
+        # /dev/snd/timer is also root:audio 660 and alsa-lib opens it on the
+        # dmix/"default"-plugin route — without it the pcm/control ACLs alone
+        # can still leave the device unopenable.
+        if sudo setfacl -m "u:${USER}:rw" /dev/snd/pcmC${card}D* "/dev/snd/controlC${card}" /dev/snd/timer 2>/dev/null \
             && [ -w "/dev/snd/controlC${card}" ]; then
             log_success "Virtual audio: device access granted for this session (ACL on card ${card})"
         else
