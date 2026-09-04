@@ -492,15 +492,35 @@ ensure_submodules() {
     log_success "Submodules ready"
 }
 
+# aeval's bundled Python Playwright expects its exact browser build under
+# ~/.cache/ms-playwright (aeval 0.4.x = playwright 1.57 = chromium-1200).
+# Keep in sync with the playwright pin in vox_eval_agentd/Dockerfile.
+AEVAL_PLAYWRIGHT_VERSION="1.57.0"
+AEVAL_CHROMIUM_BUILD="chromium-1200"
+
+ensure_aeval_browser() {
+    if [ -d "$HOME/.cache/ms-playwright/$AEVAL_CHROMIUM_BUILD" ]; then
+        return 0
+    fi
+    log_info "Installing Playwright Chromium for aeval ($AEVAL_CHROMIUM_BUILD)..."
+    if npx -y "playwright@$AEVAL_PLAYWRIGHT_VERSION" install chromium; then
+        log_success "Playwright Chromium installed"
+    else
+        log_warn "Playwright Chromium install failed — aeval jobs will fail with BrowserType.launch. Run: npx -y playwright@$AEVAL_PLAYWRIGHT_VERSION install chromium"
+    fi
+}
+
 ensure_aeval_binary() {
     if command -v aeval &> /dev/null; then
         log_info "aeval binary found: $(which aeval)"
+        ensure_aeval_browser
         return 0
     fi
 
     # Check common install locations
     if [ -x "/usr/local/bin/aeval" ]; then
         log_info "aeval binary found: /usr/local/bin/aeval"
+        ensure_aeval_browser
         return 0
     fi
 
@@ -528,6 +548,7 @@ ensure_aeval_binary() {
     log_info "Downloading aeval from ${download_url}"
     if sudo curl -fSL -o "$install_path" "$download_url" && sudo chmod +x "$install_path"; then
         log_success "aeval installed to $install_path"
+        ensure_aeval_browser
     else
         log_warn "Failed to download aeval (may need manual install). Local agent will fall back to voice-agent-tester."
     fi
@@ -549,6 +570,9 @@ ensure_virtual_audio() {
     command -v aplay > /dev/null 2>&1 || missing_pkgs+=(alsa-utils)
     ldconfig -p 2>/dev/null | grep -q libportaudio || missing_pkgs+=(libportaudio2)
     ldconfig -p 2>/dev/null | grep -q libsndfile || missing_pkgs+=(libsndfile1)
+    # acl provides setfacl, used by ensure_audio_device_access for the
+    # no-re-login grant on /dev/snd
+    command -v setfacl > /dev/null 2>&1 || missing_pkgs+=(acl)
     if [ ${#missing_pkgs[@]} -gt 0 ]; then
         log_info "Installing audio packages: ${missing_pkgs[*]}"
         if ! sudo apt-get install -y "${missing_pkgs[@]}"; then
