@@ -19,8 +19,10 @@
 #   sudo modprobe snd-aloop id=VirtualAudio pcm_substreams=1
 #   echo snd-aloop | sudo tee /etc/modules-load.d/vox-virtual-audio.conf
 #   echo 'options snd-aloop id=VirtualAudio pcm_substreams=1' | sudo tee /etc/modprobe.d/vox-virtual-audio.conf
-# The script passes --device /dev/snd to vox-eval-agentd (not clash-runner —
-# its PipeWire graph is self-contained) and warns if the card is missing.
+# The script passes --device /dev/snd AND --security-opt systempaths=unconfined
+# to vox-eval-agentd (not clash-runner — its PipeWire graph is self-contained)
+# and warns if the card is missing. The security opt is load-bearing: Docker
+# masks /proc/asound by default and aeval reads it to resolve the card.
 #
 # Get this script on a server (public repo, no auth needed):
 #   curl -fsSL -o vox-upgrade.sh \
@@ -217,10 +219,15 @@ for name in "${!images[@]}"; do
 
     # vox-eval-agentd needs the host's virtual soundcard (aeval >=0.4): pass
     # /dev/snd through and warn if the snd-aloop card isn't loaded yet.
+    # systempaths=unconfined is required alongside the device: Docker masks
+    # /proc/asound by default, and aeval resolves the card ID by reading it —
+    # with the mask in place every job fails with SOUNDCARD_DEVICE_NOT_FOUND
+    # ("No ALSA card has the ID 'VirtualAudio'") even though /dev/snd is
+    # present and aplay works (alsa-utils resolve via /dev/snd ioctls instead).
     device_args=""
     if [ "$name" = "vox-eval-agentd" ]; then
         if [ -d /dev/snd ]; then
-            device_args="--device /dev/snd"
+            device_args="--device /dev/snd --security-opt systempaths=unconfined"
         fi
         if ! grep -q VirtualAudio /proc/asound/cards 2>/dev/null; then
             echo "WARNING: no VirtualAudio ALSA card on this host — aeval jobs WILL FAIL."

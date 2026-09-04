@@ -87,6 +87,11 @@ services:
   #   #   sudo modprobe snd-aloop id=VirtualAudio pcm_substreams=1
   #   devices:
   #     - /dev/snd:/dev/snd
+  #   # Docker masks /proc/asound by default; aeval reads it to resolve the
+  #   # card ID, so the device alone is NOT enough — without this, jobs fail
+  #   # with "No ALSA card has the ID 'VirtualAudio'".
+  #   security_opt:
+  #     - systempaths=unconfined
   #   depends_on:
   #     vox-service:
   #       condition: service_started
