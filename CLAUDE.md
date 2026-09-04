@@ -1,635 +1,171 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Guidance for Claude Code (claude.ai/code) when working in this repository.
 
 ## Working Conventions
 
-- **Reviewing design files:** whenever you need the user to review a design doc, spec, plan, or any markdown deliverable, serve it with `atem serv files <path>` (renders markdown → HTML over HTTPS and prints the URLs) rather than only citing the file path. **Surface the Custom URL** (the `genie.netbird.cloud:<port>/...` one) as the link to click — it is the reachable/shareable one; don't hand over only Local/Network. Use `--background` to keep it running while iterating; manage with `atem serv list` / `atem serv kill files-<port>`.
-- **Dev vs test scripts:** `scripts/dev-local-run.sh` is for local **service setup** (PostgreSQL + Vox service + eval agent — start/stop/reset/status/logs); `scripts/full-tests-run.sh` is the **test runner** (unit/Vitest + audio pipeline + E2E/Playwright). They are not interchangeable.
-- **Pre-merge gate:** run `./scripts/full-tests-run.sh` before every PR merge — the full suite (unit + audio + E2E), not just `npm test`.
+- **Reviewing design files:** serve any markdown deliverable for user review with `atem serv files <path>` and surface the **Custom URL** (`genie.netbird.cloud:<port>/...`) — that's the reachable/shareable link. Use `--background` while iterating; manage with `atem serv list` / `atem serv kill files-<port>`.
+- **Dev vs test scripts:** `scripts/dev-local-run.sh` = local **service setup** (PostgreSQL + Vox service + eval agent); `scripts/full-tests-run.sh` = the **test runner** (unit + audio + E2E). Not interchangeable.
+- **Pre-merge gate:** run `./scripts/full-tests-run.sh` (the full suite, not just `npm test`) before every PR merge.
 
 ## Project Overview
 
-Vox is an AI latency evaluation platform for conversational AI products. It runs automated evaluation tests across multiple regions (NA, APAC, EU) to monitor response latency, interrupt latency, network resilience, naturalness, and noise reduction for AI voice agents.
+Vox is an AI latency evaluation platform for conversational AI products. Distributed eval agents run automated tests across regions (NA, APAC, EU) measuring response latency, interrupt latency, network resilience, naturalness, and noise reduction for AI voice agents.
 
-## Development Commands
-
-### Build & Development
-```bash
-npm install                 # Install dependencies
-npm run dev                # Start development server (default port 5000)
-npm run build              # Build for production
-npm start                  # Start production server
-```
-
-### Local Development Server (Recommended)
-Use the `dev-local-run.sh` script to start a complete local environment with PostgreSQL, Vox service, and eval agent:
+## Commands
 
 ```bash
-# Start all services (PostgreSQL in Docker, Vox service and eval agent as local processes)
-./scripts/dev-local-run.sh start
-
-# Start with multi-region eval agents (na, apac, eu)
-./scripts/dev-local-run.sh --multi-region start
-
-# Stop all services
-./scripts/dev-local-run.sh stop
-
-# Reset database and restart (WARNING: deletes all data)
-./scripts/dev-local-run.sh reset
-
-# Show status of all services
-./scripts/dev-local-run.sh status
-
-# View logs
-./scripts/dev-local-run.sh logs server    # Server logs
-./scripts/dev-local-run.sh logs agent     # Eval agent logs
-
-# Docker mode (all services in containers)
-./scripts/dev-local-run.sh docker start
-./scripts/dev-local-run.sh docker stop
-```
-
-**Default Credentials (after init):**
-- Admin: `admin@vox.local` / `admin123456`
-- Scout: `scout@vox.ai` / `scout123`
-
-### Quality Checks
-```bash
-npm run check              # TypeScript type checking
+npm install / npm run dev / npm run build / npm start   # dev server on port 5000
+npm run check              # TypeScript
 npm run lint               # ESLint
+
+./scripts/dev-local-run.sh start|stop|reset|status      # local env (Postgres in Docker + service + agent)
+./scripts/dev-local-run.sh --multi-region start         # na/apac/eu agents
+./scripts/dev-local-run.sh logs server|agent
+./scripts/dev-local-run.sh docker start|stop            # all-in-containers mode
 ```
 
-### Database
+Default credentials after init — Admin: `admin@vox.local` / `admin123456`, Scout: `scout@vox.ai` / `scout123`.
+
+## Database & Migrations
+
+Schema lives in `shared/schema.ts` (single source of truth: tables, enums, Zod insert/select schemas). Data-model changes start there.
+
 ```bash
-# Local dev only — direct schema sync, never use in production
-DATABASE_URL="postgresql://vox:vox123@localhost:5432/vox" npm run db:push
-
-# Generate migration from schema changes (run this after every shared/schema.ts change)
-DATABASE_URL="postgresql://vox:vox123@localhost:5432/vox" npm run db:generate
-
-# Apply pending migrations
-DATABASE_URL="postgresql://vox:vox123@localhost:5432/vox" npm run db:migrate
-
-# Utilities
-npm run db:studio          # Open Drizzle Studio (database GUI)
+DATABASE_URL="postgresql://vox:vox123@localhost:5432/vox" npm run db:generate  # after every schema.ts change
+DATABASE_URL="postgresql://vox:vox123@localhost:5432/vox" npm run db:migrate   # apply pending
+DATABASE_URL="postgresql://vox:vox123@localhost:5432/vox" npm run db:push      # local dev ONLY — never production
+npm run db:studio
 ```
 
-**RULE — Every `shared/schema.ts` change must include a migration:**
-1. Change `shared/schema.ts`
-2. `DATABASE_URL=... npm run db:generate` → creates file in `migrations/`
-3. Review the generated SQL — confirm it only changes what you intended
-4. Commit migration file in the same commit as the schema change
-5. Push → migrations apply automatically on next app startup
+**RULE — every `shared/schema.ts` change ships with a migration:**
+1. `db:generate` → review the generated SQL (only what you intended)
+2. Register the file in the `MIGRATIONS` array in `server/migrate.ts` — migrations run via a custom version-based runner (`node dist/migrate.cjs` before app start), and an unregistered SQL file is **never applied**
+3. Commit migration + schema change together; migrations apply automatically on next startup
 
-**Never use `db:push` or `drizzle-kit push --force` in production** — it diffs the live schema and can silently drop columns.
+Keep migration SQL plain (`CREATE TABLE`, `ALTER TABLE`) — no `IF NOT EXISTS` / `DO ... EXCEPTION`; each runs exactly once. Never `db:push`/`drizzle-kit push --force` in production (can silently drop columns). Pre-existing databases are auto-baselined at startup (migration 0000 marked applied). `seed-data.ts` is local-dev only; production bootstrap is `/api/auth/init`.
 
-**Migrations run automatically on startup** via a custom version-based runner in `server/migrate.ts` (NOT drizzle-orm's `migrate()`). The `npm start` script runs `node dist/migrate.cjs` before starting the app. **Every new migration file must be registered** in the `MIGRATIONS` array in `server/migrate.ts` — an unregistered SQL file will never be applied.
+## Environment Variables
 
-**Keep migration SQL clean** — plain `CREATE TABLE`, `ALTER TABLE`, etc. No `IF NOT EXISTS` or `DO ... EXCEPTION` tricks. Each migration runs exactly once on a DB that doesn't have it yet.
-
-**Existing databases are handled automatically** — startup code in `server/index.ts` detects databases with existing schema but no drizzle migration history, marks migration 0000 as applied, and only runs new migrations. No manual steps needed.
-
-**seed-data.ts is local dev only** — called by `dev-local-run.sh` to activate Scout and create the mainline workflow. Production bootstrap (providers, pricing, users) is handled by `/api/auth/init`.
-
-### Environment Variables
-Required:
-- `DATABASE_URL` - PostgreSQL connection string (e.g., `postgresql://user:pass@localhost:5432/vox`)
-- `SESSION_SECRET` - Session encryption key
-- `INIT_CODE` - System initialization code (used during first-time setup)
+Required: `DATABASE_URL`, `SESSION_SECRET`, `INIT_CODE`.
 
 Optional:
-- `CREDENTIAL_ENCRYPTION_KEY` - 32-byte hex key (64 hex chars) for AES-256-GCM secret encryption. Required for the secrets feature. Generate with: `openssl rand -hex 32`
-- `PORT` - Server port (default: 5000)
-- `GOOGLE_CLIENT_ID` - Google OAuth client ID (enables Google sign-in)
-- `GOOGLE_CLIENT_SECRET` - Google OAuth client secret
-- `GOOGLE_CALLBACK_URL` - OAuth callback URL (default: `/api/auth/google/callback`)
-- `GITHUB_CLIENT_ID` - GitHub OAuth client ID (enables GitHub sign-in)
-- `GITHUB_CLIENT_SECRET` - GitHub OAuth client secret
-- `GITHUB_CALLBACK_URL` - OAuth callback URL (default: `/auth/github/callback`)
-- `WEB_SESSION_TTL_HOURS` - How long a minted `storageState` session stays fresh before re-minting (default: 1)
-- `WEB_SESSION_MINT_TIMEOUT_SECONDS` - Max time to wait for a broker mint before failing the request (default: 180)
-- `GEOIP_DB_DIR` - Directory holding the GeoIP databases (canonical `City.mmdb`/`ASN.mmdb`, falling back to legacy `GeoLite2-City.mmdb`/`GeoLite2-ASN.mmdb` names if present) (default: `./geoip`). Absent DBs = all non-public agents stay Unverified (safe default; local dev needs no MaxMind account) — self-heals on next startup/refresh
-- `MAXMIND_LICENSE_KEY` - Optional bootstrap-only GeoLite2 license key (signup artifact, never a payment). The MaxMind key is normally managed from the admin console (Regions page → GeoIP databases card), stored encrypted in `systemConfig` (requires `CREDENTIAL_ENCRYPTION_KEY`); this env var is only consulted as a fallback when no console-managed key is set. No cron needed — Coolify containers have ephemeral filesystems, so `server/geoip-refresh.ts` refreshes in-app instead of via a script: at startup when the DBs are missing/stale (>7 days), on a weekly in-process timer, and on demand via the admin Refresh button / `POST /api/admin/geoip/refresh`. With no key configured (console or env), it automatically falls back to DB-IP Lite (CC-BY-4.0, no account/key; slightly less accurate, no accuracy_radius)
+- `CREDENTIAL_ENCRYPTION_KEY` — 32-byte hex (64 chars), AES-256-GCM for secrets feature (`openssl rand -hex 32`)
+- `PORT` (default 5000)
+- `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET`/`GOOGLE_CALLBACK_URL`, `GITHUB_CLIENT_ID`/`GITHUB_CLIENT_SECRET`/`GITHUB_CALLBACK_URL` — OAuth sign-in
+- `WEB_SESSION_TTL_HOURS` (default 1) — minted storageState freshness
+- `WEB_SESSION_MINT_TIMEOUT_SECONDS` (default 180) — read by both Core and broker to bound a mint
+- `GEOIP_DB_DIR` (default `./geoip`) — absent DBs = non-public agents stay Unverified (safe default; self-heals on refresh)
+- `MAXMIND_LICENSE_KEY` — bootstrap-only fallback; the key is normally console-managed (Regions page, stored encrypted in `systemConfig`). `server/geoip-refresh.ts` refreshes in-app (startup when missing/stale >7d, weekly timer, admin Refresh button); no key → automatic DB-IP Lite fallback (no account needed)
 
-Auth-session broker sidecar (registration env is broker-only, not read by Core — see Auth-Session Broker below):
-- `VOX_CORE_URL` - Core base URL the broker registers/heartbeats against
-- `BROKER_REG_TOKEN` - Admin-issued registration token (hashed at rest, like eval agent tokens)
-- `BROKER_ADVERTISE_URL` - Internal-only URL Core calls back to mint a session
-- `BROKER_NAME` - Optional display name for the registered broker
-- `BROKER_PORT` - Port the broker's HTTP service listens on
-- `WEB_SESSION_MINT_TIMEOUT_SECONDS` - Max seconds the broker waits for a headless login to finish before failing the mint (default: 180). Shared with the Core-side entry above — Core reads the same var to bound how long it waits on the broker's mint.
+Broker sidecar only (not read by Core): `VOX_CORE_URL`, `BROKER_REG_TOKEN`, `BROKER_ADVERTISE_URL` (internal-only callback), `BROKER_NAME`, `BROKER_PORT`.
 
 ## Architecture
 
-### Monorepo Structure
+Monorepo: **client/** (React + Vite), **server/** (Express), **shared/** (Drizzle schema + shared types), **tests/**, **scripts/**.
 
-- **client/** - React frontend (Vite + TypeScript)
-- **server/** - Express backend (Node.js + TypeScript)
-- **shared/** - Shared types and database schema (Drizzle ORM)
-- **tests/** - Test files (Vitest)
-- **scripts/** - Build scripts
+- Frontend: Wouter routing (`client/src/App.tsx`), TanStack React Query for server state, shadcn/ui + Radix, Recharts, session-based auth. Console pages under `/console/*`, admin under `/admin/console/*`.
+- Backend: `server/index.ts` entry → `registerRoutes()` in `server/routes.ts` (all API endpoints — large and monolithic by design; versioned v1 in `server/routes-api-v1.ts`). Data access through the `storage` singleton (`server/storage.ts`, DatabaseStorage). Auth middleware in `server/auth.ts`: `requireAuth`, `requireAdmin`, `requirePrincipal`, `authenticateApiKey` (`vox_live_` Bearer), `requireAuthOrApiKey`.
+- Rate limiting (production only): 100 req/15min general; strict 20 req/15min on `/api/auth/login`, `/register`, `/activate`, `/api/user/change-password`.
+- API docs: Swagger UI at `/api/docs`, spec at `/api/v1/openapi.json`, source `docs/openapi.yaml`. Don't enumerate routes here — read `server/routes.ts`.
 
-### Key Architectural Patterns
+### Eval Agent System
+1. Admin or non-basic users mint eval agent tokens with region assignment (admin: public/private visibility; non-admin: private only)
+2. Agents register with a token, then heartbeat and fetch/claim jobs for their region (`evalJobs`: `pending` → `running` → `completed`/`failed`)
+3. Agents run the eval framework and report to `evalResults`, linked to `workflows`/`evalSets` via nullable FKs
 
-#### Database-First Design
-The entire data model is defined in `shared/schema.ts` using Drizzle ORM. All tables, enums, and types are exported from this single source of truth. Changes to data models should start here.
+Region locations are admin-managed; site IDs are `<location-base>-<sequence>` (e.g. `apac-in-mumbai-01`). Some UI text still says "workers"/"testSets" for eval agents/eval sets.
 
-**Database Tables:**
-- `organizations`, `users` - User and org management
-- `providers` - AI product providers (SKUs: `convoai`, `rtc`)
-- `projects`, `workflows`, `evalSets` - Test configuration hierarchy
-- `evalAgentTokens`, `evalAgents` - Distributed eval agent system
-- `evalJobs`, `evalResults` - Job queue and results storage
-- `apiKeys`, `pricingConfig`, `paymentMethods`, `paymentHistories`, `organizationSeats` - Billing
-- `activationTokens`, `inviteTokens`, `systemConfig`, `fundReturnRequests` - System utilities
+**Immutable per-job snapshot:** each `evalJobs` row carries a `snapshot` jsonb (workflow + eval-set metadata + config + provider + creator plan at run time) and `tokenVisibility` (frozen at claim). Everything downstream — provider attribution, provenance UI, tiering — reads the snapshot, never the live rows, so editing/deleting a workflow or eval set never rewrites past history. `evalJobs`/`evalSchedules` FKs are `ON DELETE SET NULL`; orphaned jobs authorize by `createdBy`, orphaned schedules auto-disable. `buildJobSnapshot()` in `server/storage.ts`.
 
-**Enums:**
-- `userPlanEnum`: `basic`, `premium`, `principal`, `fellow`
-- Region locations are admin-managed; exact site IDs use `<location-base>-<sequence>` (for example `apac-in-mumbai-01`).
-- `providerSkuEnum`: `convoai`, `rtc`
-- `evalAgentStateEnum`: `idle`, `offline`, `occupied`
-- `evalJobStatusEnum`: `pending`, `running`, `completed`, `failed`
-- `visibilityEnum`: `public`, `private`
+**3-tier metric classification** (reads the frozen snapshot):
+- **Mainline** (`/api/metrics/realtime`): snapshot workflow AND eval set public+mainline, `tokenVisibility` public, creator plan principal/fellow
+- **Community** (`/api/metrics/community`): both public but not fully mainline
+- **My Evals** (`/api/metrics/my-evals`, auth): workflow or eval set private, owned by requester
 
-#### Eval Agent System
-The system uses distributed eval agents to run evaluation tests:
-1. Admin or non-basic users create eval agent tokens with region assignments (admin can set public/private visibility; non-admin tokens are always private)
-2. Eval agents register using tokens (`evalAgentTokens` table, which includes a `visibility` column)
-3. Agents fetch jobs matching their region (`evalJobs` table with `pending` → `running` → `completed`/`failed` status)
-4. Agents execute tests using external `voice-agent-tester` tool and report results to `evalResults` table
-5. Results are linked to `workflows` and `evalSets` via foreign keys (nullable — see the immutable job snapshot below)
+### Auth-Session Broker
+Some targets need an authenticated web login before an eval. Brokered secrets (`brokerType` non-null) are **Core-only** — structurally withheld from the job-secrets path at every dispatch tier; agents get a pre-minted session, never the credential. (`brokerType == null` = runtime/agent-exposed.)
 
-**Immutable per-job snapshot (provenance / attribution / tiering):**
-Each `evalJobs` row carries a `snapshot` jsonb (the workflow + eval-set metadata + config + provider + creator plan, captured at run time) and a `tokenVisibility` (frozen when the job is claimed). Everything downstream reads the snapshot, not the live rows, so editing or deleting a workflow/eval-set never rewrites a past job's history:
-- Provider **attribution** on `evalResults` is sourced from `snapshot.provider.id`.
-- The eval-jobs list/detail provenance columns and the "View workflow & eval set" dialog read the snapshot.
-- Metric **tiering** (below) reads the snapshot + `tokenVisibility` instead of joining the live tables.
-- `evalJobs.workflowId`/`evalSetId` and `evalSchedules.workflowId`/`evalSetId` are nullable + `ON DELETE SET NULL`, so **jobs, results, and schedules survive deletion** of their workflow/eval-set. Deleted-workflow jobs are authorized by `evalJobs.createdBy` (the runner); orphaned schedules are auto-disabled by the scheduler. `buildJobSnapshot()` in `server/storage.ts` builds the snapshot; migration `0016` added the columns and backfilled existing rows.
+- **Dynamic registry:** admin mints a hashed `broker_registration_tokens` row; the broker sidecar registers against Core, advertising an internal-only callback URL and receiving a per-broker in-memory mint secret. Core tracks `(brokerType, state)` in `brokers` and dispatches mints lease-fenced to a live broker, with cold-cache reregister after Core restarts.
+- **Sidecar:** stateless `vox-auth-session-broker` image (Dockerfile `broker` target) mints a `storageState` by driving aeval `setup:account` with the decrypted credential. Internal network only; the password never goes past Core → broker → target site.
+- **Agents run `setup:storage`, never `setup:account`:** the daemon forces `mode: storage` and strips credential fields before the agent process sees the config.
+- **Server-stamped injection:** job creation (run route + scheduler) strip-then-stamps `config.sessionInjection` when `auth-session.ts`'s `workflowNeedsSession()` detects a login-class secret in the workflow's `platform.setup` — caller-supplied values are never trusted.
+- **Session endpoint** `GET /api/eval-agent/jobs/:jobId/session` (lease-fenced): `200 ready` / `202 minting` / `503 failed`. A failed mint fails the job before any eval runs (escrow refund, not a wasted capture). The `503` body carries the real cause only to an **owner-operated** agent (`isOwnerOperatedAgent`); attested marketplace agents get status only — a mint error can quote page state.
+- **Failed-mint diagnosis:** broker folds aeval loguru `ERROR` lines into its 502; Core stores it as `webSessions.lastError`; daemon surfaces it as the job error — one `docker logs` at any tier shows the cause. URLs reduced to scheme+host (`reduceUrlsToHost`); last failed HTTP status extracted digits-only from browser console; artifacts path taken from **stderr only** and confined to permitted roots.
+- **Credential fingerprints** (`valueLength` + first-10-hex-MD5 `valueFingerprint` on `GET /api/secrets`) let an owner verify a stored value (`printf %s 'value' | md5sum | cut -c1-10`). MD5 is deliberate (owner-reproducible). **Personal secrets only** — org secrets have none because `upsertOrgSecret` keeps the original `createdBy`, so post-rotation the fingerprint would false-mismatch (needs an `updatedBy` column first). Credential-returning routes are excluded from request logs via `server/sensitive-paths.ts` (its test scans `routes.ts`). See `shared/credentials.ts`.
+- **Shared-tier gates:** marketplace dispatch of a login secret additionally requires `isTestAccount` attestation and `credentialConsent` on the job snapshot, checked before `authorizeDispatch`.
+- `eval_agents.observed_ip` is Core-internal (register/heartbeat IP, fire-and-forget) — never exposed on any endpoint; future network labeling derives from it.
 
-**3-Tier Eval Classification (reads the frozen snapshot):**
-Results are classified from each job's snapshot flags — not the live workflow/eval-set — so a result keeps its run-time tier even after its parents are edited or deleted, and deleted-parent results keep counting:
-- **Mainline**: snapshot workflow public+mainline AND snapshot eval set public+mainline AND `tokenVisibility` public AND `snapshot.creatorPlan` in (principal, fellow) → `/api/metrics/realtime`
-- **Community**: snapshot workflow + eval set both public, but NOT fully mainline → `/api/metrics/community`
-- **My Evals**: snapshot workflow or eval set private, owned by the requesting user (`snapshot.*.ownerId`) → `/api/metrics/my-evals` (requires auth)
+### Users, Orgs, Limits
+- Plans: `basic` (free), `premium` (paid), `principal` (Scout, internal), `fellow` (external prestige). `isAdmin` flag for system management. Init creates admin (active) + Scout (needs activation).
+- Orgs: first user is org admin; Premium seats with volume discounts (`pricingConfig`).
+- Project/workflow caps: basic 5×10, premium 20×20, org 100×20.
+- Visibility (workflows + eval sets): `public`/`private` (private is Premium+). Principal/Fellow can mark mainline.
 
-**Note:** Some UI text may still reference old terminology ("workers" for eval agents, "testSets" for eval sets).
+### Permission Model (`server/permissions.ts`)
+**A system admin is NOT a super-editor** — admin powers are user management + provider config + **delete (moderation)** only.
+- `canAccessResource` (view): owner, same-org, public, or admin
+- `isOwnerOrOrgManager` (edit / run-private): owner/creator or org manager — **no admin bypass**; used by PATCH routes and `canRunWorkflow` for private workflows
+- `canEditResource` = `isAdmin || isOwnerOrOrgManager` — kept for **delete** routes only
+- `canRunWorkflow`: public → anyone; private → `isOwnerOrOrgManager`
+- `canScheduleWorkflow` (schedule / run-now / enable / re-cron): **owner/creator only** — a recurring schedule is an indefinite commitment. The scheduler re-checks per tick and disables schedules whose creator lost the right. (Extend + run-once are looser: owner-or-org.)
 
-#### Auth-Session Broker
-Some target agents require an authenticated web login before an eval can run. Brokered (login-class) secrets (`brokerType` non-null) are **Core-only** — structurally withheld from the job-secrets path (`server/routes.ts`) at every dispatch tier, so a login credential is never handed to a target agent directly; the agent runs against a pre-minted session instead. `brokerType == null` means the secret is runtime/agent-exposed; non-null means brokered/Core-only — this single column replaced the old `class: "runtime"/"protected"` split.
-- **Dynamic broker registry**: brokers are no longer a single statically-configured URL/secret. An admin mints a hashed `broker_registration_tokens` row (like eval agent tokens); a broker sidecar registers against Core with that token, advertising an **internal-only** callback URL (`BROKER_ADVERTISE_URL`) and receiving a per-broker in-memory mint secret back. Core tracks each broker's `(brokerType, state)` in the `brokers` table and dispatches a mint request to a live, heartbeating broker of the right type — lease-fenced, with cold-cache reregister if Core restarts and loses the in-memory secret.
-- **Broker sidecar**: a stateless service shipped as its own lean image (`vox-auth-session-broker`, the Dockerfile's `broker` target — aeval + aeval-data + Chromium, no voice-agent-tester or daemon code) that mints a `storageState` (cookies/localStorage) by driving aeval's `setup:account` flow with the decrypted login credential. It sits on an internal-only network; Core's mint requests are authenticated with the per-broker mint secret issued at registration — the login password never leaves Core → broker → target site.
-- **Agents run `setup:storage`, never `setup:account`**: the daemon (`vox_eval_agentd/vox-agentd.ts`) forces `mode: storage` on any session-injected job and strips credential fields from the config before the agent process ever sees them — the agent only ever consumes the pre-minted `storageState`.
-- **Server-stamped injection**: job creation (the run route in `server/routes.ts` and the scheduler in `server/index.ts`) stamps `config.sessionInjection` onto the job (strip-then-stamp, so a caller-supplied value is never trusted) once `auth-session.ts`'s `workflowNeedsSession()` detects a login-class secret referenced by the workflow's `platform.setup`.
-- **Session endpoint state machine**: `GET /api/eval-agent/jobs/:jobId/session` (lease-fenced, same guards as `/secrets`) returns `200 ready` (decrypted `storageState`), `202 minting` (fire-and-forget re-mint in flight), or `503 failed`. A `failed`/timed-out mint fails the job **before** any eval runs, so the escrow refund path (not a wasted capture) applies to shared-tier jobs. The `503` body carries the mint's real cause only to an **owner-operated** agent (`isOwnerOperatedAgent` in `server/permissions.ts` — the workflow's owner or their org); a consented attested marketplace agent may receive the storageState but gets the status alone, because a mint error can quote page state. Serving the session and explaining why minting it failed are different disclosures.
-- **Diagnosing a failed mint** (no container access required): the broker folds aeval's own loguru `ERROR` lines into its 502 body, Core folds that into `webSessions.lastError`, and the daemon surfaces it as the job error — so one `docker logs` at any tier shows the cause. URLs are reduced to scheme+host (`reduceUrlsToHost`) so an OAuth `?code=`/`#id_token=` or a magic-link path token never rides along, and the **last failed request's HTTP status** is extracted (digits only) from the browser console in aeval's artifacts. Named for what it measures: a console log carries unrelated resource failures (favicon 404, blocked beacon) that can follow the auth POST, and a target page can print the same sentence itself. Usually it is the sign-in, and it is what distinguishes a rejected credential from a challenged browser — otherwise the two are indistinguishable. The artifacts path comes from **stderr only** and is confined under permitted roots, because a matched string there becomes a file read.
-- **Credential fingerprints**: `GET /api/secrets` and `/api/org-secrets` return `valueLength` + `valueFingerprint` (first 10 hex of MD5) so an owner can confirm the stored value matches theirs with `printf %s 'value' | md5sum | cut -c1-10`. MD5 is deliberate — a keyed or salted hash would be unreproducible by the owner and so useless for comparison — which is why **placement is constrained**: logs get lengths plus a fingerprint of the *identifier* only; the *secret's* hash appears solely in the authenticated console, to its owner. **Personal secrets only.** Org secrets deliberately have none: `upsertOrgSecret` preserves the original `createdBy` on update, so after a rotation the first creator would see a hash of a value they never set — a false mismatch, which causes exactly the wrong action. Needs an `updatedBy` column to do correctly. Response bodies for every credential-returning route are kept out of the request log via `server/sensitive-paths.ts`, whose test SCANS `server/routes.ts` rather than re-listing the entries. See `shared/credentials.ts`.
-- **Shared-tier gates**: a shared-tier dispatch additionally requires `isTestAccount` attestation on the login secret and `credentialConsent` recorded on the job snapshot — both checked before `authorizeDispatch`, so an un-attested or non-consented login secret never reaches a marketplace agent.
-- **`eval_agents.observed_ip`** is a Core-internal layer-2/3 foundation column — the IP Core observes at register/heartbeat, written fire-and-forget and never exposed on any agent-listing endpoint. Future network-instinct labeling (e.g. residential vs. datacenter) derives from it; the raw IP itself is never surfaced.
+**Secrets follow workflow ownership** (job-secrets endpoint): org-owned workflow → org secrets (fenced by job creator's org membership); personal workflow → owner's personal secrets. Built-in eval sets (`config.builtIn`) are server-controlled, admin-editable only.
 
-#### User & Organization System
-- **User Plans:** `basic` (free), `premium` (paid), `principal` (Scout, internal), `fellow` (external prestige)
-- **Admin Flag:** `isAdmin` for system management (admins can create public/private eval agent tokens, verify orgs, approve fund returns; non-basic users can create private tokens)
-- **Organizations:** Users can create/join organizations for team collaboration
-  - First user becomes org admin
-  - Orgs can purchase Premium seats with volume discounts (stored in `pricingConfig`)
-  - Org limits: 100 projects max, 20 workflows per project
-- **Scout User:** Created during system initialization along with admin (needs activation)
-
-#### Security Model
-All sensitive tokens are hashed with SHA256 before database storage:
-- Activation tokens
-- Invite tokens
-- Eval agent tokens
-- API keys
-
-Passwords use bcrypt hashing (salt built-in). See `server/storage.ts:hashToken()` and `server/auth.ts:hashPassword()`.
-
-#### Resource Permission Model (`server/permissions.ts`)
-Content (workflows, eval sets) is gated by three predicates plus one for scheduling. **A system admin is NOT a super-editor** — admin's elevated powers are limited to user management and provider config (separate `requireAdmin` routes). For content, admin behaves like a normal user, except it retains **delete (moderation)**.
-
-- **`canAccessResource`** (view): owner, same-org, public, or admin.
-- **`isOwnerOrOrgManager`** (edit / run-private): owner/creator, or an org manager for org resources. **No admin bypass.** Used by workflow + eval-set `PATCH` and by `canRunWorkflow` for private workflows.
-- **`canEditResource`** = `isAdmin || isOwnerOrOrgManager` — the admin-capable predicate, kept for **delete** routes (moderation) so admin can remove others' content.
-- **`canRunWorkflow`** (run-once): public → anyone; private → `isOwnerOrOrgManager` (no admin / principal-fellow bypass).
-- **`canScheduleWorkflow`** (create schedule / run-now / enable / re-cron): **owner/creator only** — no admin, no org manager. A recurring schedule is an indefinite commitment; only the owner sets it up. The background scheduler re-checks this each tick and disables schedules whose creator lost the right. (`Extend` and run-once are looser — owner-or-org.)
-
-**Secrets follow workflow ownership** (job-secrets endpoint in `routes.ts`): an **org-owned** workflow spends the **organization's** secrets (`org_secrets`, fenced by the job creator's org membership); a **personal** workflow spends its **owner's personal** secrets (`secrets`, keyed by `workflow.ownerId`). This is what makes org-member run/extend safe — org members spend org credentials, never an individual's personal key. Built-in eval sets are system templates (`config.builtIn`, server-controlled — stripped from user create/update) editable only by admins.
-
-The UI mirrors the server via server-computed flags on the list responses (`canSchedule`/`canManage` on schedules, `canSchedule` on workflows) so it never offers an action that would 403; delete buttons stay creator-only (admin deletes via API).
-
-#### Project & Workflow Organization
-- **Projects** (`projects` table) - Organizational containers for workflows
-  - Basic users: 5 projects, 10 workflows each
-  - Premium users: 20 projects, 20 workflows each
-  - Organizations: 100 projects, 20 workflows each
-- **Workflows** (`workflows` table) - Define test execution steps
-- **Eval Sets** (`evalSets` table) - Define test scenarios to run
-- **Visibility:** Both workflows and eval sets can be `public` or `private` (Premium+ only)
-- **Mainline Flag:** Principal/Fellow users can mark workflows as "mainline" for leaderboard display
-
-### Frontend Architecture
-
-#### Routing
-Uses **Wouter** (lightweight React router). Routes defined in `client/src/App.tsx`:
-- Public pages: `/`, `/realtime` (dashboard), `/leaderboard`, `/dive` (provider info), `/run-your-own` (self-test entry point)
-- Auth pages: `/login`, `/activate/:token`
-- Console pages: `/console/*` (protected routes with `ConsoleLayout`)
-- Admin pages: `/admin/login`, `/admin/console/*` (admin-only routes)
-
-#### State Management
-- **TanStack React Query** for server state (API calls, caching)
-- **React Context** for theme (ThemeProvider)
-- Session-based authentication (Express sessions)
-
-#### UI Components
-Uses **shadcn/ui** component library with Radix UI primitives. Components located in `client/src/components/ui/`. Data visualization with **Recharts**, animations with **Framer Motion**.
-
-### Backend Architecture
-
-#### Server Entry Point
-`server/index.ts` - Sets up Express, session middleware, registers routes, starts HTTP server
-
-#### Route Registration
-All API routes defined in `server/routes.ts` using functional registration pattern:
-```typescript
-export async function registerRoutes(httpServer: Server, app: Express): Promise<Server>
-```
-
-#### Authentication & Authorization
-`server/auth.ts` provides:
-- `getCurrentUser(req)` - Get current user from session
-- `requireAuth` - Middleware to protect routes (401 if not logged in)
-- `requireAdmin` - Middleware for admin-only routes
-- `requirePrincipal` - Middleware for Principal/Fellow users
-- `authenticateApiKey` - Middleware for API key auth (Bearer token with `vox_live_` prefix)
-- `requireAuthOrApiKey` - Accept either session or API key auth
-- Password hashing with bcrypt
-- Token generation utilities
-- Google OAuth via Passport.js
-
-**Rate Limiting:** API routes are rate-limited (100 req/15min general, 20 req/15min for auth endpoints). The strict auth limiter covers `/api/auth/login`, `/register`, `/activate`, and `/api/user/change-password` (bcrypt-verified, so an online brute-force surface). Rate limits apply in production only.
-
-#### Data Access Layer
-`server/storage.ts` exports a singleton `DatabaseStorage` instance as `storage`:
-```typescript
-export const storage = new DatabaseStorage();
-```
-
-All database operations go through this abstraction. Uses Drizzle ORM for type-safe queries.
-
-#### Static Asset Handling
-`server/static.ts` - Serves static files in production (built assets from `dist/public`)
-
-#### Vite Integration
-`server/vite.ts` - Development-only Vite middleware for HMR
-
-### API Routes Structure
-
-All routes defined in `server/routes.ts`:
-
-**Auth (`/api/auth/*`):**
-- `GET /api/auth/status` - Check auth status and system initialization
-- `POST /api/auth/init` - Initialize system (first-time setup, creates admin + Scout user)
-- `POST /api/auth/login`, `/logout`, `/activate`, `/register`
-- `GET /api/auth/google` - Initiate Google OAuth flow
-- `GET /api/auth/google/callback` - Google OAuth callback
-- `GET /api/auth/google/status` - Check if Google OAuth is enabled
-
-**User Profile (`/api/user/*`):** (requires auth, self only)
-- `PATCH /api/user/profile` - Update own display name (`username`; 2–50 chars, uniqueness-checked; 23505 race → 400)
-- `POST /api/user/change-password` - Change/set own password. Verifies `currentPassword` when one exists; OAuth-only accounts (no password yet) may set one without a current. On success, **regenerates the caller's session and revokes all the user's other sessions**. On the strict auth rate limiter (20 req/15min).
-
-**API Keys (`/api/user/api-keys`):** (requires auth)
-- `GET /api/user/api-keys` - List user's API keys
-- `POST /api/user/api-keys` - Create new API key (returns key once, never again)
-- `POST /api/user/api-keys/:id/revoke` - Revoke an API key
-- `DELETE /api/user/api-keys/:id` - Delete an API key
-
-**Eval Agent Tokens (`/api/eval-agent-tokens`):** (requires auth, non-basic users)
-- `GET /api/eval-agent-tokens` - List tokens (admin sees all, non-admin sees own)
-- `POST /api/eval-agent-tokens` - Create token (admin: public/private; non-admin: private only; basic: 403)
-- `POST /api/eval-agent-tokens/:id/revoke` - Revoke token (owner or admin)
-
-**Admin (`/api/admin/*`):** (requires `requireAdmin` middleware)
-- `GET/PATCH /api/admin/users` - User management
-- `POST /api/admin/invite` - Create invite tokens
-- `GET/POST /api/admin/eval-agent-tokens` - Manage eval agent tokens (legacy admin-only endpoints)
-- `POST /api/admin/eval-agent-tokens/:id/revoke`
-
-**Resources:**
-- `GET/POST /api/providers` - Provider management (POST requires admin)
-- `GET/POST /api/projects`, `/api/projects/:id` - Project CRUD
-- `GET/POST/PATCH /api/workflows`, `/api/workflows/:id` - Workflow CRUD
-- `PATCH /api/workflows/:id/mainline` - Toggle mainline (requires Principal/Fellow)
-- `POST /api/workflows/:workflowId/run` - Create eval job
-- `GET/POST /api/eval-sets`, `PATCH /api/eval-sets/:id/mainline`
-
-**Eval Agent (`/api/eval-agent/*`):** (Bearer token auth)
-- `POST /api/eval-agent/register` - Register new agent
-- `POST /api/eval-agent/heartbeat` - Agent heartbeat
-- `GET /api/eval-agent/jobs` - Get pending jobs for region
-- `POST /api/eval-agent/jobs/:jobId/claim` - Claim a job
-- `POST /api/eval-agent/jobs/:jobId/complete` - Complete job with results
-
-**Public:**
-- `GET /api/eval-agents` - List all agents with token visibility (public)
-- `GET /api/metrics/realtime` - Mainline metrics (public)
-- `GET /api/metrics/community` - Community metrics (public)
-- `GET /api/metrics/my-evals` - User's private eval metrics (requires auth)
-- `GET /api/metrics/leaderboard` - Aggregated leaderboard
-- `GET /api/config` - System config
-
-## Implementation Guidelines
-
-### KISS Principle
-Keep implementations simple. The codebase values straightforward, readable code over clever abstractions. Don't over-engineer solutions.
+The UI mirrors the server via server-computed flags (`canSchedule`/`canManage`) so it never offers an action that would 403.
 
 ### Security-First
-- Never store tokens/keys in plaintext (always hash with `hashToken()` before storage)
-- All passwords must use bcrypt via `hashPassword()`
-- Validate inputs with Zod schemas (see `shared/schema.ts` for insert schemas)
-- API keys should be prefixed (e.g., `vox_live_xxxx`) and only shown once at creation
-
-### Modular & API-Ready
-The platform is designed to be web-first but API-ready. Future integrations include CLI tools and mobile apps. When adding features, consider how they would work via REST API.
+- Hash all tokens/keys with SHA256 (`storage.ts:hashToken()`) before storage; passwords via bcrypt (`auth.ts:hashPassword()`)
+- Validate inputs with Zod schemas from `shared/schema.ts`
+- API keys prefixed (`vox_live_`), shown once at creation
+- KISS: straightforward readable code over clever abstraction; web-first but API-ready
 
 ## Testing
 
-### Test Frameworks
-- **Vitest** - Unit and integration tests
-- **Playwright** - End-to-end browser tests
-
-### Environment & Test Data Files
-
-**Design Pattern:**
-- **Local dev**: `*.dev` files loaded by app/service/AI
-- **CI/CD**: Environment variables from CI secrets (no files)
-
-| Context | Env Vars | Test Data |
-|---------|----------|-----------|
-| Local Dev | `.env.dev` (file) | `tests/tests.dev.data` (file) |
-| CI/CD | CI secrets/environment | CI secrets/environment |
-
-All files are gitignored. CI/CD sets environment variables directly from secrets.
-
-**For local development**, create these files:
-
-`.env.dev`:
-```bash
-# Google OAuth
-GOOGLE_CLIENT_ID=<client-id>
-GOOGLE_CLIENT_SECRET=<client-secret>
-
-# Stripe test keys
-STRIPE_PUBLISHABLE_KEY=pk_test_...
-STRIPE_SECRET_KEY=sk_test_...
-```
-
-`tests/tests.dev.data`:
-```bash
-# Vox test user credentials
-# Admin: admin@vox.local / admin123456
-# Scout: scout@vox.ai / scout123
-
-# Google OAuth testing account
-# Email: <test-email>
-# Password: <test-password>
-```
-
-The `dev-local-run.sh` script loads `.env` then `.env.dev` automatically.
-
-**Important for tests**: Copy `.env.dev` to `.env` before running tests:
-```bash
-cp .env.dev .env
-```
-
-**Stripe test mode**: When using Stripe test keys (`sk_test_*`), seat purchases work without a payment method (test mode). This allows testing the full purchase flow without actual payments.
-
-### Running Tests
+**Env/test-data files** (all gitignored; CI uses secrets/env vars instead):
+- `.env.dev` — OAuth + Stripe test keys; `dev-local-run.sh` loads `.env` then `.env.dev`
+- `tests/tests.dev.data` — test account credentials
+- **Copy `.env.dev` to `.env` before running tests.** Stripe test keys allow seat purchases without a payment method.
 
 ```bash
-# Start local server first (required for integration and E2E tests)
-./scripts/dev-local-run.sh start
-
-# Run ALL tests (unit + audio + E2E) - recommended
-./scripts/full-tests-run.sh       # Runs all tests
-
-# Unit and Integration Tests (Vitest)
-npm test                         # Run all tests
-npm run test:watch               # Run in watch mode
-
-# Clash Runner Audio Pipeline Test (Docker)
-./scripts/full-tests-run.sh audio                    # Via test runner
-docker build -t vox-clash-runner-test ./vox_clash_runner  # Or manually
-docker run --rm vox-clash-runner-test bash /app/audio/test-audio-pipeline.sh
-
-# End-to-End Tests (Playwright)
-npx playwright test              # Run all E2E tests
-npx playwright test --ui         # Run with Playwright Test UI
-npx playwright test --headed     # Run in headed browser mode
+./scripts/dev-local-run.sh start   # required for integration + E2E
+./scripts/full-tests-run.sh        # ALL tests (unit + audio + E2E) — the gate
+npm test                           # Vitest only
+./scripts/full-tests-run.sh audio  # Clash runner audio pipeline (Docker)
+npx playwright test [--ui|--headed]
 ```
 
-**Full Test Runner** (`./scripts/full-tests-run.sh`):
-- Loads environment from `.env` and `.env.dev` automatically
-- Verifies server is running
-- Runs unit tests (Vitest), audio pipeline (Docker), then E2E tests (Playwright)
-- Displays test accounts and credentials summary
+A green gate means all three: unit/integration (Vitest), audio (Docker), E2E (Playwright). Notable suites: `tests/api.test.ts`, `tests/eval-agent-daemon.test.ts`, `tests/clash-runner*.test.ts`, `tests/e2e/*.spec.ts`, `vox_clash_runner/audio/test-audio-pipeline.sh`. Don't trust doc'd test counts — run `npm test`.
 
-### Test Files
+**Known gate hazards:**
+- Suites leak resources into the dev DB and trip per-user caps (GitHub #134). Before a full run:
+  ```sql
+  DELETE FROM workflows WHERE owner_id=1;
+  DELETE FROM projects  WHERE owner_id=1;
+  DELETE FROM secrets   WHERE user_id=1;
+  ```
+- Integration suites hit the **already-running** dev server — after changing `server/`, run `./scripts/dev-local-run.sh stop && start` or the change isn't exercised.
 
-`tests/` holds 84 suite files; the table below is a **selection of the notable ones**, not an inventory — per-file counts drift as soon as anyone adds a case, so don't trust them as exact. For the real numbers run `npm test`; as of 2026-09-01 the unit/integration suite is **1671 tests across 88 files**, plus 29 audio-pipeline checks and 134 Playwright E2E.
+## Eval Agent Daemon
 
-| File | Type | Tests | Description |
-|------|------|-------|-------------|
-| `tests/api.test.ts` | Integration | 107+ | API endpoints (auth, workflows, jobs, organizations) |
-| `tests/auth.test.ts` | Unit | 26 | Password hashing, token generation |
-| `tests/cron.test.ts` | Unit | 32 | Cron expression parsing and validation |
-| `tests/eval-agent-daemon.test.ts` | Unit | 91 | Eval agent result parsing, metrics calculation, API communication |
-| `tests/agora.test.ts` | Unit | 45 | Agora token gen, ConvoAI payload, UID reservation |
-| `tests/agora-e2e.test.ts` | E2E | 13 | Real ConvoAI API: start/speak/stop (requires .env.dev credentials) |
-| `tests/clash-runner.test.ts` | Unit | 44 | Runner logic, secret resolution, Elo calculation |
-| `tests/clash-runner-lifecycle.test.ts` | Integration | 60 | Full runner lifecycle: tokens, registration, matches, moderator |
-| `tests/clash-v2.test.ts` | Unit | 45 | WebSocket hub, cron, Agora prompts |
-| `vox_clash_runner/audio/test-audio-pipeline.sh` | Docker | 12 | PipeWire stack, sinks, capture, cross-wire, C++ binaries |
-| `tests/e2e/auth.spec.ts` | E2E | 5 | Login, logout, authentication flows |
-| `tests/e2e/api.spec.ts` | E2E | 17 | Public API, protected endpoints, rate limiting |
-| `tests/e2e/public-pages.spec.ts` | E2E | 9 | Landing page, leaderboard, API docs |
-| `tests/e2e/console.spec.ts` | E2E | 9 | Console access control, admin routes |
+- `vox_eval_agentd/vox-agentd.ts` — the daemon (single source for Docker & local dev); `vox_eval_agentd/Dockerfile`; `aeval-data/` (git submodule); `applications/` + `scenarios/` (YAML configs)
+- Two frameworks: **aeval** (default; `aeval run scenario.yaml` → `metrics.json`) and **voice-agent-tester** (Node/Puppeteer → CSV)
+- aeval needs `libsndfile1` + `ffmpeg` (Dockerfile has them; install on host for local dev) — without them energy VAD and STT fail with `NoBackendError`
+- Metrics mapping (`metrics.json` → `evalResults`): `responseLatencyMedian`/`Sd` from `response_metrics.latency.turn_level[].latency_ms` (true median; population SD, needs ≥2 samples; negative latencies filtered; fallback turn_level → `summary.p50_latency_ms` → `aggregated_summary.avg_response_latency_ms`); `interruptLatencyMedian`/`Sd` likewise from `interruption_metrics.latency.turn_level[].reaction_time_ms`
+- **Failure policy:** non-zero aeval exit → job failed; partial results are never reported
 
-A green gate means all three: unit/integration (`npm test`), audio (Docker), and E2E (Playwright). Run `./scripts/full-tests-run.sh` for all of them — see the pre-merge gate note at the top of this file.
+## Key Files
 
-**Known gate hazard:** the suites leak resources into the local dev DB and trip per-user caps, which turns the gate red for reasons unrelated to any code change (GitHub #134). Before a full run:
+- `shared/schema.ts` — all tables/enums/Zod schemas (single source of truth)
+- `shared/secrets.ts` — secret naming + `isAuthFieldName`; **client-safe, must stay dependency-free**
+- `shared/credentials.ts` — redaction + fingerprinting shared by Core/daemon/broker; **Node-only, never import from client/**
+- `shared/mint-timeout.ts` — the one clamped `WEB_SESSION_MINT_TIMEOUT_SECONDS` reader; the clamp orders four deadlines (broker child < Core abort +15s < stale reclaim +30s < daemon's hard-coded 240s poll) — raising `MAX_MINT_TIMEOUT_SECONDS` requires raising that poll too
+- `server/routes.ts`, `server/storage.ts`, `server/auth.ts`, `server/permissions.ts`, `server/stripe.ts`, `client/src/App.tsx`
+- `designs/IMPLEMENTATION_PLAN.md`, `designs/CLASH_DESIGN.md`, `designs/vox-arch.png`
+- `scripts/vox-upgrade.sh` — upgrade eval agent / clash runner containers
 
-```sql
-DELETE FROM workflows WHERE owner_id=1;   -- 200-workflow cap
-DELETE FROM projects  WHERE owner_id=1;   -- 20-project cap
-DELETE FROM secrets   WHERE user_id=1;    -- 50-secret cap
-```
+## Deployment & Notes
 
-Also: the integration suites hit the **already-running** dev server, so a change under `server/` is not exercised until `./scripts/dev-local-run.sh stop && start`.
-
-### Test Coverage by Module
-
-- **Main Vox API**: Auth, workflows, jobs, eval sets, organizations, API keys
-- **Eval Agent Daemon**: Result parsing, CSV handling, API communication
-- **Auth Utilities**: Password hashing, bcrypt verification
-- **Cron Parsing**: Expression validation, next run calculation
-- **E2E**: Public pages, authentication, API endpoints, access control
-
-When adding new features, write tests for critical paths like authentication, job assignment, and payment flows.
-
-## Common Development Tasks
-
-### Adding a New Database Table
-1. Define table in `shared/schema.ts` with Drizzle schema
-2. Add insert/select types with Zod validation
-3. Run `npm run db:push` to sync to database
-4. Add storage methods in `server/storage.ts`
-5. Create API routes in `server/routes.ts`
-
-### Adding a New API Route
-1. Add route handler in `server/routes.ts` inside `registerRoutes()`
-2. Use appropriate auth middleware (`requireAuth`, `requireAdmin`, etc.)
-3. Call storage methods for data access
-4. Return JSON responses with proper error handling
-
-### Adding a New Page
-1. Create page component in `client/src/pages/`
-2. Add route in `client/src/App.tsx`
-3. Use `ConsoleLayout` wrapper for protected console pages
-4. Use TanStack Query hooks for API calls (see existing pages for patterns)
-
-## API Documentation
-- **Swagger UI**: `/api/docs` - Interactive API documentation
-- **OpenAPI Spec**: `/api/v1/openapi.json` - Machine-readable spec
-- **Source**: `docs/openapi.yaml` - Full OpenAPI 3.0 specification
-
-## Important Files
-
-### Core
-- `shared/schema.ts` - Single source of truth for all data models (all tables, enums, and Zod insert/select schemas)
-- `shared/secrets.ts` - Secret naming convention + the login-name heuristic (`isAuthFieldName`). **Client-safe**: imported by the console, so it must stay dependency-free.
-- `shared/credentials.ts` - Credential redaction and fingerprinting, shared by Core, the daemon and the broker so their needle sets cannot drift. **Node-only** (imports `crypto`) — never import it from `client/`.
-- `shared/mint-timeout.ts` - The one clamped `WEB_SESSION_MINT_TIMEOUT_SECONDS` reader. The clamp keeps four deadlines ordered: broker child < Core abort (+15s) < stale reclaim (+30s) < the daemon's hard-coded 240s session poll. Raising `MAX_MINT_TIMEOUT_SECONDS` means raising that poll too, or the agent gives up before Core and the diagnosis never lands.
-- `server/routes.ts` - All API endpoints (large and monolithic by design)
-- `server/routes-api-v1.ts` - Versioned API v1 endpoints
-- `server/storage.ts` - Database abstraction layer (DatabaseStorage class)
-- `server/auth.ts` - Authentication utilities and middleware
-- `server/stripe.ts` - Stripe payment integration
-- `client/src/App.tsx` - Route definitions and page layouts
-
-### Documentation & Design
-- `designs/IMPLEMENTATION_PLAN.md` - Detailed specs and implementation phases
-- `designs/CLASH_DESIGN.md` - Clash architecture: RTC uid map, PipeWire audio graph, match lifecycle, failure policy
-- `designs/vox-arch.png` - Low-level architecture diagram
-- `docs/openapi.yaml` - OpenAPI 3.0 specification for API v1
-
-### Scripts
-- `scripts/dev-local-run.sh` - Local development environment setup
-- `scripts/vox-upgrade.sh` - Upgrade eval agent / clash runner containers (reads tokens from .env)
-
-### Tests
-- `tests/tests.dev.data` - Test accounts for local dev (gitignored)
-- `tests/api.test.ts` - API integration tests
-- `tests/auth.test.ts` - Auth utilities unit tests
-- `tests/cron.test.ts` - Cron parsing unit tests
-- `tests/eval-agent-daemon.test.ts` - Eval agent daemon tests
-- `tests/e2e/*.spec.ts` - Playwright E2E tests
-- `playwright.config.ts` - Playwright configuration
-
-See the **Test Files** table above for the full per-file inventory.
-
-### Eval Agent Daemon
-- `vox_eval_agentd/vox-agentd.ts` - Eval agent daemon (single source for Docker & local dev)
-- `vox_eval_agentd/Dockerfile` - Eval agent Docker image (compiles TS via esbuild)
-- `vox_eval_agentd/aeval-data/` - aeval runtime data (git submodule: corpus, config, examples)
-- `vox_eval_agentd/applications/` - Application config files (YAML)
-- `vox_eval_agentd/scenarios/` - Test scenario config files (YAML)
-
-#### Eval Frameworks
-Two eval frameworks are supported:
-- **aeval** (default) — single-binary Python evaluator with JSON metrics output
-- **voice-agent-tester** — Node/Puppeteer evaluator with CSV report output
-
-#### System Dependencies (aeval framework)
-aeval requires two system packages for its audio analysis pipeline:
-- **`libsndfile1`** — C library for reading audio files (WAV, FLAC, OGG). Used by PySoundFile in energy VAD and librosa in STT/Whisper.
-- **`ffmpeg`** — Required for decoding WebM/Opus recordings. Browser recordings are saved as `.webm`; libsndfile can't decode this format, so librosa falls back to audioread which needs ffmpeg.
-
-Without these, energy VAD and STT both fail with `NoBackendError` — VAD falls back to events-only (losing interrupt detection), and STT produces an empty transcript.
-
-```bash
-# Ubuntu/Debian (including Docker)
-sudo apt install libsndfile1 ffmpeg
-
-# macOS
-brew install libsndfile ffmpeg
-```
-
-The Dockerfile already includes both. For local dev, install them on your host machine.
-
-#### Latency Metrics Calculation (aeval framework)
-aeval runs a scenario (e.g. `smoke_test_en_livekit.yaml`), records audio, and runs an analysis pipeline that produces `metrics.json`. The daemon reads this file and maps it to Vox's `evalResults` schema:
-
-**`responseLatencyMedian`** — Response latency median (milliseconds):
-- **Source**: Computed from `response_metrics.latency.turn_level[].latency_ms` array
-- **What it measures**: Time from when the user finishes speaking to when the AI agent starts responding (first-byte latency)
-- **Formula**: True median — sort values, take middle element (odd count) or average of two middle elements (even count)
-- **Fallback chain**: turn_level median → `summary.p50_latency_ms` → `aggregated_summary.avg_response_latency_ms`
-- **Negative latencies** (overlapping speech) are filtered out before calculation
-
-**`responseLatencySd`** — Response latency standard deviation (milliseconds):
-- **Source**: Computed from `response_metrics.latency.turn_level[].latency_ms` array
-- **Formula**: Population standard deviation: `SD = sqrt( Σ(xi - mean)² / n )`
-  - `xi` = latency of each turn, `mean` = average of all turns, `n` = number of turns
-- **Requires**: At least 2 valid turn-level samples; if < 2: SD = 0
-
-**`interruptLatencyMedian`** — Interrupt reaction time median (milliseconds):
-- **Source**: Computed from `interruption_metrics.latency.turn_level[].reaction_time_ms` array
-- **What it measures**: Time for the agent to stop speaking after being interrupted
-- **Fallback chain**: turn_level median → `summary.p50_reaction_time_ms` → `aggregated_summary.avg_interruption_reaction_ms`
-
-**`interruptLatencySd`** — Interrupt latency standard deviation (milliseconds):
-- **Source**: Computed from `interruption_metrics.latency.turn_level[].reaction_time_ms`
-- **Formula**: Same population SD formula as response latency
-
-**Job failure policy**: If aeval exits with non-zero code (e.g. target agent timeout), the job is marked as failed. Partial results are not reported to avoid polluting metrics with statistically unreliable data.
-
-## External Dependencies
-
-Key runtime dependencies:
-- **Drizzle ORM** - Type-safe database queries
-- **Express** - Web server framework
-- **React 19** - UI framework
-- **Vite** - Build tool and dev server
-- **Wouter** - Client-side routing
-- **TanStack React Query** - Server state management
-- **Zod** - Runtime validation
-- **shadcn/ui** - Component library
-- **Passport.js** - Authentication middleware (Google OAuth)
-- **express-rate-limit** - API rate limiting
-
-Development dependencies:
-- **TypeScript 5.6.3** - Type checking
-- **ESLint** - Linting with TypeScript rules
-- **Vitest** - Unit and integration testing
-- **Playwright** - End-to-end browser testing
-- **tsx** - TypeScript execution for dev server
-
-## Deployment
-
-- **CI/CD:** GitHub Actions triggers Coolify webhook on push to main (`.github/workflows/deploy.yml`)
-- Production build creates `dist/` directory with bundled assets
-- Database migrations handled by Drizzle Kit (`npm run db:push` for schema sync)
-
-## Notes
-
-- The application listens on port **5000** by default (configurable via `PORT` env var)
-- First-time setup requires `INIT_CODE` to create admin user via `/api/auth/init`
-- System creates two users on init: admin (active) and Scout (needs activation)
-- Default providers seeded (all `convoai` SKU): "Agora ConvoAI Engine" (`platformId: agora`), "LiveKit Agents" (`livekit`), "ElevenLabs Agents" (`elevenlabs`), and "Custom" (no `platformId`). `providers.platformId` is the stable slug matched against a workflow's `platform.setup → platform_id` (the console warns on mismatch and auto-selects Custom when the YAML has no `platform_id`). Provider seeding is idempotent-by-name: it runs from both migrations (retrofit existing DBs) and `/api/auth/init` (fresh installs), which coexist without duplicating.
-- The eval agent daemon supports two frameworks: `aeval` (default, binary) and `voice-agent-tester` (Node/Puppeteer)
-  - aeval: `aeval run scenario.yaml` — produces `metrics.json` with latency data
-  - voice-agent-tester: `npm start -- -a apps/livekit.yaml -s suites/appointment.yaml --headless false` — produces CSV report
-- Architecture diagram available at `designs/vox-arch.png`
+- CI/CD: GitHub Actions → Coolify webhook on push to main (`.github/workflows/deploy.yml`)
+- Default providers (all `convoai`): Agora ConvoAI Engine (`agora`), LiveKit Agents (`livekit`), ElevenLabs Agents (`elevenlabs`), Custom (no `platformId`). `providers.platformId` matches the workflow's `platform.setup → platform_id`; seeding is idempotent-by-name from both migrations and `/api/auth/init`
+- Common tasks: new table → schema.ts → migration → storage.ts → routes.ts; new page → `client/src/pages/` → route in `App.tsx` → `ConsoleLayout` + TanStack Query
