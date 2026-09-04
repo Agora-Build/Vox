@@ -558,6 +558,7 @@ ensure_virtual_audio() {
 
     if grep -q VirtualAudio /proc/asound/cards 2>/dev/null; then
         log_success "Virtual audio: VirtualAudio card present"
+        ensure_audio_device_access
         return 0
     fi
 
@@ -570,11 +571,48 @@ ensure_virtual_audio() {
             && echo "options snd-aloop id=VirtualAudio pcm_substreams=1" | sudo tee /etc/modprobe.d/vox-virtual-audio.conf > /dev/null \
             && log_info "Virtual audio: persisted via /etc/modules-load.d + /etc/modprobe.d" \
             || log_warn "Virtual audio works now but could not be persisted — reload after reboot: sudo modprobe snd-aloop id=VirtualAudio pcm_substreams=1"
+        ensure_audio_device_access
     else
         log_warn "Could not load snd-aloop — aeval jobs will fail in soundcard mode. Set up manually:"
         log_warn "  sudo modprobe snd-aloop id=VirtualAudio pcm_substreams=1"
         log_warn "  echo snd-aloop | sudo tee /etc/modules-load.d/vox-virtual-audio.conf"
         log_warn "  echo 'options snd-aloop id=VirtualAudio pcm_substreams=1' | sudo tee /etc/modprobe.d/vox-virtual-audio.conf"
+    fi
+}
+
+# The card existing is not enough: /dev/snd nodes are root:audio 660, so a
+# local-process agent whose user lacks the audio group can't open them —
+# aeval's preflight then fails with SOUNDCARD_DEVICE_NOT_FOUND (PortAudio
+# silently skips devices it can't open). usermod is the permanent fix but
+# only applies to NEW login sessions; the setfacl grant makes the CURRENT
+# session work without re-login (ACL survives until the device nodes are
+# recreated — after a reboot the audio group covers it).
+# Docker agents are unaffected: container root opens --device /dev/snd fine.
+ensure_audio_device_access() {
+    local card
+    card=$(awk '/VirtualAudio/ {print $1; exit}' /proc/asound/cards 2>/dev/null)
+    [ -n "$card" ] || return 0
+
+    if [ -r "/dev/snd/controlC${card}" ] && [ -w "/dev/snd/controlC${card}" ]; then
+        log_success "Virtual audio: device access OK (card ${card})"
+        return 0
+    fi
+
+    log_info "Granting audio device access for $USER..."
+    if ! id -nG "$USER" | grep -qw audio; then
+        sudo usermod -aG audio "$USER" \
+            && log_info "Added $USER to the audio group (takes effect on next login)" \
+            || log_warn "Could not add $USER to the audio group: sudo usermod -aG audio $USER"
+    fi
+    if command -v setfacl > /dev/null 2>&1; then
+        if sudo setfacl -m "u:${USER}:rw" /dev/snd/pcmC${card}D* "/dev/snd/controlC${card}" 2>/dev/null \
+            && [ -w "/dev/snd/controlC${card}" ]; then
+            log_success "Virtual audio: device access granted for this session (ACL on card ${card})"
+        else
+            log_warn "Virtual audio: card ${card} still not accessible — log out and back in (audio group), then restart the agent"
+        fi
+    else
+        log_warn "setfacl unavailable — log out and back in for the audio group to apply, then restart the agent"
     fi
 }
 
@@ -597,12 +635,16 @@ smoke_test_agent() {
         log_warn "aeval: not installed (skip)"
     fi
 
-    # Check virtual audio card (aeval >=0.4 soundcard mode)
+    # Check virtual audio card + device access (aeval >=0.4 soundcard mode)
     if [ "$(uname -s)" = "Linux" ]; then
-        if grep -q VirtualAudio /proc/asound/cards 2>/dev/null; then
-            log_success "Virtual audio: VirtualAudio card OK"
-        else
+        local va_card
+        va_card=$(awk '/VirtualAudio/ {print $1; exit}' /proc/asound/cards 2>/dev/null)
+        if [ -z "$va_card" ]; then
             log_warn "Virtual audio: VirtualAudio card missing — aeval jobs will fail (run: sudo modprobe snd-aloop id=VirtualAudio pcm_substreams=1)"
+        elif [ ! -w "/dev/snd/controlC${va_card}" ]; then
+            log_warn "Virtual audio: card present but not accessible by $USER — aeval preflight will fail with SOUNDCARD_DEVICE_NOT_FOUND"
+        else
+            log_success "Virtual audio: VirtualAudio card OK (card ${va_card}, accessible)"
         fi
     fi
 
