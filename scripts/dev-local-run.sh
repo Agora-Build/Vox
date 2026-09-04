@@ -492,15 +492,54 @@ ensure_submodules() {
     log_success "Submodules ready"
 }
 
+# aeval's bundled Python Playwright expects its exact browser build in the
+# Playwright cache (aeval 0.4.x = playwright 1.57 = chromium-1200).
+# Keep both pins in sync with vox_eval_agentd/Dockerfile on aeval bumps.
+AEVAL_MIN_VERSION="0.4.1"
+AEVAL_PLAYWRIGHT_VERSION="1.57.0"
+AEVAL_CHROMIUM_BUILD="chromium-1200"
+
+ensure_aeval_browser() {
+    local cache="$HOME/.cache/ms-playwright"
+    [ "$(uname -s)" = "Darwin" ] && cache="$HOME/Library/Caches/ms-playwright"
+    # Guard on the browser executable, not the directory: an interrupted
+    # install leaves the directory behind and would mask the breakage forever.
+    if ls "$cache/$AEVAL_CHROMIUM_BUILD"/*/[Cc]hrom* > /dev/null 2>&1; then
+        return 0
+    fi
+    log_info "Installing Playwright Chromium for aeval ($AEVAL_CHROMIUM_BUILD)..."
+    if npx -y "playwright@$AEVAL_PLAYWRIGHT_VERSION" install chromium; then
+        log_success "Playwright Chromium installed"
+    else
+        log_warn "Playwright Chromium install failed — aeval jobs will fail with BrowserType.launch. Run: npx -y playwright@$AEVAL_PLAYWRIGHT_VERSION install chromium"
+    fi
+}
+
+# A pre-existing binary is kept as-is, but its version is checked against the
+# branch's pinned data/browser (aeval-data submodule, chromium build) — a
+# stale binary against new data configs fails confusingly at job time.
+check_aeval_version() {
+    local v
+    v=$(aeval --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+    if [ -n "$v" ] && [ "$(printf '%s\n' "$AEVAL_MIN_VERSION" "$v" | sort -V | head -1)" != "$AEVAL_MIN_VERSION" ]; then
+        log_warn "aeval $v is older than expected $AEVAL_MIN_VERSION (aeval-data/browser are pinned for $AEVAL_MIN_VERSION)."
+        log_warn "  Upgrade: sudo rm /usr/local/bin/aeval && re-run this script"
+    fi
+}
+
 ensure_aeval_binary() {
     if command -v aeval &> /dev/null; then
         log_info "aeval binary found: $(which aeval)"
+        check_aeval_version
+        ensure_aeval_browser
         return 0
     fi
 
     # Check common install locations
     if [ -x "/usr/local/bin/aeval" ]; then
         log_info "aeval binary found: /usr/local/bin/aeval"
+        check_aeval_version
+        ensure_aeval_browser
         return 0
     fi
 
@@ -528,8 +567,106 @@ ensure_aeval_binary() {
     log_info "Downloading aeval from ${download_url}"
     if sudo curl -fSL -o "$install_path" "$download_url" && sudo chmod +x "$install_path"; then
         log_success "aeval installed to $install_path"
+        ensure_aeval_browser
     else
         log_warn "Failed to download aeval (may need manual install). Local agent will fall back to voice-agent-tester."
+    fi
+}
+
+# aeval >=0.4 defaults to virtual-soundcard audio I/O. On Linux that is the
+# snd-aloop kernel module loaded as ALSA card "VirtualAudio" (a host-level
+# operation — Docker agents see it via --device /dev/snd) plus the alsa-utils
+# and libportaudio2 userland packages. Warn-and-continue on any failure: a
+# missing card fails eval jobs at run time, it must not block the dev env.
+ensure_virtual_audio() {
+    if [ "$(uname -s)" != "Linux" ]; then
+        log_info "Virtual audio: non-Linux host — install BlackHole 2ch (48 kHz, 2ch) manually for aeval soundcard mode"
+        return 0
+    fi
+
+    # Userland packages needed by aeval's audio pipeline
+    local missing_pkgs=()
+    command -v aplay > /dev/null 2>&1 || missing_pkgs+=(alsa-utils)
+    ldconfig -p 2>/dev/null | grep -q libportaudio || missing_pkgs+=(libportaudio2)
+    ldconfig -p 2>/dev/null | grep -q libsndfile || missing_pkgs+=(libsndfile1)
+    # acl provides setfacl, used by ensure_audio_device_access for the
+    # no-re-login grant on /dev/snd
+    command -v setfacl > /dev/null 2>&1 || missing_pkgs+=(acl)
+    if [ ${#missing_pkgs[@]} -gt 0 ]; then
+        log_info "Installing audio packages: ${missing_pkgs[*]}"
+        sudo apt-get update -qq || true
+        if ! sudo apt-get install -y "${missing_pkgs[@]}"; then
+            log_warn "Failed to install ${missing_pkgs[*]} — install manually: sudo apt-get update && sudo apt-get install -y alsa-utils libportaudio2 libsndfile1 acl"
+        fi
+    fi
+
+    if grep -q VirtualAudio /proc/asound/cards 2>/dev/null; then
+        log_success "Virtual audio: VirtualAudio card present"
+        ensure_audio_device_access
+        return 0
+    fi
+
+    log_info "Loading snd-aloop kernel module as card VirtualAudio..."
+    if sudo modprobe snd-aloop id=VirtualAudio pcm_substreams=1 \
+        && grep -q VirtualAudio /proc/asound/cards 2>/dev/null; then
+        log_success "Virtual audio: snd-aloop loaded (card VirtualAudio)"
+        # Persist across reboots
+        echo "snd-aloop" | sudo tee /etc/modules-load.d/vox-virtual-audio.conf > /dev/null \
+            && echo "options snd-aloop id=VirtualAudio pcm_substreams=1" | sudo tee /etc/modprobe.d/vox-virtual-audio.conf > /dev/null \
+            && log_info "Virtual audio: persisted via /etc/modules-load.d + /etc/modprobe.d" \
+            || log_warn "Virtual audio works now but could not be persisted — reload after reboot: sudo modprobe snd-aloop id=VirtualAudio pcm_substreams=1"
+        ensure_audio_device_access
+    else
+        # modprobe on an already-loaded module is a silent no-op (its options
+        # are ignored), so a plain "Loopback" card blocks the VirtualAudio id
+        # until the module is unloaded.
+        if lsmod | grep -q '^snd_aloop'; then
+            log_warn "snd-aloop is already loaded WITHOUT id=VirtualAudio — unload it first: sudo rmmod snd-aloop, then re-run this script"
+        else
+            log_warn "Could not load snd-aloop — aeval jobs will fail in soundcard mode. Set up manually:"
+            log_warn "  sudo modprobe snd-aloop id=VirtualAudio pcm_substreams=1"
+            log_warn "  echo snd-aloop | sudo tee /etc/modules-load.d/vox-virtual-audio.conf"
+            log_warn "  echo 'options snd-aloop id=VirtualAudio pcm_substreams=1' | sudo tee /etc/modprobe.d/vox-virtual-audio.conf"
+        fi
+    fi
+}
+
+# The card existing is not enough: /dev/snd nodes are root:audio 660, so a
+# local-process agent whose user lacks the audio group can't open them —
+# aeval's preflight then fails with SOUNDCARD_DEVICE_NOT_FOUND (PortAudio
+# silently skips devices it can't open). usermod is the permanent fix but
+# only applies to NEW login sessions; the setfacl grant makes the CURRENT
+# session work without re-login (ACL survives until the device nodes are
+# recreated — after a reboot the audio group covers it).
+# Docker agents are unaffected: container root opens --device /dev/snd fine.
+ensure_audio_device_access() {
+    local card
+    card=$(awk '/VirtualAudio/ {print $1; exit}' /proc/asound/cards 2>/dev/null)
+    [ -n "$card" ] || return 0
+
+    if [ -r "/dev/snd/controlC${card}" ] && [ -w "/dev/snd/controlC${card}" ]; then
+        log_success "Virtual audio: device access OK (card ${card})"
+        return 0
+    fi
+
+    log_info "Granting audio device access for $USER..."
+    if ! id -nG "$USER" | grep -qw audio; then
+        sudo usermod -aG audio "$USER" \
+            && log_info "Added $USER to the audio group (takes effect on next login)" \
+            || log_warn "Could not add $USER to the audio group: sudo usermod -aG audio $USER"
+    fi
+    if command -v setfacl > /dev/null 2>&1; then
+        # /dev/snd/timer is also root:audio 660 and alsa-lib opens it on the
+        # dmix/"default"-plugin route — without it the pcm/control ACLs alone
+        # can still leave the device unopenable.
+        if sudo setfacl -m "u:${USER}:rw" /dev/snd/pcmC${card}D* "/dev/snd/controlC${card}" /dev/snd/timer 2>/dev/null \
+            && [ -w "/dev/snd/controlC${card}" ]; then
+            log_success "Virtual audio: device access granted for this session (ACL on card ${card})"
+        else
+            log_warn "Virtual audio: card ${card} still not accessible — log out and back in (audio group), then restart the agent"
+        fi
+    else
+        log_warn "setfacl unavailable — log out and back in for the audio group to apply, then restart the agent"
     fi
 }
 
@@ -550,6 +687,19 @@ smoke_test_agent() {
         fi
     else
         log_warn "aeval: not installed (skip)"
+    fi
+
+    # Check virtual audio card + device access (aeval >=0.4 soundcard mode)
+    if [ "$(uname -s)" = "Linux" ]; then
+        local va_card
+        va_card=$(awk '/VirtualAudio/ {print $1; exit}' /proc/asound/cards 2>/dev/null)
+        if [ -z "$va_card" ]; then
+            log_warn "Virtual audio: VirtualAudio card missing — aeval jobs will fail (run: sudo modprobe snd-aloop id=VirtualAudio pcm_substreams=1)"
+        elif [ ! -w "/dev/snd/controlC${va_card}" ]; then
+            log_warn "Virtual audio: card present but not accessible by $USER — aeval preflight will fail with SOUNDCARD_DEVICE_NOT_FOUND"
+        else
+            log_success "Virtual audio: VirtualAudio card OK (card ${va_card}, accessible)"
+        fi
     fi
 
     # Check submodules
@@ -728,10 +878,17 @@ start_eval_agent_docker() {
     docker stop "$container_name" 2>/dev/null || true
     docker rm "$container_name" 2>/dev/null || true
 
+    # aeval >=0.4 records/plays through the host's snd-aloop "VirtualAudio"
+    # card (see ensure_virtual_audio) — pass it through when present so a
+    # host without sound devices still gets a running (if audio-less) agent.
+    local device_args=""
+    [ -d /dev/snd ] && device_args="--device /dev/snd"
+
     # Run Docker container with host network access
     docker run -d \
         --name "$container_name" \
         --add-host=host.docker.internal:host-gateway \
+        $device_args \
         -e AGENT_TOKEN="$token" \
         -e VOX_SERVER="http://host.docker.internal:$SERVER_PORT" \
         -e VOX_AGENT_NAME="$name" \
@@ -932,9 +1089,10 @@ show_status() {
 # ==================== Combined Start/Stop ====================
 
 do_start_local() {
-    # 1. Initialize submodules and aeval binary
+    # 1. Initialize submodules, aeval binary, and virtual audio device
     ensure_submodules
     ensure_aeval_binary
+    ensure_virtual_audio
 
     # 1b. Run smoke tests
     smoke_test_agent || log_warn "Smoke tests had failures (continuing startup)"
@@ -992,8 +1150,10 @@ do_start_docker() {
     # 5. Seed data
     seed_data
 
-    # 6. Ensure eval agent Docker image exists
+    # 6. Ensure eval agent Docker image exists + host virtual audio
+    #    (the container's --device /dev/snd exposes the HOST's snd-aloop card)
     ensure_eval_agent_image
+    ensure_virtual_audio
 
     # 7. Get or create eval agent token and start agent (Docker)
     if [ "$MULTI_REGION_MODE" = true ]; then

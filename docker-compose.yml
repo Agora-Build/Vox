@@ -82,6 +82,11 @@ services:
   #     AGENT_TOKEN: <token>
   #     VOX_SERVER: http://vox-service:5000
   #     EVAL_FRAMEWORK: aeval   # or "voice-agent-tester"
+  #   # aeval >=0.4 records/plays through a virtual ALSA soundcard. The HOST
+  #   # must load it first (a container cannot modprobe):
+  #   #   sudo modprobe snd-aloop id=VirtualAudio pcm_substreams=1
+  #   devices:
+  #     - /dev/snd:/dev/snd
   #   depends_on:
   #     vox-service:
   #       condition: service_started

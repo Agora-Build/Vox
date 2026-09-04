@@ -1246,11 +1246,14 @@ describe('Vox API Tests', () => {
       expect(response.ok).toBe(true);
       const data = await response.json();
       expect(Array.isArray(data)).toBe(true);
-      // Leaderboard should have rank and provider info
+      // Leaderboard should have rank and provider info. The field is
+      // `provider` (display name), not `providerName` — the old assertion
+      // only ever ran against an empty leaderboard, so the drift was latent
+      // until the local dev DB gained a real mainline result.
       if (data.length > 0) {
         expect(data[0]).toHaveProperty('rank');
         expect(data[0]).toHaveProperty('providerId');
-        expect(data[0]).toHaveProperty('providerName');
+        expect(data[0]).toHaveProperty('provider');
         expect(data[0]).toHaveProperty('responseLatency');
       }
     });
