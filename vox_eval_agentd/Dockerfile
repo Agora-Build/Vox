@@ -55,6 +55,8 @@ RUN apt-get update && apt-get install -y \
     libatspi2.0-0t64 \
     libsndfile1 \
     ffmpeg \
+    alsa-utils \
+    libportaudio2 \
     wget \
     zip \
     --no-install-recommends \
@@ -64,8 +66,12 @@ WORKDIR /app
 
 # --- aeval framework ---
 # Download aeval binary from GitHub Release (multi-platform)
+# aeval >=0.4 defaults to virtual-soundcard audio I/O: the HOST must load the
+# snd-aloop kernel module as card "VirtualAudio" (a container cannot modprobe)
+# and the daemon container must run with --device /dev/snd. The broker target
+# never does audio I/O (setup:account only) and needs neither.
 ARG TARGETARCH
-ARG AEVAL_VERSION=v0.3.1
+ARG AEVAL_VERSION=v0.4.1
 RUN ARCH=$(case "${TARGETARCH}" in arm64) echo "arm64" ;; *) echo "x86_64" ;; esac) && \
     if [ "${AEVAL_VERSION}" = "latest" ]; then \
       DOWNLOAD_URL="https://github.com/Agora-Build/aeval/releases/latest/download/aeval-linux-${ARCH}"; \

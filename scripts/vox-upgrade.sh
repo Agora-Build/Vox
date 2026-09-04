@@ -14,6 +14,14 @@
 # Note: this only works if the Docker daemon itself starts on boot
 # (`sudo systemctl enable docker`); the script warns if it isn't.
 #
+# HOST REQUIREMENT (vox-eval-agentd, aeval >=0.4): evals record/play through a
+# virtual ALSA soundcard. One-time host setup (a container cannot modprobe):
+#   sudo modprobe snd-aloop id=VirtualAudio pcm_substreams=1
+#   echo snd-aloop | sudo tee /etc/modules-load.d/vox-virtual-audio.conf
+#   echo 'options snd-aloop id=VirtualAudio pcm_substreams=1' | sudo tee /etc/modprobe.d/vox-virtual-audio.conf
+# The script passes --device /dev/snd to vox-eval-agentd (not clash-runner —
+# its PipeWire graph is self-contained) and warns if the card is missing.
+#
 # Get this script on a server (public repo, no auth needed):
 #   curl -fsSL -o vox-upgrade.sh \
 #     https://raw.githubusercontent.com/Agora-Build/Vox/main/scripts/vox-upgrade.sh
@@ -207,10 +215,27 @@ for name in "${!images[@]}"; do
     # from a prior run) so `docker run --name` can't fail with a name conflict.
     docker rm -f "$name" > /dev/null 2>&1 || true
 
+    # vox-eval-agentd needs the host's virtual soundcard (aeval >=0.4): pass
+    # /dev/snd through and warn if the snd-aloop card isn't loaded yet.
+    device_args=""
+    if [ "$name" = "vox-eval-agentd" ]; then
+        if [ -d /dev/snd ]; then
+            device_args="--device /dev/snd"
+        fi
+        if ! grep -q VirtualAudio /proc/asound/cards 2>/dev/null; then
+            echo "WARNING: no VirtualAudio ALSA card on this host — aeval jobs WILL FAIL."
+            echo "         One-time setup (see header of this script):"
+            echo "           sudo modprobe snd-aloop id=VirtualAudio pcm_substreams=1"
+            echo "           echo snd-aloop | sudo tee /etc/modules-load.d/vox-virtual-audio.conf"
+            echo "           echo 'options snd-aloop id=VirtualAudio pcm_substreams=1' | sudo tee /etc/modprobe.d/vox-virtual-audio.conf"
+            echo "         Then re-run this upgrade (or restart the container)."
+        fi
+    fi
+
     # Expose health port for future upgrades; --restart so it survives reboots;
     # --name gives it a stable identity independent of the (movable) image tag,
     # so future upgrades always find it and it never shows as a bare image ID.
-    new_container_id=$(docker run -d --name "$name" --restart "$RESTART_POLICY" -p "${HEALTH_PORT}:${HEALTH_PORT}" $env_args "$image")
+    new_container_id=$(docker run -d --name "$name" --restart "$RESTART_POLICY" -p "${HEALTH_PORT}:${HEALTH_PORT}" $device_args $env_args "$image")
     short_id="${new_container_id:0:12}"
     new_containers[$name]=$short_id
     echo "Started $name: $short_id"

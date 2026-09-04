@@ -533,6 +533,51 @@ ensure_aeval_binary() {
     fi
 }
 
+# aeval >=0.4 defaults to virtual-soundcard audio I/O. On Linux that is the
+# snd-aloop kernel module loaded as ALSA card "VirtualAudio" (a host-level
+# operation — Docker agents see it via --device /dev/snd) plus the alsa-utils
+# and libportaudio2 userland packages. Warn-and-continue on any failure: a
+# missing card fails eval jobs at run time, it must not block the dev env.
+ensure_virtual_audio() {
+    if [ "$(uname -s)" != "Linux" ]; then
+        log_info "Virtual audio: non-Linux host — install BlackHole 2ch (48 kHz, 2ch) manually for aeval soundcard mode"
+        return 0
+    fi
+
+    # Userland packages needed by aeval's audio pipeline
+    local missing_pkgs=()
+    command -v aplay > /dev/null 2>&1 || missing_pkgs+=(alsa-utils)
+    ldconfig -p 2>/dev/null | grep -q libportaudio || missing_pkgs+=(libportaudio2)
+    ldconfig -p 2>/dev/null | grep -q libsndfile || missing_pkgs+=(libsndfile1)
+    if [ ${#missing_pkgs[@]} -gt 0 ]; then
+        log_info "Installing audio packages: ${missing_pkgs[*]}"
+        if ! sudo apt-get install -y "${missing_pkgs[@]}"; then
+            log_warn "Failed to install ${missing_pkgs[*]} — install manually: sudo apt-get install -y alsa-utils libportaudio2 libsndfile1"
+        fi
+    fi
+
+    if grep -q VirtualAudio /proc/asound/cards 2>/dev/null; then
+        log_success "Virtual audio: VirtualAudio card present"
+        return 0
+    fi
+
+    log_info "Loading snd-aloop kernel module as card VirtualAudio..."
+    if sudo modprobe snd-aloop id=VirtualAudio pcm_substreams=1 \
+        && grep -q VirtualAudio /proc/asound/cards 2>/dev/null; then
+        log_success "Virtual audio: snd-aloop loaded (card VirtualAudio)"
+        # Persist across reboots
+        echo "snd-aloop" | sudo tee /etc/modules-load.d/vox-virtual-audio.conf > /dev/null \
+            && echo "options snd-aloop id=VirtualAudio pcm_substreams=1" | sudo tee /etc/modprobe.d/vox-virtual-audio.conf > /dev/null \
+            && log_info "Virtual audio: persisted via /etc/modules-load.d + /etc/modprobe.d" \
+            || log_warn "Virtual audio works now but could not be persisted — reload after reboot: sudo modprobe snd-aloop id=VirtualAudio pcm_substreams=1"
+    else
+        log_warn "Could not load snd-aloop — aeval jobs will fail in soundcard mode. Set up manually:"
+        log_warn "  sudo modprobe snd-aloop id=VirtualAudio pcm_substreams=1"
+        log_warn "  echo snd-aloop | sudo tee /etc/modules-load.d/vox-virtual-audio.conf"
+        log_warn "  echo 'options snd-aloop id=VirtualAudio pcm_substreams=1' | sudo tee /etc/modprobe.d/vox-virtual-audio.conf"
+    fi
+}
+
 # ==================== Smoke Tests ====================
 
 smoke_test_agent() {
@@ -550,6 +595,15 @@ smoke_test_agent() {
         fi
     else
         log_warn "aeval: not installed (skip)"
+    fi
+
+    # Check virtual audio card (aeval >=0.4 soundcard mode)
+    if [ "$(uname -s)" = "Linux" ]; then
+        if grep -q VirtualAudio /proc/asound/cards 2>/dev/null; then
+            log_success "Virtual audio: VirtualAudio card OK"
+        else
+            log_warn "Virtual audio: VirtualAudio card missing — aeval jobs will fail (run: sudo modprobe snd-aloop id=VirtualAudio pcm_substreams=1)"
+        fi
     fi
 
     # Check submodules
@@ -728,10 +782,17 @@ start_eval_agent_docker() {
     docker stop "$container_name" 2>/dev/null || true
     docker rm "$container_name" 2>/dev/null || true
 
+    # aeval >=0.4 records/plays through the host's snd-aloop "VirtualAudio"
+    # card (see ensure_virtual_audio) — pass it through when present so a
+    # host without sound devices still gets a running (if audio-less) agent.
+    local device_args=""
+    [ -d /dev/snd ] && device_args="--device /dev/snd"
+
     # Run Docker container with host network access
     docker run -d \
         --name "$container_name" \
         --add-host=host.docker.internal:host-gateway \
+        $device_args \
         -e AGENT_TOKEN="$token" \
         -e VOX_SERVER="http://host.docker.internal:$SERVER_PORT" \
         -e VOX_AGENT_NAME="$name" \
@@ -932,9 +993,10 @@ show_status() {
 # ==================== Combined Start/Stop ====================
 
 do_start_local() {
-    # 1. Initialize submodules and aeval binary
+    # 1. Initialize submodules, aeval binary, and virtual audio device
     ensure_submodules
     ensure_aeval_binary
+    ensure_virtual_audio
 
     # 1b. Run smoke tests
     smoke_test_agent || log_warn "Smoke tests had failures (continuing startup)"
@@ -992,8 +1054,10 @@ do_start_docker() {
     # 5. Seed data
     seed_data
 
-    # 6. Ensure eval agent Docker image exists
+    # 6. Ensure eval agent Docker image exists + host virtual audio
+    #    (the container's --device /dev/snd exposes the HOST's snd-aloop card)
     ensure_eval_agent_image
+    ensure_virtual_audio
 
     # 7. Get or create eval agent token and start agent (Docker)
     if [ "$MULTI_REGION_MODE" = true ]; then
