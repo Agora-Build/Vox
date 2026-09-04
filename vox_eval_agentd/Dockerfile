@@ -68,8 +68,10 @@ WORKDIR /app
 # Download aeval binary from GitHub Release (multi-platform)
 # aeval >=0.4 defaults to virtual-soundcard audio I/O: the HOST must load the
 # snd-aloop kernel module as card "VirtualAudio" (a container cannot modprobe)
-# and the daemon container must run with --device /dev/snd. The broker target
-# never does audio I/O (setup:account only) and needs neither.
+# and the daemon container must run with BOTH --device /dev/snd AND
+# --security-opt systempaths=unconfined — Docker masks /proc/asound by
+# default and aeval resolves the card ID by reading it. The broker target
+# never does audio I/O (setup:account only) and needs none of this.
 ARG TARGETARCH
 ARG AEVAL_VERSION=v0.4.1
 RUN ARCH=$(case "${TARGETARCH}" in arm64) echo "arm64" ;; *) echo "x86_64" ;; esac) && \

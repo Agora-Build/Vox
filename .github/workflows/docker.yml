@@ -196,6 +196,26 @@ jobs:
             echo 'All smoke tests passed'
           "
 
+      - name: Smoke test container audio (soundcard mode)
+        run: |
+          # Exercise the image the way production runs it: host snd-aloop card
+          # passed through with --device /dev/snd + systempaths=unconfined
+          # (Docker masks /proc/asound by default; aeval reads it to resolve
+          # the card — the mask is exactly what broke the 0.4.1 rollout).
+          IMAGE_TAG=$(echo '${{ steps.meta.outputs.tags }}' | head -n1)
+          sudo apt-get update -qq && sudo apt-get install -y -qq "linux-modules-extra-$(uname -r)" > /dev/null || true
+          if ! sudo modprobe snd-aloop id=VirtualAudio pcm_substreams=1; then
+            echo "::warning::snd-aloop unavailable on this runner kernel — container audio check skipped"
+            exit 0
+          fi
+          docker run --rm --device /dev/snd --security-opt systempaths=unconfined "$IMAGE_TAG" bash -c "
+            echo '=== /proc/asound visible ===' &&
+            grep VirtualAudio /proc/asound/cards &&
+            echo '=== ALSA playback ===' &&
+            aplay -D hw:VirtualAudio,0 -f S16_LE -r 48000 -c 2 -d 1 /dev/zero &&
+            echo 'Container audio OK'
+          "
+
       - name: Build broker image
         uses: docker/build-push-action@v6
         with:

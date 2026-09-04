@@ -881,8 +881,11 @@ start_eval_agent_docker() {
     # aeval >=0.4 records/plays through the host's snd-aloop "VirtualAudio"
     # card (see ensure_virtual_audio) — pass it through when present so a
     # host without sound devices still gets a running (if audio-less) agent.
+    # systempaths=unconfined is required with the device: Docker masks
+    # /proc/asound by default and aeval resolves the card ID by reading it —
+    # masked, every job fails with "No ALSA card has the ID 'VirtualAudio'".
     local device_args=""
-    [ -d /dev/snd ] && device_args="--device /dev/snd"
+    [ -d /dev/snd ] && device_args="--device /dev/snd --security-opt systempaths=unconfined"
 
     # Run Docker container with host network access
     docker run -d \
