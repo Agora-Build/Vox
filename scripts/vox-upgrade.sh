@@ -246,6 +246,22 @@ for name in "${!images[@]}"; do
     short_id="${new_container_id:0:12}"
     new_containers[$name]=$short_id
     echo "Started $name: $short_id"
+
+    # Post-start audio check, from INSIDE the container — the view that
+    # matters. The host having the card proves nothing about the container:
+    # a masked /proc/asound (missing systempaths=unconfined) or a missing
+    # --device passes every host-side check and still fails every aeval job.
+    if [ "$name" = "vox-eval-agentd" ] && grep -q VirtualAudio /proc/asound/cards 2>/dev/null; then
+        sleep 2
+        if docker exec "$name" grep -q VirtualAudio /proc/asound/cards 2>/dev/null; then
+            echo "Audio check: VirtualAudio visible inside the container — OK"
+        else
+            echo "WARNING: VirtualAudio is NOT visible INSIDE the container — aeval jobs WILL FAIL."
+            echo "         The host has the card, so this is a container-config problem:"
+            echo "         the run needs BOTH --device /dev/snd and --security-opt systempaths=unconfined."
+            echo "         (Are you running an old copy of this script? Re-download it — see header.)"
+        fi
+    fi
     echo "-----------------------------------"
 done
 
