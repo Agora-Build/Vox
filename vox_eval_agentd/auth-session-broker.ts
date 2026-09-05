@@ -224,6 +224,14 @@ export async function mintWithAeval(req: MintRequest, timeoutMs: number): Promis
   const scenario = [
     '---',
     'name: session_mint',
+    // aeval >=0.4 platform configs default audio_io to soundcard, and the
+    // session preflight enforces the device even for this zero-audio login
+    // flow — in the broker container (no /dev/snd, by design) every mint
+    // then 502s with SOUNDCARD_DEVICE_NOT_FOUND. The scenario-level
+    // web_hook override skips the device entirely; a login mint plays no
+    // audio, so this is semantically right regardless of aeval defaults.
+    'audio_io:',
+    '  mode: web_hook',
     'params:',
     `  output_dir: ${JSON.stringify(path.join(workDir, 'out'))}`,
     'steps:',
