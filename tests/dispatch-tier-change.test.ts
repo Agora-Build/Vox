@@ -1,9 +1,9 @@
 import { describe, it, expect } from "vitest";
 import { validateTierChoice } from "../server/dispatch";
 
-const owner = { id: 1, isAdmin: false, plan: "premium", organizationId: null as number | null };
-const orgOwner = { id: 1, isAdmin: false, plan: "premium", organizationId: 7 as number | null };
-const admin = { id: 9, isAdmin: true, plan: "basic", organizationId: null as number | null };
+const owner = { id: 1, isAdmin: false, plan: "premium", membership: null as { organizationId: number; role: "owner" | "admin" | "member" } | null };
+const orgOwner = { id: 1, isAdmin: false, plan: "premium", membership: { organizationId: 7, role: "owner" as const } };
+const admin = { id: 9, isAdmin: true, plan: "basic", membership: null as { organizationId: number; role: "owner" | "admin" | "member" } | null };
 
 describe("validateTierChoice", () => {
   it("private is always allowed for the owner", () => {
@@ -37,7 +37,7 @@ describe("validateTierChoice", () => {
   });
 
   it("team requires a non-basic caller (403)", () => {
-    expect(validateTierChoice({ user: { id: 1, isAdmin: false, plan: "basic", organizationId: 7 }, isOwner: true, newTier: "team", marketplacePresent: false }))
+    expect(validateTierChoice({ user: { id: 1, isAdmin: false, plan: "basic", membership: { organizationId: 7, role: "owner" as const } }, isOwner: true, newTier: "team", marketplacePresent: false }))
       .toEqual({ ok: false, status: 403, reason: "team-requires-non-basic" });
   });
 
@@ -47,7 +47,7 @@ describe("validateTierChoice", () => {
   });
 
   it("shared requires a non-basic caller (403)", () => {
-    expect(validateTierChoice({ user: { id: 1, isAdmin: false, plan: "basic", organizationId: null }, isOwner: true, newTier: "shared", marketplacePresent: true, pricePerUnit: 5 }))
+    expect(validateTierChoice({ user: { id: 1, isAdmin: false, plan: "basic", membership: null }, isOwner: true, newTier: "shared", marketplacePresent: true, pricePerUnit: 5 }))
       .toEqual({ ok: false, status: 403, reason: "shared-requires-non-basic" });
   });
 
