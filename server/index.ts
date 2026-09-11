@@ -15,6 +15,8 @@ import { parseNextCronRun } from "./cron";
 import { setupClashWebSocket } from "./clash-ws";
 import { loadPlugins } from "./plugins/loader";
 import { setMarketplace, getMarketplace, type EvalMarketplace } from "./marketplace";
+import { setOrganizations, type OrganizationsProvider } from "./organizations";
+import { CoreOrganizations } from "./organizations-core";
 import { stampOwnerSession, detectSessionNeed, missingSecretNames, sessionScopeForWorkflow, resolvableSecretSources } from "./auth-session";
 import pkg from "pg";
 const { Pool } = pkg;
@@ -214,6 +216,14 @@ app.use((req, res, next) => {
   // Any misconfiguration throws here — fail-before-listen (strict startup).
   const plugins = await loadPlugins(app, pool);
   setMarketplace(plugins.services.optional<EvalMarketplace>("vox.eval-marketplace", "^1.0.0"));
+
+  // Organizations: a plugin may own membership; until one does, Core's own
+  // implementation fills the seam. Unlike the marketplace this is never null —
+  // an unresolved provider is a startup bug, not a degraded feature.
+  setOrganizations(
+    plugins.services.optional<OrganizationsProvider>("vox.organizations", "^1.0.0")
+      ?? new CoreOrganizations(storage),
+  );
 
   // Graceful shutdown: stop workers and deactivate plugins in reverse order.
   // Guard against re-entrancy — two signals in quick succession must not run the
