@@ -1,4 +1,5 @@
 import { canDispatchToToken, sameOrg, hasOrg, type DispatchToken } from "./permissions";
+import type { Membership } from "./organizations";
 
 export type DispatchTier = "private" | "team" | "public" | "shared";
 
@@ -9,7 +10,7 @@ export interface TierChangeResult {
 }
 
 export interface TierChoiceContext {
-  user: { id: number; isAdmin: boolean; plan: string; organizationId: number | null };
+  user: { id: number; isAdmin: boolean; plan: string; membership: Membership | null };
   isOwner: boolean;            // create: true (self); change: token.createdBy === user.id
   newTier: DispatchTier;
   marketplacePresent: boolean;

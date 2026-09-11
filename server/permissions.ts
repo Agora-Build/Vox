@@ -2,6 +2,8 @@
 // Shared by the route handlers (server/routes.ts) and the background scheduler
 // (server/index.ts) so authorization can't drift between the API and runtime.
 
+import type { Membership } from "./organizations";
+
 export interface OrgResource {
   ownerId?: number | null;
   organizationId?: number | null;
@@ -12,14 +14,14 @@ export interface OrgResource {
 export interface AuthUser {
   id: number;
   isAdmin: boolean;
-  organizationId: number | null;
-  orgRole: string | null;
+  /** Resolved once per request at the auth boundary; null = belongs to no org. */
+  membership: Membership | null;
 }
 
 export function canAccessResource(user: AuthUser, resource: OrgResource): boolean {
   if (user.isAdmin) return true;
   if (resource.ownerId === user.id || resource.createdBy === user.id) return true;
-  if (resource.organizationId && resource.organizationId === user.organizationId) return true;
+  if (resource.organizationId && resource.organizationId === user.membership?.organizationId) return true;
   if (resource.visibility === 'public') return true;
   return false;
 }
@@ -33,8 +35,8 @@ export function isOwnerOrOrgManager(user: AuthUser, resource: OrgResource): bool
   // Personal resource owner
   if (!resource.organizationId && (resource.ownerId === user.id || resource.createdBy === user.id)) return true;
   // Org resource
-  if (resource.organizationId && resource.organizationId === user.organizationId) {
-    if (user.orgRole === 'owner' || user.orgRole === 'admin') return true;
+  if (resource.organizationId && resource.organizationId === user.membership?.organizationId) {
+    if (user.membership.role === 'owner' || user.membership.role === 'admin') return true;
     if (resource.ownerId === user.id || resource.createdBy === user.id) return true;
   }
   return false;
@@ -91,8 +93,8 @@ export function sameOrg(a: { organizationId: number | null }, b: { organizationI
  * membership through here, so when orgs become a plugin only this moves behind
  * the seam. Mirrors sameOrg.
  */
-export function hasOrg(user: { organizationId: number | null }): boolean {
-  return user.organizationId != null;
+export function hasOrg(user: { membership: Membership | null }): boolean {
+  return user.membership != null;
 }
 
 /**

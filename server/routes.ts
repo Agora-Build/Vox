@@ -2961,7 +2961,7 @@ export async function registerRoutes(
 
       const marketplace = getMarketplace();
       const decision = validateTierChoice({
-        user: { id: user.id, isAdmin: user.isAdmin, plan: user.plan, organizationId: user.organizationId },
+        user: { id: user.id, isAdmin: user.isAdmin, plan: user.plan, membership: user.membership },
         isOwner: true,
         newTier: dispatchTier as "private" | "team" | "public" | "shared",
         marketplacePresent: marketplace !== null,
@@ -3073,7 +3073,7 @@ export async function registerRoutes(
 
       const marketplace = getMarketplace();
       const decision = validateTierChoice({
-        user: { id: user.id, isAdmin: user.isAdmin, plan: user.plan, organizationId: user.organizationId },
+        user: { id: user.id, isAdmin: user.isAdmin, plan: user.plan, membership: user.membership },
         isOwner: token.createdBy === user.id,
         newTier: dispatchTier,
         marketplacePresent: marketplace !== null,
@@ -3146,7 +3146,7 @@ export async function registerRoutes(
       }
       const marketplace = getMarketplace();
       const decision = validateTierChoice({
-        user: { id: user.id, isAdmin: user.isAdmin, plan: user.plan, organizationId: user.organizationId },
+        user: { id: user.id, isAdmin: user.isAdmin, plan: user.plan, membership: user.membership },
         isOwner: true,
         newTier: dispatchTier as "private" | "team" | "public" | "shared",
         marketplacePresent: marketplace !== null,
