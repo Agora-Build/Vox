@@ -15,7 +15,7 @@ import { parseNextCronRun } from "./cron";
 import { setupClashWebSocket } from "./clash-ws";
 import { loadPlugins } from "./plugins/loader";
 import { setMarketplace, getMarketplace, type EvalMarketplace } from "./marketplace";
-import { setOrganizations, type OrganizationsProvider } from "./organizations";
+import { setOrganizations, getOrganizations, type OrganizationsProvider } from "./organizations";
 import { CoreOrganizations } from "./organizations-core";
 import { stampOwnerSession, detectSessionNeed, missingSecretNames, sessionScopeForWorkflow, resolvableSecretSources } from "./auth-session";
 import pkg from "pg";
@@ -406,7 +406,15 @@ function startBackgroundWorker() {
             continue;
           }
           const provider = await storage.getProvider(workflow.providerId);
+          // The row is still needed for `creator.plan` in the job snapshot below.
+          // Its org columns are NOT read here: the scheduler runs outside the auth
+          // boundary, so it asks the seam directly. Passing the raw row would
+          // structurally satisfy sessionPoolViolation's `{ organizationId }` param
+          // and silently bypass the seam — see server/organizations.ts.
           const creator = schedule.createdBy ? await storage.getUser(schedule.createdBy) : undefined;
+          const creatorMembership = schedule.createdBy
+            ? await getOrganizations().getMembership(schedule.createdBy)
+            : null;
 
           // scheduled jobs are inherently owner-dispatched —
           // canScheduleWorkflow (re-checked above) is owner/creator-only, so the
@@ -428,7 +436,9 @@ function startBackgroundWorker() {
           // attempt first.
           const schedSessionReq = await detectSessionNeed(workflow);
           if (schedSessionReq.kind === "need") {
-            const violation = sessionPoolViolation(schedule.targetTier, workflow, creator);
+            const violation = sessionPoolViolation(schedule.targetTier, workflow, {
+              organizationId: creatorMembership?.organizationId ?? null,
+            });
             if (violation) {
               log(`Schedule "${schedule.name}" would dispatch into a disallowed pool (${violation}) — disabling`, "scheduler");
               await storage.updateEvalSchedule(schedule.id, { isEnabled: false });

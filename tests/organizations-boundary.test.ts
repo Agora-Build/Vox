@@ -27,7 +27,12 @@ const ALLOWED = new Set(["organizations-core.ts", "storage.ts", "permissions.ts"
 // `memberMembership.organizationId`) — those are seam-derived objects, not raw
 // column reads, and a naive pattern self-matches on the very code that fixes
 // the problem this test guards against.
-const FORBIDDEN = /\b(?!\w*[Mm]embership\b)(user|currentUser|targetUser|member|actor|apiKeyUser|tokenOwner)\w*\.(organizationId|orgRole)\b/;
+//
+// `creator` and `owner` were added after a real escape: the scheduler passed a
+// raw `User` row named `creator` into a predicate whose param is typed
+// `{ organizationId: number | null }`. That is structurally valid TypeScript, so
+// neither `tsc` nor this scan saw it — the identifier simply was not listed.
+const FORBIDDEN = /\b(?!\w*[Mm]embership\b)(user|currentUser|targetUser|member|actor|apiKeyUser|tokenOwner|creator|owner)\w*\.(organizationId|orgRole)\b/;
 
 /**
  * The scan itself — walk, comment-skip, ALLOWED filter, and offender
@@ -74,6 +79,10 @@ describe("organizations boundary", () => {
         "const u = await storage.getUser(1);",
         "const x = user.organizationId;",
         "const r = member.orgRole;",
+        // The two identifiers added after the scheduler escape — asserted here so
+        // the widened alternation is proven to fire, not merely present.
+        "const c = creator.organizationId;",
+        "const o = owner.orgRole;",
         "// user.organizationId in a comment must not count",
       ].join("\n"),
     );
@@ -87,6 +96,8 @@ describe("organizations boundary", () => {
     expect(offenders).toEqual([
       "fixture.ts:2: const x = user.organizationId;",
       "fixture.ts:3: const r = member.orgRole;",
+      "fixture.ts:4: const c = creator.organizationId;",
+      "fixture.ts:5: const o = owner.orgRole;",
     ]);
   });
 
