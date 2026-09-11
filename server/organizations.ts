@@ -5,9 +5,9 @@
 // server/organizations-core.ts; a future `vox.organizations` plugin replaces it
 // without any call site moving again.
 //
-// NOT in scope: which org OWNS a row (workflow.organizationId and its 8
-// siblings). Those are Core's own FK columns, stay Core permanently, and are
-// compared as opaque integers.
+// NOT in scope: which org OWNS a row (workflow.organizationId and the other
+// resource-ownership columns). Those are Core's own FK columns, stay Core
+// permanently, and are compared as opaque integers.
 
 export type OrgRole = "owner" | "admin" | "member";
 

@@ -163,8 +163,9 @@ that is merely tested.
 `req` so repeated `getCurrentUser` calls in a single request resolve once. It disappears
 into the plugin call after extraction, where it is unavoidable anyway.
 
-**Resource-ownership reads are untouched.** `workflow.organizationId` and its 8 siblings
-keep their column, their FK, and their direct reads. Only the *user-shaped* reads move.
+**Resource-ownership reads are untouched.** `workflow.organizationId` and the other
+resource-ownership columns keep their column, their FK, and their direct reads. Only the
+*user-shaped* reads move.
 
 **Two categories of membership read, not one.** The `Omit` covers the *caller's* own
 membership — the authorization path, and the large majority of sites. It does **not**
@@ -230,6 +231,28 @@ A seam nobody has ever swapped is a guess. Two mechanisms keep it honest:
    from eroding the way these refactors usually die — via `storage.getUser()`, which
    still returns the raw columns and would otherwise be an open back door.
 
+## Residual: two membership decisions still resolved in SQL
+
+**The seam is not total, and the guards cannot see the gap.** `server/storage.ts` is
+exempt from the scan (it is the layer that serves the raw rows) and its queries are SQL
+strings, invisible to `tsc`. Two membership decisions live there and are NOT routed
+through the provider:
+
+| Site | What it decides | Consumers |
+|---|---|---|
+| `getEvalAgentsWithTokenTier()` (`storage.ts:804`) | selects `tokenOwnerOrgId: users.organizationId` via a join | run-targets list (`routes.ts:3404`), tier-availability count (`routes.ts:4728`) — both compared against seam-derived caller membership |
+| `claimEvalJob` / `getClaimableJobsForToken` (`storage.ts:966,1021`) | filters the `team` arm on `creator.organization_id = $6` | who may claim a team-pooled job — the highest-stakes membership decision in the system |
+
+Left in place deliberately this cycle: the claim query filters many candidate jobs with
+different creators in one statement, and cannot take a single seam-derived parameter
+without restructuring the claim path. That is a follow-on cycle, not a tidy-up.
+
+**Consequence for the extraction plan below: step 4 ("Drop `users.organization_id` /
+`users.org_role`") cannot proceed until both sites are replaced.** Dropping the columns
+while these queries stand would break the run-targets listing and silently stop every
+team-pooled claim from matching. Planning the next cycle without this is planning on a
+false premise.
+
 ## Non-goals
 
 - Moving any table, row or route into a plugin schema.
@@ -272,6 +295,8 @@ Recorded so the seam is judged against its actual purpose:
    backed by tables in `plugin_organizations`.
 3. Move org CRUD/member/invite routes and the console pages into the plugin.
 4. Drop `users.organization_id` / `users.org_role`; the plugin owns membership.
+   **Blocked** until the two SQL-resolved membership decisions above are replaced —
+   see "Residual: two membership decisions still resolved in SQL".
 5. Flip resolution from `?? new CoreOrganizations(storage)` to null-when-absent, and
    delete `CoreOrganizations`.
 6. The 9 FK columns on Core tables become plain integers (FK constraints dropped): Core
