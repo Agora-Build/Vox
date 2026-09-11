@@ -13,11 +13,11 @@ import { getOrganizations, type Membership } from "./organizations";
 export type User = SchemaUser;
 
 /**
- * The authenticated caller, with their org membership resolved once. Callers
- * read `membership`, never the raw columns — that is what lets a plugin own
- * membership later without touching call sites.
+ * The authenticated caller. The org columns are deliberately OMITTED: membership
+ * is the only supported way to ask which org this person belongs to, so a future
+ * plugin can own it. Reading the columns is a compile error by design.
  */
-export type AuthUser = User & { membership: Membership | null };
+export type AuthUser = Omit<User, 'organizationId' | 'orgRole'> & { membership: Membership | null };
 
 // Per-request memo: a single request may call getCurrentUser several times, and
 // each call would otherwise hit the provider again. WeakMap keyed by the request
@@ -37,7 +37,8 @@ export async function resolveMembership(
   if (!perRequest.has(user.id)) {
     perRequest.set(user.id, await getOrganizations().getMembership(user.id));
   }
-  return { ...user, membership: perRequest.get(user.id) ?? null };
+  const { organizationId: _organizationId, orgRole: _orgRole, ...rest } = user;
+  return { ...rest, membership: perRequest.get(user.id) ?? null };
 }
 
 declare module "express-session" {

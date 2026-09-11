@@ -2311,7 +2311,7 @@ export async function registerRoutes(
       {
         const schedSessionReq = await detectSessionNeed(workflow);
         if (schedSessionReq.kind === "need") {
-          const violation = sessionPoolViolation(targetTier as "private" | "team" | "public" | "shared", workflow, user);
+          const violation = sessionPoolViolation(targetTier as "private" | "team" | "public" | "shared", workflow, { organizationId: user.membership?.organizationId ?? null });
           if (violation) {
             return res.status(403).json({ error: `Credential-injected workflows: ${violation}` });
           }
@@ -2458,7 +2458,7 @@ export async function registerRoutes(
           const effectiveTier = (targetTier ?? schedule.targetTier) as "private" | "team" | "public" | "shared";
           const schedSessionReq = await detectSessionNeed(wf);
           if (schedSessionReq.kind === "need") {
-            const violation = sessionPoolViolation(effectiveTier, wf, user);
+            const violation = sessionPoolViolation(effectiveTier, wf, { organizationId: user.membership?.organizationId ?? null });
             if (violation) {
               return res.status(403).json({ error: `Credential-injected workflows: ${violation}. Change the schedule's tier before re-enabling.` });
             }
@@ -2583,7 +2583,7 @@ export async function registerRoutes(
       // unclaimable job.
       const runNowSessionReq = await detectSessionNeed(workflow);
       if (runNowSessionReq.kind === "need") {
-        const violation = sessionPoolViolation(schedule.targetTier, workflow, user);
+        const violation = sessionPoolViolation(schedule.targetTier, workflow, { organizationId: user.membership?.organizationId ?? null });
         if (violation) {
           return res.status(400).json({ error: `This schedule's pool is no longer valid: ${violation}. Edit the schedule's tier first.` });
         }
@@ -4495,7 +4495,7 @@ export async function registerRoutes(
         // guard above separately limits WHO may dispatch a session workflow
         // untargeted; the helper deliberately does not encode that.)
         if (sessionNeed) {
-          const violation = sessionPoolViolation(targetTier as "private" | "team" | "public" | "shared", workflow, user);
+          const violation = sessionPoolViolation(targetTier as "private" | "team" | "public" | "shared", workflow, { organizationId: user.membership?.organizationId ?? null });
           if (violation) {
             return res.status(403).json({ error: `Credential-injected workflows: ${violation}` });
           }
@@ -5706,6 +5706,11 @@ export async function registerRoutes(
       res.json({
         id: updated?.id,
         username: updated?.username,
+        // Task 9: moves with the write. `updated` is the raw users row returned by
+        // storage.updateUser, so it echoes the value just written — not a stale
+        // AuthUser read. Raw User rows keep both org columns; only AuthUser omits
+        // them. When orgs move behind the plugin, this read moves with the write
+        // above, not with the membership readers.
         orgRole: updated?.orgRole,
       });
     } catch (error) {
