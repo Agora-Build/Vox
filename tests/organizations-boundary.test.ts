@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { readdirSync, readFileSync } from "fs";
+import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "fs";
+import { tmpdir } from "os";
 import path from "path";
 
 // Files allowed to read the raw org columns off a row-shaped object:
@@ -28,34 +29,46 @@ const ALLOWED = new Set(["organizations-core.ts", "storage.ts", "permissions.ts"
 // the problem this test guards against.
 const FORBIDDEN = /\b(?!\w*[Mm]embership\b)(user|currentUser|targetUser|member|actor|apiKeyUser|tokenOwner)\w*\.(organizationId|orgRole)\b/;
 
+/**
+ * The scan itself — walk, comment-skip, ALLOWED filter, and offender
+ * formatting all live here ONCE. Both the real assertion below and the
+ * falsifiability fixture call this same function, so the fixture exercises
+ * the shipped code path (including the ALLOWED skip) instead of a hand-copied
+ * re-implementation of it that could silently drift from what actually runs.
+ *
+ * Walk is TOP-LEVEL ONLY (`entry.isFile()`, no recursion into subdirectories)
+ * — `server/plugins/**` and `server/data/**` are NOT scanned.
+ */
+function scan(dir: string, allowed: Set<string>): string[] {
+  const offenders: string[] = [];
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    if (!entry.isFile() || !entry.name.endsWith(".ts")) continue;
+    if (allowed.has(entry.name)) continue;
+    readFileSync(path.join(dir, entry.name), "utf-8")
+      .split("\n")
+      .forEach((line, i) => {
+        if (line.trim().startsWith("//") || line.trim().startsWith("*")) return;
+        if (FORBIDDEN.test(line)) offenders.push(`${entry.name}:${i + 1}: ${line.trim()}`);
+      });
+  }
+  return offenders;
+}
+
 describe("organizations boundary", () => {
   it("no user-shaped org-column read outside the provider, storage, and the structural predicates", () => {
-    const dir = path.resolve(__dirname, "../server");
-    const offenders: string[] = [];
-
-    for (const entry of readdirSync(dir, { withFileTypes: true })) {
-      if (!entry.isFile() || !entry.name.endsWith(".ts")) continue;
-      if (ALLOWED.has(entry.name)) continue;
-      readFileSync(path.join(dir, entry.name), "utf-8")
-        .split("\n")
-        .forEach((line, i) => {
-          if (line.trim().startsWith("//") || line.trim().startsWith("*")) return;
-          if (FORBIDDEN.test(line)) offenders.push(`${entry.name}:${i + 1}: ${line.trim()}`);
-        });
-    }
-
+    const offenders = scan(path.resolve(__dirname, "../server"), ALLOWED);
     expect(offenders, `read membership via getOrganizations() instead:\n${offenders.join("\n")}`).toEqual([]);
   });
 
-  // Falsifiability: prove the scan logic actually flags a violation, using a
-  // scratch fixture so no tracked production file is touched. Mirrors the real
-  // scan (same regex, same comment-skip, same file-iteration shape) against a
-  // temp directory instead of server/.
-  it("flags a violation when one is present (falsifiability check)", () => {
-    const os = require("fs");
-    const tmp = require("path").join(require("os").tmpdir(), "org-boundary-fixture");
-    os.mkdirSync(tmp, { recursive: true });
-    os.writeFileSync(
+  // Falsifiability: prove the scan can actually fail, using a scratch fixture
+  // so no tracked production file is touched — and prove the ALLOWED skip
+  // itself works, by seeding a violation into a file named like an allowed
+  // one (`storage.ts`) alongside a violation in a non-allowed file. Only the
+  // latter may appear in the offender list.
+  it("flags a violation when present, and skips it when the file is ALLOWED (falsifiability check)", () => {
+    const tmp = path.join(tmpdir(), `org-boundary-fixture-${Date.now()}`);
+    mkdirSync(tmp, { recursive: true });
+    writeFileSync(
       path.join(tmp, "fixture.ts"),
       [
         "const u = await storage.getUser(1);",
@@ -64,17 +77,12 @@ describe("organizations boundary", () => {
         "// user.organizationId in a comment must not count",
       ].join("\n"),
     );
+    // Same shape of violation, but in a file named like an ALLOWED entry —
+    // proves scan()'s `allowed.has(entry.name)` filter actually suppresses
+    // it, rather than merely being asserted true by a comment.
+    writeFileSync(path.join(tmp, "storage.ts"), "const x = user.organizationId;\n");
 
-    const offenders: string[] = [];
-    for (const entry of os.readdirSync(tmp, { withFileTypes: true })) {
-      if (!entry.isFile() || !entry.name.endsWith(".ts")) continue;
-      os.readFileSync(path.join(tmp, entry.name), "utf-8")
-        .split("\n")
-        .forEach((line: string, i: number) => {
-          if (line.trim().startsWith("//") || line.trim().startsWith("*")) return;
-          if (FORBIDDEN.test(line)) offenders.push(`${entry.name}:${i + 1}: ${line.trim()}`);
-        });
-    }
+    const offenders = scan(tmp, new Set(["storage.ts"]));
 
     expect(offenders).toEqual([
       "fixture.ts:2: const x = user.organizationId;",
