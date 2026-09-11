@@ -11,6 +11,7 @@ import { registerApiV1Routes } from "./routes-api-v1";
 import { generateSignedUrlForUser } from "./s3";
 import { validateTierChoice, resolveTargetedDispatch, filterDispatchableAgents } from "./dispatch";
 import { getMarketplace } from "./marketplace";
+import { getOrganizations } from "./organizations";
 import { fingerprintCredential, formatLastFailedHttpStatus, parseLastFailedHttpStatus } from "@shared/credentials";
 import { parsePlatformSetup, sessionScopeForWorkflow, evaluateSessionRequirement, getBrokeredSecretNames, ensureSession, stampOwnerSession, credentialKeyFor, SESSION_FRESH_MARGIN_SECONDS, classifyReferencedSecrets, findBrokeredMisuse, defaultBrokerTypeForName, resolveBrokerType, type SessionNeed, detectSessionNeed, missingSecretNames, resolvableSecretSources } from "./auth-session";
 import { validateRegisterPayload, cacheBrokerMintSecret, hasBrokerMintSecret } from "./broker-registry";
@@ -337,8 +338,8 @@ export async function registerRoutes(
           isAdmin: user.isAdmin,
           isEnabled: user.isEnabled,
           emailVerified: !!user.emailVerifiedAt,
-          organizationId: user.organizationId,
-          orgRole: user.orgRole,
+          organizationId: user.membership?.organizationId ?? null,
+          orgRole: user.membership?.role ?? null,
           hasPassword: !!user.passwordHash,
         } : null
       });
@@ -593,6 +594,9 @@ export async function registerRoutes(
   app.get("/api/admin/users", requireAuth, requireAdmin, async (req, res) => {
     try {
       const users = await storage.getAllUsers();
+      // Other users' affiliation comes from the seam, not their raw rows — one
+      // batch lookup, response shape unchanged.
+      const memberships = await getOrganizations().getMemberships(users.map(u => u.id));
       res.json(users.map(u => ({
         id: u.id,
         username: u.username,
@@ -601,7 +605,7 @@ export async function registerRoutes(
         isAdmin: u.isAdmin,
         isEnabled: u.isEnabled,
         emailVerified: !!u.emailVerifiedAt,
-        organizationId: u.organizationId,
+        organizationId: memberships.get(u.id)?.organizationId ?? null,
         createdAt: u.createdAt,
       })));
     } catch (error) {
@@ -1448,10 +1452,10 @@ export async function registerRoutes(
     try {
       const user = await getCurrentUser(req);
       if (!user) return res.status(401).json({ error: "Not authenticated" });
-      if (!user.organizationId) return res.status(403).json({ error: "Organization membership required" });
+      if (!user.membership) return res.status(403).json({ error: "Organization membership required" });
 
       const { projectIds, workflowIds, evalSetIds, scheduleIds } = req.body;
-      const orgId = user.organizationId;
+      const orgId = user.membership.organizationId;
       const moved = { projects: 0, workflows: 0, evalSets: 0, schedules: 0 };
 
       // Move projects (and their child workflows)
@@ -1563,7 +1567,7 @@ export async function registerRoutes(
         name,
         description,
         ownerId: user.id,
-        organizationId: user.organizationId,
+        organizationId: user.membership?.organizationId ?? null,
       });
 
       res.json(project);
@@ -1669,8 +1673,8 @@ export async function registerRoutes(
 
       // Include org workflows if user is in an org
       let orgWorkflows: typeof ownWorkflows = [];
-      if (user.organizationId) {
-        const all = await storage.getWorkflowsByOrganization(user.organizationId);
+      if (user.membership) {
+        const all = await storage.getWorkflowsByOrganization(user.membership.organizationId);
         const ownIds = new Set(ownWorkflows.map(w => w.id));
         orgWorkflows = all.filter(w => !ownIds.has(w.id));
       }
@@ -1757,7 +1761,7 @@ export async function registerRoutes(
       }
 
       // Validate org membership if org resource
-      if (organizationId && user.organizationId !== organizationId) {
+      if (organizationId && (user.membership?.organizationId ?? null) !== organizationId) {
         return res.status(403).json({ error: "Not a member of this organization" });
       }
 
@@ -1952,8 +1956,8 @@ export async function registerRoutes(
 
       // Include org eval sets if user is in an org
       let orgSets: typeof ownSets = [];
-      if (user.organizationId) {
-        const all = await storage.getEvalSetsByOrganization(user.organizationId);
+      if (user.membership) {
+        const all = await storage.getEvalSetsByOrganization(user.membership.organizationId);
         const ownIds = new Set(ownSets.map(s => s.id));
         orgSets = all.filter(s => !ownIds.has(s.id));
       }
@@ -2015,7 +2019,7 @@ export async function registerRoutes(
         return res.status(403).json({ error: "Premium plan required for private eval sets" });
       }
 
-      if (organizationId && user.organizationId !== organizationId) {
+      if (organizationId && (user.membership?.organizationId ?? null) !== organizationId) {
         return res.status(403).json({ error: "Not a member of this organization" });
       }
 
@@ -2202,10 +2206,10 @@ export async function registerRoutes(
       // Org managers additionally see (and can Extend) schedules on their org's
       // workflows; regular members see only their own to avoid exposing other
       // members' schedule metadata.
-      const isOrgManager = user.orgRole === "owner" || user.orgRole === "admin";
+      const isOrgManager = user.membership?.role === "owner" || user.membership?.role === "admin";
       const schedules = user.isAdmin
         ? await storage.getAllEvalSchedulesWithWorkflow()
-        : await storage.getEvalSchedulesWithWorkflow(user.id, isOrgManager ? user.organizationId : null);
+        : await storage.getEvalSchedulesWithWorkflow(user.id, isOrgManager ? (user.membership?.organizationId ?? null) : null);
       // Server-computed UI flags + lifecycle status, so the client never offers an
       // action that would 403 and shows a consistent status badge:
       //  - canManage: owner-only run/resume (matches run-now/enable routes)
@@ -2809,10 +2813,10 @@ export async function registerRoutes(
   app.get("/api/org-secrets", requireAuth, async (req, res) => {
     try {
       const user = await getCurrentUser(req);
-      if (!user || !user.organizationId) {
+      if (!user || !user.membership) {
         return res.status(403).json({ error: "Organization membership required" });
       }
-      const secrets = await storage.getOrgSecrets(user.organizationId);
+      const secrets = await storage.getOrgSecrets(user.membership.organizationId);
       // NO fingerprint here, deliberately. Personal secrets are unambiguous —
       // the row is keyed by user_id, so the caller entered the value. Org
       // secrets are not: upsertOrgSecret preserves the ORIGINAL createdBy on
@@ -2839,7 +2843,7 @@ export async function registerRoutes(
   app.post("/api/org-secrets", requireAuth, requireOrgAdmin, async (req, res) => {
     try {
       const user = await getCurrentUser(req);
-      if (!user || !user.organizationId) {
+      if (!user || !user.membership) {
         return res.status(403).json({ error: "Organization membership required" });
       }
       const { name, value } = req.body;
@@ -2862,7 +2866,7 @@ export async function registerRoutes(
       const bodyBrokerType = req.body.brokerType === undefined ? undefined : req.body.brokerType;
       const isTestAccount = req.body.isTestAccount === undefined ? undefined : req.body.isTestAccount === true;
 
-      const existingRow = (await storage.getOrgSecrets(user.organizationId)).find(s => s.name === trimmedName);
+      const existingRow = (await storage.getOrgSecrets(user.membership.organizationId)).find(s => s.name === trimmedName);
       let resolvedBrokerType: string | null;
       if (existingRow && bodyBrokerType === undefined) {
         resolvedBrokerType = existingRow.brokerType; // preserve on value-only update
@@ -2876,7 +2880,7 @@ export async function registerRoutes(
       }
 
       const encrypted = encryptValue(value);
-      const secret = await storage.upsertOrgSecret(user.organizationId, trimmedName, encrypted, user.id, {
+      const secret = await storage.upsertOrgSecret(user.membership.organizationId, trimmedName, encrypted, user.id, {
         brokerType: resolvedBrokerType,
         isTestAccount,
       });
@@ -2891,10 +2895,10 @@ export async function registerRoutes(
   app.delete("/api/org-secrets/:name", requireAuth, requireOrgAdmin, async (req, res) => {
     try {
       const user = await getCurrentUser(req);
-      if (!user || !user.organizationId) {
+      if (!user || !user.membership) {
         return res.status(403).json({ error: "Organization membership required" });
       }
-      await storage.deleteOrgSecret(user.organizationId, decodeURIComponent(req.params.name));
+      await storage.deleteOrgSecret(user.membership.organizationId, decodeURIComponent(req.params.name));
       res.json({ message: "Org secret deleted" });
     } catch (error) {
       console.error("Error deleting org secret:", error);
@@ -3400,7 +3404,7 @@ export async function registerRoutes(
         ownerOrgId: a.tokenOwnerOrgId,
         state: a.state,
       }));
-      const free = filterDispatchableAgents({ id: user.id, organizationId: user.organizationId }, rows);
+      const free = filterDispatchableAgents({ id: user.id, organizationId: user.membership?.organizationId ?? null }, rows);
       const regionRowByTokenId = new Map(agents.map((a) => [a.tokenId, a.tokenRegion]));
 
       const marketplace = getMarketplace();
@@ -3657,7 +3661,7 @@ export async function registerRoutes(
         return res.status(401).json({ error: "Invalid or revoked eval agent token" });
       }
 
-      const tokenOwner = await storage.getUser(evalAgentToken.createdBy);
+      const ownerMembership = await getOrganizations().getMembership(evalAgentToken.createdBy);
       // Hoisted above the claimable-jobs lookup: the effective identity below
       // needs the token's latest agent to resolve a non-public token's DETECTED
       // region (Unverified → NULL, which structurally excludes pooled jobs).
@@ -3670,7 +3674,7 @@ export async function registerRoutes(
         region: eff.region,
         dispatchTier: evalAgentToken.dispatchTier,
         createdBy: evalAgentToken.createdBy,
-        ownerOrgId: tokenOwner?.organizationId ?? null,
+        ownerOrgId: ownerMembership?.organizationId ?? null,
       });
 
       // Version-gate: if the requesting agent has a frameworkVersion, filter out
@@ -3749,14 +3753,14 @@ export async function registerRoutes(
       // Freeze the claiming agent's token dispatch tier onto the job in the SAME
       // atomic claim update — the one tier input not known at creation. Completes
       // the immutable metric-tier snapshot (no separate write to lose on a crash).
-      const tokenOwner = await storage.getUser(evalAgentToken.createdBy);
+      const ownerMembership = await getOrganizations().getMembership(evalAgentToken.createdBy);
       const job = await storage.claimEvalJob(parseInt(jobId, 10), agentId, {
         id: evalAgentToken.id,
         siteId: eff.siteId,
         region: eff.region,
         dispatchTier: evalAgentToken.dispatchTier,
         createdBy: evalAgentToken.createdBy,
-        ownerOrgId: tokenOwner?.organizationId ?? null,
+        ownerOrgId: ownerMembership?.organizationId ?? null,
         locationTrust: eff.locationTrust,
       });
       if (!job) {
@@ -4201,7 +4205,7 @@ export async function registerRoutes(
       // Serve gate (owner + team + attested-shared), enforced against the
       // CLAIMING token from snapshot-frozen owner/org + consent. This is the
       // credential-authoritative check; the claim-SQL gate is the first line.
-      const tokenOwner = await storage.getUser(evalAgentToken.createdBy);
+      const ownerMembership = await getOrganizations().getMembership(evalAgentToken.createdBy);
       const serveJob = {
         targetTokenId: auth.job.targetTokenId ?? null,
         workflowOwnerId: snapWorkflow.ownerId ?? null,
@@ -4209,7 +4213,7 @@ export async function registerRoutes(
         consent: snap?.credentialConsent === true,
       };
       const serveToken = { id: evalAgentToken.id, createdBy: evalAgentToken.createdBy };
-      const serveTokenOwner = { organizationId: tokenOwner?.organizationId ?? null };
+      const serveTokenOwner = { organizationId: ownerMembership?.organizationId ?? null };
       const servable = isSessionServable(serveJob, serveToken, serveTokenOwner);
       if (!servable) {
         console.warn(`[Session] Job ${auth.job.id}: DENIED session bundle to token ${evalAgentToken.id} (not owner/team/attested-shared)`);
@@ -4429,11 +4433,11 @@ export async function registerRoutes(
           if (!authz.ok) return res.status(402).json({ error: authz.reason ?? "Dispatch not authorized" });
           settlementContext = authz.settlementContext; // stashed into the snapshot below
         } else {
-          const owner = await storage.getUser(token.createdBy);
+          const ownerMembership = await getOrganizations().getMembership(token.createdBy);
           const decision = resolveTargetedDispatch(
-            { id: user.id, organizationId: user.organizationId },
+            { id: user.id, organizationId: user.membership?.organizationId ?? null },
             { id: token.id, dispatchTier: token.dispatchTier, createdBy: token.createdBy, region: token.siteId },
-            { organizationId: owner?.organizationId ?? null },
+            { organizationId: ownerMembership?.organizationId ?? null },
           );
           if (!decision.ok) return res.status(403).json({ error: "Not allowed to dispatch to this agent" });
           // Credential-trust gate for a session-injected job dispatched to a
@@ -4445,7 +4449,7 @@ export async function registerRoutes(
           // separate `shared` branch above.
           if (sessionNeed) {
             const ownerTrusted = token.createdBy === workflow.ownerId
-              || (workflow.organizationId != null && sameOrg({ organizationId: owner?.organizationId ?? null }, { organizationId: workflow.organizationId }));
+              || (workflow.organizationId != null && sameOrg({ organizationId: ownerMembership?.organizationId ?? null }, { organizationId: workflow.organizationId }));
             if (!ownerTrusted) {
               return res.status(403).json({ error: "Credential-injected jobs can only be dispatched to the workflow owner's or org's agents, or to a shared agent with consent" });
             }
@@ -4463,7 +4467,7 @@ export async function registerRoutes(
         // only cross-user path, handled in the targeted branch above.
         if (sessionNeed) {
           const isOwner = workflow.ownerId === user.id;
-          const isTeam = workflow.organizationId != null && sameOrg({ organizationId: user.organizationId }, { organizationId: workflow.organizationId });
+          const isTeam = workflow.organizationId != null && sameOrg({ organizationId: user.membership?.organizationId ?? null }, { organizationId: workflow.organizationId });
           if (!isOwner && !isTeam) {
             return res.status(403).json({ error: "Credential-injected workflows can only be run untargeted by the owner or an org member; dispatch to a shared agent with consent to run it elsewhere" });
           }
@@ -4627,7 +4631,7 @@ export async function registerRoutes(
       const sessionReqForTargets = await detectSessionNeed(workflow);
       const sessionTrusted = sessionReqForTargets.kind !== "need" ||
         workflow.ownerId === user.id ||
-        (workflow.organizationId != null && sameOrg({ organizationId: user.organizationId }, { organizationId: workflow.organizationId }));
+        (workflow.organizationId != null && sameOrg({ organizationId: user.membership?.organizationId ?? null }, { organizationId: workflow.organizationId }));
       const mine: Agent[] = !sessionTrusted ? [] : ownTokens
         .filter((t) => !t.isRevoked && t.dispatchTier !== "public")
         .map((t) => {
@@ -4721,7 +4725,7 @@ export async function registerRoutes(
           if (tier === "private") return a.tokenCreatedBy === user.id;
           if (tier === "team")
             return (a.tokenDispatchTier === "team" || a.tokenDispatchTier === "public")
-              && sameOrg({ organizationId: user.organizationId }, { organizationId: a.tokenOwnerOrgId });
+              && sameOrg({ organizationId: user.membership?.organizationId ?? null }, { organizationId: a.tokenOwnerOrgId });
           return a.tokenDispatchTier === "public";
         }).length;
       // Availability must mirror the run route exactly: its untargeted branch
@@ -4732,7 +4736,7 @@ export async function registerRoutes(
       // never-offer-a-403 contract — and the dialogs auto-hop to the first
       // available tier, so a mis-advertised one would be auto-selected.
       const isTeamWorkflow = workflow.organizationId != null &&
-        sameOrg({ organizationId: user.organizationId }, { organizationId: workflow.organizationId });
+        sameOrg({ organizationId: user.membership?.organizationId ?? null }, { organizationId: workflow.organizationId });
       const sessionDispatchAllowed = sessionTrusted; // same predicate, computed above
       const teamBlockedBySession = needsSession && !isTeamWorkflow;
       const tiers = [
@@ -5464,7 +5468,7 @@ export async function registerRoutes(
         return res.status(401).json({ error: "Not authenticated" });
       }
 
-      if (user.organizationId) {
+      if (user.membership) {
         return res.status(400).json({ error: "Already a member of an organization" });
       }
 
@@ -5519,7 +5523,7 @@ export async function registerRoutes(
       }
 
       // Must be member or system admin
-      if (user.organizationId !== org.id && !user.isAdmin) {
+      if ((user.membership?.organizationId ?? null) !== org.id && !user.isAdmin) {
         return res.status(403).json({ error: "Not authorized to view this organization" });
       }
 
@@ -5541,7 +5545,7 @@ export async function registerRoutes(
       const { id } = req.params;
       const { name, address } = req.body;
 
-      if (user.organizationId !== parseInt(id)) {
+      if ((user.membership?.organizationId ?? null) !== parseInt(id)) {
         return res.status(403).json({ error: "Not authorized to modify this organization" });
       }
 
@@ -5572,7 +5576,7 @@ export async function registerRoutes(
         return res.status(400).json({ error: "Email required" });
       }
 
-      if (user.organizationId !== parseInt(id)) {
+      if ((user.membership?.organizationId ?? null) !== parseInt(id)) {
         return res.status(403).json({ error: "Not authorized to invite to this organization" });
       }
 
@@ -5623,17 +5627,23 @@ export async function registerRoutes(
       const { id } = req.params;
 
       // Must be member of the organization
-      if (user.organizationId !== parseInt(id) && !user.isAdmin) {
+      if ((user.membership?.organizationId ?? null) !== parseInt(id) && !user.isAdmin) {
         return res.status(403).json({ error: "Not authorized to view members" });
       }
 
       const members = await storage.getUsersByOrganization(parseInt(id));
+      // Roles come from the seam, not the member rows — one batch lookup, same
+      // response key. Every row here belongs to the org by construction, so the
+      // map hit is the normal case; the `?? null` is only the belt-and-braces
+      // path for a user the provider does not report (and the seam resolves a
+      // null org_role to "member", which is what the column already meant).
+      const memberRoles = await getOrganizations().getMemberships(members.map(m => m.id));
       res.json(members.map(m => ({
         id: m.id,
         username: m.username,
         email: m.email,
         plan: m.plan,
-        orgRole: m.orgRole,
+        orgRole: memberRoles.get(m.id)?.role ?? null,
         createdAt: m.createdAt,
       })));
     } catch (error) {
@@ -5657,17 +5667,20 @@ export async function registerRoutes(
         return res.status(400).json({ error: "orgRole must be 'admin' or 'member'" });
       }
 
-      if (user.organizationId !== parseInt(id)) {
+      if ((user.membership?.organizationId ?? null) !== parseInt(id)) {
         return res.status(403).json({ error: "Not authorized to modify this organization" });
       }
 
-      const member = await storage.getUser(parseInt(userId));
-      if (!member || member.organizationId !== parseInt(id)) {
+      // The target is another user — their affiliation comes from the seam, not
+      // from a raw row (which carries no resolved membership). A user who does
+      // not exist has no membership, so the same 404 applies.
+      const memberMembership = await getOrganizations().getMembership(parseInt(userId));
+      if (!memberMembership || memberMembership.organizationId !== parseInt(id)) {
         return res.status(404).json({ error: "Member not found in organization" });
       }
 
       // Cannot change owner role
-      if (member.orgRole === 'owner') {
+      if (memberMembership.role === 'owner') {
         return res.status(400).json({ error: "Cannot change owner role" });
       }
 
@@ -5677,7 +5690,7 @@ export async function registerRoutes(
       }
 
       // Only owner can promote to admin
-      if (orgRole === 'admin' && user.orgRole !== 'owner') {
+      if (orgRole === 'admin' && user.membership?.role !== 'owner') {
         return res.status(403).json({ error: "Only owner can promote to admin" });
       }
 
@@ -5711,12 +5724,14 @@ export async function registerRoutes(
 
       const { id, userId } = req.params;
 
-      if (user.organizationId !== parseInt(id)) {
+      if ((user.membership?.organizationId ?? null) !== parseInt(id)) {
         return res.status(403).json({ error: "Not authorized to modify this organization" });
       }
 
-      const member = await storage.getUser(parseInt(userId));
-      if (!member || member.organizationId !== parseInt(id)) {
+      // Another user's affiliation resolves through the seam (a raw row has no
+      // resolved membership); a nonexistent user has none, so the 404 holds.
+      const memberMembership = await getOrganizations().getMembership(parseInt(userId));
+      if (!memberMembership || memberMembership.organizationId !== parseInt(id)) {
         return res.status(404).json({ error: "Member not found in organization" });
       }
 
@@ -5726,7 +5741,7 @@ export async function registerRoutes(
       }
 
       // Cannot remove the owner
-      if (member.orgRole === 'owner') {
+      if (memberMembership.role === 'owner') {
         return res.status(400).json({ error: "Cannot remove the organization owner" });
       }
 
@@ -5757,12 +5772,12 @@ export async function registerRoutes(
 
       const { id } = req.params;
 
-      if (user.organizationId !== parseInt(id)) {
+      if ((user.membership?.organizationId ?? null) !== parseInt(id)) {
         return res.status(403).json({ error: "Not a member of this organization" });
       }
 
       // Owner cannot leave — must transfer ownership first
-      if (user.orgRole === 'owner') {
+      if (user.membership?.role === 'owner') {
         return res.status(400).json({ error: "Owner cannot leave. Transfer ownership first." });
       }
 
@@ -5836,20 +5851,21 @@ export async function registerRoutes(
         return res.status(401).json({ error: "Not authenticated" });
       }
 
-      if (!user.organizationId) {
+      if (!user.membership) {
         return res.json(null);
       }
 
-      const org = await storage.getOrganization(user.organizationId);
-      const seats = await storage.getOrganizationSeat(user.organizationId);
-      const memberCount = await storage.getOrganizationMemberCount(user.organizationId);
+      const orgId = user.membership.organizationId;
+      const org = await storage.getOrganization(orgId);
+      const seats = await storage.getOrganizationSeat(orgId);
+      const memberCount = await storage.getOrganizationMemberCount(orgId);
 
       res.json({
         ...org,
         memberCount,
         totalSeats: seats?.totalSeats || 0,
         usedSeats: seats?.usedSeats || 0,
-        orgRole: user.orgRole,
+        orgRole: user.membership.role,
       });
     } catch (error) {
       console.error("Error fetching user organization:", error);
@@ -5880,7 +5896,7 @@ export async function registerRoutes(
 
       const { id } = req.params;
 
-      if (user.organizationId !== parseInt(id)) {
+      if ((user.membership?.organizationId ?? null) !== parseInt(id)) {
         return res.status(403).json({ error: "Not authorized to view seats" });
       }
 
@@ -5917,7 +5933,7 @@ export async function registerRoutes(
       const { id } = req.params;
       const { additionalSeats } = req.body;
 
-      if (user.organizationId !== parseInt(id)) {
+      if ((user.membership?.organizationId ?? null) !== parseInt(id)) {
         return res.status(403).json({ error: "Not authorized" });
       }
 
@@ -5951,7 +5967,7 @@ export async function registerRoutes(
       const { id } = req.params;
       const { additionalSeats, paymentMethodId } = req.body;
 
-      if (user.organizationId !== parseInt(id)) {
+      if ((user.membership?.organizationId ?? null) !== parseInt(id)) {
         return res.status(403).json({ error: "Not authorized" });
       }
 
@@ -6051,7 +6067,7 @@ export async function registerRoutes(
 
       const { id } = req.params;
 
-      if (user.organizationId !== parseInt(id)) {
+      if ((user.membership?.organizationId ?? null) !== parseInt(id)) {
         return res.status(403).json({ error: "Not authorized" });
       }
 
@@ -6106,7 +6122,7 @@ export async function registerRoutes(
       const { id } = req.params;
       const { stripePaymentMethodId, stripeCustomerId, setDefault } = req.body;
 
-      if (user.organizationId !== parseInt(id)) {
+      if ((user.membership?.organizationId ?? null) !== parseInt(id)) {
         return res.status(403).json({ error: "Not authorized" });
       }
 
@@ -6160,7 +6176,7 @@ export async function registerRoutes(
 
       const { id } = req.params;
 
-      if (user.organizationId !== parseInt(id)) {
+      if ((user.membership?.organizationId ?? null) !== parseInt(id)) {
         return res.status(403).json({ error: "Not authorized" });
       }
 
@@ -6189,7 +6205,7 @@ export async function registerRoutes(
 
       const { id, methodId } = req.params;
 
-      if (user.organizationId !== parseInt(id)) {
+      if ((user.membership?.organizationId ?? null) !== parseInt(id)) {
         return res.status(403).json({ error: "Not authorized" });
       }
 
@@ -6221,7 +6237,7 @@ export async function registerRoutes(
 
       const { id } = req.params;
 
-      if (user.organizationId !== parseInt(id)) {
+      if ((user.membership?.organizationId ?? null) !== parseInt(id)) {
         return res.status(403).json({ error: "Not authorized" });
       }
 
