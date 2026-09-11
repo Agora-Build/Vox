@@ -24,21 +24,33 @@ export type AuthUser = Omit<User, 'organizationId' | 'orgRole'> & { membership: 
 // avoids augmenting Express's type surface.
 const membershipCache = new WeakMap<Request, Map<number, Membership | null>>();
 
-export async function resolveMembership(
-  user: User | undefined,
-  req: Request,
-): Promise<AuthUser | undefined> {
-  if (!user) return undefined;
+/**
+ * The ONE way to resolve a membership inside a request. Every seam call on the
+ * request path goes through here so a single request sees a single answer for a
+ * given user. That is not merely a round-trip saving: under a plugin-owned
+ * provider, two independent lookups could disagree mid-request, and a guard
+ * could then admit on one answer while the handler body rejects on the other.
+ */
+export async function membershipFor(req: Request, userId: number): Promise<Membership | null> {
   let perRequest = membershipCache.get(req);
   if (!perRequest) {
     perRequest = new Map();
     membershipCache.set(req, perRequest);
   }
-  if (!perRequest.has(user.id)) {
-    perRequest.set(user.id, await getOrganizations().getMembership(user.id));
+  if (!perRequest.has(userId)) {
+    perRequest.set(userId, await getOrganizations().getMembership(userId));
   }
+  return perRequest.get(userId) ?? null;
+}
+
+export async function resolveMembership(
+  user: User | undefined,
+  req: Request,
+): Promise<AuthUser | undefined> {
+  if (!user) return undefined;
+  const membership = await membershipFor(req, user.id);
   const { organizationId: _organizationId, orgRole: _orgRole, ...rest } = user;
-  return { ...rest, membership: perRequest.get(user.id) ?? null };
+  return { ...rest, membership };
 }
 
 declare module "express-session" {
@@ -141,7 +153,9 @@ export async function requireOrgAdmin(req: Request, res: Response, next: NextFun
   if (!user) {
     return res.status(401).json({ error: "User not found" });
   }
-  const membership = await getOrganizations().getMembership(user.id);
+  // Same per-request memo the handler body's `user.membership` came from, so the
+  // guard and the body can never decide on two different answers.
+  const membership = await membershipFor(req, user.id);
   if (!membership) {
     return res.status(403).json({ error: "Organization membership required" });
   }

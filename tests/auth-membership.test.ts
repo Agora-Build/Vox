@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { setOrganizations, resetOrganizations, type OrganizationsProvider } from "../server/organizations";
-import { resolveMembership } from "../server/auth";
+import { resolveMembership, membershipFor } from "../server/auth";
 
 let calls = 0;
 const provider: OrganizationsProvider = {
@@ -35,6 +35,23 @@ describe("auth membership resolution", () => {
     const req = {} as never;
     await resolveMembership({ id: 1 } as never, req);
     await resolveMembership({ id: 1 } as never, req);
+    expect(calls).toBe(1);
+
+    // The memo must be scoped to the REQUEST, not the process. A module-global
+    // cache would also satisfy the assertion above, yet would serve a stale
+    // membership for the lifetime of the process — a user removed from an org
+    // would keep org access until restart. A different `req` must re-resolve.
+    await resolveMembership({ id: 1 } as never, {} as never);
+    expect(calls).toBe(2);
+  });
+
+  it("shares one answer between the guard helper and resolveMembership within a request", async () => {
+    const req = {} as never;
+    await resolveMembership({ id: 1 } as never, req);
+    expect(await membershipFor(req, 1)).toEqual({ organizationId: 7, role: "admin" });
+    // requireOrgAdmin must not open a second, independently-resolved path: a
+    // guard admitting on one answer while the handler body rejects on another
+    // is the hazard this memo exists to prevent.
     expect(calls).toBe(1);
   });
 });
