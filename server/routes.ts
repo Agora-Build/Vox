@@ -3404,7 +3404,7 @@ export async function registerRoutes(
         ownerOrgId: a.tokenOwnerOrgId,
         state: a.state,
       }));
-      const free = filterDispatchableAgents({ id: user.id, organizationId: user.membership?.organizationId ?? null }, rows);
+      const free = filterDispatchableAgents({ id: user.id, membership: user.membership }, rows);
       const regionRowByTokenId = new Map(agents.map((a) => [a.tokenId, a.tokenRegion]));
 
       const marketplace = getMarketplace();

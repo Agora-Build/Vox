@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { filterDispatchableAgents, type DispatchableAgentRow } from "../server/dispatch";
 
-const user = { id: 1, organizationId: 10 };
+const user = { id: 1, membership: { organizationId: 10, role: "member" as const } };
 const rows: DispatchableAgentRow[] = [
   { tokenId: 1, region: "r", dispatchTier: "public", ownerId: 2, ownerOrgId: 99, state: "idle" },
   { tokenId: 2, region: "r", dispatchTier: "private", ownerId: 1, ownerOrgId: 10, state: "idle" },

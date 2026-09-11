@@ -71,7 +71,7 @@ export interface DispatchableAgentRow {
 
 /** Free tiers the caller may target. `shared` is excluded — the route merges it from the seam. */
 export function filterDispatchableAgents(
-  user: { id: number; organizationId: number | null },
+  user: { id: number; membership: Membership | null },
   agents: DispatchableAgentRow[],
 ): DispatchableAgentRow[] {
   return agents.filter((a) => {
@@ -81,7 +81,7 @@ export function filterDispatchableAgents(
       case "private":
         return a.ownerId === user.id;
       case "team":
-        return a.ownerId === user.id || sameOrg({ organizationId: user.organizationId }, { organizationId: a.ownerOrgId });
+        return a.ownerId === user.id || sameOrg({ organizationId: user.membership?.organizationId ?? null }, { organizationId: a.ownerOrgId });
       case "shared":
       default:
         return false;

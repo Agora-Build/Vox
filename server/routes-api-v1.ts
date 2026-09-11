@@ -372,7 +372,7 @@ export function registerApiV1Routes(app: Express): void {
         return res.status(403).json({ error: "Credential-injected workflows can only use your own or team agent pools" });
       }
       if (sessionNeed && targetTier === "team" &&
-          !(workflow.organizationId != null && sameOrg({ organizationId: user.organizationId }, { organizationId: workflow.organizationId }))) {
+          !(workflow.organizationId != null && sameOrg({ organizationId: user.membership?.organizationId ?? null }, { organizationId: workflow.organizationId }))) {
         return res.status(403).json({ error: "Credential-injected workflows can only use a team pool when the workflow belongs to your organization" });
       }
 
@@ -786,7 +786,7 @@ export function registerApiV1Routes(app: Express): void {
         name,
         description,
         ownerId: user.id,
-        organizationId: user.organizationId,
+        organizationId: user.membership?.organizationId ?? null,
       });
 
       res.status(201).json({ data: project });
@@ -985,8 +985,8 @@ export function registerApiV1Routes(app: Express): void {
           username: user.username,
           email: user.email,
           plan: user.plan,
-          organizationId: user.organizationId,
-          orgRole: user.orgRole,
+          organizationId: user.membership?.organizationId ?? null,
+          orgRole: user.membership?.role ?? null,
         },
       });
     } catch (error) {
