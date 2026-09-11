@@ -7,9 +7,38 @@ import { Strategy as GoogleStrategy, Profile } from "passport-google-oauth20";
 // passport-github2 not used — GitHub OAuth uses manual code exchange for frontend callback page
 import { storage, hashToken } from "./storage";
 import type { User as SchemaUser } from "@shared/schema";
+import { getOrganizations, type Membership } from "./organizations";
 
 // Re-export for convenience
 export type User = SchemaUser;
+
+/**
+ * The authenticated caller, with their org membership resolved once. Callers
+ * read `membership`, never the raw columns — that is what lets a plugin own
+ * membership later without touching call sites.
+ */
+export type AuthUser = User & { membership: Membership | null };
+
+// Per-request memo: a single request may call getCurrentUser several times, and
+// each call would otherwise hit the provider again. WeakMap keyed by the request
+// avoids augmenting Express's type surface.
+const membershipCache = new WeakMap<Request, Map<number, Membership | null>>();
+
+export async function resolveMembership(
+  user: User | undefined,
+  req: Request,
+): Promise<AuthUser | undefined> {
+  if (!user) return undefined;
+  let perRequest = membershipCache.get(req);
+  if (!perRequest) {
+    perRequest = new Map();
+    membershipCache.set(req, perRequest);
+  }
+  if (!perRequest.has(user.id)) {
+    perRequest.set(user.id, await getOrganizations().getMembership(user.id));
+  }
+  return { ...user, membership: perRequest.get(user.id) ?? null };
+}
 
 declare module "express-session" {
   interface SessionData {
@@ -63,11 +92,11 @@ export async function markSystemInitialized(): Promise<void> {
   await storage.setConfig({ key: "system_initialized", value: "true" });
 }
 
-export async function getCurrentUser(req: Request): Promise<User | undefined> {
+export async function getCurrentUser(req: Request): Promise<AuthUser | undefined> {
   if (!req.session?.userId) {
     return undefined;
   }
-  return storage.getUser(req.session.userId);
+  return resolveMembership(await storage.getUser(req.session.userId), req);
 }
 
 export async function requireAuth(req: Request, res: Response, next: NextFunction) {
@@ -111,10 +140,11 @@ export async function requireOrgAdmin(req: Request, res: Response, next: NextFun
   if (!user) {
     return res.status(401).json({ error: "User not found" });
   }
-  if (!user.organizationId) {
+  const membership = await getOrganizations().getMembership(user.id);
+  if (!membership) {
     return res.status(403).json({ error: "Organization membership required" });
   }
-  if (user.orgRole !== 'owner' && user.orgRole !== 'admin') {
+  if (membership.role !== 'owner' && membership.role !== 'admin') {
     return res.status(403).json({ error: "Organization admin access required" });
   }
   next();
@@ -184,13 +214,13 @@ export function requireAuthOrApiKey(req: Request, res: Response, next: NextFunct
   return res.status(401).json({ error: "Authentication required" });
 }
 
-export async function getCurrentUserOrApiKeyUser(req: Request): Promise<User | undefined> {
+export async function getCurrentUserOrApiKeyUser(req: Request): Promise<AuthUser | undefined> {
   if (req.apiKeyUser) {
-    return req.apiKeyUser;
+    return resolveMembership(req.apiKeyUser, req);
   }
 
   if (req.session?.userId) {
-    return storage.getUser(req.session.userId);
+    return resolveMembership(await storage.getUser(req.session.userId), req);
   }
 
   return undefined;
