@@ -346,6 +346,8 @@ export { pool };
 export type SessionScope = { userId: number } | { organizationId: number };
 
 export class DatabaseStorage {
+  // org-columns: provider — returns the raw User row (organizationId/orgRole
+  // included); CoreOrganizations.getMembership() maps it into a Membership.
   async getUser(id: number): Promise<User | undefined> {
     const result = await db.select().from(users).where(eq(users.id, id));
     return result[0];
@@ -386,6 +388,8 @@ export class DatabaseStorage {
     await db.delete(users).where(eq(users.id, id));
   }
 
+  // org-columns: provider — generic column setter; CoreOrganizations writes
+  // organizationId/orgRole through it (createOrganization/addMember/setMemberRole).
   async updateUser(id: number, data: Partial<User>): Promise<User | undefined> {
     const result = await db.update(users).set({ ...data, updatedAt: new Date() }).where(eq(users.id, id)).returning();
     return result[0];
@@ -395,10 +399,12 @@ export class DatabaseStorage {
     return db.select().from(users).orderBy(desc(users.createdAt));
   }
 
+  // org-columns: provider — row fetch behind CoreOrganizations.listMembers().
   async getUsersByOrganization(organizationId: number): Promise<User[]> {
     return db.select().from(users).where(eq(users.organizationId, organizationId)).orderBy(desc(users.createdAt));
   }
 
+  // org-columns: provider — batch row fetch behind CoreOrganizations.getMemberships().
   async getUsersByIds(ids: number[]): Promise<User[]> {
     if (ids.length === 0) return [];
     return db.select().from(users).where(inArray(users.id, Array.from(new Set(ids))));
@@ -2052,6 +2058,7 @@ export class DatabaseStorage {
   }
 
   // Organization helper methods
+  // org-columns: provider — raw admin/owner count behind CoreOrganizations.countOrgAdmins().
   async countOrgAdmins(organizationId: number): Promise<number> {
     const result = await db.select({ count: sql<number>`count(*)` })
       .from(users)
@@ -2059,6 +2066,7 @@ export class DatabaseStorage {
     return Number(result[0]?.count || 0);
   }
 
+  // org-columns: provider — raw member count behind CoreOrganizations.countMembers().
   async getOrganizationMemberCount(organizationId: number): Promise<number> {
     const result = await db.select({ count: sql<number>`count(*)` })
       .from(users)
@@ -2066,6 +2074,7 @@ export class DatabaseStorage {
     return Number(result[0]?.count || 0);
   }
 
+  // org-columns: provider — clears organizationId/orgRole behind CoreOrganizations.removeMember().
   async removeUserFromOrganization(userId: number): Promise<User | undefined> {
     const result = await db.update(users)
       .set({ organizationId: null, orgRole: null, updatedAt: new Date() })

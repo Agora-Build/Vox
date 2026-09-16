@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import path from "path";
 
@@ -34,6 +34,18 @@ const ALLOWED = new Set(["organizations-core.ts", "storage.ts", "permissions.ts"
 // neither `tsc` nor this scan saw it — the identifier simply was not listed.
 const FORBIDDEN = /\b(?!\w*[Mm]embership\b)(user|currentUser|targetUser|member|actor|apiKeyUser|tokenOwner|creator|owner)\w*\.(organizationId|orgRole)\b/;
 
+// Raw snake_case column SQL. `users.organization_id` is scoped to the users
+// table specifically (other tables — web_sessions, org_secrets — legitimately
+// own their own `organization_id` column as a resource-ownership FK, exactly
+// like `workflow.organizationId`, and must NOT be flagged). `org_role` has no
+// analog on any other table, so it is matched bare, unqualified.
+const SNAKE_FORBIDDEN = /\busers\.organization_id\b|\borg_role\b/;
+
+// A line so tagged is an audited, justified exemption from SNAKE_FORBIDDEN —
+// the marker replaces storage.ts's former blanket file-level exemption from
+// this pattern with an explicit, reviewable, per-line one.
+const MARKER = "// org-columns: provider";
+
 /**
  * The scan itself — walk, comment-skip, ALLOWED filter, and offender
  * formatting all live here ONCE. Both the real assertion below and the
@@ -42,22 +54,96 @@ const FORBIDDEN = /\b(?!\w*[Mm]embership\b)(user|currentUser|targetUser|member|a
  * re-implementation of it that could silently drift from what actually runs.
  *
  * Walk is TOP-LEVEL ONLY (`entry.isFile()`, no recursion into subdirectories)
- * — `server/plugins/**` and `server/data/**` are NOT scanned.
+ * — `server/plugins/**` and `server/data/**` are NOT scanned by this helper.
+ * (Recursive plugin-directory coverage is a separate helper below, since only
+ * the snake-case check extends there.)
+ *
+ * `pattern` defaults to FORBIDDEN and `markerExempt` defaults to false, so
+ * every existing call site (and existing assertion) is unchanged bit-for-bit.
  */
-function scan(dir: string, allowed: Set<string>): string[] {
+function scan(dir: string, allowed: Set<string>, pattern: RegExp = FORBIDDEN, markerExempt = false): string[] {
   const offenders: string[] = [];
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     if (!entry.isFile() || !entry.name.endsWith(".ts")) continue;
     if (allowed.has(entry.name)) continue;
-    readFileSync(path.join(dir, entry.name), "utf-8")
-      .split("\n")
-      .forEach((line, i) => {
-        if (line.trim().startsWith("//") || line.trim().startsWith("*")) return;
-        if (FORBIDDEN.test(line)) offenders.push(`${entry.name}:${i + 1}: ${line.trim()}`);
-      });
+    offenders.push(...scanLines(path.join(dir, entry.name), entry.name, pattern, markerExempt));
   }
   return offenders;
 }
+
+/** Per-file line scan shared by `scan()` (top-level dir walk) and the
+ * recursive plugin-directory walk below — one comment-skip/marker-skip
+ * implementation, reused everywhere. */
+function scanLines(filePath: string, label: string, pattern: RegExp, markerExempt: boolean): string[] {
+  const offenders: string[] = [];
+  readFileSync(filePath, "utf-8")
+    .split("\n")
+    .forEach((line, i) => {
+      if (line.trim().startsWith("//") || line.trim().startsWith("*")) return;
+      if (!pattern.test(line)) return;
+      if (markerExempt && line.includes(MARKER)) return;
+      offenders.push(`${label}:${i + 1}: ${line.trim()}`);
+    });
+  return offenders;
+}
+
+// Recursive .ts file listing, tolerant of a missing directory — both
+// server/plugins (today real, non-empty) and plugins-dir-per-plugin server
+// dirs (today real) are expected to eventually gain more nesting in Phase 2,
+// and this must not throw if a given plugin has no server dir yet.
+function walkTsFiles(dir: string): string[] {
+  if (!existsSync(dir)) return [];
+  let out: string[] = [];
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) out = out.concat(walkTsFiles(full));
+    else if (entry.isFile() && entry.name.endsWith(".ts")) out.push(full);
+  }
+  return out;
+}
+
+// Every location the org-column scans (both patterns, where applicable) must
+// cover: server-top-level .ts (handled by scan() directly), plus
+// server/plugins top-level .ts, and each plugin's own server dir, recursively
+// — no-op today for the camelCase pattern (no org-column reads live there
+// yet), load-bearing once org data moves into a plugin in Phase 2.
+function pluginTsFiles(): string[] {
+  const serverPluginsDir = path.resolve(__dirname, "../server/plugins");
+  const pluginsRootDir = path.resolve(__dirname, "../plugins");
+  const files: string[] = [];
+  if (existsSync(serverPluginsDir)) {
+    for (const entry of readdirSync(serverPluginsDir, { withFileTypes: true })) {
+      if (entry.isFile() && entry.name.endsWith(".ts")) files.push(path.join(serverPluginsDir, entry.name));
+    }
+  }
+  if (existsSync(pluginsRootDir)) {
+    for (const entry of readdirSync(pluginsRootDir, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      files.push(...walkTsFiles(path.join(pluginsRootDir, entry.name, "server")));
+    }
+  }
+  return files;
+}
+
+function scanFileList(files: string[], pattern: RegExp, markerExempt: boolean): string[] {
+  const offenders: string[] = [];
+  for (const f of files) offenders.push(...scanLines(f, f, pattern, markerExempt));
+  return offenders;
+}
+
+/** Counts audited-exemption marker lines in a file (path relative to repo root). */
+function countMarkers(relPath: string): number {
+  const full = path.resolve(__dirname, "..", relPath);
+  return readFileSync(full, "utf-8")
+    .split("\n")
+    .filter((l) => l.includes(MARKER)).length;
+}
+
+// Step 3's enumeration: after Tasks 5-9 removed the business-logic org-column
+// SQL from routes, the sites below are what legitimately remains in
+// storage.ts — the provider-serving surface `CoreOrganizations` is built on.
+// Release B deletes or re-points every one of them.
+const EXPECTED_MARKERS = 7;
 
 describe("organizations boundary", () => {
   it("no user-shaped org-column read outside the provider, storage, and the structural predicates", () => {
@@ -111,5 +197,109 @@ describe("organizations boundary", () => {
     for (const line of legit) {
       expect(FORBIDDEN.test(line), line).toBe(false);
     }
+  });
+
+  // --- Task 12: snake-case hardening ---------------------------------------
+
+  it("snake-case org-column SQL appears only on provider-marked lines", () => {
+    // storage.ts is deliberately NOT in an ALLOWED set here — unlike the
+    // camelCase scan above, it gets no file-level exemption from this
+    // pattern. Any hit must carry the MARKER on the same line instead.
+    const topLevel = scan(path.resolve(__dirname, "../server"), new Set(), SNAKE_FORBIDDEN, true);
+    const pluginHits = scanFileList(pluginTsFiles(), SNAKE_FORBIDDEN, true);
+    const offenders = [...topLevel, ...pluginHits];
+    expect(offenders, `mark with "${MARKER}" + a one-line justification, or fix through the seam:\n${offenders.join("\n")}`).toEqual([]);
+  });
+
+  it("the marker count is pinned — a new exemption is a conscious act", () => {
+    expect(countMarkers("server/storage.ts")).toBe(EXPECTED_MARKERS);
+  });
+
+  it("flags an unmarked snake-case violation, and clears it once marked (falsifiability check)", () => {
+    const tmp = path.join(tmpdir(), `org-boundary-snake-fixture-${Date.now()}`);
+    mkdirSync(tmp, { recursive: true });
+    writeFileSync(
+      path.join(tmp, "fixture.ts"),
+      [
+        "const q = `SELECT * FROM x WHERE users.organization_id = 1`;",
+        "const r = row.org_role;",
+        `const marked = row.org_role; ${MARKER} — legit test fixture line`,
+        "// a comment mentioning users.organization_id must not count",
+      ].join("\n"),
+    );
+
+    const offenders = scan(tmp, new Set(), SNAKE_FORBIDDEN, true);
+
+    expect(offenders).toEqual([
+      "fixture.ts:1: const q = `SELECT * FROM x WHERE users.organization_id = 1`;",
+      "fixture.ts:2: const r = row.org_role;",
+    ]);
+  });
+
+  it("storage.ts is not blanket-exempt from the snake-case pattern (falsifiability check)", () => {
+    const tmp = path.join(tmpdir(), `org-boundary-snake-storage-fixture-${Date.now()}`);
+    mkdirSync(tmp, { recursive: true });
+    writeFileSync(path.join(tmp, "storage.ts"), "const r = `WHERE users.organization_id = 1`;\n");
+
+    // Note: no ALLOWED set exempting storage.ts by name — that blanket
+    // exemption existed only for the camelCase pattern.
+    const offenders = scan(tmp, new Set(), SNAKE_FORBIDDEN, true);
+
+    expect(offenders).toEqual(["storage.ts:1: const r = `WHERE users.organization_id = 1`;"]);
+  });
+
+  // --- Ruling H: the decrypt tail is pinned to its single fenced call site --
+  //
+  // storage.getDecryptedOrgRuntimeSecrets is a decrypt tail with NO internal
+  // fence — its safety depends entirely on orgRuntimeSecretsForJob
+  // (server/routes.ts) being its ONLY caller. This proves that invariant by
+  // scanning source rather than trusting a comment, the same way the rest of
+  // this file works.
+
+  /** Non-comment occurrences of a whole-word identifier across a file list. */
+  function identifierOccurrences(files: string[], identifier: string, excludeNames: Set<string>): string[] {
+    const idPattern = new RegExp(`\\b${identifier}\\b`);
+    const hits: string[] = [];
+    for (const f of files) {
+      if (excludeNames.has(path.basename(f))) continue;
+      readFileSync(f, "utf-8")
+        .split("\n")
+        .forEach((line, i) => {
+          if (line.trim().startsWith("//") || line.trim().startsWith("*")) return;
+          if (idPattern.test(line)) hits.push(`${f}:${i + 1}: ${line.trim()}`);
+        });
+    }
+    return hits;
+  }
+
+  function scannedServerFiles(): string[] {
+    const serverDir = path.resolve(__dirname, "../server");
+    const topLevel = readdirSync(serverDir, { withFileTypes: true })
+      .filter((e) => e.isFile() && e.name.endsWith(".ts"))
+      .map((e) => path.join(serverDir, e.name));
+    return [...topLevel, ...pluginTsFiles()];
+  }
+
+  it("getDecryptedOrgRuntimeSecrets is called from exactly one site outside storage.ts, and it is server/routes.ts", () => {
+    const hits = identifierOccurrences(scannedServerFiles(), "getDecryptedOrgRuntimeSecrets", new Set(["storage.ts"]));
+    expect(hits).toHaveLength(1);
+    expect(hits[0]).toMatch(/[\\/]routes\.ts:/);
+  });
+
+  it("flags a second call site to the decrypt tail (falsifiability check)", () => {
+    const tmp = path.join(tmpdir(), `org-boundary-decrypt-tail-fixture-${Date.now()}`);
+    mkdirSync(tmp, { recursive: true });
+    writeFileSync(path.join(tmp, "storage.ts"), "async getDecryptedOrgRuntimeSecrets() {}\n");
+    writeFileSync(path.join(tmp, "routes.ts"), "return storage.getDecryptedOrgRuntimeSecrets(scope.workflowOrgId);\n");
+    // A second, rogue call site — the thing that must never happen for real.
+    writeFileSync(path.join(tmp, "rogue-plugin.ts"), "return storage.getDecryptedOrgRuntimeSecrets(otherOrgId);\n");
+
+    const hits = identifierOccurrences(
+      [path.join(tmp, "storage.ts"), path.join(tmp, "routes.ts"), path.join(tmp, "rogue-plugin.ts")],
+      "getDecryptedOrgRuntimeSecrets",
+      new Set(["storage.ts"]),
+    );
+
+    expect(hits).toHaveLength(2);
   });
 });
