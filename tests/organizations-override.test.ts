@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { setOrganizations, resetOrganizations, type OrganizationsProvider, type Membership } from "../server/organizations";
+import { setOrganizations, resetOrganizations, type OrganizationsProvider, type Membership, type OrgRole } from "../server/organizations";
 import { resolveMembership } from "../server/auth";
 import { canAccessResource, isOwnerOrOrgManager, hasOrg } from "../server/permissions";
 
@@ -25,6 +25,29 @@ class FakeOrganizations implements OrganizationsProvider {
     return [...this.byUser.entries()]
       .filter(([, m]) => m.organizationId === orgId)
       .map(([userId, m]) => ({ userId, role: m.role }));
+  }
+  // Task 2 widened the interface with these — trivial stubs, unused by this
+  // suite's assertions (fixture plumbing only, per Task 1/2 Ruling E).
+  async countMembers(_orgId: number): Promise<number> { return 0; }
+  async countOrgAdmins(_orgId: number): Promise<number> { return 0; }
+  async listOrganizations(): Promise<never[]> { return []; }
+  async createOrganization(_input: { name: string; address?: string }, _creator: { userId: number }): Promise<never> {
+    throw new Error("not implemented in fake");
+  }
+  async updateOrganization(_orgId: number, _patch: { name?: string; address?: string }): Promise<never> {
+    throw new Error("not implemented in fake");
+  }
+  async setVerified(_orgId: number, _verified: boolean): Promise<void> {
+    throw new Error("not implemented in fake");
+  }
+  async addMember(_orgId: number, _userId: number, _role: OrgRole): Promise<void> {
+    throw new Error("not implemented in fake");
+  }
+  async setMemberRole(_orgId: number, _userId: number, _role: OrgRole): Promise<void> {
+    throw new Error("not implemented in fake");
+  }
+  async removeMember(_orgId: number, _userId: number): Promise<void> {
+    throw new Error("not implemented in fake");
   }
 }
 

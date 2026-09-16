@@ -5,7 +5,7 @@
 // scan test. When orgs extract into a plugin, this file is deleted.
 
 import type { DatabaseStorage } from "./storage";
-import type { Membership, Organization, OrganizationsProvider, OrgRole } from "./organizations";
+import { AlreadyMemberError, type Membership, type Organization, type OrganizationsProvider, type OrgRole } from "./organizations";
 
 /** Only the storage surface this needs — keeps the class testable without a DB. */
 type StorageLike = Pick<
@@ -17,6 +17,10 @@ type StorageLike = Pick<
   | "countOrgAdmins"
   | "getOrganizationMemberCount"
   | "getAllOrganizations"
+  | "createOrganization"
+  | "updateOrganization"
+  | "updateUser"
+  | "removeUserFromOrganization"
 >;
 
 /**
@@ -72,5 +76,43 @@ export class CoreOrganizations implements OrganizationsProvider {
 
   async listOrganizations(): Promise<Organization[]> {
     return this.storage.getAllOrganizations();
+  }
+
+  async createOrganization(input: { name: string; address?: string }, creator: { userId: number }): Promise<Organization> {
+    const user = await this.storage.getUser(creator.userId);
+    if (user?.organizationId != null) throw new AlreadyMemberError(
+      `user ${creator.userId} already belongs to organization ${user.organizationId}`);
+    // Sequential, mirroring today's route behavior exactly. The PLUGIN provider
+    // wraps these two in ctx.db.withTransaction (design §5); Core cannot and
+    // does not pretend to.
+    const org = await this.storage.createOrganization({ name: input.name, address: input.address ?? null });
+    await this.storage.updateUser(creator.userId, { organizationId: org.id, orgRole: "owner" });
+    return org;
+  }
+
+  async updateOrganization(orgId: number, patch: { name?: string; address?: string }): Promise<Organization> {
+    const updated = await this.storage.updateOrganization(orgId, patch);
+    if (!updated) throw new Error("organization not found");
+    return updated;
+  }
+
+  async setVerified(orgId: number, verified: boolean): Promise<void> {
+    await this.storage.updateOrganization(orgId, { verified });
+  }
+
+  async addMember(orgId: number, userId: number, role: OrgRole): Promise<void> {
+    const user = await this.storage.getUser(userId);
+    if (!user) throw new Error("user not found");
+    if (user.organizationId != null) throw new AlreadyMemberError(
+      `user ${userId} already belongs to organization ${user.organizationId}`);
+    await this.storage.updateUser(userId, { organizationId: orgId, orgRole: role });
+  }
+
+  async setMemberRole(orgId: number, userId: number, role: OrgRole): Promise<void> {
+    await this.storage.updateUser(userId, { orgRole: role });
+  }
+
+  async removeMember(_orgId: number, userId: number): Promise<void> {
+    await this.storage.removeUserFromOrganization(userId);
   }
 }

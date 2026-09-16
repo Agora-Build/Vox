@@ -26,6 +26,18 @@ export interface Organization {
   updatedAt: Date;
 }
 
+/**
+ * Thrown by `addMember` / `createOrganization` when the target user already
+ * belongs to an organization.
+ *
+ * At-most-one-org is the provider's invariant, not Core's: today it is
+ * physically enforced by `users.organization_id` being one column; a future
+ * plugin's `memberships` table carries `UNIQUE (user_ref)` and throws this
+ * same typed error. Register-with-invite and create-org map it to today's
+ * 400s.
+ */
+export class AlreadyMemberError extends Error {}
+
 export interface OrganizationsProvider {
   /** Membership of one user; null = belongs to no org. */
   getMembership(userId: number): Promise<Membership | null>;
@@ -41,6 +53,30 @@ export interface OrganizationsProvider {
   countOrgAdmins(orgId: number): Promise<number>;
   /** All organizations (admin listing). */
   listOrganizations(): Promise<Organization[]>;
+
+  // Mutations. Rules the interface encodes (design §4):
+  // - Authorization stays in Core. The provider executes; it never decides —
+  //   `requireOrgAdmin` and the predicates keep gating routes.
+  // - At-most-one-org is the provider's invariant now (see AlreadyMemberError).
+  // - Transactions do not cross the boundary: a plugin gets intra-provider
+  //   atomicity only (e.g. org + owner membership commit together inside the
+  //   provider); Core-side compensating writes follow a fixed order and no
+  //   distributed transaction is attempted.
+  // - Error semantics: "cannot answer" != "no" — providers throw on failure;
+  //   they never return a membership-shaped null to mean "unavailable".
+
+  /** Creates the org and makes `creator` its owner. Throws AlreadyMemberError if the creator already belongs to an org. */
+  createOrganization(input: { name: string; address?: string }, creator: { userId: number }): Promise<Organization>;
+  /** Patches name/address. Throws Error("organization not found") if orgId doesn't exist. */
+  updateOrganization(orgId: number, patch: { name?: string; address?: string }): Promise<Organization>;
+  /** Writes the `verified` column. */
+  setVerified(orgId: number, verified: boolean): Promise<void>;
+  /** Adds userId to orgId with role. Throws AlreadyMemberError if the user already belongs to ANY org. */
+  addMember(orgId: number, userId: number, role: OrgRole): Promise<void>;
+  /** Changes an existing member's role. */
+  setMemberRole(orgId: number, userId: number, role: OrgRole): Promise<void>;
+  /** Removes userId from orgId. */
+  removeMember(orgId: number, userId: number): Promise<void>;
 }
 
 let current: OrganizationsProvider | null = null;
