@@ -4418,6 +4418,177 @@ describe('Vox API Tests', () => {
     });
   });
 
+  // ==================== Org Secrets: isTestAccount regression (Task 9 review I-2) ====================
+  // The suite above early-returns on `!status.user.organizationId`, and by the
+  // time it runs the "Organization Roles" suite's afterAll has already reset
+  // admin back to org-less — so those three tests never actually hit the live
+  // POST/DELETE handlers, and the isTestAccount-preservation compensation in
+  // the route (`resolvedIsTestAccount`, mirroring `resolvedBrokerType`) had no
+  // regression guard. This block seeds its own org + admin membership directly
+  // (same technique "Organization Roles" already uses: raw admin.id=1 update,
+  // restored in afterAll) so the assertions below exercise the real routes.
+  describe('Org Secrets — isTestAccount preserved across value-only update', () => {
+    let probeOrgId: number;
+    let priorOrganizationId: number | null = null;
+    let priorOrgRole: string | null = null;
+    const secretName = `TASK9_ISTESTACCT_${Date.now()}`;
+
+    beforeAll(async () => {
+      if (!process.env.DATABASE_URL) return;
+      const { storage, pool } = await import('../server/storage');
+
+      const before = await pool.query('SELECT organization_id, org_role FROM users WHERE id = 1');
+      priorOrganizationId = before.rows[0]?.organization_id ?? null;
+      priorOrgRole = before.rows[0]?.org_role ?? null;
+
+      const org = await storage.createOrganization({ name: `task9-istestacct-org-${Date.now()}` } as any);
+      probeOrgId = org.id;
+      await pool.query('UPDATE users SET organization_id = $1, org_role = $2 WHERE id = 1', [probeOrgId, 'owner']);
+    });
+
+    afterAll(async () => {
+      if (!process.env.DATABASE_URL || probeOrgId === undefined) return;
+      const { pool } = await import('../server/storage');
+      await pool.query('DELETE FROM org_secrets WHERE organization_id = $1', [probeOrgId]);
+      await pool.query('UPDATE users SET organization_id = $1, org_role = $2 WHERE id = 1', [priorOrganizationId, priorOrgRole]);
+      await pool.query('DELETE FROM organization_seats WHERE organization_id = $1', [probeOrgId]);
+      await pool.query('DELETE FROM organizations WHERE id = $1', [probeOrgId]);
+    });
+
+    it('POST with isTestAccount:true, then a value-only POST, keeps isTestAccount true end to end', async () => {
+      const createRes = await authFetch(adminSession, `${BASE_URL}/api/org-secrets`, {
+        method: 'POST',
+        body: JSON.stringify({ name: secretName, value: 'v1', isTestAccount: true }),
+      });
+      expect(createRes.ok).toBe(true);
+      const created = await createRes.json();
+      expect(created.isTestAccount).toBe(true);
+
+      // Value-only rotation: isTestAccount intentionally omitted from the body.
+      const updateRes = await authFetch(adminSession, `${BASE_URL}/api/org-secrets`, {
+        method: 'POST',
+        body: JSON.stringify({ name: secretName, value: 'v2' }),
+      });
+      expect(updateRes.ok).toBe(true);
+      const updated = await updateRes.json();
+      expect(updated.isTestAccount).toBe(true);
+
+      const { pool } = await import('../server/storage');
+      const row = await pool.query(
+        'SELECT is_test_account FROM org_secrets WHERE organization_id = $1 AND name = $2',
+        [probeOrgId, secretName],
+      );
+      expect(row.rows[0].is_test_account).toBe(true);
+
+      const listRes = await authFetch(adminSession, `${BASE_URL}/api/org-secrets`);
+      const secrets = await listRes.json();
+      expect(secrets.find((s: { name: string }) => s.name === secretName)?.isTestAccount).toBe(true);
+
+      const delRes = await authFetch(adminSession, `${BASE_URL}/api/org-secrets/${secretName}`, { method: 'DELETE' });
+      expect(delRes.ok).toBe(true);
+
+      const listRes2 = await authFetch(adminSession, `${BASE_URL}/api/org-secrets`);
+      const secrets2 = await listRes2.json();
+      expect(secrets2.find((s: { name: string }) => s.name === secretName)).toBeUndefined();
+    });
+  });
+
+  // ==================== Register: org-invite membership write (Task 9 review I-1) ====================
+  // Locks the reordering in POST /api/auth/register: the provider-absence check
+  // now runs before storage.createUser, and a failed orgs.addMember triggers a
+  // best-effort storage.deleteUser so a failed org write never leaves an
+  // orphaned, loginable account (BASE's single-INSERT atomicity, restored).
+  //
+  // Two of the scenarios in the review (provider genuinely absent; addMember
+  // failing on a mid-flight-deleted org) are not reachable from this file:
+  // api.test.ts drives the already-running dev server as a separate OS
+  // process, so resetting the in-process `vox.organizations` singleton here
+  // has no effect on it (server/index.ts:226 always installs a provider on
+  // that process); and organizations has no delete path — deleting an org row
+  // while an invite_tokens row still references it is blocked by the FK
+  // (RESTRICT, no ON DELETE), so that fault can't be constructed without a
+  // schema change. What IS covered here: the happy path through the
+  // reordered code (still joins the org, still marks the invite used), an
+  // already-used invite still creates no user row, and the new
+  // `storage.deleteUser` primitive the compensating delete depends on.
+  describe('Register — org-invite membership through the seam', () => {
+    const stamp = Date.now();
+    const username = `t9reg_${stamp}`;
+    const email = `t9reg_${stamp}@example.com`;
+    let probeOrgId: number;
+    let rawToken: string;
+
+    beforeAll(async () => {
+      if (!process.env.DATABASE_URL) return;
+      const { storage, hashToken } = await import('../server/storage');
+      const org = await storage.createOrganization({ name: `task9-reg-org-${stamp}` } as any);
+      probeOrgId = org.id;
+      rawToken = `task9regtoken${stamp}`;
+      const expiresAt = new Date(Date.now() + 60 * 60 * 1000);
+      await storage.createInviteToken(email, 'basic', false, hashToken(rawToken), null, expiresAt, probeOrgId);
+    });
+
+    afterAll(async () => {
+      if (!process.env.DATABASE_URL || probeOrgId === undefined) return;
+      const { pool } = await import('../server/storage');
+      await pool.query('DELETE FROM invite_tokens WHERE email = $1', [email]);
+      await pool.query('DELETE FROM users WHERE username = $1 OR username = $2', [username, `${username}_second`]);
+      await pool.query('DELETE FROM organization_seats WHERE organization_id = $1', [probeOrgId]);
+      await pool.query('DELETE FROM organizations WHERE id = $1', [probeOrgId]);
+    });
+
+    it('registers, joins the org via orgs.addMember, and marks the invite used', async () => {
+      const res = await fetch(`${BASE_URL}/api/auth/register`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: rawToken, username, password: 'testpassword123' }),
+      });
+      expect(res.ok).toBe(true);
+      const body = await res.json();
+      expect(body.user.username).toBe(username);
+
+      const { pool } = await import('../server/storage');
+      const row = await pool.query('SELECT organization_id, org_role FROM users WHERE username = $1', [username]);
+      expect(row.rows[0].organization_id).toBe(probeOrgId);
+      expect(row.rows[0].org_role).toBe('member');
+
+      const inviteRow = await pool.query('SELECT used_at FROM invite_tokens WHERE email = $1', [email]);
+      expect(inviteRow.rows[0].used_at).not.toBeNull();
+    });
+
+    it('a reused (already-used) invite creates no user row', async () => {
+      const res = await fetch(`${BASE_URL}/api/auth/register`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: rawToken, username: `${username}_second`, password: 'testpassword123' }),
+      });
+      expect(res.status).toBe(400);
+
+      const { pool } = await import('../server/storage');
+      const row = await pool.query('SELECT id FROM users WHERE username = $1', [`${username}_second`]);
+      expect(row.rows.length).toBe(0);
+    });
+  });
+
+  describe('storage.deleteUser — compensating-delete primitive for register atomicity (Task 9 review I-1)', () => {
+    it('removes the user row it created', async () => {
+      if (!process.env.DATABASE_URL) return;
+      const { storage, pool } = await import('../server/storage');
+      const stamp = Date.now();
+      const user = await storage.createUser({
+        username: `t9del_${stamp}`,
+        email: `t9del_${stamp}@example.com`,
+        passwordHash: 'x',
+        isEnabled: true,
+      } as any);
+
+      await storage.deleteUser(user.id);
+
+      const row = await pool.query('SELECT id FROM users WHERE id = $1', [user.id]);
+      expect(row.rows.length).toBe(0);
+    });
+  });
+
   // ==================== Permission Helpers ====================
   describe('Permission Checks', () => {
     it('should allow admin to access any workflow', async () => {

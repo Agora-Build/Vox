@@ -376,6 +376,16 @@ export class DatabaseStorage {
     return result[0];
   }
 
+  // Compensating delete for register-with-invite: createUser and the
+  // org-membership write (through the vox.organizations seam) are two
+  // separate statements, not one transaction, so a failure in the second
+  // needs to unwind the first to match BASE's atomicity (a single INSERT
+  // that either fully landed or fully didn't). Not a general user-deletion
+  // feature — there is deliberately no admin-facing route for this.
+  async deleteUser(id: number): Promise<void> {
+    await db.delete(users).where(eq(users.id, id));
+  }
+
   async updateUser(id: number, data: Partial<User>): Promise<User | undefined> {
     const result = await db.update(users).set({ ...data, updatedAt: new Date() }).where(eq(users.id, id)).returning();
     return result[0];

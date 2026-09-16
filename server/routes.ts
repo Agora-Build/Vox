@@ -879,8 +879,20 @@ export async function registerRoutes(
         return res.status(400).json({ error: "Username already taken" });
       }
 
+      // Provider-absence check hoisted above createUser: BASE's single INSERT
+      // meant a failure here left no user row at all, and this restores that
+      // for the "feature not enabled" case at zero cost (present-provider path
+      // is unaffected).
+      let orgs: ReturnType<typeof getOrganizations> = null;
+      if (invite.organizationId != null) {
+        orgs = getOrganizations();
+        if (!orgs) {
+          return res.status(400).json({ error: "Organizations feature not enabled" });
+        }
+      }
+
       const passwordHashNew = await hashPassword(password);
-      
+
       const user = await storage.createUser({
         username,
         email: invite.email,
@@ -891,14 +903,16 @@ export async function registerRoutes(
         emailVerifiedAt: new Date(),
       });
 
-      if (invite.organizationId != null) {
-        const orgs = getOrganizations();
-        if (!orgs) {
-          return res.status(400).json({ error: "Organizations feature not enabled" });
-        }
+      if (orgs) {
         try {
-          await orgs.addMember(invite.organizationId, user.id, "member");
+          await orgs.addMember(invite.organizationId!, user.id, "member");
         } catch (error) {
+          // createUser and addMember are two statements, not one transaction
+          // (BASE was a single INSERT) — best-effort unwind so a failed org
+          // write never leaves an orphaned, loginable account behind.
+          await storage.deleteUser(user.id).catch((cleanupError) => {
+            console.error("Error cleaning up orphaned user after failed org membership write:", cleanupError);
+          });
           if (error instanceof AlreadyMemberError) {
             return res.status(400).json({ error: "Already a member of an organization" });
           }
