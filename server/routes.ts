@@ -889,9 +889,22 @@ export async function registerRoutes(
         isAdmin: invite.isAdmin,
         isEnabled: true,
         emailVerifiedAt: new Date(),
-        organizationId: invite.organizationId,
-        orgRole: invite.organizationId ? 'member' : null,
       });
+
+      if (invite.organizationId != null) {
+        const orgs = getOrganizations();
+        if (!orgs) {
+          return res.status(400).json({ error: "Organizations feature not enabled" });
+        }
+        try {
+          await orgs.addMember(invite.organizationId, user.id, "member");
+        } catch (error) {
+          if (error instanceof AlreadyMemberError) {
+            return res.status(400).json({ error: "Already a member of an organization" });
+          }
+          throw error;
+        }
+      }
 
       await storage.markInviteTokenUsed(tokenHash);
 
@@ -2846,11 +2859,14 @@ export async function registerRoutes(
   // List org secrets (all members see names, admins see full)
   app.get("/api/org-secrets", requireAuth, async (req, res) => {
     try {
+      const orgs = requireOrganizations(res);
+      if (!orgs) return;
+
       const user = await getCurrentUser(req);
       if (!user || !user.membership) {
         return res.status(403).json({ error: "Organization membership required" });
       }
-      const secrets = await storage.getOrgSecrets(user.membership.organizationId);
+      const secrets = await orgs.listOrgSecrets(user.membership.organizationId);
       // NO fingerprint here, deliberately. Personal secrets are unambiguous —
       // the row is keyed by user_id, so the caller entered the value. Org
       // secrets are not: upsertOrgSecret preserves the ORIGINAL createdBy on
@@ -2876,6 +2892,9 @@ export async function registerRoutes(
   // Create/update org secret (admin/owner only)
   app.post("/api/org-secrets", requireAuth, requireOrgAdmin, async (req, res) => {
     try {
+      const orgs = requireOrganizations(res);
+      if (!orgs) return;
+
       const user = await getCurrentUser(req);
       if (!user || !user.membership) {
         return res.status(403).json({ error: "Organization membership required" });
@@ -2900,7 +2919,7 @@ export async function registerRoutes(
       const bodyBrokerType = req.body.brokerType === undefined ? undefined : req.body.brokerType;
       const isTestAccount = req.body.isTestAccount === undefined ? undefined : req.body.isTestAccount === true;
 
-      const existingRow = (await storage.getOrgSecrets(user.membership.organizationId)).find(s => s.name === trimmedName);
+      const existingRow = (await orgs.listOrgSecrets(user.membership.organizationId)).find(s => s.name === trimmedName);
       let resolvedBrokerType: string | null;
       if (existingRow && bodyBrokerType === undefined) {
         resolvedBrokerType = existingRow.brokerType; // preserve on value-only update
@@ -2912,11 +2931,20 @@ export async function registerRoutes(
       if (existingRow && existingRow.brokerType === "auth-session" && resolvedBrokerType === null) {
         return res.status(400).json({ error: "A brokered secret cannot be reclassified to runtime — delete and recreate it instead" });
       }
+      // Provider's upsertOrgSecret always writes isTestAccount (no partial-update
+      // semantics like storage.upsertOrgSecret used to have) — preserve on
+      // value-only update ourselves, same pattern as resolvedBrokerType above.
+      const resolvedIsTestAccount = existingRow && isTestAccount === undefined
+        ? existingRow.isTestAccount
+        : (isTestAccount ?? false);
 
       const encrypted = encryptValue(value);
-      const secret = await storage.upsertOrgSecret(user.membership.organizationId, trimmedName, encrypted, user.id, {
+      const secret = await orgs.upsertOrgSecret(user.membership.organizationId, {
+        name: trimmedName,
+        encryptedValue: encrypted,
         brokerType: resolvedBrokerType,
-        isTestAccount,
+        isTestAccount: resolvedIsTestAccount,
+        createdBy: user.id,
       });
       res.json({ message: "Org secret saved", brokerType: secret.brokerType, isTestAccount: secret.isTestAccount });
     } catch (error) {
@@ -2928,11 +2956,14 @@ export async function registerRoutes(
   // Delete org secret (admin/owner only)
   app.delete("/api/org-secrets/:name", requireAuth, requireOrgAdmin, async (req, res) => {
     try {
+      const orgs = requireOrganizations(res);
+      if (!orgs) return;
+
       const user = await getCurrentUser(req);
       if (!user || !user.membership) {
         return res.status(403).json({ error: "Organization membership required" });
       }
-      await storage.deleteOrgSecret(user.membership.organizationId, decodeURIComponent(req.params.name));
+      await orgs.deleteOrgSecret(user.membership.organizationId, decodeURIComponent(req.params.name));
       res.json({ message: "Org secret deleted" });
     } catch (error) {
       console.error("Error deleting org secret:", error);
