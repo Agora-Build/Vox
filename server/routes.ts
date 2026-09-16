@@ -11,7 +11,7 @@ import { registerApiV1Routes } from "./routes-api-v1";
 import { generateSignedUrlForUser } from "./s3";
 import { validateTierChoice, resolveTargetedDispatch, filterDispatchableAgents } from "./dispatch";
 import { getMarketplace } from "./marketplace";
-import { getOrganizations, type Membership } from "./organizations";
+import { AlreadyMemberError, getOrganizations, requireOrganizations, type Membership } from "./organizations";
 import { fingerprintCredential, formatLastFailedHttpStatus, parseLastFailedHttpStatus } from "@shared/credentials";
 import { parsePlatformSetup, sessionScopeForWorkflow, evaluateSessionRequirement, getBrokeredSecretNames, ensureSession, stampOwnerSession, credentialKeyFor, SESSION_FRESH_MARGIN_SECONDS, classifyReferencedSecrets, findBrokeredMisuse, defaultBrokerTypeForName, resolveBrokerType, type SessionNeed, detectSessionNeed, missingSecretNames, resolvableSecretSources } from "./auth-session";
 import { validateRegisterPayload, cacheBrokerMintSecret, hasBrokerMintSecret } from "./broker-registry";
@@ -628,7 +628,7 @@ export async function registerRoutes(
       // Other users' affiliation comes from the seam, not their raw rows — one
       // batch lookup, response shape unchanged. Absent provider ⇒ empty map,
       // same downstream effect as no member having an org.
-      const memberships = (await getOrganizations()?.getMemberships(users.map(u => u.id))) ?? new Map();
+      const memberships = (await getOrganizations()?.getMemberships(users.map(u => u.id))) ?? new Map<number, Membership>();
       res.json(users.map(u => ({
         id: u.id,
         username: u.username,
@@ -5514,6 +5514,9 @@ export async function registerRoutes(
   // Create organization (user becomes admin and gets linked)
   app.post("/api/organizations", requireAuth, async (req, res) => {
     try {
+      const orgs = requireOrganizations(res);
+      if (!orgs) return;
+
       const user = await getCurrentUser(req);
       if (!user) {
         return res.status(401).json({ error: "Not authenticated" });
@@ -5529,12 +5532,19 @@ export async function registerRoutes(
         return res.status(400).json({ error: "Organization name required" });
       }
 
-      // Create organization
-      const org = await storage.createOrganization({
-        name,
-        address,
-        verified: false,
-      });
+      // Org + owner membership commit together inside the provider (design §5);
+      // the Core-side seat row follows. A crash between the two leaves a missing
+      // seat row, which every reader already tolerates (`seats?.totalSeats || 0`)
+      // — the reverse order would leave a seat for an org that does not exist.
+      let org;
+      try {
+        org = await orgs.createOrganization({ name, address }, { userId: user.id });
+      } catch (error) {
+        if (error instanceof AlreadyMemberError) {
+          return res.status(400).json({ error: "Already a member of an organization" });
+        }
+        throw error;
+      }
 
       // Create organization seat record
       await storage.createOrganizationSeat({
@@ -5543,12 +5553,6 @@ export async function registerRoutes(
         usedSeats: 1, // Creator takes a seat
         pricePerSeat: 600,
         discountPercent: 0,
-      });
-
-      // Link user to organization as owner
-      await storage.updateUser(user.id, {
-        organizationId: org.id,
-        orgRole: 'owner',
       });
 
       res.json(org);
@@ -5561,13 +5565,17 @@ export async function registerRoutes(
   // Get organization details
   app.get("/api/organizations/:id", requireAuth, async (req, res) => {
     try {
+      const orgs = requireOrganizations(res);
+      if (!orgs) return;
+
       const user = await getCurrentUser(req);
       if (!user) {
         return res.status(401).json({ error: "Not authenticated" });
       }
 
       const { id } = req.params;
-      const org = await storage.getOrganization(parseInt(id));
+      // The seam's Organization IS the full row, so the response is unchanged.
+      const org = await orgs.getOrganization(parseInt(id));
 
       if (!org) {
         return res.status(404).json({ error: "Organization not found" });
@@ -5588,6 +5596,9 @@ export async function registerRoutes(
   // Update organization (org admin only)
   app.patch("/api/organizations/:id", requireAuth, requireOrgAdmin, async (req, res) => {
     try {
+      const orgs = requireOrganizations(res);
+      if (!orgs) return;
+
       const user = await getCurrentUser(req);
       if (!user) {
         return res.status(401).json({ error: "Not authenticated" });
@@ -5600,11 +5611,23 @@ export async function registerRoutes(
         return res.status(403).json({ error: "Not authorized to modify this organization" });
       }
 
-      const updates: Record<string, unknown> = {};
+      const updates: { name?: string; address?: string } = {};
       if (name) updates.name = name;
       if (address !== undefined) updates.address = address;
 
-      const updated = await storage.updateOrganization(parseInt(id), updates);
+      // Unreachable in practice: the membership check above proves the org
+      // exists (there is no org-delete route). The provider reports a missing
+      // org by throwing, so it maps to this file's existing 404 shape rather
+      // than falling through to the generic 500.
+      let updated;
+      try {
+        updated = await orgs.updateOrganization(parseInt(id), updates);
+      } catch (error) {
+        if (error instanceof Error && error.message === "organization not found") {
+          return res.status(404).json({ error: "Organization not found" });
+        }
+        throw error;
+      }
       res.json(updated);
     } catch (error) {
       console.error("Error updating organization:", error);
@@ -5615,6 +5638,12 @@ export async function registerRoutes(
   // Invite user to organization
   app.post("/api/organizations/:id/invite", requireAuth, requireOrgAdmin, async (req, res) => {
     try {
+      // Nothing here asks the provider anything — membership is already resolved
+      // on `user`, the seat gate is a Core seat row, and the invite row is Core's
+      // own table — but an invite into an org is meaningless with the feature
+      // absent, so the same 501 gate applies.
+      if (!requireOrganizations(res)) return;
+
       const user = await getCurrentUser(req);
       if (!user) {
         return res.status(401).json({ error: "Not authenticated" });
@@ -5670,6 +5699,9 @@ export async function registerRoutes(
   // List organization members
   app.get("/api/organizations/:id/members", requireAuth, async (req, res) => {
     try {
+      const orgs = requireOrganizations(res);
+      if (!orgs) return;
+
       const user = await getCurrentUser(req);
       if (!user) {
         return res.status(401).json({ error: "Not authenticated" });
@@ -5682,21 +5714,24 @@ export async function registerRoutes(
         return res.status(403).json({ error: "Not authorized to view members" });
       }
 
-      const members = await storage.getUsersByOrganization(parseInt(id));
-      // Roles come from the seam, not the member rows — one batch lookup, same
-      // response key. Every row here belongs to the org by construction, so the
-      // map hit is the normal case; the `?? null` is only the belt-and-braces
-      // path for a user the provider does not report (and the seam resolves a
-      // null org_role to "member", which is what the column already meant).
-      const memberRoles = (await getOrganizations()?.getMemberships(members.map(m => m.id))) ?? new Map();
-      res.json(members.map(m => ({
-        id: m.id,
-        username: m.username,
-        email: m.email,
-        plan: m.plan,
-        orgRole: memberRoles.get(m.id)?.role ?? null,
-        createdAt: m.createdAt,
-      })));
+      // The roster (ids + roles) is the provider's; the profile fields are
+      // Core's. One batch join, iterated in ROSTER order so the response
+      // ordering is exactly what the single query returned before.
+      const roster = await orgs.listMembers(parseInt(id));
+      const profiles = new Map(
+        (await storage.getUsersByIds(roster.map(r => r.userId))).map(u => [u.id, u]),
+      );
+      res.json(roster.flatMap(r => {
+        const m = profiles.get(r.userId);
+        return m ? [{
+          id: m.id,
+          username: m.username,
+          email: m.email,
+          plan: m.plan,
+          orgRole: r.role,
+          createdAt: m.createdAt,
+        }] : [];
+      }));
     } catch (error) {
       console.error("Error fetching members:", error);
       res.status(500).json({ error: "Failed to fetch members" });
@@ -5706,6 +5741,9 @@ export async function registerRoutes(
   // Update member role (org admin only)
   app.patch("/api/organizations/:id/members/:userId", requireAuth, requireOrgAdmin, async (req, res) => {
     try {
+      const orgs = requireOrganizations(res);
+      if (!orgs) return;
+
       const user = await getCurrentUser(req);
       if (!user) {
         return res.status(401).json({ error: "Not authenticated" });
@@ -5725,7 +5763,7 @@ export async function registerRoutes(
       // The target is another user — their affiliation comes from the seam, not
       // from a raw row (which carries no resolved membership). A user who does
       // not exist has no membership, so the same 404 applies.
-      const memberMembership = (await getOrganizations()?.getMembership(parseInt(userId))) ?? null;
+      const memberMembership = await orgs.getMembership(parseInt(userId));
       if (!memberMembership || memberMembership.organizationId !== parseInt(id)) {
         return res.status(404).json({ error: "Member not found in organization" });
       }
@@ -5747,22 +5785,23 @@ export async function registerRoutes(
 
       // Check max org admins (4)
       if (orgRole === 'admin') {
-        const adminCount = await storage.countOrgAdmins(parseInt(id));
+        const adminCount = await orgs.countOrgAdmins(parseInt(id));
         if (adminCount >= 4) {
           return res.status(400).json({ error: "Maximum 4 organization admins allowed" });
         }
       }
 
-      const updated = await storage.updateUser(parseInt(userId), { orgRole });
+      // Every guard above (existence, owner-protection, self-change, max-admins)
+      // ran BEFORE the write: the provider executes, it does not validate.
+      await orgs.setMemberRole(parseInt(id), parseInt(userId), orgRole);
+      // Same keys as before. `username` is a Core profile field, so it is read
+      // from Core; the role echoes the value just written rather than re-reading
+      // through the seam.
+      const updated = await storage.getUser(parseInt(userId));
       res.json({
         id: updated?.id,
         username: updated?.username,
-        // Task 9: moves with the write. `updated` is the raw users row returned by
-        // storage.updateUser, so it echoes the value just written — not a stale
-        // AuthUser read. Raw User rows keep both org columns; only AuthUser omits
-        // them. When orgs move behind the plugin, this read moves with the write
-        // above, not with the membership readers.
-        orgRole: updated?.orgRole,
+        orgRole,
       });
     } catch (error) {
       console.error("Error updating member:", error);
@@ -5773,6 +5812,9 @@ export async function registerRoutes(
   // Remove member from organization (org admin only)
   app.delete("/api/organizations/:id/members/:userId", requireAuth, requireOrgAdmin, async (req, res) => {
     try {
+      const orgs = requireOrganizations(res);
+      if (!orgs) return;
+
       const user = await getCurrentUser(req);
       if (!user) {
         return res.status(401).json({ error: "Not authenticated" });
@@ -5786,7 +5828,7 @@ export async function registerRoutes(
 
       // Another user's affiliation resolves through the seam (a raw row has no
       // resolved membership); a nonexistent user has none, so the 404 holds.
-      const memberMembership = (await getOrganizations()?.getMembership(parseInt(userId))) ?? null;
+      const memberMembership = await orgs.getMembership(parseInt(userId));
       if (!memberMembership || memberMembership.organizationId !== parseInt(id)) {
         return res.status(404).json({ error: "Member not found in organization" });
       }
@@ -5801,7 +5843,9 @@ export async function registerRoutes(
         return res.status(400).json({ error: "Cannot remove the organization owner" });
       }
 
-      await storage.removeUserFromOrganization(parseInt(userId));
+      // Membership first, seat row after (design §5): a crash between them frees
+      // the seat late, never the reverse (a seat freed for someone still in the org).
+      await orgs.removeMember(parseInt(id), parseInt(userId));
 
       // Update seat count
       const seats = await storage.getOrganizationSeat(parseInt(id));
@@ -5821,6 +5865,9 @@ export async function registerRoutes(
   // Leave organization
   app.post("/api/organizations/:id/leave", requireAuth, async (req, res) => {
     try {
+      const orgs = requireOrganizations(res);
+      if (!orgs) return;
+
       const user = await getCurrentUser(req);
       if (!user) {
         return res.status(401).json({ error: "Not authenticated" });
@@ -5837,7 +5884,8 @@ export async function registerRoutes(
         return res.status(400).json({ error: "Owner cannot leave. Transfer ownership first." });
       }
 
-      await storage.removeUserFromOrganization(user.id);
+      // Same order as member-removal: provider first, seat decrement after (§5).
+      await orgs.removeMember(parseInt(id), user.id);
 
       // Update seat count
       const seats = await storage.getOrganizationSeat(parseInt(id));
@@ -5857,15 +5905,21 @@ export async function registerRoutes(
   // Admin: Verify/unverify organization
   app.patch("/api/admin/organizations/:id/verify", requireAuth, requireAdmin, async (req, res) => {
     try {
+      const orgs = requireOrganizations(res);
+      if (!orgs) return;
+
       const { id } = req.params;
       const { verified } = req.body;
 
-      const org = await storage.getOrganization(parseInt(id));
+      const org = await orgs.getOrganization(parseInt(id));
       if (!org) {
         return res.status(404).json({ error: "Organization not found" });
       }
 
-      const updated = await storage.updateOrganization(parseInt(id), { verified });
+      // `setVerified` returns void, so the response row is re-read — same full
+      // row (including the bumped updatedAt) the update used to return.
+      await orgs.setVerified(parseInt(id), verified);
+      const updated = await orgs.getOrganization(parseInt(id));
       res.json(updated);
     } catch (error) {
       console.error("Error verifying organization:", error);
@@ -5876,12 +5930,15 @@ export async function registerRoutes(
   // Admin: List all organizations
   app.get("/api/admin/organizations", requireAuth, requireAdmin, async (req, res) => {
     try {
-      const orgs = await storage.getAllOrganizations();
+      const orgs = requireOrganizations(res);
+      if (!orgs) return;
+
+      const allOrgs = await orgs.listOrganizations();
 
       // Get member counts for each org
       const orgsWithCounts = await Promise.all(
-        orgs.map(async (org) => {
-          const memberCount = await storage.getOrganizationMemberCount(org.id);
+        allOrgs.map(async (org) => {
+          const memberCount = await orgs.countMembers(org.id);
           const seats = await storage.getOrganizationSeat(org.id);
           return {
             ...org,
@@ -5902,6 +5959,9 @@ export async function registerRoutes(
   // Get current user's organization
   app.get("/api/user/organization", requireAuth, async (req, res) => {
     try {
+      const orgs = requireOrganizations(res);
+      if (!orgs) return;
+
       const user = await getCurrentUser(req);
       if (!user) {
         return res.status(401).json({ error: "Not authenticated" });
@@ -5912,9 +5972,9 @@ export async function registerRoutes(
       }
 
       const orgId = user.membership.organizationId;
-      const org = await storage.getOrganization(orgId);
+      const org = await orgs.getOrganization(orgId);
       const seats = await storage.getOrganizationSeat(orgId);
-      const memberCount = await storage.getOrganizationMemberCount(orgId);
+      const memberCount = await orgs.countMembers(orgId);
 
       res.json({
         ...org,
@@ -6131,7 +6191,12 @@ export async function registerRoutes(
         return res.status(503).json({ error: "Stripe not configured" });
       }
 
-      const org = await storage.getOrganization(parseInt(id));
+      // Payments stay Core (design §3); this is the one org-IDENTITY read in
+      // them — the Stripe customer name — so it goes through the seam. The org
+      // cannot exist without the feature, hence the guard.
+      const orgsProvider = requireOrganizations(res);
+      if (!orgsProvider) return;
+      const org = await orgsProvider.getOrganization(parseInt(id));
       if (!org) {
         return res.status(404).json({ error: "Organization not found" });
       }
