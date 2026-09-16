@@ -13,6 +13,7 @@ import { requireAuthOrApiKey, getCurrentUserOrApiKeyUser } from "./auth";
 import { parsePlatformSetup, sessionScopeForWorkflow, evaluateSessionRequirement, getBrokeredSecretNames, ensureSession, missingSecretNames, resolvableSecretSources } from "./auth-session";
 import { regionSiteSequence } from "@shared/regions";
 import { hasOrg, sameOrg } from "./permissions";
+import { getOrganizations } from "./organizations";
 
 type ApiRegionLocation = Awaited<ReturnType<typeof storage.getAllRegionLocations>>[number];
 
@@ -323,6 +324,13 @@ export function registerApiV1Routes(app: Express): void {
       // Check access: owner only can run
       if (workflow.ownerId !== user.id) {
         return res.status(403).json({ error: "Not authorized to run this workflow" });
+      }
+
+      // Same absence arm as the console run route: an org workflow's secrets
+      // resolve through the seam, so with no provider the job could only fail —
+      // refuse before creating it (§7).
+      if (workflow.organizationId != null && !getOrganizations()) {
+        return res.status(501).json({ error: "Organizations feature not enabled" });
       }
 
       if (!evalSetId) {

@@ -9,7 +9,7 @@ import { storage, mergeEvalConfig, buildJobSnapshot } from "./storage";
 import { canScheduleWorkflow, sessionPoolViolation } from "./permissions";
 import { parseNextCronRun } from "./cron";
 import { getMarketplace } from "./marketplace";
-import { getOrganizations } from "./organizations";
+import { getOrganizations, type Membership } from "./organizations";
 import { stampOwnerSession, detectSessionNeed, missingSecretNames, sessionScopeForWorkflow, resolvableSecretSources } from "./auth-session";
 import { log } from "./log";
 
@@ -54,18 +54,24 @@ export async function runMaintenanceTasks() {
       log(`Failed ${timedOut} job(s) exceeding ${MAX_JOB_RUN_MINUTES}min run time`, "worker");
     }
 
+    // With organizations unavailable, a team-tier job is un-runnable through no
+    // fault of its own — exclude those rows from both sweeps so an outage never
+    // converts "waiting" into a permanent `failed` (§7: absence is inert).
+    const excludeTeamTier = getOrganizations() === null;
+
     // Fast-fail pending jobs whose site has no online agent (run before the
     // backstop so those get the clearer "no agent for site" reason).
     const noAgent = await storage.failPendingJobsWithNoAgent(
       PENDING_NO_AGENT_TIMEOUT_MINUTES,
       STALE_THRESHOLD_MINUTES,
+      excludeTeamTier,
     );
     if (noAgent > 0) {
       log(`Failed ${noAgent} pending job(s) with no agent for their site`, "worker");
     }
 
     // Backstop: fail any pending job that has waited past the hard cap.
-    const expired = await storage.failExpiredPendingJobs(PENDING_MAX_WAIT_MINUTES);
+    const expired = await storage.failExpiredPendingJobs(PENDING_MAX_WAIT_MINUTES, excludeTeamTier);
     if (expired > 0) {
       log(`Failed ${expired} pending job(s) exceeding ${PENDING_MAX_WAIT_MINUTES}min wait`, "worker");
     }
@@ -133,6 +139,10 @@ export async function processScheduledJobs() {
   try {
     // Get all due schedules
     const dueSchedules = await storage.getDueSchedules();
+    // Org schedules skipped this tick because organizations were unavailable.
+    // Counted, not logged per schedule: a provider outage affects every org
+    // schedule at once, and one line per tick keeps the log readable (§7).
+    let orgSkips = 0;
 
     for (const schedule of dueSchedules) {
       try {
@@ -169,11 +179,42 @@ export async function processScheduledJobs() {
         // structurally satisfy sessionPoolViolation's `{ organizationId }` param
         // and silently bypass the seam — see server/organizations.ts.
         const creator = schedule.createdBy ? await storage.getUser(schedule.createdBy) : undefined;
-        // Interim null-safe shape (Task 10 owns the proper fix): absent
-        // provider ⇒ no membership, same as a user in no org.
-        const creatorMembership = schedule.createdBy
-          ? (await getOrganizations()?.getMembership(schedule.createdBy)) ?? null
-          : null;
+        // Membership comes from the seam, and for an ORG workflow the answer is
+        // load-bearing: it picks the session pool (sessionPoolViolation) and
+        // freezes creator_org_id on the job. "Cannot answer" is not "no org"
+        // (organizations.ts §4), so an UNAVAILABLE provider — absent OR
+        // throwing — makes this schedule unprocessable, and the design's answer
+        // (§7) is to SKIP it: still enabled, next_run untouched, no job row, no
+        // mint. Never disabled: the provider being down is not the schedule's
+        // fault, and the schedule must resume by itself once orgs come back.
+        // Deliberately placed BEFORE detectSessionNeed/stampOwnerSession so a
+        // skipped schedule can never burn a broker login attempt.
+        let creatorMembership: Membership | null = null;
+        if (workflow.organizationId != null) {
+          const orgs = getOrganizations();
+          let orgsAnswered = orgs !== null;
+          if (orgs) {
+            try {
+              creatorMembership = schedule.createdBy
+                ? (await orgs.getMembership(schedule.createdBy)) ?? null
+                : null;
+            } catch {
+              orgsAnswered = false; // failure == absence in a tick (§4 error contract)
+            }
+          }
+          if (!orgsAnswered) {
+            orgSkips++;
+            continue; // skip — enabled, undispatched, unwritten
+          }
+        } else {
+          // Personal workflow: membership only decorates the job's creator_org_id
+          // stamp, so absence stays fail-closed ("no org") exactly as before, and
+          // a provider FAILURE still propagates to the per-schedule catch below
+          // (no job created) rather than silently stamping null.
+          creatorMembership = schedule.createdBy
+            ? (await getOrganizations()?.getMembership(schedule.createdBy)) ?? null
+            : null;
+        }
 
         // scheduled jobs are inherently owner-dispatched —
         // canScheduleWorkflow (re-checked above) is owner/creator-only, so the
@@ -282,6 +323,9 @@ export async function processScheduledJobs() {
       } catch (error) {
         console.error(`Failed to process schedule ${schedule.id}:`, error);
       }
+    }
+    if (orgSkips) {
+      log(`${orgSkips} org schedule(s) skipped — organizations unavailable`, "scheduler");
     }
   } catch (error) {
     console.error("Scheduler error:", error);

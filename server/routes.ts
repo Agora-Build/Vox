@@ -2624,6 +2624,11 @@ export async function registerRoutes(
       if (!canScheduleWorkflow(user, workflow)) {
         return res.status(403).json({ error: "Only the workflow owner can run this schedule" });
       }
+      // Same absence arm as the run route: no org provider ⇒ an org workflow's
+      // secrets can't be fenced, so don't create the job at all (§7).
+      if (workflow.organizationId != null && !getOrganizations()) {
+        return res.status(501).json({ error: "Organizations feature not enabled" });
+      }
       const evalSet = await storage.getEvalSet(schedule.evalSetId);
 
       // run-now fires a job on the workflow OWNER's secrets, exactly
@@ -4399,6 +4404,16 @@ export async function registerRoutes(
       // fellow bypass — see canRunWorkflow).
       if (!canRunWorkflow(user, workflow)) {
         return res.status(403).json({ error: "Not authorized to run this workflow" });
+      }
+
+      // An org-owned workflow is unrunnable while organizations are unavailable:
+      // its secret fence resolves org secrets through the seam and would return
+      // {}, so the job would be created only to fail on unresolved placeholders —
+      // a persistent write caused by absence. A PUBLIC org workflow is runnable
+      // by anyone, so this cannot be left to the org-membership checks below.
+      // Refuse at the source instead, before any job/escrow/mint write (§7).
+      if (workflow.organizationId != null && !getOrganizations()) {
+        return res.status(501).json({ error: "Organizations feature not enabled" });
       }
 
       // Daily job limit for basic users

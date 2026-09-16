@@ -1116,9 +1116,17 @@ export class DatabaseStorage {
   // freshly-requeued job on the spot — the exact single-agent-restart case this grace
   // window protects — nullifying the retry budget. updated_at is only ever bumped when
   // a row (re)enters pending or leaves it, so GREATEST = "last entered the queue".
+  //
+  // excludeTeamTier: while the organizations provider is unavailable, a team-tier
+  // job cannot be authorized or claimed (its claim arm needs membership), so
+  // failing it would turn a temporary outage into a permanent, user-visible job
+  // failure. Callers pass `getOrganizations() === null` — absence only; the
+  // claim path's team arm is plain SQL and keeps working through a *throwing*
+  // provider, so a failure does not warrant holding the sweep back.
   async failPendingJobsWithNoAgent(
     timeoutMinutes: number,
     onlineWithinMinutes: number = 5,
+    excludeTeamTier: boolean = false,
   ): Promise<number> {
     const timeoutCutoff = new Date(Date.now() - timeoutMinutes * 60 * 1000);
     const onlineCutoff = new Date(Date.now() - onlineWithinMinutes * 60 * 1000);
@@ -1134,6 +1142,7 @@ export class DatabaseStorage {
       AND site_id IS NOT NULL
       AND target_region IS NULL
       AND GREATEST(created_at, updated_at) < ${timeoutCutoff}
+      ${excludeTeamTier ? sql`AND target_tier IS DISTINCT FROM 'team'` : sql``}
       AND NOT EXISTS (
         SELECT 1 FROM eval_agents ea
         WHERE ea.site_id = eval_jobs.site_id
@@ -1148,7 +1157,9 @@ export class DatabaseStorage {
   // fast-fail misses (e.g. a region that always has an online agent which somehow
   // never claims the job). Terminal (failed). Ages from GREATEST(created_at,
   // updated_at) for the same requeue reason as failPendingJobsWithNoAgent above.
-  async failExpiredPendingJobs(maxWaitMinutes: number): Promise<number> {
+  // excludeTeamTier: see failPendingJobsWithNoAgent above — same reason, same
+  // caller-supplied condition (organizations provider absent).
+  async failExpiredPendingJobs(maxWaitMinutes: number, excludeTeamTier: boolean = false): Promise<number> {
     const cutoff = new Date(Date.now() - maxWaitMinutes * 60 * 1000);
     const message = `Not claimed by any eval agent within ${maxWaitMinutes} min`;
     // Pooled backstop message (24h by default): render hours when the window is
@@ -1168,6 +1179,7 @@ export class DatabaseStorage {
           updated_at = NOW()
       WHERE status = 'pending'::eval_job_status
       AND GREATEST(created_at, updated_at) < ${cutoff}
+      ${excludeTeamTier ? sql`AND target_tier IS DISTINCT FROM 'team'` : sql``}
     `);
     return (result as unknown as { rowCount: number }).rowCount || 0;
   }
