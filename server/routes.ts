@@ -11,7 +11,7 @@ import { registerApiV1Routes } from "./routes-api-v1";
 import { generateSignedUrlForUser } from "./s3";
 import { validateTierChoice, resolveTargetedDispatch, filterDispatchableAgents } from "./dispatch";
 import { getMarketplace } from "./marketplace";
-import { getOrganizations } from "./organizations";
+import { getOrganizations, type Membership } from "./organizations";
 import { fingerprintCredential, formatLastFailedHttpStatus, parseLastFailedHttpStatus } from "@shared/credentials";
 import { parsePlatformSetup, sessionScopeForWorkflow, evaluateSessionRequirement, getBrokeredSecretNames, ensureSession, stampOwnerSession, credentialKeyFor, SESSION_FRESH_MARGIN_SECONDS, classifyReferencedSecrets, findBrokeredMisuse, defaultBrokerTypeForName, resolveBrokerType, type SessionNeed, detectSessionNeed, missingSecretNames, resolvableSecretSources } from "./auth-session";
 import { validateRegisterPayload, cacheBrokerMintSecret, hasBrokerMintSecret } from "./broker-registry";
@@ -3399,12 +3399,17 @@ export async function registerRoutes(
       if (!user) return res.status(401).json({ error: "Not authenticated" });
 
       const agents = await storage.getEvalAgentsWithTokenTier();
+      // Owner org comes from the seam, not a SQL join — one batch lookup,
+      // response shape unchanged. Absent provider ⇒ empty map ⇒ every
+      // ownerOrgId null, same downstream effect as no owner having an org.
+      const ownerOrgs = (await getOrganizations()?.getMemberships(agents.map((a) => a.tokenCreatedBy)))
+        ?? new Map<number, Membership>();
       const rows = agents.map((a) => ({
         tokenId: a.tokenId,
         region: a.siteId,
         dispatchTier: a.tokenDispatchTier,
         ownerId: a.tokenCreatedBy,
-        ownerOrgId: a.tokenOwnerOrgId,
+        ownerOrgId: ownerOrgs.get(a.tokenCreatedBy)?.organizationId ?? null,
         state: a.state,
       }));
       const free = filterDispatchableAgents({ id: user.id, membership: user.membership }, rows);
@@ -4626,6 +4631,12 @@ export async function registerRoutes(
       for (const a of agentRows) {
         if (!agentByTokenId.has(a.tokenId)) agentByTokenId.set(a.tokenId, a);
       }
+      // Token-owner org for the team-tier count below, resolved through the
+      // seam once for every row (not per-row) — absent provider ⇒ empty map
+      // ⇒ every owner org null ⇒ the team pool never counts anyone in (same
+      // fail-closed behavior as elsewhere in this file).
+      const agentOwnerOrgs = (await getOrganizations()?.getMemberships(agentRows.map((a) => a.tokenCreatedBy)))
+        ?? new Map<number, Membership>();
       // Session trust, computed ONCE from the same detector the run route
       // enforces with. For a session-injected workflow, a dispatcher who is
       // neither the owner nor a workflow-org member cannot receive the minted
@@ -4730,7 +4741,7 @@ export async function registerRoutes(
           if (tier === "private") return a.tokenCreatedBy === user.id;
           if (tier === "team")
             return (a.tokenDispatchTier === "team" || a.tokenDispatchTier === "public")
-              && sameOrg({ organizationId: user.membership?.organizationId ?? null }, { organizationId: a.tokenOwnerOrgId });
+              && sameOrg({ organizationId: user.membership?.organizationId ?? null }, { organizationId: agentOwnerOrgs.get(a.tokenCreatedBy)?.organizationId ?? null });
           return a.tokenDispatchTier === "public";
         }).length;
       // Availability must mirror the run route exactly: its untargeted branch

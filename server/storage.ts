@@ -787,7 +787,7 @@ export class DatabaseStorage {
 
   async getEvalAgentsWithTokenTier(): Promise<
     (EvalAgent & {
-      tokenCreatedBy: number; tokenDispatchTier: string; tokenOwnerOrgId: number | null;
+      tokenCreatedBy: number; tokenDispatchTier: string;
       tokenRegion: string | null; tokenSiteId: string | null; tokenIsRevoked: boolean;
     })[]
   > {
@@ -806,7 +806,6 @@ export class DatabaseStorage {
       updatedAt: evalAgents.updatedAt,
       tokenCreatedBy: evalAgentTokens.createdBy,
       tokenDispatchTier: evalAgentTokens.dispatchTier,
-      tokenOwnerOrgId: users.organizationId,
       tokenRegion: evalAgentTokens.region,
       // Public-tier tokens carry their admin-configured region/siteId on the
       // TOKEN, not the agent (the agent's own detected region is permanently
@@ -818,10 +817,9 @@ export class DatabaseStorage {
     })
       .from(evalAgents)
       .innerJoin(evalAgentTokens, eq(evalAgents.tokenId, evalAgentTokens.id))
-      .leftJoin(users, eq(evalAgentTokens.createdBy, users.id))
       .orderBy(desc(evalAgents.createdAt));
     return results as (EvalAgent & {
-      tokenCreatedBy: number; tokenDispatchTier: string; tokenOwnerOrgId: number | null;
+      tokenCreatedBy: number; tokenDispatchTier: string;
       tokenRegion: string | null; tokenSiteId: string | null; tokenIsRevoked: boolean;
     })[];
   }
