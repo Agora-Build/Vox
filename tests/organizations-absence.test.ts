@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, beforeEach, afterAll } from "vitest";
+import { describe, it, expect, vi, beforeAll, beforeEach, afterAll } from "vitest";
 import express from "express";
 import request from "supertest";
 import { createServer } from "http";
@@ -55,6 +55,10 @@ describe("absence and failure semantics", () => {
 const hasDb = !!process.env.DATABASE_URL;
 const d = hasDb ? describe : describe.skip;
 
+// Captured before anything can swap it, so the restore assertion compares
+// against the genuine platform implementation.
+const realSetIntervalRef = globalThis.setInterval;
+
 // A workflow whose platform.setup references two login-class (brokered) org
 // secrets — the shape that makes the tick take the session path (detectSessionNeed
 // → "need" → sessionPoolViolation → stampOwnerSession/ensureSession).
@@ -68,10 +72,12 @@ const LOGIN_STEPS = (email: string, password: string) => `
 
 d("plugin absence causes zero persistent writes", () => {
   let orgId: number, creatorId: number, soloId: number;
-  let orgWorkflowId: number, orgEvalSetId: number, orgScheduleId: number, teamJobId: number;
+  let orgWorkflowId: number, orgEvalSetId: number, orgScheduleId: number;
+  let teamJobId: number, sitedTeamJobId: number;
   let soloScheduleId: number;
   let apiKey: string;
   let app: express.Express;
+  let mountTimers = 0; // setInterval calls intercepted while mounting registerRoutes
 
   // Everything this suite may legally touch. A write ANYWHERE in these tables
   // (schedule enable/next-run/run-count, a new or failed job, a minted session)
@@ -145,16 +151,25 @@ d("plugin absence causes zero persistent writes", () => {
       nextRunAt: new Date(Date.now() - 60 * 1000), createdBy: creatorId, organizationId: orgId,
     } as any)).id;
 
-    // A pending TEAM job old enough for the expired-pending backstop sweep.
-    teamJobId = (await storage.createEvalJob({
-      workflowId: orgWorkflowId, evalSetId: orgEvalSetId, triggerType: 2, createdBy: creatorId,
-      creatorOrgId: orgId, siteId: null, targetRegion: "na-us-ashburn", targetTier: "team",
-      config: {}, snapshot: { provider: null, workflow: null, evalSet: null, creatorPlan: null } as any,
-      status: "pending", priority: 0, retryCount: 0, maxRetries: 3,
-    } as any)).id;
+    // One pending TEAM job per sweep, so BOTH exclusions are mutation-covered:
+    //  - pooled (site_id NULL, target_region set) → failExpiredPendingJobs' 24h backstop
+    //  - sited (site_id set, target_region NULL, no online agent for that site)
+    //    → failPendingJobsWithNoAgent' 15min fast-fail
+    // Both backdated 30h so both sweeps would fire if their predicate were dropped.
+    const mkPendingTeamJob = (siteId: string | null, targetRegion: string | null) =>
+      storage.createEvalJob({
+        workflowId: orgWorkflowId, evalSetId: orgEvalSetId, triggerType: 2, createdBy: creatorId,
+        creatorOrgId: orgId, siteId, targetRegion, targetTier: "team",
+        config: {}, snapshot: { provider: null, workflow: null, evalSet: null, creatorPlan: null } as any,
+        status: "pending", priority: 0, retryCount: 0, maxRetries: 3,
+      } as any);
+    teamJobId = (await mkPendingTeamJob(null, "na-us-ashburn")).id;
+    // A site no agent has ever registered for — the no-agent sweep's NOT EXISTS holds.
+    sitedTeamJobId = (await mkPendingTeamJob(`na-us-absent-${suffix.slice(-6)}-01`, null)).id;
     await pool.query(
-      `UPDATE eval_jobs SET created_at = NOW() - INTERVAL '30 hours', updated_at = NOW() - INTERVAL '30 hours' WHERE id = $1`,
-      [teamJobId],
+      `UPDATE eval_jobs SET created_at = NOW() - INTERVAL '30 hours', updated_at = NOW() - INTERVAL '30 hours'
+         WHERE id = ANY($1::int[])`,
+      [[teamJobId, sitedTeamJobId]],
     );
 
     // Personal control: no org anywhere on the path, no session need.
@@ -179,10 +194,26 @@ d("plugin absence causes zero persistent writes", () => {
     // In-process API surface: the dev server always installs a provider
     // (server/index.ts), so the 501 arm can only be observed here, where the
     // holder is genuinely empty. API-key auth keeps it session-free.
-    app = express();
-    app.use(express.json());
-    app.use(authenticateApiKey);
-    await registerRoutes(createServer(app), app);
+    //
+    // registerRoutes also installs two DB-writing timers that it never clears
+    // (the clash match scheduler, 10s, and the clash schedule cron, 60s). In a
+    // test process those would race the real dev server's copies against the
+    // shared dev DB the moment this file ran longer than 10s. Neuter them at
+    // the source: setInterval is stubbed for the duration of the mount only, so
+    // no live handle is ever created, and restored immediately afterwards.
+    const realSetInterval = globalThis.setInterval;
+    globalThis.setInterval = ((..._args: unknown[]) => {
+      mountTimers++;
+      return { unref: () => undefined, ref: () => undefined } as unknown as NodeJS.Timeout;
+    }) as unknown as typeof globalThis.setInterval;
+    try {
+      app = express();
+      app.use(express.json());
+      app.use(authenticateApiKey);
+      await registerRoutes(createServer(app), app);
+    } finally {
+      globalThis.setInterval = realSetInterval;
+    }
   });
 
   beforeEach(async () => {
@@ -203,7 +234,20 @@ d("plugin absence causes zero persistent writes", () => {
   it("a FAILING provider takes the same path — skip, never disable", async () => {
     setOrganizations(failing);
     const before = await snapshot();
-    await processScheduledJobs();
+    // Zero writes alone does not discriminate here: before the guard existed a
+    // throw simply escaped into the per-schedule catch, which also wrote
+    // nothing. Assert the schedule was *deliberately* skipped and counted —
+    // that only happens on the guard's path (failure == absence, §4).
+    const skipLines: string[] = [];
+    const spy = vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+      skipLines.push(args.map(String).join(" "));
+    });
+    try {
+      await processScheduledJobs();
+    } finally {
+      spy.mockRestore();
+    }
+    expect(skipLines.some((l) => /org schedule\(s\) skipped — organizations unavailable/.test(l))).toBe(true);
     expect(await snapshot()).toEqual(before);
   });
 
@@ -230,5 +274,13 @@ d("plugin absence causes zero persistent writes", () => {
     expect(res.status).toBe(501);
     expect(res.body).toEqual({ error: "Organizations feature not enabled" });
     expect((await snapshot()).jobCount).toBe(before.jobCount);
+  });
+
+  it("mounting the API in-process leaves no live timer behind", () => {
+    // registerRoutes installs DB-writing intervals it never clears (clash match
+    // scheduler + schedule cron). They were intercepted during the mount, so no
+    // real handle exists in this process and nothing can fire mid-suite.
+    expect(mountTimers).toBeGreaterThanOrEqual(2);
+    expect(globalThis.setInterval).toBe(realSetIntervalRef); // stub restored
   });
 });
