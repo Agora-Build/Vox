@@ -8,12 +8,24 @@ const users: Record<number, { id: number; organizationId: number | null; orgRole
   4: { id: 4, organizationId: 7, orgRole: null }, // org member with no role set
 };
 
+const ORG7 = {
+  id: 7,
+  name: "Acme",
+  address: null,
+  verified: true,
+  createdAt: new Date(0),
+  updatedAt: new Date(0),
+};
+
 const fakeStorage = {
   getUser: async (id: number) => users[id],
   getUsersByOrganization: async (orgId: number) =>
     Object.values(users).filter((u) => u.organizationId === orgId),
-  getOrganization: async (id: number) =>
-    id === 7 ? { id: 7, name: "Acme", verified: true } : undefined,
+  getOrganization: async (id: number) => (id === 7 ? ORG7 : undefined),
+  getAllOrganizations: async () => [ORG7],
+  countOrgAdmins: async (id: number) => (id === 7 ? 1 : 0),
+  getOrganizationMemberCount: async (id: number) => (id === 7 ? 3 : 0),
+  getUsersByIds: async (ids: number[]) => ids.map((i) => users[i]).filter(Boolean),
 } as never;
 
 const orgs = new CoreOrganizations(fakeStorage);
@@ -43,9 +55,40 @@ describe("CoreOrganizations", () => {
     expect(map.has(999)).toBe(false);
   });
 
-  it("maps the `verified` column onto isVerified", async () => {
-    expect(await orgs.getOrganization(7)).toEqual({ id: 7, name: "Acme", isVerified: true });
+  it("getOrganization returns the FULL row (address/verified/timestamps), not a summary", async () => {
+    expect(await orgs.getOrganization(7)).toEqual(ORG7); // `verified`, not `isVerified`
     expect(await orgs.getOrganization(8)).toBeNull();
+  });
+
+  it("countMembers and countOrgAdmins delegate", async () => {
+    expect(await orgs.countMembers(7)).toBe(3);
+    expect(await orgs.countOrgAdmins(7)).toBe(1);
+  });
+
+  it("listOrganizations returns full rows", async () => {
+    expect(await orgs.listOrganizations()).toEqual([ORG7]);
+  });
+
+  it("getMemberships resolves via ONE getUsersByIds call, not per-user getUser", async () => {
+    let batchCalls = 0;
+    let singleCalls = 0;
+    const countingStorage = {
+      ...fakeStorage,
+      getUser: async (id: number) => {
+        singleCalls++;
+        return users[id];
+      },
+      getUsersByIds: async (ids: number[]) => {
+        batchCalls++;
+        return ids.map((i) => users[i]).filter(Boolean);
+      },
+    } as never;
+    const countingOrgs = new CoreOrganizations(countingStorage);
+
+    const m = await countingOrgs.getMemberships([1, 3, 4, 999]);
+    expect(m.get(1)).toEqual({ organizationId: 7, role: "owner" });
+    expect(batchCalls).toBe(1);
+    expect(singleCalls).toBe(0); // the N+1 is gone (recorded deferred-minor, now closed)
   });
 
   it("lists members with their roles", async () => {

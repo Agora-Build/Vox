@@ -11,7 +11,16 @@ class FakeOrganizations implements OrganizationsProvider {
     for (const id of userIds) { const v = this.byUser.get(id); if (v) m.set(id, v); }
     return m;
   }
-  async getOrganization(orgId: number) { return { id: orgId, name: `org-${orgId}`, isVerified: false }; }
+  async getOrganization(orgId: number) {
+    return {
+      id: orgId,
+      name: `org-${orgId}`,
+      address: null,
+      verified: false,
+      createdAt: new Date(0),
+      updatedAt: new Date(0),
+    };
+  }
   async listMembers(orgId: number) {
     return [...this.byUser.entries()]
       .filter(([, m]) => m.organizationId === orgId)

@@ -16,10 +16,14 @@ export interface Membership {
   role: OrgRole;
 }
 
-export interface OrgSummary {
+/** full row — three routes res.json() it verbatim (design §4) */
+export interface Organization {
   id: number;
   name: string;
-  isVerified: boolean;
+  address: string | null;
+  verified: boolean;
+  createdAt: Date;
+  updatedAt: Date;
 }
 
 export interface OrganizationsProvider {
@@ -28,9 +32,15 @@ export interface OrganizationsProvider {
   /** Batch form for listings — users with no org are absent from the map. */
   getMemberships(userIds: number[]): Promise<Map<number, Membership>>;
   /** Org identity, for display and the verification gate. */
-  getOrganization(orgId: number): Promise<OrgSummary | null>;
+  getOrganization(orgId: number): Promise<Organization | null>;
   /** Roster of an org. */
   listMembers(orgId: number): Promise<Array<{ userId: number; role: OrgRole }>>;
+  /** Member count of an org. */
+  countMembers(orgId: number): Promise<number>;
+  /** Count of admins/owners in an org (demotion/removal guardrails). */
+  countOrgAdmins(orgId: number): Promise<number>;
+  /** All organizations (admin listing). */
+  listOrganizations(): Promise<Organization[]>;
 }
 
 let current: OrganizationsProvider | null = null;

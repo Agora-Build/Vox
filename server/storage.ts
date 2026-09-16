@@ -389,6 +389,11 @@ export class DatabaseStorage {
     return db.select().from(users).where(eq(users.organizationId, organizationId)).orderBy(desc(users.createdAt));
   }
 
+  async getUsersByIds(ids: number[]): Promise<User[]> {
+    if (ids.length === 0) return [];
+    return db.select().from(users).where(inArray(users.id, Array.from(new Set(ids))));
+  }
+
   async createOrganization(org: InsertOrganization): Promise<Organization> {
     const result = await db.insert(organizations).values(org).returning();
     return result[0];
