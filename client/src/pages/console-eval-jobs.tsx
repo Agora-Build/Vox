@@ -259,12 +259,14 @@ function ScheduledJobsBlock() {
                         }
                         return (
                           <div className="flex flex-col gap-0.5">
-                            <div className="flex items-center gap-1">
-                              <Badge className={cls} data-testid={`status-schedule-${s.id}`}>{label}</Badge>
-                              {s.dispatchBlocked && (
+                            {s.dispatchBlocked ? (
+                              <div className="flex items-center gap-1">
+                                <Badge className={cls} data-testid={`status-schedule-${s.id}`}>{label}</Badge>
                                 <Badge variant="outline" title={s.dispatchBlocked.detail}>Orgs disabled</Badge>
-                              )}
-                            </div>
+                              </div>
+                            ) : (
+                              <Badge className={cls} data-testid={`status-schedule-${s.id}`}>{label}</Badge>
+                            )}
                             {expiryText && (
                               <span className={`text-[10px] ${s.expiringSoon ? "text-amber-600" : status === "inactive" ? "text-red-600" : "text-muted-foreground"}`}>
                                 {expiryText}

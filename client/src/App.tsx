@@ -532,7 +532,7 @@ function ConsoleOrganizationWrapper() {
   const { data: authStatus, isLoading, isFetching } = useQuery<AuthStatus>({
     queryKey: ["/api/auth/status"],
   });
-  const { data: config } = useQuery<{ organizationsEnabled?: string }>({
+  const { data: config, isLoading: configLoading } = useQuery<{ organizationsEnabled?: string }>({
     queryKey: ["/api/config"],
     staleTime: 60 * 60 * 1000,
   });
@@ -559,6 +559,17 @@ function ConsoleOrganizationWrapper() {
     return (
       <div className="min-h-screen flex items-center justify-center">
         <div className="animate-pulse text-muted-foreground">Redirecting...</div>
+      </div>
+    );
+  }
+
+  // Guard below reads config.organizationsEnabled; don't let it evaluate against
+  // an unresolved config query (defaults to "orgs enabled" and would fire the
+  // create-redirect before a genuinely org-less instance's config lands).
+  if (configLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="animate-pulse text-muted-foreground">Loading...</div>
       </div>
     );
   }
@@ -580,7 +591,7 @@ function ConsoleOrganizationMembersWrapper() {
   const { data: authStatus, isLoading, isFetching } = useQuery<AuthStatus>({
     queryKey: ["/api/auth/status"],
   });
-  const { data: config } = useQuery<{ organizationsEnabled?: string }>({
+  const { data: config, isLoading: configLoading } = useQuery<{ organizationsEnabled?: string }>({
     queryKey: ["/api/config"],
     staleTime: 60 * 60 * 1000,
   });
@@ -607,6 +618,17 @@ function ConsoleOrganizationMembersWrapper() {
     return (
       <div className="min-h-screen flex items-center justify-center">
         <div className="animate-pulse text-muted-foreground">Redirecting...</div>
+      </div>
+    );
+  }
+
+  // Guard below reads config.organizationsEnabled; don't let it evaluate against
+  // an unresolved config query (defaults to "orgs enabled" and would fire the
+  // create-redirect before a genuinely org-less instance's config lands).
+  if (configLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="animate-pulse text-muted-foreground">Loading...</div>
       </div>
     );
   }
@@ -628,7 +650,7 @@ function ConsoleOrganizationBillingWrapper() {
   const { data: authStatus, isLoading, isFetching } = useQuery<AuthStatus>({
     queryKey: ["/api/auth/status"],
   });
-  const { data: config } = useQuery<{ organizationsEnabled?: string }>({
+  const { data: config, isLoading: configLoading } = useQuery<{ organizationsEnabled?: string }>({
     queryKey: ["/api/config"],
     staleTime: 60 * 60 * 1000,
   });
@@ -655,6 +677,17 @@ function ConsoleOrganizationBillingWrapper() {
     return (
       <div className="min-h-screen flex items-center justify-center">
         <div className="animate-pulse text-muted-foreground">Redirecting...</div>
+      </div>
+    );
+  }
+
+  // Guard below reads config.organizationsEnabled; don't let it evaluate against
+  // an unresolved config query (defaults to "orgs enabled" and would fire the
+  // redirect before a genuinely org-less instance's config lands).
+  if (configLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="animate-pulse text-muted-foreground">Loading...</div>
       </div>
     );
   }
@@ -676,7 +709,7 @@ function ConsoleOrganizationSettingsWrapper() {
   const { data: authStatus, isLoading, isFetching } = useQuery<AuthStatus>({
     queryKey: ["/api/auth/status"],
   });
-  const { data: config } = useQuery<{ organizationsEnabled?: string }>({
+  const { data: config, isLoading: configLoading } = useQuery<{ organizationsEnabled?: string }>({
     queryKey: ["/api/config"],
     staleTime: 60 * 60 * 1000,
   });
@@ -703,6 +736,17 @@ function ConsoleOrganizationSettingsWrapper() {
     return (
       <div className="min-h-screen flex items-center justify-center">
         <div className="animate-pulse text-muted-foreground">Redirecting...</div>
+      </div>
+    );
+  }
+
+  // Guard below reads config.organizationsEnabled; don't let it evaluate against
+  // an unresolved config query (defaults to "orgs enabled" and would fire the
+  // redirect before a genuinely org-less instance's config lands).
+  if (configLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="animate-pulse text-muted-foreground">Loading...</div>
       </div>
     );
   }
