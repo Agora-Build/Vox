@@ -97,6 +97,14 @@ import {
 // Extended by the same window. Past expiry the scheduler stops firing it.
 const SCHEDULE_TTL_MS = 90 * 24 * 60 * 60 * 1000;
 
+// Computed per-request, never stored: an org-owned workflow's schedule can't
+// dispatch on an instance without the organizations plugin/feature installed.
+export function scheduleDispatchBlocked(workflowOrganizationId: number | null) {
+  return getOrganizations() === null && workflowOrganizationId != null
+    ? { reason: "organizations-unavailable", detail: "Organization plugin/feature not enabled" }
+    : null;
+}
+
 type RegionLocationRecord = Awaited<ReturnType<typeof storage.getAllRegionLocations>>[number];
 
 function locationForRegion(siteId: string, locations: RegionLocationRecord[]): RegionLocationRecord | undefined {
@@ -2281,6 +2289,7 @@ export async function registerRoutes(
           ...s,
           canManage: canScheduleWorkflow(user, wfRef),
           canExtend: isOwnerOrOrgManager(user, wfRef),
+          dispatchBlocked: scheduleDispatchBlocked(s.workflowOrganizationId),
           ...deriveScheduleStatus(s.isEnabled, s.expiresAt),
         };
       });

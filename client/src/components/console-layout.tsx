@@ -55,6 +55,13 @@ export default function ConsoleLayout({ children }: ConsoleLayoutProps) {
     queryKey: ["/api/auth/status"],
   });
 
+  // Public config; carries organizationsEnabled ("true"/"false" string) so an
+  // org-less instance doesn't offer a create-org action that has nowhere to go.
+  const { data: config } = useQuery<{ organizationsEnabled?: string }>({
+    queryKey: ["/api/config"],
+    staleTime: 60 * 60 * 1000,
+  });
+
   const logoutMutation = useMutation({
     mutationFn: async () => {
       await apiRequest("POST", "/api/auth/logout");
@@ -232,7 +239,7 @@ export default function ConsoleLayout({ children }: ConsoleLayoutProps) {
         active: location === "/console/organization/settings",
       });
     }
-  } else {
+  } else if (config?.organizationsEnabled !== "false") {
     orgNavItems.push({
       title: "Create Organization",
       url: "/console/organization/create",

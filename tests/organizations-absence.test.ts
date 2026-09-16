@@ -7,7 +7,7 @@ import { CoreOrganizations } from "../server/organizations-core";
 import { membershipFor, authenticateApiKey } from "../server/auth";
 import { storage, pool, encryptValue, hashToken } from "../server/storage";
 import { processScheduledJobs, runMaintenanceTasks } from "../server/scheduler";
-import { registerRoutes } from "../server/routes";
+import { registerRoutes, scheduleDispatchBlocked } from "../server/routes";
 
 // Every method throws — this exercises "provider installed but failing", which
 // must stay distinguishable from "provider absent" (see server/organizations.ts).
@@ -40,6 +40,22 @@ describe("absence and failure semantics", () => {
   it("membershipFor RETHROWS under a FAILING provider — failure must stay distinguishable from 'no org'", async () => {
     setOrganizations(failing);
     await expect(membershipFor({} as never, 1)).rejects.toThrow("db blip");
+  });
+
+  // dispatchBlocked is computed per-request on the schedules listing map, never
+  // persisted — this exercises the mapping helper directly (server/routes.ts).
+  it("scheduleDispatchBlocked flags an org-owned schedule row when the provider is ABSENT", () => {
+    const blocked = scheduleDispatchBlocked(42);
+    expect(blocked).toEqual({ reason: "organizations-unavailable", detail: "Organization plugin/feature not enabled" });
+  });
+
+  it("scheduleDispatchBlocked is null for a personal (org-less) schedule row even when the provider is ABSENT", () => {
+    expect(scheduleDispatchBlocked(null)).toBeNull();
+  });
+
+  it("scheduleDispatchBlocked is null for an org-owned schedule row once a provider is installed", () => {
+    setOrganizations(new CoreOrganizations(storage));
+    expect(scheduleDispatchBlocked(42)).toBeNull();
   });
 });
 

@@ -31,6 +31,7 @@ type EnrichedSchedule = EvalSchedule & {
   canExtend?: boolean;
   status?: ScheduleStatus;
   expiringSoon?: boolean;
+  dispatchBlocked?: { reason: string; detail: string } | null;
 };
 
 interface AuthStatus {
@@ -258,7 +259,12 @@ function ScheduledJobsBlock() {
                         }
                         return (
                           <div className="flex flex-col gap-0.5">
-                            <Badge className={cls} data-testid={`status-schedule-${s.id}`}>{label}</Badge>
+                            <div className="flex items-center gap-1">
+                              <Badge className={cls} data-testid={`status-schedule-${s.id}`}>{label}</Badge>
+                              {s.dispatchBlocked && (
+                                <Badge variant="outline" title={s.dispatchBlocked.detail}>Orgs disabled</Badge>
+                              )}
+                            </div>
                             {expiryText && (
                               <span className={`text-[10px] ${s.expiringSoon ? "text-amber-600" : status === "inactive" ? "text-red-600" : "text-muted-foreground"}`}>
                                 {expiryText}

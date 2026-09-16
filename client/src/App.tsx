@@ -532,6 +532,10 @@ function ConsoleOrganizationWrapper() {
   const { data: authStatus, isLoading, isFetching } = useQuery<AuthStatus>({
     queryKey: ["/api/auth/status"],
   });
+  const { data: config } = useQuery<{ organizationsEnabled?: string }>({
+    queryKey: ["/api/config"],
+    staleTime: 60 * 60 * 1000,
+  });
 
   useEffect(() => {
     if (!isLoading && !isFetching && authStatus?.initialized && !authStatus.user) {
@@ -559,7 +563,7 @@ function ConsoleOrganizationWrapper() {
     );
   }
 
-  if (!authStatus.user.organizationId) {
+  if (!authStatus.user.organizationId && config?.organizationsEnabled !== "false") {
     setLocation("/console/organization/create");
     return null;
   }
@@ -576,6 +580,10 @@ function ConsoleOrganizationMembersWrapper() {
   const { data: authStatus, isLoading, isFetching } = useQuery<AuthStatus>({
     queryKey: ["/api/auth/status"],
   });
+  const { data: config } = useQuery<{ organizationsEnabled?: string }>({
+    queryKey: ["/api/config"],
+    staleTime: 60 * 60 * 1000,
+  });
 
   useEffect(() => {
     if (!isLoading && !isFetching && authStatus?.initialized && !authStatus.user) {
@@ -603,7 +611,7 @@ function ConsoleOrganizationMembersWrapper() {
     );
   }
 
-  if (!authStatus.user.organizationId) {
+  if (!authStatus.user.organizationId && config?.organizationsEnabled !== "false") {
     setLocation("/console/organization/create");
     return null;
   }
@@ -620,49 +628,9 @@ function ConsoleOrganizationBillingWrapper() {
   const { data: authStatus, isLoading, isFetching } = useQuery<AuthStatus>({
     queryKey: ["/api/auth/status"],
   });
-
-  useEffect(() => {
-    if (!isLoading && !isFetching && authStatus?.initialized && !authStatus.user) {
-      setLocation("/login");
-    }
-  }, [isLoading, isFetching, authStatus, setLocation]);
-
-  if ((isLoading || isFetching) && !authStatus?.user) {
-    return (
-      <div className="min-h-screen flex items-center justify-center">
-        <div className="animate-pulse text-muted-foreground">Loading...</div>
-      </div>
-    );
-  }
-
-  if (!authStatus?.initialized) {
-    return <ConsoleInit />;
-  }
-
-  if (!authStatus.user) {
-    return (
-      <div className="min-h-screen flex items-center justify-center">
-        <div className="animate-pulse text-muted-foreground">Redirecting...</div>
-      </div>
-    );
-  }
-
-  if (!authStatus.user.organizationId || !(authStatus.user.orgRole === "owner" || authStatus.user.orgRole === "admin")) {
-    setLocation("/console/organization");
-    return null;
-  }
-
-  return (
-    <ConsoleLayout>
-      <ConsoleOrganizationBilling />
-    </ConsoleLayout>
-  );
-}
-
-function ConsoleOrganizationSettingsWrapper() {
-  const [, setLocation] = useLocation();
-  const { data: authStatus, isLoading, isFetching } = useQuery<AuthStatus>({
-    queryKey: ["/api/auth/status"],
+  const { data: config } = useQuery<{ organizationsEnabled?: string }>({
+    queryKey: ["/api/config"],
+    staleTime: 60 * 60 * 1000,
   });
 
   useEffect(() => {
@@ -691,7 +659,55 @@ function ConsoleOrganizationSettingsWrapper() {
     );
   }
 
-  if (!authStatus.user.organizationId || !(authStatus.user.orgRole === "owner" || authStatus.user.orgRole === "admin")) {
+  if ((!authStatus.user.organizationId || !(authStatus.user.orgRole === "owner" || authStatus.user.orgRole === "admin")) && config?.organizationsEnabled !== "false") {
+    setLocation("/console/organization");
+    return null;
+  }
+
+  return (
+    <ConsoleLayout>
+      <ConsoleOrganizationBilling />
+    </ConsoleLayout>
+  );
+}
+
+function ConsoleOrganizationSettingsWrapper() {
+  const [, setLocation] = useLocation();
+  const { data: authStatus, isLoading, isFetching } = useQuery<AuthStatus>({
+    queryKey: ["/api/auth/status"],
+  });
+  const { data: config } = useQuery<{ organizationsEnabled?: string }>({
+    queryKey: ["/api/config"],
+    staleTime: 60 * 60 * 1000,
+  });
+
+  useEffect(() => {
+    if (!isLoading && !isFetching && authStatus?.initialized && !authStatus.user) {
+      setLocation("/login");
+    }
+  }, [isLoading, isFetching, authStatus, setLocation]);
+
+  if ((isLoading || isFetching) && !authStatus?.user) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="animate-pulse text-muted-foreground">Loading...</div>
+      </div>
+    );
+  }
+
+  if (!authStatus?.initialized) {
+    return <ConsoleInit />;
+  }
+
+  if (!authStatus.user) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="animate-pulse text-muted-foreground">Redirecting...</div>
+      </div>
+    );
+  }
+
+  if ((!authStatus.user.organizationId || !(authStatus.user.orgRole === "owner" || authStatus.user.orgRole === "admin")) && config?.organizationsEnabled !== "false") {
     setLocation("/console/organization");
     return null;
   }
