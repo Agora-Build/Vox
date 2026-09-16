@@ -2755,22 +2755,33 @@ export class DatabaseStorage {
     return (result as unknown as { rowCount: number }).rowCount || 0;
   }
 
-  async getOrgSecretsForJob(jobId: number): Promise<Record<string, string>> {
-    // Follow: job → workflow → organizationId → org_secrets
-    // Only return org secrets if job creator is a member of the org
+  // Pure data access, no authorization: follow job → workflow → organizationId
+  // and report WHICH org owns the run and WHO created it. Null means "this job
+  // has no org-secret scope at all" (unknown job, pooled/workflow-less job, or a
+  // personal workflow) — the personal-secret path handles those.
+  //
+  // The membership FENCE that used to sit in this method (R3) now lives in Core:
+  // server/routes.ts `orgRuntimeSecretsForJob` resolves the creator's membership
+  // through the vox.organizations seam and compares it to `workflowOrgId`.
+  // Storage must not re-derive membership here — it would be the last raw-row
+  // read of users.organization_id in a business decision.
+  async getJobOrgSecretScope(jobId: number): Promise<{ workflowOrgId: number; createdBy: number | null } | null> {
     const job = await this.getEvalJob(jobId);
-    if (!job) return {};
-    if (job.workflowId == null) return {};
+    if (!job) return null;
+    if (job.workflowId == null) return null;
     const workflow = await this.getWorkflow(job.workflowId);
-    if (!workflow?.organizationId) return {};
-    // Verify the job creator is a member of the workflow's org before releasing
-    // org secrets (prevents a non-member run of a public org workflow from
-    // getting org creds). Org secrets are now the SOLE source for org workflows,
-    // so fail closed if the creator is unknown.
-    if (!job.createdBy) return {};
-    const creator = await this.getUser(job.createdBy);
-    if (!creator || creator.organizationId !== workflow.organizationId) return {};
-    const secrets = await this.getOrgSecrets(workflow.organizationId);
+    if (!workflow?.organizationId) return null;
+    // `?? null` (not `||`): the caller fails closed on a null creator exactly as
+    // the old `if (!job.createdBy) return {}` did — org secrets are the SOLE
+    // source for an org workflow, so an unknown creator gets nothing.
+    return { workflowOrgId: workflow.organizationId, createdBy: job.createdBy ?? null };
+  }
+
+  // The decrypt tail, unchanged: RUNTIME rows only. A brokerType row is a
+  // Core-only login credential and is structurally excluded here — it never
+  // reaches an agent by any path.
+  async getDecryptedOrgRuntimeSecrets(organizationId: number): Promise<Record<string, string>> {
+    const secrets = await this.getOrgSecrets(organizationId);
     const result: Record<string, string> = {};
     for (const s of secrets) {
       if (s.brokerType != null) continue; // Core-only — never sent to agents

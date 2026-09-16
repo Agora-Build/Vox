@@ -1,6 +1,9 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeAll } from "vitest";
 import { storage, encryptValue } from "../server/storage";
 import { db } from "../server/storage";
+import { orgRuntimeSecretsForJob } from "../server/routes";
+import { setOrganizations } from "../server/organizations";
+import { CoreOrganizations } from "../server/organizations-core";
 import { secrets, orgSecrets, users, organizations, evalJobs, providers } from "../shared/schema";
 import { eq } from "drizzle-orm";
 
@@ -16,6 +19,10 @@ async function anyProviderId(): Promise<string> {
 }
 
 d("login-class secrets are withheld from the job path", () => {
+  // The org path now runs the fence in Core through the vox.organizations seam
+  // (R3), so this suite needs the built-in provider installed.
+  beforeAll(() => setOrganizations(new CoreOrganizations(storage)));
+
   it("getSecretsForJob returns runtime rows only; login rows never leave Core", async () => {
     const stamp = Date.now();
     const providerId = await anyProviderId();
@@ -53,7 +60,7 @@ d("login-class secrets are withheld from the job path", () => {
     await storage.deleteProject(project.id);
   });
 
-  it("getOrgSecretsForJob returns runtime rows only; login rows never leave Core", async () => {
+  it("orgRuntimeSecretsForJob returns runtime rows only; login rows never leave Core", async () => {
     const stamp = Date.now();
     const providerId = await anyProviderId();
     // Throwaway org + throwaway member user, so we never touch admin user 1.
@@ -82,7 +89,7 @@ d("login-class secrets are withheld from the job path", () => {
       status: "pending", priority: 0, retryCount: 0, maxRetries: 3,
     } as any);
 
-    const result = await storage.getOrgSecretsForJob(job.id);
+    const result = await orgRuntimeSecretsForJob(job.id);
     expect(result[`SC_ORG_RUNTIME_${stamp}`]).toBe("ok");
     expect(result).not.toHaveProperty(`SC_ORG_LOGIN_${stamp}`);
 

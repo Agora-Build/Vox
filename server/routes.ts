@@ -317,6 +317,37 @@ async function updateClashEloRatings(
 const MISSING_SECRETS_MSG = (names: string[]) =>
   `This workflow references secret(s) ${names.join(", ")} that are not configured for its owner. If the workflow is yours, create them under Console → Secrets (names must match exactly); otherwise ask its owner to.`;
 
+/**
+ * R3 — THE ORG-CREDENTIAL FENCE. This is the check that stops one organization
+ * from spending another organization's credentials, so it lives in Core: the
+ * decision is authorization, and Core authorizes (design §4). Storage supplies
+ * the two halves (`getJobOrgSecretScope`, `getDecryptedOrgRuntimeSecrets`) and
+ * decides nothing.
+ *
+ * The creator's membership comes from the `vox.organizations` seam; the
+ * workflow's owning org (`workflowOrgId`) is a Core FK column compared as an
+ * opaque integer. Verdicts are identical to the pre-seam
+ * `creator.organizationId !== workflow.organizationId`:
+ *   - creator in the workflow's org  → the org's runtime secrets
+ *   - creator in ANOTHER org         → {}   (cross-org spend, never allowed)
+ *   - creator in no org / unknown    → {}
+ *   - no org scope (personal/pooled) → {}   (caller uses the personal path)
+ *   - provider ABSENT                → {}   fail closed, and never a throw:
+ *     this path can tolerate "no org", and a job losing its secrets is strictly
+ *     safer than a job getting someone else's.
+ * Provider FAILURE still propagates (the caller's 500) — "cannot answer" is not
+ * "no".
+ */
+export async function orgRuntimeSecretsForJob(jobId: number): Promise<Record<string, string>> {
+  const scope = await storage.getJobOrgSecretScope(jobId);
+  if (!scope) return {};
+  const creatorMembership = scope.createdBy != null
+    ? await getOrganizations()?.getMembership(scope.createdBy) ?? null
+    : null;
+  if (creatorMembership?.organizationId !== scope.workflowOrgId) return {};
+  return storage.getDecryptedOrgRuntimeSecrets(scope.workflowOrgId);
+}
+
 export async function registerRoutes(
   httpServer: Server,
   app: Express
@@ -4147,11 +4178,12 @@ export async function registerRoutes(
       const jobWorkflow = auth.job.workflowId != null ? await storage.getWorkflow(auth.job.workflowId) : undefined;
 
       if (jobWorkflow?.organizationId) {
-        // Org workflow → org secrets only. getOrgSecretsForJob fences by the job
-        // creator's org membership, so a non-member running a *public* org
-        // workflow deliberately gets no secrets (never leak org creds to
-        // outsiders) — such a run simply fails at execution if it needs them.
-        const orgSecrets = await storage.getOrgSecretsForJob(parseInt(jobId));
+        // Org workflow → org secrets only. orgRuntimeSecretsForJob fences by the
+        // job creator's org membership (resolved through the vox.organizations
+        // seam), so a non-member running a *public* org workflow deliberately
+        // gets no secrets (never leak org creds to outsiders) — such a run
+        // simply fails at execution if it needs them.
+        const orgSecrets = await orgRuntimeSecretsForJob(parseInt(jobId));
         Object.assign(decrypted, orgSecrets);
         console.log(`[Secrets] Job ${jobId}: org workflow → ${Object.keys(orgSecrets).length} org secret(s)`);
       } else {
