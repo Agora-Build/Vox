@@ -38,6 +38,24 @@ export interface Organization {
  */
 export class AlreadyMemberError extends Error {}
 
+/**
+ * Hand-written, deliberately NOT the drizzle-inferred `OrgSecret` (shared/schema.ts),
+ * which dies when org secrets move behind the seam in a later release. The provider
+ * traffics in ciphertext only: `encryptedValue` is opaque to it — `encryptValue`/
+ * `decryptValue` and the key stay in Core (design §"Org secrets move too").
+ */
+export interface OrgSecretRow {
+  id: number;
+  organizationId: number;
+  name: string;
+  encryptedValue: string;
+  brokerType: string | null;
+  isTestAccount: boolean;
+  createdBy: number | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
 export interface OrganizationsProvider {
   /** Membership of one user; null = belongs to no org. */
   getMembership(userId: number): Promise<Membership | null>;
@@ -77,6 +95,19 @@ export interface OrganizationsProvider {
   setMemberRole(orgId: number, userId: number, role: OrgRole): Promise<void>;
   /** Removes userId from orgId. */
   removeMember(orgId: number, userId: number): Promise<void>;
+
+  // Org secrets. Ciphertext only — the provider never encrypts, decrypts, or
+  // sees plaintext; `encryptValue`/`decryptValue` and the key stay in Core.
+
+  /** All secrets for an org, ciphertext untouched. */
+  listOrgSecrets(orgId: number): Promise<OrgSecretRow[]>;
+  /** Creates or updates a secret by name, storing `encryptedValue` verbatim. */
+  upsertOrgSecret(
+    orgId: number,
+    row: { name: string; encryptedValue: string; brokerType: string | null; isTestAccount: boolean; createdBy: number },
+  ): Promise<OrgSecretRow>;
+  /** Removes a secret by name. */
+  deleteOrgSecret(orgId: number, name: string): Promise<void>;
 }
 
 let current: OrganizationsProvider | null = null;

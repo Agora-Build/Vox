@@ -2708,6 +2708,43 @@ export class DatabaseStorage {
       .where(and(eq(orgSecrets.organizationId, organizationId), eq(orgSecrets.name, name)));
   }
 
+  // Ciphertext-only sibling of upsertOrgSecret, for the vox.organizations seam
+  // (server/organizations-core.ts): the caller has already encrypted the value
+  // (or is passing through a value that was never plaintext to Core in the
+  // first place), so this stores `row.encryptedValue` verbatim — no encryptValue
+  // call here or anywhere in the provider. Mirrors upsertOrgSecret's insert/
+  // conflict SQL and preserves the same createdBy-preservation behavior: an
+  // update never touches createdBy, so the original creator survives rotation.
+  async upsertOrgSecretRow(
+    organizationId: number,
+    row: { name: string; encryptedValue: string; brokerType: string | null; isTestAccount: boolean; createdBy: number }
+  ): Promise<OrgSecret> {
+    const existing = await this.getOrgSecret(organizationId, row.name);
+    if (existing) {
+      const result = await db.update(orgSecrets)
+        .set({
+          encryptedValue: row.encryptedValue,
+          brokerType: row.brokerType,
+          isTestAccount: row.isTestAccount,
+          updatedAt: new Date(),
+        })
+        .where(eq(orgSecrets.id, existing.id))
+        .returning();
+      return result[0];
+    }
+    const result = await db.insert(orgSecrets)
+      .values({
+        organizationId,
+        name: row.name,
+        encryptedValue: row.encryptedValue,
+        createdBy: row.createdBy,
+        brokerType: row.brokerType,
+        isTestAccount: row.isTestAccount,
+      })
+      .returning();
+    return result[0];
+  }
+
   // Revoke every OTHER active session for a user (keep the caller's current one).
   // Used after a password change/set so a stale or attacker-held session is evicted.
   // Sessions live in user_sessions (connect-pg-simple); the userId is stored in the

@@ -49,6 +49,16 @@ class FakeOrganizations implements OrganizationsProvider {
   async removeMember(_orgId: number, _userId: number): Promise<void> {
     throw new Error("not implemented in fake");
   }
+  async listOrgSecrets(_orgId: number): Promise<never[]> { return []; }
+  async upsertOrgSecret(
+    _orgId: number,
+    _row: { name: string; encryptedValue: string; brokerType: string | null; isTestAccount: boolean; createdBy: number },
+  ): Promise<never> {
+    throw new Error("not implemented in fake");
+  }
+  async deleteOrgSecret(_orgId: number, _name: string): Promise<void> {
+    throw new Error("not implemented in fake");
+  }
 }
 
 // The row says org 7 / owner. The provider says org 99 / member. The provider must win.

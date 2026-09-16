@@ -5,7 +5,7 @@
 // scan test. When orgs extract into a plugin, this file is deleted.
 
 import type { DatabaseStorage } from "./storage";
-import { AlreadyMemberError, type Membership, type Organization, type OrganizationsProvider, type OrgRole } from "./organizations";
+import { AlreadyMemberError, type Membership, type Organization, type OrganizationsProvider, type OrgRole, type OrgSecretRow } from "./organizations";
 
 /** Only the storage surface this needs — keeps the class testable without a DB. */
 type StorageLike = Pick<
@@ -21,6 +21,9 @@ type StorageLike = Pick<
   | "updateOrganization"
   | "updateUser"
   | "removeUserFromOrganization"
+  | "getOrgSecrets"
+  | "upsertOrgSecretRow"
+  | "deleteOrgSecret"
 >;
 
 /**
@@ -114,5 +117,31 @@ export class CoreOrganizations implements OrganizationsProvider {
 
   async removeMember(_orgId: number, userId: number): Promise<void> {
     await this.storage.removeUserFromOrganization(userId);
+  }
+
+  async listOrgSecrets(orgId: number): Promise<OrgSecretRow[]> {
+    const rows = await this.storage.getOrgSecrets(orgId);
+    return rows.map((r) => ({
+      id: r.id,
+      organizationId: r.organizationId,
+      name: r.name,
+      encryptedValue: r.encryptedValue,
+      brokerType: r.brokerType,
+      isTestAccount: r.isTestAccount,
+      createdBy: r.createdBy,
+      createdAt: r.createdAt,
+      updatedAt: r.updatedAt,
+    }));
+  }
+
+  async upsertOrgSecret(
+    orgId: number,
+    row: { name: string; encryptedValue: string; brokerType: string | null; isTestAccount: boolean; createdBy: number },
+  ): Promise<OrgSecretRow> {
+    return this.storage.upsertOrgSecretRow(orgId, row);
+  }
+
+  async deleteOrgSecret(orgId: number, name: string): Promise<void> {
+    await this.storage.deleteOrgSecret(orgId, name);
   }
 }

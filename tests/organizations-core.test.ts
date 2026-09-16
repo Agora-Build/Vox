@@ -23,6 +23,21 @@ const ORG7 = {
 const orgStore: Record<number, typeof ORG7> = { 7: { ...ORG7 } };
 let nextOrgId = 100;
 
+// In-memory org-secrets store backing the ciphertext-passthrough tests.
+type FakeOrgSecretRow = {
+  id: number;
+  organizationId: number;
+  name: string;
+  encryptedValue: string;
+  brokerType: string | null;
+  isTestAccount: boolean;
+  createdBy: number | null;
+  createdAt: Date;
+  updatedAt: Date;
+};
+const secretStore: Record<number, Record<string, FakeOrgSecretRow>> = {};
+let nextSecretId = 1;
+
 const fakeStorage = {
   getUser: async (id: number) => users[id],
   getUsersByOrganization: async (orgId: number) =>
@@ -58,6 +73,32 @@ const fakeStorage = {
     const updated = { ...existing, organizationId: null, orgRole: null };
     users[id] = updated;
     return updated;
+  },
+  getOrgSecrets: async (orgId: number) => Object.values(secretStore[orgId] ?? {}),
+  upsertOrgSecretRow: async (
+    orgId: number,
+    row: { name: string; encryptedValue: string; brokerType: string | null; isTestAccount: boolean; createdBy: number }
+  ) => {
+    secretStore[orgId] ??= {};
+    const existing = secretStore[orgId][row.name];
+    const stored: FakeOrgSecretRow = existing
+      ? { ...existing, encryptedValue: row.encryptedValue, brokerType: row.brokerType, isTestAccount: row.isTestAccount, updatedAt: new Date() }
+      : {
+          id: nextSecretId++,
+          organizationId: orgId,
+          name: row.name,
+          encryptedValue: row.encryptedValue,
+          brokerType: row.brokerType,
+          isTestAccount: row.isTestAccount,
+          createdBy: row.createdBy,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        };
+    secretStore[orgId][row.name] = stored;
+    return stored;
+  },
+  deleteOrgSecret: async (orgId: number, name: string) => {
+    if (secretStore[orgId]) delete secretStore[orgId][name];
   },
 } as never;
 
@@ -156,5 +197,15 @@ describe("CoreOrganizations", () => {
     await orgs.setVerified(7, false);
     expect((await orgs.getOrganization(7))?.verified).toBe(false);
     await expect(orgs.updateOrganization(999, { name: "x" })).rejects.toThrow("organization not found");
+  });
+
+  it("org-secret rows pass through as opaque ciphertext, and upsert returns the row", async () => {
+    const row = await orgs.upsertOrgSecret(7, { name: "API_KEY", encryptedValue: "v1:aa:bb:cc",
+      brokerType: null, isTestAccount: false, createdBy: 1 });
+    expect(row.encryptedValue).toBe("v1:aa:bb:cc");         // untouched — provider never decrypts
+    expect(row.brokerType).toBeNull();                       // routes.ts:2887 echoes these two
+    expect((await orgs.listOrgSecrets(7)).map(r => r.name)).toContain("API_KEY");
+    await orgs.deleteOrgSecret(7, "API_KEY");
+    expect((await orgs.listOrgSecrets(7)).map(r => r.name)).not.toContain("API_KEY");
   });
 });
