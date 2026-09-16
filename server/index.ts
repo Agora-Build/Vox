@@ -218,8 +218,11 @@ app.use((req, res, next) => {
   setMarketplace(plugins.services.optional<EvalMarketplace>("vox.eval-marketplace", "^1.0.0"));
 
   // Organizations: a plugin may own membership; until one does, Core's own
-  // implementation fills the seam. Unlike the marketplace this is never null —
-  // an unresolved provider is a startup bug, not a degraded feature.
+  // implementation fills the seam. Phase 1 always installs a provider here, so
+  // production never sees the absent-provider (501/503) paths — but the seam
+  // itself now treats absence as a legal state (server/organizations.ts §7
+  // contract), so a future release can omit this fallback without every call
+  // site crashing.
   setOrganizations(
     plugins.services.optional<OrganizationsProvider>("vox.organizations", "^1.0.0")
       ?? new CoreOrganizations(storage),
@@ -412,8 +415,10 @@ function startBackgroundWorker() {
           // structurally satisfy sessionPoolViolation's `{ organizationId }` param
           // and silently bypass the seam — see server/organizations.ts.
           const creator = schedule.createdBy ? await storage.getUser(schedule.createdBy) : undefined;
+          // Interim null-safe shape (Task 10 owns the proper fix): absent
+          // provider ⇒ no membership, same as a user in no org.
           const creatorMembership = schedule.createdBy
-            ? await getOrganizations().getMembership(schedule.createdBy)
+            ? (await getOrganizations()?.getMembership(schedule.createdBy)) ?? null
             : null;
 
           // scheduled jobs are inherently owner-dispatched —

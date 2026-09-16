@@ -11,6 +11,19 @@ const provider: OrganizationsProvider = {
   getMemberships: async () => new Map(),
   getOrganization: async () => null,
   listMembers: async () => [],
+  // Widened by Task 2 — trivial stubs, unused by this suite's assertions.
+  countMembers: async () => 0,
+  countOrgAdmins: async () => 0,
+  listOrganizations: async () => [],
+  createOrganization: async () => { throw new Error("not implemented in fixture"); },
+  updateOrganization: async () => { throw new Error("not implemented in fixture"); },
+  setVerified: async () => { throw new Error("not implemented in fixture"); },
+  addMember: async () => { throw new Error("not implemented in fixture"); },
+  setMemberRole: async () => { throw new Error("not implemented in fixture"); },
+  removeMember: async () => { throw new Error("not implemented in fixture"); },
+  listOrgSecrets: async () => [],
+  upsertOrgSecret: async () => { throw new Error("not implemented in fixture"); },
+  deleteOrgSecret: async () => { throw new Error("not implemented in fixture"); },
 };
 
 describe("auth membership resolution", () => {

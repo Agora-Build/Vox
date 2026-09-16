@@ -32,13 +32,20 @@ const membershipCache = new WeakMap<Request, Map<number, Membership | null>>();
  * could then admit on one answer while the handler body rejects on the other.
  */
 export async function membershipFor(req: Request, userId: number): Promise<Membership | null> {
+  // Absent provider → orgs inert, fails closed to "no membership" WITHOUT
+  // caching the answer (there's nothing to memoize — the next call re-checks
+  // in case a provider gets installed later, e.g. across tests). A provider
+  // that throws is a different case entirely and propagates below: failure
+  // must stay distinguishable from "no org" for callers that decide on it.
+  const orgs = getOrganizations();
+  if (!orgs) return null;
   let perRequest = membershipCache.get(req);
   if (!perRequest) {
     perRequest = new Map();
     membershipCache.set(req, perRequest);
   }
   if (!perRequest.has(userId)) {
-    perRequest.set(userId, await getOrganizations().getMembership(userId));
+    perRequest.set(userId, await orgs.getMembership(userId));
   }
   return perRequest.get(userId) ?? null;
 }
@@ -146,23 +153,35 @@ export async function requirePrincipal(req: Request, res: Response, next: NextFu
 }
 
 export async function requireOrgAdmin(req: Request, res: Response, next: NextFunction) {
-  if (!req.session?.userId) {
-    return res.status(401).json({ error: "Authentication required" });
+  // Feature-availability gate, checked first: an absent provider means the
+  // orgs feature is off, full stop — no point reasoning about session/user
+  // state underneath a feature that isn't there.
+  if (!getOrganizations()) {
+    return res.status(501).json({ error: "Organizations feature not enabled" });
   }
-  const user = await storage.getUser(req.session.userId);
-  if (!user) {
-    return res.status(401).json({ error: "User not found" });
+  try {
+    if (!req.session?.userId) {
+      return res.status(401).json({ error: "Authentication required" });
+    }
+    const user = await storage.getUser(req.session.userId);
+    if (!user) {
+      return res.status(401).json({ error: "User not found" });
+    }
+    // Same per-request memo the handler body's `user.membership` came from, so the
+    // guard and the body can never decide on two different answers.
+    const membership = await membershipFor(req, user.id);
+    if (!membership) {
+      return res.status(403).json({ error: "Organization membership required" });
+    }
+    if (membership.role !== 'owner' && membership.role !== 'admin') {
+      return res.status(403).json({ error: "Organization admin access required" });
+    }
+    next();
+  } catch {
+    // Provider installed but failing: distinct from absence, and distinct
+    // from "no org" — a 500 would hide that this is an org-service outage.
+    res.status(503).json({ error: "Organizations service unavailable" });
   }
-  // Same per-request memo the handler body's `user.membership` came from, so the
-  // guard and the body can never decide on two different answers.
-  const membership = await membershipFor(req, user.id);
-  if (!membership) {
-    return res.status(403).json({ error: "Organization membership required" });
-  }
-  if (membership.role !== 'owner' && membership.role !== 'admin') {
-    return res.status(403).json({ error: "Organization admin access required" });
-  }
-  next();
 }
 
 // ==================== API KEY AUTHENTICATION ====================

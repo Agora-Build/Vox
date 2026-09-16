@@ -595,8 +595,9 @@ export async function registerRoutes(
     try {
       const users = await storage.getAllUsers();
       // Other users' affiliation comes from the seam, not their raw rows — one
-      // batch lookup, response shape unchanged.
-      const memberships = await getOrganizations().getMemberships(users.map(u => u.id));
+      // batch lookup, response shape unchanged. Absent provider ⇒ empty map,
+      // same downstream effect as no member having an org.
+      const memberships = (await getOrganizations()?.getMemberships(users.map(u => u.id))) ?? new Map();
       res.json(users.map(u => ({
         id: u.id,
         username: u.username,
@@ -3661,7 +3662,7 @@ export async function registerRoutes(
         return res.status(401).json({ error: "Invalid or revoked eval agent token" });
       }
 
-      const ownerMembership = await getOrganizations().getMembership(evalAgentToken.createdBy);
+      const ownerMembership = (await getOrganizations()?.getMembership(evalAgentToken.createdBy)) ?? null;
       // Hoisted above the claimable-jobs lookup: the effective identity below
       // needs the token's latest agent to resolve a non-public token's DETECTED
       // region (Unverified → NULL, which structurally excludes pooled jobs).
@@ -3753,7 +3754,7 @@ export async function registerRoutes(
       // Freeze the claiming agent's token dispatch tier onto the job in the SAME
       // atomic claim update — the one tier input not known at creation. Completes
       // the immutable metric-tier snapshot (no separate write to lose on a crash).
-      const ownerMembership = await getOrganizations().getMembership(evalAgentToken.createdBy);
+      const ownerMembership = (await getOrganizations()?.getMembership(evalAgentToken.createdBy)) ?? null;
       const job = await storage.claimEvalJob(parseInt(jobId, 10), agentId, {
         id: evalAgentToken.id,
         siteId: eff.siteId,
@@ -4205,7 +4206,7 @@ export async function registerRoutes(
       // Serve gate (owner + team + attested-shared), enforced against the
       // CLAIMING token from snapshot-frozen owner/org + consent. This is the
       // credential-authoritative check; the claim-SQL gate is the first line.
-      const ownerMembership = await getOrganizations().getMembership(evalAgentToken.createdBy);
+      const ownerMembership = (await getOrganizations()?.getMembership(evalAgentToken.createdBy)) ?? null;
       const serveJob = {
         targetTokenId: auth.job.targetTokenId ?? null,
         workflowOwnerId: snapWorkflow.ownerId ?? null,
@@ -4433,7 +4434,7 @@ export async function registerRoutes(
           if (!authz.ok) return res.status(402).json({ error: authz.reason ?? "Dispatch not authorized" });
           settlementContext = authz.settlementContext; // stashed into the snapshot below
         } else {
-          const ownerMembership = await getOrganizations().getMembership(token.createdBy);
+          const ownerMembership = (await getOrganizations()?.getMembership(token.createdBy)) ?? null;
           const decision = resolveTargetedDispatch(
             { id: user.id, organizationId: user.membership?.organizationId ?? null },
             { id: token.id, dispatchTier: token.dispatchTier, createdBy: token.createdBy, region: token.siteId },
@@ -5416,6 +5417,9 @@ export async function registerRoutes(
       // requires it (DB-IP Lite fallback) — rendered in the public footer.
       const geoipAttribution = getGeoipAttribution();
       if (geoipAttribution) configObject.geoipAttribution = geoipAttribution;
+      // Read live provider state, not a constant — reflects reality even if a
+      // future release runs without a provider installed.
+      configObject.organizationsEnabled = getOrganizations() !== null ? "true" : "false";
       res.json(configObject);
     } catch (error) {
       console.error("Error fetching config:", error);
@@ -5637,7 +5641,7 @@ export async function registerRoutes(
       // map hit is the normal case; the `?? null` is only the belt-and-braces
       // path for a user the provider does not report (and the seam resolves a
       // null org_role to "member", which is what the column already meant).
-      const memberRoles = await getOrganizations().getMemberships(members.map(m => m.id));
+      const memberRoles = (await getOrganizations()?.getMemberships(members.map(m => m.id))) ?? new Map();
       res.json(members.map(m => ({
         id: m.id,
         username: m.username,
@@ -5674,7 +5678,7 @@ export async function registerRoutes(
       // The target is another user — their affiliation comes from the seam, not
       // from a raw row (which carries no resolved membership). A user who does
       // not exist has no membership, so the same 404 applies.
-      const memberMembership = await getOrganizations().getMembership(parseInt(userId));
+      const memberMembership = (await getOrganizations()?.getMembership(parseInt(userId))) ?? null;
       if (!memberMembership || memberMembership.organizationId !== parseInt(id)) {
         return res.status(404).json({ error: "Member not found in organization" });
       }
@@ -5735,7 +5739,7 @@ export async function registerRoutes(
 
       // Another user's affiliation resolves through the seam (a raw row has no
       // resolved membership); a nonexistent user has none, so the 404 holds.
-      const memberMembership = await getOrganizations().getMembership(parseInt(userId));
+      const memberMembership = (await getOrganizations()?.getMembership(parseInt(userId))) ?? null;
       if (!memberMembership || memberMembership.organizationId !== parseInt(id)) {
         return res.status(404).json({ error: "Member not found in organization" });
       }

@@ -123,17 +123,25 @@ export function resetOrganizations(): void {
 }
 
 /**
- * NEVER null — deliberately unlike getMarketplace(). An absent marketplace makes
- * one optional tier inert, which is a coherent product state. An absent
- * organizations provider would report every user as belonging to no org, which
- * silently changes authorization outcomes across the app. Throwing turns a
- * startup wiring bug into a loud failure instead of a quiet policy change.
+ * Absence is a legal state (design §7): a missing provider makes orgs INERT —
+ * routes/helpers that need an answer return 501, and paths that can tolerate
+ * "no org" fail closed via `?? null`. This is deliberately unlike the old
+ * throw-on-uninitialized behavior: a startup wiring bug used to crash every
+ * request that touched membership; now it degrades the org feature instead.
+ *
+ * Provider FAILURE (a thrown error from an installed provider) is NOT the same
+ * as absence — it must stay distinguishable from "no org" wherever that
+ * distinction matters (e.g. `membershipFor` rethrows), surfacing as 503 where
+ * an answer is required. Neither absence nor failure is ever allowed to look
+ * like a silent "user has no org" on a path that must tell the two apart.
  */
-export function getOrganizations(): OrganizationsProvider {
-  if (!current) {
-    throw new Error(
-      "organizations provider not initialized — setOrganizations() must run at startup (server/index.ts) or in test setup",
-    );
-  }
+export function getOrganizations(): OrganizationsProvider | null {
   return current;
+}
+
+/** Route guard: absent provider → 501, one sentence, one status, everywhere. */
+export function requireOrganizations(res: { status(n: number): { json(b: unknown): unknown } }): OrganizationsProvider | null {
+  const p = getOrganizations();
+  if (!p) res.status(501).json({ error: "Organizations feature not enabled" });
+  return p;
 }
