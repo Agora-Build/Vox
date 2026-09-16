@@ -960,7 +960,6 @@ export class DatabaseStorage {
       // that IS the zero-trust gate; no explicit trust condition needed here.
       const selectResult = await client.query(
         `SELECT ej.* FROM eval_jobs ej
-         LEFT JOIN users creator ON ej.created_by = creator.id
          WHERE ej.id = $1 AND ej.status = 'pending'::eval_job_status
            AND (
              ej.target_token_id = $2
@@ -968,7 +967,9 @@ export class DatabaseStorage {
                     ( ej.target_tier = 'private'::dispatch_tier AND ej.created_by = $5 )
                  OR ( ej.target_tier = 'team'::dispatch_tier
                       AND $4 IN ('team', 'public')
-                      AND $6::integer IS NOT NULL AND creator.organization_id = $6 )
+                      -- R2 (§11): the creator's org FROZEN at creation, not their live
+                      -- membership — no users join here by design (seam invariant).
+                      AND $6::integer IS NOT NULL AND ej.creator_org_id = $6 )
                  OR ( ej.target_tier = 'public'::dispatch_tier AND $4 = 'public'
                       AND (ej.config -> 'sessionInjection') IS NULL )
              ) )
@@ -1015,7 +1016,6 @@ export class DatabaseStorage {
     // arms — that's the zero-trust gate; SQL is otherwise unchanged.
     const result = await pool.query(
       `SELECT ej.* FROM eval_jobs ej
-        LEFT JOIN users creator ON ej.created_by = creator.id
         WHERE ej.status = 'pending'::eval_job_status
           AND (
             ej.target_token_id = $1
@@ -1023,7 +1023,8 @@ export class DatabaseStorage {
                    ( ej.target_tier = 'private'::dispatch_tier AND ej.created_by = $5 )
                 OR ( ej.target_tier = 'team'::dispatch_tier
                      AND $4 IN ('team', 'public')
-                     AND $6::integer IS NOT NULL AND creator.organization_id = $6 )
+                     -- R2 (§11): frozen creator org, not live membership (seam invariant).
+                     AND $6::integer IS NOT NULL AND ej.creator_org_id = $6 )
                 OR ( ej.target_tier = 'public'::dispatch_tier AND $4 = 'public'
                      AND (ej.config -> 'sessionInjection') IS NULL )
             ) )

@@ -383,6 +383,9 @@ export const evalJobs = pgTable("eval_jobs", {
   targetTier: dispatchTierEnum("target_tier"),
   evalAgentId: integer("eval_agent_id").references(() => evalAgents.id),
   createdBy: integer("created_by").references(() => users.id),
+  // frozen at creation from the seam (design §11 R2) — the claim SQL reads THIS, never users.organization_id.
+  // No FK: org ids are opaque integers in Core (a plugin provider may own the org table).
+  creatorOrgId: integer("creator_org_id"),
   // Concrete site that ran (or will run) the job. Pooled jobs are born null;
   // the claiming agent stamps it atomically inside claimEvalJob.
   siteId: varchar("site_id", { length: 64 }),

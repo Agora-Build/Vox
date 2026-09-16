@@ -12,9 +12,10 @@ const mkToken = (name: string, siteId: string, tier = "public", createdBy = 1) =
     siteId, dispatchTier: tier, createdBy,
   } as any);
 
-const mkPooledJob = (targetRegion: string, targetTier: string, createdBy = 1) =>
+// creatorOrgId is stamped at creation (R2, §11) — the team arm reads it, not live membership.
+const mkPooledJob = (targetRegion: string, targetTier: string, createdBy = 1, creatorOrgId: number | null = null) =>
   storage.createEvalJob({
-    workflowId: null, triggerType: 2, evalSetId: null, createdBy,
+    workflowId: null, triggerType: 2, evalSetId: null, createdBy, creatorOrgId,
     siteId: null, targetRegion, targetTier,
     config: {}, snapshot: { provider: null, workflow: null, evalSet: null, creatorPlan: null } as any,
     status: "pending", priority: 0, retryCount: 0, maxRetries: 3,
@@ -110,7 +111,7 @@ d("pooled claim SQL mirrors isClaimable", () => {
     const userB = await storage.createUser({ username: `tpB${suffix}`, email: `tpB${suffix}@example.com`, organizationId: org.id } as any);
 
     // (a) B's TEAM-tier token, in-region, ownerOrgId = the shared org: lists + claims.
-    const teamJob = await mkPooledJob("na-us-ashburn", "team", userA.id);
+    const teamJob = await mkPooledJob("na-us-ashburn", "team", userA.id, org.id);
     const teamTok = await mkToken(`tp-team-${suffix}`, "na-us-ashburn-01", "team", userB.id);
     const teamArg = { id: teamTok.id, siteId: teamTok.siteId, region: teamTok.region, dispatchTier: teamTok.dispatchTier, createdBy: teamTok.createdBy, ownerOrgId: org.id, locationTrust: "trusted" };
     expect((await storage.getClaimableJobsForToken(teamArg)).map(j => j.id)).toContain(teamJob.id);
@@ -120,7 +121,7 @@ d("pooled claim SQL mirrors isClaimable", () => {
 
     // (b) B's PRIVATE-tier token, same org, same region: does NOT (mutual consent —
     // the owner offered only 'private', which isn't in the job's team/public ask).
-    const privJob = await mkPooledJob("na-us-ashburn", "team", userA.id);
+    const privJob = await mkPooledJob("na-us-ashburn", "team", userA.id, org.id);
     const privTok = await mkToken(`tp-teampriv-${suffix}`, "na-us-ashburn-01", "private", userB.id);
     const privArg = { id: privTok.id, siteId: privTok.siteId, region: privTok.region, dispatchTier: privTok.dispatchTier, createdBy: privTok.createdBy, ownerOrgId: org.id };
     expect((await storage.getClaimableJobsForToken(privArg)).map(j => j.id)).not.toContain(privJob.id);

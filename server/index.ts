@@ -484,6 +484,9 @@ function startBackgroundWorker() {
             workflowId: schedule.workflowId,
             evalSetId: schedule.evalSetId,
             createdBy: schedule.createdBy,
+            // R2 (§11): freeze the creator's org here, from the seam-resolved
+            // membership already computed above (never users.organization_id).
+            creatorOrgId: creatorMembership?.organizationId ?? null,
             siteId: null,
             targetRegion: schedule.region,
             targetTier: schedule.targetTier,

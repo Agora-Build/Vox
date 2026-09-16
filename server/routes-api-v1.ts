@@ -413,6 +413,8 @@ export function registerApiV1Routes(app: Express): void {
         triggerType: 2, // manual (API v1 run)
         evalSetId,
         createdBy: user.id,
+        // R2 (§11): freeze the creator's org here, from the seam-resolved membership.
+        creatorOrgId: user.membership?.organizationId ?? null,
         siteId: null,
         targetRegion: region,
         targetTier: targetTier as "private" | "team" | "public",

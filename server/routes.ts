@@ -2612,6 +2612,8 @@ export async function registerRoutes(
         workflowId: schedule.workflowId,
         evalSetId: schedule.evalSetId,
         createdBy: user.id,
+        // R2 (§11): freeze the creator's org here, from the seam-resolved membership.
+        creatorOrgId: user.membership?.organizationId ?? null,
         siteId: null,
         targetRegion: schedule.region,
         targetTier: schedule.targetTier,
@@ -4539,6 +4541,8 @@ export async function registerRoutes(
           triggerType: 2, // manual (Run Workflow)
           evalSetId,
           createdBy: user.id,
+          // R2 (§11): freeze the creator's org here, from the seam-resolved membership.
+          creatorOrgId: user.membership?.organizationId ?? null,
           siteId: jobRegion,
           targetRegion: targeting == null ? region : null,
           targetTier: targeting == null ? (targetTier as "private" | "team" | "public") : null,
