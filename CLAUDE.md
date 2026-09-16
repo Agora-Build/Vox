@@ -39,11 +39,13 @@ npm run db:studio
 ```
 
 **RULE — every `shared/schema.ts` change ships with a migration:**
-1. `db:generate` → review the generated SQL (only what you intended)
+1. **`db:generate` is inoperative** — drizzle-kit's meta journal stopped at 0004 and the command now hangs on an interactive enum prompt. Every migration 0005–0036 is hand-written: copy the numbered convention already in `migrations/` and write the SQL yourself.
 2. Register the file in the `MIGRATIONS` array in `server/migrate.ts` — migrations run via a custom version-based runner (`node dist/migrate.cjs` before app start), and an unregistered SQL file is **never applied**
 3. Commit migration + schema change together; migrations apply automatically on next startup
 
 Keep migration SQL plain (`CREATE TABLE`, `ALTER TABLE`) — no `IF NOT EXISTS` / `DO ... EXCEPTION`; each runs exactly once. Never `db:push`/`drizzle-kit push --force` in production (can silently drop columns). Pre-existing databases are auto-baselined at startup (migration 0000 marked applied). `seed-data.ts` is local-dev only; production bootstrap is `/api/auth/init`.
+
+Migration 0036's backfill (`UPDATE eval_jobs ... FROM users`) takes an ACCESS EXCLUSIVE-conflicting write pass over `eval_jobs` — on a large production table, expect a brief pause at deploy. Migrations run pre-start (`dist/migrate.cjs`), so the app is already down; no action needed, noted so the pause isn't mistaken for a hang.
 
 ## Environment Variables
 
@@ -112,7 +114,18 @@ Some targets need an authenticated web login before an eval. Brokered secrets (`
 
 **Org membership goes through the `vox.organizations` seam** (`server/organizations.ts`): in application code, `getOrganizations().getMembership(userId)` is the only supported way to ask which org a user belongs to. Core's built-in provider (`server/organizations-core.ts`) reads `users.organization_id`/`org_role`; a plugin providing `vox.organizations` overrides it. Membership is resolved once per request at the auth boundary, so `AuthUser` carries `membership` and deliberately **omits** the raw columns — reading them is a compile error, and `tests/organizations-boundary.test.ts` fails the build if one creeps back via `storage.getUser()`. Resource ownership (`workflow.organizationId` and the other resource-ownership columns) is unaffected: those are Core FK columns compared as opaque integers.
 
-**The seam is not yet total — two membership decisions are still resolved in SQL** inside `server/storage.ts` (which the boundary scan exempts, because it is the layer that serves the raw rows): `getEvalAgentsWithTokenTier()` joins `users.organization_id` as `tokenOwnerOrgId`, and `claimEvalJob`/`getClaimableJobsForToken` filter the `team` arm on `creator.organization_id`. Both are deliberate for now — the claim query filters many candidate jobs with different creators and cannot take a single seam-derived parameter without restructuring the claim path. **`users.organization_id` cannot be dropped until they are replaced.** Design: `designs/2026-09-10-organizations-seam-design.md`.
+**The seam is the full org contract, not just membership reads** (`OrganizationsProvider` in `server/organizations.ts`, 16 methods): membership reads/counts (`getMembership`/`getMemberships`/`listMembers`/`countMembers`/`countOrgAdmins`), org CRUD (`createOrganization`/`updateOrganization`/`setVerified`/`addMember`/`setMemberRole`/`removeMember`), and org secrets as ciphertext-only rows (`listOrgSecrets`/`upsertOrgSecret`/`deleteOrgSecret` — the provider never sees plaintext; `encryptValue`/`decryptValue` stay in Core). `getOrganizations()` is **nullable** — a plugin may not be installed, and that's a legal state, not a startup bug:
+- **Absent ⇒ orgs inert:** org routes 501 (`requireOrganizations`), job-creating routes 501 on org-owned workflows, the scheduler skips (never disables) schedules targeting team-tier dispatch, sweeps exclude the team arm, and no code path performs a persistent write. Proven zero-write over both scheduler and reap workers in `tests/organizations-absence.test.ts`.
+- **A `dispatchBlocked` reason is always computed, never stored** — so a schedule re-enables itself for free the moment a provider comes back, with no migration/backfill to undo.
+- **Provider failure (a thrown error) is NOT absence** — gating points that can tolerate "no org" still treat a thrown error as absence (skip, never disable); paths that must give an answer surface `503 "Organizations service unavailable"` (vs `501 "Organizations feature not enabled"` when the provider is simply absent). `membershipFor` rethrows rather than swallowing to `null`.
+
+**The six former `storage.ts` SQL bypasses are closed:**
+- **R1** (`getEvalAgentsWithTokenTier`'s `tokenOwnerOrgId` join on `users.organization_id`) — removed; callers batch `getOrganizations()?.getMemberships(tokenCreatedBy[])` at the routes.ts call sites instead (`server/routes.ts`).
+- **R2** (`claimEvalJob`/`getClaimableJobsForToken` team-arm filter on live `creator.organization_id`) — the claim SQL now reads the frozen `eval_jobs.creator_org_id`, stamped from `user.membership` at job-creation time (migration 0036). **Pinned semantic change:** a pending team job now keeps the claimability it had the instant it was created — a creator's mid-flight org change no longer alters it. Backfilled for pre-existing rows; frozen going forward. Proven both directions in `tests/org-claim-stamp.test.ts`.
+- **R3** (org-credential fence): `orgRuntimeSecretsForJob` (`server/routes.ts`, sole caller of the org-secret decrypt tail) resolves the job creator's membership through the seam and compares it to the workflow's org before releasing ciphertext — cross-org negative covered in `tests/org-secret-fence.test.ts`.
+- Remaining counts/writes (roster, admin counts, org secrets CRUD) go through the provider directly — no parallel SQL path.
+
+**`users.organization_id` can now be dropped once the plugin cutover lands** — every former reader goes through the seam. Boundary scan (`tests/organizations-boundary.test.ts`) covers snake_case SQL too, with marked exemptions for the layer that serves raw rows, and now scans plugin directories. Design: `designs/2026-09-10-organizations-seam-design.md`; plugin extraction: `designs/2026-09-16-organizations-plugin-extraction-design.md`.
 
 **Secrets follow workflow ownership** (job-secrets endpoint): org-owned workflow → org secrets (fenced by job creator's org membership); personal workflow → owner's personal secrets. Built-in eval sets (`config.builtIn`) are server-controlled, admin-editable only.
 
