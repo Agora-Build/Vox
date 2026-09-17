@@ -63,7 +63,13 @@ d("pooled claim SQL mirrors isClaimable", () => {
       status: "pending", priority: 0, retryCount: 0, maxRetries: 3,
     } as any);
     // timeoutMinutes=0: everything pending is past the cutoff immediately.
-    await storage.failPendingJobsWithNoAgent(0, 5);
+    // excludeTeamTier is now a required argument (a future sweep caller must
+    // decide). `true` here, not `false`: with timeout 0 this sweep is GLOBAL over
+    // the shared dev DB, and neither fixture above is team-tier — excluding team
+    // rows keeps it from reaping a parallel suite's team-tier fixtures
+    // (tests/organizations-absence.test.ts) while leaving this case's own
+    // verdicts (a pooled row survives, a site-pinned row fails) untouched.
+    await storage.failPendingJobsWithNoAgent(0, 5, true);
     const pooledAfter = await storage.getEvalJob(pooled.id);
     const pinnedAfter = await storage.getEvalJob(pinned.id);
     expect(pooledAfter!.status).toBe("pending"); // pools are queues (spec §7)

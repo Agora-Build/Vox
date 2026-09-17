@@ -139,9 +139,11 @@ export async function processScheduledJobs() {
   try {
     // Get all due schedules
     const dueSchedules = await storage.getDueSchedules();
-    // Org schedules skipped this tick because organizations were unavailable.
-    // Counted, not logged per schedule: a provider outage affects every org
-    // schedule at once, and one line per tick keeps the log readable (§7).
+    // Org-dependent schedules skipped this tick because organizations were
+    // unavailable — org-owned workflows AND team-tier schedules (see the
+    // discriminator below). Counted, not logged per schedule: a provider outage
+    // affects every one of them at once, and one line per tick keeps the log
+    // readable (§7).
     let orgSkips = 0;
 
     for (const schedule of dueSchedules) {
@@ -179,18 +181,26 @@ export async function processScheduledJobs() {
         // structurally satisfy sessionPoolViolation's `{ organizationId }` param
         // and silently bypass the seam — see server/organizations.ts.
         const creator = schedule.createdBy ? await storage.getUser(schedule.createdBy) : undefined;
-        // Membership comes from the seam, and for an ORG workflow the answer is
-        // load-bearing: it picks the session pool (sessionPoolViolation) and
-        // freezes creator_org_id on the job. "Cannot answer" is not "no org"
-        // (organizations.ts §4), so an UNAVAILABLE provider — absent OR
-        // throwing — makes this schedule unprocessable, and the design's answer
-        // (§7) is to SKIP it: still enabled, next_run untouched, no job row, no
-        // mint. Never disabled: the provider being down is not the schedule's
-        // fault, and the schedule must resume by itself once orgs come back.
-        // Deliberately placed BEFORE detectSessionNeed/stampOwnerSession so a
-        // skipped schedule can never burn a broker login attempt.
+        // Membership comes from the seam, and the answer is load-bearing
+        // whenever the RESULTING JOB would depend on an org:
+        //   - an ORG workflow: membership picks the session pool
+        //     (sessionPoolViolation) and fences the job's org secrets;
+        //   - a TEAM-TIER schedule (on an org OR a personal workflow — an org
+        //     member may legally schedule their own personal workflow onto
+        //     their org's agents): membership freezes creator_org_id, and the
+        //     team claim arm matches `ej.creator_org_id` exactly. A job stamped
+        //     NULL-because-the-provider-was-absent is unclaimable FOREVER, not
+        //     just during the outage.
+        // "Cannot answer" is not "no org" (organizations.ts §4), so an
+        // UNAVAILABLE provider — absent OR throwing — makes such a schedule
+        // unprocessable, and the design's answer (§7) is to SKIP it: still
+        // enabled, next_run untouched, no job row, no mint. Never disabled: the
+        // provider being down is not the schedule's fault, and the schedule
+        // must resume by itself once orgs come back. Deliberately placed BEFORE
+        // detectSessionNeed/stampOwnerSession so a skipped schedule can never
+        // burn a broker login attempt.
         let creatorMembership: Membership | null = null;
-        if (workflow.organizationId != null) {
+        if (workflow.organizationId != null || schedule.targetTier === "team") {
           const orgs = getOrganizations();
           let orgsAnswered = orgs !== null;
           if (orgs) {
@@ -207,10 +217,11 @@ export async function processScheduledJobs() {
             continue; // skip — enabled, undispatched, unwritten
           }
         } else {
-          // Personal workflow: membership only decorates the job's creator_org_id
-          // stamp, so absence stays fail-closed ("no org") exactly as before, and
-          // a provider FAILURE still propagates to the per-schedule catch below
-          // (no job created) rather than silently stamping null.
+          // Personal workflow, non-team tier: membership only decorates the
+          // job's creator_org_id stamp (no claim arm reads it), so absence stays
+          // fail-closed ("no org") exactly as before, and a provider FAILURE
+          // still propagates to the per-schedule catch below (no job created)
+          // rather than silently stamping null.
           creatorMembership = schedule.createdBy
             ? (await getOrganizations()?.getMembership(schedule.createdBy)) ?? null
             : null;
@@ -325,7 +336,7 @@ export async function processScheduledJobs() {
       }
     }
     if (orgSkips) {
-      log(`${orgSkips} org schedule(s) skipped — organizations unavailable`, "scheduler");
+      log(`${orgSkips} org schedule(s) skipped — organizations unavailable (org-owned workflow or team tier)`, "scheduler");
     }
   } catch (error) {
     console.error("Scheduler error:", error);

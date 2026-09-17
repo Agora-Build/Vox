@@ -91,6 +91,17 @@ d("plugin absence causes zero persistent writes", () => {
   let orgWorkflowId: number, orgEvalSetId: number, orgScheduleId: number;
   let teamJobId: number, sitedTeamJobId: number;
   let soloScheduleId: number;
+  // The shape between the two above: a PERSONAL workflow dispatched to the TEAM
+  // tier. Legal to create (POST /api/eval-schedules gates team on hasOrg(user),
+  // not on who owns the workflow), and the one whose claimability depends on the
+  // seam even though `workflow.organizationId` is null.
+  let personalWorkflowId: number, personalEvalSetId: number, teamPersonalScheduleId: number;
+  // A PERSONAL schedule ROW pointing at the ORG-owned workflow. run-now's org
+  // arm is only reachable on this shape: when the schedule row is itself
+  // org-owned, canEditResource's org-manager arm cannot answer under absence
+  // (membership is null) and the route 403s before any org guard runs — safe,
+  // but it proves nothing about the 501.
+  let orgWfPersonalScheduleId: number;
   let apiKey: string;
   let app: express.Express;
   let mountTimers = 0; // setInterval calls intercepted while mounting registerRoutes
@@ -121,12 +132,15 @@ d("plugin absence causes zero persistent writes", () => {
     };
   }
 
-  // Re-arm the org schedule so every test starts from "enabled and due".
-  async function armOrgSchedule() {
+  // Re-arm both org-DEPENDENT schedules — the org-owned workflow and the
+  // personal workflow on the team tier — so every test starts from "enabled and
+  // due". Both must be skipped while the provider is unavailable; the tick is
+  // free to process anything else.
+  async function armOrgDependentSchedules() {
     await pool.query(
       `UPDATE eval_schedules SET is_enabled = true, next_run_at = NOW() - INTERVAL '1 minute',
-         last_run_at = NULL, run_count = 0 WHERE id = $1`,
-      [orgScheduleId],
+         last_run_at = NULL, run_count = 0 WHERE id = ANY($1::int[])`,
+      [[orgScheduleId, teamPersonalScheduleId]],
     );
   }
 
@@ -188,6 +202,37 @@ d("plugin absence causes zero persistent writes", () => {
       [[teamJobId, sitedTeamJobId]],
     );
 
+    // Personal schedule row on the ORG workflow — run-now's org-arm fixture.
+    // PRIVATE tier deliberately, so only the workflow-ownership arm of the guard
+    // can be what refuses it. Left disabled: the tick must never see it (it is a
+    // route fixture, and getDueSchedules filters on is_enabled).
+    orgWfPersonalScheduleId = (await storage.createEvalSchedule({
+      name: `abs-orgwf-personal-sched-${suffix}`, workflowId: orgWorkflowId, evalSetId: orgEvalSetId,
+      region: "na-us-ashburn", targetTier: "private", scheduleType: "recurring",
+      cronExpression: "*/5 * * * *", isEnabled: false,
+      nextRunAt: new Date(Date.now() - 60 * 1000), createdBy: creatorId,
+    } as any)).id;
+
+    // Personal workflow owned by the ORG MEMBER, scheduled onto the TEAM tier.
+    // `organizationId` is null, so every guard that keys on workflow ownership
+    // waves it through — but the job it creates is team-tier, and a team-tier
+    // job stamped creator_org_id NULL (which is what membership-by-absence
+    // yields) can never be claimed by the team arm, now or after the provider
+    // returns. No login secrets: this must fail on the tier, nothing else.
+    personalWorkflowId = (await storage.createWorkflow({
+      name: `abs-team-personal-wf-${suffix}`, ownerId: creatorId, providerId,
+      visibility: "private", config: {},
+    } as any)).id;
+    personalEvalSetId = (await storage.createEvalSet({
+      name: `abs-team-personal-es-${suffix}`, ownerId: creatorId, visibility: "private", config: {},
+    } as any)).id;
+    teamPersonalScheduleId = (await storage.createEvalSchedule({
+      name: `abs-team-personal-sched-${suffix}`, workflowId: personalWorkflowId, evalSetId: personalEvalSetId,
+      region: "na-us-ashburn", targetTier: "team", scheduleType: "recurring",
+      cronExpression: "*/5 * * * *", isEnabled: true,
+      nextRunAt: new Date(Date.now() - 60 * 1000), createdBy: creatorId,
+    } as any)).id;
+
     // Personal control: no org anywhere on the path, no session need.
     const soloWorkflowId = (await storage.createWorkflow({
       name: `abs-solo-wf-${suffix}`, ownerId: soloId, providerId, visibility: "private", config: {},
@@ -226,6 +271,16 @@ d("plugin absence causes zero persistent writes", () => {
       app = express();
       app.use(express.json());
       app.use(authenticateApiKey);
+      // Session shim. requireAuth and getCurrentUser read exactly one thing —
+      // `req.session.userId` (server/auth.ts) — so a header-driven stub is
+      // enough to reach the session-auth routes' absence arms in-process. No
+      // store and no cookies: none of the routes under test write to the
+      // session, and every authorization decision still runs for real.
+      app.use((req, _res, next) => {
+        const uid = req.header("x-test-user");
+        if (uid) (req as unknown as { session: { userId: number } }).session = { userId: Number(uid) };
+        next();
+      });
       await registerRoutes(createServer(app), app);
     } finally {
       globalThis.setInterval = realSetInterval;
@@ -234,7 +289,7 @@ d("plugin absence causes zero persistent writes", () => {
 
   beforeEach(async () => {
     resetOrganizations();
-    await armOrgSchedule();
+    await armOrgDependentSchedules();
   });
 
   // Later suites in this process must see Core's provider again.
@@ -281,12 +336,82 @@ d("plugin absence causes zero persistent writes", () => {
     await pool.query(`UPDATE eval_schedules SET is_enabled = false WHERE id = $1`, [soloScheduleId]);
   });
 
+  // The shape between the org schedule and the personal control: the workflow is
+  // personal (every ownership-keyed guard waves it through) but the TIER is team.
+  // Dispatching it under absence would stamp creator_org_id NULL — a job the team
+  // claim arm can never match, one per firing, surviving re-enable. The tick must
+  // skip it exactly like an org-owned one.
+  it("a TEAM-TIER schedule on a PERSONAL workflow is skipped too — no NULL-org job is ever stamped", async () => {
+    const before = await snapshot();
+    await processScheduledJobs();
+    const jobs = await pool.query(`SELECT id FROM eval_jobs WHERE schedule_id = $1`, [teamPersonalScheduleId]);
+    expect(jobs.rows.length).toBe(0); // no doomed job
+    const sched = await storage.getEvalSchedule(teamPersonalScheduleId);
+    expect(sched?.isEnabled).toBe(true); // skipped, never disabled — it must resume by itself
+    expect(await snapshot()).toEqual(before); // and next_run/run_count untouched
+  });
+
+  it("run-now on a team-tier PERSONAL-workflow schedule is 501 and writes no job", async () => {
+    const before = await snapshot();
+    const res = await request(app)
+      .post(`/api/eval-schedules/${teamPersonalScheduleId}/run-now`)
+      .set("x-test-user", String(creatorId))
+      .send({});
+    expect(res.status).toBe(501);
+    expect(res.body).toEqual({ error: "Organizations feature not enabled" });
+    expect((await snapshot()).jobCount).toBe(before.jobCount);
+  });
+
+  it("run-now on an ORG-workflow schedule is 501 and writes no job", async () => {
+    const before = await snapshot();
+    const res = await request(app)
+      .post(`/api/eval-schedules/${orgWfPersonalScheduleId}/run-now`)
+      .set("x-test-user", String(creatorId))
+      .send({});
+    expect(res.status).toBe(501);
+    expect(res.body).toEqual({ error: "Organizations feature not enabled" });
+    expect((await snapshot()).jobCount).toBe(before.jobCount);
+  });
+
+  it("console run of a PUBLIC org-owned workflow is 501 and writes no job", async () => {
+    const before = await snapshot();
+    const res = await request(app)
+      .post(`/api/workflows/${orgWorkflowId}/run`)
+      .set("x-test-user", String(creatorId))
+      .send({ evalSetId: orgEvalSetId, region: "na-us-ashburn", targetTier: "private" });
+    expect(res.status).toBe(501);
+    expect(res.body).toEqual({ error: "Organizations feature not enabled" });
+    expect((await snapshot()).jobCount).toBe(before.jobCount);
+  });
+
+  it("console run of a PERSONAL workflow onto the TEAM tier is 501 and writes no job", async () => {
+    const before = await snapshot();
+    const res = await request(app)
+      .post(`/api/workflows/${personalWorkflowId}/run`)
+      .set("x-test-user", String(creatorId))
+      .send({ evalSetId: personalEvalSetId, region: "na-us-ashburn", targetTier: "team" });
+    expect(res.status).toBe(501);
+    expect(res.body).toEqual({ error: "Organizations feature not enabled" });
+    expect((await snapshot()).jobCount).toBe(before.jobCount);
+  });
+
   it("running a PUBLIC org-owned workflow with the provider absent is 501 and writes no job", async () => {
     const before = await snapshot();
     const res = await request(app)
       .post(`/api/v1/workflows/${orgWorkflowId}/run`)
       .set("Authorization", `Bearer ${apiKey}`)
       .send({ evalSetId: orgEvalSetId, region: "na-us-ashburn", targetTier: "private" });
+    expect(res.status).toBe(501);
+    expect(res.body).toEqual({ error: "Organizations feature not enabled" });
+    expect((await snapshot()).jobCount).toBe(before.jobCount);
+  });
+
+  it("v1 run of a PERSONAL workflow onto the TEAM tier is 501 and writes no job", async () => {
+    const before = await snapshot();
+    const res = await request(app)
+      .post(`/api/v1/workflows/${personalWorkflowId}/run`)
+      .set("Authorization", `Bearer ${apiKey}`)
+      .send({ evalSetId: personalEvalSetId, region: "na-us-ashburn", targetTier: "team" });
     expect(res.status).toBe(501);
     expect(res.body).toEqual({ error: "Organizations feature not enabled" });
     expect((await snapshot()).jobCount).toBe(before.jobCount);

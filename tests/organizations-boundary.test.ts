@@ -41,9 +41,32 @@ const FORBIDDEN = /\b(?!\w*[Mm]embership\b)(user|currentUser|targetUser|member|a
 // analog on any other table, so it is matched bare, unqualified.
 const SNAKE_FORBIDDEN = /\busers\.organization_id\b|\borg_role\b/;
 
-// A line so tagged is an audited, justified exemption from SNAKE_FORBIDDEN —
-// the marker replaces storage.ts's former blanket file-level exemption from
-// this pattern with an explicit, reviewable, per-line one.
+// Alias bypass: `SELECT … FROM users u WHERE u.organization_id = $1` is the same
+// read as `users.organization_id`, but table-qualified matching never sees it.
+// Second pass, deliberately file-scoped: in any file that itself contains raw
+// users-table SQL, the BARE column names are forbidden too. Scoping it that way
+// is what keeps the OTHER tables' own `organization_id` FK columns
+// (web_sessions, org_secrets — resource ownership, exactly like
+// workflow.organizationId) unflagged everywhere else. Verified zero false
+// positives on the tree as of this commit: no server/plugin .ts file contains
+// raw users-table SQL at all, so this pass is a tripwire for the next one that
+// does — including a plugin's own provider implementation in Phase 2.
+const USERS_TABLE_SQL = /\bfrom\s+users\b|\bjoin\s+users\b/i;
+const SNAKE_BARE_FORBIDDEN = /\borganization_id\b|\borg_role\b/;
+
+// A line so tagged is an audited, justified provider-serving org-column site.
+//
+// Honest scope: the marker is an INVENTORY PIN, not (today) an active
+// exemption. All 7 markers in server/storage.ts sit on full-line comments,
+// which `scanLines` already skips before SNAKE_FORBIDDEN is tested, and the
+// code they annotate uses Drizzle's camelCase builder, which SNAKE_FORBIDDEN
+// never matches — so removing them would not change the snake-case result. What
+// they buy is the pinned COUNT below: a reviewable list of storage.ts's
+// provider-serving surface (every entry slated for deletion or re-pointing in
+// Release B) that a future PR cannot change without a conscious update.
+// The `markerExempt` mechanism itself is real and generic — the falsifiability
+// fixtures exercise it on a marked CODE line — so a genuine future exemption
+// can use it; it simply is not carrying any today.
 const MARKER = "// org-columns: provider";
 
 /**
@@ -128,6 +151,20 @@ function pluginTsFiles(): string[] {
 function scanFileList(files: string[], pattern: RegExp, markerExempt: boolean): string[] {
   const offenders: string[] = [];
   for (const f of files) offenders.push(...scanLines(f, f, pattern, markerExempt));
+  return offenders;
+}
+
+/**
+ * The alias-bypass pass: SNAKE_BARE_FORBIDDEN, but only inside files that
+ * contain raw users-table SQL (USERS_TABLE_SQL). Same walk, same comment-skip
+ * and marker handling as every other pass — it just picks its file set first.
+ */
+function scanAliasBypass(files: string[]): string[] {
+  const offenders: string[] = [];
+  for (const f of files) {
+    if (!USERS_TABLE_SQL.test(readFileSync(f, "utf-8"))) continue;
+    offenders.push(...scanLines(f, f, SNAKE_BARE_FORBIDDEN, true));
+  }
   return offenders;
 }
 
@@ -246,6 +283,42 @@ describe("organizations boundary", () => {
     const offenders = scan(tmp, new Set(), SNAKE_FORBIDDEN, true);
 
     expect(offenders).toEqual(["storage.ts:1: const r = `WHERE users.organization_id = 1`;"]);
+  });
+
+  it("raw users-table SQL cannot smuggle the columns in through an alias", () => {
+    const offenders = scanAliasBypass(scannedServerFiles());
+    expect(
+      offenders,
+      `this file contains raw users-table SQL, so bare organization_id/org_role reads it through an alias — go through the seam:\n${offenders.join("\n")}`,
+    ).toEqual([]);
+  });
+
+  it("flags an aliased column read, and only inside files with users-table SQL (falsifiability check)", () => {
+    const tmp = path.join(tmpdir(), `org-boundary-alias-fixture-${Date.now()}`);
+    mkdirSync(tmp, { recursive: true });
+    // Alias form: invisible to SNAKE_FORBIDDEN, caught by this pass.
+    writeFileSync(
+      path.join(tmp, "alias.ts"),
+      [
+        "const q = sql`SELECT u.id FROM users u WHERE u.organization_id = ${orgId}`;",
+        "const r = sql`SELECT c.org_role FROM x JOIN users c ON c.id = x.created_by`;",
+        `const marked = sql\`SELECT u.org_role FROM users u\`; ${MARKER} — audited`,
+        "// a comment with u.organization_id and FROM users must not count",
+      ].join("\n"),
+    );
+    // Same bare column, but the file has no users-table SQL: another table's own
+    // ownership FK (web_sessions.organization_id) — must stay unflagged.
+    writeFileSync(
+      path.join(tmp, "other-table.ts"),
+      "const q = sql`SELECT id FROM web_sessions WHERE organization_id = ${orgId}`;\n",
+    );
+    expect(SNAKE_FORBIDDEN.test("WHERE u.organization_id = 1")).toBe(false); // the bypass is real
+
+    const offenders = scanAliasBypass([path.join(tmp, "alias.ts"), path.join(tmp, "other-table.ts")]);
+
+    expect(offenders).toHaveLength(2);
+    expect(offenders[0]).toMatch(/alias\.ts:1: /);
+    expect(offenders[1]).toMatch(/alias\.ts:2: /);
   });
 
   // --- Ruling H: the decrypt tail is pinned to its single fenced call site --

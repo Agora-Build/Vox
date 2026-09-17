@@ -328,8 +328,11 @@ export function registerApiV1Routes(app: Express): void {
 
       // Same absence arm as the console run route: an org workflow's secrets
       // resolve through the seam, so with no provider the job could only fail —
-      // refuse before creating it (§7).
-      if (workflow.organizationId != null && !getOrganizations()) {
+      // refuse before creating it (§7). Team tier is refused on the same arm
+      // whoever owns the workflow: its creator_org_id would freeze NULL and the
+      // team claim arm could never match it (the `hasOrg` check below would also
+      // refuse, as a 400; this names the actual cause).
+      if ((workflow.organizationId != null || targetTier === "team") && !getOrganizations()) {
         return res.status(501).json({ error: "Organizations feature not enabled" });
       }
 

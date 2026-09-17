@@ -1129,10 +1129,14 @@ export class DatabaseStorage {
   // failure. Callers pass `getOrganizations() === null` — absence only; the
   // claim path's team arm is plain SQL and keeps working through a *throwing*
   // provider, so a failure does not warrant holding the sweep back.
+  // DELIBERATELY REQUIRED (no default): a second sweep caller — an admin "reap
+  // now", another worker — that simply forgot the flag would silently reinstate
+  // the §7 violation, and no test would discriminate. tsc makes the omission a
+  // compile error, so every future caller has to decide.
   async failPendingJobsWithNoAgent(
     timeoutMinutes: number,
-    onlineWithinMinutes: number = 5,
-    excludeTeamTier: boolean = false,
+    onlineWithinMinutes: number,
+    excludeTeamTier: boolean,
   ): Promise<number> {
     const timeoutCutoff = new Date(Date.now() - timeoutMinutes * 60 * 1000);
     const onlineCutoff = new Date(Date.now() - onlineWithinMinutes * 60 * 1000);
@@ -1164,8 +1168,9 @@ export class DatabaseStorage {
   // never claims the job). Terminal (failed). Ages from GREATEST(created_at,
   // updated_at) for the same requeue reason as failPendingJobsWithNoAgent above.
   // excludeTeamTier: see failPendingJobsWithNoAgent above — same reason, same
-  // caller-supplied condition (organizations provider absent).
-  async failExpiredPendingJobs(maxWaitMinutes: number, excludeTeamTier: boolean = false): Promise<number> {
+  // caller-supplied condition (organizations provider absent), and likewise
+  // REQUIRED so a future sweep caller cannot omit it by accident.
+  async failExpiredPendingJobs(maxWaitMinutes: number, excludeTeamTier: boolean): Promise<number> {
     const cutoff = new Date(Date.now() - maxWaitMinutes * 60 * 1000);
     const message = `Not claimed by any eval agent within ${maxWaitMinutes} min`;
     // Pooled backstop message (24h by default): render hours when the window is

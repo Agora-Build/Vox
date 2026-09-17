@@ -2633,9 +2633,14 @@ export async function registerRoutes(
       if (!canScheduleWorkflow(user, workflow)) {
         return res.status(403).json({ error: "Only the workflow owner can run this schedule" });
       }
-      // Same absence arm as the run route: no org provider ⇒ an org workflow's
-      // secrets can't be fenced, so don't create the job at all (§7).
-      if (workflow.organizationId != null && !getOrganizations()) {
+      // Same absence arm as the run route, and the same widening as the
+      // scheduler tick: the guard keys on what the RESULTING JOB needs, not on
+      // who owns the workflow. No org provider ⇒ an org workflow's secrets
+      // can't be fenced, AND a team-tier job (legal on a personal workflow —
+      // an org member may schedule their own workflow onto their org's agents)
+      // would be stamped creator_org_id NULL and stay unclaimable by the team
+      // arm forever. Don't create the job at all (§7).
+      if ((workflow.organizationId != null || schedule.targetTier === "team") && !getOrganizations()) {
         return res.status(501).json({ error: "Organizations feature not enabled" });
       }
       const evalSet = await storage.getEvalSet(schedule.evalSetId);
@@ -2897,7 +2902,8 @@ export async function registerRoutes(
       const secrets = await orgs.listOrgSecrets(user.membership.organizationId);
       // NO fingerprint here, deliberately. Personal secrets are unambiguous —
       // the row is keyed by user_id, so the caller entered the value. Org
-      // secrets are not: upsertOrgSecret preserves the ORIGINAL createdBy on
+      // secrets are not: the provider's upsertOrgSecret (this route's writer,
+      // Core-backed by storage.upsertOrgSecretRow) preserves the ORIGINAL createdBy on
       // update, so after a rotation the first creator would be shown a hash of
       // a value they never set and would "verify" it against their stale copy,
       // getting a false mismatch — which causes exactly the wrong action, and
@@ -4421,7 +4427,14 @@ export async function registerRoutes(
       // a persistent write caused by absence. A PUBLIC org workflow is runnable
       // by anyone, so this cannot be left to the org-membership checks below.
       // Refuse at the source instead, before any job/escrow/mint write (§7).
-      if (workflow.organizationId != null && !getOrganizations()) {
+      //
+      // A TEAM-TIER request is refused here too, whoever owns the workflow: the
+      // job's creator_org_id would freeze as NULL and the team claim arm
+      // (`ej.creator_org_id = $n`) could never match it, even after the provider
+      // returns. The `hasOrg(user)` check further down would also refuse it (as
+      // a 400), but this arm names the real cause and fires before the daily-cap
+      // count, the eval-set reads, and any escrow hold.
+      if ((workflow.organizationId != null || targetTier === "team") && !getOrganizations()) {
         return res.status(501).json({ error: "Organizations feature not enabled" });
       }
 
@@ -5986,9 +5999,15 @@ export async function registerRoutes(
       }
 
       // `setVerified` returns void, so the response row is re-read — same full
-      // row (including the bumped updatedAt) the update used to return.
+      // row (including the bumped updatedAt) the update used to return. If the
+      // org vanished between the write and the re-read (no delete route exists
+      // today, so this is a theoretical race), answer 404 like the pre-read
+      // does rather than a 200 with a null body.
       await orgs.setVerified(parseInt(id), verified);
       const updated = await orgs.getOrganization(parseInt(id));
+      if (!updated) {
+        return res.status(404).json({ error: "Organization not found" });
+      }
       res.json(updated);
     } catch (error) {
       console.error("Error verifying organization:", error);

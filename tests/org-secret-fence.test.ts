@@ -111,8 +111,14 @@ d("org-credential fence (R3)", () => {
 
   it("absent provider gets {} — never a leak, never a write", async () => {
     resetOrganizations();
-    await expect(orgRuntimeSecretsForJob(jobByA.id)).resolves.toEqual({});
-    setOrganizations(new CoreOrganizations(storage)); // restore for later cases
+    // finally, not a trailing statement: if the assertion above ever fails, an
+    // unrestored provider would leave the NEXT case (brokered exclusion) passing
+    // vacuously — {} has no LOGIN property for the wrong reason.
+    try {
+      await expect(orgRuntimeSecretsForJob(jobByA.id)).resolves.toEqual({});
+    } finally {
+      setOrganizations(new CoreOrganizations(storage)); // restore for later cases
+    }
   });
 
   it("brokered (login-class) rows never appear in the runtime map", async () => {
