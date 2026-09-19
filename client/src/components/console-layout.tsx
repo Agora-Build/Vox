@@ -184,6 +184,12 @@ export default function ConsoleLayout({ children }: ConsoleLayoutProps) {
       icon: Radio,
       active: location === "/console/brokers",
     });
+    navItems.push({
+      title: "Organizations",
+      url: "/admin/console/organizations",
+      icon: Building2,
+      active: location === "/admin/console/organizations",
+    });
   }
 
   navItems.push({
