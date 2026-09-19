@@ -209,7 +209,7 @@ start_service_local() {
     SESSION_SECRET="local-test-secret-123" \
     INIT_CODE="$INIT_CODE" \
     CREDENTIAL_ENCRYPTION_KEY="$CREDENTIAL_ENCRYPTION_KEY" \
-    VOX_PLUGINS="${VOX_PLUGINS:-credits,shared-agents}" \
+    VOX_PLUGINS="${VOX_PLUGINS:-credits,shared-agents,organizations}" \
     npm run dev > /tmp/vox-server.log 2>&1 &
 
     echo $! > /tmp/vox-server.pid
@@ -243,7 +243,7 @@ start_service_docker() {
     export SESSION_SECRET="local-test-secret-123"
     export INIT_CODE="$INIT_CODE"
     export CREDENTIAL_ENCRYPTION_KEY="$CREDENTIAL_ENCRYPTION_KEY"
-    export VOX_PLUGINS="${VOX_PLUGINS:-credits,shared-agents}"
+    export VOX_PLUGINS="${VOX_PLUGINS:-credits,shared-agents,organizations}"
     export VOX_TAG="${VOX_TAG:-latest}"
     # NOTE: Core no longer takes a static broker URL/secret — the broker
     # self-registers with Core instead (see the BROKER_REG_TOKEN note above).

@@ -9,8 +9,14 @@ import {
   BASE_APAC,
   BASE_SA,
 } from './helpers/regions';
+import { schemaForPlugin } from '../server/plugins/db';
 
 const BASE_URL = process.env.TEST_BASE_URL || 'http://localhost:5000';
+// Org data lives in the organizations plugin's schema since the Release A flip.
+// Three fixtures below seed/probe it directly (there is no HTTP flow that makes
+// admin — user 1 — a member of an arbitrary org), derived from Core's own naming
+// function so a prefix rename in schemaForPlugin() breaks in exactly one place.
+const ORGS_SCHEMA = schemaForPlugin('organizations');
 const ADMIN_EMAIL = process.env.TEST_ADMIN_EMAIL || 'admin@vox.local';
 const ADMIN_PASSWORD = process.env.TEST_ADMIN_PASSWORD || 'admin123456';
 
@@ -4229,7 +4235,14 @@ describe('Vox API Tests', () => {
       // assume an org-less admin (team-tier negative tests). Clear it directly.
       if (!process.env.DATABASE_URL) return;
       const { pool } = await import('../server/storage');
-      await pool.query('UPDATE users SET organization_id = NULL, org_role = NULL WHERE id = 1');
+      // Membership lives in the organizations PLUGIN's schema since the Release A
+      // flip — clearing the (now frozen) Core columns would leave admin joined as
+      // far as every authorization check is concerned. The old
+      // `UPDATE users SET organization_id = NULL, org_role = NULL` is deliberately
+      // NOT kept alongside this: post-flip nothing reads those columns (the
+      // boundary suite enforces it), so whatever stale value they hold is inert,
+      // and Release B drops them outright. (T7 M1, recorded.)
+      await pool.query(`DELETE FROM ${ORGS_SCHEMA}.memberships WHERE user_ref = 1`);
     });
 
     it('should return orgRole in auth status', async () => {
@@ -4433,26 +4446,43 @@ describe('Vox API Tests', () => {
     let priorOrgRole: string | null = null;
     const secretName = `TASK9_ISTESTACCT_${Date.now()}`;
 
+    // Same seed-and-restore technique as "Organization Roles", one schema over:
+    // orgs, memberships and org secrets live in the organizations PLUGIN since
+    // the Release A flip, so seeding admin's membership onto the frozen Core
+    // columns would not make the routes see an org at all.
     beforeAll(async () => {
       if (!process.env.DATABASE_URL) return;
-      const { storage, pool } = await import('../server/storage');
+      const { pool } = await import('../server/storage');
 
-      const before = await pool.query('SELECT organization_id, org_role FROM users WHERE id = 1');
-      priorOrganizationId = before.rows[0]?.organization_id ?? null;
-      priorOrgRole = before.rows[0]?.org_role ?? null;
+      const before = await pool.query(`SELECT org_ref, role FROM ${ORGS_SCHEMA}.memberships WHERE user_ref = 1`);
+      priorOrganizationId = before.rows[0]?.org_ref ?? null;
+      priorOrgRole = before.rows[0]?.role ?? null;
 
-      const org = await storage.createOrganization({ name: `task9-istestacct-org-${Date.now()}` } as any);
-      probeOrgId = org.id;
-      await pool.query('UPDATE users SET organization_id = $1, org_role = $2 WHERE id = 1', [probeOrgId, 'owner']);
+      const org = await pool.query(
+        `INSERT INTO ${ORGS_SCHEMA}.organizations (name) VALUES ($1) RETURNING id`,
+        [`task9-istestacct-org-${Date.now()}`],
+      );
+      probeOrgId = org.rows[0].id;
+      await pool.query(`DELETE FROM ${ORGS_SCHEMA}.memberships WHERE user_ref = 1`);
+      await pool.query(
+        `INSERT INTO ${ORGS_SCHEMA}.memberships (org_ref, user_ref, role) VALUES ($1, 1, 'owner')`,
+        [probeOrgId],
+      );
     });
 
     afterAll(async () => {
       if (!process.env.DATABASE_URL || probeOrgId === undefined) return;
       const { pool } = await import('../server/storage');
-      await pool.query('DELETE FROM org_secrets WHERE organization_id = $1', [probeOrgId]);
-      await pool.query('UPDATE users SET organization_id = $1, org_role = $2 WHERE id = 1', [priorOrganizationId, priorOrgRole]);
+      await pool.query(`DELETE FROM ${ORGS_SCHEMA}.org_secrets WHERE org_ref = $1`, [probeOrgId]);
+      await pool.query(`DELETE FROM ${ORGS_SCHEMA}.memberships WHERE user_ref = 1`);
+      if (priorOrganizationId !== null) {
+        await pool.query(
+          `INSERT INTO ${ORGS_SCHEMA}.memberships (org_ref, user_ref, role) VALUES ($1, 1, $2)`,
+          [priorOrganizationId, priorOrgRole ?? 'member'],
+        );
+      }
       await pool.query('DELETE FROM organization_seats WHERE organization_id = $1', [probeOrgId]);
-      await pool.query('DELETE FROM organizations WHERE id = $1', [probeOrgId]);
+      await pool.query(`DELETE FROM ${ORGS_SCHEMA}.organizations WHERE id = $1`, [probeOrgId]);
     });
 
     it('POST with isTestAccount:true, then a value-only POST, keeps isTestAccount true end to end', async () => {
@@ -4475,7 +4505,7 @@ describe('Vox API Tests', () => {
 
       const { pool } = await import('../server/storage');
       const row = await pool.query(
-        'SELECT is_test_account FROM org_secrets WHERE organization_id = $1 AND name = $2',
+        `SELECT is_test_account FROM ${ORGS_SCHEMA}.org_secrets WHERE org_ref = $1 AND name = $2`,
         [probeOrgId, secretName],
       );
       expect(row.rows[0].is_test_account).toBe(true);
@@ -4502,12 +4532,12 @@ describe('Vox API Tests', () => {
   // Two of the scenarios in the review (provider genuinely absent; addMember
   // failing on a mid-flight-deleted org) are not reachable from this file:
   // api.test.ts drives the already-running dev server as a separate OS
-  // process, so resetting the in-process `vox.organizations` singleton here
-  // has no effect on it (server/index.ts:226 always installs a provider on
-  // that process); and organizations has no delete path — deleting an org row
-  // while an invite_tokens row still references it is blocked by the FK
-  // (RESTRICT, no ON DELETE), so that fault can't be constructed without a
-  // schema change. What IS covered here: the happy path through the
+  // process, so resetting the in-process `vox.organizations` singleton here has
+  // no effect on it (and post-flip the dev server's provider is the
+  // `organizations` plugin, installed from VOX_PLUGINS at startup); and
+  // organizations still has no delete path, so that fault can't be constructed
+  // without reaching past the seam into the plugin's own schema. What IS
+  // covered here: the happy path through the
   // reordered code (still joins the org, still marks the invite used), an
   // already-used invite still creates no user row, and the new
   // `storage.deleteUser` primitive the compensating delete depends on.
@@ -4520,9 +4550,16 @@ describe('Vox API Tests', () => {
 
     beforeAll(async () => {
       if (!process.env.DATABASE_URL) return;
-      const { storage, hashToken } = await import('../server/storage');
-      const org = await storage.createOrganization({ name: `task9-reg-org-${stamp}` } as any);
-      probeOrgId = org.id;
+      const { storage, hashToken, pool } = await import('../server/storage');
+      // The org must exist where the PROVIDER looks (the plugin's schema): the
+      // route's orgs.addMember writes a memberships row whose org_ref is FK'd to
+      // the plugin's own organizations table, so a Core-only org row would make a
+      // legitimate register fail with a foreign-key violation.
+      const org = await pool.query(
+        `INSERT INTO ${ORGS_SCHEMA}.organizations (name) VALUES ($1) RETURNING id`,
+        [`task9-reg-org-${stamp}`],
+      );
+      probeOrgId = org.rows[0].id;
       rawToken = `task9regtoken${stamp}`;
       const expiresAt = new Date(Date.now() + 60 * 60 * 1000);
       await storage.createInviteToken(email, 'basic', false, hashToken(rawToken), null, expiresAt, probeOrgId);
@@ -4534,7 +4571,11 @@ describe('Vox API Tests', () => {
       await pool.query('DELETE FROM invite_tokens WHERE email = $1', [email]);
       await pool.query('DELETE FROM users WHERE username = $1 OR username = $2', [username, `${username}_second`]);
       await pool.query('DELETE FROM organization_seats WHERE organization_id = $1', [probeOrgId]);
-      await pool.query('DELETE FROM organizations WHERE id = $1', [probeOrgId]);
+      // Plugin-side rows: the membership the register route created (user_ref is
+      // an opaque integer with no FK, so deleting the user leaves it behind),
+      // then the org itself.
+      await pool.query(`DELETE FROM ${ORGS_SCHEMA}.memberships WHERE org_ref = $1`, [probeOrgId]);
+      await pool.query(`DELETE FROM ${ORGS_SCHEMA}.organizations WHERE id = $1`, [probeOrgId]);
     });
 
     it('registers, joins the org via orgs.addMember, and marks the invite used', async () => {
@@ -4548,9 +4589,15 @@ describe('Vox API Tests', () => {
       expect(body.user.username).toBe(username);
 
       const { pool } = await import('../server/storage');
-      const row = await pool.query('SELECT organization_id, org_role FROM users WHERE username = $1', [username]);
-      expect(row.rows[0].organization_id).toBe(probeOrgId);
-      expect(row.rows[0].org_role).toBe('member');
+      // The membership the seam wrote — plugin-side since the Release A flip.
+      const row = await pool.query(
+        `SELECT m.org_ref, m.role FROM ${ORGS_SCHEMA}.memberships m
+           JOIN users u ON u.id = m.user_ref
+          WHERE u.username = $1`,
+        [username],
+      );
+      expect(row.rows[0].org_ref).toBe(probeOrgId);
+      expect(row.rows[0].role).toBe('member');
 
       const inviteRow = await pool.query('SELECT used_at FROM invite_tokens WHERE email = $1', [email]);
       expect(inviteRow.rows[0].used_at).not.toBeNull();

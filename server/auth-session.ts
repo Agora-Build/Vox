@@ -11,6 +11,7 @@ import { createHash } from "crypto";
 import { collectSecretRefs, isAuthFieldName } from "@shared/secrets";
 import yaml from "js-yaml";
 import { storage, encryptValue, decryptValue, type SessionScope } from "./storage";
+import { getOrganizations, type OrgSecretRow } from "./organizations";
 import { brokerAvailable, routeToBroker, mintViaBroker, isKnownBrokerType, mintTimeoutSeconds } from "./broker-registry";
 
 export interface PlatformSetupInfo {
@@ -104,12 +105,39 @@ export function evaluateSessionRequirement(
   return { kind: "need", need: { platformId: setup.platformId, emailSecret: setup.emailSecret, passwordSecret: setup.passwordSecret } };
 }
 
+/**
+ * The org arm of every scope lookup in this module — the ONE place the session
+ * path asks for an organization's secret rows, now resolved through the
+ * `vox.organizations` seam instead of `storage.getOrgSecrets`. Rows are
+ * ciphertext (`encryptedValue`); `decryptValue` stays on the Core side, here.
+ *
+ * Absence THROWS, and deliberately never returns a silent `[]`. An org-scoped
+ * session with no organizations provider is a real failure, and the session path
+ * is where failure must be loud: the throw from the mint call site below is
+ * caught by ensureSession and recorded as `webSessions.lastError`, so the job
+ * fails with a cause instead of proceeding as a credential-less browse (which is
+ * what an empty row list would silently produce — "secret not found in scope",
+ * or worse, a login-class secret mistaken for absent and treated as runtime).
+ * The absent-provider guards added in Phase 1 mean no org-scoped job should ever
+ * reach here without a provider; this is the failure-is-loud BACKSTOP behind
+ * them, not the primary defense.
+ *
+ * Contrast `orgRuntimeSecretsForJob` in server/routes.ts, which returns `{}` on
+ * the same absence: that is a dispatch-tier filter whose safe verdict is "no
+ * secrets", while this is a committed org operation.
+ */
+async function orgSecretRowsViaSeam(organizationId: number): Promise<OrgSecretRow[]> {
+  const orgs = getOrganizations();
+  if (!orgs) throw new Error("Organizations service unavailable for org-scoped session");
+  return orgs.listOrgSecrets(organizationId);
+}
+
 export async function getBrokeredSecretNames(scope: SessionScope): Promise<Set<string>> {
   if ("userId" in scope) {
     const rows = await storage.getSecretsByUserId(scope.userId);
     return new Set(rows.filter(s => s.brokerType === "auth-session").map(s => s.name));
   }
-  const rows = await storage.getOrgSecrets(scope.organizationId);
+  const rows = await orgSecretRowsViaSeam(scope.organizationId);
   return new Set(rows.filter(s => s.brokerType === "auth-session").map(s => s.name));
 }
 
@@ -119,9 +147,53 @@ async function resolveScopeSecret(scope: SessionScope, name: string): Promise<st
     const row = rows.find(s => s.name === name);
     return row ? decryptValue(row.encryptedValue) : undefined;
   }
-  const rows = await storage.getOrgSecrets(scope.organizationId);
+  const rows = await orgSecretRowsViaSeam(scope.organizationId);
   const row = rows.find(s => s.name === name);
   return row ? decryptValue(row.encryptedValue) : undefined;
+}
+
+/**
+ * THE SHARED-TIER ATTESTATION GATE's predicate: true iff EVERY named login
+ * secret in scope exists, is login-class (`brokerType === "auth-session"`) AND
+ * is attested `isTestAccount`. All-names semantics, not per-name — one
+ * unattested name fails the whole set. Verdict unchanged from the
+ * `storage.areLoginSecretsAttested` it replaces; only the org arm's row source
+ * moved.
+ *
+ * Lives here, not in storage: the org arm's rows now come from the
+ * `vox.organizations` seam, and storage must not read org-secret data for a
+ * business decision (design §6 — nothing reads `public.org_secrets` outside the
+ * provider path post-flip). It lives in THIS module rather than beside its
+ * caller in routes.ts because it is a login-class-secret predicate over a
+ * SessionScope — the same shape as `getBrokeredSecretNames` and
+ * `classifyReferencedSecrets` above, sharing their personal-vs-org branch — and
+ * routes.ts would otherwise duplicate the seam lookup a fourth time.
+ *
+ * Only the ORG arm re-points. Personal secrets are Core-owned and stay on
+ * `storage.getSecretsByUserId`.
+ *
+ * Absence fails CLOSED: no provider ⇒ NOT attested ⇒ the caller's 403, so a
+ * credential-injected job can never reach a shared (stranger's) agent because
+ * the attestation question merely could not be answered. Note this is the THIRD
+ * absence semantic in the org-secret paths, and each is the safe value for its
+ * own site: this gate returns `false`, `orgRuntimeSecretsForJob` returns `{}`,
+ * and `orgSecretRowsViaSeam` above THROWS (a committed mint must fail loudly).
+ * Moot in practice — Phase-1's guards stop an org-owned workflow from creating a
+ * job at all while organizations are absent — but safe by construction, which is
+ * why it is not a throw.
+ */
+export async function areLoginSecretsAttested(scope: SessionScope, names: string[]): Promise<boolean> {
+  // Narrowed to the three fields the predicate reads, so the personal `Secret`
+  // row and the seam's `OrgSecretRow` unify into one array type.
+  let rows: Array<{ name: string; brokerType: string | null; isTestAccount: boolean }>;
+  if ("userId" in scope) {
+    rows = await storage.getSecretsByUserId(scope.userId);
+  } else {
+    const orgs = getOrganizations();
+    if (!orgs) return false;
+    rows = await orgs.listOrgSecrets(scope.organizationId);
+  }
+  return names.every(n => rows.some(r => r.name === n && r.brokerType === "auth-session" && r.isTestAccount));
 }
 
 export const SESSION_FRESH_MARGIN_SECONDS = 300;
@@ -335,9 +407,13 @@ export async function classifyReferencedSecrets(
   scope: SessionScope,
   names: Set<string>,
 ): Promise<Array<{ name: string; brokerType: string | null; present: boolean }>> {
-  const rows = "userId" in scope
+  // Both arms are narrowed to the two fields this join actually needs, so the
+  // personal `Secret` row and the seam's `OrgSecretRow` unify into one array
+  // type — no per-arm duplication of the join below, and no structural coupling
+  // to either row shape beyond `name`/`brokerType`.
+  const rows: Array<{ name: string; brokerType: string | null }> = "userId" in scope
     ? await storage.getSecretsByUserId(scope.userId)
-    : await storage.getOrgSecrets(scope.organizationId);
+    : await orgSecretRowsViaSeam(scope.organizationId);
   return Array.from(names).map((name) => {
     const row = rows.find((r) => r.name === name);
     return { name, brokerType: row?.brokerType ?? null, present: !!row };

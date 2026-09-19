@@ -12,6 +12,7 @@ import { WorkerHost } from "./hosts/worker";
 import { HealthHost } from "./hosts/health";
 import { buildContext } from "./context";
 import { BUILTIN_PLUGINS } from "../../plugins/index";
+import { log } from "../log";
 
 export interface LoadedPlugins {
   shutdown(): Promise<void>;
@@ -78,6 +79,8 @@ export async function loadPlugins(
   httpHost.mount(app);
   healthHost.routes(app);
   workerHost.startAll(pool);
+
+  log(`plugins loaded: ${ids.join(", ")}`, "plugins");
 
   return {
     shutdown: async () => {

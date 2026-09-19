@@ -3,11 +3,14 @@ import express from "express";
 import request from "supertest";
 import { createServer } from "http";
 import { setOrganizations, resetOrganizations, type OrganizationsProvider } from "../server/organizations";
-import { CoreOrganizations } from "../server/organizations-core";
 import { membershipFor, authenticateApiKey } from "../server/auth";
 import { storage, pool, encryptValue, hashToken } from "../server/storage";
 import { processScheduledJobs, runMaintenanceTasks } from "../server/scheduler";
 import { registerRoutes, scheduleDispatchBlocked } from "../server/routes";
+// The PLUGIN's own error class — deliberately imported from the plugin, not from
+// Core, so the cross-boundary case at the bottom of this file throws the exact
+// object the shipped provider throws.
+import { AlreadyMemberError as PluginAlreadyMemberError } from "../plugins/organizations/server/types";
 
 // Every method throws — this exercises "provider installed but failing", which
 // must stay distinguishable from "provider absent" (see server/organizations.ts).
@@ -54,7 +57,10 @@ describe("absence and failure semantics", () => {
   });
 
   it("scheduleDispatchBlocked is null for an org-owned schedule row once a provider is installed", () => {
-    setOrganizations(new CoreOrganizations(storage));
+    // PRESENCE is the whole test — the helper only asks whether a provider is
+    // installed, so the `failing` one above is a legitimate (and sharper)
+    // stand-in for "installed": the flag clears without any method being called.
+    setOrganizations(failing);
     expect(scheduleDispatchBlocked(42)).toBeNull();
   });
 });
@@ -150,8 +156,13 @@ d("plugin absence causes zero persistent writes", () => {
 
     const org = await storage.createOrganization({ name: `abs-org-${suffix}` } as any);
     orgId = org.id;
+    // No membership is seeded for the creator: this suite's entire subject is a
+    // provider that cannot answer, so membership is deliberately unresolvable —
+    // every guard under test keys on the RESOURCE's organizationId (Core FK
+    // columns, set below). Seeding the frozen users.organization_id column here
+    // would carry no meaning post-flip.
     creatorId = (await storage.createUser({
-      username: `absc${suffix}`, email: `absc${suffix}@example.com`, organizationId: orgId, plan: "premium",
+      username: `absc${suffix}`, email: `absc${suffix}@example.com`, plan: "premium",
     } as any)).id;
     soloId = (await storage.createUser({
       username: `abss${suffix}`, email: `abss${suffix}@example.com`, plan: "premium",
@@ -161,7 +172,14 @@ d("plugin absence causes zero persistent writes", () => {
     const emailSecret = `ABS_LOGIN_EMAIL_${suffix.replace(/-/g, "_")}`;
     const passwordSecret = `ABS_LOGIN_PASSWORD_${suffix.replace(/-/g, "_")}`;
     for (const name of [emailSecret, passwordSecret]) {
-      await storage.upsertOrgSecret(orgId, name, encryptValue("x"), creatorId, { brokerType: "auth-session" });
+      // Seeded through the ciphertext-only writer the seam uses. (Was
+      // storage.upsertOrgSecret, whose only remaining caller this was; that
+      // plaintext-opts writer is deleted. `isTestAccount: false` is explicit
+      // here where the old call let the column default — same stored row.)
+      await storage.upsertOrgSecretRow(orgId, {
+        name, encryptedValue: encryptValue("x"), brokerType: "auth-session",
+        isTestAccount: false, createdBy: creatorId,
+      });
     }
 
     const orgWorkflow = await storage.createWorkflow({
@@ -292,8 +310,11 @@ d("plugin absence causes zero persistent writes", () => {
     await armOrgDependentSchedules();
   });
 
-  // Later suites in this process must see Core's provider again.
-  afterAll(() => setOrganizations(new CoreOrganizations(storage)));
+  // Leave the holder in the same state the file found it: EMPTY. After the
+  // Release A flip there is no built-in provider to "restore" — the real one is
+  // installed by the plugin at startup (server/index.ts), which never runs
+  // in-process here, so absence is this file's honest baseline.
+  afterAll(() => resetOrganizations());
 
   it("scheduler + maintenance ticks with provider ABSENT change nothing", async () => {
     const before = await snapshot();
@@ -415,6 +436,37 @@ d("plugin absence causes zero persistent writes", () => {
     expect(res.status).toBe(501);
     expect(res.body).toEqual({ error: "Organizations feature not enabled" });
     expect((await snapshot()).jobCount).toBe(before.jobCount);
+  });
+
+  // --- cross-boundary error identity (I1) ----------------------------------
+  //
+  // Not an absence case, but it needs exactly this file's machinery: a Core
+  // ADAPTER exercised in-process against an INSTALLED provider that throws the
+  // PLUGIN's own AlreadyMemberError class. Nothing else in the tree does that —
+  // the plugin suites prove plugin-throws-plugin-class, Phase 1 proved
+  // Core-catches-Core-class, and `instanceof` is false across the boundary
+  // (distinct class objects), so the route's 400 arm was dead code against the
+  // shipped provider until the name-based predicate replaced it.
+  it("a PLUGIN-thrown AlreadyMemberError still maps to the route's 400, not a 500", async () => {
+    setOrganizations({
+      ...failing,
+      // The race the 400 exists for: membership is absent at the auth boundary
+      // (so the route's own pre-check waves the caller through) and appears
+      // before the provider's precheck runs.
+      getMembership: async () => null,
+      getMemberships: async () => new Map(),
+      createOrganization: async () => {
+        throw new PluginAlreadyMemberError(`user ${soloId} already belongs to organization 2`);
+      },
+    });
+    const before = await snapshot();
+    const res = await request(app)
+      .post("/api/organizations")
+      .set("x-test-user", String(soloId))
+      .send({ name: `xboundary-org-${Date.now()}` });
+    expect(res.status).toBe(400);
+    expect(res.body).toEqual({ error: "Already a member of an organization" });
+    expect(await snapshot()).toEqual(before); // the seat write is downstream of the throw
   });
 
   it("mounting the API in-process leaves no live timer behind", () => {

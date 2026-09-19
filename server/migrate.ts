@@ -59,6 +59,7 @@ const MIGRATIONS: Array<{ version: number; description: string; file: string | n
   { version: 35, description: "tier-targeting: token region, job target_region/target_tier (site_id nullable), schedule region+target_tier", file: "0034_tier_targeting.sql" },
   { version: 36, description: "zero-trust agent region: agent-side detected location, nullable token/agent/result site_id, job location_trust, catalog coords/source/is_mainline", file: "0035_zero_trust_agent_region.sql" },
   { version: 37, description: "R2: stamp creator_org_id on eval_jobs; claim SQL stops joining users", file: "0036_eval_jobs_creator_org_id.sql" },
+  { version: 38, description: "Release A: drop 10 org FK constraints — org ids are opaque integers on Core tables", file: "0037_release_a_drop_org_fks.sql" },
 ];
 
 const TARGET_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version;

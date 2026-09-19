@@ -47,6 +47,8 @@ Keep migration SQL plain (`CREATE TABLE`, `ALTER TABLE`) — no `IF NOT EXISTS` 
 
 Migration 0036's backfill (`UPDATE eval_jobs ... FROM users`) takes an ACCESS EXCLUSIVE-conflicting write pass over `eval_jobs` — on a large production table, expect a brief pause at deploy. Migrations run pre-start (`dist/migrate.cjs`), so the app is already down; no action needed, noted so the pause isn't mistaken for a hang.
 
+**Dev-mode migration trap:** local dev applies schema via `db:push` (`dev-local-run.sh`'s init path), and `tsx` never runs the version-based runner — `drizzle-kit push --force` **drops the `_schema_version` bookkeeping**. If you push manually, restore the version row afterward, or the next docker-mode start crash-loops re-applying already-applied migrations (this bit a task on this branch; the controller repaired it at version 38).
+
 ## Environment Variables
 
 Required: `DATABASE_URL`, `SESSION_SECRET`, `INIT_CODE`.
@@ -59,6 +61,7 @@ Optional:
 - `WEB_SESSION_MINT_TIMEOUT_SECONDS` (default 180) — read by both Core and broker to bound a mint
 - `GEOIP_DB_DIR` (default `./geoip`) — absent DBs = non-public agents stay Unverified (safe default; self-heals on refresh)
 - `MAXMIND_LICENSE_KEY` — bootstrap-only fallback; the key is normally console-managed (Regions page, stored encrypted in `systemConfig`). `server/geoip-refresh.ts` refreshes in-app (startup when missing/stale >7d, weekly timer, admin Refresh button); no key → automatic DB-IP Lite fallback (no account needed)
+- `VOX_PLUGINS` — comma-separated builtin plugin ids to activate (`sample`, `credits`, `shared-agents`, `organizations`); unset/empty = none load. Unknown id = **crash-before-listen** (`server/plugins/loader.ts`) — treat it like `DATABASE_URL`, not an optional feature flag. Dev default (`dev-local-run.sh`, `docker-compose.yml`): `credits,shared-agents,organizations`.
 
 Broker sidecar only (not read by Core): `VOX_CORE_URL`, `BROKER_REG_TOKEN`, `BROKER_ADVERTISE_URL` (internal-only callback), `BROKER_NAME`, `BROKER_PORT`.
 
@@ -70,6 +73,9 @@ Monorepo: **client/** (React + Vite), **server/** (Express), **shared/** (Drizzl
 - Backend: `server/index.ts` entry → `registerRoutes()` in `server/routes.ts` (all API endpoints — large and monolithic by design; versioned v1 in `server/routes-api-v1.ts`). Data access through the `storage` singleton (`server/storage.ts`, DatabaseStorage). Auth middleware in `server/auth.ts`: `requireAuth`, `requireAdmin`, `requirePrincipal`, `authenticateApiKey` (`vox_live_` Bearer), `requireAuthOrApiKey`.
 - Rate limiting (production only): 100 req/15min general; strict 20 req/15min on `/api/auth/login`, `/register`, `/activate`, `/api/user/change-password`.
 - API docs: Swagger UI at `/api/docs`, spec at `/api/v1/openapi.json`, source `docs/openapi.yaml`. Don't enumerate routes here — read `server/routes.ts`.
+
+### Plugins
+Optional, additive backends loaded by `server/plugins/loader.ts` from `VOX_PLUGINS` (see Environment Variables above). Builtins live under `plugins/<id>/` and are registered in `plugins/index.ts`: `sample`, `credits`, `shared-agents`, `organizations`. Each gets its own Postgres schema (`plugin_<id>`, `server/plugins/db.ts:schemaForPlugin`), in-app migrations (`server/plugins/migrate.ts`, fail-closed — a bad migration aborts the transaction and the app refuses to start), and namespaced routes under `/api/plugins/<id>/*` plus a generic `GET /api/plugins/<id>/health`; `GET /api/plugins` lists what activated. A successful load logs exactly one line: `plugins loaded: <id, id, ...>`. Plugin↔Core contracts (`vox.organizations`, `vox.credits`, ...) are looked up via `services.require`/`services.optional`; the `organizations` contract is additionally locked at compile time by `server/plugins/contract-checks.ts`.
 
 ### Eval Agent System
 1. Admin or non-basic users mint eval agent tokens with region assignment (admin: public/private visibility; non-admin: private only)
@@ -112,7 +118,7 @@ Some targets need an authenticated web login before an eval. Brokered secrets (`
 - `canRunWorkflow`: public → anyone; private → `isOwnerOrOrgManager`
 - `canScheduleWorkflow` (schedule / run-now / enable / re-cron): **owner/creator only** — a recurring schedule is an indefinite commitment. The scheduler re-checks per tick and disables schedules whose creator lost the right. (Extend + run-once are looser: owner-or-org.)
 
-**Org membership goes through the `vox.organizations` seam** (`server/organizations.ts`): in application code, `getOrganizations().getMembership(userId)` is the only supported way to ask which org a user belongs to. Core's built-in provider (`server/organizations-core.ts`) reads `users.organization_id`/`org_role`; a plugin providing `vox.organizations` overrides it. Membership is resolved once per request at the auth boundary, so `AuthUser` carries `membership` and deliberately **omits** the raw columns — reading them is a compile error, and `tests/organizations-boundary.test.ts` fails the build if one creeps back via `storage.getUser()`. Resource ownership (`workflow.organizationId` and the other resource-ownership columns) is unaffected: those are Core FK columns compared as opaque integers.
+**Org membership goes through the `vox.organizations` seam** (`server/organizations.ts`): in application code, `getOrganizations().getMembership(userId)` is the only supported way to ask which org a user belongs to. The provider is **plugin-or-absent** — `server/index.ts` installs `plugins.services.optional("vox.organizations", "^1.0.0") ?? null` at startup; there is no Core-side fallback (`CoreOrganizations` was deleted in the Release A flip — see the runbook below). The `organizations` plugin (`plugins/organizations`, enabled via `VOX_PLUGINS`) is the only implementation shipped: it owns org data in its own `plugin_organizations` schema (Core user ids as opaque integers; org secrets stored as ciphertext only — the AES-256-GCM key never enters the plugin, Core encrypts/decrypts). Membership is resolved once per request at the auth boundary, so `AuthUser` carries `membership` and deliberately **omits** the raw columns — reading them is a compile error, and `tests/organizations-boundary.test.ts` fails the build if one creeps back via `storage.getUser()` (the same scan also pins the `orgSecrets` table to 4 leftover provider-serving `storage.ts` methods, callerless since the flip, deleted in Release B). The plugin's contract is locked against Core's seam type at **compile time** by `server/plugins/contract-checks.ts` (`AssertAssignable` both directions — drift fails `npm run check`, not just a test). Resource ownership (`workflow.organizationId` and the other resource-ownership columns) is unaffected: those are Core FK columns compared as opaque integers.
 
 **The seam is the full org contract, not just membership reads** (`OrganizationsProvider` in `server/organizations.ts`, 16 methods): membership reads/counts (`getMembership`/`getMemberships`/`listMembers`/`countMembers`/`countOrgAdmins`), org CRUD (`createOrganization`/`updateOrganization`/`setVerified`/`addMember`/`setMemberRole`/`removeMember`), and org secrets as ciphertext-only rows (`listOrgSecrets`/`upsertOrgSecret`/`deleteOrgSecret` — the provider never sees plaintext; `encryptValue`/`decryptValue` stay in Core). `getOrganizations()` is **nullable** — a plugin may not be installed, and that's a legal state, not a startup bug:
 - **Absent ⇒ orgs inert:** org routes 501 (`requireOrganizations`), job-creating routes 501 on org-owned workflows, the scheduler skips (never disables) schedules targeting team-tier dispatch, sweeps exclude the team arm, and no code path performs a persistent write. Proven zero-write over both scheduler and reap workers in `tests/organizations-absence.test.ts`.
@@ -125,7 +131,7 @@ Some targets need an authenticated web login before an eval. Brokered secrets (`
 - **R3** (org-credential fence): `orgRuntimeSecretsForJob` (`server/routes.ts`, sole caller of the org-secret decrypt tail) resolves the job creator's membership through the seam and compares it to the workflow's org before releasing ciphertext — cross-org negative covered in `tests/org-secret-fence.test.ts`.
 - Remaining counts/writes (roster, admin counts, org secrets CRUD) go through the provider directly — no parallel SQL path.
 
-**`users.organization_id` can now be dropped once the plugin cutover lands** — every former reader goes through the seam. Boundary scan (`tests/organizations-boundary.test.ts`) covers snake_case SQL too, with marked exemptions for the layer that serves raw rows, and now scans plugin directories. Design: `designs/2026-09-10-organizations-seam-design.md`; plugin extraction: `designs/2026-09-16-organizations-plugin-extraction-design.md`.
+**Release A has landed; the old columns are frozen, not dropped.** Release A (`b13c12a` + `f6b9fdb`) dropped the 10 org FK constraints (ids are opaque integers on Core tables now) and deleted `CoreOrganizations`, but `users.organization_id`/`org_role` and the old `public.organizations`/`public.org_secrets` tables still physically exist — unread and unwritten by any code path (no-dual-read, achieved). Release B (dropping those columns/tables plus the ~38 dead `storage.ts` methods that reference them) is a **separate, one-way-door release**, taken only after Release A soaks — see the Release A runbook below. Boundary scan (`tests/organizations-boundary.test.ts`) covers snake_case SQL too, with marked exemptions for the layer that serves raw rows, and now scans plugin directories. Design: `designs/2026-09-10-organizations-seam-design.md`; plugin extraction: `designs/2026-09-16-organizations-plugin-extraction-design.md`.
 
 **Secrets follow workflow ownership** (job-secrets endpoint): org-owned workflow → org secrets (fenced by job creator's org membership); personal workflow → owner's personal secrets. Built-in eval sets (`config.builtIn`) are server-controlled, admin-editable only.
 
@@ -161,6 +167,12 @@ A green gate means all three: unit/integration (Vitest), audio (Docker), E2E (Pl
   DELETE FROM projects  WHERE owner_id=1;
   DELETE FROM secrets   WHERE user_id=1;
   ```
+  `tests/org-claim-stamp.test.ts` (no `afterAll`) leaks its own +1 org / +1 membership per run into `plugin_organizations` (`r2-org-<ts>-<rand>` names, fresh users each run — same pre-existing pattern as `tier-pool-claim.test.ts`). It never touches `owner_id=1`, so it doesn't trip the caps above, but clean it up separately so the plugin schema doesn't grow unbounded:
+  ```sql
+  DELETE FROM plugin_organizations.memberships
+    WHERE org_ref IN (SELECT id FROM plugin_organizations.organizations WHERE name LIKE 'r2-org-%');
+  DELETE FROM plugin_organizations.organizations WHERE name LIKE 'r2-org-%';
+  ```
 - Integration suites hit the **already-running** dev server — after changing `server/`, run `./scripts/dev-local-run.sh stop && start` or the change isn't exercised.
 
 ## Eval Agent Daemon
@@ -188,3 +200,13 @@ A green gate means all three: unit/integration (Vitest), audio (Docker), E2E (Pl
 - CI/CD: GitHub Actions → Coolify webhook on push to main (`.github/workflows/deploy.yml`)
 - Default providers (all `convoai`): Agora ConvoAI Engine (`agora`), LiveKit Agents (`livekit`), ElevenLabs Agents (`elevenlabs`), Custom (no `platformId`). `providers.platformId` matches the workflow's `platform.setup → platform_id`; seeding is idempotent-by-name from both migrations and `/api/auth/init`
 - Common tasks: new table → schema.ts → migration → storage.ts → routes.ts; new page → `client/src/pages/` → route in `App.tsx` → `ConsoleLayout` + TanStack Query
+
+### Organizations Plugin — Release A Runbook
+Enabling `organizations` on an instance that already has org data (Release A cutover):
+1. **DB snapshot first.**
+2. Add `organizations` to `VOX_PLUGINS` in Coolify — **env var only**, no code change.
+3. Deploy with a **stop-then-start, never a rolling restart**: writes the old container makes *after* the plugin's copy migration commits are silently lost (uncopied, and the old release is about to stop reading them anyway) — see `plugins/organizations/migrations/0002_copy_from_core.sql`'s header for why REPEATABLE READ isn't the fix.
+4. **Fail-closed by design:** a parity or preflight failure in the copy migration aborts the migration transaction — the container refuses to start and the old release keeps serving. The three named preflight errors (duplicate `org_secrets` names, dangling `users.organization_id`, dangling `org_secrets.organization_id`) name the offending rows directly.
+5. **Verify after deploy:** `GET /api/plugins` lists `organizations`; `GET /api/plugins/organizations/health` is `ok`; the startup log shows `plugins loaded: ...` including `organizations`.
+6. **Never remove `organizations` from an instance with org data** — it would silently make membership inert (Phase-1 absence semantics), not fall back to the old columns. `vox.agora.build` omits it deliberately today (no orgs to migrate).
+7. Release B (dropping `users.organization_id`/`org_role`, `public.organizations`/`org_secrets`, and the ~38 dead `storage.ts` methods) is a **separate release after soak** — a one-way door; snapshot again before taking it.

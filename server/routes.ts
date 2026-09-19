@@ -11,9 +11,9 @@ import { registerApiV1Routes } from "./routes-api-v1";
 import { generateSignedUrlForUser } from "./s3";
 import { validateTierChoice, resolveTargetedDispatch, filterDispatchableAgents } from "./dispatch";
 import { getMarketplace } from "./marketplace";
-import { AlreadyMemberError, getOrganizations, requireOrganizations, type Membership } from "./organizations";
+import { isAlreadyMemberError, getOrganizations, requireOrganizations, type Membership, type OrgSecretRow } from "./organizations";
 import { fingerprintCredential, formatLastFailedHttpStatus, parseLastFailedHttpStatus } from "@shared/credentials";
-import { parsePlatformSetup, sessionScopeForWorkflow, evaluateSessionRequirement, getBrokeredSecretNames, ensureSession, stampOwnerSession, credentialKeyFor, SESSION_FRESH_MARGIN_SECONDS, classifyReferencedSecrets, findBrokeredMisuse, defaultBrokerTypeForName, resolveBrokerType, type SessionNeed, detectSessionNeed, missingSecretNames, resolvableSecretSources } from "./auth-session";
+import { parsePlatformSetup, sessionScopeForWorkflow, evaluateSessionRequirement, getBrokeredSecretNames, areLoginSecretsAttested, ensureSession, stampOwnerSession, credentialKeyFor, SESSION_FRESH_MARGIN_SECONDS, classifyReferencedSecrets, findBrokeredMisuse, defaultBrokerTypeForName, resolveBrokerType, type SessionNeed, detectSessionNeed, missingSecretNames, resolvableSecretSources } from "./auth-session";
 import { validateRegisterPayload, cacheBrokerMintSecret, hasBrokerMintSecret } from "./broker-registry";
 import { deriveApiKeyStatus } from "./api-key-status";
 import { isStaleOfflineAgent } from "./agent-liveness";
@@ -326,11 +326,38 @@ const MISSING_SECRETS_MSG = (names: string[]) =>
   `This workflow references secret(s) ${names.join(", ")} that are not configured for its owner. If the workflow is yours, create them under Console → Secrets (names must match exactly); otherwise ask its owner to.`;
 
 /**
+ * The org-runtime decrypt tail, moved here verbatim from
+ * storage.getDecryptedOrgRuntimeSecrets (now deleted): the ciphertext rows come
+ * from the `vox.organizations` seam, which traffics in ciphertext only, so the
+ * decrypt has to happen on the Core side of the boundary — `decryptValue` and
+ * the key never cross it.
+ *
+ * RUNTIME rows only. A `brokerType != null` row is a Core-only login credential
+ * and is structurally excluded here — it never reaches an agent by any path.
+ *
+ * NO internal fence: this is a bare decrypt tail, and its safety depends
+ * entirely on `orgRuntimeSecretsForJob` below being its ONLY caller. That
+ * invariant is pinned by tests/organizations-boundary.test.ts (Ruling H), which
+ * scans source for references to this identifier.
+ *
+ * Not exported, and a decrypt failure propagates rather than being swallowed —
+ * both exactly as the storage method behaved.
+ */
+function decryptOrgRuntimeRows(rows: OrgSecretRow[]): Record<string, string> {
+  const result: Record<string, string> = {};
+  for (const s of rows) {
+    if (s.brokerType != null) continue; // Core-only — never sent to agents
+    result[s.name] = decryptValue(s.encryptedValue);
+  }
+  return result;
+}
+
+/**
  * R3 — THE ORG-CREDENTIAL FENCE. This is the check that stops one organization
  * from spending another organization's credentials, so it lives in Core: the
  * decision is authorization, and Core authorizes (design §4). Storage supplies
- * the two halves (`getJobOrgSecretScope`, `getDecryptedOrgRuntimeSecrets`) and
- * decides nothing.
+ * the job→workflow→org scope (`getJobOrgSecretScope`) and decides nothing; the
+ * secret ROWS come from the seam and are decrypted here, in Core.
  *
  * The creator's membership comes from the `vox.organizations` seam; the
  * workflow's owning org (`workflowOrgId`) is a Core FK column compared as an
@@ -349,11 +376,25 @@ const MISSING_SECRETS_MSG = (names: string[]) =>
 export async function orgRuntimeSecretsForJob(jobId: number): Promise<Record<string, string>> {
   const scope = await storage.getJobOrgSecretScope(jobId);
   if (!scope) return {};
+  // The fence's SINGLE absence exit, resolved once and reused for both seam
+  // reads below. `{}`, not a throw — and note the DELIBERATE asymmetry with
+  // server/auth-session.ts, where the same absence throws: this fence is a
+  // dispatch-tier FILTER whose safe answer is "no secrets" (a job losing its
+  // secrets beats a job getting someone else's), whereas a mint is a committed
+  // org operation whose failure must be loud and land in webSessions.lastError
+  // instead of silently producing a credential-less browse.
+  //
+  // Hoisted deliberately: a per-read `getOrganizations()` check on the
+  // verdict-pass side would be DEAD code, because an absent provider makes
+  // `creatorMembership` null and `null?.organizationId !== workflowOrgId` already
+  // returns below. One reachable exit beats two, one of which never runs.
+  const orgs = getOrganizations();
+  if (!orgs) return {};
   const creatorMembership = scope.createdBy != null
-    ? await getOrganizations()?.getMembership(scope.createdBy) ?? null
+    ? await orgs.getMembership(scope.createdBy)
     : null;
   if (creatorMembership?.organizationId !== scope.workflowOrgId) return {};
-  return storage.getDecryptedOrgRuntimeSecrets(scope.workflowOrgId);
+  return decryptOrgRuntimeRows(await orgs.listOrgSecrets(scope.workflowOrgId));
 }
 
 export async function registerRoutes(
@@ -921,7 +962,9 @@ export async function registerRoutes(
           await storage.deleteUser(user.id).catch((cleanupError) => {
             console.error("Error cleaning up orphaned user after failed org membership write:", cleanupError);
           });
-          if (error instanceof AlreadyMemberError) {
+          // Name-based, not `instanceof`: the provider is a plugin and throws
+          // its own copy of the class (see isAlreadyMemberError).
+          if (isAlreadyMemberError(error)) {
             return res.status(400).json({ error: "Already a member of an organization" });
           }
           throw error;
@@ -4248,9 +4291,13 @@ export async function registerRoutes(
         // seam), so a non-member running a *public* org workflow deliberately
         // gets no secrets (never leak org creds to outsiders) — such a run
         // simply fails at execution if it needs them.
-        const orgSecrets = await orgRuntimeSecretsForJob(parseInt(jobId));
-        Object.assign(decrypted, orgSecrets);
-        console.log(`[Secrets] Job ${jobId}: org workflow → ${Object.keys(orgSecrets).length} org secret(s)`);
+        // Named `orgRuntime`, deliberately NOT `orgSecrets`: that identifier is
+        // the drizzle TABLE, and tests/organizations-boundary.test.ts pins it to
+        // server/storage.ts's provider-serving methods. A same-named local here
+        // is a false positive in that scan and, worse, reads like a table import.
+        const orgRuntime = await orgRuntimeSecretsForJob(parseInt(jobId));
+        Object.assign(decrypted, orgRuntime);
+        console.log(`[Secrets] Job ${jobId}: org workflow → ${Object.keys(orgRuntime).length} org secret(s)`);
       } else {
         // Personal workflow → the owner's personal secrets.
         const userSecrets = await storage.getSecretsForJob(parseInt(jobId));
@@ -4527,7 +4574,7 @@ export async function registerRoutes(
             if (req.body.credentialConsent !== true) {
               return res.status(400).json({ error: "credentialConsent is required to dispatch credential-injected jobs to a shared agent" });
             }
-            const attested = await storage.areLoginSecretsAttested(scope, [sessionNeed.emailSecret, sessionNeed.passwordSecret]);
+            const attested = await areLoginSecretsAttested(scope, [sessionNeed.emailSecret, sessionNeed.passwordSecret]);
             if (!attested) {
               return res.status(403).json({ error: "Shared dispatch requires dedicated test-account credentials (mark the login secrets as test accounts)" });
             }
@@ -5622,7 +5669,9 @@ export async function registerRoutes(
       try {
         org = await orgs.createOrganization({ name, address }, { userId: user.id });
       } catch (error) {
-        if (error instanceof AlreadyMemberError) {
+        // Name-based, not `instanceof`: the provider is a plugin and throws its
+        // own copy of the class (see isAlreadyMemberError).
+        if (isAlreadyMemberError(error)) {
           return res.status(400).json({ error: "Already a member of an organization" });
         }
         throw error;

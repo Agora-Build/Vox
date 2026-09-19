@@ -1,13 +1,5 @@
-//
-// Core-side seam for organization MEMBERSHIP — "which org does this person
-// belong to, and with what power?". Pure interface + holder, no storage import,
-// mirroring server/marketplace.ts. The implementation is the `organizations`
-// PLUGIN (`vox.organizations`, plugins/organizations) — there is no built-in
-// fallback: absence is a legal, inert state (see getOrganizations below).
-//
-// NOT in scope: which org OWNS a row (workflow.organizationId and the other
-// resource-ownership columns). Those are Core's own FK columns, stay Core
-// permanently, and are compared as opaque integers.
+// Duck-typed mirror of server/organizations.ts — plugins import only
+// @vox/plugin-sdk. tests/organizations-mirror.test.ts fails the build on drift.
 
 export type OrgRole = "owner" | "admin" | "member";
 
@@ -36,27 +28,18 @@ export interface Organization {
  * same typed error. Register-with-invite and create-org map it to today's
  * 400s.
  *
- * `name` is set EXPLICITLY, and that is load-bearing: the implementation is a
- * plugin, which throws its OWN copy of this class (plugins/organizations/server/
- * types.ts), so `instanceof` is false across the boundary. The name is the
- * cross-boundary identity — match with `isAlreadyMemberError` below, never with
- * `instanceof` alone and never via `constructor.name` (the production bundle is
- * esbuild-built; class names are not guaranteed to survive).
+ * `name` is set EXPLICITLY and must stay identical to Core's copy
+ * (server/organizations.ts): this class is a DIFFERENT class object from the
+ * one Core's adapters can see, so `instanceof` is false across the boundary and
+ * Core matches on `err.name === "AlreadyMemberError"` (`isAlreadyMemberError`).
+ * Renaming it here silently turns both Core 400 paths into 500s — which is why
+ * tests/organizations-mirror.test.ts asserts the literal name on both classes.
  */
 export class AlreadyMemberError extends Error {
   constructor(message?: string) {
     super(message);
     this.name = "AlreadyMemberError";
   }
-}
-
-/**
- * The adapter-side predicate for the error above. `instanceof` first (same-realm
- * Core throws), then the explicit `name` — which is what carries the identity
- * when the throw came from the plugin's structurally-identical class.
- */
-export function isAlreadyMemberError(err: unknown): boolean {
-  return err instanceof AlreadyMemberError || (err instanceof Error && err.name === "AlreadyMemberError");
 }
 
 /**
@@ -129,44 +112,4 @@ export interface OrganizationsProvider {
   ): Promise<OrgSecretRow>;
   /** Removes a secret by name. */
   deleteOrgSecret(orgId: number, name: string): Promise<void>;
-}
-
-let current: OrganizationsProvider | null = null;
-
-/**
- * Called once at startup (server/index.ts), and by tests installing a fake.
- * Accepts `null` so the startup call can pass the plugin lookup through
- * verbatim — `optional(...) ?? null` — instead of branching on absence.
- */
-export function setOrganizations(p: OrganizationsProvider | null): void {
-  current = p;
-}
-
-/** Test-only: drop the installed provider so a suite starts from a known state. */
-export function resetOrganizations(): void {
-  current = null;
-}
-
-/**
- * Absence is a legal state (design §7): a missing provider makes orgs INERT —
- * routes/helpers that need an answer return 501, and paths that can tolerate
- * "no org" fail closed via `?? null`. This is deliberately unlike the old
- * throw-on-uninitialized behavior: a startup wiring bug used to crash every
- * request that touched membership; now it degrades the org feature instead.
- *
- * Provider FAILURE (a thrown error from an installed provider) is NOT the same
- * as absence — it must stay distinguishable from "no org" wherever that
- * distinction matters (e.g. `membershipFor` rethrows), surfacing as 503 where
- * an answer is required. Neither absence nor failure is ever allowed to look
- * like a silent "user has no org" on a path that must tell the two apart.
- */
-export function getOrganizations(): OrganizationsProvider | null {
-  return current;
-}
-
-/** Route guard: absent provider → 501, one sentence, one status, everywhere. */
-export function requireOrganizations(res: { status(n: number): { json(b: unknown): unknown } }): OrganizationsProvider | null {
-  const p = getOrganizations();
-  if (!p) res.status(501).json({ error: "Organizations feature not enabled" });
-  return p;
 }

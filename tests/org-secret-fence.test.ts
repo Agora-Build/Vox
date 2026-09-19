@@ -7,12 +7,20 @@
 // `vox.organizations` seam. Every verdict below must match the pre-seam
 // behavior exactly — the only thing that changed is where membership comes
 // from.
+//
+// Provider: the real `organizations` PLUGIN provider, on the dedicated plugin
+// test DB (tests/helpers/organizations-db.ts). Post-flip that is the only
+// provider there is — org rows, memberships and org secrets live in the
+// plugin's schema, while the Core fixtures this suite also needs (users,
+// workflow, jobs) stay in the dev DB. `workflows.organization_id` is an opaque
+// integer since the Release A FK drop, so the cross-database id reference is
+// exactly what production does.
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { storage, encryptValue, db } from "../server/storage";
 import { orgRuntimeSecretsForJob } from "../server/routes";
 import { setOrganizations, resetOrganizations } from "../server/organizations";
-import { CoreOrganizations } from "../server/organizations-core";
-import { orgSecrets, users, organizations, evalJobs, providers } from "../shared/schema";
+import { setupOrganizationsDb, type OrgsHarness } from "./helpers/organizations-db";
+import { users, evalJobs, providers } from "../shared/schema";
 import { eq } from "drizzle-orm";
 
 const hasDb = !!process.env.DATABASE_URL;
@@ -37,39 +45,53 @@ const mkJob = (workflowId: number, createdBy: number) =>
   } as any);
 
 d("org-credential fence (R3)", () => {
-  let orgA: any, orgB: any, aMember: any, bMember: any, nobody: any, wfA: any;
+  let h: OrgsHarness;
+  let orgAId: number, orgBId: number;
+  let aMember: any, bMember: any, nobody: any, wfA: any;
   let jobByA: any, jobByB: any, jobByNobody: any;
 
+  const mkOrg = async (name: string): Promise<number> => {
+    const { rows } = await h.db.query<{ id: number }>(
+      "INSERT INTO organizations (name) VALUES ($1) RETURNING id", [name]);
+    return rows[0].id;
+  };
+
   beforeAll(async () => {
-    setOrganizations(new CoreOrganizations(storage));
+    h = await setupOrganizationsDb();
+    setOrganizations(h.provider);
     const providerId = await anyProviderId();
 
-    orgA = await storage.createOrganization({ name: `of-orgA-${stamp}` } as any);
-    orgB = await storage.createOrganization({ name: `of-orgB-${stamp}` } as any);
+    orgAId = await mkOrg(`of-orgA-${stamp}`);
+    orgBId = await mkOrg(`of-orgB-${stamp}`);
     aMember = await storage.createUser({
-      username: `of-a-${stamp}`, email: `of-a-${stamp}@test.local`, organizationId: orgA.id,
+      username: `of-a-${stamp}`, email: `of-a-${stamp}@test.local`,
     } as any);
     bMember = await storage.createUser({
-      username: `of-b-${stamp}`, email: `of-b-${stamp}@test.local`, organizationId: orgB.id,
+      username: `of-b-${stamp}`, email: `of-b-${stamp}@test.local`,
     } as any);
     nobody = await storage.createUser({
       username: `of-n-${stamp}`, email: `of-n-${stamp}@test.local`,
     } as any);
+    // Membership is the provider's data now — written through the seam, not onto
+    // the (frozen) Core user columns.
+    await h.provider.addMember(orgAId, aMember.id, "member");
+    await h.provider.addMember(orgBId, bMember.id, "member");
 
     // Org-A-owned workflow. Public, so a non-member CAN legitimately run it —
     // which is exactly the case the fence has to keep credential-free.
     wfA = await storage.createWorkflow({
-      name: `of-wf-${stamp}`, ownerId: aMember.id, organizationId: orgA.id,
+      name: `of-wf-${stamp}`, ownerId: aMember.id, organizationId: orgAId,
       providerId, visibility: "public", isMainline: false, config: {},
     } as any);
 
     // Org-A secrets: one runtime (agent-exposed) + one brokered login row
-    // (Core-only — must never reach the runtime map by any path).
-    await storage.upsertOrgSecretRow(orgA.id, {
+    // (Core-only — must never reach the runtime map by any path). Seeded
+    // through the seam's ciphertext-only writer, as production does.
+    await h.provider.upsertOrgSecret(orgAId, {
       name: RUNTIME, encryptedValue: encryptValue("runtime-ok"),
       brokerType: null, isTestAccount: false, createdBy: aMember.id,
     });
-    await storage.upsertOrgSecretRow(orgA.id, {
+    await h.provider.upsertOrgSecret(orgAId, {
       name: LOGIN, encryptedValue: encryptValue("hunter2"),
       brokerType: "agora", isTestAccount: true, createdBy: aMember.id,
     });
@@ -81,24 +103,31 @@ d("org-credential fence (R3)", () => {
 
   afterAll(async () => {
     if (!hasDb) return;
-    setOrganizations(new CoreOrganizations(storage));
+    // Core-side fixtures only — the plugin-side org/membership/secret rows die
+    // with the throwaway schema below.
     for (const j of [jobByA, jobByB, jobByNobody]) {
       if (j) await db.delete(evalJobs).where(eq(evalJobs.id, j.id));
-    }
-    if (orgA) {
-      await db.delete(orgSecrets).where(eq(orgSecrets.organizationId, orgA.id));
     }
     if (wfA) await storage.deleteWorkflow(wfA.id);
     for (const u of [aMember, bMember, nobody]) {
       if (u) await db.delete(users).where(eq(users.id, u.id));
     }
-    for (const o of [orgA, orgB]) {
-      if (o) await db.delete(organizations).where(eq(organizations.id, o.id));
-    }
+    resetOrganizations();
+    await h.pool.query(`DROP SCHEMA IF EXISTS "${h.schema}" CASCADE`);
+    await h.pool.end();
   });
 
   it("same-org creator gets the org's runtime secrets", async () => {
     await expect(orgRuntimeSecretsForJob(jobByA.id)).resolves.toHaveProperty(RUNTIME);
+  });
+
+  it("the map carries the DECRYPTED plaintext, not the stored ciphertext (T5 M3)", async () => {
+    // The fixture above stored encryptValue("runtime-ok") through the seam's
+    // ciphertext-only writer, so this pins the whole decrypt tail's wiring:
+    // a map that echoed the stored `v1:…` blob — or handed back a row object —
+    // still satisfies the toHaveProperty assertion above, but not this one.
+    const m = await orgRuntimeSecretsForJob(jobByA.id);
+    expect(m[RUNTIME]).toBe("runtime-ok");
   });
 
   it("CROSS-ORG creator gets {} — one org can never spend another's credentials", async () => {
@@ -117,7 +146,7 @@ d("org-credential fence (R3)", () => {
     try {
       await expect(orgRuntimeSecretsForJob(jobByA.id)).resolves.toEqual({});
     } finally {
-      setOrganizations(new CoreOrganizations(storage)); // restore for later cases
+      setOrganizations(h.provider); // restore for later cases
     }
   });
 

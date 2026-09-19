@@ -5,9 +5,10 @@ import path from "path";
 
 // Files allowed to read the raw org columns off a row-shaped object:
 //
-// - organizations-core.ts: the built-in provider — reading the columns is its job.
-// - storage.ts: the data-access layer that serves the provider (and the rest of
-//   the app) the raw `User` row in the first place.
+// - storage.ts: the data-access layer that serves the raw `User` row to the rest
+//   of the app. (The built-in provider used to be listed here too; the Release A
+//   flip deleted it, so the exemption went with it — nothing in server/ may read
+//   the columns as membership anymore.)
 // - permissions.ts: holds the deliberately-structural predicates (`sameOrg`,
 //   `canDispatchToToken`, `isOwnerOperatedAgent`, …) whose params are typed
 //   `{ organizationId: number | null }` — org-id carriers, not user rows. The
@@ -17,7 +18,7 @@ import path from "path";
 // Everything else must go through getOrganizations(). Scans source rather than
 // re-listing call sites, so it cannot drift out of date — same approach as
 // tests/sensitive-paths.test.ts.
-const ALLOWED = new Set(["organizations-core.ts", "storage.ts", "permissions.ts"]);
+const ALLOWED = new Set(["storage.ts", "permissions.ts"]);
 
 // User-shaped identifiers only. Resource-shaped reads (workflow.organizationId)
 // are permanent Core FK columns and must NOT be flagged.
@@ -177,9 +178,9 @@ function countMarkers(relPath: string): number {
 }
 
 // Step 3's enumeration: after Tasks 5-9 removed the business-logic org-column
-// SQL from routes, the sites below are what legitimately remains in
-// storage.ts — the provider-serving surface `CoreOrganizations` is built on.
-// Release B deletes or re-points every one of them.
+// SQL from routes, the sites below are what legitimately remains in storage.ts —
+// the surface the deleted built-in provider was built on, now DEAD CODE kept
+// only because Release B deletes it together with the columns and tables.
 const EXPECTED_MARKERS = 7;
 
 describe("organizations boundary", () => {
@@ -323,15 +324,23 @@ describe("organizations boundary", () => {
 
   // --- Ruling H: the decrypt tail is pinned to its single fenced call site --
   //
-  // storage.getDecryptedOrgRuntimeSecrets is a decrypt tail with NO internal
-  // fence — its safety depends entirely on orgRuntimeSecretsForJob
-  // (server/routes.ts) being its ONLY caller. This proves that invariant by
-  // scanning source rather than trusting a comment, the same way the rest of
-  // this file works.
+  // The org-runtime decrypt tail used to be storage.getDecryptedOrgRuntimeSecrets;
+  // it now lives in Core as `decryptOrgRuntimeRows` (server/routes.ts), because
+  // the ciphertext rows come from the `vox.organizations` seam and only Core
+  // holds the key. The invariant is unchanged and just as load-bearing: the tail
+  // has NO internal fence, so its safety depends entirely on
+  // `orgRuntimeSecretsForJob` (which resolves the creator's membership through
+  // the seam and compares it to the workflow's owning org) being its ONLY
+  // caller. Pinned by scanning source rather than trusting a comment, the same
+  // way the rest of this file works.
+  //
+  // One shape change from the pre-seam pin: declaration and call site now live
+  // in the SAME file, so the defining file can no longer be excluded from the
+  // scan. Two hits are therefore expected (the `function` line + the one call),
+  // and both must be in routes.ts — a third hit anywhere is the regression.
 
-  /** Non-comment occurrences of a whole-word identifier across a file list. */
-  function identifierOccurrences(files: string[], identifier: string, excludeNames: Set<string>): string[] {
-    const idPattern = new RegExp(`\\b${identifier}\\b`);
+  /** Non-comment lines matching `pattern` across a file list. One implementation. */
+  function patternOccurrences(files: string[], pattern: RegExp, excludeNames: Set<string>): string[] {
     const hits: string[] = [];
     for (const f of files) {
       if (excludeNames.has(path.basename(f))) continue;
@@ -339,10 +348,15 @@ describe("organizations boundary", () => {
         .split("\n")
         .forEach((line, i) => {
           if (line.trim().startsWith("//") || line.trim().startsWith("*")) return;
-          if (idPattern.test(line)) hits.push(`${f}:${i + 1}: ${line.trim()}`);
+          if (pattern.test(line)) hits.push(`${f}:${i + 1}: ${line.trim()}`);
         });
     }
     return hits;
+  }
+
+  /** Non-comment occurrences of a whole-word identifier across a file list. */
+  function identifierOccurrences(files: string[], identifier: string, excludeNames: Set<string>): string[] {
+    return patternOccurrences(files, new RegExp(`\\b${identifier}\\b`), excludeNames);
   }
 
   function scannedServerFiles(): string[] {
@@ -353,26 +367,241 @@ describe("organizations boundary", () => {
     return [...topLevel, ...pluginTsFiles()];
   }
 
-  it("getDecryptedOrgRuntimeSecrets is called from exactly one site outside storage.ts, and it is server/routes.ts", () => {
-    const hits = identifierOccurrences(scannedServerFiles(), "getDecryptedOrgRuntimeSecrets", new Set(["storage.ts"]));
-    expect(hits).toHaveLength(1);
-    expect(hits[0]).toMatch(/[\\/]routes\.ts:/);
+  it("decryptOrgRuntimeRows is declared once and called from exactly one site, both in server/routes.ts", () => {
+    const hits = identifierOccurrences(scannedServerFiles(), "decryptOrgRuntimeRows", new Set());
+    expect(hits, `unexpected reference(s) to the org-runtime decrypt tail:\n${hits.join("\n")}`).toHaveLength(2);
+    for (const h of hits) expect(h).toMatch(/[\\/]routes\.ts:/);
+    expect(hits[0]).toMatch(/function decryptOrgRuntimeRows\(/); // the declaration
+    expect(hits[1]).toMatch(/decryptOrgRuntimeRows\(/);          // the single call
+  });
+
+  // The pre-seam storage method must be GONE, not merely uncalled: leaving a
+  // fence-free decrypt tail on the storage singleton is exactly the surface a
+  // future call site could reattach to.
+  it("storage.getDecryptedOrgRuntimeSecrets no longer exists anywhere in server/", () => {
+    const hits = identifierOccurrences(scannedServerFiles(), "getDecryptedOrgRuntimeSecrets", new Set());
+    expect(hits, `the deleted decrypt tail is back:\n${hits.join("\n")}`).toEqual([]);
+  });
+
+  // --- design §6, pinned at the TABLE rather than one accessor at a time -----
+  //
+  // After the Release A flip, `org_secrets` rows live in the plugin's schema, so
+  // ANY Core read of the Core table outside the provider path silently reads an
+  // empty/stale table. An earlier version of this pin named `getOrgSecrets` and
+  // claimed to be "the general form". It was not, and the review said so: it had
+  // a one-identifier blind spot. `storage.getOrgSecret` (SINGULAR, storage.ts) is
+  // a second raw `from(orgSecrets)` reader that `\bgetOrgSecrets\b` cannot see,
+  // and nothing pinned the drizzle table itself — so the obvious future refactor
+  // of the single-name org lookup in auth-session.ts to
+  // `storage.getOrgSecret(scope.organizationId, name)` (fewer rows over the wire;
+  // reads like an improvement) would have passed every pin and then broken every
+  // org mint post-flip: the exact Ruling-F failure mode, one identifier to the
+  // left.
+  //
+  // So the invariant is pinned twice, at the two things that can actually go
+  // wrong, and neither depends on guessing an accessor's name:
+  //
+  //  (a) THE TABLE. The drizzle `orgSecrets` identifier may appear only in
+  //      server/storage.ts, and only inside an ENUMERATED set of
+  //      provider-serving methods. A brand-new storage method doing
+  //      `db.select().from(orgSecrets)` is flagged by the enumeration even
+  //      though it names no pinned accessor. Outside storage.ts the identifier
+  //      must not appear at all (a routes.ts/plugin import of the table).
+  //
+  //  (b) THE ACCESSORS, receiver-qualified. No Core file outside storage.ts may
+  //      call `storage.<anything>OrgSecret*` / `this.<same>` — the built-in
+  //      provider's exemption died with it in the Release A flip, so the
+  //      accessors now have no sanctioned caller at all outside the data layer.
+  //      Receiver-qualified on purpose: the SEAM's own methods
+  //      share these names (`orgs.upsertOrgSecret`, `orgs.deleteOrgSecret` in
+  //      routes.ts are the sanctioned path and must NOT be flagged), and the
+  //      provider interface in organizations.ts declares them unqualified.
+  //
+  // Together these catch a new raw reader, a renamed accessor, a singular/plural
+  // variant, and a direct table import — the four holes the review named.
+
+  // The drizzle table identifier. Case-sensitive, so `getOrgSecrets`/
+  // `OrgSecretRow` do not self-match (capital O).
+  const ORG_SECRETS_TABLE = /\borgSecrets\b/;
+  // Any org-secret accessor invoked ON THE STORAGE LAYER. Covers singular and
+  // plural, Row variants, and future names (`getOrgSecretByName`, …).
+  const STORAGE_ORG_SECRET_ACCESSOR = /\b(?:storage|this)\.(?:get|upsert|delete)OrgSecret[A-Za-z]*\b/;
+
+  // Every method in server/storage.ts allowed to touch the `orgSecrets` table.
+  // All four are leftovers of the deleted built-in provider's serving surface
+  // (listOrgSecrets/upsertOrgSecret/deleteOrgSecret called them; getOrgSecret was
+  // their shared existence probe) — callerless since the Release A flip, deleted
+  // with the table in Release B. A NEW name here must be a conscious act — that
+  // is what the pinned length below buys.
+  const ORG_SECRET_TABLE_METHODS = [
+    "getOrgSecrets",
+    "getOrgSecret",
+    "deleteOrgSecret",
+    "upsertOrgSecretRow",
+  ];
+
+  /**
+   * Attribute each `pattern` hit in a class-bearing .ts file to its enclosing
+   * method, by remembering the last 2-space-indented `[async] name(` header seen
+   * above it. Hits above any method (e.g. the schema import block) attribute to
+   * "<module>". Deliberately crude — it only has to be right about one
+   * well-formed file, and being source-derived is the point.
+   */
+  function enclosingMethodsOf(file: string, pattern: RegExp): Array<{ method: string; line: string }> {
+    const METHOD_HEADER = /^ {2}(?:private |public |protected |static )*(?:async )?([A-Za-z_][A-Za-z0-9_]*)\s*\(/;
+    const out: Array<{ method: string; line: string }> = [];
+    let current = "<module>";
+    readFileSync(file, "utf-8").split("\n").forEach((line, i) => {
+      const header = METHOD_HEADER.exec(line);
+      if (header) current = header[1];
+      const trimmed = line.trim();
+      if (trimmed.startsWith("//") || trimmed.startsWith("*")) return;
+      if (pattern.test(line)) out.push({ method: current, line: `${i + 1}: ${trimmed}` });
+    });
+    return out;
+  }
+
+  it("(a) the orgSecrets TABLE is touched only inside storage.ts's enumerated provider-serving methods", () => {
+    const storageTs = path.resolve(__dirname, "../server/storage.ts");
+    const hits = enclosingMethodsOf(storageTs, ORG_SECRETS_TABLE);
+    expect(hits.length, "expected the table to be queried at all — scan is broken").toBeGreaterThan(0);
+
+    const allowed = new Set([...ORG_SECRET_TABLE_METHODS, "<module>"]); // <module> = the schema import
+    const rogue = hits.filter((h) => !allowed.has(h.method));
+    expect(
+      rogue.map((h) => `${h.method} -> ${h.line}`),
+      "a storage method outside the provider-serving set is querying org_secrets — move the decision to Core and read it through getOrganizations().listOrgSecrets()",
+    ).toEqual([]);
+  });
+
+  it("(a) the enumerated org_secrets method list is pinned, so a new raw reader is a conscious act", () => {
+    // Guards the allow-list itself: without this, "fix the test" is to append a
+    // name, which is exactly the silent widening this pin exists to prevent.
+    expect(ORG_SECRET_TABLE_METHODS).toHaveLength(4);
+    const storageTs = path.resolve(__dirname, "../server/storage.ts");
+    const methods = new Set(enclosingMethodsOf(storageTs, ORG_SECRETS_TABLE).map((h) => h.method));
+    methods.delete("<module>");
+    expect([...methods].sort()).toEqual([...ORG_SECRET_TABLE_METHODS].sort());
+  });
+
+  it("(a) the orgSecrets table identifier appears nowhere in server/ outside storage.ts", () => {
+    const hits = patternOccurrences(scannedServerFiles(), ORG_SECRETS_TABLE, new Set(["storage.ts"]));
+    expect(
+      hits,
+      `only the data layer may name the drizzle org_secrets table:\n${hits.join("\n")}`,
+    ).toEqual([]);
+  });
+
+  it("(b) no Core file outside the data layer calls a storage org-secret accessor", () => {
+    const hits = patternOccurrences(
+      scannedServerFiles(),
+      STORAGE_ORG_SECRET_ACCESSOR,
+      new Set(["storage.ts"]),
+    );
+    expect(
+      hits,
+      `read org secrets through getOrganizations().listOrgSecrets() instead of the storage layer:\n${hits.join("\n")}`,
+    ).toEqual([]);
+  });
+
+  it("flags every shape the review named (falsifiability check)", () => {
+    const tmp = path.join(tmpdir(), `org-boundary-table-fixture-${Date.now()}`);
+    mkdirSync(tmp, { recursive: true });
+
+    // (a) A brand-new storage method querying the table — names no pinned
+    //     accessor, so only the method enumeration can catch it. Includes a
+    //     legitimately-enumerated method above it to prove the scan discriminates.
+    writeFileSync(path.join(tmp, "storage.ts"), [
+      "  async getOrgSecrets(organizationId: number): Promise<OrgSecret[]> {",
+      "    return db.select().from(orgSecrets);",
+      "  }",
+      "",
+      "  async getOrgLoginRows(organizationId: number) {",
+      "    return db.select().from(orgSecrets).where(eq(orgSecrets.brokerType, 'auth-session'));",
+      "  }",
+    ].join("\n") + "\n");
+    const rogue = enclosingMethodsOf(path.join(tmp, "storage.ts"), ORG_SECRETS_TABLE)
+      .filter((h) => !new Set([...ORG_SECRET_TABLE_METHODS, "<module>"]).has(h.method));
+    expect(rogue).toHaveLength(1);
+    expect(rogue[0].method).toBe("getOrgLoginRows");
+
+    // (b) THE REVIEW'S EXACT SCENARIO: auth-session reaching for the singular
+    //     accessor. Plus the sanctioned seam calls and the interface declaration,
+    //     which must NOT be flagged, and a table import outside storage.ts.
+    writeFileSync(path.join(tmp, "auth-session.ts"),
+      "  const row = await storage.getOrgSecret(scope.organizationId, name);\n");
+    writeFileSync(path.join(tmp, "routes.ts"), [
+      "      const secret = await orgs.upsertOrgSecret(user.membership.organizationId, { name });",
+      "      await orgs.deleteOrgSecret(user.membership.organizationId, name);",
+    ].join("\n") + "\n");
+    writeFileSync(path.join(tmp, "organizations.ts"), "  upsertOrgSecret(\n");
+    writeFileSync(path.join(tmp, "table-importer.ts"), "import { orgSecrets } from '@shared/schema';\n");
+    // Prose must not count.
+    writeFileSync(path.join(tmp, "prose.ts"), " * like storage.getOrgSecret used to do. The orgSecrets table.\n");
+
+    const files = ["auth-session.ts", "routes.ts", "organizations.ts", "table-importer.ts", "prose.ts"]
+      .map((f) => path.join(tmp, f));
+
+    const accessorHits = patternOccurrences(files, STORAGE_ORG_SECRET_ACCESSOR, new Set());
+    expect(accessorHits).toHaveLength(1);
+    expect(accessorHits[0]).toMatch(/auth-session\.ts:.*storage\.getOrgSecret\(/);
+
+    const tableHits = patternOccurrences(files, ORG_SECRETS_TABLE, new Set());
+    expect(tableHits).toHaveLength(1);
+    expect(tableHits[0]).toMatch(/table-importer\.ts:/);
+  });
+
+  // T5 M5: the accessor pin accepts TWO receivers — `storage.` and `this.` — but
+  // only the `storage.` half was ever proven to fire. `this.` is the shape a
+  // class-based Core module would take (it is what the deleted built-in provider
+  // used), so a successor written that way must be caught too. This is the
+  // missing fourth fixture case.
+  it("flags a `this.`-receiver org-secret accessor call outside the data layer (falsifiability check)", () => {
+    const tmp = path.join(tmpdir(), `org-boundary-this-receiver-fixture-${Date.now()}`);
+    mkdirSync(tmp, { recursive: true });
+    writeFileSync(path.join(tmp, "org-service.ts"), [
+      "    const row = await this.getOrgSecret(orgId, name);",
+      "    await this.upsertOrgSecretRow(orgId, row);",
+      "    await this.deleteOrgSecret(orgId, name);",
+    ].join("\n") + "\n");
+    // The other half of the receiver rule: the SEAM's own calls share these
+    // method names and must stay unflagged (that is why the pattern is
+    // receiver-qualified at all), as must the bare interface declaration.
+    writeFileSync(path.join(tmp, "seam-caller.ts"), [
+      "      const secret = await orgs.upsertOrgSecret(orgId, { name });",
+      "      await orgs.deleteOrgSecret(orgId, name);",
+      "  upsertOrgSecret(",
+    ].join("\n") + "\n");
+
+    const hits = patternOccurrences(
+      [path.join(tmp, "org-service.ts"), path.join(tmp, "seam-caller.ts")],
+      STORAGE_ORG_SECRET_ACCESSOR,
+      new Set(),
+    );
+
+    expect(hits).toHaveLength(3); // all three `this.` calls, none of the seam calls
+    for (const h of hits) expect(h).toMatch(/org-service\.ts:/);
+    expect(hits[1]).toMatch(/this\.upsertOrgSecretRow\(/); // the Row variant too
   });
 
   it("flags a second call site to the decrypt tail (falsifiability check)", () => {
     const tmp = path.join(tmpdir(), `org-boundary-decrypt-tail-fixture-${Date.now()}`);
     mkdirSync(tmp, { recursive: true });
-    writeFileSync(path.join(tmp, "storage.ts"), "async getDecryptedOrgRuntimeSecrets() {}\n");
-    writeFileSync(path.join(tmp, "routes.ts"), "return storage.getDecryptedOrgRuntimeSecrets(scope.workflowOrgId);\n");
+    writeFileSync(path.join(tmp, "routes.ts"), [
+      "function decryptOrgRuntimeRows(rows) {}",
+      "return decryptOrgRuntimeRows(rows);",
+    ].join("\n") + "\n");
     // A second, rogue call site — the thing that must never happen for real.
-    writeFileSync(path.join(tmp, "rogue-plugin.ts"), "return storage.getDecryptedOrgRuntimeSecrets(otherOrgId);\n");
+    writeFileSync(path.join(tmp, "rogue-plugin.ts"), "return decryptOrgRuntimeRows(otherRows);\n");
 
     const hits = identifierOccurrences(
-      [path.join(tmp, "storage.ts"), path.join(tmp, "routes.ts"), path.join(tmp, "rogue-plugin.ts")],
-      "getDecryptedOrgRuntimeSecrets",
-      new Set(["storage.ts"]),
+      [path.join(tmp, "routes.ts"), path.join(tmp, "rogue-plugin.ts")],
+      "decryptOrgRuntimeRows",
+      new Set(),
     );
 
-    expect(hits).toHaveLength(2);
+    // 2 legitimate (declaration + call) + 1 rogue = 3, and the rogue is not in routes.ts.
+    expect(hits).toHaveLength(3);
+    expect(hits[2]).toMatch(/rogue-plugin\.ts:/);
   });
 });

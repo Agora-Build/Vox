@@ -61,7 +61,7 @@ export const users = pgTable("users", {
   isAdmin: boolean("is_admin").default(false).notNull(),
   isEnabled: boolean("is_enabled").default(true).notNull(),
   emailVerifiedAt: timestamp("email_verified_at"),
-  organizationId: integer("organization_id").references(() => organizations.id),
+  organizationId: integer("organization_id"),
   orgRole: orgRoleEnum("org_role"),
   googleId: text("google_id").unique(),
   githubId: text("github_id").unique(),
@@ -147,7 +147,7 @@ export const projects = pgTable("projects", {
   name: text("name").notNull(),
   description: text("description"),
   ownerId: integer("owner_id").notNull().references(() => users.id),
-  organizationId: integer("organization_id").references(() => organizations.id),
+  organizationId: integer("organization_id"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
@@ -170,7 +170,7 @@ export const workflows = pgTable("workflows", {
   ownerId: integer("owner_id").notNull().references(() => users.id),
   projectId: integer("project_id").references(() => projects.id, { onDelete: "cascade" }),
   providerId: varchar("provider_id", { length: 12 }).notNull().references(() => providers.id),
-  organizationId: integer("organization_id").references(() => organizations.id),
+  organizationId: integer("organization_id"),
   visibility: visibilityEnum("visibility").default("public").notNull(),
   isMainline: boolean("is_mainline").default(false).notNull(),
   config: jsonb("config").default({}).notNull(),
@@ -194,7 +194,7 @@ export const evalSets = pgTable("eval_sets", {
   name: text("name").notNull(),
   description: text("description"),
   ownerId: integer("owner_id").notNull().references(() => users.id),
-  organizationId: integer("organization_id").references(() => organizations.id),
+  organizationId: integer("organization_id"),
   visibility: visibilityEnum("visibility").default("public").notNull(),
   isMainline: boolean("is_mainline").default(false).notNull(),
   config: jsonb("config").default({}).notNull(),
@@ -313,7 +313,7 @@ export const evalSchedules = pgTable("eval_schedules", {
   runCount: integer("run_count").default(0).notNull(),
   maxRuns: integer("max_runs"), // null = unlimited for recurring
   createdBy: integer("created_by").notNull().references(() => users.id),
-  organizationId: integer("organization_id").references(() => organizations.id),
+  organizationId: integer("organization_id"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 }, (table) => ({
@@ -595,7 +595,7 @@ export type PricingConfig = typeof pricingConfig.$inferSelect;
 export const paymentMethods = pgTable("payment_methods", {
   id: serial("id").primaryKey(),
   userId: integer("user_id").references(() => users.id),
-  organizationId: integer("organization_id").references(() => organizations.id),
+  organizationId: integer("organization_id"),
   provider: text("provider").default("stripe").notNull(),
   stripeCustomerId: text("stripe_customer_id"),
   stripePaymentMethodId: text("stripe_payment_method_id"),
@@ -621,7 +621,7 @@ export type PaymentMethod = typeof paymentMethods.$inferSelect;
 export const paymentHistories = pgTable("payment_histories", {
   id: serial("id").primaryKey(),
   userId: integer("user_id").references(() => users.id),
-  organizationId: integer("organization_id").references(() => organizations.id),
+  organizationId: integer("organization_id"),
   amount: integer("amount").notNull(),
   currency: varchar("currency", { length: 3 }).default("USD").notNull(),
   status: text("status").notNull(),
@@ -644,7 +644,7 @@ export type PaymentHistory = typeof paymentHistories.$inferSelect;
 
 export const organizationSeats = pgTable("organization_seats", {
   id: serial("id").primaryKey(),
-  organizationId: integer("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  organizationId: integer("organization_id").notNull(),
   totalSeats: integer("total_seats").default(0).notNull(),
   usedSeats: integer("used_seats").default(0).notNull(),
   pricePerSeat: integer("price_per_seat").default(600).notNull(),
@@ -684,7 +684,7 @@ export const inviteTokens = pgTable("invite_tokens", {
   email: text("email").notNull(),
   plan: userPlanEnum("plan").default("basic").notNull(),
   isAdmin: boolean("is_admin").default(false).notNull(),
-  organizationId: integer("organization_id").references(() => organizations.id),
+  organizationId: integer("organization_id"),
   tokenHash: text("token_hash").notNull().unique(),
   createdBy: integer("created_by").references(() => users.id),
   expiresAt: timestamp("expires_at").notNull(),
@@ -821,7 +821,7 @@ export const webSessions = pgTable("web_sessions", {
   // a row violating this falls outside both partial unique indexes below,
   // which would silently disable the single-flight mint claim.
   userId: integer("user_id").references(() => users.id),
-  organizationId: integer("organization_id").references(() => organizations.id),
+  organizationId: integer("organization_id"),
   platformId: text("platform_id").notNull(),
   // Identity of the login credential PAIR that minted this session, so two
   // accounts on the same platform under the same owner scope never share a

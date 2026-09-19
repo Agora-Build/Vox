@@ -8,13 +8,12 @@ import session from "express-session";
 import connectPgSimple from "connect-pg-simple";
 import rateLimit from "express-rate-limit";
 import { authenticateApiKey, passport, initializeGoogleOAuth } from "./auth";
-import { storage, pool } from "./storage";
+import { pool } from "./storage";
 import { startLocationServices } from "./location";
 import { setupClashWebSocket } from "./clash-ws";
 import { loadPlugins } from "./plugins/loader";
 import { setMarketplace, type EvalMarketplace } from "./marketplace";
 import { setOrganizations, type OrganizationsProvider } from "./organizations";
-import { CoreOrganizations } from "./organizations-core";
 import { processScheduledJobs, runMaintenanceTasks } from "./scheduler";
 import { log } from "./log";
 import pkg from "pg";
@@ -172,8 +171,8 @@ app.use((req, res, next) => {
 });
 
 (async () => {
-  // storage (imported above) is ready as soon as the module graph loads;
-  // start mmdb/Tor/ASN loaders before routes so early requests still get a
+  // storage is ready as soon as the module graph loads (importing `pool` above
+  // pulls it in); start mmdb/Tor/ASN loaders before routes so early requests get a
   // (possibly still-loading) detection shell rather than a crash.
   startLocationServices();
 
@@ -185,15 +184,16 @@ app.use((req, res, next) => {
   const plugins = await loadPlugins(app, pool);
   setMarketplace(plugins.services.optional<EvalMarketplace>("vox.eval-marketplace", "^1.0.0"));
 
-  // Organizations: a plugin may own membership; until one does, Core's own
-  // implementation fills the seam. Phase 1 always installs a provider here, so
-  // production never sees the absent-provider (501/503) paths — but the seam
-  // itself now treats absence as a legal state (server/organizations.ts §7
-  // contract), so a future release can omit this fallback without every call
-  // site crashing.
+  // Organizations: PLUGIN-OR-ABSENT (Release A flip). The `organizations`
+  // plugin owns membership/org/org-secret data; there is no Core fallback
+  // anymore — `CoreOrganizations` is deleted, deliberately: after the copy
+  // migration the Core columns are frozen, so a fallback would answer
+  // authorization questions from pre-cutover data (design §6). An instance
+  // without the plugin in VOX_PLUGINS gets genuine absence: the org feature is
+  // INERT (501s, scheduler skips, fences fail closed — server/organizations.ts
+  // §7), never silently stale.
   setOrganizations(
-    plugins.services.optional<OrganizationsProvider>("vox.organizations", "^1.0.0")
-      ?? new CoreOrganizations(storage),
+    plugins.services.optional<OrganizationsProvider>("vox.organizations", "^1.0.0") ?? null,
   );
 
   // Graceful shutdown: stop workers and deactivate plugins in reverse order.

@@ -112,9 +112,14 @@ d("pooled claim SQL mirrors isClaimable", () => {
   // mutual consent) and had no SQL-level test.
   it("team pool: mutual consent at the SQL layer — org-mate's team token claims; org-mate's private token does not", async () => {
     const suffix = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+    // The org row is an ID SOURCE only: this suite exercises the SQL claim path,
+    // which compares the job's stamped `creatorOrgId` against the token's
+    // `ownerOrgId` — both passed explicitly below. It never resolves membership,
+    // so neither user is given one (writing the frozen users.organization_id
+    // column would be a no-op with respect to membership post-flip).
     const org = await storage.createOrganization({ name: `tp-org-${suffix}` } as any);
-    const userA = await storage.createUser({ username: `tpA${suffix}`, email: `tpA${suffix}@example.com`, organizationId: org.id } as any);
-    const userB = await storage.createUser({ username: `tpB${suffix}`, email: `tpB${suffix}@example.com`, organizationId: org.id } as any);
+    const userA = await storage.createUser({ username: `tpA${suffix}`, email: `tpA${suffix}@example.com` } as any);
+    const userB = await storage.createUser({ username: `tpB${suffix}`, email: `tpB${suffix}@example.com` } as any);
 
     // (a) B's TEAM-tier token, in-region, ownerOrgId = the shared org: lists + claims.
     const teamJob = await mkPooledJob("na-us-ashburn", "team", userA.id, org.id);

@@ -33,7 +33,7 @@ services:
       # dev container from prod and would otherwise 429 test/dev traffic. Read
       # at runtime; prod never sets it, so prod rate limiting stays on.
       RATE_LIMIT_DISABLED: "true"
-      VOX_PLUGINS: ${VOX_PLUGINS:-credits,shared-agents}
+      VOX_PLUGINS: ${VOX_PLUGINS:-credits,shared-agents,organizations}
       PORT: 5000
       # AES-256-GCM key for secret encryption. Compose only injects what is
       # listed here, so without this line the Docker server runs WITHOUT a key

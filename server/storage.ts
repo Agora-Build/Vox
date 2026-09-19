@@ -347,7 +347,8 @@ export type SessionScope = { userId: number } | { organizationId: number };
 
 export class DatabaseStorage {
   // org-columns: provider — returns the raw User row (organizationId/orgRole
-  // included); CoreOrganizations.getMembership() maps it into a Membership.
+  // included). Those two columns are FROZEN since the Release A flip: membership
+  // comes from the vox.organizations plugin, and Release B drops them.
   async getUser(id: number): Promise<User | undefined> {
     const result = await db.select().from(users).where(eq(users.id, id));
     return result[0];
@@ -388,8 +389,8 @@ export class DatabaseStorage {
     await db.delete(users).where(eq(users.id, id));
   }
 
-  // org-columns: provider — generic column setter; CoreOrganizations writes
-  // organizationId/orgRole through it (createOrganization/addMember/setMemberRole).
+  // org-columns: provider — generic column setter. The deleted built-in provider
+  // wrote organizationId/orgRole through it; post-flip no caller does.
   async updateUser(id: number, data: Partial<User>): Promise<User | undefined> {
     const result = await db.update(users).set({ ...data, updatedAt: new Date() }).where(eq(users.id, id)).returning();
     return result[0];
@@ -399,12 +400,14 @@ export class DatabaseStorage {
     return db.select().from(users).orderBy(desc(users.createdAt));
   }
 
-  // org-columns: provider — row fetch behind CoreOrganizations.listMembers().
+  // org-columns: provider — row fetch behind the deleted built-in provider's
+  // listMembers(); callerless since the Release A flip, dropped in Release B.
   async getUsersByOrganization(organizationId: number): Promise<User[]> {
     return db.select().from(users).where(eq(users.organizationId, organizationId)).orderBy(desc(users.createdAt));
   }
 
-  // org-columns: provider — batch row fetch behind CoreOrganizations.getMemberships().
+  // org-columns: provider — batch row fetch behind the deleted built-in
+  // provider's getMemberships(); still used by non-org batch callers.
   async getUsersByIds(ids: number[]): Promise<User[]> {
     if (ids.length === 0) return [];
     return db.select().from(users).where(inArray(users.id, Array.from(new Set(ids))));
@@ -2063,7 +2066,8 @@ export class DatabaseStorage {
   }
 
   // Organization helper methods
-  // org-columns: provider — raw admin/owner count behind CoreOrganizations.countOrgAdmins().
+  // org-columns: provider — raw admin/owner count behind the deleted built-in
+  // provider's countOrgAdmins(); callerless post-flip, dropped in Release B.
   async countOrgAdmins(organizationId: number): Promise<number> {
     const result = await db.select({ count: sql<number>`count(*)` })
       .from(users)
@@ -2071,7 +2075,8 @@ export class DatabaseStorage {
     return Number(result[0]?.count || 0);
   }
 
-  // org-columns: provider — raw member count behind CoreOrganizations.countMembers().
+  // org-columns: provider — raw member count behind the deleted built-in
+  // provider's countMembers(); callerless post-flip, dropped in Release B.
   async getOrganizationMemberCount(organizationId: number): Promise<number> {
     const result = await db.select({ count: sql<number>`count(*)` })
       .from(users)
@@ -2079,7 +2084,8 @@ export class DatabaseStorage {
     return Number(result[0]?.count || 0);
   }
 
-  // org-columns: provider — clears organizationId/orgRole behind CoreOrganizations.removeMember().
+  // org-columns: provider — cleared organizationId/orgRole behind the deleted
+  // built-in provider's removeMember(); callerless post-flip.
   async removeUserFromOrganization(userId: number): Promise<User | undefined> {
     const result = await db.update(users)
       .set({ organizationId: null, orgRole: null, updatedAt: new Date() })
@@ -2707,49 +2713,29 @@ export class DatabaseStorage {
     return result[0];
   }
 
-  async upsertOrgSecret(
-    organizationId: number,
-    name: string,
-    encryptedValue: string,
-    createdBy: number,
-    opts?: { brokerType?: string | null; isTestAccount?: boolean }
-  ): Promise<OrgSecret> {
-    const existing = await this.getOrgSecret(organizationId, name);
-    if (existing) {
-      const updates: Partial<typeof orgSecrets.$inferInsert> = { encryptedValue, updatedAt: new Date() };
-      if (opts?.brokerType !== undefined) updates.brokerType = opts.brokerType;
-      if (opts?.isTestAccount !== undefined) updates.isTestAccount = opts.isTestAccount;
-      const result = await db.update(orgSecrets)
-        .set(updates)
-        .where(eq(orgSecrets.id, existing.id))
-        .returning();
-      return result[0];
-    }
-    const result = await db.insert(orgSecrets)
-      .values({
-        organizationId,
-        name,
-        encryptedValue,
-        createdBy,
-        brokerType: opts?.brokerType ?? null,
-        ...(opts?.isTestAccount !== undefined ? { isTestAccount: opts.isTestAccount } : {}),
-      })
-      .returning();
-    return result[0];
-  }
+  // `upsertOrgSecret` (plaintext-opts writer, partial-update semantics) used to
+  // sit here. Task 4 re-pointed the console's org-secret routes to the seam's
+  // `orgs.upsertOrgSecret` (Core-backed by `upsertOrgSecretRow` below), leaving
+  // this one with no production caller at all — only a test seeder, which now
+  // seeds through `upsertOrgSecretRow` too. Deleted rather than left orphaned:
+  // an unreferenced raw org_secrets WRITER is the same reattachable surface the
+  // deleted readers were, and post-flip it would silently mutate the stale Core
+  // table. Its one behavioral quirk (partial update — `brokerType`/
+  // `isTestAccount` preserved when the opt is omitted) is deliberately not
+  // carried over; the provider path always writes both fields explicitly.
 
   async deleteOrgSecret(organizationId: number, name: string): Promise<void> {
     await db.delete(orgSecrets)
       .where(and(eq(orgSecrets.organizationId, organizationId), eq(orgSecrets.name, name)));
   }
 
-  // Ciphertext-only sibling of upsertOrgSecret, for the vox.organizations seam
-  // (server/organizations-core.ts): the caller has already encrypted the value
+  // The org-secret writer, for the vox.organizations seam. Ciphertext-only
+  // (the provider never encrypts): the caller has already encrypted the value
   // (or is passing through a value that was never plaintext to Core in the
   // first place), so this stores `row.encryptedValue` verbatim — no encryptValue
-  // call here or anywhere in the provider. Mirrors upsertOrgSecret's insert/
-  // conflict SQL and preserves the same createdBy-preservation behavior: an
-  // update never touches createdBy, so the original creator survives rotation.
+  // call here or anywhere in the provider. Preserves createdBy across an update,
+  // so the original creator survives rotation (the reason org secrets carry no
+  // credential fingerprint — see shared/credentials.ts).
   async upsertOrgSecretRow(
     organizationId: number,
     row: { name: string; encryptedValue: string; brokerType: string | null; isTestAccount: boolean; createdBy: number }
@@ -2813,18 +2799,13 @@ export class DatabaseStorage {
     return { workflowOrgId: workflow.organizationId, createdBy: job.createdBy ?? null };
   }
 
-  // The decrypt tail, unchanged: RUNTIME rows only. A brokerType row is a
-  // Core-only login credential and is structurally excluded here — it never
-  // reaches an agent by any path.
-  async getDecryptedOrgRuntimeSecrets(organizationId: number): Promise<Record<string, string>> {
-    const secrets = await this.getOrgSecrets(organizationId);
-    const result: Record<string, string> = {};
-    for (const s of secrets) {
-      if (s.brokerType != null) continue; // Core-only — never sent to agents
-      result[s.name] = decryptValue(s.encryptedValue);
-    }
-    return result;
-  }
+  // The org-runtime decrypt tail that used to live here (RUNTIME rows only,
+  // brokered rows structurally excluded) moved to Core as
+  // `decryptOrgRuntimeRows` in server/routes.ts, beside the fence that is its
+  // only caller: its ciphertext rows now come from the `vox.organizations` seam,
+  // and the seam traffics in ciphertext only — decryptValue and the key stay on
+  // the Core side of the boundary. Nothing outside the provider path reads
+  // org-secret DATA through storage any more.
 
   // ==================== WEB SESSIONS ====================
 
@@ -2855,13 +2836,11 @@ export class DatabaseStorage {
     return camel as WebSession;
   }
 
-  /** True iff EVERY named login secret in scope exists and is attested isTestAccount. */
-  async areLoginSecretsAttested(scope: SessionScope, names: string[]): Promise<boolean> {
-    const rows = "userId" in scope
-      ? await this.getSecretsByUserId(scope.userId)
-      : await this.getOrgSecrets(scope.organizationId);
-    return names.every(n => rows.some(r => r.name === n && r.brokerType === "auth-session" && r.isTestAccount));
-  }
+  // The shared-tier login-secret attestation predicate that used to live here
+  // moved to Core as `areLoginSecretsAttested` in server/auth-session.ts: its
+  // org arm reads through the `vox.organizations` seam now, and storage must not
+  // read org-secret data to settle a business question. Its personal arm still
+  // calls this class's getSecretsByUserId — from Core, as any other caller does.
 
   private webSessionScopeWhere(scope: SessionScope) {
     return "userId" in scope
