@@ -39,11 +39,13 @@ npm run db:studio
 ```
 
 **RULE — every `shared/schema.ts` change ships with a migration:**
-1. **`db:generate` is inoperative** — drizzle-kit's meta journal stopped at 0004 and the command now hangs on an interactive enum prompt. Every migration 0005–0036 is hand-written: copy the numbered convention already in `migrations/` and write the SQL yourself.
+1. **`db:generate` is inoperative** — drizzle-kit's meta journal stopped at 0004 and the command now hangs on an interactive enum prompt. Every migration 0005–0037 is hand-written: copy the numbered convention already in `migrations/` and write the SQL yourself.
 2. Register the file in the `MIGRATIONS` array in `server/migrate.ts` — migrations run via a custom version-based runner (`node dist/migrate.cjs` before app start), and an unregistered SQL file is **never applied**
 3. Commit migration + schema change together; migrations apply automatically on next startup
 
 Keep migration SQL plain (`CREATE TABLE`, `ALTER TABLE`) — no `IF NOT EXISTS` / `DO ... EXCEPTION`; each runs exactly once. Never `db:push`/`drizzle-kit push --force` in production (can silently drop columns). Pre-existing databases are auto-baselined at startup (migration 0000 marked applied). `seed-data.ts` is local-dev only; production bootstrap is `/api/auth/init`.
+
+**FK/constraint names diverge by build path — never assume drizzle names in a migration.** `drizzle db:push` (local dev) names constraints `<table>_<col>_<reftable>_<refcol>_fk` (e.g. `workflows_organization_id_organizations_id_fk`); the migration-built path (CI/prod) leaves some on Postgres defaults (`<table>_<col>_fkey`, e.g. `workflows_organization_id_fkey`). A migration doing `DROP CONSTRAINT <assumed-name>` aborts pre-start on whichever DB used the *other* name — this crash-looped prod on migration 0037 (the Release A org-FK drops assumed drizzle names; prod's `workflows`/`eval_sets`/`eval_schedules` were on `_fkey`). When a migration must drop/alter a constraint that might carry either name, query `pg_constraint` first, or `DROP CONSTRAINT IF EXISTS` **both** variants per table — the one place `IF EXISTS` is warranted despite the plain-SQL rule (still runs once, version-gated).
 
 Migration 0036's backfill (`UPDATE eval_jobs ... FROM users`) takes an ACCESS EXCLUSIVE-conflicting write pass over `eval_jobs` — on a large production table, expect a brief pause at deploy. Migrations run pre-start (`dist/migrate.cjs`), so the app is already down; no action needed, noted so the pause isn't mistaken for a hang.
 
@@ -202,11 +204,13 @@ A green gate means all three: unit/integration (Vitest), audio (Docker), E2E (Pl
 - Common tasks: new table → schema.ts → migration → storage.ts → routes.ts; new page → `client/src/pages/` → route in `App.tsx` → `ConsoleLayout` + TanStack Query
 
 ### Organizations Plugin — Release A Runbook
+**Status: Release A is LIVE in prod (2026-09-19).** `main @ 4f1d45f`, schema v38, `VOX_PLUGINS=credits,shared-agents,organizations` on Coolify; `organizations` plugin active, orgs are plugin-backed. Cutover note: the deploy first crash-looped on migration 0037 (FK-name divergence — see the migrations section) and was recovered fix-forward (0037 rewritten to drop both name variants with `IF EXISTS`). Release B (below) remains deferred until Release A soaks.
+
 Enabling `organizations` on an instance that already has org data (Release A cutover):
 1. **DB snapshot first.**
 2. Add `organizations` to `VOX_PLUGINS` in Coolify — **env var only**, no code change.
 3. Deploy with a **stop-then-start, never a rolling restart**: writes the old container makes *after* the plugin's copy migration commits are silently lost (uncopied, and the old release is about to stop reading them anyway) — see `plugins/organizations/migrations/0002_copy_from_core.sql`'s header for why REPEATABLE READ isn't the fix.
 4. **Fail-closed by design:** a parity or preflight failure in the copy migration aborts the migration transaction — the container refuses to start and the old release keeps serving. The three named preflight errors (duplicate `org_secrets` names, dangling `users.organization_id`, dangling `org_secrets.organization_id`) name the offending rows directly.
 5. **Verify after deploy:** `GET /api/plugins` lists `organizations`; `GET /api/plugins/organizations/health` is `ok`; the startup log shows `plugins loaded: ...` including `organizations`.
-6. **Never remove `organizations` from an instance with org data** — it would silently make membership inert (Phase-1 absence semantics), not fall back to the old columns. `vox.agora.build` omits it deliberately today (no orgs to migrate).
+6. **Never remove `organizations` from an instance with org data** — it would silently make membership inert (Phase-1 absence semantics), not fall back to the old columns. `vox.agora.build` now runs `organizations` in prod (enabled 2026-09-19); once enabled on an instance, it stays enabled.
 7. Release B (dropping `users.organization_id`/`org_role`, `public.organizations`/`org_secrets`, and the ~38 dead `storage.ts` methods) is a **separate release after soak** — a one-way door; snapshot again before taking it.

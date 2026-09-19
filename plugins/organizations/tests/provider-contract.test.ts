@@ -4,7 +4,7 @@
 // are kept recognizably parallel to that file; seeding swaps storage-fixture
 // objects for direct SQL through the per-worker harness.
 //
-// THIS FILE IS THAT CORPUS NOW: the Release A flip (Task 7) deleted both
+// THIS FILE IS THAT CORPUS NOW: the Release A flip deleted both
 // CoreOrganizations and tests/organizations-core.test.ts, so the citations to
 // them here are historical pointers into git history (`git show
 // b13c12a:tests/organizations-core.test.ts`). Every case of the old suite lives
@@ -14,7 +14,7 @@
 // Deliberately NOT ported: CoreOrganizations' "treats a null org_role as
 // 'member'" case. That's a Core-column artifact (users.org_role is nullable);
 // the plugin's `memberships.role` is NOT NULL, and the null->'member' mapping
-// happens once, at COPY-migration time (Task 4) — not on every read.
+// happens once, at COPY-migration time — not on every read.
 import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
 import { setupOrganizationsDb, type OrgsHarness } from "../../../tests/helpers/organizations-db";
 import type { Organization, OrganizationsProvider as PluginContract } from "../server/types";
@@ -188,7 +188,7 @@ d("organizations plugin provider — reads", () => {
 
 // Mutations + org secrets, PORTED from tests/organizations-core.test.ts
 // (CoreOrganizations "mutation" cases at the bottom of that file), plus the
-// plugin-specific cases called out in the Task 3 brief (atomic create, the
+// plugin-specific cases (atomic create, the
 // 23505 race backstop, the org-scoped removeMember tightening). Runs in its
 // own harness/schema so this block's writes never leak into the read-only
 // fixtures above.

@@ -177,11 +177,13 @@ function countMarkers(relPath: string): number {
     .filter((l) => l.includes(MARKER)).length;
 }
 
-// Step 3's enumeration: after Tasks 5-9 removed the business-logic org-column
-// SQL from routes, the sites below are what legitimately remains in storage.ts —
-// the surface the deleted built-in provider was built on, now DEAD CODE kept
-// only because Release B deletes it together with the columns and tables.
-const EXPECTED_MARKERS = 7;
+// The org-column markers that legitimately remain in storage.ts after the
+// Release B dead-code cleanup: getUser and updateUser (general-purpose user
+// row read/write that still carry the frozen organizationId/orgRole columns)
+// and getUsersByIds (batch row read). The callerless provider-serving methods
+// behind the other markers were deleted; the frozen columns/tables themselves
+// drop in the final Release B step.
+const EXPECTED_MARKERS = 3;
 
 describe("organizations boundary", () => {
   it("no user-shaped org-column read outside the provider, storage, and the structural predicates", () => {
@@ -428,15 +430,14 @@ describe("organizations boundary", () => {
   const STORAGE_ORG_SECRET_ACCESSOR = /\b(?:storage|this)\.(?:get|upsert|delete)OrgSecret[A-Za-z]*\b/;
 
   // Every method in server/storage.ts allowed to touch the `orgSecrets` table.
-  // All four are leftovers of the deleted built-in provider's serving surface
-  // (listOrgSecrets/upsertOrgSecret/deleteOrgSecret called them; getOrgSecret was
-  // their shared existence probe) — callerless since the Release A flip, deleted
-  // with the table in Release B. A NEW name here must be a conscious act — that
-  // is what the pinned length below buys.
+  // The Release B dead-code cleanup deleted the callerless raw readers
+  // (getOrgSecrets/deleteOrgSecret); the two that remain are the test-seeder
+  // writer (upsertOrgSecretRow) and its shared existence probe (getOrgSecret,
+  // which upsertOrgSecretRow calls) — both drop with the table in the final
+  // Release B step. A NEW name here must be a conscious act — that is what the
+  // pinned length below buys.
   const ORG_SECRET_TABLE_METHODS = [
-    "getOrgSecrets",
     "getOrgSecret",
-    "deleteOrgSecret",
     "upsertOrgSecretRow",
   ];
 
@@ -477,7 +478,7 @@ describe("organizations boundary", () => {
   it("(a) the enumerated org_secrets method list is pinned, so a new raw reader is a conscious act", () => {
     // Guards the allow-list itself: without this, "fix the test" is to append a
     // name, which is exactly the silent widening this pin exists to prevent.
-    expect(ORG_SECRET_TABLE_METHODS).toHaveLength(4);
+    expect(ORG_SECRET_TABLE_METHODS).toHaveLength(2);
     const storageTs = path.resolve(__dirname, "../server/storage.ts");
     const methods = new Set(enclosingMethodsOf(storageTs, ORG_SECRETS_TABLE).map((h) => h.method));
     methods.delete("<module>");
@@ -512,7 +513,7 @@ describe("organizations boundary", () => {
     //     accessor, so only the method enumeration can catch it. Includes a
     //     legitimately-enumerated method above it to prove the scan discriminates.
     writeFileSync(path.join(tmp, "storage.ts"), [
-      "  async getOrgSecrets(organizationId: number): Promise<OrgSecret[]> {",
+      "  async getOrgSecret(organizationId: number, name: string): Promise<OrgSecret | undefined> {",
       "    return db.select().from(orgSecrets);",
       "  }",
       "",

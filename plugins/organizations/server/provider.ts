@@ -61,12 +61,11 @@ function isUniqueViolation(err: unknown, constraint: string): boolean {
   );
 }
 
-// Task 2 implemented the seven reads test-first against plugin_organizations
-// tables (see migrations/0001_init.sql); Task 3 completes the remaining nine
-// mutation + org-secret methods, equivalence-locked to CoreOrganizations
-// (server/organizations-core.ts).
+// This provider implements all 16 seam methods over the plugin_organizations
+// tables (see migrations/0001_init.sql), equivalence-locked to the original
+// CoreOrganizations (server/organizations-core.ts).
 //
-// NOTE: that file no longer exists — the Release A flip (Task 7) deleted it, so
+// NOTE: that file no longer exists — the Release A flip deleted it, so
 // this provider is now the ONLY implementation of the seam. Every
 // `CoreOrganizations` / `organizations-core.ts:NN` citation below is HISTORICAL,
 // kept because it records exactly which behavior each method is locked to; read

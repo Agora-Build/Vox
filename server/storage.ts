@@ -400,12 +400,6 @@ export class DatabaseStorage {
     return db.select().from(users).orderBy(desc(users.createdAt));
   }
 
-  // org-columns: provider — row fetch behind the deleted built-in provider's
-  // listMembers(); callerless since the Release A flip, dropped in Release B.
-  async getUsersByOrganization(organizationId: number): Promise<User[]> {
-    return db.select().from(users).where(eq(users.organizationId, organizationId)).orderBy(desc(users.createdAt));
-  }
-
   // org-columns: provider — batch row fetch behind the deleted built-in
   // provider's getMemberships(); still used by non-org batch callers.
   async getUsersByIds(ids: number[]): Promise<User[]> {
@@ -413,23 +407,14 @@ export class DatabaseStorage {
     return db.select().from(users).where(inArray(users.id, Array.from(new Set(ids))));
   }
 
+  // Test-only org seeder: writes the frozen public.organizations table directly.
+  // Production creates orgs through the vox.organizations seam
+  // (orgs.createOrganization). This and upsertOrgSecretRow below are the last
+  // storage.ts org writers left after the Release B dead-code cleanup — kept
+  // only for the test seeders that target the Core tables Release B finally drops.
   async createOrganization(org: InsertOrganization): Promise<Organization> {
     const result = await db.insert(organizations).values(org).returning();
     return result[0];
-  }
-
-  async getOrganization(id: number): Promise<Organization | undefined> {
-    const result = await db.select().from(organizations).where(eq(organizations.id, id));
-    return result[0];
-  }
-
-  async updateOrganization(id: number, data: Partial<Organization>): Promise<Organization | undefined> {
-    const result = await db.update(organizations).set({ ...data, updatedAt: new Date() }).where(eq(organizations.id, id)).returning();
-    return result[0];
-  }
-
-  async getAllOrganizations(): Promise<Organization[]> {
-    return db.select().from(organizations).orderBy(desc(organizations.createdAt));
   }
 
   async createProvider(provider: Omit<InsertProvider, 'id'>): Promise<Provider> {
@@ -2065,35 +2050,6 @@ export class DatabaseStorage {
     return result[0];
   }
 
-  // Organization helper methods
-  // org-columns: provider — raw admin/owner count behind the deleted built-in
-  // provider's countOrgAdmins(); callerless post-flip, dropped in Release B.
-  async countOrgAdmins(organizationId: number): Promise<number> {
-    const result = await db.select({ count: sql<number>`count(*)` })
-      .from(users)
-      .where(and(eq(users.organizationId, organizationId), inArray(users.orgRole, ['owner', 'admin'])));
-    return Number(result[0]?.count || 0);
-  }
-
-  // org-columns: provider — raw member count behind the deleted built-in
-  // provider's countMembers(); callerless post-flip, dropped in Release B.
-  async getOrganizationMemberCount(organizationId: number): Promise<number> {
-    const result = await db.select({ count: sql<number>`count(*)` })
-      .from(users)
-      .where(eq(users.organizationId, organizationId));
-    return Number(result[0]?.count || 0);
-  }
-
-  // org-columns: provider — cleared organizationId/orgRole behind the deleted
-  // built-in provider's removeMember(); callerless post-flip.
-  async removeUserFromOrganization(userId: number): Promise<User | undefined> {
-    const result = await db.update(users)
-      .set({ organizationId: null, orgRole: null, updatedAt: new Date() })
-      .where(eq(users.id, userId))
-      .returning();
-    return result[0];
-  }
-
   async getDefaultPaymentMethod(organizationId: number): Promise<PaymentMethod | undefined> {
     const result = await db.select()
       .from(paymentMethods)
@@ -2701,12 +2657,6 @@ export class DatabaseStorage {
 
   // ==================== ORG SECRETS ====================
 
-  async getOrgSecrets(organizationId: number): Promise<OrgSecret[]> {
-    return db.select().from(orgSecrets)
-      .where(eq(orgSecrets.organizationId, organizationId))
-      .orderBy(desc(orgSecrets.createdAt));
-  }
-
   async getOrgSecret(organizationId: number, name: string): Promise<OrgSecret | undefined> {
     const result = await db.select().from(orgSecrets)
       .where(and(eq(orgSecrets.organizationId, organizationId), eq(orgSecrets.name, name)));
@@ -2714,7 +2664,7 @@ export class DatabaseStorage {
   }
 
   // `upsertOrgSecret` (plaintext-opts writer, partial-update semantics) used to
-  // sit here. Task 4 re-pointed the console's org-secret routes to the seam's
+  // sit here. The console's org-secret routes were re-pointed to the seam's
   // `orgs.upsertOrgSecret` (Core-backed by `upsertOrgSecretRow` below), leaving
   // this one with no production caller at all — only a test seeder, which now
   // seeds through `upsertOrgSecretRow` too. Deleted rather than left orphaned:
@@ -2723,11 +2673,6 @@ export class DatabaseStorage {
   // table. Its one behavioral quirk (partial update — `brokerType`/
   // `isTestAccount` preserved when the opt is omitted) is deliberately not
   // carried over; the provider path always writes both fields explicitly.
-
-  async deleteOrgSecret(organizationId: number, name: string): Promise<void> {
-    await db.delete(orgSecrets)
-      .where(and(eq(orgSecrets.organizationId, organizationId), eq(orgSecrets.name, name)));
-  }
 
   // The org-secret writer, for the vox.organizations seam. Ciphertext-only
   // (the provider never encrypts): the caller has already encrypted the value
