@@ -5680,7 +5680,7 @@ export async function registerRoutes(
       // Create organization seat record
       await storage.createOrganizationSeat({
         organizationId: org.id,
-        totalSeats: 0,
+        totalSeats: 1, // Creator's seat is included by default
         usedSeats: 1, // Creator takes a seat
         pricePerSeat: 600,
         discountPercent: 0,
