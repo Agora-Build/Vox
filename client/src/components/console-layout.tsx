@@ -186,9 +186,9 @@ export default function ConsoleLayout({ children }: ConsoleLayoutProps) {
     });
     navItems.push({
       title: "Organizations",
-      url: "/admin/console/organizations",
+      url: "/console/organizations",
       icon: Building2,
-      active: location === "/admin/console/organizations",
+      active: location === "/console/organizations",
     });
   }
 

@@ -1041,7 +1041,7 @@ function Router() {
       <Route path="/console/organization/create">
         <ConsoleOrganizationCreateWrapper />
       </Route>
-      <Route path="/admin/console/organizations">
+      <Route path="/console/organizations">
         <AdminOrganizationsWrapper />
       </Route>
       <Route path="/admin/console/fund-returns">
