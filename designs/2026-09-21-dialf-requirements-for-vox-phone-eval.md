@@ -95,6 +95,12 @@ A per-job hard cap that hangs up and ends the job with a distinct outcome. Vox c
 
 The control socket is multi-client (correct — the CLI is a client too), and `autoanswer.serve` is already exclusive. But while a `job.run` is mid-call, mutating ops from **other** connections (`call.hangup`/`call.dial`/`audio.play`/a second `job.run`) are not rejected — a concurrent CLI command can kill a live eval. Interference fails *clean* (far-end-hangup path → steps `skipped`, Vox discards partials), so this costs wasted runs/PSTN minutes, not corrupt data — hence nice-to-have. Proposed: while a job or serve session is active, reject mutating ops from other connections with a `busy` error + an explicit force flag for operator rescue. (Vox's v1 mitigation regardless: per-user `dialfd` owned by the eval-agent user, CLI reserved for provisioning/diagnostics.)
 
+### R7 — Machine-readable results for serve-answered calls (needed for the trigger/inbound eval mode)
+
+**Status of v0.3.8:** R1/R2/R3 landed (thank you — verified against the release) and the **outbound** eval mode (`job.run` with `call.dial`) is fully integrated in Vox. The **trigger mode** (Vox triggers the agent via browser/REST; the agent calls us; `autoanswer.serve` answers) is blocked on result acquisition: the serve event stream is human-only by contract, and no structured result (step outcomes / recording paths / call metadata) is exposed for a serve-answered job. Racing `call.answer` inside a `job.run` against the ring is not a foundation.
+
+Proposed (either works for Vox): **(a)** persist the same result JSON `job.run` returns next to the recordings for serve-answered jobs (deterministic path keyed by the serve label), or **(b)** a `call.wait_for_ring {timeout_ms}` step so an ordinary `job.run` can own an inbound call end-to-end (Vox prefers (b): one code path, structured result for free, no filesystem contract).
+
 ### R5 — Future (not needed for v1; flagging direction)
 
 - `call.dtmf {digits}` — IVR menu navigation *before* the conversation ("press 2 for support"), used in Vox workflow session-establishment.
