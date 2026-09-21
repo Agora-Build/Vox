@@ -16,6 +16,7 @@ on:
       - 'vite.config.ts'
       - 'drizzle.config.ts'
       - 'vox_eval_agentd/**'
+      - 'vox_rest_broker/**'
       - 'vox_clash_runner/**'
       - '.dockerignore'
       - '.github/workflows/docker.yml'

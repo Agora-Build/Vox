@@ -35,6 +35,22 @@ describe("assertSafeTarget (SSRF guard)", () => {
   });
 });
 
+describe("createRestBrokerServer /health", () => {
+  it("answers GET /health 200 without auth (deploy healthcheck)", async () => {
+    const { createRestBrokerServer } = await import("../vox_rest_broker/rest-broker");
+    const server = createRestBrokerServer(() => undefined);
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
+    const port = (server.address() as { port: number }).port;
+    const res = await fetch(`http://127.0.0.1:${port}/health`);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ status: "ok" });
+    // /execute still requires the mint secret.
+    const exec = await fetch(`http://127.0.0.1:${port}/execute`, { method: "POST", body: "{}" });
+    expect(exec.status).toBe(401);
+    await new Promise<void>((r) => server.close(() => r()));
+  });
+});
+
 describe("executeTarget", () => {
   it("performs the request and returns capped status+excerpt", async () => {
     const calls: any[] = [];
