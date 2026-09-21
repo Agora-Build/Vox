@@ -250,6 +250,14 @@ export function validateWorkflowConfig(config: unknown): { valid: boolean; error
     const v = validateRestfulTrigger(c.restfulTrigger);
     if (!v.valid) return v;
   }
+  if (c.phoneDial !== undefined) {
+    const p = c.phoneDial as Record<string, unknown>;
+    if (typeof p !== "object" || p === null || Array.isArray(p)
+      || Object.keys(p).some((k) => k !== "number")
+      || typeof p.number !== "string" || !/^\+?[0-9 ()-]{5,20}$/.test(p.number)) {
+      return { valid: false, error: "phoneDial must be { number: '<phone number>' }" };
+    }
+  }
   if (JSON.stringify(config).length > MAX_CONFIG_SIZE) {
     return { valid: false, error: "Config too large (max 100KB)" };
   }

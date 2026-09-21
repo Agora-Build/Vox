@@ -38,6 +38,8 @@ import { summarizeAevalFailure, reduceUrlsSafely, urlForms, createBoundedCapture
 import { StringDecoder } from 'string_decoder';
 import yaml from 'js-yaml';
 import { injectStorageSession } from './session-inject';
+import { DialfClient, probeDialf, resolveDialfSocketPath, type DialfProbe } from './dialf-client';
+import { runPhoneJob } from './phone-eval';
 import {
   CHUNK_SIZE,
   type ParsedScenario,
@@ -80,6 +82,8 @@ interface EvalJob {
   siteId: string | null;
   status: string;
   config: Record<string, unknown> | null;
+  // Conversation transport frozen on the job (Phase A); absent on legacy rows = web.
+  transport?: string;
 }
 
 interface EvalResult {
@@ -234,6 +238,12 @@ class VoxEvalAgentDaemon {
   // Decrypted values of the ACTIVE job's secrets, used only to scrub them out of
   // any error text we persist. The daemon runs one job at a time.
   private activeSecretValues: string[] = [];
+  // DialF capability probe, cached briefly so register + every heartbeat don't
+  // each pay 4 socket round-trips. A vanished DialF/phone drops the capability
+  // on the next refresh (self-healing, Phase A semantics).
+  private dialfProbeCache: { at: number; probe: DialfProbe } | null = null;
+  // callMetadata from the current phone job, sent with completeJob.
+  private lastCallMetadata: Record<string, unknown> | null = null;
 
   constructor(config: DaemonConfig) {
     this.config = config;
@@ -319,6 +329,20 @@ class VoxEvalAgentDaemon {
     return metadata;
   }
 
+  /** Current capability declaration (Phase A §8): ["phone"] iff a healthy
+   *  DialF ≥0.3.8 with a connected phone answers the probe; cached 30s. */
+  private async currentCapabilities(): Promise<string[]> {
+    const now = Date.now();
+    if (!this.dialfProbeCache || now - this.dialfProbeCache.at > 30_000) {
+      const probe = await probeDialf().catch(() => ({ ok: false, reason: 'probe threw' } as DialfProbe));
+      if (probe.ok !== this.dialfProbeCache?.probe.ok) {
+        console.log(`[Daemon] DialF probe: ${probe.ok ? `ok (v${probe.version})` : `unavailable (${probe.reason})`}`);
+      }
+      this.dialfProbeCache = { at: now, probe };
+    }
+    return this.dialfProbeCache.probe.ok ? ['phone'] : [];
+  }
+
   async register(): Promise<boolean> {
     console.log(`[Daemon] Registering with Vox server: ${this.config.serverUrl}`);
 
@@ -327,7 +351,7 @@ class VoxEvalAgentDaemon {
 
       const response = await this.fetch('/api/eval-agent/register', {
         method: 'POST',
-        body: JSON.stringify({ name: this.config.name, metadata }),
+        body: JSON.stringify({ name: this.config.name, metadata, capabilities: await this.currentCapabilities() }),
       });
 
       if (!response.ok) {
@@ -392,6 +416,7 @@ class VoxEvalAgentDaemon {
           leaseId: this.leaseId,
           state: this.isRunningJob ? 'occupied' : 'idle',
           metadata: this.buildMetadata(),
+          capabilities: await this.currentCapabilities(),
         }),
       });
 
@@ -453,7 +478,11 @@ class VoxEvalAgentDaemon {
       console.log(`[Daemon] Completing job ${jobId}...`);
       const response = await this.fetch(`/api/eval-agent/jobs/${jobId}/complete`, {
         method: 'POST',
-        body: JSON.stringify({ agentId: this.agentId, leaseId: this.leaseId, results }),
+        body: JSON.stringify({
+          agentId: this.agentId, leaseId: this.leaseId, results,
+          // Phone jobs attach call detail (design §7); null/absent for web.
+          ...(this.lastCallMetadata ? { callMetadata: this.lastCallMetadata } : {}),
+        }),
       });
 
       await this.exitIfSuperseded(response);
@@ -1913,7 +1942,109 @@ class VoxEvalAgentDaemon {
   // Job execution
   // -------------------------------------------------------------------------
 
+  // -------------------------------------------------------------------------
+  // Phone transport (design 2026-09-21 §6; DialF ≥ v0.3.8)
+  // -------------------------------------------------------------------------
+
+  // id → absolute file, set → ids; from aeval-data/config/corpus/*.yaml. Loaded
+  // once per process — corpus data only changes with an image/submodule bump.
+  private corpusIndex: { files: Map<string, string>; sets: Map<string, string[]> } | null = null;
+
+  private loadCorpusIndex(): { files: Map<string, string>; sets: Map<string, string[]> } {
+    if (this.corpusIndex) return this.corpusIndex;
+    const files = new Map<string, string>();
+    const sets = new Map<string, string[]>();
+    const dir = path.join(AEVAL_DATA_PATH, 'config', 'corpus');
+    try {
+      for (const f of fs.readdirSync(dir)) {
+        if (!f.endsWith('.yaml') && !f.endsWith('.yml')) continue;
+        const doc = yaml.load(fs.readFileSync(path.join(dir, f), 'utf-8')) as {
+          items?: Array<{ id?: string; file?: string }>;
+          corpus_sets?: Record<string, { items?: string[] }>;
+        };
+        for (const item of doc?.items ?? []) {
+          if (item.id && item.file) files.set(item.id, path.resolve(AEVAL_DATA_PATH, item.file));
+        }
+        for (const [name, set] of Object.entries(doc?.corpus_sets ?? {})) {
+          if (Array.isArray(set?.items)) sets.set(name, set.items);
+        }
+      }
+    } catch (e) {
+      console.warn(`[Daemon] corpus index load failed:`, e instanceof Error ? e.message : e);
+    }
+    this.corpusIndex = { files, sets };
+    return this.corpusIndex;
+  }
+
+  /** `aeval analyze <sessionDir>` — non-zero exit throws (failure policy). */
+  private runAevalAnalyze(sessionDir: string): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const proc = spawn('aeval', ['analyze', sessionDir], { cwd: AEVAL_DATA_PATH, stdio: ['ignore', 'pipe', 'pipe'] });
+      const capture = createBoundedCapture();
+      proc.stdout.on('data', (d) => capture.push(d.toString()));
+      proc.stderr.on('data', (d) => capture.push(d.toString()));
+      const timer = setTimeout(() => {
+        proc.kill('SIGKILL');
+        reject(new Error('aeval analyze exceeded 10 minutes'));
+      }, 10 * 60 * 1000);
+      proc.on('close', (code) => {
+        clearTimeout(timer);
+        if (code === 0) resolve();
+        else reject(new Error(`aeval analyze exited ${code}: ${summarizeAevalFailure(capture.text())}`));
+      });
+      proc.on('error', (err) => { clearTimeout(timer); reject(err); });
+    });
+  }
+
+  async executePhoneJob(job: EvalJob): Promise<EvalResult> {
+    console.log(`[Daemon] Executing PHONE job ${job.id} (DialF)`);
+    const probe = await probeDialf();
+    if (!probe.ok) throw new Error(`phone capability unavailable: ${probe.reason}`);
+
+    const config = (job.config || {}) as Record<string, unknown>;
+    if (typeof config.scenario !== 'string') throw new Error('job.config.scenario is required');
+    const parsed = yaml.load(config.scenario) as { steps?: unknown[] } | undefined;
+    if (!Array.isArray(parsed?.steps)) throw new Error('phone scenario has no steps');
+
+    const corpus = this.loadCorpusIndex();
+    const phoneDial = (config.phoneDial ?? undefined) as { number?: string } | undefined;
+    const workDir = fs.mkdtempSync(path.join(os.tmpdir(), `vox-phone-${job.id}-`));
+
+    const client = new DialfClient(resolveDialfSocketPath());
+    await client.connect();
+    try {
+      const out = await runPhoneJob(
+        {
+          jobId: job.id,
+          scenarioSteps: parsed!.steps!,
+          phoneDial: phoneDial?.number ? { number: phoneDial.number } : undefined,
+          hasRestfulTrigger: config.restfulTrigger !== undefined,
+          resolveCorpusFile: (id) => corpus.files.get(id) ?? null,
+          resolveCorpusSet: (name) => corpus.sets.get(name) ?? null,
+        },
+        {
+          dialfCall: (op, fields, timeoutMs) => client.call(op, fields, timeoutMs),
+          analyze: (dir) => this.runAevalAnalyze(dir),
+          parseMetrics: (dir) => {
+            const metricsFile = path.join(dir, 'analysis', 'metrics.json');
+            return fs.existsSync(metricsFile)
+              ? (this.tryParseMetricsJson(metricsFile) as Record<string, unknown> | null)
+              : null;
+          },
+          workDir,
+        },
+      );
+      this.lastCallMetadata = out.callMetadata;
+      this.jobOutputDirs.push(out.sessionDir); // artifact upload covers the session
+      return out.result as unknown as EvalResult;
+    } finally {
+      client.close();
+    }
+  }
+
   async executeJob(job: EvalJob): Promise<EvalResult> {
+    if (job.transport === 'phone') return this.executePhoneJob(job);
+
     console.log(`[Daemon] Executing job ${job.id}`);
     console.log(`  - Workflow ID: ${job.workflowId}`);
     console.log(`  - Site: ${job.siteId}`);
@@ -2119,6 +2250,7 @@ class VoxEvalAgentDaemon {
     this.currentJobId = job.id;
     this.lastOutputDir = null;
     this.jobOutputDirs = [];
+    this.lastCallMetadata = null;
     try {
       const results = await this.executeJob(job);
       await this.completeJob(job.id, results);

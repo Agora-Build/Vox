@@ -289,6 +289,30 @@ d("phone transport — workflow API (HTTP, dev server)", () => {
     expect(res.status).toBe(400);
   });
 
+  it("validates phoneDial config and refuses running a phone workflow without call establishment", async () => {
+    const badDial = await mkWorkflow({ transport: "phone", config: { phoneDial: { number: "abc" } } });
+    expect(badDial.status).toBe(400);
+    const extraField = await mkWorkflow({ transport: "phone", config: { phoneDial: { number: "+15551234", sim: "x" } } });
+    expect(extraField.status).toBe(400);
+
+    const okDial = await mkWorkflow({ transport: "phone", config: { phoneDial: { number: "+1 (555) 010-1234" } } });
+    expect(okDial.ok).toBe(true);
+    created.push((await okDial.json()).id);
+
+    // Phone workflow with NEITHER phoneDial nor restfulTrigger: creatable, but
+    // running it is refused at the source (design §4).
+    const bare = await mkWorkflow({ transport: "phone" });
+    const bareWf = await bare.json();
+    created.push(bareWf.id);
+    const run = await fetch(`${BASE_URL}/api/workflows/${bareWf.id}/run`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Cookie: cookie },
+      body: JSON.stringify({ region: "na-us-ashburn", targetTier: "private" }),
+    });
+    expect(run.status).toBe(400);
+    expect((await run.json()).error).toContain("phoneDial or restfulTrigger");
+  });
+
   it("PATCH can flip transport", async () => {
     const res = await mkWorkflow({});
     const wf = await res.json();

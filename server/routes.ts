@@ -4624,6 +4624,15 @@ export async function registerRoutes(
         return res.status(403).json({ error: "Not authorized to run this workflow" });
       }
 
+      // A phone-transport workflow needs a call-establishment mechanism (design
+      // §4): refuse at the source rather than create a job the daemon must fail.
+      if (workflow.transport === "phone") {
+        const wfConfig = (workflow.config ?? {}) as Record<string, unknown>;
+        if (wfConfig.phoneDial === undefined && wfConfig.restfulTrigger === undefined) {
+          return res.status(400).json({ error: "phone workflow needs phoneDial or restfulTrigger in its config" });
+        }
+      }
+
       // An org-owned workflow is unrunnable while organizations are unavailable:
       // its secret fence resolves org secrets through the seam and would return
       // {}, so the job would be created only to fail on unresolved placeholders —
