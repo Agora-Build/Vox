@@ -12,7 +12,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Pagination, PaginationContent, PaginationItem, PaginationLink, PaginationNext, PaginationPrevious, PaginationEllipsis } from "@/components/ui/pagination";
-import { ClipboardList, CheckCircle, XCircle, Loader2, Clock, CalendarClock, CalendarPlus, MousePointerClick, MoreHorizontal, Pause, Play, Pencil, Trash2, Zap, AlertTriangle } from "lucide-react";
+import { ClipboardList, CheckCircle, XCircle, Loader2, Clock, CalendarClock, CalendarPlus, MousePointerClick, MoreHorizontal, Pause, Play, Pencil, Trash2, Zap, AlertTriangle, Phone } from "lucide-react";
 import { useState } from "react";
 import { useToast } from "@/hooks/use-toast";
 import { useLocation, useSearch, Link } from "wouter";
@@ -584,9 +584,16 @@ function JobsTab() {
                     return (
                       <TableRow key={job.id} data-testid={`row-job-${job.id}`}>
                         <TableCell className="font-mono">
-                          <Link href={`/console/eval-jobs/${job.id}`}>
-                            <span className="text-primary hover:underline cursor-pointer">#{job.id}</span>
-                          </Link>
+                          <div className="flex items-center gap-1">
+                            <Link href={`/console/eval-jobs/${job.id}`}>
+                              <span className="text-primary hover:underline cursor-pointer">#{job.id}</span>
+                            </Link>
+                            {job.transport === "phone" && (
+                              <Badge variant="outline" className="gap-1 text-xs" data-testid={`badge-phone-job-${job.id}`}>
+                                <Phone className="h-3 w-3" /> Phone
+                              </Badge>
+                            )}
+                          </div>
                         </TableCell>
                         <TableCell className="font-medium">
                           {job.workflowId != null ? (
