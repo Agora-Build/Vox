@@ -173,6 +173,80 @@ export function toCallMetadata(call: DialfJobResult['call']): Record<string, unk
   };
 }
 
+// ---- orchestration ----------------------------------------------------------
+
+export interface PhoneRunDeps {
+  /** One-shot DialF op on a dedicated connection (DialfClient.call). */
+  dialfCall: (op: string, fields: Record<string, unknown>, timeoutMs?: number) => Promise<unknown>;
+  /** Run `aeval analyze <sessionDir>`; throws on non-zero exit. */
+  analyze: (sessionDir: string) => Promise<void>;
+  /** Parse metrics from the analyzed session dir; null = nothing usable. */
+  parseMetrics: (sessionDir: string) => Record<string, unknown> | null;
+  /** Working directory for the session layout (job-scoped temp). */
+  workDir: string;
+}
+
+export interface PhoneRunConfig {
+  jobId: number;
+  scenarioSteps: unknown[];
+  /** Outbound mode: we call the agent (design §4 — "We call the agent"). */
+  phoneDial?: { number: string };
+  /** Trigger mode flag (agent calls us) — NOT yet supported, see below. */
+  hasRestfulTrigger: boolean;
+  resolveCorpusFile: CompileOpts['resolveCorpusFile'];
+  resolveCorpusSet?: CompileOpts['resolveCorpusSet'];
+}
+
+export interface PhoneRunOutput {
+  result: Record<string, unknown>;
+  callMetadata: Record<string, unknown> | null;
+  sessionDir: string;
+}
+
+/**
+ * Execute one phone-transport job end to end. v1 supports the OUTBOUND mode
+ * fully (dial → conversation → structured result → analyze). The
+ * trigger/inbound mode (agent dials us after a browser/restful trigger) is
+ * deliberately unsupported until DialF exposes a machine-readable result for
+ * serve-answered calls or a wait-for-ring step (requirements doc R7): serve
+ * event strings are human-only by contract, and racing `call.answer` against
+ * the ring is not a foundation.
+ */
+export async function runPhoneJob(cfg: PhoneRunConfig, deps: PhoneRunDeps): Promise<PhoneRunOutput> {
+  if (!cfg.phoneDial?.number) {
+    throw new Error(cfg.hasRestfulTrigger
+      ? 'phone trigger mode (agent calls us) is not yet supported — pending DialF machine-readable serve results (R7); use phoneDial'
+      : 'phone workflow config needs phoneDial.number');
+  }
+  const compiled = compilePhoneConversation(cfg.scenarioSteps, {
+    resolveCorpusFile: cfg.resolveCorpusFile,
+    resolveCorpusSet: cfg.resolveCorpusSet,
+  });
+  if (!compiled.ok) throw new Error(`phone conversation compile failed: ${compiled.error}`);
+
+  const steps = buildOutboundJob(cfg.phoneDial.number, compiled.steps);
+  const timeoutMs = sumStepTimeouts(steps);
+  const result = (await deps.dialfCall(
+    'job.run',
+    { name: `vox-job-${cfg.jobId}`, steps },
+    timeoutMs,
+  )) as DialfJobResult;
+
+  const disposition = result.call?.end_reason ?? 'unknown';
+  // far_end_hangup mid-conversation is a FAILED eval (partial results are never
+  // reported — existing policy); completed is the only success disposition.
+  if (disposition !== 'completed') {
+    throw new Error(`call did not complete: disposition=${disposition}`);
+  }
+
+  const sessionDir = buildSessionDir(result, deps.workDir);
+  await deps.analyze(sessionDir); // throws → job fails (policy)
+  const metrics = deps.parseMetrics(sessionDir);
+  if (!metrics) throw new Error('analysis produced no usable metrics');
+
+  return { result: metrics, callMetadata: toCallMetadata(result.call), sessionDir };
+}
+
 /**
  * Lay the DialF outputs out as a session directory for `aeval analyze`:
  *   <dest>/recordings/  — rx/tx/mix wavs (copied; analyze owns the dir)

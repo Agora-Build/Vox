@@ -4,7 +4,7 @@ import * as os from "os";
 import * as path from "path";
 import {
   compilePhoneConversation, buildOutboundJob, sumStepTimeouts,
-  toCallMetadata, buildSessionDir,
+  toCallMetadata, buildSessionDir, runPhoneJob,
 } from "../vox_eval_agentd/phone-eval";
 
 const corpus = (id: string) => (id.startsWith("known") ? `/abs/corpus/${id}.wav` : null);
@@ -83,6 +83,77 @@ describe("toCallMetadata", () => {
       sim: "sim1", fromRedacted: "…9876",
     });
     expect(toCallMetadata(undefined)).toBeNull();
+  });
+});
+
+describe("runPhoneJob (orchestration, injected deps)", () => {
+  const mkDeps = (overrides: Partial<Parameters<typeof runPhoneJob>[1]> = {}) => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "phone-run-"));
+    const rx = path.join(tmp, "rx.wav");
+    fs.writeFileSync(rx, "RIFF");
+    const calls: any[] = [];
+    const deps = {
+      dialfCall: async (op: string, fields: any, timeoutMs?: number) => {
+        calls.push({ op, fields, timeoutMs });
+        return {
+          steps: [{ index: 0, id: "dial", type: "call.dial", t_start_ms: 0, t_end_ms: 100, end_reason: "completed" }],
+          recording: { rx, t0_epoch_ms: 1 },
+          call: { end_reason: "completed", answer_latency_ms: 4000, duration_ms: 30000, remote_number: "+15550109876" },
+        };
+      },
+      analyze: async (dir: string) => {
+        fs.mkdirSync(path.join(dir, "analysis"), { recursive: true });
+      },
+      parseMetrics: () => ({ responseLatencyMedian: 900, turnSuccessRate: 0.9 }),
+      workDir: path.join(tmp, "session"),
+      ...overrides,
+    };
+    return { deps, calls, tmp };
+  };
+
+  const cfg = {
+    jobId: 42,
+    scenarioSteps: [
+      { type: "audio.play", corpus_id: "known_q1" },
+      { type: "audio.wait_for_speech", end_timeout_ms: 40000 },
+    ],
+    phoneDial: { number: "+15551234" },
+    hasRestfulTrigger: false,
+    resolveCorpusFile: corpus,
+  };
+
+  it("happy path: dial job dispatched with sized timeout, metrics + callMetadata returned", async () => {
+    const { deps, calls, tmp } = mkDeps();
+    const out = await runPhoneJob(cfg, deps as any);
+    expect(calls[0].op).toBe("job.run");
+    expect(calls[0].fields.name).toBe("vox-job-42");
+    expect(calls[0].fields.steps[0].type).toBe("call.dial");
+    expect(calls[0].timeoutMs).toBe(60000 + 30000 + 30000 + 40000);
+    expect(out.result).toEqual({ responseLatencyMedian: 900, turnSuccessRate: 0.9 });
+    expect(out.callMetadata).toMatchObject({ disposition: "completed", fromRedacted: "…9876" });
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it("fails on: no phoneDial, trigger mode, bad disposition, analyze error, no metrics", async () => {
+    const { deps, tmp } = mkDeps();
+    await expect(runPhoneJob({ ...cfg, phoneDial: undefined }, deps as any)).rejects.toThrow(/needs phoneDial/);
+    await expect(runPhoneJob({ ...cfg, phoneDial: undefined, hasRestfulTrigger: true }, deps as any))
+      .rejects.toThrow(/not yet supported.*R7/);
+
+    const bad = mkDeps({
+      dialfCall: async () => ({ steps: [], recording: {}, call: { end_reason: "far_end_hangup" } }),
+    });
+    await expect(runPhoneJob(cfg, bad.deps as any)).rejects.toThrow(/disposition=far_end_hangup/);
+    fs.rmSync(bad.tmp, { recursive: true, force: true });
+
+    const anafail = mkDeps({ analyze: async () => { throw new Error("aeval analyze exited 1"); } });
+    await expect(runPhoneJob(cfg, anafail.deps as any)).rejects.toThrow(/analyze exited 1/);
+    fs.rmSync(anafail.tmp, { recursive: true, force: true });
+
+    const nometrics = mkDeps({ parseMetrics: () => null });
+    await expect(runPhoneJob(cfg, nometrics.deps as any)).rejects.toThrow(/no usable metrics/);
+    fs.rmSync(nometrics.tmp, { recursive: true, force: true });
+    fs.rmSync(tmp, { recursive: true, force: true });
   });
 });
 
