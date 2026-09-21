@@ -295,6 +295,21 @@ d("POST /api/eval-agent/jobs/:jobId/restful (integration, fake broker)", () => {
   });
 });
 
+d("GET /api/broker-types offers every known class", () => {
+  it("returns all KNOWN_BROKER_TYPES with a live flag (not just live ones)", async () => {
+    const cookie = await adminLogin();
+    const res = await fetch(`${BASE_URL}/api/broker-types`, { headers: { Cookie: cookie } });
+    expect(res.ok).toBe(true);
+    const types = (await res.json()) as Array<{ id: string; live: boolean }>;
+    const ids = types.map((t) => t.id).sort();
+    // The secret-class dropdown must offer restful even with no live broker —
+    // configuring ahead of broker deployment is legitimate; execution fails
+    // visibly at run time (503) when none is live.
+    expect(ids).toEqual(["auth-session", "restful"]);
+    expect(types.every((t) => typeof t.live === "boolean")).toBe(true);
+  });
+});
+
 d("restful secret class", () => {
   let cookie: string;
   const secretName = `PHB_TRIGGER_KEY_${suffix}`;

@@ -14,6 +14,7 @@ export function cn(...inputs: ClassValue[]) {
  */
 export function brokerTypeLabel(t: string): string {
   if (t === "auth-session") return "Brokered — login/session";
+  if (t === "restful") return "Brokered — REST API";
   return t;
 }
 
