@@ -3,7 +3,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from "recharts";
-import { Clock, Activity, RefreshCw, Lock, ChevronDown } from "lucide-react";
+import { Clock, Activity, RefreshCw, Lock, ChevronDown, Phone } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
@@ -783,6 +783,10 @@ export default function Dashboard() {
   const [regionScopes, setRegionScopes] = useState<string[]>(["all"]);
   const [refreshInterval, setRefreshInterval] = useState<number>(30000);
   const [timeRange, setTimeRange] = useState<string>("24");
+  // Evaluation Mode (design §11): web and phone are separate measurement
+  // categories, never mixed — the switch scopes the whole page; switching
+  // refetches with the transport param.
+  const [evalMode, setEvalMode] = useState<"web" | "phone">("web");
   // Provider multi-select: hidden set (default empty = all shown).
   const [hiddenProviders, setHiddenProviders] = useState<Set<string>>(new Set());
   const { data: regionLocations } = useRegionLocations();
@@ -830,10 +834,11 @@ export default function Dashboard() {
 
   const regionScopeKey = [...regionScopes].sort().join(",");
   const { data: mainlineMetrics, isLoading: mainlineLoading, refetch: refetchMainline, isFetching: mainlineFetching } = useQuery<EvalResult[]>({
-    queryKey: ['/api/metrics/realtime', timeRange, regionScopeKey],
+    queryKey: ['/api/metrics/realtime', timeRange, regionScopeKey, evalMode],
     queryFn: async () => {
       const params = new URLSearchParams();
       if (timeRange !== "all") params.set("hours", timeRange);
+      if (evalMode !== "web") params.set("transport", evalMode);
       appendRegionScopes(params, regionScopes);
       // No limit param: the server owns row counts + raw-vs-bucket per window.
       const res = await fetch(`/api/metrics/realtime?${params}`);
@@ -845,10 +850,11 @@ export default function Dashboard() {
   });
 
   const { data: communityMetrics, isLoading: communityLoading, refetch: refetchCommunity, isFetching: communityFetching } = useQuery<EvalResult[]>({
-    queryKey: ['/api/metrics/community', timeRange, regionScopeKey],
+    queryKey: ['/api/metrics/community', timeRange, regionScopeKey, evalMode],
     queryFn: async () => {
       const params = new URLSearchParams();
       if (timeRange !== "all") params.set("hours", timeRange);
+      if (evalMode !== "web") params.set("transport", evalMode);
       appendRegionScopes(params, regionScopes);
       const res = await fetch(`/api/metrics/community?${params}`);
       if (!res.ok) throw new Error("Failed to fetch community metrics");
@@ -859,10 +865,11 @@ export default function Dashboard() {
   });
 
   const { data: myEvalsMetrics, isLoading: myEvalsLoading, refetch: refetchMyEvals, isFetching: myEvalsFetching } = useQuery<EvalResult[]>({
-    queryKey: ['/api/metrics/my-evals', timeRange, regionScopeKey],
+    queryKey: ['/api/metrics/my-evals', timeRange, regionScopeKey, evalMode],
     queryFn: async () => {
       const params = new URLSearchParams();
       if (timeRange !== "all") params.set("hours", timeRange);
+      if (evalMode !== "web") params.set("transport", evalMode);
       appendRegionScopes(params, regionScopes);
       const res = await fetch(`/api/metrics/my-evals?${params}`);
       if (!res.ok) throw new Error("Failed to fetch my eval metrics");
@@ -1041,6 +1048,18 @@ export default function Dashboard() {
           </Button>
         </div>
       </div>
+
+      {/* Evaluation Mode switch (design §11): a hard category boundary above
+          the tier tabs — web and phone data never share a chart or a median. */}
+      <Tabs value={evalMode} onValueChange={(v) => setEvalMode(v as "web" | "phone")}>
+        <TabsList data-testid="tabs-eval-mode">
+          <TabsTrigger value="web" data-testid="tab-mode-web">Web vs Agent</TabsTrigger>
+          <TabsTrigger value="phone" className="gap-1" data-testid="tab-mode-phone">
+            <Phone className="h-3 w-3" />
+            Phone vs Agent
+          </TabsTrigger>
+        </TabsList>
+      </Tabs>
 
       <Tabs value={activeTab} onValueChange={setActiveTab}>
         <TabsList>

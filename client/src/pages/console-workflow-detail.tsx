@@ -419,6 +419,9 @@ export default function ConsoleWorkflowDetail() {
                 <Badge variant="outline">
                   {workflow.visibility === "public" ? "Public" : "Private"}
                 </Badge>
+                <Badge variant="outline" data-testid="badge-eval-mode">
+                  {workflow.transport === "phone" ? "Phone vs Agent" : "Web vs Agent"}
+                </Badge>
               </div>
             </div>
             <div>

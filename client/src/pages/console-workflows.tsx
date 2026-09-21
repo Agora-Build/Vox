@@ -13,7 +13,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
-import { Plus, Workflow, Globe, Lock, Star, StarOff, ChevronRight, Pencil, FolderKanban, Copy, Trash2 } from "lucide-react";
+import { Plus, Workflow, Globe, Lock, Star, StarOff, ChevronRight, Pencil, FolderKanban, Copy, Trash2, Phone } from "lucide-react";
 import { useState } from "react";
 import { useLocation } from "wouter";
 import { load as loadYaml } from "js-yaml";
@@ -95,6 +95,9 @@ export default function ConsoleWorkflows() {
   const [description, setDescription] = useState("");
   const [visibility, setVisibility] = useState("public");
   const [providerId, setProviderId] = useState("");
+  // Evaluation Mode (design §11): "web" = Web vs Agent, "phone" = Phone vs Agent.
+  const [transport, setTransport] = useState("web");
+  const [phoneNumber, setPhoneNumber] = useState("");
   const [framework, setFramework] = useState("aeval");
   const [appConfigPreset, setAppConfigPreset] = useState("custom");
   const [appConfigYaml, setAppConfigYaml] = useState("");
@@ -113,6 +116,8 @@ export default function ConsoleWorkflows() {
   const [editFramework, setEditFramework] = useState("aeval");
   const [editAppConfigYaml, setEditAppConfigYaml] = useState("");
   const [editProviderId, setEditProviderId] = useState("");
+  const [editTransport, setEditTransport] = useState("web");
+  const [editPhoneNumber, setEditPhoneNumber] = useState("");
 
   // Non-blocking warning when the workflow's provider disagrees with its YAML platform_id.
   const [pendingMismatch, setPendingMismatch] = useState<{ kind: "create" | "edit"; yamlPlatform: string; providerName: string } | null>(null);
@@ -135,18 +140,23 @@ export default function ConsoleWorkflows() {
 
   const createMutation = useMutation({
     mutationFn: async (overrideProviderId?: string) => {
-      const config: Record<string, string> = { framework };
+      const config: Record<string, unknown> = { framework };
       if (framework === "voice-agent-tester" && appConfigYaml) {
         config.app = appConfigYaml;
       }
-      if (framework === "aeval") {
+      // stepsPrefix/Suffix are web-session vocabulary — omitted for phone mode.
+      if (framework === "aeval" && transport === "web") {
         if (stepsPrefix) config.stepsPrefix = stepsPrefix;
         if (stepsSuffix) config.stepsSuffix = stepsSuffix;
+      }
+      if (transport === "phone" && phoneNumber.trim()) {
+        config.phoneDial = { number: phoneNumber.trim() };
       }
       const res = await apiRequest("POST", "/api/workflows", {
         name,
         description,
         visibility,
+        transport,
         providerId: overrideProviderId ?? providerId,
         config,
       });
@@ -158,6 +168,8 @@ export default function ConsoleWorkflows() {
       setDescription("");
       setVisibility("public");
       setProviderId("");
+      setTransport("web");
+      setPhoneNumber("");
       setFramework("aeval");
       setAppConfigPreset("custom");
       setAppConfigYaml("");
@@ -181,13 +193,17 @@ export default function ConsoleWorkflows() {
       if (editProjectId && !editWorkflow.projectId) body.projectId = parseInt(editProjectId);
       const pid = overrideProviderId ?? editProviderId;
       if (pid && pid !== editWorkflow.providerId) body.providerId = pid;
-      const config: Record<string, string> = { framework: editFramework };
+      if (editTransport !== editWorkflow.transport) body.transport = editTransport;
+      const config: Record<string, unknown> = { framework: editFramework };
       if (editFramework === "voice-agent-tester" && editAppConfigYaml) {
         config.app = editAppConfigYaml;
       }
-      if (editFramework === "aeval") {
+      if (editFramework === "aeval" && editTransport === "web") {
         if (editStepsPrefix) config.stepsPrefix = editStepsPrefix;
         if (editStepsSuffix) config.stepsSuffix = editStepsSuffix;
+      }
+      if (editTransport === "phone" && editPhoneNumber.trim()) {
+        config.phoneDial = { number: editPhoneNumber.trim() };
       }
       body.config = config;
       const res = await apiRequest("PATCH", `/api/workflows/${editWorkflow.id}`, body);
@@ -253,7 +269,7 @@ export default function ConsoleWorkflows() {
   });
 
   const openEditDialog = (workflow: WorkflowType) => {
-    const cfg = (workflow.config || {}) as Record<string, string>;
+    const cfg = (workflow.config || {}) as Record<string, any>;
     setEditWorkflow(workflow);
     setEditName(workflow.name);
     setEditDescription(workflow.description || "");
@@ -264,6 +280,8 @@ export default function ConsoleWorkflows() {
     setEditStepsPrefix(cfg.stepsPrefix || "");
     setEditStepsSuffix(cfg.stepsSuffix || "");
     setEditProviderId(workflow.providerId);
+    setEditTransport(workflow.transport || "web");
+    setEditPhoneNumber(cfg.phoneDial?.number || "");
     setEditOpen(true);
   };
 
@@ -367,6 +385,33 @@ export default function ConsoleWorkflows() {
                 </Select>
               </div>
               <div className="space-y-2">
+                <Label>Evaluation Mode</Label>
+                <Select value={transport} onValueChange={setTransport}>
+                  <SelectTrigger data-testid="select-workflow-transport">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="web">Web vs Agent</SelectItem>
+                    <SelectItem value="phone">Phone vs Agent</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              {transport === "phone" && (
+                <div className="space-y-2">
+                  <Label htmlFor="workflow-phone-number">Agent's phone number</Label>
+                  <Input
+                    id="workflow-phone-number"
+                    placeholder="+1 555 010 1234"
+                    value={phoneNumber}
+                    onChange={(e) => setPhoneNumber(e.target.value)}
+                    data-testid="input-workflow-phone-number"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    We call the agent at this number. (REST-API call triggering is configurable via the API.)
+                  </p>
+                </div>
+              )}
+              <div className="space-y-2">
                 <Label htmlFor="workflow-visibility">Visibility</Label>
                 <Select value={visibility} onValueChange={setVisibility}>
                   <SelectTrigger data-testid="select-workflow-visibility">
@@ -426,7 +471,7 @@ export default function ConsoleWorkflows() {
                   </div>
                 </>
               )}
-              {framework === "aeval" && (
+              {framework === "aeval" && transport === "web" && (
                 <>
                   <div className="space-y-2">
                     <Label>Setup Steps (stepsPrefix, YAML)</Label>
@@ -528,6 +573,33 @@ export default function ConsoleWorkflows() {
               </Select>
             </div>
             <div className="space-y-2">
+              <Label>Evaluation Mode</Label>
+              <Select value={editTransport} onValueChange={setEditTransport}>
+                <SelectTrigger data-testid="select-edit-workflow-transport">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="web">Web vs Agent</SelectItem>
+                  <SelectItem value="phone">Phone vs Agent</SelectItem>
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">
+                Past runs keep the mode they ran with — changing this affects future runs only.
+              </p>
+            </div>
+            {editTransport === "phone" && (
+              <div className="space-y-2">
+                <Label htmlFor="edit-workflow-phone-number">Agent's phone number</Label>
+                <Input
+                  id="edit-workflow-phone-number"
+                  placeholder="+1 555 010 1234"
+                  value={editPhoneNumber}
+                  onChange={(e) => setEditPhoneNumber(e.target.value)}
+                  data-testid="input-edit-workflow-phone-number"
+                />
+              </div>
+            )}
+            <div className="space-y-2">
               <Label>Eval Framework</Label>
               <Select value={editFramework} onValueChange={setEditFramework}>
                 <SelectTrigger>
@@ -550,7 +622,7 @@ export default function ConsoleWorkflows() {
                 />
               </div>
             )}
-            {editFramework === "aeval" && (
+            {editFramework === "aeval" && editTransport === "web" && (
               <>
                 <div className="space-y-2">
                   <Label>Setup Steps (stepsPrefix, YAML)</Label>
@@ -682,13 +754,20 @@ export default function ConsoleWorkflows() {
                       </TableCell>
                     )}
                     <TableCell>
-                      <Badge variant="outline" className="gap-1">
-                        {workflow.visibility === "public" ? (
-                          <><Globe className="h-3 w-3" /> Public</>
-                        ) : (
-                          <><Lock className="h-3 w-3" /> Private</>
+                      <div className="flex items-center gap-1">
+                        <Badge variant="outline" className="gap-1">
+                          {workflow.visibility === "public" ? (
+                            <><Globe className="h-3 w-3" /> Public</>
+                          ) : (
+                            <><Lock className="h-3 w-3" /> Private</>
+                          )}
+                        </Badge>
+                        {workflow.transport === "phone" && (
+                          <Badge variant="outline" className="gap-1" data-testid={`badge-phone-${workflow.id}`}>
+                            <Phone className="h-3 w-3" /> Phone
+                          </Badge>
                         )}
-                      </Badge>
+                      </div>
                     </TableCell>
                     <TableCell>
                       {workflow.isMainline ? (

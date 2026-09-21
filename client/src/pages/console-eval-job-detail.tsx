@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { ArrowLeft, Download, CheckCircle, XCircle, Loader2, Clock, Play, Upload, RefreshCw, FileText, AlertTriangle } from "lucide-react";
+import { ArrowLeft, Download, CheckCircle, XCircle, Loader2, Clock, Play, Upload, RefreshCw, FileText, AlertTriangle, Phone } from "lucide-react";
 import { Link } from "wouter";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -174,6 +174,11 @@ export default function ConsoleEvalJobDetail({ jobId }: { jobId: number }) {
                 <StatusIcon className={`h-3 w-3${job.status === "running" ? " animate-spin" : ""}`} />
                 {statusCfg.label}
               </Badge>
+              {job.transport === "phone" && (
+                <Badge variant="outline" className="gap-1" data-testid="badge-phone-job">
+                  <Phone className="h-3 w-3" /> Phone vs Agent
+                </Badge>
+              )}
               {partialResponse && (
                 <Badge
                   className="gap-1 bg-amber-500 text-white hover:bg-amber-500"
@@ -281,6 +286,28 @@ export default function ConsoleEvalJobDetail({ jobId }: { jobId: number }) {
       </div>
 
       {/* Metrics */}
+      {result?.callMetadata != null && (() => {
+        const cm = result.callMetadata as {
+          disposition?: string; answeredAfterMs?: number | null;
+          durationMs?: number | null; sim?: string | null; fromRedacted?: string | null;
+        };
+        const fmtSec = (v: number | null | undefined) => v == null ? "-" : `${(v / 1000).toFixed(1)}s`;
+        return (
+          <Card data-testid="card-call-details">
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm flex items-center gap-2"><Phone className="h-4 w-4" /> Call Details</CardTitle>
+              <CardDescription>Carrier call as observed by the phone endpoint</CardDescription>
+            </CardHeader>
+            <CardContent className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+              <div className="flex justify-between sm:block"><span className="text-sm text-muted-foreground block">Disposition</span><span className="text-sm font-mono">{cm.disposition ?? "-"}</span></div>
+              <div className="flex justify-between sm:block"><span className="text-sm text-muted-foreground block">Answered after</span><span className="text-sm font-mono">{fmtSec(cm.answeredAfterMs)}</span></div>
+              <div className="flex justify-between sm:block"><span className="text-sm text-muted-foreground block">Duration</span><span className="text-sm font-mono">{fmtSec(cm.durationMs)}</span></div>
+              <div className="flex justify-between sm:block"><span className="text-sm text-muted-foreground block">Remote number</span><span className="text-sm font-mono">{cm.fromRedacted ?? "-"}</span></div>
+            </CardContent>
+          </Card>
+        );
+      })()}
+
       {result && (
         <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
           <Card>
