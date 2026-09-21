@@ -184,6 +184,8 @@ COPY vox_eval_agentd/vox-agentd.ts /app/
 COPY vox_eval_agentd/session-inject.ts /app/
 COPY vox_eval_agentd/chunking.ts /app/
 COPY vox_eval_agentd/aeval-output.ts /app/
+COPY vox_eval_agentd/dialf-client.ts /app/
+COPY vox_eval_agentd/phone-eval.ts /app/
 COPY vox_eval_agentd/package.json /app/
 COPY shared/secrets.ts /shared/secrets.ts
 COPY shared/credentials.ts /shared/credentials.ts
