@@ -3525,6 +3525,7 @@ export async function registerRoutes(
         lastJobAt: a.lastJobAt,
         createdAt: a.createdAt,
         dispatchTier: a.tokenDispatchTier,
+        capabilities: (a as { capabilities?: unknown }).capabilities ?? [],
       })));
     } catch (error) {
       console.error("Error fetching eval agents:", error);
@@ -3576,6 +3577,19 @@ export async function registerRoutes(
   // on the lease-aware build; deploy after `vox-upgrade.sh`.)
   const isSupersededLease = (agent: { currentLeaseId?: string | null }, leaseId: unknown): boolean =>
     !!agent.currentLeaseId && leaseId !== agent.currentLeaseId;
+
+  // Agent capability allowlist (design 2026-09-21 §8). parseCapabilities returns:
+  // undefined = field absent (leave unchanged), string[] = validated value,
+  // INVALID_CAPABILITIES sentinel = 400 (unknown capability or wrong shape).
+  const ALLOWED_CAPABILITIES = ["phone"] as const;
+  const INVALID_CAPABILITIES = Symbol("invalid-capabilities");
+  const parseCapabilities = (raw: unknown): string[] | undefined | typeof INVALID_CAPABILITIES => {
+    if (raw === undefined) return undefined;
+    if (!Array.isArray(raw) || raw.some(c => typeof c !== "string" || !(ALLOWED_CAPABILITIES as readonly string[]).includes(c))) {
+      return INVALID_CAPABILITIES;
+    }
+    return Array.from(new Set(raw as string[]));
+  };
 
   // Zero-trust effective dispatch identity: public agents carry their
   // configured (admin-trusted) token region; everything else carries the
@@ -3638,6 +3652,14 @@ export async function registerRoutes(
 
       const { name, metadata } = req.body;
 
+      // Capability declaration (design 2026-09-21 §8): validated allowlist; the
+      // claim SQL requires "phone" for phone-transport jobs. Optional — absent
+      // means [] on create / unchanged shape for pre-capability daemons.
+      const capabilities = parseCapabilities(req.body.capabilities);
+      if (capabilities === INVALID_CAPABILITIES) {
+        return res.status(400).json({ error: "Unknown capability" });
+      }
+
       // Use agent-provided name, or fall back to the token's name
       const agentName = name || evalAgentToken.name;
 
@@ -3652,8 +3674,8 @@ export async function registerRoutes(
       let agent;
       if (existing.length > 0) {
         agent = existing[0];
-        await storage.updateEvalAgent(agent.id, { name: agentName, state: "idle", metadata: metadata || {}, currentLeaseId: leaseId });
-        agent = { ...agent, name: agentName, state: "idle" as const, metadata: metadata || {}, currentLeaseId: leaseId };
+        await storage.updateEvalAgent(agent.id, { name: agentName, state: "idle", metadata: metadata || {}, currentLeaseId: leaseId, capabilities: capabilities ?? [] });
+        agent = { ...agent, name: agentName, state: "idle" as const, metadata: metadata || {}, currentLeaseId: leaseId, capabilities: capabilities ?? [] };
         // A fresh registration means the prior process died; release any jobs it
         // was still running so they re-queue instead of hanging as "running"
         // forever (the heartbeat reaper misses them — this agent looks alive).
@@ -3671,6 +3693,7 @@ export async function registerRoutes(
           state: "idle",
           metadata: metadata || {},
           currentLeaseId: leaseId,
+          capabilities: capabilities ?? [],
         });
       }
 
@@ -3738,6 +3761,14 @@ export async function registerRoutes(
         return res.status(400).json({ error: "Agent ID required" });
       }
 
+      // Optional capability refresh (design §8): present ⇒ validate + replace
+      // ([] clears — a host that lost its DialF self-heals); absent ⇒ unchanged
+      // (pre-capability daemons never send the field).
+      const hbCapabilities = parseCapabilities(req.body.capabilities);
+      if (hbCapabilities === INVALID_CAPABILITIES) {
+        return res.status(400).json({ error: "Unknown capability" });
+      }
+
       const agent = await storage.getEvalAgent(agentId);
       if (!agent || agent.tokenId !== evalAgentToken.id) {
         return res.status(403).json({ error: "Agent not found or token mismatch" });
@@ -3778,6 +3809,9 @@ export async function registerRoutes(
       }
       if (metadata && typeof metadata === "object") {
         updates.metadata = metadata;
+      }
+      if (hbCapabilities !== undefined) {
+        updates.capabilities = hbCapabilities;
       }
       if (Object.keys(updates).length > 0) {
         await storage.updateEvalAgent(agentId, updates);

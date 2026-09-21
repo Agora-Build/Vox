@@ -1,8 +1,9 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { storage, pool, buildJobSnapshot } from "../server/storage";
+import { storage, pool, buildJobSnapshot, hashToken } from "../server/storage";
 
 const hasDb = !!process.env.DATABASE_URL;
 const d = hasDb ? describe : describe.skip;
+const BASE_URL = process.env.TEST_BASE_URL || "http://localhost:5000";
 
 // Phase A of Phone vs Agent (designs/2026-09-21-phone-vs-agent-design.md §3/§8):
 // the transport axis is frozen per job at creation (creator_org_id pattern) and
@@ -59,7 +60,7 @@ d("phone transport — snapshot + frozen job stamp", () => {
     expect((reread!.snapshot as any).transport).toBe("phone");
   });
 
-  it("defaults to web when the workflow has no transport", async () => {
+  it("defaults to web when the workflow has no transport (snapshot)", async () => {
     const providers = await storage.getAllProviders();
     const wf = await storage.createWorkflow({
       name: `phA-wf-web-${suffix}`, ownerId: userId, providerId: providers[0].id,
@@ -72,5 +73,82 @@ d("phone transport — snapshot + frozen job stamp", () => {
     } finally {
       await pool.query(`DELETE FROM workflows WHERE id = $1`, [wf.id]);
     }
+  });
+});
+
+d("phone transport — agent capability declaration (HTTP, dev server)", () => {
+  let ownerId: number;
+  let tokenId: number;
+  let agentId: number;
+  const rawToken = `phA-cap-token-${suffix}`;
+
+  beforeAll(async () => {
+    ownerId = (await storage.createUser({
+      username: `phAcap${suffix}`, email: `phAcap${suffix}@example.com`,
+    } as any)).id;
+    const tok = await storage.createEvalAgentToken({
+      name: `phA-cap-${suffix}`, tokenHash: hashToken(rawToken),
+      siteId: "na-us-ashburn-01", dispatchTier: "private", createdBy: ownerId,
+    } as any);
+    tokenId = tok.id;
+  });
+
+  afterAll(async () => {
+    if (!hasDb) return;
+    if (agentId) await pool.query(`DELETE FROM eval_agents WHERE id = $1`, [agentId]);
+    if (tokenId) await pool.query(`DELETE FROM eval_agent_tokens WHERE id = $1`, [tokenId]);
+    if (ownerId) await pool.query(`DELETE FROM users WHERE id = $1`, [ownerId]);
+  });
+
+  it("register accepts capabilities and persists them", async () => {
+    const res = await fetch(`${BASE_URL}/api/eval-agent/register`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${rawToken}` },
+      body: JSON.stringify({ name: `phA-cap-agent-${suffix}`, capabilities: ["phone"] }),
+    });
+    expect(res.ok).toBe(true);
+    const body = await res.json();
+    agentId = body.id;
+    const agent = await storage.getEvalAgent(agentId);
+    expect(agent!.capabilities).toEqual(["phone"]);
+  });
+
+  it("rejects unknown capabilities with 400", async () => {
+    const res = await fetch(`${BASE_URL}/api/eval-agent/register`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${rawToken}` },
+      body: JSON.stringify({ name: `phA-cap-agent-${suffix}`, capabilities: ["jetpack"] }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("heartbeat with capabilities:[] clears them (self-healing); omitted field leaves them", async () => {
+    // Re-register to get a fresh lease (the reject test above didn't supersede it,
+    // but be explicit): capabilities back to ["phone"].
+    const reg = await fetch(`${BASE_URL}/api/eval-agent/register`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${rawToken}` },
+      body: JSON.stringify({ name: `phA-cap-agent-${suffix}`, capabilities: ["phone"] }),
+    });
+    const { id, leaseId } = await reg.json();
+    agentId = id;
+
+    // Omitted field: unchanged.
+    let hb = await fetch(`${BASE_URL}/api/eval-agent/heartbeat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${rawToken}` },
+      body: JSON.stringify({ agentId: id, leaseId, state: "idle" }),
+    });
+    expect(hb.ok).toBe(true);
+    expect((await storage.getEvalAgent(id))!.capabilities).toEqual(["phone"]);
+
+    // Explicit empty array: cleared (DialF went away on the host).
+    hb = await fetch(`${BASE_URL}/api/eval-agent/heartbeat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${rawToken}` },
+      body: JSON.stringify({ agentId: id, leaseId, state: "idle", capabilities: [] }),
+    });
+    expect(hb.ok).toBe(true);
+    expect((await storage.getEvalAgent(id))!.capabilities).toEqual([]);
   });
 });
