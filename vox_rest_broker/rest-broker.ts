@@ -123,6 +123,9 @@ export function createRestBrokerServer(getSecret: () => string | undefined, fetc
       res.writeHead(code, { "content-type": "application/json" });
       res.end(JSON.stringify(payload));
     };
+    // Unauthenticated liveness for the deploy healthcheck (parity with the
+    // auth-session broker's GET /health — Coolify gates rollout on it).
+    if (req.method === "GET" && req.url === "/health") return respond(200, { status: "ok" });
     if (req.method !== "POST" || req.url !== "/execute") return respond(404, { error: "not found" });
     const secret = getSecret();
     const auth = req.headers.authorization || "";
