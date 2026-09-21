@@ -1519,6 +1519,7 @@ export class DatabaseStorage {
         interruptRate: evalResults.interruptRate,
         falseInterruptRate: evalResults.falseInterruptRate,
         turnSuccessRate: evalResults.turnSuccessRate,
+        callMetadata: evalResults.callMetadata,
         networkResilience: evalResults.networkResilience,
         naturalness: evalResults.naturalness,
         noiseReduction: evalResults.noiseReduction,
