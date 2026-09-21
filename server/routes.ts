@@ -14,7 +14,7 @@ import { getMarketplace } from "./marketplace";
 import { isAlreadyMemberError, getOrganizations, requireOrganizations, type Membership, type OrgSecretRow } from "./organizations";
 import { fingerprintCredential, formatLastFailedHttpStatus, parseLastFailedHttpStatus } from "@shared/credentials";
 import { parsePlatformSetup, sessionScopeForWorkflow, evaluateSessionRequirement, getBrokeredSecretNames, areLoginSecretsAttested, ensureSession, stampOwnerSession, credentialKeyFor, SESSION_FRESH_MARGIN_SECONDS, classifyReferencedSecrets, findBrokeredMisuse, defaultBrokerTypeForName, resolveBrokerType, type SessionNeed, detectSessionNeed, missingSecretNames, resolvableSecretSources } from "./auth-session";
-import { validateRegisterPayload, cacheBrokerMintSecret, hasBrokerMintSecret, routeToBroker, executeViaBroker } from "./broker-registry";
+import { validateRegisterPayload, cacheBrokerMintSecret, hasBrokerMintSecret, routeToBroker, executeViaBroker, KNOWN_BROKER_TYPES } from "./broker-registry";
 import { resolveRestfulTemplate } from "./restful-exec";
 import { validateRestfulTrigger } from "./storage";
 import { deriveApiKeyStatus } from "./api-key-status";
@@ -3462,12 +3462,15 @@ export async function registerRoutes(
   });
 
   // Broker types currently serviceable (distinct type of live, non-offline
-  // brokers). Drives the secret broker-type dropdown so it never offers a type
-  // no live broker can mint for. Empty list → UI falls back to Runtime only.
+  // brokers). Drives the secret broker-type dropdown: EVERY known class is
+  // offered — a secret class is configuration, and configuring ahead of broker
+  // deployment is legitimate (execution fails visibly at run time when none is
+  // live) — with `live` flagging which types a non-offline broker currently
+  // services, so the UI can label unserviced ones.
   app.get("/api/broker-types", requireAuth, async (_req, res) => {
     try {
-      const types = await storage.getLiveBrokerTypes();
-      res.json(types);
+      const live = new Set(await storage.getLiveBrokerTypes());
+      res.json(KNOWN_BROKER_TYPES.map((id) => ({ id, live: live.has(id) })));
     } catch (error) {
       console.error("Error fetching broker types:", error);
       res.status(500).json({ error: "Failed to fetch broker types" });

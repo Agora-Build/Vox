@@ -97,18 +97,21 @@ export default function ConsoleSecrets() {
     queryKey: ["/api/secrets"],
   });
 
-  // Broker types serviceable right now (live, non-offline brokers). Runtime
-  // (null) is always offered; each live type is added as a brokered option.
-  const { data: liveBrokerTypes } = useQuery<string[]>({ queryKey: ["/api/broker-types"] });
-  const brokerTypeOptions = liveBrokerTypes ?? [];
+  // Every KNOWN broker class, each flagged live iff a non-offline broker
+  // currently services it. All classes are offered — configuring a secret
+  // ahead of broker deployment is legitimate (execution 503s visibly at run
+  // time when none is live) — with unserviced ones labeled in the dropdown.
+  const { data: knownBrokerTypes } = useQuery<Array<{ id: string; live: boolean }>>({ queryKey: ["/api/broker-types"] });
+  const brokerTypeOptions = knownBrokerTypes ?? [];
 
   // A secret whose name reads like a login credential should default to the
-  // auth-session broker type — but only when such a broker is actually live.
-  // If none is, Runtime stays the default. The name heuristic is imported from
+  // auth-session broker type — but only when such a broker is actually live
+  // (never auto-flip a name onto a class nothing can service; explicit picks
+  // are the user's call). The name heuristic is imported from
   // @shared/secrets rather than restated here: a local copy drifted from the
   // server's and left PASSWORD on Runtime while EMAIL flipped to the broker,
   // which the server then rejects as a split login pair.
-  const authBrokerType = brokerTypeOptions.find((t) => /auth|session|login/i.test(t)) ?? null;
+  const authBrokerType = brokerTypeOptions.find((t) => t.live && /auth|session|login/i.test(t.id))?.id ?? null;
   // Toggle only between Runtime and the auth type — never clobber a different
   // broker type the user picked manually.
   function nextBrokerTypeForName(newName: string, current: string | null): string | null {
@@ -301,13 +304,17 @@ export default function ConsoleSecrets() {
                           <SelectContent>
                             <SelectItem value="runtime">Runtime</SelectItem>
                             {brokerTypeOptions.map((t) => (
-                              <SelectItem key={t} value={t}>{brokerTypeLabel(t)}</SelectItem>
+                              <SelectItem key={t.id} value={t.id}>
+                                {brokerTypeLabel(t.id)}{!t.live && " (broker offline)"}
+                              </SelectItem>
                             ))}
                           </SelectContent>
                         </Select>
                         <p className="text-xs text-muted-foreground">
                           {brokerType === "auth-session"
                             ? "Materialized by a broker; the agent never sees the stored value."
+                            : brokerType === "restful"
+                            ? "Used by the trusted REST broker for API call triggers; the agent never sees the stored value."
                             : "Sent directly to the agent at runtime. Only use with agents you trust."}
                         </p>
                       </div>
@@ -454,13 +461,17 @@ export default function ConsoleSecrets() {
                               <SelectContent>
                                 <SelectItem value="runtime">Runtime</SelectItem>
                                 {brokerTypeOptions.map((t) => (
-                                  <SelectItem key={t} value={t}>{brokerTypeLabel(t)}</SelectItem>
+                                  <SelectItem key={t.id} value={t.id}>
+                                    {brokerTypeLabel(t.id)}{!t.live && " (broker offline)"}
+                                  </SelectItem>
                                 ))}
                               </SelectContent>
                             </Select>
                             <p className="text-xs text-muted-foreground">
                               {orgBrokerType === "auth-session"
                                 ? "Materialized by a broker; the agent never sees the stored value."
+                                : orgBrokerType === "restful"
+                                ? "Used by the trusted REST broker for API call triggers; the agent never sees the stored value."
                                 : "Sent directly to the agent at runtime. Only use with agents you trust."}
                             </p>
                           </div>
