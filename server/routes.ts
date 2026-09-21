@@ -3856,6 +3856,7 @@ export async function registerRoutes(
         dispatchTier: evalAgentToken.dispatchTier,
         createdBy: evalAgentToken.createdBy,
         ownerOrgId: ownerMembership?.organizationId ?? null,
+        phoneCapable: Array.isArray(latestAgent?.capabilities) && (latestAgent!.capabilities as string[]).includes("phone"),
       });
 
       // Version-gate: if the requesting agent has a frameworkVersion, filter out
@@ -3943,6 +3944,7 @@ export async function registerRoutes(
         createdBy: evalAgentToken.createdBy,
         ownerOrgId: ownerMembership?.organizationId ?? null,
         locationTrust: eff.locationTrust,
+        phoneCapable: Array.isArray(agent?.capabilities) && (agent!.capabilities as string[]).includes("phone"),
       });
       if (!job) {
         return res.status(409).json({ error: "Job already claimed or not found" });

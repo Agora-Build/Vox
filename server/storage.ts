@@ -958,7 +958,7 @@ export class DatabaseStorage {
   async claimEvalJob(
     jobId: number,
     agentId: number,
-    identity: { id: number; siteId: string | null; region: string | null; dispatchTier: string; createdBy: number; ownerOrgId: number | null; locationTrust: string },
+    identity: { id: number; siteId: string | null; region: string | null; dispatchTier: string; createdBy: number; ownerOrgId: number | null; locationTrust: string; phoneCapable?: boolean },
   ): Promise<EvalJob | undefined> {
     const client = await pool.connect();
     try {
@@ -969,6 +969,9 @@ export class DatabaseStorage {
       const selectResult = await client.query(
         `SELECT ej.* FROM eval_jobs ej
          WHERE ej.id = $1 AND ej.status = 'pending'::eval_job_status
+           -- Phone-transport jobs require the phone capability (design §8) —
+           -- applies to every arm below, targeted included.
+           AND ( ej.transport = 'web'::transport OR $8::boolean = true )
            AND (
              ej.target_token_id = $2
              OR ( ej.target_token_id IS NULL AND ej.target_region IS NOT NULL AND ej.target_region = $3 AND (
@@ -987,7 +990,7 @@ export class DatabaseStorage {
              ) )
            )
          FOR UPDATE OF ej SKIP LOCKED`,
-        [jobId, identity.id, identity.region, identity.dispatchTier, identity.createdBy, identity.ownerOrgId, identity.siteId]
+        [jobId, identity.id, identity.region, identity.dispatchTier, identity.createdBy, identity.ownerOrgId, identity.siteId, identity.phoneCapable === true]
       );
       if (selectResult.rows.length === 0) {
         await client.query('ROLLBACK');
@@ -1017,7 +1020,7 @@ export class DatabaseStorage {
   }
 
   async getClaimableJobsForToken(identity: {
-    id: number; siteId: string | null; region: string | null; dispatchTier: string; createdBy: number; ownerOrgId: number | null;
+    id: number; siteId: string | null; region: string | null; dispatchTier: string; createdBy: number; ownerOrgId: number | null; phoneCapable?: boolean;
   }): Promise<EvalJob[]> {
     // Mirrors permissions.isClaimable() bit for bit (targeted / pooled / legacy).
     // A NULL region/siteId (Unverified agent) never matches the pooled/legacy
@@ -1025,6 +1028,8 @@ export class DatabaseStorage {
     const result = await pool.query(
       `SELECT ej.* FROM eval_jobs ej
         WHERE ej.status = 'pending'::eval_job_status
+          -- Phone-transport jobs require the phone capability (design §8).
+          AND ( ej.transport = 'web'::transport OR $7::boolean = true )
           AND (
             ej.target_token_id = $1
             OR ( ej.target_token_id IS NULL AND ej.target_region IS NOT NULL AND ej.target_region = $2 AND (
@@ -1042,7 +1047,7 @@ export class DatabaseStorage {
             ) )
           )
         ORDER BY ej.priority DESC, ej.created_at ASC`,
-      [identity.id, identity.region, identity.siteId, identity.dispatchTier, identity.createdBy, identity.ownerOrgId],
+      [identity.id, identity.region, identity.siteId, identity.dispatchTier, identity.createdBy, identity.ownerOrgId, identity.phoneCapable === true],
     );
     return result.rows.map((r) => snakeToCamel(r) as EvalJob);
   }

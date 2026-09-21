@@ -167,10 +167,15 @@ export function isClaimable(
     siteId?: string | null;
     createdBy: number | null;
     sessionInjected?: boolean;
+    transport?: "web" | "phone" | null;
   },
-  token: Pick<DispatchToken, "id" | "dispatchTier" | "createdBy"> & { region?: string; siteId?: string },
+  token: Pick<DispatchToken, "id" | "dispatchTier" | "createdBy"> & { region?: string; siteId?: string; phoneCapable?: boolean },
   orgs?: { tokenOwnerOrgId: number | null; creatorOrgId: number | null },
 ): boolean {
+  // Phone-transport jobs require the phone capability (design 2026-09-21 §8) —
+  // applies to every arm below, targeted included. Absent transport = web.
+  if (job.transport === "phone" && token.phoneCapable !== true) return false;
+
   // Targeted: only the aimed token, ever.
   if (job.targetTokenId != null) return job.targetTokenId === token.id;
 

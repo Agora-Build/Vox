@@ -76,6 +76,80 @@ d("phone transport — snapshot + frozen job stamp", () => {
   });
 });
 
+d("phone transport — claim gating (SQL + permissions mirror)", () => {
+  let creatorId: number;
+  let tokenArg: { id: number; siteId: string | null; region: string | null; dispatchTier: string; createdBy: number; ownerOrgId: number | null; locationTrust: string };
+  let agentId: number;
+  let phoneJobId: number;
+  let webJobId: number;
+  let tokId: number;
+
+  beforeAll(async () => {
+    creatorId = (await storage.createUser({
+      username: `phAclaim${suffix}`, email: `phAclaim${suffix}@example.com`,
+    } as any)).id;
+    const tok = await storage.createEvalAgentToken({
+      name: `phA-claim-${suffix}`, tokenHash: `phA-claim-${suffix}`,
+      siteId: "na-us-ashburn-01", dispatchTier: "private", createdBy: creatorId,
+    } as any);
+    tokId = tok.id;
+    tokenArg = {
+      id: tok.id, siteId: "na-us-ashburn-01", region: "na-us-ashburn",
+      dispatchTier: "private", createdBy: creatorId, ownerOrgId: null, locationTrust: "trusted",
+    };
+    agentId = (await storage.createEvalAgent({
+      tokenId: tok.id, name: `phA-claim-agent-${suffix}`, siteId: "na-us-ashburn-01",
+      state: "idle", metadata: {},
+    } as any)).id;
+
+    const mkJob = (transport: "web" | "phone") => storage.createEvalJob({
+      workflowId: null, triggerType: 2, evalSetId: null, createdBy: creatorId,
+      siteId: null, targetRegion: "na-us-ashburn", targetTier: "private",
+      config: {},
+      snapshot: { provider: null, workflow: null, evalSet: null, creatorPlan: null, transport } as any,
+      status: "pending", priority: 0, retryCount: 0, maxRetries: 3,
+    } as any);
+    phoneJobId = (await mkJob("phone")).id;
+    webJobId = (await mkJob("web")).id;
+  });
+
+  afterAll(async () => {
+    if (!hasDb) return;
+    await pool.query(`DELETE FROM eval_jobs WHERE id = ANY($1::int[])`, [[phoneJobId, webJobId].filter(Boolean)]);
+    if (agentId) await pool.query(`DELETE FROM eval_agents WHERE id = $1`, [agentId]);
+    if (tokId) await pool.query(`DELETE FROM eval_agent_tokens WHERE id = $1`, [tokId]);
+    if (creatorId) await pool.query(`DELETE FROM users WHERE id = $1`, [creatorId]);
+  });
+
+  it("phone job is invisible and unclaimable without the phone capability; web job unaffected", async () => {
+    const listed = await storage.getClaimableJobsForToken({ ...tokenArg, phoneCapable: false } as any);
+    const ids = listed.map((j: any) => j.id);
+    expect(ids).not.toContain(phoneJobId);
+    expect(ids).toContain(webJobId);
+
+    const claim = await storage.claimEvalJob(phoneJobId, agentId, { ...tokenArg, phoneCapable: false } as any);
+    expect(claim).toBeUndefined();
+  });
+
+  it("phone job is visible and claimable with the phone capability", async () => {
+    const listed = await storage.getClaimableJobsForToken({ ...tokenArg, phoneCapable: true } as any);
+    expect(listed.map((j: any) => j.id)).toContain(phoneJobId);
+
+    const claim = await storage.claimEvalJob(phoneJobId, agentId, { ...tokenArg, phoneCapable: true } as any);
+    expect(claim).toBeDefined();
+    expect(claim!.status).toBe("running");
+  });
+
+  it("isClaimable mirrors the gate", async () => {
+    const { isClaimable } = await import("../server/permissions");
+    const base = { targetTokenId: null, targetRegion: "na-us-ashburn", targetTier: "private" as const, createdBy: creatorId };
+    const tok = { id: tokId, dispatchTier: "private" as const, createdBy: creatorId, region: "na-us-ashburn" };
+    expect(isClaimable({ ...base, transport: "phone" }, { ...tok, phoneCapable: false } as any)).toBe(false);
+    expect(isClaimable({ ...base, transport: "phone" }, { ...tok, phoneCapable: true } as any)).toBe(true);
+    expect(isClaimable({ ...base }, { ...tok } as any)).toBe(true); // web/absent: ungated
+  });
+});
+
 d("phone transport — agent capability declaration (HTTP, dev server)", () => {
   let ownerId: number;
   let tokenId: number;
