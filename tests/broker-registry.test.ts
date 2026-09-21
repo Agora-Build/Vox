@@ -3,13 +3,14 @@ import { isKnownBrokerType, isInternalBrokerUrl, KNOWN_BROKER_TYPES, isBrokerFre
 
 describe("isKnownBrokerType", () => {
   it("accepts auth-session", () => expect(isKnownBrokerType("auth-session")).toBe(true));
+  it("accepts restful", () => expect(isKnownBrokerType("restful")).toBe(true));
   it("rejects unknown", () => expect(isKnownBrokerType("openai-key")).toBe(false));
   it("rejects null/number", () => {
     expect(isKnownBrokerType(null)).toBe(false);
     expect(isKnownBrokerType(1)).toBe(false);
   });
-  it("KNOWN_BROKER_TYPES is exactly [auth-session]", () =>
-    expect([...KNOWN_BROKER_TYPES]).toEqual(["auth-session"]));
+  it("KNOWN_BROKER_TYPES is exactly [auth-session, restful]", () =>
+    expect([...KNOWN_BROKER_TYPES]).toEqual(["auth-session", "restful"]));
 });
 
 describe("isInternalBrokerUrl", () => {

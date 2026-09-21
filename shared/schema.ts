@@ -343,6 +343,19 @@ export type EvalSchedule = typeof evalSchedules.$inferSelect;
 
 // ==================== EVAL JOBS ====================
 
+// REST call-trigger template carried in workflow config (design 2026-09-21 §5;
+// Libretto restful.request). Template placeholders (${secrets.NAME},
+// ${phoneNumber}) are resolved by Core at execution time from the FROZEN job
+// snapshot — never validated/resolved here (shape only).
+export type RestfulTrigger = {
+  method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
+  url: string;
+  headers?: Record<string, string>;
+  body?: unknown;
+  expectStatus?: number[];
+  timeoutMs?: number;
+};
+
 // Immutable snapshot of the workflow + eval-set (+ provider + creator plan) captured
 // on each job at run time. Everything downstream — provenance display, provider
 // attribution, and metric tiering — reads this instead of the live rows, so editing

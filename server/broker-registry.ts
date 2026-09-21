@@ -1,4 +1,8 @@
-export const KNOWN_BROKER_TYPES = ["auth-session"] as const;
+// "auth-session" = login-session minting (browser + aeval); "restful" = trusted
+// HTTP execution for restful.* steps referencing broker-class secrets (design
+// 2026-09-21 §5). One list gates secret classification (resolveBrokerType),
+// broker registration, and routeToBroker — adding a type here unlocks all three.
+export const KNOWN_BROKER_TYPES = ["auth-session", "restful"] as const;
 export type BrokerType = (typeof KNOWN_BROKER_TYPES)[number];
 
 export const BROKER_OFFLINE_THRESHOLD_SECONDS = 300; // 5 missed 60s heartbeats
@@ -79,6 +83,61 @@ export function routeToBroker(brokerType: BrokerType): Promise<BrokerTarget | nu
 
 export async function brokerAvailable(brokerType: BrokerType): Promise<boolean> {
   return (await routeToBroker(brokerType)) != null;
+}
+
+// ---- restful broker (design 2026-09-21 §5) ---------------------------------
+// The trusted-execution twin of mintViaBroker: Core resolves the request
+// template from the frozen snapshot, the broker performs the HTTP call, and
+// everything returned to an agent is redacted with CORE's copies of the
+// resolved secret values (never trusting the broker) then capped.
+
+export interface RestExecRequest {
+  method: string;
+  url: string;
+  headers?: Record<string, string>;
+  body?: unknown;
+  expectStatus?: number[];
+  timeoutMs?: number;
+}
+export interface RestExecResult { status: number; ok: boolean; bodyExcerpt: string }
+
+const REST_EXEC_DEFAULT_TIMEOUT_MS = 30_000;
+const REST_EXEC_EXCERPT_CAP = 2048;
+
+export async function executeViaBroker(
+  target: BrokerTarget,
+  req: RestExecRequest,
+  redactNeedles: string[],
+  fetchImpl: typeof fetch = fetch,
+): Promise<RestExecResult> {
+  const abortMs = (req.timeoutMs ?? REST_EXEC_DEFAULT_TIMEOUT_MS) + 15_000;
+  const res = await fetchImpl(`${target.url}/execute`, {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${target.mintSecret}` },
+    body: JSON.stringify(req),
+    signal: AbortSignal.timeout(abortMs),
+  });
+  const needles = credentialForms(redactNeedles.filter(Boolean));
+  if (!res.ok) {
+    let detail = "";
+    try {
+      const raw = (await res.text()).slice(0, 8192);
+      const body = JSON.parse(raw) as { error?: unknown };
+      if (typeof body?.error === "string") detail = body.error;
+    } catch { /* non-JSON body — status alone */ }
+    // Redact BEFORE truncating (a slice-first can leave a partial credential
+    // matching no whole needle) — same ordering as mintViaBroker.
+    detail = redactValues(detail, needles).slice(0, 500);
+    throw new Error(`broker exec failed: ${res.status}${detail ? `: ${detail}` : ""}`);
+  }
+  const parsed = (await res.json()) as { status?: unknown; bodyExcerpt?: unknown };
+  const status = typeof parsed.status === "number" ? parsed.status : 0;
+  const excerptRaw = typeof parsed.bodyExcerpt === "string" ? parsed.bodyExcerpt : "";
+  const bodyExcerpt = redactValues(excerptRaw, needles).slice(0, REST_EXEC_EXCERPT_CAP);
+  const ok = req.expectStatus && req.expectStatus.length > 0
+    ? req.expectStatus.includes(status)
+    : status >= 200 && status < 300;
+  return { status, ok, bodyExcerpt };
 }
 
 export async function mintViaBroker(

@@ -14,7 +14,9 @@ import { getMarketplace } from "./marketplace";
 import { isAlreadyMemberError, getOrganizations, requireOrganizations, type Membership, type OrgSecretRow } from "./organizations";
 import { fingerprintCredential, formatLastFailedHttpStatus, parseLastFailedHttpStatus } from "@shared/credentials";
 import { parsePlatformSetup, sessionScopeForWorkflow, evaluateSessionRequirement, getBrokeredSecretNames, areLoginSecretsAttested, ensureSession, stampOwnerSession, credentialKeyFor, SESSION_FRESH_MARGIN_SECONDS, classifyReferencedSecrets, findBrokeredMisuse, defaultBrokerTypeForName, resolveBrokerType, type SessionNeed, detectSessionNeed, missingSecretNames, resolvableSecretSources } from "./auth-session";
-import { validateRegisterPayload, cacheBrokerMintSecret, hasBrokerMintSecret } from "./broker-registry";
+import { validateRegisterPayload, cacheBrokerMintSecret, hasBrokerMintSecret, routeToBroker, executeViaBroker } from "./broker-registry";
+import { resolveRestfulTemplate } from "./restful-exec";
+import { validateRestfulTrigger } from "./storage";
 import { deriveApiKeyStatus } from "./api-key-status";
 import { isStaleOfflineAgent } from "./agent-liveness";
 import { runAgentLocationCheck, LOCATION_RECHECK_HOURS, getGeoipAttribution, reloadGeoReaders } from "./location";
@@ -395,6 +397,30 @@ export async function orgRuntimeSecretsForJob(jobId: number): Promise<Record<str
     : null;
   if (creatorMembership?.organizationId !== scope.workflowOrgId) return {};
   return decryptOrgRuntimeRows(await orgs.listOrgSecrets(scope.workflowOrgId));
+}
+
+/**
+ * The trusted-exec sibling of orgRuntimeSecretsForJob (design 2026-09-21 §5):
+ * SAME fence (creator's seam membership must equal the workflow's org; provider
+ * absence fails closed to {}), but decrypts ALL classes — brokered rows
+ * included — because the caller is the Core→broker restful path, where nothing
+ * but the sanitized result ever reaches an agent. Never expose its output on
+ * an agent-visible response.
+ */
+export async function orgAllSecretsForTrustedExec(jobId: number): Promise<Record<string, string>> {
+  const scope = await storage.getJobOrgSecretScope(jobId);
+  if (!scope) return {};
+  const orgs = getOrganizations();
+  if (!orgs) return {};
+  const creatorMembership = scope.createdBy != null
+    ? await orgs.getMembership(scope.createdBy)
+    : null;
+  if (creatorMembership?.organizationId !== scope.workflowOrgId) return {};
+  const result: Record<string, string> = {};
+  for (const s of await orgs.listOrgSecrets(scope.workflowOrgId)) {
+    result[s.name] = decryptValue(s.encryptedValue);
+  }
+  return result;
 }
 
 export async function registerRoutes(
@@ -2906,7 +2932,7 @@ export async function registerRoutes(
         if (!resolved.ok) return res.status(400).json({ error: resolved.error });
         resolvedBrokerType = resolved.brokerType;
       }
-      if (existingRow && existingRow.brokerType === "auth-session" && resolvedBrokerType === null) {
+      if (existingRow && existingRow.brokerType != null && resolvedBrokerType === null) {
         return res.status(400).json({ error: "A brokered secret cannot be reclassified to runtime — delete and recreate it instead" });
       }
 
@@ -3017,7 +3043,7 @@ export async function registerRoutes(
         if (!resolved.ok) return res.status(400).json({ error: resolved.error });
         resolvedBrokerType = resolved.brokerType;
       }
-      if (existingRow && existingRow.brokerType === "auth-session" && resolvedBrokerType === null) {
+      if (existingRow && existingRow.brokerType != null && resolvedBrokerType === null) {
         return res.status(400).json({ error: "A brokered secret cannot be reclassified to runtime — delete and recreate it instead" });
       }
       // Provider's upsertOrgSecret always writes isTestAccount (no partial-update
@@ -4489,6 +4515,77 @@ export async function registerRoutes(
         return res.status(500).json({ error: "Server encryption not configured" });
       }
       res.status(500).json({ error: "Failed to serve session" });
+    }
+  });
+
+  // Trusted restful.* execution (design 2026-09-21 §5): the daemon asks Core to
+  // run the job's REST call-trigger; Core resolves the template from the FROZEN
+  // snapshot (never caller data — TOCTOU, same rule as the session endpoint),
+  // decrypts the referenced secrets in the workflow-ownership scope (brokered
+  // classes included: this path is Core→broker only, nothing reaches the agent
+  // but the sanitized result), and dispatches to a live `restful` broker.
+  // The caller may supply ONLY whitelisted variables (phoneNumber).
+  app.post("/api/eval-agent/jobs/:jobId/restful", async (req, res) => {
+    try {
+      const authHeader = req.headers.authorization;
+      if (!authHeader || !authHeader.startsWith("Bearer ")) {
+        return res.status(401).json({ error: "Eval agent token required" });
+      }
+      const evalAgentToken = await storage.getEvalAgentTokenByHash(hashToken(authHeader.slice(7)));
+      if (!evalAgentToken || evalAgentToken.isRevoked) {
+        return res.status(401).json({ error: "Invalid or revoked eval agent token" });
+      }
+      const auth = await authorizeJobAgent(parseInt(req.params.jobId), evalAgentToken.id, req.body?.leaseId);
+      if (auth.status !== "ok") { denyJobAgent(res, auth); return; }
+      if (auth.job.status !== "running") {
+        return res.status(403).json({ error: "Trigger execution only available for running jobs" });
+      }
+
+      const snap = auth.job.snapshot;
+      const snapWorkflow = snap?.workflow;
+      const trigger = (snapWorkflow?.config as Record<string, unknown> | undefined)?.restfulTrigger;
+      if (!snapWorkflow || trigger === undefined) {
+        return res.status(400).json({ error: "no restfulTrigger on this job" });
+      }
+      // Defense against malformed legacy snapshots — same shape rule as creation.
+      const shape = validateRestfulTrigger(trigger);
+      if (!shape.valid) return res.status(400).json({ error: shape.error });
+
+      // Secret scope follows workflow ownership (org → fenced org rows; personal
+      // → owner rows). ALL classes resolve here — Core-only path.
+      const secretMap: Record<string, string> = {};
+      if (snapWorkflow.organizationId != null) {
+        Object.assign(secretMap, await orgAllSecretsForTrustedExec(auth.job.id));
+      } else {
+        for (const s of await storage.getSecretsByUserId(snapWorkflow.ownerId)) {
+          try { secretMap[s.name] = decryptValue(s.encryptedValue); } catch { /* skip undecryptable row */ }
+        }
+      }
+
+      const phoneNumber = typeof req.body?.variables?.phoneNumber === "string"
+        ? req.body.variables.phoneNumber : undefined;
+      const resolved = resolveRestfulTemplate(trigger as import("@shared/schema").RestfulTrigger, secretMap, { phoneNumber });
+      if (!resolved.ok) {
+        // Name-only errors by construction; still no secret values here.
+        return res.status(502).json({ error: resolved.error });
+      }
+
+      const target = await routeToBroker("restful");
+      if (!target) return res.status(503).json({ error: "No restful broker available" });
+
+      try {
+        const out = await executeViaBroker(target, resolved.request, resolved.usedSecretValues);
+        console.log(`[Restful] Job ${auth.job.id}: trigger executed via broker ${target.id} → ${out.status} (ok=${out.ok})`);
+        return res.json(out);
+      } catch (e) {
+        // executeViaBroker already redacted + capped its message.
+        const msg = e instanceof Error ? e.message : "broker exec failed";
+        console.warn(`[Restful] Job ${auth.job.id}: ${msg}`);
+        return res.status(502).json({ error: msg });
+      }
+    } catch (error) {
+      console.error("Error executing restful trigger:", error);
+      res.status(500).json({ error: "Failed to execute restful trigger" });
     }
   });
 

@@ -246,8 +246,57 @@ export function validateWorkflowConfig(config: unknown): { valid: boolean; error
   if (c.stepsSuffix !== undefined && typeof c.stepsSuffix !== "string") {
     return { valid: false, error: "Config stepsSuffix must be a string" };
   }
+  if (c.restfulTrigger !== undefined) {
+    const v = validateRestfulTrigger(c.restfulTrigger);
+    if (!v.valid) return v;
+  }
   if (JSON.stringify(config).length > MAX_CONFIG_SIZE) {
     return { valid: false, error: "Config too large (max 100KB)" };
+  }
+  return { valid: true };
+}
+
+// Shape-only validation of the REST call-trigger template (design 2026-09-21 §5).
+// Template placeholders are deliberately NOT resolved here — Core resolves them
+// from the frozen snapshot at execution time.
+const RESTFUL_TRIGGER_KEYS = new Set(["method", "url", "headers", "body", "expectStatus", "timeoutMs"]);
+const RESTFUL_METHODS = new Set(["GET", "POST", "PUT", "PATCH", "DELETE"]);
+export const RESTFUL_TIMEOUT_CAP_MS = 120_000;
+export function validateRestfulTrigger(raw: unknown): { valid: boolean; error?: string } {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+    return { valid: false, error: "restfulTrigger must be an object" };
+  }
+  const t = raw as Record<string, unknown>;
+  for (const k of Object.keys(t)) {
+    if (!RESTFUL_TRIGGER_KEYS.has(k)) return { valid: false, error: `restfulTrigger: unknown field '${k}'` };
+  }
+  if (typeof t.method !== "string" || !RESTFUL_METHODS.has(t.method)) {
+    return { valid: false, error: "restfulTrigger.method must be GET/POST/PUT/PATCH/DELETE" };
+  }
+  if (typeof t.url !== "string") return { valid: false, error: "restfulTrigger.url must be a string" };
+  // Placeholders may appear in the path/query but not the scheme/host position.
+  let parsed: URL;
+  try { parsed = new URL(t.url); } catch { return { valid: false, error: "restfulTrigger.url is not a valid URL" }; }
+  const httpOkay = parsed.protocol === "http:" && (parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1");
+  if (parsed.protocol !== "https:" && !httpOkay) {
+    return { valid: false, error: "restfulTrigger.url must be https (http allowed for localhost only)" };
+  }
+  if (t.headers !== undefined) {
+    if (typeof t.headers !== "object" || t.headers === null || Array.isArray(t.headers)
+      || Object.values(t.headers as Record<string, unknown>).some((v) => typeof v !== "string")) {
+      return { valid: false, error: "restfulTrigger.headers must be a string map" };
+    }
+  }
+  if (t.expectStatus !== undefined) {
+    if (!Array.isArray(t.expectStatus) || t.expectStatus.length === 0
+      || t.expectStatus.some((s) => !Number.isInteger(s) || (s as number) < 100 || (s as number) > 599)) {
+      return { valid: false, error: "restfulTrigger.expectStatus must be a non-empty array of HTTP status codes" };
+    }
+  }
+  if (t.timeoutMs !== undefined) {
+    if (!Number.isInteger(t.timeoutMs) || (t.timeoutMs as number) <= 0 || (t.timeoutMs as number) > RESTFUL_TIMEOUT_CAP_MS) {
+      return { valid: false, error: `restfulTrigger.timeoutMs must be 1..${RESTFUL_TIMEOUT_CAP_MS}` };
+    }
   }
   return { valid: true };
 }
