@@ -150,6 +150,98 @@ d("phone transport — claim gating (SQL + permissions mirror)", () => {
   });
 });
 
+d("phone transport — callMetadata + metrics transport filter", () => {
+  let creatorId: number;
+  let tokId: number;
+  let agentId: number;
+  let webJobId: number;
+  let phoneJobId: number;
+  const rawToken = `phA-met-token-${suffix}`;
+
+  const mkCompletedishJob = async (transport: "web" | "phone", providerId: string) => {
+    const job = await storage.createEvalJob({
+      workflowId: null, triggerType: 2, evalSetId: null, createdBy: creatorId,
+      siteId: null, targetRegion: "na-us-ashburn", targetTier: "private",
+      config: {},
+      snapshot: { provider: { id: providerId, name: "p", platformId: null }, workflow: null, evalSet: null, creatorPlan: "basic", transport } as any,
+      status: "pending", priority: 0, retryCount: 0, maxRetries: 3,
+    } as any);
+    // Claim stamps tokenDispatchTier=private + running (my-evals arm 3 needs it).
+    const claimed = await storage.claimEvalJob(job.id, agentId, {
+      id: tokId, siteId: "na-us-ashburn-01", region: "na-us-ashburn", dispatchTier: "private",
+      createdBy: creatorId, ownerOrgId: null, locationTrust: "trusted", phoneCapable: true,
+    } as any);
+    expect(claimed).toBeDefined();
+    return job.id;
+  };
+
+  beforeAll(async () => {
+    creatorId = (await storage.createUser({
+      username: `phAmet${suffix}`, email: `phAmet${suffix}@example.com`,
+    } as any)).id;
+    const tok = await storage.createEvalAgentToken({
+      name: `phA-met-${suffix}`, tokenHash: hashToken(rawToken),
+      siteId: "na-us-ashburn-01", dispatchTier: "private", createdBy: creatorId,
+    } as any);
+    tokId = tok.id;
+    agentId = (await storage.createEvalAgent({
+      tokenId: tok.id, name: `phA-met-agent-${suffix}`, siteId: "na-us-ashburn-01",
+      state: "idle", metadata: {},
+    } as any)).id;
+    const providers = await storage.getAllProviders();
+    webJobId = await mkCompletedishJob("web", providers[0].id);
+    phoneJobId = await mkCompletedishJob("phone", providers[0].id);
+  });
+
+  afterAll(async () => {
+    if (!hasDb) return;
+    await pool.query(`DELETE FROM eval_results WHERE eval_job_id = ANY($1::int[])`, [[webJobId, phoneJobId].filter(Boolean)]);
+    await pool.query(`DELETE FROM eval_jobs WHERE id = ANY($1::int[])`, [[webJobId, phoneJobId].filter(Boolean)]);
+    if (agentId) await pool.query(`DELETE FROM eval_agents WHERE id = $1`, [agentId]);
+    if (tokId) await pool.query(`DELETE FROM eval_agent_tokens WHERE id = $1`, [tokId]);
+    if (creatorId) await pool.query(`DELETE FROM users WHERE id = $1`, [creatorId]);
+  });
+
+  it("complete endpoint persists callMetadata; oversized/invalid rejected", async () => {
+    const complete = (jobId: number, extra: Record<string, unknown>) =>
+      fetch(`${BASE_URL}/api/eval-agent/jobs/${jobId}/complete`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${rawToken}` },
+        body: JSON.stringify({ agentId, results: { responseRate: 0.5, turnSuccessRate: 0.5 }, ...extra }),
+      });
+
+    const bad = await complete(phoneJobId, { callMetadata: "not-an-object" });
+    expect(bad.status).toBe(400);
+
+    const ok = await complete(phoneJobId, {
+      callMetadata: { disposition: "completed", durationMs: 61000, answeredAfterMs: 4200 },
+    });
+    expect(ok.ok).toBe(true);
+    const row = await pool.query(`SELECT call_metadata FROM eval_results WHERE eval_job_id = $1`, [phoneJobId]);
+    expect(row.rows[0].call_metadata).toEqual({ disposition: "completed", durationMs: 61000, answeredAfterMs: 4200 });
+
+    const okWeb = await complete(webJobId, {});
+    expect(okWeb.ok).toBe(true);
+  });
+
+  it("getMyEvalMetrics filters by transport; default is web", async () => {
+    const web = await storage.getMyEvalMetrics(creatorId, undefined, undefined);
+    const phone = await (storage.getMyEvalMetrics as any)(creatorId, undefined, undefined, "phone");
+    const webJobs = web.map((r: any) => r.id);
+    expect(phone.some((r: any) => (r as any).transport === "phone")).toBe(true);
+    expect(phone.every((r: any) => (r as any).transport === "phone")).toBe(true);
+    expect((web as any[]).every((r: any) => (r.transport ?? "web") === "web")).toBe(true);
+    expect(webJobs.length).toBeGreaterThan(0);
+  });
+
+  it("metrics endpoints validate the transport param", async () => {
+    const bad = await fetch(`${BASE_URL}/api/metrics/realtime?transport=pigeon`);
+    expect(bad.status).toBe(400);
+    const ok = await fetch(`${BASE_URL}/api/metrics/realtime?transport=phone`);
+    expect(ok.status).toBe(200);
+  });
+});
+
 d("phone transport — workflow API (HTTP, dev server)", () => {
   let cookie: string;
   const created: number[] = [];

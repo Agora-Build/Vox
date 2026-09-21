@@ -3994,6 +3994,16 @@ export async function registerRoutes(
         return res.status(400).json({ error: "Agent ID required" });
       }
 
+      // Phone-transport call metadata (design §7): plain object, size-capped.
+      let callMetadata: Record<string, unknown> | undefined;
+      if (req.body.callMetadata !== undefined) {
+        const cm = req.body.callMetadata;
+        if (typeof cm !== "object" || cm === null || Array.isArray(cm) || JSON.stringify(cm).length > 4096) {
+          return res.status(400).json({ error: "invalid callMetadata" });
+        }
+        callMetadata = cm as Record<string, unknown>;
+      }
+
       const agent = await storage.getEvalAgent(agentId);
       if (!agent || agent.tokenId !== evalAgentToken.id) {
         return res.status(403).json({ error: "Agent not found or token mismatch" });
@@ -4071,6 +4081,7 @@ export async function registerRoutes(
               interruptRate: results.interruptRate ?? null,
               falseInterruptRate: results.falseInterruptRate ?? null,
               turnSuccessRate: results.turnSuccessRate ?? null,
+              callMetadata: callMetadata ?? null,
               networkResilience: results.networkResilience,
               naturalness: results.naturalness,
               noiseReduction: results.noiseReduction,
@@ -5310,6 +5321,7 @@ export async function registerRoutes(
       id: r.id,
       providerId: r.providerId,
       provider: providerCache.get(r.providerId) || r.providerId,
+      transport: r.transport ?? "web",
       siteId: r.siteId,
       ...regionMetadata(r.siteId, locations),
       responseLatency: r.responseLatencyMedian,
@@ -5358,17 +5370,27 @@ export async function registerRoutes(
     return { hoursBack: parsed };
   }
 
+  // Transport partition (design 2026-09-21 §11): each metrics view is scoped to
+  // exactly one transport — web and phone are separate categories, never mixed.
+  function parseMetricsTransport(raw: unknown): { transport: "web" | "phone" } | { error: string } {
+    const t = raw === undefined ? "web" : String(raw);
+    if (t !== "web" && t !== "phone") return { error: "transport must be web or phone" };
+    return { transport: t };
+  }
+
   app.get("/api/metrics/realtime", async (req, res) => {
     try {
       const win = parseMetricsWindow(req.query.hours);
       if ("error" in win) return res.status(400).json({ error: win.error });
       const regionScope = await parseRegionQueryScope(req.query);
       if ("error" in regionScope) return res.status(400).json({ error: regionScope.error });
-      const cacheKey = `realtime:${win.hoursBack ?? 'all'}:${regionScope.cacheKey}`;
+      const tp = parseMetricsTransport(req.query.transport);
+      if ("error" in tp) return res.status(400).json({ error: tp.error });
+      const cacheKey = `realtime:${win.hoursBack ?? 'all'}:${regionScope.cacheKey}:${tp.transport}`;
       const cached = getCached(cacheKey);
       if (cached) return res.json(cached);
 
-      const results = await storage.getMainlineMetrics(win.hoursBack, regionScope.scope);
+      const results = await storage.getMainlineMetrics(win.hoursBack, regionScope.scope, tp.transport);
       const data = await formatMetricsResults(results);
       setCache(cacheKey, data);
       res.json(data);
@@ -5384,11 +5406,13 @@ export async function registerRoutes(
       if ("error" in win) return res.status(400).json({ error: win.error });
       const regionScope = await parseRegionQueryScope(req.query);
       if ("error" in regionScope) return res.status(400).json({ error: regionScope.error });
-      const cacheKey = `community:${win.hoursBack ?? 'all'}:${regionScope.cacheKey}`;
+      const tp = parseMetricsTransport(req.query.transport);
+      if ("error" in tp) return res.status(400).json({ error: tp.error });
+      const cacheKey = `community:${win.hoursBack ?? 'all'}:${regionScope.cacheKey}:${tp.transport}`;
       const cached = getCached(cacheKey);
       if (cached) return res.json(cached);
 
-      const results = await storage.getCommunityMetrics(win.hoursBack, regionScope.scope);
+      const results = await storage.getCommunityMetrics(win.hoursBack, regionScope.scope, tp.transport);
       const data = await formatMetricsResults(results);
       setCache(cacheKey, data);
       res.json(data);
@@ -5408,11 +5432,13 @@ export async function registerRoutes(
       if ("error" in win) return res.status(400).json({ error: win.error });
       const regionScope = await parseRegionQueryScope(req.query);
       if ("error" in regionScope) return res.status(400).json({ error: regionScope.error });
-      const cacheKey = `my-evals:${user.id}:${win.hoursBack ?? 'all'}:${regionScope.cacheKey}`;
+      const tp = parseMetricsTransport(req.query.transport);
+      if ("error" in tp) return res.status(400).json({ error: tp.error });
+      const cacheKey = `my-evals:${user.id}:${win.hoursBack ?? 'all'}:${regionScope.cacheKey}:${tp.transport}`;
       const cached = getCached(cacheKey);
       if (cached) return res.json(cached);
 
-      const results = await storage.getMyEvalMetrics(user.id, win.hoursBack, regionScope.scope);
+      const results = await storage.getMyEvalMetrics(user.id, win.hoursBack, regionScope.scope, tp.transport);
       const data = await formatMetricsResults(results);
       setCache(cacheKey, data);
       res.json(data);
