@@ -86,6 +86,8 @@ Optional, additive backends loaded by `server/plugins/loader.ts` from `VOX_PLUGI
 
 Region locations are admin-managed; site IDs are `<location-base>-<sequence>` (e.g. `apac-in-mumbai-01`). Some UI text still says "workers"/"testSets" for eval agents/eval sets.
 
+**Transport axis (Phone vs Agent, Phase A — `designs/2026-09-21-phone-vs-agent-design.md`):** workflows carry `transport` (`web`|`phone`, default web, editable by owner); each job freezes its own copy (snapshot field + stamped `eval_jobs.transport` column, `creator_org_id` pattern — claim SQL reads the stamp, never the live workflow). Phone jobs are claimable only by agents declaring the `phone` capability (register/heartbeat `capabilities: ["phone"]`, refreshed per beat, `[]` clears); the gate lives in both claim SQL paths AND `permissions.isClaimable` — keep them mirrored. Metrics endpoints take `?transport=` (default `web`) — web and phone are a hard partition, never mixed in one response. `evalResults.callMetadata` (jsonb, 4 KB cap at the complete endpoint) is phone-only call detail. Phases B–D (REST broker, DialF integration, UI) are separate releases.
+
 **Immutable per-job snapshot:** each `evalJobs` row carries a `snapshot` jsonb (workflow + eval-set metadata + config + provider + creator plan at run time) and `tokenVisibility` (frozen at claim). Everything downstream — provider attribution, provenance UI, tiering — reads the snapshot, never the live rows, so editing/deleting a workflow or eval set never rewrites past history. `evalJobs`/`evalSchedules` FKs are `ON DELETE SET NULL`; orphaned jobs authorize by `createdBy`, orphaned schedules auto-disable. `buildJobSnapshot()` in `server/storage.ts`.
 
 **3-tier metric classification** (reads the frozen snapshot):

@@ -8,6 +8,9 @@ import crypto from "crypto";
 export const userPlanEnum = pgEnum("user_plan", ["basic", "premium", "principal", "fellow"]);
 export const visibilityEnum = pgEnum("visibility", ["public", "private"]);
 export const providerSkuEnum = pgEnum("provider_sku", ["convoai", "rtc"]);
+// Conversation transport of a convo eval (designs/2026-09-21-phone-vs-agent-design.md §3):
+// how the simulated user reaches the agent. Orthogonal to providers.sku (the eval KIND axis).
+export const transportEnum = pgEnum("transport", ["web", "phone"]);
 export const evalAgentStateEnum = pgEnum("eval_agent_state", ["idle", "offline", "occupied"]);
 export const evalJobStatusEnum = pgEnum("eval_job_status", ["pending", "running", "completed", "failed"]);
 export const dispatchTierEnum = pgEnum("dispatch_tier", ["private", "team", "public", "shared"]);
@@ -173,6 +176,9 @@ export const workflows = pgTable("workflows", {
   organizationId: integer("organization_id"),
   visibility: visibilityEnum("visibility").default("public").notNull(),
   isMainline: boolean("is_mainline").default(false).notNull(),
+  // Conversation transport (design §3): how the simulated user reaches this
+  // workflow's agent. Editable on the live row; each job freezes its own copy.
+  transport: transportEnum("transport").default("web").notNull(),
   config: jsonb("config").default({}).notNull(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
@@ -255,6 +261,10 @@ export const evalAgents = pgTable("eval_agents", {
   lastSeenAt: timestamp("last_seen_at"),
   lastJobAt: timestamp("last_job_at"),
   metadata: jsonb("metadata").default({}),
+  // Capability declaration from register/heartbeat (e.g. ["phone"]). Claim SQL
+  // requires "phone" for phone-transport jobs (design §8). Refreshed each
+  // heartbeat — a host that loses its DialF drops the capability, self-healing.
+  capabilities: jsonb("capabilities").default([]).notNull(),
   // Core-observed egress IP (register/heartbeat). Layer-2/3 foundation: risk
   // tracking + network-instinct labels derive from this. Core-internal — never
   // expose raw in any public listing; only derived labels get exposed (future).
@@ -342,6 +352,9 @@ export type JobSnapshot = {
   workflow: { name: string; config: unknown; visibility: string; isMainline: boolean; ownerId: number; organizationId: number | null } | null;
   evalSet: { name: string; config: unknown; visibility: string; isMainline: boolean; ownerId: number } | null;
   creatorPlan: string | null;
+  // Conversation transport frozen at creation (design 2026-09-21 §3). Absent on
+  // pre-existing snapshots ⇒ treat as "web".
+  transport?: "web" | "phone";
   // Opaque marketplace settlement handle stashed by Core after a paid `shared`
   // dispatch (see the shared-agents plugin). Core never inspects it; the plugin
   // reads it back in settle(). TS-only — `snapshot` is a jsonb column.
@@ -386,6 +399,9 @@ export const evalJobs = pgTable("eval_jobs", {
   // frozen at creation from the seam (design §11 R2) — the claim SQL reads THIS, never users.organization_id.
   // No FK: org ids are opaque integers in Core (a plugin provider may own the org table).
   creatorOrgId: integer("creator_org_id"),
+  // Frozen at creation from the workflow (same pattern as creator_org_id): the
+  // claim SQL gates phone jobs on THIS, never the live workflow row.
+  transport: transportEnum("transport").default("web").notNull(),
   // Concrete site that ran (or will run) the job. Pooled jobs are born null;
   // the claiming agent stamps it atomically inside claimEvalJob.
   siteId: varchar("site_id", { length: 64 }),
@@ -462,6 +478,9 @@ export const evalResults = pgTable("eval_results", {
   // no-response turns as failures, so it stays meaningful under network
   // impairment where latency is NA. null when no evaluable turns.
   turnSuccessRate: real("turn_success_rate"),
+  // Phone-transport call metadata (design §7): {callId, disposition, answeredAfterMs,
+  // durationMs, fromRedacted, sim}. NULL for web results.
+  callMetadata: jsonb("call_metadata"),
   networkResilience: integer("network_resilience"),
   naturalness: real("naturalness"),
   noiseReduction: integer("noise_reduction"),

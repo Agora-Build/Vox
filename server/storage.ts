@@ -140,7 +140,10 @@ export type MetricSourceRow = Pick<EvalResult,
   // Workflow identity, from the job snapshot. Present only on raw (non-bucketed)
   // rows, where each point maps to one job → one workflow; null on daily buckets
   // (which average many workflows) and when the snapshot predates the field.
-  & { workflowId?: number | null; workflowName?: string | null };
+  & { workflowId?: number | null; workflowName?: string | null }
+  // Transport partition the row came from (design 2026-09-21 §11) — a constant
+  // per query since transports are never mixed in one view.
+  & { transport?: "web" | "phone" };
 
 export function hashToken(token: string): string {
   return crypto.createHash('sha256').update(token).digest('hex');
@@ -324,6 +327,7 @@ export function buildJobSnapshot(
         }
       : null,
     creatorPlan,
+    transport: (workflow.transport as "web" | "phone" | undefined) ?? "web",
   };
 }
 
@@ -934,9 +938,14 @@ export class DatabaseStorage {
   }
 
   async createEvalJob(job: InsertEvalJob): Promise<EvalJob> {
+    // Stamp the frozen transport column from the snapshot (single choke point —
+    // covers the run route AND the scheduler; creator_org_id pattern, design §3).
+    const transport = ((job.snapshot as JobSnapshot | null)?.transport ?? "web") as "web" | "phone";
     // Cast: the Zod insert type widens the `snapshot` jsonb ($type<JobSnapshot>)
     // to a looser shape; the runtime value is a valid JobSnapshot.
-    const result = await db.insert(evalJobs).values(job as typeof evalJobs.$inferInsert).returning();
+    const result = await db.insert(evalJobs)
+      .values({ ...(job as typeof evalJobs.$inferInsert), transport })
+      .returning();
     return result[0];
   }
 
@@ -952,7 +961,7 @@ export class DatabaseStorage {
   async claimEvalJob(
     jobId: number,
     agentId: number,
-    identity: { id: number; siteId: string | null; region: string | null; dispatchTier: string; createdBy: number; ownerOrgId: number | null; locationTrust: string },
+    identity: { id: number; siteId: string | null; region: string | null; dispatchTier: string; createdBy: number; ownerOrgId: number | null; locationTrust: string; phoneCapable?: boolean },
   ): Promise<EvalJob | undefined> {
     const client = await pool.connect();
     try {
@@ -963,6 +972,9 @@ export class DatabaseStorage {
       const selectResult = await client.query(
         `SELECT ej.* FROM eval_jobs ej
          WHERE ej.id = $1 AND ej.status = 'pending'::eval_job_status
+           -- Phone-transport jobs require the phone capability (design §8) —
+           -- applies to every arm below, targeted included.
+           AND ( ej.transport = 'web'::transport OR $8::boolean = true )
            AND (
              ej.target_token_id = $2
              OR ( ej.target_token_id IS NULL AND ej.target_region IS NOT NULL AND ej.target_region = $3 AND (
@@ -981,7 +993,7 @@ export class DatabaseStorage {
              ) )
            )
          FOR UPDATE OF ej SKIP LOCKED`,
-        [jobId, identity.id, identity.region, identity.dispatchTier, identity.createdBy, identity.ownerOrgId, identity.siteId]
+        [jobId, identity.id, identity.region, identity.dispatchTier, identity.createdBy, identity.ownerOrgId, identity.siteId, identity.phoneCapable === true]
       );
       if (selectResult.rows.length === 0) {
         await client.query('ROLLBACK');
@@ -1011,7 +1023,7 @@ export class DatabaseStorage {
   }
 
   async getClaimableJobsForToken(identity: {
-    id: number; siteId: string | null; region: string | null; dispatchTier: string; createdBy: number; ownerOrgId: number | null;
+    id: number; siteId: string | null; region: string | null; dispatchTier: string; createdBy: number; ownerOrgId: number | null; phoneCapable?: boolean;
   }): Promise<EvalJob[]> {
     // Mirrors permissions.isClaimable() bit for bit (targeted / pooled / legacy).
     // A NULL region/siteId (Unverified agent) never matches the pooled/legacy
@@ -1019,6 +1031,8 @@ export class DatabaseStorage {
     const result = await pool.query(
       `SELECT ej.* FROM eval_jobs ej
         WHERE ej.status = 'pending'::eval_job_status
+          -- Phone-transport jobs require the phone capability (design §8).
+          AND ( ej.transport = 'web'::transport OR $7::boolean = true )
           AND (
             ej.target_token_id = $1
             OR ( ej.target_token_id IS NULL AND ej.target_region IS NOT NULL AND ej.target_region = $2 AND (
@@ -1036,7 +1050,7 @@ export class DatabaseStorage {
             ) )
           )
         ORDER BY ej.priority DESC, ej.created_at ASC`,
-      [identity.id, identity.region, identity.siteId, identity.dispatchTier, identity.createdBy, identity.ownerOrgId],
+      [identity.id, identity.region, identity.siteId, identity.dispatchTier, identity.createdBy, identity.ownerOrgId, identity.phoneCapable === true],
     );
     return result.rows.map((r) => snakeToCamel(r) as EvalJob);
   }
@@ -1519,6 +1533,7 @@ export class DatabaseStorage {
         interruptRate: evalResults.interruptRate,
         falseInterruptRate: evalResults.falseInterruptRate,
         turnSuccessRate: evalResults.turnSuccessRate,
+        callMetadata: evalResults.callMetadata,
         networkResilience: evalResults.networkResilience,
         naturalness: evalResults.naturalness,
         noiseReduction: evalResults.noiseReduction,
@@ -1677,10 +1692,14 @@ export class DatabaseStorage {
   private joinCommunity(q: any): any { return this.joinTier(q); }
   private joinMyEvals(q: any): any { return this.joinTier(q); }
 
-  private tierConditions(tier: MetricTier, hoursBack?: number, userId?: number, scope?: RegionQueryScope) {
-    return tier === "mainline" ? this.mainlineConditions(hoursBack, scope)
+  private tierConditions(tier: MetricTier, hoursBack?: number, userId?: number, scope?: RegionQueryScope, transport: "web" | "phone" = "web") {
+    const conditions = tier === "mainline" ? this.mainlineConditions(hoursBack, scope)
       : tier === "community" ? this.communityConditions(hoursBack, scope)
       : this.myEvalConditions(userId!, hoursBack, scope);
+    // Transport is a hard partition, never mixed (design 2026-09-21 §11): every
+    // tier view is scoped to exactly one transport; default web.
+    conditions.push(eq(evalJobs.transport, transport));
+    return conditions;
   }
   private applyTierJoins(tier: MetricTier, q: any): any {
     return tier === "mainline" ? this.joinMainline(q)
@@ -1689,9 +1708,9 @@ export class DatabaseStorage {
   }
 
   // Earliest createdAt for a tier (null if no rows) → used to size "all time".
-  private async tierSpanDays(tier: MetricTier, userId?: number, scope?: RegionQueryScope): Promise<number | null> {
+  private async tierSpanDays(tier: MetricTier, userId?: number, scope?: RegionQueryScope, transport: "web" | "phone" = "web"): Promise<number | null> {
     const base = db.select({ minAt: sql<string | null>`min(${evalResults.createdAt})` }).from(evalResults);
-    const rows = await this.applyTierJoins(tier, base).where(and(...this.tierConditions(tier, undefined, userId, scope)));
+    const rows = await this.applyTierJoins(tier, base).where(and(...this.tierConditions(tier, undefined, userId, scope, transport)));
     const minAt = rows[0]?.minAt;
     if (!minAt) return null;
     return (Date.now() - new Date(minAt).getTime()) / (24 * 60 * 60 * 1000);
@@ -1699,7 +1718,7 @@ export class DatabaseStorage {
 
   // One averaged point per (day, provider, site). Same shape formatMetricsResults
   // consumes; SD/P95/secondary metrics are averages-of-aggregates (trend overview).
-  private async tierBucketedDaily(tier: MetricTier, hoursBack?: number, userId?: number, scope?: RegionQueryScope): Promise<MetricSourceRow[]> {
+  private async tierBucketedDaily(tier: MetricTier, hoursBack?: number, userId?: number, scope?: RegionQueryScope, transport: "web" | "phone" = "web"): Promise<MetricSourceRow[]> {
     const day = sql`date_trunc('day', ${evalResults.createdAt})`;
     const base = db.select({
       id: sql<number>`min(${evalResults.id})::int`,
@@ -1718,16 +1737,17 @@ export class DatabaseStorage {
       createdAt: sql<Date>`${day}`,
     }).from(evalResults);
     const rows = await this.applyTierJoins(tier, base)
-      .where(and(...this.tierConditions(tier, hoursBack, userId, scope)))
+      .where(and(...this.tierConditions(tier, hoursBack, userId, scope, transport)))
       .groupBy(day, evalResults.providerId, evalResults.siteId)
       .orderBy(day);
-    return rows as MetricSourceRow[];
+    // The query is partitioned to one transport, so it's a constant per row.
+    return (rows as any[]).map((r) => ({ ...r, transport })) as MetricSourceRow[];
   }
 
   // Applies the windowing policy (see the module-level comment). "All time"
   // (no hoursBack) is bounded to the retention cap and its raw-vs-bucket mode is
   // sized from the actual data span, so a young deployment's "all" stays raw.
-  private async tierMetrics(tier: MetricTier, hoursBack?: number, userId?: number, scope?: RegionQueryScope): Promise<MetricSourceRow[]> {
+  private async tierMetrics(tier: MetricTier, hoursBack?: number, userId?: number, scope?: RegionQueryScope, transport: "web" | "phone" = "web"): Promise<MetricSourceRow[]> {
     let effectiveHoursBack = hoursBack;
     let spanDays: number;
     if (hoursBack != null) {
@@ -1736,15 +1756,15 @@ export class DatabaseStorage {
       // "all time": clamp the window to the 3-year retention cap, and decide
       // raw-vs-bucket from how much history actually exists (also clamped).
       effectiveHoursBack = METRICS_ALL_MAX_DAYS * 24;
-      const actualSpan = (await this.tierSpanDays(tier, userId, scope)) ?? 0;
+      const actualSpan = (await this.tierSpanDays(tier, userId, scope, transport)) ?? 0;
       spanDays = Math.min(actualSpan, METRICS_ALL_MAX_DAYS);
     }
 
     if (resolveMetricsMode(spanDays) === "bucketDay") {
-      return this.tierBucketedDaily(tier, effectiveHoursBack, userId, scope);
+      return this.tierBucketedDaily(tier, effectiveHoursBack, userId, scope, transport);
     }
     const rows = await this.applyTierJoins(tier, db.select().from(evalResults))
-      .where(and(...this.tierConditions(tier, effectiveHoursBack, userId, scope)))
+      .where(and(...this.tierConditions(tier, effectiveHoursBack, userId, scope, transport)))
       .orderBy(desc(evalResults.createdAt))
       .limit(METRICS_RAW_ROW_CEILING);
     // evalJobs is already inner-joined (joinTier) for tiering, so its snapshot +
@@ -1753,19 +1773,20 @@ export class DatabaseStorage {
       ...r.eval_results,
       workflowId: r.eval_jobs?.workflowId ?? null,
       workflowName: (r.eval_jobs?.snapshot as JobSnapshot | null)?.workflow?.name ?? null,
+      transport,
     })) as MetricSourceRow[];
   }
 
   // Public metrics entry points used by the realtime dashboard. They own the
   // raw-vs-bucket decision and the row ceiling — callers pass only the window.
-  getMainlineMetrics(hoursBack?: number, scope?: RegionQueryScope): Promise<MetricSourceRow[]> {
-    return this.tierMetrics("mainline", hoursBack, undefined, scope);
+  getMainlineMetrics(hoursBack?: number, scope?: RegionQueryScope, transport: "web" | "phone" = "web"): Promise<MetricSourceRow[]> {
+    return this.tierMetrics("mainline", hoursBack, undefined, scope, transport);
   }
-  getCommunityMetrics(hoursBack?: number, scope?: RegionQueryScope): Promise<MetricSourceRow[]> {
-    return this.tierMetrics("community", hoursBack, undefined, scope);
+  getCommunityMetrics(hoursBack?: number, scope?: RegionQueryScope, transport: "web" | "phone" = "web"): Promise<MetricSourceRow[]> {
+    return this.tierMetrics("community", hoursBack, undefined, scope, transport);
   }
-  getMyEvalMetrics(userId: number, hoursBack?: number, scope?: RegionQueryScope): Promise<MetricSourceRow[]> {
-    return this.tierMetrics("myEvals", hoursBack, userId, scope);
+  getMyEvalMetrics(userId: number, hoursBack?: number, scope?: RegionQueryScope, transport: "web" | "phone" = "web"): Promise<MetricSourceRow[]> {
+    return this.tierMetrics("myEvals", hoursBack, userId, scope, transport);
   }
 
   // Available regions for a tier's picker: same tier conditions as the metrics
