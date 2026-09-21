@@ -3,7 +3,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from "recharts";
-import { Clock, Activity, RefreshCw, Lock, ChevronDown, Phone } from "lucide-react";
+import { Clock, Activity, RefreshCw, Lock, ChevronDown, Phone, Globe } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
@@ -938,7 +938,46 @@ export default function Dashboard() {
     <div className="space-y-8 animate-in fade-in duration-500">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
         <div className="flex flex-col gap-2">
-          <h1 className="text-2xl sm:text-3xl font-bold tracking-tight" data-testid="text-dashboard-title">Real-time</h1>
+          <div className="flex flex-wrap items-center gap-4">
+            <h1 className="text-2xl sm:text-3xl font-bold tracking-tight" data-testid="text-dashboard-title">Real-time</h1>
+            {/* Evaluation Mode (design §11): a page-identity switch, not a tab
+                group — bordered segmented control, visually distinct from the
+                tier pills below. Web and phone are never mixed in one view. */}
+            <div className="inline-flex overflow-hidden rounded-lg border border-border" data-testid="tabs-eval-mode" role="tablist" aria-label="Evaluation Mode">
+              <button
+                type="button"
+                role="tab"
+                data-testid="tab-mode-web"
+                data-state={evalMode === "web" ? "active" : "inactive"}
+                aria-selected={evalMode === "web"}
+                onClick={() => setEvalMode("web")}
+                className={`flex items-center gap-1.5 px-3.5 py-1.5 text-sm transition-colors ${
+                  evalMode === "web"
+                    ? "bg-primary/10 text-foreground shadow-[inset_0_-2px_0_hsl(var(--primary))]"
+                    : "text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                <Globe className="h-3.5 w-3.5" />
+                Web
+              </button>
+              <button
+                type="button"
+                role="tab"
+                data-testid="tab-mode-phone"
+                data-state={evalMode === "phone" ? "active" : "inactive"}
+                aria-selected={evalMode === "phone"}
+                onClick={() => setEvalMode("phone")}
+                className={`flex items-center gap-1.5 border-l border-border px-3.5 py-1.5 text-sm transition-colors ${
+                  evalMode === "phone"
+                    ? "bg-primary/10 text-foreground shadow-[inset_0_-2px_0_hsl(var(--primary))]"
+                    : "text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                <Phone className="h-3.5 w-3.5" />
+                Phone
+              </button>
+            </div>
+          </div>
           <p className="text-xs sm:text-sm text-muted-foreground flex flex-wrap items-center gap-2">
             <span className="relative flex h-2 w-2 shrink-0">
               {health?.status === "operational" ? (
@@ -1048,18 +1087,6 @@ export default function Dashboard() {
           </Button>
         </div>
       </div>
-
-      {/* Evaluation Mode switch (design §11): a hard category boundary above
-          the tier tabs — web and phone data never share a chart or a median. */}
-      <Tabs value={evalMode} onValueChange={(v) => setEvalMode(v as "web" | "phone")}>
-        <TabsList data-testid="tabs-eval-mode">
-          <TabsTrigger value="web" data-testid="tab-mode-web">Web vs Agent</TabsTrigger>
-          <TabsTrigger value="phone" className="gap-1" data-testid="tab-mode-phone">
-            <Phone className="h-3 w-3" />
-            Phone vs Agent
-          </TabsTrigger>
-        </TabsList>
-      </Tabs>
 
       <Tabs value={activeTab} onValueChange={setActiveTab}>
         <TabsList>
