@@ -23,6 +23,50 @@ const adminLogin = async (): Promise<string> => {
   return login.headers.get("set-cookie")!.split(";")[0];
 };
 
+describe("executeViaBroker (unit, injected fetch)", () => {
+  const target = { id: 1, url: "http://rest-broker.internal:9101", mintSecret: "ms-secret" };
+
+  it("happy path: posts to /execute with bearer auth, computes ok from expectStatus", async () => {
+    const { executeViaBroker } = await import("../server/broker-registry");
+    const calls: any[] = [];
+    const fetchImpl = (async (url: any, init: any) => {
+      calls.push({ url, init });
+      return new Response(JSON.stringify({ status: 201, bodyExcerpt: "id=7" }), { status: 200 });
+    }) as any;
+    const out = await executeViaBroker(target, { method: "POST", url: "https://t.example/x", expectStatus: [201] }, [], fetchImpl);
+    expect(out).toEqual({ status: 201, ok: true, bodyExcerpt: "id=7" });
+    expect(calls[0].url).toBe(`${target.url}/execute`);
+    expect(calls[0].init.headers.authorization).toBe("Bearer ms-secret");
+  });
+
+  it("redacts needles in bodyExcerpt and caps it", async () => {
+    const { executeViaBroker } = await import("../server/broker-registry");
+    const fetchImpl = (async () =>
+      new Response(JSON.stringify({ status: 200, bodyExcerpt: `token=sekret123 ${"x".repeat(5000)}` }), { status: 200 })) as any;
+    const out = await executeViaBroker(target, { method: "GET", url: "https://t.example/x" }, ["sekret123"], fetchImpl);
+    expect(out.bodyExcerpt).not.toContain("sekret123");
+    expect(out.bodyExcerpt.length).toBeLessThanOrEqual(2048);
+    expect(out.ok).toBe(true); // default expectStatus = 2xx
+  });
+
+  it("broker failure throws a redacted, capped message", async () => {
+    const { executeViaBroker } = await import("../server/broker-registry");
+    const fetchImpl = (async () =>
+      new Response(JSON.stringify({ error: "upstream said sekret123 is wrong" }), { status: 502 })) as any;
+    await expect(
+      executeViaBroker(target, { method: "GET", url: "https://t.example/x" }, ["sekret123"], fetchImpl),
+    ).rejects.toThrow(/broker exec failed: 502(?!.*sekret123)/);
+  });
+
+  it("out-of-expectStatus target status yields ok:false without throwing", async () => {
+    const { executeViaBroker } = await import("../server/broker-registry");
+    const fetchImpl = (async () =>
+      new Response(JSON.stringify({ status: 404, bodyExcerpt: "not found" }), { status: 200 })) as any;
+    const out = await executeViaBroker(target, { method: "GET", url: "https://t.example/x" }, [], fetchImpl);
+    expect(out).toEqual({ status: 404, ok: false, bodyExcerpt: "not found" });
+  });
+});
+
 d("restfulTrigger workflow-config validation", () => {
   let cookie: string;
   const created: number[] = [];
