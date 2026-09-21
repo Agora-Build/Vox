@@ -324,6 +324,7 @@ export function buildJobSnapshot(
         }
       : null,
     creatorPlan,
+    transport: (workflow.transport as "web" | "phone" | undefined) ?? "web",
   };
 }
 
@@ -934,9 +935,14 @@ export class DatabaseStorage {
   }
 
   async createEvalJob(job: InsertEvalJob): Promise<EvalJob> {
+    // Stamp the frozen transport column from the snapshot (single choke point —
+    // covers the run route AND the scheduler; creator_org_id pattern, design §3).
+    const transport = ((job.snapshot as JobSnapshot | null)?.transport ?? "web") as "web" | "phone";
     // Cast: the Zod insert type widens the `snapshot` jsonb ($type<JobSnapshot>)
     // to a looser shape; the runtime value is a valid JobSnapshot.
-    const result = await db.insert(evalJobs).values(job as typeof evalJobs.$inferInsert).returning();
+    const result = await db.insert(evalJobs)
+      .values({ ...(job as typeof evalJobs.$inferInsert), transport })
+      .returning();
     return result[0];
   }
 

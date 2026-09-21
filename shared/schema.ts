@@ -352,6 +352,9 @@ export type JobSnapshot = {
   workflow: { name: string; config: unknown; visibility: string; isMainline: boolean; ownerId: number; organizationId: number | null } | null;
   evalSet: { name: string; config: unknown; visibility: string; isMainline: boolean; ownerId: number } | null;
   creatorPlan: string | null;
+  // Conversation transport frozen at creation (design 2026-09-21 §3). Absent on
+  // pre-existing snapshots ⇒ treat as "web".
+  transport?: "web" | "phone";
   // Opaque marketplace settlement handle stashed by Core after a paid `shared`
   // dispatch (see the shared-agents plugin). Core never inspects it; the plugin
   // reads it back in settle(). TS-only — `snapshot` is a jsonb column.
