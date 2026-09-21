@@ -144,6 +144,26 @@ EXPOSE 8200
 CMD ["node", "auth-session-broker.js"]
 
 # ============================================================================
+# Stage: rest-broker — trusted HTTP execution sidecar (published as
+# vox-rest-broker; design 2026-09-21 §5). Node builtins only — no browser, no
+# aeval, no shared/ modules; esbuild bundles the single source file.
+#   docker build --target rest-broker -f vox_eval_agentd/Dockerfile -t vox-rest-broker .
+# ============================================================================
+FROM base AS rest-broker
+WORKDIR /app
+
+COPY vox_rest_broker/rest-broker.ts /app/
+COPY vox_eval_agentd/package.json /app/
+
+RUN npm install \
+    && npx esbuild rest-broker.ts --bundle --platform=node --format=esm --outfile=rest-broker.js \
+    && rm -rf node_modules
+
+EXPOSE 8300
+
+CMD ["node", "rest-broker.js"]
+
+# ============================================================================
 # Stage: daemon — eval-agent daemon (published as vox-eval-agentd)
 # LAST stage → the default --target. Current image content, minus the broker.
 # ============================================================================
