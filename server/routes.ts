@@ -1836,10 +1836,14 @@ export async function registerRoutes(
         return res.status(401).json({ error: "Not authenticated" });
       }
 
-      const { name, description, projectId, providerId, visibility, config, organizationId } = req.body;
+      const { name, description, projectId, providerId, visibility, config, organizationId, transport } = req.body;
 
       if (!name || !String(name).trim()) {
         return res.status(400).json({ error: "Name required" });
+      }
+
+      if (transport !== undefined && !["web", "phone"].includes(transport)) {
+        return res.status(400).json({ error: "Invalid transport" });
       }
       const cleanName = String(name).trim();
 
@@ -1884,6 +1888,7 @@ export async function registerRoutes(
         organizationId: organizationId || null,
         visibility: visibility || "public",
         isMainline: false,
+        transport: transport || "web",
         config: config || {},
       });
 
@@ -1914,12 +1919,19 @@ export async function registerRoutes(
         return res.status(403).json({ error: "Only the workflow's owner can edit it" });
       }
 
-      const { name, description, visibility, config, projectId, providerId } = req.body;
+      const { name, description, visibility, config, projectId, providerId, transport } = req.body;
       if (config) {
         const v = validateWorkflowConfig(config);
         if (!v.valid) return res.status(400).json({ error: v.error });
       }
       const updates: Record<string, unknown> = {};
+      if (transport !== undefined) {
+        if (!["web", "phone"].includes(transport)) {
+          return res.status(400).json({ error: "Invalid transport" });
+        }
+        // Live-row edit only — every existing job froze its own copy (design §3).
+        updates.transport = transport;
+      }
       if (name && String(name).trim()) updates.name = String(name).trim();
       if (description !== undefined) updates.description = description;
       if (config) updates.config = config;

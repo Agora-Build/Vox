@@ -150,6 +150,67 @@ d("phone transport — claim gating (SQL + permissions mirror)", () => {
   });
 });
 
+d("phone transport — workflow API (HTTP, dev server)", () => {
+  let cookie: string;
+  const created: number[] = [];
+
+  beforeAll(async () => {
+    const login = await fetch(`${BASE_URL}/api/auth/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: "admin@vox.local", password: "admin123456" }),
+    });
+    expect(login.ok).toBe(true);
+    cookie = login.headers.get("set-cookie")!.split(";")[0];
+  });
+
+  afterAll(async () => {
+    if (!hasDb || created.length === 0) return;
+    await pool.query(`DELETE FROM workflows WHERE id = ANY($1::int[])`, [created]);
+  });
+
+  const mkWorkflow = async (body: Record<string, unknown>) => {
+    const providers = await storage.getAllProviders();
+    const res = await fetch(`${BASE_URL}/api/workflows`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Cookie: cookie },
+      body: JSON.stringify({ name: `phA-http-${suffix}-${Math.random().toString(36).slice(2, 8)}`, providerId: providers[0].id, ...body }),
+    });
+    return res;
+  };
+
+  it("create accepts transport=phone and echoes it; default is web", async () => {
+    const res = await mkWorkflow({ transport: "phone" });
+    expect(res.ok).toBe(true);
+    const wf = await res.json();
+    created.push(wf.id);
+    expect(wf.transport).toBe("phone");
+
+    const res2 = await mkWorkflow({});
+    const wf2 = await res2.json();
+    created.push(wf2.id);
+    expect(wf2.transport).toBe("web");
+  });
+
+  it("rejects an invalid transport with 400", async () => {
+    const res = await mkWorkflow({ transport: "carrier-pigeon" });
+    expect(res.status).toBe(400);
+  });
+
+  it("PATCH can flip transport", async () => {
+    const res = await mkWorkflow({});
+    const wf = await res.json();
+    created.push(wf.id);
+    const patch = await fetch(`${BASE_URL}/api/workflows/${wf.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", Cookie: cookie },
+      body: JSON.stringify({ transport: "phone" }),
+    });
+    expect(patch.ok).toBe(true);
+    expect((await patch.json()).transport).toBe("phone");
+  });
+});
+
 d("phone transport — agent capability declaration (HTTP, dev server)", () => {
   let ownerId: number;
   let tokenId: number;
