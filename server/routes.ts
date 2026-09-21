@@ -2906,7 +2906,7 @@ export async function registerRoutes(
         if (!resolved.ok) return res.status(400).json({ error: resolved.error });
         resolvedBrokerType = resolved.brokerType;
       }
-      if (existingRow && existingRow.brokerType === "auth-session" && resolvedBrokerType === null) {
+      if (existingRow && existingRow.brokerType != null && resolvedBrokerType === null) {
         return res.status(400).json({ error: "A brokered secret cannot be reclassified to runtime — delete and recreate it instead" });
       }
 
@@ -3017,7 +3017,7 @@ export async function registerRoutes(
         if (!resolved.ok) return res.status(400).json({ error: resolved.error });
         resolvedBrokerType = resolved.brokerType;
       }
-      if (existingRow && existingRow.brokerType === "auth-session" && resolvedBrokerType === null) {
+      if (existingRow && existingRow.brokerType != null && resolvedBrokerType === null) {
         return res.status(400).json({ error: "A brokered secret cannot be reclassified to runtime — delete and recreate it instead" });
       }
       // Provider's upsertOrgSecret always writes isTestAccount (no partial-update

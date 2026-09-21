@@ -1,4 +1,8 @@
-export const KNOWN_BROKER_TYPES = ["auth-session"] as const;
+// "auth-session" = login-session minting (browser + aeval); "restful" = trusted
+// HTTP execution for restful.* steps referencing broker-class secrets (design
+// 2026-09-21 §5). One list gates secret classification (resolveBrokerType),
+// broker registration, and routeToBroker — adding a type here unlocks all three.
+export const KNOWN_BROKER_TYPES = ["auth-session", "restful"] as const;
 export type BrokerType = (typeof KNOWN_BROKER_TYPES)[number];
 
 export const BROKER_OFFLINE_THRESHOLD_SECONDS = 300; // 5 missed 60s heartbeats
