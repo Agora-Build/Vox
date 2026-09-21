@@ -2313,7 +2313,7 @@ describe('Vox API Tests', () => {
       const response = await authFetch(orgSession, `${BASE_URL}/api/organizations/${organizationId}/seats`);
       expect(response.ok).toBe(true);
       const seats = await response.json();
-      expect(seats.totalSeats).toBe(0);
+      expect(seats.totalSeats).toBe(1); // Creator's seat included by default
       expect(seats.usedSeats).toBe(1); // Creator uses 1 seat
     });
 
@@ -2324,7 +2324,7 @@ describe('Vox API Tests', () => {
       });
       expect(response.ok).toBe(true);
       const pricing = await response.json();
-      expect(pricing.totalSeats).toBe(5);
+      expect(pricing.totalSeats).toBe(6); // 1 default + 5 additional
       expect(pricing.pricePerSeat).toBeGreaterThan(0);
       expect(pricing.total).toBeGreaterThan(0);
     });
@@ -2336,14 +2336,14 @@ describe('Vox API Tests', () => {
       });
       expect(response.ok).toBe(true);
       const result = await response.json();
-      expect(result.newTotalSeats).toBe(3);
+      expect(result.newTotalSeats).toBe(4); // 1 default + 3 purchased
     });
 
     it('should verify seats were added', async () => {
       const response = await authFetch(orgSession, `${BASE_URL}/api/organizations/${organizationId}/seats`);
       expect(response.ok).toBe(true);
       const seats = await response.json();
-      expect(seats.totalSeats).toBe(3);
+      expect(seats.totalSeats).toBe(4);
     });
 
     it('should get payment history', async () => {
