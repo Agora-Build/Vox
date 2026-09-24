@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # PipeWire setup for Clash Runner (headless container)
 #
 # Audio stack: dbus -> PipeWire -> WirePlumber -> PipeWire-Pulse

@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Audio pipeline integration test for the clash runner container.
 # Tests the 4-sink design (Sink_A_Out, Sink_B_Out, Sink_A_In, Sink_B_In) with
 # REAL audio signal: sox-generated tones + RMS non-silence assertions — a
