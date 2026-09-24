@@ -242,22 +242,28 @@ describe("runPhoneJob (orchestration, injected deps)", () => {
 });
 
 describe("buildSessionDir", () => {
-  it("copies legs and writes dialf metadata; throws without recordings", () => {
+  it("stages ONE deterministic recording (mix preferred, rx fallback) + dialf metadata", () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "phone-eval-"));
     const rx = path.join(tmp, "src-rx.wav");
-    fs.writeFileSync(rx, "RIFFfake");
-    const dest = path.join(tmp, "session");
-    const dir = buildSessionDir(
+    const mix = path.join(tmp, "src-mix.wav");
+    fs.writeFileSync(rx, "RXDATA");
+    fs.writeFileSync(mix, "MIXDATA");
+
+    const withMix = buildSessionDir(
       {
         steps: [{ index: 0, id: "s1", type: "audio.play", t_start_ms: 0, t_end_ms: 900, end_reason: "completed" }],
-        recording: { rx, t0_epoch_ms: 1758412800123 },
+        recording: { rx, mix, t0_epoch_ms: 1758412800123 },
         call: { end_reason: "completed" },
       },
-      dest,
+      path.join(tmp, "s1"),
     );
-    expect(fs.readFileSync(path.join(dir, "recordings", "rx.wav"), "utf-8")).toBe("RIFFfake");
-    expect(JSON.parse(fs.readFileSync(path.join(dir, "dialf", "steps.json"), "utf-8"))[0].id).toBe("s1");
-    expect(JSON.parse(fs.readFileSync(path.join(dir, "dialf", "t0.json"), "utf-8")).t0_epoch_ms).toBe(1758412800123);
+    expect(fs.readFileSync(path.join(withMix, "recordings", "recording.wav"), "utf-8")).toBe("MIXDATA");
+    expect(fs.readdirSync(path.join(withMix, "recordings"))).toEqual(["recording.wav"]); // exactly one
+    expect(JSON.parse(fs.readFileSync(path.join(withMix, "dialf", "steps.json"), "utf-8"))[0].id).toBe("s1");
+    expect(JSON.parse(fs.readFileSync(path.join(withMix, "dialf", "t0.json"), "utf-8")).t0_epoch_ms).toBe(1758412800123);
+
+    const rxOnly = buildSessionDir({ recording: { rx } }, path.join(tmp, "s2"));
+    expect(fs.readFileSync(path.join(rxOnly, "recordings", "recording.wav"), "utf-8")).toBe("RXDATA");
 
     expect(() => buildSessionDir({ steps: [] }, path.join(tmp, "empty"))).toThrow(/no recordings/);
     fs.rmSync(tmp, { recursive: true, force: true });

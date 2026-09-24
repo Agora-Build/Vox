@@ -179,6 +179,7 @@ RUN npm install && npx puppeteer browsers install chrome
 WORKDIR /app
 COPY vox_eval_agentd/applications/ /app/applications/
 COPY vox_eval_agentd/scenarios/ /app/scenarios/
+COPY vox_eval_agentd/analysis-presets/ /app/analysis-presets/
 COPY vox_eval_agentd/assets/ /app/assets/
 COPY vox_eval_agentd/vox-agentd.ts /app/
 COPY vox_eval_agentd/session-inject.ts /app/

@@ -312,19 +312,13 @@ export async function runPhoneJob(cfg: PhoneRunConfig, deps: PhoneRunDeps): Prom
 export function buildSessionDir(result: DialfJobResult, destDir: string): string {
   const rec = path.join(destDir, 'recordings');
   fs.mkdirSync(rec, { recursive: true });
-  const legs: Array<[string, string | undefined]> = [
-    ['rx.wav', result.recording?.rx],
-    ['tx.wav', result.recording?.tx],
-    ['mix.wav', result.recording?.mix],
-  ];
-  let copied = 0;
-  for (const [name, src] of legs) {
-    if (!src) continue;
-    if (!fs.existsSync(src)) throw new Error(`recording leg missing on disk: ${src}`);
-    fs.copyFileSync(src, path.join(rec, name));
-    copied++;
-  }
-  if (copied === 0) throw new Error('DialF result carried no recordings');
+  // Exactly ONE recording, so the analyzer's pick is deterministic. The mix
+  // (stereo: L=user, R=agent) carries both speakers on one timeline — aeval's
+  // single-recording model; rx (agent-only) is the degraded fallback.
+  const src = result.recording?.mix ?? result.recording?.rx;
+  if (!src) throw new Error('DialF result carried no recordings');
+  if (!fs.existsSync(src)) throw new Error(`recording leg missing on disk: ${src}`);
+  fs.copyFileSync(src, path.join(rec, 'recording.wav'));
   const meta = path.join(destDir, 'dialf');
   fs.mkdirSync(meta, { recursive: true });
   fs.writeFileSync(path.join(meta, 'steps.json'), JSON.stringify(result.steps ?? [], null, 2));

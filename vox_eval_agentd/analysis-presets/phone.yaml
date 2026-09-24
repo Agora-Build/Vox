@@ -1,0 +1,36 @@
+# Phone-transport analysis preset (design 2026-09-21 §9): the default pipeline
+# minus the browser-only pieces — no `events` extractor (requires the web
+# session's console.log) and acoustic-only VAD (`events: false`). Everything
+# else (ten VAD, whisper STT, turn segmentation, metrics, reports) unchanged.
+# Input: the single mixed recording buildSessionDir stages (L=user, R=agent).
+cache: true
+parallel: false
+stages:
+- stage: vad
+  config:
+    acoustic: ten
+    events: false
+    acoustic_config:
+      threshold: 0.6
+- stage: vad_merger
+  config:
+    merge_strategy: union
+    min_gap_ms: 100
+- stage: stt
+  config:
+    provider: whisper
+    language: ''
+- stage: turn_segmenter
+  config:
+    interruption_tolerance_s: 2.0
+    ambiguity_profile: balanced
+- stage: metrics_calculator
+  config: {}
+- stage: html_reporter
+  config:
+    template: default.html.jinja2
+    output: report.html
+- stage: json_exporter
+  config:
+    pretty: true
+    output: metrics.json

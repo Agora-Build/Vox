@@ -1976,10 +1976,12 @@ class VoxEvalAgentDaemon {
     return this.corpusIndex;
   }
 
-  /** `aeval analyze <sessionDir>` — non-zero exit throws (failure policy). */
+  /** `aeval analyze <sessionDir>` with the phone preset — non-zero exit throws
+   *  (failure policy). The preset drops the browser-only pipeline stages. */
   private runAevalAnalyze(sessionDir: string): Promise<void> {
+    const preset = path.resolve(__dirname, 'analysis-presets', 'phone.yaml');
     return new Promise((resolve, reject) => {
-      const proc = spawn('aeval', ['analyze', sessionDir], { cwd: AEVAL_DATA_PATH, stdio: ['ignore', 'pipe', 'pipe'] });
+      const proc = spawn('aeval', ['analyze', sessionDir, '-c', preset], { cwd: AEVAL_DATA_PATH, stdio: ['ignore', 'pipe', 'pipe'] });
       const outCap = createBoundedCapture();
       const errCap = createBoundedCapture();
       proc.stdout.on('data', (d) => outCap.push(d.toString()));
