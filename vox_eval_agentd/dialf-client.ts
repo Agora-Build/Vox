@@ -132,14 +132,16 @@ export interface DialfProbe {
   ok: boolean;
   reason?: string;
   version?: string;
-  /** Our SIM's number for ${phoneNumber} injection — env-sourced (VOX_PHONE_NUMBER):
-   * SIMs commonly don't expose their own number, so env is the reliable source. */
+  /** Our SIM's own number (for ${phoneNumber} injection in trigger mode), read
+   * from DialF's sims.list — the default SIM's number, else the first SIM that
+   * has one. Undefined when the carrier didn't provision it on any SIM. */
   phoneNumber?: string;
 }
 
+interface SimInfo { slot?: number; sub_id?: number; number?: string; is_default?: boolean }
+
 export async function probeDialf(
   socketPath: string = resolveDialfSocketPath(),
-  env: NodeJS.ProcessEnv = process.env,
 ): Promise<DialfProbe> {
   const client = new DialfClient(socketPath, 5_000);
   try {
@@ -164,7 +166,15 @@ export async function probeDialf(
     if (!Array.isArray(devices) || devices.length === 0) {
       return { ok: false, reason: 'no phone connected', version: info?.version };
     }
-    return { ok: true, version: info?.version, phoneNumber: env.VOX_PHONE_NUMBER };
+    // SIM's own number from DialF (best-effort — a snapshot op; absence is not
+    // a probe failure, the number only matters for the trigger mode).
+    let phoneNumber: string | undefined;
+    try {
+      const sims = (await client.call('sims.list')) as { sims?: SimInfo[] };
+      const entries = Array.isArray(sims?.sims) ? sims.sims : [];
+      phoneNumber = (entries.find((s) => s.is_default && s.number) ?? entries.find((s) => s.number))?.number;
+    } catch { /* older builds / phone slow to answer — leave undefined */ }
+    return { ok: true, version: info?.version, phoneNumber };
   } catch (e) {
     return { ok: false, reason: e instanceof Error ? e.message : 'probe failed' };
   } finally {
