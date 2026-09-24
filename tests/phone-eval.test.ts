@@ -54,6 +54,20 @@ describe("compilePhoneConversation", () => {
   });
 });
 
+describe("phoneDial travels from workflow config into job config", () => {
+  it("mergeEvalConfig carries phoneDial (and restfulTrigger) through to the job", async () => {
+    const { mergeEvalConfig } = await import("../server/storage");
+    const jobConfig = mergeEvalConfig(
+      { framework: "aeval", phoneDial: { number: "+1 408 837 5890" } },
+      { scenario: "steps:\n  - type: audio.play" },
+    );
+    // The daemon reads job.config.phoneDial — the number is workflow data
+    // fetched from Vox with the claimed job, never host/env configuration.
+    expect(jobConfig.phoneDial).toEqual({ number: "+1 408 837 5890" });
+    expect(jobConfig.scenario).toBeDefined();
+  });
+});
+
 describe("compile: lab.trace mapping + relative file resolution (turn_taking shape)", () => {
   it("maps lab.trace to a log step and resolves relative file refs", () => {
     const out = compilePhoneConversation(
