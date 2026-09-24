@@ -1,0 +1,15 @@
+{
+  "extends": "./tsconfig.json",
+  "include": ["vox_eval_agentd/*.ts", "vox_rest_broker/*.ts", "shared/**/*"],
+  "exclude": ["node_modules", "vox_eval_agentd/aeval-data", "vox_eval_agentd/voice-agent-tester"],
+  "compilerOptions": {
+    "noEmit": true,
+    // Own buildinfo — sharing the root's makes incremental runs reuse settings
+    // from the other project and report stale errors.
+    "tsBuildInfoFile": "./node_modules/typescript/tsbuildinfo-agentd",
+    // The daemon runs modern Node (22 in the image) — not the browser target
+    // the root config serves. es2022 also enables the iterator protocols the
+    // daemon sources use (matchAll, Map iteration).
+    "target": "es2022"
+  }
+}
