@@ -1,0 +1,11 @@
+{
+  "extends": "./tsconfig.json",
+  "include": ["vox_eval_agentd/*.ts", "vox_rest_broker/*.ts", "shared/**/*"],
+  "compilerOptions": {
+    "noEmit": true,
+    // Own buildinfo: sharing the root's makes incremental runs report stale errors.
+    "tsBuildInfoFile": "./node_modules/typescript/tsbuildinfo-agentd",
+    // Node target (daemon/broker run Node 22), unlike the browser-oriented root.
+    "target": "es2022"
+  }
+}

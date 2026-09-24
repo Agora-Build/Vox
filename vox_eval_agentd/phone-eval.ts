@@ -278,12 +278,9 @@ export async function runPhoneJob(cfg: PhoneRunConfig, deps: PhoneRunDeps): Prom
   const conversation = stagePlayFiles(compiled.steps, cfg.exchangeDir ?? null);
   const steps = buildOutboundJob(cfg.phoneDial.number, conversation);
   const timeoutMs = sumStepTimeouts(steps);
-  // Per-run record_dir (dialfd ≥ 0.3.16): route this run's recordings into the
-  // exchange dir so the container can read them — no dialfd config edit needed.
-  // Precedence: per-run > override.set > config.yaml. On an older dialfd the
-  // unknown field is ignored and recordings land in its configured record_dir;
-  // if that's outside the exchange, buildSessionDir fails with a clear
-  // "recording leg missing on disk" — upgrade dialfd rather than configuring.
+  // Per-run record_dir (dialfd ≥ 0.3.16) routes this run's recordings into the
+  // exchange dir so the container can read them. An older dialfd ignores the
+  // field and buildSessionDir then fails on the missing legs — upgrade dialfd.
   const recordDir = cfg.exchangeDir ? path.join(cfg.exchangeDir, 'recordings') : undefined;
   const result = (await deps.dialfCall(
     'job.run',

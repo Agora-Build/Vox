@@ -1980,17 +1980,29 @@ class VoxEvalAgentDaemon {
   private runAevalAnalyze(sessionDir: string): Promise<void> {
     return new Promise((resolve, reject) => {
       const proc = spawn('aeval', ['analyze', sessionDir], { cwd: AEVAL_DATA_PATH, stdio: ['ignore', 'pipe', 'pipe'] });
-      const capture = createBoundedCapture();
-      proc.stdout.on('data', (d) => capture.push(d.toString()));
-      proc.stderr.on('data', (d) => capture.push(d.toString()));
+      const outCap = createBoundedCapture();
+      const errCap = createBoundedCapture();
+      proc.stdout.on('data', (d) => outCap.push(d.toString()));
+      proc.stderr.on('data', (d) => errCap.push(d.toString()));
       const timer = setTimeout(() => {
         proc.kill('SIGKILL');
         reject(new Error('aeval analyze exceeded 10 minutes'));
       }, 10 * 60 * 1000);
       proc.on('close', (code) => {
         clearTimeout(timer);
-        if (code === 0) resolve();
-        else reject(new Error(`aeval analyze exited ${code}: ${summarizeAevalFailure(capture.text())}`));
+        // Nothing here may throw: an exception inside this handler is an
+        // uncaught process crash, not a rejected promise.
+        try {
+          if (code === 0) { resolve(); return; }
+          const detail = summarizeAevalFailure(
+            reduceUrlsSafely(outCap.text, this.activeSecretValues),
+            reduceUrlsSafely(errCap.text, this.activeSecretValues),
+            this.activeSecretValues,
+          );
+          reject(new Error(`aeval analyze exited ${code}: ${detail}`));
+        } catch (e) {
+          reject(new Error(`aeval analyze exited ${code}; failure summary itself failed: ${e instanceof Error ? e.message : e}`));
+        }
       });
       proc.on('error', (err) => { clearTimeout(timer); reject(err); });
     });
