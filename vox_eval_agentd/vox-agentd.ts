@@ -2027,7 +2027,7 @@ class VoxEvalAgentDaemon {
             return fs.existsSync(abs) ? abs : null;
           },
           // Docker↔host bridge (design §6): identical-path bind mount, set by vox-upgrade.sh.
-          exchangeDir: process.env.VOX_PHONE_EXCHANGE_DIR ?? null,
+          exchangeDir: process.env.VOX_DIALF_EXCHANGE_DIR ?? null,
         },
         {
           dialfCall: (op, fields, timeoutMs) => client.call(op, fields, timeoutMs),

@@ -239,7 +239,7 @@ for name in "${!images[@]}"; do
         # files staged by the daemon are readable by dialfd, and dialfd's
         # recordings are readable by the daemon. .env config (all optional):
         #   DIALF_SOCKET=/path/to/dialfd.sock   # skip auto-detection
-        #   PHONE_EXCHANGE_DIR=/path/dir        # default: $HOME/vox-phone-exchange
+        #   DIALF_EXCHANGE_DIR=/path/dir        # default: $HOME/vox-phone-exchange
         #   VOX_PHONE_NUMBER=+1555...           # this host's SIM number
         # Caveat: the socket is bind-mounted as a FILE — if dialfd restarts and
         # recreates it, restart this container (or re-run the upgrade). For a
@@ -254,10 +254,10 @@ for name in "${!images[@]}"; do
         fi
         if [ -n "$dialf_socket" ] && [ -S "$dialf_socket" ]; then
             dialf_detected=1
-            exchange_dir="${PHONE_EXCHANGE_DIR:-$HOME/vox-phone-exchange}"
+            exchange_dir="${DIALF_EXCHANGE_DIR:-$HOME/vox-phone-exchange}"
             mkdir -p "$exchange_dir/corpus" "$exchange_dir/recordings"
             mount_args="-v $dialf_socket:$dialf_socket -v $exchange_dir:$exchange_dir"
-            env_args+="-e VOX_DIALF_SOCKET=$dialf_socket -e VOX_PHONE_EXCHANGE_DIR=$exchange_dir "
+            env_args+="-e VOX_DIALF_SOCKET=$dialf_socket -e VOX_DIALF_EXCHANGE_DIR=$exchange_dir "
             [ -n "${VOX_PHONE_NUMBER:-}" ] && env_args+="-e VOX_PHONE_NUMBER=$VOX_PHONE_NUMBER "
             echo "DialF detected: socket $dialf_socket mounted; exchange dir $exchange_dir"
             echo "  -> point dialfd's record_dir INSIDE the exchange dir (e.g. $exchange_dir/recordings)"

@@ -243,7 +243,7 @@ export interface PhoneRunConfig {
   resolveCorpusFile: CompileOpts['resolveCorpusFile'];
   resolveCorpusSet?: CompileOpts['resolveCorpusSet'];
   resolveRelativeFile?: CompileOpts['resolveRelativeFile'];
-  /** Docker↔host bridge dir (VOX_PHONE_EXCHANGE_DIR); null = host-run daemon. */
+  /** Docker↔host bridge dir (VOX_DIALF_EXCHANGE_DIR); null = host-run daemon. */
   exchangeDir?: string | null;
 }
 
