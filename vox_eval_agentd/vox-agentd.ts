@@ -2021,6 +2021,13 @@ class VoxEvalAgentDaemon {
           hasRestfulTrigger: config.restfulTrigger !== undefined,
           resolveCorpusFile: (id) => corpus.files.get(id) ?? null,
           resolveCorpusSet: (name) => corpus.sets.get(name) ?? null,
+          // aeval scenario convention: relative file refs resolve against the data root.
+          resolveRelativeFile: (rel) => {
+            const abs = path.resolve(AEVAL_DATA_PATH, rel);
+            return fs.existsSync(abs) ? abs : null;
+          },
+          // Docker↔host bridge (design §6): identical-path bind mount, set by vox-upgrade.sh.
+          exchangeDir: process.env.VOX_DIALF_EXCHANGE_DIR ?? null,
         },
         {
           dialfCall: (op, fields, timeoutMs) => client.call(op, fields, timeoutMs),

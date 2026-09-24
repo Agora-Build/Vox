@@ -4,7 +4,7 @@ import * as os from "os";
 import * as path from "path";
 import {
   compilePhoneConversation, buildOutboundJob, sumStepTimeouts,
-  toCallMetadata, buildSessionDir, runPhoneJob,
+  toCallMetadata, buildSessionDir, runPhoneJob, stagePlayFiles,
 } from "../vox_eval_agentd/phone-eval";
 
 const corpus = (id: string) => (id.startsWith("known") ? `/abs/corpus/${id}.wav` : null);
@@ -49,8 +49,74 @@ describe("compilePhoneConversation", () => {
     bad([{ type: "browser.click" }], "web-session vocabulary");
     bad([{ type: "audio.play", corpus_id: "nope" }], "unknown corpus_id");
     bad([{ type: "restful.request" }], "unsupported step type");
-    bad([{ type: "audio.play", file: "relative.wav" }], "absolute");
+    bad([{ type: "audio.play", file: "relative.wav" }], "not resolvable");
     bad([], "zero steps");
+  });
+});
+
+describe("phoneDial travels from workflow config into job config", () => {
+  it("mergeEvalConfig carries phoneDial (and restfulTrigger) through to the job", async () => {
+    const { mergeEvalConfig } = await import("../server/storage");
+    const jobConfig = mergeEvalConfig(
+      { framework: "aeval", phoneDial: { number: "+1 408 837 5890" } },
+      { scenario: "steps:\n  - type: audio.play" },
+    );
+    // The daemon reads job.config.phoneDial — the number is workflow data
+    // fetched from Vox with the claimed job, never host/env configuration.
+    expect(jobConfig.phoneDial).toEqual({ number: "+1 408 837 5890" });
+    expect(jobConfig.scenario).toBeDefined();
+  });
+});
+
+describe("compile: lab.trace mapping + relative file resolution (turn_taking shape)", () => {
+  it("maps lab.trace to a log step and resolves relative file refs", () => {
+    const out = compilePhoneConversation(
+      [
+        { type: "lab.trace", event: "case_sample_start", case_id: "RSP_BASIC", sample_id: "RSP_BASIC-001" },
+        { type: "audio.play", file: "corpus/turn_taking/en/audio/q1.wav" },
+        { type: "audio.wait_for_speech", end_timeout_ms: 45000, silence_duration_ms: 3000 },
+      ],
+      {
+        resolveCorpusFile: () => null,
+        resolveRelativeFile: (rel) => (rel.startsWith("corpus/") ? `/data/${rel}` : null),
+      },
+    );
+    expect(out.ok).toBe(true);
+    if (!out.ok) return;
+    expect(out.steps[0]).toMatchObject({ type: "log", message: "trace case_sample_start RSP_BASIC RSP_BASIC-001" });
+    expect(out.steps[1].file).toBe("/data/corpus/turn_taking/en/audio/q1.wav");
+  });
+
+  it("still rejects an unresolvable relative file", () => {
+    const out = compilePhoneConversation(
+      [{ type: "audio.play", file: "nowhere/x.wav" }],
+      { resolveCorpusFile: () => null, resolveRelativeFile: () => null },
+    );
+    expect(out.ok).toBe(false);
+    if (!out.ok) expect(out.error).toContain("not resolvable");
+  });
+});
+
+describe("stagePlayFiles (Docker↔host exchange dir)", () => {
+  it("copies play files into <exchange>/corpus and rewrites paths; no-op without exchange", () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "stage-"));
+    const src = path.join(tmp, "clip.wav");
+    fs.writeFileSync(src, "RIFF");
+    const steps = [
+      { type: "audio.play", id: "s1", file: src },
+      { type: "audio.wait_for_speech", id: "s2" },
+      { type: "audio.play", id: "s3", file: src }, // same source → same staged copy
+    ];
+    const exchange = path.join(tmp, "exchange");
+    const staged = stagePlayFiles(steps as any, exchange);
+    expect(staged[0].file).not.toBe(src);
+    expect(String(staged[0].file).startsWith(path.join(exchange, "corpus"))).toBe(true);
+    expect(fs.readFileSync(String(staged[0].file), "utf-8")).toBe("RIFF");
+    expect(staged[2].file).toBe(staged[0].file); // deduped
+    expect(staged[1]).toEqual(steps[1]); // non-play untouched
+
+    expect(stagePlayFiles(steps as any, null)).toEqual(steps);
+    fs.rmSync(tmp, { recursive: true, force: true });
   });
 });
 

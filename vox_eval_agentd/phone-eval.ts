@@ -7,6 +7,7 @@
  */
 import * as fs from 'fs';
 import * as path from 'path';
+import { createHash } from 'crypto';
 
 // ---- compiler ---------------------------------------------------------------
 
@@ -21,6 +22,10 @@ export interface CompileOpts {
   resolveCorpusFile: (corpusId: string) => string | null;
   /** corpus_set name → item list (null = unknown set). */
   resolveCorpusSet?: (setName: string) => string[] | null;
+  /** Relative `file:` reference (aeval convention: relative to the aeval-data
+   * root, e.g. `corpus/turn_taking/en/audio/x.wav`) → absolute path
+   * (null = not found). Absent ⇒ relative paths are rejected. */
+  resolveRelativeFile?: (relPath: string) => string | null;
 }
 
 export type CompileResult = { ok: true; steps: DialfStep[] } | { ok: false; error: string };
@@ -70,10 +75,25 @@ export function compilePhoneConversation(rawSteps: unknown[], opts: CompileOpts)
             if (!file) return `unknown corpus_id: ${step.corpus_id}`;
           }
           if (!file) return 'audio.play needs file or corpus_id';
-          if (!path.isAbsolute(file)) return `audio.play file must be absolute: ${file}`;
+          if (!path.isAbsolute(file)) {
+            // aeval scenarios reference corpus files relative to the data root.
+            const resolved = opts.resolveRelativeFile?.(file) ?? null;
+            if (!resolved) return `audio.play file not resolvable: ${file}`;
+            file = resolved;
+          }
           out.push({ type: 'audio.play', id: id(), file, description: step.description });
           continue;
         }
+        case 'lab.trace':
+          // aeval lab bookkeeping (case/sample markers). Pure metadata — mapped
+          // to DialF's log step so the marker survives into the step outcomes
+          // (traceability), never dropped silently.
+          out.push({
+            type: 'log', id: id(),
+            message: ['trace', step.event, step.case_id, step.sample_id]
+              .filter((x) => typeof x === 'string' && x).join(' '),
+          });
+          continue;
         case 'audio.wait_for_speech':
           out.push({
             type: 'audio.wait_for_speech', id: id(),
@@ -173,6 +193,33 @@ export function toCallMetadata(call: DialfJobResult['call']): Record<string, unk
   };
 }
 
+/**
+ * Docker↔host bridge (design §6 deployment note): when the daemon runs in a
+ * container and dialfd on the host, `audio.play` paths must be readable on the
+ * HOST. The exchange dir is bind-mounted at the IDENTICAL absolute path on
+ * both sides; this stages every play file into `<exchange>/corpus/` and
+ * rewrites the step to the staged path (valid on both sides by construction).
+ * Filename collisions across different sources are disambiguated by a short
+ * content-path hash. No-op when exchangeDir is null (host-run daemon).
+ */
+export function stagePlayFiles(steps: DialfStep[], exchangeDir: string | null): DialfStep[] {
+  if (!exchangeDir) return steps;
+  const corpusDir = path.join(exchangeDir, 'corpus');
+  fs.mkdirSync(corpusDir, { recursive: true });
+  const stagedBySource = new Map<string, string>();
+  return steps.map((s) => {
+    if (s.type !== 'audio.play' || typeof s.file !== 'string') return s;
+    let staged = stagedBySource.get(s.file);
+    if (!staged) {
+      const hash = createHash('sha256').update(s.file).digest('hex').slice(0, 8);
+      staged = path.join(corpusDir, `${hash}-${path.basename(s.file)}`);
+      fs.copyFileSync(s.file, staged);
+      stagedBySource.set(s.file, staged);
+    }
+    return { ...s, file: staged };
+  });
+}
+
 // ---- orchestration ----------------------------------------------------------
 
 export interface PhoneRunDeps {
@@ -195,6 +242,9 @@ export interface PhoneRunConfig {
   hasRestfulTrigger: boolean;
   resolveCorpusFile: CompileOpts['resolveCorpusFile'];
   resolveCorpusSet?: CompileOpts['resolveCorpusSet'];
+  resolveRelativeFile?: CompileOpts['resolveRelativeFile'];
+  /** Docker↔host bridge dir (VOX_DIALF_EXCHANGE_DIR); null = host-run daemon. */
+  exchangeDir?: string | null;
 }
 
 export interface PhoneRunOutput {
@@ -221,10 +271,12 @@ export async function runPhoneJob(cfg: PhoneRunConfig, deps: PhoneRunDeps): Prom
   const compiled = compilePhoneConversation(cfg.scenarioSteps, {
     resolveCorpusFile: cfg.resolveCorpusFile,
     resolveCorpusSet: cfg.resolveCorpusSet,
+    resolveRelativeFile: cfg.resolveRelativeFile,
   });
   if (!compiled.ok) throw new Error(`phone conversation compile failed: ${compiled.error}`);
 
-  const steps = buildOutboundJob(cfg.phoneDial.number, compiled.steps);
+  const conversation = stagePlayFiles(compiled.steps, cfg.exchangeDir ?? null);
+  const steps = buildOutboundJob(cfg.phoneDial.number, conversation);
   const timeoutMs = sumStepTimeouts(steps);
   const result = (await deps.dialfCall(
     'job.run',

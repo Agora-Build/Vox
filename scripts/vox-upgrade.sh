@@ -225,24 +225,64 @@ for name in "${!images[@]}"; do
     # ("No ALSA card has the ID 'VirtualAudio'") even though /dev/snd is
     # present and aplay works (alsa-utils resolve via /dev/snd ioctls instead).
     device_args=""
+    mount_args=""
+    dialf_detected=""
     if [ "$name" = "vox-eval-agentd" ]; then
         if [ -d /dev/snd ]; then
             device_args="--device /dev/snd --security-opt systempaths=unconfined"
         fi
+
+        # ------------------------------------------------------------------
+        # DialF bridge (Phone vs Agent): dialfd runs on the HOST; the daemon
+        # runs in this container. Auto-detect the control socket and bind-mount
+        # it plus an exchange dir (identical path on both sides) so audio.play
+        # files staged by the daemon are readable by dialfd, and dialfd's
+        # recordings are readable by the daemon. .env config (all optional):
+        #   DIALF_SOCKET=/path/to/dialfd.sock   # skip auto-detection
+        #   DIALF_EXCHANGE_DIR=/path/dir        # default: $HOME/vox-phone-exchange
+        # Caveat: the socket is bind-mounted as a FILE — if dialfd restarts and
+        # recreates it, restart this container (or re-run the upgrade). For a
+        # restart-proof setup, set `control_socket` in ~/.config/dialf/config.yaml
+        # to a path INSIDE the exchange dir and set DIALF_SOCKET to match.
+        # ------------------------------------------------------------------
+        dialf_socket="${DIALF_SOCKET:-}"
+        if [ -z "$dialf_socket" ]; then
+            for cand in "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/dialfd.sock" "/tmp/dialfd-$(id -u).sock" "/run/dialf/dialfd.sock"; do
+                [ -S "$cand" ] && dialf_socket="$cand" && break
+            done
+        fi
+        if [ -n "$dialf_socket" ] && [ -S "$dialf_socket" ]; then
+            dialf_detected=1
+            exchange_dir="${DIALF_EXCHANGE_DIR:-$HOME/vox-phone-exchange}"
+            mkdir -p "$exchange_dir/corpus" "$exchange_dir/recordings"
+            mount_args="-v $dialf_socket:$dialf_socket -v $exchange_dir:$exchange_dir"
+            env_args+="-e VOX_DIALF_SOCKET=$dialf_socket -e VOX_DIALF_EXCHANGE_DIR=$exchange_dir "
+            echo "DialF detected: socket $dialf_socket mounted; exchange dir $exchange_dir"
+            echo "  -> point dialfd's record_dir INSIDE the exchange dir (e.g. $exchange_dir/recordings)"
+            echo "     so the daemon can read recordings for analysis."
+        fi
+
         if ! grep -q VirtualAudio /proc/asound/cards 2>/dev/null; then
-            echo "WARNING: no VirtualAudio ALSA card on this host — aeval jobs WILL FAIL."
-            echo "         One-time setup (see header of this script):"
-            echo "           sudo modprobe snd-aloop id=VirtualAudio pcm_substreams=1"
-            echo "           echo snd-aloop | sudo tee /etc/modules-load.d/vox-virtual-audio.conf"
-            echo "           echo 'options snd-aloop id=VirtualAudio pcm_substreams=1' | sudo tee /etc/modprobe.d/vox-virtual-audio.conf"
-            echo "         Then re-run this upgrade (or restart the container)."
+            if [ -n "$dialf_detected" ]; then
+                echo "NOTE: no VirtualAudio ALSA card — WEB (browser) eval jobs would fail on this"
+                echo "      host, but DialF was detected: Phone vs Agent jobs are unaffected."
+                echo "      Ignore this if the agent only runs phone evals; otherwise see the"
+                echo "      snd-aloop setup in this script's header."
+            else
+                echo "WARNING: no VirtualAudio ALSA card on this host — aeval jobs WILL FAIL."
+                echo "         One-time setup (see header of this script):"
+                echo "           sudo modprobe snd-aloop id=VirtualAudio pcm_substreams=1"
+                echo "           echo snd-aloop | sudo tee /etc/modules-load.d/vox-virtual-audio.conf"
+                echo "           echo 'options snd-aloop id=VirtualAudio pcm_substreams=1' | sudo tee /etc/modprobe.d/vox-virtual-audio.conf"
+                echo "         Then re-run this upgrade (or restart the container)."
+            fi
         fi
     fi
 
     # Expose health port for future upgrades; --restart so it survives reboots;
     # --name gives it a stable identity independent of the (movable) image tag,
     # so future upgrades always find it and it never shows as a bare image ID.
-    new_container_id=$(docker run -d --name "$name" --restart "$RESTART_POLICY" -p "${HEALTH_PORT}:${HEALTH_PORT}" $device_args $env_args "$image")
+    new_container_id=$(docker run -d --name "$name" --restart "$RESTART_POLICY" -p "${HEALTH_PORT}:${HEALTH_PORT}" $device_args $mount_args $env_args "$image")
     short_id="${new_container_id:0:12}"
     new_containers[$name]=$short_id
     echo "Started $name: $short_id"

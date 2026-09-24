@@ -85,11 +85,34 @@ describe("DialfClient", () => {
   });
 });
 
+describe("resolveDialfSocketPath", () => {
+  it("VOX_DIALF_SOCKET env override wins over all resolution", async () => {
+    const { resolveDialfSocketPath } = await import("../vox_eval_agentd/dialf-client");
+    expect(resolveDialfSocketPath({ VOX_DIALF_SOCKET: "/x/dialfd.sock" } as any)).toBe("/x/dialfd.sock");
+  });
+});
+
 describe("probeDialf", () => {
-  it("healthy daemon with a phone probes ok and carries VOX_PHONE_NUMBER", async () => {
-    const rig = fakeDialfd(HEALTHY);
-    const out = await probeDialf(rig.sockPath, { VOX_PHONE_NUMBER: "+15550009999" } as any);
+  it("healthy daemon probes ok; SIM number read from sims.list (default SIM preferred)", async () => {
+    const rig = fakeDialfd({
+      ...HEALTHY,
+      "sims.list": () => ({
+        sims: [
+          { slot: 0, sub_id: 1, number: "+15550001111", is_default: false },
+          { slot: 1, sub_id: 2, number: "+15550009999", is_default: true },
+        ],
+      }),
+    });
+    const out = await probeDialf(rig.sockPath);
     expect(out).toEqual({ ok: true, version: "0.3.8", phoneNumber: "+15550009999" });
+    rig.server.close();
+  });
+
+  it("probe still ok when no SIM exposes a number (carriers often don't provision it)", async () => {
+    const rig = fakeDialfd({ ...HEALTHY, "sims.list": () => ({ sims: [{ slot: 0, sub_id: 1 }] }) });
+    const out = await probeDialf(rig.sockPath);
+    expect(out.ok).toBe(true);
+    expect(out.phoneNumber).toBeUndefined();
     rig.server.close();
   });
 
