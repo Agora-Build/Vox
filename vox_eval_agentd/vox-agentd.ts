@@ -1991,8 +1991,7 @@ class VoxEvalAgentDaemon {
       proc.on('close', (code) => {
         clearTimeout(timer);
         // Nothing here may throw: an exception inside this handler is an
-        // UNCAUGHT process crash (it took the daemon down in prod once —
-        // capture.text is a getter, and this file was outside tsc's include).
+        // uncaught process crash, not a rejected promise.
         try {
           if (code === 0) { resolve(); return; }
           const detail = summarizeAevalFailure(
