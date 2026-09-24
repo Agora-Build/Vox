@@ -20,6 +20,9 @@ import * as path from 'path';
 // ---- socket resolution (contract §2: config → per-user → system) -----------
 
 export function resolveDialfSocketPath(env: NodeJS.ProcessEnv = process.env): string {
+  // Explicit override first — REQUIRED when the daemon runs in Docker with
+  // dialfd on the host (vox-upgrade.sh bind-mounts the socket and sets this).
+  if (env.VOX_DIALF_SOCKET) return env.VOX_DIALF_SOCKET;
   const cfg = path.join(os.homedir(), '.config', 'dialf', 'config.yaml');
   try {
     if (fs.existsSync(cfg)) {

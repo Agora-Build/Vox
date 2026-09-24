@@ -85,6 +85,13 @@ describe("DialfClient", () => {
   });
 });
 
+describe("resolveDialfSocketPath", () => {
+  it("VOX_DIALF_SOCKET env override wins over all resolution", async () => {
+    const { resolveDialfSocketPath } = await import("../vox_eval_agentd/dialf-client");
+    expect(resolveDialfSocketPath({ VOX_DIALF_SOCKET: "/x/dialfd.sock" } as any)).toBe("/x/dialfd.sock");
+  });
+});
+
 describe("probeDialf", () => {
   it("healthy daemon with a phone probes ok and carries VOX_PHONE_NUMBER", async () => {
     const rig = fakeDialfd(HEALTHY);
