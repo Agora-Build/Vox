@@ -3,7 +3,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import {
-  compilePhoneConversation, buildOutboundJob, sumStepTimeouts,
+  compilePhoneConversation, buildOutboundJob, sumStepTimeouts, computePhoneRateEntries,
   toCallMetadata, buildSessionDir, runPhoneJob, stagePlayFiles,
 } from "../vox_eval_agentd/phone-eval";
 
@@ -83,7 +83,11 @@ describe("compile: lab.trace mapping + relative file resolution (turn_taking sha
     );
     expect(out.ok).toBe(true);
     if (!out.ok) return;
-    expect(out.steps[0]).toMatchObject({ type: "log", message: "trace case_sample_start RSP_BASIC RSP_BASIC-001" });
+    expect(out.steps[0]).toMatchObject({
+      type: "log",
+      message: "trace case_sample_start RSP_BASIC RSP_BASIC-001",
+      description: "trace case_sample_start RSP_BASIC RSP_BASIC-001", // outcomes echo description — rate attribution reads it
+    });
     expect(out.steps[1].file).toBe("/data/corpus/turn_taking/en/audio/q1.wav");
   });
 
@@ -163,7 +167,7 @@ describe("runPhoneJob (orchestration, injected deps)", () => {
         calls.push({ op, fields, timeoutMs });
         return {
           steps: [{ index: 0, id: "dial", type: "call.dial", t_start_ms: 0, t_end_ms: 100, end_reason: "completed" }],
-          recording: { rx, t0_epoch_ms: 1 },
+          recording: { mix: rx, t0_epoch_ms: 1 },
           call: { end_reason: "completed", answer_latency_ms: 4000, duration_ms: 30000, remote_number: "+15550109876" },
         };
       },
@@ -241,6 +245,57 @@ describe("runPhoneJob (orchestration, injected deps)", () => {
   });
 });
 
+describe("computePhoneRateEntries → computePerCaseAndRates (TSR on the phone path)", () => {
+  const mk = (tMs: number, type: string, description?: string) =>
+    ({ type, description, t_start_ms: tMs, t_end_ms: tMs + 100, end_reason: "completed" });
+
+  // Two RSP samples (one answered, one not) + one INT sample (interrupted OK).
+  // Same semantics as the web path's computePerCaseAndRates: response_rate
+  // pools ALL samples as response opportunities → 1/3; interrupt_rate 1/1.
+  const outcomes = [
+    mk(0, "log", "trace case_sample_start RSP_BASIC RSP_BASIC-001"),
+    mk(100, "audio.play"),
+    mk(1000, "audio.wait_for_speech"),
+    mk(10000, "log", "trace case_sample_start RSP_BASIC RSP_BASIC-002"),
+    mk(10100, "audio.play"),
+    mk(11000, "audio.wait_for_speech"),
+    mk(20000, "log", "trace case_sample_start INT_BASIC INT_BASIC-001"),
+    mk(20100, "audio.play"),
+    mk(21000, "audio.wait_for_speech_start"),
+    mk(23000, "audio.play"),
+    mk(24000, "audio.wait_for_speech"),
+  ];
+  const enriched = {
+    response_metrics: { latency: { turn_level: [
+      { turn_index: 0, latency_ms: 900, turn_start: 2.0 },   // in RSP-001 window
+    ] } },
+    interruption_metrics: { latency: { turn_level: [
+      { turn_index: 2, reaction_time_ms: 400, turn_start: 23.5 }, // in INT window
+    ] } },
+  };
+
+  it("attributes turns to sample windows and yields correct per-case entries + TSR", async () => {
+    const entries = computePhoneRateEntries(outcomes as any, enriched as any);
+    const byCase = Object.fromEntries(entries.map((e) => [e.caseId, e]));
+    expect(byCase.RSP_BASIC.sampleCount).toBe(2);
+    expect(byCase.RSP_BASIC.hasInterruptPhase).toBe(false);
+    expect(byCase.INT_BASIC.sampleCount).toBe(1);
+    expect(byCase.INT_BASIC.hasInterruptPhase).toBe(true);
+
+    const { computePerCaseAndRates } = await import("../vox_eval_agentd/chunking");
+    const { rates } = computePerCaseAndRates(entries);
+    expect(rates.response_rate).toBeCloseTo(1 / 3);      // 1 response over 3 response-scored samples? see note below
+    expect(rates.interrupt_rate).toBe(1);
+    expect(rates.turn_success_rate).not.toBeNull();
+  });
+
+  it("returns [] without timestamped markers (old dialfd) — rates stay NA", () => {
+    const noTs = outcomes.map(({ t_start_ms, ...rest }) => rest);
+    expect(computePhoneRateEntries(noTs as any, enriched as any)).toEqual([]);
+    expect(computePhoneRateEntries([mk(0, "audio.play")] as any, enriched as any)).toEqual([]);
+  });
+});
+
 describe("buildSessionDir", () => {
   it("stages ONE deterministic recording (mix preferred, rx fallback) + dialf metadata", () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "phone-eval-"));
@@ -262,10 +317,11 @@ describe("buildSessionDir", () => {
     expect(JSON.parse(fs.readFileSync(path.join(withMix, "dialf", "steps.json"), "utf-8"))[0].id).toBe("s1");
     expect(JSON.parse(fs.readFileSync(path.join(withMix, "dialf", "t0.json"), "utf-8")).t0_epoch_ms).toBe(1758412800123);
 
-    const rxOnly = buildSessionDir({ recording: { rx } }, path.join(tmp, "s2"));
-    expect(fs.readFileSync(path.join(rxOnly, "recordings", "recording.wav"), "utf-8")).toBe("RXDATA");
+    // rx-only is a REJECTION, not a fallback: one-speaker audio produces
+    // plausible-looking wrong metrics, and the cause is dialfd config.
+    expect(() => buildSessionDir({ recording: { rx } }, path.join(tmp, "s2"))).toThrow(/mix_recording/);
 
-    expect(() => buildSessionDir({ steps: [] }, path.join(tmp, "empty"))).toThrow(/no recordings/);
+    expect(() => buildSessionDir({ steps: [] }, path.join(tmp, "empty"))).toThrow(/no mix recording/);
     fs.rmSync(tmp, { recursive: true, force: true });
   });
 });
