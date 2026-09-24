@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 #
 # Upgrade vox-eval-agentd and/or vox-clash-runner containers.
 #

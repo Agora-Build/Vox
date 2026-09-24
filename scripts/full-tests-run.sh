@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 # Full Test Runner for Vox
 # Runs all tests (unit, integration, E2E) with proper environment setup
