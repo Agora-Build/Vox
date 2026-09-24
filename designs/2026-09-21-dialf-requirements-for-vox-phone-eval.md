@@ -101,6 +101,16 @@ The control socket is multi-client (correct — the CLI is a client too), and `a
 
 Proposed (either works for Vox): **(a)** persist the same result JSON `job.run` returns next to the recordings for serve-answered jobs (deterministic path keyed by the serve label), or **(b)** a `call.wait_for_ring {timeout_ms}` step so an ordinary `job.run` can own an inbound call end-to-end (Vox prefers (b): one code path, structured result for free, no filesystem contract).
 
+**Update after v0.3.16 (`override.*` ops — thank you):** the runtime overrides close most of the trigger-mode arming gap, and Vox's planned integration shape is now concrete:
+
+1. On claiming a trigger-mode job, the daemon asserts over the control socket:
+   `override.set { record_dir: "<exchange>/recordings", autoanswer: { "<caller or *>": [ ...inline compiled conversation steps... ] } }`
+   — inline steps (no job file on disk), wholesale-replace semantics giving a clean allowlist, ambient `record_dir` covering the auto-answered call (which has no `job.run` request to carry a per-run field). Re-asserted on reconnect per the override contract; cleared after the run.
+2. The daemon fires the workflow's `restfulTrigger` (Vox Core → REST broker) with `${phoneNumber}` from `sims.list`; the agent dials us; the override answers and runs the conversation.
+3. **The one remaining gap is unchanged: result acquisition.** Recordings now land in a daemon-chosen dir via the override, but the step outcomes (R1 envelope — timestamps for turn segmentation/interrupt latency) and call metadata for the ANSWERED call still have no machine-readable surface. So R7 narrows to exactly (a)-or-(b) above; with v0.3.16 in place, (a) shrinks to "write the result JSON into record_dir keyed by a client-supplied label", and (b) remains Vox's preference (one code path, per-run record_dir already works there).
+
+For the shipped outbound mode, Vox uses `job.run`'s per-run `record_dir` (narrower scope than the ambient override, no re-assert lifecycle, top precedence) — `override.set` is reserved for the trigger mode where it is the only way to route an inbound call's recordings.
+
 ### R5 — Future (not needed for v1; flagging direction)
 
 - `call.dtmf {digits}` — IVR menu navigation *before* the conversation ("press 2 for support"), used in Vox workflow session-establishment.
