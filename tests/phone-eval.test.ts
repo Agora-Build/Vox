@@ -194,9 +194,27 @@ describe("runPhoneJob (orchestration, injected deps)", () => {
     expect(calls[0].op).toBe("job.run");
     expect(calls[0].fields.name).toBe("vox-job-42");
     expect(calls[0].fields.steps[0].type).toBe("call.dial");
+    // No exchange dir → no per-run record_dir (dialfd's own config governs).
+    expect(calls[0].fields.record_dir).toBeUndefined();
     expect(calls[0].timeoutMs).toBe(60000 + 30000 + 30000 + 40000);
     expect(out.result).toEqual({ responseLatencyMedian: 900, turnSuccessRate: 0.9 });
     expect(out.callMetadata).toMatchObject({ disposition: "completed", fromRedacted: "…9876" });
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it("with an exchange dir, job.run carries per-run record_dir into the exchange (dialfd ≥ 0.3.16)", async () => {
+    const { deps, calls, tmp } = mkDeps();
+    const realClip = path.join(tmp, "clip.wav");
+    fs.writeFileSync(realClip, "RIFF");
+    const exchange = path.join(tmp, "xchg");
+    await runPhoneJob(
+      { ...cfg, resolveCorpusFile: () => realClip, exchangeDir: exchange },
+      deps as any,
+    );
+    expect(calls[0].fields.record_dir).toBe(path.join(exchange, "recordings"));
+    // Play file was staged into the exchange too.
+    const play = calls[0].fields.steps.find((s: any) => s.type === "audio.play");
+    expect(String(play.file).startsWith(path.join(exchange, "corpus"))).toBe(true);
     fs.rmSync(tmp, { recursive: true, force: true });
   });
 

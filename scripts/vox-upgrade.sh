@@ -258,8 +258,8 @@ for name in "${!images[@]}"; do
             mount_args="-v $dialf_socket:$dialf_socket -v $exchange_dir:$exchange_dir"
             env_args+="-e VOX_DIALF_SOCKET=$dialf_socket -e VOX_DIALF_EXCHANGE_DIR=$exchange_dir "
             echo "DialF detected: socket $dialf_socket mounted; exchange dir $exchange_dir"
-            echo "  -> point dialfd's record_dir INSIDE the exchange dir (e.g. $exchange_dir/recordings)"
-            echo "     so the daemon can read recordings for analysis."
+            echo "  -> recordings are routed into the exchange automatically (per-run"
+            echo "     record_dir; requires dialfd >= 0.3.16 — run 'dialf --version' to check)."
         fi
 
         if ! grep -q VirtualAudio /proc/asound/cards 2>/dev/null; then
