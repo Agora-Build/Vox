@@ -6,7 +6,7 @@ import * as repo from "../plugins/shared-agents/server/repo";
 const hasDb = !!process.env.DATABASE_URL;
 const d = hasDb ? describe : describe.skip;
 
-const JOB_CTX = { workflowId: 1, evalSetId: 1, region: "na-us-ashburn-01", createdBy: 3 };
+const JOB_CTX = { evalflowId: 1, evalSetId: 1, region: "na-us-ashburn-01", createdBy: 3 };
 
 d("shared-agents authorizeDispatch", () => {
   let h: MarketplaceHarness;

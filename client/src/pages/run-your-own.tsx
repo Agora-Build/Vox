@@ -35,7 +35,7 @@ interface Provider {
   sku: string;
 }
 
-interface Workflow {
+interface Evalflow {
   id: number;
   name: string;
   providerId: string;
@@ -78,14 +78,14 @@ interface RunTargetsResponse {
 
 export default function SelfTest() {
   const { toast } = useToast();
-  const [workflowTab, setWorkflowTab] = useState<string>("existing");
-  const [workflowType, setWorkflowType] = useState<string>("convoai");
-  const [workflowName, setWorkflowName] = useState("");
-  const [workflowUrl, setWorkflowUrl] = useState("");
+  const [evalflowTab, setEvalflowTab] = useState<string>("existing");
+  const [evalflowType, setEvalflowType] = useState<string>("convoai");
+  const [evalflowName, setEvalflowName] = useState("");
+  const [evalflowUrl, setEvalflowUrl] = useState("");
   const [region, setRegion] = useState<string>("");
   const [targetTier, setTargetTier] = useState<string>("public");
   const { options: regionOptions } = useRegionLocationOptions();
-  const [selectedWorkflowId, setSelectedWorkflowId] = useState<string>("");
+  const [selectedEvalflowId, setSelectedEvalflowId] = useState<string>("");
   const [selectedEvalSetId, setSelectedEvalSetId] = useState<string>("");
   const [targetTokenId, setTargetTokenId] = useState<string>("any");
   const [ackRuntime, setAckRuntime] = useState(false);
@@ -107,8 +107,8 @@ export default function SelfTest() {
     queryKey: ["/api/providers"],
   });
 
-  const { data: workflows } = useQuery<Workflow[]>({
-    queryKey: ["/api/workflows?includePublic=true"],
+  const { data: evalflows } = useQuery<Evalflow[]>({
+    queryKey: ["/api/evalflows?includePublic=true"],
     enabled: !!authStatus?.user,
   });
 
@@ -158,37 +158,37 @@ export default function SelfTest() {
     return { isOwn, isBuiltIn: builtIn, canEditInPlace: isOwn && !builtIn };
   }, [previewEvalSet, authStatus?.user?.id]);
 
-  const createWorkflowMutation = useMutation({
+  const createEvalflowMutation = useMutation({
     mutationFn: async () => {
-      const provider = providers?.find(p => p.sku === workflowType);
-      const res = await apiRequest("POST", "/api/workflows", {
-        name: workflowName,
-        description: workflowUrl,
+      const provider = providers?.find(p => p.sku === evalflowType);
+      const res = await apiRequest("POST", "/api/evalflows", {
+        name: evalflowName,
+        description: evalflowUrl,
         providerId: provider?.id,
         visibility: "public",
-        config: { url: workflowUrl },
+        config: { url: evalflowUrl },
       });
       return res.json();
     },
     onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: ["/api/workflows?includePublic=true"] });
-      setSelectedWorkflowId(data.id.toString());
-      toast({ title: "Workflow created", description: "You can now run evaluations" });
+      queryClient.invalidateQueries({ queryKey: ["/api/evalflows?includePublic=true"] });
+      setSelectedEvalflowId(data.id.toString());
+      toast({ title: "Evalflow created", description: "You can now run evaluations" });
     },
     onError: (error: Error) => {
-      toast({ title: "Failed to create workflow", description: error.message, variant: "destructive" });
+      toast({ title: "Failed to create evalflow", description: error.message, variant: "destructive" });
     },
   });
 
   const { data: runTargets, isFetching: runTargetsFetching } = useQuery<RunTargetsResponse>({
-    queryKey: [`/api/workflows/${selectedWorkflowId}/run-targets`, region, selectedEvalSetId],
+    queryKey: [`/api/evalflows/${selectedEvalflowId}/run-targets`, region, selectedEvalSetId],
     queryFn: async () => (await apiRequest("GET",
-      `/api/workflows/${selectedWorkflowId}/run-targets?region=${encodeURIComponent(region)}&evalSetId=${selectedEvalSetId}`)).json(),
-    enabled: !!selectedWorkflowId && !!region && !!selectedEvalSetId,
+      `/api/evalflows/${selectedEvalflowId}/run-targets?region=${encodeURIComponent(region)}&evalSetId=${selectedEvalSetId}`)).json(),
+    enabled: !!selectedEvalflowId && !!region && !!selectedEvalSetId,
   });
 
   // Fallback tier list (no online counts yet) so the "Run on" selector is
-  // populated immediately, before a workflow/region/eval set is chosen and
+  // populated immediately, before a evalflow/region/eval set is chosen and
   // the run-targets query has loaded.
   const tierOptions = runTargets?.tiers ?? [
     { tier: "private", available: true },
@@ -197,7 +197,7 @@ export default function SelfTest() {
   ];
 
   // When live tier data arrives and the currently-selected tier is
-  // unavailable (e.g. "public" on a credential-injected workflow), hop to the
+  // unavailable (e.g. "public" on a credential-injected evalflow), hop to the
   // first available tier so the default action never 403s.
   useEffect(() => {
     if (!runTargets?.tiers) return;
@@ -210,7 +210,7 @@ export default function SelfTest() {
           tier === "public" ? "Any public agent" : tier === "private" ? "My agents" : "Team agents";
         toast({
           title: "Run target adjusted",
-          description: `${label(current.tier)} isn't available for this workflow — switched to ${label(firstAvailable.tier)}.`,
+          description: `${label(current.tier)} isn't available for this evalflow — switched to ${label(firstAvailable.tier)}.`,
         });
       }
     }
@@ -220,7 +220,7 @@ export default function SelfTest() {
     (s) => !(runTargets?.agents.mine ?? []).some((m) => m.tokenId === s.tokenId)
   );
   // Pooled dispatch with every tier unavailable (e.g. a non-owner on a
-  // credential-injected public workflow) can only 403 — gate the submit.
+  // credential-injected public evalflow) can only 403 — gate the submit.
   const noPoolAvailable = targetTokenId === "any" &&
     (runTargets?.tiers ?? []).some((t) => t.tier !== "shared") &&
     (runTargets?.tiers ?? []).filter((t) => t.tier !== "shared").every((t) => !t.available);
@@ -229,7 +229,7 @@ export default function SelfTest() {
     [...(runTargets?.agents.mine ?? []), ...pickerShared].find((a) => String(a.tokenId) === targetTokenId);
   const runtimeExposed = (runTargets?.referencedSecrets ?? [])
     .filter((s) => s.brokerType == null && s.present).map((s) => s.name);
-  // Referenced but not configured for the workflow owner → the run would fail
+  // Referenced but not configured for the evalflow owner → the run would fail
   // with an unresolved ${secrets.X} placeholder. The server rejects it too;
   // surfacing it here means the user never spends an agent run to find out.
   const missingSecrets = (runTargets?.referencedSecrets ?? [])
@@ -239,8 +239,8 @@ export default function SelfTest() {
   const showRuntimeWarning = selectedAgent?.dispatchTier === "shared" && runtimeExposed.length > 0;
 
   const runEvalMutation = useMutation({
-    mutationFn: async (workflowId: number) => {
-      const res = await apiRequest("POST", `/api/workflows/${workflowId}/run`, {
+    mutationFn: async (evalflowId: number) => {
+      const res = await apiRequest("POST", `/api/evalflows/${evalflowId}/run`, {
         evalSetId: parseInt(selectedEvalSetId),
         ...(targetTokenId !== "any" ? { targetTokenId: Number(targetTokenId) } : { region, targetTier }),
         ...(showRuntimeWarning ? { runtimeSecretConsent: ackRuntime } : {}),
@@ -333,21 +333,21 @@ export default function SelfTest() {
     }
   };
 
-  const handleCreateWorkflow = () => {
-    if (!workflowName) {
-      toast({ title: "Workflow name required", variant: "destructive" });
+  const handleCreateEvalflow = () => {
+    if (!evalflowName) {
+      toast({ title: "Evalflow name required", variant: "destructive" });
       return;
     }
-    createWorkflowMutation.mutate();
+    createEvalflowMutation.mutate();
   };
 
   const handleRunEval = () => {
-    const workflowId = parseInt(selectedWorkflowId);
-    if (!workflowId) {
-      toast({ title: "Please select or create a workflow first", variant: "destructive" });
+    const evalflowId = parseInt(selectedEvalflowId);
+    if (!evalflowId) {
+      toast({ title: "Please select or create a evalflow first", variant: "destructive" });
       return;
     }
-    runEvalMutation.mutate(workflowId);
+    runEvalMutation.mutate(evalflowId);
   };
 
   const isLoggedIn = !!authStatus?.user;
@@ -385,7 +385,7 @@ export default function SelfTest() {
           Run Your Own Evaluation
         </h1>
         <p className="text-muted-foreground max-w-2xl mx-auto">
-          Select an existing workflow or create a new one, then run real-world evaluations across multiple regions.
+          Select an existing evalflow or create a new one, then run real-world evaluations across multiple regions.
           Measure your true performance characteristics.
         </p>
       </div>
@@ -418,26 +418,26 @@ export default function SelfTest() {
                 Configure Evaluation
               </CardTitle>
               <CardDescription>
-                Select a workflow and run an evaluation
+                Select a evalflow and run an evaluation
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-6 relative z-10">
-              <Tabs value={workflowTab} onValueChange={setWorkflowTab} className="w-full">
+              <Tabs value={evalflowTab} onValueChange={setEvalflowTab} className="w-full">
                 <TabsList className="grid w-full grid-cols-2">
-                  <TabsTrigger value="existing">Select Workflow</TabsTrigger>
+                  <TabsTrigger value="existing">Select Evalflow</TabsTrigger>
                   <TabsTrigger value="new">Create New</TabsTrigger>
                 </TabsList>
 
                 <TabsContent value="existing" className="space-y-4 mt-4">
-                  {workflows && workflows.length > 0 ? (
+                  {evalflows && evalflows.length > 0 ? (
                     <div className="space-y-2">
-                      <Label>Workflow</Label>
-                      <Select value={selectedWorkflowId} onValueChange={setSelectedWorkflowId}>
+                      <Label>Evalflow</Label>
+                      <Select value={selectedEvalflowId} onValueChange={setSelectedEvalflowId}>
                         <SelectTrigger>
-                          <SelectValue placeholder="Choose a workflow" />
+                          <SelectValue placeholder="Choose a evalflow" />
                         </SelectTrigger>
                         <SelectContent>
-                          {workflows.map((w) => (
+                          {evalflows.map((w) => (
                             <SelectItem key={w.id} value={w.id.toString()}>
                               {w.name}
                             </SelectItem>
@@ -447,8 +447,8 @@ export default function SelfTest() {
                     </div>
                   ) : (
                     <div className="text-center py-6 text-muted-foreground space-y-2">
-                      <p className="text-sm">No workflows available yet.</p>
-                      <p className="text-xs">Switch to the "Create New" tab to create your first workflow.</p>
+                      <p className="text-sm">No evalflows available yet.</p>
+                      <p className="text-xs">Switch to the "Create New" tab to create your first evalflow.</p>
                     </div>
                   )}
                 </TabsContent>
@@ -456,7 +456,7 @@ export default function SelfTest() {
                 <TabsContent value="new" className="space-y-4 mt-4">
                   <div className="space-y-2">
                     <Label>Provider Type</Label>
-                    <Select value={workflowType} onValueChange={setWorkflowType}>
+                    <Select value={evalflowType} onValueChange={setEvalflowType}>
                       <SelectTrigger>
                         <SelectValue />
                       </SelectTrigger>
@@ -471,8 +471,8 @@ export default function SelfTest() {
                     <Label>Product URL</Label>
                     <Input
                       placeholder="https://your-product.com"
-                      value={workflowUrl}
-                      onChange={(e) => setWorkflowUrl(e.target.value)}
+                      value={evalflowUrl}
+                      onChange={(e) => setEvalflowUrl(e.target.value)}
                     />
                     <p className="text-xs text-muted-foreground">
                       URL of the web-based product to evaluate
@@ -480,23 +480,23 @@ export default function SelfTest() {
                   </div>
 
                   <div className="space-y-2">
-                    <Label>Workflow Name</Label>
+                    <Label>Evalflow Name</Label>
                     <Input
-                      placeholder="My Voice AI Workflow"
-                      value={workflowName}
-                      onChange={(e) => setWorkflowName(e.target.value)}
+                      placeholder="My Voice AI Evalflow"
+                      value={evalflowName}
+                      onChange={(e) => setEvalflowName(e.target.value)}
                     />
                   </div>
 
                   <Button
-                    onClick={handleCreateWorkflow}
-                    disabled={createWorkflowMutation.isPending || !workflowName || !workflowUrl}
+                    onClick={handleCreateEvalflow}
+                    disabled={createEvalflowMutation.isPending || !evalflowName || !evalflowUrl}
                     className="w-full"
                   >
-                    {createWorkflowMutation.isPending ? (
+                    {createEvalflowMutation.isPending ? (
                       <><Loader2 className="mr-2 h-4 w-4 animate-spin" /> Creating...</>
                     ) : (
-                      "Create Workflow"
+                      "Create Evalflow"
                     )}
                   </Button>
                 </TabsContent>
@@ -513,10 +513,10 @@ export default function SelfTest() {
                       <SelectContent>
                         {evalSets?.map((es) => {
                           const isBuiltIn = es.config?.builtIn === true;
-                          const disabled = workflowTab === "new" && isBuiltIn;
+                          const disabled = evalflowTab === "new" && isBuiltIn;
                           return (
                             <SelectItem key={es.id} value={es.id.toString()} disabled={disabled}>
-                              {es.name}{isBuiltIn && workflowTab === "new" ? " (built-in)" : ""}
+                              {es.name}{isBuiltIn && evalflowTab === "new" ? " (built-in)" : ""}
                             </SelectItem>
                           );
                         })}
@@ -563,7 +563,7 @@ export default function SelfTest() {
                       {tierOptions.filter((t) => t.tier !== "shared").map((t) => (
                         <SelectItem key={t.tier} value={t.tier} disabled={!t.available}>
                           {t.tier === "public" ? "Any public agent" : t.tier === "private" ? "My agents" : "Team agents"}
-                          {t.available ? (typeof t.onlineAgents === "number" ? ` (${t.onlineAgents} online)` : "") : t.reason === "no-org" ? " — join an organization" : t.reason === "session-injected" ? " — not allowed for credential-injected workflows" : ""}
+                          {t.available ? (typeof t.onlineAgents === "number" ? ` (${t.onlineAgents} online)` : "") : t.reason === "no-org" ? " — join an organization" : t.reason === "session-injected" ? " — not allowed for credential-injected evalflows" : ""}
                         </SelectItem>
                       ))}
                     </SelectContent>
@@ -613,15 +613,15 @@ export default function SelfTest() {
                 <Alert variant="destructive">
                   <AlertTitle>Missing secrets — this run would fail</AlertTitle>
                   <AlertDescription>
-                    This workflow references {missingSecrets.length > 1 ? "secrets" : "a secret"} that {missingSecrets.length > 1 ? "are" : "is"} not
-                    configured for its owner: {missingSecrets.join(", ")}. If the workflow is yours, create
+                    This evalflow references {missingSecrets.length > 1 ? "secrets" : "a secret"} that {missingSecrets.length > 1 ? "are" : "is"} not
+                    configured for its owner: {missingSecrets.join(", ")}. If the evalflow is yours, create
                     {missingSecrets.length > 1 ? "them" : "it"} under Console → Secrets (names must match exactly); otherwise ask its owner to.
                   </AlertDescription>
                 </Alert>
               )}
               {showRuntimeWarning && (
                 <Alert variant="destructive">
-                  <AlertTitle>This workflow uses runtime secrets</AlertTitle>
+                  <AlertTitle>This evalflow uses runtime secrets</AlertTitle>
                   <AlertDescription>
                     The selected shared agent will receive the raw values of these secrets: {runtimeExposed.join(", ")}.
                     <label className="mt-2 flex items-center gap-2">
@@ -635,7 +635,7 @@ export default function SelfTest() {
                 className="w-full"
                 size="lg"
                 onClick={handleRunEval}
-                disabled={runEvalMutation.isPending || isJobRunning || !selectedWorkflowId || !selectedEvalSetId || !region || runTargetsFetching || noPoolAvailable || missingSecrets.length > 0 || (showRuntimeWarning && !ackRuntime)}
+                disabled={runEvalMutation.isPending || isJobRunning || !selectedEvalflowId || !selectedEvalSetId || !region || runTargetsFetching || noPoolAvailable || missingSecrets.length > 0 || (showRuntimeWarning && !ackRuntime)}
               >
                 {runEvalMutation.isPending ? (
                   <><Loader2 className="mr-2 h-4 w-4 animate-spin" /> Starting...</>
@@ -668,11 +668,11 @@ export default function SelfTest() {
                     <span className="text-xs font-mono">bash</span>
                   </div>
                   <div className="p-3 font-mono text-xs overflow-x-auto whitespace-pre text-muted-foreground">
-{`# Run a workflow
+{`# Run a evalflow
 curl -X POST -H "Authorization: Bearer vox_live_xxx" \\
   -H "Content-Type: application/json" \\
   -d '{"region": "na-us-seattle", "targetTier": "public"}' \\
-  ${window.location.origin}/api/v1/workflows/1/run
+  ${window.location.origin}/api/v1/evalflows/1/run
 
 # Get evaluation results
 curl -H "Authorization: Bearer vox_live_xxx" \\

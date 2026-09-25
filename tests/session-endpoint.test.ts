@@ -9,7 +9,7 @@ import { BASE_NA } from "./helpers/regions";
 // for the Core-minted login session (storageState) behind a claimed job.
 //
 // Follows the idioms in tests/session-dispatch.test.ts (session-needing
-// workflow via platform.setup + login-class secrets) and tests/web-sessions-
+// evalflow via platform.setup + login-class secrets) and tests/web-sessions-
 // store.test.ts (direct storage manipulation to seed ready/failed rows).
 
 const BASE_URL = process.env.TEST_BASE_URL || "http://localhost:5000";
@@ -59,13 +59,13 @@ describe("GET /api/eval-agent/jobs/:jobId/session", () => {
   let providerId: string;
   const stamp = Date.now();
 
-  // Login-class secrets shared by every session-needing workflow below —
+  // Login-class secrets shared by every session-needing evalflow below —
   // evaluateSessionRequirement only cares that the referenced names are
-  // login-class in scope, not that each workflow has its own pair.
+  // login-class in scope, not that each evalflow has its own pair.
   const emailSecret = `SE_E_${stamp}`;
   const passwordSecret = `SE_P_${stamp}`;
 
-  // web_sessions cache key the server derives for these workflows — all share
+  // web_sessions cache key the server derives for these evalflows — all share
   // the one login-secret pair, so it varies only by platformId. Seeded rows
   // must use the same key the /session endpoint looks up (HIGH-2).
   const ck = (platformId: string) => credentialKeyFor({ platformId, emailSecret, passwordSecret });
@@ -74,12 +74,12 @@ describe("GET /api/eval-agent/jobs/:jobId/session", () => {
   const platformIdFailed = `vapi-failed-${stamp}`;
   const platformIdCold = `vapi-cold-${stamp}`;
 
-  let noSessionWorkflowId: number;
-  let readyWorkflowId: number;
-  let failedWorkflowId: number;
-  let coldWorkflowId: number;
-  let pendingGuardWorkflowId: number;
-  let supersededWorkflowId: number;
+  let noSessionEvalflowId: number;
+  let readyEvalflowId: number;
+  let failedEvalflowId: number;
+  let coldEvalflowId: number;
+  let pendingGuardEvalflowId: number;
+  let supersededEvalflowId: number;
   let evalSetId: number;
   let tokenId: number;
   let tokenValue: string;
@@ -94,8 +94,8 @@ describe("GET /api/eval-agent/jobs/:jobId/session", () => {
     const statusRes = await authFetch(admin, `${BASE_URL}/api/auth/status`);
     const statusBody = await statusRes.json();
     adminId = statusBody.user.id;
-    // sessionScopeForWorkflow keys off the WORKFLOW's organizationId, not the
-    // creating user's own org membership. None of the workflows below pass
+    // sessionScopeForEvalflow keys off the EVALFLOW's organizationId, not the
+    // creating user's own org membership. None of the evalflows below pass
     // organizationId on create, so they're personal (organizationId: null)
     // regardless of whether admin happens to belong to an org — scope must
     // match that, not admin's account.
@@ -110,8 +110,8 @@ describe("GET /api/eval-agent/jobs/:jobId/session", () => {
     const setupSteps = (platformId: string) =>
       `- type: platform.setup\n  platform_id: ${platformId}\n  params:\n    email: \${secrets.${emailSecret}}\n    password: \${secrets.${passwordSecret}}`;
 
-    const mkWorkflow = async (name: string, config: Record<string, unknown>): Promise<number> => {
-      const res = await authFetch(admin, `${BASE_URL}/api/workflows`, {
+    const mkEvalflow = async (name: string, config: Record<string, unknown>): Promise<number> => {
+      const res = await authFetch(admin, `${BASE_URL}/api/evalflows`, {
         method: "POST",
         body: JSON.stringify({ name, providerId, config }),
       });
@@ -119,12 +119,12 @@ describe("GET /api/eval-agent/jobs/:jobId/session", () => {
       return (await res.json()).id as number;
     };
 
-    noSessionWorkflowId = await mkWorkflow(`Session-EP No-Session ${stamp}`, { framework: "aeval" });
-    readyWorkflowId = await mkWorkflow(`Session-EP Ready ${stamp}`, { framework: "aeval", stepsPrefix: setupSteps(platformIdReady) });
-    failedWorkflowId = await mkWorkflow(`Session-EP Failed ${stamp}`, { framework: "aeval", stepsPrefix: setupSteps(platformIdFailed) });
-    coldWorkflowId = await mkWorkflow(`Session-EP Cold ${stamp}`, { framework: "aeval", stepsPrefix: setupSteps(platformIdCold) });
-    pendingGuardWorkflowId = await mkWorkflow(`Session-EP Pending ${stamp}`, { framework: "aeval" });
-    supersededWorkflowId = await mkWorkflow(`Session-EP Superseded ${stamp}`, { framework: "aeval" });
+    noSessionEvalflowId = await mkEvalflow(`Session-EP No-Session ${stamp}`, { framework: "aeval" });
+    readyEvalflowId = await mkEvalflow(`Session-EP Ready ${stamp}`, { framework: "aeval", stepsPrefix: setupSteps(platformIdReady) });
+    failedEvalflowId = await mkEvalflow(`Session-EP Failed ${stamp}`, { framework: "aeval", stepsPrefix: setupSteps(platformIdFailed) });
+    coldEvalflowId = await mkEvalflow(`Session-EP Cold ${stamp}`, { framework: "aeval", stepsPrefix: setupSteps(platformIdCold) });
+    pendingGuardEvalflowId = await mkEvalflow(`Session-EP Pending ${stamp}`, { framework: "aeval" });
+    supersededEvalflowId = await mkEvalflow(`Session-EP Superseded ${stamp}`, { framework: "aeval" });
 
     const esRes = await authFetch(admin, `${BASE_URL}/api/eval-sets`, {
       method: "POST",
@@ -167,8 +167,8 @@ describe("GET /api/eval-agent/jobs/:jobId/session", () => {
   // Dispatches to our own token (default dispatchTier "public" — canDispatchToToken
   // allows it unconditionally) so job.region == token.region == agent.region and
   // the claim below succeeds without needing a specific region constant.
-  async function runAndClaim(workflowId: number): Promise<number> {
-    const runRes = await authFetch(admin, `${BASE_URL}/api/workflows/${workflowId}/run`, {
+  async function runAndClaim(evalflowId: number): Promise<number> {
+    const runRes = await authFetch(admin, `${BASE_URL}/api/evalflows/${evalflowId}/run`, {
       method: "POST",
       body: JSON.stringify({ evalSetId, targetTokenId: tokenId }),
     });
@@ -184,7 +184,7 @@ describe("GET /api/eval-agent/jobs/:jobId/session", () => {
     return jobId;
   }
 
-  // /run pre-warms the session cache for session-needing workflows (Task 6:
+  // /run pre-warms the session cache for session-needing evalflows (Task 6:
   // `void ensureSession(scope, sessionNeed)` fired inline, fire-and-forget, right
   // when the job is created). In this dev server no broker is registered,
   // so that pre-warm fails fast and lands the row in 'failed' within a
@@ -207,8 +207,8 @@ describe("GET /api/eval-agent/jobs/:jobId/session", () => {
     return fetch(url, { headers });
   }
 
-  it("1. running job whose workflow needs no session -> 200 {required:false}", async () => {
-    const jobId = await runAndClaim(noSessionWorkflowId);
+  it("1. running job whose evalflow needs no session -> 200 {required:false}", async () => {
+    const jobId = await runAndClaim(noSessionEvalflowId);
     const res = await sessionGet(jobId);
     expect(res.status).toBe(200);
     const body = await res.json();
@@ -216,7 +216,7 @@ describe("GET /api/eval-agent/jobs/:jobId/session", () => {
   });
 
   it("2. ready web_session -> 200 with DECRYPTED storageState", async () => {
-    const jobId = await runAndClaim(readyWorkflowId);
+    const jobId = await runAndClaim(readyEvalflowId);
     await waitForSettled(platformIdReady); // let the /run pre-warm's failed attempt land first
 
     const row = await storage.claimWebSessionMint(scope, platformIdReady, ck(platformIdReady), 180, 300);
@@ -239,7 +239,7 @@ describe("GET /api/eval-agent/jobs/:jobId/session", () => {
   });
 
   it("3. failed web_session -> 503 with error text", async () => {
-    const jobId = await runAndClaim(failedWorkflowId);
+    const jobId = await runAndClaim(failedEvalflowId);
     await waitForSettled(platformIdFailed); // let the /run pre-warm's failed attempt land first
 
     const row = await storage.claimWebSessionMint(scope, platformIdFailed, ck(platformIdFailed), 180, 300);
@@ -257,7 +257,7 @@ describe("GET /api/eval-agent/jobs/:jobId/session", () => {
   });
 
   it("4. no row at all -> 202 minting, then eventually 503 (no broker configured in this dev server)", async () => {
-    const jobId = await runAndClaim(coldWorkflowId);
+    const jobId = await runAndClaim(coldEvalflowId);
     // The /run pre-warm already raced ahead and created+failed a row for this
     // platform. Let it settle, then delete it so we can genuinely observe the
     // endpoint's own cold-start (no row at all) path rather than the pre-warm's.
@@ -288,13 +288,13 @@ describe("GET /api/eval-agent/jobs/:jobId/session", () => {
   });
 
   it("5a. no Bearer token -> 401", async () => {
-    const jobId = await runAndClaim(noSessionWorkflowId);
+    const jobId = await runAndClaim(noSessionEvalflowId);
     const res = await sessionGet(jobId, leaseId, null);
     expect(res.status).toBe(401);
   });
 
   it("5b. job still pending (never claimed) -> 403", async () => {
-    const runRes = await authFetch(admin, `${BASE_URL}/api/workflows/${pendingGuardWorkflowId}/run`, {
+    const runRes = await authFetch(admin, `${BASE_URL}/api/evalflows/${pendingGuardEvalflowId}/run`, {
       method: "POST",
       body: JSON.stringify({ evalSetId, targetTokenId: tokenId }),
     });
@@ -314,16 +314,16 @@ describe("GET /api/eval-agent/jobs/:jobId/session", () => {
     // unauthorized agent; the serve gate is the credential-authoritative
     // backstop, derived ENTIRELY from the immutable snapshot. Claim a job the
     // normal way (admin owner, admin token), then rewrite its frozen snapshot
-    // so the recorded workflow owner is a stranger with no consent — the
+    // so the recorded evalflow owner is a stranger with no consent — the
     // endpoint must refuse to hand over the bundle even though the LIVE
-    // workflow is still admin's.
-    const jobId = await runAndClaim(readyWorkflowId);
+    // evalflow is still admin's.
+    const jobId = await runAndClaim(readyEvalflowId);
     const [job] = await db.select().from(evalJobs).where(eq(evalJobs.id, jobId));
     const snap = job.snapshot as Record<string, any>;
     expect(snap?.sessionInjection).toBeDefined(); // sanity: the job really is session-injected
     const mutated = {
       ...snap,
-      workflow: { ...snap.workflow, ownerId: adminId + 999999, organizationId: null },
+      evalflow: { ...snap.evalflow, ownerId: adminId + 999999, organizationId: null },
       credentialConsent: false,
     };
     await db.update(evalJobs).set({ snapshot: mutated }).where(eq(evalJobs.id, jobId));
@@ -334,10 +334,10 @@ describe("GET /api/eval-agent/jobs/:jobId/session", () => {
 
   it("7. serve gate: session job with NO snapshot stamp -> {required:false}, never mints from live data", async () => {
     // A job whose snapshot carries no sessionInjection must never fall back to
-    // deriving the need from the live workflow (HIGH-2). Even though this
-    // workflow's live config references login-class secrets, a snapshot with
+    // deriving the need from the live evalflow (HIGH-2). Even though this
+    // evalflow's live config references login-class secrets, a snapshot with
     // the stamp stripped means the endpoint reports required:false.
-    const jobId = await runAndClaim(readyWorkflowId);
+    const jobId = await runAndClaim(readyEvalflowId);
     const [job] = await db.select().from(evalJobs).where(eq(evalJobs.id, jobId));
     const snap = job.snapshot as Record<string, any>;
     const { sessionInjection, ...stripped } = snap;
@@ -349,7 +349,7 @@ describe("GET /api/eval-agent/jobs/:jobId/session", () => {
   });
 
   it("5c. wrong leaseId after re-register -> 403 superseded", async () => {
-    const jobId = await runAndClaim(supersededWorkflowId);
+    const jobId = await runAndClaim(supersededEvalflowId);
     // Move the job out of "running" BEFORE re-registering: re-registration
     // releases the agent's currently-running jobs (clearing eval_agent_id),
     // which would make this hit the "unassigned" guard instead of the lease

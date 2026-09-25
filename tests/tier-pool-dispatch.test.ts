@@ -19,35 +19,35 @@ const authFetch = (cookie: string, url: string, init: RequestInit = {}) =>
   fetch(url, { ...init, headers: { ...(init.headers || {}), Cookie: cookie, "Content-Type": "application/json" } });
 
 describe("pooled dispatch API", () => {
-  let cookie: string; let workflowId: number; let evalSetId: number;
+  let cookie: string; let evalflowId: number; let evalSetId: number;
 
   beforeAll(async () => {
     cookie = await login();
-    // canScheduleWorkflow is owner/creator-only (no admin bypass) — the seeded
-    // workflows (id 1/2) are owned by Scout, not admin, so the schedule-create
-    // assertions below need an admin-OWNED workflow rather than the seed's
+    // canScheduleEvalflow is owner/creator-only (no admin bypass) — the seeded
+    // evalflows (id 1/2) are owned by Scout, not admin, so the schedule-create
+    // assertions below need an admin-OWNED evalflow rather than the seed's
     // wf[0]. Create one here so both the run-route and schedule-route tests
-    // in this file share a workflow the logged-in test user actually owns.
+    // in this file share a evalflow the logged-in test user actually owns.
     const providers = await (await authFetch(cookie, `${BASE_URL}/api/providers`)).json();
     const providerId = providers[0].id;
-    const wfRes = await authFetch(cookie, `${BASE_URL}/api/workflows`, {
+    const wfRes = await authFetch(cookie, `${BASE_URL}/api/evalflows`, {
       method: "POST",
       body: JSON.stringify({ name: `tt-dispatch-wf-${Date.now()}`, visibility: "public", providerId, config: {} }),
     });
     expect(wfRes.ok).toBe(true);
-    workflowId = (await wfRes.json()).id;
+    evalflowId = (await wfRes.json()).id;
     const es = await (await authFetch(cookie, `${BASE_URL}/api/eval-sets?includePublic=true`)).json();
     evalSetId = es[0].id;
   });
 
   afterAll(async () => {
-    if (workflowId != null) {
-      await authFetch(cookie, `${BASE_URL}/api/workflows/${workflowId}`, { method: "DELETE" });
+    if (evalflowId != null) {
+      await authFetch(cookie, `${BASE_URL}/api/evalflows/${evalflowId}`, { method: "DELETE" });
     }
   });
 
   const run = (body: Record<string, unknown>) =>
-    authFetch(cookie, `${BASE_URL}/api/workflows/${workflowId}/run`, { method: "POST", body: JSON.stringify(body) });
+    authFetch(cookie, `${BASE_URL}/api/evalflows/${evalflowId}/run`, { method: "POST", body: JSON.stringify(body) });
 
   it("public pool dispatch creates a site-less job carrying region+tier", async () => {
     const res = await run({ region: BASE_NA, targetTier: "public", evalSetId });
@@ -84,7 +84,7 @@ describe("pooled dispatch API", () => {
     const res = await authFetch(cookie, `${BASE_URL}/api/eval-schedules`, {
       method: "POST",
       body: JSON.stringify({
-        name: `tt-sched-${Date.now()}`, workflowId, evalSetId,
+        name: `tt-sched-${Date.now()}`, evalflowId, evalSetId,
         region: BASE_NA, targetTier: "public", scheduleType: "recurring", cronExpression: "0 3 * * *",
       }),
     });
@@ -97,7 +97,7 @@ describe("pooled dispatch API", () => {
   });
 
   it("schedule create rejects: shared tier, bogus tier, team without org, inactive region, missing tier", async () => {
-    const base = { name: `tt-neg-${Date.now()}`, workflowId, evalSetId, scheduleType: "recurring", cronExpression: "0 3 * * *" };
+    const base = { name: `tt-neg-${Date.now()}`, evalflowId, evalSetId, scheduleType: "recurring", cronExpression: "0 3 * * *" };
     const post = (body: Record<string, unknown>) =>
       authFetch(cookie, `${BASE_URL}/api/eval-schedules`, { method: "POST", body: JSON.stringify(body) });
     expect((await post({ ...base, region: BASE_NA, targetTier: "shared" })).status).toBe(400);
@@ -111,7 +111,7 @@ describe("pooled dispatch API", () => {
     const createRes = await authFetch(cookie, `${BASE_URL}/api/eval-schedules`, {
       method: "POST",
       body: JSON.stringify({
-        name: `tt-patch-sched-${Date.now()}`, workflowId, evalSetId,
+        name: `tt-patch-sched-${Date.now()}`, evalflowId, evalSetId,
         region: BASE_NA, targetTier: "public", scheduleType: "recurring", cronExpression: "0 3 * * *",
       }),
     });
@@ -136,17 +136,17 @@ describe("pooled dispatch API", () => {
     await authFetch(cookie, `${BASE_URL}/api/eval-schedules/${sched.id}`, { method: "DELETE" });
   });
 
-  // Reuses this describe's own admin-owned workflow/eval-set (created in its
+  // Reuses this describe's own admin-owned evalflow/eval-set (created in its
   // beforeAll above) rather than fetching `?includePublic=true` and taking
   // index 0 — that global listing is shared across every test file hitting
   // this dev DB (vitest runs files in parallel), so index 0 can flakily land
-  // on a session-injected workflow from a concurrently-running suite (e.g.
-  // session-dispatch.test.ts's login-secret workflows), which would flip
-  // needsSession and make the public-tier assertion flaky. The workflow this
+  // on a session-injected evalflow from a concurrently-running suite (e.g.
+  // session-dispatch.test.ts's login-secret evalflows), which would flip
+  // needsSession and make the public-tier assertion flaky. The evalflow this
   // describe owns has an empty config (no platform.setup), so it never needs
   // a session — deterministic.
   it("run-targets advertises per-tier availability with online counts for the region", async () => {
-    const res = await authFetch(cookie, `${BASE_URL}/api/workflows/${workflowId}/run-targets?region=${BASE_NA}&evalSetId=${evalSetId}`);
+    const res = await authFetch(cookie, `${BASE_URL}/api/evalflows/${evalflowId}/run-targets?region=${BASE_NA}&evalSetId=${evalSetId}`);
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(Array.isArray(body.tiers)).toBe(true);
@@ -167,27 +167,27 @@ describe("pooled dispatch API", () => {
 
 describe("missing secrets are rejected at dispatch, not discovered by a failed run", () => {
   let cookie: string;
-  let brokenWorkflowId: number;
+  let brokenEvalflowId: number;
   let evalSetId: number;
   const GHOST = `GHOST_SECRET_${Date.now()}`;
 
   beforeAll(async () => {
     cookie = await login();
     const providers = await (await fetch(`${BASE_URL}/api/providers`)).json();
-    // A workflow whose scenario references a secret nobody has configured.
-    const wfRes = await authFetch(cookie, `${BASE_URL}/api/workflows`, {
+    // A evalflow whose scenario references a secret nobody has configured.
+    const wfRes = await authFetch(cookie, `${BASE_URL}/api/evalflows`, {
       method: "POST",
       body: JSON.stringify({
         name: `missing-secret-wf-${Date.now()}`,
         visibility: "private",
         providerId: providers[0].id,
-        // stepsPrefix is the workflow's platform.setup — exactly where the
+        // stepsPrefix is the evalflow's platform.setup — exactly where the
         // reported failure (job #31006) referenced its secrets.
         config: { framework: "aeval", stepsPrefix: `platform:\n  setup:\n    - type: control.log\n      message: \${secrets.${GHOST}}\n` },
       }),
     });
     expect(wfRes.ok).toBe(true);
-    brokenWorkflowId = (await wfRes.json()).id;
+    brokenEvalflowId = (await wfRes.json()).id;
 
     const esRes = await authFetch(cookie, `${BASE_URL}/api/eval-sets`, {
       method: "POST",
@@ -198,16 +198,16 @@ describe("missing secrets are rejected at dispatch, not discovered by a failed r
   });
 
   afterAll(async () => {
-    if (brokenWorkflowId) await authFetch(cookie, `${BASE_URL}/api/workflows/${brokenWorkflowId}`, { method: "DELETE" });
+    if (brokenEvalflowId) await authFetch(cookie, `${BASE_URL}/api/evalflows/${brokenEvalflowId}`, { method: "DELETE" });
     if (evalSetId) await authFetch(cookie, `${BASE_URL}/api/eval-sets/${evalSetId}`, { method: "DELETE" });
   });
 
-  it("gates a workflow that OMITS framework (the reported job #31006 shape)", async () => {
+  it("gates a evalflow that OMITS framework (the reported job #31006 shape)", async () => {
     // No `framework` key and no `app`: the run can only be aeval, so the gate
     // must still cover stepsPrefix. Previously this slipped through entirely.
     const providers = await (await fetch(`${BASE_URL}/api/providers`)).json();
     const ghost = `GHOST_NOFW_${Date.now()}`;
-    const wfRes = await authFetch(cookie, `${BASE_URL}/api/workflows`, {
+    const wfRes = await authFetch(cookie, `${BASE_URL}/api/evalflows`, {
       method: "POST",
       body: JSON.stringify({
         name: `missing-secret-nofw-${Date.now()}`,
@@ -219,18 +219,18 @@ describe("missing secrets are rejected at dispatch, not discovered by a failed r
     expect(wfRes.ok).toBe(true);
     const wfId = (await wfRes.json()).id;
 
-    const res = await authFetch(cookie, `${BASE_URL}/api/workflows/${wfId}/run`, {
+    const res = await authFetch(cookie, `${BASE_URL}/api/evalflows/${wfId}/run`, {
       method: "POST",
       body: JSON.stringify({ region: BASE_NA, targetTier: "private", evalSetId }),
     });
     expect(res.status).toBe(400);
     expect((await res.json()).error).toContain(ghost);
 
-    await authFetch(cookie, `${BASE_URL}/api/workflows/${wfId}`, { method: "DELETE" });
+    await authFetch(cookie, `${BASE_URL}/api/evalflows/${wfId}`, { method: "DELETE" });
   });
 
   it("run route 400s and NAMES the missing secret (no job created)", async () => {
-    const res = await authFetch(cookie, `${BASE_URL}/api/workflows/${brokenWorkflowId}/run`, {
+    const res = await authFetch(cookie, `${BASE_URL}/api/evalflows/${brokenEvalflowId}/run`, {
       method: "POST",
       body: JSON.stringify({ region: BASE_NA, targetTier: "private", evalSetId }),
     });
@@ -248,7 +248,7 @@ describe("missing secrets are rejected at dispatch, not discovered by a failed r
     const { evalSchedules } = await import("../shared/schema");
     const [sched] = await db.insert(evalSchedules).values({
       name: `ms-reenable-${Date.now()}`,
-      workflowId: brokenWorkflowId,
+      evalflowId: brokenEvalflowId,
       evalSetId,
       createdBy: 1,
       region: BASE_NA,
@@ -268,11 +268,11 @@ describe("missing secrets are rejected at dispatch, not discovered by a failed r
     await db.delete(evalSchedules).where(eq(evalSchedules.id, sched.id));
   });
 
-  it("schedule create 400s on the same workflow", async () => {
+  it("schedule create 400s on the same evalflow", async () => {
     const res = await authFetch(cookie, `${BASE_URL}/api/eval-schedules`, {
       method: "POST",
       body: JSON.stringify({
-        name: `ms-sched-${Date.now()}`, workflowId: brokenWorkflowId, evalSetId,
+        name: `ms-sched-${Date.now()}`, evalflowId: brokenEvalflowId, evalSetId,
         region: BASE_NA, targetTier: "private", scheduleType: "recurring", cronExpression: "0 3 * * *",
       }),
     });

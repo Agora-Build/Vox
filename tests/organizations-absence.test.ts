@@ -81,7 +81,7 @@ const d = hasDb ? describe : describe.skip;
 // against the genuine platform implementation.
 const realSetIntervalRef = globalThis.setInterval;
 
-// A workflow whose platform.setup references two login-class (brokered) org
+// A evalflow whose platform.setup references two login-class (brokered) org
 // secrets — the shape that makes the tick take the session path (detectSessionNeed
 // → "need" → sessionPoolViolation → stampOwnerSession/ensureSession).
 const LOGIN_STEPS = (email: string, password: string) => `
@@ -94,15 +94,15 @@ const LOGIN_STEPS = (email: string, password: string) => `
 
 d("plugin absence causes zero persistent writes", () => {
   let orgId: number, creatorId: number, soloId: number;
-  let orgWorkflowId: number, orgEvalSetId: number, orgScheduleId: number;
+  let orgEvalflowId: number, orgEvalSetId: number, orgScheduleId: number;
   let teamJobId: number, sitedTeamJobId: number;
   let soloScheduleId: number;
-  // The shape between the two above: a PERSONAL workflow dispatched to the TEAM
+  // The shape between the two above: a PERSONAL evalflow dispatched to the TEAM
   // tier. Legal to create (POST /api/eval-schedules gates team on hasOrg(user),
-  // not on who owns the workflow), and the one whose claimability depends on the
-  // seam even though `workflow.organizationId` is null.
-  let personalWorkflowId: number, personalEvalSetId: number, teamPersonalScheduleId: number;
-  // A PERSONAL schedule ROW pointing at the ORG-owned workflow. run-now's org
+  // not on who owns the evalflow), and the one whose claimability depends on the
+  // seam even though `evalflow.organizationId` is null.
+  let personalEvalflowId: number, personalEvalSetId: number, teamPersonalScheduleId: number;
+  // A PERSONAL schedule ROW pointing at the ORG-owned evalflow. run-now's org
   // arm is only reachable on this shape: when the schedule row is itself
   // org-owned, canEditResource's org-manager arm cannot answer under absence
   // (membership is null) and the route 403s before any org guard runs — safe,
@@ -138,8 +138,8 @@ d("plugin absence causes zero persistent writes", () => {
     };
   }
 
-  // Re-arm both org-DEPENDENT schedules — the org-owned workflow and the
-  // personal workflow on the team tier — so every test starts from "enabled and
+  // Re-arm both org-DEPENDENT schedules — the org-owned evalflow and the
+  // personal evalflow on the team tier — so every test starts from "enabled and
   // due". Both must be skipped while the provider is unavailable; the tick is
   // free to process anything else.
   async function armOrgDependentSchedules() {
@@ -168,7 +168,7 @@ d("plugin absence causes zero persistent writes", () => {
       username: `abss${suffix}`, email: `abss${suffix}@example.com`, plan: "premium",
     } as any)).id;
 
-    // Login-class org secrets, so the org workflow genuinely needs a Core mint.
+    // Login-class org secrets, so the org evalflow genuinely needs a Core mint.
     const emailSecret = `ABS_LOGIN_EMAIL_${suffix.replace(/-/g, "_")}`;
     const passwordSecret = `ABS_LOGIN_PASSWORD_${suffix.replace(/-/g, "_")}`;
     for (const name of [emailSecret, passwordSecret]) {
@@ -182,18 +182,18 @@ d("plugin absence causes zero persistent writes", () => {
       });
     }
 
-    const orgWorkflow = await storage.createWorkflow({
+    const orgEvalflow = await storage.createEvalflow({
       name: `abs-wf-${suffix}`, ownerId: creatorId, organizationId: orgId, providerId,
       visibility: "public", // public + org-owned: the run-route arm's exact shape
       config: { stepsPrefix: LOGIN_STEPS(emailSecret, passwordSecret) },
     } as any);
-    orgWorkflowId = orgWorkflow.id;
+    orgEvalflowId = orgEvalflow.id;
     orgEvalSetId = (await storage.createEvalSet({
       name: `abs-es-${suffix}`, ownerId: creatorId, organizationId: orgId, visibility: "public", config: {},
     } as any)).id;
 
     orgScheduleId = (await storage.createEvalSchedule({
-      name: `abs-sched-${suffix}`, workflowId: orgWorkflowId, evalSetId: orgEvalSetId,
+      name: `abs-sched-${suffix}`, evalflowId: orgEvalflowId, evalSetId: orgEvalSetId,
       region: "na-us-ashburn", targetTier: "team", scheduleType: "recurring",
       cronExpression: "*/5 * * * *", isEnabled: true,
       nextRunAt: new Date(Date.now() - 60 * 1000), createdBy: creatorId, organizationId: orgId,
@@ -206,9 +206,9 @@ d("plugin absence causes zero persistent writes", () => {
     // Both backdated 30h so both sweeps would fire if their predicate were dropped.
     const mkPendingTeamJob = (siteId: string | null, targetRegion: string | null) =>
       storage.createEvalJob({
-        workflowId: orgWorkflowId, evalSetId: orgEvalSetId, triggerType: 2, createdBy: creatorId,
+        evalflowId: orgEvalflowId, evalSetId: orgEvalSetId, triggerType: 2, createdBy: creatorId,
         creatorOrgId: orgId, siteId, targetRegion, targetTier: "team",
-        config: {}, snapshot: { provider: null, workflow: null, evalSet: null, creatorPlan: null } as any,
+        config: {}, snapshot: { provider: null, evalflow: null, evalSet: null, creatorPlan: null } as any,
         status: "pending", priority: 0, retryCount: 0, maxRetries: 3,
       } as any);
     teamJobId = (await mkPendingTeamJob(null, "na-us-ashburn")).id;
@@ -220,24 +220,24 @@ d("plugin absence causes zero persistent writes", () => {
       [[teamJobId, sitedTeamJobId]],
     );
 
-    // Personal schedule row on the ORG workflow — run-now's org-arm fixture.
-    // PRIVATE tier deliberately, so only the workflow-ownership arm of the guard
+    // Personal schedule row on the ORG evalflow — run-now's org-arm fixture.
+    // PRIVATE tier deliberately, so only the evalflow-ownership arm of the guard
     // can be what refuses it. Left disabled: the tick must never see it (it is a
     // route fixture, and getDueSchedules filters on is_enabled).
     orgWfPersonalScheduleId = (await storage.createEvalSchedule({
-      name: `abs-orgwf-personal-sched-${suffix}`, workflowId: orgWorkflowId, evalSetId: orgEvalSetId,
+      name: `abs-orgwf-personal-sched-${suffix}`, evalflowId: orgEvalflowId, evalSetId: orgEvalSetId,
       region: "na-us-ashburn", targetTier: "private", scheduleType: "recurring",
       cronExpression: "*/5 * * * *", isEnabled: false,
       nextRunAt: new Date(Date.now() - 60 * 1000), createdBy: creatorId,
     } as any)).id;
 
-    // Personal workflow owned by the ORG MEMBER, scheduled onto the TEAM tier.
-    // `organizationId` is null, so every guard that keys on workflow ownership
+    // Personal evalflow owned by the ORG MEMBER, scheduled onto the TEAM tier.
+    // `organizationId` is null, so every guard that keys on evalflow ownership
     // waves it through — but the job it creates is team-tier, and a team-tier
     // job stamped creator_org_id NULL (which is what membership-by-absence
     // yields) can never be claimed by the team arm, now or after the provider
     // returns. No login secrets: this must fail on the tier, nothing else.
-    personalWorkflowId = (await storage.createWorkflow({
+    personalEvalflowId = (await storage.createEvalflow({
       name: `abs-team-personal-wf-${suffix}`, ownerId: creatorId, providerId,
       visibility: "private", config: {},
     } as any)).id;
@@ -245,21 +245,21 @@ d("plugin absence causes zero persistent writes", () => {
       name: `abs-team-personal-es-${suffix}`, ownerId: creatorId, visibility: "private", config: {},
     } as any)).id;
     teamPersonalScheduleId = (await storage.createEvalSchedule({
-      name: `abs-team-personal-sched-${suffix}`, workflowId: personalWorkflowId, evalSetId: personalEvalSetId,
+      name: `abs-team-personal-sched-${suffix}`, evalflowId: personalEvalflowId, evalSetId: personalEvalSetId,
       region: "na-us-ashburn", targetTier: "team", scheduleType: "recurring",
       cronExpression: "*/5 * * * *", isEnabled: true,
       nextRunAt: new Date(Date.now() - 60 * 1000), createdBy: creatorId,
     } as any)).id;
 
     // Personal control: no org anywhere on the path, no session need.
-    const soloWorkflowId = (await storage.createWorkflow({
+    const soloEvalflowId = (await storage.createEvalflow({
       name: `abs-solo-wf-${suffix}`, ownerId: soloId, providerId, visibility: "private", config: {},
     } as any)).id;
     const soloEvalSetId = (await storage.createEvalSet({
       name: `abs-solo-es-${suffix}`, ownerId: soloId, visibility: "private", config: {},
     } as any)).id;
     soloScheduleId = (await storage.createEvalSchedule({
-      name: `abs-solo-sched-${suffix}`, workflowId: soloWorkflowId, evalSetId: soloEvalSetId,
+      name: `abs-solo-sched-${suffix}`, evalflowId: soloEvalflowId, evalSetId: soloEvalSetId,
       region: "na-us-ashburn", targetTier: "private", scheduleType: "recurring",
       cronExpression: "*/5 * * * *", isEnabled: false, // armed only by the third test
       nextRunAt: new Date(Date.now() - 60 * 1000), createdBy: soloId,
@@ -357,12 +357,12 @@ d("plugin absence causes zero persistent writes", () => {
     await pool.query(`UPDATE eval_schedules SET is_enabled = false WHERE id = $1`, [soloScheduleId]);
   });
 
-  // The shape between the org schedule and the personal control: the workflow is
+  // The shape between the org schedule and the personal control: the evalflow is
   // personal (every ownership-keyed guard waves it through) but the TIER is team.
   // Dispatching it under absence would stamp creator_org_id NULL — a job the team
   // claim arm can never match, one per firing, surviving re-enable. The tick must
   // skip it exactly like an org-owned one.
-  it("a TEAM-TIER schedule on a PERSONAL workflow is skipped too — no NULL-org job is ever stamped", async () => {
+  it("a TEAM-TIER schedule on a PERSONAL evalflow is skipped too — no NULL-org job is ever stamped", async () => {
     const before = await snapshot();
     await processScheduledJobs();
     const jobs = await pool.query(`SELECT id FROM eval_jobs WHERE schedule_id = $1`, [teamPersonalScheduleId]);
@@ -372,7 +372,7 @@ d("plugin absence causes zero persistent writes", () => {
     expect(await snapshot()).toEqual(before); // and next_run/run_count untouched
   });
 
-  it("run-now on a team-tier PERSONAL-workflow schedule is 501 and writes no job", async () => {
+  it("run-now on a team-tier PERSONAL-evalflow schedule is 501 and writes no job", async () => {
     const before = await snapshot();
     const res = await request(app)
       .post(`/api/eval-schedules/${teamPersonalScheduleId}/run-now`)
@@ -383,7 +383,7 @@ d("plugin absence causes zero persistent writes", () => {
     expect((await snapshot()).jobCount).toBe(before.jobCount);
   });
 
-  it("run-now on an ORG-workflow schedule is 501 and writes no job", async () => {
+  it("run-now on an ORG-evalflow schedule is 501 and writes no job", async () => {
     const before = await snapshot();
     const res = await request(app)
       .post(`/api/eval-schedules/${orgWfPersonalScheduleId}/run-now`)
@@ -394,10 +394,10 @@ d("plugin absence causes zero persistent writes", () => {
     expect((await snapshot()).jobCount).toBe(before.jobCount);
   });
 
-  it("console run of a PUBLIC org-owned workflow is 501 and writes no job", async () => {
+  it("console run of a PUBLIC org-owned evalflow is 501 and writes no job", async () => {
     const before = await snapshot();
     const res = await request(app)
-      .post(`/api/workflows/${orgWorkflowId}/run`)
+      .post(`/api/evalflows/${orgEvalflowId}/run`)
       .set("x-test-user", String(creatorId))
       .send({ evalSetId: orgEvalSetId, region: "na-us-ashburn", targetTier: "private" });
     expect(res.status).toBe(501);
@@ -405,10 +405,10 @@ d("plugin absence causes zero persistent writes", () => {
     expect((await snapshot()).jobCount).toBe(before.jobCount);
   });
 
-  it("console run of a PERSONAL workflow onto the TEAM tier is 501 and writes no job", async () => {
+  it("console run of a PERSONAL evalflow onto the TEAM tier is 501 and writes no job", async () => {
     const before = await snapshot();
     const res = await request(app)
-      .post(`/api/workflows/${personalWorkflowId}/run`)
+      .post(`/api/evalflows/${personalEvalflowId}/run`)
       .set("x-test-user", String(creatorId))
       .send({ evalSetId: personalEvalSetId, region: "na-us-ashburn", targetTier: "team" });
     expect(res.status).toBe(501);
@@ -416,10 +416,10 @@ d("plugin absence causes zero persistent writes", () => {
     expect((await snapshot()).jobCount).toBe(before.jobCount);
   });
 
-  it("running a PUBLIC org-owned workflow with the provider absent is 501 and writes no job", async () => {
+  it("running a PUBLIC org-owned evalflow with the provider absent is 501 and writes no job", async () => {
     const before = await snapshot();
     const res = await request(app)
-      .post(`/api/v1/workflows/${orgWorkflowId}/run`)
+      .post(`/api/v1/evalflows/${orgEvalflowId}/run`)
       .set("Authorization", `Bearer ${apiKey}`)
       .send({ evalSetId: orgEvalSetId, region: "na-us-ashburn", targetTier: "private" });
     expect(res.status).toBe(501);
@@ -427,10 +427,10 @@ d("plugin absence causes zero persistent writes", () => {
     expect((await snapshot()).jobCount).toBe(before.jobCount);
   });
 
-  it("v1 run of a PERSONAL workflow onto the TEAM tier is 501 and writes no job", async () => {
+  it("v1 run of a PERSONAL evalflow onto the TEAM tier is 501 and writes no job", async () => {
     const before = await snapshot();
     const res = await request(app)
-      .post(`/api/v1/workflows/${personalWorkflowId}/run`)
+      .post(`/api/v1/evalflows/${personalEvalflowId}/run`)
       .set("Authorization", `Bearer ${apiKey}`)
       .send({ evalSetId: personalEvalSetId, region: "na-us-ashburn", targetTier: "team" });
     expect(res.status).toBe(501);

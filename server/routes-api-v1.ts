@@ -10,7 +10,7 @@
 import { Express, Request, Response } from "express";
 import { storage, mergeEvalConfig, buildJobSnapshot } from "./storage";
 import { requireAuthOrApiKey, getCurrentUserOrApiKeyUser } from "./auth";
-import { parsePlatformSetup, sessionScopeForWorkflow, evaluateSessionRequirement, getBrokeredSecretNames, ensureSession, missingSecretNames, resolvableSecretSources } from "./auth-session";
+import { parsePlatformSetup, sessionScopeForEvalflow, evaluateSessionRequirement, getBrokeredSecretNames, ensureSession, missingSecretNames, resolvableSecretSources } from "./auth-session";
 import { regionSiteSequence } from "@shared/regions";
 import { hasOrg, sameOrg } from "./permissions";
 import { getOrganizations } from "./organizations";
@@ -105,37 +105,37 @@ function apiRegionScope(
 }
 
 export function registerApiV1Routes(app: Express): void {
-  // ==================== WORKFLOWS ====================
+  // ==================== EVALFLOWS ====================
 
   /**
-   * GET /api/v1/workflows
-   * List workflows accessible to the authenticated user
+   * GET /api/v1/evalflows
+   * List evalflows accessible to the authenticated user
    */
-  app.get("/api/v1/workflows", requireAuthOrApiKey, async (req: Request, res: Response) => {
+  app.get("/api/v1/evalflows", requireAuthOrApiKey, async (req: Request, res: Response) => {
     try {
       const user = await getCurrentUserOrApiKeyUser(req);
       if (!user) {
         return res.status(401).json({ error: "Authentication required" });
       }
 
-      const workflows = await storage.getWorkflowsByOwner(user.id);
+      const evalflows = await storage.getEvalflowsByOwner(user.id);
       res.json({
-        data: workflows,
+        data: evalflows,
         meta: {
-          total: workflows.length,
+          total: evalflows.length,
         },
       });
     } catch (error) {
-      console.error("API v1 - Error fetching workflows:", error);
-      res.status(500).json({ error: "Failed to fetch workflows" });
+      console.error("API v1 - Error fetching evalflows:", error);
+      res.status(500).json({ error: "Failed to fetch evalflows" });
     }
   });
 
   /**
-   * POST /api/v1/workflows
-   * Create a new workflow
+   * POST /api/v1/evalflows
+   * Create a new evalflow
    */
-  app.post("/api/v1/workflows", requireAuthOrApiKey, async (req: Request, res: Response) => {
+  app.post("/api/v1/evalflows", requireAuthOrApiKey, async (req: Request, res: Response) => {
     try {
       const user = await getCurrentUserOrApiKeyUser(req);
       if (!user) {
@@ -156,46 +156,46 @@ export function registerApiV1Routes(app: Express): void {
         return res.status(404).json({ error: "Provider not found" });
       }
 
-      // Check workflow limits
-      const workflowCount = await storage.countWorkflowsByOwner(user.id);
-      const maxWorkflows = user.plan === "basic" ? 50 : 200; // Total across all projects
+      // Check evalflow limits
+      const evalflowCount = await storage.countEvalflowsByOwner(user.id);
+      const maxEvalflows = user.plan === "basic" ? 50 : 200; // Total across all projects
 
-      if (workflowCount >= maxWorkflows) {
+      if (evalflowCount >= maxEvalflows) {
         return res.status(403).json({
-          error: `Maximum ${maxWorkflows} workflows allowed for ${user.plan} plan`,
+          error: `Maximum ${maxEvalflows} evalflows allowed for ${user.plan} plan`,
         });
       }
 
       // Visibility check
-      const workflowVisibility = visibility || "public";
-      if (workflowVisibility === "private" && user.plan === "basic") {
+      const evalflowVisibility = visibility || "public";
+      if (evalflowVisibility === "private" && user.plan === "basic") {
         return res.status(403).json({
-          error: "Private workflows require Premium plan or higher",
+          error: "Private evalflows require Premium plan or higher",
         });
       }
 
-      const workflow = await storage.createWorkflow({
+      const evalflow = await storage.createEvalflow({
         name,
         description,
         providerId,
         projectId,
         ownerId: user.id,
-        visibility: workflowVisibility,
+        visibility: evalflowVisibility,
         config: config || {},
       });
 
-      res.status(201).json({ data: workflow });
+      res.status(201).json({ data: evalflow });
     } catch (error) {
-      console.error("API v1 - Error creating workflow:", error);
-      res.status(500).json({ error: "Failed to create workflow" });
+      console.error("API v1 - Error creating evalflow:", error);
+      res.status(500).json({ error: "Failed to create evalflow" });
     }
   });
 
   /**
-   * GET /api/v1/workflows/:id
-   * Get a specific workflow
+   * GET /api/v1/evalflows/:id
+   * Get a specific evalflow
    */
-  app.get("/api/v1/workflows/:id", requireAuthOrApiKey, async (req: Request, res: Response) => {
+  app.get("/api/v1/evalflows/:id", requireAuthOrApiKey, async (req: Request, res: Response) => {
     try {
       const user = await getCurrentUserOrApiKeyUser(req);
       if (!user) {
@@ -203,29 +203,29 @@ export function registerApiV1Routes(app: Express): void {
       }
 
       const { id } = req.params;
-      const workflow = await storage.getWorkflow(parseInt(id));
+      const evalflow = await storage.getEvalflow(parseInt(id));
 
-      if (!workflow) {
-        return res.status(404).json({ error: "Workflow not found" });
+      if (!evalflow) {
+        return res.status(404).json({ error: "Evalflow not found" });
       }
 
       // Check access: owner or public
-      if (workflow.ownerId !== user.id && workflow.visibility !== "public") {
+      if (evalflow.ownerId !== user.id && evalflow.visibility !== "public") {
         return res.status(403).json({ error: "Access denied" });
       }
 
-      res.json({ data: workflow });
+      res.json({ data: evalflow });
     } catch (error) {
-      console.error("API v1 - Error fetching workflow:", error);
-      res.status(500).json({ error: "Failed to fetch workflow" });
+      console.error("API v1 - Error fetching evalflow:", error);
+      res.status(500).json({ error: "Failed to fetch evalflow" });
     }
   });
 
   /**
-   * PUT /api/v1/workflows/:id
-   * Update a workflow
+   * PUT /api/v1/evalflows/:id
+   * Update a evalflow
    */
-  app.put("/api/v1/workflows/:id", requireAuthOrApiKey, async (req: Request, res: Response) => {
+  app.put("/api/v1/evalflows/:id", requireAuthOrApiKey, async (req: Request, res: Response) => {
     try {
       const user = await getCurrentUserOrApiKeyUser(req);
       if (!user) {
@@ -233,14 +233,14 @@ export function registerApiV1Routes(app: Express): void {
       }
 
       const { id } = req.params;
-      const workflow = await storage.getWorkflow(parseInt(id));
+      const evalflow = await storage.getEvalflow(parseInt(id));
 
-      if (!workflow) {
-        return res.status(404).json({ error: "Workflow not found" });
+      if (!evalflow) {
+        return res.status(404).json({ error: "Evalflow not found" });
       }
 
-      if (workflow.ownerId !== user.id) {
-        return res.status(403).json({ error: "Not authorized to update this workflow" });
+      if (evalflow.ownerId !== user.id) {
+        return res.status(403).json({ error: "Not authorized to update this evalflow" });
       }
 
       const { name, description, visibility, config } = req.body;
@@ -248,29 +248,29 @@ export function registerApiV1Routes(app: Express): void {
       // Visibility check
       if (visibility === "private" && user.plan === "basic") {
         return res.status(403).json({
-          error: "Private workflows require Premium plan or higher",
+          error: "Private evalflows require Premium plan or higher",
         });
       }
 
-      const updated = await storage.updateWorkflow(parseInt(id), {
-        name: name ?? workflow.name,
-        description: description ?? workflow.description,
-        visibility: visibility ?? workflow.visibility,
-        config: config ?? workflow.config,
+      const updated = await storage.updateEvalflow(parseInt(id), {
+        name: name ?? evalflow.name,
+        description: description ?? evalflow.description,
+        visibility: visibility ?? evalflow.visibility,
+        config: config ?? evalflow.config,
       });
 
       res.json({ data: updated });
     } catch (error) {
-      console.error("API v1 - Error updating workflow:", error);
-      res.status(500).json({ error: "Failed to update workflow" });
+      console.error("API v1 - Error updating evalflow:", error);
+      res.status(500).json({ error: "Failed to update evalflow" });
     }
   });
 
   /**
-   * DELETE /api/v1/workflows/:id
-   * Delete a workflow
+   * DELETE /api/v1/evalflows/:id
+   * Delete a evalflow
    */
-  app.delete("/api/v1/workflows/:id", requireAuthOrApiKey, async (req: Request, res: Response) => {
+  app.delete("/api/v1/evalflows/:id", requireAuthOrApiKey, async (req: Request, res: Response) => {
     try {
       const user = await getCurrentUserOrApiKeyUser(req);
       if (!user) {
@@ -278,29 +278,29 @@ export function registerApiV1Routes(app: Express): void {
       }
 
       const { id } = req.params;
-      const workflow = await storage.getWorkflow(parseInt(id));
+      const evalflow = await storage.getEvalflow(parseInt(id));
 
-      if (!workflow) {
-        return res.status(404).json({ error: "Workflow not found" });
+      if (!evalflow) {
+        return res.status(404).json({ error: "Evalflow not found" });
       }
 
-      if (workflow.ownerId !== user.id) {
-        return res.status(403).json({ error: "Not authorized to delete this workflow" });
+      if (evalflow.ownerId !== user.id) {
+        return res.status(403).json({ error: "Not authorized to delete this evalflow" });
       }
 
-      await storage.deleteWorkflow(parseInt(id));
+      await storage.deleteEvalflow(parseInt(id));
       res.json({ success: true });
     } catch (error) {
-      console.error("API v1 - Error deleting workflow:", error);
-      res.status(500).json({ error: "Failed to delete workflow" });
+      console.error("API v1 - Error deleting evalflow:", error);
+      res.status(500).json({ error: "Failed to delete evalflow" });
     }
   });
 
   /**
-   * POST /api/v1/workflows/:id/run
-   * Run a workflow (create an eval job)
+   * POST /api/v1/evalflows/:id/run
+   * Run a evalflow (create an eval job)
    */
-  app.post("/api/v1/workflows/:id/run", requireAuthOrApiKey, async (req: Request, res: Response) => {
+  app.post("/api/v1/evalflows/:id/run", requireAuthOrApiKey, async (req: Request, res: Response) => {
     try {
       const user = await getCurrentUserOrApiKeyUser(req);
       if (!user) {
@@ -315,24 +315,24 @@ export function registerApiV1Routes(app: Express): void {
       const region = req.body.region != null ? String(req.body.region) : null;
       const targetTier = req.body.targetTier != null ? String(req.body.targetTier) : null;
 
-      const workflow = await storage.getWorkflow(parseInt(id));
+      const evalflow = await storage.getEvalflow(parseInt(id));
 
-      if (!workflow) {
-        return res.status(404).json({ error: "Workflow not found" });
+      if (!evalflow) {
+        return res.status(404).json({ error: "Evalflow not found" });
       }
 
       // Check access: owner only can run
-      if (workflow.ownerId !== user.id) {
-        return res.status(403).json({ error: "Not authorized to run this workflow" });
+      if (evalflow.ownerId !== user.id) {
+        return res.status(403).json({ error: "Not authorized to run this evalflow" });
       }
 
-      // Same absence arm as the console run route: an org workflow's secrets
+      // Same absence arm as the console run route: an org evalflow's secrets
       // resolve through the seam, so with no provider the job could only fail —
       // refuse before creating it (§7). Team tier is refused on the same arm
-      // whoever owns the workflow: its creator_org_id would freeze NULL and the
+      // whoever owns the evalflow: its creator_org_id would freeze NULL and the
       // team claim arm could never match it (the `hasOrg` check below would also
       // refuse, as a 400; this names the actual cause).
-      if ((workflow.organizationId != null || targetTier === "team") && !getOrganizations()) {
+      if ((evalflow.organizationId != null || targetTier === "team") && !getOrganizations()) {
         return res.status(501).json({ error: "Organizations feature not enabled" });
       }
 
@@ -361,15 +361,15 @@ export function registerApiV1Routes(app: Express): void {
         return res.status(400).json({ error: "region must be an active region" });
       }
 
-      // does this workflow need a Core-minted login session? This route
-      // is owner-only (untargeted run on the caller's own workflow), so the
+      // does this evalflow need a Core-minted login session? This route
+      // is owner-only (untargeted run on the caller's own evalflow), so the
       // untargeted owner/team WHO-may-dispatch gate the console run route
       // applies is satisfied structurally — only the misconfigured-pair
       // rejection, the tier-composition guards (mirroring the console route),
       // and the immutable session stamp are needed here.
-      const wfConfig = (workflow.config ?? {}) as Record<string, unknown>;
+      const wfConfig = (evalflow.config ?? {}) as Record<string, unknown>;
       const setupInfo = parsePlatformSetup(wfConfig.stepsPrefix as string | undefined);
-      const scope = sessionScopeForWorkflow(workflow);
+      const scope = sessionScopeForEvalflow(evalflow);
       const sessionReq = evaluateSessionRequirement(setupInfo, await getBrokeredSecretNames(scope));
       if (sessionReq.kind === "misconfigured") {
         return res.status(400).json({ error: sessionReq.reason });
@@ -378,32 +378,32 @@ export function registerApiV1Routes(app: Express): void {
       // Session-injection composition (spec §5 + item 2 tightening): the serve
       // gate admits owner + team agents only, so a public-pool claim would take
       // the job and then be refused the session; and a team-pool claim on a
-      // personal (non-org) workflow is a guaranteed-failure dispatch.
+      // personal (non-org) evalflow is a guaranteed-failure dispatch.
       if (sessionNeed && targetTier === "public") {
-        return res.status(403).json({ error: "Credential-injected workflows can only use your own or team agent pools" });
+        return res.status(403).json({ error: "Credential-injected evalflows can only use your own or team agent pools" });
       }
       if (sessionNeed && targetTier === "team" &&
-          !(workflow.organizationId != null && sameOrg({ organizationId: user.membership?.organizationId ?? null }, { organizationId: workflow.organizationId }))) {
-        return res.status(403).json({ error: "Credential-injected workflows can only use a team pool when the workflow belongs to your organization" });
+          !(evalflow.organizationId != null && sameOrg({ organizationId: user.membership?.organizationId ?? null }, { organizationId: evalflow.organizationId }))) {
+        return res.status(403).json({ error: "Credential-injected evalflows can only use a team pool when the evalflow belongs to your organization" });
       }
 
       // Guaranteed-failure gate, same as the console run path: an unconfigured
       // secret means the daemon ships an unresolved placeholder and aeval aborts
       // with an opaque exit. Reject with the exact names instead.
-      const missingSecrets = await missingSecretNames(scope, resolvableSecretSources([workflow.config, evalSet.config]));
+      const missingSecrets = await missingSecretNames(scope, resolvableSecretSources([evalflow.config, evalSet.config]));
       if (missingSecrets.length > 0) {
         return res.status(400).json({
-          error: `This workflow references secret(s) ${missingSecrets.join(", ")} that are not configured. Create them (names must match exactly), then run again.`,
+          error: `This evalflow references secret(s) ${missingSecrets.join(", ")} that are not configured. Create them (names must match exactly), then run again.`,
         });
       }
 
       // Create eval job (merge configs + capture the immutable snapshot, same as the
       // console run path — otherwise these jobs lose provenance/attribution/tiering).
-      const provider = await storage.getProvider(workflow.providerId);
+      const provider = await storage.getProvider(evalflow.providerId);
 
-      const jobConfig = mergeEvalConfig(workflow.config, evalSet.config);
+      const jobConfig = mergeEvalConfig(evalflow.config, evalSet.config);
       delete (jobConfig as Record<string, unknown>).sessionInjection; // server-stamped only
-      const baseSnapshot = buildJobSnapshot(workflow, evalSet, provider, user.plan);
+      const baseSnapshot = buildJobSnapshot(evalflow, evalSet, provider, user.plan);
       const snapshot = sessionNeed
         ? {
             ...baseSnapshot,
@@ -420,7 +420,7 @@ export function registerApiV1Routes(app: Express): void {
       }
 
       const job = await storage.createEvalJob({
-        workflowId: parseInt(id),
+        evalflowId: parseInt(id),
         triggerType: 2, // manual (API v1 run)
         evalSetId,
         createdBy: user.id,
@@ -444,8 +444,8 @@ export function registerApiV1Routes(app: Express): void {
         },
       });
     } catch (error) {
-      console.error("API v1 - Error running workflow:", error);
-      res.status(500).json({ error: "Failed to run workflow" });
+      console.error("API v1 - Error running evalflow:", error);
+      res.status(500).json({ error: "Failed to run evalflow" });
     }
   });
 
@@ -606,9 +606,9 @@ export function registerApiV1Routes(app: Express): void {
         return res.status(404).json({ error: "Job not found" });
       }
 
-      // Check ownership — live workflow owner, or the job's creator once it's deleted.
-      const workflow = job.workflowId != null ? await storage.getWorkflow(job.workflowId) : undefined;
-      const allowed = workflow ? workflow.ownerId === user.id : job.createdBy === user.id;
+      // Check ownership — live evalflow owner, or the job's creator once it's deleted.
+      const evalflow = job.evalflowId != null ? await storage.getEvalflow(job.evalflowId) : undefined;
+      const allowed = evalflow ? evalflow.ownerId === user.id : job.createdBy === user.id;
       if (!allowed) {
         return res.status(403).json({ error: "Access denied" });
       }
@@ -638,9 +638,9 @@ export function registerApiV1Routes(app: Express): void {
         return res.status(404).json({ error: "Job not found" });
       }
 
-      // Check ownership — live workflow owner, or the job's creator once it's deleted.
-      const workflow = job.workflowId != null ? await storage.getWorkflow(job.workflowId) : undefined;
-      const allowed = workflow ? workflow.ownerId === user.id : job.createdBy === user.id;
+      // Check ownership — live evalflow owner, or the job's creator once it's deleted.
+      const evalflow = job.evalflowId != null ? await storage.getEvalflow(job.evalflowId) : undefined;
+      const allowed = evalflow ? evalflow.ownerId === user.id : job.createdBy === user.id;
       if (!allowed) {
         return res.status(403).json({ error: "Access denied" });
       }
@@ -673,11 +673,11 @@ export function registerApiV1Routes(app: Express): void {
         return res.status(401).json({ error: "Authentication required" });
       }
 
-      const { workflowId, jobId, limit, offset } = req.query;
+      const { evalflowId, jobId, limit, offset } = req.query;
 
       const results = await storage.getEvalResults({
         ownerId: user.id,
-        workflowId: workflowId ? parseInt(workflowId as string) : undefined,
+        evalflowId: evalflowId ? parseInt(evalflowId as string) : undefined,
         jobId: jobId ? parseInt(jobId as string) : undefined,
         limit: limit ? parseInt(limit as string) : 50,
         offset: offset ? parseInt(offset as string) : 0,
@@ -714,14 +714,14 @@ export function registerApiV1Routes(app: Express): void {
         return res.status(404).json({ error: "Result not found" });
       }
 
-      // Get job and workflow to check ownership
+      // Get job and evalflow to check ownership
       const job = await storage.getEvalJob(result.evalJobId);
       if (!job) {
         return res.status(404).json({ error: "Associated job not found" });
       }
 
-      const workflow = job.workflowId != null ? await storage.getWorkflow(job.workflowId) : undefined;
-      const allowed = workflow ? workflow.ownerId === user.id : job.createdBy === user.id;
+      const evalflow = job.evalflowId != null ? await storage.getEvalflow(job.evalflowId) : undefined;
+      const allowed = evalflow ? evalflow.ownerId === user.id : job.createdBy === user.id;
       if (!allowed) {
         return res.status(403).json({ error: "Access denied" });
       }
@@ -748,11 +748,11 @@ export function registerApiV1Routes(app: Express): void {
 
       const projects = await storage.getProjectsByOwner(user.id);
 
-      // Add workflow counts
+      // Add evalflow counts
       const projectsWithCounts = await Promise.all(
         projects.map(async (project) => ({
           ...project,
-          workflowCount: await storage.countWorkflowsByProject(project.id),
+          evalflowCount: await storage.countEvalflowsByProject(project.id),
         }))
       );
 

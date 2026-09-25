@@ -190,9 +190,9 @@ export default function ProviderGuide() {
         </div>
       </section>
 
-      {/* Evaluation Workflow */}
+      {/* Evaluation Evalflow */}
       <section className="space-y-6">
-        <h2 className="text-2xl font-bold border-b pb-2">Evaluation Workflow</h2>
+        <h2 className="text-2xl font-bold border-b pb-2">Evaluation Evalflow</h2>
         <Card>
           <CardContent className="pt-6">
             <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
@@ -200,7 +200,7 @@ export default function ProviderGuide() {
                 <Badge variant="outline" className="h-8 w-8 rounded-full flex items-center justify-center">1</Badge>
                 <div>
                   <p className="font-medium">Schedule</p>
-                  <p className="text-sm text-muted-foreground">Create workflow with cron schedule</p>
+                  <p className="text-sm text-muted-foreground">Create evalflow with cron schedule</p>
                 </div>
               </div>
               <ArrowRight className="hidden md:block h-4 w-4 text-muted-foreground" />
@@ -300,9 +300,9 @@ export default function ProviderGuide() {
               Quick Test
             </Button>
           </Link>
-          <Link href="/console/workflows">
+          <Link href="/console/evalflows">
             <Button size="lg" className="gap-2">
-              Create Workflow <ArrowRight className="h-4 w-4" />
+              Create Evalflow <ArrowRight className="h-4 w-4" />
             </Button>
           </Link>
         </div>

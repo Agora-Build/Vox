@@ -42,7 +42,7 @@ describe("defaultBrokerTypeForName", () => {
 
   // The reported bug: the console flipped ..._EMAIL to the auth broker but left
   // ..._PASSWORD on Runtime, and evaluateSessionRequirement rejects a split
-  // pair outright — so the UI's own default produced an unrunnable workflow.
+  // pair outright — so the UI's own default produced an unrunnable evalflow.
   // Both halves of a real login pair must classify the same way.
   // NOT a general property of the pattern — a pair can still split (e.g. a
   // password named without any of the four tokens). These are the shapes
@@ -81,7 +81,7 @@ describe("isAuthFieldName (shared client/server heuristic)", () => {
     // — as they did under the original server regex. Requiring end-of-name
     // would drop them but also drop EMAIL_ADDRESS, which is more often a real
     // login field than these are not. Listed so the trade is visible: a false
-    // positive here makes findBrokeredMisuse reject the whole workflow.
+    // positive here makes findBrokeredMisuse reject the whole evalflow.
     for (const n of ["TWILIO_ACCOUNT_SID", "SERVICE_ACCOUNT_JSON", "EMAIL_FROM", "PASSWORD_RESET_URL"]) {
       expect(isAuthFieldName(n)).toBe(true);
     }
@@ -112,7 +112,7 @@ describe("isAuthFieldName (shared client/server heuristic)", () => {
       "EMAILER_API_KEY",                          // EMAIL followed by a letter
       "EMAILADDRESS", "ACCOUNTNAME",              // trailing word: deliberate residual
       // Infra credentials. A false positive here is not "withheld from the
-      // agent" — findBrokeredMisuse rejects the WHOLE workflow, so accepting
+      // agent" — findBrokeredMisuse rejects the WHOLE evalflow, so accepting
       // the console's pre-selection on DB_USER would make it unrunnable.
       "DB_USER", "SMTP_USER", "POSTGRES_USER", "REDIS_USER",
       // Plural followed by more name, rather than ending the name.
@@ -122,7 +122,7 @@ describe("isAuthFieldName (shared client/server heuristic)", () => {
       // ACCEPTED split pairs, not oversights: these are excluded while
       // ADMIN_PASSWORD/TEST_PASSWORD match, so such a pair splits. Widening the
       // USER prefix list would reopen DB_USER, whose false positive rejects the
-      // whole workflow; a split pair instead fails loudly at run time with
+      // whole evalflow; a split pair instead fails loudly at run time with
       // "mark both, or neither", which the user can act on.
       "ADMIN_USER", "TEST_USER", "APP_USER", "AGORA_USER",
     ]) {

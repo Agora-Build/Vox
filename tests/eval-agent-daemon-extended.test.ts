@@ -566,15 +566,15 @@ describe("Eval Agent Daemon - Logging", () => {
   });
 
   it("should include job details in logs", () => {
-    const logJobInfo = (job: { id: number; workflowId: number; region: string }) => {
+    const logJobInfo = (job: { id: number; evalflowId: number; region: string }) => {
       return [
         `Executing job ${job.id}`,
-        `  - Workflow ID: ${job.workflowId}`,
+        `  - Evalflow ID: ${job.evalflowId}`,
         `  - Region: ${job.region}`,
       ];
     };
 
-    const logs = logJobInfo({ id: 42, workflowId: 10, region: "apac" });
+    const logs = logJobInfo({ id: 42, evalflowId: 10, region: "apac" });
     expect(logs[0]).toContain("42");
     expect(logs[1]).toContain("10");
     expect(logs[2]).toContain("apac");

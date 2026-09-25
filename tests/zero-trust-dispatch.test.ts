@@ -33,7 +33,7 @@ describeDb("zero-trust claim gating", () => {
 
   const makeJob = async (fields: Partial<typeof evalJobs.$inferInsert>) => {
     const row = await db.insert(evalJobs).values({
-      workflowId: null, evalSetId: null, createdBy: 1, status: "pending",
+      evalflowId: null, evalSetId: null, createdBy: 1, status: "pending",
       config: {}, snapshot: {}, siteId: null, ...fields,
     } as typeof evalJobs.$inferInsert).returning();
     jobIds.push(row[0].id);
@@ -91,7 +91,7 @@ describeDb("zero-trust claim gating", () => {
 // at all.
 describeDb("zero-trust complete route — Unverified agent's result is recorded (siteId NULL)", () => {
   let cookie: string;
-  let workflowId: number;
+  let evalflowId: number;
   let evalSetId: number;
   let tokenId: number;
   let tokenSecret: string;
@@ -104,12 +104,12 @@ describeDb("zero-trust complete route — Unverified agent's result is recorded 
 
     const providers = await (await authFetch(cookie, `${BASE_URL}/api/providers`)).json();
     const providerId = providers[0].id;
-    const wfRes = await authFetch(cookie, `${BASE_URL}/api/workflows`, {
+    const wfRes = await authFetch(cookie, `${BASE_URL}/api/evalflows`, {
       method: "POST",
       body: JSON.stringify({ name: `zt-complete-wf-${Date.now()}`, visibility: "public", providerId, config: {} }),
     });
     expect(wfRes.ok).toBe(true);
-    workflowId = (await wfRes.json()).id;
+    evalflowId = (await wfRes.json()).id;
     const es = await (await authFetch(cookie, `${BASE_URL}/api/eval-sets?includePublic=true`)).json();
     evalSetId = es[0].id;
 
@@ -141,7 +141,7 @@ describeDb("zero-trust complete route — Unverified agent's result is recorded 
     // Targeted dispatch is trust-exempt (spec: "Targeted claims: no trust
     // gate") — this is how an Unverified private agent still runs its
     // owner's evals.
-    const runRes = await authFetch(cookie, `${BASE_URL}/api/workflows/${workflowId}/run`, {
+    const runRes = await authFetch(cookie, `${BASE_URL}/api/evalflows/${evalflowId}/run`, {
       method: "POST",
       body: JSON.stringify({ evalSetId, targetTokenId: tokenId }),
     });
@@ -161,7 +161,7 @@ describeDb("zero-trust complete route — Unverified agent's result is recorded 
 
   afterAll(async () => {
     await authFetch(cookie, `${BASE_URL}/api/eval-agent-tokens/${tokenId}/revoke`, { method: "POST" });
-    await authFetch(cookie, `${BASE_URL}/api/workflows/${workflowId}`, { method: "DELETE" });
+    await authFetch(cookie, `${BASE_URL}/api/evalflows/${evalflowId}`, { method: "DELETE" });
   });
 
   it("completing the job with results creates an eval_results row with siteId NULL", async () => {

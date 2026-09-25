@@ -7,7 +7,7 @@ describe('Eval Job Queue', () => {
   interface EvalJob {
     id: number;
     scheduleId: number | null;
-    workflowId: number;
+    evalflowId: number;
     evalSetId: number;
     evalAgentId: number | null;
     siteId: Region;
@@ -25,7 +25,7 @@ describe('Eval Job Queue', () => {
   const createMockJob = (overrides: Partial<EvalJob> = {}): EvalJob => ({
     id: 1,
     scheduleId: null,
-    workflowId: 1,
+    evalflowId: 1,
     evalSetId: 1,
     evalAgentId: null,
     siteId: 'na',
@@ -63,7 +63,7 @@ describe('Eval Job Queue', () => {
       expect(job.priority).toBe(0);
     });
 
-    it('should assign region from workflow or default', () => {
+    it('should assign region from evalflow or default', () => {
       const naJob = createMockJob({ siteId: 'na' });
       const apacJob = createMockJob({ siteId: 'apac' });
       const euJob = createMockJob({ siteId: 'eu' });

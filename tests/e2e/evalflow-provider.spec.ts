@@ -1,7 +1,7 @@
 import { test, expect, type Page } from "@playwright/test";
 
 /**
- * E2E: workflow provider selection + platform_id guard + eval-jobs provenance.
+ * E2E: evalflow provider selection + platform_id guard + eval-jobs provenance.
  *
  * Requires a running server on :5000 with the seeded providers
  * (Agora / LiveKit / ElevenLabs / Custom) and admin@vox.local.
@@ -54,13 +54,13 @@ async function providerIdByName(page: Page, name: string): Promise<string> {
   return p!.id;
 }
 
-async function findWorkflowByName(page: Page, name: string) {
-  const res = await page.request.get("/api/workflows?includePublic=true");
+async function findEvalflowByName(page: Page, name: string) {
+  const res = await page.request.get("/api/evalflows?includePublic=true");
   const list = (await res.json()) as Array<{ id: number; name: string; providerId: string }>;
   return list.find((w) => w.name === name);
 }
 
-test.describe("Workflow provider + platform_id guard", () => {
+test.describe("Evalflow provider + platform_id guard", () => {
   test.beforeEach(async ({ page }) => {
     await page.context().clearCookies();
     await login(page);
@@ -68,17 +68,17 @@ test.describe("Workflow provider + platform_id guard", () => {
 
   test("warns on provider ↔ platform_id mismatch, saves on 'Save anyway'", async ({ page }) => {
     const name = `e2e-mismatch-${Date.now()}`;
-    await page.goto("/console/workflows");
-    await page.getByTestId("button-create-workflow").click();
+    await page.goto("/console/evalflows");
+    await page.getByTestId("button-create-evalflow").click();
 
-    await page.getByTestId("input-workflow-name").fill(name);
-    await selectOption(page, "select-workflow-provider", "Agora ConvoAI Engine");
+    await page.getByTestId("input-evalflow-name").fill(name);
+    await selectOption(page, "select-evalflow-provider", "Agora ConvoAI Engine");
     // aeval is the default framework → stepsPrefix textarea is shown.
     await page
-      .getByTestId("textarea-workflow-steps-prefix")
+      .getByTestId("textarea-evalflow-steps-prefix")
       .fill("- type: platform.setup\n  platform_id: livekit\n- type: platform.enter");
 
-    await page.getByTestId("button-submit-workflow").click();
+    await page.getByTestId("button-submit-evalflow").click();
 
     // Mismatch dialog appears (livekit YAML vs Agora provider).
     const dialog = page.getByRole("alertdialog");
@@ -89,70 +89,73 @@ test.describe("Workflow provider + platform_id guard", () => {
     await page.getByRole("button", { name: "Save anyway" }).click();
 
     // Persisted with the (mismatched) Agora provider we chose.
-    await expect.poll(async () => (await findWorkflowByName(page, name)) != null).toBeTruthy();
-    const wf = await findWorkflowByName(page, name);
+    await expect.poll(async () => (await findEvalflowByName(page, name)) != null).toBeTruthy();
+    const wf = await findEvalflowByName(page, name);
     const agora = await providerIdByName(page, "Agora ConvoAI Engine");
     expect(wf!.providerId).toBe(agora);
 
-    await page.request.delete(`/api/workflows/${wf!.id}`);
+    await page.request.delete(`/api/evalflows/${wf!.id}`);
   });
 
   test("auto-switches provider to Custom when YAML has no platform_id", async ({ page }) => {
     const name = `e2e-nocustom-${Date.now()}`;
-    await page.goto("/console/workflows");
-    await page.getByTestId("button-create-workflow").click();
+    await page.goto("/console/evalflows");
+    await page.getByTestId("button-create-evalflow").click();
 
-    await page.getByTestId("input-workflow-name").fill(name);
-    await selectOption(page, "select-workflow-provider", "Agora ConvoAI Engine");
+    await page.getByTestId("input-evalflow-name").fill(name);
+    await selectOption(page, "select-evalflow-provider", "Agora ConvoAI Engine");
     // aeval steps with NO platform.setup / platform_id.
     await page
-      .getByTestId("textarea-workflow-steps-prefix")
+      .getByTestId("textarea-evalflow-steps-prefix")
       .fill("- type: audio.start_recording");
 
-    await page.getByTestId("button-submit-workflow").click();
+    await page.getByTestId("button-submit-evalflow").click();
 
-    // Toast confirms the auto-switch (title + aria-live status both match → take first).
-    await expect(page.getByText("Provider set to Custom").first()).toBeVisible();
+    // The auto-switch toast is transient — TOAST_LIMIT is 1, so the
+    // "Evalflow created" success toast replaces it as soon as the create
+    // returns. Accept either; the authoritative auto-switch assertion is
+    // the providerId check below.
+    await expect(page.getByText(/Provider set to Custom|Evalflow created/).first()).toBeVisible();
 
-    await expect.poll(async () => (await findWorkflowByName(page, name)) != null).toBeTruthy();
-    const wf = await findWorkflowByName(page, name);
+    await expect.poll(async () => (await findEvalflowByName(page, name)) != null).toBeTruthy();
+    const wf = await findEvalflowByName(page, name);
     const custom = await providerIdByName(page, "Custom");
     expect(wf!.providerId).toBe(custom);
 
-    await page.request.delete(`/api/workflows/${wf!.id}`);
+    await page.request.delete(`/api/evalflows/${wf!.id}`);
   });
 
   test("edit dialog exposes a provider select and saves a provider change", async ({ page }) => {
-    // Seed a workflow via API (matching provider → no guard needed on create).
+    // Seed a evalflow via API (matching provider → no guard needed on create).
     const livekit = await providerIdByName(page, "LiveKit Agents");
     const name = `e2e-edit-${Date.now()}`;
-    const created = await page.request.post("/api/workflows", {
+    const created = await page.request.post("/api/evalflows", {
       data: { name, visibility: "public", providerId: livekit, config: { framework: "aeval" } },
     });
     expect(created.ok()).toBeTruthy();
     const wfId = (await created.json()).id as number;
 
-    await page.goto("/console/workflows");
-    await page.getByTestId(`row-workflow-${wfId}`).getByRole("button").first().click();
+    await page.goto("/console/evalflows");
+    await page.getByTestId(`row-evalflow-${wfId}`).getByRole("button").first().click();
 
     // Provider select is present in the edit dialog.
-    const providerSelect = page.getByTestId("select-edit-workflow-provider");
+    const providerSelect = page.getByTestId("select-edit-evalflow-provider");
     await expect(providerSelect).toBeVisible();
 
     // Change provider → ElevenLabs (its YAML is empty → no platform_id → auto-Custom on save,
-    // but here the workflow has no stepsPrefix, so selecting ElevenLabs then saving triggers
+    // but here the evalflow has no stepsPrefix, so selecting ElevenLabs then saving triggers
     // auto-Custom too). Assert the change round-trips to *some* new provider.
-    await selectOption(page, "select-edit-workflow-provider", "Custom");
+    await selectOption(page, "select-edit-evalflow-provider", "Custom");
     await page.getByRole("button", { name: "Save Changes" }).click();
 
     await expect
       .poll(async () => {
-        const wf = await findWorkflowByName(page, name);
+        const wf = await findEvalflowByName(page, name);
         return wf?.providerId;
       })
       .toBe(await providerIdByName(page, "Custom"));
 
-    await page.request.delete(`/api/workflows/${wfId}`);
+    await page.request.delete(`/api/evalflows/${wfId}`);
   });
 });
 
@@ -211,7 +214,7 @@ test.describe("Job snapshot", () => {
     await login(page);
   });
 
-  test("job detail shows a 'View workflow & eval set' snapshot dialog", async ({ page }) => {
+  test("job detail shows a 'View evalflow & eval set' snapshot dialog", async ({ page }) => {
     // Find any job to open its detail page.
     const res = await page.request.get("/api/eval-jobs?limit=1");
     const body = await res.json();
@@ -225,9 +228,9 @@ test.describe("Job snapshot", () => {
     await expect(btn).toBeVisible();
     await btn.click();
 
-    // Immutable snapshot dialog with the workflow/eval-set config.
-    await expect(page.getByRole("dialog").getByText("Workflow & eval set — as run")).toBeVisible();
-    await expect(page.getByText(/Workflow:/)).toBeVisible();
+    // Immutable snapshot dialog with the evalflow/eval-set config.
+    await expect(page.getByRole("dialog").getByText("Evalflow & eval set — as run")).toBeVisible();
+    await expect(page.getByText(/Evalflow:/)).toBeVisible();
     await expect(page.getByText(/Eval set:/)).toBeVisible();
   });
 });

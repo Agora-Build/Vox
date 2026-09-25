@@ -3,7 +3,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import {
-  compilePhoneConversation, buildOutboundJob, sumStepTimeouts, computePhoneRateEntries,
+  compilePhoneConversation, buildInboundJob, sumStepTimeouts, computePhoneRateEntries,
   toCallMetadata, buildSessionDir, runPhoneJob, stagePlayFiles,
 } from "../vox_eval_agentd/phone-eval";
 
@@ -54,14 +54,14 @@ describe("compilePhoneConversation", () => {
   });
 });
 
-describe("phoneDial travels from workflow config into job config", () => {
+describe("phoneDial travels from evalflow config into job config", () => {
   it("mergeEvalConfig carries phoneDial (and restfulTrigger) through to the job", async () => {
     const { mergeEvalConfig } = await import("../server/storage");
     const jobConfig = mergeEvalConfig(
       { framework: "aeval", phoneDial: { number: "+1 408 837 5890" } },
       { scenario: "steps:\n  - type: audio.play" },
     );
-    // The daemon reads job.config.phoneDial — the number is workflow data
+    // The daemon reads job.config.phoneDial — the number is evalflow data
     // fetched from Vox with the claimed job, never host/env configuration.
     expect(jobConfig.phoneDial).toEqual({ number: "+1 408 837 5890" });
     expect(jobConfig.scenario).toBeDefined();
@@ -124,7 +124,7 @@ describe("stagePlayFiles (Docker↔host exchange dir)", () => {
   });
 });
 
-describe("buildOutboundJob + sumStepTimeouts", () => {
+describe("buildInboundJob + sumStepTimeouts", () => {
   it("wraps conversation in dial/wait/hangup and sizes the read timeout from the steps", () => {
     const conv = compilePhoneConversation(
       [
@@ -134,7 +134,7 @@ describe("buildOutboundJob + sumStepTimeouts", () => {
       { resolveCorpusFile: corpus },
     );
     if (!conv.ok) throw new Error("compile failed");
-    const job = buildOutboundJob("+15551234", conv.steps);
+    const job = buildInboundJob("+15551234", conv.steps);
     expect(job[0]).toMatchObject({ type: "call.dial", number: "+15551234" });
     expect(job[1].type).toBe("call.wait_answered");
     expect(job[job.length - 1].type).toBe("call.hangup");

@@ -48,7 +48,7 @@ async function makeTokenAndAgent(cookie: string, name: string, regionBaseId: str
 
 describe("targeted dispatch isolation", () => {
   let cookie: string;
-  let workflowId: number;
+  let evalflowId: number;
   let evalSetId: number;
   let regionBaseIds: string[];
 
@@ -61,11 +61,11 @@ describe("targeted dispatch isolation", () => {
       .map((r: any) => r.baseId as string);
     expect(regionBaseIds.length).toBeGreaterThanOrEqual(2);
 
-    // includePublic=true: admin owns no workflows/eval-sets by default in a fresh
-    // seed — the runnable seed content (mainline LiveKit workflow, basic eval set)
+    // includePublic=true: admin owns no evalflows/eval-sets by default in a fresh
+    // seed — the runnable seed content (mainline LiveKit evalflow, basic eval set)
     // is owned by Scout but public, so admin needs the public-merge view to see it.
-    const wf = await (await authFetch(cookie, `${BASE_URL}/api/workflows?includePublic=true`)).json();
-    workflowId = wf[0].id;
+    const wf = await (await authFetch(cookie, `${BASE_URL}/api/evalflows?includePublic=true`)).json();
+    evalflowId = wf[0].id;
     const es = await (await authFetch(cookie, `${BASE_URL}/api/eval-sets?includePublic=true`)).json();
     evalSetId = es[0].id;
   });
@@ -81,7 +81,7 @@ describe("targeted dispatch isolation", () => {
 
     // Dispatch ONE job targeted at token A. The run route derives the job's region
     // from the target token and ignores any body `region`.
-    const runRes = await authFetch(cookie, `${BASE_URL}/api/workflows/${workflowId}/run`, {
+    const runRes = await authFetch(cookie, `${BASE_URL}/api/evalflows/${evalflowId}/run`, {
       method: "POST",
       body: JSON.stringify({ evalSetId, targetTokenId: A.id }),
     });

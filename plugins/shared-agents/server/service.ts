@@ -14,7 +14,7 @@ export interface CreditsPort {
 // (Plugin/Core boundary — see eslint no-restricted-imports). Core casts the provided
 // service to its own EvalMarketplace at the registry; structural shape is the contract.
 export interface AgentSummary { tokenId: number; region: string; pricePerUnit: number; ownerId: number; }
-export interface JobContext { workflowId: number | null; evalSetId: number | null; region: string; createdBy: number; }
+export interface JobContext { evalflowId: number | null; evalSetId: number | null; region: string; createdBy: number; }
 export interface DispatchAuthorization { ok: boolean; reason?: string; settlementContext?: unknown; }
 /** Money-relevant projection of a terminal job (mirrors Core's SettlementOutcome). */
 export interface SettlementOutcome { jobId: number; status: string; hasResult: boolean; settlementContext: unknown; }

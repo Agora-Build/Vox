@@ -144,8 +144,8 @@ export function compilePhoneConversation(rawSteps: unknown[], opts: CompileOpts)
   return { ok: true, steps: out };
 }
 
-/** Wrap a compiled conversation as an outbound job: dial → wait → conv → hangup. */
-export function buildOutboundJob(targetNumber: string, conversation: DialfStep[]): DialfStep[] {
+/** Wrap a compiled conversation as an agent-inbound job (we dial the agent): dial → wait → conv → hangup. */
+export function buildInboundJob(targetNumber: string, conversation: DialfStep[]): DialfStep[] {
   return [
     { type: 'call.dial', id: 'dial', number: targetNumber },
     { type: 'call.wait_answered', id: 'answered', timeout_ms: DEFAULTS.answer_timeout_ms },
@@ -335,9 +335,10 @@ export interface PhoneRunOutput {
 }
 
 /**
- * Execute one phone-transport job end to end. v1 supports the OUTBOUND mode
- * fully (dial → conversation → structured result → analyze). The
- * trigger/inbound mode (agent dials us after a browser/restful trigger) is
+ * Execute one phone-transport job end to end. Direction is the AGENT's
+ * perspective: v1 supports the INBOUND mode fully (we dial the agent →
+ * conversation → structured result → analyze). The trigger/OUTBOUND mode
+ * (agent dials us after a browser/restful trigger) is
  * deliberately unsupported until DialF exposes a machine-readable result for
  * serve-answered calls or a wait-for-ring step (requirements doc R7): serve
  * event strings are human-only by contract, and racing `call.answer` against
@@ -346,8 +347,8 @@ export interface PhoneRunOutput {
 export async function runPhoneJob(cfg: PhoneRunConfig, deps: PhoneRunDeps): Promise<PhoneRunOutput> {
   if (!cfg.phoneDial?.number) {
     throw new Error(cfg.hasRestfulTrigger
-      ? 'phone trigger mode (agent calls us) is not yet supported — pending DialF machine-readable serve results (R7); use phoneDial'
-      : 'phone workflow config needs phoneDial.number');
+      ? 'phone outbound mode (agent calls us) is not yet supported — pending DialF machine-readable serve results (R7); use phoneDial'
+      : 'phone evalflow config needs phoneDial.number');
   }
   const compiled = compilePhoneConversation(cfg.scenarioSteps, {
     resolveCorpusFile: cfg.resolveCorpusFile,
@@ -357,7 +358,7 @@ export async function runPhoneJob(cfg: PhoneRunConfig, deps: PhoneRunDeps): Prom
   if (!compiled.ok) throw new Error(`phone conversation compile failed: ${compiled.error}`);
 
   const conversation = stagePlayFiles(compiled.steps, cfg.exchangeDir ?? null);
-  const steps = buildOutboundJob(cfg.phoneDial.number, conversation);
+  const steps = buildInboundJob(cfg.phoneDial.number, conversation);
   const timeoutMs = sumStepTimeouts(steps);
   // Per-run record_dir (dialfd ≥ 0.3.16) routes this run's recordings into the
   // exchange dir so the container can read them. An older dialfd ignores the

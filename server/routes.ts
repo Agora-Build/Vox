@@ -1,7 +1,7 @@
 import type { Express } from "express";
 import { type Server } from "http";
 import { z } from "zod";
-import { storage, hashToken, generateSecureToken, generateEvalAgentToken, generateBrokerRegistrationToken, mergeEvalConfig, buildJobSnapshot, validateWorkflowConfig, validateEvalSetConfig, encryptValue, decryptValue, isEncryptionConfigured, type MetricSourceRow, type RegionQueryScope, type MetricTier } from "./storage";
+import { storage, hashToken, generateSecureToken, generateEvalAgentToken, generateBrokerRegistrationToken, mergeEvalConfig, buildJobSnapshot, validateEvalflowConfig, validateEvalSetConfig, encryptValue, decryptValue, isEncryptionConfigured, type MetricSourceRow, type RegionQueryScope, type MetricTier } from "./storage";
 import { parseNextCronRun } from "./cron";
 import { compareVersions } from "./aeval-seed";
 import { SECRET_NAME_PATTERN, collectSecretRefs } from "@shared/secrets";
@@ -13,7 +13,7 @@ import { validateTierChoice, resolveTargetedDispatch, filterDispatchableAgents }
 import { getMarketplace } from "./marketplace";
 import { isAlreadyMemberError, getOrganizations, requireOrganizations, type Membership, type OrgSecretRow } from "./organizations";
 import { fingerprintCredential, formatLastFailedHttpStatus, parseLastFailedHttpStatus } from "@shared/credentials";
-import { parsePlatformSetup, sessionScopeForWorkflow, evaluateSessionRequirement, getBrokeredSecretNames, areLoginSecretsAttested, ensureSession, stampOwnerSession, credentialKeyFor, SESSION_FRESH_MARGIN_SECONDS, classifyReferencedSecrets, findBrokeredMisuse, defaultBrokerTypeForName, resolveBrokerType, type SessionNeed, detectSessionNeed, missingSecretNames, resolvableSecretSources } from "./auth-session";
+import { parsePlatformSetup, sessionScopeForEvalflow, evaluateSessionRequirement, getBrokeredSecretNames, areLoginSecretsAttested, ensureSession, stampOwnerSession, credentialKeyFor, SESSION_FRESH_MARGIN_SECONDS, classifyReferencedSecrets, findBrokeredMisuse, defaultBrokerTypeForName, resolveBrokerType, type SessionNeed, detectSessionNeed, missingSecretNames, resolvableSecretSources } from "./auth-session";
 import { validateRegisterPayload, cacheBrokerMintSecret, hasBrokerMintSecret, routeToBroker, executeViaBroker, KNOWN_BROKER_TYPES } from "./broker-registry";
 import { resolveRestfulTemplate } from "./restful-exec";
 import { validateRestfulTrigger } from "./storage";
@@ -87,8 +87,8 @@ import {
   canAccessResource,
   canEditResource,
   isOwnerOrOrgManager,
-  canRunWorkflow,
-  canScheduleWorkflow,
+  canRunEvalflow,
+  canScheduleEvalflow,
   sameOrg,
   isSessionServable, isOwnerOperatedAgent,
   hasOrg,
@@ -99,10 +99,10 @@ import {
 // Extended by the same window. Past expiry the scheduler stops firing it.
 const SCHEDULE_TTL_MS = 90 * 24 * 60 * 60 * 1000;
 
-// Computed per-request, never stored: an org-owned workflow's schedule can't
+// Computed per-request, never stored: an org-owned evalflow's schedule can't
 // dispatch on an instance without the organizations plugin/feature installed.
-export function scheduleDispatchBlocked(workflowOrganizationId: number | null) {
-  return getOrganizations() === null && workflowOrganizationId != null
+export function scheduleDispatchBlocked(evalflowOrganizationId: number | null) {
+  return getOrganizations() === null && evalflowOrganizationId != null
     ? { reason: "organizations-unavailable", detail: "Organization plugin/feature not enabled" }
     : null;
 }
@@ -321,11 +321,11 @@ async function updateClashEloRatings(
   });
 }
 
-// Deliberately avoids "you have not configured": secrets resolve in the WORKFLOW
-// OWNER's scope, so someone running another user's public workflow cannot fix
+// Deliberately avoids "you have not configured": secrets resolve in the EVALFLOW
+// OWNER's scope, so someone running another user's public evalflow cannot fix
 // this themselves.
 const MISSING_SECRETS_MSG = (names: string[]) =>
-  `This workflow references secret(s) ${names.join(", ")} that are not configured for its owner. If the workflow is yours, create them under Console → Secrets (names must match exactly); otherwise ask its owner to.`;
+  `This evalflow references secret(s) ${names.join(", ")} that are not configured for its owner. If the evalflow is yours, create them under Console → Secrets (names must match exactly); otherwise ask its owner to.`;
 
 /**
  * The org-runtime decrypt tail, moved here verbatim from
@@ -358,14 +358,14 @@ function decryptOrgRuntimeRows(rows: OrgSecretRow[]): Record<string, string> {
  * R3 — THE ORG-CREDENTIAL FENCE. This is the check that stops one organization
  * from spending another organization's credentials, so it lives in Core: the
  * decision is authorization, and Core authorizes (design §4). Storage supplies
- * the job→workflow→org scope (`getJobOrgSecretScope`) and decides nothing; the
+ * the job→evalflow→org scope (`getJobOrgSecretScope`) and decides nothing; the
  * secret ROWS come from the seam and are decrypted here, in Core.
  *
  * The creator's membership comes from the `vox.organizations` seam; the
- * workflow's owning org (`workflowOrgId`) is a Core FK column compared as an
+ * evalflow's owning org (`evalflowOrgId`) is a Core FK column compared as an
  * opaque integer. Verdicts are identical to the pre-seam
- * `creator.organizationId !== workflow.organizationId`:
- *   - creator in the workflow's org  → the org's runtime secrets
+ * `creator.organizationId !== evalflow.organizationId`:
+ *   - creator in the evalflow's org  → the org's runtime secrets
  *   - creator in ANOTHER org         → {}   (cross-org spend, never allowed)
  *   - creator in no org / unknown    → {}
  *   - no org scope (personal/pooled) → {}   (caller uses the personal path)
@@ -388,20 +388,20 @@ export async function orgRuntimeSecretsForJob(jobId: number): Promise<Record<str
   //
   // Hoisted deliberately: a per-read `getOrganizations()` check on the
   // verdict-pass side would be DEAD code, because an absent provider makes
-  // `creatorMembership` null and `null?.organizationId !== workflowOrgId` already
+  // `creatorMembership` null and `null?.organizationId !== evalflowOrgId` already
   // returns below. One reachable exit beats two, one of which never runs.
   const orgs = getOrganizations();
   if (!orgs) return {};
   const creatorMembership = scope.createdBy != null
     ? await orgs.getMembership(scope.createdBy)
     : null;
-  if (creatorMembership?.organizationId !== scope.workflowOrgId) return {};
-  return decryptOrgRuntimeRows(await orgs.listOrgSecrets(scope.workflowOrgId));
+  if (creatorMembership?.organizationId !== scope.evalflowOrgId) return {};
+  return decryptOrgRuntimeRows(await orgs.listOrgSecrets(scope.evalflowOrgId));
 }
 
 /**
  * The trusted-exec sibling of orgRuntimeSecretsForJob (design 2026-09-21 §5):
- * SAME fence (creator's seam membership must equal the workflow's org; provider
+ * SAME fence (creator's seam membership must equal the evalflow's org; provider
  * absence fails closed to {}), but decrypts ALL classes — brokered rows
  * included — because the caller is the Core→broker restful path, where nothing
  * but the sanitized result ever reaches an agent. Never expose its output on
@@ -415,9 +415,9 @@ export async function orgAllSecretsForTrustedExec(jobId: number): Promise<Record
   const creatorMembership = scope.createdBy != null
     ? await orgs.getMembership(scope.createdBy)
     : null;
-  if (creatorMembership?.organizationId !== scope.workflowOrgId) return {};
+  if (creatorMembership?.organizationId !== scope.evalflowOrgId) return {};
   const result: Record<string, string> = {};
-  for (const s of await orgs.listOrgSecrets(scope.workflowOrgId)) {
+  for (const s of await orgs.listOrgSecrets(scope.evalflowOrgId)) {
     result[s.name] = decryptValue(s.encryptedValue);
   }
   return result;
@@ -1590,36 +1590,36 @@ export async function registerRoutes(
       if (!user) return res.status(401).json({ error: "Not authenticated" });
       if (!user.membership) return res.status(403).json({ error: "Organization membership required" });
 
-      const { projectIds, workflowIds, evalSetIds, scheduleIds } = req.body;
+      const { projectIds, evalflowIds, evalSetIds, scheduleIds } = req.body;
       const orgId = user.membership.organizationId;
-      const moved = { projects: 0, workflows: 0, evalSets: 0, schedules: 0 };
+      const moved = { projects: 0, evalflows: 0, evalSets: 0, schedules: 0 };
 
-      // Move projects (and their child workflows)
+      // Move projects (and their child evalflows)
       if (Array.isArray(projectIds) && projectIds.length > 0) {
         for (const id of projectIds) {
           const project = await storage.getProject(id);
           if (project && project.ownerId === user.id && !project.organizationId) {
             await storage.updateProject(id, { organizationId: orgId });
             moved.projects++;
-            // Move child workflows too
-            const childWorkflows = await storage.getWorkflowsByProject(id);
-            for (const w of childWorkflows) {
+            // Move child evalflows too
+            const childEvalflows = await storage.getEvalflowsByProject(id);
+            for (const w of childEvalflows) {
               if (w.ownerId === user.id && !w.organizationId) {
-                await storage.updateWorkflow(w.id, { organizationId: orgId });
-                moved.workflows++;
+                await storage.updateEvalflow(w.id, { organizationId: orgId });
+                moved.evalflows++;
               }
             }
           }
         }
       }
 
-      // Move standalone workflows
-      if (Array.isArray(workflowIds) && workflowIds.length > 0) {
-        for (const id of workflowIds) {
-          const workflow = await storage.getWorkflow(id);
-          if (workflow && workflow.ownerId === user.id && !workflow.organizationId) {
-            await storage.updateWorkflow(id, { organizationId: orgId });
-            moved.workflows++;
+      // Move standalone evalflows
+      if (Array.isArray(evalflowIds) && evalflowIds.length > 0) {
+        for (const id of evalflowIds) {
+          const evalflow = await storage.getEvalflow(id);
+          if (evalflow && evalflow.ownerId === user.id && !evalflow.organizationId) {
+            await storage.updateEvalflow(id, { organizationId: orgId });
+            moved.evalflows++;
           }
         }
       }
@@ -1663,11 +1663,11 @@ export async function registerRoutes(
       }
       const projects = await storage.getProjectsByOwner(user.id);
 
-      // Add workflow counts
+      // Add evalflow counts
       const projectsWithCounts = await Promise.all(
         projects.map(async (project) => ({
           ...project,
-          workflowCount: await storage.countWorkflowsByProject(project.id),
+          evalflowCount: await storage.countEvalflowsByProject(project.id),
         }))
       );
 
@@ -1783,10 +1783,10 @@ export async function registerRoutes(
         return res.status(403).json({ error: "Not authorized to delete this project" });
       }
 
-      // Check if project has workflows
-      const workflowCount = await storage.countWorkflowsByProject(parseInt(id));
-      if (workflowCount > 0) {
-        return res.status(400).json({ error: `Cannot delete project with ${workflowCount} workflow(s). Delete workflows first.` });
+      // Check if project has evalflows
+      const evalflowCount = await storage.countEvalflowsByProject(parseInt(id));
+      if (evalflowCount > 0) {
+        return res.status(400).json({ error: `Cannot delete project with ${evalflowCount} evalflow(s). Delete evalflows first.` });
       }
 
       await storage.deleteProject(parseInt(id));
@@ -1797,65 +1797,65 @@ export async function registerRoutes(
     }
   });
 
-  // ==================== WORKFLOW ROUTES ====================
+  // ==================== EVALFLOW ROUTES ====================
 
-  app.get("/api/workflows", requireAuth, async (req, res) => {
+  app.get("/api/evalflows", requireAuth, async (req, res) => {
     try {
       const user = await getCurrentUser(req);
       if (!user) {
         return res.status(401).json({ error: "Not authenticated" });
       }
-      const ownWorkflows = await storage.getWorkflowsByOwner(user.id);
+      const ownEvalflows = await storage.getEvalflowsByOwner(user.id);
 
-      // Include org workflows if user is in an org
-      let orgWorkflows: typeof ownWorkflows = [];
+      // Include org evalflows if user is in an org
+      let orgEvalflows: typeof ownEvalflows = [];
       if (user.membership) {
-        const all = await storage.getWorkflowsByOrganization(user.membership.organizationId);
-        const ownIds = new Set(ownWorkflows.map(w => w.id));
-        orgWorkflows = all.filter(w => !ownIds.has(w.id));
+        const all = await storage.getEvalflowsByOrganization(user.membership.organizationId);
+        const ownIds = new Set(ownEvalflows.map(w => w.id));
+        orgEvalflows = all.filter(w => !ownIds.has(w.id));
       }
 
       // Attach the server's own authorization decision so the client doesn't have
       // to re-derive it (and risk getting it wrong): canSchedule gates the
-      // recurring-schedule UI, matching the schedule route's canScheduleWorkflow.
-      const withPerms = (list: typeof ownWorkflows) =>
-        list.map(w => ({ ...w, canSchedule: canScheduleWorkflow(user, w) }));
+      // recurring-schedule UI, matching the schedule route's canScheduleEvalflow.
+      const withPerms = (list: typeof ownEvalflows) =>
+        list.map(w => ({ ...w, canSchedule: canScheduleEvalflow(user, w) }));
 
       if (req.query.includePublic === "true") {
-        const publicWorkflows = await storage.getPublicWorkflows();
-        const seenIds = new Set([...ownWorkflows, ...orgWorkflows].map(w => w.id));
-        const merged = [...ownWorkflows, ...orgWorkflows, ...publicWorkflows.filter(w => !seenIds.has(w.id))];
+        const publicEvalflows = await storage.getPublicEvalflows();
+        const seenIds = new Set([...ownEvalflows, ...orgEvalflows].map(w => w.id));
+        const merged = [...ownEvalflows, ...orgEvalflows, ...publicEvalflows.filter(w => !seenIds.has(w.id))];
         return res.json(withPerms(merged));
       }
 
-      res.json(withPerms([...ownWorkflows, ...orgWorkflows]));
+      res.json(withPerms([...ownEvalflows, ...orgEvalflows]));
     } catch (error) {
-      console.error("Error fetching workflows:", error);
-      res.status(500).json({ error: "Failed to fetch workflows" });
+      console.error("Error fetching evalflows:", error);
+      res.status(500).json({ error: "Failed to fetch evalflows" });
     }
   });
 
-  app.get("/api/workflows/:id", requireAuth, async (req, res) => {
+  app.get("/api/evalflows/:id", requireAuth, async (req, res) => {
     try {
       const user = await getCurrentUser(req);
       if (!user) {
         return res.status(401).json({ error: "Not authenticated" });
       }
-      const workflow = await storage.getWorkflow(parseInt(req.params.id));
-      if (!workflow) {
-        return res.status(404).json({ error: "Workflow not found" });
+      const evalflow = await storage.getEvalflow(parseInt(req.params.id));
+      if (!evalflow) {
+        return res.status(404).json({ error: "Evalflow not found" });
       }
-      if (!canAccessResource(user, workflow)) {
+      if (!canAccessResource(user, evalflow)) {
         return res.status(403).json({ error: "Access denied" });
       }
-      res.json(workflow);
+      res.json(evalflow);
     } catch (error) {
-      console.error("Error fetching workflow:", error);
-      res.status(500).json({ error: "Failed to fetch workflow" });
+      console.error("Error fetching evalflow:", error);
+      res.status(500).json({ error: "Failed to fetch evalflow" });
     }
   });
 
-  app.post("/api/workflows", requireAuth, async (req, res) => {
+  app.post("/api/evalflows", requireAuth, async (req, res) => {
     try {
       const user = await getCurrentUser(req);
       if (!user) {
@@ -1882,21 +1882,21 @@ export async function registerRoutes(
       }
 
       if (config) {
-        const v = validateWorkflowConfig(config);
+        const v = validateEvalflowConfig(config);
         if (!v.valid) return res.status(400).json({ error: v.error });
       }
 
       if (visibility === "private" && user.plan === "basic") {
-        return res.status(403).json({ error: "Premium plan required for private workflows" });
+        return res.status(403).json({ error: "Premium plan required for private evalflows" });
       }
 
-      // Check workflow limits per project
+      // Check evalflow limits per project
       if (projectId) {
-        const workflowCount = await storage.countWorkflowsByProject(projectId);
-        const maxWorkflows = user.plan === "basic" ? 10 : 20;
+        const evalflowCount = await storage.countEvalflowsByProject(projectId);
+        const maxEvalflows = user.plan === "basic" ? 10 : 20;
 
-        if (workflowCount >= maxWorkflows) {
-          return res.status(403).json({ error: `Maximum ${maxWorkflows} workflows per project allowed for ${user.plan} plan` });
+        if (evalflowCount >= maxEvalflows) {
+          return res.status(403).json({ error: `Maximum ${maxEvalflows} evalflows per project allowed for ${user.plan} plan` });
         }
       }
 
@@ -1905,7 +1905,7 @@ export async function registerRoutes(
         return res.status(403).json({ error: "Not a member of this organization" });
       }
 
-      const workflow = await storage.createWorkflow({
+      const evalflow = await storage.createEvalflow({
         name: cleanName,
         description,
         ownerId: user.id,
@@ -1918,14 +1918,14 @@ export async function registerRoutes(
         config: config || {},
       });
 
-      res.json(workflow);
+      res.json(evalflow);
     } catch (error) {
-      console.error("Error creating workflow:", error);
-      res.status(500).json({ error: "Failed to create workflow" });
+      console.error("Error creating evalflow:", error);
+      res.status(500).json({ error: "Failed to create evalflow" });
     }
   });
 
-  app.patch("/api/workflows/:id", requireAuth, async (req, res) => {
+  app.patch("/api/evalflows/:id", requireAuth, async (req, res) => {
     try {
       const user = await getCurrentUser(req);
       if (!user) {
@@ -1933,21 +1933,21 @@ export async function registerRoutes(
       }
 
       const { id } = req.params;
-      const workflow = await storage.getWorkflow(parseInt(id));
+      const evalflow = await storage.getEvalflow(parseInt(id));
       
-      if (!workflow) {
-        return res.status(404).json({ error: "Workflow not found" });
+      if (!evalflow) {
+        return res.status(404).json({ error: "Evalflow not found" });
       }
 
       // Editing is owner/org only — a system admin has no special power over
-      // another user's workflow (deleting for moderation stays admin-capable).
-      if (!isOwnerOrOrgManager(user, workflow)) {
-        return res.status(403).json({ error: "Only the workflow's owner can edit it" });
+      // another user's evalflow (deleting for moderation stays admin-capable).
+      if (!isOwnerOrOrgManager(user, evalflow)) {
+        return res.status(403).json({ error: "Only the evalflow's owner can edit it" });
       }
 
       const { name, description, visibility, config, projectId, providerId, transport } = req.body;
       if (config) {
-        const v = validateWorkflowConfig(config);
+        const v = validateEvalflowConfig(config);
         if (!v.valid) return res.status(400).json({ error: v.error });
       }
       const updates: Record<string, unknown> = {};
@@ -1970,13 +1970,13 @@ export async function registerRoutes(
       }
       if (visibility) {
         if (visibility === "private" && user.plan === "basic") {
-          return res.status(403).json({ error: "Premium plan required for private workflows" });
+          return res.status(403).json({ error: "Premium plan required for private evalflows" });
         }
         updates.visibility = visibility;
       }
       if (projectId !== undefined) {
-        if (workflow.projectId) {
-          return res.status(400).json({ error: "Workflow is already attached to a project and cannot be reassigned" });
+        if (evalflow.projectId) {
+          return res.status(400).json({ error: "Evalflow is already attached to a project and cannot be reassigned" });
         }
         const project = await storage.getProject(projectId);
         if (!project) {
@@ -1988,41 +1988,41 @@ export async function registerRoutes(
         updates.projectId = projectId;
       }
 
-      const updated = await storage.updateWorkflow(parseInt(id), updates);
+      const updated = await storage.updateEvalflow(parseInt(id), updates);
       res.json(updated);
     } catch (error) {
-      console.error("Error updating workflow:", error);
-      res.status(500).json({ error: "Failed to update workflow" });
+      console.error("Error updating evalflow:", error);
+      res.status(500).json({ error: "Failed to update evalflow" });
     }
   });
 
-  app.patch("/api/workflows/:id/mainline", requireAuth, requirePrincipal, async (req, res) => {
+  app.patch("/api/evalflows/:id/mainline", requireAuth, requirePrincipal, async (req, res) => {
     try {
       const { id } = req.params;
       const { isMainline } = req.body;
       
-      const workflow = await storage.getWorkflow(parseInt(id));
-      if (!workflow) {
-        return res.status(404).json({ error: "Workflow not found" });
+      const evalflow = await storage.getEvalflow(parseInt(id));
+      if (!evalflow) {
+        return res.status(404).json({ error: "Evalflow not found" });
       }
 
-      if (isMainline && workflow.visibility === "private") {
-        return res.status(400).json({ error: "Mainline workflows must be public" });
+      if (isMainline && evalflow.visibility === "private") {
+        return res.status(400).json({ error: "Mainline evalflows must be public" });
       }
 
-      const updated = await storage.updateWorkflow(parseInt(id), { 
+      const updated = await storage.updateEvalflow(parseInt(id), { 
         isMainline,
-        visibility: isMainline ? "public" : workflow.visibility,
+        visibility: isMainline ? "public" : evalflow.visibility,
       });
       
       res.json(updated);
     } catch (error) {
-      console.error("Error updating workflow mainline:", error);
-      res.status(500).json({ error: "Failed to update workflow" });
+      console.error("Error updating evalflow mainline:", error);
+      res.status(500).json({ error: "Failed to update evalflow" });
     }
   });
 
-  app.delete("/api/workflows/:id", requireAuth, async (req, res) => {
+  app.delete("/api/evalflows/:id", requireAuth, async (req, res) => {
     try {
       const user = await getCurrentUser(req);
       if (!user) {
@@ -2030,51 +2030,51 @@ export async function registerRoutes(
       }
 
       const { id } = req.params;
-      const workflow = await storage.getWorkflow(parseInt(id));
+      const evalflow = await storage.getEvalflow(parseInt(id));
 
-      if (!workflow) {
-        return res.status(404).json({ error: "Workflow not found" });
+      if (!evalflow) {
+        return res.status(404).json({ error: "Evalflow not found" });
       }
 
-      if (!canEditResource(user, workflow)) {
-        return res.status(403).json({ error: "Not authorized to delete this workflow" });
+      if (!canEditResource(user, evalflow)) {
+        return res.status(403).json({ error: "Not authorized to delete this evalflow" });
       }
 
-      // Block deletion while an active schedule still points at this workflow —
+      // Block deletion while an active schedule still points at this evalflow —
       // otherwise it would be orphaned. Tell the user exactly what to do first.
-      const activeSchedules = await storage.countActiveSchedulesForWorkflow(parseInt(id));
+      const activeSchedules = await storage.countActiveSchedulesForEvalflow(parseInt(id));
       if (activeSchedules > 0) {
         return res.status(409).json({
-          error: `This workflow has ${activeSchedules} active schedule${activeSchedules === 1 ? "" : "s"}. Pause or delete ${activeSchedules === 1 ? "it" : "them"} first (Eval Jobs → Schedules), then delete the workflow.`,
+          error: `This evalflow has ${activeSchedules} active schedule${activeSchedules === 1 ? "" : "s"}. Pause or delete ${activeSchedules === 1 ? "it" : "them"} first (Eval Jobs → Schedules), then delete the evalflow.`,
         });
       }
 
-      await storage.deleteWorkflow(parseInt(id));
+      await storage.deleteEvalflow(parseInt(id));
       res.json({ success: true });
     } catch (error) {
-      console.error("Error deleting workflow:", error);
-      res.status(500).json({ error: "Failed to delete workflow" });
+      console.error("Error deleting evalflow:", error);
+      res.status(500).json({ error: "Failed to delete evalflow" });
     }
   });
 
-  // Clone a public workflow
-  app.post("/api/workflows/:id/clone", requireAuth, async (req, res) => {
+  // Clone a public evalflow
+  app.post("/api/evalflows/:id/clone", requireAuth, async (req, res) => {
     try {
       const user = await getCurrentUser(req);
       if (!user) {
         return res.status(401).json({ error: "Not authenticated" });
       }
 
-      const source = await storage.getWorkflow(parseInt(req.params.id));
+      const source = await storage.getEvalflow(parseInt(req.params.id));
       if (!source) {
-        return res.status(404).json({ error: "Workflow not found" });
+        return res.status(404).json({ error: "Evalflow not found" });
       }
 
       if (source.visibility !== "public" && source.ownerId !== user.id && !user.isAdmin) {
-        return res.status(403).json({ error: "Can only clone public workflows" });
+        return res.status(403).json({ error: "Can only clone public evalflows" });
       }
 
-      const cloned = await storage.createWorkflow({
+      const cloned = await storage.createEvalflow({
         name: `Clone of ${source.name}`,
         description: source.description,
         ownerId: user.id,
@@ -2086,8 +2086,8 @@ export async function registerRoutes(
 
       res.json(cloned);
     } catch (error) {
-      console.error("Error cloning workflow:", error);
-      res.status(500).json({ error: "Failed to clone workflow" });
+      console.error("Error cloning evalflow:", error);
+      res.status(500).json({ error: "Failed to clone evalflow" });
     }
   });
 
@@ -2352,12 +2352,12 @@ export async function registerRoutes(
         return res.status(401).json({ error: "Not authenticated" });
       }
       // Org managers additionally see (and can Extend) schedules on their org's
-      // workflows; regular members see only their own to avoid exposing other
+      // evalflows; regular members see only their own to avoid exposing other
       // members' schedule metadata.
       const isOrgManager = user.membership?.role === "owner" || user.membership?.role === "admin";
       const schedules = user.isAdmin
-        ? await storage.getAllEvalSchedulesWithWorkflow()
-        : await storage.getEvalSchedulesWithWorkflow(user.id, isOrgManager ? (user.membership?.organizationId ?? null) : null);
+        ? await storage.getAllEvalSchedulesWithEvalflow()
+        : await storage.getEvalSchedulesWithEvalflow(user.id, isOrgManager ? (user.membership?.organizationId ?? null) : null);
       // Server-computed UI flags + lifecycle status, so the client never offers an
       // action that would 403 and shows a consistent status badge:
       //  - canManage: owner-only run/resume (matches run-now/enable routes)
@@ -2365,12 +2365,12 @@ export async function registerRoutes(
       //  - status: inactive (expired) → paused (disabled) → active; expiringSoon
       //    is an active schedule within 14 days of expiry (amber warning).
       const withPerms = schedules.map(s => {
-        const wfRef = { ownerId: s.workflowOwnerId, organizationId: s.workflowOrganizationId };
+        const wfRef = { ownerId: s.evalflowOwnerId, organizationId: s.evalflowOrganizationId };
         return {
           ...s,
-          canManage: canScheduleWorkflow(user, wfRef),
+          canManage: canScheduleEvalflow(user, wfRef),
           canExtend: isOwnerOrOrgManager(user, wfRef),
-          dispatchBlocked: scheduleDispatchBlocked(s.workflowOrganizationId),
+          dispatchBlocked: scheduleDispatchBlocked(s.evalflowOrganizationId),
           ...deriveScheduleStatus(s.isEnabled, s.expiresAt),
         };
       });
@@ -2410,12 +2410,12 @@ export async function registerRoutes(
         return res.status(401).json({ error: "Not authenticated" });
       }
 
-      const { name, workflowId, evalSetId, scheduleType, cronExpression, timezone, runAt, maxRuns, organizationId } = req.body;
+      const { name, evalflowId, evalSetId, scheduleType, cronExpression, timezone, runAt, maxRuns, organizationId } = req.body;
       const region = req.body.region != null ? String(req.body.region) : null;
       const targetTier = req.body.targetTier != null ? String(req.body.targetTier) : null;
 
-      if (!name || !workflowId || !region || !targetTier) {
-        return res.status(400).json({ error: "Name, workflowId, region, and targetTier are required" });
+      if (!name || !evalflowId || !region || !targetTier) {
+        return res.status(400).json({ error: "Name, evalflowId, region, and targetTier are required" });
       }
       if (targetTier === "shared" || !["private", "team", "public"].includes(targetTier)) {
         return res.status(400).json({ error: targetTier === "shared" ? "Pooled shared dispatch is not available" : "Invalid targetTier" });
@@ -2428,17 +2428,17 @@ export async function registerRoutes(
         return res.status(400).json({ error: "region must be an active region" });
       }
 
-      // A recurring schedule runs the workflow repeatedly on the OWNER's bound
-      // secrets, so scheduling is restricted to the workflow's owner/creator — a
+      // A recurring schedule runs the evalflow repeatedly on the OWNER's bound
+      // secrets, so scheduling is restricted to the evalflow's owner/creator — a
       // system admin and org managers are NOT exempt, since that would spend the
       // owner's secrets. Applies to deferred one-time schedules here too; the
-      // always-open path is the separate immediate /api/workflows/:id/run route.
-      const workflow = await storage.getWorkflow(workflowId);
-      if (!workflow) {
-        return res.status(404).json({ error: "Workflow not found" });
+      // always-open path is the separate immediate /api/evalflows/:id/run route.
+      const evalflow = await storage.getEvalflow(evalflowId);
+      if (!evalflow) {
+        return res.status(404).json({ error: "Evalflow not found" });
       }
-      if (!canScheduleWorkflow(user, workflow)) {
-        return res.status(403).json({ error: "Only the workflow owner can schedule recurring evaluations" });
+      if (!canScheduleEvalflow(user, evalflow)) {
+        return res.status(403).json({ error: "Only the evalflow owner can schedule recurring evaluations" });
       }
 
       // Verify eval set
@@ -2455,14 +2455,14 @@ export async function registerRoutes(
 
       // Session-injection composition (spec §5): single source of truth is
       // sessionPoolViolation — same rule the run route and the scheduler tick
-      // enforce. (canScheduleWorkflow above already guarantees creator ==
+      // enforce. (canScheduleEvalflow above already guarantees creator ==
       // owner, so the dispatcher gate the helper deliberately omits holds.)
       {
-        const schedSessionReq = await detectSessionNeed(workflow);
+        const schedSessionReq = await detectSessionNeed(evalflow);
         if (schedSessionReq.kind === "need") {
-          const violation = sessionPoolViolation(targetTier as "private" | "team" | "public" | "shared", workflow, { organizationId: user.membership?.organizationId ?? null });
+          const violation = sessionPoolViolation(targetTier as "private" | "team" | "public" | "shared", evalflow, { organizationId: user.membership?.organizationId ?? null });
           if (violation) {
-            return res.status(403).json({ error: `Credential-injected workflows: ${violation}` });
+            return res.status(403).json({ error: `Credential-injected evalflows: ${violation}` });
           }
         }
       }
@@ -2470,7 +2470,7 @@ export async function registerRoutes(
       // Same guaranteed-failure gate as the run route: a schedule referencing an
       // unconfigured secret would emit a doomed job on every tick.
       {
-        const missing = await missingSecretNames(sessionScopeForWorkflow(workflow), resolvableSecretSources([workflow.config, evalSet?.config]));
+        const missing = await missingSecretNames(sessionScopeForEvalflow(evalflow), resolvableSecretSources([evalflow.config, evalSet?.config]));
         if (missing.length > 0) {
           return res.status(400).json({ error: MISSING_SECRETS_MSG(missing) });
         }
@@ -2498,7 +2498,7 @@ export async function registerRoutes(
 
       const schedule = await storage.createEvalSchedule({
         name,
-        workflowId,
+        evalflowId,
         evalSetId,
         region,
         targetTier: targetTier as "private" | "team" | "public",
@@ -2544,7 +2544,7 @@ export async function registerRoutes(
 
       // Same validation as schedule create (spec §4/§5) for the pool being
       // requested — applied whenever the field is present, before the
-      // owner-gate below (which needs the workflow to check session composition).
+      // owner-gate below (which needs the evalflow to check session composition).
       if (targetTier !== undefined) {
         if (targetTier === "shared" || !["private", "team", "public"].includes(targetTier)) {
           return res.status(400).json({ error: targetTier === "shared" ? "Pooled shared dispatch is not available" : "Invalid targetTier" });
@@ -2562,7 +2562,7 @@ export async function registerRoutes(
 
       // Enabling, rescheduling, advancing nextRunAt, changing the run cap, or
       // repointing the target pool all affect how/where runs execute on the
-      // workflow OWNER's secrets, so they need owner rights (a system admin
+      // evalflow OWNER's secrets, so they need owner rights (a system admin
       // isn't exempt). Gate on an ACTUAL change, not mere presence — the Edit
       // dialog resends cron/maxRuns even on a name-only edit, and
       // disable/rename must stay open to the schedule's manager for cleanup.
@@ -2573,12 +2573,12 @@ export async function registerRoutes(
       const regionChanged = region !== undefined && region !== schedule.region;
       const tierChanged = targetTier !== undefined && targetTier !== schedule.targetTier;
       if (wantsEnable || cronChanged || capChanged || nextRunChanged || regionChanged || tierChanged) {
-        const wf = schedule.workflowId != null ? await storage.getWorkflow(schedule.workflowId) : undefined;
+        const wf = schedule.evalflowId != null ? await storage.getEvalflow(schedule.evalflowId) : undefined;
         if (!wf) {
-          return res.status(409).json({ error: "This schedule's workflow was deleted, so it can't be resumed or rescheduled. Delete the schedule instead." });
+          return res.status(409).json({ error: "This schedule's evalflow was deleted, so it can't be resumed or rescheduled. Delete the schedule instead." });
         }
-        if (!canScheduleWorkflow(user, wf)) {
-          return res.status(403).json({ error: "Only the workflow owner can enable or reschedule this schedule" });
+        if (!canScheduleEvalflow(user, wf)) {
+          return res.status(403).json({ error: "Only the evalflow owner can enable or reschedule this schedule" });
         }
         // Session-injection composition (spec §5): re-check against the
         // EFFECTIVE tier this update leaves the schedule with — on a tier
@@ -2598,7 +2598,7 @@ export async function registerRoutes(
         // fixing the very thing they came for.
         if (wantsEnable) {
           const schedEvalSet = schedule.evalSetId != null ? await storage.getEvalSet(schedule.evalSetId) : undefined;
-          const missing = await missingSecretNames(sessionScopeForWorkflow(wf), resolvableSecretSources([wf.config, schedEvalSet?.config]));
+          const missing = await missingSecretNames(sessionScopeForEvalflow(wf), resolvableSecretSources([wf.config, schedEvalSet?.config]));
           if (missing.length > 0) {
             return res.status(400).json({ error: MISSING_SECRETS_MSG(missing) });
           }
@@ -2609,7 +2609,7 @@ export async function registerRoutes(
           if (schedSessionReq.kind === "need") {
             const violation = sessionPoolViolation(effectiveTier, wf, { organizationId: user.membership?.organizationId ?? null });
             if (violation) {
-              return res.status(403).json({ error: `Credential-injected workflows: ${violation}. Change the schedule's tier before re-enabling.` });
+              return res.status(403).json({ error: `Credential-injected evalflows: ${violation}. Change the schedule's tier before re-enabling.` });
             }
           }
         }
@@ -2701,73 +2701,73 @@ export async function registerRoutes(
         return res.status(403).json({ error: "Access denied" });
       }
 
-      // Merge workflow + evalSet configs
-      if (schedule.workflowId == null || schedule.evalSetId == null) {
-        return res.status(404).json({ error: "Schedule references a deleted workflow or eval set" });
+      // Merge evalflow + evalSet configs
+      if (schedule.evalflowId == null || schedule.evalSetId == null) {
+        return res.status(404).json({ error: "Schedule references a deleted evalflow or eval set" });
       }
-      const workflow = await storage.getWorkflow(schedule.workflowId);
-      if (!workflow) {
-        return res.status(404).json({ error: "Schedule references a deleted workflow" });
+      const evalflow = await storage.getEvalflow(schedule.evalflowId);
+      if (!evalflow) {
+        return res.status(404).json({ error: "Schedule references a deleted evalflow" });
       }
-      // run-now fires a job on the workflow OWNER's secrets, so it needs the same
+      // run-now fires a job on the evalflow OWNER's secrets, so it needs the same
       // owner-only gate as scheduling — a system admin isn't exempt.
-      if (!canScheduleWorkflow(user, workflow)) {
-        return res.status(403).json({ error: "Only the workflow owner can run this schedule" });
+      if (!canScheduleEvalflow(user, evalflow)) {
+        return res.status(403).json({ error: "Only the evalflow owner can run this schedule" });
       }
       // Same absence arm as the run route, and the same widening as the
       // scheduler tick: the guard keys on what the RESULTING JOB needs, not on
-      // who owns the workflow. No org provider ⇒ an org workflow's secrets
-      // can't be fenced, AND a team-tier job (legal on a personal workflow —
-      // an org member may schedule their own workflow onto their org's agents)
+      // who owns the evalflow. No org provider ⇒ an org evalflow's secrets
+      // can't be fenced, AND a team-tier job (legal on a personal evalflow —
+      // an org member may schedule their own evalflow onto their org's agents)
       // would be stamped creator_org_id NULL and stay unclaimable by the team
       // arm forever. Don't create the job at all (§7).
-      if ((workflow.organizationId != null || schedule.targetTier === "team") && !getOrganizations()) {
+      if ((evalflow.organizationId != null || schedule.targetTier === "team") && !getOrganizations()) {
         return res.status(501).json({ error: "Organizations feature not enabled" });
       }
       const evalSet = await storage.getEvalSet(schedule.evalSetId);
 
-      // run-now fires a job on the workflow OWNER's secrets, exactly
+      // run-now fires a job on the evalflow OWNER's secrets, exactly
       // like the scheduler tick — so it takes the same owner-dispatched session
-      // path. A workflow whose platform.setup references login-class secrets is
+      // path. A evalflow whose platform.setup references login-class secrets is
       // Core-minted (never handed durable credentials to the agent); a
       // split-class pair is rejected outright rather than leaking the
       // runtime-class secret. No cross-user dispatch-trust gates here: run-now
-      // is canScheduleWorkflow-gated (owner/creator only).
-      const jobConfig = mergeEvalConfig(workflow.config, evalSet?.config);
+      // is canScheduleEvalflow-gated (owner/creator only).
+      const jobConfig = mergeEvalConfig(evalflow.config, evalSet?.config);
       // Same TOCTOU as the scheduler tick: the schedule's targetTier was
-      // validated at write time, but the workflow's secrets are mutable — a
+      // validated at write time, but the evalflow's secrets are mutable — a
       // later-added login-class secret makes a public/team pool invalid. Check
       // with the PURE detector BEFORE stampOwnerSession (which pre-warms a
       // broker mint) and reject interactively instead of minting + queueing an
       // unclaimable job.
-      const runNowSessionReq = await detectSessionNeed(workflow);
+      const runNowSessionReq = await detectSessionNeed(evalflow);
       if (runNowSessionReq.kind === "need") {
-        const violation = sessionPoolViolation(schedule.targetTier, workflow, { organizationId: user.membership?.organizationId ?? null });
+        const violation = sessionPoolViolation(schedule.targetTier, evalflow, { organizationId: user.membership?.organizationId ?? null });
         if (violation) {
           return res.status(400).json({ error: `This schedule's pool is no longer valid: ${violation}. Edit the schedule's tier first.` });
         }
       }
       // Secrets can be deleted after the schedule was created — re-check.
       {
-        const missing = await missingSecretNames(sessionScopeForWorkflow(workflow), resolvableSecretSources([workflow.config, evalSet?.config]));
+        const missing = await missingSecretNames(sessionScopeForEvalflow(evalflow), resolvableSecretSources([evalflow.config, evalSet?.config]));
         if (missing.length > 0) {
           return res.status(400).json({ error: MISSING_SECRETS_MSG(missing) });
         }
       }
-      const stamp = await stampOwnerSession(workflow, jobConfig as Record<string, unknown>, runNowSessionReq);
+      const stamp = await stampOwnerSession(evalflow, jobConfig as Record<string, unknown>, runNowSessionReq);
       if (stamp.kind === "misconfigured") {
         return res.status(400).json({ error: stamp.reason });
       }
 
-      const provider = await storage.getProvider(workflow.providerId);
-      const baseSnapshot = buildJobSnapshot(workflow, evalSet, provider, user.plan);
+      const provider = await storage.getProvider(evalflow.providerId);
+      const baseSnapshot = buildJobSnapshot(evalflow, evalSet, provider, user.plan);
       const snapshot = stamp.snapshotInjection
         ? { ...baseSnapshot, sessionInjection: stamp.snapshotInjection }
         : baseSnapshot;
       const job = await storage.createEvalJob({
         scheduleId: schedule.id,
         triggerType: 1, // scheduled (run-now off an existing schedule)
-        workflowId: schedule.workflowId,
+        evalflowId: schedule.evalflowId,
         evalSetId: schedule.evalSetId,
         createdBy: user.id,
         // R2 (§11): freeze the creator's org here, from the seam-resolved membership.
@@ -2790,8 +2790,8 @@ export async function registerRoutes(
     }
   });
 
-  // Extend a schedule's 90-day lifecycle. Owner OR org manager of the workflow
-  // (extending resumes/prolongs runs on the workflow's secrets). Re-activates an
+  // Extend a schedule's 90-day lifecycle. Owner OR org manager of the evalflow
+  // (extending resumes/prolongs runs on the evalflow's secrets). Re-activates an
   // already-expired schedule by pushing expiresAt back into the future.
   app.post("/api/eval-schedules/:id/extend", requireAuth, async (req, res) => {
     try {
@@ -2802,12 +2802,12 @@ export async function registerRoutes(
       const schedule = await storage.getEvalSchedule(scheduleId);
       if (!schedule) return res.status(404).json({ error: "Schedule not found" });
 
-      const workflow = schedule.workflowId != null ? await storage.getWorkflow(schedule.workflowId) : undefined;
-      if (!workflow) {
-        return res.status(409).json({ error: "This schedule's workflow was deleted, so it can't be extended. Delete the schedule instead." });
+      const evalflow = schedule.evalflowId != null ? await storage.getEvalflow(schedule.evalflowId) : undefined;
+      if (!evalflow) {
+        return res.status(409).json({ error: "This schedule's evalflow was deleted, so it can't be extended. Delete the schedule instead." });
       }
-      if (!isOwnerOrOrgManager(user, workflow)) {
-        return res.status(403).json({ error: "Only the workflow's owner or org can extend this schedule" });
+      if (!isOwnerOrOrgManager(user, evalflow)) {
+        return res.status(403).json({ error: "Only the evalflow's owner or org can extend this schedule" });
       }
 
       const scheduleUpdates: Record<string, unknown> = {
@@ -4081,7 +4081,7 @@ export async function registerRoutes(
       // already handles it) rather than silently dropping the result.
       if (results && !jobError && job.evalAgentId != null) {
         // Attribute the result to the provider snapshotted on the job at creation —
-        // not the live workflow, which may have been re-pointed since. Fall back to a
+        // not the live evalflow, which may have been re-pointed since. Fall back to a
         // default provider only for legacy jobs with no snapshot.
         let providerId = job.snapshot?.provider?.id;
         if (!providerId) {
@@ -4195,7 +4195,7 @@ export async function registerRoutes(
         // A never-claimed pooled job (siteId null) ran nowhere — skip the
         // synthetic row rather than poisoning the site metrics dimension.
         if (job && job.siteId != null) {
-          // Attribute to the snapshotted provider (immutable), not the live workflow.
+          // Attribute to the snapshotted provider (immutable), not the live evalflow.
           const providers = await storage.getAllProviders();
           const providerId = job.snapshot?.provider?.id || providers[0]?.id;
           if (providerId) {
@@ -4365,18 +4365,18 @@ export async function registerRoutes(
         return res.status(403).json({ error: "Secrets only available for running jobs" });
       }
 
-      // Secrets follow ownership of the workflow: an ORG-owned workflow spends the
+      // Secrets follow ownership of the evalflow: an ORG-owned evalflow spends the
       // ORG's secrets (so org co-workers can run it without touching anyone's
-      // personal key); a PERSONAL workflow spends its owner's personal secrets.
+      // personal key); a PERSONAL evalflow spends its owner's personal secrets.
       // This is what makes org-member run/extend safe — they never spend an
       // individual's personal credentials.
       const decrypted: Record<string, string> = {};
-      const jobWorkflow = auth.job.workflowId != null ? await storage.getWorkflow(auth.job.workflowId) : undefined;
+      const jobEvalflow = auth.job.evalflowId != null ? await storage.getEvalflow(auth.job.evalflowId) : undefined;
 
-      if (jobWorkflow?.organizationId) {
-        // Org workflow → org secrets only. orgRuntimeSecretsForJob fences by the
+      if (jobEvalflow?.organizationId) {
+        // Org evalflow → org secrets only. orgRuntimeSecretsForJob fences by the
         // job creator's org membership (resolved through the vox.organizations
-        // seam), so a non-member running a *public* org workflow deliberately
+        // seam), so a non-member running a *public* org evalflow deliberately
         // gets no secrets (never leak org creds to outsiders) — such a run
         // simply fails at execution if it needs them.
         // Named `orgRuntime`, deliberately NOT `orgSecrets`: that identifier is
@@ -4385,9 +4385,9 @@ export async function registerRoutes(
         // is a false positive in that scan and, worse, reads like a table import.
         const orgRuntime = await orgRuntimeSecretsForJob(parseInt(jobId));
         Object.assign(decrypted, orgRuntime);
-        console.log(`[Secrets] Job ${jobId}: org workflow → ${Object.keys(orgRuntime).length} org secret(s)`);
+        console.log(`[Secrets] Job ${jobId}: org evalflow → ${Object.keys(orgRuntime).length} org secret(s)`);
       } else {
-        // Personal workflow → the owner's personal secrets.
+        // Personal evalflow → the owner's personal secrets.
         const userSecrets = await storage.getSecretsForJob(parseInt(jobId));
         for (const s of userSecrets) {
           try {
@@ -4396,7 +4396,7 @@ export async function registerRoutes(
             console.error(`[Secrets] Failed to decrypt secret ${s.name} for job ${jobId}:`, err instanceof Error ? err.message : err);
           }
         }
-        console.log(`[Secrets] Job ${jobId}: personal workflow → ${userSecrets.length} personal secret(s)`);
+        console.log(`[Secrets] Job ${jobId}: personal evalflow → ${userSecrets.length} personal secret(s)`);
       }
 
       res.json(decrypted);
@@ -4429,14 +4429,14 @@ export async function registerRoutes(
 
       // HIGH-2 (TOCTOU): the need, the mint scope, and the trust context are ALL
       // derived from the job's IMMUTABLE stamped snapshot — never the live
-      // workflow. An owner editing the workflow (or its login-class secrets)
+      // evalflow. An owner editing the evalflow (or its login-class secrets)
       // after dispatch cannot change what a claimed job is allowed to receive,
       // nor cause a different account's session to be minted for an agent that
       // was authorized against the original credentials.
       const snap = auth.job.snapshot;
       const injection = snap?.sessionInjection;
-      const snapWorkflow = snap?.workflow;
-      if (!injection || !snapWorkflow) {
+      const snapEvalflow = snap?.evalflow;
+      if (!injection || !snapEvalflow) {
         // No session was stamped at dispatch → this job never carried a
         // Core-minted login. Never fall back to minting from live data.
         return res.json({ required: false });
@@ -4448,8 +4448,8 @@ export async function registerRoutes(
       const ownerMembership = (await getOrganizations()?.getMembership(evalAgentToken.createdBy)) ?? null;
       const serveJob = {
         targetTokenId: auth.job.targetTokenId ?? null,
-        workflowOwnerId: snapWorkflow.ownerId ?? null,
-        workflowOrgId: snapWorkflow.organizationId ?? null,
+        evalflowOwnerId: snapEvalflow.ownerId ?? null,
+        evalflowOrgId: snapEvalflow.organizationId ?? null,
         consent: snap?.credentialConsent === true,
       };
       const serveToken = { id: evalAgentToken.id, createdBy: evalAgentToken.createdBy };
@@ -4465,7 +4465,7 @@ export async function registerRoutes(
         emailSecret: injection.emailSecret,
         passwordSecret: injection.passwordSecret,
       };
-      const scope = sessionScopeForWorkflow({ ownerId: snapWorkflow.ownerId, organizationId: snapWorkflow.organizationId ?? null });
+      const scope = sessionScopeForEvalflow({ ownerId: snapEvalflow.ownerId, organizationId: snapEvalflow.organizationId ?? null });
 
       const session = await storage.getWebSession(scope, need.platformId, credentialKeyFor(need));
       const fresh = session?.status === "ready" && session.expiresAt &&
@@ -4524,7 +4524,7 @@ export async function registerRoutes(
   // Trusted restful.* execution (design 2026-09-21 §5): the daemon asks Core to
   // run the job's REST call-trigger; Core resolves the template from the FROZEN
   // snapshot (never caller data — TOCTOU, same rule as the session endpoint),
-  // decrypts the referenced secrets in the workflow-ownership scope (brokered
+  // decrypts the referenced secrets in the evalflow-ownership scope (brokered
   // classes included: this path is Core→broker only, nothing reaches the agent
   // but the sanitized result), and dispatches to a live `restful` broker.
   // The caller may supply ONLY whitelisted variables (phoneNumber).
@@ -4545,22 +4545,22 @@ export async function registerRoutes(
       }
 
       const snap = auth.job.snapshot;
-      const snapWorkflow = snap?.workflow;
-      const trigger = (snapWorkflow?.config as Record<string, unknown> | undefined)?.restfulTrigger;
-      if (!snapWorkflow || trigger === undefined) {
+      const snapEvalflow = snap?.evalflow;
+      const trigger = (snapEvalflow?.config as Record<string, unknown> | undefined)?.restfulTrigger;
+      if (!snapEvalflow || trigger === undefined) {
         return res.status(400).json({ error: "no restfulTrigger on this job" });
       }
       // Defense against malformed legacy snapshots — same shape rule as creation.
       const shape = validateRestfulTrigger(trigger);
       if (!shape.valid) return res.status(400).json({ error: shape.error });
 
-      // Secret scope follows workflow ownership (org → fenced org rows; personal
+      // Secret scope follows evalflow ownership (org → fenced org rows; personal
       // → owner rows). ALL classes resolve here — Core-only path.
       const secretMap: Record<string, string> = {};
-      if (snapWorkflow.organizationId != null) {
+      if (snapEvalflow.organizationId != null) {
         Object.assign(secretMap, await orgAllSecretsForTrustedExec(auth.job.id));
       } else {
-        for (const s of await storage.getSecretsByUserId(snapWorkflow.ownerId)) {
+        for (const s of await storage.getSecretsByUserId(snapEvalflow.ownerId)) {
           try { secretMap[s.name] = decryptValue(s.encryptedValue); } catch { /* skip undecryptable row */ }
         }
       }
@@ -4592,15 +4592,15 @@ export async function registerRoutes(
     }
   });
 
-  // Create eval jobs from workflow (triggered by user)
-  app.post("/api/workflows/:workflowId/run", requireAuth, async (req, res) => {
+  // Create eval jobs from evalflow (triggered by user)
+  app.post("/api/evalflows/:evalflowId/run", requireAuth, async (req, res) => {
     try {
       const user = await getCurrentUser(req);
       if (!user) {
         return res.status(401).json({ error: "Not authenticated" });
       }
 
-      const { workflowId } = req.params;
+      const { evalflowId } = req.params;
       const { evalSetId } = req.body;
       // Pooled targeting: region baseId + tier (spec §5). Exactly one of
       // targetTokenId / (region+targetTier) may be supplied.
@@ -4614,42 +4614,42 @@ export async function registerRoutes(
         return res.status(400).json({ error: "Provide either targetTokenId or region+targetTier, not both" });
       }
 
-      const workflow = await storage.getWorkflow(parseInt(workflowId));
+      const evalflow = await storage.getEvalflow(parseInt(evalflowId));
       
-      if (!workflow) {
-        return res.status(404).json({ error: "Workflow not found" });
+      if (!evalflow) {
+        return res.status(404).json({ error: "Evalflow not found" });
       }
 
-      // Public workflows can be run by anyone; a private workflow only by its
-      // owner or, for an org workflow, its org managers (no admin / principal-
-      // fellow bypass — see canRunWorkflow).
-      if (!canRunWorkflow(user, workflow)) {
-        return res.status(403).json({ error: "Not authorized to run this workflow" });
+      // Public evalflows can be run by anyone; a private evalflow only by its
+      // owner or, for an org evalflow, its org managers (no admin / principal-
+      // fellow bypass — see canRunEvalflow).
+      if (!canRunEvalflow(user, evalflow)) {
+        return res.status(403).json({ error: "Not authorized to run this evalflow" });
       }
 
-      // A phone-transport workflow needs a call-establishment mechanism (design
+      // A phone-transport evalflow needs a call-establishment mechanism (design
       // §4): refuse at the source rather than create a job the daemon must fail.
-      if (workflow.transport === "phone") {
-        const wfConfig = (workflow.config ?? {}) as Record<string, unknown>;
+      if (evalflow.transport === "phone") {
+        const wfConfig = (evalflow.config ?? {}) as Record<string, unknown>;
         if (wfConfig.phoneDial === undefined && wfConfig.restfulTrigger === undefined) {
-          return res.status(400).json({ error: "phone workflow needs phoneDial or restfulTrigger in its config" });
+          return res.status(400).json({ error: "phone evalflow needs phoneDial or restfulTrigger in its config" });
         }
       }
 
-      // An org-owned workflow is unrunnable while organizations are unavailable:
+      // An org-owned evalflow is unrunnable while organizations are unavailable:
       // its secret fence resolves org secrets through the seam and would return
       // {}, so the job would be created only to fail on unresolved placeholders —
-      // a persistent write caused by absence. A PUBLIC org workflow is runnable
+      // a persistent write caused by absence. A PUBLIC org evalflow is runnable
       // by anyone, so this cannot be left to the org-membership checks below.
       // Refuse at the source instead, before any job/escrow/mint write (§7).
       //
-      // A TEAM-TIER request is refused here too, whoever owns the workflow: the
+      // A TEAM-TIER request is refused here too, whoever owns the evalflow: the
       // job's creator_org_id would freeze as NULL and the team claim arm
       // (`ej.creator_org_id = $n`) could never match it, even after the provider
       // returns. The `hasOrg(user)` check further down would also refuse it (as
       // a 400), but this arm names the real cause and fires before the daily-cap
       // count, the eval-set reads, and any escrow hold.
-      if ((workflow.organizationId != null || targetTier === "team") && !getOrganizations()) {
+      if ((evalflow.organizationId != null || targetTier === "team") && !getOrganizations()) {
         return res.status(501).json({ error: "Organizations feature not enabled" });
       }
 
@@ -4680,23 +4680,23 @@ export async function registerRoutes(
         return res.status(403).json({ error: "Access denied to eval set" });
       }
 
-      // does this workflow need a Core-minted login session? True iff
+      // does this evalflow need a Core-minted login session? True iff
       // its platform.setup references login-class secrets (owner opt-in). A
       // split-class pair (one login, one runtime) is rejected outright — never
       // fall back to a path that would leak the runtime-class credential.
-      const scope = sessionScopeForWorkflow(workflow);
-      const sessionReq = await detectSessionNeed(workflow);
+      const scope = sessionScopeForEvalflow(evalflow);
+      const sessionReq = await detectSessionNeed(evalflow);
       if (sessionReq.kind === "misconfigured") {
         return res.status(400).json({ error: sessionReq.reason });
       }
       const sessionNeed: SessionNeed | null = sessionReq.kind === "need" ? sessionReq.need : null;
 
-      // Enumerate every ${secrets.NAME} the workflow + eval set reference, with
+      // Enumerate every ${secrets.NAME} the evalflow + eval set reference, with
       // class + presence. Drives the Brokered-misuse gate here and the
       // Runtime-on-shared consent gate in the targeted branch below.
       const classified = await classifyReferencedSecrets(
         scope,
-        collectSecretRefs([workflow.config, evalSet.config]),
+        collectSecretRefs([evalflow.config, evalSet.config]),
       );
       // A Brokered secret is only meaningful as a platform.setup login credential.
       // Any other reference is a misconfiguration — reject with a clear message
@@ -4717,7 +4717,7 @@ export async function registerRoutes(
       // Narrowed to the fields the daemon actually resolves, so the gate and the
       // daemon agree by construction. Filters the already-computed `classified`
       // rather than re-querying.
-      const resolvableRefs = collectSecretRefs(resolvableSecretSources([workflow.config, evalSet.config]));
+      const resolvableRefs = collectSecretRefs(resolvableSecretSources([evalflow.config, evalSet.config]));
       const missingSecrets = classified
         .filter((c) => !c.present && resolvableRefs.has(c.name))
         .map((c) => c.name);
@@ -4762,7 +4762,7 @@ export async function registerRoutes(
             runtimeConsentRecorded = true;
           }
           const authz = await marketplace.authorizeDispatch(user.id, token.id, {
-            workflowId: parseInt(workflowId, 10),
+            evalflowId: parseInt(evalflowId, 10),
             evalSetId: evalSetId ?? null,
             region: token.siteId,
             createdBy: user.id,
@@ -4779,16 +4779,16 @@ export async function registerRoutes(
           if (!decision.ok) return res.status(403).json({ error: "Not allowed to dispatch to this agent" });
           // Credential-trust gate for a session-injected job dispatched to a
           // free-tier (private/team/public) token: the agent must belong to the
-          // workflow owner or share the workflow's org — otherwise the minted
+          // evalflow owner or share the evalflow's org — otherwise the minted
           // session (the OWNER's test-account cookies) would reach a token the
           // serve gate will refuse anyway (a targeted public stranger). Mirror
           // isSessionServable's owner/team arms; the attested-shared arm is the
           // separate `shared` branch above.
           if (sessionNeed) {
-            const ownerTrusted = token.createdBy === workflow.ownerId
-              || (workflow.organizationId != null && sameOrg({ organizationId: ownerMembership?.organizationId ?? null }, { organizationId: workflow.organizationId }));
+            const ownerTrusted = token.createdBy === evalflow.ownerId
+              || (evalflow.organizationId != null && sameOrg({ organizationId: ownerMembership?.organizationId ?? null }, { organizationId: evalflow.organizationId }));
             if (!ownerTrusted) {
-              return res.status(403).json({ error: "Credential-injected jobs can only be dispatched to the workflow owner's or org's agents, or to a shared agent with consent" });
+              return res.status(403).json({ error: "Credential-injected jobs can only be dispatched to the evalflow owner's or org's agents, or to a shared agent with consent" });
             }
           }
         }
@@ -4796,17 +4796,17 @@ export async function registerRoutes(
         targeting = token.id;
       } else {
         // Untargeted (region-pool) dispatch. A session-injected job here must
-        // only land on the workflow owner's OWN agents (enforced in the claim
+        // only land on the evalflow owner's OWN agents (enforced in the claim
         // SQL: public strangers are excluded from session jobs). Reject up front
         // when the runner is neither the owner nor an org co-member — otherwise a
-        // stranger running a PUBLIC login workflow could pull the owner's minted
+        // stranger running a PUBLIC login evalflow could pull the owner's minted
         // test-account session. Targeting a shared agent (with consent) is the
         // only cross-user path, handled in the targeted branch above.
         if (sessionNeed) {
-          const isOwner = workflow.ownerId === user.id;
-          const isTeam = workflow.organizationId != null && sameOrg({ organizationId: user.membership?.organizationId ?? null }, { organizationId: workflow.organizationId });
+          const isOwner = evalflow.ownerId === user.id;
+          const isTeam = evalflow.organizationId != null && sameOrg({ organizationId: user.membership?.organizationId ?? null }, { organizationId: evalflow.organizationId });
           if (!isOwner && !isTeam) {
-            return res.status(403).json({ error: "Credential-injected workflows can only be run untargeted by the owner or an org member; dispatch to a shared agent with consent to run it elsewhere" });
+            return res.status(403).json({ error: "Credential-injected evalflows can only be run untargeted by the owner or an org member; dispatch to a shared agent with consent to run it elsewhere" });
           }
         }
         if (!region || !targetTier) {
@@ -4828,20 +4828,20 @@ export async function registerRoutes(
         // Session-injection composition (spec §5): single source of truth is
         // sessionPoolViolation — public pools can never serve a session job
         // (the serve gate refuses strangers post-claim), and a team pool needs
-        // the workflow to belong to the dispatcher's org. (The owner-or-org
-        // guard above separately limits WHO may dispatch a session workflow
+        // the evalflow to belong to the dispatcher's org. (The owner-or-org
+        // guard above separately limits WHO may dispatch a session evalflow
         // untargeted; the helper deliberately does not encode that.)
         if (sessionNeed) {
-          const violation = sessionPoolViolation(targetTier as "private" | "team" | "public" | "shared", workflow, { organizationId: user.membership?.organizationId ?? null });
+          const violation = sessionPoolViolation(targetTier as "private" | "team" | "public" | "shared", evalflow, { organizationId: user.membership?.organizationId ?? null });
           if (violation) {
-            return res.status(403).json({ error: `Credential-injected workflows: ${violation}` });
+            return res.status(403).json({ error: `Credential-injected evalflows: ${violation}` });
           }
         }
         jobRegion = null; // pooled: site stamped at claim
       }
 
-      const provider = await storage.getProvider(workflow.providerId);
-      const baseSnapshot = buildJobSnapshot(workflow, evalSet, provider, user.plan);
+      const provider = await storage.getProvider(evalflow.providerId);
+      const baseSnapshot = buildJobSnapshot(evalflow, evalSet, provider, user.plan);
       const snapshot = {
         ...baseSnapshot,
         ...(settlementContext !== undefined ? { settlementContext } : {}),
@@ -4849,7 +4849,7 @@ export async function registerRoutes(
         ...(runtimeConsentRecorded ? { runtimeSecretConsent: true } : {}),
         // Immutable session-injection stamp: the /session endpoint reads the need
         // (which login secrets to mint from) and the trust context from HERE, not
-        // the live workflow — an owner editing the workflow post-dispatch can't
+        // the live evalflow — an owner editing the evalflow post-dispatch can't
         // change what a claimed job is allowed to receive (HIGH-2 TOCTOU).
         ...(sessionNeed
           ? { sessionInjection: { platformId: sessionNeed.platformId, emailSecret: sessionNeed.emailSecret, passwordSecret: sessionNeed.passwordSecret } }
@@ -4858,11 +4858,11 @@ export async function registerRoutes(
       let job;
       try {
         // jobConfig assembly lives inside this try (not before it): mergeEvalConfig
-        // throws synchronously on conflicting shared workflow/eval-set keys, and if a
+        // throws synchronously on conflicting shared evalflow/eval-set keys, and if a
         // shared-tier authorizeDispatch above already placed an escrow hold, that throw
         // must still hit the catch below so voidDispatch runs — otherwise the hold leaks
         // until the 26h reaper.
-        const jobConfig = mergeEvalConfig(workflow.config, evalSet.config);
+        const jobConfig = mergeEvalConfig(evalflow.config, evalSet.config);
         delete (jobConfig as Record<string, unknown>).sessionInjection; // server-stamped only
         if (sessionNeed) {
           (jobConfig as Record<string, unknown>).sessionInjection = { platformId: sessionNeed.platformId };
@@ -4871,8 +4871,8 @@ export async function registerRoutes(
           void ensureSession(scope, sessionNeed);
         }
         job = await storage.createEvalJob({
-          workflowId: parseInt(workflowId),
-          triggerType: 2, // manual (Run Workflow)
+          evalflowId: parseInt(evalflowId),
+          triggerType: 2, // manual (Run Evalflow)
           evalSetId,
           createdBy: user.id,
           // R2 (§11): freeze the creator's org here, from the seam-resolved membership.
@@ -4908,21 +4908,21 @@ export async function registerRoutes(
         job,
       });
     } catch (error) {
-      console.error("Error running workflow:", error);
-      res.status(500).json({ error: "Failed to run workflow" });
+      console.error("Error running evalflow:", error);
+      res.status(500).json({ error: "Failed to run evalflow" });
     }
   });
 
-  // Targetable agents + the workflow's referenced-secret classes, for the run
+  // Targetable agents + the evalflow's referenced-secret classes, for the run
   // dialog's agent picker and the runtime-exposure banner (one round-trip).
-  app.get("/api/workflows/:id/run-targets", requireAuth, async (req, res) => {
+  app.get("/api/evalflows/:id/run-targets", requireAuth, async (req, res) => {
     try {
       const user = await getCurrentUser(req);
       if (!user) return res.status(401).json({ error: "Not authenticated" });
-      const workflow = await storage.getWorkflow(parseInt(req.params.id, 10));
-      if (!workflow) return res.status(404).json({ error: "Workflow not found" });
-      if (!canRunWorkflow(user, workflow)) {
-        return res.status(403).json({ error: "Not authorized to run this workflow" });
+      const evalflow = await storage.getEvalflow(parseInt(req.params.id, 10));
+      if (!evalflow) return res.status(404).json({ error: "Evalflow not found" });
+      if (!canRunEvalflow(user, evalflow)) {
+        return res.status(403).json({ error: "Not authorized to run this evalflow" });
       }
 
       const region = req.query.region ? String(req.query.region) : null;
@@ -4967,16 +4967,16 @@ export async function registerRoutes(
       const agentOwnerOrgs = (await getOrganizations()?.getMemberships(agentRows.map((a) => a.tokenCreatedBy)))
         ?? new Map<number, Membership>();
       // Session trust, computed ONCE from the same detector the run route
-      // enforces with. For a session-injected workflow, a dispatcher who is
-      // neither the owner nor a workflow-org member cannot receive the minted
+      // enforces with. For a session-injected evalflow, a dispatcher who is
+      // neither the owner nor a evalflow-org member cannot receive the minted
       // session on ANY of their own tokens (the targeted branch's ownerTrusted
       // gate 403s them) — so offering `mine` would violate the
       // never-offer-a-403 contract. Shared listings stay: targeted shared with
       // attestation + consent is the sanctioned cross-user path.
-      const sessionReqForTargets = await detectSessionNeed(workflow);
+      const sessionReqForTargets = await detectSessionNeed(evalflow);
       const sessionTrusted = sessionReqForTargets.kind !== "need" ||
-        workflow.ownerId === user.id ||
-        (workflow.organizationId != null && sameOrg({ organizationId: user.membership?.organizationId ?? null }, { organizationId: workflow.organizationId }));
+        evalflow.ownerId === user.id ||
+        (evalflow.organizationId != null && sameOrg({ organizationId: user.membership?.organizationId ?? null }, { organizationId: evalflow.organizationId }));
       const mine: Agent[] = !sessionTrusted ? [] : ownTokens
         .filter((t) => !t.isRevoked && t.dispatchTier !== "public")
         .map((t) => {
@@ -5040,14 +5040,14 @@ export async function registerRoutes(
         .filter((r): r is PublicFleetRow => r != null)
         .filter((r) => !region || r.region === region);
 
-      // Referenced secrets + class (workflow config + the chosen eval set, when
+      // Referenced secrets + class (evalflow config + the chosen eval set, when
       // supplied and visible to the caller).
-      const configs: unknown[] = [workflow.config];
+      const configs: unknown[] = [evalflow.config];
       if (evalSetIdRaw != null && Number.isFinite(evalSetIdRaw)) {
         const es = await storage.getEvalSet(evalSetIdRaw);
         if (es && canAccessResource(user, es)) configs.push(es.config);
       }
-      const scope = sessionScopeForWorkflow(workflow);
+      const scope = sessionScopeForEvalflow(evalflow);
       const classifiedRefs = await classifyReferencedSecrets(scope, collectSecretRefs(configs));
       // `resolvable` = the daemon would actually substitute this one (it only
       // touches scenario/app/stepsPrefix/stepsSuffix). The run gate narrows to
@@ -5074,16 +5074,16 @@ export async function registerRoutes(
           return a.tokenDispatchTier === "public";
         }).length;
       // Availability must mirror the run route exactly: its untargeted branch
-      // gates ALL pooled tiers on owner-or-org for session-injected workflows
-      // (a non-owner running a public login workflow gets 403 on every pool),
-      // and the team pool additionally requires the workflow to belong to the
+      // gates ALL pooled tiers on owner-or-org for session-injected evalflows
+      // (a non-owner running a public login evalflow gets 403 on every pool),
+      // and the team pool additionally requires the evalflow to belong to the
       // dispatcher's org. Advertising a tier the run would 403 defeats the
       // never-offer-a-403 contract — and the dialogs auto-hop to the first
       // available tier, so a mis-advertised one would be auto-selected.
-      const isTeamWorkflow = workflow.organizationId != null &&
-        sameOrg({ organizationId: user.membership?.organizationId ?? null }, { organizationId: workflow.organizationId });
+      const isTeamEvalflow = evalflow.organizationId != null &&
+        sameOrg({ organizationId: user.membership?.organizationId ?? null }, { organizationId: evalflow.organizationId });
       const sessionDispatchAllowed = sessionTrusted; // same predicate, computed above
-      const teamBlockedBySession = needsSession && !isTeamWorkflow;
+      const teamBlockedBySession = needsSession && !isTeamEvalflow;
       const tiers = [
         sessionDispatchAllowed
           ? { tier: "private", available: true, onlineAgents: countFor("private") }
@@ -5116,7 +5116,7 @@ export async function registerRoutes(
         return res.status(401).json({ error: "Not authenticated" });
       }
 
-      const { status, region, workflowId, limit, offset, hours } = req.query;
+      const { status, region, evalflowId, limit, offset, hours } = req.query;
       if (req.query.siteId !== undefined) {
         return res.status(400).json({ error: "The siteId filter was replaced by region (a region base ID, e.g. na-us-seattle)" });
       }
@@ -5127,7 +5127,7 @@ export async function registerRoutes(
       const filters: {
         status?: "pending" | "running" | "completed" | "failed";
         region?: string;
-        workflowId?: number;
+        evalflowId?: number;
         hoursBack?: number;
       } = {};
 
@@ -5142,10 +5142,10 @@ export async function registerRoutes(
         }
         filters.region = normalizedRegion;
       }
-      if (workflowId) {
-        const parsed = parseInt(workflowId as string, 10);
+      if (evalflowId) {
+        const parsed = parseInt(evalflowId as string, 10);
         if (Number.isFinite(parsed) && parsed > 0) {
-          filters.workflowId = parsed;
+          filters.evalflowId = parsed;
         }
       }
       if (hours) {
@@ -5158,22 +5158,22 @@ export async function registerRoutes(
 
       const jobs = await storage.getEvalJobs(filters);
 
-      // For non-admin users, only return jobs for workflows they own or are public.
-      // While the workflow exists, use its LIVE visibility (so a since-privatised
-      // workflow's jobs aren't exposed via the frozen snapshot). Once the workflow is
+      // For non-admin users, only return jobs for evalflows they own or are public.
+      // While the evalflow exists, use its LIVE visibility (so a since-privatised
+      // evalflow's jobs aren't exposed via the frozen snapshot). Once the evalflow is
       // deleted, only the owner may see the job — run-time visibility does not grant
       // ongoing public access.
       let visibleJobs = jobs;
       if (!user.isAdmin) {
-        const userWorkflows = await storage.getWorkflowsByOwner(user.id);
-        const publicWorkflows = await storage.getPublicWorkflows();
+        const userEvalflows = await storage.getEvalflowsByOwner(user.id);
+        const publicEvalflows = await storage.getPublicEvalflows();
         const allowedIds = new Set([
-          ...userWorkflows.map(w => w.id),
-          ...publicWorkflows.map(w => w.id),
+          ...userEvalflows.map(w => w.id),
+          ...publicEvalflows.map(w => w.id),
         ]);
         visibleJobs = jobs.filter(job => {
-          if (job.workflowId != null) return allowedIds.has(job.workflowId);
-          return job.createdBy === user.id; // deleted workflow: the runner sees their own job
+          if (job.evalflowId != null) return allowedIds.has(job.evalflowId);
+          return job.createdBy === user.id; // deleted evalflow: the runner sees their own job
         });
       }
 
@@ -5225,13 +5225,13 @@ export async function registerRoutes(
         return res.status(404).json({ error: "Job not found" });
       }
 
-      // Check authorization: owner, admin, or public workflow. Live check while the
-      // workflow exists; once deleted, only the owner may view it.
+      // Check authorization: owner, admin, or public evalflow. Live check while the
+      // evalflow exists; once deleted, only the owner may view it.
       if (!user.isAdmin) {
-        const workflow = job.workflowId != null ? await storage.getWorkflow(job.workflowId) : undefined;
-        const allowed = workflow
-          ? canAccessResource(user, workflow)
-          : job.createdBy === user.id; // deleted workflow: runner only
+        const evalflow = job.evalflowId != null ? await storage.getEvalflow(job.evalflowId) : undefined;
+        const allowed = evalflow
+          ? canAccessResource(user, evalflow)
+          : job.createdBy === user.id; // deleted evalflow: runner only
         if (!allowed) {
           return res.status(403).json({ error: "Not authorized to view this job" });
         }
@@ -5259,17 +5259,17 @@ export async function registerRoutes(
         return res.status(404).json({ error: "Job not found" });
       }
 
-      // Check authorization: owner, admin, or public workflow. When the workflow
+      // Check authorization: owner, admin, or public evalflow. When the evalflow
       // still exists, use its LIVE visibility; once deleted, only the owner may view
       // it (run-time visibility does not confer ongoing public read access).
       if (!user.isAdmin) {
-        const workflow = job.workflowId != null ? await storage.getWorkflow(job.workflowId) : undefined;
-        if (workflow) {
-          if (!canAccessResource(user, workflow)) {
+        const evalflow = job.evalflowId != null ? await storage.getEvalflow(job.evalflowId) : undefined;
+        if (evalflow) {
+          if (!canAccessResource(user, evalflow)) {
             return res.status(403).json({ error: "Not authorized to view this job" });
           }
         } else if (job.createdBy !== user.id) {
-          // Deleted workflow: only the runner may view their own job.
+          // Deleted evalflow: only the runner may view their own job.
           return res.status(403).json({ error: "Not authorized to view this job" });
         }
       }
@@ -5308,7 +5308,7 @@ export async function registerRoutes(
           artifactUrl: signedArtifactUrl,
           artifactFiles: signedFiles.length > 0 ? signedFiles : result.artifactFiles,
         } : null,
-        workflowName: job.snapshot?.workflow?.name ?? `Workflow #${job.workflowId ?? "?"}`,
+        evalflowName: job.snapshot?.evalflow?.name ?? `Evalflow #${job.evalflowId ?? "?"}`,
         creatorName: creator?.username ?? null,
       });
     } catch (error) {
@@ -5366,10 +5366,10 @@ export async function registerRoutes(
         return res.status(404).json({ error: "Job not found" });
       }
 
-      // Check authorization (owner). Deleted workflow → the runner (createdBy).
+      // Check authorization (owner). Deleted evalflow → the runner (createdBy).
       if (!user.isAdmin) {
-        const workflow = job.workflowId != null ? await storage.getWorkflow(job.workflowId) : undefined;
-        const allowed = workflow ? workflow.ownerId === user.id : job.createdBy === user.id;
+        const evalflow = job.evalflowId != null ? await storage.getEvalflow(job.evalflowId) : undefined;
+        const allowed = evalflow ? evalflow.ownerId === user.id : job.createdBy === user.id;
         if (!allowed) {
           return res.status(403).json({ error: "Not authorized to cancel this job" });
         }
@@ -5446,9 +5446,9 @@ export async function registerRoutes(
       naturalness: r.naturalness || 0,
       noiseReduction: r.noiseReduction || 0,
       timestamp: r.createdAt,
-      // Workflow identity for the hover tooltip (raw rows only; null on buckets).
-      workflowId: r.workflowId ?? null,
-      workflowName: r.workflowName ?? null,
+      // Evalflow identity for the hover tooltip (raw rows only; null on buckets).
+      evalflowId: r.evalflowId ?? null,
+      evalflowName: r.evalflowName ?? null,
     }));
   }
 

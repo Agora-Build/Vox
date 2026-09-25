@@ -41,8 +41,8 @@ test.describe("Console Access Control", () => {
     await expectRequiresAuth(page);
   });
 
-  test("should redirect /console/workflows to login", async ({ page }) => {
-    await page.goto("/console/workflows");
+  test("should redirect /console/evalflows to login", async ({ page }) => {
+    await page.goto("/console/evalflows");
     await expectRequiresAuth(page);
   });
 

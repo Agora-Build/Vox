@@ -97,7 +97,7 @@ describe("executeViaBroker (unit, injected fetch)", () => {
   });
 });
 
-d("restfulTrigger workflow-config validation", () => {
+d("restfulTrigger evalflow-config validation", () => {
   let cookie: string;
   const created: number[] = [];
 
@@ -107,12 +107,12 @@ d("restfulTrigger workflow-config validation", () => {
 
   afterAll(async () => {
     if (!hasDb || created.length === 0) return;
-    await pool.query(`DELETE FROM workflows WHERE id = ANY($1::int[])`, [created]);
+    await pool.query(`DELETE FROM evalflows WHERE id = ANY($1::int[])`, [created]);
   });
 
-  const mkWorkflow = async (config: Record<string, unknown>) => {
+  const mkEvalflow = async (config: Record<string, unknown>) => {
     const providers = await storage.getAllProviders();
-    return fetch(`${BASE_URL}/api/workflows`, {
+    return fetch(`${BASE_URL}/api/evalflows`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Cookie: cookie },
       body: JSON.stringify({
@@ -123,7 +123,7 @@ d("restfulTrigger workflow-config validation", () => {
   };
 
   it("accepts a valid restfulTrigger", async () => {
-    const res = await mkWorkflow({
+    const res = await mkEvalflow({
       restfulTrigger: {
         method: "POST",
         url: "https://api.example.com/v1/calls",
@@ -139,7 +139,7 @@ d("restfulTrigger workflow-config validation", () => {
 
   it("rejects a bad method, non-https url, and oversized timeout", async () => {
     const bad = async (trigger: Record<string, unknown>) => {
-      const res = await mkWorkflow({ restfulTrigger: { method: "POST", url: "https://x.example/y", ...trigger } });
+      const res = await mkEvalflow({ restfulTrigger: { method: "POST", url: "https://x.example/y", ...trigger } });
       expect(res.status).toBe(400);
     };
     await bad({ method: "BREW" });
@@ -156,7 +156,7 @@ d("POST /api/eval-agent/jobs/:jobId/restful (integration, fake broker)", () => {
   let jobId: number;
   let noTriggerJobId: number;
   let brokerId: number;
-  let workflowId: number;
+  let evalflowId: number;
   let fakeBroker: import("http").Server;
   let brokerPort: number;
   const brokerSeen: any[] = [];
@@ -182,13 +182,13 @@ d("POST /api/eval-agent/jobs/:jobId/restful (integration, fake broker)", () => {
     await new Promise<void>((r) => fakeBroker.listen(0, "127.0.0.1", () => r()));
     brokerPort = (fakeBroker.address() as any).port;
 
-    // Owner + restful secret + workflow with a trigger template.
+    // Owner + restful secret + evalflow with a trigger template.
     ownerId = (await storage.createUser({
       username: `phBexec${suffix}`, email: `phBexec${suffix}@example.com`,
     } as any)).id;
     await storage.createOrUpdateSecret(ownerId, secretName, encryptValue("sekret123"), { brokerType: "restful" });
     const providers = await storage.getAllProviders();
-    const wf = await storage.createWorkflow({
+    const wf = await storage.createEvalflow({
       name: `phB_exec_wf_${suffix}`, ownerId, providerId: providers[0].id,
       transport: "phone", visibility: "private",
       config: {
@@ -200,7 +200,7 @@ d("POST /api/eval-agent/jobs/:jobId/restful (integration, fake broker)", () => {
         },
       },
     } as any);
-    workflowId = wf.id;
+    evalflowId = wf.id;
 
     // Agent token + agent + claimed phone job with the FROZEN snapshot.
     const tok = await storage.createEvalAgentToken({
@@ -217,7 +217,7 @@ d("POST /api/eval-agent/jobs/:jobId/restful (integration, fake broker)", () => {
     const snap = buildJobSnapshot(wf, null, providers[0], "basic");
     const mkJob = async (snapshot: any) => {
       const j = await storage.createEvalJob({
-        workflowId: wf.id, triggerType: 2, evalSetId: null, createdBy: ownerId,
+        evalflowId: wf.id, triggerType: 2, evalSetId: null, createdBy: ownerId,
         siteId: null, targetRegion: "na-us-ashburn", targetTier: "private",
         config: {}, snapshot, status: "pending", priority: 0, retryCount: 0, maxRetries: 3,
       } as any);
@@ -229,7 +229,7 @@ d("POST /api/eval-agent/jobs/:jobId/restful (integration, fake broker)", () => {
       return j.id;
     };
     jobId = await mkJob(snap);
-    noTriggerJobId = await mkJob({ ...snap, workflow: { ...snap.workflow!, config: {} } });
+    noTriggerJobId = await mkJob({ ...snap, evalflow: { ...snap.evalflow!, config: {} } });
 
     // Register the fake broker through the REAL registration flow so the dev
     // server's in-process mint-secret cache is populated.
@@ -253,7 +253,7 @@ d("POST /api/eval-agent/jobs/:jobId/restful (integration, fake broker)", () => {
     await pool.query(`DELETE FROM eval_jobs WHERE id = ANY($1::int[])`, [[jobId, noTriggerJobId].filter(Boolean)]);
     await pool.query(`DELETE FROM eval_agents WHERE id = $1`, [agentId]);
     await pool.query(`DELETE FROM eval_agent_tokens WHERE id = $1`, [tokId]);
-    await pool.query(`DELETE FROM workflows WHERE id = $1`, [workflowId]);
+    await pool.query(`DELETE FROM evalflows WHERE id = $1`, [evalflowId]);
     await pool.query(`DELETE FROM secrets WHERE name = $1`, [secretName]);
     await pool.query(`DELETE FROM users WHERE id = $1`, [ownerId]);
   });
@@ -351,17 +351,17 @@ d("restful secret class", () => {
   });
 
   it("is structurally withheld from the job-secrets path", async () => {
-    // getSecretsForJob returns the workflow owner's RUNTIME rows only.
+    // getSecretsForJob returns the evalflow owner's RUNTIME rows only.
     const admin = await storage.getUserByEmail("admin@vox.local");
     const providers = await storage.getAllProviders();
-    const wf = await storage.createWorkflow({
+    const wf = await storage.createEvalflow({
       name: `phB-wf-${suffix}`, ownerId: admin!.id, providerId: providers[0].id,
       visibility: "private", config: {},
     } as any);
     const job = await storage.createEvalJob({
-      workflowId: wf.id, triggerType: 2, evalSetId: null, createdBy: admin!.id,
+      evalflowId: wf.id, triggerType: 2, evalSetId: null, createdBy: admin!.id,
       siteId: null, targetRegion: "na-us-ashburn", targetTier: "private",
-      config: {}, snapshot: { provider: null, workflow: null, evalSet: null, creatorPlan: null } as any,
+      config: {}, snapshot: { provider: null, evalflow: null, evalSet: null, creatorPlan: null } as any,
       status: "pending", priority: 0, retryCount: 0, maxRetries: 3,
     } as any);
     try {
@@ -369,7 +369,7 @@ d("restful secret class", () => {
       expect(rows.find((s) => s.name === secretName)).toBeUndefined();
     } finally {
       await pool.query(`DELETE FROM eval_jobs WHERE id = $1`, [job.id]);
-      await pool.query(`DELETE FROM workflows WHERE id = $1`, [wf.id]);
+      await pool.query(`DELETE FROM evalflows WHERE id = $1`, [wf.id]);
     }
   });
 });

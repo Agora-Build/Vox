@@ -8,10 +8,10 @@ const hasDb = !!process.env.DATABASE_URL;
 const d = hasDb ? describe : describe.skip;
 
 // A snapshot that satisfies every CONTENT gate for Mainline: public+mainline
-// workflow, public+mainline eval set, principal creator. Only the frozen agent
+// evalflow, public+mainline eval set, principal creator. Only the frozen agent
 // tier then decides Mainline (public) vs Community (shared).
 const mainlineSnapshot = (ownerId: number) => ({
-  workflow: { name: "T1 WF", config: {}, visibility: "public", isMainline: true, ownerId, organizationId: null },
+  evalflow: { name: "T1 WF", config: {}, visibility: "public", isMainline: true, ownerId, organizationId: null },
   evalSet: { name: "T1 ES", config: {}, visibility: "public", isMainline: true, ownerId },
   provider: { id: "unused" },
   creatorPlan: "principal",
@@ -69,7 +69,7 @@ d("frozen agent tier gates the leaderboard bucket (tier as restriction)", () => 
 // Content is fully PUBLIC here — so neither of the two content-privacy arms of
 // myEvalConditions can fire. Only the agent-tier arm can surface these.
 const publicSnapshot = (ownerId: number) => ({
-  workflow: { name: "T2 WF", config: {}, visibility: "public", isMainline: false, ownerId, organizationId: null },
+  evalflow: { name: "T2 WF", config: {}, visibility: "public", isMainline: false, ownerId, organizationId: null },
   evalSet: { name: "T2 ES", config: {}, visibility: "public", isMainline: false, ownerId },
   provider: { id: "unused" },
   creatorPlan: "premium",

@@ -36,7 +36,7 @@ We aim to collect only what is needed to operate the Service.
   stored only as salted cryptographic hashes.
 - **Organization information** — organization names and membership, where you use
   team features.
-- **Evaluation content** — workflows, eval sets, configurations, and related
+- **Evaluation content** — evalflows, eval sets, configurations, and related
   settings you create.
 - **Secrets and credentials** — values you supply so we can run the evaluations
   you request. These are stored in encrypted form and used only to perform the
@@ -112,7 +112,7 @@ We share information only as follows:
 - **Public evaluation results** — evaluation metrics and rankings that you choose
   to make public, or that are part of the public leaderboard, are visible to
   others. Public results relate to evaluated products and test conditions; you
-  control the visibility of the workflows and eval sets you create.
+  control the visibility of the evalflows and eval sets you create.
 - **Legal and safety** — where we believe disclosure is reasonably necessary to
   comply with law, enforce our Terms, or protect the rights, property, or safety
   of the project, our users, or the public.

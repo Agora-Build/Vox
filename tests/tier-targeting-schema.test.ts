@@ -29,9 +29,9 @@ d("tier-targeting schema", () => {
 
   it("createEvalJob accepts a site-less pooled job", async () => {
     const job = await storage.createEvalJob({
-      workflowId: null, triggerType: 2, evalSetId: null, createdBy: 1,
+      evalflowId: null, triggerType: 2, evalSetId: null, createdBy: 1,
       siteId: null, targetRegion: "na-us-seattle", targetTier: "public",
-      config: {}, snapshot: { provider: null, workflow: null, evalSet: null, creatorPlan: null } as any,
+      config: {}, snapshot: { provider: null, evalflow: null, evalSet: null, creatorPlan: null } as any,
       status: "pending", priority: 0, retryCount: 0, maxRetries: 3,
     } as any);
     expect(job.siteId).toBeNull();

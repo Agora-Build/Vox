@@ -26,7 +26,7 @@ audio_pcm_waveform.png
 
 # Local turn_taking reference YAMLs (paste into the console UI; not tracked)
 vox_eval_agentd/eval-sets/
-vox_eval_agentd/workflows/
+vox_eval_agentd/evalflows/
 
 # Local ConvoAI config (LLM/TTS secrets) — never commit
 convo_config.json

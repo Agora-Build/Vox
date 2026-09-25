@@ -122,12 +122,12 @@ describe("isClaimable — pooled arms (tier-targeting)", () => {
 });
 
 describe("isSessionServable (owner + team + attested-shared)", () => {
-  // Workflow owned by user 7, no org.
-  const personalJob = { targetTokenId: null, workflowOwnerId: 7, workflowOrgId: null, consent: false };
-  // Workflow owned by org 20.
-  const orgJob = { targetTokenId: null, workflowOwnerId: 7, workflowOrgId: 20, consent: false };
+  // Evalflow owned by user 7, no org.
+  const personalJob = { targetTokenId: null, evalflowOwnerId: 7, evalflowOrgId: null, consent: false };
+  // Evalflow owned by org 20.
+  const orgJob = { targetTokenId: null, evalflowOwnerId: 7, evalflowOrgId: 20, consent: false };
 
-  it("owner arm: the workflow owner's own agent receives the bundle", () => {
+  it("owner arm: the evalflow owner's own agent receives the bundle", () => {
     const token = { id: 100, createdBy: 7 };
     expect(isSessionServable(personalJob, token, { organizationId: null })).toBe(true);
   });
@@ -144,17 +144,17 @@ describe("isSessionServable (owner + team + attested-shared)", () => {
     expect(isSessionServable(orgJob, token, { organizationId: 21 })).toBe(false);
   });
   it("attested-shared arm: a targeted token with consent receives the bundle", () => {
-    const sharedJob = { targetTokenId: 100, workflowOwnerId: 7, workflowOrgId: null, consent: true };
+    const sharedJob = { targetTokenId: 100, evalflowOwnerId: 7, evalflowOrgId: null, consent: true };
     const token = { id: 100, createdBy: 3 };
     expect(isSessionServable(sharedJob, token, { organizationId: null })).toBe(true);
   });
   it("attested-shared arm: consent WITHOUT being the aimed token is refused", () => {
-    const sharedJob = { targetTokenId: 100, workflowOwnerId: 7, workflowOrgId: null, consent: true };
+    const sharedJob = { targetTokenId: 100, evalflowOwnerId: 7, evalflowOrgId: null, consent: true };
     const otherToken = { id: 101, createdBy: 3 };
     expect(isSessionServable(sharedJob, otherToken, { organizationId: null })).toBe(false);
   });
   it("attested-shared arm: aimed token but NO consent is refused", () => {
-    const noConsent = { targetTokenId: 100, workflowOwnerId: 7, workflowOrgId: null, consent: false };
+    const noConsent = { targetTokenId: 100, evalflowOwnerId: 7, evalflowOrgId: null, consent: false };
     const token = { id: 100, createdBy: 3 };
     expect(isSessionServable(noConsent, token, { organizationId: null })).toBe(false);
   });
@@ -164,7 +164,7 @@ describe("sessionPoolViolation — scheduler tier-composition gate", () => {
   it("public pool is always a violation for session-injected dispatch", () => {
     expect(sessionPoolViolation("public", { organizationId: 5 }, { organizationId: 5 })).toMatch(/public pool/);
   });
-  it("team pool allowed only when the workflow belongs to the creator's org", () => {
+  it("team pool allowed only when the evalflow belongs to the creator's org", () => {
     expect(sessionPoolViolation("team", { organizationId: 5 }, { organizationId: 5 })).toBeNull();
     expect(sessionPoolViolation("team", { organizationId: 5 }, { organizationId: 6 })).toMatch(/organization/);
     expect(sessionPoolViolation("team", { organizationId: null }, { organizationId: 5 })).toMatch(/organization/);
@@ -184,21 +184,21 @@ describe("isOwnerOperatedAgent (who may see a mint failure's detail)", () => {
   // NOT receive the failure detail, which can quote page state. A refactor
   // flipping this to always-true would ship that to marketplace agents with a
   // green suite, so it is asserted directly.
-  const ownerJob = { workflowOwnerId: 7, workflowOrgId: null };
-  const orgJob = { workflowOwnerId: 7, workflowOrgId: 42 };
+  const ownerJob = { evalflowOwnerId: 7, evalflowOrgId: null };
+  const orgJob = { evalflowOwnerId: 7, evalflowOrgId: 42 };
 
-  it("true for the workflow owner's own agent", () => {
+  it("true for the evalflow owner's own agent", () => {
     expect(isOwnerOperatedAgent(ownerJob, { createdBy: 7 }, { organizationId: null })).toBe(true);
   });
 
-  it("true for an agent belonging to the workflow's org", () => {
+  it("true for an agent belonging to the evalflow's org", () => {
     expect(isOwnerOperatedAgent(orgJob, { createdBy: 99 }, { organizationId: 42 })).toBe(true);
   });
 
   it("false for an attested third-party agent, even one the job was aimed at", () => {
     // This is the case isSessionServable's third arm ADMITS for the session
     // bundle — so the two predicates must disagree here, or the split is a no-op.
-    const shared = { targetTokenId: 5, workflowOwnerId: 7, workflowOrgId: null, consent: true };
+    const shared = { targetTokenId: 5, evalflowOwnerId: 7, evalflowOrgId: null, consent: true };
     const token = { id: 5, createdBy: 99 };
     const tokenOwner = { organizationId: null };
     expect(isSessionServable(shared, token, tokenOwner)).toBe(true);
