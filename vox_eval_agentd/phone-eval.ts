@@ -84,16 +84,15 @@ export function compilePhoneConversation(rawSteps: unknown[], opts: CompileOpts)
           out.push({ type: 'audio.play', id: id(), file, description: step.description });
           continue;
         }
-        case 'lab.trace':
-          // aeval lab bookkeeping (case/sample markers). Pure metadata — mapped
-          // to DialF's log step so the marker survives into the step outcomes
-          // (traceability), never dropped silently.
-          out.push({
-            type: 'log', id: id(),
-            message: ['trace', step.event, step.case_id, step.sample_id]
-              .filter((x) => typeof x === 'string' && x).join(' '),
-          });
+        case 'lab.trace': {
+          // aeval lab bookkeeping (case/sample markers). Mapped to DialF's log
+          // step; the marker text ALSO rides `description` because outcomes
+          // echo it — computePhoneRateEntries parses case ids from there.
+          const marker = ['trace', step.event, step.case_id, step.sample_id]
+            .filter((x) => typeof x === 'string' && x).join(' ');
+          out.push({ type: 'log', id: id(), message: marker, description: marker });
           continue;
+        }
         case 'audio.wait_for_speech':
           out.push({
             type: 'audio.wait_for_speech', id: id(),
@@ -220,6 +219,88 @@ export function stagePlayFiles(steps: DialfStep[], exchangeDir: string | null): 
   });
 }
 
+// ---- rate attribution (TSR on the phone path) -------------------------------
+
+import type { ChunkMetricsEntry } from './chunking';
+
+const MARKER_PREFIX = 'trace case_sample_start';
+
+function turnLevelOf(metrics: Record<string, unknown>, family: string): Record<string, unknown>[] {
+  const lat = (metrics[family] as Record<string, unknown> | undefined)?.latency as Record<string, unknown> | undefined;
+  return Array.isArray(lat?.turn_level) ? (lat!.turn_level as Record<string, unknown>[]) : [];
+}
+
+/**
+ * Build the per-case entries `computePerCaseAndRates` consumes — the web path
+ * gets them from per-case chunk runs; the phone path derives them by joining
+ * two records that share the recording clock (t=0 = recording start):
+ *   - DialF step outcomes: the sample markers (log steps carrying the
+ *     `lab.trace` text in `description`) give each sample's time window and
+ *     case id; a `wait_for_speech_start` inside a window marks an interrupt
+ *     sample;
+ *   - the enriched metrics (enrichMetricsWithTurns): each response/interrupt
+ *     turn carries `turn_start` seconds, assigning it to a sample window.
+ * Returns [] when attribution is impossible (no markers, or outcomes without
+ * timestamps — dialfd < 0.3.16): latencies still report, rates stay NA.
+ */
+export function computePhoneRateEntries(
+  outcomes: Array<Record<string, unknown>>,
+  enrichedMetrics: Record<string, unknown>,
+): ChunkMetricsEntry[] {
+  const markers = outcomes
+    .filter((o) => o.type === 'log' && typeof o.description === 'string'
+      && (o.description as string).startsWith(MARKER_PREFIX) && typeof o.t_start_ms === 'number')
+    .map((o) => ({
+      tMs: o.t_start_ms as number,
+      caseId: (o.description as string).split(/\s+/)[2] ?? 'unknown',
+    }))
+    .sort((a, b) => a.tMs - b.tMs);
+  if (markers.length === 0) return [];
+
+  interface Sample { caseId: string; startMs: number; endMs: number; hasInterrupt: boolean }
+  const samples: Sample[] = markers.map((m, i) => ({
+    caseId: m.caseId,
+    startMs: m.tMs,
+    endMs: markers[i + 1]?.tMs ?? Number.POSITIVE_INFINITY,
+    hasInterrupt: false,
+  }));
+  for (const o of outcomes) {
+    if (o.type !== 'audio.wait_for_speech_start' || typeof o.t_start_ms !== 'number') continue;
+    const s = samples.find((w) => (o.t_start_ms as number) >= w.startMs && (o.t_start_ms as number) < w.endMs);
+    if (s) s.hasInterrupt = true;
+  }
+
+  interface CaseAcc { sampleCount: number; hasInterruptPhase: boolean; resp: Record<string, unknown>[]; int: Record<string, unknown>[] }
+  const byCase = new Map<string, CaseAcc>();
+  for (const s of samples) {
+    const acc = byCase.get(s.caseId) ?? { sampleCount: 0, hasInterruptPhase: false, resp: [], int: [] };
+    acc.sampleCount += 1;
+    acc.hasInterruptPhase = acc.hasInterruptPhase || s.hasInterrupt;
+    byCase.set(s.caseId, acc);
+  }
+  const assign = (family: 'response_metrics' | 'interruption_metrics', bucket: 'resp' | 'int') => {
+    for (const turn of turnLevelOf(enrichedMetrics, family)) {
+      if (typeof turn.turn_start !== 'number') continue;
+      const tMs = (turn.turn_start as number) * 1000;
+      const s = samples.find((w) => tMs >= w.startMs && tMs < w.endMs);
+      if (s) byCase.get(s.caseId)![bucket].push(turn);
+    }
+  };
+  assign('response_metrics', 'resp');
+  assign('interruption_metrics', 'int');
+
+  return Array.from(byCase.entries()).map(([caseId, acc]) => ({
+    caseId,
+    chunkId: 'call',
+    sampleCount: acc.sampleCount,
+    hasInterruptPhase: acc.hasInterruptPhase,
+    metrics: {
+      response_metrics: { latency: { turn_level: acc.resp } },
+      interruption_metrics: { latency: { turn_level: acc.int } },
+    },
+  }));
+}
+
 // ---- orchestration ----------------------------------------------------------
 
 export interface PhoneRunDeps {
@@ -312,19 +393,15 @@ export async function runPhoneJob(cfg: PhoneRunConfig, deps: PhoneRunDeps): Prom
 export function buildSessionDir(result: DialfJobResult, destDir: string): string {
   const rec = path.join(destDir, 'recordings');
   fs.mkdirSync(rec, { recursive: true });
-  const legs: Array<[string, string | undefined]> = [
-    ['rx.wav', result.recording?.rx],
-    ['tx.wav', result.recording?.tx],
-    ['mix.wav', result.recording?.mix],
-  ];
-  let copied = 0;
-  for (const [name, src] of legs) {
-    if (!src) continue;
-    if (!fs.existsSync(src)) throw new Error(`recording leg missing on disk: ${src}`);
-    fs.copyFileSync(src, path.join(rec, name));
-    copied++;
-  }
-  if (copied === 0) throw new Error('DialF result carried no recordings');
+  // Exactly ONE recording, and it must be the MIX (stereo: L=user, R=agent —
+  // both speakers on one timeline, aeval's single-recording model). No rx
+  // fallback: a one-speaker recording yields plausible-looking but WRONG
+  // metrics (no user turns to measure latency from), and wrong beats nothing
+  // never (failure policy). Mix absence is operator-fixable dialfd config.
+  const src = result.recording?.mix;
+  if (!src) throw new Error('DialF result has no mix recording — set mix_recording: true in dialfd config');
+  if (!fs.existsSync(src)) throw new Error(`recording leg missing on disk: ${src}`);
+  fs.copyFileSync(src, path.join(rec, 'recording.wav'));
   const meta = path.join(destDir, 'dialf');
   fs.mkdirSync(meta, { recursive: true });
   fs.writeFileSync(path.join(meta, 'steps.json'), JSON.stringify(result.steps ?? [], null, 2));
