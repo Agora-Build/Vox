@@ -145,6 +145,13 @@ export function compilePhoneConversation(rawSteps: unknown[], opts: CompileOpts)
           if (typeof step.number !== 'string' || !PHONE_NUMBER_RE.test(step.number)) {
             return `call.dial number is not a dialable phone number: '${String(step.number ?? '')}'`;
           }
+          // ONE call per job (post-substitution — a for_each over numbers
+          // multiplies dials past any raw-text count): a phone eval measures
+          // one conversation with one agent, and on marketplace agents each
+          // extra dial is toll-fraud surface on someone else's SIM.
+          if (out.some((s) => s.type === 'call.dial')) {
+            return 'a phone job places exactly ONE call — remove the extra call.dial';
+          }
           out.push({ type: 'call.dial', id: id(), number: step.number, description: step.description });
           continue;
         }

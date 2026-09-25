@@ -197,6 +197,30 @@ describe("splitPhoneScript + ensureTrailingHangup + sumStepTimeouts", () => {
     expect(goodTemplated.ok).toBe(true);
   });
 
+  it("SECURITY: a phone job places exactly ONE call — for_each over numbers cannot multiply dials", () => {
+    const multi = compilePhoneConversation([{
+      type: "control.for_each",
+      items: [{ n: "+1 555 010 1234" }, { n: "+1 900 555 0100" }],
+      steps: [{ type: "call.dial", number: "${item.n}" }, { type: "call.hangup" }],
+    }], { resolveCorpusFile: corpus, segment: "setup" });
+    expect(multi.ok).toBe(false);
+    if (!multi.ok) expect(multi.error).toContain("exactly ONE call");
+    const two = compilePhoneConversation([
+      { type: "call.dial", number: "+15551234" },
+      { type: "call.hangup" },
+      { type: "call.dial", number: "+15559999" },
+    ], { resolveCorpusFile: corpus, segment: "setup" });
+    expect(two.ok).toBe(false);
+  });
+
+  it("normalizeDialableNumber strips carrier formatting; unusable stays null", async () => {
+    const { normalizeDialableNumber } = await import("../shared/steps");
+    expect(normalizeDialableNumber("+1.408.837.5890")).toBe("+14088375890");
+    expect(normalizeDialableNumber("+1 408 837 5890")).toBe("+1 408 837 5890");
+    expect(normalizeDialableNumber("evil.example/#")).toBeNull();
+    expect(normalizeDialableNumber("x")).toBeNull();
+  });
+
   it("DoS: nested for_each over no-output steps trips the ITERATION budget, not just the output cap", () => {
     // Each level multiplies iterations by |items| while emitting nothing —
     // 5 levels x 30 items = 24.3M iterations if unbounded.

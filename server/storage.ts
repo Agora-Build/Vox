@@ -326,6 +326,7 @@ export function validateStepsScript(
   // Phone: strict, recursive, node/depth-bounded (YAML aliases expand a naive
   // walk exponentially — walkStepList fails closed on the budget).
   const segment: StepSegment = field === "stepsSuffix" ? "teardown" : "setup";
+  let dialCount = 0;
   // Ordering is POSITIONAL, so check it over the raw top-level array — the
   // walk below dedupes aliased nodes by identity, which would let a repeated
   // alias skip a position-dependent rule.
@@ -371,6 +372,9 @@ export function validateStepsScript(
     const segErr = illegalPhoneStepType(type, segment);
     if (segErr) return segErr;
     if (type === "call.dial") {
+      // ONE call per job (compiler re-enforces post-substitution, where a
+      // for_each over numbers would multiply dials past this literal count).
+      if (++dialCount > 1) return "a phone job places exactly ONE call — remove the extra call.dial";
       // A literal number must match the dialable shape; a templated number
       // (for_each item) is allowed here and re-checked by the compiler after
       // substitution — the enforcement boundary.

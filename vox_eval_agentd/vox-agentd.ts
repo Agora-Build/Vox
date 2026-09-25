@@ -38,6 +38,7 @@ import { summarizeAevalFailure, reduceUrlsSafely, urlForms, createBoundedCapture
 import { StringDecoder } from 'string_decoder';
 import yaml from 'js-yaml';
 import { injectStorageSession } from './session-inject';
+import { normalizeDialableNumber } from '../shared/steps';
 import { DialfClient, probeDialf, resolveDialfSocketPath, type DialfProbe } from './dialf-client';
 import { runPhoneJob, computePhoneRateEntries } from './phone-eval';
 import {
@@ -2026,12 +2027,19 @@ class VoxEvalAgentDaemon {
    * daemon supplies only the whitelisted phoneNumber variable (our SIM).
    */
   private async executeRestfulStep(jobId: number, stepIndex: number, phoneNumber?: string): Promise<void> {
+    // Core enforces the dialable shape on this variable (it substitutes into
+    // a URL) — normalize the carrier-reported format first; if it still
+    // doesn't fit, omit it rather than 400 every trigger.
+    const normalized = phoneNumber ? normalizeDialableNumber(phoneNumber) : null;
+    if (phoneNumber && !normalized) {
+      console.warn(`[Daemon] SIM number '${phoneNumber}' is not dialable-shaped — omitting \${phoneNumber}`);
+    }
     const res = await this.fetch(`/api/eval-agent/jobs/${jobId}/restful`, {
       method: 'POST',
       body: JSON.stringify({
         leaseId: this.leaseId,
         stepIndex,
-        variables: phoneNumber ? { phoneNumber } : {},
+        variables: normalized ? { phoneNumber: normalized } : {},
       }),
     });
     const body = await res.json().catch(() => ({}));

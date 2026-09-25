@@ -449,6 +449,17 @@ describe('Config separation validators', () => {
       const restfulWithSteps = validateEvalflowConfig({
         stepsPrefix: '- type: restful.request\n  method: POST\n  url: "https://x.example/y"\n  steps: []' }, 'phone');
       expect(restfulWithSteps.valid).toBe(false);
+      // Two literal dials are rejected — one call per job.
+      const twoDials = validateEvalflowConfig({
+        stepsPrefix: '- type: call.dial\n  number: "+15551234"\n- type: call.hangup\n- type: call.dial\n  number: "+15559999"' }, 'phone');
+      expect(twoDials.valid).toBe(false);
+      expect(twoDials.error).toContain('exactly ONE call');
+      // An aliased restful node reappearing NESTED is still caught (the walk
+      // dedupes per depth, not globally).
+      const aliasedNested = validateEvalflowConfig({
+        stepsPrefix: '- &r\n  type: restful.request\n  method: POST\n  url: "https://x.example/y"\n- type: control.for_each\n  items: [1]\n  steps: [*r]' }, 'phone');
+      expect(aliasedNested.valid).toBe(false);
+      expect(aliasedNested.error).toContain('cannot be nested');
       // Positional ordering can't be evaded by re-aliasing an already-seen
       // restful node after a non-restful step.
       const aliased = validateEvalflowConfig({

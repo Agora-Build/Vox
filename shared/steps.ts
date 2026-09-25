@@ -74,13 +74,20 @@ export type StepVisit = (step: Record<string, unknown>, depth: number) => string
  *   any other string — the visitor's error
  */
 export function walkStepList(steps: unknown[], visit: StepVisit): string | null {
-  const seen = new WeakSet<object>();
+  // Dedupe by (node, DEPTH): visitors apply depth-dependent rules (e.g.
+  // "restful.request cannot be nested"), so an aliased node legal at depth 0
+  // must still be re-checked when it reappears deeper. Same node at the same
+  // depth is skipped; the node budget counts every visit, so the walk stays
+  // bounded (≤ nodes × depth).
+  const seenAtDepth = new Map<number, WeakSet<object>>();
   let nodes = 0;
   const rec = (list: unknown[], depth: number): string | null => {
     if (depth > MAX_STEP_WALK_DEPTH) return "too-complex";
+    let seen = seenAtDepth.get(depth);
+    if (!seen) { seen = new WeakSet<object>(); seenAtDepth.set(depth, seen); }
     for (const raw of list) {
       if (typeof raw !== "object" || raw === null) continue;
-      if (seen.has(raw)) continue; // aliased subtree already checked once
+      if (seen.has(raw)) continue; // aliased subtree already checked at this depth
       seen.add(raw);
       if (++nodes > MAX_STEP_WALK_NODES) return "too-complex";
       const step = raw as Record<string, unknown>;
@@ -94,6 +101,15 @@ export function walkStepList(steps: unknown[], visit: StepVisit): string | null 
     return null;
   };
   return rec(steps, 0);
+}
+
+/** Best-effort normalization of a carrier-reported number (DialF sims.list
+ * may format with dots/extensions) into the dialable shape — strips anything
+ * outside the allowed charset, keeps a leading +. Returns null when the
+ * result still doesn't match (caller should omit the variable and warn). */
+export function normalizeDialableNumber(raw: string): string | null {
+  const cleaned = (raw.startsWith("+") ? "+" : "") + raw.replace(/[^0-9 ()-]/g, "");
+  return PHONE_NUMBER_RE.test(cleaned) ? cleaned : null;
 }
 
 /** Bounded recursive scan for a call.dial step (the phone run gate — the
