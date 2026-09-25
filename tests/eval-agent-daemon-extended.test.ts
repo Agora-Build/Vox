@@ -480,35 +480,6 @@ describe("Eval Agent Daemon - Error Handling", () => {
 });
 
 describe("Eval Agent Daemon - Job Execution", () => {
-  it("should use default config when not provided", () => {
-    const getConfig = (job: { config?: { application?: string; scenario?: string } }) => {
-      const config = job.config || {};
-      return {
-        application: config.application || "applications/livekit.yaml",
-        scenario: config.scenario || "scenarios/basic_conversation.yaml",
-      };
-    };
-
-    const jobWithConfig = {
-      config: {
-        application: "apps/custom.yaml",
-        scenario: "scenes/test.yaml",
-      },
-    };
-
-    const jobWithoutConfig = {};
-
-    expect(getConfig(jobWithConfig)).toEqual({
-      application: "apps/custom.yaml",
-      scenario: "scenes/test.yaml",
-    });
-
-    expect(getConfig(jobWithoutConfig)).toEqual({
-      application: "applications/livekit.yaml",
-      scenario: "scenarios/basic_conversation.yaml",
-    });
-  });
-
   it("should return minimal results on execution failure", () => {
     const getFailureResults = () => ({
       responseLatencyMedian: 0,

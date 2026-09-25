@@ -4,7 +4,10 @@
 -- never blocks a future edit and the daemon's fail-loud unsupported-framework
 -- path stops firing. NOTE: a converted row has no Setup Steps — its runs
 -- proceed on the eval-set scenario alone and typically still need
--- re-authoring (platform.setup etc.) to be useful. The VAT-only `app` payload is PRESERVED under
+-- re-authoring (platform.setup etc.) to be useful. The parked payload lives
+-- until the owner next rewrites the config (the UI rebuilds config on save,
+-- and the API strips _legacy* keys from writes) — recover it before then via
+-- GET /api/evalflows/:id or psql. The VAT-only `app` payload is PRESERVED under
 -- an inert key (same rule as 0040's _legacyPhoneDial: a one-way migration
 -- never destroys the only copy of authored config).
 UPDATE evalflows

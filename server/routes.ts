@@ -16,7 +16,7 @@ import { fingerprintCredential, formatLastFailedHttpStatus, parseLastFailedHttpS
 import { sessionScopeForEvalflow, areLoginSecretsAttested, ensureSession, stampOwnerSession, credentialKeyFor, SESSION_FRESH_MARGIN_SECONDS, classifyReferencedSecrets, findBrokeredMisuse, resolveBrokerType, type SessionNeed, detectSessionNeed, missingSecretNames, resolvableSecretSources } from "./auth-session";
 import { validateRegisterPayload, cacheBrokerMintSecret, hasBrokerMintSecret, routeToBroker, executeViaBroker, KNOWN_BROKER_TYPES } from "./broker-registry";
 import { resolveRestfulTemplate } from "./restful-exec";
-import { validateRestfulTrigger, parseStepsScript, stepsContainCallDial } from "./storage";
+import { validateRestfulTrigger, parseStepsScript, stepsContainCallDial, stripLegacyConfigKeys } from "./storage";
 import { PHONE_NUMBER_RE } from "@shared/steps";
 import { deriveApiKeyStatus } from "./api-key-status";
 import { isStaleOfflineAgent } from "./agent-liveness";
@@ -1863,7 +1863,8 @@ export async function registerRoutes(
         return res.status(401).json({ error: "Not authenticated" });
       }
 
-      const { name, description, projectId, providerId, visibility, config, organizationId, transport } = req.body;
+      const { name, description, projectId, providerId, visibility, organizationId, transport } = req.body;
+      const config = stripLegacyConfigKeys(req.body.config);
 
       if (!name || !String(name).trim()) {
         return res.status(400).json({ error: "Name required" });
@@ -1946,7 +1947,8 @@ export async function registerRoutes(
         return res.status(403).json({ error: "Only the evalflow's owner can edit it" });
       }
 
-      const { name, description, visibility, config, projectId, providerId, transport } = req.body;
+      const { name, description, visibility, projectId, providerId, transport } = req.body;
+      const config = stripLegacyConfigKeys(req.body.config);
       if (transport !== undefined && !["web", "phone"].includes(transport)) {
         return res.status(400).json({ error: "Invalid transport" });
       }
@@ -2164,7 +2166,8 @@ export async function registerRoutes(
         return res.status(401).json({ error: "Not authenticated" });
       }
 
-      const { name, description, visibility, config, organizationId } = req.body;
+      const { name, description, visibility, organizationId } = req.body;
+      const config = stripLegacyConfigKeys(req.body.config);
 
       if (!name || !String(name).trim()) {
         return res.status(400).json({ error: "Name required" });
@@ -2231,7 +2234,8 @@ export async function registerRoutes(
         return res.status(403).json({ error: "Only the owner can edit this eval set" });
       }
 
-      const { name, description, visibility, config } = req.body;
+      const { name, description, visibility } = req.body;
+      const config = stripLegacyConfigKeys(req.body.config);
       if (config !== undefined && config !== null) {
         const v = validateEvalSetConfig(config);
         if (!v.valid) return res.status(400).json({ error: v.error });
@@ -2305,7 +2309,8 @@ export async function registerRoutes(
         return res.status(403).json({ error: "Can only clone public eval sets" });
       }
 
-      const { name, config } = req.body || {};
+      const { name } = req.body || {};
+      const config = stripLegacyConfigKeys(req.body?.config);
 
       if (config) {
         const v = validateEvalSetConfig(config);

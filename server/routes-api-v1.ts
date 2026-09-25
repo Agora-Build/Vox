@@ -8,7 +8,7 @@
  */
 
 import { Express, Request, Response } from "express";
-import { storage, mergeEvalConfig, buildJobSnapshot } from "./storage";
+import { storage, mergeEvalConfig, buildJobSnapshot, validateEvalflowConfig, validateEvalSetConfig, stripLegacyConfigKeys } from "./storage";
 import { requireAuthOrApiKey, getCurrentUserOrApiKeyUser } from "./auth";
 import { parsePlatformSetup, sessionScopeForEvalflow, evaluateSessionRequirement, getBrokeredSecretNames, ensureSession, missingSecretNames, resolvableSecretSources } from "./auth-session";
 import { regionSiteSequence } from "@shared/regions";
@@ -142,10 +142,17 @@ export function registerApiV1Routes(app: Express): void {
         return res.status(401).json({ error: "Authentication required" });
       }
 
-      const { name, description, providerId, projectId, visibility, config } = req.body;
+      const { name, description, providerId, projectId, visibility } = req.body;
+      const config = stripLegacyConfigKeys(req.body.config);
 
       if (!name) {
         return res.status(400).json({ error: "Name is required" });
+      }
+      // Same save-time gate as the console route (v1 previously skipped it —
+      // every config rule was bypassable through this endpoint).
+      if (config) {
+        const v = validateEvalflowConfig(config, "web");
+        if (!v.valid) return res.status(400).json({ error: v.error });
       }
 
       if (!providerId) {
@@ -243,7 +250,12 @@ export function registerApiV1Routes(app: Express): void {
         return res.status(403).json({ error: "Not authorized to update this evalflow" });
       }
 
-      const { name, description, visibility, config } = req.body;
+      const { name, description, visibility } = req.body;
+      const config = stripLegacyConfigKeys(req.body.config);
+      if (config) {
+        const v = validateEvalflowConfig(config, (evalflow.transport as "web" | "phone" | null) ?? "web");
+        if (!v.valid) return res.status(400).json({ error: v.error });
+      }
 
       // Visibility check
       if (visibility === "private" && user.plan === "basic") {
@@ -486,7 +498,12 @@ export function registerApiV1Routes(app: Express): void {
         return res.status(401).json({ error: "Authentication required" });
       }
 
-      const { name, description, visibility, config } = req.body;
+      const { name, description, visibility } = req.body;
+      const config = stripLegacyConfigKeys(req.body.config);
+      if (config) {
+        const v = validateEvalSetConfig(config);
+        if (!v.valid) return res.status(400).json({ error: v.error });
+      }
 
       if (!name) {
         return res.status(400).json({ error: "Name is required" });

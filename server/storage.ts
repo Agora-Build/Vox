@@ -222,6 +222,22 @@ export function decryptValue(stored: string): string {
 
 const MAX_CONFIG_SIZE = 100_000; // 100KB
 
+/**
+ * Drop user-supplied `_legacy*` top-level keys from a config before
+ * validation/storage. Only MIGRATIONS may write parked keys (0040
+ * _legacyPhoneDial, 0041 _legacyVatApp): the secret scans deliberately skip
+ * them, so accepting one from a caller would let ${config._legacyX}
+ * indirection smuggle a secret reference past the misuse/consent gates.
+ * Migrated rows are unaffected (their keys were written by SQL, and survive
+ * until the owner next rewrites the config).
+ */
+export function stripLegacyConfigKeys<T>(config: T): T {
+  if (typeof config !== "object" || config === null || Array.isArray(config)) return config;
+  return Object.fromEntries(
+    Object.entries(config as Record<string, unknown>).filter(([k]) => !k.startsWith("_legacy")),
+  ) as T;
+}
+
 // The eval-framework seam: adding a framework means extending this set, the
 // daemon's executeJob switch, and resolvableSecretSources' field map — the
 // per-job `config.framework` override and the daemon's EVAL_FRAMEWORK default

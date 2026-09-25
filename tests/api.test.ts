@@ -2827,6 +2827,39 @@ describe('Vox API Tests', () => {
       expect((evalflow.config as Record<string, unknown>).stepsPrefix).toContain('platform.setup');
     });
 
+    it("strips user-supplied _legacy* keys on save (only migrations may park payloads)", async () => {
+      const res = await authFetch(adminSession, `${BASE_URL}/api/evalflows`, {
+        method: 'POST',
+        body: JSON.stringify({
+          name: 'Legacy Key Smuggle Test',
+          visibility: 'public',
+          providerId: testProviderId,
+          // The smuggle shape: a parked-looking key holding a secret ref that
+          // ${config._legacyX} indirection would expand daemon-side while the
+          // server's misuse/consent scans (which skip _legacy*) never saw it.
+          config: { framework: 'aeval', _legacyX: '${secrets.SMUGGLED}', stepsPrefix: '- type: control.log\n  message: "${config._legacyX}"' },
+        }),
+      });
+      expect(res.ok).toBe(true);
+      const evalflow: Evalflow = await res.json();
+      expect((evalflow.config as Record<string, unknown>)._legacyX).toBeUndefined();
+      expect((evalflow.config as Record<string, unknown>).stepsPrefix).toBeDefined();
+      await authFetch(adminSession, `${BASE_URL}/api/evalflows/${evalflow.id}`, { method: 'DELETE' });
+    });
+
+    it("v1 API enforces the same config validation as the console route", async () => {
+      const res = await authFetch(adminSession, `${BASE_URL}/api/v1/evalflows`, {
+        method: 'POST',
+        body: JSON.stringify({
+          name: 'V1 Validation Test',
+          providerId: testProviderId,
+          config: { framework: 'voice-agent-tester' },
+        }),
+      });
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toContain('voice-agent-tester was removed');
+    });
+
     it('should default config to empty object when not provided', async () => {
       const response = await authFetch(adminSession, `${BASE_URL}/api/evalflows`, {
         method: 'POST',

@@ -2037,7 +2037,10 @@ class VoxEvalAgentDaemon {
     let stepsSuffix = config.stepsSuffix;
     const configPlaceholders: Record<string, string> = {};
     for (const [k, v] of Object.entries(config)) {
-      if (typeof v === 'string' && k !== 'scenario' && k !== 'framework') {
+      // _legacy* keys are migration-parked dead payloads (0040/0041): never
+      // expandable via ${config.*} — that indirection would smuggle their
+      // secret refs past the server's misuse/consent scans, which skip them.
+      if (typeof v === 'string' && k !== 'scenario' && k !== 'framework' && !k.startsWith('_legacy')) {
         configPlaceholders[k] = v;
       }
     }
