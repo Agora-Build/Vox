@@ -93,3 +93,59 @@ d("migration 0040_steps_model.sql (transactional, rolled back)", () => {
     expect(validateEvalflowConfig(config, "phone").valid).toBe(true);
   });
 });
+
+d("migration 0041_remove_vat.sql (transactional, rolled back)", () => {
+  const stamp = `mig0041-${Date.now()}`;
+  let client: import("pg").PoolClient;
+
+  beforeAll(async () => {
+    client = await pool.connect();
+    await client.query("BEGIN");
+    const FIXTURES = [
+      { name: `${stamp}-vat`, config: { framework: "voice-agent-tester", app: 'url: "https://x.example"' } },
+      { name: `${stamp}-app-only`, config: { framework: "aeval", app: 'url: "https://y.example"' } },
+      { name: `${stamp}-aeval`, config: { framework: "aeval", stepsPrefix: "- type: platform.setup" } },
+    ];
+    for (const f of FIXTURES) {
+      await client.query(
+        `INSERT INTO evalflows (name, owner_id, provider_id, visibility, transport, config)
+         VALUES ($1, 1, (SELECT id FROM providers LIMIT 1), 'private', 'web', $2::jsonb)`,
+        [f.name, JSON.stringify(f.config)],
+      );
+    }
+    const sql = readFileSync("./migrations/0041_remove_vat.sql", "utf-8");
+    for (const statement of sql.split("--> statement-breakpoint").map((s) => s.trim()).filter(Boolean)) {
+      await client.query(statement);
+    }
+  });
+
+  afterAll(async () => {
+    await client.query("ROLLBACK");
+    client.release();
+  });
+
+  const configOf = async (name: string): Promise<Record<string, unknown>> => {
+    const { rows } = await client.query(`SELECT config FROM evalflows WHERE name = $1`, [name]);
+    return rows[0].config;
+  };
+
+  it("a VAT row becomes aeval with its app payload parked inert, and passes validation", async () => {
+    const config = await configOf(`${stamp}-vat`);
+    expect(config.framework).toBe("aeval");
+    expect(config.app).toBeUndefined();
+    expect(config._legacyVatApp).toBe('url: "https://x.example"');
+    expect(validateEvalflowConfig(config, "web").valid).toBe(true);
+  });
+
+  it("a stray app key on an aeval row is parked too", async () => {
+    const config = await configOf(`${stamp}-app-only`);
+    expect(config.app).toBeUndefined();
+    expect(config._legacyVatApp).toBe('url: "https://y.example"');
+    expect(validateEvalflowConfig(config, "web").valid).toBe(true);
+  });
+
+  it("a clean aeval row is untouched", async () => {
+    const config = await configOf(`${stamp}-aeval`);
+    expect(config).toEqual({ framework: "aeval", stepsPrefix: "- type: platform.setup" });
+  });
+});

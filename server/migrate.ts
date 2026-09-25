@@ -63,6 +63,7 @@ const MIGRATIONS: Array<{ version: number; description: string; file: string | n
   { version: 39, description: "Phone vs Agent Phase A: transport axis, agent capabilities, call metadata", file: "0038_phone_transport.sql" },
   { version: 40, description: "workflow → evalflow rename: table, FK columns, snapshot key spelling", file: "0039_evalflow_rename.sql" },
   { version: 41, description: "unified steps model: phoneDial/restfulTrigger dissolve into Setup/Teardown step scripts", file: "0040_steps_model.sql" },
+  { version: 42, description: "voice-agent-tester removed: surviving rows become aeval, app parked as _legacyVatApp", file: "0041_remove_vat.sql" },
 ];
 
 const TARGET_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version;

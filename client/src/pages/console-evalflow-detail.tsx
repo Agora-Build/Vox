@@ -15,7 +15,7 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import { ArrowLeft, Play, Settings, History, Clock, CheckCircle, XCircle, Loader2, RefreshCw } from "lucide-react";
 import { useState, useEffect, useMemo } from "react";
 import type { Evalflow as EvalflowType, Provider, EvalJob, EvalSet } from "@shared/schema";
-import { formatSmartTimestamp, formatSite, formatRegion, toYaml } from "@/lib/utils";
+import { formatSmartTimestamp, formatSite, formatRegion } from "@/lib/utils";
 import { useRegionLocationOptions } from "@/hooks/use-regions";
 import {
   type RunTargetAgents,
@@ -458,20 +458,6 @@ export default function ConsoleEvalflowDetail() {
             </div>
           </div>
 
-          {(() => {
-            const config = evalflow.config as Record<string, unknown> | null;
-            if (config?.app && typeof config.app === 'object') {
-              return (
-                <div>
-                  <Label className="text-muted-foreground">App Config</Label>
-                  <pre className="mt-1 p-3 bg-muted rounded-md text-sm font-mono overflow-auto">
-                    {toYaml(config.app as Record<string, unknown>)}
-                  </pre>
-                </div>
-              );
-            }
-            return null;
-          })()}
         </CardContent>
       </Card>
 

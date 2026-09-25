@@ -1,6 +1,6 @@
 # vox_eval_agentd
 
-Distributed evaluation agent daemon for Vox. Registers with the Vox server, claims pending jobs, executes evaluations using one of two frameworks, reports results (MED/SD/P95), and uploads artifacts to S3-compatible storage.
+Distributed evaluation agent daemon for Vox. Registers with the Vox server, claims pending jobs, executes evaluations with aeval, reports results (MED/SD/P95), and uploads artifacts to S3-compatible storage.
 
 ## Architecture
 
@@ -22,10 +22,10 @@ vox-agentd.ts  (compiled to vox-agentd.js for Docker)
 2. Sends periodic heartbeats with state (`idle` / `occupied`)
 3. Polls for pending jobs matching the agent's region
 4. Claims a job (atomic, `FOR UPDATE SKIP LOCKED` on server)
-5. Reads `job.config` to determine framework and YAML content
+5. Reads `job.config` for the scenario + Setup/Teardown YAML content
 6. Resolves `${secrets.*}` placeholders with encrypted secrets from server
-7. Writes YAML content to temp files, executes the framework
-8. Parses results (JSON for aeval, CSV for VAT) including MED, SD, and P95 metrics
+7. Writes YAML content to temp files, executes aeval
+8. Parses `metrics.json` results including MED, SD, and P95 metrics
 9. Reports results back via `POST /api/eval-agent/jobs/:id/complete`
 10. Queues artifact upload (processed when daemon goes idle)
 11. Cleans up temp files
