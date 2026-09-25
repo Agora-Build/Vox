@@ -1986,10 +1986,20 @@ class VoxEvalAgentDaemon {
       const errCap = createBoundedCapture();
       proc.stdout.on('data', (d) => outCap.push(d.toString()));
       proc.stderr.on('data', (d) => errCap.push(d.toString()));
+      // 30-min default: first analyze in a fresh container downloads the
+      // whisper model, then transcribes the whole call on CPU — 10 minutes
+      // proved too tight in prod. The timeout error carries the captured
+      // output so a hang is diagnosable from the job error alone.
+      const timeoutMs = parseInt(process.env.VOX_ANALYZE_TIMEOUT_MS || '', 10) || 30 * 60 * 1000;
       const timer = setTimeout(() => {
         proc.kill('SIGKILL');
-        reject(new Error('aeval analyze exceeded 10 minutes'));
-      }, 10 * 60 * 1000);
+        const detail = summarizeAevalFailure(
+          reduceUrlsSafely(outCap.text, this.activeSecretValues),
+          reduceUrlsSafely(errCap.text, this.activeSecretValues),
+          this.activeSecretValues,
+        );
+        reject(new Error(`aeval analyze exceeded ${Math.round(timeoutMs / 60000)} minutes${detail ? `; last output: ${detail}` : ''}`));
+      }, timeoutMs);
       proc.on('close', (code) => {
         clearTimeout(timer);
         // Nothing here may throw: an exception inside this handler is an
