@@ -2051,12 +2051,15 @@ class VoxEvalAgentDaemon {
    * poisoned by the read-timeout that got us here. All errors swallowed; when
    * the call already ended both ops are cheap no-ops.
    */
-  private async dialfSafetyHangup(): Promise<void> {
+  private async dialfSafetyHangup(jobId: number): Promise<void> {
     let rescue: DialfClient | null = null;
     try {
       rescue = new DialfClient(resolveDialfSocketPath());
       await rescue.connect();
-      await rescue.call('job.cancel', {}, 5_000).catch(() => undefined);
+      // Scope the cancel to OUR job by name so a shared dialfd (multi-agent
+      // host) never has another run's job cancelled by this rescue; the
+      // hangup itself is per-line, matching the one-call-per-host model.
+      await rescue.call('job.cancel', { name: `vox-job-${jobId}` }, 5_000).catch(() => undefined);
       await rescue.call('call.hangup', {}, 10_000).catch(() => undefined);
       console.log('[Daemon] safety hangup issued');
     } catch (e) {
@@ -2113,7 +2116,7 @@ class VoxEvalAgentDaemon {
         {
           dialfCall: (op, fields, timeoutMs) => client.call(op, fields, timeoutMs),
           executeRestful: (stepIndex) => this.executeRestfulStep(job.id, stepIndex, probe.phoneNumber),
-          safetyHangup: () => this.dialfSafetyHangup(),
+          safetyHangup: () => this.dialfSafetyHangup(job.id),
           analyze: (dir) => this.runAevalAnalyze(dir),
           parseMetrics: (dir) => {
             const metricsFile = path.join(dir, 'analysis', 'metrics.json');

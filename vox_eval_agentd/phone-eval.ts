@@ -180,6 +180,10 @@ export interface SplitScript {
    * stepsPrefix — the Core endpoint resolves the template from the frozen
    * snapshot by that index (TOCTOU: the daemon never sends the template). */
   restfulPrecall: Array<{ stepIndex: number }>;
+  /** Whether the evalflow's OWN Setup establishes a call — the gate input.
+   * Deliberately not derived from the full session (the eval-set conversation
+   * is banned from call.*; see the segment scans below). */
+  setupHasDial: boolean;
   /** Raw (uncompiled) session block: setup remainder ++ conversation ++ teardown. */
   sessionRaw: unknown[];
 }
@@ -201,25 +205,50 @@ export function splitPhoneScript(
     restfulPrecall.push({ stepIndex: firstNonRestful });
     firstNonRestful++;
   }
-  // Strict ordering: restful.request only as a LEADING run of Setup. One found
-  // later would execute out of order (pre-call, but written mid-session).
-  const straggler = (steps: unknown[], offset: number): number => {
+  // Recursive scan (control.for_each nests steps) for step types that are
+  // illegal in a given segment. SECURITY: the conversation comes from the EVAL
+  // SET — a different, possibly public-third-party author than the evalflow —
+  // so it must never place, answer, or end calls on the runner's SIM (a
+  // conversation-injected call.dial is toll fraud). Teardown belongs to the
+  // evalflow author but runs post-conversation: only call.hangup is meaningful
+  // there — a Teardown call.dial would start a SECOND call.
+  const findIllegal = (steps: unknown[], offset: number, banned: (type: string) => boolean): string | null => {
     for (let i = offset; i < steps.length; i++) {
       const s = steps[i];
-      if (typeof s === 'object' && s !== null && (s as Record<string, unknown>).type === 'restful.request') return i;
+      if (typeof s !== 'object' || s === null) continue;
+      const step = s as Record<string, unknown>;
+      const type = typeof step.type === 'string' ? step.type : '';
+      if (banned(type)) return type;
+      if (Array.isArray(step.steps)) {
+        const nested = findIllegal(step.steps, 0, banned);
+        if (nested) return nested;
+      }
     }
-    return -1;
+    return null;
   };
-  if (straggler(prefixSteps, firstNonRestful) !== -1) {
+  // Strict ordering: restful.request only as a LEADING run of Setup. One found
+  // later would execute out of order (pre-call, but written mid-session).
+  if (findIllegal(prefixSteps, firstNonRestful, (t) => t === 'restful.request')) {
     return { ok: false, error: 'restful.request steps must lead Setup Steps — they execute before the call' };
   }
-  if (straggler(conversationSteps, 0) !== -1 || straggler(suffixSteps, 0) !== -1) {
-    return { ok: false, error: 'restful.request is a Setup (pre-call) step — illegal in the conversation or Teardown' };
+  const convIllegal = findIllegal(conversationSteps, 0, (t) => t.startsWith('call.') || t === 'restful.request' || t.startsWith('sms.'));
+  if (convIllegal) {
+    return { ok: false, error: `'${convIllegal}' is evalflow Setup/Teardown vocabulary — illegal in an eval-set conversation` };
+  }
+  const suffixIllegal = findIllegal(suffixSteps, 0, (t) => (t.startsWith('call.') && t !== 'call.hangup') || t === 'restful.request');
+  if (suffixIllegal) {
+    return { ok: false, error: `'${suffixIllegal}' is illegal in Teardown Steps (only call.hangup ends the session)` };
   }
   return {
     ok: true,
     value: {
       restfulPrecall,
+      // Call establishment must come from the evalflow's OWN Setup (the
+      // conversation is banned from call.* above, so scanning Setup alone is
+      // both sufficient and the security boundary).
+      setupHasDial: prefixSteps.some(
+        (s) => typeof s === 'object' && s !== null && (s as Record<string, unknown>).type === 'call.dial',
+      ),
       sessionRaw: [...prefixSteps.slice(firstNonRestful), ...conversationSteps, ...suffixSteps],
     },
   };
@@ -439,11 +468,9 @@ export async function runPhoneJob(cfg: PhoneRunConfig, deps: PhoneRunDeps): Prom
   if (!split.ok) throw new Error(`phone script split failed: ${split.error}`);
 
   // Call-establishment gate (mirrors the server's run-route gate — orphaned
-  // jobs reach the daemon with only the frozen snapshot config).
-  const hasDial = split.value.sessionRaw.some(
-    (s) => typeof s === 'object' && s !== null && (s as Record<string, unknown>).type === 'call.dial',
-  );
-  if (!hasDial) {
+  // jobs reach the daemon with only the frozen snapshot config). Setup only:
+  // the eval-set conversation is banned from call.* by the splitter.
+  if (!split.value.setupHasDial) {
     throw new Error(split.value.restfulPrecall.length > 0
       ? 'agent-outbound trigger mode is not yet supported — pending DialF machine-readable serve results (R7); add a call.dial step'
       : 'phone evalflow Setup Steps establish no call — add a call.dial step');

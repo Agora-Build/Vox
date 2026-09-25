@@ -183,6 +183,33 @@ describe("splitPhoneScript + ensureTrailingHangup + sumStepTimeouts", () => {
     const inTeardown = splitPhoneScript(SETUP, CONV, [{ type: "restful.request" }]);
     expect(inTeardown.ok).toBe(false);
   });
+
+  it("SECURITY: the eval-set conversation cannot place/end calls — even nested in for_each", () => {
+    const dialInConv = splitPhoneScript(SETUP, [{ type: "call.dial", number: "+1900PREMIUM" }], []);
+    expect(dialInConv.ok).toBe(false);
+    if (!dialInConv.ok) expect(dialInConv.error).toContain("illegal in an eval-set conversation");
+    const hangupInConv = splitPhoneScript(SETUP, [{ type: "call.hangup" }], []);
+    expect(hangupInConv.ok).toBe(false);
+    const nested = splitPhoneScript(SETUP, [
+      { type: "control.for_each", items: [1], steps: [{ type: "call.dial", number: "+1900PREMIUM" }] },
+    ], []);
+    expect(nested.ok).toBe(false);
+    const sms = splitPhoneScript(SETUP, [{ type: "sms.send", to: "+1900", body: "x" }], []);
+    expect(sms.ok).toBe(false);
+  });
+
+  it("Teardown allows only call.hangup among call.*; setupHasDial comes from Setup alone", () => {
+    const dialInTeardown = splitPhoneScript(SETUP, CONV, [{ type: "call.dial", number: "+1900PREMIUM" }]);
+    expect(dialInTeardown.ok).toBe(false);
+    if (!dialInTeardown.ok) expect(dialInTeardown.error).toContain("only call.hangup");
+    const hangupOk = splitPhoneScript(SETUP, CONV, [{ type: "log", message: "bye" }, { type: "call.hangup" }]);
+    expect(hangupOk.ok).toBe(true);
+    const noDialSetup = splitPhoneScript([{ type: "call.wait_answered" }], CONV, []);
+    expect(noDialSetup.ok).toBe(true);
+    if (noDialSetup.ok) expect(noDialSetup.value.setupHasDial).toBe(false);
+    const withDial = splitPhoneScript(SETUP, CONV, []);
+    if (withDial.ok) expect(withDial.value.setupHasDial).toBe(true);
+  });
 });
 
 describe("toCallMetadata", () => {

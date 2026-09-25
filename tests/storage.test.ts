@@ -393,9 +393,40 @@ describe('Config separation validators', () => {
       expect(badYaml.valid).toBe(false);
       expect(badYaml.error).toContain('YAML');
     });
+
+    it('restful.request must LEAD Setup; Teardown call.* is hangup-only (save-time mirror of the splitter)', () => {
+      const trailing = validateEvalflowConfig({
+        stepsPrefix: '- type: call.dial\n  number: "+15551234"\n- type: restful.request\n  method: POST\n  url: "https://x.example/y"',
+      }, 'phone');
+      expect(trailing.valid).toBe(false);
+      expect(trailing.error).toContain('must lead Setup Steps');
+
+      const dialTeardown = validateEvalflowConfig({ stepsSuffix: '- type: call.dial\n  number: "+15551234"' }, 'phone');
+      expect(dialTeardown.valid).toBe(false);
+      expect(dialTeardown.error).toContain('only call.hangup');
+      expect(validateEvalflowConfig({ stepsSuffix: '- type: call.hangup' }, 'phone').valid).toBe(true);
+    });
+
+    it('web scripts stay pass-through for aeval-owned shapes (mapping form, unknown types)', () => {
+      expect(validateEvalflowConfig({ stepsPrefix: 'platform:\n  setup:\n    - type: control.log' }, 'web').valid).toBe(true);
+      expect(validateEvalflowConfig({ stepsPrefix: '- type: http.request\n  params: {}' }, 'web').valid).toBe(true);
+    });
   });
 
   describe('validateEvalSetConfig', () => {
+    it('SECURITY: rejects call.*/restful.*/sms.* in the conversation, nested included', async () => {
+      const { validateEvalSetConfig } = await import('../server/storage');
+      const bad = validateEvalSetConfig({ scenario: 'steps:\n  - type: call.dial\n    number: "+1900PREMIUM"' });
+      expect(bad.valid).toBe(false);
+      expect(bad.error).toContain('illegal in an eval-set conversation');
+      const nested = validateEvalSetConfig({
+        scenario: 'steps:\n  - type: control.for_each\n    items: [1]\n    steps:\n      - type: restful.request',
+      });
+      expect(nested.valid).toBe(false);
+      const ok = validateEvalSetConfig({ scenario: 'steps:\n  - type: audio.play\n    corpus_id: x' });
+      expect(ok.valid).toBe(true);
+    });
+
     it('accepts a scenario body', () => {
       const r = validateEvalSetConfig({ scenario: 'name: x\nsteps: []' });
       expect(r.valid).toBe(true);

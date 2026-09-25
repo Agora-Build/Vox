@@ -229,6 +229,11 @@ export function validateEvalflowConfig(config: unknown, transport: "web" | "phon
   if (typeof config !== "object" || Array.isArray(config)) {
     return { valid: false, error: "Config must be an object" };
   }
+  // Size cap FIRST — before any YAML parse, so an oversized or alias-heavy
+  // document is rejected on cheap string length, not after expansion.
+  if (JSON.stringify(config).length > MAX_CONFIG_SIZE) {
+    return { valid: false, error: "Config too large (max 100KB)" };
+  }
   const c = config as Record<string, unknown>;
   for (const k of EVALSET_ONLY_KEYS) {
     if (k in c) {
@@ -262,9 +267,6 @@ export function validateEvalflowConfig(config: unknown, transport: "web" | "phon
   if (typeof c.stepsSuffix === "string") {
     const v = validateStepsScript(c.stepsSuffix, transport, "stepsSuffix");
     if (!v.valid) return v;
-  }
-  if (JSON.stringify(config).length > MAX_CONFIG_SIZE) {
-    return { valid: false, error: "Config too large (max 100KB)" };
   }
   return { valid: true };
 }
@@ -304,6 +306,7 @@ export function validateStepsScript(
     if (transport === "web") return { valid: true };
     return { valid: false, error: `${field} must be a YAML list of steps` };
   }
+  let seenNonRestful = false;
   for (let i = 0; i < parsed.length; i++) {
     const raw: unknown = parsed[i];
     if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
@@ -337,9 +340,21 @@ export function validateStepsScript(
       if (field === "stepsSuffix") {
         return { valid: false, error: `${field}[${i}]: restful.request is a Setup (pre-call) step — illegal in Teardown` };
       }
+      // Mirror the daemon splitter's ordering rule at save time: restful
+      // steps execute pre-call, so they must be the LEADING run of Setup.
+      if (seenNonRestful) {
+        return { valid: false, error: `${field}[${i}]: restful.request steps must lead Setup Steps — they execute before the call` };
+      }
       const { type: _t, description: _d, ...fields } = step;
       const shape = validateRestfulTrigger(fields);
       if (!shape.valid) return { valid: false, error: `${field}[${i}]: ${shape.error}` };
+      continue;
+    }
+    seenNonRestful = true;
+    if (field === "stepsSuffix" && type.startsWith("call.") && type !== "call.hangup") {
+      // Teardown runs post-conversation — a Teardown call.dial would start a
+      // SECOND call (mirrors the daemon splitter's segment rule).
+      return { valid: false, error: `${field}[${i}]: '${type}' is illegal in Teardown Steps (only call.hangup ends the session)` };
     }
     if (type === "call.dial" && (typeof step.number !== "string" || !PHONE_NUMBER_RE.test(step.number))) {
       return { valid: false, error: `${field}[${i}]: call.dial needs number: '<phone number>'` };
@@ -359,7 +374,11 @@ export function parseStepsScript(yamlText: unknown): Array<Record<string, unknow
   try {
     const parsed = yaml.load(yamlText);
     if (!Array.isArray(parsed)) return [];
-    return parsed.filter((s): s is Record<string, unknown> => typeof s === "object" && s !== null && !Array.isArray(s));
+    // Indices are a WIRE CONTRACT (the restful endpoint addresses steps by
+    // stepIndex, computed by the daemon over the raw list) — map non-object
+    // entries to {} rather than filtering, so positions never shift.
+    return parsed.map((s): Record<string, unknown> =>
+      typeof s === "object" && s !== null && !Array.isArray(s) ? (s as Record<string, unknown>) : {});
   } catch {
     return [];
   }
@@ -418,6 +437,10 @@ export function validateEvalSetConfig(config: unknown): { valid: boolean; error?
   if (typeof config !== "object" || Array.isArray(config)) {
     return { valid: false, error: "Config must be an object" };
   }
+  // Size cap FIRST — before any YAML parse (see validateEvalflowConfig).
+  if (JSON.stringify(config).length > MAX_CONFIG_SIZE) {
+    return { valid: false, error: "Config too large (max 100KB)" };
+  }
   const c = config as Record<string, unknown>;
   for (const k of EVALFLOW_ONLY_KEYS) {
     if (k in c) {
@@ -427,10 +450,38 @@ export function validateEvalSetConfig(config: unknown): { valid: boolean; error?
   if (c.scenario !== undefined && typeof c.scenario !== "string") {
     return { valid: false, error: "Config scenario must be a string" };
   }
-  if (JSON.stringify(config).length > MAX_CONFIG_SIZE) {
-    return { valid: false, error: "Config too large (max 100KB)" };
+  // SECURITY: the conversation must never place/end calls or fire REST
+  // requests — those are evalflow Setup/Teardown vocabulary, and an eval set
+  // can be a public third-party artifact combined with someone else's SIM
+  // (a conversation-injected call.dial is toll fraud). The daemon splitter
+  // enforces the same rule at run time; this rejects it at save.
+  if (typeof c.scenario === "string" && c.scenario.trim() !== "") {
+    let doc: unknown;
+    try { doc = yaml.load(c.scenario); } catch { doc = null; /* aeval's parse problem, not ours */ }
+    const steps = (doc as { steps?: unknown } | null)?.steps;
+    const illegal = Array.isArray(steps) ? findIllegalScenarioStep(steps) : null;
+    if (illegal) {
+      return { valid: false, error: `scenario: '${illegal}' is evalflow Setup/Teardown vocabulary — illegal in an eval-set conversation` };
+    }
   }
   return { valid: true };
+}
+
+/** Recursive (control.for_each nests steps) scan for call-control / REST /
+ * SMS step types inside an eval-set conversation. Returns the first illegal
+ * type found, else null. */
+function findIllegalScenarioStep(steps: unknown[]): string | null {
+  for (const s of steps) {
+    if (typeof s !== "object" || s === null) continue;
+    const step = s as Record<string, unknown>;
+    const type = typeof step.type === "string" ? step.type : "";
+    if (type.startsWith("call.") || type === "restful.request" || type.startsWith("sms.")) return type;
+    if (Array.isArray(step.steps)) {
+      const nested = findIllegalScenarioStep(step.steps);
+      if (nested) return nested;
+    }
+  }
+  return null;
 }
 
 export function mergeEvalConfig(
