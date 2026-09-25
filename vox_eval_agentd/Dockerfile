@@ -191,6 +191,7 @@ COPY vox_eval_agentd/package.json /app/
 COPY shared/secrets.ts /shared/secrets.ts
 COPY shared/credentials.ts /shared/credentials.ts
 COPY shared/metrics.ts /shared/metrics.ts
+COPY shared/steps.ts /shared/steps.ts
 
 # Install daemon dependencies (esbuild for TS compilation)
 RUN npm install

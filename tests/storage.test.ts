@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import {
   hashToken,
   generateSecureToken,
@@ -346,9 +346,162 @@ describe('Config separation validators', () => {
       expect(validateEvalflowConfig(null).valid).toBe(true);
       expect(validateEvalflowConfig(undefined).valid).toBe(true);
     });
+
+    it('rejects the deleted phoneDial/restfulTrigger keys with pointer errors', () => {
+      const dial = validateEvalflowConfig({ phoneDial: { number: '+15551234' } }, 'phone');
+      expect(dial.valid).toBe(false);
+      expect(dial.error).toContain('call.dial step');
+      const trig = validateEvalflowConfig({ restfulTrigger: { method: 'POST', url: 'https://x.example/y' } }, 'phone');
+      expect(trig.valid).toBe(false);
+      expect(trig.error).toContain('restful.request step');
+    });
+
+    it('steps vocabulary is transport-scoped', () => {
+      const phoneOk = validateEvalflowConfig({
+        stepsPrefix: '- type: call.dial\n  number: "+1 555 010 1234"\n- type: call.wait_answered',
+        stepsSuffix: '- type: call.hangup',
+      }, 'phone');
+      expect(phoneOk.valid).toBe(true);
+
+      const webOnPhone = validateEvalflowConfig({ stepsPrefix: '- type: platform.setup' }, 'phone');
+      expect(webOnPhone.valid).toBe(false);
+      expect(webOnPhone.error).toContain('web-session vocabulary');
+
+      const phoneOnWeb = validateEvalflowConfig({ stepsPrefix: '- type: call.dial\n  number: "+15551234"' }, 'web');
+      expect(phoneOnWeb.valid).toBe(false);
+      expect(phoneOnWeb.error).toContain('phone vocabulary');
+
+      // Default transport is web — existing single-arg callers keep meaning web.
+      expect(validateEvalflowConfig({ stepsPrefix: '- type: platform.setup' }).valid).toBe(true);
+    });
+
+    it('validates step shapes: bad call.dial number, restful.request fields, Teardown restful, bad YAML', () => {
+      const badNum = validateEvalflowConfig({ stepsPrefix: '- type: call.dial\n  number: abc' }, 'phone');
+      expect(badNum.valid).toBe(false);
+      expect(badNum.error).toContain('call.dial');
+
+      const badRest = validateEvalflowConfig(
+        { stepsPrefix: '- type: restful.request\n  method: BREW\n  url: "https://x.example/y"' }, 'phone');
+      expect(badRest.valid).toBe(false);
+
+      const teardownRest = validateEvalflowConfig(
+        { stepsSuffix: '- type: restful.request\n  method: POST\n  url: "https://x.example/y"' }, 'phone');
+      expect(teardownRest.valid).toBe(false);
+      expect(teardownRest.error).toContain('illegal in Teardown');
+
+      const badYaml = validateEvalflowConfig({ stepsPrefix: '- type: [unclosed' }, 'phone');
+      expect(badYaml.valid).toBe(false);
+      expect(badYaml.error).toContain('YAML');
+    });
+
+    it('restful.request must LEAD Setup; Teardown call.* is hangup-only (save-time mirror of the splitter)', () => {
+      const trailing = validateEvalflowConfig({
+        stepsPrefix: '- type: call.dial\n  number: "+15551234"\n- type: restful.request\n  method: POST\n  url: "https://x.example/y"',
+      }, 'phone');
+      expect(trailing.valid).toBe(false);
+      expect(trailing.error).toContain('must lead Setup Steps');
+
+      const dialTeardown = validateEvalflowConfig({ stepsSuffix: '- type: call.dial\n  number: "+15551234"' }, 'phone');
+      expect(dialTeardown.valid).toBe(false);
+      expect(dialTeardown.error).toContain('only call.hangup');
+      expect(validateEvalflowConfig({ stepsSuffix: '- type: call.hangup' }, 'phone').valid).toBe(true);
+    });
+
+    it('web scripts stay pass-through for aeval-owned shapes (mapping form, unknown types)', () => {
+      expect(validateEvalflowConfig({ stepsPrefix: 'platform:\n  setup:\n    - type: control.log' }, 'web').valid).toBe(true);
+      expect(validateEvalflowConfig({ stepsPrefix: '- type: http.request\n  params: {}' }, 'web').valid).toBe(true);
+    });
+
+    it('validation recurses into for_each: nested cross-mode and misplaced steps are rejected at save', () => {
+      // Web: a nested call.dial is still phone vocabulary.
+      const webNested = validateEvalflowConfig({
+        stepsPrefix: '- type: control.for_each\n  items: [1]\n  steps:\n    - type: call.dial\n      number: "+15551234"',
+      }, 'web');
+      expect(webNested.valid).toBe(false);
+      expect(webNested.error).toContain('phone vocabulary');
+      // Phone: nested web vocabulary rejected.
+      const phoneNested = validateEvalflowConfig({
+        stepsPrefix: '- type: call.dial\n  number: "+15551234"\n- type: control.for_each\n  items: [1]\n  steps:\n    - type: platform.setup',
+      }, 'phone');
+      expect(phoneNested.valid).toBe(false);
+      // Phone: nested restful.request can never execute pre-call.
+      const nestedRestful = validateEvalflowConfig({
+        stepsPrefix: '- type: control.for_each\n  items: [1]\n  steps:\n    - type: restful.request\n      method: POST\n      url: "https://x.example/y"',
+      }, 'phone');
+      expect(nestedRestful.valid).toBe(false);
+      expect(nestedRestful.error).toContain('cannot be nested');
+      // Teardown: a nested call.dial is still a second call.
+      const teardownNested = validateEvalflowConfig({
+        stepsSuffix: '- type: control.for_each\n  items: [1]\n  steps:\n    - type: call.dial\n      number: "+15551234"',
+      }, 'phone');
+      expect(teardownNested.valid).toBe(false);
+      // Templated types are the smuggle shape — rejected outright on phone.
+      const templatedType = validateEvalflowConfig({
+        stepsPrefix: '- type: "${item.t}"' }, 'phone');
+      expect(templatedType.valid).toBe(false);
+      // Templated call.dial NUMBER is legal at save (compiler re-checks the
+      // substituted value against the dialable shape).
+      const templatedNumber = validateEvalflowConfig({
+        stepsPrefix: '- type: call.dial\n  number: "${item.n}"' }, 'phone');
+      expect(templatedNumber.valid).toBe(true);
+      // A restful.request with a steps key is rejected at save (same unknown-
+      // field rule the endpoint applies at run time).
+      const restfulWithSteps = validateEvalflowConfig({
+        stepsPrefix: '- type: restful.request\n  method: POST\n  url: "https://x.example/y"\n  steps: []' }, 'phone');
+      expect(restfulWithSteps.valid).toBe(false);
+      // Two literal dials are rejected — one call per job.
+      const twoDials = validateEvalflowConfig({
+        stepsPrefix: '- type: call.dial\n  number: "+15551234"\n- type: call.hangup\n- type: call.dial\n  number: "+15559999"' }, 'phone');
+      expect(twoDials.valid).toBe(false);
+      expect(twoDials.error).toContain('exactly ONE call');
+      // An aliased restful node reappearing NESTED is still caught (the walk
+      // dedupes per depth, not globally).
+      const aliasedNested = validateEvalflowConfig({
+        stepsPrefix: '- &r\n  type: restful.request\n  method: POST\n  url: "https://x.example/y"\n- type: control.for_each\n  items: [1]\n  steps: [*r]' }, 'phone');
+      expect(aliasedNested.valid).toBe(false);
+      expect(aliasedNested.error).toContain('cannot be nested');
+      // Positional ordering can't be evaded by re-aliasing an already-seen
+      // restful node after a non-restful step.
+      const aliased = validateEvalflowConfig({
+        stepsPrefix: '- &r\n  type: restful.request\n  method: POST\n  url: "https://x.example/y"\n- type: call.dial\n  number: "+15551234"\n- *r' }, 'phone');
+      expect(aliased.valid).toBe(false);
+      expect(aliased.error).toContain('must lead Setup Steps');
+    });
+
+    it('DoS bounds: deep nesting is rejected; an aliased cycle terminates instead of hanging', async () => {
+      const yamlLib = await import('js-yaml');
+      let deep: Record<string, unknown> = { type: 'control.log', message: 'x' };
+      for (let i = 0; i < 20; i++) deep = { type: 'control.for_each', items: [1], steps: [deep] };
+      const tooDeep = validateEvalflowConfig({ stepsPrefix: yamlLib.dump([deep]) }, 'phone');
+      expect(tooDeep.valid).toBe(false);
+      expect(tooDeep.error).toContain('too complex');
+      // Self-referencing alias: the cycle guard terminates the walk.
+      const cyclic = validateEvalflowConfig({
+        stepsPrefix: '- &a\n  type: control.for_each\n  items: [1]\n  steps: [*a]' }, 'phone');
+      expect(typeof cyclic.valid).toBe('boolean'); // terminated, no hang
+    });
   });
 
   describe('validateEvalSetConfig', () => {
+    it('SECURITY: rejects call.*/restful.*/sms.* in the conversation, nested included', async () => {
+      const { validateEvalSetConfig } = await import('../server/storage');
+      const bad = validateEvalSetConfig({ scenario: 'steps:\n  - type: call.dial\n    number: "+1900PREMIUM"' });
+      expect(bad.valid).toBe(false);
+      expect(bad.error).toContain('illegal in an eval-set conversation');
+      const nested = validateEvalSetConfig({
+        scenario: 'steps:\n  - type: control.for_each\n    items: [1]\n    steps:\n      - type: restful.request',
+      });
+      expect(nested.valid).toBe(false);
+      const ok = validateEvalSetConfig({ scenario: 'steps:\n  - type: audio.play\n    corpus_id: x' });
+      expect(ok.valid).toBe(true);
+      // A templated type could resolve to call.dial post-substitution — the
+      // daemon compiler is the boundary, but save rejects the smuggle shape.
+      const templated = validateEvalSetConfig({
+        scenario: 'steps:\n  - type: control.for_each\n    items: [{t: call.dial}]\n    steps:\n      - type: "${item.t}"',
+      });
+      expect(templated.valid).toBe(false);
+    });
+
     it('accepts a scenario body', () => {
       const r = validateEvalSetConfig({ scenario: 'name: x\nsteps: []' });
       expect(r.valid).toBe(true);

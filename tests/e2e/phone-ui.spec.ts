@@ -3,10 +3,15 @@ import { test, expect } from "@playwright/test";
 /**
  * Phone vs Agent UI E2E (Phase D, design 2026-09-21 §11):
  * - evalflow create dialog offers the Evaluation Mode selector; a phone
- *   evalflow persists transport + phoneDial and shows the Phone badge
+ *   evalflow persists transport + call.dial Setup Steps and shows the badge
  * - the realtime page carries the Web vs Agent | Phone vs Agent switch and
  *   Phone mode renders without error (empty state is fine)
  */
+
+// The create dialog is tall (steps textareas show in phone mode too); a tall
+// viewport keeps the footer submit button clickable without scroll workarounds
+// (same approach as evalflow-provider.spec.ts).
+test.use({ viewport: { width: 1440, height: 1800 } });
 
 const BASE = "http://localhost:5000";
 const suffix = `${Date.now()}`;
@@ -35,7 +40,11 @@ test.describe("Phone vs Agent UI", () => {
     await api.dispose();
   });
 
-  test("create dialog: phone mode persists transport + phoneDial and shows the badge", async ({ page }) => {
+  test("create dialog: phone mode persists transport + call.dial Setup Steps and shows the badge", async ({ page }) => {
+    // UI login + dialog + persistence poll + reload legitimately exceed the
+    // 30s default under full-gate load (the gate's failure snapshot showed the
+    // row + badge rendered — only the budget had run out).
+    test.setTimeout(60_000);
     await loginUI(page);
     await page.goto(`${BASE}/console/evalflows`);
     await page.getByTestId("button-create-evalflow").click();
@@ -46,21 +55,33 @@ test.describe("Phone vs Agent UI", () => {
 
     await page.getByTestId("select-evalflow-transport").click();
     await page.getByRole("option", { name: "Phone vs Agent" }).click();
-    await page.getByTestId("input-evalflow-phone-number").fill("+1 555 010 1234");
+    // Unified steps model: the same Setup/Teardown textareas serve phone mode.
+    await page.getByTestId("textarea-evalflow-steps-prefix")
+      .fill('- type: call.dial\n  number: "+1 555 010 1234"\n- type: call.wait_answered');
+    await page.getByTestId("textarea-evalflow-steps-suffix").fill("- type: call.hangup");
 
     await page.getByTestId("button-submit-evalflow").click();
 
-    // Row appears with the Phone badge.
-    const row = page.getByRole("row", { name: new RegExp(wfName) });
-    await expect(row).toBeVisible();
-    await expect(row.getByText("Phone", { exact: true })).toBeVisible();
-
-    // Persisted server-side.
-    const api = await page.request.get(`${BASE}/api/evalflows?includePublic=true`);
-    const rows = (await api.json()) as Array<{ name: string; transport: string; config: { phoneDial?: { number: string } } }>;
-    const created = rows.find((r) => r.name === wfName);
+    // Persisted server-side FIRST (poll — the authoritative assertion), then
+    // reload before the row check: under full-gate load the list refetch races
+    // concurrent inserts from other specs and can miss the new row.
+    const fetchCreated = async () => {
+      const api = await page.request.get(`${BASE}/api/evalflows?includePublic=true`);
+      const rows = (await api.json()) as Array<{ name: string; transport: string; config: { stepsPrefix?: string; stepsSuffix?: string } }>;
+      return rows.find((r) => r.name === wfName);
+    };
+    await expect.poll(async () => (await fetchCreated()) != null, { timeout: 10000 }).toBeTruthy();
+    const created = await fetchCreated();
     expect(created?.transport).toBe("phone");
-    expect(created?.config?.phoneDial?.number).toBe("+1 555 010 1234");
+    expect(created?.config?.stepsPrefix).toContain("call.dial");
+    expect(created?.config?.stepsPrefix).toContain("+1 555 010 1234");
+    expect(created?.config?.stepsSuffix).toContain("call.hangup");
+
+    // Row appears with the Phone badge.
+    await page.reload();
+    const row = page.getByRole("row", { name: new RegExp(wfName) });
+    await expect(row).toBeVisible({ timeout: 10000 });
+    await expect(row.getByText("Phone", { exact: true })).toBeVisible();
   });
 
   test("realtime page: Evaluation Mode switch renders and Phone mode loads", async ({ page }) => {

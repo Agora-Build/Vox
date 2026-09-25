@@ -1,3 +1,9 @@
+import * as yaml from "js-yaml";
+import {
+  PHONE_NUMBER_RE, illegalPhoneStepType, illegalWebStepType, illegalWebVocabInPhone,
+  walkStepList, type StepSegment,
+} from "@shared/steps";
+export { stepsContainCallDial } from "@shared/steps";
 import {
   type User,
   type InsertUser,
@@ -221,12 +227,17 @@ const EVALSET_ONLY_KEYS = ["scenario"] as const;
 // Keys owned exclusively by the evalflow (platform setup + connection).
 const EVALFLOW_ONLY_KEYS = ["framework", "app", "stepsPrefix", "stepsSuffix"] as const;
 
-export function validateEvalflowConfig(config: unknown): { valid: boolean; error?: string } {
+export function validateEvalflowConfig(config: unknown, transport: "web" | "phone" = "web"): { valid: boolean; error?: string } {
   if (config === null || config === undefined) {
     return { valid: true };
   }
   if (typeof config !== "object" || Array.isArray(config)) {
     return { valid: false, error: "Config must be an object" };
+  }
+  // Size cap FIRST — before any YAML parse, so an oversized or alias-heavy
+  // document is rejected on cheap string length, not after expansion.
+  if (JSON.stringify(config).length > MAX_CONFIG_SIZE) {
+    return { valid: false, error: "Config too large (max 100KB)" };
   }
   const c = config as Record<string, unknown>;
   for (const k of EVALSET_ONLY_KEYS) {
@@ -246,25 +257,173 @@ export function validateEvalflowConfig(config: unknown): { valid: boolean; error
   if (c.stepsSuffix !== undefined && typeof c.stepsSuffix !== "string") {
     return { valid: false, error: "Config stepsSuffix must be a string" };
   }
+  // Clean cut (design 2026-09-25 §4): the per-mode config keys are gone; phone
+  // specifics are Libretto steps in the shared Setup/Teardown fields.
+  if (c.phoneDial !== undefined) {
+    return { valid: false, error: "phoneDial was replaced by a call.dial step in Setup Steps (stepsPrefix)" };
+  }
   if (c.restfulTrigger !== undefined) {
-    const v = validateRestfulTrigger(c.restfulTrigger);
+    return { valid: false, error: "restfulTrigger was replaced by a restful.request step in Setup Steps (stepsPrefix)" };
+  }
+  if (typeof c.stepsPrefix === "string") {
+    const v = validateStepsScript(c.stepsPrefix, transport, "stepsPrefix");
     if (!v.valid) return v;
   }
-  if (c.phoneDial !== undefined) {
-    const p = c.phoneDial as Record<string, unknown>;
-    if (typeof p !== "object" || p === null || Array.isArray(p)
-      || Object.keys(p).some((k) => k !== "number")
-      || typeof p.number !== "string" || !/^\+?[0-9 ()-]{5,20}$/.test(p.number)) {
-      return { valid: false, error: "phoneDial must be { number: '<phone number>' }" };
-    }
-  }
-  if (JSON.stringify(config).length > MAX_CONFIG_SIZE) {
-    return { valid: false, error: "Config too large (max 100KB)" };
+  if (typeof c.stepsSuffix === "string") {
+    const v = validateStepsScript(c.stepsSuffix, transport, "stepsSuffix");
+    if (!v.valid) return v;
   }
   return { valid: true };
 }
 
-// Shape-only validation of the REST call-trigger template (design 2026-09-21 §5).
+// ---- Setup/Teardown step-script validation (design 2026-09-25 §1/§5) --------
+// Save-time vocabulary gate: the LAYOUT is identical for every Evaluation Mode
+// (two YAML step lists), but each mode owns a vocabulary — web scripts can't
+// contain call.*, phone scripts can't contain platform.*/browser.*. Deeper
+// per-step semantics stay with the executors (daemon compiler / aeval); this
+// guards only what would certainly fail at run time, with clear errors.
+const STEP_EXACT_COMMON = new Set(["lab.trace", "wait", "log"]);
+const STEP_PREFIXES_COMMON = ["audio.", "control."];
+
+export function validateStepsScript(
+  yamlText: string,
+  transport: "web" | "phone",
+  field: "stepsPrefix" | "stepsSuffix",
+): { valid: boolean; error?: string } {
+  if (yamlText.trim() === "") return { valid: true };
+  let parsed: unknown;
+  try {
+    parsed = yaml.load(yamlText);
+  } catch (e) {
+    // Web scripts are aeval's domain and legacy rows carry shapes we never
+    // parsed at save time — keep them pass-through (zero behavior change).
+    // Phone is a new strict mode: its scripts must parse.
+    if (transport === "web") return { valid: true };
+    return { valid: false, error: `${field}: not valid YAML (${e instanceof Error ? e.message.split("\n")[0] : "parse error"})` };
+  }
+  if (parsed === null || parsed === undefined) return { valid: true };
+  if (!Array.isArray(parsed)) {
+    // Non-list YAML (e.g. the legacy `platform:\n  setup:` mapping form) is a
+    // legitimate web shape consumed downstream; only phone requires the step
+    // list (the daemon compiler enumerates it).
+    if (transport === "web") return { valid: true };
+    return { valid: false, error: `${field} must be a YAML list of steps` };
+  }
+
+  if (transport === "web") {
+    // Cross-mode rejection ONLY (recursive — for_each nests steps): aeval
+    // owns the web vocabulary, so unknown types pass through and fail at run
+    // time there, exactly as before this validator existed.
+    const err = walkStepList(parsed, (step) => {
+      const type = typeof step.type === "string" ? step.type : "";
+      return illegalWebStepType(type);
+    });
+    if (err === "too-complex") return { valid: false, error: `${field}: step script too complex (aliases/nesting)` };
+    if (err) return { valid: false, error: `${field}: ${err}` };
+    return { valid: true };
+  }
+
+  // Phone: strict, recursive, node/depth-bounded (YAML aliases expand a naive
+  // walk exponentially — walkStepList fails closed on the budget).
+  const segment: StepSegment = field === "stepsSuffix" ? "teardown" : "setup";
+  // Ordering is POSITIONAL, so check it over the raw top-level array — the
+  // walk below dedupes aliased nodes by identity, which would let a repeated
+  // alias skip a position-dependent rule.
+  let dialCount = 0;
+  if (segment === "setup") {
+    let seenNonRestful = false;
+    for (let i = 0; i < parsed.length; i++) {
+      const el: unknown = parsed[i];
+      const t = typeof el === "object" && el !== null ? String((el as Record<string, unknown>).type ?? "") : "";
+      if (t === "restful.request") {
+        if (seenNonRestful) {
+          return { valid: false, error: `${field}[${i}]: restful.request steps must lead Setup Steps — they execute before the call` };
+        }
+      } else {
+        seenNonRestful = true;
+      }
+      // Counted here over the RAW array (an aliased dial repeated at the top
+      // level would be deduped by the walk below); nested dials are counted
+      // in the walk visitor at depth > 0.
+      if (t === "call.dial" && ++dialCount > 1) {
+        return { valid: false, error: `${field}[${i}]: a phone job places exactly ONE call — remove the extra call.dial` };
+      }
+    }
+  }
+  const err = walkStepList(parsed, (step, depth) => {
+    const type = typeof step.type === "string" ? step.type : "";
+    if (!type) return "each step needs a string 'type'";
+    // A templated type could resolve to anything post-substitution — the
+    // daemon compiler re-enforces the policy there, but the smuggle shape is
+    // rejected here so authors get the error at save.
+    if (type.includes("${")) return `templated step type '${type}' is not allowed`;
+    const webVocab = illegalWebVocabInPhone(type);
+    if (webVocab) return webVocab;
+    const common = STEP_EXACT_COMMON.has(type) || STEP_PREFIXES_COMMON.some((p) => type.startsWith(p));
+    const phoneOnly = type.startsWith("call.") || type === "restful.request";
+    if (!common && !phoneOnly) return `unknown step type '${type}' for phone transport`;
+
+    if (type === "restful.request") {
+      if (segment === "teardown") return "restful.request is a Setup (pre-call) step — illegal in Teardown";
+      // Orchestrated class: only legal as the LEADING top-level run of Setup
+      // (positional rule checked above; a nested one can never execute pre-call).
+      if (depth > 0) return "restful.request cannot be nested — it must lead Setup Steps";
+      // Deliberately do NOT strip a `steps` key: validateRestfulTrigger flags
+      // it as unknown, matching what the endpoint would reject at run time.
+      const { type: _t, description: _d, ...fields } = step;
+      const shape = validateRestfulTrigger(fields);
+      if (!shape.valid) return shape.error ?? "invalid restful.request";
+      return null;
+    }
+    const segErr = illegalPhoneStepType(type, segment);
+    if (segErr) return segErr;
+    if (type === "call.dial") {
+      // ONE call per job (compiler re-enforces post-substitution, where a
+      // for_each over numbers would multiply dials past this literal count).
+      // Top-level dials were counted positionally above; only nested ones
+      // are added here (the walk visits top-level nodes too — skip those).
+      if (depth > 0 && ++dialCount > 1) return "a phone job places exactly ONE call — remove the extra call.dial";
+      // A literal number must match the dialable shape; a templated number
+      // (for_each item) is allowed here and re-checked by the compiler after
+      // substitution — the enforcement boundary.
+      const num = step.number;
+      if (typeof num !== "string" || (!num.includes("${") && !PHONE_NUMBER_RE.test(num))) {
+        return "call.dial needs number: '<phone number>'";
+      }
+    }
+    return null;
+  });
+  if (err === "too-complex") return { valid: false, error: `${field}: step script too complex (aliases/nesting)` };
+  if (err) return { valid: false, error: `${field}: ${err}` };
+  return { valid: true };
+}
+
+
+/**
+ * Best-effort parse of a Setup/Teardown YAML step list. Returns [] for empty,
+ * unparseable, or non-list input — callers gate on step presence, and an
+ * invalid script already failed save-time validation (this tolerates legacy
+ * snapshot configs without throwing).
+ */
+export function parseStepsScript(yamlText: unknown): Array<Record<string, unknown>> {
+  if (typeof yamlText !== "string" || yamlText.trim() === "") return [];
+  try {
+    const parsed = yaml.load(yamlText);
+    if (!Array.isArray(parsed)) return [];
+    // Indices are a WIRE CONTRACT (the restful endpoint addresses steps by
+    // stepIndex, computed by the daemon over the raw list) — map non-object
+    // entries to {} rather than filtering, so positions never shift.
+    return parsed.map((s): Record<string, unknown> =>
+      typeof s === "object" && s !== null && !Array.isArray(s) ? (s as Record<string, unknown>) : {});
+  } catch {
+    return [];
+  }
+}
+
+
+
+// Shape-only validation of a restful.request step's fields (design 2026-09-21 §5,
+// unified-steps 2026-09-25 §1): the template an orchestrated REST call executes.
 // Template placeholders are deliberately NOT resolved here — Core resolves them
 // from the frozen snapshot at execution time.
 const RESTFUL_TRIGGER_KEYS = new Set(["method", "url", "headers", "body", "expectStatus", "timeoutMs"]);
@@ -272,38 +431,38 @@ const RESTFUL_METHODS = new Set(["GET", "POST", "PUT", "PATCH", "DELETE"]);
 export const RESTFUL_TIMEOUT_CAP_MS = 120_000;
 export function validateRestfulTrigger(raw: unknown): { valid: boolean; error?: string } {
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
-    return { valid: false, error: "restfulTrigger must be an object" };
+    return { valid: false, error: "restful.request fields must be an object" };
   }
   const t = raw as Record<string, unknown>;
   for (const k of Object.keys(t)) {
-    if (!RESTFUL_TRIGGER_KEYS.has(k)) return { valid: false, error: `restfulTrigger: unknown field '${k}'` };
+    if (!RESTFUL_TRIGGER_KEYS.has(k)) return { valid: false, error: `restful.request: unknown field '${k}'` };
   }
   if (typeof t.method !== "string" || !RESTFUL_METHODS.has(t.method)) {
-    return { valid: false, error: "restfulTrigger.method must be GET/POST/PUT/PATCH/DELETE" };
+    return { valid: false, error: "restful.request method must be GET/POST/PUT/PATCH/DELETE" };
   }
-  if (typeof t.url !== "string") return { valid: false, error: "restfulTrigger.url must be a string" };
+  if (typeof t.url !== "string") return { valid: false, error: "restful.request url must be a string" };
   // Placeholders may appear in the path/query but not the scheme/host position.
   let parsed: URL;
-  try { parsed = new URL(t.url); } catch { return { valid: false, error: "restfulTrigger.url is not a valid URL" }; }
+  try { parsed = new URL(t.url); } catch { return { valid: false, error: "restful.request url is not a valid URL" }; }
   const httpOkay = parsed.protocol === "http:" && (parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1");
   if (parsed.protocol !== "https:" && !httpOkay) {
-    return { valid: false, error: "restfulTrigger.url must be https (http allowed for localhost only)" };
+    return { valid: false, error: "restful.request url must be https (http allowed for localhost only)" };
   }
   if (t.headers !== undefined) {
     if (typeof t.headers !== "object" || t.headers === null || Array.isArray(t.headers)
       || Object.values(t.headers as Record<string, unknown>).some((v) => typeof v !== "string")) {
-      return { valid: false, error: "restfulTrigger.headers must be a string map" };
+      return { valid: false, error: "restful.request headers must be a string map" };
     }
   }
   if (t.expectStatus !== undefined) {
     if (!Array.isArray(t.expectStatus) || t.expectStatus.length === 0
       || t.expectStatus.some((s) => !Number.isInteger(s) || (s as number) < 100 || (s as number) > 599)) {
-      return { valid: false, error: "restfulTrigger.expectStatus must be a non-empty array of HTTP status codes" };
+      return { valid: false, error: "restful.request expectStatus must be a non-empty array of HTTP status codes" };
     }
   }
   if (t.timeoutMs !== undefined) {
     if (!Number.isInteger(t.timeoutMs) || (t.timeoutMs as number) <= 0 || (t.timeoutMs as number) > RESTFUL_TIMEOUT_CAP_MS) {
-      return { valid: false, error: `restfulTrigger.timeoutMs must be 1..${RESTFUL_TIMEOUT_CAP_MS}` };
+      return { valid: false, error: `restful.request timeoutMs must be 1..${RESTFUL_TIMEOUT_CAP_MS}` };
     }
   }
   return { valid: true };
@@ -316,6 +475,10 @@ export function validateEvalSetConfig(config: unknown): { valid: boolean; error?
   if (typeof config !== "object" || Array.isArray(config)) {
     return { valid: false, error: "Config must be an object" };
   }
+  // Size cap FIRST — before any YAML parse (see validateEvalflowConfig).
+  if (JSON.stringify(config).length > MAX_CONFIG_SIZE) {
+    return { valid: false, error: "Config too large (max 100KB)" };
+  }
   const c = config as Record<string, unknown>;
   for (const k of EVALFLOW_ONLY_KEYS) {
     if (k in c) {
@@ -325,11 +488,42 @@ export function validateEvalSetConfig(config: unknown): { valid: boolean; error?
   if (c.scenario !== undefined && typeof c.scenario !== "string") {
     return { valid: false, error: "Config scenario must be a string" };
   }
-  if (JSON.stringify(config).length > MAX_CONFIG_SIZE) {
-    return { valid: false, error: "Config too large (max 100KB)" };
+  // SECURITY: the conversation must never place/end calls or fire REST
+  // requests — those are evalflow Setup/Teardown vocabulary, and an eval set
+  // can be a public third-party artifact combined with someone else's SIM
+  // (a conversation-injected call.dial is toll fraud). The daemon splitter
+  // enforces the same rule at run time; this rejects it at save.
+  if (typeof c.scenario === "string" && c.scenario.trim() !== "") {
+    let doc: unknown;
+    try { doc = yaml.load(c.scenario); } catch { doc = null; /* aeval's parse problem, not ours */ }
+    const steps = (doc as { steps?: unknown } | null)?.steps;
+    const illegal = Array.isArray(steps) ? findIllegalScenarioStep(steps) : null;
+    if (illegal === "too-complex") {
+      return { valid: false, error: "scenario: step script too complex (aliases/nesting)" };
+    }
+    if (illegal) {
+      return { valid: false, error: `scenario: ${illegal}` };
+    }
   }
   return { valid: true };
 }
+
+/** Bounded scan of an eval-set conversation for step types that belong to
+ * the evalflow (call-control / REST / SMS) — plus templated types, which
+ * could resolve to those post-substitution (the daemon compiler is the
+ * enforcement boundary; this rejects the smuggle shape at save). Returns an
+ * error string, "too-complex" when the walk budget is exceeded (fail
+ * closed), else null. */
+function findIllegalScenarioStep(steps: unknown[]): string | null {
+  return walkStepList(steps, (step) => {
+    const type = typeof step.type === "string" ? step.type : "";
+    const err = illegalPhoneStepType(type, "conversation");
+    if (err) return err;
+    if (type.includes("${")) return `templated step type '${type}' is not allowed`;
+    return null;
+  });
+}
+
 
 export function mergeEvalConfig(
   evalflowConfig: unknown,

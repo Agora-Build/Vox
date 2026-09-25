@@ -13,10 +13,11 @@ import { validateTierChoice, resolveTargetedDispatch, filterDispatchableAgents }
 import { getMarketplace } from "./marketplace";
 import { isAlreadyMemberError, getOrganizations, requireOrganizations, type Membership, type OrgSecretRow } from "./organizations";
 import { fingerprintCredential, formatLastFailedHttpStatus, parseLastFailedHttpStatus } from "@shared/credentials";
-import { parsePlatformSetup, sessionScopeForEvalflow, evaluateSessionRequirement, getBrokeredSecretNames, areLoginSecretsAttested, ensureSession, stampOwnerSession, credentialKeyFor, SESSION_FRESH_MARGIN_SECONDS, classifyReferencedSecrets, findBrokeredMisuse, defaultBrokerTypeForName, resolveBrokerType, type SessionNeed, detectSessionNeed, missingSecretNames, resolvableSecretSources } from "./auth-session";
+import { sessionScopeForEvalflow, areLoginSecretsAttested, ensureSession, stampOwnerSession, credentialKeyFor, SESSION_FRESH_MARGIN_SECONDS, classifyReferencedSecrets, findBrokeredMisuse, resolveBrokerType, type SessionNeed, detectSessionNeed, missingSecretNames, resolvableSecretSources } from "./auth-session";
 import { validateRegisterPayload, cacheBrokerMintSecret, hasBrokerMintSecret, routeToBroker, executeViaBroker, KNOWN_BROKER_TYPES } from "./broker-registry";
 import { resolveRestfulTemplate } from "./restful-exec";
-import { validateRestfulTrigger } from "./storage";
+import { validateRestfulTrigger, parseStepsScript, stepsContainCallDial } from "./storage";
+import { PHONE_NUMBER_RE } from "@shared/steps";
 import { deriveApiKeyStatus } from "./api-key-status";
 import { isStaleOfflineAgent } from "./agent-liveness";
 import { runAgentLocationCheck, LOCATION_RECHECK_HOURS, getGeoipAttribution, reloadGeoReaders } from "./location";
@@ -1882,7 +1883,7 @@ export async function registerRoutes(
       }
 
       if (config) {
-        const v = validateEvalflowConfig(config);
+        const v = validateEvalflowConfig(config, transport === "phone" ? "phone" : "web");
         if (!v.valid) return res.status(400).json({ error: v.error });
       }
 
@@ -1946,15 +1947,27 @@ export async function registerRoutes(
       }
 
       const { name, description, visibility, config, projectId, providerId, transport } = req.body;
-      if (config) {
-        const v = validateEvalflowConfig(config);
-        if (!v.valid) return res.status(400).json({ error: v.error });
+      if (transport !== undefined && !["web", "phone"].includes(transport)) {
+        return res.status(400).json({ error: "Invalid transport" });
+      }
+      // Steps vocabulary is transport-scoped, so validate the RESULTING pair:
+      // a new config against the (possibly changed) transport, and — when only
+      // the transport flips — the existing config against the new mode.
+      const resultingTransport = (transport ?? evalflow.transport ?? "web") as "web" | "phone";
+      const configToValidate = config ?? (transport !== undefined ? evalflow.config : undefined);
+      if (configToValidate) {
+        const v = validateEvalflowConfig(configToValidate, resultingTransport);
+        if (!v.valid) {
+          // A transport-only flip re-validates the EXISTING config — say so,
+          // or the error reads like the (unchanged) config suddenly broke.
+          const hint = config === undefined && transport !== undefined
+            ? ` (the existing config is invalid for transport '${resultingTransport}' — send a rewritten config with the transport change)`
+            : "";
+          return res.status(400).json({ error: `${v.error}${hint}` });
+        }
       }
       const updates: Record<string, unknown> = {};
       if (transport !== undefined) {
-        if (!["web", "phone"].includes(transport)) {
-          return res.status(400).json({ error: "Invalid transport" });
-        }
         // Live-row edit only — every existing job froze its own copy (design §3).
         updates.transport = transport;
       }
@@ -4546,10 +4559,31 @@ export async function registerRoutes(
 
       const snap = auth.job.snapshot;
       const snapEvalflow = snap?.evalflow;
-      const trigger = (snapEvalflow?.config as Record<string, unknown> | undefined)?.restfulTrigger;
-      if (!snapEvalflow || trigger === undefined) {
-        return res.status(400).json({ error: "no restfulTrigger on this job" });
+      if (!snapEvalflow) {
+        return res.status(400).json({ error: "job has no evalflow snapshot" });
       }
+      // The executed template comes from the FROZEN snapshot's Setup script,
+      // addressed by step index (unified-steps §3) — the daemon computed the
+      // index from the same byte-identical stepsPrefix, and the caller cannot
+      // substitute a different template (TOCTOU, same rule as before).
+      const stepIndex: unknown = req.body?.stepIndex;
+      if (typeof stepIndex !== "number" || !Number.isInteger(stepIndex) || stepIndex < 0) {
+        return res.status(400).json({ error: "stepIndex required (index into Setup Steps)" });
+      }
+      const setup = parseStepsScript((snapEvalflow.config as Record<string, unknown> | undefined)?.stepsPrefix);
+      const step = setup[stepIndex];
+      if (!step || step.type !== "restful.request") {
+        return res.status(400).json({ error: `Setup step ${stepIndex} is not a restful.request step` });
+      }
+      // Self-contained ordering check (don't trust save-time validation alone
+      // on a frozen snapshot): only steps in the LEADING restful run are
+      // executable pre-call — the daemon computes indices the same way.
+      for (let i = 0; i < stepIndex; i++) {
+        if (setup[i]?.type !== "restful.request") {
+          return res.status(400).json({ error: `Setup step ${stepIndex} is not in the leading restful.request run` });
+        }
+      }
+      const { type: _t, description: _d, ...trigger } = step;
       // Defense against malformed legacy snapshots — same shape rule as creation.
       const shape = validateRestfulTrigger(trigger);
       if (!shape.valid) return res.status(400).json({ error: shape.error });
@@ -4565,8 +4599,14 @@ export async function registerRoutes(
         }
       }
 
-      const phoneNumber = typeof req.body?.variables?.phoneNumber === "string"
-        ? req.body.variables.phoneNumber : undefined;
+      // The ONE caller-suppliable variable, and it substitutes into the URL —
+      // constrain it to the dialable shape (no URL delimiters / authority
+      // syntax can pass), so a compromised agent cannot redirect the request.
+      const rawPhone = req.body?.variables?.phoneNumber;
+      if (rawPhone !== undefined && (typeof rawPhone !== "string" || !PHONE_NUMBER_RE.test(rawPhone))) {
+        return res.status(400).json({ error: "variables.phoneNumber must be a phone number" });
+      }
+      const phoneNumber = typeof rawPhone === "string" ? rawPhone : undefined;
       const resolved = resolveRestfulTemplate(trigger as import("@shared/schema").RestfulTrigger, secretMap, { phoneNumber });
       if (!resolved.ok) {
         // Name-only errors by construction; still no secret values here.
@@ -4627,12 +4667,22 @@ export async function registerRoutes(
         return res.status(403).json({ error: "Not authorized to run this evalflow" });
       }
 
-      // A phone-transport evalflow needs a call-establishment mechanism (design
-      // §4): refuse at the source rather than create a job the daemon must fail.
+      // A phone-transport evalflow needs a call-establishment step in Setup
+      // (unified-steps §4): refuse at the source rather than create a job the
+      // daemon must fail. Trigger-only scripts (restful.request, no call.dial)
+      // are authorable but not yet runnable — agent-outbound answering is
+      // gated on DialF R7 (machine-readable serve results).
       if (evalflow.transport === "phone") {
-        const wfConfig = (evalflow.config ?? {}) as Record<string, unknown>;
-        if (wfConfig.phoneDial === undefined && wfConfig.restfulTrigger === undefined) {
-          return res.status(400).json({ error: "phone evalflow needs phoneDial or restfulTrigger in its config" });
+        const setup = parseStepsScript(((evalflow.config ?? {}) as Record<string, unknown>).stepsPrefix);
+        // Recursive: the daemon compiler unrolls for_each, so a nested dial arms the gate.
+        const hasDial = stepsContainCallDial(setup);
+        if (!hasDial) {
+          const hasTrigger = setup.some((s) => s.type === "restful.request");
+          return res.status(400).json({
+            error: hasTrigger
+              ? "agent-outbound trigger mode is pending DialF R7 — add a call.dial step to Setup Steps"
+              : "phone evalflow Setup Steps establish no call — add a call.dial step",
+          });
         }
       }
 

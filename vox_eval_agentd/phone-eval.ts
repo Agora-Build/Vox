@@ -1,13 +1,16 @@
 /**
- * Phone-eval pure helpers (design 2026-09-21 §6; DialF ≥ v0.3.8 contract):
- * compile an eval-set conversation into a DialF job, size its read timeout,
- * adapt the DialF result into an aeval-analyzable session dir + callMetadata.
+ * Phone-eval pure helpers (unified-steps design 2026-09-25 §2; DialF ≥ v0.3.8
+ * contract): split the unified script (Setup + eval-set conversation +
+ * Teardown) by Libretto execution class, compile each segment into DialF
+ * steps under its own vocabulary policy, size the read timeout, and adapt
+ * the DialF result into an aeval-analyzable session dir + callMetadata.
  * Everything here is pure or filesystem-only — no sockets, no processes —
  * so the daemon's phone path is testable without hardware.
  */
 import * as fs from 'fs';
 import * as path from 'path';
 import { createHash } from 'crypto';
+import { PHONE_NUMBER_RE, illegalPhoneStepType, illegalWebVocabInPhone, walkStepList, stepsContainCallDial } from '../shared/steps';
 
 // ---- compiler ---------------------------------------------------------------
 
@@ -26,12 +29,17 @@ export interface CompileOpts {
    * root, e.g. `corpus/turn_taking/en/audio/x.wav`) → absolute path
    * (null = not found). Absent ⇒ relative paths are rejected. */
   resolveRelativeFile?: (relPath: string) => string | null;
+  /** SECURITY — segment policy, enforced AFTER ${item} substitution (a
+   * for_each item can smuggle a step type past any raw-text scan):
+   *   'setup'    — evalflow Setup: full call.* allowed
+   *   'conversation' — eval-set body: call / restful / sms steps forbidden
+   *   'teardown' — evalflow Teardown: only call.hangup among call.* */
+  segment: 'setup' | 'conversation' | 'teardown';
+  /** Step-id prefix so separately compiled segments never collide. */
+  idPrefix?: string;
 }
 
 export type CompileResult = { ok: true; steps: DialfStep[] } | { ok: false; error: string };
-
-/** Steps that are web-session vocabulary — never legal inside a phone conversation. */
-const WEB_ONLY_PREFIXES = ['platform.', 'browser.'];
 
 /** Allowance per audio.play for unknown clip length when sizing the read timeout. */
 const PLAY_ALLOWANCE_MS = 30_000;
@@ -43,7 +51,7 @@ const DEFAULTS = { end_timeout_ms: 45_000, timeout_ms: 15_000, answer_timeout_ms
 export function compilePhoneConversation(rawSteps: unknown[], opts: CompileOpts): CompileResult {
   const out: DialfStep[] = [];
   let n = 0;
-  const id = () => `s${++n}`;
+  const id = () => `${opts.idPrefix ?? 's'}${++n}`;
 
   const substitute = (value: unknown, item: unknown): unknown => {
     if (typeof value !== 'string') return value;
@@ -54,15 +62,35 @@ export function compilePhoneConversation(rawSteps: unknown[], opts: CompileOpts)
     return s;
   };
 
-  const emit = (steps: unknown[], item: unknown): string | null => {
+  const MAX_EMIT_DEPTH = 16;
+  const MAX_EMITTED_STEPS = 2000;
+  // Work budget counts every RAW step processed, not just emitted output —
+  // nested for_each over no-output steps (e.g. dropped audio.start_recording)
+  // with aliased big item lists would otherwise burn |items|^depth iterations
+  // while out.length stays 0.
+  const MAX_EMIT_ITERATIONS = 20_000;
+  let iterations = 0;
+  const emit = (steps: unknown[], item: unknown, depth = 0): string | null => {
+    if (depth > MAX_EMIT_DEPTH) return 'step script too deeply nested';
     for (const raw of steps) {
+      if (++iterations > MAX_EMIT_ITERATIONS) return `script expands past ${MAX_EMIT_ITERATIONS} loop iterations`;
+      if (out.length > MAX_EMITTED_STEPS) return `script expands past ${MAX_EMITTED_STEPS} steps`;
       if (typeof raw !== 'object' || raw === null) return 'step must be an object';
       const step = Object.fromEntries(
         Object.entries(raw as Record<string, unknown>).map(([k, v]) => [k, substitute(v, item)]),
       );
       const type = String(step.type ?? '');
-      if (WEB_ONLY_PREFIXES.some((p) => type.startsWith(p))) {
-        return `'${type}' is web-session vocabulary — illegal in a phone conversation`;
+      {
+        const webVocab = illegalWebVocabInPhone(type);
+        if (webVocab) return webVocab;
+      }
+      // Segment policy on the POST-substitution type — the only place the
+      // real type is known (a for_each item like {t: call.dial} + type:
+      // "${item.t}" evades every raw-text scan upstream). Shared with Core's
+      // save-time validation (shared/steps.ts) so the rules cannot drift.
+      {
+        const segErr = illegalPhoneStepType(type, opts.segment);
+        if (segErr) return segErr;
       }
       switch (type) {
         case 'audio.start_recording':
@@ -110,6 +138,41 @@ export function compilePhoneConversation(rawSteps: unknown[], opts: CompileOpts)
             description: step.description,
           });
           continue;
+        case 'call.dial': {
+          // POST-substitution shape check: a templated number passed save-time
+          // validation on faith; here the real value must be dialable (blocks
+          // USSD codes and anything else outside the number shape).
+          if (typeof step.number !== 'string' || !PHONE_NUMBER_RE.test(step.number)) {
+            return `call.dial number is not a dialable phone number: '${String(step.number ?? '')}'`;
+          }
+          // ONE call per job (post-substitution — a for_each over numbers
+          // multiplies dials past any raw-text count): a phone eval measures
+          // one conversation with one agent, and on marketplace agents each
+          // extra dial is toll-fraud surface on someone else's SIM.
+          if (out.some((s) => s.type === 'call.dial')) {
+            return 'a phone job places exactly ONE call — remove the extra call.dial';
+          }
+          out.push({ type: 'call.dial', id: id(), number: step.number, description: step.description });
+          continue;
+        }
+        case 'call.wait_answered':
+          out.push({
+            type: 'call.wait_answered', id: id(),
+            timeout_ms: step.timeout_ms ?? DEFAULTS.answer_timeout_ms,
+            description: step.description,
+          });
+          continue;
+        case 'call.answer':
+          out.push({ type: 'call.answer', id: id(), timeout_ms: step.timeout_ms, description: step.description });
+          continue;
+        case 'call.hangup':
+          out.push({ type: 'call.hangup', id: id(), description: step.description });
+          continue;
+        case 'restful.request':
+          // Orchestrated class — split off BEFORE compilation (session-block
+          // rule, Libretto §3). Reaching the compiler means it sat inside the
+          // session block, which is illegal.
+          return 'restful.request must lead Setup Steps (before the call) — illegal inside the session block';
         case 'control.wait': case 'wait':
           out.push({ type: 'wait', id: id(), ms: step.ms ?? 1000 });
           continue;
@@ -126,7 +189,7 @@ export function compilePhoneConversation(rawSteps: unknown[], opts: CompileOpts)
           const inner = (raw as Record<string, unknown>).steps;
           if (!Array.isArray(inner)) return 'control.for_each needs steps';
           for (const it of items) {
-            const err = emit(inner, it);
+            const err = emit(inner, it, depth + 1);
             if (err) return err;
           }
           continue;
@@ -140,18 +203,113 @@ export function compilePhoneConversation(rawSteps: unknown[], opts: CompileOpts)
 
   const err = emit(rawSteps, null);
   if (err) return { ok: false, error: err };
-  if (out.length === 0) return { ok: false, error: 'conversation compiled to zero steps' };
+  if (out.length === 0 && opts.segment === 'conversation') {
+    return { ok: false, error: 'conversation compiled to zero steps' };
+  }
   return { ok: true, steps: out };
 }
 
-/** Wrap a compiled conversation as an agent-inbound job (we dial the agent): dial → wait → conv → hangup. */
-export function buildInboundJob(targetNumber: string, conversation: DialfStep[]): DialfStep[] {
-  return [
-    { type: 'call.dial', id: 'dial', number: targetNumber },
-    { type: 'call.wait_answered', id: 'answered', timeout_ms: DEFAULTS.answer_timeout_ms },
-    ...conversation,
-    { type: 'call.hangup', id: 'bye' },
-  ];
+// ---- script splitter (unified-steps design 2026-09-25 §2) -------------------
+// Setup + conversation + teardown form ONE Libretto script. Partition by
+// execution class: leading restful.request steps in Setup are orchestrated
+// (executed daemon-side via Core, pre-call); everything else is one contiguous
+// session block handed to DialF whole (the session-block rule).
+
+export interface SplitScript {
+  /** Orchestrated pre-call REST steps, each with its ABSOLUTE index within
+   * stepsPrefix — the Core endpoint resolves the template from the frozen
+   * snapshot by that index (TOCTOU: the daemon never sends the template). */
+  restfulPrecall: Array<{ stepIndex: number }>;
+  /** Whether the evalflow's OWN Setup establishes a call (recursive — the
+   * compiler unrolls for_each, so the gate must see nested dials too). The
+   * gate input: deliberately not derived from the conversation, which is
+   * banned from call.* (segment policy in the compiler). */
+  setupHasDial: boolean;
+  /** The three raw segments, compiled SEPARATELY with per-segment policies
+   * (the policy must apply post-substitution — see CompileOpts.segment). */
+  setupRaw: unknown[];
+  conversationRaw: unknown[];
+  teardownRaw: unknown[];
+}
+
+export type SplitResult = { ok: true; value: SplitScript } | { ok: false; error: string };
+
+export function splitPhoneScript(
+  prefixSteps: unknown[],
+  conversationSteps: unknown[],
+  suffixSteps: unknown[],
+): SplitResult {
+  const restfulPrecall: Array<{ stepIndex: number }> = [];
+  let firstNonRestful = 0;
+  while (
+    firstNonRestful < prefixSteps.length &&
+    typeof prefixSteps[firstNonRestful] === 'object' && prefixSteps[firstNonRestful] !== null &&
+    (prefixSteps[firstNonRestful] as Record<string, unknown>).type === 'restful.request'
+  ) {
+    restfulPrecall.push({ stepIndex: firstNonRestful });
+    firstNonRestful++;
+  }
+  // Recursive scan (control.for_each nests steps) for step types that are
+  // illegal in a given segment — the EARLY, raw-text check with precise
+  // errors. SECURITY NOTE: the raw type can be a "${item.x}" placeholder, so
+  // this scan alone is evadable; the compiler re-enforces the same policy on
+  // the POST-substitution type (CompileOpts.segment) — that one is the
+  // boundary. The threat: the conversation comes from the EVAL SET — a
+  // different, possibly public-third-party author than the evalflow — and
+  // must never place, answer, or end calls on the runner's SIM (a
+  // conversation-injected call.dial is toll fraud). Teardown belongs to the
+  // evalflow author but runs post-conversation: only call.hangup is
+  // meaningful there — a Teardown call.dial would start a SECOND call.
+  const findIllegal = (steps: unknown[], offset: number, banned: (type: string) => boolean): string | null => {
+    // Bounded + cycle-safe (shared/steps.ts): YAML aliases expand a naive
+    // recursive walk exponentially. Budget exceeded fails closed below.
+    const result = walkStepList(steps.slice(offset), (step) => {
+      const type = typeof step.type === 'string' ? step.type : '';
+      return banned(type) ? type : null;
+    });
+    return result; // illegal type, 'too-complex', or null
+  };
+  // Strict ordering: restful.request only as a LEADING run of Setup. One found
+  // later would execute out of order (pre-call, but written mid-session).
+  const tooComplex = (r: string | null) => r === 'too-complex';
+  const prefixIllegal = findIllegal(prefixSteps, firstNonRestful, (t) => t === 'restful.request');
+  if (tooComplex(prefixIllegal)) return { ok: false, error: 'Setup Steps too complex (aliases/nesting)' };
+  if (prefixIllegal) {
+    return { ok: false, error: 'restful.request steps must lead Setup Steps — they execute before the call' };
+  }
+  // Segment bans come from the SHARED policy (shared/steps.ts) — the same
+  // rule the compiler re-applies post-substitution, so the raw scan can
+  // never drift from the boundary check.
+  const convIllegal = findIllegal(conversationSteps, 0, (t) => illegalPhoneStepType(t, 'conversation') !== null);
+  if (tooComplex(convIllegal)) return { ok: false, error: 'conversation steps too complex (aliases/nesting)' };
+  if (convIllegal) {
+    return { ok: false, error: illegalPhoneStepType(convIllegal, 'conversation')! };
+  }
+  const suffixIllegal = findIllegal(suffixSteps, 0, (t) => illegalPhoneStepType(t, 'teardown') !== null || t === 'restful.request');
+  if (tooComplex(suffixIllegal)) return { ok: false, error: 'Teardown Steps too complex (aliases/nesting)' };
+  if (suffixIllegal) {
+    return { ok: false, error: illegalPhoneStepType(suffixIllegal, 'teardown') ?? `'${suffixIllegal}' is illegal in Teardown Steps` };
+  }
+  return {
+    ok: true,
+    value: {
+      restfulPrecall,
+      // Recursive + bounded (shared/steps.ts): the compiler unrolls for_each,
+      // so a nested call.dial in Setup arms the gate; a "${item}" type cannot
+      // (only a literal dial counts — templated types fail compile later).
+      setupHasDial: stepsContainCallDial(prefixSteps),
+      setupRaw: prefixSteps.slice(firstNonRestful),
+      conversationRaw: conversationSteps,
+      teardownRaw: suffixSteps,
+    },
+  };
+}
+
+/** Safety guarantee (§2, approved Q2 scope): the session block always ENDS the
+ * call — append a hangup when the script's own teardown omitted it. */
+export function ensureTrailingHangup(steps: DialfStep[]): DialfStep[] {
+  if (steps.length > 0 && steps[steps.length - 1].type === 'call.hangup') return steps;
+  return [...steps, { type: 'call.hangup', id: 'bye' }];
 }
 
 /** Read-timeout for a blocking job.run: the job's own worst case + slack (contract §4). */
@@ -306,6 +464,14 @@ export function computePhoneRateEntries(
 export interface PhoneRunDeps {
   /** One-shot DialF op on a dedicated connection (DialfClient.call). */
   dialfCall: (op: string, fields: Record<string, unknown>, timeoutMs?: number) => Promise<unknown>;
+  /** Execute the Setup restful.request step at stepIndex via Core's trusted
+   * endpoint (the template resolves from the FROZEN snapshot there, never
+   * here); throws on failure — a failed trigger fails the job pre-call. */
+  executeRestful: (stepIndex: number) => Promise<void>;
+  /** Best-effort end-the-call rescue on a FRESH DialF connection (job.cancel +
+   * call.hangup, errors swallowed) — invoked whenever job.run fails so a
+   * script/daemon failure never leaves a carrier call off-hook (§2, Q2). */
+  safetyHangup: () => Promise<void>;
   /** Run `aeval analyze <sessionDir>`; throws on non-zero exit. */
   analyze: (sessionDir: string) => Promise<void>;
   /** Parse metrics from the analyzed session dir; null = nothing usable. */
@@ -316,11 +482,12 @@ export interface PhoneRunDeps {
 
 export interface PhoneRunConfig {
   jobId: number;
+  /** Parsed Setup Steps (config.stepsPrefix YAML; [] when absent). */
+  prefixSteps: unknown[];
+  /** Parsed eval-set conversation steps. */
   scenarioSteps: unknown[];
-  /** Outbound mode: we call the agent (design §4 — "We call the agent"). */
-  phoneDial?: { number: string };
-  /** Trigger mode flag (agent calls us) — NOT yet supported, see below. */
-  hasRestfulTrigger: boolean;
+  /** Parsed Teardown Steps (config.stepsSuffix YAML; [] when absent). */
+  suffixSteps: unknown[];
   resolveCorpusFile: CompileOpts['resolveCorpusFile'];
   resolveCorpusSet?: CompileOpts['resolveCorpusSet'];
   resolveRelativeFile?: CompileOpts['resolveRelativeFile'];
@@ -335,45 +502,82 @@ export interface PhoneRunOutput {
 }
 
 /**
- * Execute one phone-transport job end to end. Direction is the AGENT's
- * perspective: v1 supports the INBOUND mode fully (we dial the agent →
- * conversation → structured result → analyze). The trigger/OUTBOUND mode
- * (agent dials us after a browser/restful trigger) is
- * deliberately unsupported until DialF exposes a machine-readable result for
+ * Execute one phone-transport job end to end: split the unified script
+ * (Setup + conversation + Teardown), run orchestrated restful.request steps
+ * via Core, hand the session block to DialF whole, analyze the session dir.
+ *
+ * Direction is the AGENT's perspective: v1 supports the INBOUND mode fully
+ * (Setup dials the agent via call.dial). The trigger/OUTBOUND mode (agent
+ * dials us after a restful/web trigger) is authorable but deliberately
+ * unsupported until DialF exposes a machine-readable result for
  * serve-answered calls or a wait-for-ring step (requirements doc R7): serve
  * event strings are human-only by contract, and racing `call.answer` against
  * the ring is not a foundation.
  */
 export async function runPhoneJob(cfg: PhoneRunConfig, deps: PhoneRunDeps): Promise<PhoneRunOutput> {
-  if (!cfg.phoneDial?.number) {
-    throw new Error(cfg.hasRestfulTrigger
-      ? 'phone outbound mode (agent calls us) is not yet supported — pending DialF machine-readable serve results (R7); use phoneDial'
-      : 'phone evalflow config needs phoneDial.number');
+  const split = splitPhoneScript(cfg.prefixSteps, cfg.scenarioSteps, cfg.suffixSteps);
+  if (!split.ok) throw new Error(`phone script split failed: ${split.error}`);
+
+  // Call-establishment gate (mirrors the server's run-route gate — orphaned
+  // jobs reach the daemon with only the frozen snapshot config). Setup only:
+  // the eval-set conversation is banned from call.* by the splitter.
+  if (!split.value.setupHasDial) {
+    throw new Error(split.value.restfulPrecall.length > 0
+      ? 'agent-outbound trigger mode is not yet supported — pending DialF machine-readable serve results (R7); add a call.dial step'
+      : 'phone evalflow Setup Steps establish no call — add a call.dial step');
   }
-  const compiled = compilePhoneConversation(cfg.scenarioSteps, {
+
+  // Compile each segment under its own policy (enforced post-substitution —
+  // the security boundary for eval-set call.* smuggling via ${item} types).
+  const baseOpts = {
     resolveCorpusFile: cfg.resolveCorpusFile,
     resolveCorpusSet: cfg.resolveCorpusSet,
     resolveRelativeFile: cfg.resolveRelativeFile,
-  });
-  if (!compiled.ok) throw new Error(`phone conversation compile failed: ${compiled.error}`);
+  };
+  const setup = compilePhoneConversation(split.value.setupRaw, { ...baseOpts, segment: 'setup', idPrefix: 'p' });
+  if (!setup.ok) throw new Error(`phone Setup compile failed: ${setup.error}`);
+  const conv = compilePhoneConversation(split.value.conversationRaw, { ...baseOpts, segment: 'conversation', idPrefix: 's' });
+  if (!conv.ok) throw new Error(`phone conversation compile failed: ${conv.error}`);
+  const teardown = compilePhoneConversation(split.value.teardownRaw, { ...baseOpts, segment: 'teardown', idPrefix: 't' });
+  if (!teardown.ok) throw new Error(`phone Teardown compile failed: ${teardown.error}`);
 
-  const conversation = stagePlayFiles(compiled.steps, cfg.exchangeDir ?? null);
-  const steps = buildInboundJob(cfg.phoneDial.number, conversation);
+  const steps = ensureTrailingHangup(
+    stagePlayFiles([...setup.steps, ...conv.steps, ...teardown.steps], cfg.exchangeDir ?? null),
+  );
   const timeoutMs = sumStepTimeouts(steps);
+
+  // Orchestrated pre-call actions: any failure fails the job before a dial —
+  // no wasted carrier call, no partial results.
+  for (const { stepIndex } of split.value.restfulPrecall) {
+    await deps.executeRestful(stepIndex);
+  }
+
   // Per-run record_dir (dialfd ≥ 0.3.16) routes this run's recordings into the
   // exchange dir so the container can read them. An older dialfd ignores the
   // field and buildSessionDir then fails on the missing legs — upgrade dialfd.
   const recordDir = cfg.exchangeDir ? path.join(cfg.exchangeDir, 'recordings') : undefined;
-  const result = (await deps.dialfCall(
-    'job.run',
-    { name: `vox-job-${cfg.jobId}`, steps, ...(recordDir ? { record_dir: recordDir } : {}) },
-    timeoutMs,
-  )) as DialfJobResult;
+  let result: DialfJobResult;
+  try {
+    result = (await deps.dialfCall(
+      'job.run',
+      { name: `vox-job-${cfg.jobId}`, steps, ...(recordDir ? { record_dir: recordDir } : {}) },
+      timeoutMs,
+    )) as DialfJobResult;
+  } catch (e) {
+    // A read-timeout or transport error can strand a live carrier call —
+    // rescue on a fresh connection, then fail the job with the real cause.
+    await deps.safetyHangup();
+    throw e;
+  }
 
   const disposition = result.call?.end_reason ?? 'unknown';
   // far_end_hangup mid-conversation is a FAILED eval (partial results are never
   // reported — existing policy); completed is the only success disposition.
   if (disposition !== 'completed') {
+    // Non-completed dispositions normally mean the call already ended, but a
+    // step-level failure can report before the hangup ran — rescue is a cheap
+    // idempotent no-op when the line is already down.
+    await deps.safetyHangup();
     throw new Error(`call did not complete: disposition=${disposition}`);
   }
 

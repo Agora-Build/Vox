@@ -22,14 +22,17 @@ export function resolveRestfulTemplate(
   const used = new Set<string>();
   let failure: string | null = null;
 
-  const resolveString = (s: string): string => {
+  const resolveString = (s: string, position: "url" | "raw" = "raw"): string => {
     let out = s;
     if (out.includes(PHONE_REF)) {
       if (variables.phoneNumber === undefined) {
         failure = failure ?? "template references ${phoneNumber} but no phoneNumber variable was provided";
         return out;
       }
-      out = out.split(PHONE_REF).join(variables.phoneNumber);
+      // In the URL position, spaces/parens from carrier formatting must be
+      // percent-encoded or some HTTP clients reject the request outright.
+      const value = position === "url" ? encodeURIComponent(variables.phoneNumber) : variables.phoneNumber;
+      out = out.split(PHONE_REF).join(value);
     }
     out = out.replace(SECRET_REF, (_m, name: string) => {
       const v = secrets[name];
@@ -55,7 +58,7 @@ export function resolveRestfulTemplate(
     return node;
   };
 
-  const url = resolveString(trigger.url);
+  const url = resolveString(trigger.url, "url");
   const headers = trigger.headers
     ? Object.fromEntries(Object.entries(trigger.headers).map(([k, v]) => [k, resolveString(v)]))
     : undefined;

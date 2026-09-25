@@ -343,10 +343,11 @@ export type EvalSchedule = typeof evalSchedules.$inferSelect;
 
 // ==================== EVAL JOBS ====================
 
-// REST call-trigger template carried in evalflow config (design 2026-09-21 §5;
-// Libretto restful.request). Template placeholders (${secrets.NAME},
+// The fields of a `restful.request` Setup step (design 2026-09-21 §5,
+// unified-steps 2026-09-25 §1: it lives in the evalflow's stepsPrefix, minus
+// the `type`/`description` keys). Template placeholders (${secrets.NAME},
 // ${phoneNumber}) are resolved by Core at execution time from the FROZEN job
-// snapshot — never validated/resolved here (shape only).
+// snapshot, addressed by step index — never validated/resolved here (shape only).
 export type RestfulTrigger = {
   method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
   url: string;
