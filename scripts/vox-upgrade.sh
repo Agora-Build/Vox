@@ -228,6 +228,10 @@ for name in "${!images[@]}"; do
     mount_args=""
     dialf_detected=""
     if [ "$name" = "vox-eval-agentd" ]; then
+        # Persistent model cache (whisper/HF/VAD downloads) across container
+        # upgrades — without it, the first analyze after every upgrade re-pays
+        # the model download on top of CPU transcription.
+        mount_args+="-v vox-aeval-cache:/root/.cache "
         if [ -d /dev/snd ]; then
             device_args="--device /dev/snd --security-opt systempaths=unconfined"
         fi
