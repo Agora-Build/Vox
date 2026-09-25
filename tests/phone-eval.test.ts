@@ -26,7 +26,7 @@ describe("compilePhoneConversation", () => {
         },
         { type: "control.log", message: "done" },
       ],
-      { resolveCorpusFile: corpus },
+      { resolveCorpusFile: corpus, segment: 'conversation' },
     );
     expect(out.ok).toBe(true);
     if (!out.ok) return;
@@ -41,14 +41,14 @@ describe("compilePhoneConversation", () => {
 
   it("rejects web vocabulary, unknown corpus, unknown step, relative paths, empty result", () => {
     const bad = (steps: unknown[], errPart: string) => {
-      const r = compilePhoneConversation(steps, { resolveCorpusFile: corpus });
+      const r = compilePhoneConversation(steps, { resolveCorpusFile: corpus, segment: "conversation" });
       expect(r.ok).toBe(false);
       if (!r.ok) expect(r.error).toContain(errPart);
     };
     bad([{ type: "platform.setup" }], "web-session vocabulary");
     bad([{ type: "browser.click" }], "web-session vocabulary");
     bad([{ type: "audio.play", corpus_id: "nope" }], "unknown corpus_id");
-    bad([{ type: "restful.request" }], "must lead Setup Steps");
+    bad([{ type: "restful.request" }], "illegal in an eval-set conversation");
     bad([{ type: "audio.play", file: "relative.wav" }], "not resolvable");
     bad([], "zero steps");
   });
@@ -135,28 +135,53 @@ describe("splitPhoneScript + ensureTrailingHangup + sumStepTimeouts", () => {
     { type: "audio.wait_for_speech", end_timeout_ms: 40000 },
   ];
 
-  it("compiles setup+conversation as one session block and sizes the read timeout", () => {
+  const compileAll = (setupRaw: unknown[], convRaw: unknown[], teardownRaw: unknown[]) => {
+    const setup = compilePhoneConversation(setupRaw, { resolveCorpusFile: corpus, segment: "setup", idPrefix: "p" });
+    if (!setup.ok) throw new Error(setup.error);
+    const conv = compilePhoneConversation(convRaw, { resolveCorpusFile: corpus, segment: "conversation", idPrefix: "s" });
+    if (!conv.ok) throw new Error(conv.error);
+    const teardown = compilePhoneConversation(teardownRaw, { resolveCorpusFile: corpus, segment: "teardown", idPrefix: "t" });
+    if (!teardown.ok) throw new Error(teardown.error);
+    return [...setup.steps, ...conv.steps, ...teardown.steps];
+  };
+
+  it("compiles the three segments into one session block with unique ids and a sized timeout", () => {
     const split = splitPhoneScript(SETUP, CONV, [{ type: "call.hangup" }]);
     expect(split.ok).toBe(true);
     if (!split.ok) return;
     expect(split.value.restfulPrecall).toEqual([]);
-    const compiled = compilePhoneConversation(split.value.sessionRaw, { resolveCorpusFile: corpus });
-    if (!compiled.ok) throw new Error(compiled.error);
-    const job = ensureTrailingHangup(compiled.steps);
+    const job = ensureTrailingHangup(compileAll(split.value.setupRaw, split.value.conversationRaw, split.value.teardownRaw));
     expect(job[0]).toMatchObject({ type: "call.dial", number: "+15551234" });
     expect(job[1].type).toBe("call.wait_answered");
     expect(job[1].timeout_ms).toBe(30000); // answer default applied
     expect(job[job.length - 1].type).toBe("call.hangup");
+    expect(new Set(job.map((st) => st.id)).size).toBe(job.length); // ids unique across segments
     // 60s slack + 30s answered + 30s play allowance + 40s wait = 160s
     expect(sumStepTimeouts(job)).toBe(60000 + 30000 + 30000 + 40000);
   });
 
   it("appends call.hangup only when Teardown omitted it", () => {
-    const compiled = compilePhoneConversation([...SETUP, ...CONV], { resolveCorpusFile: corpus });
-    if (!compiled.ok) throw new Error(compiled.error);
-    const appended = ensureTrailingHangup(compiled.steps);
+    const appended = ensureTrailingHangup(compileAll(SETUP, CONV, []));
     expect(appended[appended.length - 1]).toMatchObject({ type: "call.hangup", id: "bye" });
     expect(ensureTrailingHangup(appended)).toBe(appended); // idempotent
+  });
+
+  it("SECURITY: a ${item} template cannot smuggle call.dial past the segment policy", () => {
+    // The raw scan sees only "${item.t}"; the compiler enforces the policy on
+    // the substituted type — the actual boundary.
+    const smuggle = [{
+      type: "control.for_each",
+      items: [{ t: "call.dial", n: "+1900PREMIUM" }],
+      steps: [{ type: "${item.t}", number: "${item.n}" }],
+    }];
+    const split = splitPhoneScript(SETUP, smuggle, []);
+    expect(split.ok).toBe(true); // raw scan can't see through the template…
+    const conv = compilePhoneConversation(smuggle, { resolveCorpusFile: corpus, segment: "conversation" });
+    expect(conv.ok).toBe(false); // …the compiler can.
+    if (!conv.ok) expect(conv.error).toContain("illegal in an eval-set conversation");
+    // Same template in Teardown: only hangup may survive substitution.
+    const td = compilePhoneConversation(smuggle, { resolveCorpusFile: corpus, segment: "teardown" });
+    expect(td.ok).toBe(false);
   });
 
   it("splits leading restful.request steps with their ABSOLUTE stepsPrefix indices", () => {
@@ -171,7 +196,7 @@ describe("splitPhoneScript + ensureTrailingHangup + sumStepTimeouts", () => {
     expect(split.ok).toBe(true);
     if (!split.ok) return;
     expect(split.value.restfulPrecall).toEqual([{ stepIndex: 0 }, { stepIndex: 1 }]);
-    expect((split.value.sessionRaw[0] as { type: string }).type).toBe("call.dial");
+    expect((split.value.setupRaw[0] as { type: string }).type).toBe("call.dial");
   });
 
   it("rejects restful.request out of position (mid-Setup, conversation, Teardown)", () => {
@@ -209,6 +234,10 @@ describe("splitPhoneScript + ensureTrailingHangup + sumStepTimeouts", () => {
     if (noDialSetup.ok) expect(noDialSetup.value.setupHasDial).toBe(false);
     const withDial = splitPhoneScript(SETUP, CONV, []);
     if (withDial.ok) expect(withDial.value.setupHasDial).toBe(true);
+    // Recursive: the compiler unrolls for_each, so a nested Setup dial arms the gate.
+    const nestedDial = splitPhoneScript(
+      [{ type: "control.for_each", items: [1], steps: [{ type: "call.dial", number: "+15551234" }] }], CONV, []);
+    if (nestedDial.ok) expect(nestedDial.value.setupHasDial).toBe(true);
   });
 });
 

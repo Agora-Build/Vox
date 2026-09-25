@@ -16,7 +16,7 @@ import { fingerprintCredential, formatLastFailedHttpStatus, parseLastFailedHttpS
 import { parsePlatformSetup, sessionScopeForEvalflow, evaluateSessionRequirement, getBrokeredSecretNames, areLoginSecretsAttested, ensureSession, stampOwnerSession, credentialKeyFor, SESSION_FRESH_MARGIN_SECONDS, classifyReferencedSecrets, findBrokeredMisuse, defaultBrokerTypeForName, resolveBrokerType, type SessionNeed, detectSessionNeed, missingSecretNames, resolvableSecretSources } from "./auth-session";
 import { validateRegisterPayload, cacheBrokerMintSecret, hasBrokerMintSecret, routeToBroker, executeViaBroker, KNOWN_BROKER_TYPES } from "./broker-registry";
 import { resolveRestfulTemplate } from "./restful-exec";
-import { validateRestfulTrigger, parseStepsScript } from "./storage";
+import { validateRestfulTrigger, parseStepsScript, stepsContainCallDial } from "./storage";
 import { deriveApiKeyStatus } from "./api-key-status";
 import { isStaleOfflineAgent } from "./agent-liveness";
 import { runAgentLocationCheck, LOCATION_RECHECK_HOURS, getGeoipAttribution, reloadGeoReaders } from "./location";
@@ -4652,7 +4652,8 @@ export async function registerRoutes(
       // gated on DialF R7 (machine-readable serve results).
       if (evalflow.transport === "phone") {
         const setup = parseStepsScript(((evalflow.config ?? {}) as Record<string, unknown>).stepsPrefix);
-        const hasDial = setup.some((s) => s.type === "call.dial");
+        // Recursive: the daemon compiler unrolls for_each, so a nested dial arms the gate.
+        const hasDial = stepsContainCallDial(setup);
         if (!hasDial) {
           const hasTrigger = setup.some((s) => s.type === "restful.request");
           return res.status(400).json({

@@ -384,6 +384,21 @@ export function parseStepsScript(yamlText: unknown): Array<Record<string, unknow
   }
 }
 
+/** Recursive scan (control.for_each nests steps) for a call.dial step — the
+ * phone run gate must see nested dials, since the daemon compiler unrolls
+ * for_each and accepts them. */
+export function stepsContainCallDial(steps: Array<Record<string, unknown>>): boolean {
+  for (const step of steps) {
+    if (step.type === "call.dial") return true;
+    if (Array.isArray(step.steps)) {
+      const nested = step.steps.filter(
+        (x): x is Record<string, unknown> => typeof x === "object" && x !== null && !Array.isArray(x));
+      if (stepsContainCallDial(nested)) return true;
+    }
+  }
+  return false;
+}
+
 // Shape-only validation of a restful.request step's fields (design 2026-09-21 §5,
 // unified-steps 2026-09-25 §1): the template an orchestrated REST call executes.
 // Template placeholders are deliberately NOT resolved here — Core resolves them
@@ -476,6 +491,10 @@ function findIllegalScenarioStep(steps: unknown[]): string | null {
     const step = s as Record<string, unknown>;
     const type = typeof step.type === "string" ? step.type : "";
     if (type.startsWith("call.") || type === "restful.request" || type.startsWith("sms.")) return type;
+    // A templated type ("${item.x}") could resolve to anything at run time —
+    // the daemon compiler enforces the segment policy post-substitution, but
+    // reject the smuggle shape here too so authors get the error at save.
+    if (type.includes("${")) return type;
     if (Array.isArray(step.steps)) {
       const nested = findIllegalScenarioStep(step.steps);
       if (nested) return nested;

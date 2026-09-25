@@ -26,6 +26,14 @@ export interface CompileOpts {
    * root, e.g. `corpus/turn_taking/en/audio/x.wav`) → absolute path
    * (null = not found). Absent ⇒ relative paths are rejected. */
   resolveRelativeFile?: (relPath: string) => string | null;
+  /** SECURITY — segment policy, enforced AFTER ${item} substitution (a
+   * for_each item can smuggle a step type past any raw-text scan):
+   *   'setup'    — evalflow Setup: full call.* allowed
+   *   'conversation' — eval-set body: call / restful / sms steps forbidden
+   *   'teardown' — evalflow Teardown: only call.hangup among call.* */
+  segment: 'setup' | 'conversation' | 'teardown';
+  /** Step-id prefix so separately compiled segments never collide. */
+  idPrefix?: string;
 }
 
 export type CompileResult = { ok: true; steps: DialfStep[] } | { ok: false; error: string };
@@ -43,7 +51,7 @@ const DEFAULTS = { end_timeout_ms: 45_000, timeout_ms: 15_000, answer_timeout_ms
 export function compilePhoneConversation(rawSteps: unknown[], opts: CompileOpts): CompileResult {
   const out: DialfStep[] = [];
   let n = 0;
-  const id = () => `s${++n}`;
+  const id = () => `${opts.idPrefix ?? 's'}${++n}`;
 
   const substitute = (value: unknown, item: unknown): unknown => {
     if (typeof value !== 'string') return value;
@@ -63,6 +71,17 @@ export function compilePhoneConversation(rawSteps: unknown[], opts: CompileOpts)
       const type = String(step.type ?? '');
       if (WEB_ONLY_PREFIXES.some((p) => type.startsWith(p))) {
         return `'${type}' is web-session vocabulary — illegal in a phone conversation`;
+      }
+      // Segment policy on the POST-substitution type — the only place the
+      // real type is known (a for_each item like {t: call.dial} + type:
+      // "${item.t}" evades every raw-text scan upstream).
+      if (opts.segment === 'conversation'
+        && (type.startsWith('call.') || type === 'restful.request' || type.startsWith('sms.'))) {
+        return `'${type}' is evalflow Setup/Teardown vocabulary — illegal in an eval-set conversation`;
+      }
+      if (opts.segment === 'teardown'
+        && ((type.startsWith('call.') && type !== 'call.hangup') || type === 'restful.request' || type.startsWith('sms.'))) {
+        return `'${type}' is illegal in Teardown Steps (only call.hangup ends the session)`;
       }
       switch (type) {
         case 'audio.start_recording':
@@ -165,7 +184,9 @@ export function compilePhoneConversation(rawSteps: unknown[], opts: CompileOpts)
 
   const err = emit(rawSteps, null);
   if (err) return { ok: false, error: err };
-  if (out.length === 0) return { ok: false, error: 'conversation compiled to zero steps' };
+  if (out.length === 0 && opts.segment === 'conversation') {
+    return { ok: false, error: 'conversation compiled to zero steps' };
+  }
   return { ok: true, steps: out };
 }
 
@@ -180,12 +201,16 @@ export interface SplitScript {
    * stepsPrefix — the Core endpoint resolves the template from the frozen
    * snapshot by that index (TOCTOU: the daemon never sends the template). */
   restfulPrecall: Array<{ stepIndex: number }>;
-  /** Whether the evalflow's OWN Setup establishes a call — the gate input.
-   * Deliberately not derived from the full session (the eval-set conversation
-   * is banned from call.*; see the segment scans below). */
+  /** Whether the evalflow's OWN Setup establishes a call (recursive — the
+   * compiler unrolls for_each, so the gate must see nested dials too). The
+   * gate input: deliberately not derived from the conversation, which is
+   * banned from call.* (segment policy in the compiler). */
   setupHasDial: boolean;
-  /** Raw (uncompiled) session block: setup remainder ++ conversation ++ teardown. */
-  sessionRaw: unknown[];
+  /** The three raw segments, compiled SEPARATELY with per-segment policies
+   * (the policy must apply post-substitution — see CompileOpts.segment). */
+  setupRaw: unknown[];
+  conversationRaw: unknown[];
+  teardownRaw: unknown[];
 }
 
 export type SplitResult = { ok: true; value: SplitScript } | { ok: false; error: string };
@@ -206,12 +231,16 @@ export function splitPhoneScript(
     firstNonRestful++;
   }
   // Recursive scan (control.for_each nests steps) for step types that are
-  // illegal in a given segment. SECURITY: the conversation comes from the EVAL
-  // SET — a different, possibly public-third-party author than the evalflow —
-  // so it must never place, answer, or end calls on the runner's SIM (a
+  // illegal in a given segment — the EARLY, raw-text check with precise
+  // errors. SECURITY NOTE: the raw type can be a "${item.x}" placeholder, so
+  // this scan alone is evadable; the compiler re-enforces the same policy on
+  // the POST-substitution type (CompileOpts.segment) — that one is the
+  // boundary. The threat: the conversation comes from the EVAL SET — a
+  // different, possibly public-third-party author than the evalflow — and
+  // must never place, answer, or end calls on the runner's SIM (a
   // conversation-injected call.dial is toll fraud). Teardown belongs to the
-  // evalflow author but runs post-conversation: only call.hangup is meaningful
-  // there — a Teardown call.dial would start a SECOND call.
+  // evalflow author but runs post-conversation: only call.hangup is
+  // meaningful there — a Teardown call.dial would start a SECOND call.
   const findIllegal = (steps: unknown[], offset: number, banned: (type: string) => boolean): string | null => {
     for (let i = offset; i < steps.length; i++) {
       const s = steps[i];
@@ -239,17 +268,26 @@ export function splitPhoneScript(
   if (suffixIllegal) {
     return { ok: false, error: `'${suffixIllegal}' is illegal in Teardown Steps (only call.hangup ends the session)` };
   }
+  // Recursive: the compiler unrolls for_each, so a nested call.dial in Setup
+  // is legal and must satisfy the gate (raw scan is fine here — a literal
+  // dial is required; a "${item}" type cannot ARM the gate, only fail later).
+  const hasDialDeep = (steps: unknown[]): boolean => {
+    for (const s of steps) {
+      if (typeof s !== 'object' || s === null) continue;
+      const step = s as Record<string, unknown>;
+      if (step.type === 'call.dial') return true;
+      if (Array.isArray(step.steps) && hasDialDeep(step.steps)) return true;
+    }
+    return false;
+  };
   return {
     ok: true,
     value: {
       restfulPrecall,
-      // Call establishment must come from the evalflow's OWN Setup (the
-      // conversation is banned from call.* above, so scanning Setup alone is
-      // both sufficient and the security boundary).
-      setupHasDial: prefixSteps.some(
-        (s) => typeof s === 'object' && s !== null && (s as Record<string, unknown>).type === 'call.dial',
-      ),
-      sessionRaw: [...prefixSteps.slice(firstNonRestful), ...conversationSteps, ...suffixSteps],
+      setupHasDial: hasDialDeep(prefixSteps),
+      setupRaw: prefixSteps.slice(firstNonRestful),
+      conversationRaw: conversationSteps,
+      teardownRaw: suffixSteps,
     },
   };
 }
@@ -476,14 +514,23 @@ export async function runPhoneJob(cfg: PhoneRunConfig, deps: PhoneRunDeps): Prom
       : 'phone evalflow Setup Steps establish no call — add a call.dial step');
   }
 
-  const compiled = compilePhoneConversation(split.value.sessionRaw, {
+  // Compile each segment under its own policy (enforced post-substitution —
+  // the security boundary for eval-set call.* smuggling via ${item} types).
+  const baseOpts = {
     resolveCorpusFile: cfg.resolveCorpusFile,
     resolveCorpusSet: cfg.resolveCorpusSet,
     resolveRelativeFile: cfg.resolveRelativeFile,
-  });
-  if (!compiled.ok) throw new Error(`phone script compile failed: ${compiled.error}`);
+  };
+  const setup = compilePhoneConversation(split.value.setupRaw, { ...baseOpts, segment: 'setup', idPrefix: 'p' });
+  if (!setup.ok) throw new Error(`phone Setup compile failed: ${setup.error}`);
+  const conv = compilePhoneConversation(split.value.conversationRaw, { ...baseOpts, segment: 'conversation', idPrefix: 's' });
+  if (!conv.ok) throw new Error(`phone conversation compile failed: ${conv.error}`);
+  const teardown = compilePhoneConversation(split.value.teardownRaw, { ...baseOpts, segment: 'teardown', idPrefix: 't' });
+  if (!teardown.ok) throw new Error(`phone Teardown compile failed: ${teardown.error}`);
 
-  const steps = ensureTrailingHangup(stagePlayFiles(compiled.steps, cfg.exchangeDir ?? null));
+  const steps = ensureTrailingHangup(
+    stagePlayFiles([...setup.steps, ...conv.steps, ...teardown.steps], cfg.exchangeDir ?? null),
+  );
   const timeoutMs = sumStepTimeouts(steps);
 
   // Orchestrated pre-call actions: any failure fails the job before a dial —

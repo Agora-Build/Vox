@@ -425,6 +425,12 @@ describe('Config separation validators', () => {
       expect(nested.valid).toBe(false);
       const ok = validateEvalSetConfig({ scenario: 'steps:\n  - type: audio.play\n    corpus_id: x' });
       expect(ok.valid).toBe(true);
+      // A templated type could resolve to call.dial post-substitution — the
+      // daemon compiler is the boundary, but save rejects the smuggle shape.
+      const templated = validateEvalSetConfig({
+        scenario: 'steps:\n  - type: control.for_each\n    items: [{t: call.dial}]\n    steps:\n      - type: "${item.t}"',
+      });
+      expect(templated.valid).toBe(false);
     });
 
     it('accepts a scenario body', () => {

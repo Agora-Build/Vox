@@ -17,9 +17,14 @@ SET config = (config - 'phoneDial') || jsonb_build_object(
   E'- type: call.hangup\n')
 WHERE config ? 'phoneDial'
   AND transport = 'phone'
-  AND config->'phoneDial'->>'number' IS NOT NULL
-  AND NOT (config ? 'stepsPrefix')
-  AND NOT (config ? 'stepsSuffix');
+  -- The save-time regex every phoneDial ever accepted — also guarantees the
+  -- number is YAML-safe inside the double-quoted scalar above (no quotes,
+  -- backslashes, or newlines can appear). A row failing it (never observed)
+  -- falls through to the key-drop below rather than emitting broken YAML.
+  AND config->'phoneDial'->>'number' ~ '^\+?[0-9 ()-]{5,20}$'
+  -- Empty-string steps count as absent — nothing authored to preserve.
+  AND coalesce(btrim(config->>'stepsPrefix'), '') = ''
+  AND coalesce(btrim(config->>'stepsSuffix'), '') = '';
 --> statement-breakpoint
 -- Residual sweep: any phoneDial row the conversion above did not match (web
 -- transport, null number, or pre-existing steps — kept as authored) plus any
