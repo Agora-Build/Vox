@@ -58,19 +58,26 @@ test.describe("Phone vs Agent UI", () => {
 
     await page.getByTestId("button-submit-evalflow").click();
 
-    // Row appears with the Phone badge.
-    const row = page.getByRole("row", { name: new RegExp(wfName) });
-    await expect(row).toBeVisible();
-    await expect(row.getByText("Phone", { exact: true })).toBeVisible();
-
-    // Persisted server-side.
-    const api = await page.request.get(`${BASE}/api/evalflows?includePublic=true`);
-    const rows = (await api.json()) as Array<{ name: string; transport: string; config: { stepsPrefix?: string; stepsSuffix?: string } }>;
-    const created = rows.find((r) => r.name === wfName);
+    // Persisted server-side FIRST (poll — the authoritative assertion), then
+    // reload before the row check: under full-gate load the list refetch races
+    // concurrent inserts from other specs and can miss the new row.
+    const fetchCreated = async () => {
+      const api = await page.request.get(`${BASE}/api/evalflows?includePublic=true`);
+      const rows = (await api.json()) as Array<{ name: string; transport: string; config: { stepsPrefix?: string; stepsSuffix?: string } }>;
+      return rows.find((r) => r.name === wfName);
+    };
+    await expect.poll(async () => (await fetchCreated()) != null, { timeout: 10000 }).toBeTruthy();
+    const created = await fetchCreated();
     expect(created?.transport).toBe("phone");
     expect(created?.config?.stepsPrefix).toContain("call.dial");
     expect(created?.config?.stepsPrefix).toContain("+1 555 010 1234");
     expect(created?.config?.stepsSuffix).toContain("call.hangup");
+
+    // Row appears with the Phone badge.
+    await page.reload();
+    const row = page.getByRole("row", { name: new RegExp(wfName) });
+    await expect(row).toBeVisible({ timeout: 10000 });
+    await expect(row.getByText("Phone", { exact: true })).toBeVisible();
   });
 
   test("realtime page: Evaluation Mode switch renders and Phone mode loads", async ({ page }) => {
