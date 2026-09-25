@@ -1957,7 +1957,14 @@ export async function registerRoutes(
       const configToValidate = config ?? (transport !== undefined ? evalflow.config : undefined);
       if (configToValidate) {
         const v = validateEvalflowConfig(configToValidate, resultingTransport);
-        if (!v.valid) return res.status(400).json({ error: v.error });
+        if (!v.valid) {
+          // A transport-only flip re-validates the EXISTING config — say so,
+          // or the error reads like the (unchanged) config suddenly broke.
+          const hint = config === undefined && transport !== undefined
+            ? ` (the existing config is invalid for transport '${resultingTransport}' — send a rewritten config with the transport change)`
+            : "";
+          return res.status(400).json({ error: `${v.error}${hint}` });
+        }
       }
       const updates: Record<string, unknown> = {};
       if (transport !== undefined) {

@@ -45,6 +45,19 @@ describe("resolveRestfulTemplate (unit)", () => {
     expect(out.usedSecretValues.sort()).toEqual(["sek1", "sek2"]);
   });
 
+  it("percent-encodes ${phoneNumber} in the URL position only (carrier formats carry spaces/parens)", async () => {
+    const { resolveRestfulTemplate } = await import("../server/restful-exec");
+    const out = resolveRestfulTemplate(
+      { method: "POST", url: "https://t.example/dial/${phoneNumber}", body: { to: "${phoneNumber}" } },
+      {},
+      { phoneNumber: "+1 (555) 010-1234" },
+    );
+    expect(out.ok).toBe(true);
+    if (!out.ok) return;
+    expect(out.request.url).toBe(`https://t.example/dial/${encodeURIComponent("+1 (555) 010-1234")}`);
+    expect((out.request.body as any).to).toBe("+1 (555) 010-1234"); // body stays raw
+  });
+
   it("unresolved secret name errors with the name only; missing phoneNumber errors", async () => {
     const { resolveRestfulTemplate } = await import("../server/restful-exec");
     const bad = resolveRestfulTemplate(trigger, { API_KEY: "sek1" }, { phoneNumber: "+1" });

@@ -277,15 +277,18 @@ export function splitPhoneScript(
   if (prefixIllegal) {
     return { ok: false, error: 'restful.request steps must lead Setup Steps — they execute before the call' };
   }
-  const convIllegal = findIllegal(conversationSteps, 0, (t) => t.startsWith('call.') || t === 'restful.request' || t.startsWith('sms.'));
+  // Segment bans come from the SHARED policy (shared/steps.ts) — the same
+  // rule the compiler re-applies post-substitution, so the raw scan can
+  // never drift from the boundary check.
+  const convIllegal = findIllegal(conversationSteps, 0, (t) => illegalPhoneStepType(t, 'conversation') !== null);
   if (tooComplex(convIllegal)) return { ok: false, error: 'conversation steps too complex (aliases/nesting)' };
   if (convIllegal) {
-    return { ok: false, error: `'${convIllegal}' is evalflow Setup/Teardown vocabulary — illegal in an eval-set conversation` };
+    return { ok: false, error: illegalPhoneStepType(convIllegal, 'conversation')! };
   }
-  const suffixIllegal = findIllegal(suffixSteps, 0, (t) => (t.startsWith('call.') && t !== 'call.hangup') || t === 'restful.request');
+  const suffixIllegal = findIllegal(suffixSteps, 0, (t) => illegalPhoneStepType(t, 'teardown') !== null || t === 'restful.request');
   if (tooComplex(suffixIllegal)) return { ok: false, error: 'Teardown Steps too complex (aliases/nesting)' };
   if (suffixIllegal) {
-    return { ok: false, error: `'${suffixIllegal}' is illegal in Teardown Steps (only call.hangup ends the session)` };
+    return { ok: false, error: illegalPhoneStepType(suffixIllegal, 'teardown') ?? `'${suffixIllegal}' is illegal in Teardown Steps` };
   }
   return {
     ok: true,
