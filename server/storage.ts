@@ -1,5 +1,10 @@
 import * as yaml from "js-yaml";
 import {
+  PHONE_NUMBER_RE, illegalPhoneStepType, illegalWebStepType, walkStepList,
+  type StepSegment,
+} from "@shared/steps";
+export { stepsContainCallDial } from "@shared/steps";
+import {
   type User,
   type InsertUser,
   type Organization,
@@ -280,7 +285,6 @@ export function validateEvalflowConfig(config: unknown, transport: "web" | "phon
 const STEP_EXACT_COMMON = new Set(["lab.trace", "wait", "log"]);
 const STEP_PREFIXES_COMMON = ["audio.", "control."];
 const STEP_PREFIXES_WEB = ["platform.", "browser."];
-const PHONE_NUMBER_RE = /^\+?[0-9 ()-]{5,20}$/;
 
 export function validateStepsScript(
   yamlText: string,
@@ -306,62 +310,69 @@ export function validateStepsScript(
     if (transport === "web") return { valid: true };
     return { valid: false, error: `${field} must be a YAML list of steps` };
   }
-  let seenNonRestful = false;
-  for (let i = 0; i < parsed.length; i++) {
-    const raw: unknown = parsed[i];
-    if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
-      return { valid: false, error: `${field}[${i}]: each step must be an object with a 'type'` };
-    }
-    const step = raw as Record<string, unknown>;
-    const type = typeof step.type === "string" ? step.type : "";
-    if (!type) return { valid: false, error: `${field}[${i}]: step needs a string 'type'` };
 
-    const common = STEP_EXACT_COMMON.has(type) || STEP_PREFIXES_COMMON.some((p) => type.startsWith(p));
-    const webOnly = STEP_PREFIXES_WEB.some((p) => type.startsWith(p));
-    const phoneOnly = type.startsWith("call.") || type === "restful.request";
-
-    if (transport === "web") {
-      // Cross-mode rejection ONLY: aeval owns the web vocabulary (it grows
-      // without Vox releases), so unknown types pass through and fail at run
-      // time there, exactly as before this validator existed.
-      if (phoneOnly || type.startsWith("sms.")) {
-        return { valid: false, error: `${field}[${i}]: '${type}' is phone vocabulary — illegal in a web evalflow` };
-      }
-      continue;
-    }
-    // phone
-    if (webOnly) {
-      return { valid: false, error: `${field}[${i}]: '${type}' is web-session vocabulary — illegal in a phone evalflow` };
-    }
-    if (!common && !phoneOnly) {
-      return { valid: false, error: `${field}[${i}]: unknown step type '${type}' for phone transport` };
-    }
-    if (type === "restful.request") {
-      if (field === "stepsSuffix") {
-        return { valid: false, error: `${field}[${i}]: restful.request is a Setup (pre-call) step — illegal in Teardown` };
-      }
-      // Mirror the daemon splitter's ordering rule at save time: restful
-      // steps execute pre-call, so they must be the LEADING run of Setup.
-      if (seenNonRestful) {
-        return { valid: false, error: `${field}[${i}]: restful.request steps must lead Setup Steps — they execute before the call` };
-      }
-      const { type: _t, description: _d, ...fields } = step;
-      const shape = validateRestfulTrigger(fields);
-      if (!shape.valid) return { valid: false, error: `${field}[${i}]: ${shape.error}` };
-      continue;
-    }
-    seenNonRestful = true;
-    if (field === "stepsSuffix" && type.startsWith("call.") && type !== "call.hangup") {
-      // Teardown runs post-conversation — a Teardown call.dial would start a
-      // SECOND call (mirrors the daemon splitter's segment rule).
-      return { valid: false, error: `${field}[${i}]: '${type}' is illegal in Teardown Steps (only call.hangup ends the session)` };
-    }
-    if (type === "call.dial" && (typeof step.number !== "string" || !PHONE_NUMBER_RE.test(step.number))) {
-      return { valid: false, error: `${field}[${i}]: call.dial needs number: '<phone number>'` };
-    }
+  if (transport === "web") {
+    // Cross-mode rejection ONLY (recursive — for_each nests steps): aeval
+    // owns the web vocabulary, so unknown types pass through and fail at run
+    // time there, exactly as before this validator existed.
+    const err = walkStepList(parsed, (step) => {
+      const type = typeof step.type === "string" ? step.type : "";
+      return illegalWebStepType(type);
+    });
+    if (err === "too-complex") return { valid: false, error: `${field}: step script too complex (aliases/nesting)` };
+    if (err) return { valid: false, error: `${field}: ${err}` };
+    return { valid: true };
   }
+
+  // Phone: strict, recursive, node/depth-bounded (YAML aliases expand a naive
+  // walk exponentially — walkStepList fails closed on the budget).
+  const segment: StepSegment = field === "stepsSuffix" ? "teardown" : "setup";
+  let seenTopNonRestful = false;
+  const err = walkStepList(parsed, (step, depth) => {
+    const type = typeof step.type === "string" ? step.type : "";
+    if (!type) return "each step needs a string 'type'";
+    // A templated type could resolve to anything post-substitution — the
+    // daemon compiler re-enforces the policy there, but the smuggle shape is
+    // rejected here so authors get the error at save.
+    if (type.includes("${")) return `templated step type '${type}' is not allowed`;
+    if (STEP_PREFIXES_WEB.some((p) => type.startsWith(p))) {
+      return `'${type}' is web-session vocabulary — illegal in a phone evalflow`;
+    }
+    const common = STEP_EXACT_COMMON.has(type) || STEP_PREFIXES_COMMON.some((p) => type.startsWith(p));
+    const phoneOnly = type.startsWith("call.") || type === "restful.request";
+    if (!common && !phoneOnly) return `unknown step type '${type}' for phone transport`;
+
+    if (type === "restful.request") {
+      if (segment === "teardown") return "restful.request is a Setup (pre-call) step — illegal in Teardown";
+      // Orchestrated class: only legal as the LEADING top-level run of Setup
+      // (mirrors the daemon splitter; a nested one can never execute pre-call).
+      if (depth > 0) return "restful.request cannot be nested — it must lead Setup Steps";
+      if (seenTopNonRestful) return "restful.request steps must lead Setup Steps — they execute before the call";
+      const { type: _t, description: _d, steps: _s, ...fields } = step;
+      const shape = validateRestfulTrigger(fields);
+      if (!shape.valid) return shape.error ?? "invalid restful.request";
+      return null;
+    }
+    if (depth === 0) seenTopNonRestful = true;
+
+    const segErr = illegalPhoneStepType(type, segment);
+    if (segErr) return segErr;
+    if (type === "call.dial") {
+      // A literal number must match the dialable shape; a templated number
+      // (for_each item) is allowed here and re-checked by the compiler after
+      // substitution — the enforcement boundary.
+      const num = step.number;
+      if (typeof num !== "string" || (!num.includes("${") && !PHONE_NUMBER_RE.test(num))) {
+        return "call.dial needs number: '<phone number>'";
+      }
+    }
+    return null;
+  });
+  if (err === "too-complex") return { valid: false, error: `${field}: step script too complex (aliases/nesting)` };
+  if (err) return { valid: false, error: `${field}: ${err}` };
   return { valid: true };
 }
+
 
 /**
  * Best-effort parse of a Setup/Teardown YAML step list. Returns [] for empty,
@@ -384,20 +395,7 @@ export function parseStepsScript(yamlText: unknown): Array<Record<string, unknow
   }
 }
 
-/** Recursive scan (control.for_each nests steps) for a call.dial step — the
- * phone run gate must see nested dials, since the daemon compiler unrolls
- * for_each and accepts them. */
-export function stepsContainCallDial(steps: Array<Record<string, unknown>>): boolean {
-  for (const step of steps) {
-    if (step.type === "call.dial") return true;
-    if (Array.isArray(step.steps)) {
-      const nested = step.steps.filter(
-        (x): x is Record<string, unknown> => typeof x === "object" && x !== null && !Array.isArray(x));
-      if (stepsContainCallDial(nested)) return true;
-    }
-  }
-  return false;
-}
+
 
 // Shape-only validation of a restful.request step's fields (design 2026-09-21 §5,
 // unified-steps 2026-09-25 §1): the template an orchestrated REST call executes.
@@ -475,33 +473,32 @@ export function validateEvalSetConfig(config: unknown): { valid: boolean; error?
     try { doc = yaml.load(c.scenario); } catch { doc = null; /* aeval's parse problem, not ours */ }
     const steps = (doc as { steps?: unknown } | null)?.steps;
     const illegal = Array.isArray(steps) ? findIllegalScenarioStep(steps) : null;
+    if (illegal === "too-complex") {
+      return { valid: false, error: "scenario: step script too complex (aliases/nesting)" };
+    }
     if (illegal) {
-      return { valid: false, error: `scenario: '${illegal}' is evalflow Setup/Teardown vocabulary — illegal in an eval-set conversation` };
+      return { valid: false, error: `scenario: ${illegal}` };
     }
   }
   return { valid: true };
 }
 
-/** Recursive (control.for_each nests steps) scan for call-control / REST /
- * SMS step types inside an eval-set conversation. Returns the first illegal
- * type found, else null. */
+/** Bounded scan of an eval-set conversation for step types that belong to
+ * the evalflow (call-control / REST / SMS) — plus templated types, which
+ * could resolve to those post-substitution (the daemon compiler is the
+ * enforcement boundary; this rejects the smuggle shape at save). Returns an
+ * error string, "too-complex" when the walk budget is exceeded (fail
+ * closed), else null. */
 function findIllegalScenarioStep(steps: unknown[]): string | null {
-  for (const s of steps) {
-    if (typeof s !== "object" || s === null) continue;
-    const step = s as Record<string, unknown>;
+  return walkStepList(steps, (step) => {
     const type = typeof step.type === "string" ? step.type : "";
-    if (type.startsWith("call.") || type === "restful.request" || type.startsWith("sms.")) return type;
-    // A templated type ("${item.x}") could resolve to anything at run time —
-    // the daemon compiler enforces the segment policy post-substitution, but
-    // reject the smuggle shape here too so authors get the error at save.
-    if (type.includes("${")) return type;
-    if (Array.isArray(step.steps)) {
-      const nested = findIllegalScenarioStep(step.steps);
-      if (nested) return nested;
-    }
-  }
-  return null;
+    const err = illegalPhoneStepType(type, "conversation");
+    if (err) return err;
+    if (type.includes("${")) return `templated step type '${type}' is not allowed`;
+    return null;
+  });
 }
+
 
 export function mergeEvalConfig(
   evalflowConfig: unknown,

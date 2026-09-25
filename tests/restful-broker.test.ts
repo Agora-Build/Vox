@@ -169,6 +169,7 @@ d("POST /api/eval-agent/jobs/:jobId/restful (integration, fake broker)", () => {
   let agentId: number;
   let jobId: number;
   let noTriggerJobId: number;
+  let nonLeadingJobId: number;
   let brokerId: number;
   let evalflowId: number;
   let fakeBroker: import("http").Server;
@@ -249,6 +250,18 @@ d("POST /api/eval-agent/jobs/:jobId/restful (integration, fake broker)", () => {
     };
     jobId = await mkJob(snap);
     noTriggerJobId = await mkJob({ ...snap, evalflow: { ...snap.evalflow!, config: {} } });
+    // A snapshot whose restful step is NOT in the leading run (save-time
+    // validation forbids this — built directly to prove the endpoint is
+    // self-contained about the ordering rule).
+    nonLeadingJobId = await mkJob({
+      ...snap,
+      evalflow: {
+        ...snap.evalflow!,
+        config: {
+          stepsPrefix: '- type: call.dial\n  number: "+15551234"\n- type: restful.request\n  method: POST\n  url: "https://target.example/v1/calls"\n',
+        },
+      },
+    });
 
     // Register the fake broker through the REAL registration flow so the dev
     // server's in-process mint-secret cache is populated.
@@ -269,7 +282,7 @@ d("POST /api/eval-agent/jobs/:jobId/restful (integration, fake broker)", () => {
     await new Promise<void>((r) => fakeBroker?.close(() => r()));
     await pool.query(`DELETE FROM brokers WHERE id = $1`, [brokerId]);
     await pool.query(`DELETE FROM broker_registration_tokens WHERE name = $1`, [`phB_exec_breg_${suffix}`]);
-    await pool.query(`DELETE FROM eval_jobs WHERE id = ANY($1::int[])`, [[jobId, noTriggerJobId].filter(Boolean)]);
+    await pool.query(`DELETE FROM eval_jobs WHERE id = ANY($1::int[])`, [[jobId, noTriggerJobId, nonLeadingJobId].filter(Boolean)]);
     await pool.query(`DELETE FROM eval_agents WHERE id = $1`, [agentId]);
     await pool.query(`DELETE FROM eval_agent_tokens WHERE id = $1`, [tokId]);
     await pool.query(`DELETE FROM evalflows WHERE id = $1`, [evalflowId]);
@@ -310,6 +323,11 @@ d("POST /api/eval-agent/jobs/:jobId/restful (integration, fake broker)", () => {
     expect(past.status).toBe(400);
     const missing = await callEndpoint(jobId, { stepIndex: undefined });
     expect(missing.status).toBe(400);
+    // Self-contained ordering: a restful step outside the leading run is
+    // refused even though it IS a restful.request at that index.
+    const nonLeading = await callEndpoint(nonLeadingJobId, { stepIndex: 1 });
+    expect(nonLeading.status).toBe(400);
+    expect((await nonLeading.json()).error).toContain("leading");
   });
 
   it("503 when no live restful broker exists", async () => {

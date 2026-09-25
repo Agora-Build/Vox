@@ -182,6 +182,19 @@ describe("splitPhoneScript + ensureTrailingHangup + sumStepTimeouts", () => {
     // Same template in Teardown: only hangup may survive substitution.
     const td = compilePhoneConversation(smuggle, { resolveCorpusFile: corpus, segment: "teardown" });
     expect(td.ok).toBe(false);
+    // A templated NUMBER must substitute to a dialable shape — "*123#"-style
+    // USSD payloads are rejected post-substitution.
+    const ussd = compilePhoneConversation([{
+      type: "control.for_each", items: [{ n: "*123#" }],
+      steps: [{ type: "call.dial", number: "${item.n}" }],
+    }], { resolveCorpusFile: corpus, segment: "setup" });
+    expect(ussd.ok).toBe(false);
+    if (!ussd.ok) expect(ussd.error).toContain("not a dialable phone number");
+    const goodTemplated = compilePhoneConversation([{
+      type: "control.for_each", items: [{ n: "+1 555 010 1234" }],
+      steps: [{ type: "call.dial", number: "${item.n}" }],
+    }], { resolveCorpusFile: corpus, segment: "setup" });
+    expect(goodTemplated.ok).toBe(true);
   });
 
   it("splits leading restful.request steps with their ABSOLUTE stepsPrefix indices", () => {

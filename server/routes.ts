@@ -4567,6 +4567,14 @@ export async function registerRoutes(
       if (!step || step.type !== "restful.request") {
         return res.status(400).json({ error: `Setup step ${stepIndex} is not a restful.request step` });
       }
+      // Self-contained ordering check (don't trust save-time validation alone
+      // on a frozen snapshot): only steps in the LEADING restful run are
+      // executable pre-call — the daemon computes indices the same way.
+      for (let i = 0; i < stepIndex; i++) {
+        if (setup[i]?.type !== "restful.request") {
+          return res.status(400).json({ error: `Setup step ${stepIndex} is not in the leading restful.request run` });
+        }
+      }
       const { type: _t, description: _d, ...trigger } = step;
       // Defense against malformed legacy snapshots — same shape rule as creation.
       const shape = validateRestfulTrigger(trigger);

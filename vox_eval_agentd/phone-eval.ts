@@ -8,6 +8,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { createHash } from 'crypto';
+import { PHONE_NUMBER_RE, illegalPhoneStepType, walkStepList, stepsContainCallDial } from '../shared/steps';
 
 // ---- compiler ---------------------------------------------------------------
 
@@ -62,8 +63,12 @@ export function compilePhoneConversation(rawSteps: unknown[], opts: CompileOpts)
     return s;
   };
 
-  const emit = (steps: unknown[], item: unknown): string | null => {
+  const MAX_EMIT_DEPTH = 16;
+  const MAX_EMITTED_STEPS = 2000;
+  const emit = (steps: unknown[], item: unknown, depth = 0): string | null => {
+    if (depth > MAX_EMIT_DEPTH) return 'step script too deeply nested';
     for (const raw of steps) {
+      if (out.length > MAX_EMITTED_STEPS) return `script expands past ${MAX_EMITTED_STEPS} steps`;
       if (typeof raw !== 'object' || raw === null) return 'step must be an object';
       const step = Object.fromEntries(
         Object.entries(raw as Record<string, unknown>).map(([k, v]) => [k, substitute(v, item)]),
@@ -74,14 +79,11 @@ export function compilePhoneConversation(rawSteps: unknown[], opts: CompileOpts)
       }
       // Segment policy on the POST-substitution type — the only place the
       // real type is known (a for_each item like {t: call.dial} + type:
-      // "${item.t}" evades every raw-text scan upstream).
-      if (opts.segment === 'conversation'
-        && (type.startsWith('call.') || type === 'restful.request' || type.startsWith('sms.'))) {
-        return `'${type}' is evalflow Setup/Teardown vocabulary — illegal in an eval-set conversation`;
-      }
-      if (opts.segment === 'teardown'
-        && ((type.startsWith('call.') && type !== 'call.hangup') || type === 'restful.request' || type.startsWith('sms.'))) {
-        return `'${type}' is illegal in Teardown Steps (only call.hangup ends the session)`;
+      // "${item.t}" evades every raw-text scan upstream). Shared with Core's
+      // save-time validation (shared/steps.ts) so the rules cannot drift.
+      {
+        const segErr = illegalPhoneStepType(type, opts.segment);
+        if (segErr) return segErr;
       }
       switch (type) {
         case 'audio.start_recording':
@@ -130,8 +132,11 @@ export function compilePhoneConversation(rawSteps: unknown[], opts: CompileOpts)
           });
           continue;
         case 'call.dial': {
-          if (typeof step.number !== 'string' || !step.number.trim()) {
-            return 'call.dial needs a number';
+          // POST-substitution shape check: a templated number passed save-time
+          // validation on faith; here the real value must be dialable (blocks
+          // USSD codes and anything else outside the number shape).
+          if (typeof step.number !== 'string' || !PHONE_NUMBER_RE.test(step.number)) {
+            return `call.dial number is not a dialable phone number: '${String(step.number ?? '')}'`;
           }
           out.push({ type: 'call.dial', id: id(), number: step.number, description: step.description });
           continue;
@@ -170,7 +175,7 @@ export function compilePhoneConversation(rawSteps: unknown[], opts: CompileOpts)
           const inner = (raw as Record<string, unknown>).steps;
           if (!Array.isArray(inner)) return 'control.for_each needs steps';
           for (const it of items) {
-            const err = emit(inner, it);
+            const err = emit(inner, it, depth + 1);
             if (err) return err;
           }
           continue;
@@ -242,49 +247,40 @@ export function splitPhoneScript(
   // evalflow author but runs post-conversation: only call.hangup is
   // meaningful there — a Teardown call.dial would start a SECOND call.
   const findIllegal = (steps: unknown[], offset: number, banned: (type: string) => boolean): string | null => {
-    for (let i = offset; i < steps.length; i++) {
-      const s = steps[i];
-      if (typeof s !== 'object' || s === null) continue;
-      const step = s as Record<string, unknown>;
+    // Bounded + cycle-safe (shared/steps.ts): YAML aliases expand a naive
+    // recursive walk exponentially. Budget exceeded fails closed below.
+    const result = walkStepList(steps.slice(offset), (step) => {
       const type = typeof step.type === 'string' ? step.type : '';
-      if (banned(type)) return type;
-      if (Array.isArray(step.steps)) {
-        const nested = findIllegal(step.steps, 0, banned);
-        if (nested) return nested;
-      }
-    }
-    return null;
+      return banned(type) ? type : null;
+    });
+    return result; // illegal type, 'too-complex', or null
   };
   // Strict ordering: restful.request only as a LEADING run of Setup. One found
   // later would execute out of order (pre-call, but written mid-session).
-  if (findIllegal(prefixSteps, firstNonRestful, (t) => t === 'restful.request')) {
+  const tooComplex = (r: string | null) => r === 'too-complex';
+  const prefixIllegal = findIllegal(prefixSteps, firstNonRestful, (t) => t === 'restful.request');
+  if (tooComplex(prefixIllegal)) return { ok: false, error: 'Setup Steps too complex (aliases/nesting)' };
+  if (prefixIllegal) {
     return { ok: false, error: 'restful.request steps must lead Setup Steps — they execute before the call' };
   }
   const convIllegal = findIllegal(conversationSteps, 0, (t) => t.startsWith('call.') || t === 'restful.request' || t.startsWith('sms.'));
+  if (tooComplex(convIllegal)) return { ok: false, error: 'conversation steps too complex (aliases/nesting)' };
   if (convIllegal) {
     return { ok: false, error: `'${convIllegal}' is evalflow Setup/Teardown vocabulary — illegal in an eval-set conversation` };
   }
   const suffixIllegal = findIllegal(suffixSteps, 0, (t) => (t.startsWith('call.') && t !== 'call.hangup') || t === 'restful.request');
+  if (tooComplex(suffixIllegal)) return { ok: false, error: 'Teardown Steps too complex (aliases/nesting)' };
   if (suffixIllegal) {
     return { ok: false, error: `'${suffixIllegal}' is illegal in Teardown Steps (only call.hangup ends the session)` };
   }
-  // Recursive: the compiler unrolls for_each, so a nested call.dial in Setup
-  // is legal and must satisfy the gate (raw scan is fine here — a literal
-  // dial is required; a "${item}" type cannot ARM the gate, only fail later).
-  const hasDialDeep = (steps: unknown[]): boolean => {
-    for (const s of steps) {
-      if (typeof s !== 'object' || s === null) continue;
-      const step = s as Record<string, unknown>;
-      if (step.type === 'call.dial') return true;
-      if (Array.isArray(step.steps) && hasDialDeep(step.steps)) return true;
-    }
-    return false;
-  };
   return {
     ok: true,
     value: {
       restfulPrecall,
-      setupHasDial: hasDialDeep(prefixSteps),
+      // Recursive + bounded (shared/steps.ts): the compiler unrolls for_each,
+      // so a nested call.dial in Setup arms the gate; a "${item}" type cannot
+      // (only a literal dial counts — templated types fail compile later).
+      setupHasDial: stepsContainCallDial(prefixSteps),
       setupRaw: prefixSteps.slice(firstNonRestful),
       conversationRaw: conversationSteps,
       teardownRaw: suffixSteps,
