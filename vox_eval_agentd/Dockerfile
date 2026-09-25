@@ -197,6 +197,7 @@ RUN npx esbuild vox-agentd.ts --bundle --platform=node --format=esm --outfile=vo
 
 # Daemon runtime env (overridden at runtime)
 ENV VOX_SERVER=http://localhost:5000
+ENV EVAL_FRAMEWORK=aeval
 
 # Unified output directory: aeval writes /app/aeval-data/output by default;
 # symlink it to /app/output so sessions always land in one place.

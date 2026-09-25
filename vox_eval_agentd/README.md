@@ -149,6 +149,7 @@ chmod +x /usr/local/bin/aeval
 | `AGENT_TOKEN` | (required) | Eval agent token from Vox server |
 | `VOX_SERVER` | `http://localhost:5000` | Vox API server URL |
 | `VOX_AGENT_NAME` | `eval-agent-<timestamp>` | Agent display name |
+| `EVAL_FRAMEWORK` | `aeval` | Default eval framework — the extensibility seam; `aeval` is currently the only implementation. Jobs may override via `job.config.framework`; unsupported values fail loudly. |
 | `HEADLESS` | `true` | Run browser in headless mode |
 - **S3 config is fetched from the Vox server per job** — no S3 env vars needed on the daemon. Just upgrade to the latest version and it works. If the server has no S3 config, artifacts stay on local disk.
 - **Artifact upload never impacts eval jobs** — uploads only happen when the daemon is idle (no pending jobs).

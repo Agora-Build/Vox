@@ -129,6 +129,18 @@ d("migration 0041_remove_vat.sql (transactional, rolled back)", () => {
     return rows[0].config;
   };
 
+  it("parked _legacy* payloads never trip the secret scans (collectSecretRefs skips them)", async () => {
+    const { collectSecretRefs } = await import("../shared/secrets");
+    const refs = collectSecretRefs([
+      { framework: "aeval", _legacyVatApp: "header: Bearer ${secrets.LOGIN_PASSWORD}" },
+      { _legacyPhoneDial: { number: "${secrets.NOPE}" } },
+      { stepsPrefix: "- ${secrets.REAL_ONE}" },
+    ]);
+    expect(refs.has("LOGIN_PASSWORD")).toBe(false);
+    expect(refs.has("NOPE")).toBe(false);
+    expect(refs.has("REAL_ONE")).toBe(true);
+  });
+
   it("a VAT row becomes aeval with its app payload parked inert, and passes validation", async () => {
     const config = await configOf(`${stamp}-vat`);
     expect(config.framework).toBe("aeval");

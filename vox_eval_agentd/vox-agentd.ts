@@ -13,6 +13,9 @@
  *   token     = --token  || AGENT_TOKEN
  *   server    = --server || VOX_SERVER || 'http://localhost:5000'
  *   name      = --name   || VOX_AGENT_NAME || ''
+ *   framework = EVAL_FRAMEWORK || 'aeval'   (the framework seam — aeval is
+ *               currently the only implementation; jobs may override via
+ *               config.framework, unsupported values fail loudly)
  *   headless  = HEADLESS !== 'false'  (default true)
  *
  * Usage:
@@ -2150,8 +2153,9 @@ class VoxEvalAgentDaemon {
           break;
         }
         default:
-          // voice-agent-tester was removed (2026-09); a legacy job carrying it
-          // fails here rather than being silently rerouted.
+          // The framework seam: new frameworks plug in as cases here (plus
+          // SUPPORTED_FRAMEWORKS server-side). voice-agent-tester was removed
+          // 2026-09 — a legacy job carrying it fails loudly here.
           throw new Error(`Unsupported eval framework: '${framework}'. Supported: aeval`);
       }
 
@@ -2297,6 +2301,7 @@ function parseArgs(): DaemonConfig {
   let token = process.env.AGENT_TOKEN || '';
   let serverUrl = process.env.VOX_SERVER || 'http://localhost:5000';
   let name = process.env.VOX_AGENT_NAME || '';
+  const framework = process.env.EVAL_FRAMEWORK || 'aeval';
   const headless = process.env.HEADLESS !== 'false';
 
   for (let i = 0; i < args.length; i++) {
@@ -2331,6 +2336,7 @@ Environment Variables:
   AGENT_TOKEN           Agent registration token (fallback if --token not given)
   VOX_SERVER            Vox server URL (fallback if --server not given)
   VOX_AGENT_NAME        Agent name (fallback if --name not given)
+  EVAL_FRAMEWORK        Default eval framework (currently only 'aeval')
   HEADLESS              Run browser in headless mode (default: true)
 
 Example:
@@ -2346,7 +2352,7 @@ Example:
     process.exit(1);
   }
 
-  return { token, serverUrl, name, framework: 'aeval', headless };
+  return { token, serverUrl, name, framework, headless };
 }
 
 // ---------------------------------------------------------------------------

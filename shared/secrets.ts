@@ -111,12 +111,20 @@ export function resolveSecretPlaceholders(
  * scanning — $ { } . are all JSON-safe inside a string, so the placeholder
  * regex still matches. A fresh RegExp per config avoids shared-lastIndex bugs
  * with the module-level global regex.
+ *
+ * `_legacy*` keys are EXCLUDED: migrations park dead config there
+ * (0040 _legacyPhoneDial, 0041 _legacyVatApp) — nothing ever reads or
+ * substitutes those payloads, so a secret reference inside one must not
+ * trip the run gates (a migrated row would 400 with no way to clear it).
  */
 export function collectSecretRefs(configs: unknown[]): Set<string> {
   const names = new Set<string>();
   for (const cfg of configs) {
     if (cfg == null) continue;
-    const text = typeof cfg === "string" ? cfg : JSON.stringify(cfg);
+    const scrubbed = typeof cfg === "object" && !Array.isArray(cfg)
+      ? Object.fromEntries(Object.entries(cfg as Record<string, unknown>).filter(([k]) => !k.startsWith("_legacy")))
+      : cfg;
+    const text = typeof scrubbed === "string" ? scrubbed : JSON.stringify(scrubbed);
     const re = new RegExp(SECRET_PLACEHOLDER_REGEX.source, "g");
     let m: RegExpExecArray | null;
     while ((m = re.exec(text)) !== null) names.add(m[1]);

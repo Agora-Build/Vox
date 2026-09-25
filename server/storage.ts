@@ -222,6 +222,13 @@ export function decryptValue(stored: string): string {
 
 const MAX_CONFIG_SIZE = 100_000; // 100KB
 
+// The eval-framework seam: adding a framework means extending this set, the
+// daemon's executeJob switch, and resolvableSecretSources' field map — the
+// per-job `config.framework` override and the daemon's EVAL_FRAMEWORK default
+// already plumb it end to end. aeval is currently the only implementation
+// (voice-agent-tester was removed 2026-09).
+export const SUPPORTED_FRAMEWORKS = new Set<string>(["aeval"]);
+
 // Keys owned exclusively by the eval set (the test body).
 const EVALSET_ONLY_KEYS = ["scenario"] as const;
 // Keys owned exclusively by the evalflow (platform setup + connection).
@@ -245,8 +252,8 @@ export function validateEvalflowConfig(config: unknown, transport: "web" | "phon
       return { valid: false, error: `'${k}' belongs to the eval set, not the evalflow` };
     }
   }
-  if (c.framework !== undefined && c.framework !== "aeval") {
-    return { valid: false, error: "Framework must be 'aeval' (voice-agent-tester was removed)" };
+  if (c.framework !== undefined && !SUPPORTED_FRAMEWORKS.has(c.framework as string)) {
+    return { valid: false, error: `Framework must be one of: ${Array.from(SUPPORTED_FRAMEWORKS).join(", ")} (voice-agent-tester was removed)` };
   }
   if (c.app !== undefined) {
     return { valid: false, error: "'app' belonged to the removed voice-agent-tester framework" };
@@ -487,6 +494,9 @@ export function validateEvalSetConfig(config: unknown): { valid: boolean; error?
   }
   if (c.scenario !== undefined && typeof c.scenario !== "string") {
     return { valid: false, error: "Config scenario must be a string" };
+  }
+  if (c.app !== undefined) {
+    return { valid: false, error: "'app' belonged to the removed voice-agent-tester framework" };
   }
   // SECURITY: the conversation must never place/end calls or fire REST
   // requests — those are evalflow Setup/Teardown vocabulary, and an eval set

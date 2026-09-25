@@ -5100,7 +5100,7 @@ export async function registerRoutes(
       const scope = sessionScopeForEvalflow(evalflow);
       const classifiedRefs = await classifyReferencedSecrets(scope, collectSecretRefs(configs));
       // `resolvable` = the daemon would actually substitute this one (it only
-      // touches scenario/app/stepsPrefix/stepsSuffix). The run gate narrows to
+      // touches scenario/stepsPrefix/stepsSuffix). The run gate narrows to
       // exactly these, so the UI must too — otherwise it disables Run for a
       // placeholder sitting in some unresolved config key that the server would
       // happily accept.
