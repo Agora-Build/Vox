@@ -148,7 +148,7 @@ const describeDb = process.env.DATABASE_URL ? describe : describe.skip;
 
 describeDb("run-targets: two-level tree fields (Task 12)", () => {
   let cookie: string;
-  let workflowId: number;
+  let evalflowId: number;
   let evalSetId: number;
   let privateTokenId: number;
   let sharedTokenId: number;
@@ -160,12 +160,12 @@ describeDb("run-targets: two-level tree fields (Task 12)", () => {
 
     const providers = await (await authFetch(cookie, `${BASE_URL}/api/providers`)).json();
     const providerId = providers[0].id;
-    const wfRes = await authFetch(cookie, `${BASE_URL}/api/workflows`, {
+    const wfRes = await authFetch(cookie, `${BASE_URL}/api/evalflows`, {
       method: "POST",
       body: JSON.stringify({ name: `zt-rt-wf-${Date.now()}`, visibility: "public", providerId, config: {} }),
     });
     expect(wfRes.ok).toBe(true);
-    workflowId = (await wfRes.json()).id;
+    evalflowId = (await wfRes.json()).id;
     const es = await (await authFetch(cookie, `${BASE_URL}/api/eval-sets?includePublic=true`)).json();
     evalSetId = es[0].id;
 
@@ -239,11 +239,11 @@ describeDb("run-targets: two-level tree fields (Task 12)", () => {
     await authFetch(cookie, `${BASE_URL}/api/eval-agent-tokens/${privateTokenId}/revoke`, { method: "POST" });
     await authFetch(cookie, `${BASE_URL}/api/eval-agent-tokens/${sharedTokenId}/revoke`, { method: "POST" });
     await authFetch(cookie, `${BASE_URL}/api/eval-agent-tokens/${publicTokenId}/revoke`, { method: "POST" });
-    await authFetch(cookie, `${BASE_URL}/api/workflows/${workflowId}`, { method: "DELETE" });
+    await authFetch(cookie, `${BASE_URL}/api/evalflows/${evalflowId}`, { method: "DELETE" });
   });
 
   it("every agent row carries siteId/region/dispatchTier/locationTrust, with no locationSource/observedIp leak", async () => {
-    const res = await authFetch(cookie, `${BASE_URL}/api/workflows/${workflowId}/run-targets?evalSetId=${evalSetId}`);
+    const res = await authFetch(cookie, `${BASE_URL}/api/evalflows/${evalflowId}/run-targets?evalSetId=${evalSetId}`);
     expect(res.ok).toBe(true);
     const body = await res.json();
 
@@ -269,7 +269,7 @@ describeDb("run-targets: two-level tree fields (Task 12)", () => {
   });
 
   it("shared agents with siteId null (Unverified) are filtered out server-side", async () => {
-    const res = await authFetch(cookie, `${BASE_URL}/api/workflows/${workflowId}/run-targets?evalSetId=${evalSetId}`);
+    const res = await authFetch(cookie, `${BASE_URL}/api/evalflows/${evalflowId}/run-targets?evalSetId=${evalSetId}`);
     expect(res.ok).toBe(true);
     const body = await res.json();
     expect(body.agents.shared.find((a: { tokenId: number }) => a.tokenId === sharedTokenId)).toBeUndefined();
@@ -289,14 +289,14 @@ describeDb("run-targets: two-level tree fields (Task 12)", () => {
       .set({ siteId: REGION_NA, region: BASE_NA, locationTrust: "trusted" })
       .where(eq(evalAgents.tokenId, privateTokenId));
     try {
-      const matching = await authFetch(cookie, `${BASE_URL}/api/workflows/${workflowId}/run-targets?evalSetId=${evalSetId}&region=${BASE_NA}`);
+      const matching = await authFetch(cookie, `${BASE_URL}/api/evalflows/${evalflowId}/run-targets?evalSetId=${evalSetId}&region=${BASE_NA}`);
       expect(matching.ok).toBe(true);
       const matchingBody = await matching.json();
       const mineMatch = matchingBody.agents.mine.find((a: { tokenId: number }) => a.tokenId === privateTokenId);
       expect(mineMatch).toBeDefined();
       expect(mineMatch.region).toBe(BASE_NA);
 
-      const other = await authFetch(cookie, `${BASE_URL}/api/workflows/${workflowId}/run-targets?evalSetId=${evalSetId}&region=${BASE_EU}`);
+      const other = await authFetch(cookie, `${BASE_URL}/api/evalflows/${evalflowId}/run-targets?evalSetId=${evalSetId}&region=${BASE_EU}`);
       expect(other.ok).toBe(true);
       const otherBody = await other.json();
       expect(otherBody.agents.mine.find((a: { tokenId: number }) => a.tokenId === privateTokenId)).toBeUndefined();
@@ -310,7 +310,7 @@ describeDb("run-targets: two-level tree fields (Task 12)", () => {
   });
 
   it("agents.public carries token-sourced region/siteId+state, no tokenId, and no locationSource/observedIp leak", async () => {
-    const res = await authFetch(cookie, `${BASE_URL}/api/workflows/${workflowId}/run-targets?evalSetId=${evalSetId}`);
+    const res = await authFetch(cookie, `${BASE_URL}/api/evalflows/${evalflowId}/run-targets?evalSetId=${evalSetId}`);
     expect(res.ok).toBe(true);
     const body = await res.json();
 

@@ -369,7 +369,7 @@ describe('Concurrent Operation Edge Cases', () => {
 });
 
 describe('String Processing Edge Cases', () => {
-  describe('Project/Workflow Name Handling', () => {
+  describe('Project/Evalflow Name Handling', () => {
     const sanitizeName = (name: string): string => {
       return name.trim().slice(0, 100);
     };
@@ -565,31 +565,31 @@ describe('Data Integrity Edge Cases', () => {
       name: string;
     }
 
-    interface Workflow {
+    interface Evalflow {
       id: number;
       projectId: number;
       name: string;
     }
 
-    it('should not allow orphan workflows', () => {
+    it('should not allow orphan evalflows', () => {
       const projects: Project[] = [{ id: 1, name: 'Project 1' }];
       const projectIds = new Set(projects.map(p => p.id));
 
-      const canCreateWorkflow = (projectId: number) => projectIds.has(projectId);
+      const canCreateEvalflow = (projectId: number) => projectIds.has(projectId);
 
-      expect(canCreateWorkflow(1)).toBe(true);
-      expect(canCreateWorkflow(999)).toBe(false);
+      expect(canCreateEvalflow(1)).toBe(true);
+      expect(canCreateEvalflow(999)).toBe(false);
     });
 
-    it('should cascade delete workflows', () => {
-      const workflows: Workflow[] = [
+    it('should cascade delete evalflows', () => {
+      const evalflows: Evalflow[] = [
         { id: 1, projectId: 1, name: 'W1' },
         { id: 2, projectId: 1, name: 'W2' },
         { id: 3, projectId: 2, name: 'W3' },
       ];
 
       const deleteProject = (projectId: number) => {
-        return workflows.filter(w => w.projectId !== projectId);
+        return evalflows.filter(w => w.projectId !== projectId);
       };
 
       const remaining = deleteProject(1);

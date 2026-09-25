@@ -31,7 +31,7 @@ View detailed per-job metrics, turn-level latency data, play back recorded audio
 Create and manage recurring evaluation schedules with cron expressions. Pause, resume, edit, run-now, and delete from the console.
 
 ### Organization Support
-Team collaboration with seat-based pricing, member management, and shared workflows.
+Team collaboration with seat-based pricing, member management, and shared evalflows.
 
 ### 5 Key Metrics
 - **Response Latency** - Time for AI to generate initial response (ms) - *Lower is better*
@@ -223,7 +223,7 @@ All authenticated endpoints accept either:
 
 ```bash
 curl -H "Authorization: Bearer vox_live_xxxxxxxxxxxx" \
-  https://your-domain.com/api/v1/workflows
+  https://your-domain.com/api/v1/evalflows
 ```
 
 ### API v1 Endpoints
@@ -231,9 +231,9 @@ curl -H "Authorization: Bearer vox_live_xxxxxxxxxxxx" \
 | Endpoint | Auth | Description |
 |----------|------|-------------|
 | `GET /api/v1/user` | Required | Get current user info |
-| `GET /api/v1/workflows` | Required | List workflows |
-| `POST /api/v1/workflows` | Required | Create workflow |
-| `POST /api/v1/workflows/:id/run` | Required | Run workflow (create job) |
+| `GET /api/v1/evalflows` | Required | List evalflows |
+| `POST /api/v1/evalflows` | Required | Create evalflow |
+| `POST /api/v1/evalflows/:id/run` | Required | Run evalflow (create job) |
 | `GET /api/v1/eval-sets` | Required | List eval sets |
 | `GET /api/v1/jobs` | Required | List jobs |
 | `GET /api/v1/jobs/:id` | Required | Get job status |
@@ -250,7 +250,7 @@ Full interactive documentation: `/api/docs` (Swagger UI)
 
 ## User Plans
 
-| Plan | Projects | Workflows | Private | Storage Override | API Requests |
+| Plan | Projects | Evalflows | Private | Storage Override | API Requests |
 |------|----------|-----------|---------|-----------------|--------------|
 | **Basic** | 5 | 10/project | No | No | 200/mo |
 | **Premium** | 20 | 20/project | Yes | Yes | 1,000/mo |
@@ -264,7 +264,7 @@ Full interactive documentation: `/api/docs` (Swagger UI)
 | Path | Description |
 |------|-------------|
 | `/console/projects` | Manage projects |
-| `/console/workflows` | Manage workflows |
+| `/console/evalflows` | Manage evalflows |
 | `/console/eval-sets` | Manage eval sets |
 | `/console/eval-jobs` | Schedules tab + Jobs tab (with URL persistence) |
 | `/console/eval-jobs/:id` | Job detail: metrics, turn data, audio player, downloads |

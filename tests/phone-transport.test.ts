@@ -14,7 +14,7 @@ const suffix = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
 
 d("phone transport — snapshot + frozen job stamp", () => {
   let userId: number;
-  let workflowId: number;
+  let evalflowId: number;
   let jobId: number;
 
   beforeAll(async () => {
@@ -26,26 +26,26 @@ d("phone transport — snapshot + frozen job stamp", () => {
   afterAll(async () => {
     if (!hasDb) return;
     if (jobId) await pool.query(`DELETE FROM eval_jobs WHERE id = $1`, [jobId]);
-    if (workflowId) await pool.query(`DELETE FROM workflows WHERE id = $1`, [workflowId]);
+    if (evalflowId) await pool.query(`DELETE FROM evalflows WHERE id = $1`, [evalflowId]);
     if (userId) await pool.query(`DELETE FROM users WHERE id = $1`, [userId]);
   });
 
-  it("freezes transport at job creation; later workflow edits don't rewrite it", async () => {
+  it("freezes transport at job creation; later evalflow edits don't rewrite it", async () => {
     const providers = await storage.getAllProviders();
     expect(providers.length).toBeGreaterThan(0);
 
-    const wf = await storage.createWorkflow({
+    const wf = await storage.createEvalflow({
       name: `phA-wf-${suffix}`, ownerId: userId, providerId: providers[0].id,
       transport: "phone", visibility: "private", config: {},
     } as any);
-    workflowId = wf.id;
+    evalflowId = wf.id;
     expect(wf.transport).toBe("phone");
 
     const snap = buildJobSnapshot(wf, null, providers[0], "principal");
     expect(snap.transport).toBe("phone");
 
     const job = await storage.createEvalJob({
-      workflowId: wf.id, triggerType: 2, evalSetId: null, createdBy: userId,
+      evalflowId: wf.id, triggerType: 2, evalSetId: null, createdBy: userId,
       siteId: null, targetRegion: "na-us-ashburn", targetTier: "private",
       config: {}, snapshot: snap,
       status: "pending", priority: 0, retryCount: 0, maxRetries: 3,
@@ -53,16 +53,16 @@ d("phone transport — snapshot + frozen job stamp", () => {
     jobId = job.id;
     expect(job.transport).toBe("phone"); // stamped column
 
-    // Edit the live workflow — the frozen job must not move.
-    await storage.updateWorkflow(wf.id, { transport: "web" } as any);
+    // Edit the live evalflow — the frozen job must not move.
+    await storage.updateEvalflow(wf.id, { transport: "web" } as any);
     const reread = await storage.getEvalJob(job.id);
     expect(reread!.transport).toBe("phone");
     expect((reread!.snapshot as any).transport).toBe("phone");
   });
 
-  it("defaults to web when the workflow has no transport (snapshot)", async () => {
+  it("defaults to web when the evalflow has no transport (snapshot)", async () => {
     const providers = await storage.getAllProviders();
-    const wf = await storage.createWorkflow({
+    const wf = await storage.createEvalflow({
       name: `phA-wf-web-${suffix}`, ownerId: userId, providerId: providers[0].id,
       visibility: "private", config: {},
     } as any);
@@ -71,7 +71,7 @@ d("phone transport — snapshot + frozen job stamp", () => {
       const snap = buildJobSnapshot(wf, null, providers[0], "basic");
       expect(snap.transport).toBe("web");
     } finally {
-      await pool.query(`DELETE FROM workflows WHERE id = $1`, [wf.id]);
+      await pool.query(`DELETE FROM evalflows WHERE id = $1`, [wf.id]);
     }
   });
 });
@@ -103,10 +103,10 @@ d("phone transport — claim gating (SQL + permissions mirror)", () => {
     } as any)).id;
 
     const mkJob = (transport: "web" | "phone") => storage.createEvalJob({
-      workflowId: null, triggerType: 2, evalSetId: null, createdBy: creatorId,
+      evalflowId: null, triggerType: 2, evalSetId: null, createdBy: creatorId,
       siteId: null, targetRegion: "na-us-ashburn", targetTier: "private",
       config: {},
-      snapshot: { provider: null, workflow: null, evalSet: null, creatorPlan: null, transport } as any,
+      snapshot: { provider: null, evalflow: null, evalSet: null, creatorPlan: null, transport } as any,
       status: "pending", priority: 0, retryCount: 0, maxRetries: 3,
     } as any);
     phoneJobId = (await mkJob("phone")).id;
@@ -160,10 +160,10 @@ d("phone transport — callMetadata + metrics transport filter", () => {
 
   const mkCompletedishJob = async (transport: "web" | "phone", providerId: string) => {
     const job = await storage.createEvalJob({
-      workflowId: null, triggerType: 2, evalSetId: null, createdBy: creatorId,
+      evalflowId: null, triggerType: 2, evalSetId: null, createdBy: creatorId,
       siteId: null, targetRegion: "na-us-ashburn", targetTier: "private",
       config: {},
-      snapshot: { provider: { id: providerId, name: "p", platformId: null }, workflow: null, evalSet: null, creatorPlan: "basic", transport } as any,
+      snapshot: { provider: { id: providerId, name: "p", platformId: null }, evalflow: null, evalSet: null, creatorPlan: "basic", transport } as any,
       status: "pending", priority: 0, retryCount: 0, maxRetries: 3,
     } as any);
     // Claim stamps tokenDispatchTier=private + running (my-evals arm 3 needs it).
@@ -242,7 +242,7 @@ d("phone transport — callMetadata + metrics transport filter", () => {
   });
 });
 
-d("phone transport — workflow API (HTTP, dev server)", () => {
+d("phone transport — evalflow API (HTTP, dev server)", () => {
   let cookie: string;
   const created: number[] = [];
 
@@ -258,12 +258,12 @@ d("phone transport — workflow API (HTTP, dev server)", () => {
 
   afterAll(async () => {
     if (!hasDb || created.length === 0) return;
-    await pool.query(`DELETE FROM workflows WHERE id = ANY($1::int[])`, [created]);
+    await pool.query(`DELETE FROM evalflows WHERE id = ANY($1::int[])`, [created]);
   });
 
-  const mkWorkflow = async (body: Record<string, unknown>) => {
+  const mkEvalflow = async (body: Record<string, unknown>) => {
     const providers = await storage.getAllProviders();
-    const res = await fetch(`${BASE_URL}/api/workflows`, {
+    const res = await fetch(`${BASE_URL}/api/evalflows`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Cookie: cookie },
       body: JSON.stringify({ name: `phA-http-${suffix}-${Math.random().toString(36).slice(2, 8)}`, providerId: providers[0].id, ...body }),
@@ -272,39 +272,39 @@ d("phone transport — workflow API (HTTP, dev server)", () => {
   };
 
   it("create accepts transport=phone and echoes it; default is web", async () => {
-    const res = await mkWorkflow({ transport: "phone" });
+    const res = await mkEvalflow({ transport: "phone" });
     expect(res.ok).toBe(true);
     const wf = await res.json();
     created.push(wf.id);
     expect(wf.transport).toBe("phone");
 
-    const res2 = await mkWorkflow({});
+    const res2 = await mkEvalflow({});
     const wf2 = await res2.json();
     created.push(wf2.id);
     expect(wf2.transport).toBe("web");
   });
 
   it("rejects an invalid transport with 400", async () => {
-    const res = await mkWorkflow({ transport: "carrier-pigeon" });
+    const res = await mkEvalflow({ transport: "carrier-pigeon" });
     expect(res.status).toBe(400);
   });
 
-  it("validates phoneDial config and refuses running a phone workflow without call establishment", async () => {
-    const badDial = await mkWorkflow({ transport: "phone", config: { phoneDial: { number: "abc" } } });
+  it("validates phoneDial config and refuses running a phone evalflow without call establishment", async () => {
+    const badDial = await mkEvalflow({ transport: "phone", config: { phoneDial: { number: "abc" } } });
     expect(badDial.status).toBe(400);
-    const extraField = await mkWorkflow({ transport: "phone", config: { phoneDial: { number: "+15551234", sim: "x" } } });
+    const extraField = await mkEvalflow({ transport: "phone", config: { phoneDial: { number: "+15551234", sim: "x" } } });
     expect(extraField.status).toBe(400);
 
-    const okDial = await mkWorkflow({ transport: "phone", config: { phoneDial: { number: "+1 (555) 010-1234" } } });
+    const okDial = await mkEvalflow({ transport: "phone", config: { phoneDial: { number: "+1 (555) 010-1234" } } });
     expect(okDial.ok).toBe(true);
     created.push((await okDial.json()).id);
 
-    // Phone workflow with NEITHER phoneDial nor restfulTrigger: creatable, but
+    // Phone evalflow with NEITHER phoneDial nor restfulTrigger: creatable, but
     // running it is refused at the source (design §4).
-    const bare = await mkWorkflow({ transport: "phone" });
+    const bare = await mkEvalflow({ transport: "phone" });
     const bareWf = await bare.json();
     created.push(bareWf.id);
-    const run = await fetch(`${BASE_URL}/api/workflows/${bareWf.id}/run`, {
+    const run = await fetch(`${BASE_URL}/api/evalflows/${bareWf.id}/run`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Cookie: cookie },
       body: JSON.stringify({ region: "na-us-ashburn", targetTier: "private" }),
@@ -314,10 +314,10 @@ d("phone transport — workflow API (HTTP, dev server)", () => {
   });
 
   it("PATCH can flip transport", async () => {
-    const res = await mkWorkflow({});
+    const res = await mkEvalflow({});
     const wf = await res.json();
     created.push(wf.id);
-    const patch = await fetch(`${BASE_URL}/api/workflows/${wf.id}`, {
+    const patch = await fetch(`${BASE_URL}/api/evalflows/${wf.id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json", Cookie: cookie },
       body: JSON.stringify({ transport: "phone" }),

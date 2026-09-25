@@ -14,7 +14,7 @@ import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { ArrowLeft, Play, Settings, History, Clock, CheckCircle, XCircle, Loader2, RefreshCw } from "lucide-react";
 import { useState, useEffect, useMemo } from "react";
-import type { Workflow as WorkflowType, Provider, EvalJob, EvalSet } from "@shared/schema";
+import type { Evalflow as EvalflowType, Provider, EvalJob, EvalSet } from "@shared/schema";
 import { formatSmartTimestamp, formatSite, formatRegion, toYaml } from "@/lib/utils";
 import { useRegionLocationOptions } from "@/hooks/use-regions";
 import {
@@ -40,12 +40,12 @@ interface RunTargetsResponse {
 
 const TIER_LABEL: Record<string, string> = { public: "public", private: "private", team: "team", shared: "shared" };
 
-export default function ConsoleWorkflowDetail() {
+export default function ConsoleEvalflowDetail() {
   const { toast } = useToast();
   const { options: regionOptions } = useRegionLocationOptions();
   const params = useParams<{ id: string }>();
   const [, setLocation] = useLocation();
-  const workflowId = parseInt(params.id || "0");
+  const evalflowId = parseInt(params.id || "0");
 
   const [runDialogOpen, setRunDialogOpen] = useState(false);
   const [runEvalSetId, setRunEvalSetId] = useState("");
@@ -56,9 +56,9 @@ export default function ConsoleWorkflowDetail() {
     queryKey: ["/api/auth/status"],
   });
 
-  const { data: workflow, isLoading: workflowLoading } = useQuery<WorkflowType>({
-    queryKey: [`/api/workflows/${workflowId}`],
-    enabled: workflowId > 0,
+  const { data: evalflow, isLoading: evalflowLoading } = useQuery<EvalflowType>({
+    queryKey: [`/api/evalflows/${evalflowId}`],
+    enabled: evalflowId > 0,
   });
 
   const { data: providers } = useQuery<Provider[]>({
@@ -70,15 +70,15 @@ export default function ConsoleWorkflowDetail() {
   });
 
   const { data: jobs, isLoading: jobsLoading, refetch: refetchJobs } = useQuery<EvalJob[]>({
-    queryKey: [`/api/eval-jobs`, { workflowId }],
+    queryKey: [`/api/eval-jobs`, { evalflowId }],
     queryFn: async () => {
-      const res = await fetch(`/api/eval-jobs?workflowId=${workflowId}&limit=20`);
+      const res = await fetch(`/api/eval-jobs?evalflowId=${evalflowId}&limit=20`);
       if (!res.ok) throw new Error("Failed to fetch jobs");
       // The endpoint returns { data, total } — the Job History table wants the rows.
       const body = await res.json();
       return body.data ?? [];
     },
-    enabled: workflowId > 0,
+    enabled: evalflowId > 0,
     refetchInterval: 10000, // Auto-refresh every 10s to update running job status
   });
 
@@ -89,9 +89,9 @@ export default function ConsoleWorkflowDetail() {
   // task-12-report.md); tier *eligibility* (`available`/`reason`) never
   // depended on region to begin with.
   const { data: runTargets, isFetching: runTargetsFetching } = useQuery<RunTargetsResponse>({
-    queryKey: [`/api/workflows/${workflowId}/run-targets`, runEvalSetId],
+    queryKey: [`/api/evalflows/${evalflowId}/run-targets`, runEvalSetId],
     queryFn: async () => (await apiRequest("GET",
-      `/api/workflows/${workflowId}/run-targets?evalSetId=${runEvalSetId}`)).json(),
+      `/api/evalflows/${evalflowId}/run-targets?evalSetId=${runEvalSetId}`)).json(),
     enabled: runDialogOpen && !!runEvalSetId,
   });
 
@@ -147,7 +147,7 @@ export default function ConsoleWorkflowDetail() {
         setPickerValue("");
         toast({
           title: "Run target adjusted",
-          description: `That agent pool isn't available for this workflow anymore — pick another target.`,
+          description: `That agent pool isn't available for this evalflow anymore — pick another target.`,
         });
       }
     } else {
@@ -162,7 +162,7 @@ export default function ConsoleWorkflowDetail() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [runTargets, regionGroups]);
 
-  // Pooled dispatch aimed at a tier the workflow can't use (e.g. every
+  // Pooled dispatch aimed at a tier the evalflow can't use (e.g. every
   // non-shared tier blocked) can only 403 — gate the submit. In practice the
   // tree never renders a region-pool option for an unavailable tier, so this
   // is defense in depth rather than something reachable through the UI.
@@ -172,7 +172,7 @@ export default function ConsoleWorkflowDetail() {
   const selectedAgent = selection?.kind === "site" ? nonPublicAgents.find((a) => a.tokenId === selection.tokenId) ?? null : null;
   const runtimeExposed = (runTargets?.referencedSecrets ?? [])
     .filter((s) => s.brokerType == null && s.present).map((s) => s.name);
-  // Referenced but not configured for the workflow owner → the run would fail
+  // Referenced but not configured for the evalflow owner → the run would fail
   // with an unresolved ${secrets.X} placeholder. The server rejects it too;
   // surfacing it here means the user never spends an agent run to find out.
   const missingSecrets = (runTargets?.referencedSecrets ?? [])
@@ -181,10 +181,10 @@ export default function ConsoleWorkflowDetail() {
     .filter((s) => !s.present && s.resolvable !== false).map((s) => s.name);
   const showRuntimeWarning = selectedAgent?.dispatchTier === "shared" && runtimeExposed.length > 0;
 
-  const runWorkflowMutation = useMutation({
+  const runEvalflowMutation = useMutation({
     mutationFn: async () => {
       if (!selection) throw new Error("No run target selected");
-      const res = await apiRequest("POST", `/api/workflows/${workflowId}/run`, {
+      const res = await apiRequest("POST", `/api/evalflows/${evalflowId}/run`, {
         evalSetId: parseInt(runEvalSetId),
         ...(selection.kind === "site"
           ? { targetTokenId: selection.tokenId }
@@ -199,18 +199,18 @@ export default function ConsoleWorkflowDetail() {
       setPickerValue("");
       setAckRuntime(false);
       refetchJobs();
-      toast({ title: "Workflow started", description: `Job created: ${data.job?.id}` });
+      toast({ title: "Evalflow started", description: `Job created: ${data.job?.id}` });
     },
     onError: (error: Error) => {
-      toast({ title: "Failed to run workflow", description: error.message, variant: "destructive" });
+      toast({ title: "Failed to run evalflow", description: error.message, variant: "destructive" });
     },
   });
 
-  const isOwner = workflow?.ownerId === authStatus?.user?.id;
+  const isOwner = evalflow?.ownerId === authStatus?.user?.id;
   const canModify = isOwner || authStatus?.user?.isAdmin;
-  const provider = providers?.find(p => p.id === workflow?.providerId);
+  const provider = providers?.find(p => p.id === evalflow?.providerId);
 
-  if (workflowLoading) {
+  if (evalflowLoading) {
     return (
       <div className="space-y-6">
         <Skeleton className="h-8 w-48" />
@@ -219,15 +219,15 @@ export default function ConsoleWorkflowDetail() {
     );
   }
 
-  if (!workflow) {
+  if (!evalflow) {
     return (
       <div className="space-y-6">
-        <Button variant="ghost" onClick={() => setLocation("/console/workflows")}>
+        <Button variant="ghost" onClick={() => setLocation("/console/evalflows")}>
           <ArrowLeft className="mr-2 h-4 w-4" />
-          Back to Workflows
+          Back to Evalflows
         </Button>
         <div className="text-center py-8 text-muted-foreground">
-          Workflow not found
+          Evalflow not found
         </div>
       </div>
     );
@@ -237,14 +237,14 @@ export default function ConsoleWorkflowDetail() {
     <div className="space-y-6">
       <div className="flex items-center justify-between gap-4">
         <div className="flex items-center gap-4">
-          <Button variant="ghost" onClick={() => setLocation("/console/workflows")}>
+          <Button variant="ghost" onClick={() => setLocation("/console/evalflows")}>
             <ArrowLeft className="mr-2 h-4 w-4" />
             Back
           </Button>
           <div>
-            <h1 className="text-2xl font-bold">{workflow.name}</h1>
-            {workflow.description && (
-              <p className="text-muted-foreground">{workflow.description}</p>
+            <h1 className="text-2xl font-bold">{evalflow.name}</h1>
+            {evalflow.description && (
+              <p className="text-muted-foreground">{evalflow.description}</p>
             )}
           </div>
         </div>
@@ -261,14 +261,14 @@ export default function ConsoleWorkflowDetail() {
           <DialogTrigger asChild>
             <Button>
               <Play className="mr-2 h-4 w-4" />
-              Run Workflow
+              Run Evalflow
             </Button>
           </DialogTrigger>
           <DialogContent>
             <DialogHeader>
-              <DialogTitle>Run Workflow</DialogTitle>
+              <DialogTitle>Run Evalflow</DialogTitle>
               <DialogDescription>
-                Select a region to run this workflow evaluation.
+                Select a region to run this evalflow evaluation.
               </DialogDescription>
             </DialogHeader>
             <div className="space-y-4 py-4">
@@ -358,7 +358,7 @@ export default function ConsoleWorkflowDetail() {
                 )}
                 {noPoolAvailable && (
                   <p className="text-xs text-muted-foreground">
-                    No agent pool is available for this workflow — pick a specific agent instead.
+                    No agent pool is available for this evalflow — pick a specific agent instead.
                   </p>
                 )}
               </div>
@@ -366,15 +366,15 @@ export default function ConsoleWorkflowDetail() {
                 <Alert variant="destructive">
                   <AlertTitle>Missing secrets — this run would fail</AlertTitle>
                   <AlertDescription>
-                    This workflow references {missingSecrets.length > 1 ? "secrets" : "a secret"} that {missingSecrets.length > 1 ? "are" : "is"} not
-                    configured for its owner: {missingSecrets.join(", ")}. If the workflow is yours, create
+                    This evalflow references {missingSecrets.length > 1 ? "secrets" : "a secret"} that {missingSecrets.length > 1 ? "are" : "is"} not
+                    configured for its owner: {missingSecrets.join(", ")}. If the evalflow is yours, create
                     {missingSecrets.length > 1 ? "them" : "it"} under Console → Secrets (names must match exactly); otherwise ask its owner to.
                   </AlertDescription>
                 </Alert>
               )}
               {showRuntimeWarning && (
                 <Alert variant="destructive">
-                  <AlertTitle>This workflow uses runtime secrets</AlertTitle>
+                  <AlertTitle>This evalflow uses runtime secrets</AlertTitle>
                   <AlertDescription>
                     The selected shared agent will receive the raw values of these secrets: {runtimeExposed.join(", ")}.
                     <label className="mt-2 flex items-center gap-2">
@@ -387,9 +387,9 @@ export default function ConsoleWorkflowDetail() {
             </div>
             <DialogFooter>
               <Button
-                onClick={() => runWorkflowMutation.mutate()}
+                onClick={() => runEvalflowMutation.mutate()}
                 disabled={
-                  runWorkflowMutation.isPending || !runEvalSetId || !selection || runTargetsFetching ||
+                  runEvalflowMutation.isPending || !runEvalSetId || !selection || runTargetsFetching ||
                   (selection?.kind === "region" && noPoolAvailable) ||
                   missingSecrets.length > 0 || (showRuntimeWarning && !ackRuntime)
                 }
@@ -405,10 +405,10 @@ export default function ConsoleWorkflowDetail() {
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
             <Settings className="h-5 w-5" />
-            Workflow Details
+            Evalflow Details
           </CardTitle>
           <CardDescription>
-            Configuration and settings for this workflow
+            Configuration and settings for this evalflow
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
@@ -417,18 +417,18 @@ export default function ConsoleWorkflowDetail() {
               <Label className="text-muted-foreground">Visibility</Label>
               <div className="mt-1">
                 <Badge variant="outline">
-                  {workflow.visibility === "public" ? "Public" : "Private"}
+                  {evalflow.visibility === "public" ? "Public" : "Private"}
                 </Badge>
                 <Badge variant="outline" data-testid="badge-eval-mode">
-                  {workflow.transport === "phone" ? "Phone vs Agent" : "Web vs Agent"}
+                  {evalflow.transport === "phone" ? "Phone vs Agent" : "Web vs Agent"}
                 </Badge>
               </div>
             </div>
             <div>
               <Label className="text-muted-foreground">Mainline</Label>
               <div className="mt-1">
-                <Badge variant={workflow.isMainline ? "default" : "secondary"}>
-                  {workflow.isMainline ? "Yes" : "No"}
+                <Badge variant={evalflow.isMainline ? "default" : "secondary"}>
+                  {evalflow.isMainline ? "Yes" : "No"}
                 </Badge>
               </div>
             </div>
@@ -445,21 +445,21 @@ export default function ConsoleWorkflowDetail() {
             <div>
               <Label className="text-muted-foreground">Created</Label>
               <div className="mt-1 text-sm">
-                {new Date(workflow.createdAt).toLocaleDateString()}
+                {new Date(evalflow.createdAt).toLocaleDateString()}
               </div>
             </div>
             <div>
               <Label className="text-muted-foreground">Framework</Label>
               <div className="mt-1">
                 <Badge variant="outline">
-                  {(workflow.config as Record<string, unknown> | null)?.framework as string || "aeval"}
+                  {(evalflow.config as Record<string, unknown> | null)?.framework as string || "aeval"}
                 </Badge>
               </div>
             </div>
           </div>
 
           {(() => {
-            const config = workflow.config as Record<string, unknown> | null;
+            const config = evalflow.config as Record<string, unknown> | null;
             if (config?.app && typeof config.app === 'object') {
               return (
                 <div>
@@ -488,7 +488,7 @@ export default function ConsoleWorkflowDetail() {
             </Button>
           </div>
           <CardDescription>
-            Recent evaluation jobs for this workflow
+            Recent evaluation jobs for this evalflow
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -552,7 +552,7 @@ export default function ConsoleWorkflowDetail() {
             </Table>
           ) : (
             <div className="text-center py-8 text-muted-foreground">
-              No jobs have been run yet. Click "Run Workflow" to start an evaluation.
+              No jobs have been run yet. Click "Run Evalflow" to start an evaluation.
             </div>
           )}
         </CardContent>

@@ -28,7 +28,7 @@ export function canAccessResource(user: AuthUser, resource: OrgResource): boolea
 
 // Owner/creator, or an org manager for org resources — WITHOUT the system-admin
 // bypass. This is the predicate for *editing* content and *running* private
-// workflows: a system admin has no special power over another user's content
+// evalflows: a system admin has no special power over another user's content
 // (its secrets/quota are the owner's). Admin's elevated powers are limited to
 // user management and provider config (separate requireAdmin routes).
 export function isOwnerOrOrgManager(user: AuthUser, resource: OrgResource): boolean {
@@ -48,29 +48,29 @@ export function canEditResource(user: AuthUser, resource: OrgResource): boolean 
   return user.isAdmin || isOwnerOrOrgManager(user, resource);
 }
 
-// Run-once rights: a public workflow can be run by anyone (a one-off on the
-// owner's key, which they opted into by publishing). A PRIVATE workflow can be
-// run only by its owner or, for an org-owned workflow, its org managers — no
+// Run-once rights: a public evalflow can be run by anyone (a one-off on the
+// owner's key, which they opted into by publishing). A PRIVATE evalflow can be
+// run only by its owner or, for an org-owned evalflow, its org managers — no
 // system-admin and no principal/fellow bypass. This is safe because secrets
-// follow ownership: a personal workflow spends the owner's personal key (so only
-// the owner runs it), while an org workflow spends the ORG's secrets (so org
+// follow ownership: a personal evalflow spends the owner's personal key (so only
+// the owner runs it), while an org evalflow spends the ORG's secrets (so org
 // members running it spend org — not anyone's personal — credentials). See the
 // job-secrets endpoint in routes.ts.
-export function canRunWorkflow(user: AuthUser, resource: OrgResource): boolean {
+export function canRunEvalflow(user: AuthUser, resource: OrgResource): boolean {
   if (resource.visibility === 'public') return true;
   return isOwnerOrOrgManager(user, resource);
 }
 
-// "Schedule" rights are the strictest workflow action: creating a schedule sets
-// up an indefinite recurring commitment, so it is limited to the workflow's
+// "Schedule" rights are the strictest evalflow action: creating a schedule sets
+// up an indefinite recurring commitment, so it is limited to the evalflow's
 // owner/creator — NOT a system admin, and (by deliberate product choice) NOT an
 // org manager either. Running once and *extending* an existing schedule are
 // looser (owner-or-org via isOwnerOrOrgManager); only *creating* the recurring
-// commitment is owner-only. Note secrets now follow ownership (org workflows
+// commitment is owner-only. Note secrets now follow ownership (org evalflows
 // spend org secrets), so this is a product decision, not a credential-ownership
 // argument. The background scheduler applies the same check per tick, so a
 // schedule whose creator lost this right (e.g. a legacy admin-created one) stops firing.
-export function canScheduleWorkflow(user: Pick<AuthUser, 'id'>, resource: OrgResource): boolean {
+export function canScheduleEvalflow(user: Pick<AuthUser, 'id'>, resource: OrgResource): boolean {
   return resource.ownerId === user.id || resource.createdBy === user.id;
 }
 
@@ -100,29 +100,29 @@ export function hasOrg(user: { membership: Membership | null }): boolean {
 /**
  * Pool-tier composition gate for session-injected dispatch (spec §5): a
  * session-injected job may only enter the dispatcher's own pool, or a team
- * pool when the workflow belongs to that same org. The routes enforce this at
- * write time, but the workflow's secrets/config are MUTABLE afterward — a
- * public-tier schedule whose workflow later gains a login-class secret would
+ * pool when the evalflow belongs to that same org. The routes enforce this at
+ * write time, but the evalflow's secrets/config are MUTABLE afterward — a
+ * public-tier schedule whose evalflow later gains a login-class secret would
  * emit an unclaimable session job every tick. The scheduler re-checks through
  * here each tick and disables violating schedules. Returns null when allowed,
  * else a human-readable reason.
  */
 // SCOPE: encodes only the pool-composition arm; the dispatcher owner-or-org
-// gate for session workflows is separate (see the run route).
+// gate for session evalflows is separate (see the run route).
 export function sessionPoolViolation(
   targetTier: "private" | "team" | "public" | "shared",
-  workflow: { organizationId: number | null },
+  evalflow: { organizationId: number | null },
   creator: { organizationId: number | null } | undefined,
 ): string | null {
   // Allowlist shape: only tiers we affirmatively trust return null, so a
   // future enum member (or the reserved 'shared') fails CLOSED here.
   if (targetTier === "private") return null;
   if (targetTier === "team") {
-    if (workflow.organizationId != null &&
-        sameOrg({ organizationId: creator?.organizationId ?? null }, { organizationId: workflow.organizationId })) {
+    if (evalflow.organizationId != null &&
+        sameOrg({ organizationId: creator?.organizationId ?? null }, { organizationId: evalflow.organizationId })) {
       return null;
     }
-    return "credential-injected jobs can use a team pool only when the workflow belongs to the creator's organization";
+    return "credential-injected jobs can use a team pool only when the evalflow belongs to the creator's organization";
   }
   return `credential-injected jobs cannot use the ${targetTier} pool`;
 }
@@ -209,16 +209,16 @@ export function isClaimable(
 /**
  * Session serve gate — who may RECEIVE a Core-minted session bundle
  * for a session-injected job. Derived entirely from the job's IMMUTABLE stamped
- * snapshot (never the live workflow — the owner can edit it post-dispatch).
+ * snapshot (never the live evalflow — the owner can edit it post-dispatch).
  * Policy: owner + team + attested-shared.
- *  - owner: the workflow owner's own agents (token.createdBy === workflow owner).
- *  - team:  an agent whose owner shares the workflow's organization.
+ *  - owner: the evalflow owner's own agents (token.createdBy === evalflow owner).
+ *  - team:  an agent whose owner shares the evalflow's organization.
  *  - attested-shared: consent + test-account attestation were verified at
  *    dispatch (job.consent) AND the job was aimed at exactly this token.
  * Public/community and non-attested shared agents are excluded.
  */
 export function isSessionServable(
-  job: { targetTokenId: number | null; workflowOwnerId: number | null; workflowOrgId: number | null; consent: boolean },
+  job: { targetTokenId: number | null; evalflowOwnerId: number | null; evalflowOrgId: number | null; consent: boolean },
   token: { id: number; createdBy: number },
   tokenOwner: { organizationId: number | null },
 ): boolean {
@@ -230,7 +230,7 @@ export function isSessionServable(
 
 /**
  * The first two arms of isSessionServable: the claiming agent belongs to the
- * workflow's owner, or to their organization.
+ * evalflow's owner, or to their organization.
  *
  * Separate from isSessionServable because the third arm is different in kind. A
  * consented attested shared agent may legitimately receive a storageState — but
@@ -240,11 +240,11 @@ export function isSessionServable(
  * failed are different disclosures.
  */
 export function isOwnerOperatedAgent(
-  job: { workflowOwnerId: number | null; workflowOrgId: number | null },
+  job: { evalflowOwnerId: number | null; evalflowOrgId: number | null },
   token: { createdBy: number },
   tokenOwner: { organizationId: number | null },
 ): boolean {
-  if (job.workflowOwnerId != null && token.createdBy === job.workflowOwnerId) return true;
-  if (job.workflowOrgId != null && sameOrg({ organizationId: tokenOwner.organizationId }, { organizationId: job.workflowOrgId })) return true;
+  if (job.evalflowOwnerId != null && token.createdBy === job.evalflowOwnerId) return true;
+  if (job.evalflowOrgId != null && sameOrg({ organizationId: tokenOwner.organizationId }, { organizationId: job.evalflowOrgId })) return true;
   return false;
 }

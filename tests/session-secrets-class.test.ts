@@ -22,7 +22,7 @@ d("login-class secrets are withheld from the job path", () => {
   // The org path runs the fence in Core through the vox.organizations seam (R3),
   // and post-flip the seam's data lives in the `organizations` plugin — so this
   // suite installs the real plugin provider on the dedicated plugin test DB and
-  // seeds the org fixtures there. Core-side rows (users, workflow, job,
+  // seeds the org fixtures there. Core-side rows (users, evalflow, job,
   // personal secrets) stay in the dev DB.
   let h: OrgsHarness;
 
@@ -40,9 +40,9 @@ d("login-class secrets are withheld from the job path", () => {
   it("getSecretsForJob returns runtime rows only; login rows never leave Core", async () => {
     const stamp = Date.now();
     const providerId = await anyProviderId();
-    // Personal workflow owned by admin (user 1).
+    // Personal evalflow owned by admin (user 1).
     const project = await storage.createProject({ name: `sc-proj-${stamp}`, ownerId: 1 } as any);
-    const wf = await storage.createWorkflow({
+    const wf = await storage.createEvalflow({
       name: `sc-wf-${stamp}`, ownerId: 1, projectId: project.id,
       providerId, visibility: "private", isMainline: false, config: {},
     } as any);
@@ -54,9 +54,9 @@ d("login-class secrets are withheld from the job path", () => {
       userId: 1, name: `SC_LOGIN_${stamp}`, encryptedValue: encryptValue("hunter2"), brokerType: "auth-session",
     });
     const job = await storage.createEvalJob({
-      workflowId: wf.id, triggerType: 2, evalSetId: null, createdBy: 1,
+      evalflowId: wf.id, triggerType: 2, evalSetId: null, createdBy: 1,
       siteId: "na-us-ashburn-01", config: {},
-      snapshot: { provider: null, workflow: null, evalSet: null, creatorPlan: null } as any,
+      snapshot: { provider: null, evalflow: null, evalSet: null, creatorPlan: null } as any,
       status: "pending", priority: 0, retryCount: 0, maxRetries: 3,
     } as any);
 
@@ -68,9 +68,9 @@ d("login-class secrets are withheld from the job path", () => {
     // Cleanup (delete only our stamped rows/objects).
     await db.delete(secrets).where(eq(secrets.name, `SC_RUNTIME_${stamp}`));
     await db.delete(secrets).where(eq(secrets.name, `SC_LOGIN_${stamp}`));
-    // evalJobs.workflowId is ON DELETE SET NULL, so the job row (left in place,
+    // evalJobs.evalflowId is ON DELETE SET NULL, so the job row (left in place,
     // matching the repo's existing test pattern) does not block this delete.
-    await storage.deleteWorkflow(wf.id);
+    await storage.deleteEvalflow(wf.id);
     await storage.deleteProject(project.id);
   });
 
@@ -87,9 +87,9 @@ d("login-class secrets are withheld from the job path", () => {
       email: `sc-user-${stamp}@test.local`,
     } as any);
     await h.provider.addMember(orgId, user.id, "member");
-    // Org-owned workflow: organizationId set (an opaque integer since the
+    // Org-owned evalflow: organizationId set (an opaque integer since the
     // Release A FK drop), owned by the throwaway member.
-    const wf = await storage.createWorkflow({
+    const wf = await storage.createEvalflow({
       name: `sc-org-wf-${stamp}`, ownerId: user.id, organizationId: orgId,
       providerId, visibility: "private", isMainline: false, config: {},
     } as any);
@@ -103,9 +103,9 @@ d("login-class secrets are withheld from the job path", () => {
       brokerType: "auth-session", isTestAccount: false, createdBy: user.id,
     });
     const job = await storage.createEvalJob({
-      workflowId: wf.id, triggerType: 2, evalSetId: null, createdBy: user.id,
+      evalflowId: wf.id, triggerType: 2, evalSetId: null, createdBy: user.id,
       siteId: "na-us-ashburn-01", config: {},
-      snapshot: { provider: null, workflow: null, evalSet: null, creatorPlan: null } as any,
+      snapshot: { provider: null, evalflow: null, evalSet: null, creatorPlan: null } as any,
       status: "pending", priority: 0, retryCount: 0, maxRetries: 3,
     } as any);
 
@@ -114,11 +114,11 @@ d("login-class secrets are withheld from the job path", () => {
     expect(result).not.toHaveProperty(`SC_ORG_LOGIN_${stamp}`);
 
     // Cleanup of the Core-side rows, in FK-safe order: job (frees
-    // users.createdBy FK, which has no ON DELETE action) -> workflow (frees
+    // users.createdBy FK, which has no ON DELETE action) -> evalflow (frees
     // users.ownerId) -> user. The org + its secrets are plugin-side and die
     // with the throwaway schema in afterAll.
     await db.delete(evalJobs).where(eq(evalJobs.id, job.id));
-    await storage.deleteWorkflow(wf.id);
+    await storage.deleteEvalflow(wf.id);
     await db.delete(users).where(eq(users.id, user.id));
   });
 });

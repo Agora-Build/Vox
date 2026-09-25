@@ -44,8 +44,8 @@ interface EvalResult {
   noiseReduction: number | null;
   timestamp: string;
   // Present on Community / My Evals (raw) points; null on aggregated buckets.
-  workflowId?: number | null;
-  workflowName?: string | null;
+  evalflowId?: number | null;
+  evalflowName?: string | null;
 }
 
 interface AuthStatus {
@@ -159,9 +159,9 @@ function buildCombinedData(filteredMetrics: EvalResult[], colorMap: Map<string, 
         // Turn Success Rate as a percentage (0..100); undefined when no data so
         // connectNulls skips it.
         row[`${p.key}_tsr`] = m?.turnSuccessRate != null ? Math.round(m.turnSuccessRate * 100) : undefined;
-        // Carry the workflow behind this point so the tooltip can name/link it.
-        row[`${p.key}_wfname`] = m?.workflowName ?? undefined;
-        row[`${p.key}_wfid`] = m?.workflowId ?? undefined;
+        // Carry the evalflow behind this point so the tooltip can name/link it.
+        row[`${p.key}_wfname`] = m?.evalflowName ?? undefined;
+        row[`${p.key}_wfid`] = m?.evalflowId ?? undefined;
       }
       return row;
     });
@@ -452,12 +452,12 @@ function providerPrefixFromDataKey(dataKey: string): string {
 }
 
 /**
- * Chart tooltip that adds the workflow name (as a link to its detail page) under
- * each provider line. `showWorkflow` gates the workflow row so the mainline tab —
- * where a point is a daily average of many workflows — keeps the plain tooltip.
+ * Chart tooltip that adds the evalflow name (as a link to its detail page) under
+ * each provider line. `showEvalflow` gates the evalflow row so the mainline tab —
+ * where a point is a daily average of many evalflows — keeps the plain tooltip.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function WorkflowTooltip({ active, payload, label, showWorkflow, unit = "ms" }: any) {
+function EvalflowTooltip({ active, payload, label, showEvalflow, unit = "ms" }: any) {
   if (!active || !Array.isArray(payload) || payload.length === 0) return null;
   const row = (payload[0]?.payload ?? {}) as CombinedRow;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -469,16 +469,16 @@ function WorkflowTooltip({ active, payload, label, showWorkflow, unit = "ms" }: 
       {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
       {items.map((e: any) => {
         const prefix = providerPrefixFromDataKey(String(e.dataKey));
-        const wfName = showWorkflow ? (row[`${prefix}_wfname`] as string | undefined) : undefined;
-        const wfId = showWorkflow ? (row[`${prefix}_wfid`] as number | undefined) : undefined;
+        const wfName = showEvalflow ? (row[`${prefix}_wfname`] as string | undefined) : undefined;
+        const wfId = showEvalflow ? (row[`${prefix}_wfid`] as number | undefined) : undefined;
         return (
           <div key={e.dataKey} className="flex flex-col gap-0.5 py-0.5">
             <span style={{ color: e.color }}>{e.name}: {e.value}{unit}</span>
             {wfName && (wfId != null ? (
               <Link
-                href={`/console/workflows/${wfId}`}
+                href={`/console/evalflows/${wfId}`}
                 className="text-xs text-muted-foreground hover:text-primary hover:underline underline-offset-2 w-fit"
-                data-testid="link-tooltip-workflow"
+                data-testid="link-tooltip-evalflow"
               >
                 {wfName}
               </Link>
@@ -498,13 +498,13 @@ interface MetricsSectionProps {
   timeRangeLabel: string;
   regionLabel: string;
   testIdPrefix?: string;
-  /** Show the workflow name/link in the tooltip (Community / My Evals only). */
-  showWorkflow?: boolean;
+  /** Show the evalflow name/link in the tooltip (Community / My Evals only). */
+  showEvalflow?: boolean;
   /** Provider ids to hide from the charts (multi-select filter). */
   hiddenProviders?: Set<string>;
 }
 
-function MetricsSection({ metrics, isLoading, timeRangeLabel, regionLabel, testIdPrefix = "", showWorkflow = false, hiddenProviders }: MetricsSectionProps) {
+function MetricsSection({ metrics, isLoading, timeRangeLabel, regionLabel, testIdPrefix = "", showEvalflow = false, hiddenProviders }: MetricsSectionProps) {
   const { data: providerList } = useQuery<Array<{ id: string; brandColor: string | null }>>({
     queryKey: ["/api/providers"],
     staleTime: 60000,
@@ -704,7 +704,7 @@ function MetricsSection({ metrics, isLoading, timeRangeLabel, regionLabel, testI
                       <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" vertical={false} />
                       <XAxis dataKey="timestamp" stroke="hsl(var(--muted-foreground))" fontSize={12} tickLine={false} axisLine={false} />
                       <YAxis stroke="hsl(var(--muted-foreground))" fontSize={12} tickLine={false} axisLine={false} domain={[0, 100]} tickFormatter={(value) => `${value}%`} />
-                      <Tooltip content={<WorkflowTooltip showWorkflow={showWorkflow} unit="%" />} wrapperStyle={{ pointerEvents: 'auto' }} />
+                      <Tooltip content={<EvalflowTooltip showEvalflow={showEvalflow} unit="%" />} wrapperStyle={{ pointerEvents: 'auto' }} />
                       <Legend />
                       {tsrChart.lines.map(l => (
                         <Line key={l.segKey} type="monotone" dataKey={l.segKey} name={l.name} stroke={l.stroke} strokeWidth={2} dot={makeEndpointDot(l.dataIndices, l.stroke)} activeDot={{ r: 6 }} connectNulls legendType={l.showLegend ? "line" : "none"} />
@@ -733,7 +733,7 @@ function MetricsSection({ metrics, isLoading, timeRangeLabel, regionLabel, testI
                       <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" vertical={false} />
                       <XAxis dataKey="timestamp" stroke="hsl(var(--muted-foreground))" fontSize={12} tickLine={false} axisLine={false} />
                       <YAxis stroke="hsl(var(--muted-foreground))" fontSize={12} tickLine={false} axisLine={false} tickFormatter={(value) => `${value}ms`} />
-                      <Tooltip content={<WorkflowTooltip showWorkflow={showWorkflow} />} wrapperStyle={{ pointerEvents: 'auto' }} />
+                      <Tooltip content={<EvalflowTooltip showEvalflow={showEvalflow} />} wrapperStyle={{ pointerEvents: 'auto' }} />
                       <Legend />
                       {responseChart.lines.map(l => (
                         <Line key={l.segKey} type="monotone" dataKey={l.segKey} name={l.name} stroke={l.stroke} strokeWidth={2} dot={makeEndpointDot(l.dataIndices, l.stroke)} activeDot={{ r: 6 }} connectNulls legendType={l.showLegend ? "line" : "none"} />
@@ -762,7 +762,7 @@ function MetricsSection({ metrics, isLoading, timeRangeLabel, regionLabel, testI
                       <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" vertical={false} />
                       <XAxis dataKey="timestamp" stroke="hsl(var(--muted-foreground))" fontSize={12} tickLine={false} axisLine={false} />
                       <YAxis stroke="hsl(var(--muted-foreground))" fontSize={12} tickLine={false} axisLine={false} tickFormatter={(value) => `${value}ms`} />
-                      <Tooltip content={<WorkflowTooltip showWorkflow={showWorkflow} />} wrapperStyle={{ pointerEvents: 'auto' }} />
+                      <Tooltip content={<EvalflowTooltip showEvalflow={showEvalflow} />} wrapperStyle={{ pointerEvents: 'auto' }} />
                       <Legend />
                       {interruptChart.lines.map(l => (
                         <Line key={l.segKey} type="monotone" dataKey={l.segKey} name={l.name} stroke={l.stroke} strokeWidth={2} dot={makeEndpointDot(l.dataIndices, l.stroke)} activeDot={{ r: 6 }} connectNulls legendType={l.showLegend ? "line" : "none"} />
@@ -1116,7 +1116,7 @@ export default function Dashboard() {
             timeRangeLabel={timeRangeLabel}
             regionLabel={regionLabel}
             testIdPrefix="community-"
-            showWorkflow
+            showEvalflow
             hiddenProviders={hiddenProviders}
           />
         </TabsContent>
@@ -1129,7 +1129,7 @@ export default function Dashboard() {
               timeRangeLabel={timeRangeLabel}
               regionLabel={regionLabel}
               testIdPrefix="my-evals-"
-              showWorkflow
+              showEvalflow
               hiddenProviders={hiddenProviders}
             />
           ) : (
@@ -1138,7 +1138,7 @@ export default function Dashboard() {
                 <Lock className="h-8 w-8 text-muted-foreground mb-4" />
                 <h3 className="text-lg font-semibold mb-2">Sign in required</h3>
                 <p className="text-sm text-muted-foreground max-w-md">
-                  Sign in to view your private evaluation results. Results from private workflows or eval sets you own will appear here.
+                  Sign in to view your private evaluation results. Results from private evalflows or eval sets you own will appear here.
                 </p>
               </CardContent>
             </Card>

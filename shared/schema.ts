@@ -89,9 +89,9 @@ export const providers = pgTable("providers", {
   sku: providerSkuEnum("sku").notNull(),
   description: text("description"),
   brandColor: text("brand_color"),
-  // Stable platform slug matching the aeval workflow YAML `platform.setup → platform_id`
+  // Stable platform slug matching the aeval evalflow YAML `platform.setup → platform_id`
   // (e.g. "agora", "livekit", "elevenlabs"). Null for generic providers like "Custom".
-  // Used to warn when a workflow's provider disagrees with its setup YAML.
+  // Used to warn when an evalflow's provider disagrees with its setup YAML.
   platformId: text("platform_id"),
   isActive: boolean("is_active").default(true).notNull(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
@@ -164,9 +164,9 @@ export const insertProjectSchema = createInsertSchema(projects).omit({
 export type InsertProject = z.infer<typeof insertProjectSchema>;
 export type Project = typeof projects.$inferSelect;
 
-// ==================== WORKFLOWS ====================
+// ==================== EVALFLOWS ====================
 
-export const workflows = pgTable("workflows", {
+export const evalflows = pgTable("evalflows", {
   id: serial("id").primaryKey(),
   name: text("name").notNull(),
   description: text("description"),
@@ -177,21 +177,21 @@ export const workflows = pgTable("workflows", {
   visibility: visibilityEnum("visibility").default("public").notNull(),
   isMainline: boolean("is_mainline").default(false).notNull(),
   // Conversation transport (design §3): how the simulated user reaches this
-  // workflow's agent. Editable on the live row; each job freezes its own copy.
+  // evalflow's agent. Editable on the live row; each job freezes its own copy.
   transport: transportEnum("transport").default("web").notNull(),
   config: jsonb("config").default({}).notNull(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
 
-export const insertWorkflowSchema = createInsertSchema(workflows).omit({
+export const insertEvalflowSchema = createInsertSchema(evalflows).omit({
   id: true,
   createdAt: true,
   updatedAt: true,
 });
 
-export type InsertWorkflow = z.infer<typeof insertWorkflowSchema>;
-export type Workflow = typeof workflows.$inferSelect;
+export type InsertEvalflow = z.infer<typeof insertEvalflowSchema>;
+export type Evalflow = typeof evalflows.$inferSelect;
 
 // ==================== EVAL SETS ====================
 
@@ -302,9 +302,9 @@ export type EvalAgent = typeof evalAgents.$inferSelect;
 export const evalSchedules = pgTable("eval_schedules", {
   id: serial("id").primaryKey(),
   name: text("name").notNull(),
-  // Nullable + SET NULL: a schedule survives deletion of its workflow/eval-set
+  // Nullable + SET NULL: a schedule survives deletion of its evalflow/eval-set
   // (it's then skipped by the scheduler). Avoids a FK error when either is deleted.
-  workflowId: integer("workflow_id").references(() => workflows.id, { onDelete: "set null" }),
+  evalflowId: integer("evalflow_id").references(() => evalflows.id, { onDelete: "set null" }),
   evalSetId: integer("eval_set_id").references(() => evalSets.id, { onDelete: "set null" }),
   // Pool the schedule dispatches into: region baseId + tier (spec §4/§5).
   region: varchar("region", { length: 64 }).notNull(),
@@ -343,7 +343,7 @@ export type EvalSchedule = typeof evalSchedules.$inferSelect;
 
 // ==================== EVAL JOBS ====================
 
-// REST call-trigger template carried in workflow config (design 2026-09-21 §5;
+// REST call-trigger template carried in evalflow config (design 2026-09-21 §5;
 // Libretto restful.request). Template placeholders (${secrets.NAME},
 // ${phoneNumber}) are resolved by Core at execution time from the FROZEN job
 // snapshot — never validated/resolved here (shape only).
@@ -356,13 +356,13 @@ export type RestfulTrigger = {
   timeoutMs?: number;
 };
 
-// Immutable snapshot of the workflow + eval-set (+ provider + creator plan) captured
+// Immutable snapshot of the evalflow + eval-set (+ provider + creator plan) captured
 // on each job at run time. Everything downstream — provenance display, provider
 // attribution, and metric tiering — reads this instead of the live rows, so editing
-// or deleting a workflow/eval-set never rewrites a past job's history.
+// or deleting an evalflow/eval-set never rewrites a past job's history.
 export type JobSnapshot = {
   provider: { id: string; name: string; platformId: string | null } | null;
-  workflow: { name: string; config: unknown; visibility: string; isMainline: boolean; ownerId: number; organizationId: number | null } | null;
+  evalflow: { name: string; config: unknown; visibility: string; isMainline: boolean; ownerId: number; organizationId: number | null } | null;
   evalSet: { name: string; config: unknown; visibility: string; isMainline: boolean; ownerId: number } | null;
   creatorPlan: string | null;
   // Conversation transport frozen at creation (design 2026-09-21 §3). Absent on
@@ -372,10 +372,10 @@ export type JobSnapshot = {
   // dispatch (see the shared-agents plugin). Core never inspects it; the plugin
   // reads it back in settle(). TS-only — `snapshot` is a jsonb column.
   settlementContext?: unknown;
-  // the IMMUTABLE session-injection stamp. Present iff the workflow
+  // the IMMUTABLE session-injection stamp. Present iff the evalflow
   // needed a Core-minted login session at dispatch time. The /session endpoint
   // derives BOTH the session need and the credential-trust gate from this (and
-  // from workflow.ownerId/organizationId) — never from the live workflow, which
+  // from evalflow.ownerId/organizationId) — never from the live evalflow, which
   // the owner can edit after dispatch (TOCTOU).
   sessionInjection?: { platformId: string; emailSecret: string; passwordSecret: string };
   // True iff the dispatcher recorded informed credential consent AND the login
@@ -397,9 +397,9 @@ export const evalJobs = pgTable("eval_jobs", {
   // the origin survives schedule deletion (which nulls schedule_id). Nullable for
   // rows created before this column — the API falls back to schedule_id then.
   triggerType: integer("trigger_type"),
-  // Nullable + SET NULL: a job (and its results) survives deletion of its workflow
+  // Nullable + SET NULL: a job (and its results) survives deletion of its evalflow
   // or eval-set — provenance/tiering come from `snapshot`, not these live FKs.
-  workflowId: integer("workflow_id").references(() => workflows.id, { onDelete: "set null" }),
+  evalflowId: integer("evalflow_id").references(() => evalflows.id, { onDelete: "set null" }),
   evalSetId: integer("eval_set_id").references(() => evalSets.id, { onDelete: "set null" }),
   targetTokenId: integer("target_token_id").references(() => evalAgentTokens.id, { onDelete: "set null" }),
   // Pooled targeting: (targetRegion, targetTier) — "any agent of this tier in
@@ -412,8 +412,8 @@ export const evalJobs = pgTable("eval_jobs", {
   // frozen at creation from the seam (design §11 R2) — the claim SQL reads THIS, never users.organization_id.
   // No FK: org ids are opaque integers in Core (a plugin provider may own the org table).
   creatorOrgId: integer("creator_org_id"),
-  // Frozen at creation from the workflow (same pattern as creator_org_id): the
-  // claim SQL gates phone jobs on THIS, never the live workflow row.
+  // Frozen at creation from the evalflow (same pattern as creator_org_id): the
+  // claim SQL gates phone jobs on THIS, never the live evalflow row.
   transport: transportEnum("transport").default("web").notNull(),
   // Concrete site that ran (or will run) the job. Pooled jobs are born null;
   // the claiming agent stamps it atomically inside claimEvalJob.
@@ -549,7 +549,7 @@ export const orgSecrets = pgTable("org_secrets", {
   // eval agent, any tier.
   brokerType: text("broker_type"),
   // Owner's attestation that this login identity is a dedicated, disposable
-  // test account — required before shared-tier dispatch of session workflows.
+  // test account — required before shared-tier dispatch of session evalflows.
   isTestAccount: boolean("is_test_account").default(false).notNull(),
   createdBy: integer("created_by").references(() => users.id),
   createdAt: timestamp("created_at").defaultNow().notNull(),
@@ -775,7 +775,7 @@ export const secrets = pgTable("secrets", {
   // eval agent, any tier.
   brokerType: text("broker_type"),
   // Owner's attestation that this login identity is a dedicated, disposable
-  // test account — required before shared-tier dispatch of session workflows.
+  // test account — required before shared-tier dispatch of session evalflows.
   isTestAccount: boolean("is_test_account").default(false).notNull(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
@@ -859,7 +859,7 @@ export const webSessions = pgTable("web_sessions", {
   // accounts on the same platform under the same owner scope never share a
   // cached bundle — a sha256 of the two login-secret NAMES (see
   // credentialKeyFor in auth-session.ts). Without it, an attested
-  // test-account workflow could be served a non-attested prod-account session
+  // test-account evalflow could be served a non-attested prod-account session
   // minted from a different secret pair, defeating the shared-tier attestation
   // gate.
   credentialKey: text("credential_key").notNull(),

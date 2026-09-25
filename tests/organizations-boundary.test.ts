@@ -20,7 +20,7 @@ import path from "path";
 // tests/sensitive-paths.test.ts.
 const ALLOWED = new Set(["storage.ts", "permissions.ts"]);
 
-// User-shaped identifiers only. Resource-shaped reads (workflow.organizationId)
+// User-shaped identifiers only. Resource-shaped reads (evalflow.organizationId)
 // are permanent Core FK columns and must NOT be flagged.
 //
 // The `(?!\w*[Mm]embership\b)` lookahead excludes any identifier ending in
@@ -38,7 +38,7 @@ const FORBIDDEN = /\b(?!\w*[Mm]embership\b)(user|currentUser|targetUser|member|a
 // Raw snake_case column SQL. `users.organization_id` is scoped to the users
 // table specifically (other tables — web_sessions, org_secrets — legitimately
 // own their own `organization_id` column as a resource-ownership FK, exactly
-// like `workflow.organizationId`, and must NOT be flagged). `org_role` has no
+// like `evalflow.organizationId`, and must NOT be flagged). `org_role` has no
 // analog on any other table, so it is matched bare, unqualified.
 const SNAKE_FORBIDDEN = /\busers\.organization_id\b|\borg_role\b/;
 
@@ -48,7 +48,7 @@ const SNAKE_FORBIDDEN = /\busers\.organization_id\b|\borg_role\b/;
 // users-table SQL, the BARE column names are forbidden too. Scoping it that way
 // is what keeps the OTHER tables' own `organization_id` FK columns
 // (web_sessions, org_secrets — resource ownership, exactly like
-// workflow.organizationId) unflagged everywhere else. Verified zero false
+// evalflow.organizationId) unflagged everywhere else. Verified zero false
 // positives on the tree as of this commit: no server/plugin .ts file contains
 // raw users-table SQL at all, so this pass is a tripwire for the next one that
 // does — including a plugin's own provider implementation in Phase 2.
@@ -231,7 +231,7 @@ describe("organizations boundary", () => {
     const legit = [
       "const x = user.membership?.organizationId;",
       "const y = memberMembership.organizationId;",
-      "const z = workflow.organizationId;",
+      "const z = evalflow.organizationId;",
       "orgRole: updated?.orgRole,",
     ];
     for (const line of legit) {
@@ -332,7 +332,7 @@ describe("organizations boundary", () => {
   // holds the key. The invariant is unchanged and just as load-bearing: the tail
   // has NO internal fence, so its safety depends entirely on
   // `orgRuntimeSecretsForJob` (which resolves the creator's membership through
-  // the seam and compares it to the workflow's owning org) being its ONLY
+  // the seam and compares it to the evalflow's owning org) being its ONLY
   // caller. Pinned by scanning source rather than trusting a comment, the same
   // way the rest of this file works.
   //

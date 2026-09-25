@@ -22,7 +22,7 @@ import { GradientAvatar } from "@/components/gradient-avatar";
 import { ProfileDialog } from "@/components/profile-dialog";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import { Users, Workflow, FileText, LogOut, Shield, Gem, Sparkles, Rocket, Server, Building2, CreditCard, Settings, FolderKanban, ClipboardList, KeyRound, Swords, HardDrive, Box, ChevronsUpDown, Mail, UserCog, MapPinned, Radio } from "lucide-react";
+import { Users, Workflow as EvalflowIcon, FileText, LogOut, Shield, Gem, Sparkles, Rocket, Server, Building2, CreditCard, Settings, FolderKanban, ClipboardList, KeyRound, Swords, HardDrive, Box, ChevronsUpDown, Mail, UserCog, MapPinned, Radio } from "lucide-react";
 import { ThemeToggle } from "@/components/theme-toggle";
 
 interface AuthStatus {
@@ -143,10 +143,10 @@ export default function ConsoleLayout({ children }: ConsoleLayoutProps) {
   }
 
   navItems.push({
-    title: "Workflows",
-    url: "/console/workflows",
-    icon: Workflow,
-    active: location === "/console/workflows",
+    title: "Evalflows",
+    url: "/console/evalflows",
+    icon: EvalflowIcon,
+    active: location === "/console/evalflows",
   });
 
   navItems.push({

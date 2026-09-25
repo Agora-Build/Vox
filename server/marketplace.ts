@@ -8,7 +8,7 @@ export interface AgentSummary {
 
 /** Opaque-to-Core context the plugin needs to price and gate a dispatch. */
 export interface JobContext {
-  workflowId: number | null;
+  evalflowId: number | null;
   evalSetId: number | null;
   region: string | null;
   createdBy: number;

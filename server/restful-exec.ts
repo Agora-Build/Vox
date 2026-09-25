@@ -1,6 +1,6 @@
 // Template resolution for the trusted restful.* path (design 2026-09-21 §5).
 // Pure: takes the FROZEN trigger template (from the job snapshot), the decrypted
-// secret map for the workflow-ownership scope, and the caller-suppliable
+// secret map for the evalflow-ownership scope, and the caller-suppliable
 // variable whitelist. Produces the concrete RestExecRequest plus the list of
 // secret VALUES that were interpolated (the redaction needles for everything
 // later returned to an agent). Never performs IO.

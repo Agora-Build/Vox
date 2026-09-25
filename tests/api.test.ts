@@ -24,7 +24,7 @@ interface AuthSession {
   cookie: string;
 }
 
-interface Workflow {
+interface Evalflow {
   id: number;
   name: string;
   description: string | null;
@@ -72,7 +72,7 @@ interface EvalAgent {
 
 interface EvalJob {
   id: number;
-  workflowId: number;
+  evalflowId: number;
   status: string;
   siteId: string;
   scheduleId?: number | null;
@@ -82,7 +82,7 @@ interface EvalJob {
 interface EvalSchedule {
   id: number;
   name: string;
-  workflowId: number;
+  evalflowId: number;
   evalSetId: number | null;
   region: string;
   targetTier: string;
@@ -142,7 +142,7 @@ async function authFetch(session: AuthSession, url: string, options: RequestInit
 
 describe('Vox API Tests', () => {
   let adminSession: AuthSession;
-  let testWorkflowId: number;
+  let testEvalflowId: number;
   let testProjectId: number;
   let testEvalSetId: number;
   let testEvalAgentTokenId: number;
@@ -159,7 +159,7 @@ describe('Vox API Tests', () => {
   beforeAll(async () => {
     adminSession = await login(ADMIN_EMAIL, ADMIN_PASSWORD);
 
-    // Fetch a valid provider ID for tests that create workflows
+    // Fetch a valid provider ID for tests that create evalflows
     const providerResponse = await fetch(`${BASE_URL}/api/providers`);
     const providers: Provider[] = await providerResponse.json();
     testProviderId = providers[0].id;
@@ -178,7 +178,7 @@ describe('Vox API Tests', () => {
     });
 
     it('should reject unauthenticated requests', async () => {
-      const response = await fetch(`${BASE_URL}/api/workflows`);
+      const response = await fetch(`${BASE_URL}/api/evalflows`);
       expect(response.status).toBe(401);
     });
 
@@ -251,13 +251,13 @@ describe('Vox API Tests', () => {
     });
   });
 
-  describe('Workflow API', () => {
-    it('should create a new workflow', async () => {
-      const response = await authFetch(adminSession, `${BASE_URL}/api/workflows`, {
+  describe('Evalflow API', () => {
+    it('should create a new evalflow', async () => {
+      const response = await authFetch(adminSession, `${BASE_URL}/api/evalflows`, {
         method: 'POST',
         body: JSON.stringify({
-          name: 'Test Workflow',
-          description: 'A test workflow for API testing',
+          name: 'Test Evalflow',
+          description: 'A test evalflow for API testing',
           visibility: 'public',
           projectId: testProjectId,
           providerId: testProviderId,
@@ -265,51 +265,51 @@ describe('Vox API Tests', () => {
       });
 
       expect(response.ok).toBe(true);
-      const workflow: Workflow = await response.json();
-      expect(workflow.name).toBe('Test Workflow');
-      expect(workflow.visibility).toBe('public');
-      testWorkflowId = workflow.id;
+      const evalflow: Evalflow = await response.json();
+      expect(evalflow.name).toBe('Test Evalflow');
+      expect(evalflow.visibility).toBe('public');
+      testEvalflowId = evalflow.id;
     });
 
-    it('should get all workflows', async () => {
-      const response = await authFetch(adminSession, `${BASE_URL}/api/workflows`);
+    it('should get all evalflows', async () => {
+      const response = await authFetch(adminSession, `${BASE_URL}/api/evalflows`);
       expect(response.ok).toBe(true);
 
-      const workflows: Workflow[] = await response.json();
-      expect(Array.isArray(workflows)).toBe(true);
-      expect(workflows.length).toBeGreaterThan(0);
+      const evalflows: Evalflow[] = await response.json();
+      expect(Array.isArray(evalflows)).toBe(true);
+      expect(evalflows.length).toBeGreaterThan(0);
     });
 
-    it('should get a single workflow by id', async () => {
-      const response = await authFetch(adminSession, `${BASE_URL}/api/workflows/${testWorkflowId}`);
+    it('should get a single evalflow by id', async () => {
+      const response = await authFetch(adminSession, `${BASE_URL}/api/evalflows/${testEvalflowId}`);
       expect(response.ok).toBe(true);
 
-      const workflow: Workflow = await response.json();
-      expect(workflow.id).toBe(testWorkflowId);
-      expect(workflow.name).toBe('Test Workflow');
+      const evalflow: Evalflow = await response.json();
+      expect(evalflow.id).toBe(testEvalflowId);
+      expect(evalflow.name).toBe('Test Evalflow');
     });
 
-    it('should update a workflow', async () => {
-      const response = await authFetch(adminSession, `${BASE_URL}/api/workflows/${testWorkflowId}`, {
+    it('should update an evalflow', async () => {
+      const response = await authFetch(adminSession, `${BASE_URL}/api/evalflows/${testEvalflowId}`, {
         method: 'PATCH',
         body: JSON.stringify({
-          name: 'Updated Test Workflow',
+          name: 'Updated Test Evalflow',
           description: 'Updated description',
         }),
       });
 
       expect(response.ok).toBe(true);
-      const workflow: Workflow = await response.json();
-      expect(workflow.name).toBe('Updated Test Workflow');
+      const evalflow: Evalflow = await response.json();
+      expect(evalflow.name).toBe('Updated Test Evalflow');
     });
   });
 
-  describe('Workflow ownership permissions (admin is not a super-editor)', () => {
+  describe('Evalflow ownership permissions (admin is not a super-editor)', () => {
     let nonOwner: AuthSession;
     let adminPrivateWfId: number;
     let publicEvalSetId: number;
 
-    it('sets up a fresh non-owner user, an admin-owned private workflow, and a public eval set', async () => {
+    it('sets up a fresh non-owner user, an admin-owned private evalflow, and a public eval set', async () => {
       const pw = 'ownpass123';
       const email = `wf-nonowner-${Date.now()}@test.local`;
       const inviteRes = await authFetch(adminSession, `${BASE_URL}/api/admin/invite`, {
@@ -324,7 +324,7 @@ describe('Vox API Tests', () => {
       expect(regRes.ok).toBe(true);
       nonOwner = await login(email, pw);
 
-      const wfRes = await authFetch(adminSession, `${BASE_URL}/api/workflows`, {
+      const wfRes = await authFetch(adminSession, `${BASE_URL}/api/evalflows`, {
         method: 'POST',
         body: JSON.stringify({ name: 'Admin Private WF', visibility: 'private', projectId: testProjectId, providerId: testProviderId }),
       });
@@ -339,46 +339,46 @@ describe('Vox API Tests', () => {
       publicEvalSetId = (await esRes.json()).id;
     });
 
-    it('non-owner cannot EDIT another user\'s workflow (403)', async () => {
-      const res = await authFetch(nonOwner, `${BASE_URL}/api/workflows/${testWorkflowId}`, {
+    it('non-owner cannot EDIT another user\'s evalflow (403)', async () => {
+      const res = await authFetch(nonOwner, `${BASE_URL}/api/evalflows/${testEvalflowId}`, {
         method: 'PATCH', body: JSON.stringify({ description: 'hijack' }),
       });
       expect(res.status).toBe(403);
     });
 
-    it('non-owner CAN run a PUBLIC workflow they do not own', async () => {
-      const res = await authFetch(nonOwner, `${BASE_URL}/api/workflows/${testWorkflowId}/run`, {
+    it('non-owner CAN run a PUBLIC evalflow they do not own', async () => {
+      const res = await authFetch(nonOwner, `${BASE_URL}/api/evalflows/${testEvalflowId}/run`, {
         method: 'POST', body: JSON.stringify({ region: BASE_NA, targetTier: 'public', evalSetId: publicEvalSetId }),
       });
-      expect(res.ok).toBe(true); // testWorkflowId is public
+      expect(res.ok).toBe(true); // testEvalflowId is public
     });
 
-    it('non-owner CANNOT run a PRIVATE workflow they do not own (403)', async () => {
-      const res = await authFetch(nonOwner, `${BASE_URL}/api/workflows/${adminPrivateWfId}/run`, {
+    it('non-owner CANNOT run a PRIVATE evalflow they do not own (403)', async () => {
+      const res = await authFetch(nonOwner, `${BASE_URL}/api/evalflows/${adminPrivateWfId}/run`, {
         method: 'POST', body: JSON.stringify({ region: BASE_NA, targetTier: 'public', evalSetId: publicEvalSetId }),
       });
       expect(res.status).toBe(403);
     });
 
-    it('ADMIN (also a principal) cannot run a non-owned PRIVATE workflow (403)', async () => {
-      // A private workflow owned by the non-owner; the admin (adminSession is admin
+    it('ADMIN (also a principal) cannot run a non-owned PRIVATE evalflow (403)', async () => {
+      // A private evalflow owned by the non-owner; the admin (adminSession is admin
       // AND principal plan) must not be able to run it — no admin/principal bypass.
-      const wfRes = await authFetch(nonOwner, `${BASE_URL}/api/workflows`, {
+      const wfRes = await authFetch(nonOwner, `${BASE_URL}/api/evalflows`, {
         method: 'POST', body: JSON.stringify({ name: 'NonOwner Private WF', visibility: 'private', providerId: testProviderId }),
       });
       expect(wfRes.ok).toBe(true);
       const id = (await wfRes.json()).id;
-      const res = await authFetch(adminSession, `${BASE_URL}/api/workflows/${id}/run`, {
+      const res = await authFetch(adminSession, `${BASE_URL}/api/evalflows/${id}/run`, {
         method: 'POST', body: JSON.stringify({ region: BASE_NA, targetTier: 'public', evalSetId: publicEvalSetId }),
       });
       expect(res.status).toBe(403);
       // ...but admin CAN still delete it via API (moderation preserved).
-      const del = await authFetch(adminSession, `${BASE_URL}/api/workflows/${id}`, { method: 'DELETE' });
+      const del = await authFetch(adminSession, `${BASE_URL}/api/evalflows/${id}`, { method: 'DELETE' });
       expect(del.ok).toBe(true);
     });
 
-    it('rejects a whitespace-only workflow name (so type-to-confirm delete stays possible)', async () => {
-      const res = await authFetch(adminSession, `${BASE_URL}/api/workflows`, {
+    it('rejects a whitespace-only evalflow name (so type-to-confirm delete stays possible)', async () => {
+      const res = await authFetch(adminSession, `${BASE_URL}/api/evalflows`, {
         method: 'POST', body: JSON.stringify({ name: '   ', visibility: 'public', providerId: testProviderId }),
       });
       expect(res.status).toBe(400);
@@ -440,11 +440,11 @@ describe('Vox API Tests', () => {
   });
 
   describe('Config separation enforcement', () => {
-    it('rejects a workflow whose config has scenario', async () => {
-      const response = await authFetch(adminSession, `${BASE_URL}/api/workflows`, {
+    it('rejects an evalflow whose config has scenario', async () => {
+      const response = await authFetch(adminSession, `${BASE_URL}/api/evalflows`, {
         method: 'POST',
         body: JSON.stringify({
-          name: 'Bad Workflow',
+          name: 'Bad Evalflow',
           visibility: 'public',
           projectId: testProjectId,
           providerId: testProviderId,
@@ -467,14 +467,14 @@ describe('Vox API Tests', () => {
       });
       expect(response.status).toBe(400);
       const body = await response.json();
-      expect(body.error).toContain('workflow');
+      expect(body.error).toContain('evalflow');
     });
 
-    it('accepts a valid disjoint workflow + eval set', async () => {
-      const wf = await authFetch(adminSession, `${BASE_URL}/api/workflows`, {
+    it('accepts a valid disjoint evalflow + eval set', async () => {
+      const wf = await authFetch(adminSession, `${BASE_URL}/api/evalflows`, {
         method: 'POST',
         body: JSON.stringify({
-          name: 'Good Workflow',
+          name: 'Good Evalflow',
           visibility: 'public',
           projectId: testProjectId,
           providerId: testProviderId,
@@ -496,7 +496,7 @@ describe('Vox API Tests', () => {
       const esBody = await es.json();
 
       // Clean up so these rows don't leak into the shared test DB.
-      await authFetch(adminSession, `${BASE_URL}/api/workflows/${wfBody.id}`, { method: 'DELETE' });
+      await authFetch(adminSession, `${BASE_URL}/api/evalflows/${wfBody.id}`, { method: 'DELETE' });
       await authFetch(adminSession, `${BASE_URL}/api/eval-sets/${esBody.id}`, { method: 'DELETE' });
     });
   });
@@ -507,7 +507,7 @@ describe('Vox API Tests', () => {
         method: 'POST',
         body: JSON.stringify({
           name: 'Test One-Time Schedule',
-          workflowId: testWorkflowId,
+          evalflowId: testEvalflowId,
           evalSetId: testEvalSetId,
           region: BASE_NA,
           targetTier: 'public',
@@ -529,7 +529,7 @@ describe('Vox API Tests', () => {
         method: 'POST',
         body: JSON.stringify({
           name: 'Test Recurring Schedule',
-          workflowId: testWorkflowId,
+          evalflowId: testEvalflowId,
           evalSetId: testEvalSetId,
           region: BASE_NA,
           targetTier: 'public',
@@ -552,7 +552,7 @@ describe('Vox API Tests', () => {
     it('sets a ~90-day expiry on new schedules and reports status active', async () => {
       const created = await authFetch(adminSession, `${BASE_URL}/api/eval-schedules`, {
         method: 'POST',
-        body: JSON.stringify({ name: 'Expiry Create', workflowId: testWorkflowId, evalSetId: testEvalSetId, region: BASE_NA, targetTier: 'public', scheduleType: 'recurring', cronExpression: '0 * * * *' }),
+        body: JSON.stringify({ name: 'Expiry Create', evalflowId: testEvalflowId, evalSetId: testEvalSetId, region: BASE_NA, targetTier: 'public', scheduleType: 'recurring', cronExpression: '0 * * * *' }),
       });
       expect(created.ok).toBe(true);
       const s = await created.json();
@@ -564,32 +564,32 @@ describe('Vox API Tests', () => {
       const list = await (await authFetch(adminSession, `${BASE_URL}/api/eval-schedules`)).json();
       const row = list.find((r: { id: number }) => r.id === s.id);
       expect(row.status).toBe('active');
-      // Extend by the owner (admin owns testWorkflowId) succeeds.
+      // Extend by the owner (admin owns testEvalflowId) succeeds.
       const ext = await authFetch(adminSession, `${BASE_URL}/api/eval-schedules/${s.id}/extend`, { method: 'POST' });
       expect(ext.ok).toBe(true);
     });
 
-    it('blocks deleting a workflow with an active schedule, then allows it once paused', async () => {
-      const wfRes = await authFetch(adminSession, `${BASE_URL}/api/workflows`, {
+    it('blocks deleting an evalflow with an active schedule, then allows it once paused', async () => {
+      const wfRes = await authFetch(adminSession, `${BASE_URL}/api/evalflows`, {
         method: 'POST', body: JSON.stringify({ name: `Del Guard WF ${Date.now()}`, visibility: 'private', providerId: testProviderId }),
       });
       const wfId = (await wfRes.json()).id;
       const scRes = await authFetch(adminSession, `${BASE_URL}/api/eval-schedules`, {
-        method: 'POST', body: JSON.stringify({ name: 'guard', workflowId: wfId, evalSetId: testEvalSetId, region: BASE_NA, targetTier: 'public', scheduleType: 'recurring', cronExpression: '0 * * * *' }),
+        method: 'POST', body: JSON.stringify({ name: 'guard', evalflowId: wfId, evalSetId: testEvalSetId, region: BASE_NA, targetTier: 'public', scheduleType: 'recurring', cronExpression: '0 * * * *' }),
       });
       const scId = (await scRes.json()).id;
       // Active schedule blocks deletion (409).
-      const blocked = await authFetch(adminSession, `${BASE_URL}/api/workflows/${wfId}`, { method: 'DELETE' });
+      const blocked = await authFetch(adminSession, `${BASE_URL}/api/evalflows/${wfId}`, { method: 'DELETE' });
       expect(blocked.status).toBe(409);
       expect((await blocked.json()).error).toMatch(/active schedule/i);
       // Pause it, then deletion succeeds.
       await authFetch(adminSession, `${BASE_URL}/api/eval-schedules/${scId}`, { method: 'PATCH', body: JSON.stringify({ isEnabled: false }) });
-      const ok = await authFetch(adminSession, `${BASE_URL}/api/workflows/${wfId}`, { method: 'DELETE' });
+      const ok = await authFetch(adminSession, `${BASE_URL}/api/evalflows/${wfId}`, { method: 'DELETE' });
       expect(ok.ok).toBe(true);
       // The now-orphaned schedule can't be extended (409, clear message).
       const ext = await authFetch(adminSession, `${BASE_URL}/api/eval-schedules/${scId}/extend`, { method: 'POST' });
       expect(ext.status).toBe(409);
-      expect((await ext.json()).error).toMatch(/workflow was deleted/i);
+      expect((await ext.json()).error).toMatch(/evalflow was deleted/i);
       await authFetch(adminSession, `${BASE_URL}/api/eval-schedules/${scId}`, { method: 'DELETE' });
     });
 
@@ -604,7 +604,7 @@ describe('Vox API Tests', () => {
       expect(res.status).toBe(403);
     });
 
-    it('should reject scheduling a workflow you do not own (owner-only, no admin bypass)', async () => {
+    it('should reject scheduling an evalflow you do not own (owner-only, no admin bypass)', async () => {
       // Register a fresh non-admin, non-owner user via invite.
       const pw = 'schedpass123';
       const email = `sched-noowner-${Date.now()}@test.local`;
@@ -622,13 +622,13 @@ describe('Vox API Tests', () => {
       expect(regRes.ok).toBe(true);
       const nonOwner = await login(email, pw);
 
-      // testWorkflowId is owned by admin — a non-owner must not be able to schedule
+      // testEvalflowId is owned by admin — a non-owner must not be able to schedule
       // it (scheduling runs on the owner's secrets; there is no admin/org bypass).
       const res = await authFetch(nonOwner, `${BASE_URL}/api/eval-schedules`, {
         method: 'POST',
         body: JSON.stringify({
           name: 'should-be-denied',
-          workflowId: testWorkflowId,
+          evalflowId: testEvalflowId,
           evalSetId: testEvalSetId,
           region: BASE_NA,
           targetTier: 'public',
@@ -644,7 +644,7 @@ describe('Vox API Tests', () => {
         method: 'POST',
         body: JSON.stringify({
           name: 'Invalid Schedule',
-          workflowId: testWorkflowId,
+          evalflowId: testEvalflowId,
           evalSetId: testEvalSetId,
           region: BASE_NA,
           targetTier: 'public',
@@ -663,7 +663,7 @@ describe('Vox API Tests', () => {
         method: 'POST',
         body: JSON.stringify({
           name: 'Invalid Cron Schedule',
-          workflowId: testWorkflowId,
+          evalflowId: testEvalflowId,
           evalSetId: testEvalSetId,
           region: BASE_NA,
           targetTier: 'public',
@@ -745,7 +745,7 @@ describe('Vox API Tests', () => {
       expect(response.ok).toBe(true);
       const result = await response.json();
       expect(result.job).toBeDefined();
-      expect(result.job.workflowId).toBe(testWorkflowId);
+      expect(result.job.evalflowId).toBe(testEvalflowId);
       expect(result.job.scheduleId).toBe(testRecurringScheduleId);
     });
 
@@ -756,12 +756,12 @@ describe('Vox API Tests', () => {
       expect(response.status).toBe(404);
     });
 
-    it('should reject schedule creation with non-existent workflow', async () => {
+    it('should reject schedule creation with non-existent evalflow', async () => {
       const response = await authFetch(adminSession, `${BASE_URL}/api/eval-schedules`, {
         method: 'POST',
         body: JSON.stringify({
-          name: 'Invalid Workflow Schedule',
-          workflowId: 999999,
+          name: 'Invalid Evalflow Schedule',
+          evalflowId: 999999,
           region: BASE_NA,
           targetTier: 'public',
           scheduleType: 'once',
@@ -776,7 +776,7 @@ describe('Vox API Tests', () => {
         method: 'POST',
         body: JSON.stringify({
           name: 'Invalid Region Schedule',
-          workflowId: testWorkflowId,
+          evalflowId: testEvalflowId,
           region: 'invalid',
           targetTier: 'public',
           scheduleType: 'once',
@@ -790,7 +790,7 @@ describe('Vox API Tests', () => {
       const response = await authFetch(adminSession, `${BASE_URL}/api/eval-schedules`, {
         method: 'POST',
         body: JSON.stringify({
-          workflowId: testWorkflowId,
+          evalflowId: testEvalflowId,
           region: BASE_NA,
           targetTier: 'public',
           scheduleType: 'once',
@@ -806,7 +806,7 @@ describe('Vox API Tests', () => {
         method: 'POST',
         body: JSON.stringify({
           name: 'Future One-Time Schedule',
-          workflowId: testWorkflowId,
+          evalflowId: testEvalflowId,
           evalSetId: testEvalSetId,
           region: BASE_EU,
           targetTier: 'public',
@@ -832,7 +832,7 @@ describe('Vox API Tests', () => {
         method: 'POST',
         body: JSON.stringify({
           name: 'Daily Schedule',
-          workflowId: testWorkflowId,
+          evalflowId: testEvalflowId,
           evalSetId: testEvalSetId,
           region: BASE_APAC,
           targetTier: 'public',
@@ -997,8 +997,8 @@ describe('Vox API Tests', () => {
   describe('Job API', () => {
     let testJobId: number;
 
-    it('should run a workflow and create jobs', async () => {
-      const response = await authFetch(adminSession, `${BASE_URL}/api/workflows/${testWorkflowId}/run`, {
+    it('should run an evalflow and create jobs', async () => {
+      const response = await authFetch(adminSession, `${BASE_URL}/api/evalflows/${testEvalflowId}/run`, {
         method: 'POST',
         body: JSON.stringify({
           evalSetId: testEvalSetId,
@@ -1010,7 +1010,7 @@ describe('Vox API Tests', () => {
       expect(response.ok).toBe(true);
       const result = await response.json();
       expect(result.job).toBeDefined();
-      expect(result.job.workflowId).toBe(testWorkflowId);
+      expect(result.job.evalflowId).toBe(testEvalflowId);
       expect(result.job.siteId).toBeNull();
       expect(result.job.targetRegion).toBe(BASE_NA);
       testJobId = result.job.id;
@@ -1029,7 +1029,7 @@ describe('Vox API Tests', () => {
     });
 
     it('should reject job creation with invalid region', async () => {
-      const response = await authFetch(adminSession, `${BASE_URL}/api/workflows/${testWorkflowId}/run`, {
+      const response = await authFetch(adminSession, `${BASE_URL}/api/evalflows/${testEvalflowId}/run`, {
         method: 'POST',
         body: JSON.stringify({
           evalSetId: testEvalSetId,
@@ -1042,7 +1042,7 @@ describe('Vox API Tests', () => {
     });
 
     it('should reject job creation without region', async () => {
-      const response = await authFetch(adminSession, `${BASE_URL}/api/workflows/${testWorkflowId}/run`, {
+      const response = await authFetch(adminSession, `${BASE_URL}/api/evalflows/${testEvalflowId}/run`, {
         method: 'POST',
         body: JSON.stringify({
           evalSetId: testEvalSetId,
@@ -1096,16 +1096,16 @@ describe('Vox API Tests', () => {
   });
 
   describe('API v1 Endpoints', () => {
-    it('should get workflows via API v1', async () => {
-      const response = await fetch(`${BASE_URL}/api/v1/workflows`, {
+    it('should get evalflows via API v1', async () => {
+      const response = await fetch(`${BASE_URL}/api/v1/evalflows`, {
         headers: {
           'Authorization': `Bearer ${testApiKey}`,
         },
       });
 
       expect(response.ok).toBe(true);
-      const { data: workflows } = await response.json();
-      expect(Array.isArray(workflows)).toBe(true);
+      const { data: evalflows } = await response.json();
+      expect(Array.isArray(evalflows)).toBe(true);
     });
 
     it('should get eval sets via API v1', async () => {
@@ -1207,8 +1207,8 @@ describe('Vox API Tests', () => {
       expect(Array.isArray(data)).toBe(true);
     });
 
-    it('should get results filtered by workflow', async () => {
-      const response = await fetch(`${BASE_URL}/api/v1/results?workflowId=${testWorkflowId}`, {
+    it('should get results filtered by evalflow', async () => {
+      const response = await fetch(`${BASE_URL}/api/v1/results?evalflowId=${testEvalflowId}`, {
         headers: {
           'Authorization': `Bearer ${testApiKey}`,
         },
@@ -1296,7 +1296,7 @@ describe('Vox API Tests', () => {
   });
 
   describe('Complete Job Flow', () => {
-    let flowWorkflowId: number;
+    let flowEvalflowId: number;
     let flowEvalSetId: number;
     let flowAgentToken: string;
     let flowAgentRegion: string;
@@ -1305,10 +1305,10 @@ describe('Vox API Tests', () => {
     let flowJobId: number;
     let noRespJobId: number;
 
-    // Run the flow workflow, claim the resulting job as the flow agent, and
+    // Run the flow evalflow, claim the resulting job as the flow agent, and
     // complete it with the given body. Returns the new job id.
     const runClaimComplete = async (completeBody: Record<string, unknown>): Promise<number> => {
-      const runRes = await authFetch(adminSession, `${BASE_URL}/api/workflows/${flowWorkflowId}/run`, {
+      const runRes = await authFetch(adminSession, `${BASE_URL}/api/evalflows/${flowEvalflowId}/run`, {
         method: 'POST',
         body: JSON.stringify({ evalSetId: flowEvalSetId, region: BASE_NA, targetTier: 'public' }),
       });
@@ -1328,19 +1328,19 @@ describe('Vox API Tests', () => {
       return job.id;
     };
 
-    it('should create workflow for job flow test', async () => {
-      const response = await authFetch(adminSession, `${BASE_URL}/api/workflows`, {
+    it('should create evalflow for job flow test', async () => {
+      const response = await authFetch(adminSession, `${BASE_URL}/api/evalflows`, {
         method: 'POST',
         body: JSON.stringify({
-          name: 'Job Flow Test Workflow',
+          name: 'Job Flow Test Evalflow',
           description: 'Testing complete job submission flow',
           visibility: 'public',
           providerId: testProviderId,
         }),
       });
       expect(response.ok).toBe(true);
-      const workflow = await response.json();
-      flowWorkflowId = workflow.id;
+      const evalflow = await response.json();
+      flowEvalflowId = evalflow.id;
     });
 
     it('should create eval set for job flow test', async () => {
@@ -1386,8 +1386,8 @@ describe('Vox API Tests', () => {
       expect(agent.siteId).toBe(flowAgentRegion);
     });
 
-    it('should create job by running workflow', async () => {
-      const response = await authFetch(adminSession, `${BASE_URL}/api/workflows/${flowWorkflowId}/run`, {
+    it('should create job by running evalflow', async () => {
+      const response = await authFetch(adminSession, `${BASE_URL}/api/evalflows/${flowEvalflowId}/run`, {
         method: 'POST',
         body: JSON.stringify({
           evalSetId: flowEvalSetId,
@@ -1405,9 +1405,9 @@ describe('Vox API Tests', () => {
       const snap = result.job.snapshot;
       expect(snap).toBeTruthy();
       expect(snap.provider?.id).toBe(testProviderId);
-      expect(snap.workflow?.name).toBe('Job Flow Test Workflow');
+      expect(snap.evalflow?.name).toBe('Job Flow Test Evalflow');
       expect(snap.evalSet?.name).toBe('Job Flow Test Eval Set');
-      expect(snap.workflow?.visibility).toBe('public');
+      expect(snap.evalflow?.visibility).toBe('public');
       expect(snap.evalSet?.visibility).toBe('public');
     });
 
@@ -1471,7 +1471,7 @@ describe('Vox API Tests', () => {
       expect(result.interruptRate).toBeCloseTo(0.8);
       expect(result.falseInterruptRate).toBeCloseTo(0.1);
       expect(result.turnSuccessRate).toBeCloseTo(0.92);
-      // Attribution is sourced from the job's frozen snapshot, not the live workflow.
+      // Attribution is sourced from the job's frozen snapshot, not the live evalflow.
       expect(result.providerId).toBe(testProviderId);
     });
 
@@ -1516,7 +1516,7 @@ describe('Vox API Tests', () => {
     });
 
     it('exposes responseRate on the eval-jobs list so it can flag "Partial response"', async () => {
-      const response = await authFetch(adminSession, `${BASE_URL}/api/eval-jobs?workflowId=${flowWorkflowId}&limit=200`);
+      const response = await authFetch(adminSession, `${BASE_URL}/api/eval-jobs?evalflowId=${flowEvalflowId}&limit=200`);
       expect(response.ok).toBe(true);
       const { data } = await response.json();
       const naJob = data.find((j: any) => j.id === noRespJobId);
@@ -1544,7 +1544,7 @@ describe('Vox API Tests', () => {
     });
 
     it('completed result appears in the snapshot-based community tier', async () => {
-      // Public workflow + public eval set + non-mainline → community. Proves the
+      // Public evalflow + public eval set + non-mainline → community. Proves the
       // rewritten tier query (reads eval_jobs.snapshot) returns real results.
       const response = await fetch(`${BASE_URL}/api/metrics/community`);
       expect(response.ok).toBe(true);
@@ -1553,19 +1553,19 @@ describe('Vox API Tests', () => {
       expect(data.length).toBeGreaterThan(0);
     });
 
-    it('job + result survive workflow and eval-set deletion (snapshot preserved)', async () => {
-      // Deleting the workflow now SET NULLs the FK instead of cascading the job away.
-      const delWf = await authFetch(adminSession, `${BASE_URL}/api/workflows/${flowWorkflowId}`, { method: 'DELETE' });
+    it('job + result survive evalflow and eval-set deletion (snapshot preserved)', async () => {
+      // Deleting the evalflow now SET NULLs the FK instead of cascading the job away.
+      const delWf = await authFetch(adminSession, `${BASE_URL}/api/evalflows/${flowEvalflowId}`, { method: 'DELETE' });
       expect(delWf.ok).toBe(true);
 
-      // The job still resolves, snapshot intact, workflowId nulled, name from snapshot.
+      // The job still resolves, snapshot intact, evalflowId nulled, name from snapshot.
       const detail = await authFetch(adminSession, `${BASE_URL}/api/eval-jobs/${flowJobId}/detail`);
       expect(detail.ok).toBe(true);
-      const { job, workflowName } = await detail.json();
-      expect(job.workflowId).toBeNull();
-      expect(job.snapshot?.workflow?.name).toBe('Job Flow Test Workflow');
+      const { job, evalflowName } = await detail.json();
+      expect(job.evalflowId).toBeNull();
+      expect(job.snapshot?.evalflow?.name).toBe('Job Flow Test Evalflow');
       expect(job.snapshot?.provider?.id).toBe(testProviderId);
-      expect(workflowName).toBe('Job Flow Test Workflow');
+      expect(evalflowName).toBe('Job Flow Test Evalflow');
 
       // Deleting an eval set referenced by a job no longer 500s (FK SET NULL).
       const delEs = await authFetch(adminSession, `${BASE_URL}/api/eval-sets/${flowEvalSetId}`, { method: 'DELETE' });
@@ -1578,8 +1578,8 @@ describe('Vox API Tests', () => {
   });
 
   describe('Edge Cases and Error Handling', () => {
-    it('should return 404 for non-existent workflow', async () => {
-      const response = await authFetch(adminSession, `${BASE_URL}/api/workflows/999999`);
+    it('should return 404 for non-existent evalflow', async () => {
+      const response = await authFetch(adminSession, `${BASE_URL}/api/evalflows/999999`);
       expect(response.status).toBe(404);
     });
 
@@ -1607,11 +1607,11 @@ describe('Vox API Tests', () => {
       expect(response.status).toBe(401);
     });
 
-    it('should reject workflow creation without name', async () => {
-      const response = await authFetch(adminSession, `${BASE_URL}/api/workflows`, {
+    it('should reject evalflow creation without name', async () => {
+      const response = await authFetch(adminSession, `${BASE_URL}/api/evalflows`, {
         method: 'POST',
         body: JSON.stringify({
-          description: 'No name workflow',
+          description: 'No name evalflow',
         }),
       });
 
@@ -1666,7 +1666,7 @@ describe('Vox API Tests', () => {
     let euAgentId: number;
     let naLeaseId: string;
     let apacLeaseId: string;
-    let multiRegionWorkflowId: number;
+    let multiRegionEvalflowId: number;
     let multiRegionEvalSetId: number;
     let naJobId: number;
     let apacJobId: number;
@@ -1750,19 +1750,19 @@ describe('Vox API Tests', () => {
       expect(euAgent.siteId).toBe(euRegion);
     });
 
-    it('should create workflow and eval set for multi-region testing', async () => {
-      const response = await authFetch(adminSession, `${BASE_URL}/api/workflows`, {
+    it('should create evalflow and eval set for multi-region testing', async () => {
+      const response = await authFetch(adminSession, `${BASE_URL}/api/evalflows`, {
         method: 'POST',
         body: JSON.stringify({
-          name: 'Multi-Region Test Workflow',
+          name: 'Multi-Region Test Evalflow',
           description: 'Testing job distribution across regions',
           visibility: 'public',
           providerId: testProviderId,
         }),
       });
       expect(response.ok).toBe(true);
-      const workflow = await response.json();
-      multiRegionWorkflowId = workflow.id;
+      const evalflow = await response.json();
+      multiRegionEvalflowId = evalflow.id;
 
       const esResponse = await authFetch(adminSession, `${BASE_URL}/api/eval-sets`, {
         method: 'POST',
@@ -1775,7 +1775,7 @@ describe('Vox API Tests', () => {
 
     it('should create jobs for different regions', async () => {
       // Create NA job (pooled: born siteId null, targetRegion = the base)
-      const naResponse = await authFetch(adminSession, `${BASE_URL}/api/workflows/${multiRegionWorkflowId}/run`, {
+      const naResponse = await authFetch(adminSession, `${BASE_URL}/api/evalflows/${multiRegionEvalflowId}/run`, {
         method: 'POST',
         body: JSON.stringify({ region: BASE_NA, targetTier: 'public', evalSetId: multiRegionEvalSetId }),
       });
@@ -1786,7 +1786,7 @@ describe('Vox API Tests', () => {
       expect(naResult.job.targetRegion).toBe(BASE_NA);
 
       // Create APAC job
-      const apacResponse = await authFetch(adminSession, `${BASE_URL}/api/workflows/${multiRegionWorkflowId}/run`, {
+      const apacResponse = await authFetch(adminSession, `${BASE_URL}/api/evalflows/${multiRegionEvalflowId}/run`, {
         method: 'POST',
         body: JSON.stringify({ region: BASE_APAC, targetTier: 'public', evalSetId: multiRegionEvalSetId }),
       });
@@ -1797,7 +1797,7 @@ describe('Vox API Tests', () => {
       expect(apacResult.job.targetRegion).toBe(BASE_APAC);
 
       // Create EU job
-      const euResponse = await authFetch(adminSession, `${BASE_URL}/api/workflows/${multiRegionWorkflowId}/run`, {
+      const euResponse = await authFetch(adminSession, `${BASE_URL}/api/evalflows/${multiRegionEvalflowId}/run`, {
         method: 'POST',
         body: JSON.stringify({ region: BASE_EU, targetTier: 'public', evalSetId: multiRegionEvalSetId }),
       });
@@ -1899,8 +1899,8 @@ describe('Vox API Tests', () => {
         body: JSON.stringify({ agentId: apacAgentId, leaseId: apacLeaseId }),
       });
 
-      // Delete workflow (cascades to jobs)
-      await authFetch(adminSession, `${BASE_URL}/api/workflows/${multiRegionWorkflowId}`, {
+      // Delete evalflow (cascades to jobs)
+      await authFetch(adminSession, `${BASE_URL}/api/evalflows/${multiRegionEvalflowId}`, {
         method: 'DELETE',
       });
       // Delete eval set
@@ -1911,17 +1911,17 @@ describe('Vox API Tests', () => {
   });
 
   describe('Schedule Validation Tests', () => {
-    let scheduleWorkflowId: number;
+    let scheduleEvalflowId: number;
     let scheduleEvalSetId: number;
 
-    it('should create workflow and eval set for schedule tests', async () => {
-      const wfResponse = await authFetch(adminSession, `${BASE_URL}/api/workflows`, {
+    it('should create evalflow and eval set for schedule tests', async () => {
+      const wfResponse = await authFetch(adminSession, `${BASE_URL}/api/evalflows`, {
         method: 'POST',
-        body: JSON.stringify({ name: 'Schedule Test Workflow', visibility: 'public', providerId: testProviderId }),
+        body: JSON.stringify({ name: 'Schedule Test Evalflow', visibility: 'public', providerId: testProviderId }),
       });
       expect(wfResponse.ok).toBe(true);
-      const workflow = await wfResponse.json();
-      scheduleWorkflowId = workflow.id;
+      const evalflow = await wfResponse.json();
+      scheduleEvalflowId = evalflow.id;
 
       const esResponse = await authFetch(adminSession, `${BASE_URL}/api/eval-sets`, {
         method: 'POST',
@@ -1937,7 +1937,7 @@ describe('Vox API Tests', () => {
         method: 'POST',
         body: JSON.stringify({
           name: 'Invalid Cron Schedule',
-          workflowId: scheduleWorkflowId,
+          evalflowId: scheduleEvalflowId,
           evalSetId: scheduleEvalSetId,
           region: BASE_NA,
           targetTier: 'public',
@@ -1953,7 +1953,7 @@ describe('Vox API Tests', () => {
         method: 'POST',
         body: JSON.stringify({
           name: 'Missing Cron Schedule',
-          workflowId: scheduleWorkflowId,
+          evalflowId: scheduleEvalflowId,
           evalSetId: scheduleEvalSetId,
           region: BASE_NA,
           targetTier: 'public',
@@ -1969,7 +1969,7 @@ describe('Vox API Tests', () => {
         method: 'POST',
         body: JSON.stringify({
           name: 'Valid One-Time Schedule',
-          workflowId: scheduleWorkflowId,
+          evalflowId: scheduleEvalflowId,
           evalSetId: scheduleEvalSetId,
           region: BASE_NA,
           targetTier: 'public',
@@ -1987,7 +1987,7 @@ describe('Vox API Tests', () => {
         method: 'POST',
         body: JSON.stringify({
           name: 'Valid Recurring Schedule',
-          workflowId: scheduleWorkflowId,
+          evalflowId: scheduleEvalflowId,
           evalSetId: scheduleEvalSetId,
           region: BASE_EU,
           targetTier: 'public',
@@ -2002,7 +2002,7 @@ describe('Vox API Tests', () => {
     });
 
     it('should cleanup schedule test resources', async () => {
-      await authFetch(adminSession, `${BASE_URL}/api/workflows/${scheduleWorkflowId}`, {
+      await authFetch(adminSession, `${BASE_URL}/api/evalflows/${scheduleEvalflowId}`, {
         method: 'DELETE',
       });
       await authFetch(adminSession, `${BASE_URL}/api/eval-sets/${scheduleEvalSetId}`, {
@@ -2013,7 +2013,7 @@ describe('Vox API Tests', () => {
 
   describe('API Key Permission Tests', () => {
     let testUserApiKey: string;
-    let testUserWorkflowId: number;
+    let testUserEvalflowId: number;
 
     it('should create API key for permission tests', async () => {
       const response = await authFetch(adminSession, `${BASE_URL}/api/user/api-keys`, {
@@ -2026,8 +2026,8 @@ describe('Vox API Tests', () => {
       expect(testUserApiKey).toContain('vox_live_');
     });
 
-    it('should allow API key to list workflows via v1 API', async () => {
-      const response = await fetch(`${BASE_URL}/api/v1/workflows`, {
+    it('should allow API key to list evalflows via v1 API', async () => {
+      const response = await fetch(`${BASE_URL}/api/v1/evalflows`, {
         headers: { 'Authorization': `Bearer ${testUserApiKey}` },
       });
       expect(response.ok).toBe(true);
@@ -2035,15 +2035,15 @@ describe('Vox API Tests', () => {
       expect(Array.isArray(data)).toBe(true);
     });
 
-    it('should allow API key to create workflow via v1 API', async () => {
-      const response = await fetch(`${BASE_URL}/api/v1/workflows`, {
+    it('should allow API key to create evalflow via v1 API', async () => {
+      const response = await fetch(`${BASE_URL}/api/v1/evalflows`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${testUserApiKey}`,
         },
         body: JSON.stringify({
-          name: 'API Key Created Workflow',
+          name: 'API Key Created Evalflow',
           description: 'Created via API key',
           visibility: 'public',
           providerId: testProviderId,
@@ -2051,10 +2051,10 @@ describe('Vox API Tests', () => {
       });
       expect(response.ok).toBe(true);
       const { data } = await response.json();
-      testUserWorkflowId = data.id;
+      testUserEvalflowId = data.id;
     });
 
-    it('should run a workflow via v1 API with region+targetTier pooled dispatch', async () => {
+    it('should run an evalflow via v1 API with region+targetTier pooled dispatch', async () => {
       const esResponse = await fetch(`${BASE_URL}/api/v1/eval-sets`, {
         method: 'POST',
         headers: {
@@ -2066,7 +2066,7 @@ describe('Vox API Tests', () => {
       expect(esResponse.ok).toBe(true);
       const { data: evalSet } = await esResponse.json();
 
-      const response = await fetch(`${BASE_URL}/api/v1/workflows/${testUserWorkflowId}/run`, {
+      const response = await fetch(`${BASE_URL}/api/v1/evalflows/${testUserEvalflowId}/run`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -2084,7 +2084,7 @@ describe('Vox API Tests', () => {
     });
 
     it('should reject a v1 run with the old exact-site siteId body key', async () => {
-      const response = await fetch(`${BASE_URL}/api/v1/workflows/${testUserWorkflowId}/run`, {
+      const response = await fetch(`${BASE_URL}/api/v1/evalflows/${testUserEvalflowId}/run`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -2109,16 +2109,16 @@ describe('Vox API Tests', () => {
       });
 
       // Try to use revoked key
-      const response = await fetch(`${BASE_URL}/api/v1/workflows`, {
+      const response = await fetch(`${BASE_URL}/api/v1/evalflows`, {
         headers: { 'Authorization': `Bearer ${testUserApiKey}` },
       });
       expect(response.status).toBe(401);
     });
 
     it('should cleanup API key test resources', async () => {
-      // Delete workflow created by API key
-      if (testUserWorkflowId) {
-        await authFetch(adminSession, `${BASE_URL}/api/workflows/${testUserWorkflowId}`, {
+      // Delete evalflow created by API key
+      if (testUserEvalflowId) {
+        await authFetch(adminSession, `${BASE_URL}/api/evalflows/${testUserEvalflowId}`, {
           method: 'DELETE',
         });
       }
@@ -2126,7 +2126,7 @@ describe('Vox API Tests', () => {
   });
 
   describe('Concurrent Job Claiming Tests', () => {
-    let concurrentWorkflowId: number;
+    let concurrentEvalflowId: number;
     let concurrentEvalSetId: number;
     let concurrentJobId: number;
     let concurrentAgentToken: string;
@@ -2134,14 +2134,14 @@ describe('Vox API Tests', () => {
     let concurrentLease: string;
 
     it('should setup an agent for the concurrent claim test', async () => {
-      // Create workflow
-      const wfResponse = await authFetch(adminSession, `${BASE_URL}/api/workflows`, {
+      // Create evalflow
+      const wfResponse = await authFetch(adminSession, `${BASE_URL}/api/evalflows`, {
         method: 'POST',
-        body: JSON.stringify({ name: 'Concurrent Test Workflow', visibility: 'public', providerId: testProviderId }),
+        body: JSON.stringify({ name: 'Concurrent Test Evalflow', visibility: 'public', providerId: testProviderId }),
       });
       expect(wfResponse.ok).toBe(true);
-      const workflow = await wfResponse.json();
-      concurrentWorkflowId = workflow.id;
+      const evalflow = await wfResponse.json();
+      concurrentEvalflowId = evalflow.id;
 
       // Create eval set
       const esResponse = await authFetch(adminSession, `${BASE_URL}/api/eval-sets`, {
@@ -2180,7 +2180,7 @@ describe('Vox API Tests', () => {
       concurrentLease = agent.leaseId;
 
       // Create a single job in the agent's region
-      const jobResponse = await authFetch(adminSession, `${BASE_URL}/api/workflows/${concurrentWorkflowId}/run`, {
+      const jobResponse = await authFetch(adminSession, `${BASE_URL}/api/evalflows/${concurrentEvalflowId}/run`, {
         method: 'POST',
         body: JSON.stringify({ region: BASE_NA, targetTier: 'public', evalSetId: concurrentEvalSetId }),
       });
@@ -2209,7 +2209,7 @@ describe('Vox API Tests', () => {
     });
 
     it('should cleanup concurrent test resources', async () => {
-      await authFetch(adminSession, `${BASE_URL}/api/workflows/${concurrentWorkflowId}`, {
+      await authFetch(adminSession, `${BASE_URL}/api/evalflows/${concurrentEvalflowId}`, {
         method: 'DELETE',
       });
       await authFetch(adminSession, `${BASE_URL}/api/eval-sets/${concurrentEvalSetId}`, {
@@ -2688,17 +2688,17 @@ describe('Vox API Tests', () => {
       expect(response.ok).toBe(true);
     });
 
-    it('should delete workflow', async () => {
-      // testWorkflowId accumulates active schedules over the suite (the recurring
-      // + 90-day-expiry lifecycle tests). The server blocks deleting a workflow
+    it('should delete evalflow', async () => {
+      // testEvalflowId accumulates active schedules over the suite (the recurring
+      // + 90-day-expiry lifecycle tests). The server blocks deleting an evalflow
       // that still has an active schedule (409), so clear those first — mirroring
-      // the documented "delete the schedules first, then the workflow" flow.
+      // the documented "delete the schedules first, then the evalflow" flow.
       const schedules = await (await authFetch(adminSession, `${BASE_URL}/api/eval-schedules`)).json();
-      for (const s of schedules.filter((r: { workflowId: number | null }) => r.workflowId === testWorkflowId)) {
+      for (const s of schedules.filter((r: { evalflowId: number | null }) => r.evalflowId === testEvalflowId)) {
         await authFetch(adminSession, `${BASE_URL}/api/eval-schedules/${s.id}`, { method: 'DELETE' });
       }
 
-      const response = await authFetch(adminSession, `${BASE_URL}/api/workflows/${testWorkflowId}`, {
+      const response = await authFetch(adminSession, `${BASE_URL}/api/evalflows/${testEvalflowId}`, {
         method: 'DELETE',
       });
 
@@ -2706,17 +2706,17 @@ describe('Vox API Tests', () => {
     });
 
     it('should delete project', async () => {
-      // Other suites create workflows in testProjectId (the ownership-permission
+      // Other suites create evalflows in testProjectId (the ownership-permission
       // and config-separation tests) and don't remove them. The server refuses
-      // to delete a project that still has workflows ("Delete workflows first"),
-      // so clear any remaining workflows — and their schedules — first.
-      const workflows = await (await authFetch(adminSession, `${BASE_URL}/api/workflows`)).json();
-      for (const w of workflows.filter((wf: { projectId: number | null }) => wf.projectId === testProjectId)) {
+      // to delete a project that still has evalflows ("Delete evalflows first"),
+      // so clear any remaining evalflows — and their schedules — first.
+      const evalflows = await (await authFetch(adminSession, `${BASE_URL}/api/evalflows`)).json();
+      for (const w of evalflows.filter((wf: { projectId: number | null }) => wf.projectId === testProjectId)) {
         const schedules = await (await authFetch(adminSession, `${BASE_URL}/api/eval-schedules`)).json();
-        for (const s of schedules.filter((r: { workflowId: number | null }) => r.workflowId === w.id)) {
+        for (const s of schedules.filter((r: { evalflowId: number | null }) => r.evalflowId === w.id)) {
           await authFetch(adminSession, `${BASE_URL}/api/eval-schedules/${s.id}`, { method: 'DELETE' });
         }
-        await authFetch(adminSession, `${BASE_URL}/api/workflows/${w.id}`, { method: 'DELETE' });
+        await authFetch(adminSession, `${BASE_URL}/api/evalflows/${w.id}`, { method: 'DELETE' });
       }
 
       const response = await authFetch(adminSession, `${BASE_URL}/api/projects/${testProjectId}`, {
@@ -2753,15 +2753,15 @@ describe('Vox API Tests', () => {
 
   // ==================== EVAL FRAMEWORK CONFIG TESTS ====================
 
-  describe('Workflow Config (Framework + App Config)', () => {
-    let configWorkflowId: number;
+  describe('Evalflow Config (Framework + App Config)', () => {
+    let configEvalflowId: number;
 
-    it('should create a workflow with aeval framework config', async () => {
-      const response = await authFetch(adminSession, `${BASE_URL}/api/workflows`, {
+    it('should create an evalflow with aeval framework config', async () => {
+      const response = await authFetch(adminSession, `${BASE_URL}/api/evalflows`, {
         method: 'POST',
         body: JSON.stringify({
-          name: 'Config Test Workflow (aeval)',
-          description: 'Workflow with aeval framework config',
+          name: 'Config Test Evalflow (aeval)',
+          description: 'Evalflow with aeval framework config',
           visibility: 'public',
           providerId: testProviderId,
           config: { framework: 'aeval' },
@@ -2769,19 +2769,19 @@ describe('Vox API Tests', () => {
       });
 
       expect(response.ok).toBe(true);
-      const workflow: Workflow = await response.json();
-      expect(workflow.name).toBe('Config Test Workflow (aeval)');
-      expect(workflow.config).toEqual({ framework: 'aeval' });
-      configWorkflowId = workflow.id;
+      const evalflow: Evalflow = await response.json();
+      expect(evalflow.name).toBe('Config Test Evalflow (aeval)');
+      expect(evalflow.config).toEqual({ framework: 'aeval' });
+      configEvalflowId = evalflow.id;
     });
 
-    it('should create a workflow with voice-agent-tester framework and app YAML', async () => {
+    it('should create an evalflow with voice-agent-tester framework and app YAML', async () => {
       const appYaml = 'url: "https://example.com"\nsteps:\n  - action: wait\n    selector: "#start"';
-      const response = await authFetch(adminSession, `${BASE_URL}/api/workflows`, {
+      const response = await authFetch(adminSession, `${BASE_URL}/api/evalflows`, {
         method: 'POST',
         body: JSON.stringify({
-          name: 'Config Test Workflow (VAT)',
-          description: 'Workflow with VAT framework config',
+          name: 'Config Test Evalflow (VAT)',
+          description: 'Evalflow with VAT framework config',
           visibility: 'public',
           providerId: testProviderId,
           config: { framework: 'voice-agent-tester', app: appYaml },
@@ -2789,13 +2789,13 @@ describe('Vox API Tests', () => {
       });
 
       expect(response.ok).toBe(true);
-      const workflow: Workflow = await response.json();
-      expect(workflow.config).toEqual({ framework: 'voice-agent-tester', app: appYaml });
+      const evalflow: Evalflow = await response.json();
+      expect(evalflow.config).toEqual({ framework: 'voice-agent-tester', app: appYaml });
     });
 
-    it('should update workflow config via PATCH', async () => {
+    it('should update evalflow config via PATCH', async () => {
       const newAppYaml = 'url: "https://updated.com"\nsteps:\n  - action: click\n    selector: "#btn"';
-      const response = await authFetch(adminSession, `${BASE_URL}/api/workflows/${configWorkflowId}`, {
+      const response = await authFetch(adminSession, `${BASE_URL}/api/evalflows/${configEvalflowId}`, {
         method: 'PATCH',
         body: JSON.stringify({
           config: { framework: 'voice-agent-tester', app: newAppYaml },
@@ -2803,36 +2803,36 @@ describe('Vox API Tests', () => {
       });
 
       expect(response.ok).toBe(true);
-      const workflow: Workflow = await response.json();
-      expect(workflow.config).toEqual({ framework: 'voice-agent-tester', app: newAppYaml });
+      const evalflow: Evalflow = await response.json();
+      expect(evalflow.config).toEqual({ framework: 'voice-agent-tester', app: newAppYaml });
     });
 
     it('should persist config when only updating other fields', async () => {
-      const response = await authFetch(adminSession, `${BASE_URL}/api/workflows/${configWorkflowId}`, {
+      const response = await authFetch(adminSession, `${BASE_URL}/api/evalflows/${configEvalflowId}`, {
         method: 'PATCH',
         body: JSON.stringify({ description: 'New description only' }),
       });
 
       expect(response.ok).toBe(true);
-      const workflow: Workflow = await response.json();
-      expect(workflow.description).toBe('New description only');
+      const evalflow: Evalflow = await response.json();
+      expect(evalflow.description).toBe('New description only');
       // config should remain from previous update
-      expect((workflow.config as Record<string, unknown>).framework).toBe('voice-agent-tester');
+      expect((evalflow.config as Record<string, unknown>).framework).toBe('voice-agent-tester');
     });
 
     it('should default config to empty object when not provided', async () => {
-      const response = await authFetch(adminSession, `${BASE_URL}/api/workflows`, {
+      const response = await authFetch(adminSession, `${BASE_URL}/api/evalflows`, {
         method: 'POST',
         body: JSON.stringify({
-          name: 'No Config Workflow',
+          name: 'No Config Evalflow',
           visibility: 'public',
           providerId: testProviderId,
         }),
       });
 
       expect(response.ok).toBe(true);
-      const workflow: Workflow = await response.json();
-      expect(workflow.config).toEqual({});
+      const evalflow: Evalflow = await response.json();
+      expect(evalflow.config).toEqual({});
     });
   });
 
@@ -2886,22 +2886,22 @@ describe('Vox API Tests', () => {
   });
 
   describe('Job Config Merging', () => {
-    let mergeWorkflowId: number;
+    let mergeEvalflowId: number;
     let mergeEvalSetId: number;
 
     beforeAll(async () => {
-      // Create workflow with framework + app config
-      const wfRes = await authFetch(adminSession, `${BASE_URL}/api/workflows`, {
+      // Create evalflow with framework + app config
+      const wfRes = await authFetch(adminSession, `${BASE_URL}/api/evalflows`, {
         method: 'POST',
         body: JSON.stringify({
-          name: 'Merge Test Workflow',
+          name: 'Merge Test Evalflow',
           visibility: 'public',
           providerId: testProviderId,
           config: { framework: 'voice-agent-tester', app: 'url: "https://merge-test.com"' },
         }),
       });
-      const wf: Workflow = await wfRes.json();
-      mergeWorkflowId = wf.id;
+      const wf: Evalflow = await wfRes.json();
+      mergeEvalflowId = wf.id;
 
       // Create eval set with scenario config
       const esRes = await authFetch(adminSession, `${BASE_URL}/api/eval-sets`, {
@@ -2916,8 +2916,8 @@ describe('Vox API Tests', () => {
       mergeEvalSetId = es.id;
     });
 
-    it('should merge workflow config and eval set config into job config', async () => {
-      const response = await authFetch(adminSession, `${BASE_URL}/api/workflows/${mergeWorkflowId}/run`, {
+    it('should merge evalflow config and eval set config into job config', async () => {
+      const response = await authFetch(adminSession, `${BASE_URL}/api/evalflows/${mergeEvalflowId}/run`, {
         method: 'POST',
         body: JSON.stringify({
           evalSetId: mergeEvalSetId,
@@ -2932,24 +2932,24 @@ describe('Vox API Tests', () => {
       expect(result.job.config).toBeDefined();
 
       const jobConfig = result.job.config as Record<string, unknown>;
-      // Workflow config fields
+      // Evalflow config fields
       expect(jobConfig.framework).toBe('voice-agent-tester');
       expect(jobConfig.app).toBe('url: "https://merge-test.com"');
       // Eval set config fields (merged)
       expect(jobConfig.scenario).toBe('steps:\n  - action: speak\n    file: test.mp3');
     });
 
-    it('should produce empty config when both workflow and eval set have no config', async () => {
-      // Create a workflow with no config
-      const wfRes = await authFetch(adminSession, `${BASE_URL}/api/workflows`, {
+    it('should produce empty config when both evalflow and eval set have no config', async () => {
+      // Create an evalflow with no config
+      const wfRes = await authFetch(adminSession, `${BASE_URL}/api/evalflows`, {
         method: 'POST',
         body: JSON.stringify({
-          name: 'Empty Config Workflow',
+          name: 'Empty Config Evalflow',
           visibility: 'public',
           providerId: testProviderId,
         }),
       });
-      const wf: Workflow = await wfRes.json();
+      const wf: Evalflow = await wfRes.json();
 
       // Create an eval set with no config
       const esRes = await authFetch(adminSession, `${BASE_URL}/api/eval-sets`, {
@@ -2961,7 +2961,7 @@ describe('Vox API Tests', () => {
       });
       const es: EvalSet = await esRes.json();
 
-      const response = await authFetch(adminSession, `${BASE_URL}/api/workflows/${wf.id}/run`, {
+      const response = await authFetch(adminSession, `${BASE_URL}/api/evalflows/${wf.id}/run`, {
         method: 'POST',
         body: JSON.stringify({
           evalSetId: es.id,
@@ -2976,40 +2976,40 @@ describe('Vox API Tests', () => {
     });
   });
 
-  describe('Workflow Clone', () => {
-    let sourceWorkflowId: number;
+  describe('Evalflow Clone', () => {
+    let sourceEvalflowId: number;
 
     beforeAll(async () => {
-      const response = await authFetch(adminSession, `${BASE_URL}/api/workflows`, {
+      const response = await authFetch(adminSession, `${BASE_URL}/api/evalflows`, {
         method: 'POST',
         body: JSON.stringify({
-          name: 'Clone Source Workflow',
-          description: 'Original workflow to clone',
+          name: 'Clone Source Evalflow',
+          description: 'Original evalflow to clone',
           visibility: 'public',
           providerId: testProviderId,
           config: { framework: 'voice-agent-tester', app: 'url: "https://clone-me.com"' },
         }),
       });
-      const wf: Workflow = await response.json();
-      sourceWorkflowId = wf.id;
+      const wf: Evalflow = await response.json();
+      sourceEvalflowId = wf.id;
     });
 
-    it('should clone a public workflow', async () => {
-      const response = await authFetch(adminSession, `${BASE_URL}/api/workflows/${sourceWorkflowId}/clone`, {
+    it('should clone a public evalflow', async () => {
+      const response = await authFetch(adminSession, `${BASE_URL}/api/evalflows/${sourceEvalflowId}/clone`, {
         method: 'POST',
       });
 
       expect(response.ok).toBe(true);
-      const cloned: Workflow = await response.json();
-      expect(cloned.name).toBe('Clone of Clone Source Workflow');
+      const cloned: Evalflow = await response.json();
+      expect(cloned.name).toBe('Clone of Clone Source Evalflow');
       expect(cloned.config).toEqual({ framework: 'voice-agent-tester', app: 'url: "https://clone-me.com"' });
       expect(cloned.visibility).toBe('public');
       expect(cloned.isMainline).toBe(false);
-      expect(cloned.id).not.toBe(sourceWorkflowId);
+      expect(cloned.id).not.toBe(sourceEvalflowId);
     });
 
-    it('should return 404 for non-existent workflow clone', async () => {
-      const response = await authFetch(adminSession, `${BASE_URL}/api/workflows/999999/clone`, {
+    it('should return 404 for non-existent evalflow clone', async () => {
+      const response = await authFetch(adminSession, `${BASE_URL}/api/evalflows/999999/clone`, {
         method: 'POST',
       });
       expect(response.status).toBe(404);
@@ -3058,11 +3058,11 @@ describe('Vox API Tests', () => {
   });
 
   describe('Config Validation', () => {
-    it('should reject workflow with invalid framework', async () => {
-      const response = await authFetch(adminSession, `${BASE_URL}/api/workflows`, {
+    it('should reject evalflow with invalid framework', async () => {
+      const response = await authFetch(adminSession, `${BASE_URL}/api/evalflows`, {
         method: 'POST',
         body: JSON.stringify({
-          name: 'Invalid Framework Workflow',
+          name: 'Invalid Framework Evalflow',
           visibility: 'public',
           providerId: testProviderId,
           config: { framework: 'nonexistent-framework' },
@@ -3074,12 +3074,12 @@ describe('Vox API Tests', () => {
       expect(error.error).toContain('Framework');
     });
 
-    it('should reject workflow with oversized config', async () => {
+    it('should reject evalflow with oversized config', async () => {
       const bigYaml = 'x'.repeat(101_000); // > 100KB
-      const response = await authFetch(adminSession, `${BASE_URL}/api/workflows`, {
+      const response = await authFetch(adminSession, `${BASE_URL}/api/evalflows`, {
         method: 'POST',
         body: JSON.stringify({
-          name: 'Big Config Workflow',
+          name: 'Big Config Evalflow',
           visibility: 'public',
           providerId: testProviderId,
           config: { framework: 'aeval', app: bigYaml },
@@ -3132,19 +3132,19 @@ describe('Vox API Tests', () => {
   });
 
   describe('Run-Now Config Merging', () => {
-    it('should merge workflow + eval set config when running schedule immediately', async () => {
-      // Create workflow with config
-      const wfRes = await authFetch(adminSession, `${BASE_URL}/api/workflows`, {
+    it('should merge evalflow + eval set config when running schedule immediately', async () => {
+      // Create evalflow with config
+      const wfRes = await authFetch(adminSession, `${BASE_URL}/api/evalflows`, {
         method: 'POST',
         body: JSON.stringify({
-          name: 'RunNow Config Workflow',
+          name: 'RunNow Config Evalflow',
           visibility: 'public',
           providerId: testProviderId,
           config: { framework: 'voice-agent-tester', app: 'url: "https://runnow.com"' },
         }),
       });
       expect(wfRes.ok).toBe(true);
-      const wf: Workflow = await wfRes.json();
+      const wf: Evalflow = await wfRes.json();
 
       // Create eval set with config
       const esRes = await authFetch(adminSession, `${BASE_URL}/api/eval-sets`, {
@@ -3163,7 +3163,7 @@ describe('Vox API Tests', () => {
         method: 'POST',
         body: JSON.stringify({
           name: 'RunNow Config Schedule',
-          workflowId: wf.id,
+          evalflowId: wf.id,
           evalSetId: es.id,
           region: BASE_NA,
           targetTier: 'public',
@@ -3190,22 +3190,22 @@ describe('Vox API Tests', () => {
   });
 
   describe('Clone Authorization', () => {
-    let cloneSourceWorkflowId: number;
+    let cloneSourceEvalflowId: number;
     let cloneSourceEvalSetId: number;
 
     beforeAll(async () => {
       // Create source items
-      const wfRes = await authFetch(adminSession, `${BASE_URL}/api/workflows`, {
+      const wfRes = await authFetch(adminSession, `${BASE_URL}/api/evalflows`, {
         method: 'POST',
         body: JSON.stringify({
-          name: 'Auth Clone Source Workflow',
+          name: 'Auth Clone Source Evalflow',
           visibility: 'public',
           providerId: testProviderId,
           config: { framework: 'aeval' },
         }),
       });
-      const wf: Workflow = await wfRes.json();
-      cloneSourceWorkflowId = wf.id;
+      const wf: Evalflow = await wfRes.json();
+      cloneSourceEvalflowId = wf.id;
 
       const esRes = await authFetch(adminSession, `${BASE_URL}/api/eval-sets`, {
         method: 'POST',
@@ -3219,8 +3219,8 @@ describe('Vox API Tests', () => {
       cloneSourceEvalSetId = es.id;
     });
 
-    it('should reject workflow clone without authentication', async () => {
-      const response = await fetch(`${BASE_URL}/api/workflows/${cloneSourceWorkflowId}/clone`, {
+    it('should reject evalflow clone without authentication', async () => {
+      const response = await fetch(`${BASE_URL}/api/evalflows/${cloneSourceEvalflowId}/clone`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
       });
@@ -3237,7 +3237,7 @@ describe('Vox API Tests', () => {
   });
 
   describe('Apple-to-Apple Comparison Flow', () => {
-    it('should run the same eval set against two different workflows', async () => {
+    it('should run the same eval set against two different evalflows', async () => {
       // Create a shared eval set (the "apple" test)
       const esRes = await authFetch(adminSession, `${BASE_URL}/api/eval-sets`, {
         method: 'POST',
@@ -3250,40 +3250,40 @@ describe('Vox API Tests', () => {
       expect(esRes.ok).toBe(true);
       const evalSet: EvalSet = await esRes.json();
 
-      // Create two workflows for different providers
-      const wf1Res = await authFetch(adminSession, `${BASE_URL}/api/workflows`, {
+      // Create two evalflows for different providers
+      const wf1Res = await authFetch(adminSession, `${BASE_URL}/api/evalflows`, {
         method: 'POST',
         body: JSON.stringify({
-          name: 'Provider A Workflow',
+          name: 'Provider A Evalflow',
           visibility: 'public',
           providerId: testProviderId,
           config: { framework: 'voice-agent-tester', app: 'url: "https://provider-a.com"' },
         }),
       });
       expect(wf1Res.ok).toBe(true);
-      const wf1: Workflow = await wf1Res.json();
+      const wf1: Evalflow = await wf1Res.json();
 
-      const wf2Res = await authFetch(adminSession, `${BASE_URL}/api/workflows`, {
+      const wf2Res = await authFetch(adminSession, `${BASE_URL}/api/evalflows`, {
         method: 'POST',
         body: JSON.stringify({
-          name: 'Provider B Workflow',
+          name: 'Provider B Evalflow',
           visibility: 'public',
           providerId: testProviderId,
           config: { framework: 'voice-agent-tester', app: 'url: "https://provider-b.com"' },
         }),
       });
       expect(wf2Res.ok).toBe(true);
-      const wf2: Workflow = await wf2Res.json();
+      const wf2: Evalflow = await wf2Res.json();
 
-      // Run same eval set against both workflows
-      const job1Res = await authFetch(adminSession, `${BASE_URL}/api/workflows/${wf1.id}/run`, {
+      // Run same eval set against both evalflows
+      const job1Res = await authFetch(adminSession, `${BASE_URL}/api/evalflows/${wf1.id}/run`, {
         method: 'POST',
         body: JSON.stringify({ evalSetId: evalSet.id, region: BASE_NA, targetTier: 'public' }),
       });
       expect(job1Res.ok).toBe(true);
       const job1 = await job1Res.json();
 
-      const job2Res = await authFetch(adminSession, `${BASE_URL}/api/workflows/${wf2.id}/run`, {
+      const job2Res = await authFetch(adminSession, `${BASE_URL}/api/evalflows/${wf2.id}/run`, {
         method: 'POST',
         body: JSON.stringify({ evalSetId: evalSet.id, region: BASE_NA, targetTier: 'public' }),
       });
@@ -3499,12 +3499,12 @@ describe('Vox API Tests', () => {
     // Job dispatch is pooled by region base + tier: every token in this describe
     // block is created against BASE_NA (public), so all jobs here are dispatched
     // region: BASE_NA, targetTier: 'public' to share the same pool.
-    let versionedWorkflowId: number;
+    let versionedEvalflowId: number;
     let versionedEvalSetId: number;
-    let unversionedWorkflowId: number;
+    let unversionedEvalflowId: number;
     let unversionedEvalSetId: number;
     // Hoisted so the legacy-agent test can create a same-region v99 job.
-    let futureWorkflowId: number;
+    let futureEvalflowId: number;
     let futureEvalSetId: number;
 
     beforeAll(async () => {
@@ -3533,27 +3533,27 @@ describe('Vox API Tests', () => {
       const agent: EvalAgent = await agentRes.json();
       versionTestAgentId = agent.id;
 
-      // Create project for versioned workflows
+      // Create project for versioned evalflows
       const projRes = await authFetch(adminSession, `${BASE_URL}/api/projects`, {
         method: 'POST',
         body: JSON.stringify({ name: 'Version Gate Test Project' }),
       });
       const proj: Project = await projRes.json();
 
-      // Create a workflow with frameworkVersion v0.1.0
-      const wfRes = await authFetch(adminSession, `${BASE_URL}/api/workflows`, {
+      // Create an evalflow with frameworkVersion v0.1.0
+      const wfRes = await authFetch(adminSession, `${BASE_URL}/api/evalflows`, {
         method: 'POST',
         body: JSON.stringify({
-          name: 'v0.1.0 Workflow',
+          name: 'v0.1.0 Evalflow',
           projectId: proj.id,
           providerId: testProviderId,
           config: { framework: 'aeval', frameworkVersion: 'v0.1.0' },
         }),
       });
-      const wf: Workflow = await wfRes.json();
-      versionedWorkflowId = wf.id;
+      const wf: Evalflow = await wfRes.json();
+      versionedEvalflowId = wf.id;
 
-      // Create eval set for versioned workflow
+      // Create eval set for versioned evalflow
       const esRes = await authFetch(adminSession, `${BASE_URL}/api/eval-sets`, {
         method: 'POST',
         body: JSON.stringify({
@@ -3564,18 +3564,18 @@ describe('Vox API Tests', () => {
       const es: EvalSet = await esRes.json();
       versionedEvalSetId = es.id;
 
-      // Create unversioned workflow + eval set
-      const uwfRes = await authFetch(adminSession, `${BASE_URL}/api/workflows`, {
+      // Create unversioned evalflow + eval set
+      const uwfRes = await authFetch(adminSession, `${BASE_URL}/api/evalflows`, {
         method: 'POST',
         body: JSON.stringify({
-          name: 'Unversioned Workflow',
+          name: 'Unversioned Evalflow',
           projectId: proj.id,
           providerId: testProviderId,
           config: { framework: 'aeval' },
         }),
       });
-      const uwf: Workflow = await uwfRes.json();
-      unversionedWorkflowId = uwf.id;
+      const uwf: Evalflow = await uwfRes.json();
+      unversionedEvalflowId = uwf.id;
 
       const uesRes = await authFetch(adminSession, `${BASE_URL}/api/eval-sets`, {
         method: 'POST',
@@ -3590,7 +3590,7 @@ describe('Vox API Tests', () => {
 
     it('should show jobs with compatible version (v0.1.0 agent, v0.1.0 job)', async () => {
       // Create a v0.1.0 job
-      const runRes = await authFetch(adminSession, `${BASE_URL}/api/workflows/${versionedWorkflowId}/run`, {
+      const runRes = await authFetch(adminSession, `${BASE_URL}/api/evalflows/${versionedEvalflowId}/run`, {
         method: 'POST',
         body: JSON.stringify({ region: BASE_NA, targetTier: 'public', evalSetId: versionedEvalSetId }),
       });
@@ -3612,7 +3612,7 @@ describe('Vox API Tests', () => {
 
     it('should show jobs without version requirement', async () => {
       // Create an unversioned job
-      const runRes = await authFetch(adminSession, `${BASE_URL}/api/workflows/${unversionedWorkflowId}/run`, {
+      const runRes = await authFetch(adminSession, `${BASE_URL}/api/evalflows/${unversionedEvalflowId}/run`, {
         method: 'POST',
         body: JSON.stringify({ region: BASE_NA, targetTier: 'public', evalSetId: unversionedEvalSetId }),
       });
@@ -3633,24 +3633,24 @@ describe('Vox API Tests', () => {
     });
 
     it('should filter out jobs requiring newer version', async () => {
-      // Create a high-version workflow + eval set + job
+      // Create a high-version evalflow + eval set + job
       const projRes = await authFetch(adminSession, `${BASE_URL}/api/projects`, {
         method: 'POST',
         body: JSON.stringify({ name: 'Future Version Project' }),
       });
       const proj: Project = await projRes.json();
 
-      const wfRes = await authFetch(adminSession, `${BASE_URL}/api/workflows`, {
+      const wfRes = await authFetch(adminSession, `${BASE_URL}/api/evalflows`, {
         method: 'POST',
         body: JSON.stringify({
-          name: 'v99.0.0 Workflow',
+          name: 'v99.0.0 Evalflow',
           projectId: proj.id,
           providerId: testProviderId,
           config: { framework: 'aeval', frameworkVersion: 'v99.0.0' },
         }),
       });
-      const wf: Workflow = await wfRes.json();
-      futureWorkflowId = wf.id;
+      const wf: Evalflow = await wfRes.json();
+      futureEvalflowId = wf.id;
 
       const esRes = await authFetch(adminSession, `${BASE_URL}/api/eval-sets`, {
         method: 'POST',
@@ -3662,7 +3662,7 @@ describe('Vox API Tests', () => {
       const es: EvalSet = await esRes.json();
       futureEvalSetId = es.id;
 
-      const runRes = await authFetch(adminSession, `${BASE_URL}/api/workflows/${wf.id}/run`, {
+      const runRes = await authFetch(adminSession, `${BASE_URL}/api/evalflows/${wf.id}/run`, {
         method: 'POST',
         body: JSON.stringify({ region: BASE_NA, targetTier: 'public', evalSetId: es.id }),
       });
@@ -3705,7 +3705,7 @@ describe('Vox API Tests', () => {
       // Jobs are pooled by (region, targetTier); this legacy token is also
       // BASE_NA public, so it shares the same pool as the earlier v99 job and
       // doesn't strictly need its own — dispatched anyway for clarity.
-      const futureRunRes = await authFetch(adminSession, `${BASE_URL}/api/workflows/${futureWorkflowId}/run`, {
+      const futureRunRes = await authFetch(adminSession, `${BASE_URL}/api/evalflows/${futureEvalflowId}/run`, {
         method: 'POST',
         body: JSON.stringify({ region: BASE_NA, targetTier: 'public', evalSetId: futureEvalSetId }),
       });
@@ -3791,23 +3791,23 @@ describe('Vox API Tests', () => {
   // ====================================================================
 
   describe('mergeEvalConfig frameworkVersion propagation', () => {
-    it('should propagate frameworkVersion from workflow and eval set to job config', async () => {
+    it('should propagate frameworkVersion from evalflow and eval set to job config', async () => {
       const projRes = await authFetch(adminSession, `${BASE_URL}/api/projects`, {
         method: 'POST',
         body: JSON.stringify({ name: 'Config Merge Test Project' }),
       });
       const proj: Project = await projRes.json();
 
-      const wfRes = await authFetch(adminSession, `${BASE_URL}/api/workflows`, {
+      const wfRes = await authFetch(adminSession, `${BASE_URL}/api/evalflows`, {
         method: 'POST',
         body: JSON.stringify({
-          name: 'Config Merge Workflow',
+          name: 'Config Merge Evalflow',
           projectId: proj.id,
           providerId: testProviderId,
           config: { framework: 'aeval', frameworkVersion: 'v0.3.0' },
         }),
       });
-      const wf: Workflow = await wfRes.json();
+      const wf: Evalflow = await wfRes.json();
 
       const esRes = await authFetch(adminSession, `${BASE_URL}/api/eval-sets`, {
         method: 'POST',
@@ -3818,7 +3818,7 @@ describe('Vox API Tests', () => {
       });
       const es: EvalSet = await esRes.json();
 
-      const runRes = await authFetch(adminSession, `${BASE_URL}/api/workflows/${wf.id}/run`, {
+      const runRes = await authFetch(adminSession, `${BASE_URL}/api/evalflows/${wf.id}/run`, {
         method: 'POST',
         body: JSON.stringify({ region: BASE_NA, targetTier: 'public', evalSetId: es.id }),
       });
@@ -3846,8 +3846,8 @@ describe('Vox API Tests', () => {
       const detail = await detailRes.json();
       expect(detail.job).toBeDefined();
       expect(detail.job.id).toBe(jobs[0].id);
-      expect(detail.workflowName).toBeDefined();
-      expect(typeof detail.workflowName).toBe('string');
+      expect(detail.evalflowName).toBeDefined();
+      expect(typeof detail.evalflowName).toBe('string');
     });
 
     it('should return 404 for non-existent job', async () => {
@@ -3990,7 +3990,7 @@ describe('Vox API Tests', () => {
       // Admin should see all schedules with creatorName
       if (schedules.length > 0) {
         expect(schedules[0].creatorName).toBeDefined();
-        expect(schedules[0].workflowName).toBeDefined();
+        expect(schedules[0].evalflowName).toBeDefined();
       }
     });
 
@@ -4064,9 +4064,9 @@ describe('Vox API Tests', () => {
       expect(regRes.ok).toBe(true);
       const { id: agentId, leaseId } = await regRes.json();
 
-      // 2) self-contained workflow + eval set (this block runs after the Cleanup
+      // 2) self-contained evalflow + eval set (this block runs after the Cleanup
       // describe that deletes the shared fixtures), then a job claimed by the agent.
-      const wf = await authFetch(adminSession, `${BASE_URL}/api/workflows`, {
+      const wf = await authFetch(adminSession, `${BASE_URL}/api/evalflows`, {
         method: 'POST', body: JSON.stringify({ name: `Complete WF ${Date.now()}`, visibility: 'public', providerId: testProviderId }),
       });
       const wfId = (await wf.json()).id;
@@ -4074,7 +4074,7 @@ describe('Vox API Tests', () => {
         method: 'POST', body: JSON.stringify({ name: `Complete ES ${Date.now()}`, visibility: 'public', config: { scenario: 'x' } }),
       });
       const esId = (await es.json()).id;
-      const jobRes = await authFetch(adminSession, `${BASE_URL}/api/workflows/${wfId}/run`, {
+      const jobRes = await authFetch(adminSession, `${BASE_URL}/api/evalflows/${wfId}/run`, {
         method: 'POST', body: JSON.stringify({ region: BASE_SA, targetTier: 'public', evalSetId: esId }),
       });
       expect(jobRes.ok).toBe(true);
@@ -4346,12 +4346,12 @@ describe('Vox API Tests', () => {
 
   // ==================== Resource Organization Scoping ====================
   describe('Resource Organization Scoping', () => {
-    it('should include organizationId in workflow schema', async () => {
-      const res = await authFetch(adminSession, `${BASE_URL}/api/workflows?includePublic=true`);
+    it('should include organizationId in evalflow schema', async () => {
+      const res = await authFetch(adminSession, `${BASE_URL}/api/evalflows?includePublic=true`);
       if (!res.ok) return;
-      const workflows = await res.json();
-      if (workflows.length > 0) {
-        expect('organizationId' in workflows[0] || workflows[0].organizationId === undefined || workflows[0].organizationId === null).toBe(true);
+      const evalflows = await res.json();
+      if (evalflows.length > 0) {
+        expect('organizationId' in evalflows[0] || evalflows[0].organizationId === undefined || evalflows[0].organizationId === null).toBe(true);
       }
     });
 
@@ -4638,17 +4638,17 @@ describe('Vox API Tests', () => {
 
   // ==================== Permission Helpers ====================
   describe('Permission Checks', () => {
-    it('should allow admin to access any workflow', async () => {
-      const res = await authFetch(adminSession, `${BASE_URL}/api/workflows?includePublic=true`);
+    it('should allow admin to access any evalflow', async () => {
+      const res = await authFetch(adminSession, `${BASE_URL}/api/evalflows?includePublic=true`);
       expect(res.ok).toBe(true);
     });
 
-    it('should allow access to public workflows', async () => {
-      const res = await authFetch(adminSession, `${BASE_URL}/api/workflows?includePublic=true`);
+    it('should allow access to public evalflows', async () => {
+      const res = await authFetch(adminSession, `${BASE_URL}/api/evalflows?includePublic=true`);
       expect(res.ok).toBe(true);
-      const workflows = await res.json();
-      const publicWorkflows = workflows.filter((w: { visibility: string }) => w.visibility === 'public');
-      expect(publicWorkflows.length).toBeGreaterThanOrEqual(0);
+      const evalflows = await res.json();
+      const publicEvalflows = evalflows.filter((w: { visibility: string }) => w.visibility === 'public');
+      expect(publicEvalflows.length).toBeGreaterThanOrEqual(0);
     });
 
     it('should return schedules with creatorName for org admin', async () => {
@@ -4767,10 +4767,10 @@ describe('Vox API Tests', () => {
       expect(body).toHaveProperty('total');
     });
 
-    it('should ignore invalid workflowId', async () => {
-      const res = await authFetch(adminSession, `${BASE_URL}/api/eval-jobs?hours=720&workflowId=notanumber`);
+    it('should ignore invalid evalflowId', async () => {
+      const res = await authFetch(adminSession, `${BASE_URL}/api/eval-jobs?hours=720&evalflowId=notanumber`);
       expect(res.ok).toBe(true);
-      // Invalid workflowId is silently ignored — returns unfiltered results
+      // Invalid evalflowId is silently ignored — returns unfiltered results
     });
 
     it('should ignore invalid status', async () => {
@@ -4780,7 +4780,7 @@ describe('Vox API Tests', () => {
     });
 
     it('should reject invalid region filter', async () => {
-      // Unlike status/workflowId (silently ignored), the region param is strictly
+      // Unlike status/evalflowId (silently ignored), the region param is strictly
       // validated against region_locations base IDs — a bogus region ("mars") is
       // rejected with 400 rather than silently ignored.
       const res = await authFetch(adminSession, `${BASE_URL}/api/eval-jobs?hours=720&region=mars`);

@@ -2,8 +2,8 @@ import { test, expect } from "@playwright/test";
 
 /**
  * Phone vs Agent UI E2E (Phase D, design 2026-09-21 §11):
- * - workflow create dialog offers the Evaluation Mode selector; a phone
- *   workflow persists transport + phoneDial and shows the Phone badge
+ * - evalflow create dialog offers the Evaluation Mode selector; a phone
+ *   evalflow persists transport + phoneDial and shows the Phone badge
  * - the realtime page carries the Web vs Agent | Phone vs Agent switch and
  *   Phone mode renders without error (empty state is fine)
  */
@@ -22,14 +22,14 @@ async function loginUI(page: import("@playwright/test").Page) {
 
 test.describe("Phone vs Agent UI", () => {
   test.afterAll(async ({ playwright }) => {
-    // Cleanup the created workflow via API.
+    // Cleanup the created evalflow via API.
     const api = await playwright.request.newContext({ baseURL: BASE });
     await api.post("/api/auth/login", { data: { email: "admin@vox.local", password: "admin123456" } });
-    const list = await api.get("/api/workflows?includePublic=true");
+    const list = await api.get("/api/evalflows?includePublic=true");
     if (list.ok()) {
       const rows = (await list.json()) as Array<{ id: number; name: string }>;
       for (const w of rows.filter((r) => r.name === wfName)) {
-        await api.delete(`/api/workflows/${w.id}`);
+        await api.delete(`/api/evalflows/${w.id}`);
       }
     }
     await api.dispose();
@@ -37,18 +37,18 @@ test.describe("Phone vs Agent UI", () => {
 
   test("create dialog: phone mode persists transport + phoneDial and shows the badge", async ({ page }) => {
     await loginUI(page);
-    await page.goto(`${BASE}/console/workflows`);
-    await page.getByTestId("button-create-workflow").click();
+    await page.goto(`${BASE}/console/evalflows`);
+    await page.getByTestId("button-create-evalflow").click();
 
-    await page.getByTestId("input-workflow-name").fill(wfName);
-    await page.getByTestId("select-workflow-provider").click();
+    await page.getByTestId("input-evalflow-name").fill(wfName);
+    await page.getByTestId("select-evalflow-provider").click();
     await page.getByRole("option").first().click();
 
-    await page.getByTestId("select-workflow-transport").click();
+    await page.getByTestId("select-evalflow-transport").click();
     await page.getByRole("option", { name: "Phone vs Agent" }).click();
-    await page.getByTestId("input-workflow-phone-number").fill("+1 555 010 1234");
+    await page.getByTestId("input-evalflow-phone-number").fill("+1 555 010 1234");
 
-    await page.getByTestId("button-submit-workflow").click();
+    await page.getByTestId("button-submit-evalflow").click();
 
     // Row appears with the Phone badge.
     const row = page.getByRole("row", { name: new RegExp(wfName) });
@@ -56,7 +56,7 @@ test.describe("Phone vs Agent UI", () => {
     await expect(row.getByText("Phone", { exact: true })).toBeVisible();
 
     // Persisted server-side.
-    const api = await page.request.get(`${BASE}/api/workflows?includePublic=true`);
+    const api = await page.request.get(`${BASE}/api/evalflows?includePublic=true`);
     const rows = (await api.json()) as Array<{ name: string; transport: string; config: { phoneDial?: { number: string } } }>;
     const created = rows.find((r) => r.name === wfName);
     expect(created?.transport).toBe("phone");

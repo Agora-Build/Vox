@@ -72,7 +72,7 @@ If your PostgreSQL is a Coolify-managed database, use the internal hostname (e.g
 
 ### 4. Set Up Auto-Deploy (Optional)
 
-The repo includes a GitHub Actions workflow (`.github/workflows/deploy.yml`) that triggers a Coolify webhook on every push to `main`.
+The repo includes a GitHub Actions evalflow (`.github/workflows/deploy.yml`) that triggers a Coolify webhook on every push to `main`.
 
 To enable it:
 
@@ -109,7 +109,7 @@ Vox uses **Drizzle ORM** with file-based migrations. SQL files live in `migratio
 
 **Do not use `drizzle-kit push --force` in production** — it diffs the live schema and may silently drop columns.
 
-#### Developer workflow for schema changes
+#### Developer evalflow for schema changes
 
 Every time you modify `shared/schema.ts`:
 

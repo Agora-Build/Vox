@@ -6,11 +6,11 @@
 // without booting the HTTP server.
 
 import { storage, mergeEvalConfig, buildJobSnapshot } from "./storage";
-import { canScheduleWorkflow, sessionPoolViolation } from "./permissions";
+import { canScheduleEvalflow, sessionPoolViolation } from "./permissions";
 import { parseNextCronRun } from "./cron";
 import { getMarketplace } from "./marketplace";
 import { getOrganizations, type Membership } from "./organizations";
-import { stampOwnerSession, detectSessionNeed, missingSecretNames, sessionScopeForWorkflow, resolvableSecretSources } from "./auth-session";
+import { stampOwnerSession, detectSessionNeed, missingSecretNames, sessionScopeForEvalflow, resolvableSecretSources } from "./auth-session";
 import { log } from "./log";
 
 // Global hard cap on how long a single eval job may stay "running" before the
@@ -140,7 +140,7 @@ export async function processScheduledJobs() {
     // Get all due schedules
     const dueSchedules = await storage.getDueSchedules();
     // Org-dependent schedules skipped this tick because organizations were
-    // unavailable — org-owned workflows AND team-tier schedules (see the
+    // unavailable — org-owned evalflows AND team-tier schedules (see the
     // discriminator below). Counted, not logged per schedule: a provider outage
     // affects every one of them at once, and one line per tick keeps the log
     // readable (§7).
@@ -154,27 +154,27 @@ export async function processScheduledJobs() {
         if (schedule.expiresAt && schedule.expiresAt.getTime() <= Date.now()) {
           continue;
         }
-        // A schedule whose workflow or eval-set was deleted (FK SET NULL) can never
+        // A schedule whose evalflow or eval-set was deleted (FK SET NULL) can never
         // run — DISABLE it so it isn't re-selected on every tick (zombie). It stays
         // in the list (with a placeholder) for the user to clean up.
-        const workflow = schedule.workflowId != null ? await storage.getWorkflow(schedule.workflowId) : undefined;
+        const evalflow = schedule.evalflowId != null ? await storage.getEvalflow(schedule.evalflowId) : undefined;
         const evalSet = schedule.evalSetId != null ? await storage.getEvalSet(schedule.evalSetId) : undefined;
-        if (!workflow || !evalSet) {
-          log(`Schedule "${schedule.name}" references a deleted workflow/eval-set — disabling`, "scheduler");
+        if (!evalflow || !evalSet) {
+          log(`Schedule "${schedule.name}" references a deleted evalflow/eval-set — disabling`, "scheduler");
           await storage.updateEvalSchedule(schedule.id, { isEnabled: false });
           continue;
         }
         // Re-check at runtime that the schedule's creator may still schedule
-        // this workflow (secrets resolve from the workflow owner). This disables
+        // this evalflow (secrets resolve from the evalflow owner). This disables
         // schedules whose creator lost the right — e.g. legacy ones created by a
-        // system admin on someone else's workflow before scheduling was
+        // system admin on someone else's evalflow before scheduling was
         // restricted to the owner — so they stop spending the owner's secrets.
-        if (schedule.createdBy == null || !canScheduleWorkflow({ id: schedule.createdBy }, workflow)) {
-          log(`Schedule "${schedule.name}" creator is no longer authorized to schedule its workflow — disabling`, "scheduler");
+        if (schedule.createdBy == null || !canScheduleEvalflow({ id: schedule.createdBy }, evalflow)) {
+          log(`Schedule "${schedule.name}" creator is no longer authorized to schedule its evalflow — disabling`, "scheduler");
           await storage.updateEvalSchedule(schedule.id, { isEnabled: false });
           continue;
         }
-        const provider = await storage.getProvider(workflow.providerId);
+        const provider = await storage.getProvider(evalflow.providerId);
         // The row is still needed for `creator.plan` in the job snapshot below.
         // Its org columns are NOT read here: the scheduler runs outside the auth
         // boundary, so it asks the seam directly. Passing the raw row would
@@ -183,10 +183,10 @@ export async function processScheduledJobs() {
         const creator = schedule.createdBy ? await storage.getUser(schedule.createdBy) : undefined;
         // Membership comes from the seam, and the answer is load-bearing
         // whenever the RESULTING JOB would depend on an org:
-        //   - an ORG workflow: membership picks the session pool
+        //   - an ORG evalflow: membership picks the session pool
         //     (sessionPoolViolation) and fences the job's org secrets;
-        //   - a TEAM-TIER schedule (on an org OR a personal workflow — an org
-        //     member may legally schedule their own personal workflow onto
+        //   - a TEAM-TIER schedule (on an org OR a personal evalflow — an org
+        //     member may legally schedule their own personal evalflow onto
         //     their org's agents): membership freezes creator_org_id, and the
         //     team claim arm matches `ej.creator_org_id` exactly. A job stamped
         //     NULL-because-the-provider-was-absent is unclaimable FOREVER, not
@@ -200,7 +200,7 @@ export async function processScheduledJobs() {
         // detectSessionNeed/stampOwnerSession so a skipped schedule can never
         // burn a broker login attempt.
         let creatorMembership: Membership | null = null;
-        if (workflow.organizationId != null || schedule.targetTier === "team") {
+        if (evalflow.organizationId != null || schedule.targetTier === "team") {
           const orgs = getOrganizations();
           let orgsAnswered = orgs !== null;
           if (orgs) {
@@ -217,7 +217,7 @@ export async function processScheduledJobs() {
             continue; // skip — enabled, undispatched, unwritten
           }
         } else {
-          // Personal workflow, non-team tier: membership only decorates the
+          // Personal evalflow, non-team tier: membership only decorates the
           // job's creator_org_id stamp (no claim arm reads it), so absence stays
           // fail-closed ("no org") exactly as before, and a provider FAILURE
           // still propagates to the per-schedule catch below (no job created)
@@ -228,26 +228,26 @@ export async function processScheduledJobs() {
         }
 
         // scheduled jobs are inherently owner-dispatched —
-        // canScheduleWorkflow (re-checked above) is owner/creator-only, so the
-        // schedule creator IS the workflow owner and the untargeted owner/team
+        // canScheduleEvalflow (re-checked above) is owner/creator-only, so the
+        // schedule creator IS the evalflow owner and the untargeted owner/team
         // gate the run route applies is satisfied structurally. stampOwnerSession
         // (shared with the run-now route) strips/stamps config.sessionInjection,
         // pre-warms the mint, and returns the immutable snapshot stamp so
         // /session derives from it, not live data. A split-class credential pair
         // can never run safely (it would leak the runtime-class secret) — disable
         // the schedule so it stops firing failing/unsafe jobs every tick.
-        const jobConfig = mergeEvalConfig(workflow.config, evalSet?.config);
-        // The workflow's secrets are mutable after schedule creation: a
-        // public/team schedule whose workflow LATER gained a login-class
+        const jobConfig = mergeEvalConfig(evalflow.config, evalSet?.config);
+        // The evalflow's secrets are mutable after schedule creation: a
+        // public/team schedule whose evalflow LATER gained a login-class
         // secret would emit an unclaimable session job every tick (the claim
         // predicate refuses them, and pooled rows ride the 24h backstop).
         // Check with the PURE detector BEFORE stampOwnerSession — the stamp
         // helper mutates config and pre-warms a broker mint (ensureSession),
         // and a schedule we are about to disable must not burn a login
         // attempt first.
-        const schedSessionReq = await detectSessionNeed(workflow);
+        const schedSessionReq = await detectSessionNeed(evalflow);
         if (schedSessionReq.kind === "need") {
-          const violation = sessionPoolViolation(schedule.targetTier, workflow, {
+          const violation = sessionPoolViolation(schedule.targetTier, evalflow, {
             organizationId: creatorMembership?.organizationId ?? null,
           });
           if (violation) {
@@ -256,7 +256,7 @@ export async function processScheduledJobs() {
             continue;
           }
         }
-        // A secret the workflow references can be deleted AFTER the schedule
+        // A secret the evalflow references can be deleted AFTER the schedule
         // was created; every tick would then emit a job that can only fail on
         // an unresolved ${secrets.X}. Mirror the misconfigured/pool handling:
         // disable the schedule with a named reason instead of queueing doomed
@@ -265,20 +265,20 @@ export async function processScheduledJobs() {
         // exists is fine (Core mints from it), and one that doesn't is
         // correctly flagged, since the mint would fail too.
         {
-          const missing = await missingSecretNames(sessionScopeForWorkflow(workflow), resolvableSecretSources([workflow.config, evalSet?.config]));
+          const missing = await missingSecretNames(sessionScopeForEvalflow(evalflow), resolvableSecretSources([evalflow.config, evalSet?.config]));
           if (missing.length > 0) {
             log(`Schedule "${schedule.name}" references unconfigured secret(s) ${missing.join(", ")} — disabling`, "scheduler");
             await storage.updateEvalSchedule(schedule.id, { isEnabled: false });
             continue;
           }
         }
-        const stamp = await stampOwnerSession(workflow, jobConfig as Record<string, unknown>, schedSessionReq);
+        const stamp = await stampOwnerSession(evalflow, jobConfig as Record<string, unknown>, schedSessionReq);
         if (stamp.kind === "misconfigured") {
-          log(`Schedule "${schedule.name}" workflow has a split-class credential pair (${stamp.reason}) — disabling`, "scheduler");
+          log(`Schedule "${schedule.name}" evalflow has a split-class credential pair (${stamp.reason}) — disabling`, "scheduler");
           await storage.updateEvalSchedule(schedule.id, { isEnabled: false });
           continue;
         }
-        const baseSnapshot = buildJobSnapshot(workflow, evalSet, provider, creator?.plan ?? null);
+        const baseSnapshot = buildJobSnapshot(evalflow, evalSet, provider, creator?.plan ?? null);
         const snapshot = stamp.snapshotInjection
           ? { ...baseSnapshot, sessionInjection: stamp.snapshotInjection }
           : baseSnapshot;
@@ -287,7 +287,7 @@ export async function processScheduledJobs() {
         const job = await storage.createEvalJob({
           scheduleId: schedule.id,
           triggerType: 1, // scheduled
-          workflowId: schedule.workflowId,
+          evalflowId: schedule.evalflowId,
           evalSetId: schedule.evalSetId,
           createdBy: schedule.createdBy,
           // R2 (§11): freeze the creator's org here, from the seam-resolved
@@ -336,7 +336,7 @@ export async function processScheduledJobs() {
       }
     }
     if (orgSkips) {
-      log(`${orgSkips} org schedule(s) skipped — organizations unavailable (org-owned workflow or team tier)`, "scheduler");
+      log(`${orgSkips} org schedule(s) skipped — organizations unavailable (org-owned evalflow or team tier)`, "scheduler");
     }
   } catch (error) {
     console.error("Scheduler error:", error);

@@ -11,7 +11,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import { Plus, FolderKanban, Trash2, Pencil, Workflow } from "lucide-react";
+import { Plus, FolderKanban, Trash2, Pencil, Workflow as EvalflowIcon } from "lucide-react";
 import { useState } from "react";
 import type { Project } from "@shared/schema";
 
@@ -26,7 +26,7 @@ interface AuthStatus {
 }
 
 interface ProjectWithCount extends Project {
-  workflowCount?: number;
+  evalflowCount?: number;
 }
 
 export default function ConsoleProjects() {
@@ -119,7 +119,7 @@ export default function ConsoleProjects() {
         <div>
           <h1 className="text-2xl font-bold">Projects</h1>
           <p className="text-muted-foreground">
-            Organize your workflows into projects
+            Organize your evalflows into projects
             <span className="ml-2 text-sm">({projectCount}/{maxProjects} used)</span>
           </p>
         </div>
@@ -134,7 +134,7 @@ export default function ConsoleProjects() {
             <DialogHeader>
               <DialogTitle>Create Project</DialogTitle>
               <DialogDescription>
-                Create a new project to organize your workflows.
+                Create a new project to organize your evalflows.
               </DialogDescription>
             </DialogHeader>
             <div className="space-y-4 py-4">
@@ -216,10 +216,10 @@ export default function ConsoleProjects() {
         <CardHeader>
           <CardDescription>
             {plan === "basic"
-              ? `Basic plan: ${maxProjects} projects, 10 workflows each`
+              ? `Basic plan: ${maxProjects} projects, 10 evalflows each`
               : hasOrg
-              ? `Organization: ${maxProjects} projects, 20 workflows each`
-              : `Premium plan: ${maxProjects} projects, 20 workflows each`
+              ? `Organization: ${maxProjects} projects, 20 evalflows each`
+              : `Premium plan: ${maxProjects} projects, 20 evalflows each`
             }
           </CardDescription>
         </CardHeader>
@@ -235,7 +235,7 @@ export default function ConsoleProjects() {
               <TableHeader>
                 <TableRow>
                   <TableHead>Name</TableHead>
-                  <TableHead>Workflows</TableHead>
+                  <TableHead>Evalflows</TableHead>
                   <TableHead>Created</TableHead>
                   <TableHead className="text-right">Actions</TableHead>
                 </TableRow>
@@ -253,8 +253,8 @@ export default function ConsoleProjects() {
                     </TableCell>
                     <TableCell>
                       <Badge variant="secondary" className="gap-1">
-                        <Workflow className="h-3 w-3" />
-                        {project.workflowCount ?? 0}
+                        <EvalflowIcon className="h-3 w-3" />
+                        {project.evalflowCount ?? 0}
                       </Badge>
                     </TableCell>
                     <TableCell className="text-muted-foreground">
@@ -286,9 +286,9 @@ export default function ConsoleProjects() {
                               <AlertDialogTitle>Delete Project</AlertDialogTitle>
                               <AlertDialogDescription>
                                 Are you sure you want to delete "{project.name}"?
-                                {(project.workflowCount ?? 0) > 0 && (
+                                {(project.evalflowCount ?? 0) > 0 && (
                                   <span className="block mt-2 text-destructive">
-                                    This project has {project.workflowCount} workflow(s). Delete them first.
+                                    This project has {project.evalflowCount} evalflow(s). Delete them first.
                                   </span>
                                 )}
                               </AlertDialogDescription>
@@ -297,7 +297,7 @@ export default function ConsoleProjects() {
                               <AlertDialogCancel>Cancel</AlertDialogCancel>
                               <AlertDialogAction
                                 onClick={() => deleteMutation.mutate(project.id)}
-                                disabled={(project.workflowCount ?? 0) > 0}
+                                disabled={(project.evalflowCount ?? 0) > 0}
                                 className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
                               >
                                 Delete
@@ -313,7 +313,7 @@ export default function ConsoleProjects() {
             </Table>
           ) : (
             <div className="text-center py-8 text-muted-foreground">
-              No projects yet. Create your first project to organize your workflows.
+              No projects yet. Create your first project to organize your evalflows.
             </div>
           )}
         </CardContent>

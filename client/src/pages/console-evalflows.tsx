@@ -13,11 +13,11 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
-import { Plus, Workflow, Globe, Lock, Star, StarOff, ChevronRight, Pencil, FolderKanban, Copy, Trash2, Phone } from "lucide-react";
+import { Plus, Workflow as EvalflowIcon, Globe, Lock, Star, StarOff, ChevronRight, Pencil, FolderKanban, Copy, Trash2, Phone } from "lucide-react";
 import { useState } from "react";
 import { useLocation } from "wouter";
 import { load as loadYaml } from "js-yaml";
-import type { Workflow as WorkflowType, Provider, Project } from "@shared/schema";
+import type { Evalflow as EvalflowType, Provider, Project } from "@shared/schema";
 
 // Extract `platform_id` from the aeval `platform.setup` step in a stepsPrefix YAML.
 // Checks both the step's top level and its `params`. Returns null if absent/unparseable.
@@ -43,7 +43,7 @@ type SaveDecision =
   | { action: "auto-custom"; customId: string }
   | { action: "mismatch"; yamlPlatform: string; providerName: string };
 
-// Decide whether a workflow save can proceed, must switch to Custom, or should warn.
+// Decide whether an evalflow save can proceed, must switch to Custom, or should warn.
 // Only meaningful for the aeval framework (voice-agent-tester has no platform_id).
 function evaluateSave(
   framework: string,
@@ -56,7 +56,7 @@ function evaluateSave(
   const selected = providers?.find((p) => p.id === providerId);
   const custom = providers?.find((p) => p.name === "Custom" || (!p.platformId && p.name.toLowerCase() === "custom"));
   if (!yamlPlatform) {
-    // No platform_id in the setup steps → this is a Custom/self-hosted workflow.
+    // No platform_id in the setup steps → this is a Custom/self-hosted evalflow.
     if (custom && providerId !== custom.id) return { action: "auto-custom", customId: custom.id };
     return { action: "ok" };
   }
@@ -87,7 +87,7 @@ interface AuthStatus {
   } | null;
 }
 
-export default function ConsoleWorkflows() {
+export default function ConsoleEvalflows() {
   const { toast } = useToast();
   const [, setLocation] = useLocation();
   const [createOpen, setCreateOpen] = useState(false);
@@ -108,7 +108,7 @@ export default function ConsoleWorkflows() {
 
   // Edit dialog state
   const [editOpen, setEditOpen] = useState(false);
-  const [editWorkflow, setEditWorkflow] = useState<WorkflowType | null>(null);
+  const [editEvalflow, setEditEvalflow] = useState<EvalflowType | null>(null);
   const [editName, setEditName] = useState("");
   const [editDescription, setEditDescription] = useState("");
   const [editVisibility, setEditVisibility] = useState("");
@@ -119,15 +119,15 @@ export default function ConsoleWorkflows() {
   const [editTransport, setEditTransport] = useState("web");
   const [editPhoneNumber, setEditPhoneNumber] = useState("");
 
-  // Non-blocking warning when the workflow's provider disagrees with its YAML platform_id.
+  // Non-blocking warning when the evalflow's provider disagrees with its YAML platform_id.
   const [pendingMismatch, setPendingMismatch] = useState<{ kind: "create" | "edit"; yamlPlatform: string; providerName: string } | null>(null);
 
   const { data: authStatus } = useQuery<AuthStatus>({
     queryKey: ["/api/auth/status"],
   });
 
-  const { data: workflows, isLoading } = useQuery<WorkflowType[]>({
-    queryKey: ["/api/workflows?includePublic=true"],
+  const { data: evalflows, isLoading } = useQuery<EvalflowType[]>({
+    queryKey: ["/api/evalflows?includePublic=true"],
   });
 
   const { data: providers } = useQuery<Provider[]>({
@@ -152,7 +152,7 @@ export default function ConsoleWorkflows() {
       if (transport === "phone" && phoneNumber.trim()) {
         config.phoneDial = { number: phoneNumber.trim() };
       }
-      const res = await apiRequest("POST", "/api/workflows", {
+      const res = await apiRequest("POST", "/api/evalflows", {
         name,
         description,
         visibility,
@@ -175,25 +175,25 @@ export default function ConsoleWorkflows() {
       setAppConfigYaml("");
       setStepsPrefix("");
       setStepsSuffix("");
-      queryClient.invalidateQueries({ queryKey: ["/api/workflows?includePublic=true"] });
-      toast({ title: "Workflow created" });
+      queryClient.invalidateQueries({ queryKey: ["/api/evalflows?includePublic=true"] });
+      toast({ title: "Evalflow created" });
     },
     onError: (error: Error) => {
-      toast({ title: "Failed to create workflow", description: error.message, variant: "destructive" });
+      toast({ title: "Failed to create evalflow", description: error.message, variant: "destructive" });
     },
   });
 
   const editMutation = useMutation({
     mutationFn: async (overrideProviderId?: string) => {
-      if (!editWorkflow) return;
+      if (!editEvalflow) return;
       const body: Record<string, unknown> = {};
-      if (editName !== editWorkflow.name) body.name = editName;
-      if (editDescription !== (editWorkflow.description || "")) body.description = editDescription;
-      if (editVisibility !== editWorkflow.visibility) body.visibility = editVisibility;
-      if (editProjectId && !editWorkflow.projectId) body.projectId = parseInt(editProjectId);
+      if (editName !== editEvalflow.name) body.name = editName;
+      if (editDescription !== (editEvalflow.description || "")) body.description = editDescription;
+      if (editVisibility !== editEvalflow.visibility) body.visibility = editVisibility;
+      if (editProjectId && !editEvalflow.projectId) body.projectId = parseInt(editProjectId);
       const pid = overrideProviderId ?? editProviderId;
-      if (pid && pid !== editWorkflow.providerId) body.providerId = pid;
-      if (editTransport !== editWorkflow.transport) body.transport = editTransport;
+      if (pid && pid !== editEvalflow.providerId) body.providerId = pid;
+      if (editTransport !== editEvalflow.transport) body.transport = editTransport;
       const config: Record<string, unknown> = { framework: editFramework };
       if (editFramework === "voice-agent-tester" && editAppConfigYaml) {
         config.app = editAppConfigYaml;
@@ -206,81 +206,81 @@ export default function ConsoleWorkflows() {
         config.phoneDial = { number: editPhoneNumber.trim() };
       }
       body.config = config;
-      const res = await apiRequest("PATCH", `/api/workflows/${editWorkflow.id}`, body);
+      const res = await apiRequest("PATCH", `/api/evalflows/${editEvalflow.id}`, body);
       return res.json();
     },
     onSuccess: () => {
       setEditOpen(false);
-      setEditWorkflow(null);
-      queryClient.invalidateQueries({ queryKey: ["/api/workflows?includePublic=true"] });
-      toast({ title: "Workflow updated" });
+      setEditEvalflow(null);
+      queryClient.invalidateQueries({ queryKey: ["/api/evalflows?includePublic=true"] });
+      toast({ title: "Evalflow updated" });
     },
     onError: (error: Error) => {
-      toast({ title: "Failed to update workflow", description: error.message, variant: "destructive" });
+      toast({ title: "Failed to update evalflow", description: error.message, variant: "destructive" });
     },
   });
 
   const toggleMainlineMutation = useMutation({
     mutationFn: async ({ id, isMainline }: { id: number; isMainline: boolean }) => {
-      const res = await apiRequest("PATCH", `/api/workflows/${id}/mainline`, { isMainline });
+      const res = await apiRequest("PATCH", `/api/evalflows/${id}/mainline`, { isMainline });
       return res.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/workflows?includePublic=true"] });
-      toast({ title: "Workflow updated" });
+      queryClient.invalidateQueries({ queryKey: ["/api/evalflows?includePublic=true"] });
+      toast({ title: "Evalflow updated" });
     },
     onError: (error: Error) => {
-      toast({ title: "Failed to update workflow", description: error.message, variant: "destructive" });
+      toast({ title: "Failed to update evalflow", description: error.message, variant: "destructive" });
     },
   });
 
   const cloneMutation = useMutation({
     mutationFn: async (id: number) => {
-      const res = await apiRequest("POST", `/api/workflows/${id}/clone`, {});
+      const res = await apiRequest("POST", `/api/evalflows/${id}/clone`, {});
       return res.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/workflows?includePublic=true"] });
-      toast({ title: "Workflow cloned" });
+      queryClient.invalidateQueries({ queryKey: ["/api/evalflows?includePublic=true"] });
+      toast({ title: "Evalflow cloned" });
     },
     onError: (error: Error) => {
-      toast({ title: "Failed to clone workflow", description: error.message, variant: "destructive" });
+      toast({ title: "Failed to clone evalflow", description: error.message, variant: "destructive" });
     },
   });
 
   // Delete dialog state
-  const [deleteTarget, setDeleteTarget] = useState<WorkflowType | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<EvalflowType | null>(null);
   const [deleteConfirmName, setDeleteConfirmName] = useState("");
 
   const deleteMutation = useMutation({
     mutationFn: async (id: number) => {
-      const res = await apiRequest("DELETE", `/api/workflows/${id}`);
+      const res = await apiRequest("DELETE", `/api/evalflows/${id}`);
       return res.json();
     },
     onSuccess: () => {
       setDeleteTarget(null);
       setDeleteConfirmName("");
-      queryClient.invalidateQueries({ queryKey: ["/api/workflows?includePublic=true"] });
-      toast({ title: "Workflow deleted" });
+      queryClient.invalidateQueries({ queryKey: ["/api/evalflows?includePublic=true"] });
+      toast({ title: "Evalflow deleted" });
     },
     onError: (error: Error) => {
-      toast({ title: "Failed to delete workflow", description: error.message, variant: "destructive" });
+      toast({ title: "Failed to delete evalflow", description: error.message, variant: "destructive" });
     },
   });
 
-  const openEditDialog = (workflow: WorkflowType) => {
-    const cfg = (workflow.config || {}) as Record<string, any>;
-    setEditWorkflow(workflow);
-    setEditName(workflow.name);
-    setEditDescription(workflow.description || "");
-    setEditVisibility(workflow.visibility);
-    setEditProjectId(workflow.projectId?.toString() || "");
+  const openEditDialog = (evalflow: EvalflowType) => {
+    const cfg = (evalflow.config || {}) as Record<string, any>;
+    setEditEvalflow(evalflow);
+    setEditName(evalflow.name);
+    setEditDescription(evalflow.description || "");
+    setEditVisibility(evalflow.visibility);
+    setEditProjectId(evalflow.projectId?.toString() || "");
     setEditFramework(cfg.framework || "aeval");
     setEditAppConfigYaml(cfg.app || "");
     setEditStepsPrefix(cfg.stepsPrefix || "");
     setEditStepsSuffix(cfg.stepsSuffix || "");
-    setEditProviderId(workflow.providerId);
-    setEditTransport(workflow.transport || "web");
+    setEditProviderId(evalflow.providerId);
+    setEditTransport(evalflow.transport || "web");
     setEditPhoneNumber(cfg.phoneDial?.number || "");
     setEditOpen(true);
   };
@@ -331,48 +331,48 @@ export default function ConsoleWorkflows() {
     <div className="space-y-6">
       <div className="flex items-center justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold">Workflows</h1>
-          <p className="text-muted-foreground">Manage evaluation workflows</p>
+          <h1 className="text-2xl font-bold">Evalflows</h1>
+          <p className="text-muted-foreground">Manage evaluation evalflows</p>
         </div>
         <Dialog open={createOpen} onOpenChange={setCreateOpen}>
           <DialogTrigger asChild>
-            <Button data-testid="button-create-workflow">
+            <Button data-testid="button-create-evalflow">
               <Plus className="mr-2 h-4 w-4" />
-              New Workflow
+              New Evalflow
             </Button>
           </DialogTrigger>
           <DialogContent>
             <DialogHeader>
-              <DialogTitle>Create Workflow</DialogTitle>
+              <DialogTitle>Create Evalflow</DialogTitle>
               <DialogDescription>
-                Create a new test workflow for evaluation.
+                Create a new test evalflow for evaluation.
               </DialogDescription>
             </DialogHeader>
             <div className="space-y-4 py-4">
               <div className="space-y-2">
-                <Label htmlFor="workflow-name">Name</Label>
+                <Label htmlFor="evalflow-name">Name</Label>
                 <Input
-                  id="workflow-name"
-                  placeholder="My Test Workflow"
+                  id="evalflow-name"
+                  placeholder="My Test Evalflow"
                   value={name}
                   onChange={(e) => setName(e.target.value)}
-                  data-testid="input-workflow-name"
+                  data-testid="input-evalflow-name"
                 />
               </div>
               <div className="space-y-2">
-                <Label htmlFor="workflow-description">Description</Label>
+                <Label htmlFor="evalflow-description">Description</Label>
                 <Textarea
-                  id="workflow-description"
-                  placeholder="Describe what this workflow tests..."
+                  id="evalflow-description"
+                  placeholder="Describe what this evalflow tests..."
                   value={description}
                   onChange={(e) => setDescription(e.target.value)}
-                  data-testid="input-workflow-description"
+                  data-testid="input-evalflow-description"
                 />
               </div>
               <div className="space-y-2">
-                <Label htmlFor="workflow-provider">Provider</Label>
+                <Label htmlFor="evalflow-provider">Provider</Label>
                 <Select value={providerId} onValueChange={setProviderId}>
-                  <SelectTrigger data-testid="select-workflow-provider">
+                  <SelectTrigger data-testid="select-evalflow-provider">
                     <SelectValue placeholder="Select a provider" />
                   </SelectTrigger>
                   <SelectContent>
@@ -387,7 +387,7 @@ export default function ConsoleWorkflows() {
               <div className="space-y-2">
                 <Label>Evaluation Mode</Label>
                 <Select value={transport} onValueChange={setTransport}>
-                  <SelectTrigger data-testid="select-workflow-transport">
+                  <SelectTrigger data-testid="select-evalflow-transport">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -398,13 +398,13 @@ export default function ConsoleWorkflows() {
               </div>
               {transport === "phone" && (
                 <div className="space-y-2">
-                  <Label htmlFor="workflow-phone-number">Agent's phone number</Label>
+                  <Label htmlFor="evalflow-phone-number">Agent's phone number</Label>
                   <Input
-                    id="workflow-phone-number"
+                    id="evalflow-phone-number"
                     placeholder="+1 555 010 1234"
                     value={phoneNumber}
                     onChange={(e) => setPhoneNumber(e.target.value)}
-                    data-testid="input-workflow-phone-number"
+                    data-testid="input-evalflow-phone-number"
                   />
                   <p className="text-xs text-muted-foreground">
                     We call the agent at this number. (REST-API call triggering is configurable via the API.)
@@ -412,9 +412,9 @@ export default function ConsoleWorkflows() {
                 </div>
               )}
               <div className="space-y-2">
-                <Label htmlFor="workflow-visibility">Visibility</Label>
+                <Label htmlFor="evalflow-visibility">Visibility</Label>
                 <Select value={visibility} onValueChange={setVisibility}>
-                  <SelectTrigger data-testid="select-workflow-visibility">
+                  <SelectTrigger data-testid="select-evalflow-visibility">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -428,7 +428,7 @@ export default function ConsoleWorkflows() {
               <div className="space-y-2">
                 <Label>Eval Framework</Label>
                 <Select value={framework} onValueChange={setFramework}>
-                  <SelectTrigger data-testid="select-workflow-framework">
+                  <SelectTrigger data-testid="select-evalflow-framework">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -466,7 +466,7 @@ export default function ConsoleWorkflows() {
                       placeholder="url: &quot;https://...&quot;&#10;steps:&#10;  - action: wait&#10;    selector: ..."
                       value={appConfigYaml}
                       onChange={(e) => setAppConfigYaml(e.target.value)}
-                      data-testid="textarea-workflow-app-config"
+                      data-testid="textarea-evalflow-app-config"
                     />
                   </div>
                 </>
@@ -480,7 +480,7 @@ export default function ConsoleWorkflows() {
                       placeholder={"- type: platform.setup\n  platform_id: livekit\n- type: platform.enter"}
                       value={stepsPrefix}
                       onChange={(e) => setStepsPrefix(e.target.value)}
-                      data-testid="textarea-workflow-steps-prefix"
+                      data-testid="textarea-evalflow-steps-prefix"
                     />
                     <p className="text-xs text-muted-foreground">
                       Platform connect/login steps. Differs per provider. The test body lives in the eval set.
@@ -493,7 +493,7 @@ export default function ConsoleWorkflows() {
                       placeholder={"- type: audio.stop_recording\n- type: platform.exit"}
                       value={stepsSuffix}
                       onChange={(e) => setStepsSuffix(e.target.value)}
-                      data-testid="textarea-workflow-steps-suffix"
+                      data-testid="textarea-evalflow-steps-suffix"
                     />
                   </div>
                 </>
@@ -503,50 +503,50 @@ export default function ConsoleWorkflows() {
               <Button
                 onClick={handleCreateClick}
                 disabled={createMutation.isPending || !name || !providerId}
-                data-testid="button-submit-workflow"
+                data-testid="button-submit-evalflow"
               >
-                Create Workflow
+                Create Evalflow
               </Button>
             </DialogFooter>
           </DialogContent>
         </Dialog>
       </div>
 
-      {/* Edit Workflow Dialog */}
+      {/* Edit Evalflow Dialog */}
       <Dialog open={editOpen} onOpenChange={(open) => {
         if (!open) {
           setEditOpen(false);
-          setEditWorkflow(null);
+          setEditEvalflow(null);
         }
       }}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Edit Workflow</DialogTitle>
+            <DialogTitle>Edit Evalflow</DialogTitle>
             <DialogDescription>
-              Update workflow details. Project assignment is permanent once set.
+              Update evalflow details. Project assignment is permanent once set.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4 py-4">
             <div className="space-y-2">
-              <Label htmlFor="edit-workflow-name">Name</Label>
+              <Label htmlFor="edit-evalflow-name">Name</Label>
               <Input
-                id="edit-workflow-name"
+                id="edit-evalflow-name"
                 value={editName}
                 onChange={(e) => setEditName(e.target.value)}
               />
             </div>
             <div className="space-y-2">
-              <Label htmlFor="edit-workflow-description">Description</Label>
+              <Label htmlFor="edit-evalflow-description">Description</Label>
               <Textarea
-                id="edit-workflow-description"
+                id="edit-evalflow-description"
                 value={editDescription}
                 onChange={(e) => setEditDescription(e.target.value)}
               />
             </div>
             <div className="space-y-2">
-              <Label htmlFor="edit-workflow-provider">Provider</Label>
+              <Label htmlFor="edit-evalflow-provider">Provider</Label>
               <Select value={editProviderId} onValueChange={setEditProviderId}>
-                <SelectTrigger data-testid="select-edit-workflow-provider">
+                <SelectTrigger data-testid="select-edit-evalflow-provider">
                   <SelectValue placeholder="Select a provider" />
                 </SelectTrigger>
                 <SelectContent>
@@ -559,7 +559,7 @@ export default function ConsoleWorkflows() {
               </Select>
             </div>
             <div className="space-y-2">
-              <Label htmlFor="edit-workflow-visibility">Visibility</Label>
+              <Label htmlFor="edit-evalflow-visibility">Visibility</Label>
               <Select value={editVisibility} onValueChange={setEditVisibility}>
                 <SelectTrigger>
                   <SelectValue />
@@ -575,7 +575,7 @@ export default function ConsoleWorkflows() {
             <div className="space-y-2">
               <Label>Evaluation Mode</Label>
               <Select value={editTransport} onValueChange={setEditTransport}>
-                <SelectTrigger data-testid="select-edit-workflow-transport">
+                <SelectTrigger data-testid="select-edit-evalflow-transport">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -589,13 +589,13 @@ export default function ConsoleWorkflows() {
             </div>
             {editTransport === "phone" && (
               <div className="space-y-2">
-                <Label htmlFor="edit-workflow-phone-number">Agent's phone number</Label>
+                <Label htmlFor="edit-evalflow-phone-number">Agent's phone number</Label>
                 <Input
-                  id="edit-workflow-phone-number"
+                  id="edit-evalflow-phone-number"
                   placeholder="+1 555 010 1234"
                   value={editPhoneNumber}
                   onChange={(e) => setEditPhoneNumber(e.target.value)}
-                  data-testid="input-edit-workflow-phone-number"
+                  data-testid="input-edit-evalflow-phone-number"
                 />
               </div>
             )}
@@ -631,7 +631,7 @@ export default function ConsoleWorkflows() {
                     placeholder={"- type: platform.setup\n  platform_id: livekit\n- type: platform.enter"}
                     value={editStepsPrefix}
                     onChange={(e) => setEditStepsPrefix(e.target.value)}
-                    data-testid="textarea-workflow-steps-prefix-edit"
+                    data-testid="textarea-evalflow-steps-prefix-edit"
                   />
                   <p className="text-xs text-muted-foreground">
                     Platform connect/login steps. Differs per provider. The test body lives in the eval set.
@@ -644,18 +644,18 @@ export default function ConsoleWorkflows() {
                     placeholder={"- type: audio.stop_recording\n- type: platform.exit"}
                     value={editStepsSuffix}
                     onChange={(e) => setEditStepsSuffix(e.target.value)}
-                    data-testid="textarea-workflow-steps-suffix-edit"
+                    data-testid="textarea-evalflow-steps-suffix-edit"
                   />
                 </div>
               </>
             )}
             <div className="space-y-2">
-              <Label htmlFor="edit-workflow-project">Project</Label>
-              {editWorkflow?.projectId ? (
+              <Label htmlFor="edit-evalflow-project">Project</Label>
+              {editEvalflow?.projectId ? (
                 <div className="flex items-center gap-2 p-2 border rounded-md bg-muted/50">
                   <FolderKanban className="h-4 w-4 text-muted-foreground" />
                   <span className="text-sm">
-                    {projects?.find(p => p.id === editWorkflow.projectId)?.name || `Project #${editWorkflow.projectId}`}
+                    {projects?.find(p => p.id === editEvalflow.projectId)?.name || `Project #${editEvalflow.projectId}`}
                   </span>
                   <Badge variant="secondary" className="ml-auto text-xs">Locked</Badge>
                 </div>
@@ -673,7 +673,7 @@ export default function ConsoleWorkflows() {
                   </SelectContent>
                 </Select>
               )}
-              {!editWorkflow?.projectId && (
+              {!editEvalflow?.projectId && (
                 <p className="text-xs text-muted-foreground">
                   Once attached to a project, this cannot be changed.
                 </p>
@@ -681,7 +681,7 @@ export default function ConsoleWorkflows() {
             </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => { setEditOpen(false); setEditWorkflow(null); }}>
+            <Button variant="outline" onClick={() => { setEditOpen(false); setEditEvalflow(null); }}>
               Cancel
             </Button>
             <Button
@@ -698,8 +698,8 @@ export default function ConsoleWorkflows() {
         <CardHeader>
           <CardDescription>
             {isPrincipal
-              ? "As a principal user, you can mark workflows as mainline for the official evaluation."
-              : "View and manage your test workflows."
+              ? "As a principal user, you can mark evalflows as mainline for the official evaluation."
+              : "View and manage your test evalflows."
             }
           </CardDescription>
         </CardHeader>
@@ -710,7 +710,7 @@ export default function ConsoleWorkflows() {
                 <Skeleton key={i} className="h-12 w-full" />
               ))}
             </div>
-          ) : workflows && workflows.length > 0 ? (
+          ) : evalflows && evalflows.length > 0 ? (
             <Table>
               <TableHeader>
                 <TableRow>
@@ -723,19 +723,19 @@ export default function ConsoleWorkflows() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {workflows.map((workflow) => (
+                {evalflows.map((evalflow) => (
                   <TableRow
-                    key={workflow.id}
-                    data-testid={`row-workflow-${workflow.id}`}
+                    key={evalflow.id}
+                    data-testid={`row-evalflow-${evalflow.id}`}
                     className="cursor-pointer hover:bg-muted/50"
-                    onClick={() => setLocation(`/console/workflows/${workflow.id}`)}
+                    onClick={() => setLocation(`/console/evalflows/${evalflow.id}`)}
                   >
                     <TableCell>
                       <div className="flex items-center justify-between">
                         <div>
-                          <div className="font-medium">{workflow.name}</div>
-                          {workflow.description && (
-                            <div className="text-sm text-muted-foreground">{workflow.description}</div>
+                          <div className="font-medium">{evalflow.name}</div>
+                          {evalflow.description && (
+                            <div className="text-sm text-muted-foreground">{evalflow.description}</div>
                           )}
                         </div>
                         <ChevronRight className="h-4 w-4 text-muted-foreground" />
@@ -743,10 +743,10 @@ export default function ConsoleWorkflows() {
                     </TableCell>
                     {hasProjects && (
                       <TableCell>
-                        {workflow.projectId ? (
+                        {evalflow.projectId ? (
                           <Badge variant="outline" className="gap-1">
                             <FolderKanban className="h-3 w-3" />
-                            {projects?.find(p => p.id === workflow.projectId)?.name || `#${workflow.projectId}`}
+                            {projects?.find(p => p.id === evalflow.projectId)?.name || `#${evalflow.projectId}`}
                           </Badge>
                         ) : (
                           <span className="text-sm text-muted-foreground">--</span>
@@ -756,21 +756,21 @@ export default function ConsoleWorkflows() {
                     <TableCell>
                       <div className="flex items-center gap-1">
                         <Badge variant="outline" className="gap-1">
-                          {workflow.visibility === "public" ? (
+                          {evalflow.visibility === "public" ? (
                             <><Globe className="h-3 w-3" /> Public</>
                           ) : (
                             <><Lock className="h-3 w-3" /> Private</>
                           )}
                         </Badge>
-                        {workflow.transport === "phone" && (
-                          <Badge variant="outline" className="gap-1" data-testid={`badge-phone-${workflow.id}`}>
+                        {evalflow.transport === "phone" && (
+                          <Badge variant="outline" className="gap-1" data-testid={`badge-phone-${evalflow.id}`}>
                             <Phone className="h-3 w-3" /> Phone
                           </Badge>
                         )}
                       </div>
                     </TableCell>
                     <TableCell>
-                      {workflow.isMainline ? (
+                      {evalflow.isMainline ? (
                         <Badge className="gap-1">
                           <Star className="h-3 w-3" /> Mainline
                         </Badge>
@@ -781,26 +781,26 @@ export default function ConsoleWorkflows() {
                     {isPrincipal && (
                       <TableCell>
                         <Switch
-                          checked={workflow.isMainline}
+                          checked={evalflow.isMainline}
                           onCheckedChange={(checked) => {
-                            toggleMainlineMutation.mutate({ id: workflow.id, isMainline: checked });
+                            toggleMainlineMutation.mutate({ id: evalflow.id, isMainline: checked });
                           }}
-                          disabled={workflow.visibility === "private" && !workflow.isMainline}
-                          data-testid={`switch-mainline-${workflow.id}`}
+                          disabled={evalflow.visibility === "private" && !evalflow.isMainline}
+                          data-testid={`switch-mainline-${evalflow.id}`}
                           onClick={(e) => e.stopPropagation()}
                         />
                       </TableCell>
                     )}
                     <TableCell className="text-right">
                       <div className="flex items-center justify-end gap-1">
-                        {String(workflow.ownerId) === String(authStatus?.user?.id) ? (
+                        {String(evalflow.ownerId) === String(authStatus?.user?.id) ? (
                           <>
                             <Button
                               size="sm"
                               variant="ghost"
                               onClick={(e) => {
                                 e.stopPropagation();
-                                openEditDialog(workflow);
+                                openEditDialog(evalflow);
                               }}
                             >
                               <Pencil className="h-4 w-4" />
@@ -810,20 +810,20 @@ export default function ConsoleWorkflows() {
                               variant="ghost"
                               onClick={(e) => {
                                 e.stopPropagation();
-                                setDeleteTarget(workflow);
+                                setDeleteTarget(evalflow);
                                 setDeleteConfirmName("");
                               }}
                             >
                               <Trash2 className="h-4 w-4 text-destructive" />
                             </Button>
                           </>
-                        ) : workflow.visibility === "public" ? (
+                        ) : evalflow.visibility === "public" ? (
                           <Button
                             size="sm"
                             variant="ghost"
                             onClick={(e) => {
                               e.stopPropagation();
-                              cloneMutation.mutate(workflow.id);
+                              cloneMutation.mutate(evalflow.id);
                             }}
                             disabled={cloneMutation.isPending}
                           >
@@ -838,17 +838,17 @@ export default function ConsoleWorkflows() {
             </Table>
           ) : (
             <div className="text-center py-8 text-muted-foreground">
-              No workflows yet. Create your first workflow to get started.
+              No evalflows yet. Create your first evalflow to get started.
             </div>
           )}
         </CardContent>
       </Card>
 
-      {/* Delete Workflow Confirmation Dialog */}
+      {/* Delete Evalflow Confirmation Dialog */}
       <AlertDialog open={!!deleteTarget} onOpenChange={(open) => { if (!open) { setDeleteTarget(null); setDeleteConfirmName(""); } }}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Delete Workflow</AlertDialogTitle>
+            <AlertDialogTitle>Delete Evalflow</AlertDialogTitle>
             <AlertDialogDescription>
               This will permanently delete <span className="font-semibold text-foreground">{deleteTarget?.name}</span>. This action cannot be undone.
             </AlertDialogDescription>
@@ -872,7 +872,7 @@ export default function ConsoleWorkflows() {
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
               disabled={!deleteTarget?.name?.trim() || deleteConfirmName.trim() !== deleteTarget.name.trim() || deleteMutation.isPending}
               onClick={() => deleteTarget && deleteMutation.mutate(deleteTarget.id)}
-              data-testid="button-confirm-delete-workflow"
+              data-testid="button-confirm-delete-evalflow"
             >
               Delete
             </AlertDialogAction>

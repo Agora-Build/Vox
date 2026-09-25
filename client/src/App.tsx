@@ -16,8 +16,8 @@ import AdminLogin from "@/pages/login-admin";
 import Console from "@/pages/console";
 import ConsoleInit from "@/pages/console-init";
 import ConsoleProjects from "@/pages/console-projects";
-import ConsoleWorkflows from "@/pages/console-workflows";
-import ConsoleWorkflowDetail from "@/pages/console-workflow-detail";
+import ConsoleEvalflows from "@/pages/console-evalflows";
+import ConsoleEvalflowDetail from "@/pages/console-evalflow-detail";
 import ConsoleEvalSets from "@/pages/console-evalsets";
 import ConsoleEvalJobs from "@/pages/console-eval-jobs";
 import ConsoleEvalAgents from "@/pages/console-eval-agents";
@@ -142,7 +142,7 @@ function ConsoleProjectsWrapper() {
   );
 }
 
-function ConsoleWorkflowsWrapper() {
+function ConsoleEvalflowsWrapper() {
   const [, setLocation] = useLocation();
   const { data: authStatus, isLoading, isFetching } = useQuery<AuthStatus>({
     queryKey: ["/api/auth/status"],
@@ -176,7 +176,7 @@ function ConsoleWorkflowsWrapper() {
 
   return (
     <ConsoleLayout>
-      <ConsoleWorkflows />
+      <ConsoleEvalflows />
     </ConsoleLayout>
   );
 }
@@ -220,7 +220,7 @@ function ConsoleEvalSetsWrapper() {
   );
 }
 
-function ConsoleWorkflowDetailWrapper() {
+function ConsoleEvalflowDetailWrapper() {
   const [, setLocation] = useLocation();
   const { data: authStatus, isLoading, isFetching } = useQuery<AuthStatus>({
     queryKey: ["/api/auth/status"],
@@ -254,7 +254,7 @@ function ConsoleWorkflowDetailWrapper() {
 
   return (
     <ConsoleLayout>
-      <ConsoleWorkflowDetail />
+      <ConsoleEvalflowDetail />
     </ConsoleLayout>
   );
 }
@@ -840,7 +840,7 @@ function AdminOrganizationsWrapper() {
   }
 
   if (!authStatus.user.isAdmin) {
-    setLocation("/console/workflows");
+    setLocation("/console/evalflows");
     return null;
   }
 
@@ -884,7 +884,7 @@ function AdminFundReturnsWrapper() {
   }
 
   if (!authStatus.user.isAdmin) {
-    setLocation("/console/workflows");
+    setLocation("/console/evalflows");
     return null;
   }
 
@@ -923,7 +923,7 @@ function AdminProvidersWrapper() {
       </div>
     );
   }
-  if (!authStatus.user.isAdmin) { setLocation("/console/workflows"); return null; }
+  if (!authStatus.user.isAdmin) { setLocation("/console/evalflows"); return null; }
 
   return (
     <ConsoleLayout>
@@ -951,7 +951,7 @@ function AdminRegionsWrapper() {
   if (!authStatus.user) {
     return <div className="min-h-screen flex items-center justify-center"><div className="animate-pulse text-muted-foreground">Redirecting...</div></div>;
   }
-  if (!authStatus.user.isAdmin) { setLocation("/console/workflows"); return null; }
+  if (!authStatus.user.isAdmin) { setLocation("/console/evalflows"); return null; }
 
   return <ConsoleLayout><AdminRegions /></ConsoleLayout>;
 }
@@ -975,7 +975,7 @@ function AdminBrokersWrapper() {
   if (!authStatus.user) {
     return <div className="min-h-screen flex items-center justify-center"><div className="animate-pulse text-muted-foreground">Redirecting...</div></div>;
   }
-  if (!authStatus.user.isAdmin) { setLocation("/console/workflows"); return null; }
+  if (!authStatus.user.isAdmin) { setLocation("/console/evalflows"); return null; }
 
   return <ConsoleLayout><AdminBrokers /></ConsoleLayout>;
 }
@@ -996,11 +996,11 @@ function Router() {
       <Route path="/console/projects">
         <ConsoleProjectsWrapper />
       </Route>
-      <Route path="/console/workflows">
-        <ConsoleWorkflowsWrapper />
+      <Route path="/console/evalflows">
+        <ConsoleEvalflowsWrapper />
       </Route>
-      <Route path="/console/workflows/:id">
-        <ConsoleWorkflowDetailWrapper />
+      <Route path="/console/evalflows/:id">
+        <ConsoleEvalflowDetailWrapper />
       </Route>
       <Route path="/console/eval-sets">
         <ConsoleEvalSetsWrapper />

@@ -77,7 +77,7 @@ interface EvalAgent {
 
 interface EvalJob {
   id: number;
-  workflowId: number;
+  evalflowId: number;
   evalSetId: number | null;
   siteId: string | null;
   status: string;
@@ -632,24 +632,24 @@ class VoxEvalAgentDaemon {
       return this.runAeval(scenarioConfig);
     }
 
-    const hasWorkflowComposition = !!(config.stepsPrefix || config.stepsSuffix);
+    const hasEvalflowComposition = !!(config.stepsPrefix || config.stepsSuffix);
 
-    // Parse workflow setup/teardown (from the workflow config), if provided.
-    let workflowPrefix: ScenarioStep[] = [];
-    let workflowSuffix: ScenarioStep[] = [];
+    // Parse evalflow setup/teardown (from the evalflow config), if provided.
+    let evalflowPrefix: ScenarioStep[] = [];
+    let evalflowSuffix: ScenarioStep[] = [];
     if (config.stepsPrefix) {
       const p = yaml.load(config.stepsPrefix);
-      if (Array.isArray(p)) workflowPrefix = p as ScenarioStep[];
+      if (Array.isArray(p)) evalflowPrefix = p as ScenarioStep[];
     }
     if (config.stepsSuffix) {
       const s = yaml.load(config.stepsSuffix);
-      if (Array.isArray(s)) workflowSuffix = s as ScenarioStep[];
+      if (Array.isArray(s)) evalflowSuffix = s as ScenarioStep[];
     }
 
     const { prefixSteps, suffixSteps, samples } = extractSampleGroups(parsed.steps);
 
-    if (hasWorkflowComposition) {
-      // The eval set provides ONLY the body; the workflow provides setup/teardown.
+    if (hasEvalflowComposition) {
+      // The eval set provides ONLY the body; the evalflow provides setup/teardown.
       if (parsed.steps.length === 0) {
         throw new Error('Eval set scenario has no steps — nothing to run');
       }
@@ -658,15 +658,15 @@ class VoxEvalAgentDaemon {
       // or no lab.trace) compose the whole body into ONE file so nothing is lost.
       const canChunk = samples.length > 0 && prefixSteps.length === 0 && suffixSteps.length === 0;
       if (canChunk) {
-        return this.runChunked(parsed, workflowPrefix, samples, workflowSuffix, tempFiles);
+        return this.runChunked(parsed, evalflowPrefix, samples, evalflowSuffix, tempFiles);
       }
-      const composed = composeScenarioYaml(parsed, workflowPrefix, parsed.steps, workflowSuffix);
+      const composed = composeScenarioYaml(parsed, evalflowPrefix, parsed.steps, evalflowSuffix);
       const f = this.writeTempYaml(composed, 'vox-scenario')!;
       tempFiles.push(f);
       return this.runAeval(f);
     }
 
-    // No workflow composition → eval set is self-contained (backward compat).
+    // No evalflow composition → eval set is self-contained (backward compat).
     // Files are defined by the data's (case_id, chunk_id); no size-based split.
     const groups = groupSamplesByChunk(samples);
     const hasPerCaseAnalysis = !!(parsed.params?.lab as Record<string, unknown> | undefined)?.cases;
@@ -2096,7 +2096,7 @@ class VoxEvalAgentDaemon {
     if (job.transport === 'phone') return this.executePhoneJob(job);
 
     console.log(`[Daemon] Executing job ${job.id}`);
-    console.log(`  - Workflow ID: ${job.workflowId}`);
+    console.log(`  - Evalflow ID: ${job.evalflowId}`);
     console.log(`  - Site: ${job.siteId}`);
 
     const config = (job.config || {}) as { framework?: string; app?: string; scenario?: string; stepsPrefix?: string; stepsSuffix?: string };
@@ -2109,10 +2109,10 @@ class VoxEvalAgentDaemon {
       throw new Error('job.config.scenario is required');
     }
 
-    // Resolve ${config.*} placeholders (e.g., ${config.url} from workflow config)
+    // Resolve ${config.*} placeholders (e.g., ${config.url} from evalflow config)
     let scenario = config.scenario;
     let app = config.app;
-    // stepsPrefix/stepsSuffix come from the workflow and typically hold
+    // stepsPrefix/stepsSuffix come from the evalflow and typically hold
     // platform.setup with credentials — they MUST go through the same
     // ${config.*} / ${secrets.*} resolution as the scenario.
     let stepsPrefix = config.stepsPrefix;
@@ -2228,7 +2228,7 @@ class VoxEvalAgentDaemon {
         throw new Error(
           `Unresolved secret placeholder(s): ${names.join(', ')}. ` +
           `The server did not supply ${plural ? 'these secrets' : 'this secret'} for this job — ` +
-          `${plural ? 'they are' : 'it is'} either not configured for the workflow owner, or not ` +
+          `${plural ? 'they are' : 'it is'} either not configured for the evalflow owner, or not ` +
           `available to whoever started the run.`,
         );
       }

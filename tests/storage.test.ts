@@ -4,7 +4,7 @@ import {
   generateSecureToken,
   generateEvalAgentToken,
   generateBrokerRegistrationToken,
-  validateWorkflowConfig,
+  validateEvalflowConfig,
   validateEvalSetConfig,
   mergeEvalConfig,
   buildJobSnapshot,
@@ -315,9 +315,9 @@ describe('Data Validation', () => {
 });
 
 describe('Config separation validators', () => {
-  describe('validateWorkflowConfig', () => {
+  describe('validateEvalflowConfig', () => {
     it('accepts framework + steps + connection params', () => {
-      const r = validateWorkflowConfig({
+      const r = validateEvalflowConfig({
         framework: 'aeval',
         stepsPrefix: '- type: platform.setup',
         stepsSuffix: '- type: platform.exit',
@@ -326,25 +326,25 @@ describe('Config separation validators', () => {
       expect(r.valid).toBe(true);
     });
 
-    it('rejects scenario in a workflow', () => {
-      const r = validateWorkflowConfig({ framework: 'aeval', scenario: 'name: x' });
+    it('rejects scenario in an evalflow', () => {
+      const r = validateEvalflowConfig({ framework: 'aeval', scenario: 'name: x' });
       expect(r.valid).toBe(false);
       expect(r.error).toContain('eval set');
     });
 
     it('rejects an invalid framework', () => {
-      const r = validateWorkflowConfig({ framework: 'nope' });
+      const r = validateEvalflowConfig({ framework: 'nope' });
       expect(r.valid).toBe(false);
     });
 
     it('rejects non-string stepsPrefix', () => {
-      const r = validateWorkflowConfig({ stepsPrefix: 123 });
+      const r = validateEvalflowConfig({ stepsPrefix: 123 });
       expect(r.valid).toBe(false);
     });
 
     it('accepts null/undefined', () => {
-      expect(validateWorkflowConfig(null).valid).toBe(true);
-      expect(validateWorkflowConfig(undefined).valid).toBe(true);
+      expect(validateEvalflowConfig(null).valid).toBe(true);
+      expect(validateEvalflowConfig(undefined).valid).toBe(true);
     });
   });
 
@@ -357,13 +357,13 @@ describe('Config separation validators', () => {
     it('rejects framework in an eval set', () => {
       const r = validateEvalSetConfig({ scenario: 'name: x', framework: 'aeval' });
       expect(r.valid).toBe(false);
-      expect(r.error).toContain('workflow');
+      expect(r.error).toContain('evalflow');
     });
 
     it('rejects stepsPrefix in an eval set', () => {
       const r = validateEvalSetConfig({ stepsPrefix: '- type: platform.setup' });
       expect(r.valid).toBe(false);
-      expect(r.error).toContain('workflow');
+      expect(r.error).toContain('evalflow');
     });
 
     it('rejects non-string scenario', () => {
@@ -374,7 +374,7 @@ describe('Config separation validators', () => {
     it('rejects stepsSuffix in an eval set', () => {
       const r = validateEvalSetConfig({ stepsSuffix: '- type: platform.exit' });
       expect(r.valid).toBe(false);
-      expect(r.error).toContain('workflow');
+      expect(r.error).toContain('evalflow');
     });
   });
 
@@ -418,10 +418,10 @@ describe('buildJobSnapshot (immutable per-job provenance)', () => {
   const es = { name: 'ES', config: { scenario: 'steps: []' }, visibility: 'private', isMainline: false, ownerId: 9 } as any;
   const provider = { id: 'abc123def456', name: 'Agora ConvoAI Engine', platformId: 'agora' } as any;
 
-  it('captures workflow + eval-set metadata, config, and tier flags', () => {
+  it('captures evalflow + eval-set metadata, config, and tier flags', () => {
     const s = buildJobSnapshot(wf, es, provider, 'principal');
     expect(s.provider).toEqual({ id: 'abc123def456', name: 'Agora ConvoAI Engine', platformId: 'agora' });
-    expect(s.workflow).toEqual({ name: 'WF', config: { framework: 'aeval', stepsPrefix: '- x' }, visibility: 'public', isMainline: true, ownerId: 7, organizationId: null });
+    expect(s.evalflow).toEqual({ name: 'WF', config: { framework: 'aeval', stepsPrefix: '- x' }, visibility: 'public', isMainline: true, ownerId: 7, organizationId: null });
     expect(s.evalSet).toEqual({ name: 'ES', config: { scenario: 'steps: []' }, visibility: 'private', isMainline: false, ownerId: 9 });
     expect(s.creatorPlan).toBe('principal');
   });
@@ -433,7 +433,7 @@ describe('buildJobSnapshot (immutable per-job provenance)', () => {
     (mutableWf.config as any).framework = 'changed';
     // The snapshot captured the value; later mutation of the source doesn't leak in
     // for scalars, and the config object is the one captured at call time.
-    expect(s.workflow?.name).toBe('WF');
+    expect(s.evalflow?.name).toBe('WF');
   });
 
   it('degrades gracefully: missing provider / eval-set / plan → null', () => {
@@ -441,7 +441,7 @@ describe('buildJobSnapshot (immutable per-job provenance)', () => {
     expect(s.provider).toBeNull();
     expect(s.evalSet).toBeNull();
     expect(s.creatorPlan).toBeNull();
-    expect(s.workflow?.name).toBe('WF');
+    expect(s.evalflow?.name).toBe('WF');
   });
 
   it('coerces an absent provider.platformId to null (e.g. Custom)', () => {

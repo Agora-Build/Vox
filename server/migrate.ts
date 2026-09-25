@@ -61,6 +61,7 @@ const MIGRATIONS: Array<{ version: number; description: string; file: string | n
   { version: 37, description: "R2: stamp creator_org_id on eval_jobs; claim SQL stops joining users", file: "0036_eval_jobs_creator_org_id.sql" },
   { version: 38, description: "Release A: drop 10 org FK constraints — org ids are opaque integers on Core tables", file: "0037_release_a_drop_org_fks.sql" },
   { version: 39, description: "Phone vs Agent Phase A: transport axis, agent capabilities, call metadata", file: "0038_phone_transport.sql" },
+  { version: 40, description: "workflow → evalflow rename: table, FK columns, snapshot key spelling", file: "0039_evalflow_rename.sql" },
 ];
 
 const TARGET_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version;
