@@ -113,6 +113,15 @@ d("migration 0041_remove_vat.sql (transactional, rolled back)", () => {
         [f.name, JSON.stringify(f.config)],
       );
     }
+    // A schedule on the to-be-converted row: the migration must disable it
+    // (an ex-VAT evalflow has no Setup Steps — scheduled runs would proceed
+    // quietly against a target nobody configured).
+    const { rows: [wfRow] } = await client.query(`SELECT id FROM evalflows WHERE name = $1`, [`${stamp}-vat`]);
+    await client.query(
+      `INSERT INTO eval_schedules (name, evalflow_id, eval_set_id, region, target_tier, schedule_type, is_enabled, created_by)
+       VALUES ($1, $2, NULL, 'na-us-seattle', 'private', 'once', true, 1)`,
+      [`${stamp}-sched`, wfRow.id],
+    );
     const sql = readFileSync("./migrations/0041_remove_vat.sql", "utf-8");
     for (const statement of sql.split("--> statement-breakpoint").map((s) => s.trim()).filter(Boolean)) {
       await client.query(statement);
@@ -154,6 +163,22 @@ d("migration 0041_remove_vat.sql (transactional, rolled back)", () => {
     expect(config.app).toBeUndefined();
     expect(config._legacyVatApp).toBe('url: "https://y.example"');
     expect(validateEvalflowConfig(config, "web").valid).toBe(true);
+  });
+
+  it("schedules on converted rows are disabled (fail visibly, not quietly wrong)", async () => {
+    const { rows } = await client.query(`SELECT is_enabled FROM eval_schedules WHERE name = $1`, [`${stamp}-sched`]);
+    expect(rows[0].is_enabled).toBe(false);
+  });
+
+  it("mergeEvalConfig strips parked payloads from job configs (they never reach agents)", async () => {
+    const { mergeEvalConfig } = await import("../server/storage");
+    const job = mergeEvalConfig(
+      { framework: "aeval", _legacyPhoneDial: { number: "+1 555 010 1234" }, stepsPrefix: "- type: platform.setup" },
+      { scenario: "steps: []", _legacyVatApp: "x" },
+    );
+    expect(job._legacyPhoneDial).toBeUndefined();
+    expect(job._legacyVatApp).toBeUndefined();
+    expect(job.stepsPrefix).toBe("- type: platform.setup");
   });
 
   it("a clean aeval row is untouched", async () => {

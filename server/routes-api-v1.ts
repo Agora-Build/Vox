@@ -150,7 +150,7 @@ export function registerApiV1Routes(app: Express): void {
       }
       // Same save-time gate as the console route (v1 previously skipped it —
       // every config rule was bypassable through this endpoint).
-      if (config) {
+      if (config !== undefined && config !== null) {
         const v = validateEvalflowConfig(config, "web");
         if (!v.valid) return res.status(400).json({ error: v.error });
       }
@@ -252,7 +252,7 @@ export function registerApiV1Routes(app: Express): void {
 
       const { name, description, visibility } = req.body;
       const config = stripLegacyConfigKeys(req.body.config);
-      if (config) {
+      if (config !== undefined && config !== null) {
         const v = validateEvalflowConfig(config, (evalflow.transport as "web" | "phone" | null) ?? "web");
         if (!v.valid) return res.status(400).json({ error: v.error });
       }
@@ -500,7 +500,7 @@ export function registerApiV1Routes(app: Express): void {
 
       const { name, description, visibility } = req.body;
       const config = stripLegacyConfigKeys(req.body.config);
-      if (config) {
+      if (config !== undefined && config !== null) {
         const v = validateEvalSetConfig(config);
         if (!v.valid) return res.status(400).json({ error: v.error });
       }

@@ -229,7 +229,8 @@ const MAX_CONFIG_SIZE = 100_000; // 100KB
  * them, so accepting one from a caller would let ${config._legacyX}
  * indirection smuggle a secret reference past the misuse/consent gates.
  * Migrated rows are unaffected (their keys were written by SQL, and survive
- * until the owner next rewrites the config).
+ * until the owner next rewrites the config). mergeEvalConfig also applies
+ * this, so parked payloads never travel in job configs to agents.
  */
 export function stripLegacyConfigKeys<T>(config: T): T {
   if (typeof config !== "object" || config === null || Array.isArray(config)) return config;
@@ -555,8 +556,12 @@ export function mergeEvalConfig(
   evalflowConfig: unknown,
   evalSetConfig: unknown,
 ): Record<string, unknown> {
-  const wf = (evalflowConfig as Record<string, unknown>) || {};
-  const es = (evalSetConfig as Record<string, unknown>) || {};
+  // Parked _legacy* payloads never travel in job configs: job.config goes to
+  // every claiming agent (marketplace hosts included), and e.g.
+  // _legacyPhoneDial is an owner's phone number with no reason to leave Core.
+  // They stay recoverable on the evalflow row itself.
+  const wf = stripLegacyConfigKeys((evalflowConfig as Record<string, unknown>) || {});
+  const es = stripLegacyConfigKeys((evalSetConfig as Record<string, unknown>) || {});
   // Role-disjointness (scenario vs framework/app/steps*) is enforced by the
   // validators. Here we only guard against the evalflow and eval set sharing a
   // key with CONFLICTING values (e.g. a frameworkVersion mismatch). Identical

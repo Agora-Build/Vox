@@ -10,6 +10,17 @@
 -- GET /api/evalflows/:id or psql. The VAT-only `app` payload is PRESERVED under
 -- an inert key (same rule as 0040's _legacyPhoneDial: a one-way migration
 -- never destroys the only copy of authored config).
+-- Schedules on converted rows are DISABLED: an ex-VAT evalflow has no Setup
+-- Steps, so its scheduled aeval runs would proceed on the eval-set scenario
+-- against a target nobody configured — quietly burning credits and, on a
+-- public row, publishing metrics for nothing. Failing visibly (owner
+-- re-enables after re-authoring) beats running quietly wrong.
+UPDATE eval_schedules SET is_enabled = false
+WHERE evalflow_id IN (
+  SELECT id FROM evalflows
+  WHERE config->>'framework' = 'voice-agent-tester' OR config ? 'app'
+);
+--> statement-breakpoint
 UPDATE evalflows
 SET config = ((config - 'app') || jsonb_build_object('framework', 'aeval'))
   || CASE WHEN config ? 'app'

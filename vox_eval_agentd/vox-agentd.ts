@@ -2305,6 +2305,13 @@ function parseArgs(): DaemonConfig {
   let serverUrl = process.env.VOX_SERVER || 'http://localhost:5000';
   let name = process.env.VOX_AGENT_NAME || '';
   const framework = process.env.EVAL_FRAMEWORK || 'aeval';
+  // The framework seam's daemon-side gate: an unsupported value (e.g. a host
+  // .env still saying voice-agent-tester) must fail HERE, in docker logs,
+  // not one claimed job at a time.
+  if (framework !== 'aeval') {
+    console.error(`[Daemon] Unsupported EVAL_FRAMEWORK '${framework}'. Supported: aeval`);
+    process.exit(1);
+  }
   const headless = process.env.HEADLESS !== 'false';
 
   for (let i = 0; i < args.length; i++) {
