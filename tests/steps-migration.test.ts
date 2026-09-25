@@ -63,10 +63,11 @@ d("migration 0040_steps_model.sql (transactional, rolled back)", () => {
     expect(validateEvalflowConfig(config, "phone").valid).toBe(true);
   });
 
-  it("a web row only loses the dead key; its authored steps survive", async () => {
+  it("a web row only loses the dead key; its authored steps survive; the number is preserved inert", async () => {
     const config = await configOf(`${stamp}-web`);
     expect(config.phoneDial).toBeUndefined();
     expect(config.stepsPrefix).toBe("- type: platform.setup");
+    expect((config._legacyPhoneDial as any)?.number).toBe("+1 555 000 0000");
   });
 
   it("a phone row with authored steps keeps them (no silent overwrite)", async () => {
@@ -76,10 +77,13 @@ d("migration 0040_steps_model.sql (transactional, rolled back)", () => {
     expect(config.stepsSuffix).toBeUndefined();
   });
 
-  it("a malformed number never reaches the YAML template", async () => {
+  it("a malformed number never reaches the YAML template — but is preserved inert, not destroyed", async () => {
     const config = await configOf(`${stamp}-badnum`);
     expect(config.phoneDial).toBeUndefined();
     expect(config.stepsPrefix).toBeUndefined();
+    expect((config._legacyPhoneDial as any)?.number).toBe('x"; not a number');
+    // The preserved key never blocks a future edit.
+    expect(validateEvalflowConfig(config, "phone").valid).toBe(true);
   });
 
   it("whitespace-only step fields count as absent — the number converts instead of being dropped", async () => {

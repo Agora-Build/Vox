@@ -27,9 +27,14 @@ WHERE config ? 'phoneDial'
   AND coalesce(btrim(config->>'stepsSuffix'), '') = '';
 --> statement-breakpoint
 -- Residual sweep: any phoneDial row the conversion above did not match (web
--- transport, null number, or pre-existing steps — kept as authored) plus any
--- restfulTrigger row (none exists anywhere) just loses the dead keys, so the
--- new validator never blocks a future edit on a key nothing reads.
+-- transport, malformed number, or pre-existing steps — kept as authored) plus
+-- any restfulTrigger row (none exists anywhere) loses the dead keys, so the
+-- new validator never blocks a future edit. The dial value is PRESERVED under
+-- an inert key (nothing reads it, validation ignores it) — a one-way
+-- migration should never silently destroy the only copy of a number.
 UPDATE evalflows
-SET config = config - 'phoneDial' - 'restfulTrigger'
+SET config = (config - 'phoneDial' - 'restfulTrigger')
+  || CASE WHEN config ? 'phoneDial'
+       THEN jsonb_build_object('_legacyPhoneDial', config->'phoneDial')
+       ELSE '{}'::jsonb END
 WHERE config ? 'phoneDial' OR config ? 'restfulTrigger';
