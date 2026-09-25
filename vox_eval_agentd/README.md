@@ -53,7 +53,7 @@ Daemon idle (no pending jobs) → process upload queue:
 
 ### Config Data Model
 
-Jobs carry a merged config snapshot from the workflow and eval set:
+Jobs carry a merged config snapshot from the evalflow and eval set:
 
 ```
 job.config = {
@@ -63,9 +63,9 @@ job.config = {
 }
 ```
 
-- **Workflow** provides `framework` + `app` (what product to connect to)
+- **Evalflow** provides `framework` + `app` (what product to connect to)
 - **Eval Set** provides `scenario` (what test to run)
-- Merging: eval set config spreads last (overrides workflow fields)
+- Merging: eval set config spreads last (overrides evalflow fields)
 
 ### Frameworks
 

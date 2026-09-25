@@ -49,7 +49,7 @@ Keep migration SQL plain (`CREATE TABLE`, `ALTER TABLE`) — no `IF NOT EXISTS` 
 
 Migration 0036's backfill (`UPDATE eval_jobs ... FROM users`) takes an ACCESS EXCLUSIVE-conflicting write pass over `eval_jobs` — on a large production table, expect a brief pause at deploy. Migrations run pre-start (`dist/migrate.cjs`), so the app is already down; no action needed, noted so the pause isn't mistaken for a hang.
 
-**Dev-mode migration trap:** local dev applies schema via `db:push` (`dev-local-run.sh`'s init path), and `tsx` never runs the version-based runner — `drizzle-kit push --force` **drops the `_schema_version` bookkeeping**. If you push manually, restore the version row afterward, or the next docker-mode start crash-loops re-applying already-applied migrations (this bit a task on this branch; the controller repaired it at version 38).
+**Dev-mode migration trap:** local dev applies schema via `db:push` (`dev-local-run.sh`'s init path), and `tsx` never runs the version-based runner — `drizzle-kit push --force` **drops the `_schema_version` bookkeeping**. If you push manually, restore the version row afterward, or the next docker-mode start crash-loops re-applying already-applied migrations (this bit a task on this branch; the controller repaired it at version 38). **Rename corollary (0039):** against a pre-rename dev DB, `db:push` hits drizzle's interactive create-vs-rename prompt (and would never run 0039's snapshot-key rewrite) — apply `migrations/0039_evalflow_rename.sql` by hand with psql and stamp `_schema_version` to 40, or just `dev-local-run.sh reset`.
 
 ## Environment Variables
 
