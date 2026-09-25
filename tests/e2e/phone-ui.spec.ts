@@ -8,6 +8,11 @@ import { test, expect } from "@playwright/test";
  *   Phone mode renders without error (empty state is fine)
  */
 
+// The create dialog is tall (steps textareas show in phone mode too); a tall
+// viewport keeps the footer submit button clickable without scroll workarounds
+// (same approach as evalflow-provider.spec.ts).
+test.use({ viewport: { width: 1440, height: 1800 } });
+
 const BASE = "http://localhost:5000";
 const suffix = `${Date.now()}`;
 const wfName = `e2e-phone-wf-${suffix}`;

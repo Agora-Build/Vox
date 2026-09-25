@@ -290,10 +290,18 @@ export function validateStepsScript(
   try {
     parsed = yaml.load(yamlText);
   } catch (e) {
+    // Web scripts are aeval's domain and legacy rows carry shapes we never
+    // parsed at save time — keep them pass-through (zero behavior change).
+    // Phone is a new strict mode: its scripts must parse.
+    if (transport === "web") return { valid: true };
     return { valid: false, error: `${field}: not valid YAML (${e instanceof Error ? e.message.split("\n")[0] : "parse error"})` };
   }
   if (parsed === null || parsed === undefined) return { valid: true };
   if (!Array.isArray(parsed)) {
+    // Non-list YAML (e.g. the legacy `platform:\n  setup:` mapping form) is a
+    // legitimate web shape consumed downstream; only phone requires the step
+    // list (the daemon compiler enumerates it).
+    if (transport === "web") return { valid: true };
     return { valid: false, error: `${field} must be a YAML list of steps` };
   }
   for (let i = 0; i < parsed.length; i++) {
@@ -310,11 +318,11 @@ export function validateStepsScript(
     const phoneOnly = type.startsWith("call.") || type === "restful.request";
 
     if (transport === "web") {
+      // Cross-mode rejection ONLY: aeval owns the web vocabulary (it grows
+      // without Vox releases), so unknown types pass through and fail at run
+      // time there, exactly as before this validator existed.
       if (phoneOnly || type.startsWith("sms.")) {
         return { valid: false, error: `${field}[${i}]: '${type}' is phone vocabulary — illegal in a web evalflow` };
-      }
-      if (!common && !webOnly) {
-        return { valid: false, error: `${field}[${i}]: unknown step type '${type}'` };
       }
       continue;
     }
