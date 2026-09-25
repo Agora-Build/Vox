@@ -1,3 +1,4 @@
+import * as yamlLib from "js-yaml";
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { storage, pool } from "../server/storage";
 
@@ -97,7 +98,7 @@ describe("executeViaBroker (unit, injected fetch)", () => {
   });
 });
 
-d("restfulTrigger evalflow-config validation", () => {
+d("restful.request step validation (evalflow Setup Steps)", () => {
   let cookie: string;
   const created: number[] = [];
 
@@ -122,30 +123,43 @@ d("restfulTrigger evalflow-config validation", () => {
     });
   };
 
-  it("accepts a valid restfulTrigger", async () => {
+  const stepYaml = (fields: Record<string, unknown>) =>
+    yamlLib.dump([{ type: "restful.request", ...fields }]);
+
+  it("accepts a valid restful.request Setup step", async () => {
     const res = await mkEvalflow({
-      restfulTrigger: {
+      stepsPrefix: stepYaml({
         method: "POST",
         url: "https://api.example.com/v1/calls",
         headers: { Authorization: "Bearer ${secrets.PHB_KEY}" },
         body: { to: "${phoneNumber}" },
         expectStatus: [200, 201],
         timeoutMs: 20000,
-      },
+      }),
     });
     expect(res.ok).toBe(true);
     created.push((await res.json()).id);
   });
 
-  it("rejects a bad method, non-https url, and oversized timeout", async () => {
-    const bad = async (trigger: Record<string, unknown>) => {
-      const res = await mkEvalflow({ restfulTrigger: { method: "POST", url: "https://x.example/y", ...trigger } });
+  it("rejects a bad method, non-https url, oversized timeout, unknown field, and Teardown placement", async () => {
+    const bad = async (fields: Record<string, unknown>) => {
+      const res = await mkEvalflow({ stepsPrefix: stepYaml({ method: "POST", url: "https://x.example/y", ...fields }) });
       expect(res.status).toBe(400);
     };
     await bad({ method: "BREW" });
     await bad({ url: "ftp://x.example/y" });
     await bad({ timeoutMs: 999999 });
     await bad({ unknownField: 1 });
+    // restful.request is a pre-call Setup step — Teardown placement is illegal.
+    const teardown = await mkEvalflow({ stepsSuffix: stepYaml({ method: "POST", url: "https://x.example/y" }) });
+    expect(teardown.status).toBe(400);
+    expect((await teardown.json()).error).toContain("illegal in Teardown");
+  });
+
+  it("rejects the deleted restfulTrigger config key with a pointer error", async () => {
+    const res = await mkEvalflow({ restfulTrigger: { method: "POST", url: "https://x.example/y" } });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toContain("restful.request step");
   });
 });
 
@@ -192,12 +206,17 @@ d("POST /api/eval-agent/jobs/:jobId/restful (integration, fake broker)", () => {
       name: `phB_exec_wf_${suffix}`, ownerId, providerId: providers[0].id,
       transport: "phone", visibility: "private",
       config: {
-        restfulTrigger: {
-          method: "POST", url: "https://target.example/v1/calls",
-          headers: { Authorization: `Bearer \${secrets.${secretName}}` },
-          body: { to: "${phoneNumber}" },
-          expectStatus: [201],
-        },
+        stepsPrefix: [
+          "- type: restful.request",
+          "  method: POST",
+          '  url: "https://target.example/v1/calls"',
+          "  headers:",
+          `    Authorization: "Bearer \${secrets.${secretName}}"`,
+          "  body:",
+          '    to: "${phoneNumber}"',
+          "  expectStatus: [201]",
+          "",
+        ].join("\n"),
       },
     } as any);
     evalflowId = wf.id;
@@ -262,7 +281,7 @@ d("POST /api/eval-agent/jobs/:jobId/restful (integration, fake broker)", () => {
     fetch(`${BASE_URL}/api/eval-agent/jobs/${id}/restful`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${rawAgentToken}` },
-      body: JSON.stringify({ agentId, variables: { phoneNumber: "+15550001111" }, ...body }),
+      body: JSON.stringify({ agentId, stepIndex: 0, variables: { phoneNumber: "+15550001111" }, ...body }),
     });
 
   it("resolves the frozen template, dispatches via the broker, returns a redacted result", async () => {
@@ -282,9 +301,15 @@ d("POST /api/eval-agent/jobs/:jobId/restful (integration, fake broker)", () => {
     expect(brokerSeen[0].body.body.to).toBe("+15550001111");
   });
 
-  it("400 when the job's snapshot has no restfulTrigger", async () => {
+  it("400 when the snapshot's Setup has no restful.request at the index (or no steps at all)", async () => {
     const res = await callEndpoint(noTriggerJobId);
     expect(res.status).toBe(400);
+    // Index addressing is strict: pointing past the script or at a non-restful
+    // step is a 400, and the stepIndex itself is mandatory.
+    const past = await callEndpoint(jobId, { stepIndex: 7 });
+    expect(past.status).toBe(400);
+    const missing = await callEndpoint(jobId, { stepIndex: undefined });
+    expect(missing.status).toBe(400);
   });
 
   it("503 when no live restful broker exists", async () => {

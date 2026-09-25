@@ -346,6 +346,53 @@ describe('Config separation validators', () => {
       expect(validateEvalflowConfig(null).valid).toBe(true);
       expect(validateEvalflowConfig(undefined).valid).toBe(true);
     });
+
+    it('rejects the deleted phoneDial/restfulTrigger keys with pointer errors', () => {
+      const dial = validateEvalflowConfig({ phoneDial: { number: '+15551234' } }, 'phone');
+      expect(dial.valid).toBe(false);
+      expect(dial.error).toContain('call.dial step');
+      const trig = validateEvalflowConfig({ restfulTrigger: { method: 'POST', url: 'https://x.example/y' } }, 'phone');
+      expect(trig.valid).toBe(false);
+      expect(trig.error).toContain('restful.request step');
+    });
+
+    it('steps vocabulary is transport-scoped', () => {
+      const phoneOk = validateEvalflowConfig({
+        stepsPrefix: '- type: call.dial\n  number: "+1 555 010 1234"\n- type: call.wait_answered',
+        stepsSuffix: '- type: call.hangup',
+      }, 'phone');
+      expect(phoneOk.valid).toBe(true);
+
+      const webOnPhone = validateEvalflowConfig({ stepsPrefix: '- type: platform.setup' }, 'phone');
+      expect(webOnPhone.valid).toBe(false);
+      expect(webOnPhone.error).toContain('web-session vocabulary');
+
+      const phoneOnWeb = validateEvalflowConfig({ stepsPrefix: '- type: call.dial\n  number: "+15551234"' }, 'web');
+      expect(phoneOnWeb.valid).toBe(false);
+      expect(phoneOnWeb.error).toContain('phone vocabulary');
+
+      // Default transport is web — existing single-arg callers keep meaning web.
+      expect(validateEvalflowConfig({ stepsPrefix: '- type: platform.setup' }).valid).toBe(true);
+    });
+
+    it('validates step shapes: bad call.dial number, restful.request fields, Teardown restful, bad YAML', () => {
+      const badNum = validateEvalflowConfig({ stepsPrefix: '- type: call.dial\n  number: abc' }, 'phone');
+      expect(badNum.valid).toBe(false);
+      expect(badNum.error).toContain('call.dial');
+
+      const badRest = validateEvalflowConfig(
+        { stepsPrefix: '- type: restful.request\n  method: BREW\n  url: "https://x.example/y"' }, 'phone');
+      expect(badRest.valid).toBe(false);
+
+      const teardownRest = validateEvalflowConfig(
+        { stepsSuffix: '- type: restful.request\n  method: POST\n  url: "https://x.example/y"' }, 'phone');
+      expect(teardownRest.valid).toBe(false);
+      expect(teardownRest.error).toContain('illegal in Teardown');
+
+      const badYaml = validateEvalflowConfig({ stepsPrefix: '- type: [unclosed' }, 'phone');
+      expect(badYaml.valid).toBe(false);
+      expect(badYaml.error).toContain('YAML');
+    });
   });
 
   describe('validateEvalSetConfig', () => {

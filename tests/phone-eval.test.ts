@@ -3,8 +3,8 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import {
-  compilePhoneConversation, buildInboundJob, sumStepTimeouts, computePhoneRateEntries,
-  toCallMetadata, buildSessionDir, runPhoneJob, stagePlayFiles,
+  compilePhoneConversation, splitPhoneScript, ensureTrailingHangup, sumStepTimeouts,
+  computePhoneRateEntries, toCallMetadata, buildSessionDir, runPhoneJob, stagePlayFiles,
 } from "../vox_eval_agentd/phone-eval";
 
 const corpus = (id: string) => (id.startsWith("known") ? `/abs/corpus/${id}.wav` : null);
@@ -48,22 +48,23 @@ describe("compilePhoneConversation", () => {
     bad([{ type: "platform.setup" }], "web-session vocabulary");
     bad([{ type: "browser.click" }], "web-session vocabulary");
     bad([{ type: "audio.play", corpus_id: "nope" }], "unknown corpus_id");
-    bad([{ type: "restful.request" }], "unsupported step type");
+    bad([{ type: "restful.request" }], "must lead Setup Steps");
     bad([{ type: "audio.play", file: "relative.wav" }], "not resolvable");
     bad([], "zero steps");
   });
 });
 
-describe("phoneDial travels from evalflow config into job config", () => {
-  it("mergeEvalConfig carries phoneDial (and restfulTrigger) through to the job", async () => {
+describe("Setup/Teardown steps travel from evalflow config into job config", () => {
+  it("mergeEvalConfig carries stepsPrefix/stepsSuffix through to the job", async () => {
     const { mergeEvalConfig } = await import("../server/storage");
     const jobConfig = mergeEvalConfig(
-      { framework: "aeval", phoneDial: { number: "+1 408 837 5890" } },
+      { framework: "aeval", stepsPrefix: '- type: call.dial\n  number: "+1 408 837 5890"\n', stepsSuffix: "- type: call.hangup\n" },
       { scenario: "steps:\n  - type: audio.play" },
     );
-    // The daemon reads job.config.phoneDial — the number is evalflow data
-    // fetched from Vox with the claimed job, never host/env configuration.
-    expect(jobConfig.phoneDial).toEqual({ number: "+1 408 837 5890" });
+    // The daemon reads job.config.stepsPrefix — call establishment is evalflow
+    // data fetched from Vox with the claimed job, never host/env configuration.
+    expect(jobConfig.stepsPrefix).toContain("call.dial");
+    expect(jobConfig.stepsSuffix).toContain("call.hangup");
     expect(jobConfig.scenario).toBeDefined();
   });
 });
@@ -124,22 +125,63 @@ describe("stagePlayFiles (Docker↔host exchange dir)", () => {
   });
 });
 
-describe("buildInboundJob + sumStepTimeouts", () => {
-  it("wraps conversation in dial/wait/hangup and sizes the read timeout from the steps", () => {
-    const conv = compilePhoneConversation(
-      [
-        { type: "audio.play", corpus_id: "known_q1" },
-        { type: "audio.wait_for_speech", end_timeout_ms: 40000 },
-      ],
-      { resolveCorpusFile: corpus },
-    );
-    if (!conv.ok) throw new Error("compile failed");
-    const job = buildInboundJob("+15551234", conv.steps);
+describe("splitPhoneScript + ensureTrailingHangup + sumStepTimeouts", () => {
+  const SETUP = [
+    { type: "call.dial", number: "+15551234" },
+    { type: "call.wait_answered" },
+  ];
+  const CONV = [
+    { type: "audio.play", corpus_id: "known_q1" },
+    { type: "audio.wait_for_speech", end_timeout_ms: 40000 },
+  ];
+
+  it("compiles setup+conversation as one session block and sizes the read timeout", () => {
+    const split = splitPhoneScript(SETUP, CONV, [{ type: "call.hangup" }]);
+    expect(split.ok).toBe(true);
+    if (!split.ok) return;
+    expect(split.value.restfulPrecall).toEqual([]);
+    const compiled = compilePhoneConversation(split.value.sessionRaw, { resolveCorpusFile: corpus });
+    if (!compiled.ok) throw new Error(compiled.error);
+    const job = ensureTrailingHangup(compiled.steps);
     expect(job[0]).toMatchObject({ type: "call.dial", number: "+15551234" });
     expect(job[1].type).toBe("call.wait_answered");
+    expect(job[1].timeout_ms).toBe(30000); // answer default applied
     expect(job[job.length - 1].type).toBe("call.hangup");
     // 60s slack + 30s answered + 30s play allowance + 40s wait = 160s
     expect(sumStepTimeouts(job)).toBe(60000 + 30000 + 30000 + 40000);
+  });
+
+  it("appends call.hangup only when Teardown omitted it", () => {
+    const compiled = compilePhoneConversation([...SETUP, ...CONV], { resolveCorpusFile: corpus });
+    if (!compiled.ok) throw new Error(compiled.error);
+    const appended = ensureTrailingHangup(compiled.steps);
+    expect(appended[appended.length - 1]).toMatchObject({ type: "call.hangup", id: "bye" });
+    expect(ensureTrailingHangup(appended)).toBe(appended); // idempotent
+  });
+
+  it("splits leading restful.request steps with their ABSOLUTE stepsPrefix indices", () => {
+    const split = splitPhoneScript(
+      [
+        { type: "restful.request", method: "POST", url: "https://x.example/call" },
+        { type: "restful.request", method: "POST", url: "https://x.example/arm" },
+        ...SETUP,
+      ],
+      CONV, [],
+    );
+    expect(split.ok).toBe(true);
+    if (!split.ok) return;
+    expect(split.value.restfulPrecall).toEqual([{ stepIndex: 0 }, { stepIndex: 1 }]);
+    expect((split.value.sessionRaw[0] as { type: string }).type).toBe("call.dial");
+  });
+
+  it("rejects restful.request out of position (mid-Setup, conversation, Teardown)", () => {
+    const mid = splitPhoneScript([SETUP[0], { type: "restful.request" }, SETUP[1]], CONV, []);
+    expect(mid.ok).toBe(false);
+    if (!mid.ok) expect(mid.error).toContain("must lead Setup Steps");
+    const inConv = splitPhoneScript(SETUP, [{ type: "restful.request" }], []);
+    expect(inConv.ok).toBe(false);
+    const inTeardown = splitPhoneScript(SETUP, CONV, [{ type: "restful.request" }]);
+    expect(inTeardown.ok).toBe(false);
   });
 });
 
@@ -162,7 +204,11 @@ describe("runPhoneJob (orchestration, injected deps)", () => {
     const rx = path.join(tmp, "rx.wav");
     fs.writeFileSync(rx, "RIFF");
     const calls: any[] = [];
+    const restfulCalls: number[] = [];
+    let hangups = 0;
     const deps = {
+      executeRestful: async (stepIndex: number) => { restfulCalls.push(stepIndex); },
+      safetyHangup: async () => { hangups++; },
       dialfCall: async (op: string, fields: any, timeoutMs?: number) => {
         calls.push({ op, fields, timeoutMs });
         return {
@@ -178,17 +224,20 @@ describe("runPhoneJob (orchestration, injected deps)", () => {
       workDir: path.join(tmp, "session"),
       ...overrides,
     };
-    return { deps, calls, tmp };
+    return { deps, calls, restfulCalls, hangups: () => hangups, tmp };
   };
 
   const cfg = {
     jobId: 42,
+    prefixSteps: [
+      { type: "call.dial", number: "+15551234" },
+      { type: "call.wait_answered" },
+    ],
     scenarioSteps: [
       { type: "audio.play", corpus_id: "known_q1" },
       { type: "audio.wait_for_speech", end_timeout_ms: 40000 },
     ],
-    phoneDial: { number: "+15551234" },
-    hasRestfulTrigger: false,
+    suffixSteps: [],
     resolveCorpusFile: corpus,
   };
 
@@ -222,11 +271,13 @@ describe("runPhoneJob (orchestration, injected deps)", () => {
     fs.rmSync(tmp, { recursive: true, force: true });
   });
 
-  it("fails on: no phoneDial, trigger mode, bad disposition, analyze error, no metrics", async () => {
+  it("fails on: no call.dial, trigger-only (R7), bad disposition, analyze error, no metrics", async () => {
     const { deps, tmp } = mkDeps();
-    await expect(runPhoneJob({ ...cfg, phoneDial: undefined }, deps as any)).rejects.toThrow(/needs phoneDial/);
-    await expect(runPhoneJob({ ...cfg, phoneDial: undefined, hasRestfulTrigger: true }, deps as any))
-      .rejects.toThrow(/not yet supported.*R7/);
+    await expect(runPhoneJob({ ...cfg, prefixSteps: [] }, deps as any)).rejects.toThrow(/establish no call/);
+    await expect(runPhoneJob(
+      { ...cfg, prefixSteps: [{ type: "restful.request", method: "POST", url: "https://x.example/y" }] },
+      deps as any,
+    )).rejects.toThrow(/not yet supported.*R7/);
 
     const bad = mkDeps({
       dialfCall: async () => ({ steps: [], recording: {}, call: { end_reason: "far_end_hangup" } }),
@@ -241,6 +292,65 @@ describe("runPhoneJob (orchestration, injected deps)", () => {
     const nometrics = mkDeps({ parseMetrics: () => null });
     await expect(runPhoneJob(cfg, nometrics.deps as any)).rejects.toThrow(/no usable metrics/);
     fs.rmSync(nometrics.tmp, { recursive: true, force: true });
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it("executes leading restful.request steps via Core BEFORE the dial, in order", async () => {
+    const { deps, calls, restfulCalls, tmp } = mkDeps();
+    await runPhoneJob({
+      ...cfg,
+      prefixSteps: [
+        { type: "restful.request", method: "POST", url: "https://x.example/trigger" },
+        ...cfg.prefixSteps,
+      ],
+    }, deps as any);
+    expect(restfulCalls).toEqual([0]); // absolute index within stepsPrefix
+    expect(calls[0].op).toBe("job.run"); // dial happened after the trigger
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it("a failed restful.request fails the job BEFORE any dial", async () => {
+    const { deps, calls, tmp } = mkDeps({
+      executeRestful: async () => { throw new Error("restful.request step 0 failed: HTTP 502"); },
+    } as any);
+    await expect(runPhoneJob({
+      ...cfg,
+      prefixSteps: [
+        { type: "restful.request", method: "POST", url: "https://x.example/trigger" },
+        ...cfg.prefixSteps,
+      ],
+    }, deps as any)).rejects.toThrow(/HTTP 502/);
+    expect(calls.length).toBe(0); // no job.run dispatched — no wasted carrier call
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it("safety net: job.run failure and non-completed disposition both invoke safetyHangup", async () => {
+    const timeoutRun = mkDeps({
+      dialfCall: async () => { throw new Error("dialf op timed out"); },
+    });
+    await expect(runPhoneJob(cfg, timeoutRun.deps as any)).rejects.toThrow(/timed out/);
+    expect(timeoutRun.hangups()).toBe(1);
+    fs.rmSync(timeoutRun.tmp, { recursive: true, force: true });
+
+    const badDisp = mkDeps({
+      dialfCall: async () => ({ steps: [], recording: {}, call: { end_reason: "no_answer" } }),
+    });
+    await expect(runPhoneJob(cfg, badDisp.deps as any)).rejects.toThrow(/disposition=no_answer/);
+    expect(badDisp.hangups()).toBe(1);
+    fs.rmSync(badDisp.tmp, { recursive: true, force: true });
+
+    // Success path never needs the rescue.
+    const good = mkDeps();
+    await runPhoneJob(cfg, good.deps as any);
+    expect(good.hangups()).toBe(0);
+    fs.rmSync(good.tmp, { recursive: true, force: true });
+  });
+
+  it("enforced hangup: session block without a teardown hangup still ends with call.hangup", async () => {
+    const { deps, calls, tmp } = mkDeps();
+    await runPhoneJob(cfg, deps as any); // cfg.suffixSteps is []
+    const steps = calls[0].fields.steps;
+    expect(steps[steps.length - 1]).toMatchObject({ type: "call.hangup", id: "bye" });
     fs.rmSync(tmp, { recursive: true, force: true });
   });
 });

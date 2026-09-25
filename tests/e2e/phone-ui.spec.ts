@@ -3,7 +3,7 @@ import { test, expect } from "@playwright/test";
 /**
  * Phone vs Agent UI E2E (Phase D, design 2026-09-21 §11):
  * - evalflow create dialog offers the Evaluation Mode selector; a phone
- *   evalflow persists transport + phoneDial and shows the Phone badge
+ *   evalflow persists transport + call.dial Setup Steps and shows the badge
  * - the realtime page carries the Web vs Agent | Phone vs Agent switch and
  *   Phone mode renders without error (empty state is fine)
  */
@@ -35,7 +35,7 @@ test.describe("Phone vs Agent UI", () => {
     await api.dispose();
   });
 
-  test("create dialog: phone mode persists transport + phoneDial and shows the badge", async ({ page }) => {
+  test("create dialog: phone mode persists transport + call.dial Setup Steps and shows the badge", async ({ page }) => {
     await loginUI(page);
     await page.goto(`${BASE}/console/evalflows`);
     await page.getByTestId("button-create-evalflow").click();
@@ -46,7 +46,10 @@ test.describe("Phone vs Agent UI", () => {
 
     await page.getByTestId("select-evalflow-transport").click();
     await page.getByRole("option", { name: "Phone vs Agent" }).click();
-    await page.getByTestId("input-evalflow-phone-number").fill("+1 555 010 1234");
+    // Unified steps model: the same Setup/Teardown textareas serve phone mode.
+    await page.getByTestId("textarea-evalflow-steps-prefix")
+      .fill('- type: call.dial\n  number: "+1 555 010 1234"\n- type: call.wait_answered');
+    await page.getByTestId("textarea-evalflow-steps-suffix").fill("- type: call.hangup");
 
     await page.getByTestId("button-submit-evalflow").click();
 
@@ -57,10 +60,12 @@ test.describe("Phone vs Agent UI", () => {
 
     // Persisted server-side.
     const api = await page.request.get(`${BASE}/api/evalflows?includePublic=true`);
-    const rows = (await api.json()) as Array<{ name: string; transport: string; config: { phoneDial?: { number: string } } }>;
+    const rows = (await api.json()) as Array<{ name: string; transport: string; config: { stepsPrefix?: string; stepsSuffix?: string } }>;
     const created = rows.find((r) => r.name === wfName);
     expect(created?.transport).toBe("phone");
-    expect(created?.config?.phoneDial?.number).toBe("+1 555 010 1234");
+    expect(created?.config?.stepsPrefix).toContain("call.dial");
+    expect(created?.config?.stepsPrefix).toContain("+1 555 010 1234");
+    expect(created?.config?.stepsSuffix).toContain("call.hangup");
   });
 
   test("realtime page: Evaluation Mode switch renders and Phone mode loads", async ({ page }) => {

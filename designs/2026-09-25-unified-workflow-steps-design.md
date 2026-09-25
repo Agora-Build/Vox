@@ -1,6 +1,6 @@
 # Unified Evalflow Model — Setup/Teardown Steps for Every Mode + the workflow→evalflow Rename
 
-**Status: DRAFT for review — no code changed.** Date: 2026-09-25.
+**Status: APPROVED — §8 rename shipped in PR #175; §1–7 built on `feat/unified-steps` (plan: `2026-09-25-unified-steps-plan.md`).** Date: 2026-09-25.
 Two changes in one reviewable place, shipped as **separate PRs** (rename first, per §8):
 1. **Unified steps model** — direction set by review: *keep Setup Steps and Teardown Steps as the model, identical for phone and web; empty when not needed; the step vocabulary is [Libretto](https://github.com/Agora-Build/libretto)* (supersedes the rejected "Connection section" sketch).
 2. **workflow → evalflow** — full rename, no legacy compatibility (§8).

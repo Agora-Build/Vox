@@ -2020,6 +2020,52 @@ class VoxEvalAgentDaemon {
     });
   }
 
+  /**
+   * Execute the Setup restful.request step at stepIndex through Core's trusted
+   * endpoint. Core resolves the template from the FROZEN job snapshot (never
+   * from anything this daemon sends) and dispatches via a restful broker; the
+   * daemon supplies only the whitelisted phoneNumber variable (our SIM).
+   */
+  private async executeRestfulStep(jobId: number, stepIndex: number, phoneNumber?: string): Promise<void> {
+    const res = await this.fetch(`/api/eval-agent/jobs/${jobId}/restful`, {
+      method: 'POST',
+      body: JSON.stringify({
+        leaseId: this.leaseId,
+        stepIndex,
+        variables: phoneNumber ? { phoneNumber } : {},
+      }),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(`restful.request step ${stepIndex} failed: ${body?.error ?? `HTTP ${res.status}`}`);
+    }
+    if (body?.ok === false) {
+      throw new Error(`restful.request step ${stepIndex}: target returned status ${body?.status ?? '?'}`);
+    }
+    console.log(`[Daemon] restful.request step ${stepIndex} executed (status ${body?.status})`);
+  }
+
+  /**
+   * Best-effort end-the-call rescue (unified-steps §2, Q2 scope): job.cancel
+   * then call.hangup on a FRESH connection — the job connection may be
+   * poisoned by the read-timeout that got us here. All errors swallowed; when
+   * the call already ended both ops are cheap no-ops.
+   */
+  private async dialfSafetyHangup(): Promise<void> {
+    let rescue: DialfClient | null = null;
+    try {
+      rescue = new DialfClient(resolveDialfSocketPath());
+      await rescue.connect();
+      await rescue.call('job.cancel', {}, 5_000).catch(() => undefined);
+      await rescue.call('call.hangup', {}, 10_000).catch(() => undefined);
+      console.log('[Daemon] safety hangup issued');
+    } catch (e) {
+      console.warn('[Daemon] safety hangup unavailable:', e instanceof Error ? e.message : e);
+    } finally {
+      rescue?.close();
+    }
+  }
+
   async executePhoneJob(job: EvalJob): Promise<EvalResult> {
     console.log(`[Daemon] Executing PHONE job ${job.id} (DialF)`);
     const probe = await probeDialf();
@@ -2030,8 +2076,19 @@ class VoxEvalAgentDaemon {
     const parsed = yaml.load(config.scenario) as { steps?: unknown[] } | undefined;
     if (!Array.isArray(parsed?.steps)) throw new Error('phone scenario has no steps');
 
+    // Unified steps model: Setup/Teardown are the same YAML step lists the web
+    // path uses; phone specifics (call.dial, restful.request) live inside them.
+    const parseStepList = (raw: unknown, field: string): unknown[] => {
+      if (typeof raw !== 'string' || raw.trim() === '') return [];
+      const p = yaml.load(raw);
+      if (p === null || p === undefined) return [];
+      if (!Array.isArray(p)) throw new Error(`job.config.${field} is not a YAML step list`);
+      return p;
+    };
+    const prefixSteps = parseStepList(config.stepsPrefix, 'stepsPrefix');
+    const suffixSteps = parseStepList(config.stepsSuffix, 'stepsSuffix');
+
     const corpus = this.loadCorpusIndex();
-    const phoneDial = (config.phoneDial ?? undefined) as { number?: string } | undefined;
     const workDir = fs.mkdtempSync(path.join(os.tmpdir(), `vox-phone-${job.id}-`));
 
     const client = new DialfClient(resolveDialfSocketPath());
@@ -2040,9 +2097,9 @@ class VoxEvalAgentDaemon {
       const out = await runPhoneJob(
         {
           jobId: job.id,
+          prefixSteps,
           scenarioSteps: parsed!.steps!,
-          phoneDial: phoneDial?.number ? { number: phoneDial.number } : undefined,
-          hasRestfulTrigger: config.restfulTrigger !== undefined,
+          suffixSteps,
           resolveCorpusFile: (id) => corpus.files.get(id) ?? null,
           resolveCorpusSet: (name) => corpus.sets.get(name) ?? null,
           // aeval scenario convention: relative file refs resolve against the data root.
@@ -2055,6 +2112,8 @@ class VoxEvalAgentDaemon {
         },
         {
           dialfCall: (op, fields, timeoutMs) => client.call(op, fields, timeoutMs),
+          executeRestful: (stepIndex) => this.executeRestfulStep(job.id, stepIndex, probe.phoneNumber),
+          safetyHangup: () => this.dialfSafetyHangup(),
           analyze: (dir) => this.runAevalAnalyze(dir),
           parseMetrics: (dir) => {
             const metricsFile = path.join(dir, 'analysis', 'metrics.json');

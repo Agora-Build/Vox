@@ -1,3 +1,4 @@
+import * as yaml from "js-yaml";
 import {
   type User,
   type InsertUser,
@@ -221,7 +222,7 @@ const EVALSET_ONLY_KEYS = ["scenario"] as const;
 // Keys owned exclusively by the evalflow (platform setup + connection).
 const EVALFLOW_ONLY_KEYS = ["framework", "app", "stepsPrefix", "stepsSuffix"] as const;
 
-export function validateEvalflowConfig(config: unknown): { valid: boolean; error?: string } {
+export function validateEvalflowConfig(config: unknown, transport: "web" | "phone" = "web"): { valid: boolean; error?: string } {
   if (config === null || config === undefined) {
     return { valid: true };
   }
@@ -246,17 +247,21 @@ export function validateEvalflowConfig(config: unknown): { valid: boolean; error
   if (c.stepsSuffix !== undefined && typeof c.stepsSuffix !== "string") {
     return { valid: false, error: "Config stepsSuffix must be a string" };
   }
+  // Clean cut (design 2026-09-25 §4): the per-mode config keys are gone; phone
+  // specifics are Libretto steps in the shared Setup/Teardown fields.
+  if (c.phoneDial !== undefined) {
+    return { valid: false, error: "phoneDial was replaced by a call.dial step in Setup Steps (stepsPrefix)" };
+  }
   if (c.restfulTrigger !== undefined) {
-    const v = validateRestfulTrigger(c.restfulTrigger);
+    return { valid: false, error: "restfulTrigger was replaced by a restful.request step in Setup Steps (stepsPrefix)" };
+  }
+  if (typeof c.stepsPrefix === "string") {
+    const v = validateStepsScript(c.stepsPrefix, transport, "stepsPrefix");
     if (!v.valid) return v;
   }
-  if (c.phoneDial !== undefined) {
-    const p = c.phoneDial as Record<string, unknown>;
-    if (typeof p !== "object" || p === null || Array.isArray(p)
-      || Object.keys(p).some((k) => k !== "number")
-      || typeof p.number !== "string" || !/^\+?[0-9 ()-]{5,20}$/.test(p.number)) {
-      return { valid: false, error: "phoneDial must be { number: '<phone number>' }" };
-    }
+  if (typeof c.stepsSuffix === "string") {
+    const v = validateStepsScript(c.stepsSuffix, transport, "stepsSuffix");
+    if (!v.valid) return v;
   }
   if (JSON.stringify(config).length > MAX_CONFIG_SIZE) {
     return { valid: false, error: "Config too large (max 100KB)" };
@@ -264,7 +269,96 @@ export function validateEvalflowConfig(config: unknown): { valid: boolean; error
   return { valid: true };
 }
 
-// Shape-only validation of the REST call-trigger template (design 2026-09-21 §5).
+// ---- Setup/Teardown step-script validation (design 2026-09-25 §1/§5) --------
+// Save-time vocabulary gate: the LAYOUT is identical for every Evaluation Mode
+// (two YAML step lists), but each mode owns a vocabulary — web scripts can't
+// contain call.*, phone scripts can't contain platform.*/browser.*. Deeper
+// per-step semantics stay with the executors (daemon compiler / aeval); this
+// guards only what would certainly fail at run time, with clear errors.
+const STEP_EXACT_COMMON = new Set(["lab.trace", "wait", "log"]);
+const STEP_PREFIXES_COMMON = ["audio.", "control."];
+const STEP_PREFIXES_WEB = ["platform.", "browser."];
+const PHONE_NUMBER_RE = /^\+?[0-9 ()-]{5,20}$/;
+
+export function validateStepsScript(
+  yamlText: string,
+  transport: "web" | "phone",
+  field: "stepsPrefix" | "stepsSuffix",
+): { valid: boolean; error?: string } {
+  if (yamlText.trim() === "") return { valid: true };
+  let parsed: unknown;
+  try {
+    parsed = yaml.load(yamlText);
+  } catch (e) {
+    return { valid: false, error: `${field}: not valid YAML (${e instanceof Error ? e.message.split("\n")[0] : "parse error"})` };
+  }
+  if (parsed === null || parsed === undefined) return { valid: true };
+  if (!Array.isArray(parsed)) {
+    return { valid: false, error: `${field} must be a YAML list of steps` };
+  }
+  for (let i = 0; i < parsed.length; i++) {
+    const raw: unknown = parsed[i];
+    if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+      return { valid: false, error: `${field}[${i}]: each step must be an object with a 'type'` };
+    }
+    const step = raw as Record<string, unknown>;
+    const type = typeof step.type === "string" ? step.type : "";
+    if (!type) return { valid: false, error: `${field}[${i}]: step needs a string 'type'` };
+
+    const common = STEP_EXACT_COMMON.has(type) || STEP_PREFIXES_COMMON.some((p) => type.startsWith(p));
+    const webOnly = STEP_PREFIXES_WEB.some((p) => type.startsWith(p));
+    const phoneOnly = type.startsWith("call.") || type === "restful.request";
+
+    if (transport === "web") {
+      if (phoneOnly || type.startsWith("sms.")) {
+        return { valid: false, error: `${field}[${i}]: '${type}' is phone vocabulary — illegal in a web evalflow` };
+      }
+      if (!common && !webOnly) {
+        return { valid: false, error: `${field}[${i}]: unknown step type '${type}'` };
+      }
+      continue;
+    }
+    // phone
+    if (webOnly) {
+      return { valid: false, error: `${field}[${i}]: '${type}' is web-session vocabulary — illegal in a phone evalflow` };
+    }
+    if (!common && !phoneOnly) {
+      return { valid: false, error: `${field}[${i}]: unknown step type '${type}' for phone transport` };
+    }
+    if (type === "restful.request") {
+      if (field === "stepsSuffix") {
+        return { valid: false, error: `${field}[${i}]: restful.request is a Setup (pre-call) step — illegal in Teardown` };
+      }
+      const { type: _t, description: _d, ...fields } = step;
+      const shape = validateRestfulTrigger(fields);
+      if (!shape.valid) return { valid: false, error: `${field}[${i}]: ${shape.error}` };
+    }
+    if (type === "call.dial" && (typeof step.number !== "string" || !PHONE_NUMBER_RE.test(step.number))) {
+      return { valid: false, error: `${field}[${i}]: call.dial needs number: '<phone number>'` };
+    }
+  }
+  return { valid: true };
+}
+
+/**
+ * Best-effort parse of a Setup/Teardown YAML step list. Returns [] for empty,
+ * unparseable, or non-list input — callers gate on step presence, and an
+ * invalid script already failed save-time validation (this tolerates legacy
+ * snapshot configs without throwing).
+ */
+export function parseStepsScript(yamlText: unknown): Array<Record<string, unknown>> {
+  if (typeof yamlText !== "string" || yamlText.trim() === "") return [];
+  try {
+    const parsed = yaml.load(yamlText);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((s): s is Record<string, unknown> => typeof s === "object" && s !== null && !Array.isArray(s));
+  } catch {
+    return [];
+  }
+}
+
+// Shape-only validation of a restful.request step's fields (design 2026-09-21 §5,
+// unified-steps 2026-09-25 §1): the template an orchestrated REST call executes.
 // Template placeholders are deliberately NOT resolved here — Core resolves them
 // from the frozen snapshot at execution time.
 const RESTFUL_TRIGGER_KEYS = new Set(["method", "url", "headers", "body", "expectStatus", "timeoutMs"]);
@@ -272,38 +366,38 @@ const RESTFUL_METHODS = new Set(["GET", "POST", "PUT", "PATCH", "DELETE"]);
 export const RESTFUL_TIMEOUT_CAP_MS = 120_000;
 export function validateRestfulTrigger(raw: unknown): { valid: boolean; error?: string } {
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
-    return { valid: false, error: "restfulTrigger must be an object" };
+    return { valid: false, error: "restful.request fields must be an object" };
   }
   const t = raw as Record<string, unknown>;
   for (const k of Object.keys(t)) {
-    if (!RESTFUL_TRIGGER_KEYS.has(k)) return { valid: false, error: `restfulTrigger: unknown field '${k}'` };
+    if (!RESTFUL_TRIGGER_KEYS.has(k)) return { valid: false, error: `restful.request: unknown field '${k}'` };
   }
   if (typeof t.method !== "string" || !RESTFUL_METHODS.has(t.method)) {
-    return { valid: false, error: "restfulTrigger.method must be GET/POST/PUT/PATCH/DELETE" };
+    return { valid: false, error: "restful.request method must be GET/POST/PUT/PATCH/DELETE" };
   }
-  if (typeof t.url !== "string") return { valid: false, error: "restfulTrigger.url must be a string" };
+  if (typeof t.url !== "string") return { valid: false, error: "restful.request url must be a string" };
   // Placeholders may appear in the path/query but not the scheme/host position.
   let parsed: URL;
-  try { parsed = new URL(t.url); } catch { return { valid: false, error: "restfulTrigger.url is not a valid URL" }; }
+  try { parsed = new URL(t.url); } catch { return { valid: false, error: "restful.request url is not a valid URL" }; }
   const httpOkay = parsed.protocol === "http:" && (parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1");
   if (parsed.protocol !== "https:" && !httpOkay) {
-    return { valid: false, error: "restfulTrigger.url must be https (http allowed for localhost only)" };
+    return { valid: false, error: "restful.request url must be https (http allowed for localhost only)" };
   }
   if (t.headers !== undefined) {
     if (typeof t.headers !== "object" || t.headers === null || Array.isArray(t.headers)
       || Object.values(t.headers as Record<string, unknown>).some((v) => typeof v !== "string")) {
-      return { valid: false, error: "restfulTrigger.headers must be a string map" };
+      return { valid: false, error: "restful.request headers must be a string map" };
     }
   }
   if (t.expectStatus !== undefined) {
     if (!Array.isArray(t.expectStatus) || t.expectStatus.length === 0
       || t.expectStatus.some((s) => !Number.isInteger(s) || (s as number) < 100 || (s as number) > 599)) {
-      return { valid: false, error: "restfulTrigger.expectStatus must be a non-empty array of HTTP status codes" };
+      return { valid: false, error: "restful.request expectStatus must be a non-empty array of HTTP status codes" };
     }
   }
   if (t.timeoutMs !== undefined) {
     if (!Number.isInteger(t.timeoutMs) || (t.timeoutMs as number) <= 0 || (t.timeoutMs as number) > RESTFUL_TIMEOUT_CAP_MS) {
-      return { valid: false, error: `restfulTrigger.timeoutMs must be 1..${RESTFUL_TIMEOUT_CAP_MS}` };
+      return { valid: false, error: `restful.request timeoutMs must be 1..${RESTFUL_TIMEOUT_CAP_MS}` };
     }
   }
   return { valid: true };

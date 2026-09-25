@@ -110,6 +110,31 @@ export function compilePhoneConversation(rawSteps: unknown[], opts: CompileOpts)
             description: step.description,
           });
           continue;
+        case 'call.dial': {
+          if (typeof step.number !== 'string' || !step.number.trim()) {
+            return 'call.dial needs a number';
+          }
+          out.push({ type: 'call.dial', id: id(), number: step.number, description: step.description });
+          continue;
+        }
+        case 'call.wait_answered':
+          out.push({
+            type: 'call.wait_answered', id: id(),
+            timeout_ms: step.timeout_ms ?? DEFAULTS.answer_timeout_ms,
+            description: step.description,
+          });
+          continue;
+        case 'call.answer':
+          out.push({ type: 'call.answer', id: id(), timeout_ms: step.timeout_ms, description: step.description });
+          continue;
+        case 'call.hangup':
+          out.push({ type: 'call.hangup', id: id(), description: step.description });
+          continue;
+        case 'restful.request':
+          // Orchestrated class — split off BEFORE compilation (session-block
+          // rule, Libretto §3). Reaching the compiler means it sat inside the
+          // session block, which is illegal.
+          return 'restful.request must lead Setup Steps (before the call) — illegal inside the session block';
         case 'control.wait': case 'wait':
           out.push({ type: 'wait', id: id(), ms: step.ms ?? 1000 });
           continue;
@@ -144,14 +169,67 @@ export function compilePhoneConversation(rawSteps: unknown[], opts: CompileOpts)
   return { ok: true, steps: out };
 }
 
-/** Wrap a compiled conversation as an agent-inbound job (we dial the agent): dial → wait → conv → hangup. */
-export function buildInboundJob(targetNumber: string, conversation: DialfStep[]): DialfStep[] {
-  return [
-    { type: 'call.dial', id: 'dial', number: targetNumber },
-    { type: 'call.wait_answered', id: 'answered', timeout_ms: DEFAULTS.answer_timeout_ms },
-    ...conversation,
-    { type: 'call.hangup', id: 'bye' },
-  ];
+// ---- script splitter (unified-steps design 2026-09-25 §2) -------------------
+// Setup + conversation + teardown form ONE Libretto script. Partition by
+// execution class: leading restful.request steps in Setup are orchestrated
+// (executed daemon-side via Core, pre-call); everything else is one contiguous
+// session block handed to DialF whole (the session-block rule).
+
+export interface SplitScript {
+  /** Orchestrated pre-call REST steps, each with its ABSOLUTE index within
+   * stepsPrefix — the Core endpoint resolves the template from the frozen
+   * snapshot by that index (TOCTOU: the daemon never sends the template). */
+  restfulPrecall: Array<{ stepIndex: number }>;
+  /** Raw (uncompiled) session block: setup remainder ++ conversation ++ teardown. */
+  sessionRaw: unknown[];
+}
+
+export type SplitResult = { ok: true; value: SplitScript } | { ok: false; error: string };
+
+export function splitPhoneScript(
+  prefixSteps: unknown[],
+  conversationSteps: unknown[],
+  suffixSteps: unknown[],
+): SplitResult {
+  const restfulPrecall: Array<{ stepIndex: number }> = [];
+  let firstNonRestful = 0;
+  while (
+    firstNonRestful < prefixSteps.length &&
+    typeof prefixSteps[firstNonRestful] === 'object' && prefixSteps[firstNonRestful] !== null &&
+    (prefixSteps[firstNonRestful] as Record<string, unknown>).type === 'restful.request'
+  ) {
+    restfulPrecall.push({ stepIndex: firstNonRestful });
+    firstNonRestful++;
+  }
+  // Strict ordering: restful.request only as a LEADING run of Setup. One found
+  // later would execute out of order (pre-call, but written mid-session).
+  const straggler = (steps: unknown[], offset: number): number => {
+    for (let i = offset; i < steps.length; i++) {
+      const s = steps[i];
+      if (typeof s === 'object' && s !== null && (s as Record<string, unknown>).type === 'restful.request') return i;
+    }
+    return -1;
+  };
+  if (straggler(prefixSteps, firstNonRestful) !== -1) {
+    return { ok: false, error: 'restful.request steps must lead Setup Steps — they execute before the call' };
+  }
+  if (straggler(conversationSteps, 0) !== -1 || straggler(suffixSteps, 0) !== -1) {
+    return { ok: false, error: 'restful.request is a Setup (pre-call) step — illegal in the conversation or Teardown' };
+  }
+  return {
+    ok: true,
+    value: {
+      restfulPrecall,
+      sessionRaw: [...prefixSteps.slice(firstNonRestful), ...conversationSteps, ...suffixSteps],
+    },
+  };
+}
+
+/** Safety guarantee (§2, approved Q2 scope): the session block always ENDS the
+ * call — append a hangup when the script's own teardown omitted it. */
+export function ensureTrailingHangup(steps: DialfStep[]): DialfStep[] {
+  if (steps.length > 0 && steps[steps.length - 1].type === 'call.hangup') return steps;
+  return [...steps, { type: 'call.hangup', id: 'bye' }];
 }
 
 /** Read-timeout for a blocking job.run: the job's own worst case + slack (contract §4). */
@@ -306,6 +384,14 @@ export function computePhoneRateEntries(
 export interface PhoneRunDeps {
   /** One-shot DialF op on a dedicated connection (DialfClient.call). */
   dialfCall: (op: string, fields: Record<string, unknown>, timeoutMs?: number) => Promise<unknown>;
+  /** Execute the Setup restful.request step at stepIndex via Core's trusted
+   * endpoint (the template resolves from the FROZEN snapshot there, never
+   * here); throws on failure — a failed trigger fails the job pre-call. */
+  executeRestful: (stepIndex: number) => Promise<void>;
+  /** Best-effort end-the-call rescue on a FRESH DialF connection (job.cancel +
+   * call.hangup, errors swallowed) — invoked whenever job.run fails so a
+   * script/daemon failure never leaves a carrier call off-hook (§2, Q2). */
+  safetyHangup: () => Promise<void>;
   /** Run `aeval analyze <sessionDir>`; throws on non-zero exit. */
   analyze: (sessionDir: string) => Promise<void>;
   /** Parse metrics from the analyzed session dir; null = nothing usable. */
@@ -316,11 +402,12 @@ export interface PhoneRunDeps {
 
 export interface PhoneRunConfig {
   jobId: number;
+  /** Parsed Setup Steps (config.stepsPrefix YAML; [] when absent). */
+  prefixSteps: unknown[];
+  /** Parsed eval-set conversation steps. */
   scenarioSteps: unknown[];
-  /** Outbound mode: we call the agent (design §4 — "We call the agent"). */
-  phoneDial?: { number: string };
-  /** Trigger mode flag (agent calls us) — NOT yet supported, see below. */
-  hasRestfulTrigger: boolean;
+  /** Parsed Teardown Steps (config.stepsSuffix YAML; [] when absent). */
+  suffixSteps: unknown[];
   resolveCorpusFile: CompileOpts['resolveCorpusFile'];
   resolveCorpusSet?: CompileOpts['resolveCorpusSet'];
   resolveRelativeFile?: CompileOpts['resolveRelativeFile'];
@@ -335,45 +422,75 @@ export interface PhoneRunOutput {
 }
 
 /**
- * Execute one phone-transport job end to end. Direction is the AGENT's
- * perspective: v1 supports the INBOUND mode fully (we dial the agent →
- * conversation → structured result → analyze). The trigger/OUTBOUND mode
- * (agent dials us after a browser/restful trigger) is
- * deliberately unsupported until DialF exposes a machine-readable result for
+ * Execute one phone-transport job end to end: split the unified script
+ * (Setup + conversation + Teardown), run orchestrated restful.request steps
+ * via Core, hand the session block to DialF whole, analyze the session dir.
+ *
+ * Direction is the AGENT's perspective: v1 supports the INBOUND mode fully
+ * (Setup dials the agent via call.dial). The trigger/OUTBOUND mode (agent
+ * dials us after a restful/web trigger) is authorable but deliberately
+ * unsupported until DialF exposes a machine-readable result for
  * serve-answered calls or a wait-for-ring step (requirements doc R7): serve
  * event strings are human-only by contract, and racing `call.answer` against
  * the ring is not a foundation.
  */
 export async function runPhoneJob(cfg: PhoneRunConfig, deps: PhoneRunDeps): Promise<PhoneRunOutput> {
-  if (!cfg.phoneDial?.number) {
-    throw new Error(cfg.hasRestfulTrigger
-      ? 'phone outbound mode (agent calls us) is not yet supported — pending DialF machine-readable serve results (R7); use phoneDial'
-      : 'phone evalflow config needs phoneDial.number');
+  const split = splitPhoneScript(cfg.prefixSteps, cfg.scenarioSteps, cfg.suffixSteps);
+  if (!split.ok) throw new Error(`phone script split failed: ${split.error}`);
+
+  // Call-establishment gate (mirrors the server's run-route gate — orphaned
+  // jobs reach the daemon with only the frozen snapshot config).
+  const hasDial = split.value.sessionRaw.some(
+    (s) => typeof s === 'object' && s !== null && (s as Record<string, unknown>).type === 'call.dial',
+  );
+  if (!hasDial) {
+    throw new Error(split.value.restfulPrecall.length > 0
+      ? 'agent-outbound trigger mode is not yet supported — pending DialF machine-readable serve results (R7); add a call.dial step'
+      : 'phone evalflow Setup Steps establish no call — add a call.dial step');
   }
-  const compiled = compilePhoneConversation(cfg.scenarioSteps, {
+
+  const compiled = compilePhoneConversation(split.value.sessionRaw, {
     resolveCorpusFile: cfg.resolveCorpusFile,
     resolveCorpusSet: cfg.resolveCorpusSet,
     resolveRelativeFile: cfg.resolveRelativeFile,
   });
-  if (!compiled.ok) throw new Error(`phone conversation compile failed: ${compiled.error}`);
+  if (!compiled.ok) throw new Error(`phone script compile failed: ${compiled.error}`);
 
-  const conversation = stagePlayFiles(compiled.steps, cfg.exchangeDir ?? null);
-  const steps = buildInboundJob(cfg.phoneDial.number, conversation);
+  const steps = ensureTrailingHangup(stagePlayFiles(compiled.steps, cfg.exchangeDir ?? null));
   const timeoutMs = sumStepTimeouts(steps);
+
+  // Orchestrated pre-call actions: any failure fails the job before a dial —
+  // no wasted carrier call, no partial results.
+  for (const { stepIndex } of split.value.restfulPrecall) {
+    await deps.executeRestful(stepIndex);
+  }
+
   // Per-run record_dir (dialfd ≥ 0.3.16) routes this run's recordings into the
   // exchange dir so the container can read them. An older dialfd ignores the
   // field and buildSessionDir then fails on the missing legs — upgrade dialfd.
   const recordDir = cfg.exchangeDir ? path.join(cfg.exchangeDir, 'recordings') : undefined;
-  const result = (await deps.dialfCall(
-    'job.run',
-    { name: `vox-job-${cfg.jobId}`, steps, ...(recordDir ? { record_dir: recordDir } : {}) },
-    timeoutMs,
-  )) as DialfJobResult;
+  let result: DialfJobResult;
+  try {
+    result = (await deps.dialfCall(
+      'job.run',
+      { name: `vox-job-${cfg.jobId}`, steps, ...(recordDir ? { record_dir: recordDir } : {}) },
+      timeoutMs,
+    )) as DialfJobResult;
+  } catch (e) {
+    // A read-timeout or transport error can strand a live carrier call —
+    // rescue on a fresh connection, then fail the job with the real cause.
+    await deps.safetyHangup();
+    throw e;
+  }
 
   const disposition = result.call?.end_reason ?? 'unknown';
   // far_end_hangup mid-conversation is a FAILED eval (partial results are never
   // reported — existing policy); completed is the only success disposition.
   if (disposition !== 'completed') {
+    // Non-completed dispositions normally mean the call already ended, but a
+    // step-level failure can report before the hangup ran — rescue is a cheap
+    // idempotent no-op when the line is already down.
+    await deps.safetyHangup();
     throw new Error(`call did not complete: disposition=${disposition}`);
   }
 

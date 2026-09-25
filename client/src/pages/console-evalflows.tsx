@@ -97,7 +97,6 @@ export default function ConsoleEvalflows() {
   const [providerId, setProviderId] = useState("");
   // Evaluation Mode (design §11): "web" = Web vs Agent, "phone" = Phone vs Agent.
   const [transport, setTransport] = useState("web");
-  const [phoneNumber, setPhoneNumber] = useState("");
   const [framework, setFramework] = useState("aeval");
   const [appConfigPreset, setAppConfigPreset] = useState("custom");
   const [appConfigYaml, setAppConfigYaml] = useState("");
@@ -117,7 +116,6 @@ export default function ConsoleEvalflows() {
   const [editAppConfigYaml, setEditAppConfigYaml] = useState("");
   const [editProviderId, setEditProviderId] = useState("");
   const [editTransport, setEditTransport] = useState("web");
-  const [editPhoneNumber, setEditPhoneNumber] = useState("");
 
   // Non-blocking warning when the evalflow's provider disagrees with its YAML platform_id.
   const [pendingMismatch, setPendingMismatch] = useState<{ kind: "create" | "edit"; yamlPlatform: string; providerName: string } | null>(null);
@@ -144,13 +142,11 @@ export default function ConsoleEvalflows() {
       if (framework === "voice-agent-tester" && appConfigYaml) {
         config.app = appConfigYaml;
       }
-      // stepsPrefix/Suffix are web-session vocabulary — omitted for phone mode.
-      if (framework === "aeval" && transport === "web") {
+      // Unified steps model: Setup/Teardown are the same fields for every
+      // Evaluation Mode — vocabulary differs (call.* for phone), layout doesn't.
+      if (framework === "aeval") {
         if (stepsPrefix) config.stepsPrefix = stepsPrefix;
         if (stepsSuffix) config.stepsSuffix = stepsSuffix;
-      }
-      if (transport === "phone" && phoneNumber.trim()) {
-        config.phoneDial = { number: phoneNumber.trim() };
       }
       const res = await apiRequest("POST", "/api/evalflows", {
         name,
@@ -169,7 +165,6 @@ export default function ConsoleEvalflows() {
       setVisibility("public");
       setProviderId("");
       setTransport("web");
-      setPhoneNumber("");
       setFramework("aeval");
       setAppConfigPreset("custom");
       setAppConfigYaml("");
@@ -198,12 +193,9 @@ export default function ConsoleEvalflows() {
       if (editFramework === "voice-agent-tester" && editAppConfigYaml) {
         config.app = editAppConfigYaml;
       }
-      if (editFramework === "aeval" && editTransport === "web") {
+      if (editFramework === "aeval") {
         if (editStepsPrefix) config.stepsPrefix = editStepsPrefix;
         if (editStepsSuffix) config.stepsSuffix = editStepsSuffix;
-      }
-      if (editTransport === "phone" && editPhoneNumber.trim()) {
-        config.phoneDial = { number: editPhoneNumber.trim() };
       }
       body.config = config;
       const res = await apiRequest("PATCH", `/api/evalflows/${editEvalflow.id}`, body);
@@ -281,7 +273,6 @@ export default function ConsoleEvalflows() {
     setEditStepsSuffix(cfg.stepsSuffix || "");
     setEditProviderId(evalflow.providerId);
     setEditTransport(evalflow.transport || "web");
-    setEditPhoneNumber(cfg.phoneDial?.number || "");
     setEditOpen(true);
   };
 
@@ -396,21 +387,6 @@ export default function ConsoleEvalflows() {
                   </SelectContent>
                 </Select>
               </div>
-              {transport === "phone" && (
-                <div className="space-y-2">
-                  <Label htmlFor="evalflow-phone-number">Agent's phone number</Label>
-                  <Input
-                    id="evalflow-phone-number"
-                    placeholder="+1 555 010 1234"
-                    value={phoneNumber}
-                    onChange={(e) => setPhoneNumber(e.target.value)}
-                    data-testid="input-evalflow-phone-number"
-                  />
-                  <p className="text-xs text-muted-foreground">
-                    We call the agent at this number. (REST-API call triggering is configurable via the API.)
-                  </p>
-                </div>
-              )}
               <div className="space-y-2">
                 <Label htmlFor="evalflow-visibility">Visibility</Label>
                 <Select value={visibility} onValueChange={setVisibility}>
@@ -471,26 +447,32 @@ export default function ConsoleEvalflows() {
                   </div>
                 </>
               )}
-              {framework === "aeval" && transport === "web" && (
+              {framework === "aeval" && (
                 <>
                   <div className="space-y-2">
                     <Label>Setup Steps (stepsPrefix, YAML)</Label>
                     <Textarea
                       className="font-mono text-sm min-h-[120px]"
-                      placeholder={"- type: platform.setup\n  platform_id: livekit\n- type: platform.enter"}
+                      placeholder={transport === "phone"
+                        ? "- type: call.dial\n  number: \"+1 555 010 1234\"\n- type: call.wait_answered"
+                        : "- type: platform.setup\n  platform_id: livekit\n- type: platform.enter"}
                       value={stepsPrefix}
                       onChange={(e) => setStepsPrefix(e.target.value)}
                       data-testid="textarea-evalflow-steps-prefix"
                     />
                     <p className="text-xs text-muted-foreground">
-                      Platform connect/login steps. Differs per provider. The test body lives in the eval set.
+                      {transport === "phone"
+                        ? "How we reach the agent: dial it (call.dial) or trigger it. The conversation lives in the eval set."
+                        : "Platform connect/login steps. Differs per provider. The test body lives in the eval set."}
                     </p>
                   </div>
                   <div className="space-y-2">
                     <Label>Teardown Steps (stepsSuffix, YAML)</Label>
                     <Textarea
                       className="font-mono text-sm min-h-[80px]"
-                      placeholder={"- type: audio.stop_recording\n- type: platform.exit"}
+                      placeholder={transport === "phone"
+                        ? "- type: call.hangup"
+                        : "- type: audio.stop_recording\n- type: platform.exit"}
                       value={stepsSuffix}
                       onChange={(e) => setStepsSuffix(e.target.value)}
                       data-testid="textarea-evalflow-steps-suffix"
@@ -587,18 +569,6 @@ export default function ConsoleEvalflows() {
                 Past runs keep the mode they ran with — changing this affects future runs only.
               </p>
             </div>
-            {editTransport === "phone" && (
-              <div className="space-y-2">
-                <Label htmlFor="edit-evalflow-phone-number">Agent's phone number</Label>
-                <Input
-                  id="edit-evalflow-phone-number"
-                  placeholder="+1 555 010 1234"
-                  value={editPhoneNumber}
-                  onChange={(e) => setEditPhoneNumber(e.target.value)}
-                  data-testid="input-edit-evalflow-phone-number"
-                />
-              </div>
-            )}
             <div className="space-y-2">
               <Label>Eval Framework</Label>
               <Select value={editFramework} onValueChange={setEditFramework}>
@@ -622,26 +592,32 @@ export default function ConsoleEvalflows() {
                 />
               </div>
             )}
-            {editFramework === "aeval" && editTransport === "web" && (
+            {editFramework === "aeval" && (
               <>
                 <div className="space-y-2">
                   <Label>Setup Steps (stepsPrefix, YAML)</Label>
                   <Textarea
                     className="font-mono text-sm min-h-[120px]"
-                    placeholder={"- type: platform.setup\n  platform_id: livekit\n- type: platform.enter"}
+                    placeholder={editTransport === "phone"
+                      ? "- type: call.dial\n  number: \"+1 555 010 1234\"\n- type: call.wait_answered"
+                      : "- type: platform.setup\n  platform_id: livekit\n- type: platform.enter"}
                     value={editStepsPrefix}
                     onChange={(e) => setEditStepsPrefix(e.target.value)}
                     data-testid="textarea-evalflow-steps-prefix-edit"
                   />
                   <p className="text-xs text-muted-foreground">
-                    Platform connect/login steps. Differs per provider. The test body lives in the eval set.
+                    {editTransport === "phone"
+                      ? "How we reach the agent: dial it (call.dial) or trigger it. The conversation lives in the eval set."
+                      : "Platform connect/login steps. Differs per provider. The test body lives in the eval set."}
                   </p>
                 </div>
                 <div className="space-y-2">
                   <Label>Teardown Steps (stepsSuffix, YAML)</Label>
                   <Textarea
                     className="font-mono text-sm min-h-[80px]"
-                    placeholder={"- type: audio.stop_recording\n- type: platform.exit"}
+                    placeholder={editTransport === "phone"
+                      ? "- type: call.hangup"
+                      : "- type: audio.stop_recording\n- type: platform.exit"}
                     value={editStepsSuffix}
                     onChange={(e) => setEditStepsSuffix(e.target.value)}
                     data-testid="textarea-evalflow-steps-suffix-edit"

@@ -289,18 +289,34 @@ d("phone transport — evalflow API (HTTP, dev server)", () => {
     expect(res.status).toBe(400);
   });
 
-  it("validates phoneDial config and refuses running a phone evalflow without call establishment", async () => {
-    const badDial = await mkEvalflow({ transport: "phone", config: { phoneDial: { number: "abc" } } });
-    expect(badDial.status).toBe(400);
-    const extraField = await mkEvalflow({ transport: "phone", config: { phoneDial: { number: "+15551234", sim: "x" } } });
-    expect(extraField.status).toBe(400);
+  it("validates Setup step scripts per mode and refuses running a phone evalflow without call establishment", async () => {
+    // Clean cut: the old per-mode config keys are rejected with pointer errors.
+    const legacyDial = await mkEvalflow({ transport: "phone", config: { phoneDial: { number: "+15551234" } } });
+    expect(legacyDial.status).toBe(400);
+    expect((await legacyDial.json()).error).toContain("call.dial step");
+    const legacyTrigger = await mkEvalflow({ transport: "phone", config: { restfulTrigger: { method: "POST", url: "https://x.example/y" } } });
+    expect(legacyTrigger.status).toBe(400);
+    expect((await legacyTrigger.json()).error).toContain("restful.request step");
 
-    const okDial = await mkEvalflow({ transport: "phone", config: { phoneDial: { number: "+1 (555) 010-1234" } } });
+    // Vocabulary is transport-scoped.
+    const badNumber = await mkEvalflow({ transport: "phone", config: { stepsPrefix: "- type: call.dial\n  number: abc\n" } });
+    expect(badNumber.status).toBe(400);
+    const webVocabOnPhone = await mkEvalflow({ transport: "phone", config: { stepsPrefix: "- type: platform.setup\n" } });
+    expect(webVocabOnPhone.status).toBe(400);
+    expect((await webVocabOnPhone.json()).error).toContain("web-session vocabulary");
+    const phoneVocabOnWeb = await mkEvalflow({ transport: "web", config: { stepsPrefix: "- type: call.dial\n  number: \"+15551234\"\n" } });
+    expect(phoneVocabOnWeb.status).toBe(400);
+    expect((await phoneVocabOnWeb.json()).error).toContain("phone vocabulary");
+
+    const okDial = await mkEvalflow({
+      transport: "phone",
+      config: { stepsPrefix: '- type: call.dial\n  number: "+1 (555) 010-1234"\n- type: call.wait_answered\n', stepsSuffix: "- type: call.hangup\n" },
+    });
     expect(okDial.ok).toBe(true);
     created.push((await okDial.json()).id);
 
-    // Phone evalflow with NEITHER phoneDial nor restfulTrigger: creatable, but
-    // running it is refused at the source (design §4).
+    // Phone evalflow with EMPTY Setup: creatable, but running it is refused at
+    // the source (unified-steps §4 — nothing would establish a call).
     const bare = await mkEvalflow({ transport: "phone" });
     const bareWf = await bare.json();
     created.push(bareWf.id);
@@ -310,7 +326,24 @@ d("phone transport — evalflow API (HTTP, dev server)", () => {
       body: JSON.stringify({ region: "na-us-ashburn", targetTier: "private" }),
     });
     expect(run.status).toBe(400);
-    expect((await run.json()).error).toContain("phoneDial or restfulTrigger");
+    expect((await run.json()).error).toContain("establish no call");
+
+    // Trigger-only Setup (restful.request, no call.dial): authorable, but the
+    // run names the R7 gap.
+    const triggerOnly = await mkEvalflow({
+      transport: "phone",
+      config: { stepsPrefix: '- type: restful.request\n  method: POST\n  url: "https://x.example/call"\n' },
+    });
+    expect(triggerOnly.ok).toBe(true);
+    const triggerWf = await triggerOnly.json();
+    created.push(triggerWf.id);
+    const runTrigger = await fetch(`${BASE_URL}/api/evalflows/${triggerWf.id}/run`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Cookie: cookie },
+      body: JSON.stringify({ region: "na-us-ashburn", targetTier: "private" }),
+    });
+    expect(runTrigger.status).toBe(400);
+    expect((await runTrigger.json()).error).toContain("DialF R7");
   });
 
   it("PATCH can flip transport", async () => {
