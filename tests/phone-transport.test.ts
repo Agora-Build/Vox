@@ -436,3 +436,120 @@ d("phone transport — agent capability declaration (HTTP, dev server)", () => {
     expect((await storage.getEvalAgent(id))!.capabilities).toEqual([]);
   });
 });
+
+// Practical round-trip: the whole steps model through the REAL API — save
+// validation, the run gate, snapshot freezing, and the config merge the
+// daemon will read. This is the server half of what the daemon splitter
+// consumes (the daemon half is tests/phone-eval.test.ts's runPhoneJob).
+d("unified steps — full run path (API round-trip)", () => {
+  let cookie: string;
+  let evalflowId: number;
+  let evalSetId: number;
+  let jobId: number;
+
+  const SETUP = '- type: call.dial\n  number: "+1 408 837 5890"\n- type: call.wait_answered\n';
+  const TEARDOWN = "- type: call.hangup\n";
+  const SCENARIO = "name: steps-roundtrip\nsteps:\n  - type: audio.play\n    corpus_id: known_q1\n  - type: audio.wait_for_speech\n    end_timeout_ms: 30000\n";
+
+  beforeAll(async () => {
+    const login = await fetch(`${BASE_URL}/api/auth/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: "admin@vox.local", password: "admin123456" }),
+    });
+    cookie = login.headers.get("set-cookie")!.split(";")[0];
+  });
+
+  afterAll(async () => {
+    if (!hasDb) return;
+    if (jobId) await pool.query(`DELETE FROM eval_jobs WHERE id = $1`, [jobId]);
+    if (evalflowId) await pool.query(`DELETE FROM evalflows WHERE id = $1`, [evalflowId]);
+    if (evalSetId) await pool.query(`DELETE FROM eval_sets WHERE id = $1`, [evalSetId]);
+  });
+
+  const post = (path: string, body: Record<string, unknown>) =>
+    fetch(`${BASE_URL}${path}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Cookie: cookie },
+      body: JSON.stringify(body),
+    });
+
+  it("create → run → frozen snapshot + merged job config carry the steps the daemon will split", async () => {
+    const providers = await storage.getAllProviders();
+    const wfRes = await post("/api/evalflows", {
+      name: `steps-rt-wf-${suffix}`, providerId: providers[0].id, transport: "phone",
+      config: { framework: "aeval", stepsPrefix: SETUP, stepsSuffix: TEARDOWN },
+    });
+    expect(wfRes.ok).toBe(true);
+    evalflowId = (await wfRes.json()).id;
+
+    const esRes = await post("/api/eval-sets", {
+      name: `steps-rt-es-${suffix}`, visibility: "public", config: { scenario: SCENARIO },
+    });
+    expect(esRes.ok).toBe(true);
+    evalSetId = (await esRes.json()).id;
+
+    const runRes = await post(`/api/evalflows/${evalflowId}/run`, {
+      evalSetId, region: "na-us-seattle", targetTier: "private",
+    });
+    expect(runRes.ok, `run failed: ${await runRes.clone().text()}`).toBe(true);
+    jobId = (await runRes.json()).job.id;
+
+    const job = await storage.getEvalJob(jobId);
+    expect(job!.transport).toBe("phone"); // stamped column
+
+    // The FROZEN snapshot carries the steps — the restful endpoint and all
+    // provenance reads use this copy, never the live row.
+    const snapConfig = (job!.snapshot as any).evalflow.config as Record<string, unknown>;
+    expect(snapConfig.stepsPrefix).toBe(SETUP);
+    expect(snapConfig.stepsSuffix).toBe(TEARDOWN);
+
+    // The merged job config is the daemon's input: evalflow steps + eval-set
+    // scenario, exactly what executePhoneJob parses and splits.
+    const jobConfig = job!.config as Record<string, unknown>;
+    expect(jobConfig.stepsPrefix).toBe(SETUP);
+    expect(jobConfig.stepsSuffix).toBe(TEARDOWN);
+    expect(String(jobConfig.scenario)).toContain("audio.play");
+
+    // Editing the live evalflow's steps never rewrites the frozen job.
+    const patch = await fetch(`${BASE_URL}/api/evalflows/${evalflowId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", Cookie: cookie },
+      body: JSON.stringify({ config: { framework: "aeval", stepsPrefix: '- type: call.dial\n  number: "+1 999 999 9999"\n', stepsSuffix: TEARDOWN } }),
+    });
+    expect(patch.ok).toBe(true);
+    const reread = await storage.getEvalJob(jobId);
+    expect(((reread!.snapshot as any).evalflow.config as Record<string, unknown>).stepsPrefix).toBe(SETUP);
+  });
+
+  it("PATCH revalidates the RESULTING transport/config pair: a web evalflow with platform steps can't silently flip to phone", async () => {
+    const providers = await storage.getAllProviders();
+    const wfRes = await post("/api/evalflows", {
+      name: `steps-rt-flip-${suffix}`, providerId: providers[0].id, transport: "web",
+      config: { framework: "aeval", stepsPrefix: "- type: platform.setup\n  platform_id: livekit\n" },
+    });
+    expect(wfRes.ok).toBe(true);
+    const flipWfId = (await wfRes.json()).id as number;
+    try {
+      // Transport-only flip: the EXISTING config is re-validated against phone.
+      const flip = await fetch(`${BASE_URL}/api/evalflows/${flipWfId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", Cookie: cookie },
+        body: JSON.stringify({ transport: "phone" }),
+      });
+      expect(flip.status).toBe(400);
+      expect((await flip.json()).error).toContain("web-session vocabulary");
+
+      // Flipping transport TOGETHER with a valid phone config succeeds.
+      const flipWithConfig = await fetch(`${BASE_URL}/api/evalflows/${flipWfId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", Cookie: cookie },
+        body: JSON.stringify({ transport: "phone", config: { framework: "aeval", stepsPrefix: SETUP, stepsSuffix: TEARDOWN } }),
+      });
+      expect(flipWithConfig.ok).toBe(true);
+      expect((await flipWithConfig.json()).transport).toBe("phone");
+    } finally {
+      await pool.query(`DELETE FROM evalflows WHERE id = $1`, [flipWfId]);
+    }
+  });
+});

@@ -47,7 +47,6 @@ import {
   type SampleGroup,
   type ChunkGroup,
   type ChunkMetricsEntry,
-  INTERRUPT_ACTION_MAX_MS,
   sanitizeForFilename,
   extractSampleGroups,
   groupSamplesByChunk,

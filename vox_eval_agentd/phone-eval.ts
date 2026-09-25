@@ -1,14 +1,16 @@
 /**
- * Phone-eval pure helpers (design 2026-09-21 §6; DialF ≥ v0.3.8 contract):
- * compile an eval-set conversation into a DialF job, size its read timeout,
- * adapt the DialF result into an aeval-analyzable session dir + callMetadata.
+ * Phone-eval pure helpers (unified-steps design 2026-09-25 §2; DialF ≥ v0.3.8
+ * contract): split the unified script (Setup + eval-set conversation +
+ * Teardown) by Libretto execution class, compile each segment into DialF
+ * steps under its own vocabulary policy, size the read timeout, and adapt
+ * the DialF result into an aeval-analyzable session dir + callMetadata.
  * Everything here is pure or filesystem-only — no sockets, no processes —
  * so the daemon's phone path is testable without hardware.
  */
 import * as fs from 'fs';
 import * as path from 'path';
 import { createHash } from 'crypto';
-import { PHONE_NUMBER_RE, illegalPhoneStepType, walkStepList, stepsContainCallDial } from '../shared/steps';
+import { PHONE_NUMBER_RE, illegalPhoneStepType, illegalWebVocabInPhone, walkStepList, stepsContainCallDial } from '../shared/steps';
 
 // ---- compiler ---------------------------------------------------------------
 
@@ -38,9 +40,6 @@ export interface CompileOpts {
 }
 
 export type CompileResult = { ok: true; steps: DialfStep[] } | { ok: false; error: string };
-
-/** Steps that are web-session vocabulary — never legal inside a phone conversation. */
-const WEB_ONLY_PREFIXES = ['platform.', 'browser.'];
 
 /** Allowance per audio.play for unknown clip length when sizing the read timeout. */
 const PLAY_ALLOWANCE_MS = 30_000;
@@ -81,8 +80,9 @@ export function compilePhoneConversation(rawSteps: unknown[], opts: CompileOpts)
         Object.entries(raw as Record<string, unknown>).map(([k, v]) => [k, substitute(v, item)]),
       );
       const type = String(step.type ?? '');
-      if (WEB_ONLY_PREFIXES.some((p) => type.startsWith(p))) {
-        return `'${type}' is web-session vocabulary — illegal in a phone conversation`;
+      {
+        const webVocab = illegalWebVocabInPhone(type);
+        if (webVocab) return webVocab;
       }
       // Segment policy on the POST-substitution type — the only place the
       // real type is known (a for_each item like {t: call.dial} + type:

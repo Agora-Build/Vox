@@ -37,6 +37,15 @@ export function illegalPhoneStepType(type: string, segment: StepSegment): string
   return null; // setup: full call.* vocabulary (restful ordering is positional, checked separately)
 }
 
+/** Cross-mode rule for PHONE scripts: web-session vocabulary never belongs
+ * there (the DialF compiler has no browser). */
+export function illegalWebVocabInPhone(type: string): string | null {
+  if (type.startsWith("platform.") || type.startsWith("browser.")) {
+    return `'${type}' is web-session vocabulary — illegal in a phone evalflow`;
+  }
+  return null;
+}
+
 /** Cross-mode rule for WEB scripts: phone vocabulary never belongs there.
  * Everything else passes — aeval owns the web vocabulary. */
 export function illegalWebStepType(type: string): string | null {

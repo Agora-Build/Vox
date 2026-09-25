@@ -13,7 +13,7 @@ import { validateTierChoice, resolveTargetedDispatch, filterDispatchableAgents }
 import { getMarketplace } from "./marketplace";
 import { isAlreadyMemberError, getOrganizations, requireOrganizations, type Membership, type OrgSecretRow } from "./organizations";
 import { fingerprintCredential, formatLastFailedHttpStatus, parseLastFailedHttpStatus } from "@shared/credentials";
-import { parsePlatformSetup, sessionScopeForEvalflow, evaluateSessionRequirement, getBrokeredSecretNames, areLoginSecretsAttested, ensureSession, stampOwnerSession, credentialKeyFor, SESSION_FRESH_MARGIN_SECONDS, classifyReferencedSecrets, findBrokeredMisuse, defaultBrokerTypeForName, resolveBrokerType, type SessionNeed, detectSessionNeed, missingSecretNames, resolvableSecretSources } from "./auth-session";
+import { sessionScopeForEvalflow, areLoginSecretsAttested, ensureSession, stampOwnerSession, credentialKeyFor, SESSION_FRESH_MARGIN_SECONDS, classifyReferencedSecrets, findBrokeredMisuse, resolveBrokerType, type SessionNeed, detectSessionNeed, missingSecretNames, resolvableSecretSources } from "./auth-session";
 import { validateRegisterPayload, cacheBrokerMintSecret, hasBrokerMintSecret, routeToBroker, executeViaBroker, KNOWN_BROKER_TYPES } from "./broker-registry";
 import { resolveRestfulTemplate } from "./restful-exec";
 import { validateRestfulTrigger, parseStepsScript, stepsContainCallDial } from "./storage";

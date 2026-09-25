@@ -1,7 +1,7 @@
 import * as yaml from "js-yaml";
 import {
-  PHONE_NUMBER_RE, illegalPhoneStepType, illegalWebStepType, walkStepList,
-  type StepSegment,
+  PHONE_NUMBER_RE, illegalPhoneStepType, illegalWebStepType, illegalWebVocabInPhone,
+  walkStepList, type StepSegment,
 } from "@shared/steps";
 export { stepsContainCallDial } from "@shared/steps";
 import {
@@ -284,7 +284,6 @@ export function validateEvalflowConfig(config: unknown, transport: "web" | "phon
 // guards only what would certainly fail at run time, with clear errors.
 const STEP_EXACT_COMMON = new Set(["lab.trace", "wait", "log"]);
 const STEP_PREFIXES_COMMON = ["audio.", "control."];
-const STEP_PREFIXES_WEB = ["platform.", "browser."];
 
 export function validateStepsScript(
   yamlText: string,
@@ -351,9 +350,8 @@ export function validateStepsScript(
     // daemon compiler re-enforces the policy there, but the smuggle shape is
     // rejected here so authors get the error at save.
     if (type.includes("${")) return `templated step type '${type}' is not allowed`;
-    if (STEP_PREFIXES_WEB.some((p) => type.startsWith(p))) {
-      return `'${type}' is web-session vocabulary — illegal in a phone evalflow`;
-    }
+    const webVocab = illegalWebVocabInPhone(type);
+    if (webVocab) return webVocab;
     const common = STEP_EXACT_COMMON.has(type) || STEP_PREFIXES_COMMON.some((p) => type.startsWith(p));
     const phoneOnly = type.startsWith("call.") || type === "restful.request";
     if (!common && !phoneOnly) return `unknown step type '${type}' for phone transport`;
