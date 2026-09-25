@@ -41,6 +41,10 @@ test.describe("Phone vs Agent UI", () => {
   });
 
   test("create dialog: phone mode persists transport + call.dial Setup Steps and shows the badge", async ({ page }) => {
+    // UI login + dialog + persistence poll + reload legitimately exceed the
+    // 30s default under full-gate load (the gate's failure snapshot showed the
+    // row + badge rendered — only the budget had run out).
+    test.setTimeout(60_000);
     await loginUI(page);
     await page.goto(`${BASE}/console/evalflows`);
     await page.getByTestId("button-create-evalflow").click();
