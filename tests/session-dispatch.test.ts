@@ -237,8 +237,8 @@ describe("dispatch integration — session stamping, pre-warm, shared-tier gates
     beforeAll(async () => {
       // Evalflow and eval set share the "frameworkVersion" key with CONFLICTING
       // values. Neither validateEvalflowConfig nor validateEvalSetConfig restricts
-      // this key (only "scenario" is eval-set-only and "framework"/"app"/"stepsPrefix"/
-      // "stepsSuffix" are evalflow-only — see server/storage.ts:~203-258), so both
+      // this key (only "scenario" is eval-set-only and "framework"/"stepsPrefix"/
+      // "stepsSuffix" are evalflow-only — see server/storage.ts), so both
       // creates succeed and the conflict only surfaces at run time inside
       // mergeEvalConfig (server/storage.ts:~260-280).
       const wfRes = await authFetch(admin, `${BASE_URL}/api/evalflows`, {

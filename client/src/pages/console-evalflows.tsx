@@ -44,14 +44,11 @@ type SaveDecision =
   | { action: "mismatch"; yamlPlatform: string; providerName: string };
 
 // Decide whether an evalflow save can proceed, must switch to Custom, or should warn.
-// Only meaningful for the aeval framework (voice-agent-tester has no platform_id).
 function evaluateSave(
-  framework: string,
   stepsPrefix: string,
   providerId: string,
   providers: Provider[] | undefined,
 ): SaveDecision {
-  if (framework !== "aeval") return { action: "ok" };
   const yamlPlatform = extractPlatformId(stepsPrefix);
   const selected = providers?.find((p) => p.id === providerId);
   const custom = providers?.find((p) => p.name === "Custom" || (!p.platformId && p.name.toLowerCase() === "custom"));
@@ -64,19 +61,6 @@ function evaluateSave(
   return { action: "mismatch", yamlPlatform, providerName: selected?.name ?? "(none)" };
 }
 
-const APP_CONFIG_PRESETS: Record<string, string> = {
-  "livekit-playground": `url: "https://livekit.io/"
-steps:
-  - action: wait
-    selector: "xpath///button[contains(., 'Talk to LiveKit Agent')]"
-  - action: sleep
-    time: 5000
-  - action: click
-    selector: "xpath///button[contains(., 'Talk to LiveKit Agent')]"
-  - action: wait_for_voice
-  - action: wait_for_silence`,
-  custom: "",
-};
 
 interface AuthStatus {
   user: {
@@ -97,9 +81,6 @@ export default function ConsoleEvalflows() {
   const [providerId, setProviderId] = useState("");
   // Evaluation Mode (design §11): "web" = Web vs Agent, "phone" = Phone vs Agent.
   const [transport, setTransport] = useState("web");
-  const [framework, setFramework] = useState("aeval");
-  const [appConfigPreset, setAppConfigPreset] = useState("custom");
-  const [appConfigYaml, setAppConfigYaml] = useState("");
   const [stepsPrefix, setStepsPrefix] = useState("");
   const [stepsSuffix, setStepsSuffix] = useState("");
   const [editStepsPrefix, setEditStepsPrefix] = useState("");
@@ -112,8 +93,6 @@ export default function ConsoleEvalflows() {
   const [editDescription, setEditDescription] = useState("");
   const [editVisibility, setEditVisibility] = useState("");
   const [editProjectId, setEditProjectId] = useState("");
-  const [editFramework, setEditFramework] = useState("aeval");
-  const [editAppConfigYaml, setEditAppConfigYaml] = useState("");
   const [editProviderId, setEditProviderId] = useState("");
   const [editTransport, setEditTransport] = useState("web");
 
@@ -138,16 +117,11 @@ export default function ConsoleEvalflows() {
 
   const createMutation = useMutation({
     mutationFn: async (overrideProviderId?: string) => {
-      const config: Record<string, unknown> = { framework };
-      if (framework === "voice-agent-tester" && appConfigYaml) {
-        config.app = appConfigYaml;
-      }
+      const config: Record<string, unknown> = { framework: "aeval" };
       // Unified steps model: Setup/Teardown are the same fields for every
       // Evaluation Mode — vocabulary differs (call.* for phone), layout doesn't.
-      if (framework === "aeval") {
-        if (stepsPrefix) config.stepsPrefix = stepsPrefix;
-        if (stepsSuffix) config.stepsSuffix = stepsSuffix;
-      }
+      if (stepsPrefix) config.stepsPrefix = stepsPrefix;
+      if (stepsSuffix) config.stepsSuffix = stepsSuffix;
       const res = await apiRequest("POST", "/api/evalflows", {
         name,
         description,
@@ -165,9 +139,6 @@ export default function ConsoleEvalflows() {
       setVisibility("public");
       setProviderId("");
       setTransport("web");
-      setFramework("aeval");
-      setAppConfigPreset("custom");
-      setAppConfigYaml("");
       setStepsPrefix("");
       setStepsSuffix("");
       queryClient.invalidateQueries({ queryKey: ["/api/evalflows?includePublic=true"] });
@@ -189,14 +160,9 @@ export default function ConsoleEvalflows() {
       const pid = overrideProviderId ?? editProviderId;
       if (pid && pid !== editEvalflow.providerId) body.providerId = pid;
       if (editTransport !== editEvalflow.transport) body.transport = editTransport;
-      const config: Record<string, unknown> = { framework: editFramework };
-      if (editFramework === "voice-agent-tester" && editAppConfigYaml) {
-        config.app = editAppConfigYaml;
-      }
-      if (editFramework === "aeval") {
-        if (editStepsPrefix) config.stepsPrefix = editStepsPrefix;
-        if (editStepsSuffix) config.stepsSuffix = editStepsSuffix;
-      }
+      const config: Record<string, unknown> = { framework: "aeval" };
+      if (editStepsPrefix) config.stepsPrefix = editStepsPrefix;
+      if (editStepsSuffix) config.stepsSuffix = editStepsSuffix;
       body.config = config;
       const res = await apiRequest("PATCH", `/api/evalflows/${editEvalflow.id}`, body);
       return res.json();
@@ -267,8 +233,6 @@ export default function ConsoleEvalflows() {
     setEditDescription(evalflow.description || "");
     setEditVisibility(evalflow.visibility);
     setEditProjectId(evalflow.projectId?.toString() || "");
-    setEditFramework(cfg.framework || "aeval");
-    setEditAppConfigYaml(cfg.app || "");
     setEditStepsPrefix(cfg.stepsPrefix || "");
     setEditStepsSuffix(cfg.stepsSuffix || "");
     setEditProviderId(evalflow.providerId);
@@ -278,7 +242,7 @@ export default function ConsoleEvalflows() {
 
   // Run the provider/platform_id guard, then create. Warns on mismatch, auto-switches to Custom.
   const handleCreateClick = () => {
-    const decision = evaluateSave(framework, stepsPrefix, providerId, providers);
+    const decision = evaluateSave(stepsPrefix, providerId, providers);
     if (decision.action === "mismatch") {
       setPendingMismatch({ kind: "create", yamlPlatform: decision.yamlPlatform, providerName: decision.providerName });
       return;
@@ -293,7 +257,7 @@ export default function ConsoleEvalflows() {
   };
 
   const handleEditClick = () => {
-    const decision = evaluateSave(editFramework, editStepsPrefix, editProviderId, providers);
+    const decision = evaluateSave(editStepsPrefix, editProviderId, providers);
     if (decision.action === "mismatch") {
       setPendingMismatch({ kind: "edit", yamlPlatform: decision.yamlPlatform, providerName: decision.providerName });
       return;
@@ -401,54 +365,7 @@ export default function ConsoleEvalflows() {
                   </SelectContent>
                 </Select>
               </div>
-              <div className="space-y-2">
-                <Label>Eval Framework</Label>
-                <Select value={framework} onValueChange={setFramework}>
-                  <SelectTrigger data-testid="select-evalflow-framework">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="aeval">aeval</SelectItem>
-                    <SelectItem value="voice-agent-tester">voice-agent-tester</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              {framework === "voice-agent-tester" && (
-                <>
-                  <div className="space-y-2">
-                    <Label>App Config Preset</Label>
-                    <Select
-                      value={appConfigPreset}
-                      onValueChange={(v) => {
-                        setAppConfigPreset(v);
-                        if (APP_CONFIG_PRESETS[v] !== undefined) {
-                          setAppConfigYaml(APP_CONFIG_PRESETS[v]);
-                        }
-                      }}
-                    >
-                      <SelectTrigger>
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="livekit-playground">LiveKit Playground</SelectItem>
-                        <SelectItem value="custom">Custom</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  <div className="space-y-2">
-                    <Label>App Config (YAML)</Label>
-                    <Textarea
-                      className="font-mono text-sm min-h-[160px]"
-                      placeholder="url: &quot;https://...&quot;&#10;steps:&#10;  - action: wait&#10;    selector: ..."
-                      value={appConfigYaml}
-                      onChange={(e) => setAppConfigYaml(e.target.value)}
-                      data-testid="textarea-evalflow-app-config"
-                    />
-                  </div>
-                </>
-              )}
-              {framework === "aeval" && (
-                <>
+              <>
                   <div className="space-y-2">
                     <Label>Setup Steps (stepsPrefix, YAML)</Label>
                     <Textarea
@@ -478,8 +395,7 @@ export default function ConsoleEvalflows() {
                       data-testid="textarea-evalflow-steps-suffix"
                     />
                   </div>
-                </>
-              )}
+              </>
             </div>
             <DialogFooter>
               <Button
@@ -569,31 +485,7 @@ export default function ConsoleEvalflows() {
                 Past runs keep the mode they ran with — changing this affects future runs only.
               </p>
             </div>
-            <div className="space-y-2">
-              <Label>Eval Framework</Label>
-              <Select value={editFramework} onValueChange={setEditFramework}>
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="aeval">aeval</SelectItem>
-                  <SelectItem value="voice-agent-tester">voice-agent-tester</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-            {editFramework === "voice-agent-tester" && (
-              <div className="space-y-2">
-                <Label>App Config (YAML)</Label>
-                <Textarea
-                  className="font-mono text-sm min-h-[160px]"
-                  placeholder="url: &quot;https://...&quot;&#10;steps:&#10;  - action: wait&#10;    selector: ..."
-                  value={editAppConfigYaml}
-                  onChange={(e) => setEditAppConfigYaml(e.target.value)}
-                />
-              </div>
-            )}
-            {editFramework === "aeval" && (
-              <>
+            <>
                 <div className="space-y-2">
                   <Label>Setup Steps (stepsPrefix, YAML)</Label>
                   <Textarea
@@ -623,8 +515,7 @@ export default function ConsoleEvalflows() {
                     data-testid="textarea-evalflow-steps-suffix-edit"
                   />
                 </div>
-              </>
-            )}
+            </>
             <div className="space-y-2">
               <Label htmlFor="edit-evalflow-project">Project</Label>
               {editEvalflow?.projectId ? (

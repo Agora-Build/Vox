@@ -569,7 +569,7 @@ ensure_aeval_binary() {
         log_success "aeval installed to $install_path"
         ensure_aeval_browser
     else
-        log_warn "Failed to download aeval (may need manual install). Local agent will fall back to voice-agent-tester."
+        log_warn "Failed to download aeval (may need manual install) — the agent cannot run evals without it."
     fi
 }
 
@@ -710,13 +710,6 @@ smoke_test_agent() {
         failed=1
     fi
 
-    if [ -d "$PROJECT_DIR/vox_eval_agentd/voice-agent-tester/src" ]; then
-        log_success "voice-agent-tester submodule: OK"
-    else
-        log_error "voice-agent-tester submodule: MISSING (run: git submodule update --init --recursive)"
-        failed=1
-    fi
-
     # Check the daemon BUNDLES cleanly, not just parses. A single-file transform
     # can't resolve imports, so a missing sibling module (e.g. ./session-inject)
     # slips through and only fails later in the Docker build. Mirror the
@@ -838,7 +831,7 @@ build_eval_agent_docker() {
     log_info "Building eval agent Docker image..."
     cd "$PROJECT_DIR"
 
-    # Initialize and update submodules (voice-agent-tester)
+    # Initialize and update submodules (aeval-data)
     log_info "Initializing submodules..."
     git submodule update --init --recursive
 
@@ -855,8 +848,6 @@ build_eval_agent_docker() {
     if docker run --rm vox_eval_agentd bash -c "
         node --version &&
         aeval --version &&
-        cd /app/voice-agent-tester &&
-        node -e \"require('puppeteer').executablePath()\" &&
         node --check /app/vox-agentd.js
     "; then
         log_success "Docker smoke tests passed"

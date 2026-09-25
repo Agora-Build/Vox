@@ -20,7 +20,7 @@
     "db:migrate": "drizzle-kit migrate",
     "db:studio": "drizzle-kit studio",
     "plugins:validate": "tsx scripts/plugins-validate.ts",
-    "postinstall": "if [ -d .git ]; then git submodule update --init --recursive; fi && if [ -d vox_eval_agentd/voice-agent-tester ]; then cd vox_eval_agentd/voice-agent-tester && npm install; fi"
+    "postinstall": "if [ -d .git ]; then git submodule update --init --recursive; fi"
   },
   "dependencies": {
     "@agora-build/chisel-dev": "^0.3.7",

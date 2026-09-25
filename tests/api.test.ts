@@ -2775,36 +2775,43 @@ describe('Vox API Tests', () => {
       configEvalflowId = evalflow.id;
     });
 
-    it('should create an evalflow with voice-agent-tester framework and app YAML', async () => {
-      const appYaml = 'url: "https://example.com"\nsteps:\n  - action: wait\n    selector: "#start"';
-      const response = await authFetch(adminSession, `${BASE_URL}/api/evalflows`, {
+    it('rejects the removed voice-agent-tester framework and the dead app key with pointer errors', async () => {
+      const vat = await authFetch(adminSession, `${BASE_URL}/api/evalflows`, {
         method: 'POST',
         body: JSON.stringify({
           name: 'Config Test Evalflow (VAT)',
-          description: 'Evalflow with VAT framework config',
           visibility: 'public',
           providerId: testProviderId,
-          config: { framework: 'voice-agent-tester', app: appYaml },
+          config: { framework: 'voice-agent-tester' },
         }),
       });
+      expect(vat.status).toBe(400);
+      expect((await vat.json()).error).toContain('voice-agent-tester was removed');
 
-      expect(response.ok).toBe(true);
-      const evalflow: Evalflow = await response.json();
-      expect(evalflow.config).toEqual({ framework: 'voice-agent-tester', app: appYaml });
+      const app = await authFetch(adminSession, `${BASE_URL}/api/evalflows`, {
+        method: 'POST',
+        body: JSON.stringify({
+          name: 'Config Test Evalflow (app key)',
+          visibility: 'public',
+          providerId: testProviderId,
+          config: { framework: 'aeval', app: 'url: "https://example.com"' },
+        }),
+      });
+      expect(app.status).toBe(400);
+      expect((await app.json()).error).toContain('voice-agent-tester');
     });
 
     it('should update evalflow config via PATCH', async () => {
-      const newAppYaml = 'url: "https://updated.com"\nsteps:\n  - action: click\n    selector: "#btn"';
       const response = await authFetch(adminSession, `${BASE_URL}/api/evalflows/${configEvalflowId}`, {
         method: 'PATCH',
         body: JSON.stringify({
-          config: { framework: 'voice-agent-tester', app: newAppYaml },
+          config: { framework: 'aeval', stepsPrefix: '- type: platform.setup\n  platform_id: livekit\n' },
         }),
       });
 
       expect(response.ok).toBe(true);
       const evalflow: Evalflow = await response.json();
-      expect(evalflow.config).toEqual({ framework: 'voice-agent-tester', app: newAppYaml });
+      expect((evalflow.config as Record<string, unknown>).stepsPrefix).toContain('platform.setup');
     });
 
     it('should persist config when only updating other fields', async () => {
@@ -2817,7 +2824,7 @@ describe('Vox API Tests', () => {
       const evalflow: Evalflow = await response.json();
       expect(evalflow.description).toBe('New description only');
       // config should remain from previous update
-      expect((evalflow.config as Record<string, unknown>).framework).toBe('voice-agent-tester');
+      expect((evalflow.config as Record<string, unknown>).stepsPrefix).toContain('platform.setup');
     });
 
     it('should default config to empty object when not provided', async () => {
@@ -2897,7 +2904,7 @@ describe('Vox API Tests', () => {
           name: 'Merge Test Evalflow',
           visibility: 'public',
           providerId: testProviderId,
-          config: { framework: 'voice-agent-tester', app: 'url: "https://merge-test.com"' },
+          config: { framework: 'aeval', stepsPrefix: '- type: platform.setup\n  platform_id: livekit\n' },
         }),
       });
       const wf: Evalflow = await wfRes.json();
@@ -2933,8 +2940,8 @@ describe('Vox API Tests', () => {
 
       const jobConfig = result.job.config as Record<string, unknown>;
       // Evalflow config fields
-      expect(jobConfig.framework).toBe('voice-agent-tester');
-      expect(jobConfig.app).toBe('url: "https://merge-test.com"');
+      expect(jobConfig.framework).toBe('aeval');
+      expect(String(jobConfig.stepsPrefix)).toContain('platform.setup');
       // Eval set config fields (merged)
       expect(jobConfig.scenario).toBe('steps:\n  - action: speak\n    file: test.mp3');
     });
@@ -2987,7 +2994,7 @@ describe('Vox API Tests', () => {
           description: 'Original evalflow to clone',
           visibility: 'public',
           providerId: testProviderId,
-          config: { framework: 'voice-agent-tester', app: 'url: "https://clone-me.com"' },
+          config: { framework: 'aeval', stepsPrefix: '- type: platform.setup\n  platform_id: livekit\n' },
         }),
       });
       const wf: Evalflow = await response.json();
@@ -3002,7 +3009,7 @@ describe('Vox API Tests', () => {
       expect(response.ok).toBe(true);
       const cloned: Evalflow = await response.json();
       expect(cloned.name).toBe('Clone of Clone Source Evalflow');
-      expect(cloned.config).toEqual({ framework: 'voice-agent-tester', app: 'url: "https://clone-me.com"' });
+      expect(cloned.config).toEqual({ framework: 'aeval', stepsPrefix: '- type: platform.setup\n  platform_id: livekit\n' });
       expect(cloned.visibility).toBe('public');
       expect(cloned.isMainline).toBe(false);
       expect(cloned.id).not.toBe(sourceEvalflowId);
@@ -3140,7 +3147,7 @@ describe('Vox API Tests', () => {
           name: 'RunNow Config Evalflow',
           visibility: 'public',
           providerId: testProviderId,
-          config: { framework: 'voice-agent-tester', app: 'url: "https://runnow.com"' },
+          config: { framework: 'aeval', stepsPrefix: '- type: platform.setup\n  platform_id: livekit\n' },
         }),
       });
       expect(wfRes.ok).toBe(true);
@@ -3183,8 +3190,8 @@ describe('Vox API Tests', () => {
       // Verify merged config
       expect(result.job.config).toBeDefined();
       const jobConfig = result.job.config as Record<string, unknown>;
-      expect(jobConfig.framework).toBe('voice-agent-tester');
-      expect(jobConfig.app).toBe('url: "https://runnow.com"');
+      expect(jobConfig.framework).toBe('aeval');
+      expect(String(jobConfig.stepsPrefix)).toContain('platform.setup');
       expect(jobConfig.scenario).toBe('steps:\n  - action: speak\n    file: runnow.mp3');
     });
   });
@@ -3257,7 +3264,7 @@ describe('Vox API Tests', () => {
           name: 'Provider A Evalflow',
           visibility: 'public',
           providerId: testProviderId,
-          config: { framework: 'voice-agent-tester', app: 'url: "https://provider-a.com"' },
+          config: { framework: 'aeval', stepsPrefix: '- type: platform.setup\n  platform_id: agora\n' },
         }),
       });
       expect(wf1Res.ok).toBe(true);
@@ -3269,7 +3276,7 @@ describe('Vox API Tests', () => {
           name: 'Provider B Evalflow',
           visibility: 'public',
           providerId: testProviderId,
-          config: { framework: 'voice-agent-tester', app: 'url: "https://provider-b.com"' },
+          config: { framework: 'aeval', stepsPrefix: '- type: platform.setup\n  platform_id: livekit\n' },
         }),
       });
       expect(wf2Res.ok).toBe(true);
@@ -3290,12 +3297,12 @@ describe('Vox API Tests', () => {
       expect(job2Res.ok).toBe(true);
       const job2 = await job2Res.json();
 
-      // Both jobs share same scenario but different app configs
+      // Both jobs share same scenario but different setup steps
       expect(job1.job.config.scenario).toBe(job2.job.config.scenario);
-      expect(job1.job.config.app).toBe('url: "https://provider-a.com"');
-      expect(job2.job.config.app).toBe('url: "https://provider-b.com"');
-      expect(job1.job.config.framework).toBe('voice-agent-tester');
-      expect(job2.job.config.framework).toBe('voice-agent-tester');
+      expect(String(job1.job.config.stepsPrefix)).toContain('platform_id: agora');
+      expect(String(job2.job.config.stepsPrefix)).toContain('platform_id: livekit');
+      expect(job1.job.config.framework).toBe('aeval');
+      expect(job2.job.config.framework).toBe('aeval');
     });
   });
 

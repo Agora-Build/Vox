@@ -6,18 +6,13 @@
  * 1. Registers with Vox server using a token
  * 2. Sends periodic heartbeats
  * 3. Fetches and claims pending jobs
- * 4. Executes evaluation tests using aeval or voice-agent-tester
+ * 4. Executes evaluation tests using aeval
  * 5. Reports results back to the server
- *
- * Supports two eval frameworks:
- *   "aeval"                (default) - single-binary eval with JSON metrics
- *   "voice-agent-tester"   - Node/Puppeteer eval with CSV report
  *
  * Config resolution (CLI args take precedence over env vars):
  *   token     = --token  || AGENT_TOKEN
  *   server    = --server || VOX_SERVER || 'http://localhost:5000'
  *   name      = --name   || VOX_AGENT_NAME || ''
- *   framework = EVAL_FRAMEWORK || 'aeval'
  *   headless  = HEADLESS !== 'false'  (default true)
  *
  * Usage:
@@ -139,7 +134,6 @@ const AEVAL_RUN_TIMEOUT_MS = (() => {
   return Number.isFinite(v) && v > 0 ? v : 20 * 60 * 1000; // default 20 min; ignore junk/negative
 })();
 
-const VOICE_AGENT_TESTER_PATH = path.resolve(__dirname, 'voice-agent-tester');
 const AEVAL_DATA_PATH = path.resolve(__dirname, 'aeval-data');
 
 // Shorten BUILD_TAG: "main/abc123def456..." → "main/abc123d"
@@ -1503,153 +1497,6 @@ class VoxEvalAgentDaemon {
   }
 
   // -------------------------------------------------------------------------
-  // voice-agent-tester framework
-  // -------------------------------------------------------------------------
-
-  private runVoiceAgentTester(appConfig: string, scenarioConfig: string): Promise<EvalResult> {
-    return new Promise((resolve, reject) => {
-      const reportFile = `/tmp/vox-report-${Date.now()}-${Math.random().toString(36).slice(2)}.csv`;
-
-      const args = [
-        'start',
-        '--',
-        '-a', appConfig,
-        '-s', scenarioConfig,
-        '--report', reportFile,
-        '--headless', this.config.headless.toString(),
-      ];
-
-      console.log(`[Daemon] Running: npm ${args.join(' ')}`);
-
-      const proc = spawn('npm', args, {
-        cwd: VOICE_AGENT_TESTER_PATH,
-        env: { ...process.env },
-        stdio: ['ignore', 'pipe', 'pipe'],
-      });
-
-      let stdout = '';
-      let stderr = '';
-
-      proc.stdout.on('data', (data) => {
-        stdout += data.toString();
-        console.log(`[VAT] ${data.toString().trim()}`);
-      });
-
-      proc.stderr.on('data', (data) => {
-        stderr += data.toString();
-        console.error(`[VAT] ${data.toString().trim()}`);
-      });
-
-      proc.on('close', (code) => {
-        console.log(`[Daemon] voice-agent-tester exited with code ${code}`);
-        const results = this.parseVATResults(reportFile, stdout);
-        resolve(results);
-      });
-
-      proc.on('error', (error) => {
-        reject(error);
-      });
-    });
-  }
-
-  private parseVATResults(reportFile: string, stdout: string): EvalResult {
-    const results: EvalResult = { ...RESULT_DEFAULTS };
-
-    try {
-      if (fs.existsSync(reportFile)) {
-        const csv = fs.readFileSync(reportFile, 'utf-8');
-        console.log(`[Daemon] CSV Report content:\n${csv}`);
-
-        const lines = csv.trim().split('\n');
-
-        if (lines.length >= 2) {
-          const headers = lines[0].split(', ').map(h => h.trim());
-          const allLatencies: number[][] = [];
-
-          for (let i = 1; i < lines.length; i++) {
-            const values = lines[i].split(', ').map(v => v.trim());
-            const runLatencies: number[] = [];
-
-            headers.forEach((header, idx) => {
-              if (header.includes('elapsed_time')) {
-                const value = parseFloat(values[idx]);
-                if (!isNaN(value)) {
-                  runLatencies.push(value);
-                }
-              }
-            });
-
-            if (runLatencies.length > 0) {
-              allLatencies.push(runLatencies);
-            }
-          }
-
-          console.log(`[Daemon] Parsed latencies:`, allLatencies);
-
-          if (allLatencies.length > 0) {
-            // Response latency (first elapsed_time from each run)
-            const responseLatencies = allLatencies.map(run => run[0]).filter(v => !isNaN(v));
-
-            if (responseLatencies.length > 0) {
-              const sorted = [...responseLatencies].sort((a, b) => a - b);
-              const mid = Math.floor(sorted.length / 2);
-              results.responseLatencyMedian = sorted.length % 2 !== 0
-                ? Math.round(sorted[mid])
-                : Math.round((sorted[mid - 1] + sorted[mid]) / 2);
-
-              if (responseLatencies.length > 1) {
-                const mean = responseLatencies.reduce((a, b) => a + b, 0) / responseLatencies.length;
-                const variance = responseLatencies.reduce((a, b) => a + Math.pow(b - mean, 2), 0) / responseLatencies.length;
-                results.responseLatencySd = Math.round(Math.sqrt(variance));
-              }
-            }
-
-            // Interrupt latency (second elapsed_time from each run)
-            const interruptLatencies = allLatencies.map(run => run[1]).filter(v => !isNaN(v) && v !== undefined);
-
-            if (interruptLatencies.length > 0) {
-              const sorted = [...interruptLatencies].sort((a, b) => a - b);
-              const mid = Math.floor(sorted.length / 2);
-              results.interruptLatencyMedian = sorted.length % 2 !== 0
-                ? Math.round(sorted[mid])
-                : Math.round((sorted[mid - 1] + sorted[mid]) / 2);
-
-              if (interruptLatencies.length > 1) {
-                const mean = interruptLatencies.reduce((a, b) => a + b, 0) / interruptLatencies.length;
-                const variance = interruptLatencies.reduce((a, b) => a + Math.pow(b - mean, 2), 0) / interruptLatencies.length;
-                results.interruptLatencySd = Math.round(Math.sqrt(variance));
-              }
-            }
-          }
-        }
-
-        console.log(`[Daemon] Report file kept at: ${reportFile}`);
-      } else {
-        console.log(`[Daemon] Report file not found: ${reportFile}`);
-      }
-    } catch (error: unknown) {
-      const msg = error instanceof Error ? error.message : String(error);
-      console.error(`[Daemon] Error parsing results:`, msg);
-    }
-
-    // Fallback: parse stdout if CSV parsing failed (== null = still unset/NA)
-    if (results.responseLatencyMedian == null) {
-      const elapsedMatch = stdout.match(/elapsed[_\s]?time[:\s]+(\d+)/i);
-      if (elapsedMatch) {
-        results.responseLatencyMedian = parseInt(elapsedMatch[1]);
-      }
-
-      const avgMatch = stdout.match(/Average:\s*(\d+)/);
-      if (avgMatch) {
-        results.responseLatencyMedian = parseInt(avgMatch[1]);
-      }
-    }
-
-    console.log(`[Daemon] Final parsed results:`, results);
-    return results;
-  }
-
-  // -------------------------------------------------------------------------
   // Temp file helpers
   // -------------------------------------------------------------------------
 
@@ -2168,7 +2015,7 @@ class VoxEvalAgentDaemon {
     console.log(`  - Evalflow ID: ${job.evalflowId}`);
     console.log(`  - Site: ${job.siteId}`);
 
-    const config = (job.config || {}) as { framework?: string; app?: string; scenario?: string; stepsPrefix?: string; stepsSuffix?: string };
+    const config = (job.config || {}) as { framework?: string; scenario?: string; stepsPrefix?: string; stepsSuffix?: string };
 
     // Per-job framework override, falling back to daemon default
     const framework = config.framework || this.config.framework;
@@ -2180,7 +2027,6 @@ class VoxEvalAgentDaemon {
 
     // Resolve ${config.*} placeholders (e.g., ${config.url} from evalflow config)
     let scenario = config.scenario;
-    let app = config.app;
     // stepsPrefix/stepsSuffix come from the evalflow and typically hold
     // platform.setup with credentials — they MUST go through the same
     // ${config.*} / ${secrets.*} resolution as the scenario.
@@ -2188,7 +2034,7 @@ class VoxEvalAgentDaemon {
     let stepsSuffix = config.stepsSuffix;
     const configPlaceholders: Record<string, string> = {};
     for (const [k, v] of Object.entries(config)) {
-      if (typeof v === 'string' && k !== 'scenario' && k !== 'app' && k !== 'framework') {
+      if (typeof v === 'string' && k !== 'scenario' && k !== 'framework') {
         configPlaceholders[k] = v;
       }
     }
@@ -2196,7 +2042,6 @@ class VoxEvalAgentDaemon {
       s.replace(/\$\{config\.(\w+)\}/g, (_m, key) => configPlaceholders[key] ?? _m);
     if (Object.keys(configPlaceholders).length > 0) {
       scenario = resolveConfigVars(scenario);
-      if (app) app = resolveConfigVars(app);
       if (stepsPrefix) stepsPrefix = resolveConfigVars(stepsPrefix);
       if (stepsSuffix) stepsSuffix = resolveConfigVars(stepsSuffix);
     }
@@ -2208,11 +2053,10 @@ class VoxEvalAgentDaemon {
     // secret whose VALUE happens to contain "${secrets.X}" as an unresolved
     // placeholder and fail a perfectly good job.
     const unsuppliedNames = Array.from(
-      collectSecretRefs([scenario, app, stepsPrefix, stepsSuffix]),
+      collectSecretRefs([scenario, stepsPrefix, stepsSuffix]),
     ).filter((name) => !(name in jobSecrets));
     if (Object.keys(jobSecrets).length > 0) {
       scenario = this.resolveSecrets(scenario, jobSecrets);
-      if (app) app = this.resolveSecrets(app, jobSecrets);
       if (stepsPrefix) stepsPrefix = this.resolveSecrets(stepsPrefix, jobSecrets);
       if (stepsSuffix) stepsSuffix = this.resolveSecrets(stepsSuffix, jobSecrets);
     }
@@ -2276,14 +2120,10 @@ class VoxEvalAgentDaemon {
       // Scanned post-substitution rather than inside resolveSecrets because
       // substitution is skipped entirely when the secrets map is empty. Core
       // rejects this at dispatch; this catches a secret deleted in between.
-      // Of the names the server didn't supply, which still remain in the strings
-      // this framework will actually read? Framework-aware because aeval never
-      // reads `app` and voice-agent-tester never reads stepsPrefix/stepsSuffix —
-      // a stale placeholder in an ignored field ran fine before. Checked AFTER
-      // session injection, which legitimately strips brokered login refs.
-      const active = framework === 'voice-agent-tester'
-        ? [scenario, app]
-        : [scenario, stepsPrefix, stepsSuffix];
+      // Of the names the server didn't supply, which still remain in the
+      // strings aeval will actually read? Checked AFTER session injection,
+      // which legitimately strips brokered login refs.
+      const active = [scenario, stepsPrefix, stepsSuffix];
       const unresolved = unsuppliedNames.filter((name) =>
         active.some((text) => typeof text === 'string' && text.includes('${secrets.' + name + '}')),
       );
@@ -2309,29 +2149,16 @@ class VoxEvalAgentDaemon {
           results = await this.executeAevalWithChunking(scenario, { stepsPrefix, stepsSuffix }, tempFiles);
           break;
         }
-        case 'voice-agent-tester': {
-          if (!app) {
-            throw new Error('job.config.app is required for voice-agent-tester');
-          }
-          const appConfig = this.writeTempYaml(app, 'vox-app')!;
-          tempFiles.push(appConfig);
-
-          const scenarioConfig = this.writeTempYaml(scenario, 'vox-scenario')!;
-          tempFiles.push(scenarioConfig);
-
-          results = await this.runVoiceAgentTester(appConfig, scenarioConfig);
-          break;
-        }
         default:
-          throw new Error(`Unsupported eval framework: '${framework}'. Supported: aeval, voice-agent-tester`);
+          // voice-agent-tester was removed (2026-09); a legacy job carrying it
+          // fails here rather than being silently rerouted.
+          throw new Error(`Unsupported eval framework: '${framework}'. Supported: aeval`);
       }
 
       console.log(`[Daemon] Job ${job.id} results:`, results);
       return results;
-    } catch (error: unknown) {
-      // Re-throw so processJobs can report the job as failed (not completed)
-      throw error;
     } finally {
+      // Errors propagate so processJobs reports the job as failed.
       this.cleanupTempFiles(...tempFiles);
       this.activeSecretValues = []; // don't retain decrypted values past the job
     }
@@ -2470,7 +2297,6 @@ function parseArgs(): DaemonConfig {
   let token = process.env.AGENT_TOKEN || '';
   let serverUrl = process.env.VOX_SERVER || 'http://localhost:5000';
   let name = process.env.VOX_AGENT_NAME || '';
-  const framework = process.env.EVAL_FRAMEWORK || 'aeval';
   const headless = process.env.HEADLESS !== 'false';
 
   for (let i = 0; i < args.length; i++) {
@@ -2505,7 +2331,6 @@ Environment Variables:
   AGENT_TOKEN           Agent registration token (fallback if --token not given)
   VOX_SERVER            Vox server URL (fallback if --server not given)
   VOX_AGENT_NAME        Agent name (fallback if --name not given)
-  EVAL_FRAMEWORK        Default framework: 'aeval' or 'voice-agent-tester' (default: aeval)
   HEADLESS              Run browser in headless mode (default: true)
 
 Example:
@@ -2521,7 +2346,7 @@ Example:
     process.exit(1);
   }
 
-  return { token, serverUrl, name, framework, headless };
+  return { token, serverUrl, name, framework: 'aeval', headless };
 }
 
 // ---------------------------------------------------------------------------

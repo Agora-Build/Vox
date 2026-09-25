@@ -210,7 +210,6 @@ for name in "${!images[@]}"; do
     # Pass through optional env vars if set
     [ -n "${LOCAL_DEBUG:-}" ] && env_args+="-e LOCAL_DEBUG=$LOCAL_DEBUG "
     [ -n "${HEADLESS:-}" ] && env_args+="-e HEADLESS=$HEADLESS "
-    [ -n "${EVAL_FRAMEWORK:-}" ] && env_args+="-e EVAL_FRAMEWORK=$EVAL_FRAMEWORK "
     [ -n "${VOX_AGENT_NAME:-}" ] && env_args+="-e VOX_AGENT_NAME=$VOX_AGENT_NAME "
 
     # Clear any leftover container holding the stable name (e.g. a stopped one

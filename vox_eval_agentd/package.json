@@ -1,7 +1,7 @@
 {
   "name": "vox_eval_agentd",
   "version": "1.0.0",
-  "description": "Vox Evaluation Agent Daemon - integrates aeval and voice-agent-tester with Vox API",
+  "description": "Vox Evaluation Agent Daemon - integrates aeval with Vox API",
   "type": "module",
   "main": "vox-agentd.js",
   "scripts": {

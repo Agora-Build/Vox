@@ -225,7 +225,7 @@ const MAX_CONFIG_SIZE = 100_000; // 100KB
 // Keys owned exclusively by the eval set (the test body).
 const EVALSET_ONLY_KEYS = ["scenario"] as const;
 // Keys owned exclusively by the evalflow (platform setup + connection).
-const EVALFLOW_ONLY_KEYS = ["framework", "app", "stepsPrefix", "stepsSuffix"] as const;
+const EVALFLOW_ONLY_KEYS = ["framework", "stepsPrefix", "stepsSuffix"] as const;
 
 export function validateEvalflowConfig(config: unknown, transport: "web" | "phone" = "web"): { valid: boolean; error?: string } {
   if (config === null || config === undefined) {
@@ -245,11 +245,11 @@ export function validateEvalflowConfig(config: unknown, transport: "web" | "phon
       return { valid: false, error: `'${k}' belongs to the eval set, not the evalflow` };
     }
   }
-  if (c.framework !== undefined && c.framework !== "aeval" && c.framework !== "voice-agent-tester") {
-    return { valid: false, error: "Framework must be 'aeval' or 'voice-agent-tester'" };
+  if (c.framework !== undefined && c.framework !== "aeval") {
+    return { valid: false, error: "Framework must be 'aeval' (voice-agent-tester was removed)" };
   }
-  if (c.app !== undefined && typeof c.app !== "string") {
-    return { valid: false, error: "Config app must be a string" };
+  if (c.app !== undefined) {
+    return { valid: false, error: "'app' belonged to the removed voice-agent-tester framework" };
   }
   if (c.stepsPrefix !== undefined && typeof c.stepsPrefix !== "string") {
     return { valid: false, error: "Config stepsPrefix must be a string" };
