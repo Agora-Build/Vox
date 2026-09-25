@@ -444,6 +444,17 @@ describe('Config separation validators', () => {
       const templatedNumber = validateEvalflowConfig({
         stepsPrefix: '- type: call.dial\n  number: "${item.n}"' }, 'phone');
       expect(templatedNumber.valid).toBe(true);
+      // A restful.request with a steps key is rejected at save (same unknown-
+      // field rule the endpoint applies at run time).
+      const restfulWithSteps = validateEvalflowConfig({
+        stepsPrefix: '- type: restful.request\n  method: POST\n  url: "https://x.example/y"\n  steps: []' }, 'phone');
+      expect(restfulWithSteps.valid).toBe(false);
+      // Positional ordering can't be evaded by re-aliasing an already-seen
+      // restful node after a non-restful step.
+      const aliased = validateEvalflowConfig({
+        stepsPrefix: '- &r\n  type: restful.request\n  method: POST\n  url: "https://x.example/y"\n- type: call.dial\n  number: "+15551234"\n- *r' }, 'phone');
+      expect(aliased.valid).toBe(false);
+      expect(aliased.error).toContain('must lead Setup Steps');
     });
 
     it('DoS bounds: deep nesting is rejected; an aliased cycle terminates instead of hanging', async () => {

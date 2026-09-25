@@ -17,6 +17,7 @@ import { parsePlatformSetup, sessionScopeForEvalflow, evaluateSessionRequirement
 import { validateRegisterPayload, cacheBrokerMintSecret, hasBrokerMintSecret, routeToBroker, executeViaBroker, KNOWN_BROKER_TYPES } from "./broker-registry";
 import { resolveRestfulTemplate } from "./restful-exec";
 import { validateRestfulTrigger, parseStepsScript, stepsContainCallDial } from "./storage";
+import { PHONE_NUMBER_RE } from "@shared/steps";
 import { deriveApiKeyStatus } from "./api-key-status";
 import { isStaleOfflineAgent } from "./agent-liveness";
 import { runAgentLocationCheck, LOCATION_RECHECK_HOURS, getGeoipAttribution, reloadGeoReaders } from "./location";
@@ -4558,8 +4559,8 @@ export async function registerRoutes(
       // addressed by step index (unified-steps §3) — the daemon computed the
       // index from the same byte-identical stepsPrefix, and the caller cannot
       // substitute a different template (TOCTOU, same rule as before).
-      const stepIndex = Number(req.body?.stepIndex);
-      if (!Number.isInteger(stepIndex) || stepIndex < 0) {
+      const stepIndex: unknown = req.body?.stepIndex;
+      if (typeof stepIndex !== "number" || !Number.isInteger(stepIndex) || stepIndex < 0) {
         return res.status(400).json({ error: "stepIndex required (index into Setup Steps)" });
       }
       const setup = parseStepsScript((snapEvalflow.config as Record<string, unknown> | undefined)?.stepsPrefix);
@@ -4591,8 +4592,14 @@ export async function registerRoutes(
         }
       }
 
-      const phoneNumber = typeof req.body?.variables?.phoneNumber === "string"
-        ? req.body.variables.phoneNumber : undefined;
+      // The ONE caller-suppliable variable, and it substitutes into the URL —
+      // constrain it to the dialable shape (no URL delimiters / authority
+      // syntax can pass), so a compromised agent cannot redirect the request.
+      const rawPhone = req.body?.variables?.phoneNumber;
+      if (rawPhone !== undefined && (typeof rawPhone !== "string" || !PHONE_NUMBER_RE.test(rawPhone))) {
+        return res.status(400).json({ error: "variables.phoneNumber must be a phone number" });
+      }
+      const phoneNumber = typeof rawPhone === "string" ? rawPhone : undefined;
       const resolved = resolveRestfulTemplate(trigger as import("@shared/schema").RestfulTrigger, secretMap, { phoneNumber });
       if (!resolved.ok) {
         // Name-only errors by construction; still no secret values here.

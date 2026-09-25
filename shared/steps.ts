@@ -92,10 +92,5 @@ export function walkStepList(steps: unknown[], visit: StepVisit): string | null 
  * too-complex graph reports no dial, and such a script can no longer be
  * saved anyway (validation walks with the same budget). */
 export function stepsContainCallDial(steps: unknown[]): boolean {
-  let found = false;
-  const result = walkStepList(steps, (step) => {
-    if (step.type === "call.dial") { found = true; return "found"; }
-    return null;
-  });
-  return result === "found" && found;
+  return walkStepList(steps, (step) => (step.type === "call.dial" ? "found" : null)) === "found";
 }

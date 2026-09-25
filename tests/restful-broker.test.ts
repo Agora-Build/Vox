@@ -328,6 +328,11 @@ d("POST /api/eval-agent/jobs/:jobId/restful (integration, fake broker)", () => {
     const nonLeading = await callEndpoint(nonLeadingJobId, { stepIndex: 1 });
     expect(nonLeading.status).toBe(400);
     expect((await nonLeading.json()).error).toContain("leading");
+    // phoneNumber substitutes into the URL — anything outside the dialable
+    // shape (URL delimiters, authority syntax) is refused at the boundary.
+    const redirect = await callEndpoint(jobId, { variables: { phoneNumber: "evil.example/#" } });
+    expect(redirect.status).toBe(400);
+    expect((await redirect.json()).error).toContain("phone number");
   });
 
   it("503 when no live restful broker exists", async () => {

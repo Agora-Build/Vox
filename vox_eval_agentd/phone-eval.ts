@@ -65,9 +65,16 @@ export function compilePhoneConversation(rawSteps: unknown[], opts: CompileOpts)
 
   const MAX_EMIT_DEPTH = 16;
   const MAX_EMITTED_STEPS = 2000;
+  // Work budget counts every RAW step processed, not just emitted output —
+  // nested for_each over no-output steps (e.g. dropped audio.start_recording)
+  // with aliased big item lists would otherwise burn |items|^depth iterations
+  // while out.length stays 0.
+  const MAX_EMIT_ITERATIONS = 20_000;
+  let iterations = 0;
   const emit = (steps: unknown[], item: unknown, depth = 0): string | null => {
     if (depth > MAX_EMIT_DEPTH) return 'step script too deeply nested';
     for (const raw of steps) {
+      if (++iterations > MAX_EMIT_ITERATIONS) return `script expands past ${MAX_EMIT_ITERATIONS} loop iterations`;
       if (out.length > MAX_EMITTED_STEPS) return `script expands past ${MAX_EMITTED_STEPS} steps`;
       if (typeof raw !== 'object' || raw === null) return 'step must be an object';
       const step = Object.fromEntries(

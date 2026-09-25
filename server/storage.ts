@@ -327,7 +327,23 @@ export function validateStepsScript(
   // Phone: strict, recursive, node/depth-bounded (YAML aliases expand a naive
   // walk exponentially — walkStepList fails closed on the budget).
   const segment: StepSegment = field === "stepsSuffix" ? "teardown" : "setup";
-  let seenTopNonRestful = false;
+  // Ordering is POSITIONAL, so check it over the raw top-level array — the
+  // walk below dedupes aliased nodes by identity, which would let a repeated
+  // alias skip a position-dependent rule.
+  if (segment === "setup") {
+    let seenNonRestful = false;
+    for (let i = 0; i < parsed.length; i++) {
+      const el: unknown = parsed[i];
+      const t = typeof el === "object" && el !== null ? String((el as Record<string, unknown>).type ?? "") : "";
+      if (t === "restful.request") {
+        if (seenNonRestful) {
+          return { valid: false, error: `${field}[${i}]: restful.request steps must lead Setup Steps — they execute before the call` };
+        }
+      } else {
+        seenNonRestful = true;
+      }
+    }
+  }
   const err = walkStepList(parsed, (step, depth) => {
     const type = typeof step.type === "string" ? step.type : "";
     if (!type) return "each step needs a string 'type'";
@@ -345,16 +361,15 @@ export function validateStepsScript(
     if (type === "restful.request") {
       if (segment === "teardown") return "restful.request is a Setup (pre-call) step — illegal in Teardown";
       // Orchestrated class: only legal as the LEADING top-level run of Setup
-      // (mirrors the daemon splitter; a nested one can never execute pre-call).
+      // (positional rule checked above; a nested one can never execute pre-call).
       if (depth > 0) return "restful.request cannot be nested — it must lead Setup Steps";
-      if (seenTopNonRestful) return "restful.request steps must lead Setup Steps — they execute before the call";
-      const { type: _t, description: _d, steps: _s, ...fields } = step;
+      // Deliberately do NOT strip a `steps` key: validateRestfulTrigger flags
+      // it as unknown, matching what the endpoint would reject at run time.
+      const { type: _t, description: _d, ...fields } = step;
       const shape = validateRestfulTrigger(fields);
       if (!shape.valid) return shape.error ?? "invalid restful.request";
       return null;
     }
-    if (depth === 0) seenTopNonRestful = true;
-
     const segErr = illegalPhoneStepType(type, segment);
     if (segErr) return segErr;
     if (type === "call.dial") {

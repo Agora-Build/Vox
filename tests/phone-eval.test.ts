@@ -197,6 +197,19 @@ describe("splitPhoneScript + ensureTrailingHangup + sumStepTimeouts", () => {
     expect(goodTemplated.ok).toBe(true);
   });
 
+  it("DoS: nested for_each over no-output steps trips the ITERATION budget, not just the output cap", () => {
+    // Each level multiplies iterations by |items| while emitting nothing —
+    // 5 levels x 30 items = 24.3M iterations if unbounded.
+    const items = Array.from({ length: 30 }, (_, i) => i);
+    let inner: Record<string, unknown> = { type: "audio.start_recording" }; // dropped, no output
+    for (let i = 0; i < 5; i++) inner = { type: "control.for_each", items, steps: [inner] };
+    const start = Date.now();
+    const r = compilePhoneConversation([inner], { resolveCorpusFile: corpus, segment: "conversation" });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toContain("loop iterations");
+    expect(Date.now() - start).toBeLessThan(2000); // bounded work, not |items|^depth
+  });
+
   it("splits leading restful.request steps with their ABSOLUTE stepsPrefix indices", () => {
     const split = splitPhoneScript(
       [
