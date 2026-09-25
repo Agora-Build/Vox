@@ -2179,8 +2179,8 @@ export class DatabaseStorage {
     await db.delete(evalSchedules).where(eq(evalSchedules.id, id));
   }
 
-  // Count "active" schedules on a evalflow: enabled and not expired. Used to block
-  // deletion of a evalflow that still has a live schedule.
+  // Count "active" schedules on an evalflow: enabled and not expired. Used to block
+  // deletion of an evalflow that still has a live schedule.
   async countActiveSchedulesForEvalflow(evalflowId: number): Promise<number> {
     const now = new Date();
     const rows = await db.select({ count: sql<number>`count(*)::int` })

@@ -326,7 +326,7 @@ describe('Config separation validators', () => {
       expect(r.valid).toBe(true);
     });
 
-    it('rejects scenario in a evalflow', () => {
+    it('rejects scenario in an evalflow', () => {
       const r = validateEvalflowConfig({ framework: 'aeval', scenario: 'name: x' });
       expect(r.valid).toBe(false);
       expect(r.error).toContain('eval set');

@@ -522,7 +522,7 @@ export default function ConsoleEvalSets() {
           <DialogHeader>
             <DialogTitle>Run Evaluation</DialogTitle>
             <DialogDescription>
-              Run <span className="font-medium text-foreground">{runEvalSet?.name}</span> against a evalflow.
+              Run <span className="font-medium text-foreground">{runEvalSet?.name}</span> against an evalflow.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4 py-4">

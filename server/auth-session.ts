@@ -73,7 +73,7 @@ export function credentialKeyFor(need: SessionNeed): string {
 }
 
 /**
- * The outcome of deciding whether a evalflow needs a Core-minted login session:
+ * The outcome of deciding whether an evalflow needs a Core-minted login session:
  *  - `none`         — runtime path; the agent may fetch its (runtime-class) secrets directly.
  *  - `need`         — Core must mint a storageState; login secrets stay in Core.
  *  - `misconfigured`— a split-class credential pair. REJECT the run rather than
@@ -286,7 +286,7 @@ export type OwnerSessionStampResult =
  * the scheduler tick and the schedule run-now route, both of which are
  * owner/creator-gated so they carry NO cross-user dispatch-trust gates (the
  * run route does; it stays inline). Shared so the two owner paths can never
- * drift: a evalflow whose platform.setup references login-class secrets MUST
+ * drift: an evalflow whose platform.setup references login-class secrets MUST
  * be minted via Core, never handed to the agent as durable credentials.
  *
  * Mutates `jobConfig` in place: strips any caller-supplied `sessionInjection`
@@ -297,7 +297,7 @@ export type OwnerSessionStampResult =
  * into the job snapshot (null when no session is needed).
  */
 /**
- * One-stop session-need detection for a evalflow: parse the platform setup,
+ * One-stop session-need detection for an evalflow: parse the platform setup,
  * resolve the owner scope, and evaluate against the scope's brokered secrets.
  * PURE with respect to side effects (one read query, no config mutation, no
  * mint pre-warm) — safe to call before deciding whether a dispatch may happen
@@ -379,7 +379,7 @@ export function resolvableSecretSources(configs: unknown[]): unknown[] {
 }
 
 /**
- * Names of ${secrets.X} placeholders a evalflow/eval-set references that have
+ * Names of ${secrets.X} placeholders an evalflow/eval-set references that have
  * NO secret row in the owner's scope. Such a run is a GUARANTEED failure: the
  * daemon leaves an unresolved placeholder verbatim, and aeval then aborts on
  * it ("Unknown variable source: secrets") with an opaque PyInstaller exit —

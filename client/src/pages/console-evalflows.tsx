@@ -43,7 +43,7 @@ type SaveDecision =
   | { action: "auto-custom"; customId: string }
   | { action: "mismatch"; yamlPlatform: string; providerName: string };
 
-// Decide whether a evalflow save can proceed, must switch to Custom, or should warn.
+// Decide whether an evalflow save can proceed, must switch to Custom, or should warn.
 // Only meaningful for the aeval framework (voice-agent-tester has no platform_id).
 function evaluateSave(
   framework: string,

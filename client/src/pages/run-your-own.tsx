@@ -188,7 +188,7 @@ export default function SelfTest() {
   });
 
   // Fallback tier list (no online counts yet) so the "Run on" selector is
-  // populated immediately, before a evalflow/region/eval set is chosen and
+  // populated immediately, before an evalflow/region/eval set is chosen and
   // the run-targets query has loaded.
   const tierOptions = runTargets?.tiers ?? [
     { tier: "private", available: true },
@@ -344,7 +344,7 @@ export default function SelfTest() {
   const handleRunEval = () => {
     const evalflowId = parseInt(selectedEvalflowId);
     if (!evalflowId) {
-      toast({ title: "Please select or create a evalflow first", variant: "destructive" });
+      toast({ title: "Please select or create an evalflow first", variant: "destructive" });
       return;
     }
     runEvalMutation.mutate(evalflowId);
@@ -418,7 +418,7 @@ export default function SelfTest() {
                 Configure Evaluation
               </CardTitle>
               <CardDescription>
-                Select a evalflow and run an evaluation
+                Select an evalflow and run an evaluation
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-6 relative z-10">
@@ -434,7 +434,7 @@ export default function SelfTest() {
                       <Label>Evalflow</Label>
                       <Select value={selectedEvalflowId} onValueChange={setSelectedEvalflowId}>
                         <SelectTrigger>
-                          <SelectValue placeholder="Choose a evalflow" />
+                          <SelectValue placeholder="Choose an evalflow" />
                         </SelectTrigger>
                         <SelectContent>
                           {evalflows.map((w) => (
@@ -668,7 +668,7 @@ export default function SelfTest() {
                     <span className="text-xs font-mono">bash</span>
                   </div>
                   <div className="p-3 font-mono text-xs overflow-x-auto whitespace-pre text-muted-foreground">
-{`# Run a evalflow
+{`# Run an evalflow
 curl -X POST -H "Authorization: Bearer vox_live_xxx" \\
   -H "Content-Type: application/json" \\
   -d '{"region": "na-us-seattle", "targetTier": "public"}' \\

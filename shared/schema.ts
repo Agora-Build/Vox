@@ -91,7 +91,7 @@ export const providers = pgTable("providers", {
   brandColor: text("brand_color"),
   // Stable platform slug matching the aeval evalflow YAML `platform.setup → platform_id`
   // (e.g. "agora", "livekit", "elevenlabs"). Null for generic providers like "Custom".
-  // Used to warn when a evalflow's provider disagrees with its setup YAML.
+  // Used to warn when an evalflow's provider disagrees with its setup YAML.
   platformId: text("platform_id"),
   isActive: boolean("is_active").default(true).notNull(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
@@ -359,7 +359,7 @@ export type RestfulTrigger = {
 // Immutable snapshot of the evalflow + eval-set (+ provider + creator plan) captured
 // on each job at run time. Everything downstream — provenance display, provider
 // attribution, and metric tiering — reads this instead of the live rows, so editing
-// or deleting a evalflow/eval-set never rewrites a past job's history.
+// or deleting an evalflow/eval-set never rewrites a past job's history.
 export type JobSnapshot = {
   provider: { id: string; name: string; platformId: string | null } | null;
   evalflow: { name: string; config: unknown; visibility: string; isMainline: boolean; ownerId: number; organizationId: number | null } | null;

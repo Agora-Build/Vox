@@ -24,7 +24,7 @@ export const SECRET_PLACEHOLDER_REGEX = /\$\{secrets\.([A-Z][A-Z0-9_]*)\}/g;
  * `AGORA_CONSOLE_EMAIL` to the auth-session broker but left
  * `AGORA_CONSOLE_PASSWORD` on Runtime — and a split pair is rejected outright
  * by evaluateSessionRequirement ("Login requires BOTH email and password to be
- * dedicated login-class secrets"), so the UI's own default produced a evalflow
+ * dedicated login-class secrets"), so the UI's own default produced an evalflow
  * that could never run.
  *
  * This is only a DEFAULT; both the console dropdown and the API's explicit
@@ -44,7 +44,7 @@ export const SECRET_PLACEHOLDER_REGEX = /\$\{secrets\.([A-Z][A-Z0-9_]*)\}/g;
  *    brokered secrets that are not the evalflow's platform.setup login pair are
  *    caught by findBrokeredMisuse, and the run route rejects the ENTIRE
  *    evalflow. So DB_USER + DB_PASSWORD defaulting to brokered would leave a
- *    user with a evalflow that cannot run at all. That is why the USER arm
+ *    user with an evalflow that cannot run at all. That is why the USER arm
  *    lists login-ish prefixes rather than accepting any `*_USER`:
  *    DB_USER / SMTP_USER / POSTGRES_USER are far more common in a secrets store
  *    than API_USER, and USER_AGENT / USER_ID / MAX_USERS must not match either.

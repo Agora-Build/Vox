@@ -289,7 +289,7 @@ describe('Vox API Tests', () => {
       expect(evalflow.name).toBe('Test Evalflow');
     });
 
-    it('should update a evalflow', async () => {
+    it('should update an evalflow', async () => {
       const response = await authFetch(adminSession, `${BASE_URL}/api/evalflows/${testEvalflowId}`, {
         method: 'PATCH',
         body: JSON.stringify({
@@ -440,7 +440,7 @@ describe('Vox API Tests', () => {
   });
 
   describe('Config separation enforcement', () => {
-    it('rejects a evalflow whose config has scenario', async () => {
+    it('rejects an evalflow whose config has scenario', async () => {
       const response = await authFetch(adminSession, `${BASE_URL}/api/evalflows`, {
         method: 'POST',
         body: JSON.stringify({
@@ -569,7 +569,7 @@ describe('Vox API Tests', () => {
       expect(ext.ok).toBe(true);
     });
 
-    it('blocks deleting a evalflow with an active schedule, then allows it once paused', async () => {
+    it('blocks deleting an evalflow with an active schedule, then allows it once paused', async () => {
       const wfRes = await authFetch(adminSession, `${BASE_URL}/api/evalflows`, {
         method: 'POST', body: JSON.stringify({ name: `Del Guard WF ${Date.now()}`, visibility: 'private', providerId: testProviderId }),
       });
@@ -604,7 +604,7 @@ describe('Vox API Tests', () => {
       expect(res.status).toBe(403);
     });
 
-    it('should reject scheduling a evalflow you do not own (owner-only, no admin bypass)', async () => {
+    it('should reject scheduling an evalflow you do not own (owner-only, no admin bypass)', async () => {
       // Register a fresh non-admin, non-owner user via invite.
       const pw = 'schedpass123';
       const email = `sched-noowner-${Date.now()}@test.local`;
@@ -997,7 +997,7 @@ describe('Vox API Tests', () => {
   describe('Job API', () => {
     let testJobId: number;
 
-    it('should run a evalflow and create jobs', async () => {
+    it('should run an evalflow and create jobs', async () => {
       const response = await authFetch(adminSession, `${BASE_URL}/api/evalflows/${testEvalflowId}/run`, {
         method: 'POST',
         body: JSON.stringify({
@@ -2054,7 +2054,7 @@ describe('Vox API Tests', () => {
       testUserEvalflowId = data.id;
     });
 
-    it('should run a evalflow via v1 API with region+targetTier pooled dispatch', async () => {
+    it('should run an evalflow via v1 API with region+targetTier pooled dispatch', async () => {
       const esResponse = await fetch(`${BASE_URL}/api/v1/eval-sets`, {
         method: 'POST',
         headers: {
@@ -2690,7 +2690,7 @@ describe('Vox API Tests', () => {
 
     it('should delete evalflow', async () => {
       // testEvalflowId accumulates active schedules over the suite (the recurring
-      // + 90-day-expiry lifecycle tests). The server blocks deleting a evalflow
+      // + 90-day-expiry lifecycle tests). The server blocks deleting an evalflow
       // that still has an active schedule (409), so clear those first — mirroring
       // the documented "delete the schedules first, then the evalflow" flow.
       const schedules = await (await authFetch(adminSession, `${BASE_URL}/api/eval-schedules`)).json();
@@ -2756,7 +2756,7 @@ describe('Vox API Tests', () => {
   describe('Evalflow Config (Framework + App Config)', () => {
     let configEvalflowId: number;
 
-    it('should create a evalflow with aeval framework config', async () => {
+    it('should create an evalflow with aeval framework config', async () => {
       const response = await authFetch(adminSession, `${BASE_URL}/api/evalflows`, {
         method: 'POST',
         body: JSON.stringify({
@@ -2775,7 +2775,7 @@ describe('Vox API Tests', () => {
       configEvalflowId = evalflow.id;
     });
 
-    it('should create a evalflow with voice-agent-tester framework and app YAML', async () => {
+    it('should create an evalflow with voice-agent-tester framework and app YAML', async () => {
       const appYaml = 'url: "https://example.com"\nsteps:\n  - action: wait\n    selector: "#start"';
       const response = await authFetch(adminSession, `${BASE_URL}/api/evalflows`, {
         method: 'POST',
@@ -2940,7 +2940,7 @@ describe('Vox API Tests', () => {
     });
 
     it('should produce empty config when both evalflow and eval set have no config', async () => {
-      // Create a evalflow with no config
+      // Create an evalflow with no config
       const wfRes = await authFetch(adminSession, `${BASE_URL}/api/evalflows`, {
         method: 'POST',
         body: JSON.stringify({
@@ -3540,7 +3540,7 @@ describe('Vox API Tests', () => {
       });
       const proj: Project = await projRes.json();
 
-      // Create a evalflow with frameworkVersion v0.1.0
+      // Create an evalflow with frameworkVersion v0.1.0
       const wfRes = await authFetch(adminSession, `${BASE_URL}/api/evalflows`, {
         method: 'POST',
         body: JSON.stringify({

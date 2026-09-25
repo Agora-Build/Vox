@@ -27,7 +27,7 @@ describe("pooled dispatch API", () => {
     // evalflows (id 1/2) are owned by Scout, not admin, so the schedule-create
     // assertions below need an admin-OWNED evalflow rather than the seed's
     // wf[0]. Create one here so both the run-route and schedule-route tests
-    // in this file share a evalflow the logged-in test user actually owns.
+    // in this file share an evalflow the logged-in test user actually owns.
     const providers = await (await authFetch(cookie, `${BASE_URL}/api/providers`)).json();
     const providerId = providers[0].id;
     const wfRes = await authFetch(cookie, `${BASE_URL}/api/evalflows`, {
@@ -174,7 +174,7 @@ describe("missing secrets are rejected at dispatch, not discovered by a failed r
   beforeAll(async () => {
     cookie = await login();
     const providers = await (await fetch(`${BASE_URL}/api/providers`)).json();
-    // A evalflow whose scenario references a secret nobody has configured.
+    // An evalflow whose scenario references a secret nobody has configured.
     const wfRes = await authFetch(cookie, `${BASE_URL}/api/evalflows`, {
       method: "POST",
       body: JSON.stringify({
@@ -202,7 +202,7 @@ describe("missing secrets are rejected at dispatch, not discovered by a failed r
     if (evalSetId) await authFetch(cookie, `${BASE_URL}/api/eval-sets/${evalSetId}`, { method: "DELETE" });
   });
 
-  it("gates a evalflow that OMITS framework (the reported job #31006 shape)", async () => {
+  it("gates an evalflow that OMITS framework (the reported job #31006 shape)", async () => {
     // No `framework` key and no `app`: the run can only be aeval, so the gate
     // must still cover stepsPrefix. Previously this slipped through entirely.
     const providers = await (await fetch(`${BASE_URL}/api/providers`)).json();

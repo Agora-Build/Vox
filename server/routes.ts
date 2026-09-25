@@ -2728,7 +2728,7 @@ export async function registerRoutes(
 
       // run-now fires a job on the evalflow OWNER's secrets, exactly
       // like the scheduler tick — so it takes the same owner-dispatched session
-      // path. A evalflow whose platform.setup references login-class secrets is
+      // path. An evalflow whose platform.setup references login-class secrets is
       // Core-minted (never handed durable credentials to the agent); a
       // split-class pair is rejected outright rather than leaking the
       // runtime-class secret. No cross-user dispatch-trust gates here: run-now
@@ -4968,7 +4968,7 @@ export async function registerRoutes(
         ?? new Map<number, Membership>();
       // Session trust, computed ONCE from the same detector the run route
       // enforces with. For a session-injected evalflow, a dispatcher who is
-      // neither the owner nor a evalflow-org member cannot receive the minted
+      // neither the owner nor an evalflow-org member cannot receive the minted
       // session on ANY of their own tokens (the targeted branch's ownerTrusted
       // gate 403s them) — so offering `mine` would violate the
       // never-offer-a-403 contract. Shared listings stay: targeted shared with

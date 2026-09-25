@@ -223,7 +223,7 @@ export function registerApiV1Routes(app: Express): void {
 
   /**
    * PUT /api/v1/evalflows/:id
-   * Update a evalflow
+   * Update an evalflow
    */
   app.put("/api/v1/evalflows/:id", requireAuthOrApiKey, async (req: Request, res: Response) => {
     try {
@@ -268,7 +268,7 @@ export function registerApiV1Routes(app: Express): void {
 
   /**
    * DELETE /api/v1/evalflows/:id
-   * Delete a evalflow
+   * Delete an evalflow
    */
   app.delete("/api/v1/evalflows/:id", requireAuthOrApiKey, async (req: Request, res: Response) => {
     try {
@@ -298,7 +298,7 @@ export function registerApiV1Routes(app: Express): void {
 
   /**
    * POST /api/v1/evalflows/:id/run
-   * Run a evalflow (create an eval job)
+   * Run an evalflow (create an eval job)
    */
   app.post("/api/v1/evalflows/:id/run", requireAuthOrApiKey, async (req: Request, res: Response) => {
     try {

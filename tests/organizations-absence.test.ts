@@ -81,7 +81,7 @@ const d = hasDb ? describe : describe.skip;
 // against the genuine platform implementation.
 const realSetIntervalRef = globalThis.setInterval;
 
-// A evalflow whose platform.setup references two login-class (brokered) org
+// An evalflow whose platform.setup references two login-class (brokered) org
 // secrets — the shape that makes the tick take the session path (detectSessionNeed
 // → "need" → sessionPoolViolation → stampOwnerSession/ensureSession).
 const LOGIN_STEPS = (email: string, password: string) => `

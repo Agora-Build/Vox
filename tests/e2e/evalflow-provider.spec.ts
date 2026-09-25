@@ -126,7 +126,7 @@ test.describe("Evalflow provider + platform_id guard", () => {
   });
 
   test("edit dialog exposes a provider select and saves a provider change", async ({ page }) => {
-    // Seed a evalflow via API (matching provider → no guard needed on create).
+    // Seed an evalflow via API (matching provider → no guard needed on create).
     const livekit = await providerIdByName(page, "LiveKit Agents");
     const name = `e2e-edit-${Date.now()}`;
     const created = await page.request.post("/api/evalflows", {

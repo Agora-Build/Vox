@@ -714,7 +714,7 @@ paths:
       tags:
         - Evalflows
       summary: Delete evalflow
-      description: Deletes a evalflow (owner only)
+      description: Deletes an evalflow (owner only)
       security:
         - BearerAuth: []
       parameters:

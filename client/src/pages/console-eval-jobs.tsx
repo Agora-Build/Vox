@@ -718,7 +718,7 @@ function JobsTab() {
             <div className="text-center py-8 text-muted-foreground">
               {hasActiveFilters
                 ? "No jobs match the current filters."
-                : "No eval jobs yet. Run an evaluation from a evalflow or eval set to create one."}
+                : "No eval jobs yet. Run an evaluation from an evalflow or eval set to create one."}
             </div>
           )}
         </CardContent>

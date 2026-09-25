@@ -32,15 +32,15 @@ const MIGRATIONS: Array<{ version: number; description: string; file: string | n
   { version: 8, description: "remove auto-seeded aeval data", file: "0007_remove_aeval_seeds.sql" },
   { version: 9, description: "fix: remove aeval seeds (correct pattern)", file: "0008_fix_remove_aeval_seeds.sql" },
   { version: 10, description: "add provider brand color", file: "0009_add_provider_brand_color.sql" },
-  { version: 11, description: "strip scenario from evalflow configs", file: "0010_strip_evalflow_scenario.sql" },
+  { version: 11, description: "strip scenario from workflow configs", file: "0010_strip_workflow_scenario.sql" },
   { version: 12, description: "eval result rate columns", file: "0011_add_rate_columns.sql" },
   { version: 13, description: "eval job trigger type", file: "0012_add_job_trigger_type.sql" },
   { version: 14, description: "eval agent lease id", file: "0013_add_agent_lease.sql" },
   { version: 15, description: "add Custom provider", file: "0014_add_custom_provider.sql" },
   { version: 16, description: "add provider platform_id slug", file: "0015_add_provider_platform_id.sql" },
-  { version: 17, description: "per-job evalflow/eval-set snapshot + survive-delete FKs", file: "0016_job_snapshot.sql" },
+  { version: 17, description: "per-job workflow/eval-set snapshot + survive-delete FKs", file: "0016_job_snapshot.sql" },
   { version: 18, description: "expression indexes for snapshot tier predicates", file: "0017_snapshot_tier_indexes.sql" },
-  { version: 19, description: "eval_schedules evalflow/eval-set FKs survive delete", file: "0018_schedule_survive_delete.sql" },
+  { version: 19, description: "eval_schedules workflow/eval-set FKs survive delete", file: "0018_schedule_survive_delete.sql" },
   { version: 20, description: "eval_schedules 90-day expiry (expires_at)", file: "0019_schedule_expiry.sql" },
   { version: 21, description: "eval_result latency columns nullable (NA for no-response)", file: "0020_eval_result_latency_nullable.sql" },
   { version: 22, description: "eval_result turn_success_rate column", file: "0021_add_turn_success_rate.sql" },
@@ -61,7 +61,7 @@ const MIGRATIONS: Array<{ version: number; description: string; file: string | n
   { version: 37, description: "R2: stamp creator_org_id on eval_jobs; claim SQL stops joining users", file: "0036_eval_jobs_creator_org_id.sql" },
   { version: 38, description: "Release A: drop 10 org FK constraints — org ids are opaque integers on Core tables", file: "0037_release_a_drop_org_fks.sql" },
   { version: 39, description: "Phone vs Agent Phase A: transport axis, agent capabilities, call metadata", file: "0038_phone_transport.sql" },
-  { version: 40, description: "evalflow → evalflow rename: table, FK columns, snapshot key spelling", file: "0039_evalflow_rename.sql" },
+  { version: 40, description: "workflow → evalflow rename: table, FK columns, snapshot key spelling", file: "0039_evalflow_rename.sql" },
 ];
 
 const TARGET_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version;
