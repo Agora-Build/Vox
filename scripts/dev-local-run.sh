@@ -740,12 +740,42 @@ smoke_test_agent() {
 
 # ==================== Eval Agent (Local Process Mode) ====================
 
+# Is anything LISTENING on this TCP port? Deliberately NOT "does /health
+# answer" — a process can hold the port and return 404, or not speak HTTP at
+# all (the clash runner defaults to this same port, GitHub #126), and treating
+# a failed health probe as "free" is how you spawn straight into EADDRINUSE.
+port_in_use() {
+    local port=$1
+    if command -v ss >/dev/null 2>&1; then
+        ss -ltnH "sport = :${port}" 2>/dev/null | grep -q .
+    elif command -v lsof >/dev/null 2>&1; then
+        lsof -iTCP:"${port}" -sTCP:LISTEN >/dev/null 2>&1
+    else
+        (exec 3<>/dev/tcp/127.0.0.1/"${port}") >/dev/null 2>&1 && exec 3<&- 
+    fi
+}
+
 start_eval_agent_local() {
     local token=$1
     local name=$2
     local region=${3:-na}
 
     log_info "Starting eval agent (local process): $name ($region)..."
+
+    # Anything holding the health port makes the new agent die on EADDRINUSE.
+    # Wait for the LISTENER to go away rather than racing it — the usual cause
+    # is a previous `start` whose agent outlived its `stop`.
+    local health_port=${VOX_AGENT_HEALTH_PORT:-8099}
+    local waited=0
+    while port_in_use "$health_port"; do
+        if [ $waited -ge 10 ]; then
+            log_error "Port ${health_port} is still held after ${waited}s — another agent (or the clash runner, GitHub #126) is listening"
+            return 1
+        fi
+        [ $waited -eq 0 ] && log_warn "Port ${health_port} still in use, waiting for the previous agent to exit..."
+        sleep 1
+        waited=$((waited + 1))
+    done
 
     cd "$PROJECT_DIR"
     npx tsx vox_eval_agentd/vox-agentd.ts \
@@ -755,13 +785,170 @@ start_eval_agent_local() {
 
     echo $! > /tmp/vox-eval-agent-${region}.pid
 
-    sleep 2
+    # Liveness is not readiness: the daemon binds its health port late, so a
+    # `kill -0` two seconds in reports an agent that is about to die on
+    # EADDRINUSE as "started". Poll the port it must actually serve.
+    local ready=0
+    for _ in $(seq 1 30); do
+        if curl -sf --max-time 1 "http://localhost:${health_port}/health" >/dev/null 2>&1; then
+            ready=1
+            break
+        fi
+        kill -0 $(cat /tmp/vox-eval-agent-${region}.pid) 2>/dev/null || break
+        sleep 1
+    done
 
-    if [ -f /tmp/vox-eval-agent-${region}.pid ] && kill -0 $(cat /tmp/vox-eval-agent-${region}.pid) 2>/dev/null; then
-        log_success "Eval agent $name ($region) started (PID: $(cat /tmp/vox-eval-agent-${region}.pid))"
+    if [ $ready -eq 1 ]; then
+        log_success "Eval agent $name ($region) started (PID: $(cat /tmp/vox-eval-agent-${region}.pid), health :${health_port})"
     else
         log_error "Eval agent $name ($region) failed to start"
-        cat /tmp/vox-eval-agent-${region}.log
+        tail -20 /tmp/vox-eval-agent-${region}.log
+        return 1
+    fi
+}
+
+# Purge accumulated test-suite leakage from the dev database.
+#
+# Suites create eval flows, sets, schedules and jobs and mostly do not remove
+# them. The expensive part is not the rows themselves but the ENABLED RECURRING
+# schedules among them: they keep firing on their cron long after the run that
+# made them, manufacturing jobs indefinitely. Left alone this DB reached 264k
+# eval_jobs (~1,800/hour from 178 orphaned schedules), at which point logins
+# blew the 10s test hook and `GET /api/eval-flows` blew Playwright's 30s
+# timeout — the gate went red for reasons that had nothing to do with the code
+# under test.
+#
+# Seeded data is preserved by OWNER: everything seed-data.ts creates belongs
+# to the Scout account, and no suite creates rows as Scout (they run as admin
+# or as users they invite). Owner is the right key here because seed-data.ts
+# is only idempotent at the top: the Agora flow and Login Smoke set are
+# created inside the `if (!existingLiveKitEvalFlow)` branch, so once LiveKit
+# exists a re-seed will NOT put them back. Delete them and they stay gone
+# until a full `reset`.
+clean_test_data() {
+    # This deletes broadly — every non-Scout flow/set without a schedule, the
+    # projects left empty, non-seed secrets, and all sessions. That is right
+    # for a scratch database and wrong for anything with real users in it, and
+    # nothing in the predicates themselves can tell the difference. So gate on
+    # the two things that can: the DB must be the local container, and a human
+    # must say so. `--yes` skips the prompt for scripted use.
+    if ! docker ps --format '{{.Names}}' | grep -q "^${DB_CONTAINER}$"; then
+        log_error "Postgres container ${DB_CONTAINER} is not running — run '$0 start' first"
+        return 1
+    fi
+    case "$DB_URL" in
+        *@localhost:*|*@127.0.0.1:*) ;;
+        *)
+            log_error "Refusing to clean: DATABASE_URL does not point at a local database"
+            log_error "  ${DB_URL}"
+            return 1
+            ;;
+    esac
+    if [ "${1:-}" != "--yes" ] && [ "${VOX_CLEAN_ASSUME_YES:-}" != "1" ]; then
+        log_warn "This DELETES test data from ${DB_URL}:"
+        log_warn "  eval flows/sets without a schedule (except Scout's seeded ones), the"
+        log_warn "  projects left empty, non-seed secrets, old jobs, and ALL login sessions."
+        printf "Type 'yes' to continue: "
+        local reply=""
+        read -r reply
+        if [ "$reply" != "yes" ]; then
+            log_info "Aborted — nothing deleted"
+            return 1
+        fi
+    fi
+
+    log_info "Cleaning test-suite leakage from the dev database..."
+
+    docker exec -i -e PGPASSWORD=vox123 "$DB_CONTAINER" \
+        psql -U vox -d vox -v ON_ERROR_STOP=1 <<'SQL'
+-- Stop the bleeding first: any recurring schedule still armed from a past run.
+UPDATE eval_schedules SET is_enabled = false
+ WHERE is_enabled AND schedule_type = 'recurring' AND name NOT LIKE 'LiveKit %';
+
+-- Then the rows themselves, FK-safe order. Jobs are generated rather than
+-- named, so they go by age — but only the ones that produced NOTHING. A job
+-- with an eval_result is the provenance for a metric on the leaderboard
+-- (results carry a NOT NULL eval_job_id and the tier queries read the job's
+-- frozen snapshot), so deleting it would silently strip history. The churn is
+-- the pending/failed backlog, and that is all this removes.
+DELETE FROM eval_jobs
+      WHERE created_at < now() - interval '1 day'
+        AND NOT EXISTS (SELECT 1 FROM eval_results r WHERE r.eval_job_id = eval_jobs.id);
+
+-- Stale pending/running jobs go on a much shorter clock. They are the direct
+-- output of the orphaned schedules disabled above and will never be claimed
+-- (the production sweeps themselves fail pending jobs after 15 minutes), but
+-- they sit in the claim queries and in every agent's poll — 33k of them here.
+DELETE FROM eval_jobs
+      WHERE status IN ('pending', 'running')
+        AND created_at < now() - interval '1 hour';
+DELETE FROM eval_schedules WHERE NOT is_enabled AND name NOT LIKE 'LiveKit %';
+
+-- Flows and sets go by REFERENCE, not by owner. Most leakage is created as
+-- the admin user (that is who the suites log in as), so an owner_id filter
+-- misses the bulk of it — this DB held 8,121 admin-owned eval sets, the same
+-- dozen fixture names repeated ~295 times, once per gate run.
+--
+-- Only a SCHEDULE pins a flow or set, deliberately not a job. Jobs carry an
+-- immutable `snapshot` of the flow and set as they were at run time, and
+-- every downstream reader (provider attribution, provenance UI, tiering)
+-- reads that snapshot rather than the live row — deleting a flow nulls the
+-- job's FK and changes no history. Pinning on jobs instead kept hundreds of
+-- dead flows alive (218 for one user against a 200 cap, so the next run's
+-- flow creation 403'd), which is the opposite of the point. Built-ins are
+-- server-controlled and never leaked.
+DELETE FROM eval_flows f
+      WHERE f.owner_id <> (SELECT id FROM users WHERE email = 'scout@vox.ai')
+        AND NOT EXISTS (SELECT 1 FROM eval_schedules s WHERE s.eval_flow_id = f.id);
+DELETE FROM eval_sets e
+      WHERE e.owner_id <> (SELECT id FROM users WHERE email = 'scout@vox.ai')
+        AND COALESCE((e.config->>'builtIn')::boolean, false) = false
+        AND NOT EXISTS (SELECT 1 FROM eval_schedules s WHERE s.eval_set_id = e.id);
+-- Projects last, once the flows inside them are gone: they carry their own
+-- per-user cap (basic 5 / premium 20), so a few leaked runs is all it takes
+-- to make "should create a new project" fail for reasons unrelated to it.
+DELETE FROM projects p
+      WHERE NOT EXISTS (SELECT 1 FROM eval_flows f WHERE f.project_id = p.id);
+DELETE FROM secrets        WHERE user_id > 2;
+DELETE FROM plugin_organizations.memberships
+      WHERE org_ref IN (SELECT id FROM plugin_organizations.organizations
+                         WHERE name LIKE 'r2-org-%' OR name LIKE 'abs-org-%');
+DELETE FROM plugin_organizations.org_secrets
+      WHERE org_ref IN (SELECT id FROM plugin_organizations.organizations
+                         WHERE name LIKE 'r2-org-%' OR name LIKE 'abs-org-%');
+DELETE FROM plugin_organizations.organizations
+      WHERE name LIKE 'r2-org-%' OR name LIKE 'abs-org-%';
+
+-- FULL, because a plain VACUUM marks the pages reusable but hands nothing
+-- back to the OS, and the point here is to undo a 500 MB table. It takes an
+-- ACCESS EXCLUSIVE lock, which is why this is a deliberate maintenance
+-- command and not something `start` does — but with only a few thousand live
+-- rows left it finishes in seconds.
+-- Every login in every suite mints a session row, and they are created with
+-- a long TTL, so none of them expire and connect-pg-simple's own sweeper can
+-- never reclaim them. At ~7,000 live rows admin login started losing its race
+-- with the post-login redirect and the E2E auth tests bounced to /login —
+-- passing alone, failing in a full file, green again on a fresh server. This
+-- logs out any browser you have open against the dev server, which is the
+-- expected cost of a test-data purge.
+DELETE FROM user_sessions;
+
+VACUUM (FULL, ANALYZE) eval_jobs;
+VACUUM (FULL, ANALYZE) eval_flows;
+VACUUM (FULL, ANALYZE) eval_sets;
+VACUUM (FULL, ANALYZE) eval_schedules;
+
+SELECT 'eval_jobs' AS t, count(*) FROM eval_jobs
+UNION ALL SELECT 'eval_flows', count(*) FROM eval_flows
+UNION ALL SELECT 'eval_sets', count(*) FROM eval_sets
+UNION ALL SELECT 'eval_schedules (enabled)', count(*) FROM eval_schedules WHERE is_enabled
+UNION ALL SELECT 'user_sessions', count(*) FROM user_sessions;
+SQL
+
+    if [ $? -eq 0 ]; then
+        log_success "Test data cleaned"
+    else
+        log_error "Cleanup failed"
         return 1
     fi
 }
@@ -1266,6 +1453,9 @@ main() {
             check_command npm
             do_reset "local"
             ;;
+        clean-test-data)
+            clean_test_data "${2:-}"
+            ;;
         build-agent)
             build_eval_agent_docker
             ;;
@@ -1342,6 +1532,9 @@ main() {
             echo ""
             echo "Common Commands:"
             echo "  status                 - Show service status"
+            echo "  clean-test-data [--yes] - Purge test-suite leakage (incl. orphaned"
+            echo "                           recurring schedules) from the dev DB."
+            echo "                           Prompts unless --yes; refuses a non-local DB"
             echo "  build-agent            - Build eval agent Docker image"
             echo "  smoke-test             - Run eval agent smoke tests"
             echo "  logs [server|agent]    - Show logs"

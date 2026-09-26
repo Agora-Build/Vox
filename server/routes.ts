@@ -5874,6 +5874,18 @@ export async function registerRoutes(
       // Read live provider state, not a constant — reflects reality even if a
       // future release runs without a provider installed.
       configObject.organizationsEnabled = getOrganizations() !== null ? "true" : "false";
+      // Public contact links, set per deployment. Runtime env rather than a
+      // build-time constant, so a fork (or a rebrand) changes them with an env
+      // var and a restart instead of a rebuild. Anything unset is OMITTED and
+      // the footer hides that icon — better than shipping a link that goes
+      // nowhere, which is what the bare "https://twitter.com" placeholder did.
+      // (That link was also stale branding: Twitter is X now.)
+      const contactEmail = process.env.VOX_CONTACT_EMAIL ?? "vox@agora.build";
+      const githubUrl = process.env.VOX_GITHUB_URL ?? "https://github.com/Agora-Build/Vox";
+      const xUrl = process.env.VOX_X_URL;
+      if (contactEmail) configObject.contactEmail = contactEmail;
+      if (githubUrl) configObject.githubUrl = githubUrl;
+      if (xUrl) configObject.xUrl = xUrl;
       res.json(configObject);
     } catch (error) {
       console.error("Error fetching config:", error);

@@ -181,7 +181,7 @@ async function seedData() {
   }
 
   // Create Scout's LiveKit evaluation evalFlow and schedule
-  // This sets up a mainline evalFlow that runs every 8 hours
+  // This sets up a mainline evalFlow that runs every 3 hours
   const scoutEvalFlows = await storage.getEvalFlowsByOwner(scoutId);
   const existingLiveKitEvalFlow = scoutEvalFlows.find(w => w.name === "LiveKit Agent Evaluation");
 
@@ -231,7 +231,7 @@ steps:
     // LiveKit evalFlow: platform enter/exit only (no login).
     const livekitEvalFlow = await storage.createEvalFlow({
       name: "LiveKit Agent Evaluation",
-      description: "Mainline evaluation evalFlow for LiveKit Agents - runs every 8 hours",
+      description: "Mainline evaluation evalFlow for LiveKit Agents - runs every 3 hours",
       ownerId: scoutId,
       projectId: scoutProject.id,
       providerId: livekitProvider?.id || null,
@@ -342,39 +342,88 @@ steps:
       console.log(`Created eval set: ${loginSmokeEvalSet.name}`);
     }
 
-    // Create recurring schedule - every 8 hours (at 0:00, 8:00, 16:00)
-    // Cron: "0 */8 * * *" means "at minute 0 past every 8th hour"
-    const schedules = await storage.getEvalSchedulesByEvalFlow(livekitEvalFlow.id);
-    if (schedules.length === 0) {
-      // Calculate next run time for every 8 hours
-      const now = new Date();
-      const nextHour = Math.ceil(now.getHours() / 8) * 8;
-      const nextRunAt = new Date(now);
-      nextRunAt.setHours(nextHour % 24, 0, 0, 0);
-      if (nextRunAt <= now) {
-        nextRunAt.setHours(nextRunAt.getHours() + 8);
-      }
+  } else {
+    console.log(`LiveKit evalFlow already exists: ID ${existingLiveKitEvalFlow.id}`);
+  }
 
+  // Mainline schedule, reconciled on EVERY seed rather than only when the
+  // evalFlow is first created. It used to live inside the create-only branch
+  // above, which meant a database seeded before a cadence change kept firing
+  // on the old cron indefinitely while the site advertised the new one — and
+  // re-running the seeder, the obvious remedy, did nothing at all.
+  const MAINLINE_CRON = "0 */3 * * *"; // every 3 hours: 0:00, 3:00, ... 21:00
+  const MAINLINE_NAME = "LiveKit 3-Hour Evaluation";
+  const seededFlows = await storage.getEvalFlowsByOwner(scoutId);
+  const mainlineFlow = seededFlows.find(w => w.name === "LiveKit Agent Evaluation");
+  const seededSets = await storage.getEvalSetsByOwner(scoutId);
+  const mainlineSet = seededSets.find(e => e.name === "Basic Conversation Test");
+
+  if (mainlineFlow && mainlineSet) {
+    // Next 3-hour boundary, computed in UTC: the schedule is stored with
+    // timezone "UTC" and the cron boundaries are UTC, so using local
+    // getHours/setHours would put nextRunAt hours off the real boundary on
+    // any host that isn't UTC. setUTCHours(24) rolls the date over, so late
+    // in the day this still lands in the future.
+    const now = new Date();
+    const nextRunAt = new Date(now);
+    nextRunAt.setUTCMinutes(0, 0, 0);
+    nextRunAt.setUTCHours(Math.floor(now.getUTCHours() / 3) * 3 + 3);
+
+    const schedules = await storage.getEvalSchedulesByEvalFlow(mainlineFlow.id);
+    // Pick the canonical one deterministically: an already-correct schedule if
+    // there is one, else the oldest. Taking whatever the query returned first
+    // could disable the correct schedule and promote the stale duplicate —
+    // the right end state, reached backwards, with a confusing log.
+    const recurring = schedules
+      .filter(s => s.scheduleType === "recurring")
+      .sort((a, b) => {
+        const aCanon = a.name === MAINLINE_NAME && a.cronExpression === MAINLINE_CRON ? 0 : 1;
+        const bCanon = b.name === MAINLINE_NAME && b.cronExpression === MAINLINE_CRON ? 0 : 1;
+        return aCanon - bCanon || a.id - b.id;
+      });
+    const [existing, ...duplicates] = recurring;
+
+    // Exactly one canonical recurring schedule. Extras left enabled would keep
+    // firing on whatever cadence they carry, so the flow runs at the old rate
+    // or several times per interval — reconciling only the first would leave
+    // precisely the state this reconciliation exists to end.
+    for (const dup of duplicates) {
+      if (dup.isEnabled) {
+        await storage.updateEvalSchedule(dup.id, { isEnabled: false });
+        console.log(`Disabled duplicate recurring schedule: ${dup.name} (${dup.cronExpression})`);
+      }
+    }
+    if (!existing) {
       const schedule = await storage.createEvalSchedule({
-        name: "LiveKit 8-Hour Evaluation",
-        evalFlowId: livekitEvalFlow.id,
-        evalSetId: basicEvalSet.id,
+        name: MAINLINE_NAME,
+        evalFlowId: mainlineFlow.id,
+        evalSetId: mainlineSet.id,
         region: "na",  // North America region
         scheduleType: "recurring",
-        cronExpression: "0 */8 * * *",  // Every 8 hours
+        cronExpression: MAINLINE_CRON,
         timezone: "UTC",
         isEnabled: true,
         nextRunAt: nextRunAt,
         maxRuns: null,  // Unlimited runs
         createdBy: scoutId,
       });
-      console.log(`Created recurring schedule: ${schedule.name} (every 8 hours, region: NA)`);
+      console.log(`Created recurring schedule: ${schedule.name} (every 3 hours, region: NA)`);
       console.log(`  Next run at: ${nextRunAt.toISOString()}`);
+    } else if (existing.cronExpression !== MAINLINE_CRON || existing.name !== MAINLINE_NAME) {
+      await storage.updateEvalSchedule(existing.id, {
+        name: MAINLINE_NAME,
+        cronExpression: MAINLINE_CRON,
+        nextRunAt,
+      });
+      console.log(`Updated mainline schedule: "${existing.name}" (${existing.cronExpression}) -> "${MAINLINE_NAME}" (${MAINLINE_CRON})`);
+    } else if (!existing.nextRunAt || existing.nextRunAt.getTime() <= now.getTime()) {
+      // Right cron, but the next run is in the past — a database that sat idle
+      // since the last seed. Nudge it to the coming boundary.
+      await storage.updateEvalSchedule(existing.id, { nextRunAt });
+      console.log(`Refreshed stale nextRunAt -> ${nextRunAt.toISOString()}`);
     } else {
-      console.log(`Schedule already exists for LiveKit evalFlow`);
+      console.log(`Mainline schedule already on ${MAINLINE_CRON}`);
     }
-  } else {
-    console.log(`LiveKit evalFlow already exists: ID ${existingLiveKitEvalFlow.id}`);
   }
 
   // Agora Console login credentials (Protected / login-class) for the login

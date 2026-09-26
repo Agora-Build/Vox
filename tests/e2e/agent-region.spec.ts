@@ -4,6 +4,14 @@ import { test, expect } from "@playwright/test";
 // tiers (server rejects it anyway — the UI never offers what would 400).
 // No token is actually minted: dialog-only, zero DB pollution.
 test.describe("eval-agent token mint dialog", () => {
+  // Two full page loads (login, then /console/eval-agents) before the first
+  // assertion, each paying the Vite dev server's on-demand transform for
+  // routes nothing has hit yet. The APIs behind this page answer in under
+  // 100ms; the time is all first-hit compilation. That put the run at ~24s of
+  // a 30s budget in isolation and over it whenever the suite ran 4-wide —
+  // which is why this was on the "known flakes" list. Budget for the work.
+  test.setTimeout(90_000);
+
   test.beforeEach(async ({ page }) => {
     await page.goto("/login");
     await page.waitForLoadState("domcontentloaded");

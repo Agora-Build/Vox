@@ -1097,7 +1097,7 @@ describe('Vox API Tests', () => {
 
   describe('API v1 Endpoints', () => {
     it('should get evalFlows via API v1', async () => {
-      const response = await fetch(`${BASE_URL}/api/v1/evalFlows`, {
+      const response = await fetch(`${BASE_URL}/api/v1/eval-flows`, {
         headers: {
           'Authorization': `Bearer ${testApiKey}`,
         },
@@ -1914,6 +1914,12 @@ describe('Vox API Tests', () => {
     let scheduleEvalFlowId: number;
     let scheduleEvalSetId: number;
 
+    // Schedules survive their evalFlow (eval_schedules.eval_flow_id is
+    // ON DELETE SET NULL), so deleting the flow alone left an ENABLED
+    // recurring row behind on every run — 37 of them had piled up in the dev
+    // DB, each still firing on its cron.
+    const createdScheduleIds: number[] = [];
+
     it('should create evalFlow and eval set for schedule tests', async () => {
       const wfResponse = await authFetch(adminSession, `${BASE_URL}/api/eval-flows`, {
         method: 'POST',
@@ -1979,6 +1985,7 @@ describe('Vox API Tests', () => {
       });
       expect(response.ok).toBe(true);
       const schedule = await response.json();
+      createdScheduleIds.push(schedule.id);
       expect(schedule.scheduleType).toBe('once');
     });
 
@@ -1997,11 +2004,19 @@ describe('Vox API Tests', () => {
       });
       expect(response.ok).toBe(true);
       const schedule = await response.json();
+      createdScheduleIds.push(schedule.id);
       expect(schedule.scheduleType).toBe('recurring');
       expect(schedule.cronExpression).toBe('0 0 * * *');
     });
 
     it('should cleanup schedule test resources', async () => {
+      // Schedules first: once the evalFlow is gone their FK is nulled and
+      // they outlive it.
+      for (const id of createdScheduleIds) {
+        await authFetch(adminSession, `${BASE_URL}/api/eval-schedules/${id}`, {
+          method: 'DELETE',
+        });
+      }
       await authFetch(adminSession, `${BASE_URL}/api/eval-flows/${scheduleEvalFlowId}`, {
         method: 'DELETE',
       });
@@ -2015,6 +2030,19 @@ describe('Vox API Tests', () => {
     let testUserApiKey: string;
     let testUserEvalFlowId: number;
 
+    // This block creates an eval flow per run and used to leave it behind.
+    // Flows count against a per-plan cap (200 for non-basic), so after ~200
+    // gate runs the CREATE test itself started 403ing and every test after it
+    // cascaded into 500s — a failure that looks like a v1 regression and
+    // isn't.
+    afterAll(async () => {
+      if (testUserEvalFlowId) {
+        await authFetch(adminSession, `${BASE_URL}/api/eval-flows/${testUserEvalFlowId}`, {
+          method: 'DELETE',
+        }).catch(() => {});
+      }
+    });
+
     it('should create API key for permission tests', async () => {
       const response = await authFetch(adminSession, `${BASE_URL}/api/user/api-keys`, {
         method: 'POST',
@@ -2027,7 +2055,7 @@ describe('Vox API Tests', () => {
     });
 
     it('should allow API key to list evalFlows via v1 API', async () => {
-      const response = await fetch(`${BASE_URL}/api/v1/evalFlows`, {
+      const response = await fetch(`${BASE_URL}/api/v1/eval-flows`, {
         headers: { 'Authorization': `Bearer ${testUserApiKey}` },
       });
       expect(response.ok).toBe(true);
@@ -2036,7 +2064,7 @@ describe('Vox API Tests', () => {
     });
 
     it('should allow API key to create evalFlow via v1 API', async () => {
-      const response = await fetch(`${BASE_URL}/api/v1/evalFlows`, {
+      const response = await fetch(`${BASE_URL}/api/v1/eval-flows`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -2066,7 +2094,7 @@ describe('Vox API Tests', () => {
       expect(esResponse.ok).toBe(true);
       const { data: evalSet } = await esResponse.json();
 
-      const response = await fetch(`${BASE_URL}/api/v1/evalFlows/${testUserEvalFlowId}/run`, {
+      const response = await fetch(`${BASE_URL}/api/v1/eval-flows/${testUserEvalFlowId}/run`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -2083,8 +2111,86 @@ describe('Vox API Tests', () => {
       await authFetch(adminSession, `${BASE_URL}/api/eval-sets/${evalSet.id}`, { method: 'DELETE' });
     });
 
+    it('should refuse a v1 run naming an eval set the key cannot access', async () => {
+      // Regression: the v1 run route checked only that the eval set EXISTED.
+      // Any API key could name any id and have that eval set's config merged
+      // into a job and executed — the visibility boundary GET /eval-sets/:id
+      // enforces, bypassed on the surface that actually runs things.
+      //
+      // The OUTSIDER has to be the caller. `testUserApiKey` above is minted
+      // from adminSession, and canAccessResource has an admin arm, so an
+      // admin key reaching a private set is allowed and proves nothing. So:
+      // a premium invitee, running their own flow, naming admin's private set.
+      const stamp = Date.now();
+      const outsiderEmail = `es-fence-${stamp}@example.com`;
+      const outsiderPassword = 'TestPass123!';
+      const inviteRes = await authFetch(adminSession, `${BASE_URL}/api/admin/invite`, {
+        method: 'POST',
+        body: JSON.stringify({ email: outsiderEmail, plan: 'premium' }),
+      });
+      expect(inviteRes.ok).toBe(true);
+      const { token } = await inviteRes.json();
+      const regRes = await fetch(`${BASE_URL}/api/auth/register`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: `esfence${stamp}`, password: outsiderPassword, token }),
+      });
+      expect(regRes.ok).toBe(true);
+      const outsider = await login(outsiderEmail, outsiderPassword);
+
+      // Admin's PRIVATE eval set — the thing that must stay out of reach.
+      const esRes = await authFetch(adminSession, `${BASE_URL}/api/eval-sets`, {
+        method: 'POST',
+        body: JSON.stringify({ name: `Admin Private ES ${stamp}`, visibility: 'private', config: {} }),
+      });
+      expect(esRes.ok).toBe(true);
+      const adminEvalSet = await esRes.json();
+      expect(adminEvalSet.visibility).toBe('private');
+
+      // The outsider's own project + flow, so the flow-ownership check passes
+      // and the eval-set fence is the only thing left that can refuse.
+      const projRes = await authFetch(outsider, `${BASE_URL}/api/projects`, {
+        method: 'POST',
+        body: JSON.stringify({ name: `esfence-proj-${stamp}` }),
+      });
+      expect(projRes.ok).toBe(true);
+      const project = await projRes.json();
+      const providerId = (await (await fetch(`${BASE_URL}/api/providers`)).json())[0].id;
+      const wfRes = await authFetch(outsider, `${BASE_URL}/api/eval-flows`, {
+        method: 'POST',
+        body: JSON.stringify({
+          name: `esfence-wf-${stamp}`, visibility: 'public', projectId: project.id, providerId,
+        }),
+      });
+      expect(wfRes.ok).toBe(true);
+      const outsiderFlow = await wfRes.json();
+
+      const keyRes = await authFetch(outsider, `${BASE_URL}/api/user/api-keys`, {
+        method: 'POST',
+        body: JSON.stringify({ name: `esfence-key-${stamp}` }),
+      });
+      expect(keyRes.ok).toBe(true);
+      const outsiderKey = (await keyRes.json()).key;
+
+      const response = await fetch(`${BASE_URL}/api/v1/eval-flows/${outsiderFlow.id}/run`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${outsiderKey}`,
+        },
+        body: JSON.stringify({ region: BASE_NA, targetTier: 'public', evalSetId: adminEvalSet.id }),
+      });
+      expect(response.status).toBe(403);
+      const body = await response.json();
+      expect(body.error).toMatch(/access denied/i);
+
+      await authFetch(adminSession, `${BASE_URL}/api/eval-sets/${adminEvalSet.id}`, { method: 'DELETE' });
+      await authFetch(outsider, `${BASE_URL}/api/eval-flows/${outsiderFlow.id}`, { method: 'DELETE' });
+      await authFetch(outsider, `${BASE_URL}/api/projects/${project.id}`, { method: 'DELETE' });
+    });
+
     it('should reject a v1 run with the old exact-site siteId body key', async () => {
-      const response = await fetch(`${BASE_URL}/api/v1/evalFlows/${testUserEvalFlowId}/run`, {
+      const response = await fetch(`${BASE_URL}/api/v1/eval-flows/${testUserEvalFlowId}/run`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -2109,7 +2215,7 @@ describe('Vox API Tests', () => {
       });
 
       // Try to use revoked key
-      const response = await fetch(`${BASE_URL}/api/v1/evalFlows`, {
+      const response = await fetch(`${BASE_URL}/api/v1/eval-flows`, {
         headers: { 'Authorization': `Bearer ${testUserApiKey}` },
       });
       expect(response.status).toBe(401);
@@ -2648,11 +2754,20 @@ describe('Vox API Tests', () => {
     });
 
     it('should get my-evals metrics with time filter', async () => {
-      const response = await authFetch(adminSession, `${BASE_URL}/api/metrics/my-evals?hours=24&limit=5`);
+      // Same correction the community sibling above already carries: the
+      // server ignores a client `limit` (parseMetricsWindow reads only
+      // `hours`), so asserting `length <= 5` tested a behavior that does not
+      // exist — it passed only while this account happened to own fewer than
+      // five recent jobs, and a single gate run creates ~2,000. Assert the
+      // window is honored instead.
+      const response = await authFetch(adminSession, `${BASE_URL}/api/metrics/my-evals?hours=24`);
       expect(response.ok).toBe(true);
       const data = await response.json();
       expect(Array.isArray(data)).toBe(true);
-      expect(data.length).toBeLessThanOrEqual(5);
+      const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+      for (const row of data) {
+        if (row.timestamp) expect(new Date(row.timestamp).getTime()).toBeGreaterThanOrEqual(cutoff);
+      }
     });
 
     it('should get realtime (mainline) metrics with time filter', async () => {
@@ -2828,7 +2943,7 @@ describe('Vox API Tests', () => {
     });
 
     it("v1 API enforces the same config validation as the console route", async () => {
-      const res = await authFetch(adminSession, `${BASE_URL}/api/v1/evalFlows`, {
+      const res = await authFetch(adminSession, `${BASE_URL}/api/v1/eval-flows`, {
         method: 'POST',
         body: JSON.stringify({
           name: 'V1 Validation Test',

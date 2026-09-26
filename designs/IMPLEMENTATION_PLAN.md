@@ -1,4 +1,12 @@
-# Vox Implementation Plan - Remaining Phases
+# Vox Implementation Plan — Remaining Phases
+
+> **Historical.** This is the ORIGINAL plan, kept as the record of what Vox set
+> out to build. It is not maintained and no longer describes the system: since
+> it was written the product gained the transport axis (web/phone), the unified
+> Setup/Teardown steps model, the organizations plugin, shared agents and
+> credits, the auth-session and REST brokers, and `workflow` became `eval flow`.
+> For how things work **today**, read `CLAUDE.md`; for the reasoning behind
+> individual changes, read the dated documents in `designs/`.
 
 
 # Original Specs(HLD/LLD)

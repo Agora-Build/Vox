@@ -33,6 +33,83 @@ export default function Home() {
         </div>
       </section>
 
+
+      {/* Products — ours, as distinct from the providers we test */}
+      <section className="space-y-12">
+        <div className="text-center space-y-4">
+          <Badge variant="secondary" className="px-4 py-1">Products</Badge>
+          <h2 className="text-3xl font-bold">Three parts, one pipeline</h2>
+          <p className="text-muted-foreground max-w-2xl mx-auto">
+            Vox decides what to measure and keeps the history. aeval runs the conversation
+            and scores it. DialF places the call when the target is a phone.
+          </p>
+        </div>
+
+        <div className="grid md:grid-cols-3 gap-6">
+          <Card className="relative overflow-hidden">
+            <CardHeader>
+              <Activity className="h-8 w-8 mb-4 text-primary" />
+              <CardTitle>Real-time Eval</CardTitle>
+              <CardDescription>
+                Schedule evals, watch latency and turn-taking land live, and keep every run's
+                frozen provenance.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <Link href="/realtime">
+                <Button variant="outline" size="sm" className="gap-2" data-testid="link-product-realtime">
+                  Open dashboard <ArrowRight className="h-4 w-4" />
+                </Button>
+              </Link>
+            </CardContent>
+          </Card>
+
+          <Card className="relative overflow-hidden">
+            <CardHeader>
+              <AudioLines className="h-8 w-8 mb-4 text-primary" />
+              <CardTitle>aeval</CardTitle>
+              <CardDescription>
+                The eval engine: drives the conversation, measures response and interrupt
+                latency turn by turn, and reports turn-taking success.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <a href="https://github.com/Agora-Build/aeval" target="_blank" rel="noreferrer">
+                <Button variant="outline" size="sm" className="gap-2" data-testid="link-product-aeval">
+                  View on GitHub <ArrowRight className="h-4 w-4" />
+                </Button>
+              </a>
+            </CardContent>
+          </Card>
+
+          <Card className="relative overflow-hidden">
+            <CardHeader>
+              <Radio className="h-8 w-8 mb-4 text-primary" />
+              <CardTitle>DialF</CardTitle>
+              <CardDescription>
+                Autonomous phone control: places and answers real PSTN calls over a handset,
+                with scripted audio and voice activity detection.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <a href="https://github.com/Agora-Build/DialF" target="_blank" rel="noreferrer">
+                <Button variant="outline" size="sm" className="gap-2" data-testid="link-product-dialf">
+                  View on GitHub <ArrowRight className="h-4 w-4" />
+                </Button>
+              </a>
+            </CardContent>
+          </Card>
+        </div>
+
+        {/* What you can point an eval at today, and what's next. */}
+        <div className="flex flex-wrap items-center justify-center gap-3 text-sm">
+          <span className="text-muted-foreground">Evaluate over</span>
+          <Badge variant="outline" className="gap-1.5 py-1" data-testid="badge-surface-web">Web</Badge>
+          <Badge variant="outline" className="gap-1.5 py-1" data-testid="badge-surface-phone">Phone</Badge>
+          <Badge variant="secondary" className="gap-1.5 py-1" data-testid="badge-surface-native">Native apps — coming</Badge>
+        </div>
+      </section>
+
       {/* Features Grid */}
       <section className="space-y-12">
         <div className="text-center space-y-4">
@@ -46,11 +123,11 @@ export default function Home() {
               <div className="w-12 h-12 rounded-lg bg-blue-500/10 flex items-center justify-center mb-4">
                 <Clock className="h-6 w-6 text-blue-500" />
               </div>
-              <CardTitle>Automated Testing</CardTitle>
+              <CardTitle>Automated Evals</CardTitle>
             </CardHeader>
             <CardContent>
               <p className="text-muted-foreground">
-                Comprehensive evaluations run automatically every 8 hours across all selected products and regions.
+                Evals run automatically every 3 hours across all selected providers and regions.
               </p>
             </CardContent>
           </Card>
@@ -88,22 +165,22 @@ export default function Home() {
               <div className="w-12 h-12 rounded-lg bg-emerald-500/10 flex items-center justify-center mb-4">
                 <Activity className="h-6 w-6 text-emerald-500" />
               </div>
-              <CardTitle>5 Key Metrics</CardTitle>
+              <CardTitle>6 Key Metrics</CardTitle>
             </CardHeader>
             <CardContent>
               <p className="text-muted-foreground">
-                Response latency, interrupt latency, network resilience, naturalness, and noise reduction analysis.
+                Turn success rate, response latency, interrupt latency, network resilience, naturalness, and noise reduction.
               </p>
             </CardContent>
           </Card>
         </div>
       </section>
 
-      {/* Supported Products */}
+      {/* Providers we evaluate against (third-party) */}
       <section className="space-y-12">
         <div className="text-center space-y-4">
-          <Badge variant="secondary" className="px-4 py-1">Supported Products</Badge>
-          <h2 className="text-3xl font-bold">Products We Test</h2>
+          <Badge variant="secondary" className="px-4 py-1">Supported Providers</Badge>
+          <h2 className="text-3xl font-bold">Providers We Test</h2>
           <p className="text-muted-foreground max-w-2xl mx-auto">
             Currently evaluating browser-based conversational AI products. RTC solutions coming soon.
           </p>
@@ -159,7 +236,7 @@ export default function Home() {
       {/* Metrics Detail */}
       <section className="space-y-12">
         <div className="text-center space-y-4">
-          <h2 className="text-3xl font-bold">5 Key Metrics</h2>
+          <h2 className="text-3xl font-bold">6 Key Metrics</h2>
           <p className="text-muted-foreground">We measure critical performance indicators that impact real-world user experience</p>
         </div>
 
@@ -198,6 +275,25 @@ export default function Home() {
                </div>
                <div className="pt-2">
                  <Badge className="bg-emerald-500 hover:bg-emerald-600">Lower is better</Badge>
+               </div>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <div className="flex items-center gap-2 mb-2">
+                <Activity className="h-5 w-5 text-emerald-500" />
+                <h3 className="font-bold">Turn Success Rate</h3>
+              </div>
+              <p className="text-sm text-muted-foreground">Share of turns handled correctly — responded, stopped on interrupt, no false barge-in</p>
+            </CardHeader>
+            <CardContent className="space-y-4">
+               <div>
+                  <div className="text-xs uppercase text-muted-foreground font-bold">Unit</div>
+                  <div className="font-mono">percentage (%)</div>
+               </div>
+               <div className="pt-2">
+                 <Badge className="bg-emerald-500 hover:bg-emerald-600">Higher is better</Badge>
                </div>
             </CardContent>
           </Card>
@@ -262,6 +358,58 @@ export default function Home() {
             </CardContent>
           </Card>
         </div>
+      </section>
+
+      {/* Where this is going — clearly labelled as not-yet-built */}
+      <section className="space-y-10">
+        <div className="text-center space-y-4">
+          <Badge variant="secondary" className="px-4 py-1">Where this is going</Badge>
+          <h2 className="text-3xl font-bold">From measuring agents to improving them</h2>
+          <p className="text-muted-foreground max-w-2xl mx-auto leading-relaxed">
+            Evaluation is the first half. Knowing an agent answers 400 ms slower in Mumbai, or
+            drops one turn in eight, only pays off when something acts on it. The direction is a
+            loop that closes itself: simulate, find where conversations fail, propose the change,
+            prove it against the same evals.
+          </p>
+        </div>
+
+        <div className="grid md:grid-cols-3 gap-6">
+          <Card className="border-dashed">
+            <CardHeader>
+              <Bot className="h-8 w-8 mb-4 text-muted-foreground" />
+              <CardTitle className="text-lg">Simulate automatically</CardTitle>
+              <CardDescription>
+                Run conversations your users would have had — across regions, accents and
+                interruption patterns — without writing each one by hand.
+              </CardDescription>
+            </CardHeader>
+          </Card>
+          <Card className="border-dashed">
+            <CardHeader>
+              <Settings className="h-8 w-8 mb-4 text-muted-foreground" />
+              <CardTitle className="text-lg">Suggest the fix</CardTitle>
+              <CardDescription>
+                Turn a failed turn into a concrete change to the prompt or config, tied to the
+                evidence that motivated it.
+              </CardDescription>
+            </CardHeader>
+          </Card>
+          <Card className="border-dashed">
+            <CardHeader>
+              <Clock className="h-8 w-8 mb-4 text-muted-foreground" />
+              <CardTitle className="text-lg">Prove it moved</CardTitle>
+              <CardDescription>
+                Re-run the same evals against the change, so &quot;better&quot; is a number on the
+                same scale as before — not a hunch.
+              </CardDescription>
+            </CardHeader>
+          </Card>
+        </div>
+
+        <p className="text-center text-sm text-muted-foreground">
+          None of this is built yet. Today Vox measures and tracks; the self-improvement loop is
+          the roadmap, and we would rather show the gap than imply it is closed.
+        </p>
       </section>
 
       {/* CTA */}

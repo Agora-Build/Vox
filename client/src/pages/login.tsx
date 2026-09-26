@@ -70,13 +70,22 @@ export function LoginForm({ variant = "user" }: LoginFormProps) {
       const res = await apiRequest("POST", "/api/auth/login", { email, password });
       return res.json();
     },
-    onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: ["/api/auth/status"] });
-
+    onSuccess: async (data) => {
       if (isAdminVariant && !data.user?.isAdmin) {
+        queryClient.invalidateQueries({ queryKey: ["/api/auth/status"] });
         toast({ title: "Admin access required", description: "Please sign in with an admin account.", variant: "destructive" });
         return;
       }
+
+      // AWAIT the refreshed auth status before navigating. Invalidating and
+      // navigating in the same tick is a race the user can lose: the console
+      // route guards redirect to /login when the CACHED status says logged
+      // out, and at that moment it still does — this page had no
+      // /api/auth/status observer mounted, so invalidate only marks it stale
+      // and the refetch does not begin until the console mounts. Land in the
+      // gap and a successful login bounces you straight back to the login
+      // page. Refetching first costs one round trip and closes it.
+      await queryClient.refetchQueries({ queryKey: ["/api/auth/status"] });
 
       const isAdmin = data.user?.isAdmin;
       // Admins → User Management; everyone else → Projects (/console now redirects

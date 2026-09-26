@@ -68,8 +68,8 @@ test.describe("Auth Status API", () => {
 });
 
 test.describe("Protected API Endpoints (Unauthorized)", () => {
-  test("GET /api/v1/evalFlows - should require auth", async ({ request }) => {
-    const response = await request.get("/api/v1/evalFlows");
+  test("GET /api/v1/eval-flows - should require auth", async ({ request }) => {
+    const response = await request.get("/api/v1/eval-flows");
     expect(response.status()).toBe(401);
 
     const body = await response.json();
@@ -84,8 +84,8 @@ test.describe("Protected API Endpoints (Unauthorized)", () => {
     expect(body.error).toBeDefined();
   });
 
-  test("POST /api/v1/evalFlows - should require auth", async ({ request }) => {
-    const response = await request.post("/api/v1/evalFlows", {
+  test("POST /api/v1/eval-flows - should require auth", async ({ request }) => {
+    const response = await request.post("/api/v1/eval-flows", {
       data: { name: "Test EvalFlow" },
     });
     expect(response.status()).toBe(401);

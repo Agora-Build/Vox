@@ -12,7 +12,7 @@ import { storage, mergeEvalConfig, buildJobSnapshot, validateEvalFlowConfig, val
 import { requireAuthOrApiKey, getCurrentUserOrApiKeyUser } from "./auth";
 import { parsePlatformSetup, sessionScopeForEvalFlow, evaluateSessionRequirement, getBrokeredSecretNames, ensureSession, missingSecretNames, resolvableSecretSources } from "./auth-session";
 import { regionSiteSequence } from "@shared/regions";
-import { hasOrg, sameOrg, isOwnerOrOrgManager } from "./permissions";
+import { hasOrg, sameOrg, isOwnerOrOrgManager, canAccessResource } from "./permissions";
 import { getOrganizations } from "./organizations";
 
 type ApiRegionLocation = Awaited<ReturnType<typeof storage.getAllRegionLocations>>[number];
@@ -108,10 +108,10 @@ export function registerApiV1Routes(app: Express): void {
   // ==================== EVAL_FLOWS ====================
 
   /**
-   * GET /api/v1/evalFlows
+   * GET /api/v1/eval-flows
    * List evalFlows accessible to the authenticated user
    */
-  app.get("/api/v1/evalFlows", requireAuthOrApiKey, async (req: Request, res: Response) => {
+  app.get("/api/v1/eval-flows", requireAuthOrApiKey, async (req: Request, res: Response) => {
     try {
       const user = await getCurrentUserOrApiKeyUser(req);
       if (!user) {
@@ -132,10 +132,10 @@ export function registerApiV1Routes(app: Express): void {
   });
 
   /**
-   * POST /api/v1/evalFlows
+   * POST /api/v1/eval-flows
    * Create a new evalFlow
    */
-  app.post("/api/v1/evalFlows", requireAuthOrApiKey, async (req: Request, res: Response) => {
+  app.post("/api/v1/eval-flows", requireAuthOrApiKey, async (req: Request, res: Response) => {
     try {
       const user = await getCurrentUserOrApiKeyUser(req);
       if (!user) {
@@ -204,10 +204,10 @@ export function registerApiV1Routes(app: Express): void {
   });
 
   /**
-   * GET /api/v1/evalFlows/:id
+   * GET /api/v1/eval-flows/:id
    * Get a specific evalFlow
    */
-  app.get("/api/v1/evalFlows/:id", requireAuthOrApiKey, async (req: Request, res: Response) => {
+  app.get("/api/v1/eval-flows/:id", requireAuthOrApiKey, async (req: Request, res: Response) => {
     try {
       const user = await getCurrentUserOrApiKeyUser(req);
       if (!user) {
@@ -234,10 +234,10 @@ export function registerApiV1Routes(app: Express): void {
   });
 
   /**
-   * PUT /api/v1/evalFlows/:id
+   * PUT /api/v1/eval-flows/:id
    * Update an evalFlow
    */
-  app.put("/api/v1/evalFlows/:id", requireAuthOrApiKey, async (req: Request, res: Response) => {
+  app.put("/api/v1/eval-flows/:id", requireAuthOrApiKey, async (req: Request, res: Response) => {
     try {
       const user = await getCurrentUserOrApiKeyUser(req);
       if (!user) {
@@ -284,10 +284,10 @@ export function registerApiV1Routes(app: Express): void {
   });
 
   /**
-   * DELETE /api/v1/evalFlows/:id
+   * DELETE /api/v1/eval-flows/:id
    * Delete an evalFlow
    */
-  app.delete("/api/v1/evalFlows/:id", requireAuthOrApiKey, async (req: Request, res: Response) => {
+  app.delete("/api/v1/eval-flows/:id", requireAuthOrApiKey, async (req: Request, res: Response) => {
     try {
       const user = await getCurrentUserOrApiKeyUser(req);
       if (!user) {
@@ -314,10 +314,10 @@ export function registerApiV1Routes(app: Express): void {
   });
 
   /**
-   * POST /api/v1/evalFlows/:id/run
+   * POST /api/v1/eval-flows/:id/run
    * Run an evalFlow (create an eval job)
    */
-  app.post("/api/v1/evalFlows/:id/run", requireAuthOrApiKey, async (req: Request, res: Response) => {
+  app.post("/api/v1/eval-flows/:id/run", requireAuthOrApiKey, async (req: Request, res: Response) => {
     try {
       const user = await getCurrentUserOrApiKeyUser(req);
       if (!user) {
@@ -359,6 +359,13 @@ export function registerApiV1Routes(app: Express): void {
       const evalSet = await storage.getEvalSet(evalSetId);
       if (!evalSet) {
         return res.status(404).json({ error: "Eval set not found" });
+      }
+      // Existence is not access. Without this an API key could name ANY eval
+      // set id and have its config merged into a job and executed — the same
+      // check GET /eval-sets/:id applies, and the one the console run route
+      // has always applied.
+      if (!canAccessResource(user, evalSet)) {
+        return res.status(403).json({ error: "Access denied to eval set" });
       }
 
       if (!region || !targetTier) {

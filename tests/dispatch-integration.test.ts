@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
 
 const BASE_URL = process.env.TEST_BASE_URL || "http://localhost:5000";
 const ADMIN_EMAIL = process.env.TEST_ADMIN_EMAIL || "admin@vox.local";
@@ -50,6 +50,7 @@ describe("targeted dispatch isolation", () => {
   let cookie: string;
   let evalFlowId: number;
   let evalSetId: number;
+  let projectId: number;
   let regionBaseIds: string[];
 
   beforeAll(async () => {
@@ -61,13 +62,31 @@ describe("targeted dispatch isolation", () => {
       .map((r: any) => r.baseId as string);
     expect(regionBaseIds.length).toBeGreaterThanOrEqual(2);
 
-    // includePublic=true: admin owns no evalFlows/eval-sets by default in a fresh
-    // seed — the runnable seed content (mainline LiveKit evalFlow, basic eval set)
-    // is owned by Scout but public, so admin needs the public-merge view to see it.
-    const wf = await (await authFetch(cookie, `${BASE_URL}/api/eval-flows?includePublic=true`)).json();
-    evalFlowId = wf[0].id;
-    const es = await (await authFetch(cookie, `${BASE_URL}/api/eval-sets?includePublic=true`)).json();
-    evalSetId = es[0].id;
+    // Own fixtures rather than the first row of `?includePublic=true`. That
+    // used to rely on "admin owns no evalFlows in a fresh seed", which stops
+    // being true the moment any other suite runs — index 0 then becomes some
+    // other suite's flow, possibly private or non-web, and the dispatch below
+    // fails for a reason unrelated to targeting.
+    const stamp = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+    const providerId = (await (await authFetch(cookie, `${BASE_URL}/api/providers`)).json())[0].id;
+    projectId = (await (await authFetch(cookie, `${BASE_URL}/api/projects`, {
+      method: "POST",
+      body: JSON.stringify({ name: `dispatch-proj-${stamp}` }),
+    })).json()).id;
+    evalFlowId = (await (await authFetch(cookie, `${BASE_URL}/api/eval-flows`, {
+      method: "POST",
+      body: JSON.stringify({ name: `dispatch-wf-${stamp}`, visibility: "public", projectId, providerId }),
+    })).json()).id;
+    evalSetId = (await (await authFetch(cookie, `${BASE_URL}/api/eval-sets`, {
+      method: "POST",
+      body: JSON.stringify({ name: `dispatch-es-${stamp}`, visibility: "public", config: {} }),
+    })).json()).id;
+  });
+
+  afterAll(async () => {
+    for (const [path, id] of [["eval-flows", evalFlowId], ["eval-sets", evalSetId], ["projects", projectId]] as const) {
+      if (id) await authFetch(cookie, `${BASE_URL}/api/${path}/${id}`, { method: "DELETE" }).catch(() => {});
+    }
   });
 
   it("a targeted job is visible/claimable ONLY to the aimed token's agent", async () => {

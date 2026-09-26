@@ -12,8 +12,8 @@
 
 ## Features
 
-### Automated Testing
-Comprehensive evaluations run automatically across all selected products and regions using distributed eval agents.
+### Automated Evals
+Evals run automatically every 3 hours across all selected providers and regions, using distributed eval agents.
 
 ### Multi-Region Coverage
 Test from North America, Asia Pacific, Europe, and South America to understand regional performance characteristics.
@@ -33,7 +33,8 @@ Create and manage recurring evaluation schedules with cron expressions. Pause, r
 ### Organization Support
 Team collaboration with seat-based pricing, member management, and shared eval flows.
 
-### 5 Key Metrics
+### 6 Key Metrics
+- **Turn Success Rate** - Share of turns handled correctly: responded, stopped on interrupt, no false barge-in (%) - *Higher is better*
 - **Response Latency** - Time for AI to generate initial response (ms) - *Lower is better*
 - **Interrupt Latency** - Time to process and respond to interruptions (ms) - *Lower is better*
 - **Network Resilience** - Stability under varying network conditions (%) - *Higher is better*

@@ -1,6 +1,6 @@
 import { Link, useLocation } from "wouter";
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { LayoutDashboard, Trophy, BookOpen, Activity, Rocket, Swords, Menu, X, Github, Twitter, Mail, LogIn, LogOut, User } from "lucide-react";
+import { LayoutDashboard, Trophy, BookOpen, Activity, Rocket, Swords, Menu, X, Github, Mail, LogIn, LogOut, User } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
@@ -28,6 +28,18 @@ interface AuthStatus {
   } | null;
 }
 
+/**
+ * X (formerly Twitter) brand mark. lucide ships no brand logos — its `X` is the
+ * close/cross glyph, which in a row of social icons reads as a dismiss button.
+ */
+function XLogo({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" className={className}>
+      <path d="M18.901 1.153h3.68l-8.04 9.19L24 22.846h-7.406l-5.8-7.584-6.638 7.584H.474l8.6-9.83L0 1.154h7.594l5.243 6.932ZM17.61 20.644h2.039L6.486 3.24H4.298Z" />
+    </svg>
+  );
+}
+
 export default function Layout({ children }: { children: React.ReactNode }) {
   const [location, setLocation] = useLocation();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
@@ -38,9 +50,16 @@ export default function Layout({ children }: { children: React.ReactNode }) {
     queryFn: getQueryFn({ on401: "returnNull" }),
   });
 
-  // Public config; carries geoipAttribution when the server's GeoIP data
-  // source (DB-IP Lite, CC-BY-4.0) requires the footer credit.
-  const { data: publicConfig } = useQuery<{ geoipAttribution?: string }>({
+  // Public config: the GeoIP credit (when DB-IP Lite's CC-BY-4.0 requires it)
+  // and the deployment's contact links. Each link is rendered ONLY when the
+  // server sends it, so an unconfigured deployment shows no icon rather than
+  // one that goes nowhere.
+  const { data: publicConfig } = useQuery<{
+    geoipAttribution?: string;
+    contactEmail?: string;
+    githubUrl?: string;
+    xUrl?: string;
+  }>({
     queryKey: ["/api/config"],
     staleTime: 60 * 60 * 1000,
   });
@@ -235,13 +254,13 @@ export default function Layout({ children }: { children: React.ReactNode }) {
               </p>
             </div>
 
-            {/* Product */}
+            {/* Products — ours; the providers we test are a different list */}
             <div className="space-y-4">
-              <h4 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Product</h4>
+              <h4 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Products</h4>
               <ul className="space-y-3">
                 <li>
                   <Link href="/realtime" className="text-sm hover:text-foreground transition-colors text-muted-foreground" data-testid="link-footer-realtime">
-                    Real-time
+                    Real-time Eval
                   </Link>
                 </li>
                 <li>
@@ -253,6 +272,16 @@ export default function Layout({ children }: { children: React.ReactNode }) {
                   <Link href="/run-your-own" className="text-sm hover:text-foreground transition-colors text-muted-foreground" data-testid="link-footer-test">
                     Run Your Own
                   </Link>
+                </li>
+                <li>
+                  <a href="https://github.com/Agora-Build/aeval" target="_blank" rel="noreferrer" className="text-sm hover:text-foreground transition-colors text-muted-foreground" data-testid="link-footer-aeval">
+                    aeval
+                  </a>
+                </li>
+                <li>
+                  <a href="https://github.com/Agora-Build/DialF" target="_blank" rel="noreferrer" className="text-sm hover:text-foreground transition-colors text-muted-foreground" data-testid="link-footer-dialf">
+                    DialF
+                  </a>
                 </li>
               </ul>
             </div>
@@ -267,14 +296,9 @@ export default function Layout({ children }: { children: React.ReactNode }) {
                   </Link>
                 </li>
                 <li>
-                  <span className="text-sm text-muted-foreground/60 cursor-default">
+                  <Link href="/api-docs" className="text-sm hover:text-foreground transition-colors text-muted-foreground" data-testid="link-footer-api-docs">
                     API Docs
-                  </span>
-                </li>
-                <li>
-                  <span className="text-sm text-muted-foreground/60 cursor-default">
-                    Changelog
-                  </span>
+                  </Link>
                 </li>
               </ul>
             </div>
@@ -283,21 +307,27 @@ export default function Layout({ children }: { children: React.ReactNode }) {
             <div className="space-y-4">
               <h4 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Connect</h4>
               <div className="flex items-center gap-3">
-                <a href="https://github.com" target="_blank" rel="noopener noreferrer">
-                  <Button variant="ghost" size="icon" className="h-8 w-8" data-testid="button-footer-github">
-                    <Github className="h-4 w-4" />
-                  </Button>
-                </a>
-                <a href="https://twitter.com" target="_blank" rel="noopener noreferrer">
-                  <Button variant="ghost" size="icon" className="h-8 w-8" data-testid="button-footer-twitter">
-                    <Twitter className="h-4 w-4" />
-                  </Button>
-                </a>
-                <a href="mailto:contact@vox.ai">
-                  <Button variant="ghost" size="icon" className="h-8 w-8" data-testid="button-footer-email">
-                    <Mail className="h-4 w-4" />
-                  </Button>
-                </a>
+                {publicConfig?.githubUrl && (
+                  <a href={publicConfig.githubUrl} target="_blank" rel="noopener noreferrer">
+                    <Button variant="ghost" size="icon" className="h-8 w-8" data-testid="button-footer-github">
+                      <Github className="h-4 w-4" />
+                    </Button>
+                  </a>
+                )}
+                {publicConfig?.xUrl && (
+                  <a href={publicConfig.xUrl} target="_blank" rel="noopener noreferrer" aria-label="X">
+                    <Button variant="ghost" size="icon" className="h-8 w-8" data-testid="button-footer-x">
+                      <XLogo className="h-4 w-4" />
+                    </Button>
+                  </a>
+                )}
+                {publicConfig?.contactEmail && (
+                  <a href={`mailto:${publicConfig.contactEmail}`}>
+                    <Button variant="ghost" size="icon" className="h-8 w-8" data-testid="button-footer-email">
+                      <Mail className="h-4 w-4" />
+                    </Button>
+                  </a>
+                )}
               </div>
             </div>
           </div>

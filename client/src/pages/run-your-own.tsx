@@ -672,7 +672,7 @@ export default function SelfTest() {
 curl -X POST -H "Authorization: Bearer vox_live_xxx" \\
   -H "Content-Type: application/json" \\
   -d '{"region": "na-us-seattle", "targetTier": "public"}' \\
-  ${window.location.origin}/api/v1/evalFlows/1/run
+  ${window.location.origin}/api/v1/eval-flows/1/run
 
 # Get evaluation results
 curl -H "Authorization: Bearer vox_live_xxx" \\
