@@ -2663,11 +2663,20 @@ describe('Vox API Tests', () => {
     });
 
     it('should get my-evals metrics with time filter', async () => {
-      const response = await authFetch(adminSession, `${BASE_URL}/api/metrics/my-evals?hours=24&limit=5`);
+      // Same correction the community sibling above already carries: the
+      // server ignores a client `limit` (parseMetricsWindow reads only
+      // `hours`), so asserting `length <= 5` tested a behavior that does not
+      // exist — it passed only while this account happened to own fewer than
+      // five recent jobs, and a single gate run creates ~2,000. Assert the
+      // window is honored instead.
+      const response = await authFetch(adminSession, `${BASE_URL}/api/metrics/my-evals?hours=24`);
       expect(response.ok).toBe(true);
       const data = await response.json();
       expect(Array.isArray(data)).toBe(true);
-      expect(data.length).toBeLessThanOrEqual(5);
+      const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+      for (const row of data) {
+        if (row.timestamp) expect(new Date(row.timestamp).getTime()).toBeGreaterThanOrEqual(cutoff);
+      }
     });
 
     it('should get realtime (mainline) metrics with time filter', async () => {

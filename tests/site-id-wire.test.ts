@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { REGION_NA, BASE_NA } from './helpers/regions';
 
 /**
@@ -31,6 +31,12 @@ const ADMIN_PASSWORD = process.env.TEST_ADMIN_PASSWORD || 'admin123456';
 const SITE_ID_RE = /^[a-z0-9-]+-\d{2,}$/;
 
 let cookie: string;
+// This suite's OWN runnable evalFlow + eval set. It used to take whichever
+// rows happened to sort first out of `?includePublic=true`, which under
+// parallel load is some other suite's fixture — a private, phone-transport or
+// otherwise unrunnable flow, and the run below then 400s for a reason that
+// has nothing to do with the wire contract under test.
+let wfId: number, esId: number, projectId: number;
 
 async function authFetch(url: string, options: RequestInit = {}): Promise<Response> {
   return fetch(`${BASE_URL}${url}`, {
@@ -47,6 +53,29 @@ beforeAll(async () => {
   });
   if (!res.ok) throw new Error(`Login failed: ${res.status}`);
   cookie = (res.headers.get('set-cookie') || '').split(';')[0];
+
+  const stamp = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+  const providerId = (await (await authFetch('/api/providers')).json())[0].id;
+  projectId = (await (await authFetch('/api/projects', {
+    method: 'POST',
+    body: JSON.stringify({ name: `siteid-proj-${stamp}` }),
+  })).json()).id;
+  wfId = (await (await authFetch('/api/eval-flows', {
+    method: 'POST',
+    body: JSON.stringify({
+      name: `siteid-wf-${stamp}`, visibility: 'public', projectId, providerId,
+    }),
+  })).json()).id;
+  esId = (await (await authFetch('/api/eval-sets', {
+    method: 'POST',
+    body: JSON.stringify({ name: `siteid-es-${stamp}`, visibility: 'public', config: {} }),
+  })).json()).id;
+});
+
+afterAll(async () => {
+  for (const [path, id] of [['eval-flows', wfId], ['eval-sets', esId], ['projects', projectId]] as const) {
+    if (id) await authFetch(`/api/${path}/${id}`, { method: 'DELETE' }).catch(() => {});
+  }
 });
 
 describe('site-id wire contract', () => {
@@ -148,17 +177,15 @@ describe('site-id wire contract', () => {
   });
 
   it('run body takes region+targetTier; the siteId body key is dead', async () => {
-    const wf = await (await authFetch('/api/eval-flows?includePublic=true')).json();
-    const es = await (await authFetch('/api/eval-sets?includePublic=true')).json();
-    const viaSite = await authFetch(`/api/eval-flows/${wf[0].id}/run`, {
+    const viaSite = await authFetch(`/api/eval-flows/${wfId}/run`, {
       method: 'POST',
-      body: JSON.stringify({ siteId: REGION_NA, evalSetId: es[0].id }),
+      body: JSON.stringify({ siteId: REGION_NA, evalSetId: esId }),
     });
     expect(viaSite.status).toBe(400); // siteId body key no longer read
 
-    const viaPool = await authFetch(`/api/eval-flows/${wf[0].id}/run`, {
+    const viaPool = await authFetch(`/api/eval-flows/${wfId}/run`, {
       method: 'POST',
-      body: JSON.stringify({ region: BASE_NA, targetTier: 'public', evalSetId: es[0].id }),
+      body: JSON.stringify({ region: BASE_NA, targetTier: 'public', evalSetId: esId }),
     });
     expect(viaPool.status).toBe(200);
     const { job } = await viaPool.json();
