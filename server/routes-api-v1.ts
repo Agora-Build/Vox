@@ -8,11 +8,11 @@
  */
 
 import { Express, Request, Response } from "express";
-import { storage, mergeEvalConfig, buildJobSnapshot } from "./storage";
+import { storage, mergeEvalConfig, buildJobSnapshot, validateEvalflowConfig, validateEvalSetConfig, stripLegacyConfigKeys, redactLegacyForViewer, unsupportedFrameworkError, carryOverLegacyKeys } from "./storage";
 import { requireAuthOrApiKey, getCurrentUserOrApiKeyUser } from "./auth";
 import { parsePlatformSetup, sessionScopeForEvalflow, evaluateSessionRequirement, getBrokeredSecretNames, ensureSession, missingSecretNames, resolvableSecretSources } from "./auth-session";
 import { regionSiteSequence } from "@shared/regions";
-import { hasOrg, sameOrg } from "./permissions";
+import { hasOrg, sameOrg, isOwnerOrOrgManager } from "./permissions";
 import { getOrganizations } from "./organizations";
 
 type ApiRegionLocation = Awaited<ReturnType<typeof storage.getAllRegionLocations>>[number];
@@ -120,7 +120,7 @@ export function registerApiV1Routes(app: Express): void {
 
       const evalflows = await storage.getEvalflowsByOwner(user.id);
       res.json({
-        data: evalflows,
+        data: evalflows, // owner's own rows — parked payloads are theirs to see
         meta: {
           total: evalflows.length,
         },
@@ -142,10 +142,22 @@ export function registerApiV1Routes(app: Express): void {
         return res.status(401).json({ error: "Authentication required" });
       }
 
-      const { name, description, providerId, projectId, visibility, config } = req.body;
+      const { name, description, providerId, projectId, visibility } = req.body;
+      const config = stripLegacyConfigKeys(req.body.config);
 
       if (!name) {
         return res.status(400).json({ error: "Name is required" });
+      }
+      // Same save-time gate as the console route (v1 previously skipped it —
+      // every config rule was bypassable through this endpoint).
+      if (config !== undefined && config !== null) {
+        // Validate against the transport that will actually be STORED. v1
+        // create never passes transport to storage.createEvalflow, so the row
+        // is always `web` — honouring req.body.transport here would let
+        // phone-only steps into a web row, which is what this check exists to
+        // stop. When v1 learns to save transport, pass the saved value.
+        const v = validateEvalflowConfig(config, "web");
+        if (!v.valid) return res.status(400).json({ error: v.error });
       }
 
       if (!providerId) {
@@ -214,7 +226,9 @@ export function registerApiV1Routes(app: Express): void {
         return res.status(403).json({ error: "Access denied" });
       }
 
-      res.json({ data: evalflow });
+      // Same rule as the console route: the EDIT right, not bare ownership,
+      // so an org manager sees parked payloads through either API.
+      res.json({ data: redactLegacyForViewer(evalflow, isOwnerOrOrgManager(user, evalflow)) });
     } catch (error) {
       console.error("API v1 - Error fetching evalflow:", error);
       res.status(500).json({ error: "Failed to fetch evalflow" });
@@ -243,7 +257,14 @@ export function registerApiV1Routes(app: Express): void {
         return res.status(403).json({ error: "Not authorized to update this evalflow" });
       }
 
-      const { name, description, visibility, config } = req.body;
+      const { name, description, visibility } = req.body;
+      const config = req.body.config === undefined || req.body.config === null
+        ? req.body.config
+        : carryOverLegacyKeys(stripLegacyConfigKeys(req.body.config), evalflow.config);
+      if (config !== undefined && config !== null) {
+        const v = validateEvalflowConfig(config, (evalflow.transport as "web" | "phone" | null) ?? "web");
+        if (!v.valid) return res.status(400).json({ error: v.error });
+      }
 
       // Visibility check
       if (visibility === "private" && user.plan === "basic") {
@@ -387,6 +408,16 @@ export function registerApiV1Routes(app: Express): void {
         return res.status(403).json({ error: "Credential-injected evalflows can only use a team pool when the evalflow belongs to your organization" });
       }
 
+      // Same backstop as the console run route and the scheduler: an evalflow
+      // on a framework this build can't run only produces jobs that fail at
+      // the daemon. Unreachable today (0041 deleted those rows and the
+      // validator rejects the framework at save) — which is exactly why both
+      // run paths must agree.
+      {
+        const frameworkError = unsupportedFrameworkError(evalflow.config);
+        if (frameworkError) return res.status(400).json({ error: frameworkError });
+      }
+
       // Guaranteed-failure gate, same as the console run path: an unconfigured
       // secret means the daemon ships an unresolved placeholder and aeval aborts
       // with an opaque exit. Reject with the exact names instead.
@@ -486,7 +517,12 @@ export function registerApiV1Routes(app: Express): void {
         return res.status(401).json({ error: "Authentication required" });
       }
 
-      const { name, description, visibility, config } = req.body;
+      const { name, description, visibility } = req.body;
+      const config = stripLegacyConfigKeys(req.body.config);
+      if (config !== undefined && config !== null) {
+        const v = validateEvalSetConfig(config);
+        if (!v.valid) return res.status(400).json({ error: v.error });
+      }
 
       if (!name) {
         return res.status(400).json({ error: "Name is required" });

@@ -3,7 +3,7 @@
 # One Dockerfile, three stages:
 #   base   — shared: Ubuntu + Node + Chromium deps + aeval + Playwright + aeval-data
 #   broker — FROM base: auth-session-broker.js only  (published as vox-auth-session-broker)
-#   daemon — FROM base: voice-agent-tester + vox-agentd.js  (published as vox-eval-agentd)
+#   daemon — FROM base: vox-agentd.js  (published as vox-eval-agentd)
 #
 # `daemon` is the LAST stage, so it is the default --target:
 #   docker build -f vox_eval_agentd/Dockerfile -t vox_eval_agentd .                            # → daemon
@@ -111,7 +111,7 @@ ENV HEADLESS=true
 
 # ============================================================================
 # Stage: broker — trusted login sidecar (published as vox-auth-session-broker)
-# Lean tip: auth-session-broker.js only. No voice-agent-tester, no daemon code,
+# Lean tip: auth-session-broker.js only. No daemon code,
 # no node_modules at runtime. The two shared/ modules it imports are COPYed in
 # and bundled by esbuild; nothing else from shared/ is present.
 # ============================================================================
@@ -170,14 +170,7 @@ CMD ["node", "rest-broker.js"]
 FROM base AS daemon
 WORKDIR /app
 
-# --- voice-agent-tester framework (daemon-only) ---
-COPY vox_eval_agentd/voice-agent-tester/ /app/voice-agent-tester/
-WORKDIR /app/voice-agent-tester
-RUN npm install && npx puppeteer browsers install chrome
-
 # --- vox integration files ---
-WORKDIR /app
-COPY vox_eval_agentd/applications/ /app/applications/
 COPY vox_eval_agentd/scenarios/ /app/scenarios/
 COPY vox_eval_agentd/analysis-presets/ /app/analysis-presets/
 COPY vox_eval_agentd/assets/ /app/assets/
@@ -206,12 +199,10 @@ RUN npx esbuild vox-agentd.ts --bundle --platform=node --format=esm --outfile=vo
 ENV VOX_SERVER=http://localhost:5000
 ENV EVAL_FRAMEWORK=aeval
 
-# Unified output directory. Both frameworks write to their own subdir by default
-# (aeval → /app/aeval-data/output, VAT → /app/voice-agent-tester/output); symlink
-# both to /app/output so sessions always land in one place.
+# Unified output directory: aeval writes /app/aeval-data/output by default;
+# symlink it to /app/output so sessions always land in one place.
 RUN mkdir -p /app/output \
- && ln -sfn /app/output /app/aeval-data/output \
- && ln -sfn /app/output /app/voice-agent-tester/output
+ && ln -sfn /app/output /app/aeval-data/output
 VOLUME /app/output
 EXPOSE 8099
 

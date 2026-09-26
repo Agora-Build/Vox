@@ -284,7 +284,7 @@ Distributed eval agents run evaluation tests across regions:
 1. Admin or non-basic users create eval agent tokens with region assignments
 2. Agents register using tokens and heartbeat regularly
 3. Agents claim pending jobs atomically (no race conditions)
-4. Agents execute tests via aeval or voice-agent-tester
+4. Agents execute tests via aeval
 5. Results reported with MED, SD, and P95 latency metrics
 6. Artifacts (recordings, logs, metrics) uploaded to S3 when idle
 

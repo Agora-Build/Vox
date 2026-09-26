@@ -1,6 +1,6 @@
 # vox_eval_agentd
 
-Distributed evaluation agent daemon for Vox. Registers with the Vox server, claims pending jobs, executes evaluations using one of two frameworks, reports results (MED/SD/P95), and uploads artifacts to S3-compatible storage.
+Distributed evaluation agent daemon for Vox. Registers with the Vox server, claims pending jobs, executes evaluations with aeval, reports results (MED/SD/P95), and uploads artifacts to S3-compatible storage.
 
 ## Architecture
 
@@ -11,8 +11,7 @@ Vox Server (API)
     v
 vox-agentd.ts  (compiled to vox-agentd.js for Docker)
     |
-    |-- aeval (default)              Single binary, JSON metrics output
-    |-- voice-agent-tester           Node/Puppeteer, CSV report output
+    |-- aeval                        Single binary, JSON metrics output
     |
     |-- S3 Upload (idle time)        Zip + upload artifacts when no jobs pending
 ```
@@ -23,10 +22,10 @@ vox-agentd.ts  (compiled to vox-agentd.js for Docker)
 2. Sends periodic heartbeats with state (`idle` / `occupied`)
 3. Polls for pending jobs matching the agent's region
 4. Claims a job (atomic, `FOR UPDATE SKIP LOCKED` on server)
-5. Reads `job.config` to determine framework and YAML content
+5. Reads `job.config` for the scenario + Setup/Teardown YAML content
 6. Resolves `${secrets.*}` placeholders with encrypted secrets from server
-7. Writes YAML content to temp files, executes the framework
-8. Parses results (JSON for aeval, CSV for VAT) including MED, SD, and P95 metrics
+7. Writes YAML content to temp files, executes aeval
+8. Parses `metrics.json` results including MED, SD, and P95 metrics
 9. Reports results back via `POST /api/eval-agent/jobs/:id/complete`
 10. Queues artifact upload (processed when daemon goes idle)
 11. Cleans up temp files
@@ -57,19 +56,20 @@ Jobs carry a merged config snapshot from the evalflow and eval set:
 
 ```
 job.config = {
-  framework: "aeval" | "voice-agent-tester",
-  app: "<YAML string>",       // VAT: product URL + browser setup steps
-  scenario: "<YAML string>",  // Test steps to execute
+  framework: "aeval",
+  scenario: "<YAML string>",       // Test steps to execute
+  stepsPrefix: "<YAML step list>", // Evalflow Setup Steps
+  stepsSuffix: "<YAML step list>", // Evalflow Teardown Steps
 }
 ```
 
-- **Evalflow** provides `framework` + `app` (what product to connect to)
+- **Evalflow** provides `framework` + Setup/Teardown steps (how to reach the agent)
 - **Eval Set** provides `scenario` (what test to run)
 - Merging: eval set config spreads last (overrides evalflow fields)
 
-### Frameworks
+### Framework
 
-**aeval** (default):
+**aeval**:
 - Single compiled binary downloaded from GitHub Releases
 - Runtime data (config, examples, corpus) from `aeval-data/` submodule
 - Runs with `cwd: /app/aeval-data` (platform configs resolve relative to this)
@@ -77,18 +77,10 @@ job.config = {
 - Parses: response/interrupt latency (MED, SD, P95) from turn-level arrays
 - Fallback chain: `turn_level` → `summary.p50/p95` → `aggregated_summary.avg` → stdout timestamps
 
-**voice-agent-tester** (VAT):
-- Node.js + Puppeteer browser automation
-- App config YAML: URL + browser interaction steps (navigate, click, wait)
-- Scenario YAML: voice interaction steps (speak, wait_for_voice, metrics)
-- Output: CSV report with `elapsed_time` columns
-- Parses: median/stddev/p95 of response and interrupt latencies
-
 ### Output Directory
 
-Both frameworks write to `/app/output` via symlinks:
+aeval writes to `/app/output` via a symlink:
 - `/app/aeval-data/output` → `/app/output` (symlink in Dockerfile)
-- `/app/voice-agent-tester/output` → `/app/output` (symlink in Dockerfile)
 
 The `VOLUME /app/output` mount makes artifacts accessible on the host.
 
@@ -100,8 +92,6 @@ vox_eval_agentd/
   package.json           # Deps (@aws-sdk/client-s3) + esbuild build script
   Dockerfile             # Production Docker image
   aeval-data/            # Git submodule: Agora-Build/aeval (config, examples, corpus)
-  voice-agent-tester/    # Git submodule: voice-agent-tester
-  applications/          # Default VAT app configs
   scenarios/             # Scenario YAML files
     smoke_test_en_livekit.yaml      # LiveKit smoke test
     smoke_test_en_agora.yaml        # Agora ConvoAI smoke test
@@ -122,7 +112,6 @@ docker build -f vox_eval_agentd/Dockerfile -t vox_eval_agentd .
 docker run \
   -e AGENT_TOKEN=<token> \
   -e VOX_SERVER=http://host.docker.internal:5000 \
-  -e EVAL_FRAMEWORK=aeval \
   -v /tmp/vox-output:/app/output \
   vox_eval_agentd
 ```
@@ -160,9 +149,8 @@ chmod +x /usr/local/bin/aeval
 | `AGENT_TOKEN` | (required) | Eval agent token from Vox server |
 | `VOX_SERVER` | `http://localhost:5000` | Vox API server URL |
 | `VOX_AGENT_NAME` | `eval-agent-<timestamp>` | Agent display name |
-| `EVAL_FRAMEWORK` | `aeval` | Default framework: `aeval` or `voice-agent-tester` |
+| `EVAL_FRAMEWORK` | `aeval` | Default eval framework — the extensibility seam; `aeval` is currently the only implementation. Jobs may override via `job.config.framework`; unsupported values fail loudly. |
 | `HEADLESS` | `true` | Run browser in headless mode |
-- `EVAL_FRAMEWORK` is the fallback default. Individual jobs can override via `job.config.framework`.
 - **S3 config is fetched from the Vox server per job** — no S3 env vars needed on the daemon. Just upgrade to the latest version and it works. If the server has no S3 config, artifacts stay on local disk.
 - **Artifact upload never impacts eval jobs** — uploads only happen when the daemon is idle (no pending jobs).
 - **Crash-safe** — all upload operations are wrapped in try/catch. Network failures, S3 errors, zip timeouts, and bad configs are logged but never crash the daemon or block job execution.

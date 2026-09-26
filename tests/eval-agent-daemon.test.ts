@@ -680,14 +680,6 @@ function resolveAevalOutputDir(aevalDataPath: string, scenarioConfig: string): s
   return path.join(aevalDataPath, "output", scenarioBasename);
 }
 
-/** Mirror of daemon's framework-selection logic from executeJob */
-function selectFramework(
-  jobConfigFramework: string | undefined,
-  envFramework: string,
-): string {
-  return jobConfigFramework || envFramework;
-}
-
 // ---------------------------------------------------------------------------
 // aeval tests
 // ---------------------------------------------------------------------------
@@ -1457,25 +1449,6 @@ describe("Eval Agent Daemon - aeval Output Directory Resolution", () => {
       "a/b/c/d/my_scenario.yaml",
     );
     expect(dir).toBe("/app/aeval-data/output/my_scenario");
-  });
-});
-
-describe("Eval Agent Daemon - Framework Selection", () => {
-  it("should default to aeval when env is aeval and no job override", () => {
-    expect(selectFramework(undefined, "aeval")).toBe("aeval");
-  });
-
-  it("should default to voice-agent-tester when env says so", () => {
-    expect(selectFramework(undefined, "voice-agent-tester")).toBe("voice-agent-tester");
-  });
-
-  it("should prefer job-level framework over env default", () => {
-    expect(selectFramework("voice-agent-tester", "aeval")).toBe("voice-agent-tester");
-    expect(selectFramework("aeval", "voice-agent-tester")).toBe("aeval");
-  });
-
-  it("should fall back to env when job framework is empty string", () => {
-    expect(selectFramework("", "aeval")).toBe("aeval");
   });
 });
 

@@ -333,12 +333,9 @@ export async function stampOwnerSession(
 
 /**
  * The config fields whose ${secrets.X} placeholders the daemon actually feeds
- * to the selected framework, per vox-agentd executeJob:
- *   aeval               → scenario, stepsPrefix, stepsSuffix
- *   voice-agent-tester  → scenario, app
+ * to aeval, per vox-agentd executeJob: scenario, stepsPrefix, stepsSuffix.
  * Gating on anything wider rejects runs that work today — and, worse, can
- * silently disable a recurring schedule on its next tick. A stale placeholder
- * in a field the chosen framework ignores must not block.
+ * silently disable a recurring schedule on its next tick.
  *
  * NOT exhaustive: executeJob expands ${config.X} BEFORE ${secrets.X}, so a
  * secret reached only through config indirection (config.url = "${secrets.K}",
@@ -351,29 +348,9 @@ export async function stampOwnerSession(
  */
 export function resolvableSecretSources(configs: unknown[]): unknown[] {
   const cfgs = configs.map((c) => (c ?? {}) as Record<string, unknown>);
-  // `framework` is evalflow-exclusive (validateEvalSetConfig rejects
-  // EVALFLOW_ONLY_KEYS), so find it rather than merging.
-  const declared = cfgs.find((c) => typeof c.framework === "string")?.framework as string | undefined;
-  // When the config doesn't pin a framework the daemon falls back to its OWN
-  // env default (EVAL_FRAMEWORK, a per-agent knob the server cannot see), so
-  // guessing here would block runs on an agent that reads different fields.
-  // Per this module's asymmetry rule — over-blocking can permanently disable a
-  // schedule, under-blocking merely defers to the daemon's clear error — an
-  // unknown framework narrows to the INTERSECTION.
-  // When it's unset we can still infer safely: voice-agent-tester hard-fails
-  // without `app` ("job.config.app is required"), so a config with no `app` but
-  // with steps can only ever run under aeval — gating those fields there cannot
-  // reject anything that would otherwise have worked. This matters because the
-  // reported failure shape (secret in stepsPrefix, no explicit framework) would
-  // otherwise slip the gate entirely. If `app` IS present, stay conservative.
-  const hasApp = cfgs.some((c) => typeof c.app === "string" && c.app.length > 0);
-  const framework = declared ?? (hasApp ? null : "aeval");
-
   const out: unknown[] = [];
   for (const c of cfgs) {
-    out.push(c.scenario); // read by every framework
-    if (framework === "voice-agent-tester") out.push(c.app);
-    else if (framework === "aeval") out.push(c.stepsPrefix, c.stepsSuffix);
+    out.push(c.scenario, c.stepsPrefix, c.stepsSuffix);
   }
   return out;
 }

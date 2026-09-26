@@ -58,7 +58,7 @@ function resolveSecrets(steps: SetupStep[], secrets: Record<string, string>): Se
  * agent's TTS/WebRTC voice is never rendered to the PulseAudio sink and the
  * broadcaster publishes silence. New headless runs the full Chromium (audio
  * included) without needing an X server — verified to render audio to
- * Sink_*_Out in the runner container. Mirrors voice-agent-tester.
+ * Sink_*_Out in the runner container.
  *
  * @param config Agent configuration (URL + setup steps)
  * @param sinkName PipeWire sink name for audio output (e.g., "Virtual_Sink_A")

@@ -5,7 +5,7 @@
 // so both ticks can be invoked directly — by a test, or by any future runner —
 // without booting the HTTP server.
 
-import { storage, mergeEvalConfig, buildJobSnapshot } from "./storage";
+import { storage, mergeEvalConfig, buildJobSnapshot, unsupportedFrameworkError } from "./storage";
 import { canScheduleEvalflow, sessionPoolViolation } from "./permissions";
 import { parseNextCronRun } from "./cron";
 import { getMarketplace } from "./marketplace";
@@ -164,6 +164,18 @@ export async function processScheduledJobs() {
           await storage.updateEvalSchedule(schedule.id, { isEnabled: false });
           continue;
         }
+        // An evalflow declaring a framework this build can't run (a removed
+        // one, e.g. voice-agent-tester) can only produce jobs that fail at
+        // the daemon — once per tick, forever, each costing a claim and, on
+        // shared dispatch, an escrow round-trip. Disable the schedule like
+        // the deleted-evalflow case above: unsupported ⇒ not scheduled.
+        if (unsupportedFrameworkError(evalflow.config)) {
+          const declaredFramework = (evalflow.config as Record<string, unknown> | null)?.framework;
+          log(`Schedule "${schedule.name}" targets an evalflow on unsupported framework '${String(declaredFramework)}' — disabling`, "scheduler");
+          await storage.updateEvalSchedule(schedule.id, { isEnabled: false });
+          continue;
+        }
+
         // Re-check at runtime that the schedule's creator may still schedule
         // this evalflow (secrets resolve from the evalflow owner). This disables
         // schedules whose creator lost the right — e.g. legacy ones created by a

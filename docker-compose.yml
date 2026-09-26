@@ -47,8 +47,8 @@ services:
         condition: service_healthy
 
   # Session broker — stateless trusted sidecar, its own lean image built from the
-  # Dockerfile's `broker` target (aeval + aeval-data + Chromium only; no
-  # voice-agent-tester, no daemon code). It mints a Playwright storageState by
+  # Dockerfile's `broker` target (aeval + aeval-data + Chromium only;
+  # no daemon code). It mints a Playwright storageState by
   # driving aeval's `setup:account` flow with the login credential Core passes
   # over the internal network. NO ports are published: only vox-service (same
   # compose network) may reach it.
@@ -81,7 +81,7 @@ services:
   #   environment:
   #     AGENT_TOKEN: <token>
   #     VOX_SERVER: http://vox-service:5000
-  #     EVAL_FRAMEWORK: aeval   # or "voice-agent-tester"
+  #     EVAL_FRAMEWORK: aeval   # framework seam — aeval is currently the only one
   #   # aeval >=0.4 records/plays through a virtual ALSA soundcard. The HOST
   #   # must load it first (a container cannot modprobe):
   #   #   sudo modprobe snd-aloop id=VirtualAudio pcm_substreams=1

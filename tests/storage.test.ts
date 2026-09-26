@@ -547,7 +547,18 @@ describe('Config separation validators', () => {
     });
 
     it('tolerates null inputs', () => {
-      expect(mergeEvalConfig(null, { scenario: 'b' })).toEqual({ scenario: 'b' });
+      // framework is stamped so a job never inherits the claiming agent's
+      // EVAL_FRAMEWORK default (a stale agent mid-rollout would pick its own).
+      expect(mergeEvalConfig(null, { scenario: 'b' })).toEqual({ scenario: 'b', framework: 'aeval' });
+    });
+
+    it('stamps the framework only when neither config names one', () => {
+      expect(mergeEvalConfig({ framework: 'aeval' }, { scenario: 'b' }))
+        .toEqual({ framework: 'aeval', scenario: 'b' });
+      // A pre-existing row naming something else keeps it — the run gates and
+      // the daemon reject it loudly rather than being silently rewritten here.
+      expect(mergeEvalConfig({ framework: 'some-removed-framework' }, { scenario: 'b' }))
+        .toEqual({ framework: 'some-removed-framework', scenario: 'b' });
     });
 
     it('reports all overlapping keys', () => {

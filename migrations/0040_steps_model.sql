@@ -31,7 +31,9 @@ WHERE config ? 'phoneDial'
 -- any restfulTrigger row (none exists anywhere) loses the dead keys, so the
 -- new validator never blocks a future edit. The dial value is PRESERVED under
 -- an inert key (nothing reads it, validation ignores it) — a one-way
--- migration should never silently destroy the only copy of a number.
+-- migration should never silently destroy the only copy of a number. It
+-- survives edits (writes strip caller-supplied _legacy* keys but carry the
+-- STORED ones over) and is visible read-only in the editor.
 UPDATE evalflows
 SET config = (config - 'phoneDial' - 'restfulTrigger')
   || CASE WHEN config ? 'phoneDial'
