@@ -826,12 +826,38 @@ start_eval_agent_local() {
 # exists a re-seed will NOT put them back. Delete them and they stay gone
 # until a full `reset`.
 clean_test_data() {
-    log_info "Cleaning test-suite leakage from the dev database..."
-
+    # This deletes broadly — every non-Scout flow/set without a schedule, the
+    # projects left empty, non-seed secrets, and all sessions. That is right
+    # for a scratch database and wrong for anything with real users in it, and
+    # nothing in the predicates themselves can tell the difference. So gate on
+    # the two things that can: the DB must be the local container, and a human
+    # must say so. `--yes` skips the prompt for scripted use.
     if ! docker ps --format '{{.Names}}' | grep -q "^${DB_CONTAINER}$"; then
         log_error "Postgres container ${DB_CONTAINER} is not running — run '$0 start' first"
         return 1
     fi
+    case "$DB_URL" in
+        *@localhost:*|*@127.0.0.1:*) ;;
+        *)
+            log_error "Refusing to clean: DATABASE_URL does not point at a local database"
+            log_error "  ${DB_URL}"
+            return 1
+            ;;
+    esac
+    if [ "${1:-}" != "--yes" ] && [ "${VOX_CLEAN_ASSUME_YES:-}" != "1" ]; then
+        log_warn "This DELETES test data from ${DB_URL}:"
+        log_warn "  eval flows/sets without a schedule (except Scout's seeded ones), the"
+        log_warn "  projects left empty, non-seed secrets, old jobs, and ALL login sessions."
+        printf "Type 'yes' to continue: "
+        local reply=""
+        read -r reply
+        if [ "$reply" != "yes" ]; then
+            log_info "Aborted — nothing deleted"
+            return 1
+        fi
+    fi
+
+    log_info "Cleaning test-suite leakage from the dev database..."
 
     docker exec -i -e PGPASSWORD=vox123 "$DB_CONTAINER" \
         psql -U vox -d vox -v ON_ERROR_STOP=1 <<'SQL'
@@ -1428,7 +1454,7 @@ main() {
             do_reset "local"
             ;;
         clean-test-data)
-            clean_test_data
+            clean_test_data "${2:-}"
             ;;
         build-agent)
             build_eval_agent_docker
@@ -1506,8 +1532,9 @@ main() {
             echo ""
             echo "Common Commands:"
             echo "  status                 - Show service status"
-            echo "  clean-test-data        - Purge test-suite leakage (incl. orphaned"
-            echo "                           recurring schedules) from the dev DB"
+            echo "  clean-test-data [--yes] - Purge test-suite leakage (incl. orphaned"
+            echo "                           recurring schedules) from the dev DB."
+            echo "                           Prompts unless --yes; refuses a non-local DB"
             echo "  build-agent            - Build eval agent Docker image"
             echo "  smoke-test             - Run eval agent smoke tests"
             echo "  logs [server|agent]    - Show logs"

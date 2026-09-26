@@ -166,7 +166,7 @@ npx playwright test [--ui|--headed]
 
 A green gate means all three: unit/integration (Vitest), audio (Docker), E2E (Playwright). Notable suites: `tests/api.test.ts`, `tests/eval-agent-daemon.test.ts`, `tests/clash-runner*.test.ts`, `tests/e2e/*.spec.ts`, `vox_clash_runner/audio/test-audio-pipeline.sh`. Don't trust doc'd test counts — run `npm test`.
 
-Run `./scripts/dev-local-run.sh clean-test-data` on a DB that has accumulated suite leakage: it disarms orphaned recurring schedules (the expensive kind — they keep firing on their cron long after the run that made them) and deletes by reference, keeping anything a surviving job or schedule points at plus every job that produced an `eval_result`.
+Run `./scripts/dev-local-run.sh clean-test-data [--yes]` on a DB that has accumulated suite leakage (it prompts unless `--yes`, and refuses outright if `DATABASE_URL` is not local — the predicates are broad by necessity and cannot tell a fixture from a real row): it disarms orphaned recurring schedules (the expensive kind — they keep firing on their cron long after the run that made them) and deletes by reference, keeping anything a surviving job or schedule points at plus every job that produced an `eval_result`.
 
 **Known gate hazards:**
 - Suites leak resources into the dev DB and trip per-user caps (GitHub #134). `clean-test-data` above replaces the hand-written SQL this section used to carry — it covers the same rows plus the `plugin_organizations` leakage from `tests/org-claim-stamp.test.ts` (`r2-org-*`, no `afterAll`; same pre-existing pattern as `tier-pool-claim.test.ts`).
