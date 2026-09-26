@@ -359,16 +359,40 @@ steps:
   const mainlineSet = seededSets.find(e => e.name === "Basic Conversation Test");
 
   if (mainlineFlow && mainlineSet) {
-    // Next 3-hour boundary. setHours(24) rolls the date over, so late in the
-    // day this still lands in the future — the old `% 24` wrap seeded a
-    // nextRunAt in the past for any hour past the last boundary.
+    // Next 3-hour boundary, computed in UTC: the schedule is stored with
+    // timezone "UTC" and the cron boundaries are UTC, so using local
+    // getHours/setHours would put nextRunAt hours off the real boundary on
+    // any host that isn't UTC. setUTCHours(24) rolls the date over, so late
+    // in the day this still lands in the future.
     const now = new Date();
     const nextRunAt = new Date(now);
-    nextRunAt.setMinutes(0, 0, 0);
-    nextRunAt.setHours(Math.floor(now.getHours() / 3) * 3 + 3);
+    nextRunAt.setUTCMinutes(0, 0, 0);
+    nextRunAt.setUTCHours(Math.floor(now.getUTCHours() / 3) * 3 + 3);
 
     const schedules = await storage.getEvalSchedulesByEvalFlow(mainlineFlow.id);
-    const existing = schedules.find(s => s.scheduleType === "recurring");
+    // Pick the canonical one deterministically: an already-correct schedule if
+    // there is one, else the oldest. Taking whatever the query returned first
+    // could disable the correct schedule and promote the stale duplicate —
+    // the right end state, reached backwards, with a confusing log.
+    const recurring = schedules
+      .filter(s => s.scheduleType === "recurring")
+      .sort((a, b) => {
+        const aCanon = a.name === MAINLINE_NAME && a.cronExpression === MAINLINE_CRON ? 0 : 1;
+        const bCanon = b.name === MAINLINE_NAME && b.cronExpression === MAINLINE_CRON ? 0 : 1;
+        return aCanon - bCanon || a.id - b.id;
+      });
+    const [existing, ...duplicates] = recurring;
+
+    // Exactly one canonical recurring schedule. Extras left enabled would keep
+    // firing on whatever cadence they carry, so the flow runs at the old rate
+    // or several times per interval — reconciling only the first would leave
+    // precisely the state this reconciliation exists to end.
+    for (const dup of duplicates) {
+      if (dup.isEnabled) {
+        await storage.updateEvalSchedule(dup.id, { isEnabled: false });
+        console.log(`Disabled duplicate recurring schedule: ${dup.name} (${dup.cronExpression})`);
+      }
+    }
     if (!existing) {
       const schedule = await storage.createEvalSchedule({
         name: MAINLINE_NAME,
@@ -392,6 +416,11 @@ steps:
         nextRunAt,
       });
       console.log(`Updated mainline schedule: "${existing.name}" (${existing.cronExpression}) -> "${MAINLINE_NAME}" (${MAINLINE_CRON})`);
+    } else if (!existing.nextRunAt || existing.nextRunAt.getTime() <= now.getTime()) {
+      // Right cron, but the next run is in the past — a database that sat idle
+      // since the last seed. Nudge it to the coming boundary.
+      await storage.updateEvalSchedule(existing.id, { nextRunAt });
+      console.log(`Refreshed stale nextRunAt -> ${nextRunAt.toISOString()}`);
     } else {
       console.log(`Mainline schedule already on ${MAINLINE_CRON}`);
     }

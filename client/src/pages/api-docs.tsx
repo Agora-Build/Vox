@@ -39,7 +39,18 @@ export default function ApiDocs() {
     queryKey: ["/api/v1/openapi.json"],
   });
 
-  const base = spec?.servers?.[spec.servers.length - 1]?.url ?? "https://vox.agora.build/api/v1";
+  // The curl examples below must hit the instance whose docs you are reading.
+  // Taking the LAST server in the spec always yielded production, so a
+  // developer on localhost copied commands aimed at vox.agora.build. Prefer a
+  // spec server on this origin; otherwise build the base from this origin, and
+  // only fall back to the spec when neither applies (SSR, no window).
+  const origin = typeof window === "undefined" ? "" : window.location.origin;
+  const specBase = spec?.servers?.[spec.servers.length - 1]?.url;
+  const base =
+    spec?.servers?.find((s) => origin && s.url.startsWith(origin))?.url ??
+    (origin ? `${origin}/api/v1` : undefined) ??
+    specBase ??
+    "https://vox.agora.build/api/v1";
 
   // Group operations by tag so the reference reads the way the API is shaped.
   type EndpointRow = { verb: string; path: string; summary: string; open: boolean };
