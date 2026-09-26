@@ -120,7 +120,7 @@ export function registerApiV1Routes(app: Express): void {
 
       const evalFlows = await storage.getEvalFlowsByOwner(user.id);
       res.json({
-        data: evalFlows, // owner's own rows — parked payloads are theirs to see
+        data: evalFlows,
         meta: {
           total: evalFlows.length,
         },

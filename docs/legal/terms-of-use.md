@@ -118,7 +118,7 @@ You agree not to:
 
 ## 8. User Content
 
-You may create or submit content through the Service, including evalflows, eval
+You may create or submit content through the Service, including eval flows, eval
 sets, configurations, and results ("User Content"). You retain ownership of your
 User Content. You grant VOX and its contributors a worldwide, non-exclusive,
 royalty-free license to host, store, reproduce, and process your User Content as

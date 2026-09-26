@@ -2,7 +2,7 @@ openapi: 3.0.3
 info:
   title: Vox API
   description: |
-    API for the Vox AI latency evaluation platform. This API allows you to manage evalFlows,
+    API for the Vox AI latency evaluation platform. This API allows you to manage eval flows,
     eval sets, jobs, and access metrics for conversational AI products.
 
     ## Authentication
@@ -49,7 +49,7 @@ servers:
     description: Production server
 
 tags:
-  - name: EvalFlows
+  - name: Eval Flows
     description: Manage how evaluations reach each agent
   - name: Eval Sets
     description: Manage evaluation test sets
@@ -545,10 +545,10 @@ components:
           example: 90
 
 paths:
-  /evalFlows:
+  /eval-flows:
     get:
       tags:
-        - EvalFlows
+        - Eval Flows
       summary: List evalFlows
       description: Returns all evalFlows accessible to the authenticated user
       security:
@@ -579,7 +579,7 @@ paths:
 
     post:
       tags:
-        - EvalFlows
+        - Eval Flows
       summary: Create evalFlow
       description: Creates a new evalFlow
       security:
@@ -619,10 +619,10 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
 
-  /evalFlows/{id}:
+  /eval-flows/{id}:
     get:
       tags:
-        - EvalFlows
+        - Eval Flows
       summary: Get evalFlow
       description: Returns a specific evalFlow by ID
       security:
@@ -664,7 +664,7 @@ paths:
 
     put:
       tags:
-        - EvalFlows
+        - Eval Flows
       summary: Update evalFlow
       description: Updates an existing evalFlow (owner only)
       security:
@@ -712,7 +712,7 @@ paths:
 
     delete:
       tags:
-        - EvalFlows
+        - Eval Flows
       summary: Delete evalFlow
       description: Deletes an evalFlow (owner only)
       security:
@@ -752,10 +752,10 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
 
-  /evalFlows/{id}/run:
+  /eval-flows/{id}/run:
     post:
       tags:
-        - EvalFlows
+        - Eval Flows
       summary: Run evalFlow
       description: Creates an eval job to run the evalFlow
       security:
