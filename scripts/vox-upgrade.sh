@@ -210,9 +210,9 @@ for name in "${!images[@]}"; do
     # Pass through optional env vars if set
     [ -n "${LOCAL_DEBUG:-}" ] && env_args+="-e LOCAL_DEBUG=$LOCAL_DEBUG "
     [ -n "${HEADLESS:-}" ] && env_args+="-e HEADLESS=$HEADLESS "
-    # The daemon exits on an unsupported framework (fail-loud seam), so
-    # forwarding a stale value would crash-loop the container under the
-    # restart policy. Drop it with a warning instead; aeval is the default.
+    # The daemon warns and falls back to aeval on an unsupported value, so
+    # forwarding a stale one only produces a confusing log line every start.
+    # Drop it here instead, with the same warning; aeval is the default.
     if [ -n "${EVAL_FRAMEWORK:-}" ]; then
         if [ "$EVAL_FRAMEWORK" = "aeval" ]; then
             env_args+="-e EVAL_FRAMEWORK=$EVAL_FRAMEWORK "

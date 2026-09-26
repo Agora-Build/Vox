@@ -293,6 +293,8 @@ export function redactLegacyFromJob<T extends { config?: unknown; snapshot?: unk
 // already plumb it end to end. aeval is currently the only implementation
 // (voice-agent-tester was removed 2026-09).
 export const SUPPORTED_FRAMEWORKS = new Set<string>(["aeval"]);
+/** Stamped into every job config that doesn't name one (see mergeEvalConfig). */
+export const DEFAULT_FRAMEWORK = "aeval";
 
 // Keys owned exclusively by the eval set (the test body).
 const EVALSET_ONLY_KEYS = ["scenario"] as const;
@@ -623,7 +625,15 @@ export function mergeEvalConfig(
   if (conflicts.length > 0) {
     throw new Error(`Evalflow and eval set configs share keys with conflicting values: ${conflicts.join(", ")}`);
   }
-  return { ...wf, ...es };
+  const merged = { ...wf, ...es };
+  // Stamp the framework explicitly. The daemon resolves
+  // `config.framework || <its EVAL_FRAMEWORK default>`, so a job that omits
+  // it inherits whatever the CLAIMING agent is configured with — and
+  // marketplace/self-hosted agents upgrade on their own schedule, so during a
+  // rollout a stale agent would otherwise take its own branch on a job the
+  // server considers aeval. An explicit value always wins.
+  if (typeof merged.framework !== "string") merged.framework = DEFAULT_FRAMEWORK;
+  return merged;
 }
 
 // Build the immutable per-job snapshot (see JobSnapshot in shared/schema). Captures

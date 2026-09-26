@@ -31,6 +31,7 @@ SET status = 'failed',
     error = 'voice-agent-tester was removed; re-create this eval on aeval',
     completed_at = NOW()
 WHERE status IN ('pending', 'running')
+  AND jsonb_typeof(config) = 'object'
   AND (config->>'framework' = 'voice-agent-tester'
        OR (config ? 'app'
            AND config->>'framework' IS DISTINCT FROM 'aeval'
@@ -46,11 +47,12 @@ WHERE status IN ('pending', 'running')
 UPDATE eval_schedules SET is_enabled = false
 WHERE evalflow_id IN (
   SELECT id FROM evalflows
-  WHERE config->>'framework' = 'voice-agent-tester'
-     OR (config ? 'app'
-         AND config->>'framework' IS DISTINCT FROM 'aeval'
-         AND coalesce(btrim(config->>'stepsPrefix'), '') = ''
-         AND coalesce(btrim(config->>'stepsSuffix'), '') = '')
+  WHERE jsonb_typeof(config) = 'object'
+    AND (config->>'framework' = 'voice-agent-tester'
+         OR (config ? 'app'
+             AND config->>'framework' IS DISTINCT FROM 'aeval'
+             AND coalesce(btrim(config->>'stepsPrefix'), '') = ''
+             AND coalesce(btrim(config->>'stepsSuffix'), '') = ''))
 );
 --> statement-breakpoint
 -- DELETE only rows that PROVABLY declared the removed framework. The
@@ -75,7 +77,7 @@ WHERE config->>'framework' = 'voice-agent-tester';
 -- never blocks a future edit. Nothing ever read it.
 UPDATE evalflows
 SET config = config - 'app'
-WHERE config ? 'app';
+WHERE jsonb_typeof(config) = 'object' AND config ? 'app';
 --> statement-breakpoint
 -- Eval sets too: validateEvalSetConfig now rejects `app`, and v1 eval-set
 -- create did NO validation before this release, so an older row may carry
@@ -83,7 +85,7 @@ WHERE config ? 'app';
 -- removed-framework error and there's no way to clear it.
 UPDATE eval_sets
 SET config = config - 'app'
-WHERE config ? 'app';
+WHERE jsonb_typeof(config) = 'object' AND config ? 'app';
 --> statement-breakpoint
 -- Unrelated to VAT, same class of cleanup: 0040 parked unconvertible dial
 -- numbers as _legacyPhoneDial on the evalflow row, and jobs merged before
