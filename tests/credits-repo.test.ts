@@ -1,34 +1,29 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { Pool } from "pg";
-import { readFileSync } from "fs";
-import { runPluginMigrations } from "../server/plugins/migrate";
-import { parseManifest } from "../server/plugins/manifest";
-import { createPluginDb } from "../server/plugins/db";
 import * as repo from "../plugins/credits/server/repo";
 import type { PluginDb } from "@vox/plugin-sdk";
-import { TEST_PLUGIN_DATABASE_URL, ensurePluginTestDatabase } from "./helpers/plugin-test-db";
+import { setupCreditsDb, type CreditsHarness } from "./helpers/credits-db";
 
 const hasDb = !!process.env.DATABASE_URL;
 const d = hasDb ? describe : describe.skip;
 
 d("credits repo", () => {
-  let pool: Pool;
+  let h: CreditsHarness;
   let db: PluginDb;
 
+  // Worker-scoped schema via the shared credits harness, like the other
+  // credits-*.test.ts files. This suite used to migrate into the fixed
+  // `plugin_credits` schema, which credits-e2e.test.ts also drops and rebuilds
+  // (it has to: it exercises the real loader). Running in parallel workers,
+  // each dropped the other's tables mid-run. The migration runner itself is
+  // covered by credits-e2e; this file only needs the tables.
   beforeAll(async () => {
-    await ensurePluginTestDatabase();
-    pool = new Pool({ connectionString: TEST_PLUGIN_DATABASE_URL });
-    await pool.query(`DROP SCHEMA IF EXISTS plugin_credits CASCADE`);
-    await pool.query(`DELETE FROM _plugin_schema_versions WHERE plugin_id = 'credits'`).catch(() => {});
-    const manifest = parseManifest(JSON.parse(readFileSync("plugins/credits/vox.plugin.json", "utf-8")));
-    await runPluginMigrations(pool, [manifest], "plugins");
-    db = createPluginDb(pool, "plugin_credits");
+    h = await setupCreditsDb();
+    db = h.db;
   });
 
   afterAll(async () => {
-    await pool.query(`DROP SCHEMA IF EXISTS plugin_credits CASCADE`);
-    await pool.query(`DELETE FROM _plugin_schema_versions WHERE plugin_id = 'credits'`).catch(() => {});
-    await pool.end();
+    await h.pool.query(`DROP SCHEMA IF EXISTS "${h.schema}" CASCADE`);
+    await h.pool.end();
   });
 
   it("resolves the three system accounts", async () => {
