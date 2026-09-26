@@ -123,11 +123,11 @@ export default function Home() {
               <div className="w-12 h-12 rounded-lg bg-blue-500/10 flex items-center justify-center mb-4">
                 <Clock className="h-6 w-6 text-blue-500" />
               </div>
-              <CardTitle>Automated Testing</CardTitle>
+              <CardTitle>Automated Evals</CardTitle>
             </CardHeader>
             <CardContent>
               <p className="text-muted-foreground">
-                Comprehensive evaluations run automatically every 8 hours across all selected products and regions.
+                Evals run automatically every 3 hours across all selected providers and regions.
               </p>
             </CardContent>
           </Card>
@@ -165,11 +165,11 @@ export default function Home() {
               <div className="w-12 h-12 rounded-lg bg-emerald-500/10 flex items-center justify-center mb-4">
                 <Activity className="h-6 w-6 text-emerald-500" />
               </div>
-              <CardTitle>5 Key Metrics</CardTitle>
+              <CardTitle>6 Key Metrics</CardTitle>
             </CardHeader>
             <CardContent>
               <p className="text-muted-foreground">
-                Response latency, interrupt latency, network resilience, naturalness, and noise reduction analysis.
+                Turn success rate, response latency, interrupt latency, network resilience, naturalness, and noise reduction.
               </p>
             </CardContent>
           </Card>
@@ -236,7 +236,7 @@ export default function Home() {
       {/* Metrics Detail */}
       <section className="space-y-12">
         <div className="text-center space-y-4">
-          <h2 className="text-3xl font-bold">5 Key Metrics</h2>
+          <h2 className="text-3xl font-bold">6 Key Metrics</h2>
           <p className="text-muted-foreground">We measure critical performance indicators that impact real-world user experience</p>
         </div>
 
@@ -275,6 +275,25 @@ export default function Home() {
                </div>
                <div className="pt-2">
                  <Badge className="bg-emerald-500 hover:bg-emerald-600">Lower is better</Badge>
+               </div>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <div className="flex items-center gap-2 mb-2">
+                <Activity className="h-5 w-5 text-emerald-500" />
+                <h3 className="font-bold">Turn Success Rate</h3>
+              </div>
+              <p className="text-sm text-muted-foreground">Share of turns handled correctly — responded, stopped on interrupt, no false barge-in</p>
+            </CardHeader>
+            <CardContent className="space-y-4">
+               <div>
+                  <div className="text-xs uppercase text-muted-foreground font-bold">Unit</div>
+                  <div className="font-mono">percentage (%)</div>
+               </div>
+               <div className="pt-2">
+                 <Badge className="bg-emerald-500 hover:bg-emerald-600">Higher is better</Badge>
                </div>
             </CardContent>
           </Card>

@@ -181,7 +181,7 @@ async function seedData() {
   }
 
   // Create Scout's LiveKit evaluation evalFlow and schedule
-  // This sets up a mainline evalFlow that runs every 8 hours
+  // This sets up a mainline evalFlow that runs every 3 hours
   const scoutEvalFlows = await storage.getEvalFlowsByOwner(scoutId);
   const existingLiveKitEvalFlow = scoutEvalFlows.find(w => w.name === "LiveKit Agent Evaluation");
 
@@ -231,7 +231,7 @@ steps:
     // LiveKit evalFlow: platform enter/exit only (no login).
     const livekitEvalFlow = await storage.createEvalFlow({
       name: "LiveKit Agent Evaluation",
-      description: "Mainline evaluation evalFlow for LiveKit Agents - runs every 8 hours",
+      description: "Mainline evaluation evalFlow for LiveKit Agents - runs every 3 hours",
       ownerId: scoutId,
       projectId: scoutProject.id,
       providerId: livekitProvider?.id || null,
@@ -342,33 +342,32 @@ steps:
       console.log(`Created eval set: ${loginSmokeEvalSet.name}`);
     }
 
-    // Create recurring schedule - every 8 hours (at 0:00, 8:00, 16:00)
-    // Cron: "0 */8 * * *" means "at minute 0 past every 8th hour"
+    // Create recurring schedule - every 3 hours (0:00, 3:00, ... 21:00), the cadence the site advertises
+    // Cron: "0 */3 * * *" means "at minute 0 past every 3rd hour"
     const schedules = await storage.getEvalSchedulesByEvalFlow(livekitEvalFlow.id);
     if (schedules.length === 0) {
-      // Calculate next run time for every 8 hours
+      // Next 3-hour boundary. setHours(24) rolls the date over, so late in
+      // the day this still lands in the future — the old `% 24` wrap seeded
+      // a nextRunAt in the past for any hour past the last boundary.
       const now = new Date();
-      const nextHour = Math.ceil(now.getHours() / 8) * 8;
       const nextRunAt = new Date(now);
-      nextRunAt.setHours(nextHour % 24, 0, 0, 0);
-      if (nextRunAt <= now) {
-        nextRunAt.setHours(nextRunAt.getHours() + 8);
-      }
+      nextRunAt.setMinutes(0, 0, 0);
+      nextRunAt.setHours(Math.floor(now.getHours() / 3) * 3 + 3);
 
       const schedule = await storage.createEvalSchedule({
-        name: "LiveKit 8-Hour Evaluation",
+        name: "LiveKit 3-Hour Evaluation",
         evalFlowId: livekitEvalFlow.id,
         evalSetId: basicEvalSet.id,
         region: "na",  // North America region
         scheduleType: "recurring",
-        cronExpression: "0 */8 * * *",  // Every 8 hours
+        cronExpression: "0 */3 * * *",  // Every 3 hours
         timezone: "UTC",
         isEnabled: true,
         nextRunAt: nextRunAt,
         maxRuns: null,  // Unlimited runs
         createdBy: scoutId,
       });
-      console.log(`Created recurring schedule: ${schedule.name} (every 8 hours, region: NA)`);
+      console.log(`Created recurring schedule: ${schedule.name} (every 3 hours, region: NA)`);
       console.log(`  Next run at: ${nextRunAt.toISOString()}`);
     } else {
       console.log(`Schedule already exists for LiveKit evalFlow`);
