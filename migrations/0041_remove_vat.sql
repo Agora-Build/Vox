@@ -33,11 +33,13 @@ SET config = ((config - 'app') || jsonb_build_object('framework', 'aeval'))
        ELSE '{}'::jsonb END
 WHERE config->>'framework' = 'voice-agent-tester' OR config ? 'app';
 --> statement-breakpoint
--- Non-terminal jobs froze their merged config BEFORE mergeEvalConfig learned
--- to strip parked keys, so a pending row can still carry _legacyPhoneDial
--- (0040) — an owner's phone number that would travel to whichever agent
--- claims it, for a key nothing reads. Strip them; terminal rows are history
--- and stay untouched.
+-- Jobs froze their merged config BEFORE mergeEvalConfig learned to strip
+-- parked keys, so a row can carry _legacyPhoneDial (0040): an owner's phone
+-- number travelling to whichever agent claims it, and readable by whoever RAN
+-- the evalflow (anyone may run a public one). Stripped from EVERY job, not
+-- just queued ones — these keys are dead data parked by 0040 itself, never
+-- provenance content, so removing them doesn't rewrite history. The read
+-- boundary redacts them for non-owners regardless; this removes the copy.
 UPDATE eval_jobs
 SET config = config - '_legacyPhoneDial' - '_legacyVatApp',
     snapshot = CASE
@@ -45,10 +47,9 @@ SET config = config - '_legacyPhoneDial' - '_legacyVatApp',
         THEN jsonb_set(snapshot, '{evalflow,config}',
                (snapshot #> '{evalflow,config}') - '_legacyPhoneDial' - '_legacyVatApp')
       ELSE snapshot END
-WHERE status IN ('pending', 'running')
-  AND (config ? '_legacyPhoneDial' OR config ? '_legacyVatApp'
-       OR snapshot #> '{evalflow,config}' ? '_legacyPhoneDial'
-       OR snapshot #> '{evalflow,config}' ? '_legacyVatApp');
+WHERE config ? '_legacyPhoneDial' OR config ? '_legacyVatApp'
+   OR snapshot #> '{evalflow,config}' ? '_legacyPhoneDial'
+   OR snapshot #> '{evalflow,config}' ? '_legacyVatApp';
 --> statement-breakpoint
 -- A queued job froze `framework: voice-agent-tester` in its own config, so
 -- the upgraded daemon would claim it and fail with "Unsupported eval

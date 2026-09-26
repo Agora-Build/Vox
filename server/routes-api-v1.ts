@@ -151,7 +151,9 @@ export function registerApiV1Routes(app: Express): void {
       // Same save-time gate as the console route (v1 previously skipped it —
       // every config rule was bypassable through this endpoint).
       if (config !== undefined && config !== null) {
-        const v = validateEvalflowConfig(config, "web");
+        // v1 create has no transport field today; read it anyway so adding
+        // one later can't silently validate phone steps as web.
+        const v = validateEvalflowConfig(config, req.body.transport === "phone" ? "phone" : "web");
         if (!v.valid) return res.status(400).json({ error: v.error });
       }
 

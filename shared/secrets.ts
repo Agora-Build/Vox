@@ -117,12 +117,18 @@ export function resolveSecretPlaceholders(
  * substitutes those payloads, so a secret reference inside one must not
  * trip the run gates (a migrated row would 400 with no way to clear it).
  */
+/** Config keys with this prefix are migration-parked dead payloads (0040
+ * _legacyPhoneDial, 0041 _legacyVatApp): never read, never executed, never
+ * scanned for secret refs, never sent to agents, owner-only on reads. The one
+ * definition — server/storage.ts and the daemon import it from here. */
+export const LEGACY_CONFIG_KEY_PREFIX = "_legacy";
+
 export function collectSecretRefs(configs: unknown[]): Set<string> {
   const names = new Set<string>();
   for (const cfg of configs) {
     if (cfg == null) continue;
     const scrubbed = typeof cfg === "object" && !Array.isArray(cfg)
-      ? Object.fromEntries(Object.entries(cfg as Record<string, unknown>).filter(([k]) => !k.startsWith("_legacy")))
+      ? Object.fromEntries(Object.entries(cfg as Record<string, unknown>).filter(([k]) => !k.startsWith(LEGACY_CONFIG_KEY_PREFIX)))
       : cfg;
     const text = typeof scrubbed === "string" ? scrubbed : JSON.stringify(scrubbed);
     const re = new RegExp(SECRET_PLACEHOLDER_REGEX.source, "g");

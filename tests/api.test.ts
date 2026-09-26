@@ -2877,6 +2877,25 @@ describe('Vox API Tests', () => {
         const jobBody = await jobRes.json();
         expect(jobBody.config._legacyPhoneDial).toBeUndefined();
         expect(jobBody.snapshot.evalflow.config._legacyPhoneDial).toBeUndefined();
+        // The job's CREATOR is not the evalflow owner: anyone may run a
+        // public evalflow, and the job they create carries the owner's
+        // parked payload — redaction keys on the owner, not the runner.
+        const ranByAdmin = await storage.createEvalJob({
+          evalflowId: wf.id, triggerType: 2, evalSetId: null, createdBy: 1,
+          siteId: null, targetRegion: BASE_NA, targetTier: 'public',
+          config: { _legacyPhoneDial: { number: '+1 555 010 9999' } },
+          snapshot: { evalflow: { name: wf.name, ownerId: owner.id, config: { _legacyPhoneDial: { number: '+1 555 010 9999' } } } },
+          status: 'completed', priority: 0, retryCount: 0, maxRetries: 3,
+        } as any);
+        try {
+          const res = await authFetch(adminSession, `${BASE_URL}/api/eval-jobs/${ranByAdmin.id}`);
+          expect(res.ok).toBe(true);
+          const body = await res.json();
+          expect(body.config._legacyPhoneDial).toBeUndefined();
+          expect(body.snapshot.evalflow.config._legacyPhoneDial).toBeUndefined();
+        } finally {
+          await pool.query(`DELETE FROM eval_jobs WHERE id = $1`, [ranByAdmin.id]);
+        }
       } finally {
         await pool.query(`DELETE FROM eval_jobs WHERE id = $1`, [job.id]);
         await pool.query(`DELETE FROM evalflows WHERE id = $1`, [wf.id]);

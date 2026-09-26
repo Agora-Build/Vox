@@ -224,25 +224,22 @@ d("migration 0041_remove_vat.sql (transactional, rolled back)", () => {
     expect(job.stepsPrefix).toBe("- type: platform.setup");
   });
 
-  it("strips parked payloads from NON-TERMINAL jobs only (no owner phone number to agents; history intact)", async () => {
+  it("strips parked payloads from EVERY job — config and frozen snapshot, terminal rows included", async () => {
+    // These keys are dead data parked by 0040 itself, never provenance
+    // content: a terminal job is readable by whoever RAN the evalflow (anyone
+    // may run a public one), so leaving the owner's number there is a leak
+    // the read boundary shouldn't have to carry alone.
     const { rows } = await client.query(
-      `SELECT status, config FROM eval_jobs WHERE config->>'scenario' LIKE '%# pending%' OR config->>'scenario' LIKE '%# terminal%'`,
-    );
-    const pending = rows.find((r: any) => r.status === "pending");
-    const terminal = rows.find((r: any) => r.status === "completed");
-    expect(pending.config._legacyPhoneDial).toBeUndefined();
-    expect(terminal.config._legacyPhoneDial).toEqual({ number: "+1 555 010 1234" });
-  });
-
-  it("strips parked payloads from the queued job's SNAPSHOT too (it ships to agents with the job)", async () => {
-    const { rows } = await client.query(
-      `SELECT status, snapshot #> '{evalflow,config}' AS wfconfig FROM eval_jobs
+      `SELECT status, config, snapshot #> '{evalflow,config}' AS wfconfig FROM eval_jobs
        WHERE config->>'scenario' LIKE '%# pending%' OR config->>'scenario' LIKE '%# terminal%'`,
     );
-    const pending = rows.find((r: any) => r.status === "pending");
-    const terminal = rows.find((r: any) => r.status === "completed");
-    expect(pending.wfconfig._legacyPhoneDial).toBeUndefined();
-    expect(terminal.wfconfig._legacyPhoneDial).toEqual({ number: "+1 555 010 1234" });
+    expect(rows).toHaveLength(2);
+    for (const row of rows) {
+      expect(row.config._legacyPhoneDial).toBeUndefined();
+      expect(row.wfconfig._legacyPhoneDial).toBeUndefined();
+      // Real content survives — only the parked key goes.
+      expect(String(row.config.scenario)).toContain("steps: []");
+    }
   });
 
   it("fails queued jobs frozen on the removed framework (no wasted claim + escrow round-trip)", async () => {

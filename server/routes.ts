@@ -5169,6 +5169,13 @@ export async function registerRoutes(
 
   // ==================== EVAL JOB MANAGEMENT ROUTES ====================
 
+  // Parked _legacy* payloads in a job (config + frozen snapshot) belong to the
+  // EVALFLOW's owner, not whoever ran it: anyone may run a public evalflow, and
+  // the job they create carries the owner's payload. Falls back to the job
+  // creator only when the snapshot predates owner capture.
+  const jobLegacyOwner = (job: { snapshot?: { evalflow?: { ownerId?: number | null } | null } | null; createdBy?: number | null }) =>
+    job.snapshot?.evalflow?.ownerId ?? job.createdBy ?? null;
+
   // List eval jobs with filters
   app.get("/api/eval-jobs", requireAuth, async (req, res) => {
     try {
@@ -5256,7 +5263,7 @@ export async function registerRoutes(
       const enriched = paged.map(job => ({
         // Parked _legacy* payloads are owner-only; this list includes jobs
         // from PUBLIC evalflows owned by other people.
-        ...redactLegacyFromJob(job, job.createdBy === user.id),
+        ...redactLegacyFromJob(job, jobLegacyOwner(job) === user.id),
         creatorName: job.createdBy ? creatorMap.get(job.createdBy) || null : null,
         responseRate: rateMap.has(job.id) ? rateMap.get(job.id)! : null,
         // trigger_type: 1 = scheduled, 2 = manual (recorded at creation). Fall back
@@ -5300,7 +5307,7 @@ export async function registerRoutes(
         }
       }
 
-      res.json(redactLegacyFromJob(job, job.createdBy === user.id));
+      res.json(redactLegacyFromJob(job, jobLegacyOwner(job) === user.id));
     } catch (error) {
       console.error("Error fetching eval job:", error);
       res.status(500).json({ error: "Failed to fetch eval job" });
@@ -5365,7 +5372,7 @@ export async function registerRoutes(
       }
 
       res.json({
-        job: redactLegacyFromJob(job, job.createdBy === user.id),
+        job: redactLegacyFromJob(job, jobLegacyOwner(job) === user.id),
         result: result ? {
           ...result,
           artifactUrl: signedArtifactUrl,

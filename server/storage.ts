@@ -1,4 +1,5 @@
 import * as yaml from "js-yaml";
+import { LEGACY_CONFIG_KEY_PREFIX } from "@shared/secrets";
 import {
   PHONE_NUMBER_RE, illegalPhoneStepType, illegalWebStepType, illegalWebVocabInPhone,
   walkStepList, type StepSegment,
@@ -235,7 +236,7 @@ const MAX_CONFIG_SIZE = 100_000; // 100KB
 export function stripLegacyConfigKeys<T>(config: T): T {
   if (typeof config !== "object" || config === null || Array.isArray(config)) return config;
   return Object.fromEntries(
-    Object.entries(config as Record<string, unknown>).filter(([k]) => !k.startsWith("_legacy")),
+    Object.entries(config as Record<string, unknown>).filter(([k]) => !k.startsWith(LEGACY_CONFIG_KEY_PREFIX)),
   ) as T;
 }
 
@@ -249,7 +250,7 @@ export function redactLegacyForViewer<T extends { config?: unknown }>(row: T, ca
   if (canSeeLegacy) return row;
   const config = row.config;
   if (typeof config !== "object" || config === null || Array.isArray(config)) return row;
-  if (!Object.keys(config as Record<string, unknown>).some((k) => k.startsWith("_legacy"))) return row;
+  if (!Object.keys(config as Record<string, unknown>).some((k) => k.startsWith(LEGACY_CONFIG_KEY_PREFIX))) return row;
   return { ...row, config: stripLegacyConfigKeys(config) };
 }
 
@@ -264,6 +265,9 @@ export function redactLegacyFromJob<T extends { config?: unknown; snapshot?: unk
   job: T,
   canSeeLegacy: boolean,
 ): T {
+  // NOTE for callers: `canSeeLegacy` must be keyed on the EVALFLOW OWNER, not
+  // job.createdBy — anyone may run a public evalflow, and the resulting job
+  // (theirs) carries the owner's parked payload.
   if (canSeeLegacy) return job;
   const snap = job.snapshot as { evalflow?: { config?: unknown }; evalSet?: { config?: unknown } } | null | undefined;
   return {

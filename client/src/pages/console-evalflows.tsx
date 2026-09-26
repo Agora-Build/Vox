@@ -15,6 +15,7 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { Plus, Workflow as EvalflowIcon, Globe, Lock, Star, StarOff, ChevronRight, Pencil, FolderKanban, Copy, Trash2, Phone } from "lucide-react";
 import { useState } from "react";
+import { LEGACY_CONFIG_KEY_PREFIX } from "@shared/secrets";
 import { useLocation } from "wouter";
 import { load as loadYaml } from "js-yaml";
 import type { Evalflow as EvalflowType, Provider, Project } from "@shared/schema";
@@ -241,7 +242,7 @@ export default function ConsoleEvalflows() {
     setEditStepsSuffix(cfg.stepsSuffix || "");
     setEditProviderId(evalflow.providerId);
     setEditTransport(evalflow.transport || "web");
-    const parked = Object.fromEntries(Object.entries(cfg).filter(([k]) => k.startsWith("_legacy")));
+    const parked = Object.fromEntries(Object.entries(cfg).filter(([k]) => k.startsWith(LEGACY_CONFIG_KEY_PREFIX)));
     setEditLegacyConfig(Object.keys(parked).length > 0 ? JSON.stringify(parked, null, 2) : "");
     setEditOpen(true);
   };
