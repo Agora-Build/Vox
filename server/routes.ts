@@ -16,7 +16,7 @@ import { fingerprintCredential, formatLastFailedHttpStatus, parseLastFailedHttpS
 import { sessionScopeForEvalflow, areLoginSecretsAttested, ensureSession, stampOwnerSession, credentialKeyFor, SESSION_FRESH_MARGIN_SECONDS, classifyReferencedSecrets, findBrokeredMisuse, resolveBrokerType, type SessionNeed, detectSessionNeed, missingSecretNames, resolvableSecretSources } from "./auth-session";
 import { validateRegisterPayload, cacheBrokerMintSecret, hasBrokerMintSecret, routeToBroker, executeViaBroker, KNOWN_BROKER_TYPES } from "./broker-registry";
 import { resolveRestfulTemplate } from "./restful-exec";
-import { validateRestfulTrigger, parseStepsScript, stepsContainCallDial, stripLegacyConfigKeys, redactLegacyForViewer, redactLegacyFromJob } from "./storage";
+import { validateRestfulTrigger, parseStepsScript, stepsContainCallDial, stripLegacyConfigKeys, redactLegacyForViewer, redactLegacyFromJob, SUPPORTED_FRAMEWORKS } from "./storage";
 import { PHONE_NUMBER_RE } from "@shared/steps";
 import { deriveApiKeyStatus } from "./api-key-status";
 import { isStaleOfflineAgent } from "./agent-liveness";
@@ -4676,6 +4676,20 @@ export async function registerRoutes(
       // fellow bypass — see canRunEvalflow).
       if (!canRunEvalflow(user, evalflow)) {
         return res.status(403).json({ error: "Not authorized to run this evalflow" });
+      }
+
+      // An evalflow on a framework this build can't run (a removed one, e.g.
+      // voice-agent-tester) can only produce a job that fails at the daemon —
+      // after a claim and, on shared dispatch, an escrow round-trip. Refuse at
+      // the source. Only a pre-existing row can be in this state: the
+      // validator rejects the framework at save.
+      {
+        const declared = ((evalflow.config ?? {}) as Record<string, unknown>).framework;
+        if (typeof declared === "string" && !SUPPORTED_FRAMEWORKS.has(declared)) {
+          return res.status(400).json({
+            error: `This evalflow uses '${declared}', which this version cannot run. Re-create it on ${Array.from(SUPPORTED_FRAMEWORKS).join(" or ")}.`,
+          });
+        }
       }
 
       // A phone-transport evalflow needs a call-establishment step in Setup

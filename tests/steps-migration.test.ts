@@ -207,10 +207,13 @@ d("migration 0041_remove_vat.sql (transactional, rolled back)", () => {
     expect(healthy.stepsPrefix).toBe("- type: platform.setup");
   });
 
-  it("a deleted evalflow orphans its schedule (scheduler disables it) and keeps job history", async () => {
+  it("DISABLES the schedule before deleting, then orphans it; job history survives", async () => {
     const { rows: sched } = await client.query(
-      `SELECT evalflow_id FROM eval_schedules WHERE name = $1`, [`${stamp}-vat-sched`]);
-    expect(sched[0].evalflow_id).toBeNull(); // ON DELETE SET NULL → orphan → auto-disabled on next tick
+      `SELECT evalflow_id, is_enabled FROM eval_schedules WHERE name = $1`, [`${stamp}-vat-sched`]);
+    // Explicitly disabled by the migration — NOT left for the scheduler's
+    // orphan path, which only fires once next_run_at arrives.
+    expect(sched[0].is_enabled).toBe(false);
+    expect(sched[0].evalflow_id).toBeNull(); // ON DELETE SET NULL
 
     const { rows: healthySched } = await client.query(
       `SELECT evalflow_id, is_enabled FROM eval_schedules WHERE name = $1`, [`${stamp}-healthy-sched`]);

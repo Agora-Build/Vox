@@ -32,6 +32,22 @@ WHERE status IN ('pending', 'running')
            AND coalesce(btrim(config->>'stepsPrefix'), '') = ''
            AND coalesce(btrim(config->>'stepsSuffix'), '') = ''));
 --> statement-breakpoint
+-- Disable their schedules BEFORE the delete — afterwards evalflow_id is NULL
+-- and the association is gone. Not redundant with the scheduler's
+-- orphan-disable: getDueSchedules only selects rows whose next_run_at has
+-- arrived, so an orphaned schedule would otherwise sit "enabled" in the UI
+-- until its next fire time. An unsupported framework disables the schedule,
+-- full stop.
+UPDATE eval_schedules SET is_enabled = false
+WHERE evalflow_id IN (
+  SELECT id FROM evalflows
+  WHERE config->>'framework' = 'voice-agent-tester'
+     OR (config ? 'app'
+         AND config->>'framework' IS DISTINCT FROM 'aeval'
+         AND coalesce(btrim(config->>'stepsPrefix'), '') = ''
+         AND coalesce(btrim(config->>'stepsSuffix'), '') = '')
+);
+--> statement-breakpoint
 -- The evalflows themselves, same two shapes. A healthy aeval row that merely
 -- carries a leftover `app` key (the old validator accepted it on any
 -- evalflow) is NOT deleted — it was running fine and only loses the dead key,

@@ -553,3 +553,72 @@ d("unified steps — full run path (API round-trip)", () => {
     }
   });
 });
+
+// An evalflow whose framework this build can't run (only reachable as a
+// pre-existing row — the validator rejects it at save) must never produce
+// a job: refused at the run route, and its schedule disabled by the
+// scheduler rather than firing failures forever.
+d("unsupported framework — run refused, schedule disabled", () => {
+  let cookie: string;
+  let wfId: number;
+  let scheduleId: number;
+  let evalSetId: number;
+
+  beforeAll(async () => {
+    const login = await fetch(`${BASE_URL}/api/auth/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: "admin@vox.local", password: "admin123456" }),
+    });
+    cookie = login.headers.get("set-cookie")!.split(";")[0];
+
+    const providers = await storage.getAllProviders();
+    // Written through storage, bypassing the validator — exactly the shape a
+    // pre-existing row has after its framework is removed from the build.
+    const wf = await storage.createEvalflow({
+      name: `unsupported-fw-${suffix}`, ownerId: 1, providerId: providers[0].id,
+      visibility: "private", config: { framework: "some-removed-framework", scenario: undefined },
+    } as any);
+    wfId = wf.id;
+    const es = await storage.createEvalSet({
+      name: `unsupported-fw-es-${suffix}`, ownerId: 1, visibility: "private",
+      config: { scenario: "steps: []" },
+    } as any);
+    evalSetId = es.id;
+    const sched = await storage.createEvalSchedule({
+      name: `unsupported-fw-sched-${suffix}`, evalflowId: wf.id, evalSetId: es.id,
+      region: "na-us-seattle", targetTier: "private", scheduleType: "recurring",
+      cronExpression: "0 * * * *", isEnabled: true, createdBy: 1,
+      nextRunAt: new Date(Date.now() - 60_000), // due now
+    } as any);
+    scheduleId = sched.id;
+  });
+
+  afterAll(async () => {
+    if (!hasDb) return;
+    await pool.query(`DELETE FROM eval_jobs WHERE evalflow_id = $1`, [wfId]);
+    if (scheduleId) await pool.query(`DELETE FROM eval_schedules WHERE id = $1`, [scheduleId]);
+    if (wfId) await pool.query(`DELETE FROM evalflows WHERE id = $1`, [wfId]);
+    if (evalSetId) await pool.query(`DELETE FROM eval_sets WHERE id = $1`, [evalSetId]);
+  });
+
+  it("the run route refuses it instead of creating a job that fails at the daemon", async () => {
+    const res = await fetch(`${BASE_URL}/api/evalflows/${wfId}/run`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Cookie: cookie },
+      body: JSON.stringify({ evalSetId, region: "na-us-seattle", targetTier: "private" }),
+    });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toContain("cannot run");
+  });
+
+  it("the scheduler disables its schedule on the next tick", async () => {
+    const { processScheduledJobs } = await import("../server/scheduler");
+    await processScheduledJobs();
+    const after = await storage.getEvalSchedule(scheduleId);
+    expect(after!.isEnabled).toBe(false);
+    // And it created nothing.
+    const { rows } = await pool.query(`SELECT count(*)::int AS n FROM eval_jobs WHERE evalflow_id = $1`, [wfId]);
+    expect(rows[0].n).toBe(0);
+  });
+});
