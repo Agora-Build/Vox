@@ -10,6 +10,7 @@ import Home from "@/pages/home";
 import Dashboard from "@/pages/realtime";
 import Leaderboard from "@/pages/leaderboard";
 import ProviderGuide from "@/pages/provider";
+import ApiDocs from "@/pages/api-docs";
 import SelfTest from "@/pages/run-your-own";
 import Login from "@/pages/login";
 import AdminLogin from "@/pages/login-admin";
@@ -1081,6 +1082,11 @@ function Router() {
       <Route path="/dive">
         <Layout>
           <ProviderGuide />
+        </Layout>
+      </Route>
+      <Route path="/api-docs">
+        <Layout>
+          <ApiDocs />
         </Layout>
       </Route>
       <Route path="/run-your-own">

@@ -200,7 +200,7 @@ A green gate means all three: unit/integration (Vitest), audio (Docker), E2E (Pl
 - `shared/credentials.ts` — redaction + fingerprinting shared by Core/daemon/broker; **Node-only, never import from client/**
 - `shared/mint-timeout.ts` — the one clamped `WEB_SESSION_MINT_TIMEOUT_SECONDS` reader; the clamp orders four deadlines (broker child < Core abort +15s < stale reclaim +30s < daemon's hard-coded 240s poll) — raising `MAX_MINT_TIMEOUT_SECONDS` requires raising that poll too
 - `server/routes.ts`, `server/storage.ts`, `server/auth.ts`, `server/permissions.ts`, `server/stripe.ts`, `client/src/App.tsx`
-- `designs/IMPLEMENTATION_PLAN.md`, `designs/CLASH_DESIGN.md`, `designs/vox-arch.png`
+- `designs/CLASH_DESIGN.md`, `designs/vox-arch.png`; dated design docs in `designs/` carry the reasoning per change. `designs/IMPLEMENTATION_PLAN.md` is the ORIGINAL plan, kept for history and no longer accurate
 - `scripts/vox-upgrade.sh` — upgrade eval agent / clash runner containers
 
 ## Deployment & Notes

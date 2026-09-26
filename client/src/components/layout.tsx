@@ -277,9 +277,9 @@ export default function Layout({ children }: { children: React.ReactNode }) {
                   </Link>
                 </li>
                 <li>
-                  <a href="/api/docs" className="text-sm hover:text-foreground transition-colors text-muted-foreground" data-testid="link-footer-api-docs">
+                  <Link href="/api-docs" className="text-sm hover:text-foreground transition-colors text-muted-foreground" data-testid="link-footer-api-docs">
                     API Docs
-                  </a>
+                  </Link>
                 </li>
               </ul>
             </div>
