@@ -111,6 +111,10 @@ export default function ConsoleApiKeys() {
         <div>
           <h1 className="text-2xl font-bold">API Keys</h1>
           <p className="text-muted-foreground">Manage API keys for programmatic access to Vox</p>
+          <p className="text-sm text-muted-foreground mt-2" data-testid="text-api-key-once">
+            The key is shown <strong>once, at creation</strong> — copy it then. Vox stores only a SHA-256
+            hash and cannot show it to you again; if you lose it, revoke it and make another.
+          </p>
         </div>
         <Button onClick={() => setCreateOpen(true)} className="gap-2">
           <Plus className="h-4 w-4" /> Create Key

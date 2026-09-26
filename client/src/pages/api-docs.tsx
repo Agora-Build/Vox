@@ -134,9 +134,7 @@ export default function ApiDocs() {
             </CardHeader>
             <CardContent className="space-y-4">
               <p className="text-sm text-muted-foreground">
-                Sign in, then open <strong>Console → API Keys</strong> and create one. The key is
-                shown <strong>once, at creation</strong> — copy it then. Vox stores only a SHA-256
-                hash and cannot show it to you again; if you lose it, revoke it and make another.
+                Sign in, then open <strong>Console → API Keys</strong> and create one.
               </p>
               <Link href="/console/api-keys">
                 <Button variant="outline" size="sm" className="gap-2" data-testid="link-api-keys">
