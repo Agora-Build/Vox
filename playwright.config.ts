@@ -11,7 +11,13 @@ export default defineConfig({
   fullyParallel: true,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 2 : 0,
-  workers: process.env.CI ? 1 : undefined,
+  // Everything under test is ONE single-process Vite dev server, so workers
+  // past a handful do not buy parallelism — they queue on the same event loop
+  // and push login round trips and first-hit module transforms past the
+  // assertion budgets. Playwright's default is half the cores (8 here), which
+  // is tuned for independent workers and wrong for a shared backend: it made
+  // the auth specs fail intermittently on load alone. CI already runs 1.
+  workers: process.env.CI ? 1 : 4,
   reporter: "html",
   use: {
     baseURL: "http://localhost:5000",
