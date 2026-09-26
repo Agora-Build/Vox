@@ -12,6 +12,11 @@
 -- — disabling"), and completed jobs keep their history and results,
 -- authorized by created_by.
 
+-- A `running` job whose agent is mid-execution reports completion later;
+-- finalizeRunningJob only transitions FROM `running`, so that report finds
+-- the row already terminal and returns undefined — it cannot overwrite this
+-- `failed` with `completed`, and the reap-settle sweep stays correct.
+--
 -- Queued jobs first — FAIL rather than delete, so a shared-dispatch row stays
 -- visible to the scheduler's reap-settle sweep (it picks up `failed` rows with
 -- a settlementContext 1–15 min after completed_at, and the worker ticks every
@@ -56,6 +61,12 @@ WHERE evalflow_id IN (
 -- runs quietly wrong) and its dead `app` key is dropped below, leaving a
 -- human to decide. Queued jobs of BOTH shapes were failed regardless —
 -- failing a job destroys nothing.
+-- To triage the kept rows after deploy (they have no steps, so they'd run
+-- as aeval with nothing set up, and their schedules are already off):
+--   SELECT id, name, owner_id FROM evalflows
+--   WHERE config->>'framework' IS NULL
+--     AND coalesce(btrim(config->>'stepsPrefix'), '') = ''
+--     AND coalesce(btrim(config->>'stepsSuffix'), '') = '';
 DELETE FROM evalflows
 WHERE config->>'framework' = 'voice-agent-tester';
 --> statement-breakpoint
@@ -80,12 +91,20 @@ WHERE config ? 'app';
 -- config and snapshot. That copy travels to whichever agent claims the job and
 -- is readable by whoever RAN the evalflow (anyone may run a public one), for a
 -- key nothing reads. Remove the copies; the evalflow row keeps the original.
+-- jsonb_typeof guards on BOTH sides: the WHERE is an OR, so a row can match
+-- on one side while the other holds a JSON scalar (JSON `null` is not SQL
+-- NULL) — and `scalar - 'key'` raises "cannot delete from scalar", aborting
+-- a migration that runs before the app starts. Normal rows can't reach this;
+-- 0037 is why the guard is worth its two lines anyway.
 UPDATE eval_jobs
-SET config = config - '_legacyPhoneDial',
+SET config = CASE
+      WHEN jsonb_typeof(config) = 'object' THEN config - '_legacyPhoneDial'
+      ELSE config END,
     snapshot = CASE
-      WHEN snapshot #> '{evalflow,config}' IS NOT NULL
+      WHEN jsonb_typeof(snapshot #> '{evalflow,config}') = 'object'
         THEN jsonb_set(snapshot, '{evalflow,config}',
                (snapshot #> '{evalflow,config}') - '_legacyPhoneDial')
       ELSE snapshot END
-WHERE config ? '_legacyPhoneDial'
-   OR snapshot #> '{evalflow,config}' ? '_legacyPhoneDial';
+WHERE (jsonb_typeof(config) = 'object' AND config ? '_legacyPhoneDial')
+   OR (jsonb_typeof(snapshot #> '{evalflow,config}') = 'object'
+       AND snapshot #> '{evalflow,config}' ? '_legacyPhoneDial');

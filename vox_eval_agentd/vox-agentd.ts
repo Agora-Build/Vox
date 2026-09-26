@@ -2305,12 +2305,17 @@ function parseArgs(): DaemonConfig {
   let serverUrl = process.env.VOX_SERVER || 'http://localhost:5000';
   let name = process.env.VOX_AGENT_NAME || '';
   const framework = process.env.EVAL_FRAMEWORK || 'aeval';
-  // The framework seam's daemon-side gate: an unsupported value (e.g. a host
-  // .env still saying voice-agent-tester) must fail HERE, in docker logs,
-  // not one claimed job at a time.
-  if (framework !== 'aeval') {
-    console.error(`[Daemon] Unsupported EVAL_FRAMEWORK '${framework}'. Supported: aeval`);
-    process.exit(1);
+  // The framework seam's daemon-side gate. An unsupported value (a host .env
+  // still saying voice-agent-tester) is reported HERE, in docker logs, rather
+  // than one claimed job at a time. It FALLS BACK rather than exiting: this
+  // env var is only a per-agent DEFAULT, every job may override it, and aeval
+  // is the only framework — so the fallback can never run a wrong eval, while
+  // exiting would crash-loop any host that sets the var outside
+  // vox-upgrade.sh (its own compose file, systemd, k8s) the moment it pulls
+  // this image. Same resolution vox-upgrade.sh applies before starting us.
+  const resolvedFramework = framework === 'aeval' ? framework : 'aeval';
+  if (resolvedFramework !== framework) {
+    console.warn(`[Daemon] Unsupported EVAL_FRAMEWORK '${framework}' — using 'aeval' (the only supported framework). Remove it from your env to silence this.`);
   }
   const headless = process.env.HEADLESS !== 'false';
 
@@ -2362,7 +2367,7 @@ Example:
     process.exit(1);
   }
 
-  return { token, serverUrl, name, framework, headless };
+  return { token, serverUrl, name, framework: resolvedFramework, headless };
 }
 
 // ---------------------------------------------------------------------------

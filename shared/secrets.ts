@@ -105,6 +105,12 @@ export function resolveSecretPlaceholders(
   });
 }
 
+/** Config keys with this prefix are migration-parked dead payloads (0040's
+ * _legacyPhoneDial): never read, never executed, never scanned for secret
+ * refs, never sent to agents, owner-only on reads. The one definition —
+ * server/storage.ts, the daemon and the client import it from here. */
+export const LEGACY_CONFIG_KEY_PREFIX = "_legacy";
+
 /**
  * Enumerate every ${secrets.NAME} referenced across one or more configs.
  * Objects (jsonb evalflow/eval-set configs) are JSON-stringified before
@@ -117,12 +123,6 @@ export function resolveSecretPlaceholders(
  * payloads, so a secret reference inside one must not trip the run gates
  * (a migrated row would 400 with no way to clear it).
  */
-/** Config keys with this prefix are migration-parked dead payloads (0040's
- * _legacyPhoneDial): never read, never executed, never scanned for secret
- * refs, never sent to agents, owner-only on reads. The one definition —
- * server/storage.ts, the daemon and the client import it from here. */
-export const LEGACY_CONFIG_KEY_PREFIX = "_legacy";
-
 export function collectSecretRefs(configs: unknown[]): Set<string> {
   const names = new Set<string>();
   for (const cfg of configs) {

@@ -177,6 +177,16 @@ d("migration 0041_remove_vat.sql (transactional, rolled back)", () => {
       );
     }
 
+    // A pathological row: config is a JSON scalar, not an object. `scalar -
+    // 'key'` raises "cannot delete from scalar" and would abort a migration
+    // that runs BEFORE the app starts (the 0037 failure mode).
+    await client.query(
+      `INSERT INTO eval_jobs (evalflow_id, trigger_type, created_by, target_region, target_tier, config, snapshot, status, priority, retry_count, max_retries)
+       VALUES ($1, 2, 1, 'na-us-seattle', 'private', 'null'::jsonb,
+               $2::jsonb, 'completed', 0, 0, 3)`,
+      [aevalWfId, JSON.stringify({ evalflow: { name: "scalar-cfg", config: { _legacyPhoneDial: { number: "+1 555 010 1234" } } } })],
+    );
+
     const sql = readFileSync("./migrations/0041_remove_vat.sql", "utf-8");
     for (const statement of sql.split("--> statement-breakpoint").map((x) => x.trim()).filter(Boolean)) {
       await client.query(statement);
@@ -263,6 +273,16 @@ d("migration 0041_remove_vat.sql (transactional, rolled back)", () => {
       expect(row.wfconfig._legacyPhoneDial).toBeUndefined();
       expect(String(row.config.scenario)).toContain("steps: []"); // real content intact
     }
+  });
+
+  it("survives a job whose config is a JSON scalar (would abort a pre-start migration)", async () => {
+    // Reaching this assertion at all proves the migration didn't raise —
+    // beforeAll executes the real file. The snapshot side still got cleaned.
+    const { rows } = await client.query(
+      `SELECT config, snapshot #> '{evalflow,config}' AS wfconfig FROM eval_jobs
+       WHERE snapshot #>> '{evalflow,name}' = 'scalar-cfg'`);
+    expect(rows[0].config).toBeNull(); // JSON null, left alone
+    expect(rows[0].wfconfig._legacyPhoneDial).toBeUndefined();
   });
 
   it("parked _legacy* payloads never trip the secret scans (collectSecretRefs skips them)", async () => {
