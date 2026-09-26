@@ -365,37 +365,35 @@ export default function ConsoleEvalflows() {
                   </SelectContent>
                 </Select>
               </div>
-              <>
-                  <div className="space-y-2">
-                    <Label>Setup Steps (stepsPrefix, YAML)</Label>
-                    <Textarea
-                      className="font-mono text-sm min-h-[120px]"
-                      placeholder={transport === "phone"
-                        ? "- type: call.dial\n  number: \"+1 555 010 1234\"\n- type: call.wait_answered"
-                        : "- type: platform.setup\n  platform_id: livekit\n- type: platform.enter"}
-                      value={stepsPrefix}
-                      onChange={(e) => setStepsPrefix(e.target.value)}
-                      data-testid="textarea-evalflow-steps-prefix"
-                    />
-                    <p className="text-xs text-muted-foreground">
-                      {transport === "phone"
-                        ? "How we reach the agent: dial it (call.dial) or trigger it. The conversation lives in the eval set."
-                        : "Platform connect/login steps. Differs per provider. The test body lives in the eval set."}
-                    </p>
-                  </div>
-                  <div className="space-y-2">
-                    <Label>Teardown Steps (stepsSuffix, YAML)</Label>
-                    <Textarea
-                      className="font-mono text-sm min-h-[80px]"
-                      placeholder={transport === "phone"
-                        ? "- type: call.hangup"
-                        : "- type: audio.stop_recording\n- type: platform.exit"}
-                      value={stepsSuffix}
-                      onChange={(e) => setStepsSuffix(e.target.value)}
-                      data-testid="textarea-evalflow-steps-suffix"
-                    />
-                  </div>
-              </>
+              <div className="space-y-2">
+                <Label>Setup Steps (stepsPrefix, YAML)</Label>
+                <Textarea
+                  className="font-mono text-sm min-h-[120px]"
+                  placeholder={transport === "phone"
+                    ? "- type: call.dial\n  number: \"+1 555 010 1234\"\n- type: call.wait_answered"
+                    : "- type: platform.setup\n  platform_id: livekit\n- type: platform.enter"}
+                  value={stepsPrefix}
+                  onChange={(e) => setStepsPrefix(e.target.value)}
+                  data-testid="textarea-evalflow-steps-prefix"
+                />
+                <p className="text-xs text-muted-foreground">
+                  {transport === "phone"
+                    ? "How we reach the agent: dial it (call.dial) or trigger it. The conversation lives in the eval set."
+                    : "Platform connect/login steps. Differs per provider. The test body lives in the eval set."}
+                </p>
+              </div>
+              <div className="space-y-2">
+                <Label>Teardown Steps (stepsSuffix, YAML)</Label>
+                <Textarea
+                  className="font-mono text-sm min-h-[80px]"
+                  placeholder={transport === "phone"
+                    ? "- type: call.hangup"
+                    : "- type: audio.stop_recording\n- type: platform.exit"}
+                  value={stepsSuffix}
+                  onChange={(e) => setStepsSuffix(e.target.value)}
+                  data-testid="textarea-evalflow-steps-suffix"
+                />
+              </div>
             </div>
             <DialogFooter>
               <Button
@@ -485,37 +483,35 @@ export default function ConsoleEvalflows() {
                 Past runs keep the mode they ran with — changing this affects future runs only.
               </p>
             </div>
-            <>
-                <div className="space-y-2">
-                  <Label>Setup Steps (stepsPrefix, YAML)</Label>
-                  <Textarea
-                    className="font-mono text-sm min-h-[120px]"
-                    placeholder={editTransport === "phone"
-                      ? "- type: call.dial\n  number: \"+1 555 010 1234\"\n- type: call.wait_answered"
-                      : "- type: platform.setup\n  platform_id: livekit\n- type: platform.enter"}
-                    value={editStepsPrefix}
-                    onChange={(e) => setEditStepsPrefix(e.target.value)}
-                    data-testid="textarea-evalflow-steps-prefix-edit"
-                  />
-                  <p className="text-xs text-muted-foreground">
-                    {editTransport === "phone"
-                      ? "How we reach the agent: dial it (call.dial) or trigger it. The conversation lives in the eval set."
-                      : "Platform connect/login steps. Differs per provider. The test body lives in the eval set."}
-                  </p>
-                </div>
-                <div className="space-y-2">
-                  <Label>Teardown Steps (stepsSuffix, YAML)</Label>
-                  <Textarea
-                    className="font-mono text-sm min-h-[80px]"
-                    placeholder={editTransport === "phone"
-                      ? "- type: call.hangup"
-                      : "- type: audio.stop_recording\n- type: platform.exit"}
-                    value={editStepsSuffix}
-                    onChange={(e) => setEditStepsSuffix(e.target.value)}
-                    data-testid="textarea-evalflow-steps-suffix-edit"
-                  />
-                </div>
-            </>
+            <div className="space-y-2">
+              <Label>Setup Steps (stepsPrefix, YAML)</Label>
+              <Textarea
+                className="font-mono text-sm min-h-[120px]"
+                placeholder={editTransport === "phone"
+                  ? "- type: call.dial\n  number: \"+1 555 010 1234\"\n- type: call.wait_answered"
+                  : "- type: platform.setup\n  platform_id: livekit\n- type: platform.enter"}
+                value={editStepsPrefix}
+                onChange={(e) => setEditStepsPrefix(e.target.value)}
+                data-testid="textarea-evalflow-steps-prefix-edit"
+              />
+              <p className="text-xs text-muted-foreground">
+                {editTransport === "phone"
+                  ? "How we reach the agent: dial it (call.dial) or trigger it. The conversation lives in the eval set."
+                  : "Platform connect/login steps. Differs per provider. The test body lives in the eval set."}
+              </p>
+            </div>
+            <div className="space-y-2">
+              <Label>Teardown Steps (stepsSuffix, YAML)</Label>
+              <Textarea
+                className="font-mono text-sm min-h-[80px]"
+                placeholder={editTransport === "phone"
+                  ? "- type: call.hangup"
+                  : "- type: audio.stop_recording\n- type: platform.exit"}
+                value={editStepsSuffix}
+                onChange={(e) => setEditStepsSuffix(e.target.value)}
+                data-testid="textarea-evalflow-steps-suffix-edit"
+              />
+            </div>
             <div className="space-y-2">
               <Label htmlFor="edit-evalflow-project">Project</Label>
               {editEvalflow?.projectId ? (

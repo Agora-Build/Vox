@@ -16,7 +16,7 @@ import { fingerprintCredential, formatLastFailedHttpStatus, parseLastFailedHttpS
 import { sessionScopeForEvalflow, areLoginSecretsAttested, ensureSession, stampOwnerSession, credentialKeyFor, SESSION_FRESH_MARGIN_SECONDS, classifyReferencedSecrets, findBrokeredMisuse, resolveBrokerType, type SessionNeed, detectSessionNeed, missingSecretNames, resolvableSecretSources } from "./auth-session";
 import { validateRegisterPayload, cacheBrokerMintSecret, hasBrokerMintSecret, routeToBroker, executeViaBroker, KNOWN_BROKER_TYPES } from "./broker-registry";
 import { resolveRestfulTemplate } from "./restful-exec";
-import { validateRestfulTrigger, parseStepsScript, stepsContainCallDial, stripLegacyConfigKeys } from "./storage";
+import { validateRestfulTrigger, parseStepsScript, stepsContainCallDial, stripLegacyConfigKeys, redactLegacyForViewer } from "./storage";
 import { PHONE_NUMBER_RE } from "@shared/steps";
 import { deriveApiKeyStatus } from "./api-key-status";
 import { isStaleOfflineAgent } from "./agent-liveness";
@@ -1820,7 +1820,12 @@ export async function registerRoutes(
       // to re-derive it (and risk getting it wrong): canSchedule gates the
       // recurring-schedule UI, matching the schedule route's canScheduleEvalflow.
       const withPerms = (list: typeof ownEvalflows) =>
-        list.map(w => ({ ...w, canSchedule: canScheduleEvalflow(user, w) }));
+        list.map(w => ({
+          // Parked _legacy* payloads are owner-only (the list includes PUBLIC
+          // rows from other owners).
+          ...redactLegacyForViewer(w, isOwnerOrOrgManager(user, w)),
+          canSchedule: canScheduleEvalflow(user, w),
+        }));
 
       if (req.query.includePublic === "true") {
         const publicEvalflows = await storage.getPublicEvalflows();
@@ -1849,7 +1854,7 @@ export async function registerRoutes(
       if (!canAccessResource(user, evalflow)) {
         return res.status(403).json({ error: "Access denied" });
       }
-      res.json(evalflow);
+      res.json(redactLegacyForViewer(evalflow, isOwnerOrOrgManager(user, evalflow)));
     } catch (error) {
       console.error("Error fetching evalflow:", error);
       res.status(500).json({ error: "Failed to fetch evalflow" });
@@ -2096,7 +2101,8 @@ export async function registerRoutes(
         providerId: source.providerId,
         visibility: "public",
         isMainline: false,
-        config: source.config || {},
+        // A clone must not carry the source owner's parked payload to a new owner.
+        config: stripLegacyConfigKeys(source.config || {}),
       });
 
       res.json(cloned);

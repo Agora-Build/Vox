@@ -210,7 +210,18 @@ for name in "${!images[@]}"; do
     # Pass through optional env vars if set
     [ -n "${LOCAL_DEBUG:-}" ] && env_args+="-e LOCAL_DEBUG=$LOCAL_DEBUG "
     [ -n "${HEADLESS:-}" ] && env_args+="-e HEADLESS=$HEADLESS "
-    [ -n "${EVAL_FRAMEWORK:-}" ] && env_args+="-e EVAL_FRAMEWORK=$EVAL_FRAMEWORK "
+    # The daemon exits on an unsupported framework (fail-loud seam), so
+    # forwarding a stale value would crash-loop the container under the
+    # restart policy. Drop it with a warning instead; aeval is the default.
+    if [ -n "${EVAL_FRAMEWORK:-}" ]; then
+        if [ "$EVAL_FRAMEWORK" = "aeval" ]; then
+            env_args+="-e EVAL_FRAMEWORK=$EVAL_FRAMEWORK "
+        else
+            echo "WARNING: EVAL_FRAMEWORK='$EVAL_FRAMEWORK' is not supported (voice-agent-tester was"
+            echo "         removed; aeval is the only framework) — ignoring it and using aeval."
+            echo "         Remove the line from your .env to silence this."
+        fi
+    fi
     [ -n "${VOX_AGENT_NAME:-}" ] && env_args+="-e VOX_AGENT_NAME=$VOX_AGENT_NAME "
 
     # Clear any leftover container holding the stable name (e.g. a stopped one

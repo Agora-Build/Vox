@@ -8,7 +8,7 @@
  */
 
 import { Express, Request, Response } from "express";
-import { storage, mergeEvalConfig, buildJobSnapshot, validateEvalflowConfig, validateEvalSetConfig, stripLegacyConfigKeys } from "./storage";
+import { storage, mergeEvalConfig, buildJobSnapshot, validateEvalflowConfig, validateEvalSetConfig, stripLegacyConfigKeys, redactLegacyForViewer } from "./storage";
 import { requireAuthOrApiKey, getCurrentUserOrApiKeyUser } from "./auth";
 import { parsePlatformSetup, sessionScopeForEvalflow, evaluateSessionRequirement, getBrokeredSecretNames, ensureSession, missingSecretNames, resolvableSecretSources } from "./auth-session";
 import { regionSiteSequence } from "@shared/regions";
@@ -120,7 +120,7 @@ export function registerApiV1Routes(app: Express): void {
 
       const evalflows = await storage.getEvalflowsByOwner(user.id);
       res.json({
-        data: evalflows,
+        data: evalflows, // owner's own rows — parked payloads are theirs to see
         meta: {
           total: evalflows.length,
         },
@@ -221,7 +221,7 @@ export function registerApiV1Routes(app: Express): void {
         return res.status(403).json({ error: "Access denied" });
       }
 
-      res.json({ data: evalflow });
+      res.json({ data: redactLegacyForViewer(evalflow, evalflow.ownerId === user.id) });
     } catch (error) {
       console.error("API v1 - Error fetching evalflow:", error);
       res.status(500).json({ error: "Failed to fetch evalflow" });

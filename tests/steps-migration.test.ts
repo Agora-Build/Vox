@@ -135,10 +135,22 @@ d("migration 0041_remove_vat.sql (transactional, rolled back)", () => {
     for (const [status, marker] of [["pending", "pending"], ["completed", "terminal"]]) {
       await client.query(
         `INSERT INTO eval_jobs (evalflow_id, trigger_type, created_by, target_region, target_tier, config, snapshot, status, priority, retry_count, max_retries)
-         VALUES ($1, 2, 1, 'na-us-seattle', 'private', $2::jsonb, '{}'::jsonb, $3, 0, 0, 3)`,
-        [jobWf.id, JSON.stringify({ scenario: `steps: [] # ${marker}`, _legacyPhoneDial: { number: "+1 555 010 1234" } }), status],
+         VALUES ($1, 2, 1, 'na-us-seattle', 'private', $2::jsonb, $3::jsonb, $4, 0, 0, 3)`,
+        [
+          jobWf.id,
+          JSON.stringify({ scenario: `steps: [] # ${marker}`, _legacyPhoneDial: { number: "+1 555 010 1234" } }),
+          JSON.stringify({ evalflow: { name: "x", config: { _legacyPhoneDial: { number: "+1 555 010 1234" } } } }),
+          status,
+        ],
       );
     }
+    // A queued job frozen on the removed framework: must be failed by the
+    // migration, not left for an agent to claim and fail (escrow round-trip).
+    await client.query(
+      `INSERT INTO eval_jobs (evalflow_id, trigger_type, created_by, target_region, target_tier, config, snapshot, status, priority, retry_count, max_retries)
+       VALUES ($1, 2, 1, 'na-us-seattle', 'private', $2::jsonb, '{}'::jsonb, 'pending', 0, 0, 3)`,
+      [jobWf.id, JSON.stringify({ framework: "voice-agent-tester", scenario: "steps: [] # queued-vat" })],
+    );
     const sql = readFileSync("./migrations/0041_remove_vat.sql", "utf-8");
     for (const statement of sql.split("--> statement-breakpoint").map((s) => s.trim()).filter(Boolean)) {
       await client.query(statement);
@@ -220,6 +232,25 @@ d("migration 0041_remove_vat.sql (transactional, rolled back)", () => {
     const terminal = rows.find((r: any) => r.status === "completed");
     expect(pending.config._legacyPhoneDial).toBeUndefined();
     expect(terminal.config._legacyPhoneDial).toEqual({ number: "+1 555 010 1234" });
+  });
+
+  it("strips parked payloads from the queued job's SNAPSHOT too (it ships to agents with the job)", async () => {
+    const { rows } = await client.query(
+      `SELECT status, snapshot #> '{evalflow,config}' AS wfconfig FROM eval_jobs
+       WHERE config->>'scenario' LIKE '%# pending%' OR config->>'scenario' LIKE '%# terminal%'`,
+    );
+    const pending = rows.find((r: any) => r.status === "pending");
+    const terminal = rows.find((r: any) => r.status === "completed");
+    expect(pending.wfconfig._legacyPhoneDial).toBeUndefined();
+    expect(terminal.wfconfig._legacyPhoneDial).toEqual({ number: "+1 555 010 1234" });
+  });
+
+  it("fails queued jobs frozen on the removed framework (no wasted claim + escrow round-trip)", async () => {
+    const { rows } = await client.query(
+      `SELECT status, error FROM eval_jobs WHERE config->>'scenario' LIKE '%# queued-vat%'`,
+    );
+    expect(rows[0].status).toBe("failed");
+    expect(rows[0].error).toContain("voice-agent-tester was removed");
   });
 
   it("a clean aeval row is untouched", async () => {

@@ -22,7 +22,8 @@ WHERE evalflow_id IN (
   SELECT id FROM evalflows
   WHERE (config->>'framework' = 'voice-agent-tester'
          OR (config ? 'app' AND config->>'framework' IS DISTINCT FROM 'aeval'))
-    AND NOT (config ? 'stepsPrefix' OR config ? 'stepsSuffix')
+    AND coalesce(btrim(config->>'stepsPrefix'), '') = ''
+    AND coalesce(btrim(config->>'stepsSuffix'), '') = ''
 );
 --> statement-breakpoint
 UPDATE evalflows
@@ -38,6 +39,24 @@ WHERE config->>'framework' = 'voice-agent-tester' OR config ? 'app';
 -- claims it, for a key nothing reads. Strip them; terminal rows are history
 -- and stay untouched.
 UPDATE eval_jobs
-SET config = config - '_legacyPhoneDial' - '_legacyVatApp'
+SET config = config - '_legacyPhoneDial' - '_legacyVatApp',
+    snapshot = CASE
+      WHEN snapshot #> '{evalflow,config}' IS NOT NULL
+        THEN jsonb_set(snapshot, '{evalflow,config}',
+               (snapshot #> '{evalflow,config}') - '_legacyPhoneDial' - '_legacyVatApp')
+      ELSE snapshot END
 WHERE status IN ('pending', 'running')
-  AND (config ? '_legacyPhoneDial' OR config ? '_legacyVatApp');
+  AND (config ? '_legacyPhoneDial' OR config ? '_legacyVatApp'
+       OR snapshot #> '{evalflow,config}' ? '_legacyPhoneDial'
+       OR snapshot #> '{evalflow,config}' ? '_legacyVatApp');
+--> statement-breakpoint
+-- A queued job froze `framework: voice-agent-tester` in its own config, so
+-- the upgraded daemon would claim it and fail with "Unsupported eval
+-- framework" — after an escrow hold/refund round-trip and an occupied agent
+-- slot. Fail them here instead, with the reason recorded.
+UPDATE eval_jobs
+SET status = 'failed',
+    error = 'voice-agent-tester was removed; re-run this eval after re-authoring the evalflow for aeval',
+    completed_at = NOW()
+WHERE status IN ('pending', 'running')
+  AND config->>'framework' = 'voice-agent-tester';

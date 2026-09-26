@@ -239,6 +239,20 @@ export function stripLegacyConfigKeys<T>(config: T): T {
   ) as T;
 }
 
+/**
+ * Response-boundary redaction: parked `_legacy*` payloads are OWNER-ONLY.
+ * A migrated row can be public (anyone may read its config), and the parked
+ * payload is the owner's data — a phone number (0040) or old app YAML
+ * (0041). `canSeeLegacy` should be the edit right, not mere visibility.
+ */
+export function redactLegacyForViewer<T extends { config?: unknown }>(row: T, canSeeLegacy: boolean): T {
+  if (canSeeLegacy) return row;
+  const config = row.config;
+  if (typeof config !== "object" || config === null || Array.isArray(config)) return row;
+  if (!Object.keys(config as Record<string, unknown>).some((k) => k.startsWith("_legacy"))) return row;
+  return { ...row, config: stripLegacyConfigKeys(config) };
+}
+
 // The eval-framework seam: adding a framework means extending this set, the
 // daemon's executeJob switch, and resolvableSecretSources' field map — the
 // per-job `config.framework` override and the daemon's EVAL_FRAMEWORK default
@@ -593,7 +607,10 @@ export function buildJobSnapshot(
       : null,
     evalflow: {
       name: evalflow.name,
-      config: evalflow.config,
+      // Parked _legacy* payloads are stripped here too: the snapshot travels
+      // to every claiming agent (GET /jobs and the claim response return the
+      // whole job row), so an owner's _legacyPhoneDial must not ride along.
+      config: stripLegacyConfigKeys(evalflow.config),
       visibility: evalflow.visibility,
       isMainline: evalflow.isMainline,
       ownerId: evalflow.ownerId,
@@ -602,7 +619,7 @@ export function buildJobSnapshot(
     evalSet: evalSet
       ? {
           name: evalSet.name,
-          config: evalSet.config,
+          config: stripLegacyConfigKeys(evalSet.config),
           visibility: evalSet.visibility,
           isMainline: evalSet.isMainline,
           ownerId: evalSet.ownerId,
