@@ -558,7 +558,7 @@ d("unified steps — full run path (API round-trip)", () => {
 // pre-existing row — the validator rejects it at save) must never produce
 // a job: refused at the run route, and its schedule disabled by the
 // scheduler rather than firing failures forever.
-d("unsupported framework — run refused, schedule disabled", () => {
+d("unsupported framework — inoperable everywhere, not just unrunnable", () => {
   let cookie: string;
   let wfId: number;
   let scheduleId: number;
@@ -610,6 +610,50 @@ d("unsupported framework — run refused, schedule disabled", () => {
     });
     expect(res.status).toBe(400);
     expect((await res.json()).error).toContain("cannot run");
+  });
+
+  it("cannot be cloned — that would mint a new inoperable flow for a new owner", async () => {
+    const res = await fetch(`${BASE_URL}/api/eval-flows/${wfId}/clone`, {
+      method: "POST", headers: { "Content-Type": "application/json", Cookie: cookie },
+    });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toContain("cannot run");
+  });
+
+  it("cannot be scheduled, re-enabled, or run-now", async () => {
+    const post = (path: string, body: Record<string, unknown>) =>
+      fetch(`${BASE_URL}${path}`, {
+        method: "POST", headers: { "Content-Type": "application/json", Cookie: cookie },
+        body: JSON.stringify(body),
+      });
+
+    // Create: refused rather than accepted and disabled a tick later.
+    const created = await post("/api/eval-schedules", {
+      name: `unsupported-fw-new-${suffix}`, evalFlowId: wfId, evalSetId,
+      region: "na-us-seattle", targetTier: "private", scheduleType: "once",
+      runAt: new Date(Date.now() + 3_600_000).toISOString(),
+    });
+    expect(created.status).toBe(400);
+
+    // Re-enable after the scheduler disabled it — the realistic loop, and the
+    // only path that trips the enable gate (PATCHing isEnabled:true on an
+    // already-enabled schedule is a no-op by design).
+    await storage.updateEvalSchedule(scheduleId, { isEnabled: false } as never);
+    const reEnabled = await fetch(`${BASE_URL}/api/eval-schedules/${scheduleId}`, {
+      method: "PATCH", headers: { "Content-Type": "application/json", Cookie: cookie },
+      body: JSON.stringify({ isEnabled: true }),
+    });
+    expect(reEnabled.status).toBe(400);
+    const after = await storage.getEvalSchedule(scheduleId);
+    expect(after!.isEnabled).toBe(false);
+
+    // Run-now: refused.
+    const ranNow = await post(`/api/eval-schedules/${scheduleId}/run-now`, {});
+    expect(ranNow.status).toBe(400);
+
+    // Nothing created a job through any of those paths.
+    const { rows } = await pool.query(`SELECT count(*)::int AS n FROM eval_jobs WHERE eval_flow_id = $1`, [wfId]);
+    expect(rows[0].n).toBe(0);
   });
 
   it("the scheduler disables its schedule on the next tick", async () => {

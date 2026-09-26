@@ -2090,7 +2090,15 @@ export async function registerRoutes(
       }
 
       if (source.visibility !== "public" && source.ownerId !== user.id && !user.isAdmin) {
-        return res.status(403).json({ error: "Can only clone public evalFlows" });
+        return res.status(403).json({ error: "Can only clone public eval flows" });
+      }
+
+      // Cloning would mint a NEW inoperable row — and hand it to someone who
+      // wasn't around when the framework was removed. Same shared check as
+      // the run routes and the scheduler tick.
+      {
+        const frameworkError = unsupportedFrameworkError(source.config);
+        if (frameworkError) return res.status(400).json({ error: frameworkError });
       }
 
       const cloned = await storage.createEvalFlow({
@@ -2460,7 +2468,14 @@ export async function registerRoutes(
         return res.status(404).json({ error: "Eval Flow not found" });
       }
       if (!canScheduleEvalFlow(user, evalFlow)) {
-        return res.status(403).json({ error: "Only the evalFlow owner can schedule recurring evaluations" });
+        return res.status(403).json({ error: "Only the eval flow owner can schedule recurring evaluations" });
+      }
+
+      // A schedule on an unrunnable eval flow would arrive already dead: the
+      // scheduler disables it on the first tick. Refuse it here instead.
+      {
+        const frameworkError = unsupportedFrameworkError(evalFlow.config);
+        if (frameworkError) return res.status(400).json({ error: frameworkError });
       }
 
       // Verify eval set
@@ -2600,7 +2615,13 @@ export async function registerRoutes(
           return res.status(409).json({ error: "This schedule's evalFlow was deleted, so it can't be resumed or rescheduled. Delete the schedule instead." });
         }
         if (!canScheduleEvalFlow(user, wf)) {
-          return res.status(403).json({ error: "Only the evalFlow owner can enable or reschedule this schedule" });
+          return res.status(403).json({ error: "Only the eval flow owner can enable or reschedule this schedule" });
+        }
+        // Re-enabling an unsupported-framework schedule just re-arms the
+        // scheduler's own disable — refuse rather than let it flap.
+        {
+          const frameworkError = unsupportedFrameworkError(wf.config);
+          if (frameworkError) return res.status(400).json({ error: frameworkError });
         }
         // Session-injection composition (spec §5): re-check against the
         // EFFECTIVE tier this update leaves the schedule with — on a tier
@@ -2734,7 +2755,11 @@ export async function registerRoutes(
       // run-now fires a job on the evalFlow OWNER's secrets, so it needs the same
       // owner-only gate as scheduling — a system admin isn't exempt.
       if (!canScheduleEvalFlow(user, evalFlow)) {
-        return res.status(403).json({ error: "Only the evalFlow owner can run this schedule" });
+        return res.status(403).json({ error: "Only the eval flow owner can run this schedule" });
+      }
+      {
+        const frameworkError = unsupportedFrameworkError(evalFlow.config);
+        if (frameworkError) return res.status(400).json({ error: frameworkError });
       }
       // Same absence arm as the run route, and the same widening as the
       // scheduler tick: the guard keys on what the RESULTING JOB needs, not on
