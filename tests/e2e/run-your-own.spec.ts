@@ -100,8 +100,8 @@ test.describe("Run Your Own — Authenticated Form", () => {
     ).toBeVisible({ timeout: 10000 });
   });
 
-  test("should show Select Evalflow and Create New tabs", async ({ page }) => {
-    await expect(page.getByRole("tab", { name: "Select Evalflow" })).toBeVisible({ timeout: 10000 });
+  test("should show Select EvalFlow and Create New tabs", async ({ page }) => {
+    await expect(page.getByRole("tab", { name: "Select EvalFlow" })).toBeVisible({ timeout: 10000 });
     await expect(page.getByRole("tab", { name: "Create New" })).toBeVisible();
   });
 

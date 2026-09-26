@@ -52,20 +52,20 @@ Daemon idle (no pending jobs) → process upload queue:
 
 ### Config Data Model
 
-Jobs carry a merged config snapshot from the evalflow and eval set:
+Jobs carry a merged config snapshot from the eval flow and eval set:
 
 ```
 job.config = {
   framework: "aeval",
   scenario: "<YAML string>",       // Test steps to execute
-  stepsPrefix: "<YAML step list>", // Evalflow Setup Steps
-  stepsSuffix: "<YAML step list>", // Evalflow Teardown Steps
+  stepsPrefix: "<YAML step list>", // Eval Flow Setup Steps
+  stepsSuffix: "<YAML step list>", // Eval Flow Teardown Steps
 }
 ```
 
-- **Evalflow** provides `framework` + Setup/Teardown steps (how to reach the agent)
+- **Eval Flow** provides `framework` + Setup/Teardown steps (how to reach the agent)
 - **Eval Set** provides `scenario` (what test to run)
-- Merging: eval set config spreads last (overrides evalflow fields)
+- Merging: eval set config spreads last (overrides eval flow fields)
 
 ### Framework
 

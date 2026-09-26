@@ -2,7 +2,7 @@
 // R3 — the org-credential fence. THIS is the check that stops one organization
 // from spending another organization's credentials, so it is pinned directly:
 // the fence block that used to live inside the old storage method (a raw
-// `creator.organizationId !== evalflow.organizationId` comparison on the users
+// `creator.organizationId !== evalFlow.organizationId` comparison on the users
 // row) now lives in Core and resolves the creator's membership through the
 // `vox.organizations` seam. Every verdict below must match the pre-seam
 // behavior exactly — the only thing that changed is where membership comes
@@ -12,7 +12,7 @@
 // test DB (tests/helpers/organizations-db.ts). Post-flip that is the only
 // provider there is — org rows, memberships and org secrets live in the
 // plugin's schema, while the Core fixtures this suite also needs (users,
-// evalflow, jobs) stay in the dev DB. `evalflows.organization_id` is an opaque
+// evalFlow, jobs) stay in the dev DB. `evalFlows.organization_id` is an opaque
 // integer since the Release A FK drop, so the cross-database id reference is
 // exactly what production does.
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
@@ -36,11 +36,11 @@ async function anyProviderId(): Promise<string> {
   return p.id;
 }
 
-const mkJob = (evalflowId: number, createdBy: number) =>
+const mkJob = (evalFlowId: number, createdBy: number) =>
   storage.createEvalJob({
-    evalflowId, triggerType: 2, evalSetId: null, createdBy,
+    evalFlowId, triggerType: 2, evalSetId: null, createdBy,
     siteId: "na-us-ashburn-01", config: {},
-    snapshot: { provider: null, evalflow: null, evalSet: null, creatorPlan: null } as any,
+    snapshot: { provider: null, evalFlow: null, evalSet: null, creatorPlan: null } as any,
     status: "pending", priority: 0, retryCount: 0, maxRetries: 3,
   } as any);
 
@@ -77,9 +77,9 @@ d("org-credential fence (R3)", () => {
     await h.provider.addMember(orgAId, aMember.id, "member");
     await h.provider.addMember(orgBId, bMember.id, "member");
 
-    // Org-A-owned evalflow. Public, so a non-member CAN legitimately run it —
+    // Org-A-owned evalFlow. Public, so a non-member CAN legitimately run it —
     // which is exactly the case the fence has to keep credential-free.
-    wfA = await storage.createEvalflow({
+    wfA = await storage.createEvalFlow({
       name: `of-wf-${stamp}`, ownerId: aMember.id, organizationId: orgAId,
       providerId, visibility: "public", isMainline: false, config: {},
     } as any);
@@ -108,7 +108,7 @@ d("org-credential fence (R3)", () => {
     for (const j of [jobByA, jobByB, jobByNobody]) {
       if (j) await db.delete(evalJobs).where(eq(evalJobs.id, j.id));
     }
-    if (wfA) await storage.deleteEvalflow(wfA.id);
+    if (wfA) await storage.deleteEvalFlow(wfA.id);
     for (const u of [aMember, bMember, nobody]) {
       if (u) await db.delete(users).where(eq(users.id, u.id));
     }

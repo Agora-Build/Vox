@@ -36,10 +36,10 @@ const mkToken = (name: string, siteId: string, tier: string, createdBy: number) 
 
 const mkTeamJob = (createdBy: number, creatorOrgId: number | null) =>
   storage.createEvalJob({
-    evalflowId: null, triggerType: 2, evalSetId: null, createdBy,
+    evalFlowId: null, triggerType: 2, evalSetId: null, createdBy,
     siteId: null, targetRegion: "na-us-ashburn", targetTier: "team",
     creatorOrgId,
-    config: {}, snapshot: { provider: null, evalflow: null, evalSet: null, creatorPlan: null } as any,
+    config: {}, snapshot: { provider: null, evalFlow: null, evalSet: null, creatorPlan: null } as any,
     status: "pending", priority: 0, retryCount: 0, maxRetries: 3,
   } as any);
 

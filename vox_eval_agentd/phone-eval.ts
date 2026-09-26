@@ -31,9 +31,9 @@ export interface CompileOpts {
   resolveRelativeFile?: (relPath: string) => string | null;
   /** SECURITY — segment policy, enforced AFTER ${item} substitution (a
    * for_each item can smuggle a step type past any raw-text scan):
-   *   'setup'    — evalflow Setup: full call.* allowed
+   *   'setup'    — evalFlow Setup: full call.* allowed
    *   'conversation' — eval-set body: call / restful / sms steps forbidden
-   *   'teardown' — evalflow Teardown: only call.hangup among call.* */
+   *   'teardown' — evalFlow Teardown: only call.hangup among call.* */
   segment: 'setup' | 'conversation' | 'teardown';
   /** Step-id prefix so separately compiled segments never collide. */
   idPrefix?: string;
@@ -220,7 +220,7 @@ export interface SplitScript {
    * stepsPrefix — the Core endpoint resolves the template from the frozen
    * snapshot by that index (TOCTOU: the daemon never sends the template). */
   restfulPrecall: Array<{ stepIndex: number }>;
-  /** Whether the evalflow's OWN Setup establishes a call (recursive — the
+  /** Whether the evalFlow's OWN Setup establishes a call (recursive — the
    * compiler unrolls for_each, so the gate must see nested dials too). The
    * gate input: deliberately not derived from the conversation, which is
    * banned from call.* (segment policy in the compiler). */
@@ -255,10 +255,10 @@ export function splitPhoneScript(
   // this scan alone is evadable; the compiler re-enforces the same policy on
   // the POST-substitution type (CompileOpts.segment) — that one is the
   // boundary. The threat: the conversation comes from the EVAL SET — a
-  // different, possibly public-third-party author than the evalflow — and
+  // different, possibly public-third-party author than the evalFlow — and
   // must never place, answer, or end calls on the runner's SIM (a
   // conversation-injected call.dial is toll fraud). Teardown belongs to the
-  // evalflow author but runs post-conversation: only call.hangup is
+  // evalFlow author but runs post-conversation: only call.hangup is
   // meaningful there — a Teardown call.dial would start a SECOND call.
   const findIllegal = (steps: unknown[], offset: number, banned: (type: string) => boolean): string | null => {
     // Bounded + cycle-safe (shared/steps.ts): YAML aliases expand a naive
@@ -524,7 +524,7 @@ export async function runPhoneJob(cfg: PhoneRunConfig, deps: PhoneRunDeps): Prom
   if (!split.value.setupHasDial) {
     throw new Error(split.value.restfulPrecall.length > 0
       ? 'agent-outbound trigger mode is not yet supported — pending DialF machine-readable serve results (R7); add a call.dial step'
-      : 'phone evalflow Setup Steps establish no call — add a call.dial step');
+      : 'phone evalFlow Setup Steps establish no call — add a call.dial step');
   }
 
   // Compile each segment under its own policy (enforced post-substitution —

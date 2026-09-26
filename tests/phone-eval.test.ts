@@ -54,14 +54,14 @@ describe("compilePhoneConversation", () => {
   });
 });
 
-describe("Setup/Teardown steps travel from evalflow config into job config", () => {
+describe("Setup/Teardown steps travel from evalFlow config into job config", () => {
   it("mergeEvalConfig carries stepsPrefix/stepsSuffix through to the job", async () => {
     const { mergeEvalConfig } = await import("../server/storage");
     const jobConfig = mergeEvalConfig(
       { framework: "aeval", stepsPrefix: '- type: call.dial\n  number: "+1 408 837 5890"\n', stepsSuffix: "- type: call.hangup\n" },
       { scenario: "steps:\n  - type: audio.play" },
     );
-    // The daemon reads job.config.stepsPrefix — call establishment is evalflow
+    // The daemon reads job.config.stepsPrefix — call establishment is evalFlow
     // data fetched from Vox with the claimed job, never host/env configuration.
     expect(jobConfig.stepsPrefix).toContain("call.dial");
     expect(jobConfig.stepsSuffix).toContain("call.hangup");

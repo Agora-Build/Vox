@@ -224,7 +224,7 @@ export function appendRegionScopes(params: URLSearchParams, scopes: string[]): v
   if (effectiveScopes.length > 0) params.set("regionScope", effectiveScopes.join(","));
 }
 
-// Render a JS value as readable YAML for read-only config display (evalflow/eval-set
+// Render a JS value as readable YAML for read-only config display (evalFlow/eval-set
 // snapshots, app config). Uses js-yaml's serializer; lineWidth -1 keeps long
 // step/scenario lines intact. Falls back to JSON for the rare value it can't dump.
 export function toYaml(obj: unknown): string {

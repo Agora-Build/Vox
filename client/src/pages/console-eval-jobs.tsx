@@ -19,13 +19,13 @@ import { useLocation, useSearch, Link } from "wouter";
 import { formatSmartTimestamp, formatSite, formatRegion } from "@/lib/utils";
 import { useRegionLocationOptions } from "@/hooks/use-regions";
 import { format } from "date-fns";
-import type { EvalJob, EvalSchedule, Evalflow as EvalflowType } from "@shared/schema";
+import type { EvalJob, EvalSchedule, EvalFlow as EvalFlowType } from "@shared/schema";
 
 // canManage is the server's owner-only decision for run-now/resume (matches the
 // backend), so the UI never offers actions that would 403.
 type ScheduleStatus = "active" | "paused" | "inactive";
 type EnrichedSchedule = EvalSchedule & {
-  evalflowName: string;
+  evalFlowName: string;
   creatorName: string;
   canManage?: boolean;
   canExtend?: boolean;
@@ -56,11 +56,11 @@ const TIME_RANGES = [
 
 const PAGE_SIZE = 50;
 
-function buildJobsUrl(filters: { status: string; region: string; evalflowId: string; hours: string; limit: number; offset: number }) {
+function buildJobsUrl(filters: { status: string; region: string; evalFlowId: string; hours: string; limit: number; offset: number }) {
   const params = new URLSearchParams();
   if (filters.status !== "all") params.set("status", filters.status);
   if (filters.region !== "all") params.set("region", filters.region);
-  if (filters.evalflowId !== "all") params.set("evalflowId", filters.evalflowId);
+  if (filters.evalFlowId !== "all") params.set("evalFlowId", filters.evalFlowId);
   params.set("hours", filters.hours);
   params.set("limit", String(filters.limit));
   if (filters.offset > 0) params.set("offset", String(filters.offset));
@@ -98,9 +98,9 @@ function ScheduledJobsBlock() {
   // Managing the schedule OBJECT (pause / edit / delete) — the creator or an admin
   // (moderation). Distinct from spending its secrets.
   const canManageSchedule = (s: EnrichedSchedule) => s.createdBy === userId || isAdmin;
-  // Enable/Run-Now spend the evalflow owner's secrets, so the server restricts
-  // them to the evalflow owner (no admin bypass). Use the server-computed
-  // canManage bit (owner of the schedule's evalflow); fail open if it's absent
+  // Enable/Run-Now spend the evalFlow owner's secrets, so the server restricts
+  // them to the evalFlow owner (no admin bypass). Use the server-computed
+  // canManage bit (owner of the schedule's evalFlow); fail open if it's absent
   // (older API) so a legitimate owner is never blocked.
   const canRunOrResume = (s: EnrichedSchedule) => s.canManage ?? (s.createdBy === userId);
   // Show the dropdown if the user can do ANY action; each item is gated below:
@@ -211,7 +211,7 @@ function ScheduledJobsBlock() {
               <TableHeader>
                 <TableRow>
                   <TableHead>Name</TableHead>
-                  <TableHead>Evalflow</TableHead>
+                  <TableHead>Eval Flow</TableHead>
                   <TableHead>Region</TableHead>
                   <TableHead>Type</TableHead>
                   <TableHead>Cron</TableHead>
@@ -227,7 +227,7 @@ function ScheduledJobsBlock() {
                 {schedules.map((s) => (
                   <TableRow key={s.id}>
                     <TableCell className="font-medium">{s.name}</TableCell>
-                    <TableCell>{s.evalflowName}</TableCell>
+                    <TableCell>{s.evalFlowName}</TableCell>
                     <TableCell>
                       <div className="flex items-center gap-1">
                         <Badge variant="outline">{formatRegion(s.region)}</Badge>
@@ -428,12 +428,12 @@ function JobsTab() {
   const { options: regionOptions } = useRegionLocationOptions();
   const [statusFilter, setStatusFilter] = useState("all");
   const [regionFilter, setRegionFilter] = useState("all");
-  const [evalflowFilter, setEvalflowFilter] = useState("all");
+  const [evalFlowFilter, setEvalFlowFilter] = useState("all");
   const [timeFilter, setTimeFilter] = useState("24");
   const [page, setPage] = useState(1);
 
   const offset = (page - 1) * PAGE_SIZE;
-  const url = buildJobsUrl({ status: statusFilter, region: regionFilter, evalflowId: evalflowFilter, hours: timeFilter, limit: PAGE_SIZE, offset });
+  const url = buildJobsUrl({ status: statusFilter, region: regionFilter, evalFlowId: evalFlowFilter, hours: timeFilter, limit: PAGE_SIZE, offset });
 
   const { data, isLoading } = useQuery<{ data: EnrichedEvalJob[]; total: number }>({
     queryKey: [url],
@@ -449,19 +449,19 @@ function JobsTab() {
   const total = data?.total ?? 0;
   const totalPages = Math.ceil(total / PAGE_SIZE);
 
-  // Only needed for the evalflow filter dropdown. Provenance (evalflow/provider/
+  // Only needed for the evalFlow filter dropdown. Provenance (evalFlow/provider/
   // eval-set names) is read from each job's immutable snapshot, so it stays correct
   // after edits/deletes and needs no live joins.
-  const { data: evalflows } = useQuery<EvalflowType[]>({
-    queryKey: ["/api/evalflows?includePublic=true"],
+  const { data: evalFlows } = useQuery<EvalFlowType[]>({
+    queryKey: ["/api/eval-flows?includePublic=true"],
   });
 
-  const hasActiveFilters = statusFilter !== "all" || regionFilter !== "all" || evalflowFilter !== "all" || timeFilter !== "24";
+  const hasActiveFilters = statusFilter !== "all" || regionFilter !== "all" || evalFlowFilter !== "all" || timeFilter !== "24";
 
   const setTimeAndReset = (v: string) => { setTimeFilter(v); setPage(1); };
   const setStatusAndReset = (v: string) => { setStatusFilter(v); setPage(1); };
   const setRegionAndReset = (v: string) => { setRegionFilter(v); setPage(1); };
-  const setEvalflowAndReset = (v: string) => { setEvalflowFilter(v); setPage(1); };
+  const setEvalFlowAndReset = (v: string) => { setEvalFlowFilter(v); setPage(1); };
 
   const rangeStart = total > 0 ? offset + 1 : 0;
   const rangeEnd = Math.min(offset + PAGE_SIZE, total);
@@ -517,13 +517,13 @@ function JobsTab() {
           </SelectContent>
         </Select>
 
-        <Select value={evalflowFilter} onValueChange={setEvalflowAndReset}>
-          <SelectTrigger className="w-[200px]" data-testid="select-filter-evalflow">
-            <SelectValue placeholder="All Evalflows" />
+        <Select value={evalFlowFilter} onValueChange={setEvalFlowAndReset}>
+          <SelectTrigger className="w-[200px]" data-testid="select-filter-eval-flow">
+            <SelectValue placeholder="All Eval Flows" />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="all">All Evalflows</SelectItem>
-            {evalflows?.map((w) => (
+            <SelectItem value="all">All Eval Flows</SelectItem>
+            {evalFlows?.map((w) => (
               <SelectItem key={w.id} value={String(w.id)}>{w.name}</SelectItem>
             ))}
           </SelectContent>
@@ -533,7 +533,7 @@ function JobsTab() {
           <Button
             variant="ghost"
             size="sm"
-            onClick={() => { setStatusFilter("all"); setRegionFilter("all"); setEvalflowFilter("all"); setTimeFilter("24"); setPage(1); }}
+            onClick={() => { setStatusFilter("all"); setRegionFilter("all"); setEvalFlowFilter("all"); setTimeFilter("24"); setPage(1); }}
           >
             Clear filters
           </Button>
@@ -566,7 +566,7 @@ function JobsTab() {
                 <TableHeader>
                   <TableRow>
                     <TableHead>ID</TableHead>
-                    <TableHead>Evalflow</TableHead>
+                    <TableHead>Eval Flow</TableHead>
                     <TableHead>Provider</TableHead>
                     <TableHead>Eval Set</TableHead>
                     <TableHead>Creator</TableHead>
@@ -596,15 +596,15 @@ function JobsTab() {
                           </div>
                         </TableCell>
                         <TableCell className="font-medium">
-                          {job.evalflowId != null ? (
-                            <Link href={`/console/evalflows/${job.evalflowId}`}>
+                          {job.evalFlowId != null ? (
+                            <Link href={`/console/eval-flows/${job.evalFlowId}`}>
                               <span className="text-primary hover:underline cursor-pointer">
-                                {job.snapshot?.evalflow?.name ?? `Evalflow #${job.evalflowId}`}
+                                {job.snapshot?.evalFlow?.name ?? `EvalFlow #${job.evalFlowId}`}
                               </span>
                             </Link>
                           ) : (
-                            // Evalflow deleted — snapshot name only (no link).
-                            <span title="Evalflow deleted">{job.snapshot?.evalflow?.name ?? "—"}</span>
+                            // Eval Flow deleted — snapshot name only (no link).
+                            <span title="Eval Flow deleted">{job.snapshot?.evalFlow?.name ?? "—"}</span>
                           )}
                         </TableCell>
                         <TableCell className="text-sm">
@@ -718,7 +718,7 @@ function JobsTab() {
             <div className="text-center py-8 text-muted-foreground">
               {hasActiveFilters
                 ? "No jobs match the current filters."
-                : "No eval jobs yet. Run an evaluation from an evalflow or eval set to create one."}
+                : "No eval jobs yet. Run an evaluation from an evalFlow or eval set to create one."}
             </div>
           )}
         </CardContent>

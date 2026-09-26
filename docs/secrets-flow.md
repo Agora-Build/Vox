@@ -19,10 +19,10 @@ Both runners follow the same pattern: user stores encrypted secrets in the Vox U
 | **7. Auth helper** | Inline: hash token -> `evalAgentTokens` -> check `isRevoked` | `authenticateClashRunner()`: hash token -> `clashRunnerIssuedTokens` -> check `isRevoked` -> look up runner in pool |
 | **8. Secrets endpoint** | `GET /api/eval-agent/jobs/:jobId/secrets` | `GET /api/clash-runner/secrets?matchId=X` |
 | **9. Ownership guard** | Job must be `running` + `job.evalAgentId` -> `agent.tokenId` must match | Runner must be `running` + `runner.currentMatchId` must match |
-| **10. Owner chain** | job -> evalflow -> `evalflow.ownerId` | match -> event -> `event.createdBy` |
+| **10. Owner chain** | job -> eval flow -> `eval flow.ownerId` | match -> event -> `event.createdBy` |
 | **11. Decrypt** | `decryptValue()` per secret, log errors | Same |
 | **12. Response** | `{ "KEY": "value", ... }` | Same |
-| **13. Audit log** | `[Secrets] Job N: found N secret(s) for evalflow owner` | `[ClashSecrets] Runner X fetched secrets for match #N (event #N, owner #N): N decrypted, N failed` |
+| **13. Audit log** | `[Secrets] Job N: found N secret(s) for eval flow owner` | `[ClashSecrets] Runner X fetched secrets for match #N (event #N, owner #N): N decrypted, N failed` |
 | **14. Resolution** | `vox-agentd.ts` replaces in YAML + YAML-escapes values | `browser-agent.ts` replaces in setup step values (plain) |
 | **15. Regex** | `[A-Z][A-Z0-9_]*` (aligned with `shared/secrets.ts`) | Same |
 | **16. Execution** | aeval binary (Python/Puppeteer) | Playwright `pressSequentially()` |
@@ -43,7 +43,7 @@ Runner authenticates with Bearer token (ev.../cr...)
 Server validates: token not revoked, runner owns the active job/match
   |
   v
-Server resolves owner: job -> evalflow -> ownerId  OR  match -> event -> createdBy
+Server resolves owner: job -> eval flow -> ownerId  OR  match -> event -> createdBy
   |
   v
 Server fetches user's secrets, decrypts each with decryptValue()

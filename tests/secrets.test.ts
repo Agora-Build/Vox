@@ -527,7 +527,7 @@ describe('Secrets - Agent Endpoint', () => {
   let agentToken = '';
   let agentId = 0;
   let leaseId = '';
-  let evalflowId = 0;
+  let evalFlowId = 0;
   let jobId = 0;
   let encryptionAvailable = false;
 
@@ -570,18 +570,18 @@ describe('Secrets - Agent Endpoint', () => {
         }
       }
 
-      // Create a dedicated admin-owned evalflow rather than borrowing
-      // evalflows[0] off a GET list — list order isn't stable across
+      // Create a dedicated admin-owned evalFlow rather than borrowing
+      // evalFlows[0] off a GET list — list order isn't stable across
       // concurrently-running test files sharing the same dev DB, and
-      // getSecretsForJob resolves by the evalflow's actual ownerId.
+      // getSecretsForJob resolves by the evalFlow's actual ownerId.
       const providers = await (await fetch(`${BASE_URL}/api/providers`)).json();
       const providerId = providers[0]?.id;
-      const wfRes = await authFetch(adminSession, `${BASE_URL}/api/evalflows`, {
+      const wfRes = await authFetch(adminSession, `${BASE_URL}/api/eval-flows`, {
         method: 'POST',
         body: JSON.stringify({ name: `Secrets Agent Test WF ${Date.now()}`, providerId, config: { framework: 'aeval' } }),
       });
       if (wfRes.ok) {
-        evalflowId = (await wfRes.json()).id;
+        evalFlowId = (await wfRes.json()).id;
       }
 
       // Eval set required by the run route — the original beforeAll omitted
@@ -597,8 +597,8 @@ describe('Secrets - Agent Endpoint', () => {
       }
 
       // Create and claim a job
-      if (evalflowId && agentToken && agentId && evalSetId) {
-        const runRes = await authFetch(adminSession, `${BASE_URL}/api/evalflows/${evalflowId}/run`, {
+      if (evalFlowId && agentToken && agentId && evalSetId) {
+        const runRes = await authFetch(adminSession, `${BASE_URL}/api/eval-flows/${evalFlowId}/run`, {
           method: 'POST',
           body: JSON.stringify({ region: BASE_NA, targetTier: 'public', evalSetId }),
         });

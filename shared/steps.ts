@@ -24,7 +24,7 @@ export type StepSegment = "setup" | "conversation" | "teardown";
 export function illegalPhoneStepType(type: string, segment: StepSegment): string | null {
   if (segment === "conversation") {
     if (type.startsWith("call.") || type === "restful.request" || type.startsWith("sms.")) {
-      return `'${type}' is evalflow Setup/Teardown vocabulary — illegal in an eval-set conversation`;
+      return `'${type}' is evalFlow Setup/Teardown vocabulary — illegal in an eval-set conversation`;
     }
     return null;
   }
@@ -41,7 +41,7 @@ export function illegalPhoneStepType(type: string, segment: StepSegment): string
  * there (the DialF compiler has no browser). */
 export function illegalWebVocabInPhone(type: string): string | null {
   if (type.startsWith("platform.") || type.startsWith("browser.")) {
-    return `'${type}' is web-session vocabulary — illegal in a phone evalflow`;
+    return `'${type}' is web-session vocabulary — illegal in a phone evalFlow`;
   }
   return null;
 }
@@ -50,7 +50,7 @@ export function illegalWebVocabInPhone(type: string): string | null {
  * Everything else passes — aeval owns the web vocabulary. */
 export function illegalWebStepType(type: string): string | null {
   if (type.startsWith("call.") || type === "restful.request" || type.startsWith("sms.")) {
-    return `'${type}' is phone vocabulary — illegal in a web evalflow`;
+    return `'${type}' is phone vocabulary — illegal in a web evalFlow`;
   }
   return null;
 }

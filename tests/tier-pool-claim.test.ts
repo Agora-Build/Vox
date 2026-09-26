@@ -15,9 +15,9 @@ const mkToken = (name: string, siteId: string, tier = "public", createdBy = 1) =
 // creatorOrgId is stamped at creation (R2, §11) — the team arm reads it, not live membership.
 const mkPooledJob = (targetRegion: string, targetTier: string, createdBy = 1, creatorOrgId: number | null = null) =>
   storage.createEvalJob({
-    evalflowId: null, triggerType: 2, evalSetId: null, createdBy, creatorOrgId,
+    evalFlowId: null, triggerType: 2, evalSetId: null, createdBy, creatorOrgId,
     siteId: null, targetRegion, targetTier,
-    config: {}, snapshot: { provider: null, evalflow: null, evalSet: null, creatorPlan: null } as any,
+    config: {}, snapshot: { provider: null, evalFlow: null, evalSet: null, creatorPlan: null } as any,
     status: "pending", priority: 0, retryCount: 0, maxRetries: 3,
   } as any);
 
@@ -57,9 +57,9 @@ d("pooled claim SQL mirrors isClaimable", () => {
   it("reaper: pooled pending job is NOT fast-failed by the no-agent sweep; site-pinned is", async () => {
     const pooled = await mkPooledJob("sa-br-saopaulo", "public", 2); // region with no online agent
     const pinned = await storage.createEvalJob({
-      evalflowId: null, triggerType: 2, evalSetId: null, createdBy: 2,
+      evalFlowId: null, triggerType: 2, evalSetId: null, createdBy: 2,
       siteId: "sa-br-saopaulo-01", targetRegion: null, targetTier: null,
-      config: {}, snapshot: { provider: null, evalflow: null, evalSet: null, creatorPlan: null } as any,
+      config: {}, snapshot: { provider: null, evalFlow: null, evalSet: null, creatorPlan: null } as any,
       status: "pending", priority: 0, retryCount: 0, maxRetries: 3,
     } as any);
     // timeoutMinutes=0: everything pending is past the cutoff immediately.
@@ -79,9 +79,9 @@ d("pooled claim SQL mirrors isClaimable", () => {
   it("legacy site-pinned row still claimable under the old arm", async () => {
     const tok = await mkToken(`tp-leg-${Date.now()}`, "na-us-ashburn-01");
     const job = await storage.createEvalJob({
-      evalflowId: null, triggerType: 2, evalSetId: null, createdBy: 2,
+      evalFlowId: null, triggerType: 2, evalSetId: null, createdBy: 2,
       siteId: "na-us-ashburn-01", targetRegion: null, targetTier: null,
-      config: {}, snapshot: { provider: null, evalflow: null, evalSet: null, creatorPlan: null } as any,
+      config: {}, snapshot: { provider: null, evalFlow: null, evalSet: null, creatorPlan: null } as any,
       status: "pending", priority: 0, retryCount: 0, maxRetries: 3,
     } as any);
     const arg = { id: tok.id, siteId: tok.siteId, region: tok.region, dispatchTier: tok.dispatchTier, createdBy: tok.createdBy, ownerOrgId: null };
@@ -97,9 +97,9 @@ d("pooled claim SQL mirrors isClaimable", () => {
     const otherTok = await mkToken(`tp-other-${Date.now()}`, "na-us-ashburn-01");
     const pubTok = await mkToken(`tp-divpub-${Date.now()}`, "na-us-ashburn-01");
     const job = await storage.createEvalJob({
-      evalflowId: null, triggerType: 2, evalSetId: null, createdBy: 2,
+      evalFlowId: null, triggerType: 2, evalSetId: null, createdBy: 2,
       siteId: null, targetTokenId: otherTok.id, targetRegion: "na-us-ashburn", targetTier: "public",
-      config: {}, snapshot: { provider: null, evalflow: null, evalSet: null, creatorPlan: null } as any,
+      config: {}, snapshot: { provider: null, evalFlow: null, evalSet: null, creatorPlan: null } as any,
       status: "pending", priority: 0, retryCount: 0, maxRetries: 3,
     } as any);
     const arg = { id: pubTok.id, siteId: pubTok.siteId, region: pubTok.region, dispatchTier: pubTok.dispatchTier, createdBy: pubTok.createdBy, ownerOrgId: null, locationTrust: "trusted" };
@@ -146,9 +146,9 @@ d("getEvalJobs region filter", () => {
     // directly. A bare LIKE 'base-%' would wrongly match the sibling's site.
     const mk = (siteId: string | null, targetRegion: string | null) =>
       storage.createEvalJob({
-        evalflowId: null, triggerType: 2, evalSetId: null, createdBy: 1,
+        evalFlowId: null, triggerType: 2, evalSetId: null, createdBy: 1,
         siteId, targetRegion, targetTier: targetRegion ? "public" : null,
-        config: {}, snapshot: { provider: null, evalflow: null, evalSet: null, creatorPlan: null } as any,
+        config: {}, snapshot: { provider: null, evalFlow: null, evalSet: null, creatorPlan: null } as any,
         status: "pending", priority: 0, retryCount: 0, maxRetries: 3,
       } as any);
     const claimed = await mk("na-us-ashburn-01", null);

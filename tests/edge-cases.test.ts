@@ -369,7 +369,7 @@ describe('Concurrent Operation Edge Cases', () => {
 });
 
 describe('String Processing Edge Cases', () => {
-  describe('Project/Evalflow Name Handling', () => {
+  describe('Project/EvalFlow Name Handling', () => {
     const sanitizeName = (name: string): string => {
       return name.trim().slice(0, 100);
     };
@@ -565,31 +565,31 @@ describe('Data Integrity Edge Cases', () => {
       name: string;
     }
 
-    interface Evalflow {
+    interface EvalFlow {
       id: number;
       projectId: number;
       name: string;
     }
 
-    it('should not allow orphan evalflows', () => {
+    it('should not allow orphan evalFlows', () => {
       const projects: Project[] = [{ id: 1, name: 'Project 1' }];
       const projectIds = new Set(projects.map(p => p.id));
 
-      const canCreateEvalflow = (projectId: number) => projectIds.has(projectId);
+      const canCreateEvalFlow = (projectId: number) => projectIds.has(projectId);
 
-      expect(canCreateEvalflow(1)).toBe(true);
-      expect(canCreateEvalflow(999)).toBe(false);
+      expect(canCreateEvalFlow(1)).toBe(true);
+      expect(canCreateEvalFlow(999)).toBe(false);
     });
 
-    it('should cascade delete evalflows', () => {
-      const evalflows: Evalflow[] = [
+    it('should cascade delete evalFlows', () => {
+      const evalFlows: EvalFlow[] = [
         { id: 1, projectId: 1, name: 'W1' },
         { id: 2, projectId: 1, name: 'W2' },
         { id: 3, projectId: 2, name: 'W3' },
       ];
 
       const deleteProject = (projectId: number) => {
-        return evalflows.filter(w => w.projectId !== projectId);
+        return evalFlows.filter(w => w.projectId !== projectId);
       };
 
       const remaining = deleteProject(1);

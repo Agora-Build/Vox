@@ -8,7 +8,7 @@ import { BASE_NA } from "./helpers/regions";
 // `sessionInjection: "1"` (Task 10 sends this from the real daemon).
 //
 // Follows the idioms in tests/session-dispatch.test.ts (session-needing
-// evalflow via platform.setup + login-class secrets) and the
+// evalFlow via platform.setup + login-class secrets) and the
 // "Version-Gated Job Fetching" describe block in tests/api.test.ts
 // (token/agent registration + region-scoped job listing).
 
@@ -60,8 +60,8 @@ describe("GET /api/eval-agent/jobs — session-capability gate", () => {
   const emailSecret = `SCG_E_${stamp}`;
   const passwordSecret = `SCG_P_${stamp}`;
 
-  let sessionEvalflowId: number;
-  let plainEvalflowId: number;
+  let sessionEvalFlowId: number;
+  let plainEvalFlowId: number;
   let evalSetId: number;
 
   let tokenValue: string;
@@ -72,7 +72,7 @@ describe("GET /api/eval-agent/jobs — session-capability gate", () => {
     const providers = await (await fetch(`${BASE_URL}/api/providers`)).json();
     providerId = providers[0].id;
 
-    // Login-class secrets so the "session" evalflow's platform.setup is
+    // Login-class secrets so the "session" evalFlow's platform.setup is
     // evaluated by evaluateSessionRequirement as a session "need" and its jobs
     // get stamped with config.sessionInjection.
     await createSecret(admin, emailSecret, "scg-test-user@example.com", { brokerType: "auth-session" });
@@ -81,7 +81,7 @@ describe("GET /api/eval-agent/jobs — session-capability gate", () => {
     const setupSteps =
       `- type: platform.setup\n  platform_id: vapi\n  params:\n    email: \${secrets.${emailSecret}}\n    password: \${secrets.${passwordSecret}}`;
 
-    const wfRes = await authFetch(admin, `${BASE_URL}/api/evalflows`, {
+    const wfRes = await authFetch(admin, `${BASE_URL}/api/eval-flows`, {
       method: "POST",
       body: JSON.stringify({
         name: `SCG Session WF ${stamp}`,
@@ -92,9 +92,9 @@ describe("GET /api/eval-agent/jobs — session-capability gate", () => {
       }),
     });
     expect(wfRes.ok).toBe(true);
-    sessionEvalflowId = (await wfRes.json()).id;
+    sessionEvalFlowId = (await wfRes.json()).id;
 
-    const plainWfRes = await authFetch(admin, `${BASE_URL}/api/evalflows`, {
+    const plainWfRes = await authFetch(admin, `${BASE_URL}/api/eval-flows`, {
       method: "POST",
       body: JSON.stringify({
         name: `SCG Plain WF ${stamp}`,
@@ -103,7 +103,7 @@ describe("GET /api/eval-agent/jobs — session-capability gate", () => {
       }),
     });
     expect(plainWfRes.ok).toBe(true);
-    plainEvalflowId = (await plainWfRes.json()).id;
+    plainEvalFlowId = (await plainWfRes.json()).id;
 
     const esRes = await authFetch(admin, `${BASE_URL}/api/eval-sets`, {
       method: "POST",
@@ -141,7 +141,7 @@ describe("GET /api/eval-agent/jobs — session-capability gate", () => {
     expect(regRes.ok).toBe(true);
 
     // Session-stamped job.
-    const sessionRunRes = await authFetch(admin, `${BASE_URL}/api/evalflows/${sessionEvalflowId}/run`, {
+    const sessionRunRes = await authFetch(admin, `${BASE_URL}/api/eval-flows/${sessionEvalFlowId}/run`, {
       method: "POST",
       body: JSON.stringify({ region: BASE_NA, targetTier: "private", evalSetId }),
     });
@@ -150,7 +150,7 @@ describe("GET /api/eval-agent/jobs — session-capability gate", () => {
     expect(sessionJob.config.sessionInjection).toEqual({ platformId: "vapi" });
 
     // Plain job (no login secrets referenced — no stamp).
-    const plainRunRes = await authFetch(admin, `${BASE_URL}/api/evalflows/${plainEvalflowId}/run`, {
+    const plainRunRes = await authFetch(admin, `${BASE_URL}/api/eval-flows/${plainEvalFlowId}/run`, {
       method: "POST",
       body: JSON.stringify({ region: BASE_NA, targetTier: "private", evalSetId }),
     });

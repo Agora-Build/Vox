@@ -192,7 +192,7 @@ export function buildChunkYaml(
 }
 
 /**
- * Compose a single scenario YAML from evalflow setup/teardown wrapped around an
+ * Compose a single scenario YAML from evalFlow setup/teardown wrapped around an
  * eval-set body, preserving the scenario's metadata. Used when the body is not a
  * clean set of lab.trace samples (e.g. control.for_each) so it can't be chunked —
  * we run it as one file: prefix + body + suffix.

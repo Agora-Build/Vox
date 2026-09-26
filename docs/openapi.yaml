@@ -2,7 +2,7 @@ openapi: 3.0.3
 info:
   title: Vox API
   description: |
-    API for the Vox AI latency evaluation platform. This API allows you to manage evalflows,
+    API for the Vox AI latency evaluation platform. This API allows you to manage evalFlows,
     eval sets, jobs, and access metrics for conversational AI products.
 
     ## Authentication
@@ -49,8 +49,8 @@ servers:
     description: Production server
 
 tags:
-  - name: Evalflows
-    description: Manage evaluation evalflows
+  - name: EvalFlows
+    description: Manage how evaluations reach each agent
   - name: Eval Sets
     description: Manage evaluation test sets
   - name: Jobs
@@ -138,7 +138,7 @@ components:
           type: boolean
           example: false
 
-    Evalflow:
+    EvalFlow:
       type: object
       properties:
         id:
@@ -179,7 +179,7 @@ components:
           type: string
           format: date-time
 
-    EvalflowCreate:
+    EvalFlowCreate:
       type: object
       required:
         - name
@@ -204,7 +204,7 @@ components:
           type: object
           additionalProperties: true
 
-    EvalflowUpdate:
+    EvalFlowUpdate:
       type: object
       properties:
         name:
@@ -274,7 +274,7 @@ components:
         id:
           type: integer
           example: 1
-        evalflowId:
+        evalFlowId:
           type: integer
           example: 1
         evalSetId:
@@ -332,7 +332,7 @@ components:
           type: string
           format: date-time
 
-    RunEvalflowRequest:
+    RunEvalFlowRequest:
       type: object
       required:
         - region
@@ -435,7 +435,7 @@ components:
         organizationId:
           type: integer
           nullable: true
-        evalflowCount:
+        evalFlowCount:
           type: integer
           example: 5
         createdAt:
@@ -545,17 +545,17 @@ components:
           example: 90
 
 paths:
-  /evalflows:
+  /evalFlows:
     get:
       tags:
-        - Evalflows
-      summary: List evalflows
-      description: Returns all evalflows accessible to the authenticated user
+        - EvalFlows
+      summary: List evalFlows
+      description: Returns all evalFlows accessible to the authenticated user
       security:
         - BearerAuth: []
       responses:
         '200':
-          description: List of evalflows
+          description: List of evalFlows
           content:
             application/json:
               schema:
@@ -564,7 +564,7 @@ paths:
                   data:
                     type: array
                     items:
-                      $ref: '#/components/schemas/Evalflow'
+                      $ref: '#/components/schemas/EvalFlow'
                   meta:
                     type: object
                     properties:
@@ -579,9 +579,9 @@ paths:
 
     post:
       tags:
-        - Evalflows
-      summary: Create evalflow
-      description: Creates a new evalflow
+        - EvalFlows
+      summary: Create evalFlow
+      description: Creates a new evalFlow
       security:
         - BearerAuth: []
       requestBody:
@@ -589,17 +589,17 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/EvalflowCreate'
+              $ref: '#/components/schemas/EvalFlowCreate'
       responses:
         '201':
-          description: Evalflow created
+          description: Eval Flow created
           content:
             application/json:
               schema:
                 type: object
                 properties:
                   data:
-                    $ref: '#/components/schemas/Evalflow'
+                    $ref: '#/components/schemas/EvalFlow'
         '400':
           description: Invalid request
           content:
@@ -619,12 +619,12 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
 
-  /evalflows/{id}:
+  /evalFlows/{id}:
     get:
       tags:
-        - Evalflows
-      summary: Get evalflow
-      description: Returns a specific evalflow by ID
+        - EvalFlows
+      summary: Get evalFlow
+      description: Returns a specific evalFlow by ID
       security:
         - BearerAuth: []
       parameters:
@@ -635,14 +635,14 @@ paths:
             type: integer
       responses:
         '200':
-          description: Evalflow details
+          description: EvalFlow details
           content:
             application/json:
               schema:
                 type: object
                 properties:
                   data:
-                    $ref: '#/components/schemas/Evalflow'
+                    $ref: '#/components/schemas/EvalFlow'
         '401':
           description: Authentication required
           content:
@@ -656,7 +656,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
         '404':
-          description: Evalflow not found
+          description: Eval Flow not found
           content:
             application/json:
               schema:
@@ -664,9 +664,9 @@ paths:
 
     put:
       tags:
-        - Evalflows
-      summary: Update evalflow
-      description: Updates an existing evalflow (owner only)
+        - EvalFlows
+      summary: Update evalFlow
+      description: Updates an existing evalFlow (owner only)
       security:
         - BearerAuth: []
       parameters:
@@ -680,17 +680,17 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/EvalflowUpdate'
+              $ref: '#/components/schemas/EvalFlowUpdate'
       responses:
         '200':
-          description: Evalflow updated
+          description: Eval Flow updated
           content:
             application/json:
               schema:
                 type: object
                 properties:
                   data:
-                    $ref: '#/components/schemas/Evalflow'
+                    $ref: '#/components/schemas/EvalFlow'
         '401':
           description: Authentication required
           content:
@@ -704,7 +704,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
         '404':
-          description: Evalflow not found
+          description: Eval Flow not found
           content:
             application/json:
               schema:
@@ -712,9 +712,9 @@ paths:
 
     delete:
       tags:
-        - Evalflows
-      summary: Delete evalflow
-      description: Deletes an evalflow (owner only)
+        - EvalFlows
+      summary: Delete evalFlow
+      description: Deletes an evalFlow (owner only)
       security:
         - BearerAuth: []
       parameters:
@@ -725,7 +725,7 @@ paths:
             type: integer
       responses:
         '200':
-          description: Evalflow deleted
+          description: Eval Flow deleted
           content:
             application/json:
               schema:
@@ -746,18 +746,18 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
         '404':
-          description: Evalflow not found
+          description: Eval Flow not found
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
 
-  /evalflows/{id}/run:
+  /evalFlows/{id}/run:
     post:
       tags:
-        - Evalflows
-      summary: Run evalflow
-      description: Creates an eval job to run the evalflow
+        - EvalFlows
+      summary: Run evalFlow
+      description: Creates an eval job to run the evalFlow
       security:
         - BearerAuth: []
       parameters:
@@ -770,7 +770,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/RunEvalflowRequest'
+              $ref: '#/components/schemas/RunEvalFlowRequest'
       responses:
         '201':
           description: Job created
@@ -799,7 +799,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
         '404':
-          description: Evalflow not found
+          description: Eval Flow not found
           content:
             application/json:
               schema:
@@ -1079,7 +1079,7 @@ paths:
       security:
         - BearerAuth: []
       parameters:
-        - name: evalflowId
+        - name: evalFlowId
           in: query
           schema:
             type: integer
@@ -1247,7 +1247,7 @@ paths:
       summary: Get mainline metrics
       description: >
         Returns recent evaluation metrics for the Mainline tier (public endpoint).
-        Only includes results where the evalflow is public+mainline, the eval set is
+        Only includes results where the evalFlow is public+mainline, the eval set is
         public+mainline, and the agent token is public.
       parameters:
         - name: hours
@@ -1289,8 +1289,8 @@ paths:
       summary: Get community metrics
       description: >
         Returns recent evaluation metrics for the Community tier (public endpoint).
-        Includes results where the evalflow and eval set are both public, but the
-        result is NOT fully mainline (at least one of evalflow.isMainline, evalSet.isMainline,
+        Includes results where the evalFlow and eval set are both public, but the
+        result is NOT fully mainline (at least one of evalFlow.isMainline, evalSet.isMainline,
         or token.visibility is not mainline/public).
       parameters:
         - name: hours
@@ -1321,7 +1321,7 @@ paths:
       summary: Get user's private eval metrics
       description: >
         Returns evaluation metrics for the My Evals tier (requires authentication).
-        Includes results where the evalflow or eval set is private and owned by the
+        Includes results where the evalFlow or eval set is private and owned by the
         requesting user.
       security:
         - cookieAuth: []

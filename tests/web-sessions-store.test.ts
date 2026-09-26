@@ -95,7 +95,7 @@ d("web_sessions store", () => {
     const platformId = pid("cred-iso");
     // Same owner, same platform, DIFFERENT credential pair → separate sessions.
     // Without the credential_key index column these collapse into one row, and
-    // an attested test-account evalflow could be served the other account's
+    // an attested test-account evalFlow could be served the other account's
     // (e.g. non-attested prod) session — the attestation-gate bypass.
     const a = await storage.claimWebSessionMint({ userId: 1 }, platformId, "ck-account-a", 180, 300);
     const b = await storage.claimWebSessionMint({ userId: 1 }, platformId, "ck-account-b", 180, 300);

@@ -63,9 +63,29 @@ describe("_legacy* config keys", () => {
     expect(merged.stepsPrefix).toBe("- b"); // the actual edit applied
   });
 
+  it("parked _legacy* payloads never trip the secret scans (collectSecretRefs skips them)", async () => {
+    const { collectSecretRefs } = await import("../shared/secrets");
+    const refs = collectSecretRefs([
+      { _legacyPhoneDial: { number: "${secrets.NOPE}" } },
+      { stepsPrefix: "- ${secrets.REAL_ONE}" },
+    ]);
+    expect(refs.has("NOPE")).toBe(false);
+    expect(refs.has("REAL_ONE")).toBe(true);
+  });
+
+  it("mergeEvalConfig strips parked payloads from job configs (they never reach agents)", async () => {
+    const { mergeEvalConfig } = await import("../server/storage");
+    const job = mergeEvalConfig(
+      { framework: "aeval", _legacyPhoneDial: { number: "+1 555 010 1234" }, stepsPrefix: "- type: platform.setup" },
+      { scenario: "steps: []" },
+    );
+    expect(job._legacyPhoneDial).toBeUndefined();
+    expect(job.stepsPrefix).toBe("- type: platform.setup");
+  });
+
   it("the prefix is the shared constant, so the scans can't drift apart", () => {
     expect(LEGACY_CONFIG_KEY_PREFIX).toBe("_legacy");
-    for (const file of ["server/storage.ts", "vox_eval_agentd/vox-agentd.ts", "client/src/pages/console-evalflows.tsx"]) {
+    for (const file of ["server/storage.ts", "vox_eval_agentd/vox-agentd.ts", "client/src/pages/console-eval-flows.tsx"]) {
       const src = readFileSync(file, "utf8");
       // No hand-rolled copies of the literal prefix in the guards.
       expect(src.includes('startsWith("_legacy")') || src.includes("startsWith('_legacy')")).toBe(false);

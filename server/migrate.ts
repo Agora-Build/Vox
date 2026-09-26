@@ -64,6 +64,7 @@ const MIGRATIONS: Array<{ version: number; description: string; file: string | n
   { version: 40, description: "workflow → evalflow rename: table, FK columns, snapshot key spelling", file: "0039_evalflow_rename.sql" },
   { version: 41, description: "unified steps model: phoneDial/restfulTrigger dissolve into Setup/Teardown step scripts", file: "0040_steps_model.sql" },
   { version: 42, description: "voice-agent-tester removed: delete VAT evalflows, fail their queued jobs, drop stray app keys", file: "0041_remove_vat.sql" },
+  { version: 43, description: "evalflow → eval_flow: table, FK columns, snapshot key, tier indexes (aligns the eval-* family)", file: "0042_eval_flow_rename.sql" },
 ];
 
 const TARGET_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version;

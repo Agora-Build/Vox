@@ -111,7 +111,7 @@ describe("executeViaBroker (unit, injected fetch)", () => {
   });
 });
 
-d("restful.request step validation (evalflow Setup Steps)", () => {
+d("restful.request step validation (evalFlow Setup Steps)", () => {
   let cookie: string;
   const created: number[] = [];
 
@@ -121,12 +121,12 @@ d("restful.request step validation (evalflow Setup Steps)", () => {
 
   afterAll(async () => {
     if (!hasDb || created.length === 0) return;
-    await pool.query(`DELETE FROM evalflows WHERE id = ANY($1::int[])`, [created]);
+    await pool.query(`DELETE FROM eval_flows WHERE id = ANY($1::int[])`, [created]);
   });
 
-  const mkEvalflow = async (config: Record<string, unknown>) => {
+  const mkEvalFlow = async (config: Record<string, unknown>) => {
     const providers = await storage.getAllProviders();
-    return fetch(`${BASE_URL}/api/evalflows`, {
+    return fetch(`${BASE_URL}/api/eval-flows`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Cookie: cookie },
       body: JSON.stringify({
@@ -140,7 +140,7 @@ d("restful.request step validation (evalflow Setup Steps)", () => {
     yamlLib.dump([{ type: "restful.request", ...fields }]);
 
   it("accepts a valid restful.request Setup step", async () => {
-    const res = await mkEvalflow({
+    const res = await mkEvalFlow({
       stepsPrefix: stepYaml({
         method: "POST",
         url: "https://api.example.com/v1/calls",
@@ -156,7 +156,7 @@ d("restful.request step validation (evalflow Setup Steps)", () => {
 
   it("rejects a bad method, non-https url, oversized timeout, unknown field, and Teardown placement", async () => {
     const bad = async (fields: Record<string, unknown>) => {
-      const res = await mkEvalflow({ stepsPrefix: stepYaml({ method: "POST", url: "https://x.example/y", ...fields }) });
+      const res = await mkEvalFlow({ stepsPrefix: stepYaml({ method: "POST", url: "https://x.example/y", ...fields }) });
       expect(res.status).toBe(400);
     };
     await bad({ method: "BREW" });
@@ -164,13 +164,13 @@ d("restful.request step validation (evalflow Setup Steps)", () => {
     await bad({ timeoutMs: 999999 });
     await bad({ unknownField: 1 });
     // restful.request is a pre-call Setup step — Teardown placement is illegal.
-    const teardown = await mkEvalflow({ stepsSuffix: stepYaml({ method: "POST", url: "https://x.example/y" }) });
+    const teardown = await mkEvalFlow({ stepsSuffix: stepYaml({ method: "POST", url: "https://x.example/y" }) });
     expect(teardown.status).toBe(400);
     expect((await teardown.json()).error).toContain("illegal in Teardown");
   });
 
   it("rejects the deleted restfulTrigger config key with a pointer error", async () => {
-    const res = await mkEvalflow({ restfulTrigger: { method: "POST", url: "https://x.example/y" } });
+    const res = await mkEvalFlow({ restfulTrigger: { method: "POST", url: "https://x.example/y" } });
     expect(res.status).toBe(400);
     expect((await res.json()).error).toContain("restful.request step");
   });
@@ -184,7 +184,7 @@ d("POST /api/eval-agent/jobs/:jobId/restful (integration, fake broker)", () => {
   let noTriggerJobId: number;
   let nonLeadingJobId: number;
   let brokerId: number;
-  let evalflowId: number;
+  let evalFlowId: number;
   let fakeBroker: import("http").Server;
   let brokerPort: number;
   const brokerSeen: any[] = [];
@@ -210,13 +210,13 @@ d("POST /api/eval-agent/jobs/:jobId/restful (integration, fake broker)", () => {
     await new Promise<void>((r) => fakeBroker.listen(0, "127.0.0.1", () => r()));
     brokerPort = (fakeBroker.address() as any).port;
 
-    // Owner + restful secret + evalflow with a trigger template.
+    // Owner + restful secret + evalFlow with a trigger template.
     ownerId = (await storage.createUser({
       username: `phBexec${suffix}`, email: `phBexec${suffix}@example.com`,
     } as any)).id;
     await storage.createOrUpdateSecret(ownerId, secretName, encryptValue("sekret123"), { brokerType: "restful" });
     const providers = await storage.getAllProviders();
-    const wf = await storage.createEvalflow({
+    const wf = await storage.createEvalFlow({
       name: `phB_exec_wf_${suffix}`, ownerId, providerId: providers[0].id,
       transport: "phone", visibility: "private",
       config: {
@@ -233,7 +233,7 @@ d("POST /api/eval-agent/jobs/:jobId/restful (integration, fake broker)", () => {
         ].join("\n"),
       },
     } as any);
-    evalflowId = wf.id;
+    evalFlowId = wf.id;
 
     // Agent token + agent + claimed phone job with the FROZEN snapshot.
     const tok = await storage.createEvalAgentToken({
@@ -250,7 +250,7 @@ d("POST /api/eval-agent/jobs/:jobId/restful (integration, fake broker)", () => {
     const snap = buildJobSnapshot(wf, null, providers[0], "basic");
     const mkJob = async (snapshot: any) => {
       const j = await storage.createEvalJob({
-        evalflowId: wf.id, triggerType: 2, evalSetId: null, createdBy: ownerId,
+        evalFlowId: wf.id, triggerType: 2, evalSetId: null, createdBy: ownerId,
         siteId: null, targetRegion: "na-us-ashburn", targetTier: "private",
         config: {}, snapshot, status: "pending", priority: 0, retryCount: 0, maxRetries: 3,
       } as any);
@@ -262,14 +262,14 @@ d("POST /api/eval-agent/jobs/:jobId/restful (integration, fake broker)", () => {
       return j.id;
     };
     jobId = await mkJob(snap);
-    noTriggerJobId = await mkJob({ ...snap, evalflow: { ...snap.evalflow!, config: {} } });
+    noTriggerJobId = await mkJob({ ...snap, evalFlow: { ...snap.evalFlow!, config: {} } });
     // A snapshot whose restful step is NOT in the leading run (save-time
     // validation forbids this — built directly to prove the endpoint is
     // self-contained about the ordering rule).
     nonLeadingJobId = await mkJob({
       ...snap,
-      evalflow: {
-        ...snap.evalflow!,
+      evalFlow: {
+        ...snap.evalFlow!,
         config: {
           stepsPrefix: '- type: call.dial\n  number: "+15551234"\n- type: restful.request\n  method: POST\n  url: "https://target.example/v1/calls"\n',
         },
@@ -298,7 +298,7 @@ d("POST /api/eval-agent/jobs/:jobId/restful (integration, fake broker)", () => {
     await pool.query(`DELETE FROM eval_jobs WHERE id = ANY($1::int[])`, [[jobId, noTriggerJobId, nonLeadingJobId].filter(Boolean)]);
     await pool.query(`DELETE FROM eval_agents WHERE id = $1`, [agentId]);
     await pool.query(`DELETE FROM eval_agent_tokens WHERE id = $1`, [tokId]);
-    await pool.query(`DELETE FROM evalflows WHERE id = $1`, [evalflowId]);
+    await pool.query(`DELETE FROM eval_flows WHERE id = $1`, [evalFlowId]);
     await pool.query(`DELETE FROM secrets WHERE name = $1`, [secretName]);
     await pool.query(`DELETE FROM users WHERE id = $1`, [ownerId]);
   });
@@ -412,17 +412,17 @@ d("restful secret class", () => {
   });
 
   it("is structurally withheld from the job-secrets path", async () => {
-    // getSecretsForJob returns the evalflow owner's RUNTIME rows only.
+    // getSecretsForJob returns the evalFlow owner's RUNTIME rows only.
     const admin = await storage.getUserByEmail("admin@vox.local");
     const providers = await storage.getAllProviders();
-    const wf = await storage.createEvalflow({
+    const wf = await storage.createEvalFlow({
       name: `phB-wf-${suffix}`, ownerId: admin!.id, providerId: providers[0].id,
       visibility: "private", config: {},
     } as any);
     const job = await storage.createEvalJob({
-      evalflowId: wf.id, triggerType: 2, evalSetId: null, createdBy: admin!.id,
+      evalFlowId: wf.id, triggerType: 2, evalSetId: null, createdBy: admin!.id,
       siteId: null, targetRegion: "na-us-ashburn", targetTier: "private",
-      config: {}, snapshot: { provider: null, evalflow: null, evalSet: null, creatorPlan: null } as any,
+      config: {}, snapshot: { provider: null, evalFlow: null, evalSet: null, creatorPlan: null } as any,
       status: "pending", priority: 0, retryCount: 0, maxRetries: 3,
     } as any);
     try {
@@ -430,7 +430,7 @@ d("restful secret class", () => {
       expect(rows.find((s) => s.name === secretName)).toBeUndefined();
     } finally {
       await pool.query(`DELETE FROM eval_jobs WHERE id = $1`, [job.id]);
-      await pool.query(`DELETE FROM evalflows WHERE id = $1`, [wf.id]);
+      await pool.query(`DELETE FROM eval_flows WHERE id = $1`, [wf.id]);
     }
   });
 });

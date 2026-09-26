@@ -46,16 +46,16 @@ describe("dispatch integration — session stamping, pre-warm, shared-tier gates
   let providerId: string;
   const stamp = Date.now();
 
-  // Login-class secrets referenced by the "session" evalflow's platform.setup.
+  // Login-class secrets referenced by the "session" evalFlow's platform.setup.
   const emailSecret = `SD_E_${stamp}`;
   const passwordSecret = `SD_P_${stamp}`;
-  // Runtime-class secrets referenced by the "no session" evalflow.
+  // Runtime-class secrets referenced by the "no session" evalFlow.
   const runtimeEmailSecret = `SD_RE_${stamp}`;
   const runtimePasswordSecret = `SD_RP_${stamp}`;
 
-  let sessionEvalflowId: number;
-  let noSessionEvalflowId: number;
-  let injectionEvalflowId: number;
+  let sessionEvalFlowId: number;
+  let noSessionEvalFlowId: number;
+  let injectionEvalFlowId: number;
   let evalSetId: number;
 
   beforeAll(async () => {
@@ -72,7 +72,7 @@ describe("dispatch integration — session stamping, pre-warm, shared-tier gates
     const setupSteps = (email: string, password: string) =>
       `- type: platform.setup\n  platform_id: vapi\n  params:\n    email: \${secrets.${email}}\n    password: \${secrets.${password}}`;
 
-    const wfRes = await authFetch(admin, `${BASE_URL}/api/evalflows`, {
+    const wfRes = await authFetch(admin, `${BASE_URL}/api/eval-flows`, {
       method: "POST",
       body: JSON.stringify({
         name: `Session WF ${stamp}`,
@@ -81,9 +81,9 @@ describe("dispatch integration — session stamping, pre-warm, shared-tier gates
       }),
     });
     expect(wfRes.ok).toBe(true);
-    sessionEvalflowId = (await wfRes.json()).id;
+    sessionEvalFlowId = (await wfRes.json()).id;
 
-    const wfNoSessionRes = await authFetch(admin, `${BASE_URL}/api/evalflows`, {
+    const wfNoSessionRes = await authFetch(admin, `${BASE_URL}/api/eval-flows`, {
       method: "POST",
       body: JSON.stringify({
         name: `No-Session WF ${stamp}`,
@@ -92,9 +92,9 @@ describe("dispatch integration — session stamping, pre-warm, shared-tier gates
       }),
     });
     expect(wfNoSessionRes.ok).toBe(true);
-    noSessionEvalflowId = (await wfNoSessionRes.json()).id;
+    noSessionEvalFlowId = (await wfNoSessionRes.json()).id;
 
-    const wfInjectionRes = await authFetch(admin, `${BASE_URL}/api/evalflows`, {
+    const wfInjectionRes = await authFetch(admin, `${BASE_URL}/api/eval-flows`, {
       method: "POST",
       body: JSON.stringify({
         name: `Injection WF ${stamp}`,
@@ -107,7 +107,7 @@ describe("dispatch integration — session stamping, pre-warm, shared-tier gates
       }),
     });
     expect(wfInjectionRes.ok).toBe(true);
-    injectionEvalflowId = (await wfInjectionRes.json()).id;
+    injectionEvalFlowId = (await wfInjectionRes.json()).id;
 
     const esRes = await authFetch(admin, `${BASE_URL}/api/eval-sets`, {
       method: "POST",
@@ -130,8 +130,8 @@ describe("dispatch integration — session stamping, pre-warm, shared-tier gates
     }
   });
 
-  it("1. stamps config.sessionInjection when the evalflow's platform.setup references login secrets", async () => {
-    const res = await authFetch(admin, `${BASE_URL}/api/evalflows/${sessionEvalflowId}/run`, {
+  it("1. stamps config.sessionInjection when the evalFlow's platform.setup references login secrets", async () => {
+    const res = await authFetch(admin, `${BASE_URL}/api/eval-flows/${sessionEvalFlowId}/run`, {
       method: "POST",
       body: JSON.stringify({ region: BASE_NA, targetTier: "private", evalSetId }),
     });
@@ -141,7 +141,7 @@ describe("dispatch integration — session stamping, pre-warm, shared-tier gates
   });
 
   it("2. leaves config.sessionInjection undefined when referenced secrets are runtime-class", async () => {
-    const res = await authFetch(admin, `${BASE_URL}/api/evalflows/${noSessionEvalflowId}/run`, {
+    const res = await authFetch(admin, `${BASE_URL}/api/eval-flows/${noSessionEvalFlowId}/run`, {
       method: "POST",
       body: JSON.stringify({ region: BASE_NA, targetTier: "private", evalSetId }),
     });
@@ -151,7 +151,7 @@ describe("dispatch integration — session stamping, pre-warm, shared-tier gates
   });
 
   it("3. strips a user-supplied sessionInjection and stamps the server value instead", async () => {
-    const res = await authFetch(admin, `${BASE_URL}/api/evalflows/${injectionEvalflowId}/run`, {
+    const res = await authFetch(admin, `${BASE_URL}/api/eval-flows/${injectionEvalFlowId}/run`, {
       method: "POST",
       body: JSON.stringify({ region: BASE_NA, targetTier: "private", evalSetId }),
     });
@@ -186,7 +186,7 @@ describe("dispatch integration — session stamping, pre-warm, shared-tier gates
     });
 
     it("4a. rejects targeted dispatch to a shared agent without credentialConsent", async () => {
-      const res = await authFetch(admin, `${BASE_URL}/api/evalflows/${sessionEvalflowId}/run`, {
+      const res = await authFetch(admin, `${BASE_URL}/api/eval-flows/${sessionEvalFlowId}/run`, {
         method: "POST",
         body: JSON.stringify({ evalSetId, targetTokenId: sharedTokenId }),
       });
@@ -196,7 +196,7 @@ describe("dispatch integration — session stamping, pre-warm, shared-tier gates
     });
 
     it("4b. rejects targeted dispatch when login secrets are not attested as test accounts", async () => {
-      const res = await authFetch(admin, `${BASE_URL}/api/evalflows/${sessionEvalflowId}/run`, {
+      const res = await authFetch(admin, `${BASE_URL}/api/eval-flows/${sessionEvalFlowId}/run`, {
         method: "POST",
         body: JSON.stringify({ evalSetId, targetTokenId: sharedTokenId, credentialConsent: true }),
       });
@@ -209,7 +209,7 @@ describe("dispatch integration — session stamping, pre-warm, shared-tier gates
       await createSecret(admin, emailSecret, "sd-test-user@example.com", { isTestAccount: true });
       await createSecret(admin, passwordSecret, "sd-test-password-1", { isTestAccount: true });
 
-      const res = await authFetch(admin, `${BASE_URL}/api/evalflows/${sessionEvalflowId}/run`, {
+      const res = await authFetch(admin, `${BASE_URL}/api/eval-flows/${sessionEvalFlowId}/run`, {
         method: "POST",
         body: JSON.stringify({ evalSetId, targetTokenId: sharedTokenId, credentialConsent: true }),
       });
@@ -231,17 +231,17 @@ describe("dispatch integration — session stamping, pre-warm, shared-tier gates
   });
 
   describe("6. escrow-leak fix: jobConfig assembly throws inside the voidDispatch-compensated try", () => {
-    let conflictEvalflowId: number;
+    let conflictEvalFlowId: number;
     let conflictEvalSetId: number;
 
     beforeAll(async () => {
-      // Evalflow and eval set share the "frameworkVersion" key with CONFLICTING
-      // values. Neither validateEvalflowConfig nor validateEvalSetConfig restricts
+      // EvalFlow and eval set share the "frameworkVersion" key with CONFLICTING
+      // values. Neither validateEvalFlowConfig nor validateEvalSetConfig restricts
       // this key (only "scenario" is eval-set-only and "framework"/"stepsPrefix"/
-      // "stepsSuffix" are evalflow-only — see server/storage.ts), so both
+      // "stepsSuffix" are eval-flow-only — see server/storage.ts), so both
       // creates succeed and the conflict only surfaces at run time inside
       // mergeEvalConfig (server/storage.ts:~260-280).
-      const wfRes = await authFetch(admin, `${BASE_URL}/api/evalflows`, {
+      const wfRes = await authFetch(admin, `${BASE_URL}/api/eval-flows`, {
         method: "POST",
         body: JSON.stringify({
           name: `Conflict WF ${stamp}`,
@@ -250,7 +250,7 @@ describe("dispatch integration — session stamping, pre-warm, shared-tier gates
         }),
       });
       expect(wfRes.ok).toBe(true);
-      conflictEvalflowId = (await wfRes.json()).id;
+      conflictEvalFlowId = (await wfRes.json()).id;
 
       const esRes = await authFetch(admin, `${BASE_URL}/api/eval-sets`, {
         method: "POST",
@@ -266,21 +266,21 @@ describe("dispatch integration — session stamping, pre-warm, shared-tier gates
     // dispatch requires live marketplace balances and is deliberately deferred to the
     // practical e2e suite (Task 13).
     it("untargeted run with conflicting shared config keys surfaces a controlled 500, not a crash", async () => {
-      const res = await authFetch(admin, `${BASE_URL}/api/evalflows/${conflictEvalflowId}/run`, {
+      const res = await authFetch(admin, `${BASE_URL}/api/eval-flows/${conflictEvalFlowId}/run`, {
         method: "POST",
         body: JSON.stringify({ region: BASE_NA, targetTier: "private", evalSetId: conflictEvalSetId }),
       });
       expect(res.status).toBe(500);
       const body = await res.json();
-      expect(body.error).toBe("Failed to run evalflow");
+      expect(body.error).toBe("Failed to run evalFlow");
     });
   });
 
   describe("7. credential-injection dispatch guards (owner + team + attested-shared)", () => {
     let stranger: AuthSession;
     let strangerPublicTokenId: number;
-    let guardEvalflowId: number; // public, admin-owned, references a login-class pair
-    let splitEvalflowId: number; // login-class email + runtime-class password
+    let guardEvalFlowId: number; // public, admin-owned, references a login-class pair
+    let splitEvalFlowId: number; // login-class email + runtime-class password
 
     // A fresh login-class pair, independent of the 4-5 block's re-attestation of
     // emailSecret/passwordSecret (which rewrites those two secrets mid-suite).
@@ -299,10 +299,10 @@ describe("dispatch integration — session stamping, pre-warm, shared-tier gates
       const setupSteps = (email: string, password: string) =>
         `- type: platform.setup\n  platform_id: vapi\n  params:\n    email: \${secrets.${email}}\n    password: \${secrets.${password}}`;
 
-      // Default evalflow visibility is "public" (server-side), so a stranger can
+      // Default evalFlow visibility is "public" (server-side), so a stranger can
       // reach the run route's session gate rather than being turned away earlier
-      // by canRunEvalflow.
-      const gRes = await authFetch(admin, `${BASE_URL}/api/evalflows`, {
+      // by canRunEvalFlow.
+      const gRes = await authFetch(admin, `${BASE_URL}/api/eval-flows`, {
         method: "POST",
         body: JSON.stringify({
           name: `Guard WF ${stamp}`,
@@ -311,9 +311,9 @@ describe("dispatch integration — session stamping, pre-warm, shared-tier gates
         }),
       });
       expect(gRes.ok).toBe(true);
-      guardEvalflowId = (await gRes.json()).id;
+      guardEvalFlowId = (await gRes.json()).id;
 
-      const sRes = await authFetch(admin, `${BASE_URL}/api/evalflows`, {
+      const sRes = await authFetch(admin, `${BASE_URL}/api/eval-flows`, {
         method: "POST",
         body: JSON.stringify({
           name: `Split WF ${stamp}`,
@@ -322,7 +322,7 @@ describe("dispatch integration — session stamping, pre-warm, shared-tier gates
         }),
       });
       expect(sRes.ok).toBe(true);
-      splitEvalflowId = (await sRes.json()).id;
+      splitEvalFlowId = (await sRes.json()).id;
 
       // A second, non-owner user (premium so they may own an eval-agent token).
       const inviteRes = await authFetch(admin, `${BASE_URL}/api/admin/invite`, {
@@ -352,18 +352,18 @@ describe("dispatch integration — session stamping, pre-warm, shared-tier gates
       strangerPublicTokenId = (await tRes.json()).id;
     });
 
-    it("7a. untargeted stranger run of a PUBLIC credential-injected evalflow -> 403", async () => {
-      // The evalflow is public so canRunEvalflow lets the stranger through; the
+    it("7a. untargeted stranger run of a PUBLIC credential-injected evalFlow -> 403", async () => {
+      // The evalFlow is public so canRunEvalFlow lets the stranger through; the
       // session gate is what stops them — running it untargeted would let a
       // stranger's own agent pull the OWNER's minted test-account session.
-      const res = await authFetch(stranger, `${BASE_URL}/api/evalflows/${guardEvalflowId}/run`, {
+      const res = await authFetch(stranger, `${BASE_URL}/api/eval-flows/${guardEvalFlowId}/run`, {
         method: "POST",
         body: JSON.stringify({ region: BASE_NA, targetTier: "private", evalSetId }),
       });
       expect(res.status).toBe(403);
       const body = await res.json();
       expect(body.error).toBe(
-        "Credential-injected evalflows can only be run untargeted by the owner or an org member; dispatch to a shared agent with consent to run it elsewhere",
+        "Credential-injected evalFlows can only be run untargeted by the owner or an org member; dispatch to a shared agent with consent to run it elsewhere",
       );
     });
 
@@ -373,7 +373,7 @@ describe("dispatch integration — session stamping, pre-warm, shared-tier gates
       // (canDispatchToToken) refuses a stranger-owned token before the session-
       // credential gate is ever reached. Either way a session-injected job never
       // lands on a stranger's agent; here the shallower guard fires first.
-      const res = await authFetch(admin, `${BASE_URL}/api/evalflows/${guardEvalflowId}/run`, {
+      const res = await authFetch(admin, `${BASE_URL}/api/eval-flows/${guardEvalFlowId}/run`, {
         method: "POST",
         body: JSON.stringify({ evalSetId, targetTokenId: strangerPublicTokenId }),
       });
@@ -383,7 +383,7 @@ describe("dispatch integration — session stamping, pre-warm, shared-tier gates
     });
 
     it("7c. split-class credential pair (one login, one runtime) -> 400, never a silent runtime leak", async () => {
-      const res = await authFetch(admin, `${BASE_URL}/api/evalflows/${splitEvalflowId}/run`, {
+      const res = await authFetch(admin, `${BASE_URL}/api/eval-flows/${splitEvalFlowId}/run`, {
         method: "POST",
         body: JSON.stringify({ region: BASE_NA, targetTier: "private", evalSetId }),
       });
@@ -394,29 +394,29 @@ describe("dispatch integration — session stamping, pre-warm, shared-tier gates
       );
     });
 
-    it("7d. owner untargeted public-pool dispatch of a session-injected evalflow -> 403", async () => {
+    it("7d. owner untargeted public-pool dispatch of a session-injected evalFlow -> 403", async () => {
       // Even the owner can't pool a credential-injected job into the public
       // tier — a public-pool claim would be admitted by the untargeted-owner
       // check above but then refused the minted session by the serve gate.
       // Reject up front instead. Only private/team pools (or a targeted
       // shared agent with consent) may carry a session-injected job.
-      const res = await authFetch(admin, `${BASE_URL}/api/evalflows/${guardEvalflowId}/run`, {
+      const res = await authFetch(admin, `${BASE_URL}/api/eval-flows/${guardEvalFlowId}/run`, {
         method: "POST",
         body: JSON.stringify({ region: BASE_NA, targetTier: "public", evalSetId }),
       });
       expect(res.status).toBe(403);
       const body = await res.json();
-      expect(body.error).toBe("Credential-injected evalflows: credential-injected jobs cannot use the public pool");
+      expect(body.error).toBe("Credential-injected evalFlows: credential-injected jobs cannot use the public pool");
     });
 
-    it("7e. owner team-pool dispatch of a session-injected PERSONAL (non-org) evalflow -> 403", async () => {
+    it("7e. owner team-pool dispatch of a session-injected PERSONAL (non-org) evalFlow -> 403", async () => {
       // Distinct from 7d (public-pool rejection): here the dispatcher DOES have
       // an org (so the pre-existing hasOrg "join an organization" 400 does NOT
       // fire — a dispatcher with no org can never reach team tier at all), but
-      // the EVALFLOW itself was created with no organizationId (a personal
-      // evalflow, even though its owner belongs to an org). A team-pool claim
+      // the EVAL_FLOW itself was created with no organizationId (a personal
+      // evalFlow, even though its owner belongs to an org). A team-pool claim
       // would then land on an org-mate's token, and the session serve gate only
-      // admits the evalflow owner's/org's agents — a personal evalflow has
+      // admits the evalFlow owner's/org's agents — a personal evalFlow has
       // none. Without the tightened guard this is a guaranteed-failure dispatch
       // (claims, then 403s fetching the session).
       const inviteRes = await authFetch(admin, `${BASE_URL}/api/admin/invite`, {
@@ -444,7 +444,7 @@ describe("dispatch integration — session stamping, pre-warm, shared-tier gates
       await createSecret(orgOwner, oEmail, "sdg-org-user@example.com", { brokerType: "auth-session" });
       await createSecret(orgOwner, oPass, "sdg-org-password", { brokerType: "auth-session" });
 
-      const wfRes = await authFetch(orgOwner, `${BASE_URL}/api/evalflows`, {
+      const wfRes = await authFetch(orgOwner, `${BASE_URL}/api/eval-flows`, {
         method: "POST",
         body: JSON.stringify({
           name: `Org-owner Personal Guard WF ${stamp}`,
@@ -453,21 +453,21 @@ describe("dispatch integration — session stamping, pre-warm, shared-tier gates
             framework: "aeval",
             stepsPrefix: `- type: platform.setup\n  platform_id: vapi\n  params:\n    email: \${secrets.${oEmail}}\n    password: \${secrets.${oPass}}`,
           },
-          // no organizationId — a PERSONAL evalflow despite the owner belonging to an org
+          // no organizationId — a PERSONAL evalFlow despite the owner belonging to an org
         }),
       });
       expect(wfRes.ok).toBe(true);
       const personalWfId = (await wfRes.json()).id;
 
-      const res = await authFetch(orgOwner, `${BASE_URL}/api/evalflows/${personalWfId}/run`, {
+      const res = await authFetch(orgOwner, `${BASE_URL}/api/eval-flows/${personalWfId}/run`, {
         method: "POST",
         body: JSON.stringify({ region: BASE_NA, targetTier: "team", evalSetId }),
       });
       expect(res.status).toBe(403);
       const body = await res.json();
-      expect(body.error).toBe("Credential-injected evalflows: credential-injected jobs can use a team pool only when the evalflow belongs to the creator's organization");
+      expect(body.error).toBe("Credential-injected evalFlows: credential-injected jobs can use a team pool only when the evalFlow belongs to the creator's organization");
 
-      await authFetch(orgOwner, `${BASE_URL}/api/evalflows/${personalWfId}`, { method: "DELETE" });
+      await authFetch(orgOwner, `${BASE_URL}/api/eval-flows/${personalWfId}`, { method: "DELETE" });
       for (const name of [oEmail, oPass]) {
         await authFetch(orgOwner, `${BASE_URL}/api/secrets/${name}`, { method: "DELETE" });
       }
@@ -476,12 +476,12 @@ describe("dispatch integration — session stamping, pre-warm, shared-tier gates
 
   describe("8. Brokered-misuse pre-run validation", () => {
     const protectedSecret = `API_TOKEN_${stamp}`;
-    let misuseEvalflowId: number;
+    let misuseEvalFlowId: number;
 
     beforeAll(async () => {
       await createSecret(admin, protectedSecret, "sdp-protected-value", { brokerType: "auth-session" });
 
-      const misuseRes = await authFetch(admin, `${BASE_URL}/api/evalflows`, {
+      const misuseRes = await authFetch(admin, `${BASE_URL}/api/eval-flows`, {
         method: "POST",
         body: JSON.stringify({
           name: `Misuse WF ${stamp}`,
@@ -495,7 +495,7 @@ describe("dispatch integration — session stamping, pre-warm, shared-tier gates
         }),
       });
       expect(misuseRes.ok).toBe(true);
-      misuseEvalflowId = (await misuseRes.json()).id;
+      misuseEvalFlowId = (await misuseRes.json()).id;
     });
 
     afterAll(async () => {
@@ -503,7 +503,7 @@ describe("dispatch integration — session stamping, pre-warm, shared-tier gates
     });
 
     it("rejects a run when a Brokered secret is used outside platform.setup login", async () => {
-      const res = await authFetch(admin, `${BASE_URL}/api/evalflows/${misuseEvalflowId}/run`, {
+      const res = await authFetch(admin, `${BASE_URL}/api/eval-flows/${misuseEvalFlowId}/run`, {
         method: "POST",
         body: JSON.stringify({ region: BASE_NA, targetTier: "private", evalSetId }),
       });
@@ -537,7 +537,7 @@ describe("dispatch integration — session stamping, pre-warm, shared-tier gates
     });
 
     it("9a. blocks a shared run exposing runtime secrets without consent", async () => {
-      const res = await authFetch(admin, `${BASE_URL}/api/evalflows/${noSessionEvalflowId}/run`, {
+      const res = await authFetch(admin, `${BASE_URL}/api/eval-flows/${noSessionEvalFlowId}/run`, {
         method: "POST",
         body: JSON.stringify({ evalSetId, targetTokenId: runtimeSharedTokenId }),
       });
@@ -548,7 +548,7 @@ describe("dispatch integration — session stamping, pre-warm, shared-tier gates
     });
 
     it("9b. allows it with runtimeSecretConsent, recording it on the snapshot when authorized", async () => {
-      const res = await authFetch(admin, `${BASE_URL}/api/evalflows/${noSessionEvalflowId}/run`, {
+      const res = await authFetch(admin, `${BASE_URL}/api/eval-flows/${noSessionEvalFlowId}/run`, {
         method: "POST",
         body: JSON.stringify({ evalSetId, targetTokenId: runtimeSharedTokenId, runtimeSecretConsent: true }),
       });
@@ -582,7 +582,7 @@ describe("dispatch integration — session stamping, pre-warm, shared-tier gates
     });
 
     it("run-targets lists own tokens and referenced-secret classes", async () => {
-      const res = await authFetch(admin, `${BASE_URL}/api/evalflows/${noSessionEvalflowId}/run-targets?evalSetId=${evalSetId}`);
+      const res = await authFetch(admin, `${BASE_URL}/api/eval-flows/${noSessionEvalFlowId}/run-targets?evalSetId=${evalSetId}`);
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.agents.mine.map((a: any) => a.tokenId)).toContain(tok.id);
@@ -599,7 +599,7 @@ describe("dispatch integration — session stamping, pre-warm, shared-tier gates
   // asserting on `body.agents.shared` would be non-deterministic.
   describe("11. run-targets negative paths", () => {
     let stranger: AuthSession;
-    let privateEvalflowId: number;
+    let privateEvalFlowId: number;
     let privateEvalSetId: number;
     const isolatedSecret = `RTNEG_ISO_${stamp}`;
 
@@ -619,21 +619,21 @@ describe("dispatch integration — session stamping, pre-warm, shared-tier gates
       expect(regRes.ok).toBe(true);
       stranger = await login(`rtneg-stranger-${stamp}@example.com`, "rtneg-stranger-pass-123");
 
-      // A private evalflow owned by admin, for the non-owner-403 case.
-      const pRes = await authFetch(admin, `${BASE_URL}/api/evalflows`, {
+      // A private evalFlow owned by admin, for the non-owner-403 case.
+      const pRes = await authFetch(admin, `${BASE_URL}/api/eval-flows`, {
         method: "POST",
         body: JSON.stringify({ name: `RTNeg Private WF ${stamp}`, providerId, visibility: "private", config: { framework: "aeval" } }),
       });
       expect(pRes.ok).toBe(true);
-      const privateEvalflow = await pRes.json();
+      const privateEvalFlow = await pRes.json();
       // Guard against a silent default-to-public, which would make the 403
       // assertion below pass vacuously.
-      expect(privateEvalflow.visibility).toBe("private");
-      privateEvalflowId = privateEvalflow.id;
+      expect(privateEvalFlow.visibility).toBe("private");
+      privateEvalFlowId = privateEvalFlow.id;
 
       // A unique secret + private eval set (both admin-owned) referencing it,
       // for the cross-tenant secret-exclusion case. `framework` is a
-      // evalflow-only config key, so the eval set config carries only `scenario`.
+      // eval-flow-only config key, so the eval set config carries only `scenario`.
       await createSecret(admin, isolatedSecret, "iso-value");
       const esRes = await authFetch(admin, `${BASE_URL}/api/eval-sets`, {
         method: "POST",
@@ -650,19 +650,19 @@ describe("dispatch integration — session stamping, pre-warm, shared-tier gates
     });
 
     it("401s when unauthenticated", async () => {
-      const res = await fetch(`${BASE_URL}/api/evalflows/${noSessionEvalflowId}/run-targets`);
+      const res = await fetch(`${BASE_URL}/api/eval-flows/${noSessionEvalFlowId}/run-targets`);
       expect(res.status).toBe(401);
     });
 
-    it("403s when a non-owner targets a private evalflow", async () => {
-      const res = await authFetch(stranger, `${BASE_URL}/api/evalflows/${privateEvalflowId}/run-targets`);
+    it("403s when a non-owner targets a private evalFlow", async () => {
+      const res = await authFetch(stranger, `${BASE_URL}/api/eval-flows/${privateEvalFlowId}/run-targets`);
       expect(res.status).toBe(403);
     });
 
     it("excludes an inaccessible eval set's secret references (cross-tenant isolation)", async () => {
       const res = await authFetch(
         stranger,
-        `${BASE_URL}/api/evalflows/${noSessionEvalflowId}/run-targets?evalSetId=${privateEvalSetId}`,
+        `${BASE_URL}/api/eval-flows/${noSessionEvalFlowId}/run-targets?evalSetId=${privateEvalSetId}`,
       );
       expect(res.status).toBe(200);
       const body = await res.json();

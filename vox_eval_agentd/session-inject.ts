@@ -5,7 +5,7 @@
  * placeholders can't reach temp YAML or logs.
  *
  * `mode` is set BOTH at step level and inside params: aeval-data examples put
- * it at step level, seed-data evalflows put it under params — forcing both
+ * it at step level, seed-data evalFlows put it under params — forcing both
  * covers either shape harmlessly.
  *
  * Two document shapes are accepted (parity with Core's parsePlatformSetup):

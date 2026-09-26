@@ -6,7 +6,7 @@ import * as repo from "../plugins/shared-agents/server/repo";
 const hasDb = !!process.env.DATABASE_URL;
 const d = hasDb ? describe : describe.skip;
 
-const CTX = { evalflowId: 1, evalSetId: 1, region: "na-us-ashburn-01", createdBy: 3 };
+const CTX = { evalFlowId: 1, evalSetId: 1, region: "na-us-ashburn-01", createdBy: 3 };
 
 d("shared-agents leak-reaper", () => {
   let h: MarketplaceHarness;

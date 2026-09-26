@@ -13,12 +13,12 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
-import { Plus, Workflow as EvalflowIcon, Globe, Lock, Star, StarOff, ChevronRight, Pencil, FolderKanban, Copy, Trash2, Phone } from "lucide-react";
+import { Plus, Workflow as EvalFlowIcon, Globe, Lock, Star, StarOff, ChevronRight, Pencil, FolderKanban, Copy, Trash2, Phone } from "lucide-react";
 import { useState } from "react";
 import { LEGACY_CONFIG_KEY_PREFIX } from "@shared/secrets";
 import { useLocation } from "wouter";
 import { load as loadYaml } from "js-yaml";
-import type { Evalflow as EvalflowType, Provider, Project } from "@shared/schema";
+import type { EvalFlow as EvalFlowType, Provider, Project } from "@shared/schema";
 
 // Extract `platform_id` from the aeval `platform.setup` step in a stepsPrefix YAML.
 // Checks both the step's top level and its `params`. Returns null if absent/unparseable.
@@ -44,7 +44,7 @@ type SaveDecision =
   | { action: "auto-custom"; customId: string }
   | { action: "mismatch"; yamlPlatform: string; providerName: string };
 
-// Decide whether an evalflow save can proceed, must switch to Custom, or should warn.
+// Decide whether an evalFlow save can proceed, must switch to Custom, or should warn.
 function evaluateSave(
   stepsPrefix: string,
   providerId: string,
@@ -54,7 +54,7 @@ function evaluateSave(
   const selected = providers?.find((p) => p.id === providerId);
   const custom = providers?.find((p) => p.name === "Custom" || (!p.platformId && p.name.toLowerCase() === "custom"));
   if (!yamlPlatform) {
-    // No platform_id in the setup steps → this is a Custom/self-hosted evalflow.
+    // No platform_id in the setup steps → this is a Custom/self-hosted evalFlow.
     if (custom && providerId !== custom.id) return { action: "auto-custom", customId: custom.id };
     return { action: "ok" };
   }
@@ -72,7 +72,7 @@ interface AuthStatus {
   } | null;
 }
 
-export default function ConsoleEvalflows() {
+export default function ConsoleEvalFlows() {
   const { toast } = useToast();
   const [, setLocation] = useLocation();
   const [createOpen, setCreateOpen] = useState(false);
@@ -89,7 +89,7 @@ export default function ConsoleEvalflows() {
 
   // Edit dialog state
   const [editOpen, setEditOpen] = useState(false);
-  const [editEvalflow, setEditEvalflow] = useState<EvalflowType | null>(null);
+  const [editEvalFlow, setEditEvalFlow] = useState<EvalFlowType | null>(null);
   const [editName, setEditName] = useState("");
   const [editDescription, setEditDescription] = useState("");
   const [editVisibility, setEditVisibility] = useState("");
@@ -101,15 +101,15 @@ export default function ConsoleEvalflows() {
   // is purely so the owner can see and copy the value.
   const [editLegacyConfig, setEditLegacyConfig] = useState<string>("");
 
-  // Non-blocking warning when the evalflow's provider disagrees with its YAML platform_id.
+  // Non-blocking warning when the evalFlow's provider disagrees with its YAML platform_id.
   const [pendingMismatch, setPendingMismatch] = useState<{ kind: "create" | "edit"; yamlPlatform: string; providerName: string } | null>(null);
 
   const { data: authStatus } = useQuery<AuthStatus>({
     queryKey: ["/api/auth/status"],
   });
 
-  const { data: evalflows, isLoading } = useQuery<EvalflowType[]>({
-    queryKey: ["/api/evalflows?includePublic=true"],
+  const { data: evalFlows, isLoading } = useQuery<EvalFlowType[]>({
+    queryKey: ["/api/eval-flows?includePublic=true"],
   });
 
   const { data: providers } = useQuery<Provider[]>({
@@ -127,7 +127,7 @@ export default function ConsoleEvalflows() {
       // Evaluation Mode — vocabulary differs (call.* for phone), layout doesn't.
       if (stepsPrefix) config.stepsPrefix = stepsPrefix;
       if (stepsSuffix) config.stepsSuffix = stepsSuffix;
-      const res = await apiRequest("POST", "/api/evalflows", {
+      const res = await apiRequest("POST", "/api/eval-flows", {
         name,
         description,
         visibility,
@@ -146,102 +146,102 @@ export default function ConsoleEvalflows() {
       setTransport("web");
       setStepsPrefix("");
       setStepsSuffix("");
-      queryClient.invalidateQueries({ queryKey: ["/api/evalflows?includePublic=true"] });
-      toast({ title: "Evalflow created" });
+      queryClient.invalidateQueries({ queryKey: ["/api/eval-flows?includePublic=true"] });
+      toast({ title: "Eval Flow created" });
     },
     onError: (error: Error) => {
-      toast({ title: "Failed to create evalflow", description: error.message, variant: "destructive" });
+      toast({ title: "Failed to create evalFlow", description: error.message, variant: "destructive" });
     },
   });
 
   const editMutation = useMutation({
     mutationFn: async (overrideProviderId?: string) => {
-      if (!editEvalflow) return;
+      if (!editEvalFlow) return;
       const body: Record<string, unknown> = {};
-      if (editName !== editEvalflow.name) body.name = editName;
-      if (editDescription !== (editEvalflow.description || "")) body.description = editDescription;
-      if (editVisibility !== editEvalflow.visibility) body.visibility = editVisibility;
-      if (editProjectId && !editEvalflow.projectId) body.projectId = parseInt(editProjectId);
+      if (editName !== editEvalFlow.name) body.name = editName;
+      if (editDescription !== (editEvalFlow.description || "")) body.description = editDescription;
+      if (editVisibility !== editEvalFlow.visibility) body.visibility = editVisibility;
+      if (editProjectId && !editEvalFlow.projectId) body.projectId = parseInt(editProjectId);
       const pid = overrideProviderId ?? editProviderId;
-      if (pid && pid !== editEvalflow.providerId) body.providerId = pid;
-      if (editTransport !== editEvalflow.transport) body.transport = editTransport;
+      if (pid && pid !== editEvalFlow.providerId) body.providerId = pid;
+      if (editTransport !== editEvalFlow.transport) body.transport = editTransport;
       const config: Record<string, unknown> = { framework: "aeval" };
       if (editStepsPrefix) config.stepsPrefix = editStepsPrefix;
       if (editStepsSuffix) config.stepsSuffix = editStepsSuffix;
       body.config = config;
-      const res = await apiRequest("PATCH", `/api/evalflows/${editEvalflow.id}`, body);
+      const res = await apiRequest("PATCH", `/api/eval-flows/${editEvalFlow.id}`, body);
       return res.json();
     },
     onSuccess: () => {
       setEditOpen(false);
-      setEditEvalflow(null);
-      queryClient.invalidateQueries({ queryKey: ["/api/evalflows?includePublic=true"] });
-      toast({ title: "Evalflow updated" });
+      setEditEvalFlow(null);
+      queryClient.invalidateQueries({ queryKey: ["/api/eval-flows?includePublic=true"] });
+      toast({ title: "Eval Flow updated" });
     },
     onError: (error: Error) => {
-      toast({ title: "Failed to update evalflow", description: error.message, variant: "destructive" });
+      toast({ title: "Failed to update evalFlow", description: error.message, variant: "destructive" });
     },
   });
 
   const toggleMainlineMutation = useMutation({
     mutationFn: async ({ id, isMainline }: { id: number; isMainline: boolean }) => {
-      const res = await apiRequest("PATCH", `/api/evalflows/${id}/mainline`, { isMainline });
+      const res = await apiRequest("PATCH", `/api/eval-flows/${id}/mainline`, { isMainline });
       return res.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/evalflows?includePublic=true"] });
-      toast({ title: "Evalflow updated" });
+      queryClient.invalidateQueries({ queryKey: ["/api/eval-flows?includePublic=true"] });
+      toast({ title: "Eval Flow updated" });
     },
     onError: (error: Error) => {
-      toast({ title: "Failed to update evalflow", description: error.message, variant: "destructive" });
+      toast({ title: "Failed to update evalFlow", description: error.message, variant: "destructive" });
     },
   });
 
   const cloneMutation = useMutation({
     mutationFn: async (id: number) => {
-      const res = await apiRequest("POST", `/api/evalflows/${id}/clone`, {});
+      const res = await apiRequest("POST", `/api/eval-flows/${id}/clone`, {});
       return res.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/evalflows?includePublic=true"] });
-      toast({ title: "Evalflow cloned" });
+      queryClient.invalidateQueries({ queryKey: ["/api/eval-flows?includePublic=true"] });
+      toast({ title: "Eval Flow cloned" });
     },
     onError: (error: Error) => {
-      toast({ title: "Failed to clone evalflow", description: error.message, variant: "destructive" });
+      toast({ title: "Failed to clone evalFlow", description: error.message, variant: "destructive" });
     },
   });
 
   // Delete dialog state
-  const [deleteTarget, setDeleteTarget] = useState<EvalflowType | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<EvalFlowType | null>(null);
   const [deleteConfirmName, setDeleteConfirmName] = useState("");
 
   const deleteMutation = useMutation({
     mutationFn: async (id: number) => {
-      const res = await apiRequest("DELETE", `/api/evalflows/${id}`);
+      const res = await apiRequest("DELETE", `/api/eval-flows/${id}`);
       return res.json();
     },
     onSuccess: () => {
       setDeleteTarget(null);
       setDeleteConfirmName("");
-      queryClient.invalidateQueries({ queryKey: ["/api/evalflows?includePublic=true"] });
-      toast({ title: "Evalflow deleted" });
+      queryClient.invalidateQueries({ queryKey: ["/api/eval-flows?includePublic=true"] });
+      toast({ title: "Eval Flow deleted" });
     },
     onError: (error: Error) => {
-      toast({ title: "Failed to delete evalflow", description: error.message, variant: "destructive" });
+      toast({ title: "Failed to delete evalFlow", description: error.message, variant: "destructive" });
     },
   });
 
-  const openEditDialog = (evalflow: EvalflowType) => {
-    const cfg = (evalflow.config || {}) as Record<string, any>;
-    setEditEvalflow(evalflow);
-    setEditName(evalflow.name);
-    setEditDescription(evalflow.description || "");
-    setEditVisibility(evalflow.visibility);
-    setEditProjectId(evalflow.projectId?.toString() || "");
+  const openEditDialog = (evalFlow: EvalFlowType) => {
+    const cfg = (evalFlow.config || {}) as Record<string, any>;
+    setEditEvalFlow(evalFlow);
+    setEditName(evalFlow.name);
+    setEditDescription(evalFlow.description || "");
+    setEditVisibility(evalFlow.visibility);
+    setEditProjectId(evalFlow.projectId?.toString() || "");
     setEditStepsPrefix(cfg.stepsPrefix || "");
     setEditStepsSuffix(cfg.stepsSuffix || "");
-    setEditProviderId(evalflow.providerId);
-    setEditTransport(evalflow.transport || "web");
+    setEditProviderId(evalFlow.providerId);
+    setEditTransport(evalFlow.transport || "web");
     const parked = Object.fromEntries(Object.entries(cfg).filter(([k]) => k.startsWith(LEGACY_CONFIG_KEY_PREFIX)));
     setEditLegacyConfig(Object.keys(parked).length > 0 ? JSON.stringify(parked, null, 2) : "");
     setEditOpen(true);
@@ -293,48 +293,48 @@ export default function ConsoleEvalflows() {
     <div className="space-y-6">
       <div className="flex items-center justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold">Evalflows</h1>
-          <p className="text-muted-foreground">Manage evaluation evalflows</p>
+          <h1 className="text-2xl font-bold">Eval Flows</h1>
+          <p className="text-muted-foreground">Manage how evaluations reach each agent</p>
         </div>
         <Dialog open={createOpen} onOpenChange={setCreateOpen}>
           <DialogTrigger asChild>
-            <Button data-testid="button-create-evalflow">
+            <Button data-testid="button-create-eval-flow">
               <Plus className="mr-2 h-4 w-4" />
-              New Evalflow
+              New Eval Flow
             </Button>
           </DialogTrigger>
           <DialogContent>
             <DialogHeader>
-              <DialogTitle>Create Evalflow</DialogTitle>
+              <DialogTitle>Create Eval Flow</DialogTitle>
               <DialogDescription>
-                Create a new test evalflow for evaluation.
+                Create a new test evalFlow for evaluation.
               </DialogDescription>
             </DialogHeader>
             <div className="space-y-4 py-4">
               <div className="space-y-2">
-                <Label htmlFor="evalflow-name">Name</Label>
+                <Label htmlFor="eval-flow-name">Name</Label>
                 <Input
-                  id="evalflow-name"
-                  placeholder="My Test Evalflow"
+                  id="eval-flow-name"
+                  placeholder="My Test Eval Flow"
                   value={name}
                   onChange={(e) => setName(e.target.value)}
-                  data-testid="input-evalflow-name"
+                  data-testid="input-eval-flow-name"
                 />
               </div>
               <div className="space-y-2">
-                <Label htmlFor="evalflow-description">Description</Label>
+                <Label htmlFor="eval-flow-description">Description</Label>
                 <Textarea
-                  id="evalflow-description"
-                  placeholder="Describe what this evalflow tests..."
+                  id="eval-flow-description"
+                  placeholder="Describe what this evalFlow tests..."
                   value={description}
                   onChange={(e) => setDescription(e.target.value)}
-                  data-testid="input-evalflow-description"
+                  data-testid="input-eval-flow-description"
                 />
               </div>
               <div className="space-y-2">
-                <Label htmlFor="evalflow-provider">Provider</Label>
+                <Label htmlFor="eval-flow-provider">Provider</Label>
                 <Select value={providerId} onValueChange={setProviderId}>
-                  <SelectTrigger data-testid="select-evalflow-provider">
+                  <SelectTrigger data-testid="select-eval-flow-provider">
                     <SelectValue placeholder="Select a provider" />
                   </SelectTrigger>
                   <SelectContent>
@@ -349,7 +349,7 @@ export default function ConsoleEvalflows() {
               <div className="space-y-2">
                 <Label>Evaluation Mode</Label>
                 <Select value={transport} onValueChange={setTransport}>
-                  <SelectTrigger data-testid="select-evalflow-transport">
+                  <SelectTrigger data-testid="select-eval-flow-transport">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -359,9 +359,9 @@ export default function ConsoleEvalflows() {
                 </Select>
               </div>
               <div className="space-y-2">
-                <Label htmlFor="evalflow-visibility">Visibility</Label>
+                <Label htmlFor="eval-flow-visibility">Visibility</Label>
                 <Select value={visibility} onValueChange={setVisibility}>
-                  <SelectTrigger data-testid="select-evalflow-visibility">
+                  <SelectTrigger data-testid="select-eval-flow-visibility">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -381,7 +381,7 @@ export default function ConsoleEvalflows() {
                     : "- type: platform.setup\n  platform_id: livekit\n- type: platform.enter"}
                   value={stepsPrefix}
                   onChange={(e) => setStepsPrefix(e.target.value)}
-                  data-testid="textarea-evalflow-steps-prefix"
+                  data-testid="textarea-eval-flow-steps-prefix"
                 />
                 <p className="text-xs text-muted-foreground">
                   {transport === "phone"
@@ -398,7 +398,7 @@ export default function ConsoleEvalflows() {
                     : "- type: audio.stop_recording\n- type: platform.exit"}
                   value={stepsSuffix}
                   onChange={(e) => setStepsSuffix(e.target.value)}
-                  data-testid="textarea-evalflow-steps-suffix"
+                  data-testid="textarea-eval-flow-steps-suffix"
                 />
               </div>
             </div>
@@ -406,50 +406,50 @@ export default function ConsoleEvalflows() {
               <Button
                 onClick={handleCreateClick}
                 disabled={createMutation.isPending || !name || !providerId}
-                data-testid="button-submit-evalflow"
+                data-testid="button-submit-eval-flow"
               >
-                Create Evalflow
+                Create Eval Flow
               </Button>
             </DialogFooter>
           </DialogContent>
         </Dialog>
       </div>
 
-      {/* Edit Evalflow Dialog */}
+      {/* Edit Eval Flow Dialog */}
       <Dialog open={editOpen} onOpenChange={(open) => {
         if (!open) {
           setEditOpen(false);
-          setEditEvalflow(null);
+          setEditEvalFlow(null);
         }
       }}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Edit Evalflow</DialogTitle>
+            <DialogTitle>Edit Eval Flow</DialogTitle>
             <DialogDescription>
-              Update evalflow details. Project assignment is permanent once set.
+              Update evalFlow details. Project assignment is permanent once set.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4 py-4">
             <div className="space-y-2">
-              <Label htmlFor="edit-evalflow-name">Name</Label>
+              <Label htmlFor="edit-eval-flow-name">Name</Label>
               <Input
-                id="edit-evalflow-name"
+                id="edit-eval-flow-name"
                 value={editName}
                 onChange={(e) => setEditName(e.target.value)}
               />
             </div>
             <div className="space-y-2">
-              <Label htmlFor="edit-evalflow-description">Description</Label>
+              <Label htmlFor="edit-eval-flow-description">Description</Label>
               <Textarea
-                id="edit-evalflow-description"
+                id="edit-eval-flow-description"
                 value={editDescription}
                 onChange={(e) => setEditDescription(e.target.value)}
               />
             </div>
             <div className="space-y-2">
-              <Label htmlFor="edit-evalflow-provider">Provider</Label>
+              <Label htmlFor="edit-eval-flow-provider">Provider</Label>
               <Select value={editProviderId} onValueChange={setEditProviderId}>
-                <SelectTrigger data-testid="select-edit-evalflow-provider">
+                <SelectTrigger data-testid="select-edit-eval-flow-provider">
                   <SelectValue placeholder="Select a provider" />
                 </SelectTrigger>
                 <SelectContent>
@@ -462,7 +462,7 @@ export default function ConsoleEvalflows() {
               </Select>
             </div>
             <div className="space-y-2">
-              <Label htmlFor="edit-evalflow-visibility">Visibility</Label>
+              <Label htmlFor="edit-eval-flow-visibility">Visibility</Label>
               <Select value={editVisibility} onValueChange={setEditVisibility}>
                 <SelectTrigger>
                   <SelectValue />
@@ -478,7 +478,7 @@ export default function ConsoleEvalflows() {
             <div className="space-y-2">
               <Label>Evaluation Mode</Label>
               <Select value={editTransport} onValueChange={setEditTransport}>
-                <SelectTrigger data-testid="select-edit-evalflow-transport">
+                <SelectTrigger data-testid="select-edit-eval-flow-transport">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -499,7 +499,7 @@ export default function ConsoleEvalflows() {
                   : "- type: platform.setup\n  platform_id: livekit\n- type: platform.enter"}
                 value={editStepsPrefix}
                 onChange={(e) => setEditStepsPrefix(e.target.value)}
-                data-testid="textarea-evalflow-steps-prefix-edit"
+                data-testid="textarea-eval-flow-steps-prefix-edit"
               />
               <p className="text-xs text-muted-foreground">
                 {editTransport === "phone"
@@ -516,7 +516,7 @@ export default function ConsoleEvalflows() {
                   : "- type: audio.stop_recording\n- type: platform.exit"}
                 value={editStepsSuffix}
                 onChange={(e) => setEditStepsSuffix(e.target.value)}
-                data-testid="textarea-evalflow-steps-suffix-edit"
+                data-testid="textarea-eval-flow-steps-suffix-edit"
               />
             </div>
             {editLegacyConfig && (
@@ -526,23 +526,23 @@ export default function ConsoleEvalflows() {
                 </Label>
                 <p className="text-xs text-muted-foreground">
                   A migration parked this from an older config format. Nothing runs it,
-                  and editing this evalflow won't remove it. Copy anything you still need.
+                  and editing this evalFlow won't remove it. Copy anything you still need.
                 </p>
                 <pre
                   className="max-h-40 overflow-auto rounded bg-muted p-2 font-mono text-xs"
-                  data-testid="text-evalflow-legacy-config"
+                  data-testid="text-eval-flow-legacy-config"
                 >
                   {editLegacyConfig}
                 </pre>
               </div>
             )}
             <div className="space-y-2">
-              <Label htmlFor="edit-evalflow-project">Project</Label>
-              {editEvalflow?.projectId ? (
+              <Label htmlFor="edit-eval-flow-project">Project</Label>
+              {editEvalFlow?.projectId ? (
                 <div className="flex items-center gap-2 p-2 border rounded-md bg-muted/50">
                   <FolderKanban className="h-4 w-4 text-muted-foreground" />
                   <span className="text-sm">
-                    {projects?.find(p => p.id === editEvalflow.projectId)?.name || `Project #${editEvalflow.projectId}`}
+                    {projects?.find(p => p.id === editEvalFlow.projectId)?.name || `Project #${editEvalFlow.projectId}`}
                   </span>
                   <Badge variant="secondary" className="ml-auto text-xs">Locked</Badge>
                 </div>
@@ -560,7 +560,7 @@ export default function ConsoleEvalflows() {
                   </SelectContent>
                 </Select>
               )}
-              {!editEvalflow?.projectId && (
+              {!editEvalFlow?.projectId && (
                 <p className="text-xs text-muted-foreground">
                   Once attached to a project, this cannot be changed.
                 </p>
@@ -568,7 +568,7 @@ export default function ConsoleEvalflows() {
             </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => { setEditOpen(false); setEditEvalflow(null); }}>
+            <Button variant="outline" onClick={() => { setEditOpen(false); setEditEvalFlow(null); }}>
               Cancel
             </Button>
             <Button
@@ -585,8 +585,8 @@ export default function ConsoleEvalflows() {
         <CardHeader>
           <CardDescription>
             {isPrincipal
-              ? "As a principal user, you can mark evalflows as mainline for the official evaluation."
-              : "View and manage your test evalflows."
+              ? "As a principal user, you can mark evalFlows as mainline for the official evaluation."
+              : "View and manage your test evalFlows."
             }
           </CardDescription>
         </CardHeader>
@@ -597,7 +597,7 @@ export default function ConsoleEvalflows() {
                 <Skeleton key={i} className="h-12 w-full" />
               ))}
             </div>
-          ) : evalflows && evalflows.length > 0 ? (
+          ) : evalFlows && evalFlows.length > 0 ? (
             <Table>
               <TableHeader>
                 <TableRow>
@@ -610,19 +610,19 @@ export default function ConsoleEvalflows() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {evalflows.map((evalflow) => (
+                {evalFlows.map((evalFlow) => (
                   <TableRow
-                    key={evalflow.id}
-                    data-testid={`row-evalflow-${evalflow.id}`}
+                    key={evalFlow.id}
+                    data-testid={`row-eval-flow-${evalFlow.id}`}
                     className="cursor-pointer hover:bg-muted/50"
-                    onClick={() => setLocation(`/console/evalflows/${evalflow.id}`)}
+                    onClick={() => setLocation(`/console/eval-flows/${evalFlow.id}`)}
                   >
                     <TableCell>
                       <div className="flex items-center justify-between">
                         <div>
-                          <div className="font-medium">{evalflow.name}</div>
-                          {evalflow.description && (
-                            <div className="text-sm text-muted-foreground">{evalflow.description}</div>
+                          <div className="font-medium">{evalFlow.name}</div>
+                          {evalFlow.description && (
+                            <div className="text-sm text-muted-foreground">{evalFlow.description}</div>
                           )}
                         </div>
                         <ChevronRight className="h-4 w-4 text-muted-foreground" />
@@ -630,10 +630,10 @@ export default function ConsoleEvalflows() {
                     </TableCell>
                     {hasProjects && (
                       <TableCell>
-                        {evalflow.projectId ? (
+                        {evalFlow.projectId ? (
                           <Badge variant="outline" className="gap-1">
                             <FolderKanban className="h-3 w-3" />
-                            {projects?.find(p => p.id === evalflow.projectId)?.name || `#${evalflow.projectId}`}
+                            {projects?.find(p => p.id === evalFlow.projectId)?.name || `#${evalFlow.projectId}`}
                           </Badge>
                         ) : (
                           <span className="text-sm text-muted-foreground">--</span>
@@ -643,21 +643,21 @@ export default function ConsoleEvalflows() {
                     <TableCell>
                       <div className="flex items-center gap-1">
                         <Badge variant="outline" className="gap-1">
-                          {evalflow.visibility === "public" ? (
+                          {evalFlow.visibility === "public" ? (
                             <><Globe className="h-3 w-3" /> Public</>
                           ) : (
                             <><Lock className="h-3 w-3" /> Private</>
                           )}
                         </Badge>
-                        {evalflow.transport === "phone" && (
-                          <Badge variant="outline" className="gap-1" data-testid={`badge-phone-${evalflow.id}`}>
+                        {evalFlow.transport === "phone" && (
+                          <Badge variant="outline" className="gap-1" data-testid={`badge-phone-${evalFlow.id}`}>
                             <Phone className="h-3 w-3" /> Phone
                           </Badge>
                         )}
                       </div>
                     </TableCell>
                     <TableCell>
-                      {evalflow.isMainline ? (
+                      {evalFlow.isMainline ? (
                         <Badge className="gap-1">
                           <Star className="h-3 w-3" /> Mainline
                         </Badge>
@@ -668,26 +668,26 @@ export default function ConsoleEvalflows() {
                     {isPrincipal && (
                       <TableCell>
                         <Switch
-                          checked={evalflow.isMainline}
+                          checked={evalFlow.isMainline}
                           onCheckedChange={(checked) => {
-                            toggleMainlineMutation.mutate({ id: evalflow.id, isMainline: checked });
+                            toggleMainlineMutation.mutate({ id: evalFlow.id, isMainline: checked });
                           }}
-                          disabled={evalflow.visibility === "private" && !evalflow.isMainline}
-                          data-testid={`switch-mainline-${evalflow.id}`}
+                          disabled={evalFlow.visibility === "private" && !evalFlow.isMainline}
+                          data-testid={`switch-mainline-${evalFlow.id}`}
                           onClick={(e) => e.stopPropagation()}
                         />
                       </TableCell>
                     )}
                     <TableCell className="text-right">
                       <div className="flex items-center justify-end gap-1">
-                        {String(evalflow.ownerId) === String(authStatus?.user?.id) ? (
+                        {String(evalFlow.ownerId) === String(authStatus?.user?.id) ? (
                           <>
                             <Button
                               size="sm"
                               variant="ghost"
                               onClick={(e) => {
                                 e.stopPropagation();
-                                openEditDialog(evalflow);
+                                openEditDialog(evalFlow);
                               }}
                             >
                               <Pencil className="h-4 w-4" />
@@ -697,20 +697,20 @@ export default function ConsoleEvalflows() {
                               variant="ghost"
                               onClick={(e) => {
                                 e.stopPropagation();
-                                setDeleteTarget(evalflow);
+                                setDeleteTarget(evalFlow);
                                 setDeleteConfirmName("");
                               }}
                             >
                               <Trash2 className="h-4 w-4 text-destructive" />
                             </Button>
                           </>
-                        ) : evalflow.visibility === "public" ? (
+                        ) : evalFlow.visibility === "public" ? (
                           <Button
                             size="sm"
                             variant="ghost"
                             onClick={(e) => {
                               e.stopPropagation();
-                              cloneMutation.mutate(evalflow.id);
+                              cloneMutation.mutate(evalFlow.id);
                             }}
                             disabled={cloneMutation.isPending}
                           >
@@ -725,17 +725,17 @@ export default function ConsoleEvalflows() {
             </Table>
           ) : (
             <div className="text-center py-8 text-muted-foreground">
-              No evalflows yet. Create your first evalflow to get started.
+              No evalFlows yet. Create your first evalFlow to get started.
             </div>
           )}
         </CardContent>
       </Card>
 
-      {/* Delete Evalflow Confirmation Dialog */}
+      {/* Delete Eval Flow Confirmation Dialog */}
       <AlertDialog open={!!deleteTarget} onOpenChange={(open) => { if (!open) { setDeleteTarget(null); setDeleteConfirmName(""); } }}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Delete Evalflow</AlertDialogTitle>
+            <AlertDialogTitle>Delete Eval Flow</AlertDialogTitle>
             <AlertDialogDescription>
               This will permanently delete <span className="font-semibold text-foreground">{deleteTarget?.name}</span>. This action cannot be undone.
             </AlertDialogDescription>
@@ -759,7 +759,7 @@ export default function ConsoleEvalflows() {
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
               disabled={!deleteTarget?.name?.trim() || deleteConfirmName.trim() !== deleteTarget.name.trim() || deleteMutation.isPending}
               onClick={() => deleteTarget && deleteMutation.mutate(deleteTarget.id)}
-              data-testid="button-confirm-delete-evalflow"
+              data-testid="button-confirm-delete-eval-flow"
             >
               Delete
             </AlertDialogAction>

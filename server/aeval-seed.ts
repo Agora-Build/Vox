@@ -1,5 +1,5 @@
 /**
- * aeval-seed.ts — Auto-seed built-in evalflows + eval sets when a new aeval version appears.
+ * aeval-seed.ts — Auto-seed built-in evalFlows + eval sets when a new aeval version appears.
  *
  * Two trigger points:
  *   1. Server startup  → seedFromLocalAevalData() reads version from aeval-data/release/
@@ -106,7 +106,7 @@ export function discoverScenarios(aevalDataPath: string): ScenarioMeta[] {
 
 /**
  * Idempotent seed for a specific aeval version.
- * Creates a "[Built-in]" project, evalflows per category, and eval sets per YAML.
+ * Creates a "[Built-in]" project, evalFlows per category, and eval sets per YAML.
  */
 export async function seedAevalVersion(version: string, aevalDataPath?: string): Promise<void> {
   const configKey = `aeval_seeded:${version}`;
@@ -189,21 +189,21 @@ export async function seedAevalVersion(version: string, aevalDataPath?: string):
       byCategory.set(s.category, arr);
     }
 
-    // Pre-fetch existing evalflows and eval sets once to avoid per-iteration DB queries
-    const existingEvalflows = await storage.getEvalflowsByProject(project.id);
+    // Pre-fetch existing evalFlows and eval sets once to avoid per-iteration DB queries
+    const existingEvalFlows = await storage.getEvalFlowsByProject(project.id);
     const existingEvalSets = await storage.getEvalSetsByOwner(scout.id);
     const existingEvalSetNames = new Set(existingEvalSets.map((es) => es.name));
-    const existingEvalflowNames = new Set(existingEvalflows.map((w) => w.name));
+    const existingEvalFlowNames = new Set(existingEvalFlows.map((w) => w.name));
 
     for (const [category, catScenarios] of Array.from(byCategory.entries())) {
       const label = CATEGORY_LABELS[category] || category;
-      const evalflowName = `[aeval ${version}] ${label}`;
+      const evalFlowName = `[aeval ${version}] ${label}`;
 
-      // Create evalflow for this category (skip if already exists)
-      let evalflow = existingEvalflows.find((w) => w.name === evalflowName);
-      if (!evalflow && !existingEvalflowNames.has(evalflowName)) {
-        evalflow = await storage.createEvalflow({
-          name: evalflowName,
+      // Create evalFlow for this category (skip if already exists)
+      let evalFlow = existingEvalFlows.find((w) => w.name === evalFlowName);
+      if (!evalFlow && !existingEvalFlowNames.has(evalFlowName)) {
+        evalFlow = await storage.createEvalFlow({
+          name: evalFlowName,
           description: `Built-in ${label.toLowerCase()} from aeval ${version}`,
           projectId: project.id,
           providerId: livekitProvider.id,
@@ -212,7 +212,7 @@ export async function seedAevalVersion(version: string, aevalDataPath?: string):
           isMainline: false,
           config: { framework: "aeval", frameworkVersion: version },
         });
-        console.log(`[aeval-seed]   Evalflow: ${evalflowName} (id=${evalflow.id})`);
+        console.log(`[aeval-seed]   EvalFlow: ${evalFlowName} (id=${evalFlow.id})`);
       }
 
       // Create eval sets for each scenario

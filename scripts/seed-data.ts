@@ -11,8 +11,8 @@
 //
 // What this script adds on top of init (local dev only):
 //   - Enables Scout account + sets known password (scout123) + email (scout@vox.ai)
-//   - Creates Scout's mainline LiveKit evaluation evalflow + eval set + schedule
-//   - Creates Scout's Agora ConvoAI login evalflow (mode: account) + short login-smoke eval set
+//   - Creates Scout's mainline LiveKit evaluation evalFlow + eval set + schedule
+//   - Creates Scout's Agora ConvoAI login evalFlow (mode: account) + short login-smoke eval set
 //   - Seeds Protected login secrets AGORA_CONSOLE_EMAIL/PASSWORD from .env.dev (if set)
 //
 // Do not add production bootstrap logic here. If you need data in production,
@@ -180,12 +180,12 @@ async function seedData() {
     console.log(`Created region base: ${base.baseId} (next_sequence: ${nextSequence})`);
   }
 
-  // Create Scout's LiveKit evaluation evalflow and schedule
-  // This sets up a mainline evalflow that runs every 8 hours
-  const scoutEvalflows = await storage.getEvalflowsByOwner(scoutId);
-  const existingLiveKitEvalflow = scoutEvalflows.find(w => w.name === "LiveKit Agent Evaluation");
+  // Create Scout's LiveKit evaluation evalFlow and schedule
+  // This sets up a mainline evalFlow that runs every 8 hours
+  const scoutEvalFlows = await storage.getEvalFlowsByOwner(scoutId);
+  const existingLiveKitEvalFlow = scoutEvalFlows.find(w => w.name === "LiveKit Agent Evaluation");
 
-  if (!existingLiveKitEvalflow) {
+  if (!existingLiveKitEvalFlow) {
     // Get LiveKit provider
     const allProviders = await storage.getAllProviders();
     const livekitProvider = allProviders.find(p => p.name.includes("LiveKit"));
@@ -228,10 +228,10 @@ steps:
         description: Wait for full agent response
 `;
 
-    // LiveKit evalflow: platform enter/exit only (no login).
-    const livekitEvalflow = await storage.createEvalflow({
+    // LiveKit evalFlow: platform enter/exit only (no login).
+    const livekitEvalFlow = await storage.createEvalFlow({
       name: "LiveKit Agent Evaluation",
-      description: "Mainline evaluation evalflow for LiveKit Agents - runs every 8 hours",
+      description: "Mainline evaluation evalFlow for LiveKit Agents - runs every 8 hours",
       ownerId: scoutId,
       projectId: scoutProject.id,
       providerId: livekitProvider?.id || null,
@@ -247,21 +247,21 @@ steps:
 - type: platform.enter
   params:
     tone_name: ''`,
-        // Same teardown for all aeval evalflows (stop recording, leave platform).
+        // Same teardown for all aeval evalFlows (stop recording, leave platform).
         stepsSuffix: `- type: audio.stop_recording
 - type: platform.exit`,
       },
     });
-    console.log(`Created LiveKit evalflow: ${livekitEvalflow.name} (mainline: true)`);
+    console.log(`Created LiveKit evalFlow: ${livekitEvalFlow.name} (mainline: true)`);
 
-    // Agora evalflow: real SSO login BEFORE enter — the `mode: account` flow
+    // Agora evalFlow: real SSO login BEFORE enter — the `mode: account` flow
     // matches config/platforms/agora.yaml's `setup:account`. Both email and
     // password come from Protected (login-class) secrets, so Core mints a
     // storageState via the session broker and the agent never sees them.
     // Mirrors scenarios/smoke_test_en_agora.yaml + examples/agora-agents.yaml.
-    const agoraEvalflow = await storage.createEvalflow({
+    const agoraEvalFlow = await storage.createEvalFlow({
       name: "Agora ConvoAI Evaluation",
-      description: "Evaluation evalflow for Agora ConvoAI - Console login (mode: account) before joining",
+      description: "Evaluation evalFlow for Agora ConvoAI - Console login (mode: account) before joining",
       ownerId: scoutId,
       projectId: scoutProject.id,
       providerId: agoraProvider?.id || null,
@@ -284,14 +284,14 @@ steps:
   timeout_ms: 30000
   silence_duration_ms: 1500
   description: Wait for agent greeting`,
-        // Same teardown for all aeval evalflows (stop recording, leave platform).
+        // Same teardown for all aeval evalFlows (stop recording, leave platform).
         stepsSuffix: `- type: audio.stop_recording
 - type: platform.exit`,
       },
     });
-    console.log(`Created Agora evalflow: ${agoraEvalflow.name}`);
+    console.log(`Created Agora evalFlow: ${agoraEvalFlow.name}`);
 
-    // Shared eval set (body only) — referenced by both evalflows.
+    // Shared eval set (body only) — referenced by both evalFlows.
     const scoutEvalSets = await storage.getEvalSetsByOwner(scoutId);
     let basicEvalSet = scoutEvalSets.find(e => e.name === "Basic Conversation Test");
     if (!basicEvalSet) {
@@ -344,7 +344,7 @@ steps:
 
     // Create recurring schedule - every 8 hours (at 0:00, 8:00, 16:00)
     // Cron: "0 */8 * * *" means "at minute 0 past every 8th hour"
-    const schedules = await storage.getEvalSchedulesByEvalflow(livekitEvalflow.id);
+    const schedules = await storage.getEvalSchedulesByEvalFlow(livekitEvalFlow.id);
     if (schedules.length === 0) {
       // Calculate next run time for every 8 hours
       const now = new Date();
@@ -357,7 +357,7 @@ steps:
 
       const schedule = await storage.createEvalSchedule({
         name: "LiveKit 8-Hour Evaluation",
-        evalflowId: livekitEvalflow.id,
+        evalFlowId: livekitEvalFlow.id,
         evalSetId: basicEvalSet.id,
         region: "na",  // North America region
         scheduleType: "recurring",
@@ -371,18 +371,18 @@ steps:
       console.log(`Created recurring schedule: ${schedule.name} (every 8 hours, region: NA)`);
       console.log(`  Next run at: ${nextRunAt.toISOString()}`);
     } else {
-      console.log(`Schedule already exists for LiveKit evalflow`);
+      console.log(`Schedule already exists for LiveKit evalFlow`);
     }
   } else {
-    console.log(`LiveKit evalflow already exists: ID ${existingLiveKitEvalflow.id}`);
+    console.log(`LiveKit evalFlow already exists: ID ${existingLiveKitEvalFlow.id}`);
   }
 
   // Agora Console login credentials (Protected / login-class) for the login
   // e2e. Sourced from the environment (.env.dev on the host, gitignored) so
   // real credentials are NEVER committed. Re-run on every seed (outside the
-  // evalflow guard) so an updated .env.dev value propagates after a reset.
-  // Owned by Scout to match the Agora evalflow's ownership — a personal
-  // evalflow spends its owner's personal secrets. `class: protected` makes
+  // evalFlow guard) so an updated .env.dev value propagates after a reset.
+  // Owned by Scout to match the Agora evalFlow's ownership — a personal
+  // evalFlow spends its owner's personal secrets. `class: protected` makes
   // them Core-only: structurally withheld from the agent, minted via broker.
   const agoraEmail = process.env.AGORA_CONSOLE_EMAIL;
   const agoraPassword = process.env.AGORA_CONSOLE_PASSWORD;
