@@ -203,11 +203,15 @@ d("migration 0041_remove_vat.sql (transactional, rolled back)", () => {
   const configOf41 = async (name: string) =>
     (await client.query(`SELECT config FROM evalflows WHERE name = $1`, [name])).rows[0].config as Record<string, unknown>;
 
-  it("DELETES provably-VAT evalflows; keeps the ambiguous implicit shape (minus the dead key)", async () => {
+  it("DELETES provably-VAT evalflows; keeps the ambiguous shape with its app PARKED as evidence", async () => {
     expect(await exists(`${stamp}-vat`)).toBe(false);
-    // Kept — irreversible deletion needs proof, not probability.
+    // Kept — irreversible deletion needs proof, not probability. And the app
+    // YAML is parked, not deleted: it's the only record of what the row was
+    // configured for, and the triage query keys on it.
     expect(await exists(`${stamp}-implicit`)).toBe(true);
-    expect((await configOf41(`${stamp}-implicit`)).app).toBeUndefined();
+    const implicit = await configOf41(`${stamp}-implicit`);
+    expect(implicit.app).toBeUndefined();
+    expect(implicit._legacyApp).toBe('url: "https://y.example"');
   });
 
   it("strips a stray app key from eval sets too (v1 create used to skip validation)", async () => {
@@ -217,7 +221,7 @@ d("migration 0041_remove_vat.sql (transactional, rolled back)", () => {
       [`${stamp}-es`, JSON.stringify({ scenario: "steps: []", app: 'url: "https://es.example"' })],
     );
     // Re-run the sweep statement the way the runner would.
-    await client.query(`UPDATE eval_sets SET config = config - 'app' WHERE config ? 'app'`);
+    await client.query(`UPDATE eval_sets SET config = config - 'app' - 'framework' WHERE config ? 'app' OR config ? 'framework'`);
     const { rows } = await client.query(`SELECT config FROM eval_sets WHERE name = $1`, [`${stamp}-es`]);
     expect(rows[0].config.app).toBeUndefined();
     expect(rows[0].config.scenario).toBe("steps: []");
@@ -230,6 +234,7 @@ d("migration 0041_remove_vat.sql (transactional, rolled back)", () => {
     expect(await exists(`${stamp}-healthy`)).toBe(true);
     const healthy = await configOf41(`${stamp}-healthy`);
     expect(healthy.app).toBeUndefined();
+    expect(healthy._legacyApp).toBe('url: "https://ok.example"'); // parked, never destroyed
     expect(healthy.framework).toBe("aeval");
     expect(healthy.stepsPrefix).toBe("- type: platform.setup");
   });

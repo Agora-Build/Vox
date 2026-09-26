@@ -229,9 +229,10 @@ const MAX_CONFIG_SIZE = 100_000; // 100KB
  * _legacyPhoneDial): the secret scans deliberately skip them, so accepting
  * one from a caller would let ${config._legacyX}
  * indirection smuggle a secret reference past the misuse/consent gates.
- * Migrated rows are unaffected (their keys were written by SQL, and survive
- * until the owner next rewrites the config). mergeEvalConfig also applies
- * this, so parked payloads never travel in job configs to agents.
+ * Migrated rows are unaffected: their keys were written by SQL, and
+ * carryOverLegacyKeys re-attaches them on update so an edit can't destroy
+ * them. mergeEvalConfig also applies this, so parked payloads never travel
+ * in job configs to agents.
  */
 export function carryOverLegacyKeys(incoming: unknown, existing: unknown): unknown {
   // Re-attach the STORED parked keys to a caller's config on update. Writes

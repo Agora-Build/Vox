@@ -2316,7 +2316,6 @@ function parseArgs(): DaemonConfig {
   if (framework !== 'aeval') {
     console.warn(`[Daemon] Unsupported EVAL_FRAMEWORK '${framework}' — using 'aeval' (the only supported framework). Remove it from your env to silence this.`);
   }
-  const resolvedFramework = 'aeval';
   const headless = process.env.HEADLESS !== 'false';
 
   for (let i = 0; i < args.length; i++) {
@@ -2367,7 +2366,7 @@ Example:
     process.exit(1);
   }
 
-  return { token, serverUrl, name, framework: resolvedFramework, headless };
+  return { token, serverUrl, name, framework: 'aeval', headless };
 }
 
 // ---------------------------------------------------------------------------

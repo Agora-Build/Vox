@@ -63,20 +63,28 @@ WHERE evalflow_id IN (
 -- runs quietly wrong) and its dead `app` key is dropped below, leaving a
 -- human to decide. Queued jobs of BOTH shapes were failed regardless —
 -- failing a job destroys nothing.
--- To triage the kept rows after deploy (they have no steps, so they'd run
--- as aeval with nothing set up, and their schedules are already off):
---   SELECT id, name, owner_id FROM evalflows
---   WHERE config->>'framework' IS NULL
+-- To triage the kept rows after deploy (they have no steps, so they'd run as
+-- aeval with nothing set up; their schedules are already off, and the parked
+-- `_legacyApp` below is the evidence of what they were configured for):
+--   SELECT id, name, owner_id, config->'_legacyApp' AS legacy_app
+--   FROM evalflows
+--   WHERE config ? '_legacyApp'
 --     AND coalesce(btrim(config->>'stepsPrefix'), '') = ''
 --     AND coalesce(btrim(config->>'stepsSuffix'), '') = '';
 DELETE FROM evalflows
 WHERE config->>'framework' = 'voice-agent-tester';
 --> statement-breakpoint
 -- Survivors carrying a stray `app` (a healthy aeval row, or an ambiguous
--- implicit one kept above): drop the dead key so the save-time validator
--- never blocks a future edit. Nothing ever read it.
+-- implicit one kept above): move the dead key aside so the save-time
+-- validator never blocks a future edit. PARKED, not deleted — 0040's rule
+-- ("a one-way migration never destroys the only copy of authored config")
+-- applies here too, and for the ambiguous rows the `app` YAML is the only
+-- evidence of what they were FOR: delete it and the triage query below can no
+-- longer tell them from any plain aeval row. `_legacy*` keys are already
+-- handled everywhere — never sent to agents, skipped by the secret scans,
+-- owner-only on reads, carried across edits, shown read-only in the editor.
 UPDATE evalflows
-SET config = config - 'app'
+SET config = (config - 'app') || jsonb_build_object('_legacyApp', config->'app')
 WHERE jsonb_typeof(config) = 'object' AND config ? 'app';
 --> statement-breakpoint
 -- Eval sets too: validateEvalSetConfig now rejects `app` AND `framework`
