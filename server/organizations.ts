@@ -5,7 +5,7 @@
 // PLUGIN (`vox.organizations`, plugins/organizations) — there is no built-in
 // fallback: absence is a legal, inert state (see getOrganizations below).
 //
-// NOT in scope: which org OWNS a row (evalflow.organizationId and the other
+// NOT in scope: which org OWNS a row (evalFlow.organizationId and the other
 // resource-ownership columns). Those are Core's own FK columns, stay Core
 // permanently, and are compared as opaque integers.
 

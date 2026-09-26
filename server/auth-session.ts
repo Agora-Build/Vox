@@ -49,11 +49,11 @@ export function parsePlatformSetup(stepsYaml: string | null | undefined): Platfo
 
 /**
  * SINGLE choke-point for org-vs-personal session scoping (mirrors the
- * secrets-follow-evalflow-ownership rule). When organizations move to a
+ * secrets-follow-eval-flow-ownership rule). When organizations move to a
  * plugin, the org branch here goes behind that plugin's seam — nothing else
- * in the session path reads evalflow.organizationId.
+ * in the session path reads evalFlow.organizationId.
  */
-export function sessionScopeForEvalflow(wf: { ownerId: number; organizationId: number | null }): SessionScope {
+export function sessionScopeForEvalFlow(wf: { ownerId: number; organizationId: number | null }): SessionScope {
   return wf.organizationId != null ? { organizationId: wf.organizationId } : { userId: wf.ownerId };
 }
 
@@ -63,7 +63,7 @@ export interface SessionNeed { platformId: string; emailSecret: string; password
  * Stable identity of the login credential PAIR behind a session need, used as
  * the web_sessions cache key alongside (scope, platformId). Derived from the
  * two login-secret NAMES (not their decrypted values — no secret material, no
- * DB read) so it is cheap and deterministic. Two evalflows that reference the
+ * DB read) so it is cheap and deterministic. Two evalFlows that reference the
  * same secret pair share a cached session (correct); two accounts on the same
  * platform under one owner get separate rows, so an attested test-account
  * session is never served in place of a different account's (HIGH-2).
@@ -73,7 +73,7 @@ export function credentialKeyFor(need: SessionNeed): string {
 }
 
 /**
- * The outcome of deciding whether an evalflow needs a Core-minted login session:
+ * The outcome of deciding whether an evalFlow needs a Core-minted login session:
  *  - `none`         — runtime path; the agent may fetch its (runtime-class) secrets directly.
  *  - `need`         — Core must mint a storageState; login secrets stay in Core.
  *  - `misconfigured`— a split-class credential pair. REJECT the run rather than
@@ -178,7 +178,7 @@ async function resolveScopeSecret(scope: SessionScope, name: string): Promise<st
  * absence semantic in the org-secret paths, and each is the safe value for its
  * own site: this gate returns `false`, `orgRuntimeSecretsForJob` returns `{}`,
  * and `orgSecretRowsViaSeam` above THROWS (a committed mint must fail loudly).
- * Moot in practice — Phase-1's guards stop an org-owned evalflow from creating a
+ * Moot in practice — Phase-1's guards stop an org-owned evalFlow from creating a
  * job at all while organizations are absent — but safe by construction, which is
  * why it is not a throw.
  */
@@ -286,7 +286,7 @@ export type OwnerSessionStampResult =
  * the scheduler tick and the schedule run-now route, both of which are
  * owner/creator-gated so they carry NO cross-user dispatch-trust gates (the
  * run route does; it stays inline). Shared so the two owner paths can never
- * drift: an evalflow whose platform.setup references login-class secrets MUST
+ * drift: an evalFlow whose platform.setup references login-class secrets MUST
  * be minted via Core, never handed to the agent as durable credentials.
  *
  * Mutates `jobConfig` in place: strips any caller-supplied `sessionInjection`
@@ -297,29 +297,29 @@ export type OwnerSessionStampResult =
  * into the job snapshot (null when no session is needed).
  */
 /**
- * One-stop session-need detection for an evalflow: parse the platform setup,
+ * One-stop session-need detection for an evalFlow: parse the platform setup,
  * resolve the owner scope, and evaluate against the scope's brokered secrets.
  * PURE with respect to side effects (one read query, no config mutation, no
  * mint pre-warm) — safe to call before deciding whether a dispatch may happen
- * at all. Every caller that needs "does this evalflow need a session?" derives
+ * at all. Every caller that needs "does this evalFlow need a session?" derives
  * it from HERE so the answer can't drift between routes.
  */
 export async function detectSessionNeed(
-  evalflow: { ownerId: number; organizationId: number | null; config: unknown },
+  evalFlow: { ownerId: number; organizationId: number | null; config: unknown },
 ): Promise<SessionRequirement> {
-  const wfConfig = (evalflow.config ?? {}) as Record<string, unknown>;
+  const wfConfig = (evalFlow.config ?? {}) as Record<string, unknown>;
   const setup = parsePlatformSetup(wfConfig.stepsPrefix as string | undefined);
-  const scope = sessionScopeForEvalflow(evalflow);
+  const scope = sessionScopeForEvalFlow(evalFlow);
   return evaluateSessionRequirement(setup, await getBrokeredSecretNames(scope));
 }
 
 export async function stampOwnerSession(
-  evalflow: { ownerId: number; organizationId: number | null; config: unknown },
+  evalFlow: { ownerId: number; organizationId: number | null; config: unknown },
   jobConfig: Record<string, unknown>,
   precomputedReq?: SessionRequirement,
 ): Promise<OwnerSessionStampResult> {
-  const scope = sessionScopeForEvalflow(evalflow);
-  const req = precomputedReq ?? await detectSessionNeed(evalflow);
+  const scope = sessionScopeForEvalFlow(evalFlow);
+  const req = precomputedReq ?? await detectSessionNeed(evalFlow);
   if (req.kind === "misconfigured") return { kind: "misconfigured", reason: req.reason };
 
   delete jobConfig.sessionInjection; // server-stamped only — never trust a caller value
@@ -356,13 +356,13 @@ export function resolvableSecretSources(configs: unknown[]): unknown[] {
 }
 
 /**
- * Names of ${secrets.X} placeholders an evalflow/eval-set references that have
+ * Names of ${secrets.X} placeholders an evalFlow/eval-set references that have
  * NO secret row in the owner's scope. Such a run is a GUARANTEED failure: the
  * daemon leaves an unresolved placeholder verbatim, and aeval then aborts on
  * it ("Unknown variable source: secrets") with an opaque PyInstaller exit —
  * so every dispatch path rejects up front instead of burning an agent run.
  *
- * Scope is the EVALFLOW OWNER's (secrets follow evalflow ownership), which is
+ * Scope is the EVAL_FLOW OWNER's (secrets follow evalFlow ownership), which is
  * the same scope the job-secrets endpoint resolves against at claim time.
  */
 export async function missingSecretNames(

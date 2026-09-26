@@ -11,7 +11,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import { Plus, FolderKanban, Trash2, Pencil, Workflow as EvalflowIcon } from "lucide-react";
+import { Plus, FolderKanban, Trash2, Pencil, Workflow as EvalFlowIcon } from "lucide-react";
 import { useState } from "react";
 import type { Project } from "@shared/schema";
 
@@ -26,7 +26,7 @@ interface AuthStatus {
 }
 
 interface ProjectWithCount extends Project {
-  evalflowCount?: number;
+  evalFlowCount?: number;
 }
 
 export default function ConsoleProjects() {
@@ -119,7 +119,7 @@ export default function ConsoleProjects() {
         <div>
           <h1 className="text-2xl font-bold">Projects</h1>
           <p className="text-muted-foreground">
-            Organize your evalflows into projects
+            Organize your evalFlows into projects
             <span className="ml-2 text-sm">({projectCount}/{maxProjects} used)</span>
           </p>
         </div>
@@ -134,7 +134,7 @@ export default function ConsoleProjects() {
             <DialogHeader>
               <DialogTitle>Create Project</DialogTitle>
               <DialogDescription>
-                Create a new project to organize your evalflows.
+                Create a new project to organize your evalFlows.
               </DialogDescription>
             </DialogHeader>
             <div className="space-y-4 py-4">
@@ -216,10 +216,10 @@ export default function ConsoleProjects() {
         <CardHeader>
           <CardDescription>
             {plan === "basic"
-              ? `Basic plan: ${maxProjects} projects, 10 evalflows each`
+              ? `Basic plan: ${maxProjects} projects, 10 evalFlows each`
               : hasOrg
-              ? `Organization: ${maxProjects} projects, 20 evalflows each`
-              : `Premium plan: ${maxProjects} projects, 20 evalflows each`
+              ? `Organization: ${maxProjects} projects, 20 evalFlows each`
+              : `Premium plan: ${maxProjects} projects, 20 evalFlows each`
             }
           </CardDescription>
         </CardHeader>
@@ -235,7 +235,7 @@ export default function ConsoleProjects() {
               <TableHeader>
                 <TableRow>
                   <TableHead>Name</TableHead>
-                  <TableHead>Evalflows</TableHead>
+                  <TableHead>Eval Flows</TableHead>
                   <TableHead>Created</TableHead>
                   <TableHead className="text-right">Actions</TableHead>
                 </TableRow>
@@ -253,8 +253,8 @@ export default function ConsoleProjects() {
                     </TableCell>
                     <TableCell>
                       <Badge variant="secondary" className="gap-1">
-                        <EvalflowIcon className="h-3 w-3" />
-                        {project.evalflowCount ?? 0}
+                        <EvalFlowIcon className="h-3 w-3" />
+                        {project.evalFlowCount ?? 0}
                       </Badge>
                     </TableCell>
                     <TableCell className="text-muted-foreground">
@@ -286,9 +286,9 @@ export default function ConsoleProjects() {
                               <AlertDialogTitle>Delete Project</AlertDialogTitle>
                               <AlertDialogDescription>
                                 Are you sure you want to delete "{project.name}"?
-                                {(project.evalflowCount ?? 0) > 0 && (
+                                {(project.evalFlowCount ?? 0) > 0 && (
                                   <span className="block mt-2 text-destructive">
-                                    This project has {project.evalflowCount} evalflow(s). Delete them first.
+                                    This project has {project.evalFlowCount} evalFlow(s). Delete them first.
                                   </span>
                                 )}
                               </AlertDialogDescription>
@@ -297,7 +297,7 @@ export default function ConsoleProjects() {
                               <AlertDialogCancel>Cancel</AlertDialogCancel>
                               <AlertDialogAction
                                 onClick={() => deleteMutation.mutate(project.id)}
-                                disabled={(project.evalflowCount ?? 0) > 0}
+                                disabled={(project.evalFlowCount ?? 0) > 0}
                                 className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
                               >
                                 Delete
@@ -313,7 +313,7 @@ export default function ConsoleProjects() {
             </Table>
           ) : (
             <div className="text-center py-8 text-muted-foreground">
-              No projects yet. Create your first project to organize your evalflows.
+              No projects yet. Create your first project to organize your evalFlows.
             </div>
           )}
         </CardContent>

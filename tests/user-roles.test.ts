@@ -100,7 +100,7 @@ describe('User Role-Based Access Control', () => {
       expect(canToggleMainline(scoutUser)).toBe(true);
     });
 
-    it('should allow scout to create private evalflows', () => {
+    it('should allow scout to create private evalFlows', () => {
       const canCreatePrivate = (user: User) =>
         ['premium', 'principal', 'fellow'].includes(user.plan);
       expect(canCreatePrivate(scoutUser)).toBe(true);
@@ -176,7 +176,7 @@ describe('User Role-Based Access Control', () => {
       isAdmin: false
     });
 
-    it('should allow premium to create private evalflows', () => {
+    it('should allow premium to create private evalFlows', () => {
       const canCreatePrivate = (user: User) =>
         ['premium', 'principal', 'fellow'].includes(user.plan);
       expect(canCreatePrivate(premiumUser)).toBe(true);
@@ -197,8 +197,8 @@ describe('User Role-Based Access Control', () => {
       expect(getProjectLimit(premiumUser)).toBe(20);
     });
 
-    it('should have extended evalflow limits per project', () => {
-      const getEvalflowLimit = (user: User) => {
+    it('should have extended evalFlow limits per project', () => {
+      const getEvalFlowLimit = (user: User) => {
         switch (user.plan) {
           case 'principal':
           case 'fellow':
@@ -208,7 +208,7 @@ describe('User Role-Based Access Control', () => {
             return 10;
         }
       };
-      expect(getEvalflowLimit(premiumUser)).toBe(20);
+      expect(getEvalFlowLimit(premiumUser)).toBe(20);
     });
 
     it('should not allow premium to toggle mainline', () => {
@@ -252,8 +252,8 @@ describe('User Role-Based Access Control', () => {
       expect(getProjectLimit(basicUser)).toBe(5);
     });
 
-    it('should have limited evalflow count per project', () => {
-      const getEvalflowLimit = (user: User) => {
+    it('should have limited evalFlow count per project', () => {
+      const getEvalFlowLimit = (user: User) => {
         switch (user.plan) {
           case 'principal':
           case 'fellow':
@@ -263,7 +263,7 @@ describe('User Role-Based Access Control', () => {
             return 10;
         }
       };
-      expect(getEvalflowLimit(basicUser)).toBe(10);
+      expect(getEvalFlowLimit(basicUser)).toBe(10);
     });
 
     it('should not allow mainline toggle', () => {
@@ -304,7 +304,7 @@ describe('User Role-Based Access Control', () => {
       const protectedRoutes = [
         '/console',
         '/console/projects',
-        '/console/evalflows',
+        '/console/eval-flows',
         '/console/settings',
       ];
 
@@ -345,7 +345,7 @@ describe('User Role-Based Access Control', () => {
     it('should reject access to protected API endpoints', () => {
       const protectedApiRoutes = [
         '/api/projects',
-        '/api/evalflows',
+        '/api/eval-flows',
         '/api/user/api-keys',
         '/api/organizations',
       ];
@@ -468,7 +468,7 @@ describe('User Role-Based Access Control', () => {
     });
   });
 
-  describe('Eval Set and Evalflow Visibility', () => {
+  describe('Eval Set and EvalFlow Visibility', () => {
     type Visibility = 'public' | 'private';
 
     interface Resource {

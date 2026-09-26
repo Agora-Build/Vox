@@ -8,9 +8,9 @@
  */
 
 import { Express, Request, Response } from "express";
-import { storage, mergeEvalConfig, buildJobSnapshot, validateEvalflowConfig, validateEvalSetConfig, stripLegacyConfigKeys, redactLegacyForViewer, unsupportedFrameworkError, carryOverLegacyKeys } from "./storage";
+import { storage, mergeEvalConfig, buildJobSnapshot, validateEvalFlowConfig, validateEvalSetConfig, unsupportedFrameworkError } from "./storage";
 import { requireAuthOrApiKey, getCurrentUserOrApiKeyUser } from "./auth";
-import { parsePlatformSetup, sessionScopeForEvalflow, evaluateSessionRequirement, getBrokeredSecretNames, ensureSession, missingSecretNames, resolvableSecretSources } from "./auth-session";
+import { parsePlatformSetup, sessionScopeForEvalFlow, evaluateSessionRequirement, getBrokeredSecretNames, ensureSession, missingSecretNames, resolvableSecretSources } from "./auth-session";
 import { regionSiteSequence } from "@shared/regions";
 import { hasOrg, sameOrg, isOwnerOrOrgManager } from "./permissions";
 import { getOrganizations } from "./organizations";
@@ -105,37 +105,37 @@ function apiRegionScope(
 }
 
 export function registerApiV1Routes(app: Express): void {
-  // ==================== EVALFLOWS ====================
+  // ==================== EVAL_FLOWS ====================
 
   /**
-   * GET /api/v1/evalflows
-   * List evalflows accessible to the authenticated user
+   * GET /api/v1/evalFlows
+   * List evalFlows accessible to the authenticated user
    */
-  app.get("/api/v1/evalflows", requireAuthOrApiKey, async (req: Request, res: Response) => {
+  app.get("/api/v1/evalFlows", requireAuthOrApiKey, async (req: Request, res: Response) => {
     try {
       const user = await getCurrentUserOrApiKeyUser(req);
       if (!user) {
         return res.status(401).json({ error: "Authentication required" });
       }
 
-      const evalflows = await storage.getEvalflowsByOwner(user.id);
+      const evalFlows = await storage.getEvalFlowsByOwner(user.id);
       res.json({
-        data: evalflows, // owner's own rows — parked payloads are theirs to see
+        data: evalFlows,
         meta: {
-          total: evalflows.length,
+          total: evalFlows.length,
         },
       });
     } catch (error) {
-      console.error("API v1 - Error fetching evalflows:", error);
-      res.status(500).json({ error: "Failed to fetch evalflows" });
+      console.error("API v1 - Error fetching evalFlows:", error);
+      res.status(500).json({ error: "Failed to fetch evalFlows" });
     }
   });
 
   /**
-   * POST /api/v1/evalflows
-   * Create a new evalflow
+   * POST /api/v1/evalFlows
+   * Create a new evalFlow
    */
-  app.post("/api/v1/evalflows", requireAuthOrApiKey, async (req: Request, res: Response) => {
+  app.post("/api/v1/evalFlows", requireAuthOrApiKey, async (req: Request, res: Response) => {
     try {
       const user = await getCurrentUserOrApiKeyUser(req);
       if (!user) {
@@ -143,7 +143,7 @@ export function registerApiV1Routes(app: Express): void {
       }
 
       const { name, description, providerId, projectId, visibility } = req.body;
-      const config = stripLegacyConfigKeys(req.body.config);
+      const config = req.body.config;
 
       if (!name) {
         return res.status(400).json({ error: "Name is required" });
@@ -152,11 +152,11 @@ export function registerApiV1Routes(app: Express): void {
       // every config rule was bypassable through this endpoint).
       if (config !== undefined && config !== null) {
         // Validate against the transport that will actually be STORED. v1
-        // create never passes transport to storage.createEvalflow, so the row
+        // create never passes transport to storage.createEvalFlow, so the row
         // is always `web` — honouring req.body.transport here would let
         // phone-only steps into a web row, which is what this check exists to
         // stop. When v1 learns to save transport, pass the saved value.
-        const v = validateEvalflowConfig(config, "web");
+        const v = validateEvalFlowConfig(config, "web");
         if (!v.valid) return res.status(400).json({ error: v.error });
       }
 
@@ -168,46 +168,46 @@ export function registerApiV1Routes(app: Express): void {
         return res.status(404).json({ error: "Provider not found" });
       }
 
-      // Check evalflow limits
-      const evalflowCount = await storage.countEvalflowsByOwner(user.id);
-      const maxEvalflows = user.plan === "basic" ? 50 : 200; // Total across all projects
+      // Check evalFlow limits
+      const evalFlowCount = await storage.countEvalFlowsByOwner(user.id);
+      const maxEvalFlows = user.plan === "basic" ? 50 : 200; // Total across all projects
 
-      if (evalflowCount >= maxEvalflows) {
+      if (evalFlowCount >= maxEvalFlows) {
         return res.status(403).json({
-          error: `Maximum ${maxEvalflows} evalflows allowed for ${user.plan} plan`,
+          error: `Maximum ${maxEvalFlows} evalFlows allowed for ${user.plan} plan`,
         });
       }
 
       // Visibility check
-      const evalflowVisibility = visibility || "public";
-      if (evalflowVisibility === "private" && user.plan === "basic") {
+      const evalFlowVisibility = visibility || "public";
+      if (evalFlowVisibility === "private" && user.plan === "basic") {
         return res.status(403).json({
-          error: "Private evalflows require Premium plan or higher",
+          error: "Private evalFlows require Premium plan or higher",
         });
       }
 
-      const evalflow = await storage.createEvalflow({
+      const evalFlow = await storage.createEvalFlow({
         name,
         description,
         providerId,
         projectId,
         ownerId: user.id,
-        visibility: evalflowVisibility,
+        visibility: evalFlowVisibility,
         config: config || {},
       });
 
-      res.status(201).json({ data: evalflow });
+      res.status(201).json({ data: evalFlow });
     } catch (error) {
-      console.error("API v1 - Error creating evalflow:", error);
-      res.status(500).json({ error: "Failed to create evalflow" });
+      console.error("API v1 - Error creating evalFlow:", error);
+      res.status(500).json({ error: "Failed to create evalFlow" });
     }
   });
 
   /**
-   * GET /api/v1/evalflows/:id
-   * Get a specific evalflow
+   * GET /api/v1/evalFlows/:id
+   * Get a specific evalFlow
    */
-  app.get("/api/v1/evalflows/:id", requireAuthOrApiKey, async (req: Request, res: Response) => {
+  app.get("/api/v1/evalFlows/:id", requireAuthOrApiKey, async (req: Request, res: Response) => {
     try {
       const user = await getCurrentUserOrApiKeyUser(req);
       if (!user) {
@@ -215,31 +215,29 @@ export function registerApiV1Routes(app: Express): void {
       }
 
       const { id } = req.params;
-      const evalflow = await storage.getEvalflow(parseInt(id));
+      const evalFlow = await storage.getEvalFlow(parseInt(id));
 
-      if (!evalflow) {
-        return res.status(404).json({ error: "Evalflow not found" });
+      if (!evalFlow) {
+        return res.status(404).json({ error: "Eval Flow not found" });
       }
 
       // Check access: owner or public
-      if (evalflow.ownerId !== user.id && evalflow.visibility !== "public") {
+      if (evalFlow.ownerId !== user.id && evalFlow.visibility !== "public") {
         return res.status(403).json({ error: "Access denied" });
       }
 
-      // Same rule as the console route: the EDIT right, not bare ownership,
-      // so an org manager sees parked payloads through either API.
-      res.json({ data: redactLegacyForViewer(evalflow, isOwnerOrOrgManager(user, evalflow)) });
+      res.json({ data: evalFlow });
     } catch (error) {
-      console.error("API v1 - Error fetching evalflow:", error);
-      res.status(500).json({ error: "Failed to fetch evalflow" });
+      console.error("API v1 - Error fetching evalFlow:", error);
+      res.status(500).json({ error: "Failed to fetch evalFlow" });
     }
   });
 
   /**
-   * PUT /api/v1/evalflows/:id
-   * Update an evalflow
+   * PUT /api/v1/evalFlows/:id
+   * Update an evalFlow
    */
-  app.put("/api/v1/evalflows/:id", requireAuthOrApiKey, async (req: Request, res: Response) => {
+  app.put("/api/v1/evalFlows/:id", requireAuthOrApiKey, async (req: Request, res: Response) => {
     try {
       const user = await getCurrentUserOrApiKeyUser(req);
       if (!user) {
@@ -247,51 +245,49 @@ export function registerApiV1Routes(app: Express): void {
       }
 
       const { id } = req.params;
-      const evalflow = await storage.getEvalflow(parseInt(id));
+      const evalFlow = await storage.getEvalFlow(parseInt(id));
 
-      if (!evalflow) {
-        return res.status(404).json({ error: "Evalflow not found" });
+      if (!evalFlow) {
+        return res.status(404).json({ error: "Eval Flow not found" });
       }
 
-      if (evalflow.ownerId !== user.id) {
-        return res.status(403).json({ error: "Not authorized to update this evalflow" });
+      if (evalFlow.ownerId !== user.id) {
+        return res.status(403).json({ error: "Not authorized to update this evalFlow" });
       }
 
       const { name, description, visibility } = req.body;
-      const config = req.body.config === undefined || req.body.config === null
-        ? req.body.config
-        : carryOverLegacyKeys(stripLegacyConfigKeys(req.body.config), evalflow.config);
+      const config = req.body.config;
       if (config !== undefined && config !== null) {
-        const v = validateEvalflowConfig(config, (evalflow.transport as "web" | "phone" | null) ?? "web");
+        const v = validateEvalFlowConfig(config, (evalFlow.transport as "web" | "phone" | null) ?? "web");
         if (!v.valid) return res.status(400).json({ error: v.error });
       }
 
       // Visibility check
       if (visibility === "private" && user.plan === "basic") {
         return res.status(403).json({
-          error: "Private evalflows require Premium plan or higher",
+          error: "Private evalFlows require Premium plan or higher",
         });
       }
 
-      const updated = await storage.updateEvalflow(parseInt(id), {
-        name: name ?? evalflow.name,
-        description: description ?? evalflow.description,
-        visibility: visibility ?? evalflow.visibility,
-        config: config ?? evalflow.config,
+      const updated = await storage.updateEvalFlow(parseInt(id), {
+        name: name ?? evalFlow.name,
+        description: description ?? evalFlow.description,
+        visibility: visibility ?? evalFlow.visibility,
+        config: config ?? evalFlow.config,
       });
 
       res.json({ data: updated });
     } catch (error) {
-      console.error("API v1 - Error updating evalflow:", error);
-      res.status(500).json({ error: "Failed to update evalflow" });
+      console.error("API v1 - Error updating evalFlow:", error);
+      res.status(500).json({ error: "Failed to update evalFlow" });
     }
   });
 
   /**
-   * DELETE /api/v1/evalflows/:id
-   * Delete an evalflow
+   * DELETE /api/v1/evalFlows/:id
+   * Delete an evalFlow
    */
-  app.delete("/api/v1/evalflows/:id", requireAuthOrApiKey, async (req: Request, res: Response) => {
+  app.delete("/api/v1/evalFlows/:id", requireAuthOrApiKey, async (req: Request, res: Response) => {
     try {
       const user = await getCurrentUserOrApiKeyUser(req);
       if (!user) {
@@ -299,29 +295,29 @@ export function registerApiV1Routes(app: Express): void {
       }
 
       const { id } = req.params;
-      const evalflow = await storage.getEvalflow(parseInt(id));
+      const evalFlow = await storage.getEvalFlow(parseInt(id));
 
-      if (!evalflow) {
-        return res.status(404).json({ error: "Evalflow not found" });
+      if (!evalFlow) {
+        return res.status(404).json({ error: "Eval Flow not found" });
       }
 
-      if (evalflow.ownerId !== user.id) {
-        return res.status(403).json({ error: "Not authorized to delete this evalflow" });
+      if (evalFlow.ownerId !== user.id) {
+        return res.status(403).json({ error: "Not authorized to delete this evalFlow" });
       }
 
-      await storage.deleteEvalflow(parseInt(id));
+      await storage.deleteEvalFlow(parseInt(id));
       res.json({ success: true });
     } catch (error) {
-      console.error("API v1 - Error deleting evalflow:", error);
-      res.status(500).json({ error: "Failed to delete evalflow" });
+      console.error("API v1 - Error deleting evalFlow:", error);
+      res.status(500).json({ error: "Failed to delete evalFlow" });
     }
   });
 
   /**
-   * POST /api/v1/evalflows/:id/run
-   * Run an evalflow (create an eval job)
+   * POST /api/v1/evalFlows/:id/run
+   * Run an evalFlow (create an eval job)
    */
-  app.post("/api/v1/evalflows/:id/run", requireAuthOrApiKey, async (req: Request, res: Response) => {
+  app.post("/api/v1/evalFlows/:id/run", requireAuthOrApiKey, async (req: Request, res: Response) => {
     try {
       const user = await getCurrentUserOrApiKeyUser(req);
       if (!user) {
@@ -336,24 +332,24 @@ export function registerApiV1Routes(app: Express): void {
       const region = req.body.region != null ? String(req.body.region) : null;
       const targetTier = req.body.targetTier != null ? String(req.body.targetTier) : null;
 
-      const evalflow = await storage.getEvalflow(parseInt(id));
+      const evalFlow = await storage.getEvalFlow(parseInt(id));
 
-      if (!evalflow) {
-        return res.status(404).json({ error: "Evalflow not found" });
+      if (!evalFlow) {
+        return res.status(404).json({ error: "Eval Flow not found" });
       }
 
       // Check access: owner only can run
-      if (evalflow.ownerId !== user.id) {
-        return res.status(403).json({ error: "Not authorized to run this evalflow" });
+      if (evalFlow.ownerId !== user.id) {
+        return res.status(403).json({ error: "Not authorized to run this evalFlow" });
       }
 
-      // Same absence arm as the console run route: an org evalflow's secrets
+      // Same absence arm as the console run route: an org evalFlow's secrets
       // resolve through the seam, so with no provider the job could only fail —
       // refuse before creating it (§7). Team tier is refused on the same arm
-      // whoever owns the evalflow: its creator_org_id would freeze NULL and the
+      // whoever owns the evalFlow: its creator_org_id would freeze NULL and the
       // team claim arm could never match it (the `hasOrg` check below would also
       // refuse, as a 400; this names the actual cause).
-      if ((evalflow.organizationId != null || targetTier === "team") && !getOrganizations()) {
+      if ((evalFlow.organizationId != null || targetTier === "team") && !getOrganizations()) {
         return res.status(501).json({ error: "Organizations feature not enabled" });
       }
 
@@ -382,15 +378,15 @@ export function registerApiV1Routes(app: Express): void {
         return res.status(400).json({ error: "region must be an active region" });
       }
 
-      // does this evalflow need a Core-minted login session? This route
-      // is owner-only (untargeted run on the caller's own evalflow), so the
+      // does this evalFlow need a Core-minted login session? This route
+      // is owner-only (untargeted run on the caller's own evalFlow), so the
       // untargeted owner/team WHO-may-dispatch gate the console run route
       // applies is satisfied structurally — only the misconfigured-pair
       // rejection, the tier-composition guards (mirroring the console route),
       // and the immutable session stamp are needed here.
-      const wfConfig = (evalflow.config ?? {}) as Record<string, unknown>;
+      const wfConfig = (evalFlow.config ?? {}) as Record<string, unknown>;
       const setupInfo = parsePlatformSetup(wfConfig.stepsPrefix as string | undefined);
-      const scope = sessionScopeForEvalflow(evalflow);
+      const scope = sessionScopeForEvalFlow(evalFlow);
       const sessionReq = evaluateSessionRequirement(setupInfo, await getBrokeredSecretNames(scope));
       if (sessionReq.kind === "misconfigured") {
         return res.status(400).json({ error: sessionReq.reason });
@@ -399,42 +395,42 @@ export function registerApiV1Routes(app: Express): void {
       // Session-injection composition (spec §5 + item 2 tightening): the serve
       // gate admits owner + team agents only, so a public-pool claim would take
       // the job and then be refused the session; and a team-pool claim on a
-      // personal (non-org) evalflow is a guaranteed-failure dispatch.
+      // personal (non-org) evalFlow is a guaranteed-failure dispatch.
       if (sessionNeed && targetTier === "public") {
-        return res.status(403).json({ error: "Credential-injected evalflows can only use your own or team agent pools" });
+        return res.status(403).json({ error: "Credential-injected evalFlows can only use your own or team agent pools" });
       }
       if (sessionNeed && targetTier === "team" &&
-          !(evalflow.organizationId != null && sameOrg({ organizationId: user.membership?.organizationId ?? null }, { organizationId: evalflow.organizationId }))) {
-        return res.status(403).json({ error: "Credential-injected evalflows can only use a team pool when the evalflow belongs to your organization" });
+          !(evalFlow.organizationId != null && sameOrg({ organizationId: user.membership?.organizationId ?? null }, { organizationId: evalFlow.organizationId }))) {
+        return res.status(403).json({ error: "Credential-injected evalFlows can only use a team pool when the evalFlow belongs to your organization" });
       }
 
-      // Same backstop as the console run route and the scheduler: an evalflow
+      // Same backstop as the console run route and the scheduler: an evalFlow
       // on a framework this build can't run only produces jobs that fail at
       // the daemon. Unreachable today (0041 deleted those rows and the
       // validator rejects the framework at save) — which is exactly why both
       // run paths must agree.
       {
-        const frameworkError = unsupportedFrameworkError(evalflow.config);
+        const frameworkError = unsupportedFrameworkError(evalFlow.config);
         if (frameworkError) return res.status(400).json({ error: frameworkError });
       }
 
       // Guaranteed-failure gate, same as the console run path: an unconfigured
       // secret means the daemon ships an unresolved placeholder and aeval aborts
       // with an opaque exit. Reject with the exact names instead.
-      const missingSecrets = await missingSecretNames(scope, resolvableSecretSources([evalflow.config, evalSet.config]));
+      const missingSecrets = await missingSecretNames(scope, resolvableSecretSources([evalFlow.config, evalSet.config]));
       if (missingSecrets.length > 0) {
         return res.status(400).json({
-          error: `This evalflow references secret(s) ${missingSecrets.join(", ")} that are not configured. Create them (names must match exactly), then run again.`,
+          error: `This evalFlow references secret(s) ${missingSecrets.join(", ")} that are not configured. Create them (names must match exactly), then run again.`,
         });
       }
 
       // Create eval job (merge configs + capture the immutable snapshot, same as the
       // console run path — otherwise these jobs lose provenance/attribution/tiering).
-      const provider = await storage.getProvider(evalflow.providerId);
+      const provider = await storage.getProvider(evalFlow.providerId);
 
-      const jobConfig = mergeEvalConfig(evalflow.config, evalSet.config);
+      const jobConfig = mergeEvalConfig(evalFlow.config, evalSet.config);
       delete (jobConfig as Record<string, unknown>).sessionInjection; // server-stamped only
-      const baseSnapshot = buildJobSnapshot(evalflow, evalSet, provider, user.plan);
+      const baseSnapshot = buildJobSnapshot(evalFlow, evalSet, provider, user.plan);
       const snapshot = sessionNeed
         ? {
             ...baseSnapshot,
@@ -451,7 +447,7 @@ export function registerApiV1Routes(app: Express): void {
       }
 
       const job = await storage.createEvalJob({
-        evalflowId: parseInt(id),
+        evalFlowId: parseInt(id),
         triggerType: 2, // manual (API v1 run)
         evalSetId,
         createdBy: user.id,
@@ -475,8 +471,8 @@ export function registerApiV1Routes(app: Express): void {
         },
       });
     } catch (error) {
-      console.error("API v1 - Error running evalflow:", error);
-      res.status(500).json({ error: "Failed to run evalflow" });
+      console.error("API v1 - Error running evalFlow:", error);
+      res.status(500).json({ error: "Failed to run evalFlow" });
     }
   });
 
@@ -518,7 +514,7 @@ export function registerApiV1Routes(app: Express): void {
       }
 
       const { name, description, visibility } = req.body;
-      const config = stripLegacyConfigKeys(req.body.config);
+      const config = req.body.config;
       if (config !== undefined && config !== null) {
         const v = validateEvalSetConfig(config);
         if (!v.valid) return res.status(400).json({ error: v.error });
@@ -642,9 +638,9 @@ export function registerApiV1Routes(app: Express): void {
         return res.status(404).json({ error: "Job not found" });
       }
 
-      // Check ownership — live evalflow owner, or the job's creator once it's deleted.
-      const evalflow = job.evalflowId != null ? await storage.getEvalflow(job.evalflowId) : undefined;
-      const allowed = evalflow ? evalflow.ownerId === user.id : job.createdBy === user.id;
+      // Check ownership — live evalFlow owner, or the job's creator once it's deleted.
+      const evalFlow = job.evalFlowId != null ? await storage.getEvalFlow(job.evalFlowId) : undefined;
+      const allowed = evalFlow ? evalFlow.ownerId === user.id : job.createdBy === user.id;
       if (!allowed) {
         return res.status(403).json({ error: "Access denied" });
       }
@@ -674,9 +670,9 @@ export function registerApiV1Routes(app: Express): void {
         return res.status(404).json({ error: "Job not found" });
       }
 
-      // Check ownership — live evalflow owner, or the job's creator once it's deleted.
-      const evalflow = job.evalflowId != null ? await storage.getEvalflow(job.evalflowId) : undefined;
-      const allowed = evalflow ? evalflow.ownerId === user.id : job.createdBy === user.id;
+      // Check ownership — live evalFlow owner, or the job's creator once it's deleted.
+      const evalFlow = job.evalFlowId != null ? await storage.getEvalFlow(job.evalFlowId) : undefined;
+      const allowed = evalFlow ? evalFlow.ownerId === user.id : job.createdBy === user.id;
       if (!allowed) {
         return res.status(403).json({ error: "Access denied" });
       }
@@ -709,11 +705,11 @@ export function registerApiV1Routes(app: Express): void {
         return res.status(401).json({ error: "Authentication required" });
       }
 
-      const { evalflowId, jobId, limit, offset } = req.query;
+      const { evalFlowId, jobId, limit, offset } = req.query;
 
       const results = await storage.getEvalResults({
         ownerId: user.id,
-        evalflowId: evalflowId ? parseInt(evalflowId as string) : undefined,
+        evalFlowId: evalFlowId ? parseInt(evalFlowId as string) : undefined,
         jobId: jobId ? parseInt(jobId as string) : undefined,
         limit: limit ? parseInt(limit as string) : 50,
         offset: offset ? parseInt(offset as string) : 0,
@@ -750,14 +746,14 @@ export function registerApiV1Routes(app: Express): void {
         return res.status(404).json({ error: "Result not found" });
       }
 
-      // Get job and evalflow to check ownership
+      // Get job and evalFlow to check ownership
       const job = await storage.getEvalJob(result.evalJobId);
       if (!job) {
         return res.status(404).json({ error: "Associated job not found" });
       }
 
-      const evalflow = job.evalflowId != null ? await storage.getEvalflow(job.evalflowId) : undefined;
-      const allowed = evalflow ? evalflow.ownerId === user.id : job.createdBy === user.id;
+      const evalFlow = job.evalFlowId != null ? await storage.getEvalFlow(job.evalFlowId) : undefined;
+      const allowed = evalFlow ? evalFlow.ownerId === user.id : job.createdBy === user.id;
       if (!allowed) {
         return res.status(403).json({ error: "Access denied" });
       }
@@ -784,11 +780,11 @@ export function registerApiV1Routes(app: Express): void {
 
       const projects = await storage.getProjectsByOwner(user.id);
 
-      // Add evalflow counts
+      // Add evalFlow counts
       const projectsWithCounts = await Promise.all(
         projects.map(async (project) => ({
           ...project,
-          evalflowCount: await storage.countEvalflowsByProject(project.id),
+          evalFlowCount: await storage.countEvalFlowsByProject(project.id),
         }))
       );
 

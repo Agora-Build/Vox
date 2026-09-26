@@ -18,7 +18,7 @@ import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { Plus, FileText, Globe, Lock, Star, Play, Pencil, Copy, Trash2 } from "lucide-react";
 import { useState, useEffect } from "react";
-import type { EvalSet, Evalflow as EvalflowType } from "@shared/schema";
+import type { EvalSet, EvalFlow as EvalFlowType } from "@shared/schema";
 
 
 interface AuthStatus {
@@ -31,10 +31,10 @@ interface AuthStatus {
   } | null;
 }
 
-// The evalflows list carries the server's authorization decision (canSchedule),
-// computed from the same canScheduleEvalflow the schedule route enforces — so the
+// The evalFlows list carries the server's authorization decision (canSchedule),
+// computed from the same canScheduleEvalFlow the schedule route enforces — so the
 // client never re-derives it and can't disagree with the backend.
-type EvalflowWithPerms = EvalflowType & { canSchedule?: boolean };
+type EvalFlowWithPerms = EvalFlowType & { canSchedule?: boolean };
 
 
 export default function ConsoleEvalSets() {
@@ -51,7 +51,7 @@ export default function ConsoleEvalSets() {
   // Run dialog state
   const [runOpen, setRunOpen] = useState(false);
   const [runEvalSet, setRunEvalSet] = useState<EvalSet | null>(null);
-  const [runEvalflowId, setRunEvalflowId] = useState("");
+  const [runEvalFlowId, setRunEvalFlowId] = useState("");
   const [runRegion, setRunRegion] = useState("");
   const [targetTier, setTargetTier] = useState<string>("public");
   const [runMode, setRunMode] = useState<"once" | "recurring">("once");
@@ -84,8 +84,8 @@ export default function ConsoleEvalSets() {
     queryKey: ["/api/eval-sets"],
   });
 
-  const { data: evalflows } = useQuery<EvalflowWithPerms[]>({
-    queryKey: ["/api/evalflows?includePublic=true"],
+  const { data: evalFlows } = useQuery<EvalFlowWithPerms[]>({
+    queryKey: ["/api/eval-flows?includePublic=true"],
   });
 
   const createMutation = useMutation({
@@ -130,7 +130,7 @@ export default function ConsoleEvalSets() {
 
   const runOnceMutation = useMutation({
     mutationFn: async () => {
-      const res = await apiRequest("POST", `/api/evalflows/${runEvalflowId}/run`, {
+      const res = await apiRequest("POST", `/api/eval-flows/${runEvalFlowId}/run`, {
         region: runRegion,
         targetTier,
         evalSetId: runEvalSet!.id,
@@ -150,7 +150,7 @@ export default function ConsoleEvalSets() {
     mutationFn: async () => {
       const res = await apiRequest("POST", "/api/eval-schedules", {
         name: scheduleName || `${runEvalSet!.name} schedule`,
-        evalflowId: parseInt(runEvalflowId),
+        evalFlowId: parseInt(runEvalFlowId),
         evalSetId: runEvalSet!.id,
         region: runRegion,
         targetTier,
@@ -226,7 +226,7 @@ export default function ConsoleEvalSets() {
 
   function openRunDialog(evalSet: EvalSet) {
     setRunEvalSet(evalSet);
-    setRunEvalflowId("");
+    setRunEvalFlowId("");
     setRunRegion("");
     setTargetTier("public");
     setRunMode("once");
@@ -238,7 +238,7 @@ export default function ConsoleEvalSets() {
   function closeRunDialog() {
     setRunOpen(false);
     setRunEvalSet(null);
-    setRunEvalflowId("");
+    setRunEvalFlowId("");
     setRunRegion("");
     setTargetTier("public");
     setRunMode("once");
@@ -265,19 +265,19 @@ export default function ConsoleEvalSets() {
   }
 
   const isRunPending = runOnceMutation.isPending || runRecurringMutation.isPending;
-  const canRun = runEvalflowId && runRegion && (runMode === "once" || cronExpression);
+  const canRun = runEvalFlowId && runRegion && (runMode === "once" || cronExpression);
 
-  // Only evalflow managers may schedule (recurring runs use the owner's secrets).
+  // Only evalFlow managers may schedule (recurring runs use the owner's secrets).
   // Trust the server's canSchedule; if it's absent (older API), fail open so we
   // never wrongly block a legitimate owner.
-  const selectedRunEvalflow = evalflows?.find((w) => String(w.id) === runEvalflowId);
-  const canScheduleSelected = selectedRunEvalflow?.canSchedule ?? true;
-  // If the picked evalflow isn't manageable, fall back to a one-off run.
+  const selectedRunEvalFlow = evalFlows?.find((w) => String(w.id) === runEvalFlowId);
+  const canScheduleSelected = selectedRunEvalFlow?.canSchedule ?? true;
+  // If the picked evalFlow isn't manageable, fall back to a one-off run.
   useEffect(() => {
-    if (runMode === "recurring" && runEvalflowId && !canScheduleSelected) {
+    if (runMode === "recurring" && runEvalFlowId && !canScheduleSelected) {
       setRunMode("once");
     }
-  }, [runMode, runEvalflowId, canScheduleSelected]);
+  }, [runMode, runEvalFlowId, canScheduleSelected]);
 
   // "My Eval Sets" = own + org; "Public" = everything public I don't already own.
   const myIds = new Set((myEvalSets ?? []).map((s) => s.id));
@@ -463,7 +463,7 @@ export default function ConsoleEvalSets() {
                   data-testid="textarea-evalset-scenario"
                 />
                 <p className="text-xs text-muted-foreground">
-                  Test body only (samples + analysis). Platform setup/login lives in the evalflow.
+                  Test body only (samples + analysis). Platform setup/login lives in the evalFlow.
                 </p>
               </div>
             </div>
@@ -506,7 +506,7 @@ export default function ConsoleEvalSets() {
           <Card>
             <CardHeader>
               <CardDescription>
-                Public eval sets shared by other users. Clone one to use it in your own evalflows.
+                Public eval sets shared by other users. Clone one to use it in your own evalFlows.
               </CardDescription>
             </CardHeader>
             <CardContent>
@@ -522,18 +522,18 @@ export default function ConsoleEvalSets() {
           <DialogHeader>
             <DialogTitle>Run Evaluation</DialogTitle>
             <DialogDescription>
-              Run <span className="font-medium text-foreground">{runEvalSet?.name}</span> against an evalflow.
+              Run <span className="font-medium text-foreground">{runEvalSet?.name}</span> against an evalFlow.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4 py-4">
             <div className="space-y-2">
-              <Label>Evalflow</Label>
-              <Select value={runEvalflowId} onValueChange={setRunEvalflowId}>
-                <SelectTrigger data-testid="select-run-evalflow">
-                  <SelectValue placeholder="Select evalflow" />
+              <Label>Eval Flow</Label>
+              <Select value={runEvalFlowId} onValueChange={setRunEvalFlowId}>
+                <SelectTrigger data-testid="select-run-eval-flow">
+                  <SelectValue placeholder="Select Eval Flow" />
                 </SelectTrigger>
                 <SelectContent>
-                  {evalflows?.map((w) => (
+                  {evalFlows?.map((w) => (
                     <SelectItem key={w.id} value={String(w.id)}>
                       {w.name}
                     </SelectItem>
@@ -584,18 +584,18 @@ export default function ConsoleEvalSets() {
                   </Label>
                 </div>
                 <div className="flex items-center space-x-2">
-                  <RadioGroupItem value="recurring" id="run-recurring" data-testid="radio-run-recurring" disabled={!!runEvalflowId && !canScheduleSelected} />
+                  <RadioGroupItem value="recurring" id="run-recurring" data-testid="radio-run-recurring" disabled={!!runEvalFlowId && !canScheduleSelected} />
                   <Label
                     htmlFor="run-recurring"
-                    className={`font-normal ${!!runEvalflowId && !canScheduleSelected ? "cursor-not-allowed text-muted-foreground" : "cursor-pointer"}`}
+                    className={`font-normal ${!!runEvalFlowId && !canScheduleSelected ? "cursor-not-allowed text-muted-foreground" : "cursor-pointer"}`}
                   >
                     Recurring schedule
                   </Label>
                 </div>
               </RadioGroup>
-              {!!runEvalflowId && !canScheduleSelected && (
+              {!!runEvalFlowId && !canScheduleSelected && (
                 <p className="text-xs text-muted-foreground" data-testid="text-schedule-owner-only">
-                  Recurring schedules can only be created by the evalflow's owner, since they run on the owner's saved secrets. You can still run this evalflow once.
+                  Recurring schedules can only be created by the evalFlow's owner, since they run on the owner's saved secrets. You can still run this evalFlow once.
                 </p>
               )}
             </div>
@@ -695,7 +695,7 @@ export default function ConsoleEvalSets() {
                 onChange={(e) => setEditScenarioYaml(e.target.value)}
               />
               <p className="text-xs text-muted-foreground">
-                Test body only (samples + analysis). Platform setup/login lives in the evalflow.
+                Test body only (samples + analysis). Platform setup/login lives in the evalFlow.
               </p>
             </div>
           </div>

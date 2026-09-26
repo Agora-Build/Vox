@@ -251,7 +251,7 @@ export default function ConsoleSecrets() {
             <CardHeader>
               <div className="flex items-center justify-between gap-4">
                 <CardDescription>
-                  Private to you. Used by evalflows you own.
+                  Private to you. Used by evalFlows you own.
                 </CardDescription>
                 <Dialog open={createOpen} onOpenChange={setCreateOpen}>
                   <DialogTrigger asChild>
@@ -410,7 +410,7 @@ export default function ConsoleSecrets() {
               <CardHeader>
                 <div className="flex items-center justify-between gap-4">
                   <CardDescription>
-                    Shared across all org evalflows. Org secrets override personal secrets with the same name.
+                    Shared across all org evalFlows. Org secrets override personal secrets with the same name.
                   </CardDescription>
                   {isOrgAdmin && (
                     <Dialog open={orgCreateOpen} onOpenChange={setOrgCreateOpen}>
@@ -424,7 +424,7 @@ export default function ConsoleSecrets() {
                         <DialogHeader>
                           <DialogTitle>Add Secret</DialogTitle>
                           <DialogDescription>
-                            This secret will be available to all evalflows in your organization.
+                            This secret will be available to all evalFlows in your organization.
                           </DialogDescription>
                         </DialogHeader>
                         <div className="space-y-4 py-4">
@@ -556,7 +556,7 @@ export default function ConsoleSecrets() {
                 ) : (
                   <div className="text-center py-8 text-muted-foreground">
                     {isOrgAdmin
-                      ? "No org secrets yet. Add secrets that will be shared across all org evalflows."
+                      ? "No org secrets yet. Add secrets that will be shared across all org evalFlows."
                       : "No org secrets configured. Ask an org admin to add shared credentials."}
                   </div>
                 )}
@@ -579,7 +579,7 @@ export default function ConsoleSecrets() {
     password: \${secrets.YOUR_PASSWORD}`}</pre>
           <p className="text-xs text-muted-foreground mt-2">
             The eval agent resolves <code>{"${secrets.*}"}</code> placeholders before running the eval jobs.
-            For org evalflows, org secrets override personal secrets with the same name.
+            For org evalFlows, org secrets override personal secrets with the same name.
           </p>
         </CardContent>
       </Card>

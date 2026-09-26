@@ -10,7 +10,7 @@ import { computeCharge, computeFee, PLATFORM_FEE_BPS } from "../plugins/shared-a
 // (VOX_PLUGINS=credits,shared-agents). No mocks: every dollar (credit) moved
 // here is observed through the same balance/statement HTTP surface a real
 // client would use, and every dispatch goes through the real
-// /api/evalflows/:id/run + /api/eval-agent/* HTTP flow.
+// /api/eval-flows/:id/run + /api/eval-agent/* HTTP flow.
 //
 // Requires: local dev server running (./scripts/dev-local-run.sh start)
 // with both plugins loaded — confirmed in setup via /api/eval-agents/dispatchable.
@@ -180,8 +180,8 @@ async function completeJob(tokenPlain: string, agentId: number, leaseId: string,
   return bearerFetch(tokenPlain, "POST", `/api/eval-agent/jobs/${jobId}/complete`, { agentId, leaseId, ...extra });
 }
 
-async function createEvalflow(session: AuthSession, name: string, providerId: string, config: Record<string, unknown> = { framework: "aeval" }): Promise<number> {
-  const res = await authFetch(session, `${BASE_URL}/api/evalflows`, {
+async function createEvalFlow(session: AuthSession, name: string, providerId: string, config: Record<string, unknown> = { framework: "aeval" }): Promise<number> {
+  const res = await authFetch(session, `${BASE_URL}/api/eval-flows`, {
     method: "POST", body: JSON.stringify({ name, providerId, config }),
   });
   expect(res.ok).toBe(true);
@@ -293,7 +293,7 @@ describe("Task 13: practical shared-agents marketplace + credits e2e", () => {
 
     let happyTokenId: number;
     let happyTokenPlain: string;
-    let evalflowId: number;
+    let evalFlowId: number;
     let evalSetId: number;
     let happyJobId: number;
 
@@ -312,14 +312,14 @@ describe("Task 13: practical shared-agents marketplace + credits e2e", () => {
       const dispatchable = await dispatchableRes.json();
       expect(dispatchable.shared.some((a: { tokenId: number }) => a.tokenId === happyTokenId)).toBe(true);
 
-      evalflowId = await createEvalflow(rich.session, `t13-happy-wf-${stamp}`, providerId);
+      evalFlowId = await createEvalFlow(rich.session, `t13-happy-wf-${stamp}`, providerId);
       evalSetId = await createEvalSet(rich.session, `t13-happy-es-${stamp}`);
     });
 
     it("dispatch places an escrow hold (dispatcher balance drops by the charge)", async () => {
       const dispatcherBefore = await getBalance(rich.session);
 
-      const runRes = await authFetch(rich.session, `${BASE_URL}/api/evalflows/${evalflowId}/run`, {
+      const runRes = await authFetch(rich.session, `${BASE_URL}/api/eval-flows/${evalFlowId}/run`, {
         method: "POST", body: JSON.stringify({ evalSetId, targetTokenId: happyTokenId }),
       });
       expect(runRes.status).toBe(200);
@@ -414,7 +414,7 @@ describe("Task 13: practical shared-agents marketplace + credits e2e", () => {
 
     let refundTokenId: number;
     let refundTokenPlain: string;
-    let evalflowId: number;
+    let evalFlowId: number;
     let evalSetId: number;
 
     beforeAll(async () => {
@@ -424,7 +424,7 @@ describe("Task 13: practical shared-agents marketplace + credits e2e", () => {
       const tier = await setDispatchTier(owner.session, refundTokenId, "shared", PRICE_PER_UNIT);
       expect(tier.ok).toBe(true);
 
-      evalflowId = await createEvalflow(rich.session, `t13-refund-wf-${stamp}`, providerId);
+      evalFlowId = await createEvalFlow(rich.session, `t13-refund-wf-${stamp}`, providerId);
       evalSetId = await createEvalSet(rich.session, `t13-refund-es-${stamp}`);
     });
 
@@ -432,7 +432,7 @@ describe("Task 13: practical shared-agents marketplace + credits e2e", () => {
       const ownerBefore = await getBalance(owner.session);
       const dispatcherBefore = await getBalance(rich.session);
 
-      const runRes = await authFetch(rich.session, `${BASE_URL}/api/evalflows/${evalflowId}/run`, {
+      const runRes = await authFetch(rich.session, `${BASE_URL}/api/eval-flows/${evalFlowId}/run`, {
         method: "POST", body: JSON.stringify({ evalSetId, targetTokenId: refundTokenId }),
       });
       expect(runRes.status).toBe(200);
@@ -476,10 +476,10 @@ describe("Task 13: practical shared-agents marketplace + credits e2e", () => {
       const before = await getBalance(broke.session);
       expect(before).toBe(0);
 
-      const evalflowId = await createEvalflow(broke.session, `t13-402-wf-${stamp}`, providerId);
+      const evalFlowId = await createEvalFlow(broke.session, `t13-402-wf-${stamp}`, providerId);
       const evalSetId = await createEvalSet(broke.session, `t13-402-es-${stamp}`);
 
-      const runRes = await authFetch(broke.session, `${BASE_URL}/api/evalflows/${evalflowId}/run`, {
+      const runRes = await authFetch(broke.session, `${BASE_URL}/api/eval-flows/${evalFlowId}/run`, {
         method: "POST", body: JSON.stringify({ evalSetId, targetTokenId: gateTokenId }),
       });
       expect(runRes.status).toBe(402);
@@ -491,14 +491,14 @@ describe("Task 13: practical shared-agents marketplace + credits e2e", () => {
     });
   });
 
-  // ── 5. Session-evalflow gate interplay ───────────
-  describe("5. Session-evalflow gate interplay: consent + attestation gates precede the hold", () => {
+  // ── 5. Session-eval-flow gate interplay ───────────
+  describe("5. Session-eval-flow gate interplay: consent + attestation gates precede the hold", () => {
     const PRICE_PER_UNIT = 250;
     const charge = computeCharge(PRICE_PER_UNIT, 1);
 
     let sessionTokenId: number;
     let sessionTokenPlain: string;
-    let sessionEvalflowId: number;
+    let sessionEvalFlowId: number;
     let evalSetId: number;
     const emailSecret = `T13_E_${stamp.toUpperCase()}`;
     const passwordSecret = `T13_P_${stamp.toUpperCase()}`;
@@ -510,20 +510,20 @@ describe("Task 13: practical shared-agents marketplace + credits e2e", () => {
       const tier = await setDispatchTier(owner.session, sessionTokenId, "shared", PRICE_PER_UNIT);
       expect(tier.ok).toBe(true);
 
-      // rich owns both the secrets AND the evalflow: session scope is keyed
-      // to the EVALFLOW OWNER (server/auth-session.ts sessionScopeForEvalflow),
+      // rich owns both the secrets AND the evalFlow: session scope is keyed
+      // to the EVAL_FLOW OWNER (server/auth-session.ts sessionScopeForEvalFlow),
       // so keeping owner==caller avoids cross-user scope mismatches.
       await createSecret(rich.session, emailSecret, "t13-test-user@example.com", { brokerType: "auth-session" });
       await createSecret(rich.session, passwordSecret, "t13-test-password-1", { brokerType: "auth-session" });
 
       const setupSteps = `- type: platform.setup\n  platform_id: vapi\n  params:\n    email: \${secrets.${emailSecret}}\n    password: \${secrets.${passwordSecret}}`;
-      sessionEvalflowId = await createEvalflow(rich.session, `t13-session-wf-${stamp}`, providerId, { framework: "aeval", stepsPrefix: setupSteps });
+      sessionEvalFlowId = await createEvalFlow(rich.session, `t13-session-wf-${stamp}`, providerId, { framework: "aeval", stepsPrefix: setupSteps });
       evalSetId = await createEvalSet(rich.session, `t13-session-es-${stamp}`);
     });
 
     it("5a. rejects without credentialConsent (400) — balance unchanged", async () => {
       const before = await getBalance(rich.session);
-      const res = await authFetch(rich.session, `${BASE_URL}/api/evalflows/${sessionEvalflowId}/run`, {
+      const res = await authFetch(rich.session, `${BASE_URL}/api/eval-flows/${sessionEvalFlowId}/run`, {
         method: "POST", body: JSON.stringify({ evalSetId, targetTokenId: sessionTokenId }),
       });
       expect(res.status).toBe(400);
@@ -534,7 +534,7 @@ describe("Task 13: practical shared-agents marketplace + credits e2e", () => {
 
     it("5b. rejects with consent but unattested secrets (403) — balance unchanged", async () => {
       const before = await getBalance(rich.session);
-      const res = await authFetch(rich.session, `${BASE_URL}/api/evalflows/${sessionEvalflowId}/run`, {
+      const res = await authFetch(rich.session, `${BASE_URL}/api/eval-flows/${sessionEvalFlowId}/run`, {
         method: "POST", body: JSON.stringify({ evalSetId, targetTokenId: sessionTokenId, credentialConsent: true }),
       });
       expect(res.status).toBe(403);
@@ -548,7 +548,7 @@ describe("Task 13: practical shared-agents marketplace + credits e2e", () => {
       await createSecret(rich.session, passwordSecret, "t13-test-password-1", { isTestAccount: true });
 
       const before = await getBalance(rich.session);
-      const res = await authFetch(rich.session, `${BASE_URL}/api/evalflows/${sessionEvalflowId}/run`, {
+      const res = await authFetch(rich.session, `${BASE_URL}/api/eval-flows/${sessionEvalFlowId}/run`, {
         method: "POST", body: JSON.stringify({ evalSetId, targetTokenId: sessionTokenId, credentialConsent: true }),
       });
       expect(res.status).toBe(200);
@@ -615,9 +615,9 @@ describe("Task 13: practical shared-agents marketplace + credits e2e", () => {
       let job: { id: number } | undefined;
       let claim: Response | undefined;
       for (let attempt = 0; attempt < 3; attempt++) {
-        const evalflowId = await createEvalflow(broke.session, `t13-free-wf-${stamp}-${attempt}`, providerId);
+        const evalFlowId = await createEvalFlow(broke.session, `t13-free-wf-${stamp}-${attempt}`, providerId);
         const evalSetId = await createEvalSet(broke.session, `t13-free-es-${stamp}-${attempt}`);
-        const runRes = await authFetch(broke.session, `${BASE_URL}/api/evalflows/${evalflowId}/run`, {
+        const runRes = await authFetch(broke.session, `${BASE_URL}/api/eval-flows/${evalFlowId}/run`, {
           method: "POST", body: JSON.stringify({ region: BASE_NA, targetTier: "private", evalSetId }),
         });
         expect(runRes.status).toBe(200);
@@ -641,10 +641,10 @@ describe("Task 13: practical shared-agents marketplace + credits e2e", () => {
       const before = await getBalance(broke.session);
       expect(before).toBe(0);
 
-      const evalflowId = await createEvalflow(broke.session, `t13-free2-wf-${stamp}`, providerId);
+      const evalFlowId = await createEvalFlow(broke.session, `t13-free2-wf-${stamp}`, providerId);
       const evalSetId = await createEvalSet(broke.session, `t13-free2-es-${stamp}`);
 
-      const runRes = await authFetch(broke.session, `${BASE_URL}/api/evalflows/${evalflowId}/run`, {
+      const runRes = await authFetch(broke.session, `${BASE_URL}/api/eval-flows/${evalFlowId}/run`, {
         method: "POST", body: JSON.stringify({ evalSetId, targetTokenId: freeTokenId }),
       });
       expect(runRes.status).toBe(200);
@@ -664,7 +664,7 @@ describe("Task 13: practical shared-agents marketplace + credits e2e", () => {
   // ── 7. Hold voided on post-authorize failure ─────────────────────────
   describe("7. Hold voided when job creation fails AFTER the escrow hold", () => {
     let holdVoidTokenId: number;
-    let conflictEvalflowId: number;
+    let conflictEvalFlowId: number;
     let conflictEvalSetId: number;
 
     beforeAll(async () => {
@@ -674,12 +674,12 @@ describe("Task 13: practical shared-agents marketplace + credits e2e", () => {
       const tier = await setDispatchTier(owner.session, holdVoidTokenId, "shared", 300);
       expect(tier.ok).toBe(true);
 
-      // Evalflow and eval set share the "frameworkVersion" key with
+      // EvalFlow and eval set share the "frameworkVersion" key with
       // CONFLICTING values — neither create-time validator restricts this
       // key, so both creates succeed and the conflict surfaces only inside
       // mergeEvalConfig at run time (server/storage.ts), which is INSIDE the
       // voidDispatch-compensated try (server/routes.ts, Task 6 review fix).
-      conflictEvalflowId = await createEvalflow(rich.session, `t13-conflict-wf-${stamp}`, providerId, { framework: "aeval", frameworkVersion: "1.0.0" });
+      conflictEvalFlowId = await createEvalFlow(rich.session, `t13-conflict-wf-${stamp}`, providerId, { framework: "aeval", frameworkVersion: "1.0.0" });
       conflictEvalSetId = await createEvalSet(rich.session, `t13-conflict-es-${stamp}`, { frameworkVersion: "2.0.0" });
     });
 
@@ -688,12 +688,12 @@ describe("Task 13: practical shared-agents marketplace + credits e2e", () => {
       const dispatcherBefore = await getBalance(rich.session);
       const charge = computeCharge(300, 1);
 
-      const runRes = await authFetch(rich.session, `${BASE_URL}/api/evalflows/${conflictEvalflowId}/run`, {
+      const runRes = await authFetch(rich.session, `${BASE_URL}/api/eval-flows/${conflictEvalFlowId}/run`, {
         method: "POST", body: JSON.stringify({ evalSetId: conflictEvalSetId, targetTokenId: holdVoidTokenId }),
       });
       expect(runRes.status).toBe(500);
       const body = await runRes.json();
-      expect(body.error).toBe("Failed to run evalflow");
+      expect(body.error).toBe("Failed to run evalFlow");
 
       // voidDispatch is awaited inside the route's catch block before the 500
       // is returned, so this should already be restored — poll briefly as a

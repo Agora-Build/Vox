@@ -16,7 +16,7 @@ import { REGION_NA, BASE_NA } from './helpers/regions';
  *    adds `region` (the Vox-detected baseId, nullable) and `locationTrust`
  *    alongside `siteId` per the zero-trust agent-region design
  *    (designs/2026-09-01-zero-trust-agent-region-design.md) — covered below.
- *  - Run and schedule request bodies (evalflow run, v1 run, eval-schedules
+ *  - Run and schedule request bodies (evalFlow run, v1 run, eval-schedules
  *    create/PATCH) take `region` + `targetTier` (pooled dispatch, spec
  *    2026-08-24-tier-targeting) — the exact-site `siteId` body key is dead on
  *    those routes and must be rejected, not silently read. CLASH-token /
@@ -148,15 +148,15 @@ describe('site-id wire contract', () => {
   });
 
   it('run body takes region+targetTier; the siteId body key is dead', async () => {
-    const wf = await (await authFetch('/api/evalflows?includePublic=true')).json();
+    const wf = await (await authFetch('/api/eval-flows?includePublic=true')).json();
     const es = await (await authFetch('/api/eval-sets?includePublic=true')).json();
-    const viaSite = await authFetch(`/api/evalflows/${wf[0].id}/run`, {
+    const viaSite = await authFetch(`/api/eval-flows/${wf[0].id}/run`, {
       method: 'POST',
       body: JSON.stringify({ siteId: REGION_NA, evalSetId: es[0].id }),
     });
     expect(viaSite.status).toBe(400); // siteId body key no longer read
 
-    const viaPool = await authFetch(`/api/evalflows/${wf[0].id}/run`, {
+    const viaPool = await authFetch(`/api/eval-flows/${wf[0].id}/run`, {
       method: 'POST',
       body: JSON.stringify({ region: BASE_NA, targetTier: 'public', evalSetId: es[0].id }),
     });

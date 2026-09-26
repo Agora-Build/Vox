@@ -169,7 +169,7 @@ export default function Console() {
   }
 
   if (!authStatus.user.isAdmin) {
-    return <Redirect to="/console/evalflows" />;
+    return <Redirect to="/console/eval-flows" />;
   }
 
   return (

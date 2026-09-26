@@ -62,7 +62,7 @@ describe("response-body redaction list", () => {
   });
 
   it("does not redact ordinary routes", () => {
-    for (const p of ["/api/evalflows", "/api/metrics/realtime", "/api/eval-agents", "/api/config"]) {
+    for (const p of ["/api/eval-flows", "/api/metrics/realtime", "/api/eval-agents", "/api/config"]) {
       expect(isSensitiveResponsePath(p)).toBe(false);
     }
   });

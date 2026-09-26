@@ -2,15 +2,15 @@ import { test, expect } from "@playwright/test";
 
 /**
  * Phone vs Agent UI E2E (Phase D, design 2026-09-21 §11):
- * - evalflow create dialog offers the Evaluation Mode selector; a phone
- *   evalflow persists transport + call.dial Setup Steps and shows the badge
+ * - evalFlow create dialog offers the Evaluation Mode selector; a phone
+ *   evalFlow persists transport + call.dial Setup Steps and shows the badge
  * - the realtime page carries the Web vs Agent | Phone vs Agent switch and
  *   Phone mode renders without error (empty state is fine)
  */
 
 // The create dialog is tall (steps textareas show in phone mode too); a tall
 // viewport keeps the footer submit button clickable without scroll workarounds
-// (same approach as evalflow-provider.spec.ts).
+// (same approach as eval-flow-provider.spec.ts).
 test.use({ viewport: { width: 1440, height: 1800 } });
 
 const BASE = "http://localhost:5000";
@@ -27,14 +27,14 @@ async function loginUI(page: import("@playwright/test").Page) {
 
 test.describe("Phone vs Agent UI", () => {
   test.afterAll(async ({ playwright }) => {
-    // Cleanup the created evalflow via API.
+    // Cleanup the created evalFlow via API.
     const api = await playwright.request.newContext({ baseURL: BASE });
     await api.post("/api/auth/login", { data: { email: "admin@vox.local", password: "admin123456" } });
-    const list = await api.get("/api/evalflows?includePublic=true");
+    const list = await api.get("/api/eval-flows?includePublic=true");
     if (list.ok()) {
       const rows = (await list.json()) as Array<{ id: number; name: string }>;
       for (const w of rows.filter((r) => r.name === wfName)) {
-        await api.delete(`/api/evalflows/${w.id}`);
+        await api.delete(`/api/eval-flows/${w.id}`);
       }
     }
     await api.dispose();
@@ -46,27 +46,27 @@ test.describe("Phone vs Agent UI", () => {
     // row + badge rendered — only the budget had run out).
     test.setTimeout(60_000);
     await loginUI(page);
-    await page.goto(`${BASE}/console/evalflows`);
-    await page.getByTestId("button-create-evalflow").click();
+    await page.goto(`${BASE}/console/eval-flows`);
+    await page.getByTestId("button-create-eval-flow").click();
 
-    await page.getByTestId("input-evalflow-name").fill(wfName);
-    await page.getByTestId("select-evalflow-provider").click();
+    await page.getByTestId("input-eval-flow-name").fill(wfName);
+    await page.getByTestId("select-eval-flow-provider").click();
     await page.getByRole("option").first().click();
 
-    await page.getByTestId("select-evalflow-transport").click();
+    await page.getByTestId("select-eval-flow-transport").click();
     await page.getByRole("option", { name: "Phone vs Agent" }).click();
     // Unified steps model: the same Setup/Teardown textareas serve phone mode.
-    await page.getByTestId("textarea-evalflow-steps-prefix")
+    await page.getByTestId("textarea-eval-flow-steps-prefix")
       .fill('- type: call.dial\n  number: "+1 555 010 1234"\n- type: call.wait_answered');
-    await page.getByTestId("textarea-evalflow-steps-suffix").fill("- type: call.hangup");
+    await page.getByTestId("textarea-eval-flow-steps-suffix").fill("- type: call.hangup");
 
-    await page.getByTestId("button-submit-evalflow").click();
+    await page.getByTestId("button-submit-eval-flow").click();
 
     // Persisted server-side FIRST (poll — the authoritative assertion), then
     // reload before the row check: under full-gate load the list refetch races
     // concurrent inserts from other specs and can miss the new row.
     const fetchCreated = async () => {
-      const api = await page.request.get(`${BASE}/api/evalflows?includePublic=true`);
+      const api = await page.request.get(`${BASE}/api/eval-flows?includePublic=true`);
       const rows = (await api.json()) as Array<{ name: string; transport: string; config: { stepsPrefix?: string; stepsSuffix?: string } }>;
       return rows.find((r) => r.name === wfName);
     };

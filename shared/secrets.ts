@@ -24,7 +24,7 @@ export const SECRET_PLACEHOLDER_REGEX = /\$\{secrets\.([A-Z][A-Z0-9_]*)\}/g;
  * `AGORA_CONSOLE_EMAIL` to the auth-session broker but left
  * `AGORA_CONSOLE_PASSWORD` on Runtime — and a split pair is rejected outright
  * by evaluateSessionRequirement ("Login requires BOTH email and password to be
- * dedicated login-class secrets"), so the UI's own default produced an evalflow
+ * dedicated login-class secrets"), so the UI's own default produced an evalFlow
  * that could never run.
  *
  * This is only a DEFAULT; both the console dropdown and the API's explicit
@@ -41,10 +41,10 @@ export const SECRET_PLACEHOLDER_REGEX = /\$\{secrets\.([A-Z][A-Z0-9_]*)\}/g;
  * first look:
  *
  *  - A false POSITIVE does not merely withhold the secret from the agent. Two
- *    brokered secrets that are not the evalflow's platform.setup login pair are
+ *    brokered secrets that are not the evalFlow's platform.setup login pair are
  *    caught by findBrokeredMisuse, and the run route rejects the ENTIRE
- *    evalflow. So DB_USER + DB_PASSWORD defaulting to brokered would leave a
- *    user with an evalflow that cannot run at all. That is why the USER arm
+ *    evalFlow. So DB_USER + DB_PASSWORD defaulting to brokered would leave a
+ *    user with an evalFlow that cannot run at all. That is why the USER arm
  *    lists login-ish prefixes rather than accepting any `*_USER`:
  *    DB_USER / SMTP_USER / POSTGRES_USER are far more common in a secrets store
  *    than API_USER, and USER_AGENT / USER_ID / MAX_USERS must not match either.
@@ -63,7 +63,7 @@ export const SECRET_PLACEHOLDER_REGEX = /\$\{secrets\.([A-Z][A-Z0-9_]*)\}/g;
  * ACCEPTED split pairs: the USER prefix list excludes ADMIN_USER, TEST_USER and
  * APP_USER, while ADMIN_PASSWORD and TEST_PASSWORD match — so those pairs
  * split. Widening the list is the wrong trade, because it reopens
- * DB_USER/SMTP_USER, and a false positive there rejects the whole evalflow.
+ * DB_USER/SMTP_USER, and a false positive there rejects the whole evalFlow.
  * A split pair fails LOUDLY at run time with the "mark both, or neither"
  * message, which is recoverable; the silent runtime-path fallback is not.
  *
@@ -105,34 +105,18 @@ export function resolveSecretPlaceholders(
   });
 }
 
-/** Config keys with this prefix are migration-parked dead payloads (0040's
- * _legacyPhoneDial): never read, never executed, never scanned for secret
- * refs, never sent to agents, owner-only on reads. Only TOP-LEVEL config
- * keys are ever parked, so every scan that honours this prefix checks the
- * top level only. The one definition — server/storage.ts, the daemon and
- * the client import it from here. */
-export const LEGACY_CONFIG_KEY_PREFIX = "_legacy";
-
 /**
  * Enumerate every ${secrets.NAME} referenced across one or more configs.
- * Objects (jsonb evalflow/eval-set configs) are JSON-stringified before
+ * Objects (jsonb evalFlow/eval-set configs) are JSON-stringified before
  * scanning — $ { } . are all JSON-safe inside a string, so the placeholder
  * regex still matches. A fresh RegExp per config avoids shared-lastIndex bugs
  * with the module-level global regex.
- *
- * `_legacy*` keys are EXCLUDED: a migration may park dead config there
- * (0040's _legacyPhoneDial) — nothing ever reads or substitutes those
- * payloads, so a secret reference inside one must not trip the run gates
- * (a migrated row would 400 with no way to clear it).
  */
 export function collectSecretRefs(configs: unknown[]): Set<string> {
   const names = new Set<string>();
   for (const cfg of configs) {
     if (cfg == null) continue;
-    const scrubbed = typeof cfg === "object" && !Array.isArray(cfg)
-      ? Object.fromEntries(Object.entries(cfg as Record<string, unknown>).filter(([k]) => !k.startsWith(LEGACY_CONFIG_KEY_PREFIX)))
-      : cfg;
-    const text = typeof scrubbed === "string" ? scrubbed : JSON.stringify(scrubbed);
+    const text = typeof cfg === "string" ? cfg : JSON.stringify(cfg);
     const re = new RegExp(SECRET_PLACEHOLDER_REGEX.source, "g");
     let m: RegExpExecArray | null;
     while ((m = re.exec(text)) !== null) names.add(m[1]);

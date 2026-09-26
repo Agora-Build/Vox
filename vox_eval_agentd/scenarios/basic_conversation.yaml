@@ -1,5 +1,5 @@
 # Basic Conversation Evaluation Scenario
-# Tests basic interaction with voice agent using appointment evalflow
+# Tests basic interaction with voice agent using appointment evalFlow
 #
 # Note: App config (livekit.yaml) already handles:
 # - Navigating to URL

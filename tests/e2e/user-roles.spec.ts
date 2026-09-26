@@ -197,10 +197,10 @@ test.describe("Unauthenticated Access E2E Tests", () => {
     expect(response.status()).toBe(401);
   });
 
-  test("API rejects unauthenticated evalflow creation", async ({ request }) => {
-    const response = await request.post("/api/evalflows", {
+  test("API rejects unauthenticated evalFlow creation", async ({ request }) => {
+    const response = await request.post("/api/eval-flows", {
       data: {
-        name: "Unauthorized Evalflow",
+        name: "Unauthorized EvalFlow",
         projectId: 1,
       },
     });

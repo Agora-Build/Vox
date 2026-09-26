@@ -123,7 +123,7 @@ export default function ConsoleOrganizationCreate() {
             <li>1. You'll become the organization admin</li>
             <li>2. Purchase seats for your team members</li>
             <li>3. Invite members using their email addresses</li>
-            <li>4. Collaborate on projects and evalflows</li>
+            <li>4. Collaborate on projects and evalFlows</li>
           </ul>
         </CardContent>
       </Card>

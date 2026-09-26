@@ -51,7 +51,7 @@ describeDb("zero-trust metrics gates", () => {
   beforeAll(async () => {
     providerId = (await db.select().from(providers).limit(1))[0].id;
     publicSnap = {
-      evalflow: { visibility: "public", isMainline: false, ownerId: 1 },
+      evalFlow: { visibility: "public", isMainline: false, ownerId: 1 },
       evalSet: { visibility: "public", isMainline: false, ownerId: 1 },
       provider: { id: providerId }, creatorPlan: "premium",
     };

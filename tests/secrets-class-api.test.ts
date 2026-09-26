@@ -146,7 +146,7 @@ describe('Secrets class — job-secrets withhold', () => {
   let agentToken = '';
   let agentId = 0;
   let leaseId = '';
-  let evalflowId = 0;
+  let evalFlowId = 0;
   let evalSetId = 0;
   let jobId = 0;
   let tokenId = 0;
@@ -191,14 +191,14 @@ describe('Secrets class — job-secrets withhold', () => {
       }
     }
 
-    // A dedicated evalflow + eval set owned by THIS admin session — must not
-    // borrow evalflows[0]/evalSets[0] from a plain list response, since
-    // getSecretsForJob keys off evalflow.ownerId and the secrets under test
+    // A dedicated evalFlow + eval set owned by THIS admin session — must not
+    // borrow evalFlows[0]/evalSets[0] from a plain list response, since
+    // getSecretsForJob keys off evalFlow.ownerId and the secrets under test
     // are owned by admin (see tests/session-dispatch.test.ts for the idiom).
     const providers = await (await fetch(`${BASE_URL}/api/providers`)).json();
     const providerId = providers[0].id;
 
-    const wfRes = await authFetch(adminSession, `${BASE_URL}/api/evalflows`, {
+    const wfRes = await authFetch(adminSession, `${BASE_URL}/api/eval-flows`, {
       method: 'POST',
       body: JSON.stringify({
         name: `Secrets Class Withhold WF ${stamp}`,
@@ -207,7 +207,7 @@ describe('Secrets class — job-secrets withhold', () => {
       }),
     });
     if (wfRes.ok) {
-      evalflowId = (await wfRes.json()).id;
+      evalFlowId = (await wfRes.json()).id;
     }
 
     const esRes = await authFetch(adminSession, `${BASE_URL}/api/eval-sets`, {
@@ -218,8 +218,8 @@ describe('Secrets class — job-secrets withhold', () => {
       evalSetId = (await esRes.json()).id;
     }
 
-    if (evalflowId && evalSetId && agentToken && agentId) {
-      const runRes = await authFetch(adminSession, `${BASE_URL}/api/evalflows/${evalflowId}/run`, {
+    if (evalFlowId && evalSetId && agentToken && agentId) {
+      const runRes = await authFetch(adminSession, `${BASE_URL}/api/eval-flows/${evalFlowId}/run`, {
         method: 'POST',
         body: JSON.stringify({ region: BASE_NA, targetTier: 'public', evalSetId }),
       });

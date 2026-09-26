@@ -31,7 +31,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { SECRET_PLACEHOLDER_REGEX, collectSecretRefs, LEGACY_CONFIG_KEY_PREFIX } from '../shared/secrets';
+import { SECRET_PLACEHOLDER_REGEX, collectSecretRefs } from '../shared/secrets';
 import { summarizeAevalFailure, reduceUrlsSafely, urlForms, createBoundedCapture } from './aeval-output';
 import { StringDecoder } from 'string_decoder';
 import yaml from 'js-yaml';
@@ -75,7 +75,7 @@ interface EvalAgent {
 
 interface EvalJob {
   id: number;
-  evalflowId: number;
+  evalFlowId: number;
   evalSetId: number | null;
   siteId: string | null;
   status: string;
@@ -629,24 +629,24 @@ class VoxEvalAgentDaemon {
       return this.runAeval(scenarioConfig);
     }
 
-    const hasEvalflowComposition = !!(config.stepsPrefix || config.stepsSuffix);
+    const hasEvalFlowComposition = !!(config.stepsPrefix || config.stepsSuffix);
 
-    // Parse evalflow setup/teardown (from the evalflow config), if provided.
-    let evalflowPrefix: ScenarioStep[] = [];
-    let evalflowSuffix: ScenarioStep[] = [];
+    // Parse evalFlow setup/teardown (from the evalFlow config), if provided.
+    let evalFlowPrefix: ScenarioStep[] = [];
+    let evalFlowSuffix: ScenarioStep[] = [];
     if (config.stepsPrefix) {
       const p = yaml.load(config.stepsPrefix);
-      if (Array.isArray(p)) evalflowPrefix = p as ScenarioStep[];
+      if (Array.isArray(p)) evalFlowPrefix = p as ScenarioStep[];
     }
     if (config.stepsSuffix) {
       const s = yaml.load(config.stepsSuffix);
-      if (Array.isArray(s)) evalflowSuffix = s as ScenarioStep[];
+      if (Array.isArray(s)) evalFlowSuffix = s as ScenarioStep[];
     }
 
     const { prefixSteps, suffixSteps, samples } = extractSampleGroups(parsed.steps);
 
-    if (hasEvalflowComposition) {
-      // The eval set provides ONLY the body; the evalflow provides setup/teardown.
+    if (hasEvalFlowComposition) {
+      // The eval set provides ONLY the body; the evalFlow provides setup/teardown.
       if (parsed.steps.length === 0) {
         throw new Error('Eval set scenario has no steps — nothing to run');
       }
@@ -655,15 +655,15 @@ class VoxEvalAgentDaemon {
       // or no lab.trace) compose the whole body into ONE file so nothing is lost.
       const canChunk = samples.length > 0 && prefixSteps.length === 0 && suffixSteps.length === 0;
       if (canChunk) {
-        return this.runChunked(parsed, evalflowPrefix, samples, evalflowSuffix, tempFiles);
+        return this.runChunked(parsed, evalFlowPrefix, samples, evalFlowSuffix, tempFiles);
       }
-      const composed = composeScenarioYaml(parsed, evalflowPrefix, parsed.steps, evalflowSuffix);
+      const composed = composeScenarioYaml(parsed, evalFlowPrefix, parsed.steps, evalFlowSuffix);
       const f = this.writeTempYaml(composed, 'vox-scenario')!;
       tempFiles.push(f);
       return this.runAeval(f);
     }
 
-    // No evalflow composition → eval set is self-contained (backward compat).
+    // No evalFlow composition → eval set is self-contained (backward compat).
     // Files are defined by the data's (case_id, chunk_id); no size-based split.
     const groups = groupSamplesByChunk(samples);
     const hasPerCaseAnalysis = !!(parsed.params?.lab as Record<string, unknown> | undefined)?.cases;
@@ -2015,7 +2015,7 @@ class VoxEvalAgentDaemon {
     if (job.transport === 'phone') return this.executePhoneJob(job);
 
     console.log(`[Daemon] Executing job ${job.id}`);
-    console.log(`  - Evalflow ID: ${job.evalflowId}`);
+    console.log(`  - EvalFlow ID: ${job.evalFlowId}`);
     console.log(`  - Site: ${job.siteId}`);
 
     const config = (job.config || {}) as { framework?: string; scenario?: string; stepsPrefix?: string; stepsSuffix?: string };
@@ -2028,19 +2028,16 @@ class VoxEvalAgentDaemon {
       throw new Error('job.config.scenario is required');
     }
 
-    // Resolve ${config.*} placeholders (e.g., ${config.url} from evalflow config)
+    // Resolve ${config.*} placeholders (e.g., ${config.url} from evalFlow config)
     let scenario = config.scenario;
-    // stepsPrefix/stepsSuffix come from the evalflow and typically hold
+    // stepsPrefix/stepsSuffix come from the evalFlow and typically hold
     // platform.setup with credentials — they MUST go through the same
     // ${config.*} / ${secrets.*} resolution as the scenario.
     let stepsPrefix = config.stepsPrefix;
     let stepsSuffix = config.stepsSuffix;
     const configPlaceholders: Record<string, string> = {};
     for (const [k, v] of Object.entries(config)) {
-      // _legacy* keys are migration-parked dead payloads (0040/0041): never
-      // expandable via ${config.*} — that indirection would smuggle their
-      // secret refs past the server's misuse/consent scans, which skip them.
-      if (typeof v === 'string' && k !== 'scenario' && k !== 'framework' && !k.startsWith(LEGACY_CONFIG_KEY_PREFIX)) {
+      if (typeof v === 'string' && k !== 'scenario' && k !== 'framework') {
         configPlaceholders[k] = v;
       }
     }
@@ -2143,7 +2140,7 @@ class VoxEvalAgentDaemon {
         throw new Error(
           `Unresolved secret placeholder(s): ${names.join(', ')}. ` +
           `The server did not supply ${plural ? 'these secrets' : 'this secret'} for this job — ` +
-          `${plural ? 'they are' : 'it is'} either not configured for the evalflow owner, or not ` +
+          `${plural ? 'they are' : 'it is'} either not configured for the evalFlow owner, or not ` +
           `available to whoever started the run.`,
         );
       }

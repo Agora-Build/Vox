@@ -28,7 +28,7 @@ interface ArtifactFile {
 interface JobDetailResponse {
   job: EvalJob;
   result: EvalResult | null;
-  evalflowName: string;
+  evalFlowName: string;
   creatorName: string | null;
 }
 
@@ -89,12 +89,12 @@ export default function ConsoleEvalJobDetail({ jobId }: { jobId: number }) {
     );
   }
 
-  const { job, result, evalflowName, creatorName } = data;
+  const { job, result, evalFlowName, creatorName } = data;
   const statusCfg = STATUS_CONFIG[job.status] ?? STATUS_CONFIG.pending;
   const StatusIcon = statusCfg.icon;
 
   // Provenance from the job's immutable snapshot — correct even after the
-  // evalflow/eval-set is edited or deleted.
+  // evalFlow/eval-set is edited or deleted.
   const snap = job.snapshot;
   const providerName = snap?.provider?.name ?? null;
   const jobEvalSetName = snap?.evalSet?.name ?? `#${job.evalSetId ?? "?"}`;
@@ -190,12 +190,12 @@ export default function ConsoleEvalJobDetail({ jobId }: { jobId: number }) {
               )}
             </h1>
             <p className="text-muted-foreground text-sm">
-              {job.evalflowId != null ? (
-                <Link href={`/console/evalflows/${job.evalflowId}`}>
-                  <span className="text-primary hover:underline cursor-pointer">{evalflowName}</span>
+              {job.evalFlowId != null ? (
+                <Link href={`/console/eval-flows/${job.evalFlowId}`}>
+                  <span className="text-primary hover:underline cursor-pointer">{evalFlowName}</span>
                 </Link>
               ) : (
-                <span title="Evalflow deleted">{evalflowName}</span>
+                <span title="Eval Flow deleted">{evalFlowName}</span>
               )}
               {providerName && <> · {providerName}</>}
               {" · "}
@@ -215,7 +215,7 @@ export default function ConsoleEvalJobDetail({ jobId }: { jobId: number }) {
         <div className="flex items-center gap-2">
           {snap && (
             <Button variant="outline" className="gap-2" onClick={() => setSnapshotOpen(true)} data-testid="button-view-snapshot">
-              <FileText className="h-4 w-4" /> View evalflow &amp; eval set
+              <FileText className="h-4 w-4" /> View Eval Flow &amp; eval set
             </Button>
           )}
           {/* Artifact status + actions */}
@@ -586,14 +586,14 @@ export default function ConsoleEvalJobDetail({ jobId }: { jobId: number }) {
         </Card>
       )}
 
-      {/* Immutable evalflow + eval-set snapshot (as run) */}
+      {/* Immutable evalFlow + eval-set snapshot (as run) */}
       <Dialog open={snapshotOpen} onOpenChange={setSnapshotOpen}>
         <DialogContent className="max-w-3xl max-h-[85vh] overflow-y-auto">
           <DialogHeader>
-            <DialogTitle>Evalflow &amp; eval set — as run</DialogTitle>
+            <DialogTitle>Eval Flow &amp; eval set — as run</DialogTitle>
             <DialogDescription>
               Immutable snapshot captured when this job ran. It does not change if the
-              evalflow or eval set is later edited or deleted.
+              evalFlow or eval set is later edited or deleted.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
@@ -606,9 +606,9 @@ export default function ConsoleEvalJobDetail({ jobId }: { jobId: number }) {
               </div>
             </div>
             <div>
-              <div className="text-sm font-semibold mb-1">Evalflow: {snap?.evalflow?.name ?? "—"}</div>
+              <div className="text-sm font-semibold mb-1">Eval Flow: {snap?.evalFlow?.name ?? "—"}</div>
               <pre className="p-3 bg-muted rounded-md text-xs font-mono overflow-auto max-h-72">
-                {snap?.evalflow?.config ? toYaml(snap.evalflow.config) : "(no config)"}
+                {snap?.evalFlow?.config ? toYaml(snap.evalFlow.config) : "(no config)"}
               </pre>
             </div>
             <div>

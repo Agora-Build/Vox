@@ -259,7 +259,7 @@ describe("Eval Agent Daemon - API Communication", () => {
 
       // Core derives the site from the auth token — no query param involved.
       res.json([
-        { id: 1, evalflowId: 1, siteId: "na", status: "pending" },
+        { id: 1, evalFlowId: 1, siteId: "na", status: "pending" },
       ]);
     });
 

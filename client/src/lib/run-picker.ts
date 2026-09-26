@@ -1,6 +1,6 @@
 /**
  * Pure helpers for the run dialog's two-level region/site agent picker.
- * Extracted from console-evalflow-detail.tsx so the grouping/encoding logic
+ * Extracted from console-eval-flow-detail.tsx so the grouping/encoding logic
  * is unit-testable without a browser (see tests/run-picker.test.ts).
  */
 

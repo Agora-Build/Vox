@@ -5,7 +5,7 @@ import { createMarketplaceService } from "../plugins/shared-agents/server/servic
 const hasDb = !!process.env.DATABASE_URL;
 const d = hasDb ? describe : describe.skip;
 
-const CTX = { evalflowId: 1, evalSetId: 1, region: "na-us-ashburn-01", createdBy: 3 };
+const CTX = { evalFlowId: 1, evalSetId: 1, region: "na-us-ashburn-01", createdBy: 3 };
 // SettlementOutcome stub — settle reads jobId, status, hasResult, settlementContext.
 // hasResult defaults true (the normal path: a completed job wrote a result row);
 // the H1 test overrides it to prove a resultless completion refunds.

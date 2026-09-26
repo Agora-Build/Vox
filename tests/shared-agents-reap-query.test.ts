@@ -16,18 +16,18 @@ d("storage.getReapableSharedJobs", () => {
 
     // Targeted + carries settlementContext → should be returned once failed.
     const included = await storage.createEvalJob({
-      evalflowId: null, triggerType: 2, evalSetId: null, createdBy: 1,
+      evalFlowId: null, triggerType: 2, evalSetId: null, createdBy: 1,
       siteId: "na-us-ashburn-01", targetTokenId: token.id,
-      config: {}, snapshot: { provider: null, evalflow: null, evalSet: null, creatorPlan: null,
+      config: {}, snapshot: { provider: null, evalFlow: null, evalSet: null, creatorPlan: null,
         settlementContext: { settlementId: 424242 } } as any,
       status: "pending", priority: 0, retryCount: 0, maxRetries: 3,
     } as any);
 
     // Targeted but NO settlementContext → must be excluded.
     const excluded = await storage.createEvalJob({
-      evalflowId: null, triggerType: 2, evalSetId: null, createdBy: 1,
+      evalFlowId: null, triggerType: 2, evalSetId: null, createdBy: 1,
       siteId: "na-us-ashburn-01", targetTokenId: token.id,
-      config: {}, snapshot: { provider: null, evalflow: null, evalSet: null, creatorPlan: null } as any,
+      config: {}, snapshot: { provider: null, evalFlow: null, evalSet: null, creatorPlan: null } as any,
       status: "pending", priority: 0, retryCount: 0, maxRetries: 3,
     } as any);
 
@@ -42,9 +42,9 @@ d("storage.getReapableSharedJobs", () => {
     // leak-reaper). completeEvalJob sets status=failed, so drive completed via the
     // running→completed transition.
     const includedCompleted = await storage.createEvalJob({
-      evalflowId: null, triggerType: 2, evalSetId: null, createdBy: 1,
+      evalFlowId: null, triggerType: 2, evalSetId: null, createdBy: 1,
       siteId: "na-us-ashburn-01", targetTokenId: token.id,
-      config: {}, snapshot: { provider: null, evalflow: null, evalSet: null, creatorPlan: null,
+      config: {}, snapshot: { provider: null, evalFlow: null, evalSet: null, creatorPlan: null,
         settlementContext: { settlementId: 424243 } } as any,
       status: "running", priority: 0, retryCount: 0, maxRetries: 3,
     } as any);
@@ -69,9 +69,9 @@ d("storage.getReapableSharedJobs", () => {
     // A completed, targeted, settlement-bearing job — the money path. Drive it
     // through running→completed so its completed_at is ~now (inside the grace window).
     const job = await storage.createEvalJob({
-      evalflowId: null, triggerType: 2, evalSetId: null, createdBy: 1,
+      evalFlowId: null, triggerType: 2, evalSetId: null, createdBy: 1,
       siteId: "na-us-ashburn-01", targetTokenId: token.id,
-      config: {}, snapshot: { provider: null, evalflow: null, evalSet: null, creatorPlan: null,
+      config: {}, snapshot: { provider: null, evalFlow: null, evalSet: null, creatorPlan: null,
         settlementContext: { settlementId: 909090 } } as any,
       status: "running", priority: 0, retryCount: 0, maxRetries: 3,
     } as any);
@@ -102,17 +102,17 @@ d("storage.getReapableSharedJobs", () => {
     // earlier tests in this describe (which would let it pass vacuously if they were
     // removed or reordered). Two awaited finalizes give distinct completed_at.
     const first = await storage.createEvalJob({
-      evalflowId: null, triggerType: 2, evalSetId: null, createdBy: 1,
+      evalFlowId: null, triggerType: 2, evalSetId: null, createdBy: 1,
       siteId: "na-us-ashburn-01", targetTokenId: token.id,
-      config: {}, snapshot: { provider: null, evalflow: null, evalSet: null, creatorPlan: null,
+      config: {}, snapshot: { provider: null, evalFlow: null, evalSet: null, creatorPlan: null,
         settlementContext: { settlementId: 707071 } } as any,
       status: "running", priority: 0, retryCount: 0, maxRetries: 3,
     } as any);
     await storage.finalizeRunningJob(first.id, undefined);
     const second = await storage.createEvalJob({
-      evalflowId: null, triggerType: 2, evalSetId: null, createdBy: 1,
+      evalFlowId: null, triggerType: 2, evalSetId: null, createdBy: 1,
       siteId: "na-us-ashburn-01", targetTokenId: token.id,
-      config: {}, snapshot: { provider: null, evalflow: null, evalSet: null, creatorPlan: null,
+      config: {}, snapshot: { provider: null, evalFlow: null, evalSet: null, creatorPlan: null,
         settlementContext: { settlementId: 707072 } } as any,
       status: "running", priority: 0, retryCount: 0, maxRetries: 3,
     } as any);

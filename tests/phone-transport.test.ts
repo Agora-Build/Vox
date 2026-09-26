@@ -14,7 +14,7 @@ const suffix = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
 
 d("phone transport — snapshot + frozen job stamp", () => {
   let userId: number;
-  let evalflowId: number;
+  let evalFlowId: number;
   let jobId: number;
 
   beforeAll(async () => {
@@ -26,26 +26,26 @@ d("phone transport — snapshot + frozen job stamp", () => {
   afterAll(async () => {
     if (!hasDb) return;
     if (jobId) await pool.query(`DELETE FROM eval_jobs WHERE id = $1`, [jobId]);
-    if (evalflowId) await pool.query(`DELETE FROM evalflows WHERE id = $1`, [evalflowId]);
+    if (evalFlowId) await pool.query(`DELETE FROM eval_flows WHERE id = $1`, [evalFlowId]);
     if (userId) await pool.query(`DELETE FROM users WHERE id = $1`, [userId]);
   });
 
-  it("freezes transport at job creation; later evalflow edits don't rewrite it", async () => {
+  it("freezes transport at job creation; later evalFlow edits don't rewrite it", async () => {
     const providers = await storage.getAllProviders();
     expect(providers.length).toBeGreaterThan(0);
 
-    const wf = await storage.createEvalflow({
+    const wf = await storage.createEvalFlow({
       name: `phA-wf-${suffix}`, ownerId: userId, providerId: providers[0].id,
       transport: "phone", visibility: "private", config: {},
     } as any);
-    evalflowId = wf.id;
+    evalFlowId = wf.id;
     expect(wf.transport).toBe("phone");
 
     const snap = buildJobSnapshot(wf, null, providers[0], "principal");
     expect(snap.transport).toBe("phone");
 
     const job = await storage.createEvalJob({
-      evalflowId: wf.id, triggerType: 2, evalSetId: null, createdBy: userId,
+      evalFlowId: wf.id, triggerType: 2, evalSetId: null, createdBy: userId,
       siteId: null, targetRegion: "na-us-ashburn", targetTier: "private",
       config: {}, snapshot: snap,
       status: "pending", priority: 0, retryCount: 0, maxRetries: 3,
@@ -53,16 +53,16 @@ d("phone transport — snapshot + frozen job stamp", () => {
     jobId = job.id;
     expect(job.transport).toBe("phone"); // stamped column
 
-    // Edit the live evalflow — the frozen job must not move.
-    await storage.updateEvalflow(wf.id, { transport: "web" } as any);
+    // Edit the live evalFlow — the frozen job must not move.
+    await storage.updateEvalFlow(wf.id, { transport: "web" } as any);
     const reread = await storage.getEvalJob(job.id);
     expect(reread!.transport).toBe("phone");
     expect((reread!.snapshot as any).transport).toBe("phone");
   });
 
-  it("defaults to web when the evalflow has no transport (snapshot)", async () => {
+  it("defaults to web when the evalFlow has no transport (snapshot)", async () => {
     const providers = await storage.getAllProviders();
-    const wf = await storage.createEvalflow({
+    const wf = await storage.createEvalFlow({
       name: `phA-wf-web-${suffix}`, ownerId: userId, providerId: providers[0].id,
       visibility: "private", config: {},
     } as any);
@@ -71,7 +71,7 @@ d("phone transport — snapshot + frozen job stamp", () => {
       const snap = buildJobSnapshot(wf, null, providers[0], "basic");
       expect(snap.transport).toBe("web");
     } finally {
-      await pool.query(`DELETE FROM evalflows WHERE id = $1`, [wf.id]);
+      await pool.query(`DELETE FROM eval_flows WHERE id = $1`, [wf.id]);
     }
   });
 });
@@ -103,10 +103,10 @@ d("phone transport — claim gating (SQL + permissions mirror)", () => {
     } as any)).id;
 
     const mkJob = (transport: "web" | "phone") => storage.createEvalJob({
-      evalflowId: null, triggerType: 2, evalSetId: null, createdBy: creatorId,
+      evalFlowId: null, triggerType: 2, evalSetId: null, createdBy: creatorId,
       siteId: null, targetRegion: "na-us-ashburn", targetTier: "private",
       config: {},
-      snapshot: { provider: null, evalflow: null, evalSet: null, creatorPlan: null, transport } as any,
+      snapshot: { provider: null, evalFlow: null, evalSet: null, creatorPlan: null, transport } as any,
       status: "pending", priority: 0, retryCount: 0, maxRetries: 3,
     } as any);
     phoneJobId = (await mkJob("phone")).id;
@@ -160,10 +160,10 @@ d("phone transport — callMetadata + metrics transport filter", () => {
 
   const mkCompletedishJob = async (transport: "web" | "phone", providerId: string) => {
     const job = await storage.createEvalJob({
-      evalflowId: null, triggerType: 2, evalSetId: null, createdBy: creatorId,
+      evalFlowId: null, triggerType: 2, evalSetId: null, createdBy: creatorId,
       siteId: null, targetRegion: "na-us-ashburn", targetTier: "private",
       config: {},
-      snapshot: { provider: { id: providerId, name: "p", platformId: null }, evalflow: null, evalSet: null, creatorPlan: "basic", transport } as any,
+      snapshot: { provider: { id: providerId, name: "p", platformId: null }, evalFlow: null, evalSet: null, creatorPlan: "basic", transport } as any,
       status: "pending", priority: 0, retryCount: 0, maxRetries: 3,
     } as any);
     // Claim stamps tokenDispatchTier=private + running (my-evals arm 3 needs it).
@@ -242,7 +242,7 @@ d("phone transport — callMetadata + metrics transport filter", () => {
   });
 });
 
-d("phone transport — evalflow API (HTTP, dev server)", () => {
+d("phone transport — evalFlow API (HTTP, dev server)", () => {
   let cookie: string;
   const created: number[] = [];
 
@@ -258,12 +258,12 @@ d("phone transport — evalflow API (HTTP, dev server)", () => {
 
   afterAll(async () => {
     if (!hasDb || created.length === 0) return;
-    await pool.query(`DELETE FROM evalflows WHERE id = ANY($1::int[])`, [created]);
+    await pool.query(`DELETE FROM eval_flows WHERE id = ANY($1::int[])`, [created]);
   });
 
-  const mkEvalflow = async (body: Record<string, unknown>) => {
+  const mkEvalFlow = async (body: Record<string, unknown>) => {
     const providers = await storage.getAllProviders();
-    const res = await fetch(`${BASE_URL}/api/evalflows`, {
+    const res = await fetch(`${BASE_URL}/api/eval-flows`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Cookie: cookie },
       body: JSON.stringify({ name: `phA-http-${suffix}-${Math.random().toString(36).slice(2, 8)}`, providerId: providers[0].id, ...body }),
@@ -272,55 +272,55 @@ d("phone transport — evalflow API (HTTP, dev server)", () => {
   };
 
   it("create accepts transport=phone and echoes it; default is web", async () => {
-    const res = await mkEvalflow({ transport: "phone" });
+    const res = await mkEvalFlow({ transport: "phone" });
     expect(res.ok).toBe(true);
     const wf = await res.json();
     created.push(wf.id);
     expect(wf.transport).toBe("phone");
 
-    const res2 = await mkEvalflow({});
+    const res2 = await mkEvalFlow({});
     const wf2 = await res2.json();
     created.push(wf2.id);
     expect(wf2.transport).toBe("web");
   });
 
   it("rejects an invalid transport with 400", async () => {
-    const res = await mkEvalflow({ transport: "carrier-pigeon" });
+    const res = await mkEvalFlow({ transport: "carrier-pigeon" });
     expect(res.status).toBe(400);
   });
 
-  it("validates Setup step scripts per mode and refuses running a phone evalflow without call establishment", async () => {
+  it("validates Setup step scripts per mode and refuses running a phone evalFlow without call establishment", async () => {
     // Clean cut: the old per-mode config keys are rejected with pointer errors.
-    const legacyDial = await mkEvalflow({ transport: "phone", config: { phoneDial: { number: "+15551234" } } });
+    const legacyDial = await mkEvalFlow({ transport: "phone", config: { phoneDial: { number: "+15551234" } } });
     expect(legacyDial.status).toBe(400);
     expect((await legacyDial.json()).error).toContain("call.dial step");
-    const legacyTrigger = await mkEvalflow({ transport: "phone", config: { restfulTrigger: { method: "POST", url: "https://x.example/y" } } });
+    const legacyTrigger = await mkEvalFlow({ transport: "phone", config: { restfulTrigger: { method: "POST", url: "https://x.example/y" } } });
     expect(legacyTrigger.status).toBe(400);
     expect((await legacyTrigger.json()).error).toContain("restful.request step");
 
     // Vocabulary is transport-scoped.
-    const badNumber = await mkEvalflow({ transport: "phone", config: { stepsPrefix: "- type: call.dial\n  number: abc\n" } });
+    const badNumber = await mkEvalFlow({ transport: "phone", config: { stepsPrefix: "- type: call.dial\n  number: abc\n" } });
     expect(badNumber.status).toBe(400);
-    const webVocabOnPhone = await mkEvalflow({ transport: "phone", config: { stepsPrefix: "- type: platform.setup\n" } });
+    const webVocabOnPhone = await mkEvalFlow({ transport: "phone", config: { stepsPrefix: "- type: platform.setup\n" } });
     expect(webVocabOnPhone.status).toBe(400);
     expect((await webVocabOnPhone.json()).error).toContain("web-session vocabulary");
-    const phoneVocabOnWeb = await mkEvalflow({ transport: "web", config: { stepsPrefix: "- type: call.dial\n  number: \"+15551234\"\n" } });
+    const phoneVocabOnWeb = await mkEvalFlow({ transport: "web", config: { stepsPrefix: "- type: call.dial\n  number: \"+15551234\"\n" } });
     expect(phoneVocabOnWeb.status).toBe(400);
     expect((await phoneVocabOnWeb.json()).error).toContain("phone vocabulary");
 
-    const okDial = await mkEvalflow({
+    const okDial = await mkEvalFlow({
       transport: "phone",
       config: { stepsPrefix: '- type: call.dial\n  number: "+1 (555) 010-1234"\n- type: call.wait_answered\n', stepsSuffix: "- type: call.hangup\n" },
     });
     expect(okDial.ok).toBe(true);
     created.push((await okDial.json()).id);
 
-    // Phone evalflow with EMPTY Setup: creatable, but running it is refused at
+    // Phone evalFlow with EMPTY Setup: creatable, but running it is refused at
     // the source (unified-steps §4 — nothing would establish a call).
-    const bare = await mkEvalflow({ transport: "phone" });
+    const bare = await mkEvalFlow({ transport: "phone" });
     const bareWf = await bare.json();
     created.push(bareWf.id);
-    const run = await fetch(`${BASE_URL}/api/evalflows/${bareWf.id}/run`, {
+    const run = await fetch(`${BASE_URL}/api/eval-flows/${bareWf.id}/run`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Cookie: cookie },
       body: JSON.stringify({ region: "na-us-ashburn", targetTier: "private" }),
@@ -330,14 +330,14 @@ d("phone transport — evalflow API (HTTP, dev server)", () => {
 
     // Trigger-only Setup (restful.request, no call.dial): authorable, but the
     // run names the R7 gap.
-    const triggerOnly = await mkEvalflow({
+    const triggerOnly = await mkEvalFlow({
       transport: "phone",
       config: { stepsPrefix: '- type: restful.request\n  method: POST\n  url: "https://x.example/call"\n' },
     });
     expect(triggerOnly.ok).toBe(true);
     const triggerWf = await triggerOnly.json();
     created.push(triggerWf.id);
-    const runTrigger = await fetch(`${BASE_URL}/api/evalflows/${triggerWf.id}/run`, {
+    const runTrigger = await fetch(`${BASE_URL}/api/eval-flows/${triggerWf.id}/run`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Cookie: cookie },
       body: JSON.stringify({ region: "na-us-ashburn", targetTier: "private" }),
@@ -347,10 +347,10 @@ d("phone transport — evalflow API (HTTP, dev server)", () => {
   });
 
   it("PATCH can flip transport", async () => {
-    const res = await mkEvalflow({});
+    const res = await mkEvalFlow({});
     const wf = await res.json();
     created.push(wf.id);
-    const patch = await fetch(`${BASE_URL}/api/evalflows/${wf.id}`, {
+    const patch = await fetch(`${BASE_URL}/api/eval-flows/${wf.id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json", Cookie: cookie },
       body: JSON.stringify({ transport: "phone" }),
@@ -443,7 +443,7 @@ d("phone transport — agent capability declaration (HTTP, dev server)", () => {
 // consumes (the daemon half is tests/phone-eval.test.ts's runPhoneJob).
 d("unified steps — full run path (API round-trip)", () => {
   let cookie: string;
-  let evalflowId: number;
+  let evalFlowId: number;
   let evalSetId: number;
   let jobId: number;
 
@@ -463,7 +463,7 @@ d("unified steps — full run path (API round-trip)", () => {
   afterAll(async () => {
     if (!hasDb) return;
     if (jobId) await pool.query(`DELETE FROM eval_jobs WHERE id = $1`, [jobId]);
-    if (evalflowId) await pool.query(`DELETE FROM evalflows WHERE id = $1`, [evalflowId]);
+    if (evalFlowId) await pool.query(`DELETE FROM eval_flows WHERE id = $1`, [evalFlowId]);
     if (evalSetId) await pool.query(`DELETE FROM eval_sets WHERE id = $1`, [evalSetId]);
   });
 
@@ -476,12 +476,12 @@ d("unified steps — full run path (API round-trip)", () => {
 
   it("create → run → frozen snapshot + merged job config carry the steps the daemon will split", async () => {
     const providers = await storage.getAllProviders();
-    const wfRes = await post("/api/evalflows", {
+    const wfRes = await post("/api/eval-flows", {
       name: `steps-rt-wf-${suffix}`, providerId: providers[0].id, transport: "phone",
       config: { framework: "aeval", stepsPrefix: SETUP, stepsSuffix: TEARDOWN },
     });
     expect(wfRes.ok).toBe(true);
-    evalflowId = (await wfRes.json()).id;
+    evalFlowId = (await wfRes.json()).id;
 
     const esRes = await post("/api/eval-sets", {
       name: `steps-rt-es-${suffix}`, visibility: "public", config: { scenario: SCENARIO },
@@ -489,7 +489,7 @@ d("unified steps — full run path (API round-trip)", () => {
     expect(esRes.ok).toBe(true);
     evalSetId = (await esRes.json()).id;
 
-    const runRes = await post(`/api/evalflows/${evalflowId}/run`, {
+    const runRes = await post(`/api/eval-flows/${evalFlowId}/run`, {
       evalSetId, region: "na-us-seattle", targetTier: "private",
     });
     expect(runRes.ok, `run failed: ${await runRes.clone().text()}`).toBe(true);
@@ -500,31 +500,31 @@ d("unified steps — full run path (API round-trip)", () => {
 
     // The FROZEN snapshot carries the steps — the restful endpoint and all
     // provenance reads use this copy, never the live row.
-    const snapConfig = (job!.snapshot as any).evalflow.config as Record<string, unknown>;
+    const snapConfig = (job!.snapshot as any).evalFlow.config as Record<string, unknown>;
     expect(snapConfig.stepsPrefix).toBe(SETUP);
     expect(snapConfig.stepsSuffix).toBe(TEARDOWN);
 
-    // The merged job config is the daemon's input: evalflow steps + eval-set
+    // The merged job config is the daemon's input: evalFlow steps + eval-set
     // scenario, exactly what executePhoneJob parses and splits.
     const jobConfig = job!.config as Record<string, unknown>;
     expect(jobConfig.stepsPrefix).toBe(SETUP);
     expect(jobConfig.stepsSuffix).toBe(TEARDOWN);
     expect(String(jobConfig.scenario)).toContain("audio.play");
 
-    // Editing the live evalflow's steps never rewrites the frozen job.
-    const patch = await fetch(`${BASE_URL}/api/evalflows/${evalflowId}`, {
+    // Editing the live evalFlow's steps never rewrites the frozen job.
+    const patch = await fetch(`${BASE_URL}/api/eval-flows/${evalFlowId}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json", Cookie: cookie },
       body: JSON.stringify({ config: { framework: "aeval", stepsPrefix: '- type: call.dial\n  number: "+1 999 999 9999"\n', stepsSuffix: TEARDOWN } }),
     });
     expect(patch.ok).toBe(true);
     const reread = await storage.getEvalJob(jobId);
-    expect(((reread!.snapshot as any).evalflow.config as Record<string, unknown>).stepsPrefix).toBe(SETUP);
+    expect(((reread!.snapshot as any).evalFlow.config as Record<string, unknown>).stepsPrefix).toBe(SETUP);
   });
 
-  it("PATCH revalidates the RESULTING transport/config pair: a web evalflow with platform steps can't silently flip to phone", async () => {
+  it("PATCH revalidates the RESULTING transport/config pair: a web evalFlow with platform steps can't silently flip to phone", async () => {
     const providers = await storage.getAllProviders();
-    const wfRes = await post("/api/evalflows", {
+    const wfRes = await post("/api/eval-flows", {
       name: `steps-rt-flip-${suffix}`, providerId: providers[0].id, transport: "web",
       config: { framework: "aeval", stepsPrefix: "- type: platform.setup\n  platform_id: livekit\n" },
     });
@@ -532,7 +532,7 @@ d("unified steps — full run path (API round-trip)", () => {
     const flipWfId = (await wfRes.json()).id as number;
     try {
       // Transport-only flip: the EXISTING config is re-validated against phone.
-      const flip = await fetch(`${BASE_URL}/api/evalflows/${flipWfId}`, {
+      const flip = await fetch(`${BASE_URL}/api/eval-flows/${flipWfId}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json", Cookie: cookie },
         body: JSON.stringify({ transport: "phone" }),
@@ -541,7 +541,7 @@ d("unified steps — full run path (API round-trip)", () => {
       expect((await flip.json()).error).toContain("web-session vocabulary");
 
       // Flipping transport TOGETHER with a valid phone config succeeds.
-      const flipWithConfig = await fetch(`${BASE_URL}/api/evalflows/${flipWfId}`, {
+      const flipWithConfig = await fetch(`${BASE_URL}/api/eval-flows/${flipWfId}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json", Cookie: cookie },
         body: JSON.stringify({ transport: "phone", config: { framework: "aeval", stepsPrefix: SETUP, stepsSuffix: TEARDOWN } }),
@@ -549,12 +549,12 @@ d("unified steps — full run path (API round-trip)", () => {
       expect(flipWithConfig.ok).toBe(true);
       expect((await flipWithConfig.json()).transport).toBe("phone");
     } finally {
-      await pool.query(`DELETE FROM evalflows WHERE id = $1`, [flipWfId]);
+      await pool.query(`DELETE FROM eval_flows WHERE id = $1`, [flipWfId]);
     }
   });
 });
 
-// An evalflow whose framework this build can't run (only reachable as a
+// An evalFlow whose framework this build can't run (only reachable as a
 // pre-existing row — the validator rejects it at save) must never produce
 // a job: refused at the run route, and its schedule disabled by the
 // scheduler rather than firing failures forever.
@@ -575,7 +575,7 @@ d("unsupported framework — run refused, schedule disabled", () => {
     const providers = await storage.getAllProviders();
     // Written through storage, bypassing the validator — exactly the shape a
     // pre-existing row has after its framework is removed from the build.
-    const wf = await storage.createEvalflow({
+    const wf = await storage.createEvalFlow({
       name: `unsupported-fw-${suffix}`, ownerId: 1, providerId: providers[0].id,
       visibility: "private", config: { framework: "some-removed-framework", scenario: undefined },
     } as any);
@@ -586,7 +586,7 @@ d("unsupported framework — run refused, schedule disabled", () => {
     } as any);
     evalSetId = es.id;
     const sched = await storage.createEvalSchedule({
-      name: `unsupported-fw-sched-${suffix}`, evalflowId: wf.id, evalSetId: es.id,
+      name: `unsupported-fw-sched-${suffix}`, evalFlowId: wf.id, evalSetId: es.id,
       region: "na-us-seattle", targetTier: "private", scheduleType: "recurring",
       cronExpression: "0 * * * *", isEnabled: true, createdBy: 1,
       nextRunAt: new Date(Date.now() - 60_000), // due now
@@ -596,14 +596,14 @@ d("unsupported framework — run refused, schedule disabled", () => {
 
   afterAll(async () => {
     if (!hasDb) return;
-    await pool.query(`DELETE FROM eval_jobs WHERE evalflow_id = $1`, [wfId]);
+    await pool.query(`DELETE FROM eval_jobs WHERE eval_flow_id = $1`, [wfId]);
     if (scheduleId) await pool.query(`DELETE FROM eval_schedules WHERE id = $1`, [scheduleId]);
-    if (wfId) await pool.query(`DELETE FROM evalflows WHERE id = $1`, [wfId]);
+    if (wfId) await pool.query(`DELETE FROM eval_flows WHERE id = $1`, [wfId]);
     if (evalSetId) await pool.query(`DELETE FROM eval_sets WHERE id = $1`, [evalSetId]);
   });
 
   it("the run route refuses it instead of creating a job that fails at the daemon", async () => {
-    const res = await fetch(`${BASE_URL}/api/evalflows/${wfId}/run`, {
+    const res = await fetch(`${BASE_URL}/api/eval-flows/${wfId}/run`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Cookie: cookie },
       body: JSON.stringify({ evalSetId, region: "na-us-seattle", targetTier: "private" }),
@@ -618,7 +618,7 @@ d("unsupported framework — run refused, schedule disabled", () => {
     const after = await storage.getEvalSchedule(scheduleId);
     expect(after!.isEnabled).toBe(false);
     // And it created nothing.
-    const { rows } = await pool.query(`SELECT count(*)::int AS n FROM eval_jobs WHERE evalflow_id = $1`, [wfId]);
+    const { rows } = await pool.query(`SELECT count(*)::int AS n FROM eval_jobs WHERE eval_flow_id = $1`, [wfId]);
     expect(rows[0].n).toBe(0);
   });
 });

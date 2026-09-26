@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { parsePlatformSetup, evaluateSessionRequirement, sessionScopeForEvalflow, credentialKeyFor } from "../server/auth-session";
+import { parsePlatformSetup, evaluateSessionRequirement, sessionScopeForEvalFlow, credentialKeyFor } from "../server/auth-session";
 
 describe("parsePlatformSetup", () => {
   it("extracts platformId and secret refs from a stepsPrefix", () => {
@@ -80,10 +80,10 @@ describe("evaluateSessionRequirement", () => {
   });
 });
 
-describe("sessionScopeForEvalflow", () => {
-  it("org evalflow → org scope; personal → owner scope", () => {
-    expect(sessionScopeForEvalflow({ ownerId: 7, organizationId: 3 })).toEqual({ organizationId: 3 });
-    expect(sessionScopeForEvalflow({ ownerId: 7, organizationId: null })).toEqual({ userId: 7 });
+describe("sessionScopeForEvalFlow", () => {
+  it("org evalFlow → org scope; personal → owner scope", () => {
+    expect(sessionScopeForEvalFlow({ ownerId: 7, organizationId: 3 })).toEqual({ organizationId: 3 });
+    expect(sessionScopeForEvalFlow({ ownerId: 7, organizationId: null })).toEqual({ userId: 7 });
   });
 });
 

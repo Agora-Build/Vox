@@ -13,7 +13,7 @@ import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, 
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import { Save, LogOut, ArrowRight, FolderKanban, Workflow as EvalflowIcon, FileText, CalendarClock } from "lucide-react";
+import { Save, LogOut, ArrowRight, FolderKanban, Workflow as EvalFlowIcon, FileText, CalendarClock } from "lucide-react";
 import { formatRegion } from "@/lib/utils";
 
 interface AuthStatus {
@@ -31,9 +31,9 @@ interface Organization {
 }
 
 interface Project { id: number; name: string; organizationId: number | null; }
-interface EvalflowItem { id: number; name: string; projectId: number | null; organizationId: number | null; }
+interface EvalFlowItem { id: number; name: string; projectId: number | null; organizationId: number | null; }
 interface EvalSetItem { id: number; name: string; organizationId: number | null; }
-interface ScheduleItem { id: number; name: string; evalflowName: string; region: string; targetTier: string; organizationId: number | null; }
+interface ScheduleItem { id: number; name: string; evalFlowName: string; region: string; targetTier: string; organizationId: number | null; }
 
 export default function ConsoleOrganizationSettings() {
   const { toast } = useToast();
@@ -185,8 +185,8 @@ function MoveResourcesDialog({ open, onOpenChange, orgName }: { open: boolean; o
     enabled: open,
   });
 
-  const { data: evalflows } = useQuery<EvalflowItem[]>({
-    queryKey: ["/api/evalflows"],
+  const { data: evalFlows } = useQuery<EvalFlowItem[]>({
+    queryKey: ["/api/eval-flows"],
     enabled: open,
   });
 
@@ -202,12 +202,12 @@ function MoveResourcesDialog({ open, onOpenChange, orgName }: { open: boolean; o
 
   // Filter to personal resources only (no organizationId)
   const personalProjects = projects?.filter(p => !p.organizationId) ?? [];
-  const personalEvalflows = evalflows?.filter(w => !w.organizationId) ?? [];
+  const personalEvalFlows = evalFlows?.filter(w => !w.organizationId) ?? [];
   const personalEvalSets = evalSets?.filter(e => !e.organizationId) ?? [];
   const personalSchedules = schedules?.filter(s => !s.organizationId) ?? [];
 
   const [selectedProjects, setSelectedProjects] = useState<Set<number>>(new Set());
-  const [selectedEvalflows, setSelectedEvalflows] = useState<Set<number>>(new Set());
+  const [selectedEvalFlows, setSelectedEvalFlows] = useState<Set<number>>(new Set());
   const [selectedEvalSets, setSelectedEvalSets] = useState<Set<number>>(new Set());
   const [selectedSchedules, setSelectedSchedules] = useState<Set<number>>(new Set());
 
@@ -217,27 +217,27 @@ function MoveResourcesDialog({ open, onOpenChange, orgName }: { open: boolean; o
     setter(next);
   };
 
-  const totalSelected = selectedProjects.size + selectedEvalflows.size + selectedEvalSets.size + selectedSchedules.size;
-  const hasPersonalResources = personalProjects.length + personalEvalflows.length + personalEvalSets.length + personalSchedules.length > 0;
+  const totalSelected = selectedProjects.size + selectedEvalFlows.size + selectedEvalSets.size + selectedSchedules.size;
+  const hasPersonalResources = personalProjects.length + personalEvalFlows.length + personalEvalSets.length + personalSchedules.length > 0;
 
   const moveMutation = useMutation({
     mutationFn: async () => {
       return apiRequest("POST", "/api/organizations/move-resources", {
         projectIds: Array.from(selectedProjects),
-        evalflowIds: Array.from(selectedEvalflows),
+        evalFlowIds: Array.from(selectedEvalFlows),
         evalSetIds: Array.from(selectedEvalSets),
         scheduleIds: Array.from(selectedSchedules),
       }).then(r => r.json());
     },
     onSuccess: (data) => {
       const m = data.moved;
-      toast({ title: "Resources moved", description: `${m.projects} projects, ${m.evalflows} evalflows, ${m.evalSets} eval sets, ${m.schedules} schedules` });
+      toast({ title: "Resources moved", description: `${m.projects} projects, ${m.evalFlows} evalFlows, ${m.evalSets} eval sets, ${m.schedules} schedules` });
       setSelectedProjects(new Set());
-      setSelectedEvalflows(new Set());
+      setSelectedEvalFlows(new Set());
       setSelectedEvalSets(new Set());
       setSelectedSchedules(new Set());
       queryClient.invalidateQueries({ queryKey: ["/api/projects"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/evalflows"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/eval-flows"] });
       queryClient.invalidateQueries({ queryKey: ["/api/eval-sets"] });
       queryClient.invalidateQueries({ queryKey: ["/api/eval-schedules"] });
       onOpenChange(false);
@@ -273,24 +273,24 @@ function MoveResourcesDialog({ open, onOpenChange, orgName }: { open: boolean; o
                     <label key={p.id} className="flex items-center gap-2 text-sm cursor-pointer hover:bg-muted/50 rounded px-2 py-1">
                       <Checkbox checked={selectedProjects.has(p.id)} onCheckedChange={() => toggleSet(selectedProjects, p.id, setSelectedProjects)} />
                       {p.name}
-                      <Badge variant="outline" className="text-xs ml-auto">+ child evalflows</Badge>
+                      <Badge variant="outline" className="text-xs ml-auto">+ child evalFlows</Badge>
                     </label>
                   ))}
                 </div>
               </div>
             )}
 
-            {/* Evalflows */}
-            {personalEvalflows.length > 0 && (
+            {/* Eval Flows */}
+            {personalEvalFlows.length > 0 && (
               <div className="space-y-2">
                 <div className="flex items-center gap-2 text-sm font-medium">
-                  <EvalflowIcon className="h-4 w-4" />
-                  Evalflows ({personalEvalflows.length})
+                  <EvalFlowIcon className="h-4 w-4" />
+                  Eval Flows ({personalEvalFlows.length})
                 </div>
                 <div className="space-y-1 ml-6">
-                  {personalEvalflows.map(w => (
+                  {personalEvalFlows.map(w => (
                     <label key={w.id} className="flex items-center gap-2 text-sm cursor-pointer hover:bg-muted/50 rounded px-2 py-1">
-                      <Checkbox checked={selectedEvalflows.has(w.id)} onCheckedChange={() => toggleSet(selectedEvalflows, w.id, setSelectedEvalflows)} />
+                      <Checkbox checked={selectedEvalFlows.has(w.id)} onCheckedChange={() => toggleSet(selectedEvalFlows, w.id, setSelectedEvalFlows)} />
                       {w.name}
                     </label>
                   ))}
@@ -328,7 +328,7 @@ function MoveResourcesDialog({ open, onOpenChange, orgName }: { open: boolean; o
                     <label key={s.id} className="flex items-center gap-2 text-sm cursor-pointer hover:bg-muted/50 rounded px-2 py-1">
                       <Checkbox checked={selectedSchedules.has(s.id)} onCheckedChange={() => toggleSet(selectedSchedules, s.id, setSelectedSchedules)} />
                       {s.name}
-                      <span className="text-xs text-muted-foreground ml-auto">{s.evalflowName} / {formatRegion(s.region)} · {s.targetTier}</span>
+                      <span className="text-xs text-muted-foreground ml-auto">{s.evalFlowName} / {formatRegion(s.region)} · {s.targetTier}</span>
                     </label>
                   ))}
                 </div>

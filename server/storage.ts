@@ -1,5 +1,4 @@
 import * as yaml from "js-yaml";
-import { LEGACY_CONFIG_KEY_PREFIX } from "@shared/secrets";
 import {
   PHONE_NUMBER_RE, illegalPhoneStepType, illegalWebStepType, illegalWebVocabInPhone,
   walkStepList, type StepSegment,
@@ -17,8 +16,8 @@ import {
   generateProviderId,
   type Project,
   type InsertProject,
-  type Evalflow,
-  type InsertEvalflow,
+  type EvalFlow,
+  type InsertEvalFlow,
   type EvalSet,
   type InsertEvalSet,
   type EvalAgentToken,
@@ -75,7 +74,7 @@ import {
   providers,
   regionLocations,
   projects,
-  evalflows,
+  evalFlows,
   evalSets,
   evalAgentTokens,
   evalAgents,
@@ -144,10 +143,10 @@ export type MetricSourceRow = Pick<EvalResult,
   | "interruptLatencyMedian" | "interruptLatencySd" | "interruptLatencyP95"
   | "turnSuccessRate"
   | "networkResilience" | "naturalness" | "noiseReduction" | "createdAt">
-  // Evalflow identity, from the job snapshot. Present only on raw (non-bucketed)
-  // rows, where each point maps to one job → one evalflow; null on daily buckets
-  // (which average many evalflows) and when the snapshot predates the field.
-  & { evalflowId?: number | null; evalflowName?: string | null }
+  // EvalFlow identity, from the job snapshot. Present only on raw (non-bucketed)
+  // rows, where each point maps to one job → one evalFlow; null on daily buckets
+  // (which average many evalFlows) and when the snapshot predates the field.
+  & { evalFlowId?: number | null; evalFlowName?: string | null }
   // Transport partition the row came from (design 2026-09-21 §11) — a constant
   // per query since transports are never mixed in one view.
   & { transport?: "web" | "phone" };
@@ -223,86 +222,6 @@ export function decryptValue(stored: string): string {
 
 const MAX_CONFIG_SIZE = 100_000; // 100KB
 
-/**
- * Drop user-supplied `_legacy*` top-level keys from a config before
- * validation/storage. Only MIGRATIONS may write parked keys (0040's
- * _legacyPhoneDial): the secret scans deliberately skip them, so accepting
- * one from a caller would let ${config._legacyX}
- * indirection smuggle a secret reference past the misuse/consent gates.
- * Migrated rows are unaffected: their keys were written by SQL, and
- * carryOverLegacyKeys re-attaches them on update so an edit can't destroy
- * them. mergeEvalConfig also applies this, so parked payloads never travel
- * in job configs to agents.
- */
-export function carryOverLegacyKeys(incoming: unknown, existing: unknown): unknown {
-  // Re-attach the STORED parked keys to a caller's config on update. Writes
-  // strip caller-supplied `_legacy*` (they'd smuggle secret refs past the
-  // scans), but that also meant any innocuous edit — a rename, a description
-  // tweak — silently destroyed the only copy of a parked payload, defeating
-  // the reason migrations park it. The caller can never inject one; they only
-  // survive from the row.
-  if (typeof incoming !== "object" || incoming === null || Array.isArray(incoming)) return incoming;
-  if (typeof existing !== "object" || existing === null || Array.isArray(existing)) return incoming;
-  const parked = Object.entries(existing as Record<string, unknown>)
-    .filter(([k]) => k.startsWith(LEGACY_CONFIG_KEY_PREFIX));
-  if (parked.length === 0) return incoming;
-  return { ...(incoming as Record<string, unknown>), ...Object.fromEntries(parked) };
-}
-
-export function stripLegacyConfigKeys<T>(config: T): T {
-  if (typeof config !== "object" || config === null || Array.isArray(config)) return config;
-  return Object.fromEntries(
-    Object.entries(config as Record<string, unknown>).filter(([k]) => !k.startsWith(LEGACY_CONFIG_KEY_PREFIX)),
-  ) as T;
-}
-
-/**
- * Response-boundary redaction: parked `_legacy*` payloads are OWNER-ONLY.
- * A migrated row can be public (anyone may read its config), and the parked
- * payload is the owner's data — a phone number (0040) or old app YAML
- * (0041). `canSeeLegacy` should be the edit right, not mere visibility.
- */
-export function redactLegacyForViewer<T extends { config?: unknown }>(row: T, canSeeLegacy: boolean): T {
-  if (canSeeLegacy) return row;
-  const config = row.config;
-  if (typeof config !== "object" || config === null || Array.isArray(config)) return row;
-  if (!Object.keys(config as Record<string, unknown>).some((k) => k.startsWith(LEGACY_CONFIG_KEY_PREFIX))) return row;
-  return { ...row, config: stripLegacyConfigKeys(config) };
-}
-
-/**
- * Job-shaped counterpart of redactLegacyForViewer: a job row carries the
- * merged `config` AND the frozen `snapshot`, both of which can hold parked
- * `_legacy*` payloads. Job reads are visible to anyone who can see the
- * evalflow (public included), so non-owners must not see the owner's parked
- * data. This is a BACKSTOP: 0041 strips these keys from every job row, and
- * mergeEvalConfig/buildJobSnapshot strip them from new ones — it guards a
- * regression, not the normal path.
- */
-export function redactLegacyFromJob<T extends { config?: unknown; snapshot?: unknown; createdBy?: number | null }>(
-  job: T,
-  canSeeLegacy: boolean,
-): T {
-  // NOTE for callers: `canSeeLegacy` must be keyed on the EVALFLOW OWNER, not
-  // job.createdBy — anyone may run a public evalflow, and the resulting job
-  // (theirs) carries the owner's parked payload.
-  if (canSeeLegacy) return job;
-  const snap = job.snapshot as { evalflow?: { config?: unknown }; evalSet?: { config?: unknown } } | null | undefined;
-  return {
-    ...job,
-    config: stripLegacyConfigKeys(job.config),
-    ...(snap
-      ? {
-          snapshot: {
-            ...snap,
-            ...(snap.evalflow ? { evalflow: { ...snap.evalflow, config: stripLegacyConfigKeys(snap.evalflow.config) } } : {}),
-            ...(snap.evalSet ? { evalSet: { ...snap.evalSet, config: stripLegacyConfigKeys(snap.evalSet.config) } } : {}),
-          },
-        }
-      : {}),
-  };
-}
-
 // The eval-framework seam: adding a framework means extending this set, the
 // daemon's executeJob switch, and resolvableSecretSources' field map — the
 // per-job `config.framework` override and the daemon's EVAL_FRAMEWORK default
@@ -321,15 +240,15 @@ export const DEFAULT_FRAMEWORK = "aeval";
 export function unsupportedFrameworkError(config: unknown): string | null {
   const declared = ((config ?? {}) as Record<string, unknown>).framework;
   if (typeof declared !== "string" || SUPPORTED_FRAMEWORKS.has(declared)) return null;
-  return `This evalflow uses '${declared}', which this version cannot run. Re-create it on ${Array.from(SUPPORTED_FRAMEWORKS).join(" or ")}.`;
+  return `This evalFlow uses '${declared}', which this version cannot run. Re-create it on ${Array.from(SUPPORTED_FRAMEWORKS).join(" or ")}.`;
 }
 
 // Keys owned exclusively by the eval set (the test body).
 const EVALSET_ONLY_KEYS = ["scenario"] as const;
-// Keys owned exclusively by the evalflow (platform setup + connection).
-const EVALFLOW_ONLY_KEYS = ["framework", "stepsPrefix", "stepsSuffix"] as const;
+// Keys owned exclusively by the evalFlow (platform setup + connection).
+const EVAL_FLOW_ONLY_KEYS = ["framework", "stepsPrefix", "stepsSuffix"] as const;
 
-export function validateEvalflowConfig(config: unknown, transport: "web" | "phone" = "web"): { valid: boolean; error?: string } {
+export function validateEvalFlowConfig(config: unknown, transport: "web" | "phone" = "web"): { valid: boolean; error?: string } {
   if (config === null || config === undefined) {
     return { valid: true };
   }
@@ -344,7 +263,7 @@ export function validateEvalflowConfig(config: unknown, transport: "web" | "phon
   const c = config as Record<string, unknown>;
   for (const k of EVALSET_ONLY_KEYS) {
     if (k in c) {
-      return { valid: false, error: `'${k}' belongs to the eval set, not the evalflow` };
+      return { valid: false, error: `'${k}' belongs to the eval set, not the evalFlow` };
     }
   }
   if (c.framework !== undefined && !SUPPORTED_FRAMEWORKS.has(c.framework as string)) {
@@ -577,14 +496,14 @@ export function validateEvalSetConfig(config: unknown): { valid: boolean; error?
   if (typeof config !== "object" || Array.isArray(config)) {
     return { valid: false, error: "Config must be an object" };
   }
-  // Size cap FIRST — before any YAML parse (see validateEvalflowConfig).
+  // Size cap FIRST — before any YAML parse (see validateEvalFlowConfig).
   if (JSON.stringify(config).length > MAX_CONFIG_SIZE) {
     return { valid: false, error: "Config too large (max 100KB)" };
   }
   const c = config as Record<string, unknown>;
-  for (const k of EVALFLOW_ONLY_KEYS) {
+  for (const k of EVAL_FLOW_ONLY_KEYS) {
     if (k in c) {
-      return { valid: false, error: `'${k}' belongs to the evalflow, not the eval set` };
+      return { valid: false, error: `'${k}' belongs to the evalFlow, not the eval set` };
     }
   }
   if (c.scenario !== undefined && typeof c.scenario !== "string") {
@@ -594,7 +513,7 @@ export function validateEvalSetConfig(config: unknown): { valid: boolean; error?
     return { valid: false, error: "'app' belonged to the removed voice-agent-tester framework" };
   }
   // SECURITY: the conversation must never place/end calls or fire REST
-  // requests — those are evalflow Setup/Teardown vocabulary, and an eval set
+  // requests — those are evalFlow Setup/Teardown vocabulary, and an eval set
   // can be a public third-party artifact combined with someone else's SIM
   // (a conversation-injected call.dial is toll fraud). The daemon splitter
   // enforces the same rule at run time; this rejects it at save.
@@ -614,7 +533,7 @@ export function validateEvalSetConfig(config: unknown): { valid: boolean; error?
 }
 
 /** Bounded scan of an eval-set conversation for step types that belong to
- * the evalflow (call-control / REST / SMS) — plus templated types, which
+ * the evalFlow (call-control / REST / SMS) — plus templated types, which
  * could resolve to those post-substitution (the daemon compiler is the
  * enforcement boundary; this rejects the smuggle shape at save). Returns an
  * error string, "too-complex" when the walk budget is exceeded (fail
@@ -631,17 +550,13 @@ function findIllegalScenarioStep(steps: unknown[]): string | null {
 
 
 export function mergeEvalConfig(
-  evalflowConfig: unknown,
+  evalFlowConfig: unknown,
   evalSetConfig: unknown,
 ): Record<string, unknown> {
-  // Parked _legacy* payloads never travel in job configs: job.config goes to
-  // every claiming agent (marketplace hosts included), and e.g.
-  // _legacyPhoneDial is an owner's phone number with no reason to leave Core.
-  // They stay recoverable on the evalflow row itself.
-  const wf = stripLegacyConfigKeys((evalflowConfig as Record<string, unknown>) || {});
-  const es = stripLegacyConfigKeys((evalSetConfig as Record<string, unknown>) || {});
+  const wf = (evalFlowConfig as Record<string, unknown>) || {};
+  const es = (evalSetConfig as Record<string, unknown>) || {};
   // Role-disjointness (scenario vs framework/app/steps*) is enforced by the
-  // validators. Here we only guard against the evalflow and eval set sharing a
+  // validators. Here we only guard against the evalFlow and eval set sharing a
   // key with CONFLICTING values (e.g. a frameworkVersion mismatch). Identical
   // shared values are fine — the eval set's value is used.
   // Shared keys are scalars (e.g. frameworkVersion), so JSON.stringify compares
@@ -651,7 +566,7 @@ export function mergeEvalConfig(
     (k) => k in es && JSON.stringify(wf[k]) !== JSON.stringify(es[k]),
   );
   if (conflicts.length > 0) {
-    throw new Error(`Evalflow and eval set configs share keys with conflicting values: ${conflicts.join(", ")}`);
+    throw new Error(`EvalFlow and eval set configs share keys with conflicting values: ${conflicts.join(", ")}`);
   }
   const merged = { ...wf, ...es };
   // Stamp the framework explicitly. The daemon resolves
@@ -665,10 +580,10 @@ export function mergeEvalConfig(
 }
 
 // Build the immutable per-job snapshot (see JobSnapshot in shared/schema). Captures
-// the metadata + config + tier flags of the evalflow/eval-set/provider at run time so
+// the metadata + config + tier flags of the evalFlow/eval-set/provider at run time so
 // provenance, attribution, and metric tiering never drift when those rows change.
 export function buildJobSnapshot(
-  evalflow: Evalflow,
+  evalFlow: EvalFlow,
   evalSet: EvalSet | undefined | null,
   provider: Provider | undefined | null,
   creatorPlan: string | null,
@@ -677,28 +592,25 @@ export function buildJobSnapshot(
     provider: provider
       ? { id: provider.id, name: provider.name, platformId: provider.platformId ?? null }
       : null,
-    evalflow: {
-      name: evalflow.name,
-      // Parked _legacy* payloads are stripped here too: the snapshot travels
-      // to every claiming agent (GET /jobs and the claim response return the
-      // whole job row), so an owner's _legacyPhoneDial must not ride along.
-      config: stripLegacyConfigKeys(evalflow.config),
-      visibility: evalflow.visibility,
-      isMainline: evalflow.isMainline,
-      ownerId: evalflow.ownerId,
-      organizationId: evalflow.organizationId ?? null,
+    evalFlow: {
+      name: evalFlow.name,
+      config: evalFlow.config,
+      visibility: evalFlow.visibility,
+      isMainline: evalFlow.isMainline,
+      ownerId: evalFlow.ownerId,
+      organizationId: evalFlow.organizationId ?? null,
     },
     evalSet: evalSet
       ? {
           name: evalSet.name,
-          config: stripLegacyConfigKeys(evalSet.config),
+          config: evalSet.config,
           visibility: evalSet.visibility,
           isMainline: evalSet.isMainline,
           ownerId: evalSet.ownerId,
         }
       : null,
     creatorPlan,
-    transport: (evalflow.transport as "web" | "phone" | undefined) ?? "web",
+    transport: (evalFlow.transport as "web" | "phone" | undefined) ?? "web",
   };
 }
 
@@ -1019,52 +931,52 @@ export class DatabaseStorage {
     return Number(result[0]?.count || 0);
   }
 
-  async createEvalflow(evalflow: InsertEvalflow): Promise<Evalflow> {
-    const result = await db.insert(evalflows).values(evalflow).returning();
+  async createEvalFlow(evalFlow: InsertEvalFlow): Promise<EvalFlow> {
+    const result = await db.insert(evalFlows).values(evalFlow).returning();
     return result[0];
   }
 
-  async getEvalflow(id: number): Promise<Evalflow | undefined> {
-    const result = await db.select().from(evalflows).where(eq(evalflows.id, id));
+  async getEvalFlow(id: number): Promise<EvalFlow | undefined> {
+    const result = await db.select().from(evalFlows).where(eq(evalFlows.id, id));
     return result[0];
   }
 
-  async getEvalflowsByOwner(ownerId: number): Promise<Evalflow[]> {
-    return db.select().from(evalflows).where(eq(evalflows.ownerId, ownerId)).orderBy(desc(evalflows.createdAt));
+  async getEvalFlowsByOwner(ownerId: number): Promise<EvalFlow[]> {
+    return db.select().from(evalFlows).where(eq(evalFlows.ownerId, ownerId)).orderBy(desc(evalFlows.createdAt));
   }
 
-  async getEvalflowsByOrganization(organizationId: number): Promise<Evalflow[]> {
-    return db.select().from(evalflows).where(eq(evalflows.organizationId, organizationId)).orderBy(desc(evalflows.createdAt));
+  async getEvalFlowsByOrganization(organizationId: number): Promise<EvalFlow[]> {
+    return db.select().from(evalFlows).where(eq(evalFlows.organizationId, organizationId)).orderBy(desc(evalFlows.createdAt));
   }
 
-  async getEvalflowsByProject(projectId: number): Promise<Evalflow[]> {
-    return db.select().from(evalflows).where(eq(evalflows.projectId, projectId)).orderBy(desc(evalflows.createdAt));
+  async getEvalFlowsByProject(projectId: number): Promise<EvalFlow[]> {
+    return db.select().from(evalFlows).where(eq(evalFlows.projectId, projectId)).orderBy(desc(evalFlows.createdAt));
   }
 
-  async getPublicEvalflows(): Promise<Evalflow[]> {
-    return db.select().from(evalflows).where(eq(evalflows.visibility, "public")).orderBy(desc(evalflows.createdAt));
+  async getPublicEvalFlows(): Promise<EvalFlow[]> {
+    return db.select().from(evalFlows).where(eq(evalFlows.visibility, "public")).orderBy(desc(evalFlows.createdAt));
   }
 
-  async getMainlineEvalflows(): Promise<Evalflow[]> {
-    return db.select().from(evalflows).where(eq(evalflows.isMainline, true)).orderBy(desc(evalflows.createdAt));
+  async getMainlineEvalFlows(): Promise<EvalFlow[]> {
+    return db.select().from(evalFlows).where(eq(evalFlows.isMainline, true)).orderBy(desc(evalFlows.createdAt));
   }
 
-  async updateEvalflow(id: number, data: Partial<Evalflow>): Promise<Evalflow | undefined> {
-    const result = await db.update(evalflows).set({ ...data, updatedAt: new Date() }).where(eq(evalflows.id, id)).returning();
+  async updateEvalFlow(id: number, data: Partial<EvalFlow>): Promise<EvalFlow | undefined> {
+    const result = await db.update(evalFlows).set({ ...data, updatedAt: new Date() }).where(eq(evalFlows.id, id)).returning();
     return result[0];
   }
 
-  async deleteEvalflow(id: number): Promise<void> {
-    await db.delete(evalflows).where(eq(evalflows.id, id));
+  async deleteEvalFlow(id: number): Promise<void> {
+    await db.delete(evalFlows).where(eq(evalFlows.id, id));
   }
 
-  async countEvalflowsByProject(projectId: number): Promise<number> {
-    const result = await db.select({ count: sql<number>`count(*)` }).from(evalflows).where(eq(evalflows.projectId, projectId));
+  async countEvalFlowsByProject(projectId: number): Promise<number> {
+    const result = await db.select({ count: sql<number>`count(*)` }).from(evalFlows).where(eq(evalFlows.projectId, projectId));
     return Number(result[0]?.count || 0);
   }
 
-  async countEvalflowsByOwner(ownerId: number): Promise<number> {
-    const result = await db.select({ count: sql<number>`count(*)` }).from(evalflows).where(eq(evalflows.ownerId, ownerId));
+  async countEvalFlowsByOwner(ownerId: number): Promise<number> {
+    const result = await db.select({ count: sql<number>`count(*)` }).from(evalFlows).where(eq(evalFlows.ownerId, ownerId));
     return Number(result[0]?.count || 0);
   }
 
@@ -1300,8 +1212,8 @@ export class DatabaseStorage {
   async countTodayJobsByOwner(ownerId: number): Promise<number> {
     const startOfDay = new Date();
     startOfDay.setHours(0, 0, 0, 0);
-    // Count the jobs this user RAN (created_by) — immutable and survives evalflow
-    // deletion, so the daily limit can't be bypassed by deleting the evalflow.
+    // Count the jobs this user RAN (created_by) — immutable and survives evalFlow
+    // deletion, so the daily limit can't be bypassed by deleting the evalFlow.
     const result = await db.select({ count: sql<number>`count(*)::int` })
       .from(evalJobs)
       .where(and(eq(evalJobs.createdBy, ownerId), gte(evalJobs.createdAt, startOfDay)));
@@ -1650,7 +1562,7 @@ export class DatabaseStorage {
   async getEvalJobs(filters?: {
     status?: "pending" | "running" | "completed" | "failed";
     region?: string;
-    evalflowId?: number;
+    evalFlowId?: number;
     agentId?: number;
     ownerId?: number;
     hoursBack?: number;
@@ -1692,14 +1604,14 @@ export class DatabaseStorage {
       const cutoff = new Date(Date.now() - filters.hoursBack * 60 * 60 * 1000);
       conditions.push(gte(evalJobs.createdAt, cutoff));
     }
-    if (filters?.evalflowId) {
-      conditions.push(eq(evalJobs.evalflowId, filters.evalflowId));
+    if (filters?.evalFlowId) {
+      conditions.push(eq(evalJobs.evalFlowId, filters.evalFlowId));
     }
     if (filters?.agentId) {
       conditions.push(eq(evalJobs.evalAgentId, filters.agentId));
     }
-    // "Owner" = the job's creator (immutable), not the evalflow owner — so a user's
-    // job history survives evalflow deletion and isn't dropped by a live join.
+    // "Owner" = the job's creator (immutable), not the evalFlow owner — so a user's
+    // job history survives evalFlow deletion and isn't dropped by a live join.
     if (filters?.ownerId) {
       conditions.push(eq(evalJobs.createdBy, filters.ownerId));
     }
@@ -1876,7 +1788,7 @@ export class DatabaseStorage {
 
   async getEvalResults(filters?: {
     ownerId?: number;
-    evalflowId?: number;
+    evalFlowId?: number;
     jobId?: number;
     limit?: number;
     offset?: number;
@@ -1887,8 +1799,8 @@ export class DatabaseStorage {
       conditions.push(eq(evalResults.evalJobId, filters.jobId));
     }
 
-    if (filters?.evalflowId || filters?.ownerId) {
-      // Need to join with evalJobs and evalflows for these filters
+    if (filters?.evalFlowId || filters?.ownerId) {
+      // Need to join with evalJobs and evalFlows for these filters
       let query = db.select({
         id: evalResults.id,
         evalJobId: evalResults.evalJobId,
@@ -1917,11 +1829,11 @@ export class DatabaseStorage {
         .from(evalResults)
         .innerJoin(evalJobs, eq(evalResults.evalJobId, evalJobs.id));
 
-      if (filters.evalflowId) {
-        conditions.push(eq(evalJobs.evalflowId, filters.evalflowId));
+      if (filters.evalFlowId) {
+        conditions.push(eq(evalJobs.evalFlowId, filters.evalFlowId));
       }
 
-      // Scope by the job's creator (immutable) — survives evalflow deletion and
+      // Scope by the job's creator (immutable) — survives evalFlow deletion and
       // matches the created_by model used for jobs/quota.
       if (filters.ownerId) {
         conditions.push(eq(evalJobs.createdBy, filters.ownerId));
@@ -1954,8 +1866,8 @@ export class DatabaseStorage {
   // drift apart. See getXMetrics() for the span-based raw-vs-bucket policy.
 
   // Tiering reads the immutable per-job snapshot (see JobSnapshot) instead of the
-  // live evalflows/eval_sets/users/agent-tokens. Consequences: a result keeps its
-  // run-time tier even after its evalflow/eval-set is edited or deleted, and the
+  // live evalFlows/eval_sets/users/agent-tokens. Consequences: a result keeps its
+  // run-time tier even after its evalFlow/eval-set is edited or deleted, and the
   // join chain collapses to just eval_results → eval_jobs.
   private regionScopeCondition(scope?: RegionQueryScope) {
     if (!scope) return undefined;
@@ -1974,9 +1886,9 @@ export class DatabaseStorage {
     const snap = evalJobs.snapshot;
     const conditions = [
       eq(evalJobs.status, "completed"),
-      sql`${snap}->'evalflow'->>'visibility' = 'public'`,
+      sql`${snap}->'evalFlow'->>'visibility' = 'public'`,
       // Compare as text ('true'/'false') so the text expression index is usable.
-      sql`${snap}->'evalflow'->>'isMainline' = 'true'`,
+      sql`${snap}->'evalFlow'->>'isMainline' = 'true'`,
       sql`${snap}->'evalSet'->>'visibility' = 'public'`,
       sql`${snap}->'evalSet'->>'isMainline' = 'true'`,
       eq(evalJobs.tokenDispatchTier, "public"),
@@ -1995,7 +1907,7 @@ export class DatabaseStorage {
     const snap = evalJobs.snapshot;
     const conditions = [
       eq(evalJobs.status, "completed"),
-      sql`${snap}->'evalflow'->>'visibility' = 'public'`,
+      sql`${snap}->'evalFlow'->>'visibility' = 'public'`,
       sql`${snap}->'evalSet'->>'visibility' = 'public'`,
       // Agent gate (tier as restriction): only public/shared agents feed a public
       // board. private/team agents appear on no public leaderboard.
@@ -2003,7 +1915,7 @@ export class DatabaseStorage {
       // Exclude fully mainline results (all 4 inputs true → mainline).
       // Text comparison (matches the expression index; NULL/'false' → not mainline).
       or(
-        sql`${snap}->'evalflow'->>'isMainline' IS DISTINCT FROM 'true'`,
+        sql`${snap}->'evalFlow'->>'isMainline' IS DISTINCT FROM 'true'`,
         sql`${snap}->'evalSet'->>'isMainline' IS DISTINCT FROM 'true'`,
         sql`${evalJobs.tokenDispatchTier} IS DISTINCT FROM 'public'`,
         sql`${snap}->>'creatorPlan' IS NULL OR ${snap}->>'creatorPlan' NOT IN ('principal', 'fellow')`,
@@ -2030,12 +1942,12 @@ export class DatabaseStorage {
     const conditions = [
       eq(evalJobs.status, "completed"),
       or(
-        sql`${snap}->'evalflow'->>'visibility' = 'private' AND (${snap}->'evalflow'->>'ownerId')::int = ${userId}`,
+        sql`${snap}->'evalFlow'->>'visibility' = 'private' AND (${snap}->'evalFlow'->>'ownerId')::int = ${userId}`,
         sql`${snap}->'evalSet'->>'visibility' = 'private' AND (${snap}->'evalSet'->>'ownerId')::int = ${userId}`,
         // Own job on own private/team agent. Without this arm such a result is
         // ORPHANED: the two public boards exclude private/team agents by design
         // ("tier as restriction"), and the content arms above only fire when the
-        // evalflow or eval set is private — so running a PUBLIC evalflow on your
+        // evalFlow or eval set is private — so running a PUBLIC evalFlow on your
         // OWN private agent produced a result visible nowhere. Fenced by
         // created_by, so this shows a user only their own dispatches (a team
         // agent serving an org-mate's job stays in that dispatcher's My Evals,
@@ -2139,11 +2051,11 @@ export class DatabaseStorage {
       .orderBy(desc(evalResults.createdAt))
       .limit(METRICS_RAW_ROW_CEILING);
     // evalJobs is already inner-joined (joinTier) for tiering, so its snapshot +
-    // evalflowId ride along — attach the evalflow identity for the hover tooltip.
+    // evalFlowId ride along — attach the evalFlow identity for the hover tooltip.
     return rows.map((r: any) => ({
       ...r.eval_results,
-      evalflowId: r.eval_jobs?.evalflowId ?? null,
-      evalflowName: (r.eval_jobs?.snapshot as JobSnapshot | null)?.evalflow?.name ?? null,
+      evalFlowId: r.eval_jobs?.evalFlowId ?? null,
+      evalFlowName: (r.eval_jobs?.snapshot as JobSnapshot | null)?.evalFlow?.name ?? null,
       transport,
     })) as MetricSourceRow[];
   }
@@ -2480,8 +2392,8 @@ export class DatabaseStorage {
     return db.select().from(evalSchedules).where(eq(evalSchedules.createdBy, userId)).orderBy(desc(evalSchedules.createdAt));
   }
 
-  async getEvalSchedulesByEvalflow(evalflowId: number): Promise<EvalSchedule[]> {
-    return db.select().from(evalSchedules).where(eq(evalSchedules.evalflowId, evalflowId)).orderBy(desc(evalSchedules.createdAt));
+  async getEvalSchedulesByEvalFlow(evalFlowId: number): Promise<EvalSchedule[]> {
+    return db.select().from(evalSchedules).where(eq(evalSchedules.evalFlowId, evalFlowId)).orderBy(desc(evalSchedules.createdAt));
   }
 
   async updateEvalSchedule(id: number, data: Partial<EvalSchedule>): Promise<EvalSchedule | undefined> {
@@ -2493,14 +2405,14 @@ export class DatabaseStorage {
     await db.delete(evalSchedules).where(eq(evalSchedules.id, id));
   }
 
-  // Count "active" schedules on an evalflow: enabled and not expired. Used to block
-  // deletion of an evalflow that still has a live schedule.
-  async countActiveSchedulesForEvalflow(evalflowId: number): Promise<number> {
+  // Count "active" schedules on an evalFlow: enabled and not expired. Used to block
+  // deletion of an evalFlow that still has a live schedule.
+  async countActiveSchedulesForEvalFlow(evalFlowId: number): Promise<number> {
     const now = new Date();
     const rows = await db.select({ count: sql<number>`count(*)::int` })
       .from(evalSchedules)
       .where(and(
-        eq(evalSchedules.evalflowId, evalflowId),
+        eq(evalSchedules.evalFlowId, evalFlowId),
         eq(evalSchedules.isEnabled, true),
         sql`(${evalSchedules.expiresAt} IS NULL OR ${evalSchedules.expiresAt} > ${now})`,
       ));
@@ -2552,12 +2464,12 @@ export class DatabaseStorage {
       .orderBy(evalSchedules.nextRunAt);
   }
 
-  // Get schedules with their evalflow info (for listing)
+  // Get schedules with their evalFlow info (for listing)
   private buildScheduleQuery() {
     return {
       id: evalSchedules.id,
       name: evalSchedules.name,
-      evalflowId: evalSchedules.evalflowId,
+      evalFlowId: evalSchedules.evalFlowId,
       evalSetId: evalSchedules.evalSetId,
       region: evalSchedules.region,
       targetTier: evalSchedules.targetTier,
@@ -2574,34 +2486,34 @@ export class DatabaseStorage {
       organizationId: evalSchedules.organizationId,
       createdAt: evalSchedules.createdAt,
       updatedAt: evalSchedules.updatedAt,
-      // Left-joined: a schedule whose evalflow was deleted still lists (with a
+      // Left-joined: a schedule whose evalFlow was deleted still lists (with a
       // placeholder) so users can find and remove the orphan.
-      evalflowName: sql<string>`coalesce(${evalflows.name}, '(deleted evalflow)')`,
-      evalflowOwnerId: evalflows.ownerId,
-      evalflowOrganizationId: evalflows.organizationId,
+      evalFlowName: sql<string>`coalesce(${evalFlows.name}, '(deleted evalFlow)')`,
+      evalFlowOwnerId: evalFlows.ownerId,
+      evalFlowOrganizationId: evalFlows.organizationId,
       creatorName: users.username,
     };
   }
 
   // Returns the user's own schedules plus schedules on their organization's
-  // evalflows (so an org manager can see/Extend them — actions are gated per row
+  // evalFlows (so an org manager can see/Extend them — actions are gated per row
   // by the route's canExtend/canManage flags).
-  async getEvalSchedulesWithEvalflow(userId: number, organizationId?: number | null): Promise<(EvalSchedule & { evalflowName: string; evalflowOwnerId: number | null; evalflowOrganizationId: number | null; creatorName: string })[]> {
+  async getEvalSchedulesWithEvalFlow(userId: number, organizationId?: number | null): Promise<(EvalSchedule & { evalFlowName: string; evalFlowOwnerId: number | null; evalFlowOrganizationId: number | null; creatorName: string })[]> {
     const scope = organizationId != null
-      ? or(eq(evalSchedules.createdBy, userId), eq(evalflows.organizationId, organizationId))
+      ? or(eq(evalSchedules.createdBy, userId), eq(evalFlows.organizationId, organizationId))
       : eq(evalSchedules.createdBy, userId);
     return db.select(this.buildScheduleQuery())
       .from(evalSchedules)
-      .leftJoin(evalflows, eq(evalSchedules.evalflowId, evalflows.id))
+      .leftJoin(evalFlows, eq(evalSchedules.evalFlowId, evalFlows.id))
       .innerJoin(users, eq(evalSchedules.createdBy, users.id))
       .where(scope)
       .orderBy(desc(evalSchedules.createdAt));
   }
 
-  async getAllEvalSchedulesWithEvalflow(): Promise<(EvalSchedule & { evalflowName: string; evalflowOwnerId: number | null; evalflowOrganizationId: number | null; creatorName: string })[]> {
+  async getAllEvalSchedulesWithEvalFlow(): Promise<(EvalSchedule & { evalFlowName: string; evalFlowOwnerId: number | null; evalFlowOrganizationId: number | null; creatorName: string })[]> {
     return db.select(this.buildScheduleQuery())
       .from(evalSchedules)
-      .leftJoin(evalflows, eq(evalSchedules.evalflowId, evalflows.id))
+      .leftJoin(evalFlows, eq(evalSchedules.evalFlowId, evalFlows.id))
       .innerJoin(users, eq(evalSchedules.createdBy, users.id))
       .orderBy(desc(evalSchedules.createdAt));
   }
@@ -2648,16 +2560,16 @@ export class DatabaseStorage {
   }
 
   async getSecretsForJob(jobId: number): Promise<Secret[]> {
-    // Find the evalflow owner for this job, then return their secrets
+    // Find the evalFlow owner for this job, then return their secrets
     const job = await this.getEvalJob(jobId);
     if (!job) { console.log(`[Secrets] getSecretsForJob: job ${jobId} not found`); return []; }
-    if (job.evalflowId == null) { console.log(`[Secrets] getSecretsForJob: job ${jobId} has no evalflow (deleted)`); return []; }
-    const evalflow = await this.getEvalflow(job.evalflowId);
-    if (!evalflow) { console.log(`[Secrets] getSecretsForJob: evalflow ${job.evalflowId} not found`); return []; }
-    console.log(`[Secrets] getSecretsForJob: job ${jobId} → evalflow ${evalflow.id} → owner ${evalflow.ownerId}`);
+    if (job.evalFlowId == null) { console.log(`[Secrets] getSecretsForJob: job ${jobId} has no evalFlow (deleted)`); return []; }
+    const evalFlow = await this.getEvalFlow(job.evalFlowId);
+    if (!evalFlow) { console.log(`[Secrets] getSecretsForJob: evalFlow ${job.evalFlowId} not found`); return []; }
+    console.log(`[Secrets] getSecretsForJob: job ${jobId} → evalFlow ${evalFlow.id} → owner ${evalFlow.ownerId}`);
     // Structural withhold: brokered rows (broker_type != null) are Core-only. They
     // feed the session broker's mint and must never reach an eval agent, any tier.
-    const all = await this.getSecretsByUserId(evalflow.ownerId);
+    const all = await this.getSecretsByUserId(evalFlow.ownerId);
     return all.filter((s) => s.brokerType == null);
   }
 
@@ -3114,26 +3026,26 @@ export class DatabaseStorage {
     return (result as unknown as { rowCount: number }).rowCount || 0;
   }
 
-  // Pure data access, no authorization: follow job → evalflow → organizationId
+  // Pure data access, no authorization: follow job → evalFlow → organizationId
   // and report WHICH org owns the run and WHO created it. Null means "this job
-  // has no org-secret scope at all" (unknown job, pooled/evalflow-less job, or a
-  // personal evalflow) — the personal-secret path handles those.
+  // has no org-secret scope at all" (unknown job, pooled/eval-flow-less job, or a
+  // personal evalFlow) — the personal-secret path handles those.
   //
   // The membership FENCE that used to sit in this method (R3) now lives in Core:
   // server/routes.ts `orgRuntimeSecretsForJob` resolves the creator's membership
-  // through the vox.organizations seam and compares it to `evalflowOrgId`.
+  // through the vox.organizations seam and compares it to `evalFlowOrgId`.
   // Storage must not re-derive membership here — it would be the last raw-row
   // read of users.organization_id in a business decision.
-  async getJobOrgSecretScope(jobId: number): Promise<{ evalflowOrgId: number; createdBy: number | null } | null> {
+  async getJobOrgSecretScope(jobId: number): Promise<{ evalFlowOrgId: number; createdBy: number | null } | null> {
     const job = await this.getEvalJob(jobId);
     if (!job) return null;
-    if (job.evalflowId == null) return null;
-    const evalflow = await this.getEvalflow(job.evalflowId);
-    if (!evalflow?.organizationId) return null;
+    if (job.evalFlowId == null) return null;
+    const evalFlow = await this.getEvalFlow(job.evalFlowId);
+    if (!evalFlow?.organizationId) return null;
     // `?? null` (not `||`): the caller fails closed on a null creator exactly as
     // the old `if (!job.createdBy) return {}` did — org secrets are the SOLE
-    // source for an org evalflow, so an unknown creator gets nothing.
-    return { evalflowOrgId: evalflow.organizationId, createdBy: job.createdBy ?? null };
+    // source for an org evalFlow, so an unknown creator gets nothing.
+    return { evalFlowOrgId: evalFlow.organizationId, createdBy: job.createdBy ?? null };
   }
 
   // The org-runtime decrypt tail that used to live here (RUNTIME rows only,
