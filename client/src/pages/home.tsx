@@ -34,82 +34,6 @@ export default function Home() {
       </section>
 
 
-      {/* Products — ours, as distinct from the providers we test */}
-      <section className="space-y-12">
-        <div className="text-center space-y-4">
-          <Badge variant="secondary" className="px-4 py-1">Products</Badge>
-          <h2 className="text-3xl font-bold">Three parts, one pipeline</h2>
-          <p className="text-muted-foreground max-w-2xl mx-auto">
-            Vox decides what to measure and keeps the history. aeval runs the conversation
-            and scores it. DialF places the call when the target is a phone.
-          </p>
-        </div>
-
-        <div className="grid md:grid-cols-3 gap-6">
-          <Card className="relative overflow-hidden">
-            <CardHeader>
-              <Activity className="h-8 w-8 mb-4 text-primary" />
-              <CardTitle>Real-time Eval</CardTitle>
-              <CardDescription>
-                Schedule evals, watch latency and turn-taking land live, and keep every run's
-                frozen provenance.
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <Link href="/realtime">
-                <Button variant="outline" size="sm" className="gap-2" data-testid="link-product-realtime">
-                  Open dashboard <ArrowRight className="h-4 w-4" />
-                </Button>
-              </Link>
-            </CardContent>
-          </Card>
-
-          <Card className="relative overflow-hidden">
-            <CardHeader>
-              <AudioLines className="h-8 w-8 mb-4 text-primary" />
-              <CardTitle>aeval</CardTitle>
-              <CardDescription>
-                The eval engine: drives the conversation, measures response and interrupt
-                latency turn by turn, and reports turn-taking success.
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <a href="https://github.com/Agora-Build/aeval" target="_blank" rel="noreferrer">
-                <Button variant="outline" size="sm" className="gap-2" data-testid="link-product-aeval">
-                  View on GitHub <ArrowRight className="h-4 w-4" />
-                </Button>
-              </a>
-            </CardContent>
-          </Card>
-
-          <Card className="relative overflow-hidden">
-            <CardHeader>
-              <Radio className="h-8 w-8 mb-4 text-primary" />
-              <CardTitle>DialF</CardTitle>
-              <CardDescription>
-                Autonomous phone control: places and answers real PSTN calls over a handset,
-                with scripted audio and voice activity detection.
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <a href="https://github.com/Agora-Build/DialF" target="_blank" rel="noreferrer">
-                <Button variant="outline" size="sm" className="gap-2" data-testid="link-product-dialf">
-                  View on GitHub <ArrowRight className="h-4 w-4" />
-                </Button>
-              </a>
-            </CardContent>
-          </Card>
-        </div>
-
-        {/* What you can point an eval at today, and what's next. */}
-        <div className="flex flex-wrap items-center justify-center gap-3 text-sm">
-          <span className="text-muted-foreground">Evaluate over</span>
-          <Badge variant="outline" className="gap-1.5 py-1" data-testid="badge-surface-web">Web</Badge>
-          <Badge variant="outline" className="gap-1.5 py-1" data-testid="badge-surface-phone">Phone</Badge>
-          <Badge variant="secondary" className="gap-1.5 py-1" data-testid="badge-surface-native">Native apps — coming</Badge>
-        </div>
-      </section>
-
       {/* Features Grid */}
       <section className="space-y-12">
         <div className="text-center space-y-4">
@@ -179,10 +103,9 @@ export default function Home() {
       {/* Providers we evaluate against (third-party) */}
       <section className="space-y-12">
         <div className="text-center space-y-4">
-          <Badge variant="secondary" className="px-4 py-1">Supported Providers</Badge>
-          <h2 className="text-3xl font-bold">Providers We Test</h2>
+          <h2 className="text-3xl font-bold">Supported Providers</h2>
           <p className="text-muted-foreground max-w-2xl mx-auto">
-            Currently evaluating browser-based conversational AI products. RTC solutions coming soon.
+            Currently evaluating conversational AI products. RTC solutions coming soon.
           </p>
         </div>
 
@@ -360,17 +283,58 @@ export default function Home() {
         </div>
       </section>
 
-      {/* Where this is going — clearly labelled as not-yet-built */}
+      {/* Roadmap — not yet built; the dashed treatment carries that */}
       <section className="space-y-10">
-        <div className="text-center space-y-4">
-          <Badge variant="secondary" className="px-4 py-1">Where this is going</Badge>
-          <h2 className="text-3xl font-bold">From measuring agents to improving them</h2>
-          <p className="text-muted-foreground max-w-2xl mx-auto leading-relaxed">
-            Evaluation is the first half. Knowing an agent answers 400 ms slower in Mumbai, or
-            drops one turn in eight, only pays off when something acts on it. The direction is a
-            loop that closes itself: simulate, find where conversations fail, propose the change,
-            prove it against the same evals.
-          </p>
+        <h2 className="text-3xl font-bold text-center">From measuring agents to improving them</h2>
+
+        {/* Full container width on the same 3-column grid as the cards below,
+            split along the text's own seam: the argument spans two columns, the
+            loop it proposes takes the third and lines up with the last card.
+            One paragraph at full width would run ~140 characters a line. */}
+        <div className="grid md:grid-cols-3 gap-10 md:gap-6 items-center" data-testid="roadmap-lead">
+          <div className="md:col-span-2 md:pl-6 md:pr-12 space-y-3">
+            <p className="text-2xl md:text-3xl font-semibold tracking-tight text-foreground">
+              Evaluation is the first half.
+            </p>
+            <p className="text-lg md:text-xl leading-relaxed text-muted-foreground text-pretty">
+              Knowing an agent answers{" "}
+              <span className="text-foreground font-medium">400&nbsp;ms slower in&nbsp;Mumbai</span>,
+              or drops <span className="text-foreground font-medium">one turn in&nbsp;eight</span>,
+              only pays off when something acts on it. The direction is a loop that closes itself.
+            </p>
+          </div>
+
+          {/* The loop is drawn, not captioned: a solid line runs DOWN through
+              the steps, and a dashed return path (the page's "not built yet"
+              treatment) runs back UP the left side into step 1. */}
+          <ol className="relative space-y-5 pl-6" aria-label="The improvement loop">
+            <span
+              aria-hidden="true"
+              className="absolute left-[2.375rem] top-3.5 bottom-3.5 border-l border-border"
+            />
+            <span
+              aria-hidden="true"
+              className="absolute left-0 top-3.5 bottom-3.5 w-6 rounded-l-2xl border border-r-0 border-dashed border-primary/70"
+            />
+            <span
+              aria-hidden="true"
+              className="absolute left-[1.0625rem] top-3.5 -translate-y-1/2 border-y-[5px] border-y-transparent border-l-[7px] border-l-primary"
+            />
+            {[
+              "Simulate",
+              "Find where conversations fail",
+              "Propose the change",
+              "Prove it against the same evals",
+            ].map((step, i) => (
+              <li key={step} className="relative flex items-center gap-4">
+                <span className="relative z-10 flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-primary/40 bg-background text-xs font-semibold tabular-nums text-foreground">
+                  {i + 1}
+                </span>
+                <span className="text-base">{step}</span>
+              </li>
+            ))}
+            <li className="sr-only">Then back to step 1.</li>
+          </ol>
         </div>
 
         <div className="grid md:grid-cols-3 gap-6">
@@ -406,17 +370,13 @@ export default function Home() {
           </Card>
         </div>
 
-        <p className="text-center text-sm text-muted-foreground">
-          None of this is built yet. Today Vox measures and tracks; the self-improvement loop is
-          the roadmap, and we would rather show the gap than imply it is closed.
-        </p>
       </section>
 
       {/* CTA */}
       <section className="bg-gradient-to-r from-secondary/50 to-background border rounded-2xl p-12 text-center space-y-6">
         <h2 className="text-3xl font-bold">Ready to dive deeper?</h2>
         <p className="text-muted-foreground max-w-xl mx-auto">
-          Check out our comprehensive leaderboard to compare products across all five metrics.
+          Check out our comprehensive leaderboard to compare providers across all six metrics.
         </p>
         <Link href="/leaderboard">
           <Button size="lg" className="bg-primary text-primary-foreground hover:bg-primary/90">

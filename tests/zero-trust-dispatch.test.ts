@@ -110,8 +110,16 @@ describeDb("zero-trust complete route — Unverified agent's result is recorded 
     });
     expect(wfRes.ok).toBe(true);
     evalFlowId = (await wfRes.json()).id;
-    const es = await (await authFetch(cookie, `${BASE_URL}/api/eval-sets?includePublic=true`)).json();
-    evalSetId = es[0].id;
+    // Own eval set, not the first row of `?includePublic=true` — under
+    // parallel load that is another suite's fixture, possibly private or
+    // unrunnable, and the run below then fails for a reason unrelated to
+    // zero-trust dispatch.
+    const esRes = await authFetch(cookie, `${BASE_URL}/api/eval-sets`, {
+      method: "POST",
+      body: JSON.stringify({ name: `zt-complete-es-${Date.now()}`, visibility: "public", config: {} }),
+    });
+    expect(esRes.ok).toBe(true);
+    evalSetId = (await esRes.json()).id;
 
     // Private (non-public) token: mints with siteId/region NULL under zero
     // trust — no region assertion possible at mint time.
@@ -162,6 +170,7 @@ describeDb("zero-trust complete route — Unverified agent's result is recorded 
   afterAll(async () => {
     await authFetch(cookie, `${BASE_URL}/api/eval-agent-tokens/${tokenId}/revoke`, { method: "POST" });
     await authFetch(cookie, `${BASE_URL}/api/eval-flows/${evalFlowId}`, { method: "DELETE" });
+    await authFetch(cookie, `${BASE_URL}/api/eval-sets/${evalSetId}`, { method: "DELETE" });
   });
 
   it("completing the job with results creates an eval_results row with siteId NULL", async () => {
