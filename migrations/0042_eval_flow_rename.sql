@@ -40,3 +40,32 @@ DROP INDEX eval_jobs_snap_wf_mainline_idx;
 CREATE INDEX eval_jobs_snap_wf_visibility_idx ON eval_jobs ((snapshot->'evalFlow'->>'visibility'));
 --> statement-breakpoint
 CREATE INDEX eval_jobs_snap_wf_mainline_idx ON eval_jobs ((snapshot->'evalFlow'->>'isMainline'));
+--> statement-breakpoint
+-- Drop the parked-payload experiment. 0040 and 0041 moved dead config aside
+-- under `_legacy*` keys rather than deleting it ("never destroy the only
+-- copy"), which pulled in a whole apparatus to keep them safe: stripped from
+-- writes, carried across edits, hidden from non-owners, skipped by the secret
+-- scans and by the daemon's ${config.*} expansion. The payloads turned out to
+-- be worthless — a voice-agent-tester `app` YAML for a framework that no
+-- longer exists, or a dial number that already failed conversion — and prod
+-- carries none of either. Deleting the keys is what lets all of that code go;
+-- with nothing parked, nothing needs guarding.
+UPDATE eval_flows
+SET config = config - '_legacyApp' - '_legacyPhoneDial'
+WHERE jsonb_typeof(config) = 'object'
+  AND (config ? '_legacyApp' OR config ? '_legacyPhoneDial');
+--> statement-breakpoint
+UPDATE eval_jobs
+SET config = CASE
+      WHEN jsonb_typeof(config) = 'object' THEN config - '_legacyApp' - '_legacyPhoneDial'
+      ELSE config END,
+    snapshot = CASE
+      WHEN jsonb_typeof(snapshot #> '{evalFlow,config}') = 'object'
+        THEN jsonb_set(snapshot, '{evalFlow,config}',
+               (snapshot #> '{evalFlow,config}') - '_legacyApp' - '_legacyPhoneDial')
+      ELSE snapshot END
+WHERE (jsonb_typeof(config) = 'object'
+       AND (config ? '_legacyApp' OR config ? '_legacyPhoneDial'))
+   OR (jsonb_typeof(snapshot #> '{evalFlow,config}') = 'object'
+       AND (snapshot #> '{evalFlow,config}' ? '_legacyApp'
+            OR snapshot #> '{evalFlow,config}' ? '_legacyPhoneDial'));

@@ -202,7 +202,7 @@ export default function ConsoleEvalFlowDetail() {
       toast({ title: "Eval Flow started", description: `Job created: ${data.job?.id}` });
     },
     onError: (error: Error) => {
-      toast({ title: "Failed to run evalFlow", description: error.message, variant: "destructive" });
+      toast({ title: "Failed to run Eval Flow", description: error.message, variant: "destructive" });
     },
   });
 
@@ -374,7 +374,7 @@ export default function ConsoleEvalFlowDetail() {
               )}
               {showRuntimeWarning && (
                 <Alert variant="destructive">
-                  <AlertTitle>This evalFlow uses runtime secrets</AlertTitle>
+                  <AlertTitle>This Eval Flow uses runtime secrets</AlertTitle>
                   <AlertDescription>
                     The selected shared agent will receive the raw values of these secrets: {runtimeExposed.join(", ")}.
                     <label className="mt-2 flex items-center gap-2">

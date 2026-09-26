@@ -16,7 +16,7 @@ import { fingerprintCredential, formatLastFailedHttpStatus, parseLastFailedHttpS
 import { sessionScopeForEvalFlow, areLoginSecretsAttested, ensureSession, stampOwnerSession, credentialKeyFor, SESSION_FRESH_MARGIN_SECONDS, classifyReferencedSecrets, findBrokeredMisuse, resolveBrokerType, type SessionNeed, detectSessionNeed, missingSecretNames, resolvableSecretSources } from "./auth-session";
 import { validateRegisterPayload, cacheBrokerMintSecret, hasBrokerMintSecret, routeToBroker, executeViaBroker, KNOWN_BROKER_TYPES } from "./broker-registry";
 import { resolveRestfulTemplate } from "./restful-exec";
-import { validateRestfulTrigger, parseStepsScript, stepsContainCallDial, stripLegacyConfigKeys, redactLegacyForViewer, redactLegacyFromJob, unsupportedFrameworkError, carryOverLegacyKeys } from "./storage";
+import { validateRestfulTrigger, parseStepsScript, stepsContainCallDial, unsupportedFrameworkError } from "./storage";
 import { PHONE_NUMBER_RE } from "@shared/steps";
 import { deriveApiKeyStatus } from "./api-key-status";
 import { isStaleOfflineAgent } from "./agent-liveness";
@@ -1820,12 +1820,7 @@ export async function registerRoutes(
       // to re-derive it (and risk getting it wrong): canSchedule gates the
       // recurring-schedule UI, matching the schedule route's canScheduleEvalFlow.
       const withPerms = (list: typeof ownEvalFlows) =>
-        list.map(w => ({
-          // Parked _legacy* payloads are owner-only (the list includes PUBLIC
-          // rows from other owners).
-          ...redactLegacyForViewer(w, isOwnerOrOrgManager(user, w)),
-          canSchedule: canScheduleEvalFlow(user, w),
-        }));
+        list.map(w => ({ ...w, canSchedule: canScheduleEvalFlow(user, w) }));
 
       if (req.query.includePublic === "true") {
         const publicEvalFlows = await storage.getPublicEvalFlows();
@@ -1854,7 +1849,7 @@ export async function registerRoutes(
       if (!canAccessResource(user, evalFlow)) {
         return res.status(403).json({ error: "Access denied" });
       }
-      res.json(redactLegacyForViewer(evalFlow, isOwnerOrOrgManager(user, evalFlow)));
+      res.json(evalFlow);
     } catch (error) {
       console.error("Error fetching evalFlow:", error);
       res.status(500).json({ error: "Failed to fetch evalFlow" });
@@ -1869,7 +1864,7 @@ export async function registerRoutes(
       }
 
       const { name, description, projectId, providerId, visibility, organizationId, transport } = req.body;
-      const config = stripLegacyConfigKeys(req.body.config);
+      const config = req.body.config;
 
       if (!name || !String(name).trim()) {
         return res.status(400).json({ error: "Name required" });
@@ -1953,11 +1948,7 @@ export async function registerRoutes(
       }
 
       const { name, description, visibility, projectId, providerId, transport } = req.body;
-      // Strip caller-supplied parked keys, then carry the STORED ones over so
-      // an unrelated edit doesn't destroy the only copy of a parked payload.
-      const config = req.body.config === undefined || req.body.config === null
-        ? req.body.config
-        : carryOverLegacyKeys(stripLegacyConfigKeys(req.body.config), evalFlow.config);
+      const config = req.body.config;
       if (transport !== undefined && !["web", "phone"].includes(transport)) {
         return res.status(400).json({ error: "Invalid transport" });
       }
@@ -2105,8 +2096,7 @@ export async function registerRoutes(
         providerId: source.providerId,
         visibility: "public",
         isMainline: false,
-        // A clone must not carry the source owner's parked payload to a new owner.
-        config: stripLegacyConfigKeys(source.config || {}),
+        config: source.config || {},
       });
 
       res.json(cloned);
@@ -2177,7 +2167,7 @@ export async function registerRoutes(
       }
 
       const { name, description, visibility, organizationId } = req.body;
-      const config = stripLegacyConfigKeys(req.body.config);
+      const config = req.body.config;
 
       if (!name || !String(name).trim()) {
         return res.status(400).json({ error: "Name required" });
@@ -2245,7 +2235,7 @@ export async function registerRoutes(
       }
 
       const { name, description, visibility } = req.body;
-      const config = stripLegacyConfigKeys(req.body.config);
+      const config = req.body.config;
       if (config !== undefined && config !== null) {
         const v = validateEvalSetConfig(config);
         if (!v.valid) return res.status(400).json({ error: v.error });
@@ -2320,7 +2310,7 @@ export async function registerRoutes(
       }
 
       const { name } = req.body || {};
-      const config = stripLegacyConfigKeys(req.body?.config);
+      const config = req.body?.config;
 
       if (config) {
         const v = validateEvalSetConfig(config);
@@ -5183,28 +5173,6 @@ export async function registerRoutes(
 
   // ==================== EVAL JOB MANAGEMENT ROUTES ====================
 
-  // Parked _legacy* payloads in a job (config + frozen snapshot) belong to the
-  // EVAL_FLOW's owner, not whoever ran it: anyone may run a public evalFlow, and
-  // the job they create carries the owner's payload. Same rule as the evalFlow
-  // routes (owner or org manager, no admin bypass) so the two agree.
-  //
-  // Backstop, not the main protection: 0041 strips these keys from every job
-  // row, and mergeEvalConfig/buildJobSnapshot strip them from new ones. This
-  // guards a regression or a row written outside those paths.
-  const canSeeJobLegacy = (
-    job: { snapshot?: { evalFlow?: { ownerId?: number | null; organizationId?: number | null } | null } | null },
-    user: Awaited<ReturnType<typeof getCurrentUser>> & object,
-  ) => {
-    const snapWf = job.snapshot?.evalFlow;
-    // Fail CLOSED when the snapshot doesn't name an owner: falling back to
-    // job.createdBy would hand the payload to whoever ran the evalFlow, which
-    // is the exact case this guards against.
-    if (snapWf?.ownerId == null) return false;
-    return isOwnerOrOrgManager(user, {
-      ownerId: snapWf.ownerId,
-      organizationId: snapWf.organizationId ?? null,
-    } as Parameters<typeof isOwnerOrOrgManager>[1]);
-  };
 
   // List eval jobs with filters
   app.get("/api/eval-jobs", requireAuth, async (req, res) => {
@@ -5291,9 +5259,7 @@ export async function registerRoutes(
       const rateMap = await storage.getResponseRatesByJobIds(paged.map(j => j.id));
 
       const enriched = paged.map(job => ({
-        // Parked _legacy* payloads are owner-only; this list includes jobs
-        // from PUBLIC evalFlows owned by other people.
-        ...redactLegacyFromJob(job, canSeeJobLegacy(job, user)),
+        ...job,
         creatorName: job.createdBy ? creatorMap.get(job.createdBy) || null : null,
         responseRate: rateMap.has(job.id) ? rateMap.get(job.id)! : null,
         // trigger_type: 1 = scheduled, 2 = manual (recorded at creation). Fall back
@@ -5337,7 +5303,7 @@ export async function registerRoutes(
         }
       }
 
-      res.json(redactLegacyFromJob(job, canSeeJobLegacy(job, user)));
+      res.json(job);
     } catch (error) {
       console.error("Error fetching eval job:", error);
       res.status(500).json({ error: "Failed to fetch eval job" });
@@ -5402,7 +5368,7 @@ export async function registerRoutes(
       }
 
       res.json({
-        job: redactLegacyFromJob(job, canSeeJobLegacy(job, user)),
+        job,
         result: result ? {
           ...result,
           artifactUrl: signedArtifactUrl,

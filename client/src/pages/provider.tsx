@@ -200,7 +200,7 @@ export default function ProviderGuide() {
                 <Badge variant="outline" className="h-8 w-8 rounded-full flex items-center justify-center">1</Badge>
                 <div>
                   <p className="font-medium">Schedule</p>
-                  <p className="text-sm text-muted-foreground">Create evalFlow with cron schedule</p>
+                  <p className="text-sm text-muted-foreground">Create Eval Flow with cron schedule</p>
                 </div>
               </div>
               <ArrowRight className="hidden md:block h-4 w-4 text-muted-foreground" />

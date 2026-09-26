@@ -1,5 +1,4 @@
 import * as yaml from "js-yaml";
-import { LEGACY_CONFIG_KEY_PREFIX } from "@shared/secrets";
 import {
   PHONE_NUMBER_RE, illegalPhoneStepType, illegalWebStepType, illegalWebVocabInPhone,
   walkStepList, type StepSegment,
@@ -222,86 +221,6 @@ export function decryptValue(stored: string): string {
 }
 
 const MAX_CONFIG_SIZE = 100_000; // 100KB
-
-/**
- * Drop user-supplied `_legacy*` top-level keys from a config before
- * validation/storage. Only MIGRATIONS may write parked keys (0040's
- * _legacyPhoneDial): the secret scans deliberately skip them, so accepting
- * one from a caller would let ${config._legacyX}
- * indirection smuggle a secret reference past the misuse/consent gates.
- * Migrated rows are unaffected: their keys were written by SQL, and
- * carryOverLegacyKeys re-attaches them on update so an edit can't destroy
- * them. mergeEvalConfig also applies this, so parked payloads never travel
- * in job configs to agents.
- */
-export function carryOverLegacyKeys(incoming: unknown, existing: unknown): unknown {
-  // Re-attach the STORED parked keys to a caller's config on update. Writes
-  // strip caller-supplied `_legacy*` (they'd smuggle secret refs past the
-  // scans), but that also meant any innocuous edit — a rename, a description
-  // tweak — silently destroyed the only copy of a parked payload, defeating
-  // the reason migrations park it. The caller can never inject one; they only
-  // survive from the row.
-  if (typeof incoming !== "object" || incoming === null || Array.isArray(incoming)) return incoming;
-  if (typeof existing !== "object" || existing === null || Array.isArray(existing)) return incoming;
-  const parked = Object.entries(existing as Record<string, unknown>)
-    .filter(([k]) => k.startsWith(LEGACY_CONFIG_KEY_PREFIX));
-  if (parked.length === 0) return incoming;
-  return { ...(incoming as Record<string, unknown>), ...Object.fromEntries(parked) };
-}
-
-export function stripLegacyConfigKeys<T>(config: T): T {
-  if (typeof config !== "object" || config === null || Array.isArray(config)) return config;
-  return Object.fromEntries(
-    Object.entries(config as Record<string, unknown>).filter(([k]) => !k.startsWith(LEGACY_CONFIG_KEY_PREFIX)),
-  ) as T;
-}
-
-/**
- * Response-boundary redaction: parked `_legacy*` payloads are OWNER-ONLY.
- * A migrated row can be public (anyone may read its config), and the parked
- * payload is the owner's data — a phone number (0040) or old app YAML
- * (0041). `canSeeLegacy` should be the edit right, not mere visibility.
- */
-export function redactLegacyForViewer<T extends { config?: unknown }>(row: T, canSeeLegacy: boolean): T {
-  if (canSeeLegacy) return row;
-  const config = row.config;
-  if (typeof config !== "object" || config === null || Array.isArray(config)) return row;
-  if (!Object.keys(config as Record<string, unknown>).some((k) => k.startsWith(LEGACY_CONFIG_KEY_PREFIX))) return row;
-  return { ...row, config: stripLegacyConfigKeys(config) };
-}
-
-/**
- * Job-shaped counterpart of redactLegacyForViewer: a job row carries the
- * merged `config` AND the frozen `snapshot`, both of which can hold parked
- * `_legacy*` payloads. Job reads are visible to anyone who can see the
- * evalFlow (public included), so non-owners must not see the owner's parked
- * data. This is a BACKSTOP: 0041 strips these keys from every job row, and
- * mergeEvalConfig/buildJobSnapshot strip them from new ones — it guards a
- * regression, not the normal path.
- */
-export function redactLegacyFromJob<T extends { config?: unknown; snapshot?: unknown; createdBy?: number | null }>(
-  job: T,
-  canSeeLegacy: boolean,
-): T {
-  // NOTE for callers: `canSeeLegacy` must be keyed on the EVAL_FLOW OWNER, not
-  // job.createdBy — anyone may run a public evalFlow, and the resulting job
-  // (theirs) carries the owner's parked payload.
-  if (canSeeLegacy) return job;
-  const snap = job.snapshot as { evalFlow?: { config?: unknown }; evalSet?: { config?: unknown } } | null | undefined;
-  return {
-    ...job,
-    config: stripLegacyConfigKeys(job.config),
-    ...(snap
-      ? {
-          snapshot: {
-            ...snap,
-            ...(snap.evalFlow ? { evalFlow: { ...snap.evalFlow, config: stripLegacyConfigKeys(snap.evalFlow.config) } } : {}),
-            ...(snap.evalSet ? { evalSet: { ...snap.evalSet, config: stripLegacyConfigKeys(snap.evalSet.config) } } : {}),
-          },
-        }
-      : {}),
-  };
-}
 
 // The eval-framework seam: adding a framework means extending this set, the
 // daemon's executeJob switch, and resolvableSecretSources' field map — the
@@ -634,12 +553,8 @@ export function mergeEvalConfig(
   evalFlowConfig: unknown,
   evalSetConfig: unknown,
 ): Record<string, unknown> {
-  // Parked _legacy* payloads never travel in job configs: job.config goes to
-  // every claiming agent (marketplace hosts included), and e.g.
-  // _legacyPhoneDial is an owner's phone number with no reason to leave Core.
-  // They stay recoverable on the evalFlow row itself.
-  const wf = stripLegacyConfigKeys((evalFlowConfig as Record<string, unknown>) || {});
-  const es = stripLegacyConfigKeys((evalSetConfig as Record<string, unknown>) || {});
+  const wf = (evalFlowConfig as Record<string, unknown>) || {};
+  const es = (evalSetConfig as Record<string, unknown>) || {};
   // Role-disjointness (scenario vs framework/app/steps*) is enforced by the
   // validators. Here we only guard against the evalFlow and eval set sharing a
   // key with CONFLICTING values (e.g. a frameworkVersion mismatch). Identical
@@ -679,10 +594,7 @@ export function buildJobSnapshot(
       : null,
     evalFlow: {
       name: evalFlow.name,
-      // Parked _legacy* payloads are stripped here too: the snapshot travels
-      // to every claiming agent (GET /jobs and the claim response return the
-      // whole job row), so an owner's _legacyPhoneDial must not ride along.
-      config: stripLegacyConfigKeys(evalFlow.config),
+      config: evalFlow.config,
       visibility: evalFlow.visibility,
       isMainline: evalFlow.isMainline,
       ownerId: evalFlow.ownerId,
@@ -691,7 +603,7 @@ export function buildJobSnapshot(
     evalSet: evalSet
       ? {
           name: evalSet.name,
-          config: stripLegacyConfigKeys(evalSet.config),
+          config: evalSet.config,
           visibility: evalSet.visibility,
           isMainline: evalSet.isMainline,
           ownerId: evalSet.ownerId,

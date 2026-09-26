@@ -176,7 +176,7 @@ export default function SelfTest() {
       toast({ title: "Eval Flow created", description: "You can now run evaluations" });
     },
     onError: (error: Error) => {
-      toast({ title: "Failed to create evalFlow", description: error.message, variant: "destructive" });
+      toast({ title: "Failed to create Eval Flow", description: error.message, variant: "destructive" });
     },
   });
 
@@ -344,7 +344,7 @@ export default function SelfTest() {
   const handleRunEval = () => {
     const evalFlowId = parseInt(selectedEvalFlowId);
     if (!evalFlowId) {
-      toast({ title: "Please select or create an evalFlow first", variant: "destructive" });
+      toast({ title: "Please select or create an Eval Flow first", variant: "destructive" });
       return;
     }
     runEvalMutation.mutate(evalFlowId);
@@ -434,7 +434,7 @@ export default function SelfTest() {
                       <Label>Eval Flow</Label>
                       <Select value={selectedEvalFlowId} onValueChange={setSelectedEvalFlowId}>
                         <SelectTrigger>
-                          <SelectValue placeholder="Choose an evalFlow" />
+                          <SelectValue placeholder="Choose an Eval Flow" />
                         </SelectTrigger>
                         <SelectContent>
                           {evalFlows.map((w) => (
@@ -621,7 +621,7 @@ export default function SelfTest() {
               )}
               {showRuntimeWarning && (
                 <Alert variant="destructive">
-                  <AlertTitle>This evalFlow uses runtime secrets</AlertTitle>
+                  <AlertTitle>This Eval Flow uses runtime secrets</AlertTitle>
                   <AlertDescription>
                     The selected shared agent will receive the raw values of these secrets: {runtimeExposed.join(", ")}.
                     <label className="mt-2 flex items-center gap-2">

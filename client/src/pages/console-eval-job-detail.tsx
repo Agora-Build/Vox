@@ -215,7 +215,7 @@ export default function ConsoleEvalJobDetail({ jobId }: { jobId: number }) {
         <div className="flex items-center gap-2">
           {snap && (
             <Button variant="outline" className="gap-2" onClick={() => setSnapshotOpen(true)} data-testid="button-view-snapshot">
-              <FileText className="h-4 w-4" /> View evalFlow &amp; eval set
+              <FileText className="h-4 w-4" /> View Eval Flow &amp; eval set
             </Button>
           )}
           {/* Artifact status + actions */}

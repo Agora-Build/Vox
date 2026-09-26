@@ -530,7 +530,7 @@ export default function ConsoleEvalSets() {
               <Label>Eval Flow</Label>
               <Select value={runEvalFlowId} onValueChange={setRunEvalFlowId}>
                 <SelectTrigger data-testid="select-run-eval-flow">
-                  <SelectValue placeholder="Select evalFlow" />
+                  <SelectValue placeholder="Select Eval Flow" />
                 </SelectTrigger>
                 <SelectContent>
                   {evalFlows?.map((w) => (

@@ -15,7 +15,6 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { Plus, Workflow as EvalFlowIcon, Globe, Lock, Star, StarOff, ChevronRight, Pencil, FolderKanban, Copy, Trash2, Phone } from "lucide-react";
 import { useState } from "react";
-import { LEGACY_CONFIG_KEY_PREFIX } from "@shared/secrets";
 import { useLocation } from "wouter";
 import { load as loadYaml } from "js-yaml";
 import type { EvalFlow as EvalFlowType, Provider, Project } from "@shared/schema";
@@ -96,10 +95,6 @@ export default function ConsoleEvalFlows() {
   const [editProjectId, setEditProjectId] = useState("");
   const [editProviderId, setEditProviderId] = useState("");
   const [editTransport, setEditTransport] = useState("web");
-  // Payloads parked by a migration (0040's _legacyPhoneDial). Read-only:
-  // nothing executes them, and the server carries them across saves, so this
-  // is purely so the owner can see and copy the value.
-  const [editLegacyConfig, setEditLegacyConfig] = useState<string>("");
 
   // Non-blocking warning when the evalFlow's provider disagrees with its YAML platform_id.
   const [pendingMismatch, setPendingMismatch] = useState<{ kind: "create" | "edit"; yamlPlatform: string; providerName: string } | null>(null);
@@ -150,7 +145,7 @@ export default function ConsoleEvalFlows() {
       toast({ title: "Eval Flow created" });
     },
     onError: (error: Error) => {
-      toast({ title: "Failed to create evalFlow", description: error.message, variant: "destructive" });
+      toast({ title: "Failed to create Eval Flow", description: error.message, variant: "destructive" });
     },
   });
 
@@ -179,7 +174,7 @@ export default function ConsoleEvalFlows() {
       toast({ title: "Eval Flow updated" });
     },
     onError: (error: Error) => {
-      toast({ title: "Failed to update evalFlow", description: error.message, variant: "destructive" });
+      toast({ title: "Failed to update Eval Flow", description: error.message, variant: "destructive" });
     },
   });
 
@@ -193,7 +188,7 @@ export default function ConsoleEvalFlows() {
       toast({ title: "Eval Flow updated" });
     },
     onError: (error: Error) => {
-      toast({ title: "Failed to update evalFlow", description: error.message, variant: "destructive" });
+      toast({ title: "Failed to update Eval Flow", description: error.message, variant: "destructive" });
     },
   });
 
@@ -207,7 +202,7 @@ export default function ConsoleEvalFlows() {
       toast({ title: "Eval Flow cloned" });
     },
     onError: (error: Error) => {
-      toast({ title: "Failed to clone evalFlow", description: error.message, variant: "destructive" });
+      toast({ title: "Failed to clone Eval Flow", description: error.message, variant: "destructive" });
     },
   });
 
@@ -227,7 +222,7 @@ export default function ConsoleEvalFlows() {
       toast({ title: "Eval Flow deleted" });
     },
     onError: (error: Error) => {
-      toast({ title: "Failed to delete evalFlow", description: error.message, variant: "destructive" });
+      toast({ title: "Failed to delete Eval Flow", description: error.message, variant: "destructive" });
     },
   });
 
@@ -242,8 +237,6 @@ export default function ConsoleEvalFlows() {
     setEditStepsSuffix(cfg.stepsSuffix || "");
     setEditProviderId(evalFlow.providerId);
     setEditTransport(evalFlow.transport || "web");
-    const parked = Object.fromEntries(Object.entries(cfg).filter(([k]) => k.startsWith(LEGACY_CONFIG_KEY_PREFIX)));
-    setEditLegacyConfig(Object.keys(parked).length > 0 ? JSON.stringify(parked, null, 2) : "");
     setEditOpen(true);
   };
 
@@ -325,7 +318,7 @@ export default function ConsoleEvalFlows() {
                 <Label htmlFor="eval-flow-description">Description</Label>
                 <Textarea
                   id="eval-flow-description"
-                  placeholder="Describe what this evalFlow tests..."
+                  placeholder="Describe what this Eval Flow tests..."
                   value={description}
                   onChange={(e) => setDescription(e.target.value)}
                   data-testid="input-eval-flow-description"
@@ -519,23 +512,6 @@ export default function ConsoleEvalFlows() {
                 data-testid="textarea-eval-flow-steps-suffix-edit"
               />
             </div>
-            {editLegacyConfig && (
-              <div className="space-y-2 rounded-md border border-amber-500/40 bg-amber-500/5 p-3">
-                <Label className="text-amber-600 dark:text-amber-400">
-                  Legacy config — kept, but unused
-                </Label>
-                <p className="text-xs text-muted-foreground">
-                  A migration parked this from an older config format. Nothing runs it,
-                  and editing this evalFlow won't remove it. Copy anything you still need.
-                </p>
-                <pre
-                  className="max-h-40 overflow-auto rounded bg-muted p-2 font-mono text-xs"
-                  data-testid="text-eval-flow-legacy-config"
-                >
-                  {editLegacyConfig}
-                </pre>
-              </div>
-            )}
             <div className="space-y-2">
               <Label htmlFor="edit-eval-flow-project">Project</Label>
               {editEvalFlow?.projectId ? (

@@ -8,7 +8,7 @@
  */
 
 import { Express, Request, Response } from "express";
-import { storage, mergeEvalConfig, buildJobSnapshot, validateEvalFlowConfig, validateEvalSetConfig, stripLegacyConfigKeys, redactLegacyForViewer, unsupportedFrameworkError, carryOverLegacyKeys } from "./storage";
+import { storage, mergeEvalConfig, buildJobSnapshot, validateEvalFlowConfig, validateEvalSetConfig, unsupportedFrameworkError } from "./storage";
 import { requireAuthOrApiKey, getCurrentUserOrApiKeyUser } from "./auth";
 import { parsePlatformSetup, sessionScopeForEvalFlow, evaluateSessionRequirement, getBrokeredSecretNames, ensureSession, missingSecretNames, resolvableSecretSources } from "./auth-session";
 import { regionSiteSequence } from "@shared/regions";
@@ -143,7 +143,7 @@ export function registerApiV1Routes(app: Express): void {
       }
 
       const { name, description, providerId, projectId, visibility } = req.body;
-      const config = stripLegacyConfigKeys(req.body.config);
+      const config = req.body.config;
 
       if (!name) {
         return res.status(400).json({ error: "Name is required" });
@@ -226,9 +226,7 @@ export function registerApiV1Routes(app: Express): void {
         return res.status(403).json({ error: "Access denied" });
       }
 
-      // Same rule as the console route: the EDIT right, not bare ownership,
-      // so an org manager sees parked payloads through either API.
-      res.json({ data: redactLegacyForViewer(evalFlow, isOwnerOrOrgManager(user, evalFlow)) });
+      res.json({ data: evalFlow });
     } catch (error) {
       console.error("API v1 - Error fetching evalFlow:", error);
       res.status(500).json({ error: "Failed to fetch evalFlow" });
@@ -258,9 +256,7 @@ export function registerApiV1Routes(app: Express): void {
       }
 
       const { name, description, visibility } = req.body;
-      const config = req.body.config === undefined || req.body.config === null
-        ? req.body.config
-        : carryOverLegacyKeys(stripLegacyConfigKeys(req.body.config), evalFlow.config);
+      const config = req.body.config;
       if (config !== undefined && config !== null) {
         const v = validateEvalFlowConfig(config, (evalFlow.transport as "web" | "phone" | null) ?? "web");
         if (!v.valid) return res.status(400).json({ error: v.error });
@@ -518,7 +514,7 @@ export function registerApiV1Routes(app: Express): void {
       }
 
       const { name, description, visibility } = req.body;
-      const config = stripLegacyConfigKeys(req.body.config);
+      const config = req.body.config;
       if (config !== undefined && config !== null) {
         const v = validateEvalSetConfig(config);
         if (!v.valid) return res.status(400).json({ error: v.error });

@@ -31,7 +31,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { SECRET_PLACEHOLDER_REGEX, collectSecretRefs, LEGACY_CONFIG_KEY_PREFIX } from '../shared/secrets';
+import { SECRET_PLACEHOLDER_REGEX, collectSecretRefs } from '../shared/secrets';
 import { summarizeAevalFailure, reduceUrlsSafely, urlForms, createBoundedCapture } from './aeval-output';
 import { StringDecoder } from 'string_decoder';
 import yaml from 'js-yaml';
@@ -2037,10 +2037,7 @@ class VoxEvalAgentDaemon {
     let stepsSuffix = config.stepsSuffix;
     const configPlaceholders: Record<string, string> = {};
     for (const [k, v] of Object.entries(config)) {
-      // _legacy* keys are migration-parked dead payloads (0040/0041): never
-      // expandable via ${config.*} — that indirection would smuggle their
-      // secret refs past the server's misuse/consent scans, which skip them.
-      if (typeof v === 'string' && k !== 'scenario' && k !== 'framework' && !k.startsWith(LEGACY_CONFIG_KEY_PREFIX)) {
+      if (typeof v === 'string' && k !== 'scenario' && k !== 'framework') {
         configPlaceholders[k] = v;
       }
     }
