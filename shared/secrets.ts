@@ -107,8 +107,10 @@ export function resolveSecretPlaceholders(
 
 /** Config keys with this prefix are migration-parked dead payloads (0040's
  * _legacyPhoneDial): never read, never executed, never scanned for secret
- * refs, never sent to agents, owner-only on reads. The one definition —
- * server/storage.ts, the daemon and the client import it from here. */
+ * refs, never sent to agents, owner-only on reads. Only TOP-LEVEL config
+ * keys are ever parked, so every scan that honours this prefix checks the
+ * top level only. The one definition — server/storage.ts, the daemon and
+ * the client import it from here. */
 export const LEGACY_CONFIG_KEY_PREFIX = "_legacy";
 
 /**

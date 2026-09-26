@@ -8,7 +8,7 @@
  */
 
 import { Express, Request, Response } from "express";
-import { storage, mergeEvalConfig, buildJobSnapshot, validateEvalflowConfig, validateEvalSetConfig, stripLegacyConfigKeys, redactLegacyForViewer, SUPPORTED_FRAMEWORKS } from "./storage";
+import { storage, mergeEvalConfig, buildJobSnapshot, validateEvalflowConfig, validateEvalSetConfig, stripLegacyConfigKeys, redactLegacyForViewer, unsupportedFrameworkError, carryOverLegacyKeys } from "./storage";
 import { requireAuthOrApiKey, getCurrentUserOrApiKeyUser } from "./auth";
 import { parsePlatformSetup, sessionScopeForEvalflow, evaluateSessionRequirement, getBrokeredSecretNames, ensureSession, missingSecretNames, resolvableSecretSources } from "./auth-session";
 import { regionSiteSequence } from "@shared/regions";
@@ -151,9 +151,12 @@ export function registerApiV1Routes(app: Express): void {
       // Same save-time gate as the console route (v1 previously skipped it —
       // every config rule was bypassable through this endpoint).
       if (config !== undefined && config !== null) {
-        // v1 create has no transport field today; read it anyway so adding
-        // one later can't silently validate phone steps as web.
-        const v = validateEvalflowConfig(config, req.body.transport === "phone" ? "phone" : "web");
+        // Validate against the transport that will actually be STORED. v1
+        // create never passes transport to storage.createEvalflow, so the row
+        // is always `web` — honouring req.body.transport here would let
+        // phone-only steps into a web row, which is what this check exists to
+        // stop. When v1 learns to save transport, pass the saved value.
+        const v = validateEvalflowConfig(config, "web");
         if (!v.valid) return res.status(400).json({ error: v.error });
       }
 
@@ -255,7 +258,9 @@ export function registerApiV1Routes(app: Express): void {
       }
 
       const { name, description, visibility } = req.body;
-      const config = stripLegacyConfigKeys(req.body.config);
+      const config = req.body.config === undefined || req.body.config === null
+        ? req.body.config
+        : carryOverLegacyKeys(stripLegacyConfigKeys(req.body.config), evalflow.config);
       if (config !== undefined && config !== null) {
         const v = validateEvalflowConfig(config, (evalflow.transport as "web" | "phone" | null) ?? "web");
         if (!v.valid) return res.status(400).json({ error: v.error });
@@ -409,12 +414,8 @@ export function registerApiV1Routes(app: Express): void {
       // validator rejects the framework at save) — which is exactly why both
       // run paths must agree.
       {
-        const declared = ((evalflow.config ?? {}) as Record<string, unknown>).framework;
-        if (typeof declared === "string" && !SUPPORTED_FRAMEWORKS.has(declared)) {
-          return res.status(400).json({
-            error: `This evalflow uses '${declared}', which this version cannot run. Re-create it on ${Array.from(SUPPORTED_FRAMEWORKS).join(" or ")}.`,
-          });
-        }
+        const frameworkError = unsupportedFrameworkError(evalflow.config);
+        if (frameworkError) return res.status(400).json({ error: frameworkError });
       }
 
       // Guaranteed-failure gate, same as the console run path: an unconfigured

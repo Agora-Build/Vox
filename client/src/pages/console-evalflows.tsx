@@ -96,9 +96,9 @@ export default function ConsoleEvalflows() {
   const [editProjectId, setEditProjectId] = useState("");
   const [editProviderId, setEditProviderId] = useState("");
   const [editTransport, setEditTransport] = useState("web");
-  // Payloads parked by a migration (0040's _legacyPhoneDial).
-  // Read-only: nothing executes them, and saving this dialog discards them —
-  // so the owner has to be able to SEE them before that happens.
+  // Payloads parked by a migration (0040's _legacyPhoneDial). Read-only:
+  // nothing executes them, and the server carries them across saves, so this
+  // is purely so the owner can see and copy the value.
   const [editLegacyConfig, setEditLegacyConfig] = useState<string>("");
 
   // Non-blocking warning when the evalflow's provider disagrees with its YAML platform_id.
@@ -522,11 +522,11 @@ export default function ConsoleEvalflows() {
             {editLegacyConfig && (
               <div className="space-y-2 rounded-md border border-amber-500/40 bg-amber-500/5 p-3">
                 <Label className="text-amber-600 dark:text-amber-400">
-                  Legacy config — discarded when you save
+                  Legacy config — kept, but unused
                 </Label>
                 <p className="text-xs text-muted-foreground">
-                  A migration parked this from an older config format. Nothing runs it.
-                  Copy anything you still need before saving.
+                  A migration parked this from an older config format. Nothing runs it,
+                  and editing this evalflow won't remove it. Copy anything you still need.
                 </p>
                 <pre
                   className="max-h-40 overflow-auto rounded bg-muted p-2 font-mono text-xs"

@@ -16,7 +16,7 @@ import { fingerprintCredential, formatLastFailedHttpStatus, parseLastFailedHttpS
 import { sessionScopeForEvalflow, areLoginSecretsAttested, ensureSession, stampOwnerSession, credentialKeyFor, SESSION_FRESH_MARGIN_SECONDS, classifyReferencedSecrets, findBrokeredMisuse, resolveBrokerType, type SessionNeed, detectSessionNeed, missingSecretNames, resolvableSecretSources } from "./auth-session";
 import { validateRegisterPayload, cacheBrokerMintSecret, hasBrokerMintSecret, routeToBroker, executeViaBroker, KNOWN_BROKER_TYPES } from "./broker-registry";
 import { resolveRestfulTemplate } from "./restful-exec";
-import { validateRestfulTrigger, parseStepsScript, stepsContainCallDial, stripLegacyConfigKeys, redactLegacyForViewer, redactLegacyFromJob, SUPPORTED_FRAMEWORKS } from "./storage";
+import { validateRestfulTrigger, parseStepsScript, stepsContainCallDial, stripLegacyConfigKeys, redactLegacyForViewer, redactLegacyFromJob, unsupportedFrameworkError, carryOverLegacyKeys } from "./storage";
 import { PHONE_NUMBER_RE } from "@shared/steps";
 import { deriveApiKeyStatus } from "./api-key-status";
 import { isStaleOfflineAgent } from "./agent-liveness";
@@ -1953,7 +1953,11 @@ export async function registerRoutes(
       }
 
       const { name, description, visibility, projectId, providerId, transport } = req.body;
-      const config = stripLegacyConfigKeys(req.body.config);
+      // Strip caller-supplied parked keys, then carry the STORED ones over so
+      // an unrelated edit doesn't destroy the only copy of a parked payload.
+      const config = req.body.config === undefined || req.body.config === null
+        ? req.body.config
+        : carryOverLegacyKeys(stripLegacyConfigKeys(req.body.config), evalflow.config);
       if (transport !== undefined && !["web", "phone"].includes(transport)) {
         return res.status(400).json({ error: "Invalid transport" });
       }
@@ -4684,12 +4688,8 @@ export async function registerRoutes(
       // the source. Only a pre-existing row can be in this state: the
       // validator rejects the framework at save.
       {
-        const declared = ((evalflow.config ?? {}) as Record<string, unknown>).framework;
-        if (typeof declared === "string" && !SUPPORTED_FRAMEWORKS.has(declared)) {
-          return res.status(400).json({
-            error: `This evalflow uses '${declared}', which this version cannot run. Re-create it on ${Array.from(SUPPORTED_FRAMEWORKS).join(" or ")}.`,
-          });
-        }
+        const frameworkError = unsupportedFrameworkError(evalflow.config);
+        if (frameworkError) return res.status(400).json({ error: frameworkError });
       }
 
       // A phone-transport evalflow needs a call-establishment step in Setup

@@ -5,7 +5,7 @@
 // so both ticks can be invoked directly — by a test, or by any future runner —
 // without booting the HTTP server.
 
-import { storage, mergeEvalConfig, buildJobSnapshot, SUPPORTED_FRAMEWORKS } from "./storage";
+import { storage, mergeEvalConfig, buildJobSnapshot, unsupportedFrameworkError } from "./storage";
 import { canScheduleEvalflow, sessionPoolViolation } from "./permissions";
 import { parseNextCronRun } from "./cron";
 import { getMarketplace } from "./marketplace";
@@ -169,9 +169,9 @@ export async function processScheduledJobs() {
         // the daemon — once per tick, forever, each costing a claim and, on
         // shared dispatch, an escrow round-trip. Disable the schedule like
         // the deleted-evalflow case above: unsupported ⇒ not scheduled.
-        const declaredFramework = (evalflow.config as Record<string, unknown> | null)?.framework;
-        if (typeof declaredFramework === "string" && !SUPPORTED_FRAMEWORKS.has(declaredFramework)) {
-          log(`Schedule "${schedule.name}" targets an evalflow on unsupported framework '${declaredFramework}' — disabling`, "scheduler");
+        if (unsupportedFrameworkError(evalflow.config)) {
+          const declaredFramework = (evalflow.config as Record<string, unknown> | null)?.framework;
+          log(`Schedule "${schedule.name}" targets an evalflow on unsupported framework '${String(declaredFramework)}' — disabling`, "scheduler");
           await storage.updateEvalSchedule(schedule.id, { isEnabled: false });
           continue;
         }

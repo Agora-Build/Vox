@@ -233,6 +233,21 @@ const MAX_CONFIG_SIZE = 100_000; // 100KB
  * until the owner next rewrites the config). mergeEvalConfig also applies
  * this, so parked payloads never travel in job configs to agents.
  */
+export function carryOverLegacyKeys(incoming: unknown, existing: unknown): unknown {
+  // Re-attach the STORED parked keys to a caller's config on update. Writes
+  // strip caller-supplied `_legacy*` (they'd smuggle secret refs past the
+  // scans), but that also meant any innocuous edit — a rename, a description
+  // tweak — silently destroyed the only copy of a parked payload, defeating
+  // the reason migrations park it. The caller can never inject one; they only
+  // survive from the row.
+  if (typeof incoming !== "object" || incoming === null || Array.isArray(incoming)) return incoming;
+  if (typeof existing !== "object" || existing === null || Array.isArray(existing)) return incoming;
+  const parked = Object.entries(existing as Record<string, unknown>)
+    .filter(([k]) => k.startsWith(LEGACY_CONFIG_KEY_PREFIX));
+  if (parked.length === 0) return incoming;
+  return { ...(incoming as Record<string, unknown>), ...Object.fromEntries(parked) };
+}
+
 export function stripLegacyConfigKeys<T>(config: T): T {
   if (typeof config !== "object" || config === null || Array.isArray(config)) return config;
   return Object.fromEntries(
@@ -295,6 +310,18 @@ export function redactLegacyFromJob<T extends { config?: unknown; snapshot?: unk
 export const SUPPORTED_FRAMEWORKS = new Set<string>(["aeval"]);
 /** Stamped into every job config that doesn't name one (see mergeEvalConfig). */
 export const DEFAULT_FRAMEWORK = "aeval";
+
+/**
+ * The one unsupported-framework test, shared by both run routes and the
+ * scheduler (they must agree — a framework this build can't run only
+ * produces jobs that fail at the daemon). Returns a user-facing message, or
+ * null when the config is runnable.
+ */
+export function unsupportedFrameworkError(config: unknown): string | null {
+  const declared = ((config ?? {}) as Record<string, unknown>).framework;
+  if (typeof declared !== "string" || SUPPORTED_FRAMEWORKS.has(declared)) return null;
+  return `This evalflow uses '${declared}', which this version cannot run. Re-create it on ${Array.from(SUPPORTED_FRAMEWORKS).join(" or ")}.`;
+}
 
 // Keys owned exclusively by the eval set (the test body).
 const EVALSET_ONLY_KEYS = ["scenario"] as const;

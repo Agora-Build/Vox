@@ -2903,6 +2903,40 @@ describe('Vox API Tests', () => {
       }
     });
 
+    it("an unrelated edit keeps the stored parked payload (callers still can't inject one)", async () => {
+      const { storage, pool } = await import('../server/storage');
+      const providers = await storage.getAllProviders();
+      const wf = await storage.createEvalflow({
+        name: `Legacy Carryover WF ${Date.now()}`, ownerId: 1, providerId: providers[0].id,
+        visibility: 'private',
+        config: { framework: 'aeval', stepsPrefix: '- type: platform.setup', _legacyPhoneDial: { number: '+1 555 010 7777' } },
+      } as any);
+      try {
+        // A config edit that doesn't mention the parked key must not drop it.
+        const res = await authFetch(adminSession, `${BASE_URL}/api/evalflows/${wf.id}`, {
+          method: 'PATCH',
+          body: JSON.stringify({ config: { framework: 'aeval', stepsPrefix: '- type: platform.enter' } }),
+        });
+        expect(res.ok).toBe(true);
+        const after = await storage.getEvalflow(wf.id);
+        const cfg = after!.config as Record<string, any>;
+        expect(cfg.stepsPrefix).toBe('- type: platform.enter'); // the edit applied
+        expect(cfg._legacyPhoneDial).toEqual({ number: '+1 555 010 7777' }); // and the payload survived
+
+        // A caller still cannot INJECT one (that's the smuggling vector).
+        const inject = await authFetch(adminSession, `${BASE_URL}/api/evalflows/${wf.id}`, {
+          method: 'PATCH',
+          body: JSON.stringify({ config: { framework: 'aeval', _legacyInjected: '${secrets.NOPE}' } }),
+        });
+        expect(inject.ok).toBe(true);
+        const after2 = (await storage.getEvalflow(wf.id))!.config as Record<string, any>;
+        expect(after2._legacyInjected).toBeUndefined();
+        expect(after2._legacyPhoneDial).toEqual({ number: '+1 555 010 7777' });
+      } finally {
+        await pool.query(`DELETE FROM evalflows WHERE id = $1`, [wf.id]);
+      }
+    });
+
     it("v1 API enforces the same config validation as the console route", async () => {
       const res = await authFetch(adminSession, `${BASE_URL}/api/v1/evalflows`, {
         method: 'POST',
@@ -3035,7 +3069,7 @@ describe('Vox API Tests', () => {
       expect(jobConfig.scenario).toBe('steps:\n  - action: speak\n    file: test.mp3');
     });
 
-    it('should produce empty config when both evalflow and eval set have no config', async () => {
+    it('stamps only the framework when both evalflow and eval set have no config', async () => {
       // Create an evalflow with no config
       const wfRes = await authFetch(adminSession, `${BASE_URL}/api/evalflows`, {
         method: 'POST',
@@ -3068,7 +3102,9 @@ describe('Vox API Tests', () => {
 
       expect(response.ok).toBe(true);
       const result = await response.json();
-      expect(result.job.config).toEqual({});
+      // framework is stamped even on an otherwise-empty merge, so a job never
+      // inherits the claiming agent's EVAL_FRAMEWORK default.
+      expect(result.job.config).toEqual({ framework: 'aeval' });
     });
   });
 
