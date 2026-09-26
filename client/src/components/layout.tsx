@@ -235,13 +235,13 @@ export default function Layout({ children }: { children: React.ReactNode }) {
               </p>
             </div>
 
-            {/* Product */}
+            {/* Products — ours; the providers we test are a different list */}
             <div className="space-y-4">
-              <h4 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Product</h4>
+              <h4 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Products</h4>
               <ul className="space-y-3">
                 <li>
                   <Link href="/realtime" className="text-sm hover:text-foreground transition-colors text-muted-foreground" data-testid="link-footer-realtime">
-                    Real-time
+                    Real-time Eval
                   </Link>
                 </li>
                 <li>
@@ -253,6 +253,16 @@ export default function Layout({ children }: { children: React.ReactNode }) {
                   <Link href="/run-your-own" className="text-sm hover:text-foreground transition-colors text-muted-foreground" data-testid="link-footer-test">
                     Run Your Own
                   </Link>
+                </li>
+                <li>
+                  <a href="https://github.com/Agora-Build/aeval" target="_blank" rel="noreferrer" className="text-sm hover:text-foreground transition-colors text-muted-foreground" data-testid="link-footer-aeval">
+                    aeval
+                  </a>
+                </li>
+                <li>
+                  <a href="https://github.com/Agora-Build/DialF" target="_blank" rel="noreferrer" className="text-sm hover:text-foreground transition-colors text-muted-foreground" data-testid="link-footer-dialf">
+                    DialF
+                  </a>
                 </li>
               </ul>
             </div>
@@ -267,14 +277,9 @@ export default function Layout({ children }: { children: React.ReactNode }) {
                   </Link>
                 </li>
                 <li>
-                  <span className="text-sm text-muted-foreground/60 cursor-default">
+                  <a href="/api/docs" className="text-sm hover:text-foreground transition-colors text-muted-foreground" data-testid="link-footer-api-docs">
                     API Docs
-                  </span>
-                </li>
-                <li>
-                  <span className="text-sm text-muted-foreground/60 cursor-default">
-                    Changelog
-                  </span>
+                  </a>
                 </li>
               </ul>
             </div>
@@ -283,7 +288,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
             <div className="space-y-4">
               <h4 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Connect</h4>
               <div className="flex items-center gap-3">
-                <a href="https://github.com" target="_blank" rel="noopener noreferrer">
+                <a href="https://github.com/Agora-Build/Vox" target="_blank" rel="noopener noreferrer">
                   <Button variant="ghost" size="icon" className="h-8 w-8" data-testid="button-footer-github">
                     <Github className="h-4 w-4" />
                   </Button>
@@ -293,7 +298,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
                     <Twitter className="h-4 w-4" />
                   </Button>
                 </a>
-                <a href="mailto:contact@vox.ai">
+                <a href="mailto:vox@agora.build">
                   <Button variant="ghost" size="icon" className="h-8 w-8" data-testid="button-footer-email">
                     <Mail className="h-4 w-4" />
                   </Button>

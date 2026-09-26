@@ -108,10 +108,10 @@ export function registerApiV1Routes(app: Express): void {
   // ==================== EVAL_FLOWS ====================
 
   /**
-   * GET /api/v1/evalFlows
+   * GET /api/v1/eval-flows
    * List evalFlows accessible to the authenticated user
    */
-  app.get("/api/v1/evalFlows", requireAuthOrApiKey, async (req: Request, res: Response) => {
+  app.get("/api/v1/eval-flows", requireAuthOrApiKey, async (req: Request, res: Response) => {
     try {
       const user = await getCurrentUserOrApiKeyUser(req);
       if (!user) {
@@ -132,10 +132,10 @@ export function registerApiV1Routes(app: Express): void {
   });
 
   /**
-   * POST /api/v1/evalFlows
+   * POST /api/v1/eval-flows
    * Create a new evalFlow
    */
-  app.post("/api/v1/evalFlows", requireAuthOrApiKey, async (req: Request, res: Response) => {
+  app.post("/api/v1/eval-flows", requireAuthOrApiKey, async (req: Request, res: Response) => {
     try {
       const user = await getCurrentUserOrApiKeyUser(req);
       if (!user) {
@@ -204,10 +204,10 @@ export function registerApiV1Routes(app: Express): void {
   });
 
   /**
-   * GET /api/v1/evalFlows/:id
+   * GET /api/v1/eval-flows/:id
    * Get a specific evalFlow
    */
-  app.get("/api/v1/evalFlows/:id", requireAuthOrApiKey, async (req: Request, res: Response) => {
+  app.get("/api/v1/eval-flows/:id", requireAuthOrApiKey, async (req: Request, res: Response) => {
     try {
       const user = await getCurrentUserOrApiKeyUser(req);
       if (!user) {
@@ -234,10 +234,10 @@ export function registerApiV1Routes(app: Express): void {
   });
 
   /**
-   * PUT /api/v1/evalFlows/:id
+   * PUT /api/v1/eval-flows/:id
    * Update an evalFlow
    */
-  app.put("/api/v1/evalFlows/:id", requireAuthOrApiKey, async (req: Request, res: Response) => {
+  app.put("/api/v1/eval-flows/:id", requireAuthOrApiKey, async (req: Request, res: Response) => {
     try {
       const user = await getCurrentUserOrApiKeyUser(req);
       if (!user) {
@@ -284,10 +284,10 @@ export function registerApiV1Routes(app: Express): void {
   });
 
   /**
-   * DELETE /api/v1/evalFlows/:id
+   * DELETE /api/v1/eval-flows/:id
    * Delete an evalFlow
    */
-  app.delete("/api/v1/evalFlows/:id", requireAuthOrApiKey, async (req: Request, res: Response) => {
+  app.delete("/api/v1/eval-flows/:id", requireAuthOrApiKey, async (req: Request, res: Response) => {
     try {
       const user = await getCurrentUserOrApiKeyUser(req);
       if (!user) {
@@ -314,10 +314,10 @@ export function registerApiV1Routes(app: Express): void {
   });
 
   /**
-   * POST /api/v1/evalFlows/:id/run
+   * POST /api/v1/eval-flows/:id/run
    * Run an evalFlow (create an eval job)
    */
-  app.post("/api/v1/evalFlows/:id/run", requireAuthOrApiKey, async (req: Request, res: Response) => {
+  app.post("/api/v1/eval-flows/:id/run", requireAuthOrApiKey, async (req: Request, res: Response) => {
     try {
       const user = await getCurrentUserOrApiKeyUser(req);
       if (!user) {

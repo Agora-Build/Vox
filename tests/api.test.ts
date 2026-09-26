@@ -1097,7 +1097,7 @@ describe('Vox API Tests', () => {
 
   describe('API v1 Endpoints', () => {
     it('should get evalFlows via API v1', async () => {
-      const response = await fetch(`${BASE_URL}/api/v1/evalFlows`, {
+      const response = await fetch(`${BASE_URL}/api/v1/eval-flows`, {
         headers: {
           'Authorization': `Bearer ${testApiKey}`,
         },
@@ -2027,7 +2027,7 @@ describe('Vox API Tests', () => {
     });
 
     it('should allow API key to list evalFlows via v1 API', async () => {
-      const response = await fetch(`${BASE_URL}/api/v1/evalFlows`, {
+      const response = await fetch(`${BASE_URL}/api/v1/eval-flows`, {
         headers: { 'Authorization': `Bearer ${testUserApiKey}` },
       });
       expect(response.ok).toBe(true);
@@ -2036,7 +2036,7 @@ describe('Vox API Tests', () => {
     });
 
     it('should allow API key to create evalFlow via v1 API', async () => {
-      const response = await fetch(`${BASE_URL}/api/v1/evalFlows`, {
+      const response = await fetch(`${BASE_URL}/api/v1/eval-flows`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -2066,7 +2066,7 @@ describe('Vox API Tests', () => {
       expect(esResponse.ok).toBe(true);
       const { data: evalSet } = await esResponse.json();
 
-      const response = await fetch(`${BASE_URL}/api/v1/evalFlows/${testUserEvalFlowId}/run`, {
+      const response = await fetch(`${BASE_URL}/api/v1/eval-flows/${testUserEvalFlowId}/run`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -2084,7 +2084,7 @@ describe('Vox API Tests', () => {
     });
 
     it('should reject a v1 run with the old exact-site siteId body key', async () => {
-      const response = await fetch(`${BASE_URL}/api/v1/evalFlows/${testUserEvalFlowId}/run`, {
+      const response = await fetch(`${BASE_URL}/api/v1/eval-flows/${testUserEvalFlowId}/run`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -2109,7 +2109,7 @@ describe('Vox API Tests', () => {
       });
 
       // Try to use revoked key
-      const response = await fetch(`${BASE_URL}/api/v1/evalFlows`, {
+      const response = await fetch(`${BASE_URL}/api/v1/eval-flows`, {
         headers: { 'Authorization': `Bearer ${testUserApiKey}` },
       });
       expect(response.status).toBe(401);
@@ -2828,7 +2828,7 @@ describe('Vox API Tests', () => {
     });
 
     it("v1 API enforces the same config validation as the console route", async () => {
-      const res = await authFetch(adminSession, `${BASE_URL}/api/v1/evalFlows`, {
+      const res = await authFetch(adminSession, `${BASE_URL}/api/v1/eval-flows`, {
         method: 'POST',
         body: JSON.stringify({
           name: 'V1 Validation Test',

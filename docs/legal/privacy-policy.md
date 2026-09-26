@@ -185,7 +185,7 @@ constitutes acceptance of the revised Policy.
 
 For privacy questions or to exercise your rights, contact us at:
 
-- **Email:** [open@agora.build](mailto:open@agora.build)
+- **Email:** [vox@agora.build](mailto:vox@agora.build)
 - **Project repository / issues:** [github.com/Agora-Build/Vox](https://github.com/Agora-Build/Vox)
 - **Data controller:** [Brent G](https://github.com/guohai), project maintainer,
   reachable at the email above. VOX is a community-driven, open-source project and

@@ -419,7 +419,7 @@ d("plugin absence causes zero persistent writes", () => {
   it("running a PUBLIC org-owned evalFlow with the provider absent is 501 and writes no job", async () => {
     const before = await snapshot();
     const res = await request(app)
-      .post(`/api/v1/evalFlows/${orgEvalFlowId}/run`)
+      .post(`/api/v1/eval-flows/${orgEvalFlowId}/run`)
       .set("Authorization", `Bearer ${apiKey}`)
       .send({ evalSetId: orgEvalSetId, region: "na-us-ashburn", targetTier: "private" });
     expect(res.status).toBe(501);
@@ -430,7 +430,7 @@ d("plugin absence causes zero persistent writes", () => {
   it("v1 run of a PERSONAL evalFlow onto the TEAM tier is 501 and writes no job", async () => {
     const before = await snapshot();
     const res = await request(app)
-      .post(`/api/v1/evalFlows/${personalEvalFlowId}/run`)
+      .post(`/api/v1/eval-flows/${personalEvalFlowId}/run`)
       .set("Authorization", `Bearer ${apiKey}`)
       .send({ evalSetId: personalEvalSetId, region: "na-us-ashburn", targetTier: "team" });
     expect(res.status).toBe(501);
