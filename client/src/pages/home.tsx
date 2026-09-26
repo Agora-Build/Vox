@@ -38,7 +38,7 @@ export default function Home() {
       <section className="space-y-12">
         <div className="text-center space-y-4">
           <Badge variant="secondary" className="px-4 py-1">Products</Badge>
-          <h2 className="text-3xl font-bold">Three parts, one pipeline</h2>
+          <h2 className="text-3xl font-bold">One pipeline</h2>
           <p className="text-muted-foreground max-w-2xl mx-auto">
             Vox decides what to measure and keeps the history. aeval runs the conversation
             and scores it. DialF places the call when the target is a phone.
@@ -179,10 +179,9 @@ export default function Home() {
       {/* Providers we evaluate against (third-party) */}
       <section className="space-y-12">
         <div className="text-center space-y-4">
-          <Badge variant="secondary" className="px-4 py-1">Supported Providers</Badge>
-          <h2 className="text-3xl font-bold">Providers We Test</h2>
+          <h2 className="text-3xl font-bold">Supported Providers</h2>
           <p className="text-muted-foreground max-w-2xl mx-auto">
-            Currently evaluating browser-based conversational AI products. RTC solutions coming soon.
+            Currently evaluating conversational AI products. RTC solutions coming soon.
           </p>
         </div>
 
@@ -360,10 +359,9 @@ export default function Home() {
         </div>
       </section>
 
-      {/* Where this is going — clearly labelled as not-yet-built */}
+      {/* Roadmap — clearly labelled as not-yet-built */}
       <section className="space-y-10">
         <div className="text-center space-y-4">
-          <Badge variant="secondary" className="px-4 py-1">Where this is going</Badge>
           <h2 className="text-3xl font-bold">From measuring agents to improving them</h2>
           <p className="text-muted-foreground max-w-2xl mx-auto leading-relaxed">
             Evaluation is the first half. Knowing an agent answers 400 ms slower in Mumbai, or
@@ -406,17 +404,13 @@ export default function Home() {
           </Card>
         </div>
 
-        <p className="text-center text-sm text-muted-foreground">
-          None of this is built yet. Today Vox measures and tracks; the self-improvement loop is
-          the roadmap, and we would rather show the gap than imply it is closed.
-        </p>
       </section>
 
       {/* CTA */}
       <section className="bg-gradient-to-r from-secondary/50 to-background border rounded-2xl p-12 text-center space-y-6">
         <h2 className="text-3xl font-bold">Ready to dive deeper?</h2>
         <p className="text-muted-foreground max-w-xl mx-auto">
-          Check out our comprehensive leaderboard to compare products across all five metrics.
+          Check out our comprehensive leaderboard to compare providers across all six metrics.
         </p>
         <Link href="/leaderboard">
           <Button size="lg" className="bg-primary text-primary-foreground hover:bg-primary/90">
