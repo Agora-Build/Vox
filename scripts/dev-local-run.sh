@@ -747,6 +747,21 @@ start_eval_agent_local() {
 
     log_info "Starting eval agent (local process): $name ($region)..."
 
+    # A leftover agent still holding the health port makes the new one die on
+    # EADDRINUSE. Wait for the port rather than racing it — and say so, since
+    # the usual cause is a previous `start` whose agent outlived its `stop`.
+    local health_port=${VOX_AGENT_HEALTH_PORT:-8099}
+    local waited=0
+    while curl -sf --max-time 1 "http://localhost:${health_port}/health" >/dev/null 2>&1; do
+        if [ $waited -ge 10 ]; then
+            log_error "Port ${health_port} is still held after ${waited}s — another agent (or the clash runner) is running"
+            return 1
+        fi
+        [ $waited -eq 0 ] && log_warn "Port ${health_port} still in use, waiting for the previous agent to exit..."
+        sleep 1
+        waited=$((waited + 1))
+    done
+
     cd "$PROJECT_DIR"
     npx tsx vox_eval_agentd/vox-agentd.ts \
         --token "$token" \
@@ -755,13 +770,24 @@ start_eval_agent_local() {
 
     echo $! > /tmp/vox-eval-agent-${region}.pid
 
-    sleep 2
+    # Liveness is not readiness: the daemon binds its health port late, so a
+    # `kill -0` two seconds in reports an agent that is about to die on
+    # EADDRINUSE as "started". Poll the port it must actually serve.
+    local ready=0
+    for _ in $(seq 1 30); do
+        if curl -sf --max-time 1 "http://localhost:${health_port}/health" >/dev/null 2>&1; then
+            ready=1
+            break
+        fi
+        kill -0 $(cat /tmp/vox-eval-agent-${region}.pid) 2>/dev/null || break
+        sleep 1
+    done
 
-    if [ -f /tmp/vox-eval-agent-${region}.pid ] && kill -0 $(cat /tmp/vox-eval-agent-${region}.pid) 2>/dev/null; then
-        log_success "Eval agent $name ($region) started (PID: $(cat /tmp/vox-eval-agent-${region}.pid))"
+    if [ $ready -eq 1 ]; then
+        log_success "Eval agent $name ($region) started (PID: $(cat /tmp/vox-eval-agent-${region}.pid), health :${health_port})"
     else
         log_error "Eval agent $name ($region) failed to start"
-        cat /tmp/vox-eval-agent-${region}.log
+        tail -20 /tmp/vox-eval-agent-${region}.log
         return 1
     fi
 }
