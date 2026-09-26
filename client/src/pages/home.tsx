@@ -283,7 +283,7 @@ export default function Home() {
         </div>
       </section>
 
-      {/* Roadmap — clearly labelled as not-yet-built */}
+      {/* Roadmap — not yet built; the dashed treatment carries that */}
       <section className="space-y-10">
         <h2 className="text-3xl font-bold text-center">From measuring agents to improving them</h2>
 
