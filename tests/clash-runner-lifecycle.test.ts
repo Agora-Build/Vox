@@ -1,5 +1,4 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { REGION_NA } from "./helpers/regions";
 
 // =====================================================================
 // Clash Runner Lifecycle Tests
@@ -56,9 +55,45 @@ describe("Clash Runner Lifecycle", () => {
   let profileBId: number;
   let eventId: number;
   const testId = Date.now().toString(36); // unique per test run
+  // A region of this suite's own. The live server's clash scheduler assigns
+  // ANY idle runner in a site to ANY live event's pending match in that site.
+  // On the shared NA site, other suites' live events took this suite's runner
+  // (server log: "Assigned match #… to runner test-host-…-2"), and other
+  // suites' idle runners could take this suite's match. Alone in its own
+  // site, the scheduler can only pair this suite's runner with its own match.
+  let site: string;
+  let regionLocationId: number;
 
   beforeAll(async () => {
     admin = await login(ADMIN_EMAIL, ADMIN_PASSWORD);
+
+    const baseId = `na-us-clash${testId}`;
+    const locRes = await authFetch(admin, `${BASE_URL}/api/admin/region-locations`, {
+      method: "POST",
+      body: JSON.stringify({
+        baseId,
+        displayName: `Clash lifecycle ${testId}`,
+        city: `Lifecycle ${testId}`,
+        countryCode: "US",
+        countryName: "United States",
+        macroRegionCode: "na",
+        macroRegionName: "North America",
+      }),
+    });
+    expect(locRes.ok).toBe(true);
+    regionLocationId = (await locRes.json()).id;
+
+    // A new region has no allocated sites; minting a token allocates `<base>-01`.
+    // The token itself is not needed, so it is revoked straight away — the
+    // site stays allocated.
+    const tokRes = await authFetch(admin, `${BASE_URL}/api/eval-agent-tokens`, {
+      method: "POST",
+      body: JSON.stringify({ name: `clash-lifecycle-site-${testId}`, regionLocationBaseId: baseId }),
+    });
+    expect(tokRes.ok).toBe(true);
+    const tok = await tokRes.json();
+    site = tok.siteId;
+    await authFetch(admin, `${BASE_URL}/api/eval-agent-tokens/${tok.id}/revoke`, { method: "POST" });
   });
 
   // ── Token Management ──────────────────────────────────────────────
@@ -67,13 +102,13 @@ describe("Clash Runner Lifecycle", () => {
     it("creates a runner token with region", async () => {
       const res = await authFetch(admin, `${BASE_URL}/api/admin/clash-runner-tokens`, {
         method: "POST",
-        body: JSON.stringify({ name: "lifecycle-test-runner", siteId: REGION_NA }),
+        body: JSON.stringify({ name: "lifecycle-test-runner", siteId: site }),
       });
       expect(res.status).toBe(200);
       const data = await res.json();
       expect(data.token).toBeTruthy();
       expect(data.token).toMatch(/^cr/);
-      expect(data.siteId).toBe(REGION_NA);
+      expect(data.siteId).toBe(site);
       expect(data.name).toBe("lifecycle-test-runner");
       runnerToken = data.token;
       runnerTokenId = data.id;
@@ -90,7 +125,7 @@ describe("Clash Runner Lifecycle", () => {
     it("rejects token creation without name", async () => {
       const res = await authFetch(admin, `${BASE_URL}/api/admin/clash-runner-tokens`, {
         method: "POST",
-        body: JSON.stringify({ siteId: REGION_NA }),
+        body: JSON.stringify({ siteId: site }),
       });
       expect(res.status).toBe(400);
     });
@@ -117,7 +152,7 @@ describe("Clash Runner Lifecycle", () => {
       expect(res.status).toBe(200);
       const data = await res.json();
       expect(data.state).toBe("idle");
-      expect(data.siteId).toBe(REGION_NA);
+      expect(data.siteId).toBe(site);
       expect(data).not.toHaveProperty('region'); // alias dropped
       expect(data.id).toBeTypeOf("number");
     });
@@ -147,7 +182,7 @@ describe("Clash Runner Lifecycle", () => {
       // Create + revoke a token
       const createRes = await authFetch(admin, `${BASE_URL}/api/admin/clash-runner-tokens`, {
         method: "POST",
-        body: JSON.stringify({ name: "to-revoke", siteId: REGION_NA }),
+        body: JSON.stringify({ name: "to-revoke", siteId: site }),
       });
       const { token: revokeToken, id: revokeId } = await createRes.json();
 
@@ -221,7 +256,7 @@ describe("Clash Runner Lifecycle", () => {
       expect(Array.isArray(runners)).toBe(true);
       const found = runners.find((r: any) => r.runnerId === `test-host-${testId}-2`);
       expect(found).toBeTruthy();
-      expect(found.siteId).toBe(REGION_NA);
+      expect(found.siteId).toBe(site);
       expect(found.state).toBe("idle");
     });
 
@@ -265,7 +300,7 @@ describe("Clash Runner Lifecycle", () => {
         method: "POST",
         body: JSON.stringify({
           name: "Lifecycle Test Event",
-          siteId: REGION_NA,
+          siteId: site,
           visibility: "private",
           matchups: [
             {
@@ -389,7 +424,7 @@ describe("Clash Runner Lifecycle", () => {
         method: "POST",
         body: JSON.stringify({
           name: "Failure Test Event",
-          siteId: REGION_NA,
+          siteId: site,
           visibility: "private",
           matchups: [{
             agentAProfileId: profileAId,
@@ -431,7 +466,7 @@ describe("Clash Runner Lifecycle", () => {
         method: "POST",
         body: JSON.stringify({
           name: "Draw Test Event",
-          siteId: REGION_NA,
+          siteId: site,
           visibility: "private",
           matchups: [{
             agentAProfileId: profileAId,
@@ -468,7 +503,7 @@ describe("Clash Runner Lifecycle", () => {
         method: "POST",
         body: JSON.stringify({
           name: "Moderator Test Event",
-          siteId: REGION_NA,
+          siteId: site,
           visibility: "private",
           matchups: [{
             agentAProfileId: profileAId,
@@ -516,7 +551,7 @@ describe("Clash Runner Lifecycle", () => {
         method: "POST",
         body: JSON.stringify({
           name: "Phase Test",
-          siteId: REGION_NA,
+          siteId: site,
           visibility: "private",
           matchups: [{
             agentAProfileId: profileAId,
@@ -641,7 +676,7 @@ describe("Clash Runner Lifecycle", () => {
         method: "POST",
         body: JSON.stringify({
           name: "Stream Info Test",
-          siteId: REGION_NA,
+          siteId: site,
           visibility: "private",
           matchups: [{
             agentAProfileId: profileAId,
@@ -675,6 +710,10 @@ describe("Clash Runner Lifecycle", () => {
     }
     if (profileBId) {
       await authFetch(admin, `${BASE_URL}/api/clash/profiles/${profileBId}`, { method: "DELETE" });
+    }
+    // Deactivates (the API only soft-deletes); clean-test-data removes it.
+    if (regionLocationId) {
+      await authFetch(admin, `${BASE_URL}/api/admin/region-locations/${regionLocationId}`, { method: "DELETE" });
     }
   });
 });
