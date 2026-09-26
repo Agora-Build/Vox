@@ -112,15 +112,15 @@ export function resolveSecretPlaceholders(
  * regex still matches. A fresh RegExp per config avoids shared-lastIndex bugs
  * with the module-level global regex.
  *
- * `_legacy*` keys are EXCLUDED: migrations park dead config there
- * (0040 _legacyPhoneDial, 0041 _legacyVatApp) — nothing ever reads or
- * substitutes those payloads, so a secret reference inside one must not
- * trip the run gates (a migrated row would 400 with no way to clear it).
+ * `_legacy*` keys are EXCLUDED: a migration may park dead config there
+ * (0040's _legacyPhoneDial) — nothing ever reads or substitutes those
+ * payloads, so a secret reference inside one must not trip the run gates
+ * (a migrated row would 400 with no way to clear it).
  */
-/** Config keys with this prefix are migration-parked dead payloads (0040
- * _legacyPhoneDial, 0041 _legacyVatApp): never read, never executed, never
- * scanned for secret refs, never sent to agents, owner-only on reads. The one
- * definition — server/storage.ts and the daemon import it from here. */
+/** Config keys with this prefix are migration-parked dead payloads (0040's
+ * _legacyPhoneDial): never read, never executed, never scanned for secret
+ * refs, never sent to agents, owner-only on reads. The one definition —
+ * server/storage.ts, the daemon and the client import it from here. */
 export const LEGACY_CONFIG_KEY_PREFIX = "_legacy";
 
 export function collectSecretRefs(configs: unknown[]): Set<string> {

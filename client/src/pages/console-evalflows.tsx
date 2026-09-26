@@ -96,7 +96,7 @@ export default function ConsoleEvalflows() {
   const [editProjectId, setEditProjectId] = useState("");
   const [editProviderId, setEditProviderId] = useState("");
   const [editTransport, setEditTransport] = useState("web");
-  // Payloads parked by a migration (0040 _legacyPhoneDial, 0041 _legacyVatApp).
+  // Payloads parked by a migration (0040's _legacyPhoneDial).
   // Read-only: nothing executes them, and saving this dialog discards them —
   // so the owner has to be able to SEE them before that happens.
   const [editLegacyConfig, setEditLegacyConfig] = useState<string>("");

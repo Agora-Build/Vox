@@ -225,9 +225,9 @@ const MAX_CONFIG_SIZE = 100_000; // 100KB
 
 /**
  * Drop user-supplied `_legacy*` top-level keys from a config before
- * validation/storage. Only MIGRATIONS may write parked keys (0040
- * _legacyPhoneDial, 0041 _legacyVatApp): the secret scans deliberately skip
- * them, so accepting one from a caller would let ${config._legacyX}
+ * validation/storage. Only MIGRATIONS may write parked keys (0040's
+ * _legacyPhoneDial): the secret scans deliberately skip them, so accepting
+ * one from a caller would let ${config._legacyX}
  * indirection smuggle a secret reference past the misuse/consent gates.
  * Migrated rows are unaffected (their keys were written by SQL, and survive
  * until the owner next rewrites the config). mergeEvalConfig also applies
