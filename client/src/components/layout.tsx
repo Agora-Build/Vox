@@ -254,7 +254,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
               </p>
             </div>
 
-            {/* Products — ours; the providers we test are a different list */}
+            {/* Products — the source of truth for what Vox ships; providers we test are a different list */}
             <div className="space-y-4">
               <h4 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Products</h4>
               <ul className="space-y-3">
@@ -269,11 +269,6 @@ export default function Layout({ children }: { children: React.ReactNode }) {
                   </Link>
                 </li>
                 <li>
-                  <Link href="/run-your-own" className="text-sm hover:text-foreground transition-colors text-muted-foreground" data-testid="link-footer-test">
-                    Run Your Own
-                  </Link>
-                </li>
-                <li>
                   <a href="https://github.com/Agora-Build/aeval" target="_blank" rel="noreferrer" className="text-sm hover:text-foreground transition-colors text-muted-foreground" data-testid="link-footer-aeval">
                     aeval
                   </a>
@@ -282,6 +277,11 @@ export default function Layout({ children }: { children: React.ReactNode }) {
                   <a href="https://github.com/Agora-Build/DialF" target="_blank" rel="noreferrer" className="text-sm hover:text-foreground transition-colors text-muted-foreground" data-testid="link-footer-dialf">
                     DialF
                   </a>
+                </li>
+                <li>
+                  <Link href="/run-your-own" className="text-sm hover:text-foreground transition-colors text-muted-foreground" data-testid="link-footer-test">
+                    Run Your Own
+                  </Link>
                 </li>
               </ul>
             </div>
