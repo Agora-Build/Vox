@@ -166,8 +166,15 @@ describeDb("run-targets: two-level tree fields (Task 12)", () => {
     });
     expect(wfRes.ok).toBe(true);
     evalFlowId = (await wfRes.json()).id;
-    const es = await (await authFetch(cookie, `${BASE_URL}/api/eval-sets?includePublic=true`)).json();
-    evalSetId = es[0].id;
+    // Own eval set, not the first row of `?includePublic=true` — under
+    // parallel load that is another suite's fixture, possibly private or
+    // unrunnable, and a run fails for a reason unrelated to this suite.
+    const esRes = await authFetch(cookie, `${BASE_URL}/api/eval-sets`, {
+      method: "POST",
+      body: JSON.stringify({ name: `zt-rt-es-${Date.now()}`, visibility: "public", config: {} }),
+    });
+    expect(esRes.ok).toBe(true);
+    evalSetId = (await esRes.json()).id;
 
     // A private token whose agent registers and lands Unverified (localhost →
     // "unknown" trust, siteId null) — exercises the "mine" row shape.
@@ -240,6 +247,7 @@ describeDb("run-targets: two-level tree fields (Task 12)", () => {
     await authFetch(cookie, `${BASE_URL}/api/eval-agent-tokens/${sharedTokenId}/revoke`, { method: "POST" });
     await authFetch(cookie, `${BASE_URL}/api/eval-agent-tokens/${publicTokenId}/revoke`, { method: "POST" });
     await authFetch(cookie, `${BASE_URL}/api/eval-flows/${evalFlowId}`, { method: "DELETE" });
+    await authFetch(cookie, `${BASE_URL}/api/eval-sets/${evalSetId}`, { method: "DELETE" });
   });
 
   it("every agent row carries siteId/region/dispatchTier/locationTrust, with no locationSource/observedIp leak", async () => {

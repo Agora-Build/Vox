@@ -36,13 +36,23 @@ describe("pooled dispatch API", () => {
     });
     expect(wfRes.ok).toBe(true);
     evalFlowId = (await wfRes.json()).id;
-    const es = await (await authFetch(cookie, `${BASE_URL}/api/eval-sets?includePublic=true`)).json();
-    evalSetId = es[0].id;
+    // Own eval set, not the first row of `?includePublic=true` — under
+    // parallel load that is another suite's fixture, possibly private or
+    // unrunnable, and a run fails for a reason unrelated to this suite.
+    const esRes = await authFetch(cookie, `${BASE_URL}/api/eval-sets`, {
+      method: "POST",
+      body: JSON.stringify({ name: `tt-dispatch-es-${Date.now()}`, visibility: "public", config: {} }),
+    });
+    expect(esRes.ok).toBe(true);
+    evalSetId = (await esRes.json()).id;
   });
 
   afterAll(async () => {
     if (evalFlowId != null) {
       await authFetch(cookie, `${BASE_URL}/api/eval-flows/${evalFlowId}`, { method: "DELETE" });
+    }
+    if (evalSetId != null) {
+      await authFetch(cookie, `${BASE_URL}/api/eval-sets/${evalSetId}`, { method: "DELETE" });
     }
   });
 
