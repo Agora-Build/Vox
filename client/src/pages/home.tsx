@@ -285,14 +285,56 @@ export default function Home() {
 
       {/* Roadmap — clearly labelled as not-yet-built */}
       <section className="space-y-10">
-        <div className="text-center space-y-4">
-          <h2 className="text-3xl font-bold">From measuring agents to improving them</h2>
-          <p className="text-muted-foreground max-w-2xl mx-auto leading-relaxed">
-            Evaluation is the first half. Knowing an agent answers 400 ms slower in Mumbai, or
-            drops one turn in eight, only pays off when something acts on it. The direction is a
-            loop that closes itself: simulate, find where conversations fail, propose the change,
-            prove it against the same evals.
-          </p>
+        <h2 className="text-3xl font-bold text-center">From measuring agents to improving them</h2>
+
+        {/* Full container width on the same 3-column grid as the cards below,
+            split along the text's own seam: the argument spans two columns, the
+            loop it proposes takes the third and lines up with the last card.
+            One paragraph at full width would run ~140 characters a line. */}
+        <div className="grid md:grid-cols-3 gap-10 md:gap-6 items-center" data-testid="roadmap-lead">
+          <div className="md:col-span-2 md:pl-6 md:pr-12 space-y-3">
+            <p className="text-2xl md:text-3xl font-semibold tracking-tight text-foreground">
+              Evaluation is the first half.
+            </p>
+            <p className="text-lg md:text-xl leading-relaxed text-muted-foreground text-pretty">
+              Knowing an agent answers{" "}
+              <span className="text-foreground font-medium">400&nbsp;ms slower in&nbsp;Mumbai</span>,
+              or drops <span className="text-foreground font-medium">one turn in&nbsp;eight</span>,
+              only pays off when something acts on it. The direction is a loop that closes itself.
+            </p>
+          </div>
+
+          {/* The loop is drawn, not captioned: a solid line runs DOWN through
+              the steps, and a dashed return path (the page's "not built yet"
+              treatment) runs back UP the left side into step 1. */}
+          <ol className="relative space-y-5 pl-6" aria-label="The improvement loop">
+            <span
+              aria-hidden="true"
+              className="absolute left-[2.375rem] top-3.5 bottom-3.5 border-l border-border"
+            />
+            <span
+              aria-hidden="true"
+              className="absolute left-0 top-3.5 bottom-3.5 w-6 rounded-l-2xl border border-r-0 border-dashed border-primary/70"
+            />
+            <span
+              aria-hidden="true"
+              className="absolute left-[1.0625rem] top-3.5 -translate-y-1/2 border-y-[5px] border-y-transparent border-l-[7px] border-l-primary"
+            />
+            {[
+              "Simulate",
+              "Find where conversations fail",
+              "Propose the change",
+              "Prove it against the same evals",
+            ].map((step, i) => (
+              <li key={step} className="relative flex items-center gap-4">
+                <span className="relative z-10 flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-primary/40 bg-background text-xs font-semibold tabular-nums text-foreground">
+                  {i + 1}
+                </span>
+                <span className="text-base">{step}</span>
+              </li>
+            ))}
+            <li className="sr-only">Then back to step 1.</li>
+          </ol>
         </div>
 
         <div className="grid md:grid-cols-3 gap-6">
