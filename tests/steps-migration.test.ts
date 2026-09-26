@@ -151,6 +151,18 @@ d("migration 0041_remove_vat.sql (transactional, rolled back)", () => {
        VALUES ($1, 2, 1, 'na-us-seattle', 'private', $2::jsonb, '{}'::jsonb, 'pending', 0, 0, 3)`,
       [jobWf.id, JSON.stringify({ framework: "voice-agent-tester", scenario: "steps: [] # queued-vat" })],
     );
+    for (const cfg of [
+      // Implicit VAT (app, no framework, no steps) → must fail too.
+      { app: 'url: "https://x.example"', scenario: "steps: [] # queued-implicit" },
+      // Healthy queued aeval job with steps → untouched.
+      { framework: "aeval", stepsPrefix: "- type: platform.setup", scenario: "steps: [] # queued-healthy" },
+    ]) {
+      await client.query(
+        `INSERT INTO eval_jobs (evalflow_id, trigger_type, created_by, target_region, target_tier, config, snapshot, status, priority, retry_count, max_retries)
+         VALUES ($1, 2, 1, 'na-us-seattle', 'private', $2::jsonb, '{}'::jsonb, 'pending', 0, 0, 3)`,
+        [jobWf.id, JSON.stringify(cfg)],
+      );
+    }
     const sql = readFileSync("./migrations/0041_remove_vat.sql", "utf-8");
     for (const statement of sql.split("--> statement-breakpoint").map((s) => s.trim()).filter(Boolean)) {
       await client.query(statement);
@@ -242,12 +254,25 @@ d("migration 0041_remove_vat.sql (transactional, rolled back)", () => {
     }
   });
 
-  it("fails queued jobs frozen on the removed framework (no wasted claim + escrow round-trip)", async () => {
+  it("fails queued jobs frozen on the removed framework — explicit AND implicit (app, no framework, no steps)", async () => {
     const { rows } = await client.query(
       `SELECT status, error FROM eval_jobs WHERE config->>'scenario' LIKE '%# queued-vat%'`,
     );
     expect(rows[0].status).toBe("failed");
     expect(rows[0].error).toContain("voice-agent-tester was removed");
+
+    // Implicit VAT: relied on an old agent's EVAL_FRAMEWORK default; running
+    // it as aeval with no steps is the "quietly wrong" case.
+    const { rows: implicit } = await client.query(
+      `SELECT status FROM eval_jobs WHERE config->>'scenario' LIKE '%# queued-implicit%'`,
+    );
+    expect(implicit[0].status).toBe("failed");
+
+    // A queued aeval job with real steps is NOT touched.
+    const { rows: healthy } = await client.query(
+      `SELECT status FROM eval_jobs WHERE config->>'scenario' LIKE '%# queued-healthy%'`,
+    );
+    expect(healthy[0].status).toBe("pending");
   });
 
   it("a clean aeval row is untouched", async () => {

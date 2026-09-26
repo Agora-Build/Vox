@@ -51,13 +51,26 @@ WHERE config ? '_legacyPhoneDial' OR config ? '_legacyVatApp'
    OR snapshot #> '{evalflow,config}' ? '_legacyPhoneDial'
    OR snapshot #> '{evalflow,config}' ? '_legacyVatApp';
 --> statement-breakpoint
--- A queued job froze `framework: voice-agent-tester` in its own config, so
--- the upgraded daemon would claim it and fail with "Unsupported eval
--- framework" — after an escrow hold/refund round-trip and an occupied agent
--- slot. Fail them here instead, with the reason recorded.
+-- Queued jobs that can only run wrong under the new daemon:
+--   * explicit `framework: voice-agent-tester` — the daemon would claim it
+--     and fail with "Unsupported eval framework", after an escrow round-trip
+--     and an occupied agent slot;
+--   * IMPLICIT VAT (an `app` payload, no explicit framework, no steps) — it
+--     relied on an old agent's EVAL_FRAMEWORK default and would now run as
+--     aeval with nothing to set up: the "quietly wrong" case the schedule
+--     step above avoids, so it uses the same predicate.
+-- Escrow: completed_at = NOW() puts a shared-dispatch row in the scheduler's
+-- reap-settle window (1–15 min after terminal, swept every minute from
+-- startup), so holds are RELEASED on the first eligible tick — not stranded.
+-- Only a backlog exceeding the sweep's 200-row batch could age out to the
+-- 26h leak-reaper, which still releases them.
 UPDATE eval_jobs
 SET status = 'failed',
     error = 'voice-agent-tester was removed; re-run this eval after re-authoring the evalflow for aeval',
     completed_at = NOW()
 WHERE status IN ('pending', 'running')
-  AND config->>'framework' = 'voice-agent-tester';
+  AND (config->>'framework' = 'voice-agent-tester'
+       OR (config ? 'app'
+           AND config->>'framework' IS DISTINCT FROM 'aeval'
+           AND coalesce(btrim(config->>'stepsPrefix'), '') = ''
+           AND coalesce(btrim(config->>'stepsSuffix'), '') = ''));

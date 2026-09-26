@@ -257,9 +257,11 @@ export function redactLegacyForViewer<T extends { config?: unknown }>(row: T, ca
 /**
  * Job-shaped counterpart of redactLegacyForViewer: a job row carries the
  * merged `config` AND the frozen `snapshot`, both of which can hold parked
- * `_legacy*` payloads on rows created before those keys were stripped at
- * write time. Job reads are visible to anyone who can see the evalflow
- * (public included), so non-owners must not see the owner's parked data.
+ * `_legacy*` payloads. Job reads are visible to anyone who can see the
+ * evalflow (public included), so non-owners must not see the owner's parked
+ * data. This is a BACKSTOP: 0041 strips these keys from every job row, and
+ * mergeEvalConfig/buildJobSnapshot strip them from new ones — it guards a
+ * regression, not the normal path.
  */
 export function redactLegacyFromJob<T extends { config?: unknown; snapshot?: unknown; createdBy?: number | null }>(
   job: T,

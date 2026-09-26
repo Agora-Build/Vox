@@ -5171,10 +5171,23 @@ export async function registerRoutes(
 
   // Parked _legacy* payloads in a job (config + frozen snapshot) belong to the
   // EVALFLOW's owner, not whoever ran it: anyone may run a public evalflow, and
-  // the job they create carries the owner's payload. Falls back to the job
-  // creator only when the snapshot predates owner capture.
-  const jobLegacyOwner = (job: { snapshot?: { evalflow?: { ownerId?: number | null } | null } | null; createdBy?: number | null }) =>
-    job.snapshot?.evalflow?.ownerId ?? job.createdBy ?? null;
+  // the job they create carries the owner's payload. Same rule as the evalflow
+  // routes (owner or org manager, no admin bypass) so the two agree.
+  //
+  // Backstop, not the main protection: 0041 strips these keys from every job
+  // row, and mergeEvalConfig/buildJobSnapshot strip them from new ones. This
+  // guards a regression or a row written outside those paths.
+  const canSeeJobLegacy = (
+    job: { snapshot?: { evalflow?: { ownerId?: number | null; organizationId?: number | null } | null } | null; createdBy?: number | null },
+    user: Awaited<ReturnType<typeof getCurrentUser>> & object,
+  ) => {
+    const snapWf = job.snapshot?.evalflow;
+    return isOwnerOrOrgManager(user, {
+      // Snapshots predating owner capture fall back to the job's creator.
+      ownerId: snapWf?.ownerId ?? job.createdBy ?? null,
+      organizationId: snapWf?.organizationId ?? null,
+    } as Parameters<typeof isOwnerOrOrgManager>[1]);
+  };
 
   // List eval jobs with filters
   app.get("/api/eval-jobs", requireAuth, async (req, res) => {
@@ -5263,7 +5276,7 @@ export async function registerRoutes(
       const enriched = paged.map(job => ({
         // Parked _legacy* payloads are owner-only; this list includes jobs
         // from PUBLIC evalflows owned by other people.
-        ...redactLegacyFromJob(job, jobLegacyOwner(job) === user.id),
+        ...redactLegacyFromJob(job, canSeeJobLegacy(job, user)),
         creatorName: job.createdBy ? creatorMap.get(job.createdBy) || null : null,
         responseRate: rateMap.has(job.id) ? rateMap.get(job.id)! : null,
         // trigger_type: 1 = scheduled, 2 = manual (recorded at creation). Fall back
@@ -5307,7 +5320,7 @@ export async function registerRoutes(
         }
       }
 
-      res.json(redactLegacyFromJob(job, jobLegacyOwner(job) === user.id));
+      res.json(redactLegacyFromJob(job, canSeeJobLegacy(job, user)));
     } catch (error) {
       console.error("Error fetching eval job:", error);
       res.status(500).json({ error: "Failed to fetch eval job" });
@@ -5372,7 +5385,7 @@ export async function registerRoutes(
       }
 
       res.json({
-        job: redactLegacyFromJob(job, jobLegacyOwner(job) === user.id),
+        job: redactLegacyFromJob(job, canSeeJobLegacy(job, user)),
         result: result ? {
           ...result,
           artifactUrl: signedArtifactUrl,
