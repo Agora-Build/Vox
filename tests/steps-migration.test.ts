@@ -105,6 +105,10 @@ d("migration 0041_remove_vat.sql (transactional, rolled back)", () => {
       { name: `${stamp}-vat`, config: { framework: "voice-agent-tester", app: 'url: "https://x.example"' } },
       { name: `${stamp}-app-only`, config: { framework: "aeval", app: 'url: "https://y.example"' } },
       { name: `${stamp}-aeval`, config: { framework: "aeval", stepsPrefix: "- type: platform.setup" } },
+      // Healthy aeval row that merely carries a leftover `app` key (the old
+      // validator accepted it on any evalflow) — it ran fine and must KEEP
+      // its schedule; only the dead key is parked.
+      { name: `${stamp}-healthy`, config: { framework: "aeval", app: 'url: "https://ok.example"', stepsPrefix: "- type: platform.setup" } },
     ];
     for (const f of FIXTURES) {
       await client.query(
@@ -116,12 +120,25 @@ d("migration 0041_remove_vat.sql (transactional, rolled back)", () => {
     // A schedule on the to-be-converted row: the migration must disable it
     // (an ex-VAT evalflow has no Setup Steps — scheduled runs would proceed
     // quietly against a target nobody configured).
-    const { rows: [wfRow] } = await client.query(`SELECT id FROM evalflows WHERE name = $1`, [`${stamp}-vat`]);
-    await client.query(
-      `INSERT INTO eval_schedules (name, evalflow_id, eval_set_id, region, target_tier, schedule_type, is_enabled, created_by)
-       VALUES ($1, $2, NULL, 'na-us-seattle', 'private', 'once', true, 1)`,
-      [`${stamp}-sched`, wfRow.id],
-    );
+    for (const wfName of [`${stamp}-vat`, `${stamp}-healthy`]) {
+      const { rows: [wfRow] } = await client.query(`SELECT id FROM evalflows WHERE name = $1`, [wfName]);
+      await client.query(
+        `INSERT INTO eval_schedules (name, evalflow_id, eval_set_id, region, target_tier, schedule_type, is_enabled, created_by)
+         VALUES ($1, $2, NULL, 'na-us-seattle', 'private', 'once', true, 1)`,
+        [`${wfName}-sched`, wfRow.id],
+      );
+    }
+    // A pending job whose frozen config still carries a parked payload (it
+    // was merged before mergeEvalConfig learned to strip) plus a terminal one
+    // that must stay untouched (history).
+    const { rows: [jobWf] } = await client.query(`SELECT id FROM evalflows WHERE name = $1`, [`${stamp}-aeval`]);
+    for (const [status, marker] of [["pending", "pending"], ["completed", "terminal"]]) {
+      await client.query(
+        `INSERT INTO eval_jobs (evalflow_id, trigger_type, created_by, target_region, target_tier, config, snapshot, status, priority, retry_count, max_retries)
+         VALUES ($1, 2, 1, 'na-us-seattle', 'private', $2::jsonb, '{}'::jsonb, $3, 0, 0, 3)`,
+        [jobWf.id, JSON.stringify({ scenario: `steps: [] # ${marker}`, _legacyPhoneDial: { number: "+1 555 010 1234" } }), status],
+      );
+    }
     const sql = readFileSync("./migrations/0041_remove_vat.sql", "utf-8");
     for (const statement of sql.split("--> statement-breakpoint").map((s) => s.trim()).filter(Boolean)) {
       await client.query(statement);
@@ -165,9 +182,23 @@ d("migration 0041_remove_vat.sql (transactional, rolled back)", () => {
     expect(validateEvalflowConfig(config, "web").valid).toBe(true);
   });
 
-  it("schedules on converted rows are disabled (fail visibly, not quietly wrong)", async () => {
-    const { rows } = await client.query(`SELECT is_enabled FROM eval_schedules WHERE name = $1`, [`${stamp}-sched`]);
-    expect(rows[0].is_enabled).toBe(false);
+  it("disables schedules ONLY where the row can't run as aeval (no steps); healthy rows keep theirs", async () => {
+    const enabledOf = async (name: string) => {
+      const { rows } = await client.query(`SELECT is_enabled FROM eval_schedules WHERE name = $1`, [name]);
+      return rows[0].is_enabled;
+    };
+    // Ex-VAT, no Setup Steps → disabled.
+    expect(await enabledOf(`${stamp}-vat-sched`)).toBe(false);
+    // aeval with working steps and only a stray `app` key → still enabled.
+    expect(await enabledOf(`${stamp}-healthy-sched`)).toBe(true);
+  });
+
+  it("a healthy aeval row loses only the dead key (steps + framework intact)", async () => {
+    const config = await configOf(`${stamp}-healthy`);
+    expect(config.app).toBeUndefined();
+    expect(config._legacyVatApp).toBe('url: "https://ok.example"');
+    expect(config.framework).toBe("aeval");
+    expect(config.stepsPrefix).toBe("- type: platform.setup");
   });
 
   it("mergeEvalConfig strips parked payloads from job configs (they never reach agents)", async () => {
@@ -179,6 +210,16 @@ d("migration 0041_remove_vat.sql (transactional, rolled back)", () => {
     expect(job._legacyPhoneDial).toBeUndefined();
     expect(job._legacyVatApp).toBeUndefined();
     expect(job.stepsPrefix).toBe("- type: platform.setup");
+  });
+
+  it("strips parked payloads from NON-TERMINAL jobs only (no owner phone number to agents; history intact)", async () => {
+    const { rows } = await client.query(
+      `SELECT status, config FROM eval_jobs WHERE config->>'scenario' LIKE '%# pending%' OR config->>'scenario' LIKE '%# terminal%'`,
+    );
+    const pending = rows.find((r: any) => r.status === "pending");
+    const terminal = rows.find((r: any) => r.status === "completed");
+    expect(pending.config._legacyPhoneDial).toBeUndefined();
+    expect(terminal.config._legacyPhoneDial).toEqual({ number: "+1 555 010 1234" });
   });
 
   it("a clean aeval row is untouched", async () => {
