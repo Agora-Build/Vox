@@ -238,4 +238,4 @@ transfer of the project.
 Questions about these Terms, or requests from product owners, can be directed to:
 
 - **Project repository / issues:** [github.com/Agora-Build/Vox](https://github.com/Agora-Build/Vox)
-- **Email:** [vox@agora.build](mailto:vox@agora.build)
+- **Email:** [open@agora.build](mailto:open@agora.build)
