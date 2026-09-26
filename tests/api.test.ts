@@ -1914,6 +1914,12 @@ describe('Vox API Tests', () => {
     let scheduleEvalFlowId: number;
     let scheduleEvalSetId: number;
 
+    // Schedules survive their evalFlow (eval_schedules.eval_flow_id is
+    // ON DELETE SET NULL), so deleting the flow alone left an ENABLED
+    // recurring row behind on every run — 37 of them had piled up in the dev
+    // DB, each still firing on its cron.
+    const createdScheduleIds: number[] = [];
+
     it('should create evalFlow and eval set for schedule tests', async () => {
       const wfResponse = await authFetch(adminSession, `${BASE_URL}/api/eval-flows`, {
         method: 'POST',
@@ -1979,6 +1985,7 @@ describe('Vox API Tests', () => {
       });
       expect(response.ok).toBe(true);
       const schedule = await response.json();
+      createdScheduleIds.push(schedule.id);
       expect(schedule.scheduleType).toBe('once');
     });
 
@@ -1997,11 +2004,19 @@ describe('Vox API Tests', () => {
       });
       expect(response.ok).toBe(true);
       const schedule = await response.json();
+      createdScheduleIds.push(schedule.id);
       expect(schedule.scheduleType).toBe('recurring');
       expect(schedule.cronExpression).toBe('0 0 * * *');
     });
 
     it('should cleanup schedule test resources', async () => {
+      // Schedules first: once the evalFlow is gone their FK is nulled and
+      // they outlive it.
+      for (const id of createdScheduleIds) {
+        await authFetch(adminSession, `${BASE_URL}/api/eval-schedules/${id}`, {
+          method: 'DELETE',
+        });
+      }
       await authFetch(adminSession, `${BASE_URL}/api/eval-flows/${scheduleEvalFlowId}`, {
         method: 'DELETE',
       });

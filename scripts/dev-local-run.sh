@@ -792,6 +792,100 @@ start_eval_agent_local() {
     fi
 }
 
+# Purge accumulated test-suite leakage from the dev database.
+#
+# Suites create eval flows, sets, schedules and jobs and mostly do not remove
+# them. The expensive part is not the rows themselves but the ENABLED RECURRING
+# schedules among them: they keep firing on their cron long after the run that
+# made them, manufacturing jobs indefinitely. Left alone this DB reached 264k
+# eval_jobs (~1,800/hour from 178 orphaned schedules), at which point logins
+# blew the 10s test hook and `GET /api/eval-flows` blew Playwright's 30s
+# timeout — the gate went red for reasons that had nothing to do with the code
+# under test.
+#
+# Seeded data (seed-data.ts) is preserved: it is owned by users 1-2 and its
+# schedule is named "LiveKit ...".
+clean_test_data() {
+    log_info "Cleaning test-suite leakage from the dev database..."
+
+    if ! docker ps --format '{{.Names}}' | grep -q "^${DB_CONTAINER}$"; then
+        log_error "Postgres container ${DB_CONTAINER} is not running — run '$0 start' first"
+        return 1
+    fi
+
+    docker exec -i -e PGPASSWORD=vox123 "$DB_CONTAINER" \
+        psql -U vox -d vox -v ON_ERROR_STOP=1 <<'SQL'
+-- Stop the bleeding first: any recurring schedule still armed from a past run.
+UPDATE eval_schedules SET is_enabled = false
+ WHERE is_enabled AND schedule_type = 'recurring' AND name NOT LIKE 'LiveKit %';
+
+-- Then the rows themselves, FK-safe order. Jobs are generated rather than
+-- named, so they go by age — but only the ones that produced NOTHING. A job
+-- with an eval_result is the provenance for a metric on the leaderboard
+-- (results carry a NOT NULL eval_job_id and the tier queries read the job's
+-- frozen snapshot), so deleting it would silently strip history. The churn is
+-- the pending/failed backlog, and that is all this removes.
+DELETE FROM eval_jobs
+      WHERE created_at < now() - interval '1 day'
+        AND NOT EXISTS (SELECT 1 FROM eval_results r WHERE r.eval_job_id = eval_jobs.id);
+
+-- Stale pending/running jobs go on a much shorter clock. They are the direct
+-- output of the orphaned schedules disabled above and will never be claimed
+-- (the production sweeps themselves fail pending jobs after 15 minutes), but
+-- they sit in the claim queries and in every agent's poll — 33k of them here.
+DELETE FROM eval_jobs
+      WHERE status IN ('pending', 'running')
+        AND created_at < now() - interval '1 hour';
+DELETE FROM eval_schedules WHERE NOT is_enabled AND name NOT LIKE 'LiveKit %';
+
+-- Flows and sets go by REFERENCE, not by owner. Most leakage is created as
+-- the admin user (that is who the suites log in as), so an owner_id filter
+-- misses the bulk of it — this DB held 8,121 admin-owned eval sets, the same
+-- dozen fixture names repeated ~295 times, once per gate run. Anything still
+-- reachable from a surviving job or schedule stays, which is what preserves
+-- the seeded set without having to enumerate its names. Built-ins are
+-- server-controlled and never leaked.
+DELETE FROM eval_flows f
+      WHERE NOT EXISTS (SELECT 1 FROM eval_jobs j      WHERE j.eval_flow_id = f.id)
+        AND NOT EXISTS (SELECT 1 FROM eval_schedules s WHERE s.eval_flow_id = f.id);
+DELETE FROM eval_sets e
+      WHERE COALESCE((e.config->>'builtIn')::boolean, false) = false
+        AND NOT EXISTS (SELECT 1 FROM eval_jobs j      WHERE j.eval_set_id = e.id)
+        AND NOT EXISTS (SELECT 1 FROM eval_schedules s WHERE s.eval_set_id = e.id);
+DELETE FROM secrets        WHERE user_id > 2;
+DELETE FROM plugin_organizations.memberships
+      WHERE org_ref IN (SELECT id FROM plugin_organizations.organizations
+                         WHERE name LIKE 'r2-org-%' OR name LIKE 'abs-org-%');
+DELETE FROM plugin_organizations.org_secrets
+      WHERE org_ref IN (SELECT id FROM plugin_organizations.organizations
+                         WHERE name LIKE 'r2-org-%' OR name LIKE 'abs-org-%');
+DELETE FROM plugin_organizations.organizations
+      WHERE name LIKE 'r2-org-%' OR name LIKE 'abs-org-%';
+
+-- FULL, because a plain VACUUM marks the pages reusable but hands nothing
+-- back to the OS, and the point here is to undo a 500 MB table. It takes an
+-- ACCESS EXCLUSIVE lock, which is why this is a deliberate maintenance
+-- command and not something `start` does — but with only a few thousand live
+-- rows left it finishes in seconds.
+VACUUM (FULL, ANALYZE) eval_jobs;
+VACUUM (FULL, ANALYZE) eval_flows;
+VACUUM (FULL, ANALYZE) eval_sets;
+VACUUM (FULL, ANALYZE) eval_schedules;
+
+SELECT 'eval_jobs' AS t, count(*) FROM eval_jobs
+UNION ALL SELECT 'eval_flows', count(*) FROM eval_flows
+UNION ALL SELECT 'eval_sets', count(*) FROM eval_sets
+UNION ALL SELECT 'eval_schedules (enabled)', count(*) FROM eval_schedules WHERE is_enabled;
+SQL
+
+    if [ $? -eq 0 ]; then
+        log_success "Test data cleaned"
+    else
+        log_error "Cleanup failed"
+        return 1
+    fi
+}
+
 # Start eval agents for all regions (multi-region mode)
 start_all_eval_agents_local() {
     log_info "Starting eval agents for all regions (multi-region mode)..."
@@ -1292,6 +1386,9 @@ main() {
             check_command npm
             do_reset "local"
             ;;
+        clean-test-data)
+            clean_test_data
+            ;;
         build-agent)
             build_eval_agent_docker
             ;;
@@ -1368,6 +1465,8 @@ main() {
             echo ""
             echo "Common Commands:"
             echo "  status                 - Show service status"
+            echo "  clean-test-data        - Purge test-suite leakage (incl. orphaned"
+            echo "                           recurring schedules) from the dev DB"
             echo "  build-agent            - Build eval agent Docker image"
             echo "  smoke-test             - Run eval agent smoke tests"
             echo "  logs [server|agent]    - Show logs"
