@@ -166,6 +166,8 @@ npx playwright test [--ui|--headed]
 
 A green gate means all three: unit/integration (Vitest), audio (Docker), E2E (Playwright). Notable suites: `tests/api.test.ts`, `tests/eval-agent-daemon.test.ts`, `tests/clash-runner*.test.ts`, `tests/e2e/*.spec.ts`, `vox_clash_runner/audio/test-audio-pipeline.sh`. Don't trust doc'd test counts — run `npm test`.
 
+Run `./scripts/dev-local-run.sh clean-test-data` on a DB that has accumulated suite leakage: it disarms orphaned recurring schedules (the expensive kind — they keep firing on their cron long after the run that made them) and deletes by reference, keeping anything a surviving job or schedule points at plus every job that produced an `eval_result`.
+
 **Known gate hazards:**
 - Suites leak resources into the dev DB and trip per-user caps (GitHub #134). Before a full run:
   ```sql
