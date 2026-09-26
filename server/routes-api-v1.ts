@@ -12,7 +12,7 @@ import { storage, mergeEvalConfig, buildJobSnapshot, validateEvalFlowConfig, val
 import { requireAuthOrApiKey, getCurrentUserOrApiKeyUser } from "./auth";
 import { parsePlatformSetup, sessionScopeForEvalFlow, evaluateSessionRequirement, getBrokeredSecretNames, ensureSession, missingSecretNames, resolvableSecretSources } from "./auth-session";
 import { regionSiteSequence } from "@shared/regions";
-import { hasOrg, sameOrg, isOwnerOrOrgManager } from "./permissions";
+import { hasOrg, sameOrg, isOwnerOrOrgManager, canAccessResource } from "./permissions";
 import { getOrganizations } from "./organizations";
 
 type ApiRegionLocation = Awaited<ReturnType<typeof storage.getAllRegionLocations>>[number];
@@ -359,6 +359,13 @@ export function registerApiV1Routes(app: Express): void {
       const evalSet = await storage.getEvalSet(evalSetId);
       if (!evalSet) {
         return res.status(404).json({ error: "Eval set not found" });
+      }
+      // Existence is not access. Without this an API key could name ANY eval
+      // set id and have its config merged into a job and executed — the same
+      // check GET /eval-sets/:id applies, and the one the console run route
+      // has always applied.
+      if (!canAccessResource(user, evalSet)) {
+        return res.status(403).json({ error: "Access denied to eval set" });
       }
 
       if (!region || !targetTier) {

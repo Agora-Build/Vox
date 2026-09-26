@@ -740,6 +740,21 @@ smoke_test_agent() {
 
 # ==================== Eval Agent (Local Process Mode) ====================
 
+# Is anything LISTENING on this TCP port? Deliberately NOT "does /health
+# answer" — a process can hold the port and return 404, or not speak HTTP at
+# all (the clash runner defaults to this same port, GitHub #126), and treating
+# a failed health probe as "free" is how you spawn straight into EADDRINUSE.
+port_in_use() {
+    local port=$1
+    if command -v ss >/dev/null 2>&1; then
+        ss -ltnH "sport = :${port}" 2>/dev/null | grep -q .
+    elif command -v lsof >/dev/null 2>&1; then
+        lsof -iTCP:"${port}" -sTCP:LISTEN >/dev/null 2>&1
+    else
+        (exec 3<>/dev/tcp/127.0.0.1/"${port}") >/dev/null 2>&1 && exec 3<&- 
+    fi
+}
+
 start_eval_agent_local() {
     local token=$1
     local name=$2
@@ -747,14 +762,14 @@ start_eval_agent_local() {
 
     log_info "Starting eval agent (local process): $name ($region)..."
 
-    # A leftover agent still holding the health port makes the new one die on
-    # EADDRINUSE. Wait for the port rather than racing it — and say so, since
-    # the usual cause is a previous `start` whose agent outlived its `stop`.
+    # Anything holding the health port makes the new agent die on EADDRINUSE.
+    # Wait for the LISTENER to go away rather than racing it — the usual cause
+    # is a previous `start` whose agent outlived its `stop`.
     local health_port=${VOX_AGENT_HEALTH_PORT:-8099}
     local waited=0
-    while curl -sf --max-time 1 "http://localhost:${health_port}/health" >/dev/null 2>&1; do
+    while port_in_use "$health_port"; do
         if [ $waited -ge 10 ]; then
-            log_error "Port ${health_port} is still held after ${waited}s — another agent (or the clash runner) is running"
+            log_error "Port ${health_port} is still held after ${waited}s — another agent (or the clash runner, GitHub #126) is listening"
             return 1
         fi
         [ $waited -eq 0 ] && log_warn "Port ${health_port} still in use, waiting for the previous agent to exit..."
@@ -803,8 +818,13 @@ start_eval_agent_local() {
 # timeout — the gate went red for reasons that had nothing to do with the code
 # under test.
 #
-# Seeded data (seed-data.ts) is preserved: it is owned by users 1-2 and its
-# schedule is named "LiveKit ...".
+# Seeded data is preserved by OWNER: everything seed-data.ts creates belongs
+# to the Scout account, and no suite creates rows as Scout (they run as admin
+# or as users they invite). Owner is the right key here because seed-data.ts
+# is only idempotent at the top: the Agora flow and Login Smoke set are
+# created inside the `if (!existingLiveKitEvalFlow)` branch, so once LiveKit
+# exists a re-seed will NOT put them back. Delete them and they stay gone
+# until a full `reset`.
 clean_test_data() {
     log_info "Cleaning test-suite leakage from the dev database..."
 
@@ -841,17 +861,28 @@ DELETE FROM eval_schedules WHERE NOT is_enabled AND name NOT LIKE 'LiveKit %';
 -- Flows and sets go by REFERENCE, not by owner. Most leakage is created as
 -- the admin user (that is who the suites log in as), so an owner_id filter
 -- misses the bulk of it — this DB held 8,121 admin-owned eval sets, the same
--- dozen fixture names repeated ~295 times, once per gate run. Anything still
--- reachable from a surviving job or schedule stays, which is what preserves
--- the seeded set without having to enumerate its names. Built-ins are
+-- dozen fixture names repeated ~295 times, once per gate run.
+--
+-- Only a SCHEDULE pins a flow or set, deliberately not a job. Jobs carry an
+-- immutable `snapshot` of the flow and set as they were at run time, and
+-- every downstream reader (provider attribution, provenance UI, tiering)
+-- reads that snapshot rather than the live row — deleting a flow nulls the
+-- job's FK and changes no history. Pinning on jobs instead kept hundreds of
+-- dead flows alive (218 for one user against a 200 cap, so the next run's
+-- flow creation 403'd), which is the opposite of the point. Built-ins are
 -- server-controlled and never leaked.
 DELETE FROM eval_flows f
-      WHERE NOT EXISTS (SELECT 1 FROM eval_jobs j      WHERE j.eval_flow_id = f.id)
+      WHERE f.owner_id <> (SELECT id FROM users WHERE email = 'scout@vox.ai')
         AND NOT EXISTS (SELECT 1 FROM eval_schedules s WHERE s.eval_flow_id = f.id);
 DELETE FROM eval_sets e
-      WHERE COALESCE((e.config->>'builtIn')::boolean, false) = false
-        AND NOT EXISTS (SELECT 1 FROM eval_jobs j      WHERE j.eval_set_id = e.id)
+      WHERE e.owner_id <> (SELECT id FROM users WHERE email = 'scout@vox.ai')
+        AND COALESCE((e.config->>'builtIn')::boolean, false) = false
         AND NOT EXISTS (SELECT 1 FROM eval_schedules s WHERE s.eval_set_id = e.id);
+-- Projects last, once the flows inside them are gone: they carry their own
+-- per-user cap (basic 5 / premium 20), so a few leaked runs is all it takes
+-- to make "should create a new project" fail for reasons unrelated to it.
+DELETE FROM projects p
+      WHERE NOT EXISTS (SELECT 1 FROM eval_flows f WHERE f.project_id = p.id);
 DELETE FROM secrets        WHERE user_id > 2;
 DELETE FROM plugin_organizations.memberships
       WHERE org_ref IN (SELECT id FROM plugin_organizations.organizations
@@ -867,6 +898,15 @@ DELETE FROM plugin_organizations.organizations
 -- ACCESS EXCLUSIVE lock, which is why this is a deliberate maintenance
 -- command and not something `start` does — but with only a few thousand live
 -- rows left it finishes in seconds.
+-- Every login in every suite mints a session row, and they are created with
+-- a long TTL, so none of them expire and connect-pg-simple's own sweeper can
+-- never reclaim them. At ~7,000 live rows admin login started losing its race
+-- with the post-login redirect and the E2E auth tests bounced to /login —
+-- passing alone, failing in a full file, green again on a fresh server. This
+-- logs out any browser you have open against the dev server, which is the
+-- expected cost of a test-data purge.
+DELETE FROM user_sessions;
+
 VACUUM (FULL, ANALYZE) eval_jobs;
 VACUUM (FULL, ANALYZE) eval_flows;
 VACUUM (FULL, ANALYZE) eval_sets;
@@ -875,7 +915,8 @@ VACUUM (FULL, ANALYZE) eval_schedules;
 SELECT 'eval_jobs' AS t, count(*) FROM eval_jobs
 UNION ALL SELECT 'eval_flows', count(*) FROM eval_flows
 UNION ALL SELECT 'eval_sets', count(*) FROM eval_sets
-UNION ALL SELECT 'eval_schedules (enabled)', count(*) FROM eval_schedules WHERE is_enabled;
+UNION ALL SELECT 'eval_schedules (enabled)', count(*) FROM eval_schedules WHERE is_enabled
+UNION ALL SELECT 'user_sessions', count(*) FROM user_sessions;
 SQL
 
     if [ $? -eq 0 ]; then

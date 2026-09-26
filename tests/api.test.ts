@@ -2030,6 +2030,19 @@ describe('Vox API Tests', () => {
     let testUserApiKey: string;
     let testUserEvalFlowId: number;
 
+    // This block creates an eval flow per run and used to leave it behind.
+    // Flows count against a per-plan cap (200 for non-basic), so after ~200
+    // gate runs the CREATE test itself started 403ing and every test after it
+    // cascaded into 500s — a failure that looks like a v1 regression and
+    // isn't.
+    afterAll(async () => {
+      if (testUserEvalFlowId) {
+        await authFetch(adminSession, `${BASE_URL}/api/eval-flows/${testUserEvalFlowId}`, {
+          method: 'DELETE',
+        }).catch(() => {});
+      }
+    });
+
     it('should create API key for permission tests', async () => {
       const response = await authFetch(adminSession, `${BASE_URL}/api/user/api-keys`, {
         method: 'POST',
@@ -2096,6 +2109,84 @@ describe('Vox API Tests', () => {
       expect(data.job.targetTier).toBe('public');
 
       await authFetch(adminSession, `${BASE_URL}/api/eval-sets/${evalSet.id}`, { method: 'DELETE' });
+    });
+
+    it('should refuse a v1 run naming an eval set the key cannot access', async () => {
+      // Regression: the v1 run route checked only that the eval set EXISTED.
+      // Any API key could name any id and have that eval set's config merged
+      // into a job and executed — the visibility boundary GET /eval-sets/:id
+      // enforces, bypassed on the surface that actually runs things.
+      //
+      // The OUTSIDER has to be the caller. `testUserApiKey` above is minted
+      // from adminSession, and canAccessResource has an admin arm, so an
+      // admin key reaching a private set is allowed and proves nothing. So:
+      // a premium invitee, running their own flow, naming admin's private set.
+      const stamp = Date.now();
+      const outsiderEmail = `es-fence-${stamp}@example.com`;
+      const outsiderPassword = 'TestPass123!';
+      const inviteRes = await authFetch(adminSession, `${BASE_URL}/api/admin/invite`, {
+        method: 'POST',
+        body: JSON.stringify({ email: outsiderEmail, plan: 'premium' }),
+      });
+      expect(inviteRes.ok).toBe(true);
+      const { token } = await inviteRes.json();
+      const regRes = await fetch(`${BASE_URL}/api/auth/register`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: `esfence${stamp}`, password: outsiderPassword, token }),
+      });
+      expect(regRes.ok).toBe(true);
+      const outsider = await login(outsiderEmail, outsiderPassword);
+
+      // Admin's PRIVATE eval set — the thing that must stay out of reach.
+      const esRes = await authFetch(adminSession, `${BASE_URL}/api/eval-sets`, {
+        method: 'POST',
+        body: JSON.stringify({ name: `Admin Private ES ${stamp}`, visibility: 'private', config: {} }),
+      });
+      expect(esRes.ok).toBe(true);
+      const adminEvalSet = await esRes.json();
+      expect(adminEvalSet.visibility).toBe('private');
+
+      // The outsider's own project + flow, so the flow-ownership check passes
+      // and the eval-set fence is the only thing left that can refuse.
+      const projRes = await authFetch(outsider, `${BASE_URL}/api/projects`, {
+        method: 'POST',
+        body: JSON.stringify({ name: `esfence-proj-${stamp}` }),
+      });
+      expect(projRes.ok).toBe(true);
+      const project = await projRes.json();
+      const providerId = (await (await fetch(`${BASE_URL}/api/providers`)).json())[0].id;
+      const wfRes = await authFetch(outsider, `${BASE_URL}/api/eval-flows`, {
+        method: 'POST',
+        body: JSON.stringify({
+          name: `esfence-wf-${stamp}`, visibility: 'public', projectId: project.id, providerId,
+        }),
+      });
+      expect(wfRes.ok).toBe(true);
+      const outsiderFlow = await wfRes.json();
+
+      const keyRes = await authFetch(outsider, `${BASE_URL}/api/user/api-keys`, {
+        method: 'POST',
+        body: JSON.stringify({ name: `esfence-key-${stamp}` }),
+      });
+      expect(keyRes.ok).toBe(true);
+      const outsiderKey = (await keyRes.json()).key;
+
+      const response = await fetch(`${BASE_URL}/api/v1/eval-flows/${outsiderFlow.id}/run`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${outsiderKey}`,
+        },
+        body: JSON.stringify({ region: BASE_NA, targetTier: 'public', evalSetId: adminEvalSet.id }),
+      });
+      expect(response.status).toBe(403);
+      const body = await response.json();
+      expect(body.error).toMatch(/access denied/i);
+
+      await authFetch(adminSession, `${BASE_URL}/api/eval-sets/${adminEvalSet.id}`, { method: 'DELETE' });
+      await authFetch(outsider, `${BASE_URL}/api/eval-flows/${outsiderFlow.id}`, { method: 'DELETE' });
+      await authFetch(outsider, `${BASE_URL}/api/projects/${project.id}`, { method: 'DELETE' });
     });
 
     it('should reject a v1 run with the old exact-site siteId body key', async () => {

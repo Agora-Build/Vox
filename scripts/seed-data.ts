@@ -342,25 +342,41 @@ steps:
       console.log(`Created eval set: ${loginSmokeEvalSet.name}`);
     }
 
-    // Create recurring schedule - every 3 hours (0:00, 3:00, ... 21:00), the cadence the site advertises
-    // Cron: "0 */3 * * *" means "at minute 0 past every 3rd hour"
-    const schedules = await storage.getEvalSchedulesByEvalFlow(livekitEvalFlow.id);
-    if (schedules.length === 0) {
-      // Next 3-hour boundary. setHours(24) rolls the date over, so late in
-      // the day this still lands in the future — the old `% 24` wrap seeded
-      // a nextRunAt in the past for any hour past the last boundary.
-      const now = new Date();
-      const nextRunAt = new Date(now);
-      nextRunAt.setMinutes(0, 0, 0);
-      nextRunAt.setHours(Math.floor(now.getHours() / 3) * 3 + 3);
+  } else {
+    console.log(`LiveKit evalFlow already exists: ID ${existingLiveKitEvalFlow.id}`);
+  }
 
+  // Mainline schedule, reconciled on EVERY seed rather than only when the
+  // evalFlow is first created. It used to live inside the create-only branch
+  // above, which meant a database seeded before a cadence change kept firing
+  // on the old cron indefinitely while the site advertised the new one — and
+  // re-running the seeder, the obvious remedy, did nothing at all.
+  const MAINLINE_CRON = "0 */3 * * *"; // every 3 hours: 0:00, 3:00, ... 21:00
+  const MAINLINE_NAME = "LiveKit 3-Hour Evaluation";
+  const seededFlows = await storage.getEvalFlowsByOwner(scoutId);
+  const mainlineFlow = seededFlows.find(w => w.name === "LiveKit Agent Evaluation");
+  const seededSets = await storage.getEvalSetsByOwner(scoutId);
+  const mainlineSet = seededSets.find(e => e.name === "Basic Conversation Test");
+
+  if (mainlineFlow && mainlineSet) {
+    // Next 3-hour boundary. setHours(24) rolls the date over, so late in the
+    // day this still lands in the future — the old `% 24` wrap seeded a
+    // nextRunAt in the past for any hour past the last boundary.
+    const now = new Date();
+    const nextRunAt = new Date(now);
+    nextRunAt.setMinutes(0, 0, 0);
+    nextRunAt.setHours(Math.floor(now.getHours() / 3) * 3 + 3);
+
+    const schedules = await storage.getEvalSchedulesByEvalFlow(mainlineFlow.id);
+    const existing = schedules.find(s => s.scheduleType === "recurring");
+    if (!existing) {
       const schedule = await storage.createEvalSchedule({
-        name: "LiveKit 3-Hour Evaluation",
-        evalFlowId: livekitEvalFlow.id,
-        evalSetId: basicEvalSet.id,
+        name: MAINLINE_NAME,
+        evalFlowId: mainlineFlow.id,
+        evalSetId: mainlineSet.id,
         region: "na",  // North America region
         scheduleType: "recurring",
-        cronExpression: "0 */3 * * *",  // Every 3 hours
+        cronExpression: MAINLINE_CRON,
         timezone: "UTC",
         isEnabled: true,
         nextRunAt: nextRunAt,
@@ -369,11 +385,16 @@ steps:
       });
       console.log(`Created recurring schedule: ${schedule.name} (every 3 hours, region: NA)`);
       console.log(`  Next run at: ${nextRunAt.toISOString()}`);
+    } else if (existing.cronExpression !== MAINLINE_CRON || existing.name !== MAINLINE_NAME) {
+      await storage.updateEvalSchedule(existing.id, {
+        name: MAINLINE_NAME,
+        cronExpression: MAINLINE_CRON,
+        nextRunAt,
+      });
+      console.log(`Updated mainline schedule: "${existing.name}" (${existing.cronExpression}) -> "${MAINLINE_NAME}" (${MAINLINE_CRON})`);
     } else {
-      console.log(`Schedule already exists for LiveKit evalFlow`);
+      console.log(`Mainline schedule already on ${MAINLINE_CRON}`);
     }
-  } else {
-    console.log(`LiveKit evalFlow already exists: ID ${existingLiveKitEvalFlow.id}`);
   }
 
   // Agora Console login credentials (Protected / login-class) for the login
