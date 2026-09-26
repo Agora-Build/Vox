@@ -95,6 +95,10 @@ export default function ConsoleEvalflows() {
   const [editProjectId, setEditProjectId] = useState("");
   const [editProviderId, setEditProviderId] = useState("");
   const [editTransport, setEditTransport] = useState("web");
+  // Payloads parked by a migration (0040 _legacyPhoneDial, 0041 _legacyVatApp).
+  // Read-only: nothing executes them, and saving this dialog discards them —
+  // so the owner has to be able to SEE them before that happens.
+  const [editLegacyConfig, setEditLegacyConfig] = useState<string>("");
 
   // Non-blocking warning when the evalflow's provider disagrees with its YAML platform_id.
   const [pendingMismatch, setPendingMismatch] = useState<{ kind: "create" | "edit"; yamlPlatform: string; providerName: string } | null>(null);
@@ -237,6 +241,8 @@ export default function ConsoleEvalflows() {
     setEditStepsSuffix(cfg.stepsSuffix || "");
     setEditProviderId(evalflow.providerId);
     setEditTransport(evalflow.transport || "web");
+    const parked = Object.fromEntries(Object.entries(cfg).filter(([k]) => k.startsWith("_legacy")));
+    setEditLegacyConfig(Object.keys(parked).length > 0 ? JSON.stringify(parked, null, 2) : "");
     setEditOpen(true);
   };
 
@@ -512,6 +518,23 @@ export default function ConsoleEvalflows() {
                 data-testid="textarea-evalflow-steps-suffix-edit"
               />
             </div>
+            {editLegacyConfig && (
+              <div className="space-y-2 rounded-md border border-amber-500/40 bg-amber-500/5 p-3">
+                <Label className="text-amber-600 dark:text-amber-400">
+                  Legacy config — discarded when you save
+                </Label>
+                <p className="text-xs text-muted-foreground">
+                  A migration parked this from an older config format. Nothing runs it.
+                  Copy anything you still need before saving.
+                </p>
+                <pre
+                  className="max-h-40 overflow-auto rounded bg-muted p-2 font-mono text-xs"
+                  data-testid="text-evalflow-legacy-config"
+                >
+                  {editLegacyConfig}
+                </pre>
+              </div>
+            )}
             <div className="space-y-2">
               <Label htmlFor="edit-evalflow-project">Project</Label>
               {editEvalflow?.projectId ? (

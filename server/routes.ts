@@ -16,7 +16,7 @@ import { fingerprintCredential, formatLastFailedHttpStatus, parseLastFailedHttpS
 import { sessionScopeForEvalflow, areLoginSecretsAttested, ensureSession, stampOwnerSession, credentialKeyFor, SESSION_FRESH_MARGIN_SECONDS, classifyReferencedSecrets, findBrokeredMisuse, resolveBrokerType, type SessionNeed, detectSessionNeed, missingSecretNames, resolvableSecretSources } from "./auth-session";
 import { validateRegisterPayload, cacheBrokerMintSecret, hasBrokerMintSecret, routeToBroker, executeViaBroker, KNOWN_BROKER_TYPES } from "./broker-registry";
 import { resolveRestfulTemplate } from "./restful-exec";
-import { validateRestfulTrigger, parseStepsScript, stepsContainCallDial, stripLegacyConfigKeys, redactLegacyForViewer } from "./storage";
+import { validateRestfulTrigger, parseStepsScript, stepsContainCallDial, stripLegacyConfigKeys, redactLegacyForViewer, redactLegacyFromJob } from "./storage";
 import { PHONE_NUMBER_RE } from "@shared/steps";
 import { deriveApiKeyStatus } from "./api-key-status";
 import { isStaleOfflineAgent } from "./agent-liveness";
@@ -5254,7 +5254,9 @@ export async function registerRoutes(
       const rateMap = await storage.getResponseRatesByJobIds(paged.map(j => j.id));
 
       const enriched = paged.map(job => ({
-        ...job,
+        // Parked _legacy* payloads are owner-only; this list includes jobs
+        // from PUBLIC evalflows owned by other people.
+        ...redactLegacyFromJob(job, job.createdBy === user.id),
         creatorName: job.createdBy ? creatorMap.get(job.createdBy) || null : null,
         responseRate: rateMap.has(job.id) ? rateMap.get(job.id)! : null,
         // trigger_type: 1 = scheduled, 2 = manual (recorded at creation). Fall back
@@ -5298,7 +5300,7 @@ export async function registerRoutes(
         }
       }
 
-      res.json(job);
+      res.json(redactLegacyFromJob(job, job.createdBy === user.id));
     } catch (error) {
       console.error("Error fetching eval job:", error);
       res.status(500).json({ error: "Failed to fetch eval job" });
@@ -5363,7 +5365,7 @@ export async function registerRoutes(
       }
 
       res.json({
-        job,
+        job: redactLegacyFromJob(job, job.createdBy === user.id),
         result: result ? {
           ...result,
           artifactUrl: signedArtifactUrl,

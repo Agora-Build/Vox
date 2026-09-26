@@ -12,7 +12,7 @@ import { storage, mergeEvalConfig, buildJobSnapshot, validateEvalflowConfig, val
 import { requireAuthOrApiKey, getCurrentUserOrApiKeyUser } from "./auth";
 import { parsePlatformSetup, sessionScopeForEvalflow, evaluateSessionRequirement, getBrokeredSecretNames, ensureSession, missingSecretNames, resolvableSecretSources } from "./auth-session";
 import { regionSiteSequence } from "@shared/regions";
-import { hasOrg, sameOrg } from "./permissions";
+import { hasOrg, sameOrg, isOwnerOrOrgManager } from "./permissions";
 import { getOrganizations } from "./organizations";
 
 type ApiRegionLocation = Awaited<ReturnType<typeof storage.getAllRegionLocations>>[number];
@@ -221,7 +221,9 @@ export function registerApiV1Routes(app: Express): void {
         return res.status(403).json({ error: "Access denied" });
       }
 
-      res.json({ data: redactLegacyForViewer(evalflow, evalflow.ownerId === user.id) });
+      // Same rule as the console route: the EDIT right, not bare ownership,
+      // so an org manager sees parked payloads through either API.
+      res.json({ data: redactLegacyForViewer(evalflow, isOwnerOrOrgManager(user, evalflow)) });
     } catch (error) {
       console.error("API v1 - Error fetching evalflow:", error);
       res.status(500).json({ error: "Failed to fetch evalflow" });

@@ -253,6 +253,34 @@ export function redactLegacyForViewer<T extends { config?: unknown }>(row: T, ca
   return { ...row, config: stripLegacyConfigKeys(config) };
 }
 
+/**
+ * Job-shaped counterpart of redactLegacyForViewer: a job row carries the
+ * merged `config` AND the frozen `snapshot`, both of which can hold parked
+ * `_legacy*` payloads on rows created before those keys were stripped at
+ * write time. Job reads are visible to anyone who can see the evalflow
+ * (public included), so non-owners must not see the owner's parked data.
+ */
+export function redactLegacyFromJob<T extends { config?: unknown; snapshot?: unknown; createdBy?: number | null }>(
+  job: T,
+  canSeeLegacy: boolean,
+): T {
+  if (canSeeLegacy) return job;
+  const snap = job.snapshot as { evalflow?: { config?: unknown }; evalSet?: { config?: unknown } } | null | undefined;
+  return {
+    ...job,
+    config: stripLegacyConfigKeys(job.config),
+    ...(snap
+      ? {
+          snapshot: {
+            ...snap,
+            ...(snap.evalflow ? { evalflow: { ...snap.evalflow, config: stripLegacyConfigKeys(snap.evalflow.config) } } : {}),
+            ...(snap.evalSet ? { evalSet: { ...snap.evalSet, config: stripLegacyConfigKeys(snap.evalSet.config) } } : {}),
+          },
+        }
+      : {}),
+  };
+}
+
 // The eval-framework seam: adding a framework means extending this set, the
 // daemon's executeJob switch, and resolvableSecretSources' field map — the
 // per-job `config.framework` override and the daemon's EVAL_FRAMEWORK default

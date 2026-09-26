@@ -2847,6 +2847,43 @@ describe('Vox API Tests', () => {
       await authFetch(adminSession, `${BASE_URL}/api/evalflows/${evalflow.id}`, { method: 'DELETE' });
     });
 
+    it("parked _legacy* payloads are owner-only on evalflow AND job reads", async () => {
+      // Seed a migrated-looking row directly (only migrations write these keys).
+      const { storage, pool } = await import('../server/storage');
+      const providers = await storage.getAllProviders();
+      const owner = await storage.createUser({
+        username: `legacyowner${Date.now()}`, email: `legacyowner${Date.now()}@example.com`,
+      } as any);
+      const wf = await storage.createEvalflow({
+        name: `Legacy Redaction WF ${Date.now()}`, ownerId: owner.id, providerId: providers[0].id,
+        visibility: 'public', config: { framework: 'aeval', _legacyPhoneDial: { number: '+1 555 010 9999' } },
+      } as any);
+      const job = await storage.createEvalJob({
+        evalflowId: wf.id, triggerType: 2, evalSetId: null, createdBy: owner.id,
+        siteId: null, targetRegion: BASE_NA, targetTier: 'public',
+        config: { _legacyPhoneDial: { number: '+1 555 010 9999' } },
+        snapshot: { evalflow: { name: wf.name, config: { _legacyPhoneDial: { number: '+1 555 010 9999' } } } },
+        status: 'completed', priority: 0, retryCount: 0, maxRetries: 3,
+      } as any);
+      try {
+        // admin is NOT the owner — the row is public, so it IS readable.
+        const wfRes = await authFetch(adminSession, `${BASE_URL}/api/evalflows/${wf.id}`);
+        expect(wfRes.ok).toBe(true);
+        expect((await wfRes.json()).config._legacyPhoneDial).toBeUndefined();
+
+        // Job reads carry the merged config AND the frozen snapshot.
+        const jobRes = await authFetch(adminSession, `${BASE_URL}/api/eval-jobs/${job.id}`);
+        expect(jobRes.ok).toBe(true);
+        const jobBody = await jobRes.json();
+        expect(jobBody.config._legacyPhoneDial).toBeUndefined();
+        expect(jobBody.snapshot.evalflow.config._legacyPhoneDial).toBeUndefined();
+      } finally {
+        await pool.query(`DELETE FROM eval_jobs WHERE id = $1`, [job.id]);
+        await pool.query(`DELETE FROM evalflows WHERE id = $1`, [wf.id]);
+        await pool.query(`DELETE FROM users WHERE id = $1`, [owner.id]);
+      }
+    });
+
     it("v1 API enforces the same config validation as the console route", async () => {
       const res = await authFetch(adminSession, `${BASE_URL}/api/v1/evalflows`, {
         method: 'POST',
