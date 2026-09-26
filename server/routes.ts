@@ -1849,7 +1849,11 @@ export async function registerRoutes(
       if (!canAccessResource(user, evalFlow)) {
         return res.status(403).json({ error: "Access denied" });
       }
-      res.json(evalFlow);
+      // Owner display name, same shape as a job's creatorName: the detail page
+      // shows who owns the flow, and a public flow is readable by people who
+      // can't look the id up themselves.
+      const owner = evalFlow.ownerId != null ? await storage.getUser(evalFlow.ownerId) : undefined;
+      res.json({ ...evalFlow, ownerName: owner?.username ?? null });
     } catch (error) {
       console.error("Error fetching evalFlow:", error);
       res.status(500).json({ error: "Failed to fetch evalFlow" });

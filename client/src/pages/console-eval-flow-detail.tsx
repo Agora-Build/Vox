@@ -14,7 +14,10 @@ import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { ArrowLeft, Play, Settings, History, Clock, CheckCircle, XCircle, Loader2, RefreshCw } from "lucide-react";
 import { useState, useEffect, useMemo } from "react";
-import type { EvalFlow as EvalFlowType, Provider, EvalJob, EvalSet } from "@shared/schema";
+import type { EvalFlow, Provider, EvalJob, EvalSet } from "@shared/schema";
+
+/** The detail route enriches the row with the owner's display name. */
+type EvalFlowType = EvalFlow & { ownerName?: string | null };
 import { formatSmartTimestamp, formatSite, formatRegion } from "@/lib/utils";
 import { useRegionLocationOptions } from "@/hooks/use-regions";
 import {
@@ -440,6 +443,12 @@ export default function ConsoleEvalFlowDetail() {
                 ) : (
                   <span className="text-muted-foreground">Not set</span>
                 )}
+              </div>
+            </div>
+            <div>
+              <Label className="text-muted-foreground">Creator</Label>
+              <div className="mt-1 text-sm" data-testid="text-eval-flow-creator">
+                {evalFlow.ownerName ?? <span className="text-muted-foreground">Unknown</span>}
               </div>
             </div>
             <div>
