@@ -214,7 +214,7 @@ test.describe("Job snapshot", () => {
     await login(page);
   });
 
-  test("job detail shows a 'View evalFlow & eval set' snapshot dialog", async ({ page }) => {
+  test("job detail shows a 'View Eval Flow & eval set' snapshot dialog", async ({ page }) => {
     // Find any job to open its detail page.
     const res = await page.request.get("/api/eval-jobs?limit=1");
     const body = await res.json();
@@ -228,9 +228,9 @@ test.describe("Job snapshot", () => {
     await expect(btn).toBeVisible();
     await btn.click();
 
-    // Immutable snapshot dialog with the evalFlow/eval-set config.
-    await expect(page.getByRole("dialog").getByText("EvalFlow & eval set — as run")).toBeVisible();
-    await expect(page.getByText(/EvalFlow:/)).toBeVisible();
+    // Immutable snapshot dialog with the eval-flow/eval-set config.
+    await expect(page.getByRole("dialog").getByText("Eval Flow & eval set — as run")).toBeVisible();
+    await expect(page.getByText(/Eval Flow:/)).toBeVisible();
     await expect(page.getByText(/Eval set:/)).toBeVisible();
   });
 });
