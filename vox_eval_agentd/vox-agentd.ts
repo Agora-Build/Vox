@@ -2313,10 +2313,10 @@ function parseArgs(): DaemonConfig {
   // exiting would crash-loop any host that sets the var outside
   // vox-upgrade.sh (its own compose file, systemd, k8s) the moment it pulls
   // this image. Same resolution vox-upgrade.sh applies before starting us.
-  const resolvedFramework = framework === 'aeval' ? framework : 'aeval';
-  if (resolvedFramework !== framework) {
+  if (framework !== 'aeval') {
     console.warn(`[Daemon] Unsupported EVAL_FRAMEWORK '${framework}' — using 'aeval' (the only supported framework). Remove it from your env to silence this.`);
   }
+  const resolvedFramework = 'aeval';
   const headless = process.env.HEADLESS !== 'false';
 
   for (let i = 0; i < args.length; i++) {

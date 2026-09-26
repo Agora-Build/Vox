@@ -79,13 +79,17 @@ UPDATE evalflows
 SET config = config - 'app'
 WHERE jsonb_typeof(config) = 'object' AND config ? 'app';
 --> statement-breakpoint
--- Eval sets too: validateEvalSetConfig now rejects `app`, and v1 eval-set
--- create did NO validation before this release, so an older row may carry
--- one. Without this, sending the config back on PATCH fails with the
--- removed-framework error and there's no way to clear it.
+-- Eval sets too: validateEvalSetConfig now rejects `app` AND `framework`
+-- (both evalflow-only), and v1 eval-set create did NO validation before this
+-- release, so an older row may carry either. `framework` matters most:
+-- mergeEvalConfig lets the eval set win (`{...wf, ...es}`), so a stray
+-- `voice-agent-tester` there would slip past every gate — which reads the
+-- EVALFLOW's config — and only fail at the daemon (or, if the evalflow names
+-- aeval, throw a merge conflict on every run and scheduler tick).
 UPDATE eval_sets
-SET config = config - 'app'
-WHERE jsonb_typeof(config) = 'object' AND config ? 'app';
+SET config = config - 'app' - 'framework'
+WHERE jsonb_typeof(config) = 'object'
+  AND (config ? 'app' OR config ? 'framework');
 --> statement-breakpoint
 -- Unrelated to VAT, same class of cleanup: 0040 parked unconvertible dial
 -- numbers as _legacyPhoneDial on the evalflow row, and jobs merged before
