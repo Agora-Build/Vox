@@ -8,7 +8,7 @@
  */
 
 import { Express, Request, Response } from "express";
-import { storage, mergeEvalConfig, buildJobSnapshot, validateEvalflowConfig, validateEvalSetConfig, stripLegacyConfigKeys, redactLegacyForViewer } from "./storage";
+import { storage, mergeEvalConfig, buildJobSnapshot, validateEvalflowConfig, validateEvalSetConfig, stripLegacyConfigKeys, redactLegacyForViewer, SUPPORTED_FRAMEWORKS } from "./storage";
 import { requireAuthOrApiKey, getCurrentUserOrApiKeyUser } from "./auth";
 import { parsePlatformSetup, sessionScopeForEvalflow, evaluateSessionRequirement, getBrokeredSecretNames, ensureSession, missingSecretNames, resolvableSecretSources } from "./auth-session";
 import { regionSiteSequence } from "@shared/regions";
@@ -401,6 +401,20 @@ export function registerApiV1Routes(app: Express): void {
       if (sessionNeed && targetTier === "team" &&
           !(evalflow.organizationId != null && sameOrg({ organizationId: user.membership?.organizationId ?? null }, { organizationId: evalflow.organizationId }))) {
         return res.status(403).json({ error: "Credential-injected evalflows can only use a team pool when the evalflow belongs to your organization" });
+      }
+
+      // Same backstop as the console run route and the scheduler: an evalflow
+      // on a framework this build can't run only produces jobs that fail at
+      // the daemon. Unreachable today (0041 deleted those rows and the
+      // validator rejects the framework at save) — which is exactly why both
+      // run paths must agree.
+      {
+        const declared = ((evalflow.config ?? {}) as Record<string, unknown>).framework;
+        if (typeof declared === "string" && !SUPPORTED_FRAMEWORKS.has(declared)) {
+          return res.status(400).json({
+            error: `This evalflow uses '${declared}', which this version cannot run. Re-create it on ${Array.from(SUPPORTED_FRAMEWORKS).join(" or ")}.`,
+          });
+        }
       }
 
       // Guaranteed-failure gate, same as the console run path: an unconfigured

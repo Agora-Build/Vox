@@ -48,20 +48,29 @@ WHERE evalflow_id IN (
          AND coalesce(btrim(config->>'stepsSuffix'), '') = '')
 );
 --> statement-breakpoint
--- The evalflows themselves, same two shapes. A healthy aeval row that merely
--- carries a leftover `app` key (the old validator accepted it on any
--- evalflow) is NOT deleted — it was running fine and only loses the dead key,
--- below.
+-- DELETE only rows that PROVABLY declared the removed framework. The
+-- "implicit VAT" shape (an `app` payload, no explicit framework, no steps)
+-- merely *probably* relied on an old agent's EVAL_FRAMEWORK default — it
+-- could equally be an aeval row with junk in it. Deletion is irreversible,
+-- so ambiguity keeps the row: its schedules were disabled above (nothing
+-- runs quietly wrong) and its dead `app` key is dropped below, leaving a
+-- human to decide. Queued jobs of BOTH shapes were failed regardless —
+-- failing a job destroys nothing.
 DELETE FROM evalflows
-WHERE config->>'framework' = 'voice-agent-tester'
-   OR (config ? 'app'
-       AND config->>'framework' IS DISTINCT FROM 'aeval'
-       AND coalesce(btrim(config->>'stepsPrefix'), '') = ''
-       AND coalesce(btrim(config->>'stepsSuffix'), '') = '');
+WHERE config->>'framework' = 'voice-agent-tester';
 --> statement-breakpoint
--- Survivors: healthy aeval rows carrying a stray `app`. Drop the dead key so
--- the save-time validator never blocks a future edit. Nothing ever read it.
+-- Survivors carrying a stray `app` (a healthy aeval row, or an ambiguous
+-- implicit one kept above): drop the dead key so the save-time validator
+-- never blocks a future edit. Nothing ever read it.
 UPDATE evalflows
+SET config = config - 'app'
+WHERE config ? 'app';
+--> statement-breakpoint
+-- Eval sets too: validateEvalSetConfig now rejects `app`, and v1 eval-set
+-- create did NO validation before this release, so an older row may carry
+-- one. Without this, sending the config back on PATCH fails with the
+-- removed-framework error and there's no way to clear it.
+UPDATE eval_sets
 SET config = config - 'app'
 WHERE config ? 'app';
 --> statement-breakpoint

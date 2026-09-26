@@ -106,8 +106,10 @@ d("migration 0041_remove_vat.sql (transactional, rolled back)", () => {
     const FIXTURES = [
       // Explicit VAT → deleted (unrunnable, uneditable, no steps to fall back on).
       { name: `${stamp}-vat`, config: { framework: "voice-agent-tester", app: 'url: "https://x.example"' } },
-      // Implicit VAT: an app payload, no framework, no steps — it relied on an
-      // old agent's EVAL_FRAMEWORK default → deleted too.
+      // Ambiguous "implicit VAT": an app payload, no framework, no steps. It
+      // PROBABLY relied on an old agent's EVAL_FRAMEWORK default, but could be
+      // an aeval row with junk — deletion is irreversible, so it's kept (key
+      // dropped, schedules disabled) for a human to decide.
       { name: `${stamp}-implicit`, config: { app: 'url: "https://y.example"' } },
       // Clean aeval row → untouched.
       { name: `${stamp}-aeval`, config: { framework: "aeval", stepsPrefix: "- type: platform.setup" } },
@@ -191,9 +193,24 @@ d("migration 0041_remove_vat.sql (transactional, rolled back)", () => {
   const configOf41 = async (name: string) =>
     (await client.query(`SELECT config FROM evalflows WHERE name = $1`, [name])).rows[0].config as Record<string, unknown>;
 
-  it("DELETES voice-agent-tester evalflows — explicit and implicit", async () => {
+  it("DELETES provably-VAT evalflows; keeps the ambiguous implicit shape (minus the dead key)", async () => {
     expect(await exists(`${stamp}-vat`)).toBe(false);
-    expect(await exists(`${stamp}-implicit`)).toBe(false);
+    // Kept — irreversible deletion needs proof, not probability.
+    expect(await exists(`${stamp}-implicit`)).toBe(true);
+    expect((await configOf41(`${stamp}-implicit`)).app).toBeUndefined();
+  });
+
+  it("strips a stray app key from eval sets too (v1 create used to skip validation)", async () => {
+    await client.query(
+      `INSERT INTO eval_sets (name, owner_id, visibility, config)
+       VALUES ($1, 1, 'private', $2::jsonb)`,
+      [`${stamp}-es`, JSON.stringify({ scenario: "steps: []", app: 'url: "https://es.example"' })],
+    );
+    // Re-run the sweep statement the way the runner would.
+    await client.query(`UPDATE eval_sets SET config = config - 'app' WHERE config ? 'app'`);
+    const { rows } = await client.query(`SELECT config FROM eval_sets WHERE name = $1`, [`${stamp}-es`]);
+    expect(rows[0].config.app).toBeUndefined();
+    expect(rows[0].config.scenario).toBe("steps: []");
   });
 
   it("keeps healthy aeval rows, dropping only the dead app key", async () => {

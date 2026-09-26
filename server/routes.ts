@@ -5192,14 +5192,17 @@ export async function registerRoutes(
   // row, and mergeEvalConfig/buildJobSnapshot strip them from new ones. This
   // guards a regression or a row written outside those paths.
   const canSeeJobLegacy = (
-    job: { snapshot?: { evalflow?: { ownerId?: number | null; organizationId?: number | null } | null } | null; createdBy?: number | null },
+    job: { snapshot?: { evalflow?: { ownerId?: number | null; organizationId?: number | null } | null } | null },
     user: Awaited<ReturnType<typeof getCurrentUser>> & object,
   ) => {
     const snapWf = job.snapshot?.evalflow;
+    // Fail CLOSED when the snapshot doesn't name an owner: falling back to
+    // job.createdBy would hand the payload to whoever ran the evalflow, which
+    // is the exact case this guards against.
+    if (snapWf?.ownerId == null) return false;
     return isOwnerOrOrgManager(user, {
-      // Snapshots predating owner capture fall back to the job's creator.
-      ownerId: snapWf?.ownerId ?? job.createdBy ?? null,
-      organizationId: snapWf?.organizationId ?? null,
+      ownerId: snapWf.ownerId,
+      organizationId: snapWf.organizationId ?? null,
     } as Parameters<typeof isOwnerOrOrgManager>[1]);
   };
 
