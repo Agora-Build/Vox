@@ -147,12 +147,14 @@ export default function ProviderGuide() {
             </CardContent>
           </Card>
         </div>
-        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border bg-card px-4 py-2.5 text-sm" data-testid="multi-region-line">
-          <Globe className="h-4 w-4 shrink-0 text-cyan-500" />
-          <span className="font-medium">Multi-Region</span>
-          <span className="text-muted-foreground">
+        <div className="rounded-lg border bg-card px-4 py-3 text-sm" data-testid="multi-region-line">
+          <div className="flex items-center gap-2 font-medium">
+            <Globe className="h-4 w-4 shrink-0 text-cyan-500" />
+            Multi-Region
+          </div>
+          <p className="mt-1 pl-6 text-muted-foreground">
             Every metric is measured from North America, Asia Pacific, Europe, and South America.
-          </span>
+          </p>
         </div>
       </section>
 
