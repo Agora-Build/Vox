@@ -94,8 +94,12 @@ export interface IdentityService {
    */
   createUser(input: { email: string; preferredUsername?: string }): Promise<IdentityUser>;
   markEmailVerified(userId: number): Promise<void>;
-  /** Starts a Core session for `userId` on this request. */
-  signIn(req: Request, userId: number): void;
+  /**
+   * Starts a Core session for `userId` on this request. The session is
+   * regenerated first (new id, previous contents dropped), so an id that
+   * existed before sign-in is never promoted to a signed-in one.
+   */
+  signIn(req: Request, userId: number): Promise<void>;
   /** Ends any Core session on this request. */
   signOut(req: Request): void;
 }

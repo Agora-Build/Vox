@@ -15,6 +15,18 @@ function absolute(configured: string, origin: string): string {
   return configured.startsWith("http") ? configured : `${origin}${configured}`;
 }
 
+export interface GithubEmail { email: string; primary: boolean; verified: boolean }
+
+/**
+ * The email that decides which existing Vox account a GitHub sign-in links to,
+ * so it must be one GitHub has verified: the primary if verified, else any
+ * verified one, else none. The profile's public `email` field is deliberately
+ * not used — it carries no verified flag.
+ */
+export function pickVerifiedGithubEmail(emails: GithubEmail[]): string | null {
+  return emails.find((e) => e.primary && e.verified)?.email ?? emails.find((e) => e.verified)?.email ?? null;
+}
+
 // ==================== GitHub ====================
 // The registered callback is a web page (/auth/github/callback), which POSTs the
 // code to this plugin — GitHub OAuth Apps allow one callback URL, and it is the
@@ -51,18 +63,12 @@ export const github = {
 
     const userRes = await fetch("https://api.github.com/user", { headers: auth });
     if (!userRes.ok) throw new Error("Failed to fetch GitHub user profile");
-    const user = (await userRes.json()) as { id: number; login: string; email: string | null };
+    const user = (await userRes.json()) as { id: number; login: string };
 
-    // A public email is used as-is; otherwise the primary verified one.
-    let email = user.email;
-    if (!email) {
-      const emailsRes = await fetch("https://api.github.com/user/emails", { headers: auth });
-      if (emailsRes.ok) {
-        const emails = (await emailsRes.json()) as Array<{ email: string; primary: boolean; verified: boolean }>;
-        email = emails.find((e) => e.primary && e.verified)?.email || emails.find((e) => e.verified)?.email || null;
-      }
-    }
-    if (!email) throw new Error("No email found in GitHub profile");
+    const emailsRes = await fetch("https://api.github.com/user/emails", { headers: auth });
+    if (!emailsRes.ok) throw new Error("Failed to fetch GitHub email addresses");
+    const email = pickVerifiedGithubEmail((await emailsRes.json()) as GithubEmail[]);
+    if (!email) throw new Error("No verified email on this GitHub account");
     return { subject: String(user.id), email, preferredUsername: user.login };
   },
 };

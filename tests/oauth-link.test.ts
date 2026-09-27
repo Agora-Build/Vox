@@ -32,7 +32,7 @@ function fakeIdentity() {
       return u;
     },
     async markEmailVerified(id) { const u = users.get(id); if (u) u.emailVerified = true; },
-    signIn() {},
+    async signIn() {},
     signOut() {},
   };
   const addUser = (u: Partial<IdentityUser> & { id: number; email: string }) => {

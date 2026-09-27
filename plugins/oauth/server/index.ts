@@ -60,7 +60,7 @@ const plugin: VoxPlugin = {
         try {
           const profile = await github.profileFromCode(config, code);
           const user = await findOrLinkOrCreate(db, identity, { provider: "github", ...profile });
-          identity.signIn(req, user.id);
+          await identity.signIn(req, user.id);
           res.json({ user: { id: user.id, username: user.username, email: user.email, isAdmin: user.isAdmin } });
         } catch (err) {
           logger.warn("GitHub sign-in failed", { error: err instanceof Error ? err.message : String(err) });
@@ -84,7 +84,7 @@ const plugin: VoxPlugin = {
         try {
           const profile = await google.profileFromCode(config, code, origin(req));
           const user = await findOrLinkOrCreate(db, identity, { provider: "google", ...profile });
-          identity.signIn(req, user.id);
+          await identity.signIn(req, user.id);
           res.redirect("/console");
         } catch (err) {
           logger.warn("Google sign-in failed", { error: err instanceof Error ? err.message : String(err) });

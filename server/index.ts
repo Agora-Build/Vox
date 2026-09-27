@@ -176,6 +176,16 @@ app.use((req, res, next) => {
   const plugins = await loadPlugins(app, pool, undefined, undefined, {
     "vox.identity": { version: "1.0.0", impl: identityService },
   });
+  // Sign-in with GitHub/Google lives in the oauth plugin. Credentials without
+  // the plugin would otherwise just make the buttons vanish, indistinguishable
+  // from "not configured".
+  const pluginIds = (process.env.VOX_PLUGINS ?? "").split(",").map((id) => id.trim());
+  if ((process.env.GITHUB_CLIENT_ID || process.env.GOOGLE_CLIENT_ID) && !pluginIds.includes("oauth")) {
+    console.warn(
+      "[oauth] GitHub/Google credentials are set but the oauth plugin is not in VOX_PLUGINS — " +
+        "sign-in with GitHub/Google is OFF. Add oauth to VOX_PLUGINS to enable it.",
+    );
+  }
   setMarketplace(plugins.services.optional<EvalMarketplace>("vox.eval-marketplace", "^1.0.0"));
 
   // Organizations: PLUGIN-OR-ABSENT (Release A flip). The `organizations`
