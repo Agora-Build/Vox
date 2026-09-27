@@ -1,5 +1,4 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { REGION_NA } from "./helpers/regions";
 
 // =====================================================================
 // Clash Runner Lifecycle Tests
@@ -56,9 +55,45 @@ describe("Clash Runner Lifecycle", () => {
   let profileBId: number;
   let eventId: number;
   const testId = Date.now().toString(36); // unique per test run
+  // A region of this suite's own. The live server's clash scheduler assigns
+  // ANY idle runner in a site to ANY live event's pending match in that site.
+  // On the shared NA site, other suites' live events took this suite's runner
+  // (server log: "Assigned match #… to runner test-host-…-2"), and other
+  // suites' idle runners could take this suite's match. Alone in its own
+  // site, the scheduler can only pair this suite's runner with its own match.
+  let site: string;
+  let regionLocationId: number;
 
   beforeAll(async () => {
     admin = await login(ADMIN_EMAIL, ADMIN_PASSWORD);
+
+    const baseId = `na-us-clash${testId}`;
+    const locRes = await authFetch(admin, `${BASE_URL}/api/admin/region-locations`, {
+      method: "POST",
+      body: JSON.stringify({
+        baseId,
+        displayName: `Clash lifecycle ${testId}`,
+        city: `Lifecycle ${testId}`,
+        countryCode: "US",
+        countryName: "United States",
+        macroRegionCode: "na",
+        macroRegionName: "North America",
+      }),
+    });
+    expect(locRes.ok).toBe(true);
+    regionLocationId = (await locRes.json()).id;
+
+    // A new region has no allocated sites; minting a token allocates `<base>-01`.
+    // The token itself is not needed, so it is revoked straight away — the
+    // site stays allocated.
+    const tokRes = await authFetch(admin, `${BASE_URL}/api/eval-agent-tokens`, {
+      method: "POST",
+      body: JSON.stringify({ name: `clash-lifecycle-site-${testId}`, regionLocationBaseId: baseId }),
+    });
+    expect(tokRes.ok).toBe(true);
+    const tok = await tokRes.json();
+    site = tok.siteId;
+    await authFetch(admin, `${BASE_URL}/api/eval-agent-tokens/${tok.id}/revoke`, { method: "POST" });
   });
 
   // ── Token Management ──────────────────────────────────────────────
@@ -67,13 +102,13 @@ describe("Clash Runner Lifecycle", () => {
     it("creates a runner token with region", async () => {
       const res = await authFetch(admin, `${BASE_URL}/api/admin/clash-runner-tokens`, {
         method: "POST",
-        body: JSON.stringify({ name: "lifecycle-test-runner", siteId: REGION_NA }),
+        body: JSON.stringify({ name: "lifecycle-test-runner", siteId: site }),
       });
       expect(res.status).toBe(200);
       const data = await res.json();
       expect(data.token).toBeTruthy();
       expect(data.token).toMatch(/^cr/);
-      expect(data.siteId).toBe(REGION_NA);
+      expect(data.siteId).toBe(site);
       expect(data.name).toBe("lifecycle-test-runner");
       runnerToken = data.token;
       runnerTokenId = data.id;
@@ -90,7 +125,7 @@ describe("Clash Runner Lifecycle", () => {
     it("rejects token creation without name", async () => {
       const res = await authFetch(admin, `${BASE_URL}/api/admin/clash-runner-tokens`, {
         method: "POST",
-        body: JSON.stringify({ siteId: REGION_NA }),
+        body: JSON.stringify({ siteId: site }),
       });
       expect(res.status).toBe(400);
     });
@@ -117,7 +152,7 @@ describe("Clash Runner Lifecycle", () => {
       expect(res.status).toBe(200);
       const data = await res.json();
       expect(data.state).toBe("idle");
-      expect(data.siteId).toBe(REGION_NA);
+      expect(data.siteId).toBe(site);
       expect(data).not.toHaveProperty('region'); // alias dropped
       expect(data.id).toBeTypeOf("number");
     });
@@ -147,7 +182,7 @@ describe("Clash Runner Lifecycle", () => {
       // Create + revoke a token
       const createRes = await authFetch(admin, `${BASE_URL}/api/admin/clash-runner-tokens`, {
         method: "POST",
-        body: JSON.stringify({ name: "to-revoke", siteId: REGION_NA }),
+        body: JSON.stringify({ name: "to-revoke", siteId: site }),
       });
       const { token: revokeToken, id: revokeId } = await createRes.json();
 
@@ -221,7 +256,7 @@ describe("Clash Runner Lifecycle", () => {
       expect(Array.isArray(runners)).toBe(true);
       const found = runners.find((r: any) => r.runnerId === `test-host-${testId}-2`);
       expect(found).toBeTruthy();
-      expect(found.siteId).toBe(REGION_NA);
+      expect(found.siteId).toBe(site);
       expect(found.state).toBe("idle");
     });
 
@@ -265,7 +300,7 @@ describe("Clash Runner Lifecycle", () => {
         method: "POST",
         body: JSON.stringify({
           name: "Lifecycle Test Event",
-          siteId: REGION_NA,
+          siteId: site,
           visibility: "private",
           matchups: [
             {
@@ -291,16 +326,25 @@ describe("Clash Runner Lifecycle", () => {
       expect(started.status).toBe("live");
     });
 
-    it("match gets assigned to the idle runner via scheduler polling", async () => {
-      // The scheduler runs every 10s. We can't wait for it in tests, but we can
-      // manually verify the state. For now, let's check the match is "pending"
-      const eventRes = await authFetch(admin, `${BASE_URL}/api/clash/events/${eventId}`);
-      const event = await eventRes.json();
-      const matches = event.matches || [];
-      expect(matches.length).toBe(1);
-      // Match starts as "pending" — scheduler will pick it up
-      expect(["pending", "starting", "live"]).toContain(matches[0].status);
-    });
+    it("match gets assigned to the idle runner by the scheduler", async () => {
+      const event = await (await authFetch(admin, `${BASE_URL}/api/clash/events/${eventId}`)).json();
+      expect(event.matches).toHaveLength(1);
+      const matchId = event.matches[0].id;
+
+      // The live server's clash scheduler ticks every 10s. This suite's runner
+      // is the only runner in its own site, so the tick has exactly one pairing
+      // to make: poll the runner's own view until it is handed THIS match.
+      const deadline = Date.now() + 25_000;
+      let assignment: { assigned: boolean; match?: { id: number }; event?: { id: number } } = { assigned: false };
+      while (Date.now() < deadline) {
+        assignment = await (await bearerFetch(runnerToken, "GET", "/api/clash-runner/assignment")).json();
+        if (assignment.assigned) break;
+        await new Promise((r) => setTimeout(r, 1000));
+      }
+      expect(assignment.assigned).toBe(true);
+      expect(assignment.match?.id).toBe(matchId);
+      expect(assignment.event?.id).toBe(eventId);
+    }, 40_000);
 
     it("runner can complete a match with metrics", async () => {
       // Get the match ID
@@ -389,7 +433,7 @@ describe("Clash Runner Lifecycle", () => {
         method: "POST",
         body: JSON.stringify({
           name: "Failure Test Event",
-          siteId: REGION_NA,
+          siteId: site,
           visibility: "private",
           matchups: [{
             agentAProfileId: profileAId,
@@ -431,7 +475,7 @@ describe("Clash Runner Lifecycle", () => {
         method: "POST",
         body: JSON.stringify({
           name: "Draw Test Event",
-          siteId: REGION_NA,
+          siteId: site,
           visibility: "private",
           matchups: [{
             agentAProfileId: profileAId,
@@ -463,12 +507,12 @@ describe("Clash Runner Lifecycle", () => {
   // ── Moderator Endpoints ────────────────────────────────────────────
 
   describe("Moderator Endpoints", () => {
-    it("moderator/start succeeds (returns moderatorAvailable or skips gracefully)", async () => {
+    it("moderator/start starts a real moderator when configured, reports unavailable when not", async () => {
       const eventRes = await authFetch(admin, `${BASE_URL}/api/clash/events`, {
         method: "POST",
         body: JSON.stringify({
           name: "Moderator Test Event",
-          siteId: REGION_NA,
+          siteId: site,
           visibility: "private",
           matchups: [{
             agentAProfileId: profileAId,
@@ -488,16 +532,36 @@ describe("Clash Runner Lifecycle", () => {
         phase: "announce",
       });
       const data = await res.json();
-      // 200 = moderator started or skipped; 500 = ConvoAI API error (credentials/appId mismatch in dev)
-      expect([200, 500]).toContain(res.status);
-      if (res.status === 200) {
+      try {
+        // A 500 is never acceptable. Unconfigured, the route skips with 200;
+        // configured, it must actually start a moderator, so a failed ConvoAI
+        // call is a real failure. Whether it is configured is the SERVER's
+        // answer — the test process may not share its environment (plain
+        // `npm test`, docker mode), so it must not guess from its own.
+        expect(res.status).toBe(200);
         expect(data.success).toBe(true);
-      }
+        expect(typeof data.moderatorAvailable).toBe("boolean");
 
-      // Clean up
-      await bearerFetch(runnerToken, "POST", "/api/clash-runner/complete", {
-        matchId, error: "test cleanup",
-      });
+        if (data.moderatorAvailable) {
+          expect(typeof data.agentId).toBe("string");
+          expect(data.agentId.length).toBeGreaterThan(0);
+          const after = await (await authFetch(admin, `${BASE_URL}/api/clash/events/${event.id}`)).json();
+          expect(after.moderatorAgentId).toBe(data.agentId);
+        } else {
+          expect(data.agentId).toBeUndefined();
+        }
+      } finally {
+        // A started moderator is a real, billed ConvoAI agent, and completing
+        // the match does NOT stop it — only /moderator/stop does. Stop it
+        // whenever one was started, even if an assertion above failed.
+        if (data.agentId) {
+          const stop = await bearerFetch(runnerToken, "POST", "/api/clash/moderator/stop", { matchId });
+          expect(stop.status).toBe(200);
+        }
+        await bearerFetch(runnerToken, "POST", "/api/clash-runner/complete", {
+          matchId, error: "test cleanup",
+        });
+      }
     });
 
     it("moderator/announce skips when no moderator agent", async () => {
@@ -516,7 +580,7 @@ describe("Clash Runner Lifecycle", () => {
         method: "POST",
         body: JSON.stringify({
           name: "Phase Test",
-          siteId: REGION_NA,
+          siteId: site,
           visibility: "private",
           matchups: [{
             agentAProfileId: profileAId,
@@ -641,7 +705,7 @@ describe("Clash Runner Lifecycle", () => {
         method: "POST",
         body: JSON.stringify({
           name: "Stream Info Test",
-          siteId: REGION_NA,
+          siteId: site,
           visibility: "private",
           matchups: [{
             agentAProfileId: profileAId,
@@ -675,6 +739,10 @@ describe("Clash Runner Lifecycle", () => {
     }
     if (profileBId) {
       await authFetch(admin, `${BASE_URL}/api/clash/profiles/${profileBId}`, { method: "DELETE" });
+    }
+    // Deactivates (the API only soft-deletes); clean-test-data removes it.
+    if (regionLocationId) {
+      await authFetch(admin, `${BASE_URL}/api/admin/region-locations/${regionLocationId}`, { method: "DELETE" });
     }
   });
 });

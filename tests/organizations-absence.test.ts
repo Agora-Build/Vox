@@ -12,6 +12,19 @@ import { registerRoutes, scheduleDispatchBlocked } from "../server/routes";
 // object the shipped provider throws.
 import { AlreadyMemberError as PluginAlreadyMemberError } from "../plugins/organizations/server/types";
 
+// Runs against its own freshly migrated database, never the dev one. This
+// suite seeds due work (armed schedules, pending team jobs backdated 30h) and
+// asserts the workers write NOTHING. On the shared dev DB the live server runs
+// the same workers every 60s with a working provider, and legitimately acted on
+// those rows whenever its tick landed mid-suite — failing the zero-write
+// assertion for a write the code under test never made. Hoisted so it runs
+// before server/storage binds its pool to DATABASE_URL.
+await vi.hoisted(async () => {
+  if (!process.env.DATABASE_URL) return;
+  const { prepareIsolatedCoreDb } = await import("./helpers/isolated-core-db");
+  process.env.DATABASE_URL = await prepareIsolatedCoreDb(process.env.DATABASE_URL, "vox_test_org_absence");
+});
+
 // Every method throws — this exercises "provider installed but failing", which
 // must stay distinguishable from "provider absent" (see server/organizations.ts).
 const failing: OrganizationsProvider = {
@@ -109,9 +122,6 @@ d("plugin absence causes zero persistent writes", () => {
   // but it proves nothing about the 501.
   let orgWfPersonalScheduleId: number;
   let apiKey: string;
-  // Hoisted: teardown deletes by this run's suffix, so a partly-failed
-  // beforeAll still cleans up whatever it managed to create.
-  let suffix = "";
   let app: express.Express;
   let mountTimers = 0; // setInterval calls intercepted while mounting registerRoutes
 
@@ -154,7 +164,7 @@ d("plugin absence causes zero persistent writes", () => {
   }
 
   beforeAll(async () => {
-    suffix = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+    const suffix = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
     const providerId = (await storage.getAllProviders())[0]!.id;
 
     const org = await storage.createOrganization({ name: `abs-org-${suffix}` } as any);
@@ -317,31 +327,8 @@ d("plugin absence causes zero persistent writes", () => {
   // Release A flip there is no built-in provider to "restore" — the real one is
   // installed by the plugin at startup (server/index.ts), which never runs
   // in-process here, so absence is this file's honest baseline.
-  afterAll(async () => {
-    resetOrganizations();
-    // Delete what this run created. Without this the suite leaked its fixtures
-    // every time it ran — and four of them are ENABLED recurring schedules on
-    // a */5 cron, so each leaked run kept manufacturing jobs forever. The dev
-    // DB had accumulated 178 such schedules producing ~1,800 eval_jobs an
-    // hour, which is what made logins time out and list endpoints crawl.
-    // Matched by this run's suffix rather than by tracked ids, so rows created
-    // before a mid-beforeAll failure are collected too.
-    const like = `%${suffix}`;
-    try {
-      await pool.query(`DELETE FROM eval_jobs WHERE eval_flow_id IN (SELECT id FROM eval_flows WHERE name LIKE $1)`, [like]);
-      await pool.query(`DELETE FROM eval_schedules WHERE name LIKE $1`, [like]);
-      await pool.query(`DELETE FROM eval_flows WHERE name LIKE $1`, [like]);
-      await pool.query(`DELETE FROM eval_sets WHERE name LIKE $1`, [like]);
-      await pool.query(`DELETE FROM api_keys WHERE name LIKE $1`, [like]);
-      await pool.query(`DELETE FROM org_secrets WHERE organization_id = $1`, [orgId]);
-      await pool.query(`DELETE FROM organizations WHERE id = $1`, [orgId]);
-      await pool.query(`DELETE FROM users WHERE id = ANY($1::int[])`, [[creatorId, soloId].filter(Boolean)]);
-    } catch (err) {
-      // Teardown must not turn a passing suite red; a leaked row is a
-      // nuisance, a false failure is worse.
-      console.warn("organizations-absence teardown:", (err as Error).message);
-    }
-  });
+  // No row cleanup: the suite's database is private and rebuilt on every run.
+  afterAll(() => resetOrganizations());
 
   it("scheduler + maintenance ticks with provider ABSENT change nothing", async () => {
     const before = await snapshot();

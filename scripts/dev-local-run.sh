@@ -933,6 +933,12 @@ DELETE FROM plugin_organizations.organizations
 -- expected cost of a test-data purge.
 DELETE FROM user_sessions;
 
+-- Private regions made by clash-runner-lifecycle.test.ts (one per run). The
+-- admin API only deactivates a region, so the rows stay behind; nothing holds
+-- a foreign key to region_locations. Only inactive ones: a run in progress
+-- still needs its region.
+DELETE FROM region_locations WHERE base_id LIKE 'na-us-clash%' AND NOT is_active;
+
 VACUUM (FULL, ANALYZE) eval_jobs;
 VACUUM (FULL, ANALYZE) eval_flows;
 VACUUM (FULL, ANALYZE) eval_sets;
