@@ -651,16 +651,6 @@ export class DatabaseStorage {
     return result[0];
   }
 
-  async getUserByGoogleId(googleId: string): Promise<User | undefined> {
-    const result = await db.select().from(users).where(eq(users.googleId, googleId));
-    return result[0];
-  }
-
-  async getUserByGithubId(githubId: string): Promise<User | undefined> {
-    const result = await db.select().from(users).where(eq(users.githubId, githubId));
-    return result[0];
-  }
-
   async createUser(insertUser: InsertUser): Promise<User> {
     const result = await db.insert(users).values(insertUser).returning();
     return result[0];

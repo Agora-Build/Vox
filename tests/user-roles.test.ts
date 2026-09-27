@@ -336,7 +336,7 @@ describe('User Role-Based Access Control', () => {
         '/api/metrics/leaderboard',
         '/api/config',
         '/api/auth/status',
-        '/api/auth/google/status',
+        '/api/plugins/oauth/providers',
       ];
 
       expect(publicApiRoutes.length).toBeGreaterThan(0);

@@ -134,7 +134,7 @@ Open `http://localhost:5000`.
    DATABASE_URL=postgresql://user:password@localhost:5432/vox
    SESSION_SECRET=your-session-secret
    INIT_CODE=your-initialization-code
-   VOX_PLUGINS=credits,shared-agents,organizations
+   VOX_PLUGINS=credits,shared-agents,organizations,oauth
    ```
 2. **Push the schema** (local development only, never production):
    ```bash
@@ -159,10 +159,10 @@ Open `http://localhost:5000`.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `PORT` | `5000` | Server port |
-| `VOX_PLUGINS` | none | Comma-separated plugins to load: `credits`, `shared-agents`, `organizations`, `sample`. An unknown id stops the server at startup, so treat it like a required setting. |
+| `VOX_PLUGINS` | none | Comma-separated plugins to load: `credits`, `shared-agents`, `organizations`, `oauth`, `sample`. An unknown id stops the server at startup, so treat it like a required setting. |
 | `CREDENTIAL_ENCRYPTION_KEY` | - | 32-byte hex key (AES-256-GCM) for stored secrets. Generate with `openssl rand -hex 32` |
-| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` / `GOOGLE_CALLBACK_URL` | - | Google sign-in |
-| `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET` / `GITHUB_CALLBACK_URL` | - | GitHub sign-in |
+| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` / `GOOGLE_CALLBACK_URL` | - | Google sign-in (needs the `oauth` plugin). Redirect URI: `<your site>/api/plugins/oauth/google/callback` |
+| `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET` / `GITHUB_CALLBACK_URL` | - | GitHub sign-in (needs the `oauth` plugin). Callback URL: `<your site>/auth/github/callback` |
 | `STRIPE_SECRET_KEY` / `STRIPE_PUBLISHABLE_KEY` / `STRIPE_WEBHOOK_SECRET` | - | Organization seat billing |
 | `APP_URL` | `http://localhost:5000` | Public base URL, used for billing return links |
 | `AGORA_APP_ID` / `AGORA_APP_CERTIFICATE` / `AGORA_CONVOAI_CONFIG` | - | Agora RTC and the Clash live moderator |
@@ -320,6 +320,7 @@ Optional backends load from `VOX_PLUGINS`. Each gets its own PostgreSQL schema, 
 | Plugin | Adds |
 |--------|------|
 | `organizations` | Organizations, membership, and org secrets |
+| `oauth` | Sign in with GitHub and Google (each on when its credentials are set) |
 | `credits` | Credit ledger for paid dispatch |
 | `shared-agents` | A marketplace for running evals on other people's eval agents |
 | `sample` | A minimal example plugin |

@@ -19,11 +19,11 @@ test.describe("Google OAuth Integration", () => {
   });
 
   test("should show Google OAuth is enabled", async ({ request }) => {
-    const response = await request.get("/api/auth/google/status");
+    const response = await request.get("/api/plugins/oauth/providers");
     expect(response.ok()).toBeTruthy();
 
     const body = await response.json();
-    expect(body.enabled).toBe(true);
+    expect(body.google).toBe(true);
   });
 
   test("should have Google sign-in button on login page", async ({ page }) => {

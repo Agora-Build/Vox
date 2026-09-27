@@ -25,7 +25,7 @@ export default function AuthGithubCallback() {
 
     async function exchange() {
       try {
-        const res = await apiRequest("POST", "/api/auth/github/callback", { code, state });
+        const res = await apiRequest("POST", "/api/plugins/oauth/github/callback", { code, state });
         if (!res.ok) {
           const data = await res.json();
           throw new Error(data.error || "GitHub authentication failed");

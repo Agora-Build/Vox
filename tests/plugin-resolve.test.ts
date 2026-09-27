@@ -43,4 +43,17 @@ describe("resolveActivationOrder", () => {
     // and still resolves when the optional provider is absent
     expect(resolveActivationOrder([consumer]).map((m) => m.id)).toEqual(["consumer"]);
   });
+
+  it("treats a Core-provided service as satisfying a plugin's requirement", () => {
+    const oauth = mf({ id: "oauth", requiresServices: { "vox.identity": "^1.0.0" } });
+    // Without Core's service the requirement is unmet...
+    expect(() => resolveActivationOrder([oauth])).toThrow(/no enabled plugin provides/);
+    // ...with it, the plugin resolves.
+    expect(resolveActivationOrder([oauth], new Set(["vox.identity"])).map((m) => m.id)).toEqual(["oauth"]);
+  });
+
+  it("refuses a plugin that provides a service Core already provides", () => {
+    const impostor = mf({ id: "impostor", providesServices: { "vox.identity": "1.0.0" } });
+    expect(() => resolveActivationOrder([impostor], new Set(["vox.identity"]))).toThrow(/Core already provides/);
+  });
 });
