@@ -60,8 +60,9 @@ info:
 
     ## Rate Limiting
 
-    In production, API requests are rate limited to 100 requests per 15 minutes. Login and
-    registration endpoints carry a stricter limit of 20 per 15 minutes.
+    In production, API requests are rate limited to 1,000 requests per 15 minutes per IP. The
+    account endpoints — login, registration, account activation and password change — carry a
+    stricter limit of 20 per 15 minutes.
 
     ## Response Format
 
@@ -972,10 +973,22 @@ paths:
       tags:
         - Jobs
       summary: List jobs
-      description: Returns eval jobs for the authenticated user
+      description: |
+        Lists eval jobs, newest first. By default (`scope=mine`) these are the jobs
+        you started. With `scope=visible` it lists every job you may view — the same
+        set as Console → Eval Jobs with **All visible** on: jobs on eval flows you
+        own, on your organization's flows, and on any public flow; once a flow is
+        deleted, only the person who ran the job still sees it.
       security:
         - BearerAuth: []
       parameters:
+        - name: scope
+          in: query
+          description: "`mine` (default): jobs you started. `visible`: every job you may view."
+          schema:
+            type: string
+            enum: [mine, visible]
+            default: mine
         - name: status
           in: query
           schema:
@@ -1006,10 +1019,22 @@ paths:
                   meta:
                     type: object
                     properties:
+                      total:
+                        type: integer
+                        description: Jobs matching the filters, across all pages
                       limit:
                         type: integer
                       offset:
                         type: integer
+                      scope:
+                        type: string
+                        enum: [mine, visible]
+        '400':
+          description: Unknown scope
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '401':
           description: Authentication required
           content:
@@ -1022,7 +1047,12 @@ paths:
       tags:
         - Jobs
       summary: Get job
-      description: Returns a specific job by ID
+      description: |
+        Returns a job by ID. You may read any job you can see in the console: jobs on
+        eval flows you own, on your organization's flows, or on any public flow
+        (including jobs other people ran on them). Once the job's eval flow is
+        deleted, only the person who ran the job may read it. System admins may
+        read any job.
       security:
         - BearerAuth: []
       parameters:
@@ -1048,7 +1078,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
         '403':
-          description: Access denied
+          description: You may not view this job (e.g. it belongs to someone else's private eval flow)
           content:
             application/json:
               schema:
@@ -1064,7 +1094,11 @@ paths:
       tags:
         - Jobs
       summary: Cancel job
-      description: Cancels a pending job
+      description: |
+        Cancels a job that is still pending. Stricter than reading: only the owner of
+        the job's eval flow may cancel it (or, once the flow is deleted, the person
+        who ran the job), plus system admins. Being able to view a public flow does
+        not let you cancel its jobs.
       security:
         - BearerAuth: []
       parameters:
@@ -1103,7 +1137,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
         '403':
-          description: Access denied
+          description: You may not cancel this job
           content:
             application/json:
               schema:
@@ -1120,7 +1154,7 @@ paths:
       tags:
         - Results
       summary: List results
-      description: Returns eval results for the authenticated user
+      description: Lists results of the jobs you started, newest first. Filter by `evalFlowId` or `jobId`.
       security:
         - BearerAuth: []
       parameters:
@@ -1173,7 +1207,9 @@ paths:
       tags:
         - Results
       summary: Get result
-      description: Returns a specific result by ID
+      description: |
+        Returns a result by ID. The same rule as reading its job: you may read it if
+        you may view the job (see `GET /jobs/{id}`).
       security:
         - BearerAuth: []
       parameters:

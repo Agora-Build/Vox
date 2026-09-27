@@ -74,7 +74,7 @@ Monorepo: **client/** (React + Vite), **server/** (Express), **shared/** (Drizzl
 
 - Frontend: Wouter routing (`client/src/App.tsx`), TanStack React Query for server state, shadcn/ui + Radix, Recharts, session-based auth. Console pages under `/console/*`, admin under `/admin/console/*`.
 - Backend: `server/index.ts` entry → `registerRoutes()` in `server/routes.ts` (all API endpoints — large and monolithic by design; versioned v1 in `server/routes-api-v1.ts`). Data access through the `storage` singleton (`server/storage.ts`, DatabaseStorage). Auth middleware in `server/auth.ts`: `requireAuth`, `requireAdmin`, `requirePrincipal`, `authenticateApiKey` (`vox_live_` Bearer), `requireAuthOrApiKey`.
-- Rate limiting (production only): 100 req/15min general; strict 20 req/15min on `/api/auth/login`, `/register`, `/activate`, `/api/user/change-password`.
+- Rate limiting (production only, per IP, `server/index.ts`): 1000 req/15min general; strict 20 req/15min on `/api/auth/login`, `/register`, `/activate`, `/api/user/change-password`.
 - API docs: Swagger UI at `/api/docs`, spec at `/api/v1/openapi.json`, source `docs/openapi.yaml`. Don't enumerate routes here — read `server/routes.ts`.
 
 ### Plugins

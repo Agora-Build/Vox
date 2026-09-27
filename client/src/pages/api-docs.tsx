@@ -214,11 +214,14 @@ curl -X POST -H "Authorization: Bearer vox_live_xxxxx" \\
 curl -H "Authorization: Bearer vox_live_xxxxx" ${base}/jobs/123
 
 # then read its metrics
-curl -H "Authorization: Bearer vox_live_xxxxx" "${base}/results?jobId=123"`}</CodeBlock>
+curl -H "Authorization: Bearer vox_live_xxxxx" "${base}/results?jobId=123"
+
+# list the jobs you started — or, with scope=visible, every job you can see
+curl -H "Authorization: Bearer vox_live_xxxxx" "${base}/jobs?scope=visible"`}</CodeBlock>
               <p className="text-sm text-muted-foreground">
                 Responses are <code className="font-mono text-xs">{`{ "data": ..., "meta": ... }`}</code>;
                 errors are <code className="font-mono text-xs">{`{ "error": "..." }`}</code>. Requests
-                are rate limited to 100 per 15 minutes in production.
+                are rate limited to 1,000 per 15 minutes in production (account routes such as sign-in: 20).
               </p>
             </CardContent>
           </Card>
