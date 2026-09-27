@@ -532,33 +532,36 @@ describe("Clash Runner Lifecycle", () => {
         phase: "announce",
       });
       const data = await res.json();
-      // Mirrors isModeratorConfigured() (server/agora.ts). The test process
-      // loads the same .env as the dev server. A 500 is never acceptable: with
-      // the moderator unconfigured the route skips with 200, and configured it
-      // must actually start one — a failed ConvoAI call is a real failure.
-      const moderatorConfigured = !!(
-        process.env.AGORA_APP_ID && process.env.AGORA_APP_CERTIFICATE && process.env.AGORA_CONVOAI_CONFIG
-      );
-      expect(res.status).toBe(200);
-      expect(data.success).toBe(true);
-      expect(data.moderatorAvailable).toBe(moderatorConfigured);
+      try {
+        // A 500 is never acceptable. Unconfigured, the route skips with 200;
+        // configured, it must actually start a moderator, so a failed ConvoAI
+        // call is a real failure. Whether it is configured is the SERVER's
+        // answer — the test process may not share its environment (plain
+        // `npm test`, docker mode), so it must not guess from its own.
+        expect(res.status).toBe(200);
+        expect(data.success).toBe(true);
+        expect(typeof data.moderatorAvailable).toBe("boolean");
 
-      if (moderatorConfigured) {
-        // A real, billed ConvoAI agent is now running: prove the server recorded
-        // it, then stop it. Completing the match does NOT stop the moderator —
-        // only /moderator/stop does, so without this every run leaked an agent.
-        expect(typeof data.agentId).toBe("string");
-        expect(data.agentId.length).toBeGreaterThan(0);
-        const after = await (await authFetch(admin, `${BASE_URL}/api/clash/events/${event.id}`)).json();
-        expect(after.moderatorAgentId).toBe(data.agentId);
-
-        const stop = await bearerFetch(runnerToken, "POST", "/api/clash/moderator/stop", { matchId });
-        expect(stop.status).toBe(200);
+        if (data.moderatorAvailable) {
+          expect(typeof data.agentId).toBe("string");
+          expect(data.agentId.length).toBeGreaterThan(0);
+          const after = await (await authFetch(admin, `${BASE_URL}/api/clash/events/${event.id}`)).json();
+          expect(after.moderatorAgentId).toBe(data.agentId);
+        } else {
+          expect(data.agentId).toBeUndefined();
+        }
+      } finally {
+        // A started moderator is a real, billed ConvoAI agent, and completing
+        // the match does NOT stop it — only /moderator/stop does. Stop it
+        // whenever one was started, even if an assertion above failed.
+        if (data.agentId) {
+          const stop = await bearerFetch(runnerToken, "POST", "/api/clash/moderator/stop", { matchId });
+          expect(stop.status).toBe(200);
+        }
+        await bearerFetch(runnerToken, "POST", "/api/clash-runner/complete", {
+          matchId, error: "test cleanup",
+        });
       }
-
-      await bearerFetch(runnerToken, "POST", "/api/clash-runner/complete", {
-        matchId, error: "test cleanup",
-      });
     });
 
     it("moderator/announce skips when no moderator agent", async () => {
