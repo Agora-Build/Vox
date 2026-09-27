@@ -15,17 +15,27 @@
 -- good: the next sign-in finds the user by email and links them again.
 DO $$
 DECLARE
+  has_github boolean;
+  has_google boolean;
   core_github integer;
   core_google integer;
   copied_github integer;
   copied_google integer;
 BEGIN
-  IF NOT EXISTS (
-    SELECT 1 FROM information_schema.columns
-    WHERE table_schema = 'public' AND table_name = 'users' AND column_name = 'github_id'
-  ) THEN
-    RAISE NOTICE 'oauth copy: no public.users.github_id — fresh install, nothing to copy';
+  SELECT EXISTS (SELECT 1 FROM information_schema.columns
+                 WHERE table_schema = 'public' AND table_name = 'users' AND column_name = 'github_id')
+    INTO has_github;
+  SELECT EXISTS (SELECT 1 FROM information_schema.columns
+                 WHERE table_schema = 'public' AND table_name = 'users' AND column_name = 'google_id')
+    INTO has_google;
+  IF NOT has_github AND NOT has_google THEN
+    RAISE NOTICE 'oauth copy: no public.users.github_id / google_id — fresh install, nothing to copy';
     RETURN;
+  END IF;
+  -- Only one of the pair present is not a state any Core release produced;
+  -- skipping would silently drop the other provider's links.
+  IF has_github <> has_google THEN
+    RAISE EXCEPTION 'oauth copy: public.users has only one of github_id / google_id — inconsistent Core schema, refusing to copy';
   END IF;
   IF EXISTS (SELECT 1 FROM identities) THEN
     RAISE EXCEPTION 'oauth copy: identities already populated — refusing to re-copy';

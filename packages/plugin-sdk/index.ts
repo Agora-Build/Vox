@@ -77,6 +77,8 @@ export interface IdentityUser {
   isAdmin: boolean;
   isEnabled: boolean;
   emailVerified: boolean;
+  /** Whether the account can also sign in with a password. */
+  hasPassword: boolean;
 }
 
 /**

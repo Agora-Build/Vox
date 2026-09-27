@@ -25,7 +25,7 @@ function fakeIdentity() {
     async createUser({ email, preferredUsername }) {
       const u: IdentityUser = {
         id: nextId++, username: preferredUsername ?? email, email,
-        isAdmin: false, isEnabled: true, emailVerified: true,
+        isAdmin: false, isEnabled: true, emailVerified: true, hasPassword: false,
       };
       users.set(u.id, u);
       created.push(u);
@@ -36,7 +36,7 @@ function fakeIdentity() {
     signOut() {},
   };
   const addUser = (u: Partial<IdentityUser> & { id: number; email: string }) => {
-    const full: IdentityUser = { username: u.email, isAdmin: false, isEnabled: true, emailVerified: false, ...u };
+    const full: IdentityUser = { username: u.email, isAdmin: false, isEnabled: true, emailVerified: false, hasPassword: false, ...u };
     users.set(full.id, full);
     return full;
   };
@@ -142,5 +142,59 @@ d("oauth plugin — account linking rules", () => {
     const user = await findOrLinkOrCreate(db, id.service, { provider: "google", subject: "g-ghost", email: "ghost@example.com" });
     expect(user.id).not.toBe(999);
     expect(await links()).toEqual([{ provider: "google", subject: "g-ghost", user_id: user.id }]);
+  });
+
+  it("refuses to adopt an unverified-email account that has a password (pre-hijack)", async () => {
+    const id = fakeIdentity();
+    // Someone registered the owner's email with a password and never verified it.
+    id.addUser({ id: 11, email: "owner@victim.com", emailVerified: false, hasPassword: true });
+    await expect(
+      findOrLinkOrCreate(db, id.service, { provider: "github", subject: "gh-real-owner", email: "owner@victim.com" }),
+    ).rejects.toThrow(/not verified/);
+    expect(await links()).toEqual([]);
+  });
+
+  it("still links an unverified account that has no password (nothing to hijack)", async () => {
+    const id = fakeIdentity();
+    id.addUser({ id: 12, email: "nopw@example.com", emailVerified: false, hasPassword: false });
+    const user = await findOrLinkOrCreate(db, id.service, { provider: "github", subject: "gh-12", email: "nopw@example.com" });
+    expect(user.id).toBe(12);
+  });
+
+  // Simulates the race: another sign-in links this user to a DIFFERENT account
+  // in the gap between the guard's read and this request's insert.
+  it("does not sign in when a concurrent sign-in linked the user to another account first", async () => {
+    const id = fakeIdentity();
+    id.addUser({ id: 13, email: "race@example.com", emailVerified: true });
+    const racing: PluginDb = {
+      ...db,
+      query: async (sql: string, params?: unknown[]) => {
+        if (sql.startsWith("INSERT INTO identities") && params?.[1] === "gh-mine") {
+          await db.query("INSERT INTO identities (provider, subject, user_id) VALUES ('github', 'gh-theirs', 13)");
+        }
+        return db.query(sql, params);
+      },
+    } as PluginDb;
+    await expect(
+      findOrLinkOrCreate(racing, id.service, { provider: "github", subject: "gh-mine", email: "race@example.com" }),
+    ).rejects.toThrow(LoginRefused);
+    expect(await links()).toEqual([{ provider: "github", subject: "gh-theirs", user_id: 13 }]);
+  });
+
+  it("two first sign-ins for the same new account both end up as the one linked user", async () => {
+    const id = fakeIdentity();
+    // The other sign-in links this account to user 500 just before our insert.
+    id.addUser({ id: 500, email: "first@example.com", emailVerified: true });
+    const racing: PluginDb = {
+      ...db,
+      query: async (sql: string, params?: unknown[]) => {
+        if (sql.startsWith("INSERT INTO identities") && params?.[1] === "gh-new" && params?.[2] !== 500) {
+          await db.query("INSERT INTO identities (provider, subject, user_id) VALUES ('github', 'gh-new', 500)");
+        }
+        return db.query(sql, params);
+      },
+    } as PluginDb;
+    const user = await findOrLinkOrCreate(racing, id.service, { provider: "github", subject: "gh-new", email: "second@example.com" });
+    expect(user.id).toBe(500);
   });
 });

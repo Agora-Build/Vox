@@ -95,7 +95,7 @@ const isProduction = process.env["NODE_ENV"] === "production";
 const rateLimitDisabled = process.env["RATE_LIMIT_DISABLED"] === "true";
 
 // Paths exempt from rate limiting (lightweight read-only checks)
-const rateLimitExempt = new Set(["/api/auth/status", "/api/auth/google/status", "/api/auth/github/status"]);
+const rateLimitExempt = new Set(["/api/auth/status", "/api/plugins/oauth/providers"]);
 
 // Rate limiting for API routes
 const apiLimiter = rateLimit({

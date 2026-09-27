@@ -16,6 +16,7 @@ function toIdentityUser(u: User): IdentityUser {
     isAdmin: u.isAdmin,
     isEnabled: u.isEnabled,
     emailVerified: !!u.emailVerifiedAt,
+    hasPassword: !!u.passwordHash,
   };
 }
 
