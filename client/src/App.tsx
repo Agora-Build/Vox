@@ -20,7 +20,7 @@ import ConsoleInit from "@/pages/console-init";
 import ConsoleProjects from "@/pages/console-projects";
 import ConsoleEvalFlows from "@/pages/console-eval-flows";
 import ConsoleEvalFlowDetail from "@/pages/console-eval-flow-detail";
-import ConsoleEvalSets from "@/pages/console-evalsets";
+import ConsoleEvalSets from "@/pages/console-eval-sets";
 import ConsoleEvalJobs from "@/pages/console-eval-jobs";
 import ConsoleEvalAgents from "@/pages/console-eval-agents";
 import ConsoleSecrets from "@/pages/console-secrets";

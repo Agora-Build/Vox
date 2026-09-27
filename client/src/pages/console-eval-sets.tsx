@@ -506,7 +506,7 @@ export default function ConsoleEvalSets() {
           <Card>
             <CardHeader>
               <CardDescription>
-                Public eval sets shared by other users. Clone one to use it in your own evalFlows.
+                Public eval sets shared by other users. Clone one to use it in your own eval flows.
               </CardDescription>
             </CardHeader>
             <CardContent>

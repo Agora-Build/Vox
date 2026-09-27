@@ -271,6 +271,36 @@ d("phone transport — evalFlow API (HTTP, dev server)", () => {
     return res;
   };
 
+  it("cloning a phone eval flow keeps it a phone flow, with its steps intact", async () => {
+    // Before the fix the clone silently became transport=web while keeping
+    // call.dial steps — a flow that runs the wrong way, and one its owner
+    // could never save an edit to (phone vocabulary is refused on web).
+    const config = { stepsPrefix: '- type: call.dial\n  number: "+1 (555) 010-7777"\n', stepsSuffix: "- type: call.hangup\n" };
+    const src = await mkEvalFlow({ transport: "phone", visibility: "public", config });
+    expect(src.ok).toBe(true);
+    const source = await src.json();
+    created.push(source.id);
+
+    const res = await fetch(`${BASE_URL}/api/eval-flows/${source.id}/clone`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Cookie: cookie },
+    });
+    expect(res.ok).toBe(true);
+    const clone = await res.json();
+    created.push(clone.id);
+    expect(clone.id).not.toBe(source.id);
+    expect(clone.transport).toBe("phone");
+    expect(clone.config).toEqual(source.config);
+
+    // And the clone is a flow its owner can actually edit.
+    const edit = await fetch(`${BASE_URL}/api/eval-flows/${clone.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", Cookie: cookie },
+      body: JSON.stringify({ description: "edited after clone", config: clone.config }),
+    });
+    expect(edit.ok).toBe(true);
+  });
+
   it("create accepts transport=phone and echoes it; default is web", async () => {
     const res = await mkEvalFlow({ transport: "phone" });
     expect(res.ok).toBe(true);
