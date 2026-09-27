@@ -100,7 +100,7 @@ describe('site-id wire contract', () => {
   });
 
   it('GET /api/eval-jobs returns {data,total}; rows carry siteId', async () => {
-    const res = await authFetch('/api/eval-jobs?limit=5');
+    const res = await authFetch('/api/eval-jobs?scope=visible&limit=5');
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(Array.isArray(body.data)).toBe(true);
@@ -112,7 +112,7 @@ describe('site-id wire contract', () => {
   });
 
   it('GET /api/eval-jobs?region= filters by region, keeps pending pooled rows, rejects garbage', async () => {
-    const ok = await authFetch(`/api/eval-jobs?region=${BASE_NA}&limit=20`);
+    const ok = await authFetch(`/api/eval-jobs?scope=visible&region=${BASE_NA}&limit=20`);
     expect(ok.status).toBe(200);
     const { data } = await ok.json();
     for (const job of data) {
@@ -125,7 +125,7 @@ describe('site-id wire contract', () => {
       }
     }
 
-    const bad = await authFetch('/api/eval-jobs?region=not-a-real-region-zz');
+    const bad = await authFetch('/api/eval-jobs?scope=visible&region=not-a-real-region-zz');
     expect(bad.status).toBe(400);
   });
 

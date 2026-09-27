@@ -26,6 +26,51 @@ export function canAccessResource(user: AuthUser, resource: OrgResource): boolea
   return false;
 }
 
+// Who may READ an eval job (and its result). The one rule for both the console
+// (/api/eval-jobs/:id…) and the public API (/api/v1/jobs/:id, /results/:id) —
+// they are separate handlers, and they drifted apart when each wrote its own.
+// While the job's eval flow exists, anyone who can view the flow can view its
+// jobs, using the flow's LIVE visibility (so a since-privatised flow's jobs stop
+// being visible). Once the flow is deleted, only the person who ran the job may.
+export function canViewJob(
+  user: AuthUser,
+  job: { createdBy: number | null },
+  evalFlow: OrgResource | undefined,
+): boolean {
+  if (user.isAdmin) return true;
+  if (evalFlow) return canAccessResource(user, evalFlow);
+  return job.createdBy === user.id;
+}
+
+// Job LISTS (console /api/eval-jobs and API /api/v1/jobs) take `scope`:
+//   mine    (default) — jobs this user started
+//   visible           — every job this user may view (canViewJob, as SQL)
+export type JobScope = "mine" | "visible";
+
+export function parseJobScope(raw: unknown): JobScope | null {
+  if (raw === undefined || raw === "" || raw === "mine") return "mine";
+  if (raw === "visible") return "visible";
+  return null;
+}
+
+export function jobListFilter(user: AuthUser, scope: JobScope) {
+  return scope === "mine"
+    ? { ownerId: user.id }
+    : { visibleTo: { userId: user.id, organizationId: user.membership?.organizationId ?? null, isAdmin: user.isAdmin } };
+}
+
+// Who may CANCEL an eval job: stricter than viewing. The eval flow's owner (or
+// the job's runner once the flow is deleted), or a system admin (moderation).
+// Shared by the console and the public API for the same reason as canViewJob.
+export function canCancelJob(
+  user: AuthUser,
+  job: { createdBy: number | null },
+  evalFlow: { ownerId?: number | null } | undefined,
+): boolean {
+  if (user.isAdmin) return true;
+  return evalFlow ? evalFlow.ownerId === user.id : job.createdBy === user.id;
+}
+
 // Owner/creator, or an org manager for org resources — WITHOUT the system-admin
 // bypass. This is the predicate for *editing* content and *running* private
 // evalFlows: a system admin has no special power over another user's content

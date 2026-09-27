@@ -89,6 +89,10 @@ import {
   isSessionServable, isOwnerOperatedAgent,
   hasOrg,
   sessionPoolViolation,
+  canViewJob,
+  canCancelJob,
+  parseJobScope,
+  jobListFilter,
 } from "./permissions";
 
 // Schedule lifecycle: a schedule is created with a 90-day expiry and can be
@@ -5125,6 +5129,8 @@ export async function registerRoutes(
       if (req.query.siteId !== undefined) {
         return res.status(400).json({ error: "The siteId filter was replaced by region (a region base ID, e.g. na-us-seattle)" });
       }
+      const scope = parseJobScope(req.query.scope);
+      if (!scope) return res.status(400).json({ error: "scope must be mine or visible" });
 
       const pageLimit = Math.min(Math.max(parseInt(limit as string) || 50, 1), 200);
       const pageOffset = Math.max(parseInt(offset as string) || 0, 0);
@@ -5161,29 +5167,13 @@ export async function registerRoutes(
         filters.hoursBack = parsed;
       }
 
-      const jobs = await storage.getEvalJobs(filters);
-
-      // For non-admin users, only return jobs for evalFlows they own or are public.
-      // While the evalFlow exists, use its LIVE visibility (so a since-privatised
-      // evalFlow's jobs aren't exposed via the frozen snapshot). Once the evalFlow is
-      // deleted, only the owner may see the job — run-time visibility does not grant
-      // ongoing public access.
-      let visibleJobs = jobs;
-      if (!user.isAdmin) {
-        const userEvalFlows = await storage.getEvalFlowsByOwner(user.id);
-        const publicEvalFlows = await storage.getPublicEvalFlows();
-        const allowedIds = new Set([
-          ...userEvalFlows.map(w => w.id),
-          ...publicEvalFlows.map(w => w.id),
-        ]);
-        visibleJobs = jobs.filter(job => {
-          if (job.evalFlowId != null) return allowedIds.has(job.evalFlowId);
-          return job.createdBy === user.id; // deleted evalFlow: the runner sees their own job
-        });
-      }
-
-      const total = visibleJobs.length;
-      const paged = visibleJobs.slice(pageOffset, pageOffset + pageLimit);
+      // mine (default) = jobs this user started; visible = every job they may
+      // view (canViewJob). Filtered and paged in the database.
+      const scoped = { ...filters, ...jobListFilter(user, scope) };
+      const [paged, total] = await Promise.all([
+        storage.getEvalJobs({ ...scoped, limit: pageLimit, offset: pageOffset }),
+        storage.countEvalJobs(scoped),
+      ]);
 
       // Enrich with creator username
       const creatorIds = Array.from(new Set(paged.map(j => j.createdBy).filter((id): id is number => id != null)));
@@ -5230,16 +5220,9 @@ export async function registerRoutes(
         return res.status(404).json({ error: "Job not found" });
       }
 
-      // Check authorization: owner, admin, or public evalFlow. Live check while the
-      // evalFlow exists; once deleted, only the owner may view it.
-      if (!user.isAdmin) {
-        const evalFlow = job.evalFlowId != null ? await storage.getEvalFlow(job.evalFlowId) : undefined;
-        const allowed = evalFlow
-          ? canAccessResource(user, evalFlow)
-          : job.createdBy === user.id; // deleted evalFlow: runner only
-        if (!allowed) {
-          return res.status(403).json({ error: "Not authorized to view this job" });
-        }
+      const evalFlow = job.evalFlowId != null ? await storage.getEvalFlow(job.evalFlowId) : undefined;
+      if (!canViewJob(user, job, evalFlow)) {
+        return res.status(403).json({ error: "Not authorized to view this job" });
       }
 
       res.json(job);
@@ -5264,19 +5247,9 @@ export async function registerRoutes(
         return res.status(404).json({ error: "Job not found" });
       }
 
-      // Check authorization: owner, admin, or public evalFlow. When the evalFlow
-      // still exists, use its LIVE visibility; once deleted, only the owner may view
-      // it (run-time visibility does not confer ongoing public read access).
-      if (!user.isAdmin) {
-        const evalFlow = job.evalFlowId != null ? await storage.getEvalFlow(job.evalFlowId) : undefined;
-        if (evalFlow) {
-          if (!canAccessResource(user, evalFlow)) {
-            return res.status(403).json({ error: "Not authorized to view this job" });
-          }
-        } else if (job.createdBy !== user.id) {
-          // Deleted evalFlow: only the runner may view their own job.
-          return res.status(403).json({ error: "Not authorized to view this job" });
-        }
+      const evalFlow = job.evalFlowId != null ? await storage.getEvalFlow(job.evalFlowId) : undefined;
+      if (!canViewJob(user, job, evalFlow)) {
+        return res.status(403).json({ error: "Not authorized to view this job" });
       }
 
       // Get eval results for this job
@@ -5371,13 +5344,9 @@ export async function registerRoutes(
         return res.status(404).json({ error: "Job not found" });
       }
 
-      // Check authorization (owner). Deleted evalFlow → the runner (createdBy).
-      if (!user.isAdmin) {
-        const evalFlow = job.evalFlowId != null ? await storage.getEvalFlow(job.evalFlowId) : undefined;
-        const allowed = evalFlow ? evalFlow.ownerId === user.id : job.createdBy === user.id;
-        if (!allowed) {
-          return res.status(403).json({ error: "Not authorized to cancel this job" });
-        }
+      const evalFlow = job.evalFlowId != null ? await storage.getEvalFlow(job.evalFlowId) : undefined;
+      if (!canCancelJob(user, job, evalFlow)) {
+        return res.status(403).json({ error: "Not authorized to cancel this job" });
       }
 
       if (job.status !== "pending") {

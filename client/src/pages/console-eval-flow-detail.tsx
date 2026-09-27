@@ -75,7 +75,8 @@ export default function ConsoleEvalFlowDetail() {
   const { data: jobs, isLoading: jobsLoading, refetch: refetchJobs } = useQuery<EvalJob[]>({
     queryKey: [`/api/eval-jobs`, { evalFlowId }],
     queryFn: async () => {
-      const res = await fetch(`/api/eval-jobs?evalFlowId=${evalFlowId}&limit=20`);
+      // Every run of this flow, not only yours — the flow's full history.
+      const res = await fetch(`/api/eval-jobs?evalFlowId=${evalFlowId}&limit=20&scope=visible`);
       if (!res.ok) throw new Error("Failed to fetch jobs");
       // The endpoint returns { data, total } — the Job History table wants the rows.
       const body = await res.json();
