@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  Automated evaluation testing for conversational AI products. Monitor response latency, interrupt latency, network resilience, naturalness, and noise reduction across multiple regions.
+  Automated evaluation testing for conversational AI products. Monitor turn success rate, response latency, interrupt latency, network resilience, naturalness, and noise reduction across multiple regions.
 </p>
 
 ---
