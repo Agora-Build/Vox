@@ -134,7 +134,8 @@ export default function ApiDocs() {
             </CardHeader>
             <CardContent className="space-y-4">
               <p className="text-sm text-muted-foreground">
-                Sign in, then open <strong>Console → API Keys</strong> and create one.
+                Sign in, then open <strong>Console → API Keys</strong> and create one. A key acts as
+                you, with one exception: it never has admin rights, even if you are an admin.
               </p>
               <Link href="/console/api-keys">
                 <Button variant="outline" size="sm" className="gap-2" data-testid="link-api-keys">

@@ -55,8 +55,10 @@ info:
     Authorization: Bearer vox_live_xxxxx
     ```
 
-    A key carries the permissions of the user who created it. Requests without one get `401`;
-    requests for another user's private resource get `403`.
+    A key carries the permissions of the user who created it — **except admin rights**: a key
+    never has them, even an admin's own. Admin powers (moderation, reading or cancelling anyone's
+    jobs) are available only when signed in to the console in a browser. Requests without a key
+    get `401`; requests for another user's private resource get `403`.
 
     ## Rate Limiting
 
@@ -1051,8 +1053,8 @@ paths:
         Returns a job by ID. You may read any job you can see in the console: jobs on
         eval flows you own, on your organization's flows, or on any public flow
         (including jobs other people ran on them). Once the job's eval flow is
-        deleted, only the person who ran the job may read it. System admins may
-        read any job.
+        deleted, only the person who ran the job may read it. API keys carry no
+        admin rights, so an admin's key sees what any user would.
       security:
         - BearerAuth: []
       parameters:
@@ -1095,10 +1097,11 @@ paths:
         - Jobs
       summary: Cancel job
       description: |
-        Cancels a job that is still pending. Stricter than reading: only the owner of
-        the job's eval flow may cancel it (or, once the flow is deleted, the person
-        who ran the job), plus system admins. Being able to view a public flow does
-        not let you cancel its jobs.
+        Cancels a job that is still pending. Allowed for the person who started the
+        job, and for whoever controls the eval flow it runs on — its owner, or an
+        organization owner/admin for an org flow — since a run on your flow uses your
+        secrets. Being able to view a flow (e.g. it is public) is not enough. (Admins
+        can cancel anyone's job from the console; API keys carry no admin rights.)
       security:
         - BearerAuth: []
       parameters:

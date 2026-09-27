@@ -681,7 +681,6 @@ export function registerApiV1Routes(app: Express): void {
         return res.status(404).json({ error: "Job not found" });
       }
 
-      // Check ownership — live evalFlow owner, or the job's creator once it's deleted.
       const evalFlow = job.evalFlowId != null ? await storage.getEvalFlow(job.evalFlowId) : undefined;
       if (!canCancelJob(user, job, evalFlow)) {
         return res.status(403).json({ error: "Access denied" });
