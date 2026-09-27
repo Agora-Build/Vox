@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<!--
+  Source of client/public/opengraph.jpg — the link-preview image for
+  vox.agora.build. Regenerate after editing:
+    node scripts/render-og-card.mjs
+  Rendered at 1200x630, the size link previews expect. Keep it free of
+  numbers and dates: previews are cached for weeks and shown only a few
+  hundred pixels wide.
+-->
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@500;700;800&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #121212;
+    --fg: #f8fafc;
+    --muted: #94a3b8;
+    --primary: #3b82f6;
+    --tile: rgba(59, 130, 246, 0.12);
+  }
+  * { margin: 0; box-sizing: border-box; }
+  html, body { width: 1200px; height: 630px; }
+  body {
+    background: var(--bg);
+    color: var(--fg);
+    font-family: "Inter", sans-serif;
+    position: relative;
+    overflow: hidden;
+  }
+  .pulse {
+    position: absolute;
+    right: -300px;
+    top: 50%;
+    width: 900px;
+    height: 900px;
+    transform: translateY(-50%);
+    color: var(--primary);
+    opacity: 0.9;
+  }
+  .content {
+    position: absolute;
+    inset: 72px 80px;
+    display: flex;
+    flex-direction: column;
+  }
+  .brand { display: flex; align-items: center; gap: 18px; }
+  .tile {
+    width: 64px; height: 64px; border-radius: 14px;
+    background: var(--tile);
+    display: flex; align-items: center; justify-content: center;
+    color: var(--primary);
+  }
+  .brand-name { font-size: 40px; font-weight: 700; letter-spacing: -0.01em; }
+  h1 {
+    margin-top: auto;
+    font-size: 84px;
+    line-height: 1.02;
+    font-weight: 800;
+    letter-spacing: -0.035em;
+    max-width: 700px;
+  }
+  .sub {
+    margin-top: 26px;
+    font-size: 30px;
+    line-height: 1.35;
+    font-weight: 500;
+    color: var(--muted);
+    max-width: 640px;
+  }
+  .url {
+    margin-top: auto;
+    font-size: 26px;
+    font-weight: 500;
+    color: var(--muted);
+  }
+</style>
+</head>
+<body>
+  <!-- The Vox mark (Lucide "activity"), drawn large and cropped off the edge. -->
+  <svg class="pulse" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="0.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+    <path d="M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2" />
+  </svg>
+
+  <div class="content">
+    <div class="brand">
+      <div class="tile">
+        <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2" />
+        </svg>
+      </div>
+      <span class="brand-name">Vox</span>
+    </div>
+
+    <h1>Vox for every engagement.</h1>
+    <p class="sub">Real-time evaluation of conversational AI voice agents, on web and phone.</p>
+
+    <p class="url">vox.agora.build</p>
+  </div>
+</body>
+</html>
