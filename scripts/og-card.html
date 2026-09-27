@@ -1,11 +1,11 @@
 <!DOCTYPE html>
 <!--
-  Source of client/public/opengraph.jpg — the link-preview image for
-  vox.agora.build. Regenerate after editing:
+  Source of the link-preview images: client/public/opengraph.jpg (the
+  website, 1200x630) and .github/social-preview.png (the GitHub repo,
+  1280x640). Regenerate both after editing:
     node scripts/render-og-card.mjs
-  Rendered at 1200x630, the size link previews expect. Keep it free of
-  numbers and dates: previews are cached for weeks and shown only a few
-  hundred pixels wide.
+  Keep it free of numbers and dates: previews are cached for weeks and
+  shown only a few hundred pixels wide.
 -->
 <html lang="en">
 <head>
@@ -20,7 +20,7 @@
     --tile: rgba(59, 130, 246, 0.12);
   }
   * { margin: 0; box-sizing: border-box; }
-  html, body { width: 1200px; height: 630px; }
+  html, body { width: 100vw; height: 100vh; }
   body {
     background: var(--bg);
     color: var(--fg);
