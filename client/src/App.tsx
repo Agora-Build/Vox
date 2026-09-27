@@ -1,4 +1,5 @@
 import { Switch, Route, useLocation, useRoute, Redirect } from "wouter";
+import { usePageMeta } from "@/lib/page-meta";
 import { queryClient } from "./lib/queryClient";
 import { QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { useEffect, lazy, Suspense } from "react";
@@ -982,6 +983,7 @@ function AdminBrokersWrapper() {
 }
 
 function Router() {
+  usePageMeta();
   return (
     <Switch>
       <Route path="/login" component={Login} />
