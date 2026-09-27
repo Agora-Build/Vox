@@ -13,8 +13,9 @@ export default function Home() {
           Track Your Products Experience<br />Across the World
         </h1>
         <p className="text-base sm:text-lg md:text-xl text-muted-foreground max-w-3xl mx-auto leading-relaxed px-2">
-          Automated evaluation testing for conversational AI products. Monitor respond latency,
-          interrupt latency, network resilience, naturalness, and noise reduction across multiple regions.
+          Automated evaluation testing for conversational AI products. Monitor turn success rate,
+          response latency, interrupt latency, network resilience, naturalness, and noise reduction
+          across multiple regions.
         </p>
         <div className="flex flex-col sm:flex-row justify-center gap-3 sm:gap-4 pt-4 px-4 sm:px-0">
           <Link href="/realtime">
