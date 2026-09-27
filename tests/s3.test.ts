@@ -144,7 +144,7 @@ describe.skipIf(!isConfigured)('Vox Artifact API Integration', () => {
 
   it('should store artifact metadata via eval-agent API', async () => {
     // Get a completed job to test with
-    const jobsRes = await authFetch(adminSession, `${BASE_URL}/api/eval-jobs?status=completed&limit=1`);
+    const jobsRes = await authFetch(adminSession, `${BASE_URL}/api/eval-jobs?scope=visible&status=completed&limit=1`);
     if (!jobsRes.ok) return;
     const { data: jobs } = await jobsRes.json();
     if (jobs.length === 0) return;
@@ -201,7 +201,7 @@ describe.skipIf(!isConfigured)('Vox Artifact API Integration', () => {
   });
 
   it('should return job detail with signed artifact URL', async () => {
-    const jobsRes = await authFetch(adminSession, `${BASE_URL}/api/eval-jobs?status=completed&limit=1`);
+    const jobsRes = await authFetch(adminSession, `${BASE_URL}/api/eval-jobs?scope=visible&status=completed&limit=1`);
     if (!jobsRes.ok) return;
     const { data: jobs } = await jobsRes.json();
     if (jobs.length === 0) return;

@@ -216,7 +216,7 @@ test.describe("Job snapshot", () => {
 
   test("job detail shows a 'View Eval Flow & eval set' snapshot dialog", async ({ page }) => {
     // Find any job to open its detail page.
-    const res = await page.request.get("/api/eval-jobs?limit=1");
+    const res = await page.request.get("/api/eval-jobs?scope=visible&limit=1");
     const body = await res.json();
     const job = body?.data?.[0];
     test.skip(!job, "no jobs in the DB to inspect");
