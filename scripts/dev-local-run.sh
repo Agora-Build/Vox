@@ -1521,7 +1521,7 @@ main() {
             echo "Usage: $0 [OPTIONS] <command>"
             echo ""
             echo "Options:"
-            echo "  --multi-region  Start eval agents for all regions (na, apac, eu)"
+            echo "  --multi-region  Start eval agents for all regions (na, apac, eu, sa)"
             echo ""
             echo "Local Process Mode (vox-service and vox-eval-agent as local processes):"
             echo "  start                  - Start all services (single agent)"

@@ -66,7 +66,7 @@ export default function Home() {
             </CardHeader>
             <CardContent>
               <p className="text-muted-foreground">
-                Test from US East, US West, Europe, Asia-Pacific, and more to understand regional performance.
+                Test from North America, Asia Pacific, Europe, and South America to understand regional performance.
               </p>
             </CardContent>
           </Card>

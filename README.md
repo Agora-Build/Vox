@@ -8,6 +8,18 @@ Distributed eval agents hold real conversations with AI voice agents and measure
 
 ---
 
+## Screenshots
+
+| Real-time dashboard | Global leaderboard |
+|---|---|
+| ![Real-time dashboard](screenshots/realtime-dashboard.png) | ![Global leaderboard](screenshots/leaderboard.png) |
+| **Home** | **API docs** |
+| ![Home](screenshots/home.png) | ![API docs](screenshots/api-docs.png) |
+
+More in [`screenshots/`](screenshots/).
+
+---
+
 ## Features
 
 ### Automated Evals
