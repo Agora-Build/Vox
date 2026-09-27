@@ -1,0 +1,11 @@
+User-agent: *
+Allow: /
+Disallow: /console
+Disallow: /admin
+Disallow: /api/
+Disallow: /login
+Disallow: /setup
+Disallow: /activate/
+Disallow: /auth/
+
+Sitemap: https://vox.agora.build/sitemap.xml
