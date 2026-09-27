@@ -10,7 +10,7 @@ Guidance for Claude Code (claude.ai/code) when working in this repository.
 
 ## Project Overview
 
-Vox is an AI latency evaluation platform for conversational AI products. Distributed eval agents run automated tests across regions (NA, APAC, EU) measuring turn success rate, response latency, interrupt latency, network resilience, naturalness, and noise reduction for AI voice agents.
+Vox is an AI latency evaluation platform for conversational AI products. Distributed eval agents run automated tests across regions (NA, APAC, EU, SA) measuring turn success rate, response latency, interrupt latency, network resilience, naturalness, and noise reduction for AI voice agents.
 
 ## Commands
 
@@ -20,7 +20,7 @@ npm run check              # TypeScript
 npm run lint               # ESLint
 
 ./scripts/dev-local-run.sh start|stop|reset|status      # local env (Postgres in Docker + service + agent)
-./scripts/dev-local-run.sh --multi-region start         # na/apac/eu agents
+./scripts/dev-local-run.sh --multi-region start         # na/apac/eu/sa agents
 ./scripts/dev-local-run.sh logs server|agent
 ./scripts/dev-local-run.sh docker start|stop            # all-in-containers mode
 ```

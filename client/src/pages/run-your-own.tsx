@@ -17,7 +17,7 @@ import { Play, Loader2, XCircle, CheckCircle, Clock, AlertCircle, Rocket, Eye, T
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { Link } from "wouter";
-import generatedImage from '@assets/generated_images/abstract_digital_network_visualization_dark_blue.png';
+import generatedImage from '@/assets/network-visualization.png';
 import { useRegionLocationOptions } from "@/hooks/use-regions";
 
 interface AuthStatus {
