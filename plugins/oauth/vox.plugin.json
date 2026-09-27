@@ -1,0 +1,16 @@
+{
+  "id": "oauth",
+  "version": "1.0.0",
+  "voxPluginApi": "^1.1.0",
+  "providesServices": {},
+  "requiresServices": { "vox.identity": "^1.0.0" },
+  "optionalServices": {},
+  "migrations": "migrations",
+  "routes": [
+    "GET /api/plugins/oauth/providers",
+    "GET /api/plugins/oauth/github/start",
+    "POST /api/plugins/oauth/github/callback",
+    "GET /api/plugins/oauth/google/start",
+    "GET /api/plugins/oauth/google/callback"
+  ]
+}

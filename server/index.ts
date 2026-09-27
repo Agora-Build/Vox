@@ -7,7 +7,8 @@ import { createServer } from "http";
 import session from "express-session";
 import connectPgSimple from "connect-pg-simple";
 import rateLimit from "express-rate-limit";
-import { authenticateApiKey, passport, initializeGoogleOAuth } from "./auth";
+import { authenticateApiKey } from "./auth";
+import { identityService } from "./identity";
 import { pool } from "./storage";
 import { startLocationServices } from "./location";
 import { setupClashWebSocket } from "./clash-ws";
@@ -63,16 +64,6 @@ app.use(
     },
   })
 );
-
-// Initialize Passport for OAuth
-app.use(passport.initialize());
-app.use(passport.session());
-
-// Initialize Google OAuth if credentials are configured
-const googleOAuthEnabled = initializeGoogleOAuth();
-if (googleOAuthEnabled) {
-  console.log("Google OAuth initialized successfully");
-}
 
 
 declare module "http" {
@@ -181,7 +172,10 @@ app.use((req, res, next) => {
 
   // Load enabled plugins (routes mounted before the error handler + vite catch-all).
   // Any misconfiguration throws here — fail-before-listen (strict startup).
-  const plugins = await loadPlugins(app, pool);
+  // vox.identity: Core users and sessions, for plugins that sign people in (oauth).
+  const plugins = await loadPlugins(app, pool, undefined, undefined, {
+    "vox.identity": { version: "1.0.0", impl: identityService },
+  });
   setMarketplace(plugins.services.optional<EvalMarketplace>("vox.eval-marketplace", "^1.0.0"));
 
   // Organizations: PLUGIN-OR-ABSENT (Release A flip). The `organizations`

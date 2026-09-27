@@ -1,12 +1,20 @@
 import type { PluginManifest } from "./manifest";
 
-export function resolveActivationOrder(manifests: PluginManifest[]): PluginManifest[] {
+// `coreServices` are provided by Core itself (registered before any plugin
+// activates), so a plugin may require one without any plugin providing it.
+export function resolveActivationOrder(
+  manifests: PluginManifest[],
+  coreServices: ReadonlySet<string> = new Set(),
+): PluginManifest[] {
   const providers = new Map<string, string>(); // service name -> plugin id
   for (const m of manifests) {
     for (const svc of Object.keys(m.providesServices)) {
       const existing = providers.get(svc);
       if (existing) {
         throw new Error(`duplicate singleton provider for ${svc}: ${existing} and ${m.id}`);
+      }
+      if (coreServices.has(svc)) {
+        throw new Error(`plugin ${m.id} provides ${svc}, which Core already provides`);
       }
       providers.set(svc, m.id);
     }
@@ -17,6 +25,7 @@ export function resolveActivationOrder(manifests: PluginManifest[]): PluginManif
   for (const m of manifests) {
     const d: string[] = [];
     for (const svc of Object.keys(m.requiresServices)) {
+      if (coreServices.has(svc)) continue;
       const provider = providers.get(svc);
       if (!provider) {
         throw new Error(`plugin ${m.id} requires service ${svc} but no enabled plugin provides it`);
