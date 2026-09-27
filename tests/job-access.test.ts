@@ -142,6 +142,8 @@ async function flowWithJob(owner: Session, runner: Session, visibility: "public"
   let adminKey: string;
   let owner: Session;
   let other: Session;
+  let outsider: Session;
+  let outsiderKey: string;
   let otherKey: string;
   let ownerKey: string;
   let publicJobRunByOther: number;
@@ -154,6 +156,9 @@ async function flowWithJob(owner: Session, runner: Session, visibility: "public"
     other = await newUser(admin, "parity-other");
     ownerKey = await apiKey(owner);
     otherKey = await apiKey(other);
+    // Neither ran the jobs below nor owns their flows: can only VIEW the public one.
+    outsider = await newUser(admin, "parity-outsider");
+    outsiderKey = await apiKey(outsider);
     // The reported case: someone runs another user's PUBLIC flow.
     publicJobRunByOther = await flowWithJob(owner, other, "public");
     // A PRIVATE flow's job, run by its owner.
@@ -187,7 +192,12 @@ async function flowWithJob(owner: Session, runner: Session, visibility: "public"
     fetch(`${BASE_URL}/api/v1/jobs/${id}`, { method: "DELETE", headers: { Authorization: `Bearer ${key}` } }).then((r) => r.status);
 
   it("someone who can merely view a public flow cannot cancel runs on it — refused through both", async () => {
-    // Through a key the admin is an ordinary user: neither the runner nor the owner.
+    // A real outsider: can view the public flow (so this is not a 403 for
+    // not seeing it), but neither ran the job nor owns the flow.
+    expect(await viaConsole(outsider, publicJobRunByOther)).toBe(200);
+    expect(await consoleCancel(outsider, publicJobRunByOther)).toBe(403);
+    expect(await apiCancel(outsiderKey, publicJobRunByOther)).toBe(403);
+    // Through a key an admin is exactly such an outsider too.
     expect(await apiCancel(adminKey, publicJobRunByOther)).toBe(403);
   });
 
@@ -210,14 +220,24 @@ async function flowWithJob(owner: Session, runner: Session, visibility: "public"
     expect(await consoleCancel(admin, privateJob)).not.toBe(403);
   });
 
-  it("an admin API key cannot perform admin-only console actions either", async () => {
-    const providers = await (await fetch(`${BASE_URL}/api/providers`)).json();
-    const res = await fetch(`${BASE_URL}/api/providers/${providers[0].id}`, {
+  it("an admin API key cannot perform admin-only console actions; the same admin in the browser can", async () => {
+    const list = await fetch(`${BASE_URL}/api/providers`);
+    expect(list.ok).toBe(true);
+    const providers: Array<{ id: string; name: string }> = await list.json();
+    expect(providers.length).toBeGreaterThan(0);
+    // Re-sending the current name changes nothing, whoever is allowed.
+    const body = JSON.stringify({ name: providers[0].name });
+
+    const viaKey = await fetch(`${BASE_URL}/api/providers/${providers[0].id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${adminKey}` },
-      body: JSON.stringify({ name: providers[0].name }),
+      body,
     });
-    expect(res.status).toBe(403);
+    expect(viaKey.status).toBe(403);
+
+    // Proves the 403 is about the key, not a broken route.
+    const viaBrowser = await call(admin, "PATCH", `/api/providers/${providers[0].id}`, { name: providers[0].name });
+    expect(viaBrowser.status).toBe(200);
   });
 
   // ---- lists: default "mine", scope=visible for everything viewable ----
