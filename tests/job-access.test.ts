@@ -40,21 +40,20 @@ describe("canViewJob", () => {
   });
 });
 
-describe("canCancelJob — stricter than viewing", () => {
+describe("canCancelJob — only the person who started the job (or an admin)", () => {
   const job = { createdBy: 2 };
 
-  it("the flow's owner may cancel; viewing a public flow does not let you cancel its jobs", () => {
-    expect(canCancelJob(u(1), job, { ownerId: 1 })).toBe(true);
-    expect(canCancelJob(u(3), job, { ownerId: 1 })).toBe(false);
+  it("the person who ran the job may cancel it, whoever owns the flow", () => {
+    expect(canCancelJob(u(2), job)).toBe(true);
   });
 
-  it("once the flow is deleted, the person who ran the job", () => {
-    expect(canCancelJob(u(2), job, undefined)).toBe(true);
-    expect(canCancelJob(u(1), job, undefined)).toBe(false);
+  it("owning or viewing the flow is not enough", () => {
+    expect(canCancelJob(u(1), job)).toBe(false);
+    expect(canCancelJob(u(3), job)).toBe(false);
   });
 
-  it("admins may cancel any job", () => {
-    expect(canCancelJob(u(99, { isAdmin: true }), job, { ownerId: 1 })).toBe(true);
+  it("an admin may cancel anyone's (browser only — API keys never carry admin)", () => {
+    expect(canCancelJob(u(99, { isAdmin: true }), job)).toBe(true);
   });
 });
 
@@ -125,6 +124,8 @@ async function flowWithJob(owner: Session, runner: Session, visibility: "public"
 }
 
 (hasDb ? describe : describe.skip)("console and API agree on who may view a job", () => {
+  let admin: Session;
+  let adminKey: string;
   let owner: Session;
   let other: Session;
   let otherKey: string;
@@ -133,7 +134,8 @@ async function flowWithJob(owner: Session, runner: Session, visibility: "public"
   let privateJob: number;
 
   beforeAll(async () => {
-    const admin = await login(ADMIN_EMAIL, ADMIN_PASSWORD);
+    admin = await login(ADMIN_EMAIL, ADMIN_PASSWORD);
+    adminKey = await apiKey(admin);
     owner = await newUser(admin, "parity-owner");
     other = await newUser(admin, "parity-other");
     ownerKey = await apiKey(owner);
@@ -163,13 +165,40 @@ async function flowWithJob(owner: Session, runner: Session, visibility: "public"
     expect(await viaApi(otherKey, privateJob)).toBe(403);
   });
 
-  it("viewing a public flow does not let you cancel its jobs — refused through both", async () => {
-    const consoleCancel = await call(other, "DELETE", `/api/eval-jobs/${publicJobRunByOther}`);
-    const apiCancel = await fetch(`${BASE_URL}/api/v1/jobs/${publicJobRunByOther}`, {
-      method: "DELETE", headers: { Authorization: `Bearer ${otherKey}` },
+  // "Allowed" is asserted as NOT 403: a local agent may already have claimed
+  // the job, and cancelling a non-pending job is a 400. The point here is who
+  // is permitted, not the job's state.
+  const consoleCancel = (sess: Session, id: number) => call(sess, "DELETE", `/api/eval-jobs/${id}`).then((r) => r.status);
+  const apiCancel = (key: string, id: number) =>
+    fetch(`${BASE_URL}/api/v1/jobs/${id}`, { method: "DELETE", headers: { Authorization: `Bearer ${key}` } }).then((r) => r.status);
+
+  it("the flow's owner cannot cancel a run someone else started on it — refused through both", async () => {
+    expect(await consoleCancel(owner, publicJobRunByOther)).toBe(403);
+    expect(await apiCancel(ownerKey, publicJobRunByOther)).toBe(403);
+  });
+
+  it("the person who started a job may cancel it, even on someone else's flow — through both", async () => {
+    expect(await consoleCancel(other, publicJobRunByOther)).not.toBe(403);
+    expect(await apiCancel(otherKey, publicJobRunByOther)).not.toBe(403);
+  });
+
+  it("an admin's API key carries no admin rights; the same admin in the browser does", async () => {
+    // Read someone else's private job.
+    expect(await viaApi(adminKey, privateJob)).toBe(403);
+    expect(await viaConsole(admin, privateJob)).toBe(200);
+    // Cancel someone else's job.
+    expect(await apiCancel(adminKey, privateJob)).toBe(403);
+    expect(await consoleCancel(admin, privateJob)).not.toBe(403);
+  });
+
+  it("an admin API key cannot perform admin-only console actions either", async () => {
+    const providers = await (await fetch(`${BASE_URL}/api/providers`)).json();
+    const res = await fetch(`${BASE_URL}/api/providers/${providers[0].id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${adminKey}` },
+      body: JSON.stringify({ name: providers[0].name }),
     });
-    expect(consoleCancel.status).toBe(403);
-    expect(apiCancel.status).toBe(403);
+    expect(res.status).toBe(403);
   });
 
   // ---- lists: default "mine", scope=visible for everything viewable ----
@@ -212,6 +241,11 @@ async function flowWithJob(owner: Session, runner: Session, visibility: "public"
     for (const id of ids.slice(0, 15)) {
       expect(await viaApi(otherKey, id)).toBe(200);
     }
+  });
+
+  it("an admin sees ALL jobs in the browser (All visible); an admin's API key does not", async () => {
+    expect((await consoleList(admin, "visible")).ids).toContain(privateJob);
+    expect((await apiList(adminKey, "visible")).ids).not.toContain(privateJob);
   });
 
   it("an unknown scope is refused by both", async () => {

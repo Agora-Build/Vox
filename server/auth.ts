@@ -226,7 +226,12 @@ export async function authenticateApiKey(req: Request, res: Response, next: Next
 
   await storage.incrementApiKeyUsage(apiKey.id);
 
-  req.apiKeyUser = user;
+  // An API key never carries admin rights, even an admin's own key: admin
+  // powers (moderation, user and provider management, reading or cancelling
+  // anyone's jobs) are for a person in the browser. Keys are long-lived bearer
+  // secrets that end up in scripts, CI and chat logs; a leaked one must reach
+  // no further than an ordinary account.
+  req.apiKeyUser = { ...user, isAdmin: false };
   req.apiKeyId = apiKey.id;
 
   next();

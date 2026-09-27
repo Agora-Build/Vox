@@ -59,16 +59,12 @@ export function jobListFilter(user: AuthUser, scope: JobScope) {
     : { visibleTo: { userId: user.id, organizationId: user.membership?.organizationId ?? null, isAdmin: user.isAdmin } };
 }
 
-// Who may CANCEL an eval job: stricter than viewing. The eval flow's owner (or
-// the job's runner once the flow is deleted), or a system admin (moderation).
-// Shared by the console and the public API for the same reason as canViewJob.
-export function canCancelJob(
-  user: AuthUser,
-  job: { createdBy: number | null },
-  evalFlow: { ownerId?: number | null } | undefined,
-): boolean {
-  if (user.isAdmin) return true;
-  return evalFlow ? evalFlow.ownerId === user.id : job.createdBy === user.id;
+// Who may CANCEL an eval job: the person who started it, in the console and the
+// API alike — owning the eval flow, or being able to view it, is not enough.
+// A system admin may cancel anyone's (moderation: runaway schedules, abuse);
+// API keys never carry admin (server/auth.ts), so that is browser-only.
+export function canCancelJob(user: AuthUser, job: { createdBy: number | null }): boolean {
+  return user.isAdmin || job.createdBy === user.id;
 }
 
 // Owner/creator, or an org manager for org resources — WITHOUT the system-admin
