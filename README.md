@@ -2,7 +2,7 @@
 
 **Vox for every engagement.** Real-time experience evaluation for conversational AI agents: measure how voice agents actually behave for users, on the web and over the phone, from regions around the world.
 
-**Live:** [vox.agora.build](https://vox.agora.build) · **API docs:** [vox.agora.build/api-docs](https://vox.agora.build/api-docs)
+**Live:** [vox.agora.build](https://vox.agora.build) · **API docs:** [vox.agora.build/api-docs](https://vox.agora.build/api-docs) · **Deploying:** [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)
 
 Distributed eval agents hold real conversations with AI voice agents and measure turn success rate, response latency, interrupt latency, network resilience, naturalness, and noise reduction, then track the results over time on a public dashboard and leaderboard.
 
@@ -141,6 +141,10 @@ Open `http://localhost:5000`.
    DATABASE_URL=... npm run db:push
    ```
 3. **Start the dev server:** `npm run dev`
+
+## Deploying
+
+See **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)**: environment variables, `VOX_PLUGINS`, Coolify and other platforms, migrations, the brokers, and a post-deploy checklist.
 
 ---
 
