@@ -2022,6 +2022,11 @@ export async function registerRoutes(
         providerId: source.providerId,
         visibility: "public",
         isMainline: false,
+        // Transport decides how the flow runs (browser vs a real phone call)
+        // and which Setup/Teardown steps its config may hold; a clone must keep
+        // it or a phone flow silently becomes a web flow. Project, org,
+        // visibility and mainline are the cloner's own and reset on purpose.
+        transport: source.transport,
         config: source.config || {},
       });
 
