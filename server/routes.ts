@@ -5349,7 +5349,8 @@ export async function registerRoutes(
         return res.status(404).json({ error: "Job not found" });
       }
 
-      if (!canCancelJob(user, job)) {
+      const evalFlow = job.evalFlowId != null ? await storage.getEvalFlow(job.evalFlowId) : undefined;
+      if (!canCancelJob(user, job, evalFlow)) {
         return res.status(403).json({ error: "Not authorized to cancel this job" });
       }
 

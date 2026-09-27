@@ -40,20 +40,34 @@ describe("canViewJob", () => {
   });
 });
 
-describe("canCancelJob — only the person who started the job (or an admin)", () => {
+describe("canCancelJob", () => {
   const job = { createdBy: 2 };
+  const personalFlow = { ownerId: 1, visibility: "public" };
+  const orgFlow = { ownerId: 1, visibility: "private", organizationId: 9 };
+  const member = (id: number, role: string) =>
+    u(id, { membership: { organizationId: 9, role } as AuthUser["membership"] });
 
   it("the person who ran the job may cancel it, whoever owns the flow", () => {
-    expect(canCancelJob(u(2), job)).toBe(true);
+    expect(canCancelJob(u(2), job, personalFlow)).toBe(true);
+    expect(canCancelJob(u(2), job, undefined)).toBe(true); // flow deleted
   });
 
-  it("owning or viewing the flow is not enough", () => {
-    expect(canCancelJob(u(1), job)).toBe(false);
-    expect(canCancelJob(u(3), job)).toBe(false);
+  it("the flow's owner may cancel runs others start on it — they spend the owner's secrets", () => {
+    expect(canCancelJob(u(1), job, personalFlow)).toBe(true);
+  });
+
+  it("an org manager may cancel a member's job on an org flow; a plain member may not", () => {
+    expect(canCancelJob(member(5, "admin"), job, orgFlow)).toBe(true);
+    expect(canCancelJob(member(6, "owner"), job, orgFlow)).toBe(true);
+    expect(canCancelJob(member(7, "member"), job, orgFlow)).toBe(false);
+  });
+
+  it("merely being able to view the flow is not enough", () => {
+    expect(canCancelJob(u(3), job, personalFlow)).toBe(false);
   });
 
   it("an admin may cancel anyone's (browser only — API keys never carry admin)", () => {
-    expect(canCancelJob(u(99, { isAdmin: true }), job)).toBe(true);
+    expect(canCancelJob(u(99, { isAdmin: true }), job, personalFlow)).toBe(true);
   });
 });
 
@@ -172,9 +186,14 @@ async function flowWithJob(owner: Session, runner: Session, visibility: "public"
   const apiCancel = (key: string, id: number) =>
     fetch(`${BASE_URL}/api/v1/jobs/${id}`, { method: "DELETE", headers: { Authorization: `Bearer ${key}` } }).then((r) => r.status);
 
-  it("the flow's owner cannot cancel a run someone else started on it — refused through both", async () => {
-    expect(await consoleCancel(owner, publicJobRunByOther)).toBe(403);
-    expect(await apiCancel(ownerKey, publicJobRunByOther)).toBe(403);
+  it("someone who can merely view a public flow cannot cancel runs on it — refused through both", async () => {
+    // Through a key the admin is an ordinary user: neither the runner nor the owner.
+    expect(await apiCancel(adminKey, publicJobRunByOther)).toBe(403);
+  });
+
+  it("the flow's owner may cancel a run someone else started on it — through both", async () => {
+    expect(await consoleCancel(owner, publicJobRunByOther)).not.toBe(403);
+    expect(await apiCancel(ownerKey, publicJobRunByOther)).not.toBe(403);
   });
 
   it("the person who started a job may cancel it, even on someone else's flow — through both", async () => {

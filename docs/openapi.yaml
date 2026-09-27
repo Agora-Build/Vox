@@ -1097,8 +1097,10 @@ paths:
         - Jobs
       summary: Cancel job
       description: |
-        Cancels a job that is still pending. Only the person who started the job may
-        cancel it — owning or being able to view its eval flow is not enough. (Admins
+        Cancels a job that is still pending. Allowed for the person who started the
+        job, and for whoever controls the eval flow it runs on — its owner, or an
+        organization owner/admin for an org flow — since a run on your flow uses your
+        secrets. Being able to view a flow (e.g. it is public) is not enough. (Admins
         can cancel anyone's job from the console; API keys carry no admin rights.)
       security:
         - BearerAuth: []
