@@ -8,6 +8,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
@@ -103,8 +104,14 @@ export default function ConsoleEvalFlows() {
     queryKey: ["/api/auth/status"],
   });
 
+  // All eval flows I can see (own + org + others' public) — drives the Public tab.
   const { data: evalFlows, isLoading } = useQuery<EvalFlowType[]>({
     queryKey: ["/api/eval-flows?includePublic=true"],
+  });
+
+  // My own (+ org) eval flows — drives the default "My Eval Flows" tab.
+  const { data: myEvalFlows, isLoading: myLoading } = useQuery<EvalFlowType[]>({
+    queryKey: ["/api/eval-flows"],
   });
 
   const { data: providers } = useQuery<Provider[]>({
@@ -142,6 +149,7 @@ export default function ConsoleEvalFlows() {
       setStepsPrefix("");
       setStepsSuffix("");
       queryClient.invalidateQueries({ queryKey: ["/api/eval-flows?includePublic=true"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/eval-flows"] });
       toast({ title: "Eval Flow created" });
     },
     onError: (error: Error) => {
@@ -171,6 +179,7 @@ export default function ConsoleEvalFlows() {
       setEditOpen(false);
       setEditEvalFlow(null);
       queryClient.invalidateQueries({ queryKey: ["/api/eval-flows?includePublic=true"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/eval-flows"] });
       toast({ title: "Eval Flow updated" });
     },
     onError: (error: Error) => {
@@ -185,6 +194,7 @@ export default function ConsoleEvalFlows() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/eval-flows?includePublic=true"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/eval-flows"] });
       toast({ title: "Eval Flow updated" });
     },
     onError: (error: Error) => {
@@ -199,6 +209,7 @@ export default function ConsoleEvalFlows() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/eval-flows?includePublic=true"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/eval-flows"] });
       toast({ title: "Eval Flow cloned" });
     },
     onError: (error: Error) => {
@@ -219,6 +230,7 @@ export default function ConsoleEvalFlows() {
       setDeleteTarget(null);
       setDeleteConfirmName("");
       queryClient.invalidateQueries({ queryKey: ["/api/eval-flows?includePublic=true"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/eval-flows"] });
       toast({ title: "Eval Flow deleted" });
     },
     onError: (error: Error) => {
@@ -282,6 +294,150 @@ export default function ConsoleEvalFlows() {
   const canCreatePrivate = authStatus?.user?.plan !== "basic";
   const hasProjects = projects && projects.length > 0;
 
+
+  // "My Eval Flows" = own + org; "Public" = everything public I don't already own.
+  const myFlowIds = new Set((myEvalFlows ?? []).map((f) => f.id));
+  const publicEvalFlows = (evalFlows ?? []).filter((f) => !myFlowIds.has(f.id));
+
+  const renderEvalFlowTable = (flows: EvalFlowType[] | undefined, loading: boolean, emptyMsg: string) => (
+    <>
+            {loading ? (
+              <div className="space-y-4">
+                {[1, 2, 3].map((i) => (
+                  <Skeleton key={i} className="h-12 w-full" />
+                ))}
+              </div>
+            ) : flows && flows.length > 0 ? (
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Name</TableHead>
+                    {hasProjects && <TableHead>Project</TableHead>}
+                    <TableHead>Visibility</TableHead>
+                    <TableHead>Status</TableHead>
+                    {isPrincipal && <TableHead>Mainline</TableHead>}
+                    <TableHead className="text-right">Actions</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {flows.map((evalFlow) => (
+                    <TableRow
+                      key={evalFlow.id}
+                      data-testid={`row-eval-flow-${evalFlow.id}`}
+                      className="cursor-pointer hover:bg-muted/50"
+                      onClick={() => setLocation(`/console/eval-flows/${evalFlow.id}`)}
+                    >
+                      <TableCell>
+                        <div className="flex items-center justify-between">
+                          <div>
+                            <div className="font-medium">{evalFlow.name}</div>
+                            {evalFlow.description && (
+                              <div className="text-sm text-muted-foreground">{evalFlow.description}</div>
+                            )}
+                          </div>
+                          <ChevronRight className="h-4 w-4 text-muted-foreground" />
+                        </div>
+                      </TableCell>
+                      {hasProjects && (
+                        <TableCell>
+                          {evalFlow.projectId ? (
+                            <Badge variant="outline" className="gap-1">
+                              <FolderKanban className="h-3 w-3" />
+                              {projects?.find(p => p.id === evalFlow.projectId)?.name || `#${evalFlow.projectId}`}
+                            </Badge>
+                          ) : (
+                            <span className="text-sm text-muted-foreground">--</span>
+                          )}
+                        </TableCell>
+                      )}
+                      <TableCell>
+                        <div className="flex items-center gap-1">
+                          <Badge variant="outline" className="gap-1">
+                            {evalFlow.visibility === "public" ? (
+                              <><Globe className="h-3 w-3" /> Public</>
+                            ) : (
+                              <><Lock className="h-3 w-3" /> Private</>
+                            )}
+                          </Badge>
+                          {evalFlow.transport === "phone" && (
+                            <Badge variant="outline" className="gap-1" data-testid={`badge-phone-${evalFlow.id}`}>
+                              <Phone className="h-3 w-3" /> Phone
+                            </Badge>
+                          )}
+                        </div>
+                      </TableCell>
+                      <TableCell>
+                        {evalFlow.isMainline ? (
+                          <Badge className="gap-1">
+                            <Star className="h-3 w-3" /> Mainline
+                          </Badge>
+                        ) : (
+                          <Badge variant="secondary">Community</Badge>
+                        )}
+                      </TableCell>
+                      {isPrincipal && (
+                        <TableCell>
+                          <Switch
+                            checked={evalFlow.isMainline}
+                            onCheckedChange={(checked) => {
+                              toggleMainlineMutation.mutate({ id: evalFlow.id, isMainline: checked });
+                            }}
+                            disabled={evalFlow.visibility === "private" && !evalFlow.isMainline}
+                            data-testid={`switch-mainline-${evalFlow.id}`}
+                            onClick={(e) => e.stopPropagation()}
+                          />
+                        </TableCell>
+                      )}
+                      <TableCell className="text-right">
+                        <div className="flex items-center justify-end gap-1">
+                          {String(evalFlow.ownerId) === String(authStatus?.user?.id) ? (
+                            <>
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  openEditDialog(evalFlow);
+                                }}
+                              >
+                                <Pencil className="h-4 w-4" />
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setDeleteTarget(evalFlow);
+                                  setDeleteConfirmName("");
+                                }}
+                              >
+                                <Trash2 className="h-4 w-4 text-destructive" />
+                              </Button>
+                            </>
+                          ) : evalFlow.visibility === "public" ? (
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                cloneMutation.mutate(evalFlow.id);
+                              }}
+                              disabled={cloneMutation.isPending}
+                            >
+                              <Copy className="h-4 w-4" />
+                            </Button>
+                          ) : null}
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            ) : (
+              <div className="text-center py-8 text-muted-foreground">{emptyMsg}</div>
+            )}
+    </>
+  );
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between gap-4">
@@ -557,155 +713,41 @@ export default function ConsoleEvalFlows() {
         </DialogContent>
       </Dialog>
 
-      <Card>
-        <CardHeader>
-          <CardDescription>
-            {isPrincipal
-              ? "As a principal user, you can mark evalFlows as mainline for the official evaluation."
-              : "View and manage your test evalFlows."
-            }
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          {isLoading ? (
-            <div className="space-y-4">
-              {[1, 2, 3].map((i) => (
-                <Skeleton key={i} className="h-12 w-full" />
-              ))}
-            </div>
-          ) : evalFlows && evalFlows.length > 0 ? (
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Name</TableHead>
-                  {hasProjects && <TableHead>Project</TableHead>}
-                  <TableHead>Visibility</TableHead>
-                  <TableHead>Status</TableHead>
-                  {isPrincipal && <TableHead>Mainline</TableHead>}
-                  <TableHead className="text-right">Actions</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {evalFlows.map((evalFlow) => (
-                  <TableRow
-                    key={evalFlow.id}
-                    data-testid={`row-eval-flow-${evalFlow.id}`}
-                    className="cursor-pointer hover:bg-muted/50"
-                    onClick={() => setLocation(`/console/eval-flows/${evalFlow.id}`)}
-                  >
-                    <TableCell>
-                      <div className="flex items-center justify-between">
-                        <div>
-                          <div className="font-medium">{evalFlow.name}</div>
-                          {evalFlow.description && (
-                            <div className="text-sm text-muted-foreground">{evalFlow.description}</div>
-                          )}
-                        </div>
-                        <ChevronRight className="h-4 w-4 text-muted-foreground" />
-                      </div>
-                    </TableCell>
-                    {hasProjects && (
-                      <TableCell>
-                        {evalFlow.projectId ? (
-                          <Badge variant="outline" className="gap-1">
-                            <FolderKanban className="h-3 w-3" />
-                            {projects?.find(p => p.id === evalFlow.projectId)?.name || `#${evalFlow.projectId}`}
-                          </Badge>
-                        ) : (
-                          <span className="text-sm text-muted-foreground">--</span>
-                        )}
-                      </TableCell>
-                    )}
-                    <TableCell>
-                      <div className="flex items-center gap-1">
-                        <Badge variant="outline" className="gap-1">
-                          {evalFlow.visibility === "public" ? (
-                            <><Globe className="h-3 w-3" /> Public</>
-                          ) : (
-                            <><Lock className="h-3 w-3" /> Private</>
-                          )}
-                        </Badge>
-                        {evalFlow.transport === "phone" && (
-                          <Badge variant="outline" className="gap-1" data-testid={`badge-phone-${evalFlow.id}`}>
-                            <Phone className="h-3 w-3" /> Phone
-                          </Badge>
-                        )}
-                      </div>
-                    </TableCell>
-                    <TableCell>
-                      {evalFlow.isMainline ? (
-                        <Badge className="gap-1">
-                          <Star className="h-3 w-3" /> Mainline
-                        </Badge>
-                      ) : (
-                        <Badge variant="secondary">Community</Badge>
-                      )}
-                    </TableCell>
-                    {isPrincipal && (
-                      <TableCell>
-                        <Switch
-                          checked={evalFlow.isMainline}
-                          onCheckedChange={(checked) => {
-                            toggleMainlineMutation.mutate({ id: evalFlow.id, isMainline: checked });
-                          }}
-                          disabled={evalFlow.visibility === "private" && !evalFlow.isMainline}
-                          data-testid={`switch-mainline-${evalFlow.id}`}
-                          onClick={(e) => e.stopPropagation()}
-                        />
-                      </TableCell>
-                    )}
-                    <TableCell className="text-right">
-                      <div className="flex items-center justify-end gap-1">
-                        {String(evalFlow.ownerId) === String(authStatus?.user?.id) ? (
-                          <>
-                            <Button
-                              size="sm"
-                              variant="ghost"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                openEditDialog(evalFlow);
-                              }}
-                            >
-                              <Pencil className="h-4 w-4" />
-                            </Button>
-                            <Button
-                              size="sm"
-                              variant="ghost"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                setDeleteTarget(evalFlow);
-                                setDeleteConfirmName("");
-                              }}
-                            >
-                              <Trash2 className="h-4 w-4 text-destructive" />
-                            </Button>
-                          </>
-                        ) : evalFlow.visibility === "public" ? (
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              cloneMutation.mutate(evalFlow.id);
-                            }}
-                            disabled={cloneMutation.isPending}
-                          >
-                            <Copy className="h-4 w-4" />
-                          </Button>
-                        ) : null}
-                      </div>
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          ) : (
-            <div className="text-center py-8 text-muted-foreground">
-              No evalFlows yet. Create your first evalFlow to get started.
-            </div>
-          )}
-        </CardContent>
-      </Card>
+      <Tabs defaultValue="my">
+        <TabsList>
+          <TabsTrigger value="my" data-testid="tab-my-eval-flows">My Eval Flows</TabsTrigger>
+          <TabsTrigger value="public" data-testid="tab-public-eval-flows">Public</TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="my" className="mt-4">
+          <Card>
+            <CardHeader>
+              <CardDescription>
+                {isPrincipal
+                  ? "As a principal user, you can mark eval flows as mainline for the official evaluation."
+                  : "View and manage your eval flows."
+                }
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              {renderEvalFlowTable(myEvalFlows, myLoading, "No eval flows yet. Create your first eval flow to get started.")}
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="public" className="mt-4">
+          <Card>
+            <CardHeader>
+              <CardDescription>
+                Public eval flows shared by other users. Clone one to use it as your own.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              {renderEvalFlowTable(publicEvalFlows, isLoading, "No public eval flows from other users yet.")}
+            </CardContent>
+          </Card>
+        </TabsContent>
+      </Tabs>
 
       {/* Delete Eval Flow Confirmation Dialog */}
       <AlertDialog open={!!deleteTarget} onOpenChange={(open) => { if (!open) { setDeleteTarget(null); setDeleteConfirmName(""); } }}>
