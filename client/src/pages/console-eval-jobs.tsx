@@ -11,6 +11,7 @@ import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, 
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Switch } from "@/components/ui/switch";
 import { Pagination, PaginationContent, PaginationItem, PaginationLink, PaginationNext, PaginationPrevious, PaginationEllipsis } from "@/components/ui/pagination";
 import { ClipboardList, CheckCircle, XCircle, Loader2, Clock, CalendarClock, CalendarPlus, MousePointerClick, MoreHorizontal, Pause, Play, Pencil, Trash2, Zap, AlertTriangle, Phone } from "lucide-react";
 import { useState } from "react";
@@ -56,8 +57,10 @@ const TIME_RANGES = [
 
 const PAGE_SIZE = 50;
 
-function buildJobsUrl(filters: { status: string; region: string; evalFlowId: string; hours: string; limit: number; offset: number }) {
+function buildJobsUrl(filters: { status: string; region: string; evalFlowId: string; hours: string; limit: number; offset: number; allVisible: boolean }) {
   const params = new URLSearchParams();
+  // Default is jobs you started; "all visible" = every job you may view.
+  if (filters.allVisible) params.set("scope", "visible");
   if (filters.status !== "all") params.set("status", filters.status);
   if (filters.region !== "all") params.set("region", filters.region);
   if (filters.evalFlowId !== "all") params.set("evalFlowId", filters.evalFlowId);
@@ -430,10 +433,11 @@ function JobsTab() {
   const [regionFilter, setRegionFilter] = useState("all");
   const [evalFlowFilter, setEvalFlowFilter] = useState("all");
   const [timeFilter, setTimeFilter] = useState("24");
+  const [allVisible, setAllVisible] = useState(false);
   const [page, setPage] = useState(1);
 
   const offset = (page - 1) * PAGE_SIZE;
-  const url = buildJobsUrl({ status: statusFilter, region: regionFilter, evalFlowId: evalFlowFilter, hours: timeFilter, limit: PAGE_SIZE, offset });
+  const url = buildJobsUrl({ status: statusFilter, region: regionFilter, evalFlowId: evalFlowFilter, hours: timeFilter, limit: PAGE_SIZE, offset, allVisible });
 
   const { data, isLoading } = useQuery<{ data: EnrichedEvalJob[]; total: number }>({
     queryKey: [url],
@@ -462,6 +466,7 @@ function JobsTab() {
   const setStatusAndReset = (v: string) => { setStatusFilter(v); setPage(1); };
   const setRegionAndReset = (v: string) => { setRegionFilter(v); setPage(1); };
   const setEvalFlowAndReset = (v: string) => { setEvalFlowFilter(v); setPage(1); };
+  const setAllVisibleAndReset = (v: boolean) => { setAllVisible(v); setPage(1); };
 
   const rangeStart = total > 0 ? offset + 1 : 0;
   const rangeEnd = Math.min(offset + PAGE_SIZE, total);
@@ -538,6 +543,18 @@ function JobsTab() {
             Clear filters
           </Button>
         )}
+
+        <div className="ml-auto flex items-center gap-2">
+          <Switch
+            id="jobs-all-visible"
+            checked={allVisible}
+            onCheckedChange={setAllVisibleAndReset}
+            data-testid="switch-all-visible"
+          />
+          <Label htmlFor="jobs-all-visible" className="text-sm cursor-pointer">
+            All visible
+          </Label>
+        </div>
       </div>
 
       <Card>

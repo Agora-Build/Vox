@@ -12,7 +12,7 @@ import { storage, mergeEvalConfig, buildJobSnapshot, validateEvalFlowConfig, val
 import { requireAuthOrApiKey, getCurrentUserOrApiKeyUser } from "./auth";
 import { parsePlatformSetup, sessionScopeForEvalFlow, evaluateSessionRequirement, getBrokeredSecretNames, ensureSession, missingSecretNames, resolvableSecretSources } from "./auth-session";
 import { regionSiteSequence } from "@shared/regions";
-import { hasOrg, sameOrg, isOwnerOrOrgManager, canAccessResource } from "./permissions";
+import { hasOrg, sameOrg, isOwnerOrOrgManager, canAccessResource, canViewJob, canCancelJob, parseJobScope, jobListFilter } from "./permissions";
 import { getOrganizations } from "./organizations";
 
 type ApiRegionLocation = Awaited<ReturnType<typeof storage.getAllRegionLocations>>[number];
@@ -597,6 +597,8 @@ export function registerApiV1Routes(app: Express): void {
       }
 
       const { status, limit, offset } = req.query;
+      const scope = parseJobScope(req.query.scope);
+      if (!scope) return res.status(400).json({ error: "scope must be mine or visible" });
 
       const pageLimit = Math.min(Math.max(parseInt(limit as string) || 50, 1), 200);
       const pageOffset = Math.max(parseInt(offset as string) || 0, 0);
@@ -607,16 +609,19 @@ export function registerApiV1Routes(app: Express): void {
         ? (status as typeof validStatuses[number])
         : undefined;
 
-      // Count total (no limit/offset) and fetch page in parallel
-      const [allJobs, pagedJobs] = await Promise.all([
-        storage.getEvalJobs({ ownerId: user.id, status: statusFilter }),
-        storage.getEvalJobs({ ownerId: user.id, status: statusFilter, limit: pageLimit, offset: pageOffset }),
+      // mine (default) = jobs you started; visible = every job you may view —
+      // the same scopes, and the same rule, as the console's job list.
+      const scoped = { status: statusFilter, ...jobListFilter(user, scope) };
+      const [total, pagedJobs] = await Promise.all([
+        storage.countEvalJobs(scoped),
+        storage.getEvalJobs({ ...scoped, limit: pageLimit, offset: pageOffset }),
       ]);
 
       res.json({
         data: pagedJobs,
         meta: {
-          total: allJobs.length,
+          total,
+          scope,
           limit: pageLimit,
           offset: pageOffset,
         },
@@ -647,8 +652,7 @@ export function registerApiV1Routes(app: Express): void {
 
       // Check ownership — live evalFlow owner, or the job's creator once it's deleted.
       const evalFlow = job.evalFlowId != null ? await storage.getEvalFlow(job.evalFlowId) : undefined;
-      const allowed = evalFlow ? evalFlow.ownerId === user.id : job.createdBy === user.id;
-      if (!allowed) {
+      if (!canViewJob(user, job, evalFlow)) {
         return res.status(403).json({ error: "Access denied" });
       }
 
@@ -679,8 +683,7 @@ export function registerApiV1Routes(app: Express): void {
 
       // Check ownership — live evalFlow owner, or the job's creator once it's deleted.
       const evalFlow = job.evalFlowId != null ? await storage.getEvalFlow(job.evalFlowId) : undefined;
-      const allowed = evalFlow ? evalFlow.ownerId === user.id : job.createdBy === user.id;
-      if (!allowed) {
+      if (!canCancelJob(user, job, evalFlow)) {
         return res.status(403).json({ error: "Access denied" });
       }
 
@@ -760,8 +763,7 @@ export function registerApiV1Routes(app: Express): void {
       }
 
       const evalFlow = job.evalFlowId != null ? await storage.getEvalFlow(job.evalFlowId) : undefined;
-      const allowed = evalFlow ? evalFlow.ownerId === user.id : job.createdBy === user.id;
-      if (!allowed) {
+      if (!canViewJob(user, job, evalFlow)) {
         return res.status(403).json({ error: "Access denied" });
       }
 

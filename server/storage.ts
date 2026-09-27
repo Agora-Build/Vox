@@ -632,6 +632,19 @@ export { pool };
 // or an organization (mirrors secrets ownership).
 export type SessionScope = { userId: number } | { organizationId: number };
 
+export interface EvalJobFilters {
+  status?: "pending" | "running" | "completed" | "failed";
+  region?: string;
+  evalFlowId?: number;
+  agentId?: number;
+  ownerId?: number;
+  hoursBack?: number;
+  limit?: number;
+  offset?: number;
+  /** Only jobs this user may view — the SQL form of canViewJob. */
+  visibleTo?: { userId: number; organizationId: number | null; isAdmin: boolean };
+}
+
 export class DatabaseStorage {
   // org-columns: provider — returns the raw User row (organizationId/orgRole
   // included). Those two columns are FROZEN since the Release A flip: membership
@@ -1549,16 +1562,7 @@ export class DatabaseStorage {
   }
 
   // Get all jobs with optional filters
-  async getEvalJobs(filters?: {
-    status?: "pending" | "running" | "completed" | "failed";
-    region?: string;
-    evalFlowId?: number;
-    agentId?: number;
-    ownerId?: number;
-    hoursBack?: number;
-    limit?: number;
-    offset?: number;
-  }): Promise<EvalJob[]> {
+  private evalJobConditions(filters?: EvalJobFilters) {
     const conditions = [];
     if (filters?.status) {
       conditions.push(eq(evalJobs.status, filters.status));
@@ -1605,7 +1609,24 @@ export class DatabaseStorage {
     if (filters?.ownerId) {
       conditions.push(eq(evalJobs.createdBy, filters.ownerId));
     }
+    // "All jobs this user may view" — the SQL form of canViewJob
+    // (server/permissions.ts); keep the two in step. An admin sees everything.
+    // While the job's eval flow exists: the flow's owner, its org's members, or
+    // anyone if it is public (LIVE visibility). Once deleted: the job's runner.
+    if (filters?.visibleTo && !filters.visibleTo.isAdmin) {
+      const { userId, organizationId } = filters.visibleTo;
+      conditions.push(or(
+        and(isNull(evalJobs.evalFlowId), eq(evalJobs.createdBy, userId)),
+        sql`${evalJobs.evalFlowId} IN (SELECT id FROM eval_flows WHERE owner_id = ${userId} OR visibility = 'public'${
+          organizationId != null ? sql` OR organization_id = ${organizationId}` : sql``
+        })`,
+      )!);
+    }
+    return conditions;
+  }
 
+  async getEvalJobs(filters?: EvalJobFilters): Promise<EvalJob[]> {
+    const conditions = this.evalJobConditions(filters);
     let query = db.select().from(evalJobs);
 
     if (conditions.length > 0) {
@@ -1622,6 +1643,13 @@ export class DatabaseStorage {
     }
 
     return query;
+  }
+
+  async countEvalJobs(filters?: Omit<EvalJobFilters, "limit" | "offset">): Promise<number> {
+    const conditions = this.evalJobConditions(filters);
+    const rows = await db.select({ count: sql<number>`count(*)::int` }).from(evalJobs)
+      .where(conditions.length > 0 ? and(...conditions) : undefined);
+    return rows[0]?.count ?? 0;
   }
 
   // Cancel a pending job
