@@ -743,7 +743,9 @@ export default function ConsoleEvalFlows() {
               </CardDescription>
             </CardHeader>
             <CardContent>
-              {renderEvalFlowTable(publicEvalFlows, isLoading, "No public eval flows from other users yet.")}
+              {/* Wait for "mine" too: until it loads, publicEvalFlows can't exclude
+                  your own flows and would briefly show them here. */}
+              {renderEvalFlowTable(publicEvalFlows, isLoading || myLoading, "No public eval flows from other users yet.")}
             </CardContent>
           </Card>
         </TabsContent>
