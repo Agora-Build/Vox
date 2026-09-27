@@ -60,8 +60,9 @@ info:
 
     ## Rate Limiting
 
-    In production, API requests are rate limited to 1,000 requests per 15 minutes per IP. Login and
-    registration endpoints carry a stricter limit of 20 per 15 minutes.
+    In production, API requests are rate limited to 1,000 requests per 15 minutes per IP. The
+    account endpoints — login, registration, account activation and password change — carry a
+    stricter limit of 20 per 15 minutes.
 
     ## Response Format
 
@@ -1050,7 +1051,8 @@ paths:
         Returns a job by ID. You may read any job you can see in the console: jobs on
         eval flows you own, on your organization's flows, or on any public flow
         (including jobs other people ran on them). Once the job's eval flow is
-        deleted, only the person who ran the job may read it.
+        deleted, only the person who ran the job may read it. System admins may
+        read any job.
       security:
         - BearerAuth: []
       parameters:

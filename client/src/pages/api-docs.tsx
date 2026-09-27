@@ -221,7 +221,7 @@ curl -H "Authorization: Bearer vox_live_xxxxx" "${base}/jobs?scope=visible"`}</C
               <p className="text-sm text-muted-foreground">
                 Responses are <code className="font-mono text-xs">{`{ "data": ..., "meta": ... }`}</code>;
                 errors are <code className="font-mono text-xs">{`{ "error": "..." }`}</code>. Requests
-                are rate limited to 1,000 per 15 minutes in production (sign-in routes: 20).
+                are rate limited to 1,000 per 15 minutes in production (account routes such as sign-in: 20).
               </p>
             </CardContent>
           </Card>
