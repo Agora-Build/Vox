@@ -1,6 +1,6 @@
 import { Link, useLocation } from "wouter";
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { LayoutDashboard, Trophy, BookOpen, Activity, Rocket, Swords, Menu, X, Github, Mail, LogIn, LogOut, User } from "lucide-react";
+import { LayoutDashboard, Trophy, BookOpen, Activity, Rocket, Swords, Menu, X, Github, Mail, CircleUserRound, LogOut, User } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
@@ -149,8 +149,15 @@ export default function Layout({ children }: { children: React.ReactNode }) {
               </DropdownMenu>
             ) : (
               <Link href="/login">
-                <Button variant="ghost" size="icon" data-testid="button-sign-in">
-                  <LogIn className="h-4 w-4" />
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="rounded-full"
+                  aria-label="Sign In"
+                  title="Sign In"
+                  data-testid="button-sign-in"
+                >
+                  <CircleUserRound className="h-5 w-5" />
                 </Button>
               </Link>
             )}
@@ -224,7 +231,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
                     onClick={() => setMobileMenuOpen(false)}
                     className="flex items-center gap-3 px-4 py-3 rounded-md text-sm font-medium transition-colors cursor-pointer text-muted-foreground hover:text-foreground hover:bg-secondary/50"
                   >
-                    <LogIn className="h-5 w-5" />
+                    <CircleUserRound className="h-5 w-5" />
                     <span>Sign In</span>
                   </div>
                 </Link>
