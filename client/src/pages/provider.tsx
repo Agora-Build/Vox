@@ -2,7 +2,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { ArrowRight, Clock, Wifi, Mic, Volume2, Globe, Server, Shield, ExternalLink } from "lucide-react";
+import { ArrowRight, Activity, Clock, Wifi, Mic, Volume2, Globe, Server, Shield, ExternalLink } from "lucide-react";
 import { Link } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -83,6 +83,17 @@ export default function ProviderGuide() {
           <Card>
             <CardHeader className="pb-2">
               <CardTitle className="text-base flex items-center gap-2">
+                <Activity className="h-4 w-4 text-emerald-500" />
+                Turn Success Rate
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <p className="text-sm text-muted-foreground">Share of turns handled correctly: responded, stopped on interrupt, no false barge-in. A turn with no response counts as a failure.</p>
+            </CardContent>
+          </Card>
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-base flex items-center gap-2">
                 <Clock className="h-4 w-4 text-blue-500" />
                 Response Latency
               </CardTitle>
@@ -135,17 +146,13 @@ export default function ProviderGuide() {
               <p className="text-sm text-muted-foreground">Percentage of background noise suppressed while maintaining speech clarity.</p>
             </CardContent>
           </Card>
-          <Card>
-            <CardHeader className="pb-2">
-              <CardTitle className="text-base flex items-center gap-2">
-                <Globe className="h-4 w-4 text-cyan-500" />
-                Multi-Region
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <p className="text-sm text-muted-foreground">Tests run across North America, Asia Pacific, Europe, and South America to measure global performance consistency.</p>
-            </CardContent>
-          </Card>
+        </div>
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border bg-card px-4 py-2.5 text-sm" data-testid="multi-region-line">
+          <Globe className="h-4 w-4 shrink-0 text-cyan-500" />
+          <span className="font-medium">Multi-Region</span>
+          <span className="text-muted-foreground">
+            Every metric is measured from North America, Asia Pacific, Europe, and South America.
+          </span>
         </div>
       </section>
 
@@ -292,12 +299,12 @@ export default function ProviderGuide() {
 
       {/* Get Started CTA */}
       <section className="text-center space-y-4 py-8 border-t">
-        <h2 className="text-xl font-bold">Ready to benchmark your agent?</h2>
+        <h2 className="text-xl font-bold">Ready to run an evaluation on your agent?</h2>
         <p className="text-muted-foreground">Create an account to get started with evaluations.</p>
         <div className="flex justify-center gap-3">
           <Link href="/run-your-own">
             <Button size="lg" variant="outline">
-              Quick Test
+              Quick Run
             </Button>
           </Link>
           <Link href="/console/eval-flows">
