@@ -34,17 +34,14 @@ export function LoginForm({ variant = "user" }: LoginFormProps) {
   const [password, setPassword] = useState("");
   const isAdminVariant = variant === "admin";
 
-  // Check if Google OAuth is available
-  const { data: googleStatus } = useQuery<{ enabled: boolean }>({
-    queryKey: ["/api/auth/google/status"],
+  // Which sign-in providers are on. Served by the oauth plugin; when the plugin
+  // isn't loaded this 404s and no provider buttons are shown.
+  const { data: providers } = useQuery<{ github: boolean; google: boolean }>({
+    queryKey: ["/api/plugins/oauth/providers"],
+    retry: false,
   });
 
-  // Check if GitHub OAuth is available
-  const { data: githubStatus } = useQuery<{ enabled: boolean }>({
-    queryKey: ["/api/auth/github/status"],
-  });
-
-  const hasOAuth = googleStatus?.enabled || githubStatus?.enabled;
+  const hasOAuth = !!(providers?.google || providers?.github);
 
   // Handle OAuth error from redirect
   useEffect(() => {
@@ -167,11 +164,11 @@ export function LoginForm({ variant = "user" }: LoginFormProps) {
                 </span>
               </div>
               <div className="space-y-2">
-                {googleStatus?.enabled && (
+                {providers?.google && (
                   <Button
                     variant="outline"
                     className="w-full"
-                    onClick={() => window.location.href = "/api/auth/google"}
+                    onClick={() => window.location.href = "/api/plugins/oauth/google/start"}
                     data-testid="button-google-login"
                   >
                     <svg className="mr-2 h-4 w-4" viewBox="0 0 24 24">
@@ -195,11 +192,11 @@ export function LoginForm({ variant = "user" }: LoginFormProps) {
                     Continue with Google
                   </Button>
                 )}
-                {githubStatus?.enabled && (
+                {providers?.github && (
                   <Button
                     variant="outline"
                     className="w-full"
-                    onClick={() => window.location.href = "/api/auth/github"}
+                    onClick={() => window.location.href = "/api/plugins/oauth/github/start"}
                     data-testid="button-github-login"
                   >
                     <svg className="mr-2 h-4 w-4" viewBox="0 0 24 24">

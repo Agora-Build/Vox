@@ -7,7 +7,8 @@ import { createServer } from "http";
 import session from "express-session";
 import connectPgSimple from "connect-pg-simple";
 import rateLimit from "express-rate-limit";
-import { authenticateApiKey, passport, initializeGoogleOAuth } from "./auth";
+import { authenticateApiKey } from "./auth";
+import { identityService } from "./identity";
 import { pool } from "./storage";
 import { startLocationServices } from "./location";
 import { setupClashWebSocket } from "./clash-ws";
@@ -64,16 +65,6 @@ app.use(
   })
 );
 
-// Initialize Passport for OAuth
-app.use(passport.initialize());
-app.use(passport.session());
-
-// Initialize Google OAuth if credentials are configured
-const googleOAuthEnabled = initializeGoogleOAuth();
-if (googleOAuthEnabled) {
-  console.log("Google OAuth initialized successfully");
-}
-
 
 declare module "http" {
   interface IncomingMessage {
@@ -104,7 +95,7 @@ const isProduction = process.env["NODE_ENV"] === "production";
 const rateLimitDisabled = process.env["RATE_LIMIT_DISABLED"] === "true";
 
 // Paths exempt from rate limiting (lightweight read-only checks)
-const rateLimitExempt = new Set(["/api/auth/status", "/api/auth/google/status", "/api/auth/github/status"]);
+const rateLimitExempt = new Set(["/api/auth/status", "/api/plugins/oauth/providers"]);
 
 // Rate limiting for API routes
 const apiLimiter = rateLimit({
@@ -181,7 +172,20 @@ app.use((req, res, next) => {
 
   // Load enabled plugins (routes mounted before the error handler + vite catch-all).
   // Any misconfiguration throws here — fail-before-listen (strict startup).
-  const plugins = await loadPlugins(app, pool);
+  // vox.identity: Core users and sessions, for plugins that sign people in (oauth).
+  const plugins = await loadPlugins(app, pool, undefined, undefined, {
+    "vox.identity": { version: "1.0.0", impl: identityService },
+  });
+  // Sign-in with GitHub/Google lives in the oauth plugin. Credentials without
+  // the plugin would otherwise just make the buttons vanish, indistinguishable
+  // from "not configured".
+  const pluginIds = (process.env.VOX_PLUGINS ?? "").split(",").map((id) => id.trim());
+  if ((process.env.GITHUB_CLIENT_ID || process.env.GOOGLE_CLIENT_ID) && !pluginIds.includes("oauth")) {
+    console.warn(
+      "[oauth] GitHub/Google credentials are set but the oauth plugin is not in VOX_PLUGINS — " +
+        "sign-in with GitHub/Google is OFF. Add oauth to VOX_PLUGINS to enable it.",
+    );
+  }
   setMarketplace(plugins.services.optional<EvalMarketplace>("vox.eval-marketplace", "^1.0.0"));
 
   // Organizations: PLUGIN-OR-ABSENT (Release A flip). The `organizations`

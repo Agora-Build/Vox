@@ -26,11 +26,18 @@ export function makeServicesView(registry: ServiceRegistry): LoadedPlugins["serv
   };
 }
 
+/** A service Core offers to plugins, e.g. `vox.identity`. */
+export interface CoreService {
+  version: string;
+  impl: unknown;
+}
+
 export async function loadPlugins(
   app: Express,
   pool: Pool,
   builtins: Record<string, VoxPlugin> = BUILTIN_PLUGINS,
   pluginsDir = "./plugins",
+  coreServices: Record<string, CoreService> = {},
 ): Promise<LoadedPlugins> {
   const ids = (process.env.VOX_PLUGINS ?? "").split(",").map((s) => s.trim()).filter(Boolean);
   if (ids.length === 0) {
@@ -51,13 +58,16 @@ export async function loadPlugins(
   }
 
   // 2. resolve order
-  const ordered = resolveActivationOrder(manifests);
+  const ordered = resolveActivationOrder(manifests, new Set(Object.keys(coreServices)));
 
   // 3. migrate
   await runPluginMigrations(pool, ordered, pluginsDir);
 
   // 4. activate in dependency order
   const registry = new ServiceRegistry();
+  for (const [name, { version, impl }] of Object.entries(coreServices)) {
+    registry.provide(name, version, impl);
+  }
   const httpHost = new HttpHost();
   const workerHost = new WorkerHost();
   const healthHost = new HealthHost();

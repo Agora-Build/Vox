@@ -135,14 +135,15 @@ test.describe("System Configuration", () => {
     expect(body).toBeDefined();
   });
 
-  test("GET /api/auth/google/status - should return OAuth status", async ({
+  test("GET /api/plugins/oauth/providers - should report sign-in providers", async ({
     request,
   }) => {
-    const response = await request.get("/api/auth/google/status");
+    const response = await request.get("/api/plugins/oauth/providers");
     expect(response.ok()).toBeTruthy();
 
     const body = await response.json();
-    expect(typeof body.enabled).toBe("boolean");
+    expect(typeof body.github).toBe("boolean");
+    expect(typeof body.google).toBe("boolean");
   });
 });
 

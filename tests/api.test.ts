@@ -182,11 +182,12 @@ describe('Vox API Tests', () => {
       expect(response.status).toBe(401);
     });
 
-    it('should check Google OAuth status', async () => {
-      const response = await fetch(`${BASE_URL}/api/auth/google/status`);
+    it('should report which sign-in providers are on (oauth plugin)', async () => {
+      const response = await fetch(`${BASE_URL}/api/plugins/oauth/providers`);
       expect(response.ok).toBe(true);
       const data = await response.json();
-      expect(typeof data.enabled).toBe('boolean');
+      expect(typeof data.github).toBe('boolean');
+      expect(typeof data.google).toBe('boolean');
     });
   });
 

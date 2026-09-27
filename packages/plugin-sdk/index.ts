@@ -1,7 +1,7 @@
-import type { RequestHandler } from "express";
+import type { Request, RequestHandler } from "express";
 
 /** Plugin API version Core implements. Plugins declare a compatible range in voxPluginApi. */
-export const VOX_PLUGIN_API_VERSION = "1.0.0";
+export const VOX_PLUGIN_API_VERSION = "1.1.0";
 
 export type Handler = RequestHandler;
 
@@ -63,4 +63,45 @@ export interface VoxPluginContext {
 export interface VoxPlugin {
   activate(ctx: VoxPluginContext): Promise<void>;
   deactivate?(): Promise<void>;
+}
+
+// ---------------------------------------------------------------------------
+// Services Core provides to plugins (plugin API >= 1.1.0)
+// ---------------------------------------------------------------------------
+
+/** A Core user, as much of it as a plugin may see. */
+export interface IdentityUser {
+  id: number;
+  username: string;
+  email: string;
+  isAdmin: boolean;
+  isEnabled: boolean;
+  emailVerified: boolean;
+  /** Whether the account can also sign in with a password. */
+  hasPassword: boolean;
+}
+
+/**
+ * `vox.identity@1.0.0` — Core's users and sessions, for plugins that sign people
+ * in (e.g. oauth). Core stays the only writer of users and sessions; a plugin
+ * that needs a user goes through here rather than touching Core tables.
+ */
+export interface IdentityService {
+  getUserById(id: number): Promise<IdentityUser | null>;
+  getUserByEmail(email: string): Promise<IdentityUser | null>;
+  /**
+   * Creates a basic-plan user with no password and a verified email. The
+   * username is derived from `preferredUsername` (or the email's local part)
+   * and made unique by Core.
+   */
+  createUser(input: { email: string; preferredUsername?: string }): Promise<IdentityUser>;
+  markEmailVerified(userId: number): Promise<void>;
+  /**
+   * Starts a Core session for `userId` on this request. The session is
+   * regenerated first (new id, previous contents dropped), so an id that
+   * existed before sign-in is never promoted to a signed-in one.
+   */
+  signIn(req: Request, userId: number): Promise<void>;
+  /** Ends any Core session on this request. */
+  signOut(req: Request): void;
 }

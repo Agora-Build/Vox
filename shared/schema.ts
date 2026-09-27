@@ -66,6 +66,8 @@ export const users = pgTable("users", {
   emailVerifiedAt: timestamp("email_verified_at"),
   organizationId: integer("organization_id"),
   orgRole: orgRoleEnum("org_role"),
+  // Frozen: account links moved to the oauth plugin (plugin_oauth.identities).
+  // No code reads or writes these; dropped in a later release.
   googleId: text("google_id").unique(),
   githubId: text("github_id").unique(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
