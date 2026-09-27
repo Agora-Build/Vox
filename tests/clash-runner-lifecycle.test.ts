@@ -326,16 +326,25 @@ describe("Clash Runner Lifecycle", () => {
       expect(started.status).toBe("live");
     });
 
-    it("match gets assigned to the idle runner via scheduler polling", async () => {
-      // The scheduler runs every 10s. We can't wait for it in tests, but we can
-      // manually verify the state. For now, let's check the match is "pending"
-      const eventRes = await authFetch(admin, `${BASE_URL}/api/clash/events/${eventId}`);
-      const event = await eventRes.json();
-      const matches = event.matches || [];
-      expect(matches.length).toBe(1);
-      // Match starts as "pending" — scheduler will pick it up
-      expect(["pending", "starting", "live"]).toContain(matches[0].status);
-    });
+    it("match gets assigned to the idle runner by the scheduler", async () => {
+      const event = await (await authFetch(admin, `${BASE_URL}/api/clash/events/${eventId}`)).json();
+      expect(event.matches).toHaveLength(1);
+      const matchId = event.matches[0].id;
+
+      // The live server's clash scheduler ticks every 10s. This suite's runner
+      // is the only runner in its own site, so the tick has exactly one pairing
+      // to make: poll the runner's own view until it is handed THIS match.
+      const deadline = Date.now() + 25_000;
+      let assignment: { assigned: boolean; match?: { id: number }; event?: { id: number } } = { assigned: false };
+      while (Date.now() < deadline) {
+        assignment = await (await bearerFetch(runnerToken, "GET", "/api/clash-runner/assignment")).json();
+        if (assignment.assigned) break;
+        await new Promise((r) => setTimeout(r, 1000));
+      }
+      expect(assignment.assigned).toBe(true);
+      expect(assignment.match?.id).toBe(matchId);
+      expect(assignment.event?.id).toBe(eventId);
+    }, 40_000);
 
     it("runner can complete a match with metrics", async () => {
       // Get the match ID
@@ -498,7 +507,7 @@ describe("Clash Runner Lifecycle", () => {
   // ── Moderator Endpoints ────────────────────────────────────────────
 
   describe("Moderator Endpoints", () => {
-    it("moderator/start succeeds (returns moderatorAvailable or skips gracefully)", async () => {
+    it("moderator/start starts a real moderator when configured, reports unavailable when not", async () => {
       const eventRes = await authFetch(admin, `${BASE_URL}/api/clash/events`, {
         method: "POST",
         body: JSON.stringify({
@@ -523,13 +532,30 @@ describe("Clash Runner Lifecycle", () => {
         phase: "announce",
       });
       const data = await res.json();
-      // 200 = moderator started or skipped; 500 = ConvoAI API error (credentials/appId mismatch in dev)
-      expect([200, 500]).toContain(res.status);
-      if (res.status === 200) {
-        expect(data.success).toBe(true);
+      // Mirrors isModeratorConfigured() (server/agora.ts). The test process
+      // loads the same .env as the dev server. A 500 is never acceptable: with
+      // the moderator unconfigured the route skips with 200, and configured it
+      // must actually start one — a failed ConvoAI call is a real failure.
+      const moderatorConfigured = !!(
+        process.env.AGORA_APP_ID && process.env.AGORA_APP_CERTIFICATE && process.env.AGORA_CONVOAI_CONFIG
+      );
+      expect(res.status).toBe(200);
+      expect(data.success).toBe(true);
+      expect(data.moderatorAvailable).toBe(moderatorConfigured);
+
+      if (moderatorConfigured) {
+        // A real, billed ConvoAI agent is now running: prove the server recorded
+        // it, then stop it. Completing the match does NOT stop the moderator —
+        // only /moderator/stop does, so without this every run leaked an agent.
+        expect(typeof data.agentId).toBe("string");
+        expect(data.agentId.length).toBeGreaterThan(0);
+        const after = await (await authFetch(admin, `${BASE_URL}/api/clash/events/${event.id}`)).json();
+        expect(after.moderatorAgentId).toBe(data.agentId);
+
+        const stop = await bearerFetch(runnerToken, "POST", "/api/clash/moderator/stop", { matchId });
+        expect(stop.status).toBe(200);
       }
 
-      // Clean up
       await bearerFetch(runnerToken, "POST", "/api/clash-runner/complete", {
         matchId, error: "test cleanup",
       });
