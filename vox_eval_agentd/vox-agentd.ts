@@ -31,7 +31,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { SECRET_PLACEHOLDER_REGEX, collectSecretRefs } from '../shared/secrets';
+import { SECRET_PLACEHOLDER_REGEX, collectSecretRefs, unresolvedSecretsMessage } from '../shared/secrets';
 import { summarizeAevalFailure, reduceUrlsSafely, urlForms, createBoundedCapture } from './aeval-output';
 import { StringDecoder } from 'string_decoder';
 import yaml from 'js-yaml';
@@ -1947,6 +1947,13 @@ class VoxEvalAgentDaemon {
     };
     const prefixSteps = parseStepList(config.stepsPrefix, 'stepsPrefix');
     const suffixSteps = parseStepList(config.stepsSuffix, 'stepsSuffix');
+    // ${config.*} / ${secrets.*} in Setup/Teardown — e.g. a call.dial number
+    // kept as a secret. runPhoneJob fills them and redacts its errors.
+    const configVars: Record<string, string> = {};
+    for (const [k, v] of Object.entries(config)) {
+      if (typeof v === 'string' && k !== 'scenario' && k !== 'framework') configVars[k] = v;
+    }
+    const jobSecrets = await this.fetchSecrets(job.id);
 
     const corpus = this.loadCorpusIndex();
     const workDir = fs.mkdtempSync(path.join(os.tmpdir(), `vox-phone-${job.id}-`));
@@ -1969,6 +1976,7 @@ class VoxEvalAgentDaemon {
           },
           // Docker↔host bridge (design §6): identical-path bind mount, set by vox-upgrade.sh.
           exchangeDir: process.env.VOX_DIALF_EXCHANGE_DIR ?? null,
+          placeholders: { config: configVars, secrets: jobSecrets },
         },
         {
           dialfCall: (op, fields, timeoutMs) => client.call(op, fields, timeoutMs),
@@ -2130,20 +2138,7 @@ class VoxEvalAgentDaemon {
       const unresolved = unsuppliedNames.filter((name) =>
         active.some((text) => typeof text === 'string' && text.includes('${secrets.' + name + '}')),
       );
-      if (unresolved.length > 0) {
-        const names = [...unresolved].sort();
-        const plural = names.length > 1;
-        // Deliberately scope-agnostic: the daemon cannot distinguish "no such
-        // secret" from "the server withheld it for this job" (e.g. an org
-        // secret fenced on the job creator's membership), so it must not tell
-        // the user to go create one.
-        throw new Error(
-          `Unresolved secret placeholder(s): ${names.join(', ')}. ` +
-          `The server did not supply ${plural ? 'these secrets' : 'this secret'} for this job — ` +
-          `${plural ? 'they are' : 'it is'} either not configured for the evalFlow owner, or not ` +
-          `available to whoever started the run.`,
-        );
-      }
+      if (unresolved.length > 0) throw new Error(unresolvedSecretsMessage(unresolved));
 
       let results: EvalResult;
 

@@ -2,9 +2,10 @@ import { describe, it, expect } from "vitest";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
+import yaml from "js-yaml";
 import {
   compilePhoneConversation, splitPhoneScript, ensureTrailingHangup, sumStepTimeouts,
-  computePhoneRateEntries, toCallMetadata, buildSessionDir, runPhoneJob, stagePlayFiles,
+  computePhoneRateEntries, toCallMetadata, buildSessionDir, runPhoneJob, stagePlayFiles, fillStepPlaceholders,
 } from "../vox_eval_agentd/phone-eval";
 
 const corpus = (id: string) => (id.startsWith("known") ? `/abs/corpus/${id}.wav` : null);
@@ -450,6 +451,90 @@ describe("runPhoneJob (orchestration, injected deps)", () => {
     await runPhoneJob(cfg, good.deps as any);
     expect(good.hangups()).toBe(0);
     fs.rmSync(good.tmp, { recursive: true, force: true });
+  });
+
+  // The reported bug: `number: ${secrets.AGORA_AGENT_PHONE_NUMBER}` reached the
+  // dialable check as the literal placeholder, so every such job failed.
+  it("a call.dial number kept as a secret is dialed as its value — bare or quoted in the YAML", async () => {
+    for (const number of ["${secrets.AGENT_PHONE}", "\"${secrets.AGENT_PHONE}\""]) {
+      const { deps, calls, tmp } = mkDeps();
+      const prefixSteps = yaml.load(`- type: call.dial\n  number: ${number}\n- type: call.wait_answered\n`) as unknown[];
+      await runPhoneJob({
+        ...cfg,
+        prefixSteps,
+        placeholders: { config: {}, secrets: { AGENT_PHONE: "+1 234 595 2048" } },
+      }, deps as any);
+      expect(calls[0].fields.steps[0]).toMatchObject({ type: "call.dial", number: "+1 234 595 2048" });
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("${config.*} in Setup is filled from the job config", async () => {
+    const { deps, calls, tmp } = mkDeps();
+    await runPhoneJob({
+      ...cfg,
+      prefixSteps: [{ type: "call.dial", number: "${config.agentNumber}" }, { type: "call.wait_answered" }],
+      placeholders: { config: { agentNumber: "+15557654321" }, secrets: {} },
+    }, deps as any);
+    expect(calls[0].fields.steps[0].number).toBe("+15557654321");
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it("a secret the server did not supply fails the job naming it, before any dial", async () => {
+    const { deps, calls, tmp } = mkDeps();
+    await expect(runPhoneJob({
+      ...cfg,
+      prefixSteps: [{ type: "call.dial", number: "${secrets.AGENT_PHONE}" }, { type: "call.wait_answered" }],
+      placeholders: { config: {}, secrets: { OTHER: "x" } },
+    }, deps as any)).rejects.toThrow(/Unresolved secret placeholder\(s\): AGENT_PHONE\./);
+    expect(calls.length).toBe(0);
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it("a secret value never appears in the job error", async () => {
+    const { deps, tmp } = mkDeps();
+    const err = await runPhoneJob({
+      ...cfg,
+      prefixSteps: [{ type: "call.dial", number: "${secrets.AGENT_PHONE}" }, { type: "call.wait_answered" }],
+      placeholders: { config: {}, secrets: { AGENT_PHONE: "not-a-number-s3cret" } },
+    }, deps as any).catch((e: Error) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).message).toMatch(/call\.dial number is not a dialable phone number/);
+    expect((err as Error).message).not.toContain("s3cret");
+    expect((err as Error).message).toContain("[redacted]");
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it("restful.request steps are left for Core: their secrets are neither filled nor required", async () => {
+    const { deps, calls, restfulCalls, tmp } = mkDeps();
+    const restful = { type: "restful.request", method: "POST", url: "https://x.example/${secrets.BROKERED_KEY}" };
+    await runPhoneJob({
+      ...cfg,
+      prefixSteps: [restful, ...cfg.prefixSteps],
+      placeholders: { config: {}, secrets: {} }, // brokered secrets never reach the agent
+    }, deps as any);
+    expect(restfulCalls).toEqual([0]);
+    expect(calls[0].op).toBe("job.run");
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it("the eval-set conversation does not get the eval flow owner's secrets", async () => {
+    const { deps, calls, tmp } = mkDeps();
+    await runPhoneJob({
+      ...cfg,
+      scenarioSteps: [{ type: "audio.play", corpus_id: "known_${secrets.AGENT_PHONE}" }],
+      placeholders: { config: {}, secrets: { AGENT_PHONE: "15551234" } },
+    }, deps as any);
+    const play = calls[0].fields.steps.find((s: any) => s.type === "audio.play");
+    expect(play.file).toBe("/abs/corpus/known_${secrets.AGENT_PHONE}.wav");
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it("Teardown gets the same filling as Setup", () => {
+    const filled = fillStepPlaceholders(
+      [{ type: "call.hangup", note: "${secrets.A} ${config.b}" }], { b: "B" }, { A: "a" },
+    );
+    expect(filled).toEqual({ steps: [{ type: "call.hangup", note: "a B" }], unsupplied: [] });
   });
 
   it("enforced hangup: session block without a teardown hangup still ends with call.hangup", async () => {

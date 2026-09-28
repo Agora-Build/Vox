@@ -11,6 +11,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { createHash } from 'crypto';
 import { PHONE_NUMBER_RE, illegalPhoneStepType, illegalWebVocabInPhone, walkStepList, stepsContainCallDial } from '../shared/steps';
+import { collectSecretRefs, resolveSecretPlaceholders, unresolvedSecretsMessage } from '../shared/secrets';
+import { redactValues } from '../shared/credentials';
 
 // ---- compiler ---------------------------------------------------------------
 
@@ -493,6 +495,46 @@ export interface PhoneRunConfig {
   resolveRelativeFile?: CompileOpts['resolveRelativeFile'];
   /** Docker↔host bridge dir (VOX_DIALF_EXCHANGE_DIR); null = host-run daemon. */
   exchangeDir?: string | null;
+  /** Values for ${config.*} / ${secrets.*} in Setup/Teardown Steps. */
+  placeholders?: { config: Record<string, string>; secrets: Record<string, string> };
+}
+
+/**
+ * Fill ${config.*} then ${secrets.*} in every string of parsed steps, in that
+ * order (as the web path does). Works on parsed values, not YAML text, so a
+ * value needs no quoting and `number: "${secrets.X}"` works as well as the
+ * bare form. Returns the secret names referenced but not supplied.
+ *
+ * restful.request steps are left as they are: Core resolves them from the
+ * frozen snapshot (by stepIndex) with secrets it never hands to an agent.
+ */
+export function fillStepPlaceholders(
+  steps: unknown[],
+  config: Record<string, string>,
+  secrets: Record<string, string>,
+): { steps: unknown[]; unsupplied: string[] } {
+  const map = (v: unknown, fn: (s: string) => string): unknown => {
+    if (typeof v === 'string') return fn(v);
+    if (Array.isArray(v)) return v.map((x) => map(x, fn));
+    if (v && typeof v === 'object') {
+      return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, map(x, fn)]));
+    }
+    return v;
+  };
+  const isRestful = (s: unknown) =>
+    !!s && typeof s === 'object' && (s as Record<string, unknown>).type === 'restful.request';
+  const each = (list: unknown[], fn: (s: string) => string) =>
+    list.map((s) => (isRestful(s) ? s : map(s, fn)));
+
+  const withConfig = each(steps, (s) =>
+    s.replace(/\$\{config\.(\w+)\}/g, (m, key) => config[key] ?? m),
+  );
+  const unsupplied = Array.from(collectSecretRefs(withConfig.filter((s) => !isRestful(s))))
+    .filter((n) => !(n in secrets));
+  return {
+    steps: each(withConfig, (s) => resolveSecretPlaceholders(s, secrets)),
+    unsupplied,
+  };
 }
 
 export interface PhoneRunOutput {
@@ -515,7 +557,27 @@ export interface PhoneRunOutput {
  * the ring is not a foundation.
  */
 export async function runPhoneJob(cfg: PhoneRunConfig, deps: PhoneRunDeps): Promise<PhoneRunOutput> {
-  const split = splitPhoneScript(cfg.prefixSteps, cfg.scenarioSteps, cfg.suffixSteps);
+  // A resolved secret can surface in an error (e.g. a call.dial number that
+  // fails the dialable check) — no job error may carry one.
+  const secretValues = Object.values(cfg.placeholders?.secrets ?? {});
+  try {
+    return await runPhoneJobUnredacted(cfg, deps);
+  } catch (e) {
+    if (e instanceof Error) e.message = redactValues(e.message, secretValues);
+    throw e;
+  }
+}
+
+async function runPhoneJobUnredacted(cfg: PhoneRunConfig, deps: PhoneRunDeps): Promise<PhoneRunOutput> {
+  // Only the eval flow's own Setup/Teardown get its owner's secrets — the
+  // conversation comes from the eval set, which may be someone else's.
+  const vars = cfg.placeholders ?? { config: {}, secrets: {} };
+  const prefix = fillStepPlaceholders(cfg.prefixSteps, vars.config, vars.secrets);
+  const suffix = fillStepPlaceholders(cfg.suffixSteps, vars.config, vars.secrets);
+  const unsupplied = [...new Set([...prefix.unsupplied, ...suffix.unsupplied])];
+  if (unsupplied.length > 0) throw new Error(unresolvedSecretsMessage(unsupplied));
+
+  const split = splitPhoneScript(prefix.steps, cfg.scenarioSteps, suffix.steps);
   if (!split.ok) throw new Error(`phone script split failed: ${split.error}`);
 
   // Call-establishment gate (mirrors the server's run-route gate — orphaned

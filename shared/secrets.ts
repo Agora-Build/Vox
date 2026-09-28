@@ -106,6 +106,23 @@ export function resolveSecretPlaceholders(
 }
 
 /**
+ * The job error for ${secrets.NAME} references the server did not supply.
+ * Deliberately scope-agnostic: the agent cannot distinguish "no such secret"
+ * from "the server withheld it for this job" (e.g. an org secret fenced on
+ * the job creator's membership), so it must not tell the user to go create one.
+ */
+export function unresolvedSecretsMessage(names: string[]): string {
+  const sorted = [...names].sort();
+  const plural = sorted.length > 1;
+  return (
+    `Unresolved secret placeholder(s): ${sorted.join(", ")}. ` +
+    `The server did not supply ${plural ? "these secrets" : "this secret"} for this job — ` +
+    `${plural ? "they are" : "it is"} either not configured for the evalFlow owner, or not ` +
+    `available to whoever started the run.`
+  );
+}
+
+/**
  * Enumerate every ${secrets.NAME} referenced across one or more configs.
  * Objects (jsonb evalFlow/eval-set configs) are JSON-stringified before
  * scanning — $ { } . are all JSON-safe inside a string, so the placeholder
