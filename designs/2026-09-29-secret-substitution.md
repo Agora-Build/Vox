@@ -151,6 +151,18 @@ Being a server check, this also protects agents that predate the
 `evalSetSecrets` stamp (they fill secrets everywhere): such a job is never
 created.
 
+### YAML alias bombs
+
+A parsed YAML alias is a shared reference; nested aliases ("billion laughs")
+make ~1 KB of YAML expand exponentially. Every walk here (filling, the
+job-secrets release, JSON/YAML re-serialisation, aeval) sees the expanded
+shape, so each part is first checked against `MAX_FILL_NODES` (200,000) and a
+depth of 64, counted with aliases expanded and stopping as soon as a bound is
+crossed (`withinBounds`, `shared/placeholders.ts`). Over the bounds: job
+creation refuses it (`secretGate`, so it never reaches any agent — including
+ones older than this check), the job-secrets endpoint releases nothing, and
+the agent refuses the job before running it.
+
 ## Eval agent (one prepare step for every job)
 
 ```

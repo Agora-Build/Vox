@@ -77,6 +77,17 @@ describe("fillJobPlaceholders", () => {
   });
 });
 
+describe("fillJobPlaceholders — bounded against YAML alias bombs", () => {
+  it("refuses a part whose aliases expand past the bounds, before walking it", () => {
+    let y = "a0: &a0 [\"${secrets.K}\", \"x\"]\n";
+    for (let i = 1; i <= 40; i++) y += `a${i}: &a${i} [*a${i - 1}, *a${i - 1}]\n`;
+    const t = Date.now();
+    expect(() => fillJobPlaceholders({ scenario: parse(y), stepsPrefix: undefined, stepsSuffix: undefined }, {}, { K: "abcd" }, trusted))
+      .toThrow(/too large once its YAML anchors\/aliases are expanded/);
+    expect(Date.now() - t).toBeLessThan(2000);
+  });
+});
+
 describe("FilledJob.used — only secrets actually filled are redacted", () => {
   it("lists secrets filled into Setup/Teardown (directly or through ${config.*}); not unsupplied ones, not an untrusted eval set's", () => {
     const filled = fillJobPlaceholders(

@@ -13,7 +13,7 @@ import { validateTierChoice, resolveTargetedDispatch, filterDispatchableAgents }
 import { getMarketplace } from "./marketplace";
 import { isAlreadyMemberError, getOrganizations, requireOrganizations, type Membership, type OrgSecretRow } from "./organizations";
 import { fingerprintCredential, formatLastFailedHttpStatus, parseLastFailedHttpStatus } from "@shared/credentials";
-import { sessionScopeForEvalFlow, areLoginSecretsAttested, ensureSession, stampOwnerSession, credentialKeyFor, SESSION_FRESH_MARGIN_SECONDS, classifyReferencedSecrets, findBrokeredMisuse, resolveBrokerType, type SessionNeed, detectSessionNeed, resolvableSecretSources, secretGate, evalSetMayUseSecrets, untrustedEvalSetConfigError, secretsJobFills } from "./auth-session";
+import { sessionScopeForEvalFlow, areLoginSecretsAttested, ensureSession, stampOwnerSession, credentialKeyFor, SESSION_FRESH_MARGIN_SECONDS, classifyReferencedSecrets, findBrokeredMisuse, resolveBrokerType, type SessionNeed, detectSessionNeed, resolvableSecretSources, secretGate, evalSetMayUseSecrets, secretsJobFills, runDialogEvalSetProblem } from "./auth-session";
 import { validateRegisterPayload, cacheBrokerMintSecret, hasBrokerMintSecret, routeToBroker, executeViaBroker, KNOWN_BROKER_TYPES } from "./broker-registry";
 import { resolveRestfulTemplate } from "./restful-exec";
 import { validateRestfulTrigger, parseStepsScript, stepsContainCallDial, unsupportedFrameworkError } from "./storage";
@@ -5068,13 +5068,13 @@ export async function registerRoutes(
       // otherwise it disables Run for a placeholder the server would accept.
       // Read-only: a failing organizations provider means "not trusted" here
       // (the run itself re-checks and reports the outage), never a 500.
-      const trusted = await evalSetMayUseSecrets(evalFlow, evalSetForRun).catch(() => false);
-      const resolvableHere = collectSecretRefs(resolvableSecretSources(evalFlow.config, evalSetForRun?.config, trusted));
+      // null = unknown (the provider threw): neither trusted nor refused here.
+      const trusted = await evalSetMayUseSecrets(evalFlow, evalSetForRun).catch(() => null);
+      const resolvableHere = collectSecretRefs(resolvableSecretSources(evalFlow.config, evalSetForRun?.config, trusted === true));
       // The run route would refuse this eval set (secretGate): say so up front
       // so the dialog can disable Run instead of the click returning a 400.
-      const evalSetProblem = evalSetForRun && !trusted
-        ? untrustedEvalSetConfigError(evalFlow.config, evalSetForRun.config)
-        : null;
+      // Only on a definite "not trusted" — an outage is not a trust problem.
+      const evalSetProblem = runDialogEvalSetProblem(evalFlow.config, evalSetForRun?.config, trusted);
       const referencedSecrets = classifiedRefs.map((c) => ({ ...c, resolvable: resolvableHere.has(c.name) }));
 
       // Same detector the run route enforces with — not "any brokered secret

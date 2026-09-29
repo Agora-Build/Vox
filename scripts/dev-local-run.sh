@@ -189,7 +189,14 @@ push_schema() {
     # shared/schema.ts doesn't declare (expression and partial indexes), and it
     # stops at a prompt to drop _schema_version itself, which hangs a
     # non-interactive start (#199).
-    if docker exec "$DB_CONTAINER" psql -U vox -d vox -Atc "SELECT to_regclass('public._schema_version')" 2>/dev/null | grep -q _schema_version; then
+    # Fail closed: if the check itself fails we can't tell a fresh DB from a
+    # migration-managed one, and guessing wrong runs the destructive push.
+    local managed
+    if ! managed=$(docker exec "$DB_CONTAINER" psql -U vox -d vox -Atc "SELECT to_regclass('public._schema_version')" 2>&1); then
+        log_error "Could not inspect the database schema: $managed"
+        return 1
+    fi
+    if [ "$managed" = "_schema_version" ]; then
         log_info "Database is migration-managed — applying pending migrations..."
         DATABASE_URL="$DB_URL" npx tsx server/migrate.ts
         log_success "Database migrated"

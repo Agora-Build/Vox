@@ -32,6 +32,32 @@ export interface FilledJob {
   used: string[];
 }
 
+/**
+ * Bounds on a part, counted with YAML aliases EXPANDED — the shape every later
+ * consumer sees (these walks, JSON.stringify, YAML dump with noRefs, aeval). A
+ * parsed alias is a shared reference, so a ~1 KB document of nested aliases
+ * ("billion laughs") expands exponentially and exhausts memory. Far above any
+ * real eval set; the count stops as soon as a bound is crossed.
+ */
+export const MAX_FILL_NODES = 200_000;
+const MAX_FILL_DEPTH = 64;
+
+/** Whether a parsed part stays within MAX_FILL_NODES / depth, aliases expanded. */
+export function withinBounds(v: unknown): boolean {
+  let nodes = 0;
+  const rec = (x: unknown, depth: number): boolean => {
+    if (++nodes > MAX_FILL_NODES || depth > MAX_FILL_DEPTH) return false;
+    if (Array.isArray(x)) return x.every((y) => rec(y, depth + 1));
+    if (x && typeof x === "object") return Object.values(x).every((y) => rec(y, depth + 1));
+    return true;
+  };
+  return rec(v, 0);
+}
+
+export const TOO_COMPLEX_MESSAGE =
+  `The job's scenario or Setup/Teardown is too large once its YAML anchors/aliases are expanded ` +
+  `(over ${MAX_FILL_NODES.toLocaleString("en-US")} nodes or ${MAX_FILL_DEPTH} levels deep)`;
+
 const isRestful = (v: unknown) =>
   !!v && typeof v === 'object' && (v as Record<string, unknown>).type === 'restful.request';
 
@@ -71,6 +97,10 @@ export function fillJobPlaceholders(
   secrets: Record<string, string>,
   opts: { evalSetSecrets: boolean },
 ): FilledJob {
+  // First, before any walk: everything below is linear in the EXPANDED size.
+  for (const part of [parts.scenario, parts.stepsPrefix, parts.stepsSuffix]) {
+    if (!withinBounds(part)) throw new Error(TOO_COMPLEX_MESSAGE);
+  }
   const fillConfig = (v: unknown) =>
     mapStrings(v, (s) => s.replace(/\$\{config\.(\w+)\}/g, (m, key) => config[key] ?? m));
   const withConfig: JobParts = {
