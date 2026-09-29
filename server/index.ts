@@ -1,6 +1,6 @@
 import express, { type Request, Response, NextFunction } from "express";
 import helmet from "helmet";
-import { isSensitiveResponsePath } from "./sensitive-paths";
+import { requestLogLine } from "./request-log";
 import { registerRoutes } from "./routes";
 import { serveStatic } from "./static";
 import { createServer } from "http";
@@ -148,13 +148,8 @@ app.use((req, res, next) => {
   res.on("finish", () => {
     const duration = Date.now() - start;
     if (path.startsWith("/api")) {
-      let logLine = `${req.method} ${path} ${res.statusCode} in ${duration}ms`;
-      const isSensitive = isSensitiveResponsePath(path);
-      if (capturedJsonResponse && !isSensitive) {
-        logLine += ` :: ${JSON.stringify(capturedJsonResponse)}`;
-      }
-
-      log(logLine);
+      // Bodies only on failure, capped and without URL query strings (#208).
+      log(requestLogLine(req.method, path, res.statusCode, duration, capturedJsonResponse));
     }
   });
 
