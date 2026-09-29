@@ -29,6 +29,8 @@ interface SecretEntry {
   // Absent when the value cannot be decrypted (e.g. after a key rotation).
   valueLength?: number;
   valueFingerprint?: string;
+  /** Set when the stored value breaks the value rule — jobs using it are refused. */
+  valueProblem?: string;
 }
 
 interface SecretsResponse {
@@ -40,6 +42,8 @@ interface OrgSecretEntry {
   name: string;
   brokerType: string | null;
   isTestAccount: boolean;
+  /** Org owners/admins only: set when the stored value breaks the value rule. */
+  valueProblem?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -377,6 +381,7 @@ export default function ConsoleSecrets() {
                             )}
                             <ValueFingerprint length={secret.valueLength} fingerprint={secret.valueFingerprint} />
                           </div>
+                          <ValueProblem problem={secret.valueProblem} />
                         </TableCell>
                         <TableCell className="text-muted-foreground">••••••••</TableCell>
                         <TableCell className="text-muted-foreground">
@@ -537,6 +542,7 @@ export default function ConsoleSecrets() {
                                 </>
                               )}
                             </div>
+                            <ValueProblem problem={secret.valueProblem} />
                           </TableCell>
                           <TableCell className="text-muted-foreground">••••••••</TableCell>
                           <TableCell className="text-muted-foreground">
@@ -590,6 +596,16 @@ export default function ConsoleSecrets() {
         </CardContent>
       </Card>
     </div>
+  );
+}
+
+/** Under a stored secret whose value jobs now refuse: what's wrong and how to fix it. */
+function ValueProblem({ problem }: { problem?: string }) {
+  if (!problem) return null;
+  return (
+    <p className="mt-1 max-w-prose font-sans text-xs font-normal text-destructive" data-testid="secret-value-problem">
+      {problem}. Jobs that use it are refused — save it again with a new value (Add Secret, same name).
+    </p>
   );
 }
 

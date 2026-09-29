@@ -13,7 +13,7 @@ import { validateTierChoice, resolveTargetedDispatch, filterDispatchableAgents }
 import { getMarketplace } from "./marketplace";
 import { isAlreadyMemberError, getOrganizations, requireOrganizations, type Membership, type OrgSecretRow } from "./organizations";
 import { fingerprintCredential, formatLastFailedHttpStatus, parseLastFailedHttpStatus } from "@shared/credentials";
-import { sessionScopeForEvalFlow, areLoginSecretsAttested, ensureSession, stampOwnerSession, credentialKeyFor, SESSION_FRESH_MARGIN_SECONDS, classifyReferencedSecrets, findBrokeredMisuse, resolveBrokerType, type SessionNeed, detectSessionNeed, resolvableSecretSources, secretGate, evalSetMayUseSecrets } from "./auth-session";
+import { sessionScopeForEvalFlow, areLoginSecretsAttested, ensureSession, stampOwnerSession, credentialKeyFor, SESSION_FRESH_MARGIN_SECONDS, classifyReferencedSecrets, findBrokeredMisuse, resolveBrokerType, type SessionNeed, detectSessionNeed, resolvableSecretSources, secretGate, evalSetMayUseSecrets, secretsJobFills, runDialogEvalSetProblem } from "./auth-session";
 import { validateRegisterPayload, cacheBrokerMintSecret, hasBrokerMintSecret, routeToBroker, executeViaBroker, KNOWN_BROKER_TYPES } from "./broker-registry";
 import { resolveRestfulTemplate } from "./restful-exec";
 import { validateRestfulTrigger, parseStepsScript, stepsContainCallDial, unsupportedFrameworkError } from "./storage";
@@ -2809,6 +2809,21 @@ export async function registerRoutes(
     }
   }
 
+  // A runtime secret stored before the value rule (secretValueError: at least 4
+  // characters, and each line with letters or digits) makes every job that
+  // uses it fail before it runs. Flag it on the list so the owner can update
+  // it — the message only, never the value. Brokered secrets never reach an
+  // agent, so no job fails on them.
+  function secretValueProblem(s: { encryptedValue: string; brokerType: string | null }): { valueProblem?: string } {
+    if (s.brokerType != null) return {};
+    try {
+      const problem = secretValueError(decryptValue(s.encryptedValue));
+      return problem ? { valueProblem: problem } : {};
+    } catch {
+      return {};
+    }
+  }
+
   app.get("/api/secrets", requireAuth, async (req, res) => {
     try {
       const user = await getCurrentUser(req);
@@ -2833,6 +2848,7 @@ export async function registerRoutes(
           // has had to be diagnosed so far. Safe here because the query is
           // keyed by user.id: these are the caller's OWN secrets.
           ...secretFingerprint(s.encryptedValue),
+          ...secretValueProblem(s),
           createdAt: s.createdAt,
           updatedAt: s.updatedAt,
         })),
@@ -2940,10 +2956,13 @@ export async function registerRoutes(
       // is the failure this whole feature exists to prevent. Meanwhile whoever
       // actually set the current value would see nothing. Needs an updatedBy
       // column to do correctly; tracked separately.
+      // The value flag goes to those who can update the value (org owner/admin).
+      const canUpdate = user.membership.role === "owner" || user.membership.role === "admin";
       res.json(secrets.map(s => ({
         name: s.name,
         brokerType: s.brokerType,
         isTestAccount: s.isTestAccount,
+        ...(canUpdate ? secretValueProblem(s) : {}),
         createdAt: s.createdAt,
         updatedAt: s.updatedAt,
       })));
@@ -4347,7 +4366,11 @@ export async function registerRoutes(
         console.log(`[Secrets] Job ${jobId}: personal evalFlow → ${userSecrets.length} personal secret(s)`);
       }
 
-      res.json(decrypted);
+      // Least privilege (#203): release only what this job will fill — computed
+      // from its frozen config by the same function the agent fills with.
+      const released = secretsJobFills(auth.job.config, decrypted);
+      console.log(`[Secrets] Job ${jobId}: releasing ${Object.keys(released).length} of ${Object.keys(decrypted).length} secret(s)`);
+      res.json(released);
     } catch (error) {
       console.error("Error fetching job secrets:", error);
       if (error instanceof Error && error.message.includes("CREDENTIAL_ENCRYPTION_KEY")) {
@@ -5045,8 +5068,13 @@ export async function registerRoutes(
       // otherwise it disables Run for a placeholder the server would accept.
       // Read-only: a failing organizations provider means "not trusted" here
       // (the run itself re-checks and reports the outage), never a 500.
-      const trusted = await evalSetMayUseSecrets(evalFlow, evalSetForRun).catch(() => false);
-      const resolvableHere = collectSecretRefs(resolvableSecretSources(evalFlow.config, evalSetForRun?.config, trusted));
+      // null = unknown (the provider threw): neither trusted nor refused here.
+      const trusted = await evalSetMayUseSecrets(evalFlow, evalSetForRun).catch(() => null);
+      const resolvableHere = collectSecretRefs(resolvableSecretSources(evalFlow.config, evalSetForRun?.config, trusted === true));
+      // The run route would refuse this eval set (secretGate): say so up front
+      // so the dialog can disable Run instead of the click returning a 400.
+      // Only on a definite "not trusted" — an outage is not a trust problem.
+      const evalSetProblem = runDialogEvalSetProblem(evalFlow.config, evalSetForRun?.config, trusted);
       const referencedSecrets = classifiedRefs.map((c) => ({ ...c, resolvable: resolvableHere.has(c.name) }));
 
       // Same detector the run route enforces with — not "any brokered secret
@@ -5091,7 +5119,7 @@ export async function registerRoutes(
         { tier: "shared", available: false, reason: "not-pooled-yet" },
       ];
 
-      res.json({ agents: { mine, shared, public: publicFleet }, referencedSecrets, tiers });
+      res.json({ agents: { mine, shared, public: publicFleet }, referencedSecrets, evalSetProblem, tiers });
     } catch (error) {
       console.error("Error listing run targets:", error);
       res.status(500).json({ error: "Failed to list run targets" });

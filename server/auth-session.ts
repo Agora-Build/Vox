@@ -10,6 +10,7 @@
 import { createHash } from "crypto";
 import { collectSecretRefs, isAuthFieldName, untrustedEvalSetSecretsMessage } from "@shared/secrets";
 import yaml from "js-yaml";
+import { fillJobPlaceholders, jobConfigVars, withinBounds, TOO_COMPLEX_MESSAGE, type JobParts } from "@shared/placeholders";
 import { storage, encryptValue, decryptValue, type SessionScope } from "./storage";
 import { getOrganizations, type OrgSecretRow } from "./organizations";
 import { isOwnerOrOrgManager } from "./permissions";
@@ -397,6 +398,35 @@ export function resolvableSecretSources(
 export const MISSING_SECRETS_MSG = (names: string[]) =>
   `This evalFlow references secret(s) ${names.join(", ")} that are not configured for its owner. If the evalFlow is yours, create them under Console → Secrets (names must match exactly); otherwise ask its owner to.`;
 
+/** TOO_COMPLEX_MESSAGE when a part a job would fill expands past the fill bounds, else null. A part that doesn't parse is left to the existing validators. */
+export function configTooComplex(evalFlowConfig: unknown, evalSetConfig: unknown): string | null {
+  const flow = (evalFlowConfig ?? {}) as Record<string, unknown>;
+  const set = (evalSetConfig ?? {}) as Record<string, unknown>;
+  for (const text of [flow.stepsPrefix, flow.stepsSuffix, set.scenario]) {
+    if (typeof text !== "string" || text.trim() === "") continue;
+    let parsed: unknown;
+    try { parsed = yaml.load(text); } catch { continue; }
+    if (!withinBounds(parsed)) return `${TOO_COMPLEX_MESSAGE}.`;
+  }
+  return null;
+}
+
+/**
+ * What the run dialog shows for the chosen eval set — the error the run route
+ * would refuse it with — or null. `trusted` is evalSetMayUseSecrets' answer,
+ * or null when that threw (organizations provider outage): an outage is not a
+ * trust problem, so it shows nothing and the run itself reports the outage.
+ */
+export function runDialogEvalSetProblem(
+  evalFlowConfig: unknown,
+  evalSetConfig: unknown,
+  trusted: boolean | null,
+): string | null {
+  if (evalSetConfig === undefined) return null;
+  return configTooComplex(evalFlowConfig, evalSetConfig) ??
+    (trusted === false ? untrustedEvalSetConfigError(evalFlowConfig, evalSetConfig) : null);
+}
+
 /**
  * The secret gate every job-creating path runs — console run, API run,
  * schedule create/enable/run-now, and the scheduler tick. Returns the
@@ -408,6 +438,11 @@ export async function secretGate(
   evalFlow: EvalFlowLike,
   evalSet: EvalSetLike | null | undefined,
 ): Promise<{ evalSetSecrets: boolean; error: string | null }> {
+  // A YAML alias bomb would exhaust the agent's memory when it fills the job
+  // (and agents older than the bounded walk have no guard) — refuse it here,
+  // on every job-creating path, before any job exists.
+  const tooComplex = configTooComplex(evalFlow.config, evalSet?.config);
+  if (tooComplex) return { evalSetSecrets: false, error: tooComplex };
   const evalSetSecrets = await evalSetMayUseSecrets(evalFlow, evalSet);
   if (!evalSetSecrets && evalSet) {
     const error = untrustedEvalSetConfigError(evalFlow.config, evalSet.config);
@@ -453,6 +488,39 @@ export function untrustedEvalSetConfigError(evalFlowConfig: unknown, evalSetConf
       `reads, but it may not: only the eval flow's owner may configure its Setup. Define them in the eval flow instead.`;
   }
   return null;
+}
+
+/**
+ * The secrets a job will actually fill (#203) — what the job-secrets endpoint
+ * releases, instead of every runtime secret of the owner. Computed from the
+ * job's FROZEN config with the agent's own filling function
+ * (shared/placeholders.ts), so the two agree by construction: Setup/Teardown,
+ * the eval set's scenario only when the job is stamped evalSetSecrets: true,
+ * secrets reached through a ${config.*} value those parts read, and nothing
+ * from restful.request steps (Core fills those itself). Also enforces the
+ * trust rule here: an agent that predates the stamp can't fill what it never
+ * receives. A config that doesn't parse, or expands past the fill bounds
+ * (YAML alias bombs), releases nothing — the agent refuses that job anyway.
+ */
+export function secretsJobFills(
+  jobConfig: unknown,
+  available: Record<string, string>,
+): Record<string, string> {
+  const cfg = (jobConfig ?? {}) as Record<string, unknown>;
+  const parse = (t: unknown) => (typeof t === "string" && t.trim() !== "" ? yaml.load(t) : undefined);
+  let parts: JobParts;
+  try {
+    parts = { scenario: parse(cfg.scenario), stepsPrefix: parse(cfg.stepsPrefix), stepsSuffix: parse(cfg.stepsSuffix) };
+  } catch {
+    return {};
+  }
+  let used: string[];
+  try {
+    ({ used } = fillJobPlaceholders(parts, jobConfigVars(cfg), available, { evalSetSecrets: cfg.evalSetSecrets === true }));
+  } catch {
+    return {}; // too complex to walk (TOO_COMPLEX_MESSAGE) — the agent refuses the job too
+  }
+  return Object.fromEntries(used.map((n) => [n, available[n]]));
 }
 
 /**

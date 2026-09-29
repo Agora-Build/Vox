@@ -4624,6 +4624,31 @@ describe('Vox API Tests', () => {
       await pool.query(`DELETE FROM ${ORGS_SCHEMA}.organizations WHERE id = $1`, [probeOrgId]);
     });
 
+    // #197: a runtime org secret stored before the value rule is flagged on the
+    // list — to those who can update it (org owner/admin), never a plain member.
+    it('flags an org secret stored before the value rule, for org owners/admins only', async () => {
+      if (!process.env.CREDENTIAL_ENCRYPTION_KEY) return;
+      const { pool, encryptValue } = await import('../server/storage');
+      const name = `${secretName}_OLDSHORT`;
+      await pool.query(
+        `INSERT INTO ${ORGS_SCHEMA}.org_secrets (org_ref, name, encrypted_value, broker_type, is_test_account, created_by)
+         VALUES ($1, $2, $3, NULL, false, 1)`,
+        [probeOrgId, name, encryptValue('abc')],
+      );
+      const flagFor = async () => {
+        const list = await (await authFetch(adminSession, `${BASE_URL}/api/org-secrets`)).json();
+        return list.find((s: { name: string }) => s.name === name)?.valueProblem;
+      };
+      try {
+        expect(await flagFor()).toMatch(/at least 4 characters/); // admin is the org's owner here
+        await pool.query(`UPDATE ${ORGS_SCHEMA}.memberships SET role = 'member' WHERE user_ref = 1 AND org_ref = $1`, [probeOrgId]);
+        expect(await flagFor()).toBeUndefined();
+      } finally {
+        await pool.query(`UPDATE ${ORGS_SCHEMA}.memberships SET role = 'owner' WHERE user_ref = 1 AND org_ref = $1`, [probeOrgId]);
+        await pool.query(`DELETE FROM ${ORGS_SCHEMA}.org_secrets WHERE org_ref = $1 AND name = $2`, [probeOrgId, name]);
+      }
+    });
+
     it('refuses an org secret value shorter than 4 characters, and stores nothing', async () => {
       const res = await authFetch(adminSession, `${BASE_URL}/api/org-secrets`, {
         method: 'POST',

@@ -277,8 +277,20 @@ async function flowWithJob(owner: Session, runner: Session, visibility: "public"
   it("everything a visible list shows can also be opened on its own", async () => {
     const { ids } = await apiList(otherKey, "visible");
     expect(ids.length).toBeGreaterThan(0);
+    const { pool } = await import("../server/storage");
     for (const id of ids.slice(0, 15)) {
-      expect(await viaApi(otherKey, id)).toBe(200);
+      const status = await viaApi(otherKey, id);
+      if (status === 403) {
+        // The sample includes other suites' jobs, which they clean up while
+        // this runs: a flow deleted or made private between the list and the
+        // open is a real state change, not a rule mismatch. A 403 on a job
+        // whose flow is STILL public is a mismatch and fails.
+        const { rows } = await pool.query(
+          `SELECT f.visibility FROM eval_jobs j LEFT JOIN eval_flows f ON f.id = j.eval_flow_id WHERE j.id = $1`, [id]);
+        expect(rows[0]?.visibility, `job ${id}: listed as visible, refused while its flow is still public`).not.toBe("public");
+        continue;
+      }
+      expect(status).toBe(200);
     }
   });
 

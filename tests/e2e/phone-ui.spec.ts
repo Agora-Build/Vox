@@ -50,8 +50,12 @@ test.describe("Phone vs Agent UI", () => {
     await page.getByTestId("button-create-eval-flow").click();
 
     await page.getByTestId("input-eval-flow-name").fill(wfName);
+    // A named provider, not Custom: a phone Setup (call.dial) names no
+    // platform_id, and the save used to force the provider to Custom anyway.
     await page.getByTestId("select-eval-flow-provider").click();
-    await page.getByRole("option").first().click();
+    // The list can be long (and scrolled): focus the option, select with Enter.
+    await page.getByRole("option", { name: "Agora ConvoAI Engine" }).first().focus();
+    await page.keyboard.press("Enter");
 
     await page.getByTestId("select-eval-flow-transport").click();
     await page.getByRole("option", { name: "Phone vs Agent" }).click();
@@ -67,7 +71,7 @@ test.describe("Phone vs Agent UI", () => {
     // concurrent inserts from other specs and can miss the new row.
     const fetchCreated = async () => {
       const api = await page.request.get(`${BASE}/api/eval-flows?includePublic=true`);
-      const rows = (await api.json()) as Array<{ name: string; transport: string; config: { stepsPrefix?: string; stepsSuffix?: string } }>;
+      const rows = (await api.json()) as Array<{ name: string; transport: string; providerId: string; config: { stepsPrefix?: string; stepsSuffix?: string } }>;
       return rows.find((r) => r.name === wfName);
     };
     await expect.poll(async () => (await fetchCreated()) != null, { timeout: 10000 }).toBeTruthy();
@@ -76,6 +80,8 @@ test.describe("Phone vs Agent UI", () => {
     expect(created?.config?.stepsPrefix).toContain("call.dial");
     expect(created?.config?.stepsPrefix).toContain("+1 555 010 1234");
     expect(created?.config?.stepsSuffix).toContain("call.hangup");
+    const providers = (await (await page.request.get(`${BASE}/api/providers`)).json()) as Array<{ id: string; name: string }>;
+    expect(created?.providerId).toBe(providers.find((p) => p.name === "Agora ConvoAI Engine")?.id);
 
     // Row appears with the Phone badge.
     await page.reload();

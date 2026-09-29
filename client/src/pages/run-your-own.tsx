@@ -73,6 +73,8 @@ interface RunTargetAgent {
 interface RunTargetsResponse {
   agents: { mine: RunTargetAgent[]; shared: RunTargetAgent[] };
   referencedSecrets: Array<{ name: string; brokerType: string | null; present: boolean; resolvable?: boolean }>;
+  /** Why the run would refuse the chosen eval set (it may not use this flow's secrets), or null. */
+  evalSetProblem?: string | null;
   tiers: { tier: string; available: boolean; onlineAgents?: number; reason?: string }[];
 }
 
@@ -609,6 +611,12 @@ export default function SelfTest() {
               </div>
             </CardContent>
             <CardFooter className="relative z-10 flex-col items-stretch gap-3">
+              {runTargets?.evalSetProblem && (
+                <Alert variant="destructive" data-testid="eval-set-problem">
+                  <AlertTitle>This eval set can't run with this Eval Flow</AlertTitle>
+                  <AlertDescription>{runTargets.evalSetProblem}</AlertDescription>
+                </Alert>
+              )}
               {missingSecrets.length > 0 && (
                 <Alert variant="destructive">
                   <AlertTitle>Missing secrets — this run would fail</AlertTitle>
@@ -635,7 +643,7 @@ export default function SelfTest() {
                 className="w-full"
                 size="lg"
                 onClick={handleRunEval}
-                disabled={runEvalMutation.isPending || isJobRunning || !selectedEvalFlowId || !selectedEvalSetId || !region || runTargetsFetching || noPoolAvailable || missingSecrets.length > 0 || (showRuntimeWarning && !ackRuntime)}
+                disabled={runEvalMutation.isPending || isJobRunning || !selectedEvalFlowId || !selectedEvalSetId || !region || runTargetsFetching || noPoolAvailable || missingSecrets.length > 0 || !!runTargets?.evalSetProblem || (showRuntimeWarning && !ackRuntime)}
               >
                 {runEvalMutation.isPending ? (
                   <><Loader2 className="mr-2 h-4 w-4 animate-spin" /> Starting...</>

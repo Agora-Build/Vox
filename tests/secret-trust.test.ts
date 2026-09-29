@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, beforeAll, afterAll } from "vitest";
 import { BASE_NA } from "./helpers/regions";
 import { setOrganizations, resetOrganizations, type OrganizationsProvider, type Membership } from "../server/organizations";
-import { evalSetMayUseSecrets, resolvableSecretSources, secretGate, untrustedEvalSetConfigError } from "../server/auth-session";
+import { evalSetMayUseSecrets, resolvableSecretSources, secretGate, untrustedEvalSetConfigError, secretsJobFills, configTooComplex, runDialogEvalSetProblem } from "../server/auth-session";
 import { mergeEvalConfig } from "../server/storage";
 
 // "Only when trusted" (designs/2026-09-29-secret-substitution.md): an eval set
@@ -160,6 +160,84 @@ describe("untrustedEvalSetConfigError — the whole eval-set config, not just it
   });
 });
 
+// #203: the job-secrets endpoint releases only what the job will fill.
+describe("secretsJobFills — least privilege for the job-secrets endpoint", () => {
+  const owner = { PHONE: "+15551234567", API_KEY: "sk-live-1234", UNUSED_1: "aaaa", UNUSED_2: "bbbb" };
+
+  it("a phone job gets only the call.dial number, not the owner's other secrets", () => {
+    const cfg = { stepsPrefix: "- type: call.dial\n  number: ${secrets.PHONE}\n- type: call.wait_answered\n", evalSetSecrets: false };
+    expect(secretsJobFills(cfg, owner)).toEqual({ PHONE: "+15551234567" });
+  });
+
+  it("the eval set's scenario counts only when the job is stamped trusted", () => {
+    const scenario = "steps:\n  - type: log\n    text: ${secrets.API_KEY}\n";
+    expect(secretsJobFills({ scenario, evalSetSecrets: false }, owner)).toEqual({});
+    expect(secretsJobFills({ scenario }, owner)).toEqual({}); // unstamped (older job) = untrusted
+    expect(secretsJobFills({ scenario, evalSetSecrets: true }, owner)).toEqual({ API_KEY: "sk-live-1234" });
+  });
+
+  it("includes a secret reached through a ${config.*} value the Setup reads", () => {
+    const cfg = { url: "https://api.example/?k=${secrets.API_KEY}", stepsPrefix: "- type: x\n  url: ${config.url}\n" };
+    expect(secretsJobFills(cfg, owner)).toEqual({ API_KEY: "sk-live-1234" });
+  });
+
+  it("releases nothing for restful.request steps — Core fills those itself", () => {
+    const cfg = { stepsPrefix: "- type: restful.request\n  url: https://x.example/${secrets.API_KEY}\n- type: call.dial\n  number: ${secrets.PHONE}\n" };
+    expect(secretsJobFills(cfg, owner)).toEqual({ PHONE: "+15551234567" });
+  });
+
+  it("a config that doesn't parse releases nothing", () => {
+    expect(secretsJobFills({ stepsPrefix: "- type: [unclosed\n  number: ${secrets.PHONE}" }, owner)).toEqual({});
+  });
+});
+
+// Review of #205: nested YAML aliases ("billion laughs") expand exponentially;
+// ~1 KB of YAML exhausted the process's memory in the unbounded walk.
+const aliasBomb = (levels: number) => {
+  let y = "a0: &a0 [\"${secrets.K}\", \"x\"]\n";
+  for (let i = 1; i <= levels; i++) y += `a${i}: &a${i} [*a${i - 1}, *a${i - 1}]\n`;
+  return y + "steps: []\n";
+};
+
+describe("YAML alias bombs are refused, fast, on every path", () => {
+  it("the job-secrets release returns nothing, in milliseconds", () => {
+    const t = Date.now();
+    expect(secretsJobFills({ scenario: aliasBomb(40), evalSetSecrets: true }, { K: "abcd" })).toEqual({});
+    expect(Date.now() - t).toBeLessThan(2000);
+  });
+
+  it("job creation refuses it (secretGate) — so it never reaches an agent, old or new", async () => {
+    expect(configTooComplex({}, { scenario: aliasBomb(40) })).toMatch(/too large once its YAML anchors\/aliases are expanded/);
+    const gate = await secretGate({ ...personalFlow, config: {} }, { ...set(1, null), config: { scenario: aliasBomb(40) } });
+    expect(gate.error).toMatch(/too large/);
+    expect(configTooComplex({ stepsPrefix: aliasBomb(40) }, {})).toMatch(/too large/);
+  });
+
+  it("a large but ordinary eval set is fine (aliases used a few times, thousands of steps)", () => {
+    const steps = Array.from({ length: 5000 }, (_, i) => `  - type: audio.play\n    corpus_id: q${i}\n`).join("");
+    const scenario = `defaults: &d {timeout_ms: 1000}\nsteps:\n${steps}  - type: audio.wait_for_speech\n    <<: *d\n`;
+    expect(configTooComplex({}, { scenario })).toBeNull();
+    expect(secretsJobFills({ scenario, evalSetSecrets: true }, { K: "abcd" })).toEqual({});
+  });
+});
+
+describe("runDialogEvalSetProblem — the run dialog's answer", () => {
+  const untrustedCfg = { scenario: "steps: []", note: "${secrets.K}" };
+  it("a definite 'not trusted' shows the trust error", () => {
+    expect(runDialogEvalSetProblem({}, untrustedCfg, false)).toMatch(/may not use this eval flow's secrets/);
+  });
+  it("an organizations outage (null) is not a trust problem — nothing shown", () => {
+    expect(runDialogEvalSetProblem({}, untrustedCfg, null)).toBeNull();
+  });
+  it("trusted, or no eval set chosen: nothing", () => {
+    expect(runDialogEvalSetProblem({}, untrustedCfg, true)).toBeNull();
+    expect(runDialogEvalSetProblem({}, undefined, false)).toBeNull();
+  });
+  it("an alias bomb is reported whatever the trust answer", () => {
+    expect(runDialogEvalSetProblem({}, { scenario: aliasBomb(40) }, null)).toMatch(/too large/);
+  });
+});
+
 describe("mergeEvalConfig — evalSetSecrets is server-stamped only", () => {
   it("strips whatever either config carries and stamps the server's answer", () => {
     const merged = mergeEvalConfig({ evalSetSecrets: true, stepsPrefix: "x" }, { evalSetSecrets: true, scenario: "y" }, { evalSetSecrets: false });
@@ -278,6 +356,20 @@ async function newUser(admin: Session, tag: string): Promise<Session> {
     const res = await consoleRun(stranger, ownSetId);
     expect(res.status).toBe(200);
     expect((await res.json()).job.config.evalSetSecrets).toBe(true);
+  });
+
+  // #198: the run dialog learns up front what the run route would refuse.
+  it("run-targets reports the eval set problem the run would fail with — and none when trusted or clean", async () => {
+    const problem = async (s: Session, evalSetId: number) => {
+      const res = await call(s, "GET", `/api/eval-flows/${flowId}/run-targets?region=${BASE_NA}&evalSetId=${evalSetId}`);
+      expect(res.status).toBe(200);
+      return (await res.json()).evalSetProblem;
+    };
+    expect(await problem(stranger, strangersSetId)).toMatch(new RegExp(`The eval set uses secret\\(s\\) ${SECRET}, but it may not use`));
+    expect(await problem(owner, strangersSetId)).toMatch(/may not use this eval flow's secrets/);
+    expect(await problem(owner, ownSetId)).toBeNull();
+    expect(await problem(stranger, ownSetId)).toBeNull();
+    expect(await problem(stranger, strangersPlainSetId)).toBeNull();
   });
 
   it("a stranger's eval set without secrets still runs on the flow — stamped evalSetSecrets: false", async () => {

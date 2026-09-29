@@ -186,6 +186,7 @@ COPY shared/secrets.ts /shared/secrets.ts
 COPY shared/credentials.ts /shared/credentials.ts
 COPY shared/metrics.ts /shared/metrics.ts
 COPY shared/steps.ts /shared/steps.ts
+COPY shared/placeholders.ts /shared/placeholders.ts
 
 # Install daemon dependencies (esbuild for TS compilation)
 RUN npm install

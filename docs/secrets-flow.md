@@ -24,7 +24,7 @@ Both runners follow the same pattern: user stores encrypted secrets in the Vox U
 | **9. Ownership guard** | Job must be `running` + `job.evalAgentId` -> `agent.tokenId` must match | Runner must be `running` + `runner.currentMatchId` must match |
 | **10. Owner chain** | job -> eval flow -> org secrets (org eval flow, fenced by the job creator's membership) or `eval flow.ownerId`'s personal secrets | match -> event -> `event.createdBy` |
 | **11. Decrypt** | `decryptValue()` per secret, log errors | Same |
-| **12. Response** | `{ "KEY": "value", ... }` | Same |
+| **12. Response** | `{ "KEY": "value", ... }` — only the secrets this job fills (its frozen config; `secretsJobFills`) | `{ "KEY": "value", ... }` |
 | **13. Audit log** | `[Secrets] Job N: found N secret(s) for eval flow owner` | `[ClashSecrets] Runner X fetched secrets for match #N (event #N, owner #N): N decrypted, N failed` |
 | **14. Resolution** | `placeholders.ts` fills parsed YAML values (`${config.*}` then `${secrets.*}`), never `restful.request` steps | `browser-agent.ts` replaces in setup step values (plain) |
 | **15. Regex** | `[A-Z][A-Z0-9_]*` (aligned with `shared/secrets.ts`) | Same |

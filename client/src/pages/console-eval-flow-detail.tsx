@@ -38,6 +38,8 @@ interface AuthStatus {
 interface RunTargetsResponse {
   agents: RunTargetAgents;
   referencedSecrets: Array<{ name: string; brokerType: string | null; present: boolean; resolvable?: boolean }>;
+  /** Why the run would refuse the chosen eval set (it may not use this flow's secrets), or null. */
+  evalSetProblem?: string | null;
   tiers: { tier: string; available: boolean; onlineAgents?: number; reason?: string }[];
 }
 
@@ -366,6 +368,12 @@ export default function ConsoleEvalFlowDetail() {
                   </p>
                 )}
               </div>
+              {runTargets?.evalSetProblem && (
+                <Alert variant="destructive" data-testid="eval-set-problem">
+                  <AlertTitle>This eval set can't run with this Eval Flow</AlertTitle>
+                  <AlertDescription>{runTargets.evalSetProblem}</AlertDescription>
+                </Alert>
+              )}
               {missingSecrets.length > 0 && (
                 <Alert variant="destructive">
                   <AlertTitle>Missing secrets — this run would fail</AlertTitle>
@@ -395,7 +403,7 @@ export default function ConsoleEvalFlowDetail() {
                 disabled={
                   runEvalFlowMutation.isPending || !runEvalSetId || !selection || runTargetsFetching ||
                   (selection?.kind === "region" && noPoolAvailable) ||
-                  missingSecrets.length > 0 || (showRuntimeWarning && !ackRuntime)
+                  missingSecrets.length > 0 || !!runTargets?.evalSetProblem || (showRuntimeWarning && !ackRuntime)
                 }
               >
                 Run Evaluation
