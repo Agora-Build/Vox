@@ -17,7 +17,10 @@ export default defineConfig({
   // assertion budgets. Playwright's default is half the cores (8 here), which
   // is tuned for independent workers and wrong for a shared backend: it made
   // the auth specs fail intermittently on load alone. CI already runs 1.
-  workers: process.env.CI ? 1 : 4,
+  // One dev server (a single Node process serving the API and every Vite
+  // module) can't serve 4 browsers at once: page loads timed out mid-run
+  // (#201). 2 measured clean of those; CI runs 1.
+  workers: process.env.CI ? 1 : 2,
   reporter: "html",
   use: {
     baseURL: "http://localhost:5000",

@@ -941,6 +941,35 @@ DELETE FROM plugin_organizations.org_secrets
 DELETE FROM plugin_organizations.organizations
       WHERE name LIKE 'r2-org-%' OR name LIKE 'abs-org-%';
 
+-- Test users (@example.com, @test.local): suites invite a fresh user per run and never
+-- delete it. At ~5,000 of them the unpaginated /console/users page took so
+-- long to render that the admin login E2E tests timed out waiting on it
+-- (#201). Drop what such a user owns outright, then the user itself — one at
+-- a time, keeping any a surviving job, eval flow, schedule or eval set still
+-- points at (the rows kept above) — then plugin rows left without a user.
+DELETE FROM api_keys            WHERE created_by IN (SELECT id FROM users WHERE (email LIKE '%@example.com' OR email LIKE '%@test.local'));
+DELETE FROM activation_tokens   WHERE user_id    IN (SELECT id FROM users WHERE (email LIKE '%@example.com' OR email LIKE '%@test.local'));
+DELETE FROM secrets             WHERE user_id    IN (SELECT id FROM users WHERE (email LIKE '%@example.com' OR email LIKE '%@test.local'));
+DELETE FROM web_sessions        WHERE user_id    IN (SELECT id FROM users WHERE (email LIKE '%@example.com' OR email LIKE '%@test.local'));
+DELETE FROM user_storage_config WHERE user_id    IN (SELECT id FROM users WHERE (email LIKE '%@example.com' OR email LIKE '%@test.local'));
+DO $$
+DECLARE u integer;
+BEGIN
+  FOR u IN SELECT id FROM users WHERE (email LIKE '%@example.com' OR email LIKE '%@test.local') LOOP
+    BEGIN
+      DELETE FROM users WHERE id = u;
+    EXCEPTION WHEN foreign_key_violation THEN
+      NULL; -- still referenced by a kept row: keep the user too
+    END;
+  END LOOP;
+  IF to_regclass('plugin_organizations.memberships') IS NOT NULL THEN
+    DELETE FROM plugin_organizations.memberships m WHERE NOT EXISTS (SELECT 1 FROM users WHERE id = m.user_ref);
+  END IF;
+  IF to_regclass('plugin_oauth.identities') IS NOT NULL THEN
+    DELETE FROM plugin_oauth.identities i WHERE NOT EXISTS (SELECT 1 FROM users WHERE id = i.user_id);
+  END IF;
+END $$;
+
 -- FULL, because a plain VACUUM marks the pages reusable but hands nothing
 -- back to the OS, and the point here is to undo a 500 MB table. It takes an
 -- ACCESS EXCLUSIVE lock, which is why this is a deliberate maintenance

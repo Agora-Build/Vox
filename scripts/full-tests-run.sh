@@ -179,6 +179,15 @@ run_e2e_tests() {
         npx playwright install chromium
     fi
 
+    # The suites above (and every earlier run) leak test users, flows and jobs
+    # into the dev DB; enough of them makes pages slow enough to time out E2E
+    # tests — thousands of users on the unpaginated /console/users page failed
+    # the admin login tests (#201). Purge first. Refuses a non-local DB.
+    log_info "Cleaning test data before E2E..."
+    if ! "$PROJECT_DIR/scripts/dev-local-run.sh" clean-test-data --yes < /dev/null > /dev/null 2>&1; then
+        log_warn "clean-test-data failed — running E2E on an uncleaned DB"
+    fi
+
     if npx playwright test $verbose; then
         log_success "E2E tests passed!"
         return 0
