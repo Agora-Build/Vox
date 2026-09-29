@@ -17,10 +17,16 @@ function beginSignIn(req: Request, identity: IdentityService, provider: Provider
   return value;
 }
 
-function consumeState(req: Request, provider: Provider, state: unknown): boolean {
+async function consumeState(req: Request, provider: Provider, state: unknown): Promise<boolean> {
   const expected = session(req).oauthState;
   delete session(req).oauthState;
-  return !!expected && expected.provider === provider && typeof state === "string" && state === expected.value;
+  // Persist the removal before anything else happens. express-session would
+  // otherwise save it while sending the response, and a second callback with
+  // the same state arriving in that window (a replay, or the client racing
+  // itself) found the state still there: single-use failed 2 in 300 under load.
+  // Fail closed: if the removal can't be saved, the state isn't accepted.
+  const saved = await new Promise<boolean>((resolve) => req.session.save((err) => resolve(!err)));
+  return saved && !!expected && expected.provider === provider && typeof state === "string" && state === expected.value;
 }
 
 const origin = (req: Request) => `${req.protocol}://${req.get("host")}`;
@@ -56,7 +62,7 @@ const plugin: VoxPlugin = {
       r.post("/github/callback", async (req, res) => {
         const { code, state } = req.body ?? {};
         if (!code || !state) return res.status(400).json({ error: "Missing code or state" });
-        if (!consumeState(req, "github", state)) return res.status(403).json({ error: "Invalid OAuth state" });
+        if (!(await consumeState(req, "github", state))) return res.status(403).json({ error: "Invalid OAuth state" });
         try {
           const profile = await github.profileFromCode(config, code);
           const user = await findOrLinkOrCreate(db, identity, { provider: "github", ...profile });
@@ -79,7 +85,7 @@ const plugin: VoxPlugin = {
       // Google redirects the browser here directly.
       r.get("/google/callback", async (req, res) => {
         const { code, state, error } = req.query as Record<string, string | undefined>;
-        const ok = consumeState(req, "google", state);
+        const ok = await consumeState(req, "google", state);
         if (error || !code || !ok) return res.redirect("/login?error=oauth_failed");
         try {
           const profile = await google.profileFromCode(config, code, origin(req));
