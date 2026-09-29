@@ -18,16 +18,39 @@ async function login(): Promise<string> {
 const authFetch = (cookie: string, url: string, init: RequestInit = {}) =>
   fetch(url, { ...init, headers: { ...(init.headers || {}), Cookie: cookie, "Content-Type": "application/json" } });
 
+/** A freshly invited premium user who belongs to no organization. */
+async function newUserWithoutOrg(adminCookie: string): Promise<string> {
+  const email = `tt-noorg-${Date.now()}-${Math.floor(Math.random() * 1e6)}@example.com`;
+  const password = "TestPass123!";
+  const invite = await authFetch(adminCookie, `${BASE_URL}/api/admin/invite`, {
+    method: "POST", body: JSON.stringify({ email, plan: "premium" }),
+  });
+  if (!invite.ok) throw new Error(`invite: ${invite.status}`);
+  const { token } = await invite.json();
+  const reg = await fetch(`${BASE_URL}/api/auth/register`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username: email.split("@")[0].replace(/[^a-z0-9]/gi, ""), password, token }),
+  });
+  if (!reg.ok) throw new Error(`register: ${reg.status}`);
+  const res = await fetch(`${BASE_URL}/api/auth/login`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email, password }),
+  });
+  const cookie = res.headers.get("set-cookie");
+  if (!cookie) throw new Error("no session cookie");
+  return cookie.split(";")[0];
+}
+
 describe("pooled dispatch API", () => {
   let cookie: string; let evalFlowId: number; let evalSetId: number;
 
   beforeAll(async () => {
-    cookie = await login();
-    // canScheduleEvalFlow is owner/creator-only (no admin bypass) — the seeded
-    // evalFlows (id 1/2) are owned by Scout, not admin, so the schedule-create
-    // assertions below need an admin-OWNED evalFlow rather than the seed's
-    // wf[0]. Create one here so both the run-route and schedule-route tests
-    // in this file share an evalFlow the logged-in test user actually owns.
+    // Its own user with no organization — not the admin: other suites
+    // (api.test's org blocks) make the admin an org owner while they run, and
+    // the "team pool needs an org" assertions below would then flip (#196).
+    // The same user owns the evalFlow, since canScheduleEvalFlow is
+    // owner/creator-only (no admin bypass).
+    cookie = await newUserWithoutOrg(await login());
     const providers = await (await authFetch(cookie, `${BASE_URL}/api/providers`)).json();
     const providerId = providers[0].id;
     const wfRes = await authFetch(cookie, `${BASE_URL}/api/eval-flows`, {
@@ -84,7 +107,6 @@ describe("pooled dispatch API", () => {
   });
 
   it("rejects team pool for a user with no org", async () => {
-    // admin has no organization in the dev seed
     const res = await run({ region: BASE_NA, targetTier: "team", evalSetId });
     expect(res.status).toBe(400);
     expect((await res.json()).error).toMatch(/organization/i);
@@ -112,7 +134,7 @@ describe("pooled dispatch API", () => {
       authFetch(cookie, `${BASE_URL}/api/eval-schedules`, { method: "POST", body: JSON.stringify(body) });
     expect((await post({ ...base, region: BASE_NA, targetTier: "shared" })).status).toBe(400);
     expect((await post({ ...base, region: BASE_NA, targetTier: "bogus" })).status).toBe(400);
-    expect((await post({ ...base, region: BASE_NA, targetTier: "team" })).status).toBe(400); // admin has no org
+    expect((await post({ ...base, region: BASE_NA, targetTier: "team" })).status).toBe(400); // this user has no org
     expect((await post({ ...base, region: "not-a-region", targetTier: "public" })).status).toBe(400);
     expect((await post({ ...base, region: BASE_NA })).status).toBe(400);
   });
@@ -146,7 +168,7 @@ describe("pooled dispatch API", () => {
     await authFetch(cookie, `${BASE_URL}/api/eval-schedules/${sched.id}`, { method: "DELETE" });
   });
 
-  // Reuses this describe's own admin-owned evalFlow/eval-set (created in its
+  // Reuses this describe's own user-owned evalFlow/eval-set (created in its
   // beforeAll above) rather than fetching `?includePublic=true` and taking
   // index 0 — that global listing is shared across every test file hitting
   // this dev DB (vitest runs files in parallel), so index 0 can flakily land
@@ -164,7 +186,7 @@ describe("pooled dispatch API", () => {
     expect(byTier.public.available).toBe(true);
     expect(typeof byTier.public.onlineAgents).toBe("number");
     expect(byTier.private.available).toBe(true);
-    expect(byTier.team.available).toBe(false); // admin has no org in dev seed
+    expect(byTier.team.available).toBe(false); // this user has no org
     expect(byTier.team.reason).toBe("no-org");
     expect(byTier.shared.available).toBe(false);
     expect(byTier.shared.reason).toBe("not-pooled-yet");
