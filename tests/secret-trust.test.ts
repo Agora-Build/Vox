@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, beforeAll, afterAll } from "vitest";
 import { BASE_NA } from "./helpers/regions";
 import { setOrganizations, resetOrganizations, type OrganizationsProvider, type Membership } from "../server/organizations";
-import { evalSetMayUseSecrets, resolvableSecretSources, secretGate } from "../server/auth-session";
+import { evalSetMayUseSecrets, resolvableSecretSources, secretGate, untrustedEvalSetConfigError } from "../server/auth-session";
 import { mergeEvalConfig } from "../server/storage";
 
 // "Only when trusted" (designs/2026-09-29-secret-substitution.md): an eval set
@@ -115,6 +115,43 @@ describe("secretGate — untrusted eval set referencing a secret is refused befo
       { ...set(4, ORG_A), config: { scenario: "steps:\n  - type: audio.wait_for_speech\n" } },
     );
     expect(gate).toEqual({ evalSetSecrets: false, error: null });
+  });
+});
+
+// Review finding: every string key of an eval set's config becomes a
+// ${config.*} value in the job, so checking only the step fields left two
+// routes open — and agents older than the stamp fill secrets everywhere.
+describe("untrustedEvalSetConfigError — the whole eval-set config, not just its steps", () => {
+  it("refuses ${secrets.*} in any key of the eval set's config", () => {
+    expect(untrustedEvalSetConfigError({}, { scenario: "steps: []", note: "${secrets.K}" }))
+      .toMatch(/The eval set uses secret\(s\) K, but it may not use/);
+  });
+
+  it("refuses a secret reached through a ${config.*} value the eval set reads", () => {
+    const flow = { url: "https://api.example/?key=${secrets.API_KEY}" };
+    expect(untrustedEvalSetConfigError(flow, { scenario: "steps:\n  - type: log\n    text: ${config.url}\n" }))
+      .toMatch(/secret\(s\) API_KEY/);
+  });
+
+  it("refuses a config value the eval flow's Setup reads but does not define", () => {
+    const flow = { stepsPrefix: "- type: x\n  url: ${config.endpoint}\n  auth: ${secrets.KEY}\n" };
+    expect(untrustedEvalSetConfigError(flow, { scenario: "steps: []", endpoint: "https://attacker.example/" }))
+      .toMatch(/sets config value\(s\) endpoint that this eval flow's Setup\/Teardown reads/);
+  });
+
+  it("accepts an ordinary eval set: its own keys, reading the flow's plain config", () => {
+    const flow = { url: "https://agent.example/", stepsPrefix: "- type: x\n  url: ${config.url}\n" };
+    expect(untrustedEvalSetConfigError(flow, {
+      scenario: "steps:\n  - type: log\n    text: ${config.url}\n", frameworkVersion: "v0.4.1",
+    })).toBeNull();
+  });
+
+  it("secretGate applies it only to untrusted eval sets", async () => {
+    const cfg = { scenario: "steps: []", note: "${secrets.K}" };
+    expect((await secretGate({ ...personalFlow, config: {} }, { ...set(6, null), config: cfg })).error)
+      .toMatch(/may not use this eval flow's secrets/);
+    // The owner's own eval set may mention it (in a key the agent never fills).
+    expect((await secretGate({ ...personalFlow, config: {} }, { ...set(1, null), config: cfg })).error).toBeNull();
   });
 });
 

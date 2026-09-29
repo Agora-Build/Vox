@@ -5048,11 +5048,10 @@ export async function registerRoutes(
       // Setup/Teardown, and the eval set's scenario only when it may use the
       // secrets. The run gate narrows to exactly these, so the UI must too —
       // otherwise it disables Run for a placeholder the server would accept.
-      const resolvableHere = collectSecretRefs(resolvableSecretSources(
-        evalFlow.config,
-        evalSetForRun?.config,
-        await evalSetMayUseSecrets(evalFlow, evalSetForRun),
-      ));
+      // Read-only: a failing organizations provider means "not trusted" here
+      // (the run itself re-checks and reports the outage), never a 500.
+      const trusted = await evalSetMayUseSecrets(evalFlow, evalSetForRun).catch(() => false);
+      const resolvableHere = collectSecretRefs(resolvableSecretSources(evalFlow.config, evalSetForRun?.config, trusted));
       const referencedSecrets = classifiedRefs.map((c) => ({ ...c, resolvable: resolvableHere.has(c.name) }));
 
       // Same detector the run route enforces with — not "any brokered secret

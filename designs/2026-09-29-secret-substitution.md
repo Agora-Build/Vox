@@ -121,6 +121,24 @@ the rule, because secrets are filled after config.
    (strip-then-stamp, like `sessionInjection`). The TypeScript signature makes
    the stamp mandatory, so no path can forget it.
 
+### What an untrusted eval set may not do (whole config)
+
+Every string key of an eval set's config becomes a `${config.*}` value in
+the job, not only its `scenario`. So for an untrusted eval set the gate checks
+its **whole** config and refuses the job when it:
+
+- **(a) mentions `${secrets.*}`** anywhere — directly, or through a
+  `${config.*}` value it reads (e.g. the flow's `url` holds `${secrets.K}` and
+  the scenario reads `${config.url}`);
+- **(b) supplies a config value the eval flow's Setup/Teardown reads** but the
+  eval flow does not define. Setup is always filled with secrets, so the eval
+  set would be steering them (e.g. pointing a request that carries
+  `${secrets.KEY}` at its own URL).
+
+Being a server check, this also protects agents that predate the
+`evalSetSecrets` stamp (they fill secrets everywhere): such a job is never
+created.
+
 ## Eval agent (one prepare step for every job)
 
 ```
@@ -174,7 +192,7 @@ they are needed to fix a run and are not secret. Secret **values** never:
 | Vox server logs | counts only; a name on a decrypt failure | unchanged (audited) |
 | Agent logs | counts only | unchanged |
 | Job errors (stored, shown in the console) | web: aeval failures redacted; phone: **not** — a bad `call.dial` number is echoed | every job error redacted in one place |
-| Uploaded artifacts | phone: DialF `steps.json` records the dialed number, `call.json` the far-end number; web: aeval's output may hold a copy of the filled scenario | every text artifact (`.json`, `.yaml`, `.yml`, `.log`, `.txt`, `.csv`) scrubbed of secret values before upload, in one place; audio untouched |
+| Uploaded artifacts | phone: DialF `steps.json` records the dialed number, `call.json` the far-end number; web: aeval's output may hold a copy of the filled scenario | every file scrubbed before upload, in one place — text decided by content (not file name) and redacted; a binary holding a secret deleted; recordings without one kept. Fail-closed: a file that can't be checked or removed means the job's artifacts are not uploaded |
 | `callMetadata` | far-end number reduced to last 4 digits | unchanged |
 | Temp files with filled YAML | written `0600`, deleted after the run | unchanged |
 | REST broker responses | redacted by Vox's server | unchanged |
@@ -182,6 +200,18 @@ they are needed to fix a run and are not secret. Secret **values** never:
 Outside Vox's control: `dialfd` on the phone host keeps its own logs and
 recordings, and the target platform sees whatever the script sends it. Both
 are on hosts the eval flow's owner or the agent's operator already controls.
+
+**Which values are redacted:** only the secrets the job actually filled (the
+server hands the agent every runtime secret of the owner; redacting unrelated
+ones would mangle artifacts). Values shorter than 4 characters are not
+redacted — replacing a 1–3 character string everywhere corrupts unrelated
+numbers and words, and such a value is not meaningfully secret; the agent logs
+its **name** as a warning.
+
+**Re-written YAML:** a filled part is re-written through js-yaml, which drops
+comments and expands anchors — the same as web's existing composing of
+Setup + scenario + Teardown. Parts with nothing to fill are passed on as
+written.
 
 ## Rollout and compatibility
 

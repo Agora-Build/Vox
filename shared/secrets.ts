@@ -122,6 +122,16 @@ export function unresolvedSecretsMessage(names: string[]): string {
   );
 }
 
+/** The error for an eval set that references secrets it may not use. */
+export function untrustedEvalSetSecretsMessage(names: string[]): string {
+  return (
+    `The eval set uses secret(s) ${[...names].sort().join(", ")}, but it may not use this eval flow's ` +
+    `secrets: an eval set gets them only when it belongs to the eval flow's owner (or, for an ` +
+    `organization's eval flow, to that organization and was created by someone who can edit the ` +
+    `eval flow).`
+  );
+}
+
 /**
  * Enumerate every ${secrets.NAME} referenced across one or more configs.
  * Objects (jsonb evalFlow/eval-set configs) are JSON-stringified before

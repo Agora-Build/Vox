@@ -4,7 +4,7 @@ import * as os from "os";
 import * as path from "path";
 import yaml from "js-yaml";
 import {
-  fillJobPlaceholders, unresolvedSecretsError, secretNeedles, scrubSecretsFromArtifacts, jobConfigVars,
+  fillJobPlaceholders, unresolvedSecretsError, secretNeedles, scrubSecretsFromArtifacts, jobConfigVars, MIN_REDACT_LENGTH,
 } from "../vox_eval_agentd/placeholders";
 import { runPhoneJob } from "../vox_eval_agentd/phone-eval";
 
@@ -76,6 +76,23 @@ describe("fillJobPlaceholders", () => {
   });
 });
 
+describe("FilledJob.used — only secrets actually filled are redacted", () => {
+  it("lists secrets filled into Setup/Teardown (directly or through ${config.*}); not unsupplied ones, not an untrusted eval set's", () => {
+    const filled = fillJobPlaceholders(
+      {
+        scenario: { steps: [{ type: "log", text: "${secrets.IN_SET}" }] },
+        stepsPrefix: [{ type: "call.dial", number: "${secrets.PHONE}" }, { type: "x", url: "${config.url}" }],
+        stepsSuffix: [{ type: "log", text: "${secrets.MISSING}" }],
+      },
+      { url: "https://${secrets.HOST}/" },
+      { PHONE: "+15551234", HOST: "h.example", IN_SET: "set-value", UNUSED: "1" },
+      untrusted,
+    );
+    expect(filled.used.sort()).toEqual(["HOST", "PHONE"]);
+    expect(filled.unsupplied).toEqual(["MISSING"]);
+  });
+});
+
 describe("unresolvedSecretsError", () => {
   it("names a secret the server did not supply", () => {
     const filled = fillJobPlaceholders(
@@ -115,29 +132,75 @@ describe("secretNeedles", () => {
     const needles = secretNeedles({ K: 'a"b c' });
     expect(needles).toEqual(expect.arrayContaining(['a"b c', 'a\\"b c', "a%22b%20c"]));
   });
+
+  it(`skips values shorter than ${MIN_REDACT_LENGTH} characters, which would mangle unrelated text`, () => {
+    expect(secretNeedles({ PIN: "1", CODE: "abc" })).toEqual([]);
+    expect(secretNeedles({ PIN: "1234" })).toEqual(["1234"]);
+  });
 });
 
 describe("scrubSecretsFromArtifacts", () => {
-  it("removes secret values from text artifacts, in nested dirs, and leaves audio alone", () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "scrub-"));
+  const SECRET = "+12345952048";
+  const needles = secretNeedles({ P: SECRET });
+  const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), "scrub-"));
+
+  it("redacts text artifacts in nested dirs, and leaves a recording without the secret alone", () => {
+    const dir = tmp();
     fs.mkdirSync(path.join(dir, "dialf"));
-    fs.writeFileSync(path.join(dir, "dialf", "steps.json"), JSON.stringify([{ type: "call.dial", number: "+12345952048" }]));
+    fs.writeFileSync(path.join(dir, "dialf", "steps.json"), JSON.stringify([{ type: "call.dial", number: SECRET }]));
     fs.writeFileSync(path.join(dir, "notes.log"), "nothing secret here");
-    const wav = Buffer.from("RIFF+12345952048");
+    const wav = Buffer.concat([Buffer.from("RIFF"), Buffer.alloc(64), Buffer.from("audio")]);
     fs.writeFileSync(path.join(dir, "rx.wav"), wav);
 
-    const changed = scrubSecretsFromArtifacts([dir], secretNeedles({ P: "+12345952048" }));
+    const out = scrubSecretsFromArtifacts([dir], needles);
 
-    expect(changed).toEqual([path.join(dir, "dialf", "steps.json")]);
+    expect(out).toEqual({ changed: [path.join(dir, "dialf", "steps.json")], failed: [] });
     const steps = fs.readFileSync(path.join(dir, "dialf", "steps.json"), "utf-8");
-    expect(steps).not.toContain("+12345952048");
+    expect(steps).not.toContain(SECRET);
     expect(steps).toContain("[redacted]");
     expect(fs.readFileSync(path.join(dir, "rx.wav")).equals(wav)).toBe(true);
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
+  it("decides text by content, not file name: extensionless and .xml/.js text is redacted too", () => {
+    const dir = tmp();
+    for (const name of ["trace", "report.xml", "page.js"]) fs.writeFileSync(path.join(dir, name), `x ${SECRET} y`);
+    const out = scrubSecretsFromArtifacts([dir], needles);
+    expect(out.changed.sort()).toEqual(["page.js", "report.xml", "trace"].map((n) => path.join(dir, n)));
+    for (const name of ["trace", "report.xml", "page.js"]) {
+      expect(fs.readFileSync(path.join(dir, name), "utf-8")).toBe("x [redacted] y");
+    }
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("deletes a binary file that contains a secret — it cannot be redacted safely", () => {
+    const dir = tmp();
+    const bin = path.join(dir, "blob.bin");
+    fs.writeFileSync(bin, Buffer.concat([Buffer.alloc(16), Buffer.from(SECRET), Buffer.alloc(16)]));
+    expect(scrubSecretsFromArtifacts([dir], needles)).toEqual({ changed: [bin], failed: [] });
+    expect(fs.existsSync(bin)).toBe(false);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("fails closed: a file it can neither rewrite nor remove is reported, never skipped", () => {
+    if (process.getuid?.() === 0) return; // root ignores the permission this relies on
+    const dir = tmp();
+    const locked = path.join(dir, "locked");
+    fs.mkdirSync(locked);
+    const f = path.join(locked, "out.json");
+    fs.writeFileSync(f, `{"n":"${SECRET}"}`);
+    fs.chmodSync(f, 0o444);
+    fs.chmodSync(locked, 0o555);
+    try {
+      expect(scrubSecretsFromArtifacts([dir], needles).failed).toEqual([f]);
+    } finally {
+      fs.chmodSync(locked, 0o755);
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("does nothing without secrets", () => {
-    expect(scrubSecretsFromArtifacts(["/nonexistent"], [])).toEqual([]);
+    expect(scrubSecretsFromArtifacts(["/nonexistent"], [])).toEqual({ changed: [], failed: [] });
   });
 });
 

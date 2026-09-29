@@ -31,7 +31,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { fillJobPlaceholders, jobConfigVars, secretNeedles, unresolvedSecretsError, scrubSecretsFromArtifacts, type FilledJob, type JobParts } from './placeholders';
+import { fillJobPlaceholders, jobConfigVars, secretNeedles, unresolvedSecretsError, scrubSecretsFromArtifacts, MIN_REDACT_LENGTH, type FilledJob, type JobParts } from './placeholders';
 import { redactValues } from '../shared/credentials';
 import { summarizeAevalFailure, reduceUrlsSafely, createBoundedCapture } from './aeval-output';
 import { StringDecoder } from 'string_decoder';
@@ -1922,8 +1922,16 @@ class VoxEvalAgentDaemon {
     // the eval flow owner's secrets? Absent (an older job) means no.
     const evalSetSecrets = config.evalSetSecrets === true;
     const secrets = await this.fetchSecrets(job.id);
-    this.activeSecretValues = secretNeedles(secrets);
     const filled = fillJobPlaceholders(parsed, jobConfigVars(config), secrets, { evalSetSecrets });
+    // Redact only what this job used: the server hands over every runtime
+    // secret of the owner, and scrubbing unrelated short values would mangle
+    // artifacts. Names only in the warning — never a value.
+    const used = Object.fromEntries(filled.used.map((n) => [n, secrets[n]]));
+    const tooShort = Object.keys(used).filter((n) => used[n].length < MIN_REDACT_LENGTH).sort();
+    if (tooShort.length > 0) {
+      console.warn(`[Daemon] Secret(s) ${tooShort.join(', ')} are shorter than ${MIN_REDACT_LENGTH} characters — too short to redact from errors and artifacts`);
+    }
+    this.activeSecretValues = secretNeedles(used);
     return { parsed, filled, evalSetSecrets };
   }
 
@@ -2165,23 +2173,32 @@ class VoxEvalAgentDaemon {
         console.error(`[Daemon] Failed to report job failure:`, reportMsg);
       }
     } finally {
-      // No secret value leaves this agent in an artifact: scrub every text
-      // file in the job's output before it is queued for upload.
-      const scrubbed = scrubSecretsFromArtifacts(this.jobOutputDirs, this.activeSecretValues);
-      if (scrubbed.length > 0) console.log(`[Daemon] Removed secret values from ${scrubbed.length} artifact file(s)`);
-      this.activeSecretValues = []; // don't retain decrypted values past the job
-      // Queue artifact upload (whether job succeeded or failed) — covers every
-      // chunk's output dir, not just the last run's.
-      if (this.jobOutputDirs.length > 0) {
-        this.queueUpload({
-          jobId: job.id,
-          outputDirs: [...this.jobOutputDirs],
-          scenarioName: (job.config as Record<string, string>)?.scenario?.slice(0, 50) || 'unknown',
-          retries: 0,
-        });
+      try {
+        // No secret value leaves this agent in an artifact: scrub every file in
+        // the job's output before it is queued for upload. Fail-closed — if any
+        // file could not be checked or removed, nothing is uploaded.
+        const scrub = scrubSecretsFromArtifacts(this.jobOutputDirs, this.activeSecretValues);
+        if (scrub.changed.length > 0) console.log(`[Daemon] Removed secret values from ${scrub.changed.length} artifact file(s)`);
+        if (scrub.failed.length > 0) {
+          console.error(`[Daemon] Could not scrub ${scrub.failed.length} artifact path(s) — not uploading job ${job.id}'s artifacts`);
+        } else if (this.jobOutputDirs.length > 0) {
+          // Queue artifact upload (whether job succeeded or failed) — covers
+          // every chunk's output dir, not just the last run's.
+          this.queueUpload({
+            jobId: job.id,
+            outputDirs: [...this.jobOutputDirs],
+            scenarioName: (job.config as Record<string, string>)?.scenario?.slice(0, 50) || 'unknown',
+            retries: 0,
+          });
+        }
+      } catch (e) {
+        console.error(`[Daemon] Artifact scrub failed — not uploading job ${job.id}'s artifacts:`, e instanceof Error ? e.message : e);
+      } finally {
+        // Always reset, or the daemon would stay "busy" forever.
+        this.activeSecretValues = []; // don't retain decrypted values past the job
+        this.isRunningJob = false;
+        this.currentJobId = null;
       }
-      this.isRunningJob = false;
-      this.currentJobId = null;
     }
   }
 

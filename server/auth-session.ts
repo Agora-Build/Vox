@@ -8,7 +8,7 @@
  * storageState. Broker addressing/routing lives in `./broker-registry`.
  */
 import { createHash } from "crypto";
-import { collectSecretRefs, isAuthFieldName } from "@shared/secrets";
+import { collectSecretRefs, isAuthFieldName, untrustedEvalSetSecretsMessage } from "@shared/secrets";
 import yaml from "js-yaml";
 import { storage, encryptValue, decryptValue, type SessionScope } from "./storage";
 import { getOrganizations, type OrgSecretRow } from "./organizations";
@@ -397,9 +397,6 @@ export function resolvableSecretSources(
 export const MISSING_SECRETS_MSG = (names: string[]) =>
   `This evalFlow references secret(s) ${names.join(", ")} that are not configured for its owner. If the evalFlow is yours, create them under Console → Secrets (names must match exactly); otherwise ask its owner to.`;
 
-export const UNTRUSTED_EVAL_SET_SECRETS_MSG = (names: string[]) =>
-  `The eval set uses secret(s) ${names.join(", ")}, but it may not use this eval flow's secrets: an eval set gets them only when it belongs to the eval flow's owner (or, for an organization's eval flow, to that organization and was created by someone who can edit the eval flow).`;
-
 /**
  * The secret gate every job-creating path runs — console run, API run,
  * schedule create/enable/run-now, and the scheduler tick. Returns the
@@ -413,15 +410,46 @@ export async function secretGate(
 ): Promise<{ evalSetSecrets: boolean; error: string | null }> {
   const evalSetSecrets = await evalSetMayUseSecrets(evalFlow, evalSet);
   if (!evalSetSecrets && evalSet) {
-    const cfg = (evalSet.config ?? {}) as Record<string, unknown>;
-    const untrusted = Array.from(collectSecretRefs([cfg.scenario, cfg.stepsPrefix, cfg.stepsSuffix])).sort();
-    if (untrusted.length > 0) return { evalSetSecrets, error: UNTRUSTED_EVAL_SET_SECRETS_MSG(untrusted) };
+    const error = untrustedEvalSetConfigError(evalFlow.config, evalSet.config);
+    if (error) return { evalSetSecrets, error };
   }
   const missing = await missingSecretNames(
     sessionScopeForEvalFlow(evalFlow),
     resolvableSecretSources(evalFlow.config, evalSet?.config, evalSetSecrets),
   );
   return { evalSetSecrets, error: missing.length > 0 ? MISSING_SECRETS_MSG(missing) : null };
+}
+
+const CONFIG_REF = /\$\{config\.(\w+)\}/g;
+const configRefs = (v: unknown): Set<string> => {
+  const text = typeof v === "string" ? v : JSON.stringify(v ?? null);
+  return new Set(Array.from(text.matchAll(CONFIG_REF), (m) => m[1]));
+};
+
+/**
+ * What an untrusted eval set may not do, checked on its WHOLE config (any
+ * key, not just the step fields — every string key becomes a ${config.*}
+ * value in the job). Closes both routes around the trust rule, including on
+ * agents that predate the evalSetSecrets stamp and fill secrets everywhere:
+ *  (a) mention ${secrets.*} — directly, or through a ${config.*} value it reads;
+ *  (b) supply a config value the eval flow's Setup/Teardown reads — Setup is
+ *      always filled with secrets, so the eval set would be steering them.
+ */
+export function untrustedEvalSetConfigError(evalFlowConfig: unknown, evalSetConfig: unknown): string | null {
+  const flow = (evalFlowConfig ?? {}) as Record<string, unknown>;
+  const set = (evalSetConfig ?? {}) as Record<string, unknown>;
+  const merged: Record<string, unknown> = { ...flow, ...set };
+  const reached = [set, ...Array.from(configRefs(set), (k) => merged[k])];
+  const names = Array.from(collectSecretRefs(reached)).sort();
+  if (names.length > 0) return untrustedEvalSetSecretsMessage(names);
+
+  const setupReads = configRefs([flow.stepsPrefix, flow.stepsSuffix]);
+  const steered = Object.keys(set).filter((k) => setupReads.has(k) && !(k in flow)).sort();
+  if (steered.length > 0) {
+    return `The eval set sets config value(s) ${steered.join(", ")} that this eval flow's Setup/Teardown ` +
+      `reads, but it may not: only the eval flow's owner may configure its Setup. Define them in the eval flow instead.`;
+  }
+  return null;
 }
 
 /**

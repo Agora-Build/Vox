@@ -11,7 +11,7 @@
  * - restful.request steps are never touched: Vox's server fills them from the
  *   job snapshot with secrets it never hands to an agent.
  */
-import { collectSecretRefs, resolveSecretPlaceholders, unresolvedSecretsMessage } from '../shared/secrets';
+import { collectSecretRefs, resolveSecretPlaceholders, unresolvedSecretsMessage, untrustedEvalSetSecretsMessage } from '../shared/secrets';
 import * as fs from 'fs';
 import * as path from 'path';
 import { redactValues, urlForms } from '../shared/credentials';
@@ -26,6 +26,8 @@ export interface FilledJob {
   parts: JobParts;
   /** Secret names the filled parts reference that the server did not supply. */
   unsupplied: string[];
+  /** Secret names actually filled into this job — the only values to redact. */
+  used: string[];
 }
 
 const isRestful = (v: unknown) =>
@@ -80,7 +82,10 @@ export function fillJobPlaceholders(
   // Taken BEFORE filling: a secret whose value happens to contain
   // "${secrets.X}" must not read as an unresolved placeholder afterwards.
   const unsupplied = new Set<string>();
-  for (const v of filled) for (const n of refsOutsideRestful(v)) if (!(n in secrets)) unsupplied.add(n);
+  const used = new Set<string>();
+  for (const v of filled) {
+    for (const n of refsOutsideRestful(v)) (n in secrets ? used : unsupplied).add(n);
+  }
 
   const fillSecrets = (v: unknown) => mapStrings(v, (s) => resolveSecretPlaceholders(s, secrets));
   return {
@@ -90,6 +95,7 @@ export function fillJobPlaceholders(
       stepsSuffix: fillSecrets(withConfig.stepsSuffix),
     },
     unsupplied: [...unsupplied],
+    used: [...used],
   };
 }
 
@@ -106,9 +112,7 @@ export function unresolvedSecretsError(
   if (!opts.evalSetSecrets) {
     const inEvalSet = [...refsOutsideRestful(finalParts.scenario)].sort();
     if (inEvalSet.length > 0) {
-      return `The eval set uses secret(s) ${inEvalSet.join(', ')}, but it belongs to someone other ` +
-        `than this eval flow's owner. An eval set may use the eval flow owner's secrets only when ` +
-        `the same person or organization owns both.`;
+      return untrustedEvalSetSecretsMessage(inEvalSet);
     }
   }
   const remaining = refsOutsideRestful([finalParts.scenario, finalParts.stepsPrefix, finalParts.stepsSuffix]);
@@ -128,44 +132,95 @@ export function yamlEscape(value: string): string {
 }
 
 /**
+ * Shorter values are not redacted: replacing a 1–3 character string everywhere
+ * would corrupt unrelated text (numbers, words) in errors and artifacts. Such a
+ * value is not meaningfully secret; the agent logs its NAME as a warning.
+ */
+export const MIN_REDACT_LENGTH = 4;
+
+/**
  * Every spelling of the secret values that must be redacted from job output
- * and errors: raw, YAML-escaped, and the URL encodings (shared with the broker).
+ * and errors: raw, YAML-escaped, and the URL encodings (shared with the
+ * broker). Pass only the secrets the job actually used (FilledJob.used) —
+ * the server hands over every runtime secret of the owner.
  * Deduped: for an alphanumeric secret they are all the same string.
  */
 export function secretNeedles(secrets: Record<string, string>): string[] {
   return Array.from(new Set(
-    Object.values(secrets).flatMap((v) => [v, yamlEscape(v), ...urlForms(v)]),
+    Object.values(secrets)
+      .filter((v) => v.length >= MIN_REDACT_LENGTH)
+      .flatMap((v) => [v, yamlEscape(v), ...urlForms(v)]),
   ));
 }
 
-/** Artifact files that can carry text — scrubbed; audio and other binaries are not. */
-const TEXT_ARTIFACT = /\.(json|ya?ml|log|txt|csv|md|html?)$/i;
 const MAX_SCRUB_BYTES = 50 * 1024 * 1024;
+const BINARY_SNIFF_BYTES = 8192;
+
+export interface ScrubResult {
+  /** Files rewritten (text) or deleted (a binary holding a secret, or too big to scrub). */
+  changed: string[];
+  /** Files that could not be checked or removed — the job's artifacts must not be uploaded. */
+  failed: string[];
+}
 
 /**
- * Remove secret values from every text artifact under dirs, in place, before
- * upload — e.g. DialF's steps.json records a call.dial number kept as a
- * secret, and aeval's output can hold a copy of the filled scenario. Returns
- * the files changed. Files over MAX_SCRUB_BYTES are deleted rather than
- * uploaded unscrubbed.
+ * Remove secret values from every artifact under dirs, in place, before upload
+ * (the uploader sends every file). e.g. DialF's steps.json records a call.dial
+ * number kept as a secret; aeval's output can hold a copy of the filled
+ * scenario.
+ *
+ * Text vs binary is decided by content (a NUL byte in the first 8 KB), not by
+ * file name. Text is redacted; a binary that contains a secret cannot be
+ * redacted safely and is deleted; other binaries (recordings) are kept. Text
+ * over MAX_SCRUB_BYTES is deleted rather than uploaded unscrubbed. Best-effort
+ * per file and fail-closed: a file that cannot be handled is deleted, and one
+ * that cannot even be deleted is reported in `failed`.
  */
-export function scrubSecretsFromArtifacts(dirs: string[], needles: string[]): string[] {
+export function scrubSecretsFromArtifacts(dirs: string[], needles: string[]): ScrubResult {
+  const result: ScrubResult = { changed: [], failed: [] };
   const values = needles.filter((v) => v.length > 0);
-  if (values.length === 0) return [];
-  const changed: string[] = [];
+  if (values.length === 0) return result;
+  const needleBytes = values.map((v) => Buffer.from(v, 'utf-8'));
+  const remove = (p: string) => {
+    try { fs.rmSync(p, { force: true }); result.changed.push(p); } catch { result.failed.push(p); }
+  };
+  const scrubFile = (p: string) => {
+    const size = fs.statSync(p).size;
+    const fd = fs.openSync(p, 'r');
+    let head: Buffer;
+    try {
+      head = Buffer.alloc(Math.min(size, BINARY_SNIFF_BYTES));
+      fs.readSync(fd, head, 0, head.length, 0);
+    } finally {
+      fs.closeSync(fd);
+    }
+    const binary = head.includes(0);
+    if (binary) {
+      if (size > MAX_SCRUB_BYTES) return; // e.g. a long call recording
+      const bytes = fs.readFileSync(p);
+      if (needleBytes.some((n) => bytes.includes(n))) remove(p);
+      return;
+    }
+    if (size > MAX_SCRUB_BYTES) { remove(p); return; }
+    const text = fs.readFileSync(p, 'utf-8');
+    const clean = redactValues(text, values);
+    if (clean !== text) { fs.writeFileSync(p, clean); result.changed.push(p); }
+  };
   const walk = (dir: string) => {
     let entries: fs.Dirent[];
-    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') result.failed.push(dir);
+      return;
+    }
     for (const e of entries) {
       const p = path.join(dir, e.name);
       if (e.isDirectory()) { walk(p); continue; }
-      if (!e.isFile() || !TEXT_ARTIFACT.test(e.name)) continue;
-      if (fs.statSync(p).size > MAX_SCRUB_BYTES) { fs.rmSync(p, { force: true }); changed.push(p); continue; }
-      const text = fs.readFileSync(p, 'utf-8');
-      const clean = redactValues(text, values);
-      if (clean !== text) { fs.writeFileSync(p, clean); changed.push(p); }
+      if (!e.isFile()) continue; // the uploader sends regular files only
+      try { scrubFile(p); } catch { remove(p); }
     }
   };
   for (const d of dirs) walk(d);
-  return changed;
+  return result;
 }
