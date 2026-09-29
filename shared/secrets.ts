@@ -90,6 +90,39 @@ export function isAuthFieldName(name: string): boolean {
 }
 
 /**
+ * Minimum length of a secret value — and of every line of a multi-line value
+ * that carries letters or digits. A shorter piece cannot be kept out of logs,
+ * errors and artifacts (redacting a 1–3 character string everywhere would
+ * corrupt unrelated text), and output that echoes a multi-line value line by
+ * line exposes each line on its own. Lines of pure punctuation (JSON's `{`,
+ * `}`) carry no secret and are allowed. Vox refuses to store a value that
+ * breaks this (UI and server), and the eval agent refuses a job that uses one.
+ */
+export const MIN_SECRET_VALUE_LENGTH = 4;
+
+/** The line breaks a multi-line value is split on — shared with redaction. */
+export const SECRET_LINE_BREAK = /\r\n|[\r\n\u2028\u2029]/;
+
+const LETTER_OR_DIGIT = new RegExp("[\\p{L}\\p{N}]", "u");
+
+/** Why a secret value can't be stored, or null. Shared by the UI, the server and the eval agent. */
+export function secretValueError(value: unknown): string | null {
+  if (typeof value !== "string" || value.length === 0) return "Secret value is required";
+  if (value.length < MIN_SECRET_VALUE_LENGTH) {
+    return `Secret value must be at least ${MIN_SECRET_VALUE_LENGTH} characters — shorter values can't be kept out of logs and artifacts`;
+  }
+  const shortLine = value
+    .split(SECRET_LINE_BREAK)
+    .map((l) => l.trim())
+    .some((l) => l.length > 0 && l.length < MIN_SECRET_VALUE_LENGTH && LETTER_OR_DIGIT.test(l));
+  if (shortLine) {
+    return `Each line of a secret value that contains letters or digits must be at least ${MIN_SECRET_VALUE_LENGTH} characters — shorter lines can't be kept out of logs and artifacts`;
+  }
+  if (value.length > 10000) return "Secret value too large (max 10KB)";
+  return null;
+}
+
+/**
  * Resolve ${secrets.KEY} placeholders in a string.
  * Unresolved placeholders are left as-is.
  */
@@ -103,6 +136,33 @@ export function resolveSecretPlaceholders(
     onMissing?.(key);
     return match;
   });
+}
+
+/**
+ * The job error for ${secrets.NAME} references the server did not supply.
+ * Deliberately scope-agnostic: the agent cannot distinguish "no such secret"
+ * from "the server withheld it for this job" (e.g. an org secret fenced on
+ * the job creator's membership), so it must not tell the user to go create one.
+ */
+export function unresolvedSecretsMessage(names: string[]): string {
+  const sorted = [...names].sort();
+  const plural = sorted.length > 1;
+  return (
+    `Unresolved secret placeholder(s): ${sorted.join(", ")}. ` +
+    `The server did not supply ${plural ? "these secrets" : "this secret"} for this job — ` +
+    `${plural ? "they are" : "it is"} either not configured for the evalFlow owner, or not ` +
+    `available to whoever started the run.`
+  );
+}
+
+/** The error for an eval set that references secrets it may not use. */
+export function untrustedEvalSetSecretsMessage(names: string[]): string {
+  return (
+    `The eval set uses secret(s) ${[...names].sort().join(", ")}, but it may not use this eval flow's ` +
+    `secrets: an eval set gets them only when it belongs to the eval flow's owner (or, for an ` +
+    `organization's eval flow, to that organization and was created by someone who can edit the ` +
+    `eval flow).`
+  );
 }
 
 /**

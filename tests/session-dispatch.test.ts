@@ -649,6 +649,12 @@ describe("dispatch integration — session stamping, pre-warm, shared-tier gates
       privateEvalSetId = privateEvalSet.id;
     });
 
+    // The per-user secret cap (50) is a real product limit: without this the
+    // isolated secret leaked once per run and eventually broke secrets.test.ts.
+    afterAll(async () => {
+      await authFetch(admin, `${BASE_URL}/api/secrets/${encodeURIComponent(isolatedSecret)}`, { method: "DELETE" });
+    });
+
     it("401s when unauthenticated", async () => {
       const res = await fetch(`${BASE_URL}/api/eval-flows/${noSessionEvalFlowId}/run-targets`);
       expect(res.status).toBe(401);

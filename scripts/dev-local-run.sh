@@ -910,6 +910,9 @@ DELETE FROM eval_sets e
 DELETE FROM projects p
       WHERE NOT EXISTS (SELECT 1 FROM eval_flows f WHERE f.project_id = p.id);
 DELETE FROM secrets        WHERE user_id > 2;
+-- Admin's own secrets are kept, except a suite fixture that used to leak one
+-- per run (session-dispatch RTNEG_ISO_*) toward the 50-per-user cap.
+DELETE FROM secrets        WHERE name LIKE 'RTNEG\_ISO\_%';
 DELETE FROM plugin_organizations.memberships
       WHERE org_ref IN (SELECT id FROM plugin_organizations.organizations
                          WHERE name LIKE 'r2-org-%' OR name LIKE 'abs-org-%');

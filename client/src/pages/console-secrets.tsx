@@ -16,7 +16,7 @@ import { KeyRound, Plus, Trash2, ShieldAlert, Building2 } from "lucide-react";
 import { useState } from "react";
 import { useLocation, useSearch } from "wouter";
 import { formatSmartTimestamp, brokerTypeLabel } from "@/lib/utils";
-import { isAuthFieldName } from "@shared/secrets";
+import { isAuthFieldName, secretValueError, MIN_SECRET_VALUE_LENGTH } from "@shared/secrets";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 
 interface SecretEntry {
@@ -293,7 +293,10 @@ export default function ConsoleSecrets() {
                           placeholder="Enter secret value"
                           value={value}
                           onChange={(e) => setValue(e.target.value)}
+                          aria-invalid={!!value && !!secretValueError(value)}
+                          aria-describedby="secret-value-hint"
                         />
+                        <SecretValueHint id="secret-value-hint" value={value} />
                       </div>
                       <div className="space-y-2">
                         <Label htmlFor="secret-class">Type</Label>
@@ -334,7 +337,7 @@ export default function ConsoleSecrets() {
                     <DialogFooter>
                       <Button
                         onClick={() => createMutation.mutate()}
-                        disabled={createMutation.isPending || !name.trim() || !value}
+                        disabled={createMutation.isPending || !name.trim() || !!secretValueError(value)}
                       >
                         Save Secret
                       </Button>
@@ -450,7 +453,10 @@ export default function ConsoleSecrets() {
                               placeholder="Enter secret value"
                               value={orgValue}
                               onChange={(e) => setOrgValue(e.target.value)}
+                              aria-invalid={!!orgValue && !!secretValueError(orgValue)}
+                              aria-describedby="org-secret-value-hint"
                             />
+                            <SecretValueHint id="org-secret-value-hint" value={orgValue} />
                           </div>
                           <div className="space-y-2">
                             <Label htmlFor="org-secret-class">Type</Label>
@@ -491,7 +497,7 @@ export default function ConsoleSecrets() {
                         <DialogFooter>
                           <Button
                             onClick={() => orgCreateMutation.mutate()}
-                            disabled={orgCreateMutation.isPending || !orgName.trim() || !orgValue}
+                            disabled={orgCreateMutation.isPending || !orgName.trim() || !!secretValueError(orgValue)}
                           >
                             Save Org Secret
                           </Button>
@@ -584,5 +590,15 @@ export default function ConsoleSecrets() {
         </CardContent>
       </Card>
     </div>
+  );
+}
+
+/** Under a secret value input: the minimum length, in red once a value is typed that is too short. */
+function SecretValueHint({ id, value }: { id: string; value: string }) {
+  const error = value ? secretValueError(value) : null;
+  return (
+    <p id={id} className={error ? "text-xs text-destructive" : "text-xs text-muted-foreground"}>
+      {error ?? `At least ${MIN_SECRET_VALUE_LENGTH} characters.`}
+    </p>
   );
 }

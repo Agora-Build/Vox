@@ -552,9 +552,14 @@ function findIllegalScenarioStep(steps: unknown[]): string | null {
 export function mergeEvalConfig(
   evalFlowConfig: unknown,
   evalSetConfig: unknown,
+  stamp: { evalSetSecrets: boolean },
 ): Record<string, unknown> {
-  const wf = (evalFlowConfig as Record<string, unknown>) || {};
-  const es = (evalSetConfig as Record<string, unknown>) || {};
+  const wf = { ...((evalFlowConfig as Record<string, unknown>) || {}) };
+  const es = { ...((evalSetConfig as Record<string, unknown>) || {}) };
+  // evalSetSecrets is server-stamped only (auth-session evalSetMayUseSecrets):
+  // strip whatever either config carries, then stamp below.
+  delete wf.evalSetSecrets;
+  delete es.evalSetSecrets;
   // Role-disjointness (scenario vs framework/app/steps*) is enforced by the
   // validators. Here we only guard against the evalFlow and eval set sharing a
   // key with CONFLICTING values (e.g. a frameworkVersion mismatch). Identical
@@ -576,6 +581,7 @@ export function mergeEvalConfig(
   // rollout a stale agent would otherwise take its own branch on a job the
   // server considers aeval. An explicit value always wins.
   if (typeof merged.framework !== "string") merged.framework = DEFAULT_FRAMEWORK;
+  merged.evalSetSecrets = stamp.evalSetSecrets;
   return merged;
 }
 

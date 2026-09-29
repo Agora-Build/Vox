@@ -532,38 +532,40 @@ describe('Config separation validators', () => {
   });
 
   describe('mergeEvalConfig', () => {
+    const stamp = { evalSetSecrets: false };
     it('spreads disjoint configs', () => {
       const merged = mergeEvalConfig(
         { framework: 'aeval', stepsPrefix: 'a' },
         { scenario: 'b' },
+        stamp,
       );
-      expect(merged).toEqual({ framework: 'aeval', stepsPrefix: 'a', scenario: 'b' });
+      expect(merged).toEqual({ framework: 'aeval', stepsPrefix: 'a', scenario: 'b', evalSetSecrets: false });
     });
 
     it('throws on overlapping keys', () => {
       expect(() =>
-        mergeEvalConfig({ scenario: 'a' }, { scenario: 'b' }),
+        mergeEvalConfig({ scenario: 'a' }, { scenario: 'b' }, stamp),
       ).toThrow(/share keys/);
     });
 
     it('tolerates null inputs', () => {
       // framework is stamped so a job never inherits the claiming agent's
       // EVAL_FRAMEWORK default (a stale agent mid-rollout would pick its own).
-      expect(mergeEvalConfig(null, { scenario: 'b' })).toEqual({ scenario: 'b', framework: 'aeval' });
+      expect(mergeEvalConfig(null, { scenario: 'b' }, stamp)).toEqual({ scenario: 'b', framework: 'aeval', evalSetSecrets: false });
     });
 
     it('stamps the framework only when neither config names one', () => {
-      expect(mergeEvalConfig({ framework: 'aeval' }, { scenario: 'b' }))
-        .toEqual({ framework: 'aeval', scenario: 'b' });
+      expect(mergeEvalConfig({ framework: 'aeval' }, { scenario: 'b' }, stamp))
+        .toEqual({ framework: 'aeval', scenario: 'b', evalSetSecrets: false });
       // A pre-existing row naming something else keeps it — the run gates and
       // the daemon reject it loudly rather than being silently rewritten here.
-      expect(mergeEvalConfig({ framework: 'some-removed-framework' }, { scenario: 'b' }))
-        .toEqual({ framework: 'some-removed-framework', scenario: 'b' });
+      expect(mergeEvalConfig({ framework: 'some-removed-framework' }, { scenario: 'b' }, stamp))
+        .toEqual({ framework: 'some-removed-framework', scenario: 'b', evalSetSecrets: false });
     });
 
     it('reports all overlapping keys', () => {
       expect(() =>
-        mergeEvalConfig({ framework: 'aeval', scenario: 'a' }, { framework: 'x', scenario: 'b' }),
+        mergeEvalConfig({ framework: 'aeval', scenario: 'a' }, { framework: 'x', scenario: 'b' }, stamp),
       ).toThrow(/framework, scenario/);
     });
 
@@ -571,8 +573,9 @@ describe('Config separation validators', () => {
       const merged = mergeEvalConfig(
         { framework: 'aeval', frameworkVersion: 'v0.1.0' },
         { scenario: 'b', frameworkVersion: 'v0.1.0' },
+        stamp,
       );
-      expect(merged).toEqual({ framework: 'aeval', frameworkVersion: 'v0.1.0', scenario: 'b' });
+      expect(merged).toEqual({ framework: 'aeval', frameworkVersion: 'v0.1.0', scenario: 'b', evalSetSecrets: false });
     });
   });
 });

@@ -4,7 +4,7 @@ import { z } from "zod";
 import { storage, hashToken, generateSecureToken, generateEvalAgentToken, generateBrokerRegistrationToken, mergeEvalConfig, buildJobSnapshot, validateEvalFlowConfig, validateEvalSetConfig, encryptValue, decryptValue, isEncryptionConfigured, type MetricSourceRow, type RegionQueryScope, type MetricTier } from "./storage";
 import { parseNextCronRun } from "./cron";
 import { compareVersions } from "./aeval-seed";
-import { SECRET_NAME_PATTERN, collectSecretRefs } from "@shared/secrets";
+import { SECRET_NAME_PATTERN, collectSecretRefs, secretValueError } from "@shared/secrets";
 import { deriveScheduleStatus } from "@shared/schedule-status";
 import { regionSiteSequence } from "@shared/regions";
 import { registerApiV1Routes } from "./routes-api-v1";
@@ -13,7 +13,7 @@ import { validateTierChoice, resolveTargetedDispatch, filterDispatchableAgents }
 import { getMarketplace } from "./marketplace";
 import { isAlreadyMemberError, getOrganizations, requireOrganizations, type Membership, type OrgSecretRow } from "./organizations";
 import { fingerprintCredential, formatLastFailedHttpStatus, parseLastFailedHttpStatus } from "@shared/credentials";
-import { sessionScopeForEvalFlow, areLoginSecretsAttested, ensureSession, stampOwnerSession, credentialKeyFor, SESSION_FRESH_MARGIN_SECONDS, classifyReferencedSecrets, findBrokeredMisuse, resolveBrokerType, type SessionNeed, detectSessionNeed, missingSecretNames, resolvableSecretSources } from "./auth-session";
+import { sessionScopeForEvalFlow, areLoginSecretsAttested, ensureSession, stampOwnerSession, credentialKeyFor, SESSION_FRESH_MARGIN_SECONDS, classifyReferencedSecrets, findBrokeredMisuse, resolveBrokerType, type SessionNeed, detectSessionNeed, resolvableSecretSources, secretGate, evalSetMayUseSecrets } from "./auth-session";
 import { validateRegisterPayload, cacheBrokerMintSecret, hasBrokerMintSecret, routeToBroker, executeViaBroker, KNOWN_BROKER_TYPES } from "./broker-registry";
 import { resolveRestfulTemplate } from "./restful-exec";
 import { validateRestfulTrigger, parseStepsScript, stepsContainCallDial, unsupportedFrameworkError } from "./storage";
@@ -320,12 +320,6 @@ async function updateClashEloRatings(
     drawCount: (ratingB?.drawCount ?? 0) + bDraw,
   });
 }
-
-// Deliberately avoids "you have not configured": secrets resolve in the EVAL_FLOW
-// OWNER's scope, so someone running another user's public evalFlow cannot fix
-// this themselves.
-const MISSING_SECRETS_MSG = (names: string[]) =>
-  `This evalFlow references secret(s) ${names.join(", ")} that are not configured for its owner. If the evalFlow is yours, create them under Console → Secrets (names must match exactly); otherwise ask its owner to.`;
 
 /**
  * The org-runtime decrypt tail, moved here verbatim from
@@ -2423,13 +2417,12 @@ export async function registerRoutes(
         }
       }
 
-      // Same guaranteed-failure gate as the run route: a schedule referencing an
-      // unconfigured secret would emit a doomed job on every tick.
+      // Same secret gate as the run route: a schedule referencing an
+      // unconfigured (or, from an eval set, unusable) secret would emit a
+      // doomed job on every tick.
       {
-        const missing = await missingSecretNames(sessionScopeForEvalFlow(evalFlow), resolvableSecretSources([evalFlow.config, evalSet?.config]));
-        if (missing.length > 0) {
-          return res.status(400).json({ error: MISSING_SECRETS_MSG(missing) });
-        }
+        const { error } = await secretGate(evalFlow, evalSet);
+        if (error) return res.status(400).json({ error });
       }
 
       const type = scheduleType || "once";
@@ -2560,10 +2553,8 @@ export async function registerRoutes(
         // fixing the very thing they came for.
         if (wantsEnable) {
           const schedEvalSet = schedule.evalSetId != null ? await storage.getEvalSet(schedule.evalSetId) : undefined;
-          const missing = await missingSecretNames(sessionScopeForEvalFlow(wf), resolvableSecretSources([wf.config, schedEvalSet?.config]));
-          if (missing.length > 0) {
-            return res.status(400).json({ error: MISSING_SECRETS_MSG(missing) });
-          }
+          const { error } = await secretGate(wf, schedEvalSet);
+          if (error) return res.status(400).json({ error });
         }
         if (tierChanged || wantsEnable) {
           const effectiveTier = (targetTier ?? schedule.targetTier) as "private" | "team" | "public" | "shared";
@@ -2699,7 +2690,10 @@ export async function registerRoutes(
       // split-class pair is rejected outright rather than leaking the
       // runtime-class secret. No cross-user dispatch-trust gates here: run-now
       // is canScheduleEvalFlow-gated (owner/creator only).
-      const jobConfig = mergeEvalConfig(evalFlow.config, evalSet?.config);
+      // Secrets can be deleted after the schedule was created — re-check.
+      const gate = await secretGate(evalFlow, evalSet);
+      if (gate.error) return res.status(400).json({ error: gate.error });
+      const jobConfig = mergeEvalConfig(evalFlow.config, evalSet?.config, { evalSetSecrets: gate.evalSetSecrets });
       // Same TOCTOU as the scheduler tick: the schedule's targetTier was
       // validated at write time, but the evalFlow's secrets are mutable — a
       // later-added login-class secret makes a public/team pool invalid. Check
@@ -2711,13 +2705,6 @@ export async function registerRoutes(
         const violation = sessionPoolViolation(schedule.targetTier, evalFlow, { organizationId: user.membership?.organizationId ?? null });
         if (violation) {
           return res.status(400).json({ error: `This schedule's pool is no longer valid: ${violation}. Edit the schedule's tier first.` });
-        }
-      }
-      // Secrets can be deleted after the schedule was created — re-check.
-      {
-        const missing = await missingSecretNames(sessionScopeForEvalFlow(evalFlow), resolvableSecretSources([evalFlow.config, evalSet?.config]));
-        if (missing.length > 0) {
-          return res.status(400).json({ error: MISSING_SECRETS_MSG(missing) });
         }
       }
       const stamp = await stampOwnerSession(evalFlow, jobConfig as Record<string, unknown>, runNowSessionReq);
@@ -2866,18 +2853,14 @@ export async function registerRoutes(
       if (!name || typeof name !== "string" || !name.trim()) {
         return res.status(400).json({ error: "Secret name is required" });
       }
-      if (!value || typeof value !== "string") {
-        return res.status(400).json({ error: "Secret value is required" });
-      }
+      const valueError = secretValueError(value);
+      if (valueError) return res.status(400).json({ error: valueError });
       const trimmedName = name.trim();
       if (!SECRET_NAME_PATTERN.test(trimmedName)) {
         return res.status(400).json({ error: "Secret name must be uppercase letters, digits, and underscores (e.g., YOUR_EMAIL)" });
       }
       if (trimmedName.length > 256) {
         return res.status(400).json({ error: "Secret name too long (max 256 characters)" });
-      }
-      if (value.length > 10000) {
-        return res.status(400).json({ error: "Secret value too large (max 10KB)" });
       }
       const bodyBrokerType = req.body.brokerType === undefined ? undefined : req.body.brokerType;
       const isTestAccount = req.body.isTestAccount === undefined ? undefined : req.body.isTestAccount === true;
@@ -2981,18 +2964,17 @@ export async function registerRoutes(
         return res.status(403).json({ error: "Organization membership required" });
       }
       const { name, value } = req.body;
-      if (!name || !value) {
+      if (!name || typeof name !== "string") {
         return res.status(400).json({ error: "Name and value are required" });
       }
+      const valueError = secretValueError(value);
+      if (valueError) return res.status(400).json({ error: valueError });
       const trimmedName = name.trim();
       if (!SECRET_NAME_PATTERN.test(trimmedName)) {
         return res.status(400).json({ error: "Name must be uppercase letters, digits, and underscores (e.g., MY_SECRET)" });
       }
       if (trimmedName.length > 100) {
         return res.status(400).json({ error: "Name too long (max 100 characters)" });
-      }
-      if (value.length > 10000) {
-        return res.status(400).json({ error: "Value too long (max 10000 characters)" });
       }
       if (!isEncryptionConfigured()) {
         return res.status(503).json({ error: "Encryption not configured on server" });
@@ -4724,19 +4706,13 @@ export async function registerRoutes(
         });
       }
 
-      // A referenced-but-unconfigured secret is a guaranteed-failure dispatch:
-      // the daemon leaves the placeholder verbatim and aeval aborts on it with
-      // an opaque PyInstaller exit. Reject with the exact names instead.
-      // Narrowed to the fields the daemon actually resolves, so the gate and the
-      // daemon agree by construction. Filters the already-computed `classified`
-      // rather than re-querying.
-      const resolvableRefs = collectSecretRefs(resolvableSecretSources([evalFlow.config, evalSet.config]));
-      const missingSecrets = classified
-        .filter((c) => !c.present && resolvableRefs.has(c.name))
-        .map((c) => c.name);
-      if (missingSecrets.length > 0) {
-        return res.status(400).json({ error: MISSING_SECRETS_MSG(missingSecrets) });
-      }
+      // The secret gate every job-creating path shares (auth-session.ts): an
+      // eval set may not use this eval flow's secrets unless trusted, and a
+      // referenced-but-unconfigured secret is a guaranteed-failure dispatch —
+      // reject with the exact names instead. Narrowed to the fields the daemon
+      // actually fills, so the gate and the daemon agree by construction.
+      const gate = await secretGate(evalFlow, evalSet);
+      if (gate.error) return res.status(400).json({ error: gate.error });
 
       let jobRegion: string | null;
       let targeting: number | null = null;
@@ -4875,7 +4851,7 @@ export async function registerRoutes(
         // shared-tier authorizeDispatch above already placed an escrow hold, that throw
         // must still hit the catch below so voidDispatch runs — otherwise the hold leaks
         // until the 26h reaper.
-        const jobConfig = mergeEvalConfig(evalFlow.config, evalSet.config);
+        const jobConfig = mergeEvalConfig(evalFlow.config, evalSet.config, { evalSetSecrets: gate.evalSetSecrets });
         delete (jobConfig as Record<string, unknown>).sessionInjection; // server-stamped only
         if (sessionNeed) {
           (jobConfig as Record<string, unknown>).sessionInjection = { platformId: sessionNeed.platformId };
@@ -5056,18 +5032,21 @@ export async function registerRoutes(
       // Referenced secrets + class (evalFlow config + the chosen eval set, when
       // supplied and visible to the caller).
       const configs: unknown[] = [evalFlow.config];
+      let evalSetForRun: Awaited<ReturnType<typeof storage.getEvalSet>> = undefined;
       if (evalSetIdRaw != null && Number.isFinite(evalSetIdRaw)) {
         const es = await storage.getEvalSet(evalSetIdRaw);
-        if (es && canAccessResource(user, es)) configs.push(es.config);
+        if (es && canAccessResource(user, es)) { configs.push(es.config); evalSetForRun = es; }
       }
       const scope = sessionScopeForEvalFlow(evalFlow);
       const classifiedRefs = await classifyReferencedSecrets(scope, collectSecretRefs(configs));
-      // `resolvable` = the daemon would actually substitute this one (it only
-      // touches scenario/stepsPrefix/stepsSuffix). The run gate narrows to
-      // exactly these, so the UI must too — otherwise it disables Run for a
-      // placeholder sitting in some unresolved config key that the server would
-      // happily accept.
-      const resolvableHere = collectSecretRefs(resolvableSecretSources(configs));
+      // `resolvable` = the daemon would actually fill this one: the eval flow's
+      // Setup/Teardown, and the eval set's scenario only when it may use the
+      // secrets. The run gate narrows to exactly these, so the UI must too —
+      // otherwise it disables Run for a placeholder the server would accept.
+      // Read-only: a failing organizations provider means "not trusted" here
+      // (the run itself re-checks and reports the outage), never a 500.
+      const trusted = await evalSetMayUseSecrets(evalFlow, evalSetForRun).catch(() => false);
+      const resolvableHere = collectSecretRefs(resolvableSecretSources(evalFlow.config, evalSetForRun?.config, trusted));
       const referencedSecrets = classifiedRefs.map((c) => ({ ...c, resolvable: resolvableHere.has(c.name) }));
 
       // Same detector the run route enforces with — not "any brokered secret

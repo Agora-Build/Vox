@@ -60,6 +60,7 @@ describe("Setup/Teardown steps travel from evalFlow config into job config", () 
     const jobConfig = mergeEvalConfig(
       { framework: "aeval", stepsPrefix: '- type: call.dial\n  number: "+1 408 837 5890"\n', stepsSuffix: "- type: call.hangup\n" },
       { scenario: "steps:\n  - type: audio.play" },
+      { evalSetSecrets: false },
     );
     // The daemon reads job.config.stepsPrefix — call establishment is evalFlow
     // data fetched from Vox with the claimed job, never host/env configuration.

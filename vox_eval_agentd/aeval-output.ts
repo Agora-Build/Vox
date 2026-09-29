@@ -129,7 +129,7 @@ export function summarizeAevalFailure(
   // untrusted stream, and removing the prefix is the safer direction.
   const strip = (l: string) => l.replace(/^\S+(?:\s+\S+)?\s*\|\s*\w+\s*\|\s*/, '').trim();
 
-  // resolveSecrets substitutes DECRYPTED values into the YAML handed to aeval,
+  // The daemon fills DECRYPTED values into the YAML handed to aeval,
   // so any ERROR line echoing step params can carry a live credential — and this
   // string is persisted as the job's error, visible in the console. Scrub every
   // known value before anything is returned.

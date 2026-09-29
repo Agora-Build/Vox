@@ -31,8 +31,9 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { SECRET_PLACEHOLDER_REGEX, collectSecretRefs } from '../shared/secrets';
-import { summarizeAevalFailure, reduceUrlsSafely, urlForms, createBoundedCapture } from './aeval-output';
+import { fillJobPlaceholders, jobConfigVars, secretNeedles, unresolvedSecretsError, scrubSecretsFromArtifacts, toYaml, shortSecretsError, createRedactingLineLogger, type FilledJob, type JobParts } from './placeholders';
+import { redactValues } from '../shared/credentials';
+import { summarizeAevalFailure, reduceUrlsSafely, createBoundedCapture } from './aeval-output';
 import { StringDecoder } from 'string_decoder';
 import yaml from 'js-yaml';
 import { injectStorageSession } from './session-inject';
@@ -583,29 +584,6 @@ class VoxEvalAgentDaemon {
     }
   }
 
-  /** Escape a secret value for embedding in double-quoted YAML. */
-  private static yamlEscape(value: string): string {
-    return value
-      .replace(/\\/g, '\\\\')
-      .replace(/"/g, '\\"')
-      .replace(/\n/g, '\\n')
-      .replace(/\r/g, '\\r')
-      .replace(/\t/g, '\\t')
-      .replace(/\0/g, '\\0');
-  }
-
-  private resolveSecrets(content: string, secrets: Record<string, string>): string {
-    return content.replace(SECRET_PLACEHOLDER_REGEX, (_match, key) => {
-      if (key in secrets) {
-        // Always double-quote and escape for valid YAML
-        const escaped = VoxEvalAgentDaemon.yamlEscape(secrets[key]);
-        return `"${escaped}"`;
-      }
-      console.warn(`[Daemon] Secret placeholder \${secrets.${key}} not found — leaving as-is`);
-      return _match;
-    });
-  }
-
   // -------------------------------------------------------------------------
   // aeval framework
   // -------------------------------------------------------------------------
@@ -887,17 +865,25 @@ class VoxEvalAgentDaemon {
         }, 10000);
       }, AEVAL_RUN_TIMEOUT_MS);
 
+      // aeval echoes filled steps, URLs and errors: every line is redacted
+      // before it reaches the agent's logs.
+      const outLog = createRedactingLineLogger((l) => console.log(`[aeval] ${l}`), this.activeSecretValues);
+      const errLog = createRedactingLineLogger((l) => console.error(`[aeval] ${l}`), this.activeSecretValues);
       proc.stdout.on('data', (data) => {
-        outCap.push(outDec.write(data));
-        console.log(`[aeval] ${data.toString().trim()}`);
+        const text = outDec.write(data);
+        outCap.push(text);
+        outLog.write(text);
       });
 
       proc.stderr.on('data', (data) => {
-        errCap.push(errDec.write(data));
-        console.error(`[aeval] ${data.toString().trim()}`);
+        const text = errDec.write(data);
+        errCap.push(text);
+        errLog.write(text);
       });
 
       proc.on('close', (code) => {
+        outLog.flush();
+        errLog.flush();
         if (settled) return; // already force-failed by the deadline
         console.log(`[Daemon] aeval exited with code ${code}${timedOut ? ' (timed out)' : ''}`);
 
@@ -1926,6 +1912,37 @@ class VoxEvalAgentDaemon {
     }
   }
 
+  /**
+   * The first step of every job, web and phone alike: fetch the runtime
+   * secrets, fill ${config.*} / ${secrets.*} (vox_eval_agentd/placeholders.ts),
+   * and record the secret values so processJobs redacts them from any error.
+   * Returns the parsed parts before and after filling.
+   */
+  private async fillJob(job: EvalJob): Promise<{ parsed: JobParts; filled: FilledJob; evalSetSecrets: boolean }> {
+    const config = (job.config || {}) as Record<string, unknown>;
+    const parse = (t: unknown) => (typeof t === 'string' && t.trim() !== '' ? yaml.load(t) : undefined);
+    const parsed: JobParts = {
+      scenario: parse(config.scenario),
+      stepsPrefix: parse(config.stepsPrefix),
+      stepsSuffix: parse(config.stepsSuffix),
+    };
+    // Stamped by Vox at job creation (strip-then-stamp): may the eval set use
+    // the eval flow owner's secrets? Absent (an older job) means no.
+    const evalSetSecrets = config.evalSetSecrets === true;
+    const secrets = await this.fetchSecrets(job.id);
+    const filled = fillJobPlaceholders(parsed, jobConfigVars(config), secrets, { evalSetSecrets });
+    // Redact only what this job used: the server hands over every runtime
+    // secret of the owner, and scrubbing unrelated short values would mangle
+    // artifacts. Names only in the warning — never a value.
+    const used = Object.fromEntries(filled.used.map((n) => [n, secrets[n]]));
+    // Fail closed before anything runs: a value too short to redact would
+    // otherwise reach logs, errors and artifacts.
+    const tooShort = shortSecretsError(used);
+    if (tooShort) throw new Error(tooShort);
+    this.activeSecretValues = secretNeedles(used);
+    return { parsed, filled, evalSetSecrets };
+  }
+
   async executePhoneJob(job: EvalJob): Promise<EvalResult> {
     console.log(`[Daemon] Executing PHONE job ${job.id} (DialF)`);
     const probe = await probeDialf();
@@ -1933,20 +1950,22 @@ class VoxEvalAgentDaemon {
 
     const config = (job.config || {}) as Record<string, unknown>;
     if (typeof config.scenario !== 'string') throw new Error('job.config.scenario is required');
-    const parsed = yaml.load(config.scenario) as { steps?: unknown[] } | undefined;
-    if (!Array.isArray(parsed?.steps)) throw new Error('phone scenario has no steps');
 
     // Unified steps model: Setup/Teardown are the same YAML step lists the web
     // path uses; phone specifics (call.dial, restful.request) live inside them.
-    const parseStepList = (raw: unknown, field: string): unknown[] => {
-      if (typeof raw !== 'string' || raw.trim() === '') return [];
-      const p = yaml.load(raw);
-      if (p === null || p === undefined) return [];
-      if (!Array.isArray(p)) throw new Error(`job.config.${field} is not a YAML step list`);
-      return p;
+    const { filled, evalSetSecrets } = await this.fillJob(job);
+    const unresolved = unresolvedSecretsError(filled, filled.parts, { evalSetSecrets });
+    if (unresolved) throw new Error(unresolved);
+    const { scenario, stepsPrefix, stepsSuffix } = filled.parts;
+    const scenarioSteps = (scenario as { steps?: unknown } | undefined)?.steps;
+    if (!Array.isArray(scenarioSteps)) throw new Error('phone scenario has no steps');
+    const stepList = (v: unknown, field: string): unknown[] => {
+      if (v === null || v === undefined) return [];
+      if (!Array.isArray(v)) throw new Error(`job.config.${field} is not a YAML step list`);
+      return v;
     };
-    const prefixSteps = parseStepList(config.stepsPrefix, 'stepsPrefix');
-    const suffixSteps = parseStepList(config.stepsSuffix, 'stepsSuffix');
+    const prefixSteps = stepList(stepsPrefix, 'stepsPrefix');
+    const suffixSteps = stepList(stepsSuffix, 'stepsSuffix');
 
     const corpus = this.loadCorpusIndex();
     const workDir = fs.mkdtempSync(path.join(os.tmpdir(), `vox-phone-${job.id}-`));
@@ -1958,7 +1977,7 @@ class VoxEvalAgentDaemon {
         {
           jobId: job.id,
           prefixSteps,
-          scenarioSteps: parsed!.steps!,
+          scenarioSteps,
           suffixSteps,
           resolveCorpusFile: (id) => corpus.files.get(id) ?? null,
           resolveCorpusSet: (name) => corpus.sets.get(name) ?? null,
@@ -2028,61 +2047,21 @@ class VoxEvalAgentDaemon {
       throw new Error('job.config.scenario is required');
     }
 
-    // Resolve ${config.*} placeholders (e.g., ${config.url} from evalFlow config)
-    let scenario = config.scenario;
-    // stepsPrefix/stepsSuffix come from the evalFlow and typically hold
-    // platform.setup with credentials — they MUST go through the same
-    // ${config.*} / ${secrets.*} resolution as the scenario.
-    let stepsPrefix = config.stepsPrefix;
-    let stepsSuffix = config.stepsSuffix;
-    const configPlaceholders: Record<string, string> = {};
-    for (const [k, v] of Object.entries(config)) {
-      if (typeof v === 'string' && k !== 'scenario' && k !== 'framework') {
-        configPlaceholders[k] = v;
-      }
-    }
-    const resolveConfigVars = (s: string) =>
-      s.replace(/\$\{config\.(\w+)\}/g, (_m, key) => configPlaceholders[key] ?? _m);
-    if (Object.keys(configPlaceholders).length > 0) {
-      scenario = resolveConfigVars(scenario);
-      if (stepsPrefix) stepsPrefix = resolveConfigVars(stepsPrefix);
-      if (stepsSuffix) stepsSuffix = resolveConfigVars(stepsSuffix);
-    }
-
-    // Fetch secrets for this job and resolve ${secrets.*} placeholders
-    const jobSecrets = await this.fetchSecrets(job.id);
-    // Names referenced BEFORE substitution that the server did not supply. Taken
-    // pre-substitution deliberately: scanning the substituted text would treat a
-    // secret whose VALUE happens to contain "${secrets.X}" as an unresolved
-    // placeholder and fail a perfectly good job.
-    const unsuppliedNames = Array.from(
-      collectSecretRefs([scenario, stepsPrefix, stepsSuffix]),
-    ).filter((name) => !(name in jobSecrets));
-    if (Object.keys(jobSecrets).length > 0) {
-      scenario = this.resolveSecrets(scenario, jobSecrets);
-      if (stepsPrefix) stepsPrefix = this.resolveSecrets(stepsPrefix, jobSecrets);
-      if (stepsSuffix) stepsSuffix = this.resolveSecrets(stepsSuffix, jobSecrets);
-    }
+    const { parsed, filled, evalSetSecrets } = await this.fillJob(job);
+    // Back to the YAML aeval reads. A part with nothing filled stays byte-for-byte
+    // as written; the others are re-written (web already re-writes Setup +
+    // scenario + Teardown when composing them).
+    const toText = (original: string | undefined, before: unknown, after: unknown) =>
+      original === undefined || JSON.stringify(before) === JSON.stringify(after)
+        ? original
+        : toYaml(after);
+    const scenario = toText(config.scenario, parsed.scenario, filled.parts.scenario)!;
+    let stepsPrefix = toText(config.stepsPrefix, parsed.stepsPrefix, filled.parts.stepsPrefix);
+    const stepsSuffix = toText(config.stepsSuffix, parsed.stepsSuffix, filled.parts.stepsSuffix);
 
     const tempFiles: (string | null)[] = [];
 
     try {
-      // Assigned INSIDE the try whose finally clears it: set before the try, a
-      // throw in between would leave decrypted values resident until the next
-      // job overwrote them.
-      // Both forms: the YAML handed to aeval carries the ESCAPED value, so a
-      // secret containing a quote or backslash would appear escaped in its
-      // output and slip past a raw-value scrub.
-      // Raw + the YAML spelling resolveSecrets substitutes + the URL encodings
-      // a redirect or signaling URL would carry. urlForms is shared with the
-      // broker so the two redaction sets cannot drift.
-      // Deduped: for an alphanumeric secret the yamlEscape and all four
-      // urlForms spellings equal the raw value, so this would otherwise be ~6
-      // identical needles. summarizeAevalFailure dedupes internally, but
-      // reduceUrlsSafely and redactValues do not.
-      this.activeSecretValues = Array.from(new Set(
-        Object.values(jobSecrets).flatMap((v) => [v, VoxEvalAgentDaemon.yamlEscape(v), ...urlForms(v)]),
-      ));
       // session-injected jobs get a Core-minted storageState instead of
       // login credentials (which the server structurally withholds).
       const sessionCfg = (job.config as Record<string, unknown> | null)?.sessionInjection;
@@ -2108,7 +2087,7 @@ class VoxEvalAgentDaemon {
         }
       }
 
-      // Fail fast on any ${secrets.X} that survived substitution. aeval aborts
+      // Fail fast on any ${secrets.X} left in what aeval will read. aeval aborts
       // on an unresolved placeholder with "Unknown variable source: secrets",
       // and its PyInstaller wrapper prints a generic banner as the LAST stderr
       // line — so without this the job's recorded error is a packaging
@@ -2119,31 +2098,14 @@ class VoxEvalAgentDaemon {
       // (the agent must never hold durable credentials), and injectStorageSession
       // rewrites platform.setup to storage mode — removing those references. A
       // scan before that rewrite would fail every brokered-login job.
-      //
-      // Scanned post-substitution rather than inside resolveSecrets because
-      // substitution is skipped entirely when the secrets map is empty. Core
-      // rejects this at dispatch; this catches a secret deleted in between.
-      // Of the names the server didn't supply, which still remain in the
-      // strings aeval will actually read? Checked AFTER session injection,
-      // which legitimately strips brokered login refs.
-      const active = [scenario, stepsPrefix, stepsSuffix];
-      const unresolved = unsuppliedNames.filter((name) =>
-        active.some((text) => typeof text === 'string' && text.includes('${secrets.' + name + '}')),
+      // Core rejects this at dispatch; this catches a secret deleted in between.
+      const parse = (t: string | undefined) => (t && t.trim() !== '' ? yaml.load(t) : undefined);
+      const unresolved = unresolvedSecretsError(
+        filled,
+        { scenario: parse(scenario), stepsPrefix: parse(stepsPrefix), stepsSuffix: parse(stepsSuffix) },
+        { evalSetSecrets },
       );
-      if (unresolved.length > 0) {
-        const names = [...unresolved].sort();
-        const plural = names.length > 1;
-        // Deliberately scope-agnostic: the daemon cannot distinguish "no such
-        // secret" from "the server withheld it for this job" (e.g. an org
-        // secret fenced on the job creator's membership), so it must not tell
-        // the user to go create one.
-        throw new Error(
-          `Unresolved secret placeholder(s): ${names.join(', ')}. ` +
-          `The server did not supply ${plural ? 'these secrets' : 'this secret'} for this job — ` +
-          `${plural ? 'they are' : 'it is'} either not configured for the evalFlow owner, or not ` +
-          `available to whoever started the run.`,
-        );
-      }
+      if (unresolved) throw new Error(unresolved);
 
       let results: EvalResult;
 
@@ -2162,9 +2124,15 @@ class VoxEvalAgentDaemon {
       console.log(`[Daemon] Job ${job.id} results:`, results);
       return results;
     } finally {
-      // Errors propagate so processJobs reports the job as failed.
+      // Errors propagate so processJobs reports the job as failed (and redacts).
       this.cleanupTempFiles(...tempFiles);
-      this.activeSecretValues = []; // don't retain decrypted values past the job
+    }
+  }
+
+  /** Unscrubbed output must not stay on disk either — best effort. */
+  private removeOutputDirs(): void {
+    for (const d of this.jobOutputDirs) {
+      try { fs.rmSync(d, { recursive: true, force: true }); } catch { /* best effort */ }
     }
   }
 
@@ -2205,7 +2173,10 @@ class VoxEvalAgentDaemon {
       const results = await this.executeJob(job);
       await this.completeJob(job.id, results);
     } catch (error: unknown) {
-      const msg = error instanceof Error ? error.message : String(error);
+      // The one redaction point for job errors, web and phone: whatever raised
+      // it, no reported error carries a secret value (e.g. a call.dial number
+      // kept as a secret that failed the dialable check).
+      const msg = redactValues(error instanceof Error ? error.message : String(error), this.activeSecretValues);
       console.error(`[Daemon] Job execution error:`, msg);
 
       // A failed run records NO result — partial metrics from a failed run are
@@ -2217,18 +2188,37 @@ class VoxEvalAgentDaemon {
         console.error(`[Daemon] Failed to report job failure:`, reportMsg);
       }
     } finally {
-      // Queue artifact upload (whether job succeeded or failed) — covers every
-      // chunk's output dir, not just the last run's.
-      if (this.jobOutputDirs.length > 0) {
-        this.queueUpload({
-          jobId: job.id,
-          outputDirs: [...this.jobOutputDirs],
-          scenarioName: (job.config as Record<string, string>)?.scenario?.slice(0, 50) || 'unknown',
-          retries: 0,
-        });
+      try {
+        // No secret value leaves this agent in an artifact: scrub every file in
+        // the job's output before it is queued for upload. Fail-closed — if any
+        // file could not be checked or removed, nothing is uploaded.
+        const scrub = scrubSecretsFromArtifacts(this.jobOutputDirs, this.activeSecretValues);
+        if (scrub.changed.length > 0) console.log(`[Daemon] Removed secret values from ${scrub.changed.length} artifact file(s)`);
+        if (scrub.deleted.length > 0) {
+          console.warn(`[Daemon] Deleted ${scrub.deleted.length} artifact file(s) that held a secret: ${scrub.deleted.map((f) => path.basename(f)).join(', ')}`);
+        }
+        if (scrub.failed.length > 0) {
+          console.error(`[Daemon] Could not scrub ${scrub.failed.length} artifact path(s) — not uploading job ${job.id}'s artifacts`);
+          this.removeOutputDirs();
+        } else if (this.jobOutputDirs.length > 0) {
+          // Queue artifact upload (whether job succeeded or failed) — covers
+          // every chunk's output dir, not just the last run's.
+          this.queueUpload({
+            jobId: job.id,
+            outputDirs: [...this.jobOutputDirs],
+            scenarioName: (job.config as Record<string, string>)?.scenario?.slice(0, 50) || 'unknown',
+            retries: 0,
+          });
+        }
+      } catch (e) {
+        console.error(`[Daemon] Artifact scrub failed — not uploading job ${job.id}'s artifacts:`, e instanceof Error ? e.message : e);
+        this.removeOutputDirs();
+      } finally {
+        // Always reset, or the daemon would stay "busy" forever.
+        this.activeSecretValues = []; // don't retain decrypted values past the job
+        this.isRunningJob = false;
+        this.currentJobId = null;
       }
-      this.isRunningJob = false;
-      this.currentJobId = null;
     }
   }
 

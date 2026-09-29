@@ -3075,7 +3075,7 @@ describe('Vox API Tests', () => {
       expect(jobConfig.scenario).toBe('steps:\n  - action: speak\n    file: test.mp3');
     });
 
-    it('stamps only the framework when both evalFlow and eval set have no config', async () => {
+    it('stamps only the framework and evalSetSecrets when both evalFlow and eval set have no config', async () => {
       // Create an evalFlow with no config
       const wfRes = await authFetch(adminSession, `${BASE_URL}/api/eval-flows`, {
         method: 'POST',
@@ -3109,8 +3109,9 @@ describe('Vox API Tests', () => {
       expect(response.ok).toBe(true);
       const result = await response.json();
       // framework is stamped even on an otherwise-empty merge, so a job never
-      // inherits the claiming agent's EVAL_FRAMEWORK default.
-      expect(result.job.config).toEqual({ framework: 'aeval' });
+      // inherits the claiming agent's EVAL_FRAMEWORK default. evalSetSecrets is
+      // always stamped too: the same user owns both, so the eval set is trusted.
+      expect(result.job.config).toEqual({ framework: 'aeval', evalSetSecrets: true });
     });
   });
 
@@ -4623,10 +4624,25 @@ describe('Vox API Tests', () => {
       await pool.query(`DELETE FROM ${ORGS_SCHEMA}.organizations WHERE id = $1`, [probeOrgId]);
     });
 
+    it('refuses an org secret value shorter than 4 characters, and stores nothing', async () => {
+      const res = await authFetch(adminSession, `${BASE_URL}/api/org-secrets`, {
+        method: 'POST',
+        body: JSON.stringify({ name: `${secretName}_SHORT`, value: 'abc' }),
+      });
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toMatch(/at least 4 characters/);
+      const { pool } = await import('../server/storage');
+      const row = await pool.query(
+        `SELECT 1 FROM ${ORGS_SCHEMA}.org_secrets WHERE org_ref = $1 AND name = $2`,
+        [probeOrgId, `${secretName}_SHORT`],
+      );
+      expect(row.rows).toHaveLength(0);
+    });
+
     it('POST with isTestAccount:true, then a value-only POST, keeps isTestAccount true end to end', async () => {
       const createRes = await authFetch(adminSession, `${BASE_URL}/api/org-secrets`, {
         method: 'POST',
-        body: JSON.stringify({ name: secretName, value: 'v1', isTestAccount: true }),
+        body: JSON.stringify({ name: secretName, value: 'value-1', isTestAccount: true }),
       });
       expect(createRes.ok).toBe(true);
       const created = await createRes.json();
@@ -4635,7 +4651,7 @@ describe('Vox API Tests', () => {
       // Value-only rotation: isTestAccount intentionally omitted from the body.
       const updateRes = await authFetch(adminSession, `${BASE_URL}/api/org-secrets`, {
         method: 'POST',
-        body: JSON.stringify({ name: secretName, value: 'v2' }),
+        body: JSON.stringify({ name: secretName, value: 'value-2' }),
       });
       expect(updateRes.ok).toBe(true);
       const updated = await updateRes.json();

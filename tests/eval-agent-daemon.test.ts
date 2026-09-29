@@ -1787,7 +1787,7 @@ describe("summarizeAevalFailure", () => {
   });
 
   it("redacts decrypted secret VALUES that aeval echoed back", () => {
-    // resolveSecrets substitutes real values into the YAML, so an aeval ERROR
+    // The daemon fills real values into the YAML, so an aeval ERROR
     // line can echo a live credential — and this string is persisted as the
     // job's user-visible error.
     const secret = "sk-live-abcdef123456";
@@ -1818,9 +1818,9 @@ describe("summarizeAevalFailure", () => {
   });
 
   it("redacts the YAML-ESCAPED form too (that is what aeval actually receives)", () => {
-    // resolveSecrets embeds values double-quoted and escaped, so a secret with
-    // a quote or backslash appears escaped in aeval's output — a raw-value-only
-    // scrub would miss it and persist the credential.
+    // The filled YAML can carry a value double-quoted and escaped, so a secret
+    // with a quote or backslash may appear escaped in aeval's output — a
+    // raw-value-only scrub would miss it and persist the credential.
     const raw = 'pa"ss\\word-1234';
     const escaped = raw.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
     const log = `2026-01-01 00:00:00 | ERROR    | login rejected for "${escaped}"`;

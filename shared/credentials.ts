@@ -54,8 +54,9 @@ export function urlForms(v: string): string[] {
  * The escaped form is derived from the SAME `JSON.stringify` that writes the
  * scenario YAML rather than a hand-rolled escaper, so the two cannot drift:
  * whatever the emitter produces is, by construction, what gets redacted.
- * Callers whose emitter escapes differently (the daemon substitutes via its own
- * `yamlEscape`) should add that spelling rather than assume this one covers it.
+ * Callers whose emitter escapes differently (the daemon writes filled YAML with
+ * js-yaml, and vox_eval_agentd/placeholders.ts adds that double-quoted spelling)
+ * should add their spelling rather than assume this one covers it.
  */
 export function credentialForms(values: string[]): string[] {
   return Array.from(
