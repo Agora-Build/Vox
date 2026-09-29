@@ -133,9 +133,11 @@ its **whole** config and refuses the job when it:
   `${config.*}` value it reads (e.g. the flow's `url` holds `${secrets.K}` and
   the scenario reads `${config.url}`);
 - **(b) supplies a config value the eval flow's Setup/Teardown reads** but the
-  eval flow does not define. Setup is always filled with secrets, so the eval
-  set would be steering them (e.g. pointing a request that carries
-  `${secrets.KEY}` at its own URL).
+  eval flow does not define — when the eval flow uses secrets. Setup is always
+  filled with them, so the eval set would be steering them (e.g. pointing a
+  request that carries `${secrets.KEY}` at its own URL). A flow without secrets
+  may take its Setup config from any eval set, as before. (Core's own
+  `restful.request` filling never reads `${config.*}`.)
 
 Being a server check, this also protects agents that predate the
 `evalSetSecrets` stamp (they fill secrets everywhere): such a job is never
@@ -193,9 +195,9 @@ they are needed to fix a run and are not secret. Secret **values** never:
 | Where | Before | After |
 |---|---|---|
 | Vox server logs | counts only; a name on a decrypt failure | unchanged (audited) |
-| Agent logs | counts only | unchanged |
+| Agent logs | counts only, but aeval's output was echoed raw | aeval's output is redacted line by line before it is logged |
 | Job errors (stored, shown in the console) | web: aeval failures redacted; phone: **not** — a bad `call.dial` number is echoed | every job error redacted in one place |
-| Uploaded artifacts | phone: DialF `steps.json` records the dialed number, `call.json` the far-end number; web: aeval's output may hold a copy of the filled scenario | every file scrubbed before upload, in one place — text decided by content (not file name) and redacted; a binary holding a secret deleted; recordings without one kept. Fail-closed: a file that can't be checked or removed means the job's artifacts are not uploaded |
+| Uploaded artifacts | phone: DialF `steps.json` records the dialed number, `call.json` the far-end number; web: aeval's output may hold a copy of the filled scenario | every file scrubbed before upload, in one place — text decided by content (not file name) and redacted byte-for-byte; any other binary scanned in full (in chunks) and deleted if it holds a secret, by name in the log; audio recordings never byte-scanned. Fail-closed: if a file can't be checked or removed, nothing is uploaded and the job's output is deleted |
 | `callMetadata` | far-end number reduced to last 4 digits | unchanged |
 | Temp files with filled YAML | written `0600`, deleted after the run | unchanged |
 | REST broker responses | redacted by Vox's server | unchanged |
@@ -206,10 +208,16 @@ are on hosts the eval flow's owner or the agent's operator already controls.
 
 **Which values are redacted:** only the secrets the job actually filled (the
 server hands the agent every runtime secret of the owner; redacting unrelated
-ones would mangle artifacts). Values shorter than 4 characters are not
-redacted — replacing a 1–3 character string everywhere corrupts unrelated
-numbers and words, and such a value is not meaningfully secret; the agent logs
-its **name** as a warning.
+ones would mangle artifacts).
+
+**Secrets shorter than 4 characters:** a job that uses one is refused before
+it runs, naming the secret. Replacing a 1–3 character string everywhere would
+corrupt unrelated numbers and words, so such a value cannot be kept out of
+logs, errors and artifacts — and running with it exposed is not an option.
+
+**Recordings:** audio (WAV/OGG/FLAC/MP3, by magic bytes) is never
+byte-scanned. Its samples cannot carry a secret as text, but a short needle
+would match random PCM bytes by chance often enough to delete a recording.
 
 **Re-written YAML:** a filled part is re-written through js-yaml, which drops
 comments and expands anchors — the same as web's existing composing of
@@ -240,11 +248,15 @@ written.
   untrusted message; a secret value containing `${secrets.X}` is not flagged.
 - Phone end to end through `runPhoneJob` with filled steps: DialF receives the
   real number.
-- Only secrets the job filled are redacted; values under 4 characters are not.
+- Only secrets the job filled are redacted; a job using a secret under 4
+  characters is refused, by name.
+- aeval's output reaches the agent's logs redacted, including a secret split
+  across output chunks and each line of a multi-line secret.
 - Artifacts: text is redacted whatever its file name (`steps.json`,
-  extensionless, `.xml`, `.js`); a binary holding a secret is deleted; a
-  recording without one is untouched; a file that can be neither rewritten
-  nor removed is reported (no upload).
+  extensionless, `.xml`, `.js`) and byte-for-byte (invalid UTF-8 survives); a
+  binary holding a secret is deleted, including a large one where the secret
+  straddles a scan chunk; a recording is never deleted; a file that can be
+  neither rewritten nor removed is reported (no upload).
 - Any secret value (quotes, backslashes, newlines, `:`/`#`, empty) survives
   fill → YAML → parse exactly.
 - Server: `evalSetMayUseSecrets` for every row of the table; `mergeEvalConfig`

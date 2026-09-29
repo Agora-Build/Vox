@@ -432,8 +432,10 @@ const configRefs = (v: unknown): Set<string> => {
  * value in the job). Closes both routes around the trust rule, including on
  * agents that predate the evalSetSecrets stamp and fill secrets everywhere:
  *  (a) mention ${secrets.*} — directly, or through a ${config.*} value it reads;
- *  (b) supply a config value the eval flow's Setup/Teardown reads — Setup is
- *      always filled with secrets, so the eval set would be steering them.
+ *  (b) supply a config value the eval flow's Setup/Teardown reads, when the
+ *      eval flow uses secrets — Setup is always filled with them, so the eval
+ *      set would be steering them. A flow without secrets may take its Setup
+ *      config from the eval set as before.
  */
 export function untrustedEvalSetConfigError(evalFlowConfig: unknown, evalSetConfig: unknown): string | null {
   const flow = (evalFlowConfig ?? {}) as Record<string, unknown>;
@@ -443,6 +445,7 @@ export function untrustedEvalSetConfigError(evalFlowConfig: unknown, evalSetConf
   const names = Array.from(collectSecretRefs(reached)).sort();
   if (names.length > 0) return untrustedEvalSetSecretsMessage(names);
 
+  if (collectSecretRefs([flow]).size === 0) return null;
   const setupReads = configRefs([flow.stepsPrefix, flow.stepsSuffix]);
   const steered = Object.keys(set).filter((k) => setupReads.has(k) && !(k in flow)).sort();
   if (steered.length > 0) {

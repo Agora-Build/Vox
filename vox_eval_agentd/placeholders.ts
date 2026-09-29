@@ -139,11 +139,21 @@ function yamlEscape(value: string): string {
 }
 
 /**
- * Shorter values are not redacted: replacing a 1–3 character string everywhere
- * would corrupt unrelated text (numbers, words) in errors and artifacts. Such a
- * value is not meaningfully secret; the agent logs its NAME as a warning.
+ * A secret shorter than this cannot be kept out of logs, errors and artifacts:
+ * replacing a 1–3 character string everywhere would corrupt unrelated numbers
+ * and words. So a job that USES one is refused before it runs
+ * (shortSecretsError) rather than run with the value exposed.
  */
 export const MIN_REDACT_LENGTH = 4;
+
+/** The job error when a secret the job uses is too short to redact, or null. Names only. */
+export function shortSecretsError(used: Record<string, string>): string | null {
+  const names = Object.keys(used).filter((n) => used[n].length < MIN_REDACT_LENGTH).sort();
+  if (names.length === 0) return null;
+  return `Secret(s) ${names.join(', ')} ${names.length > 1 ? 'are' : 'is'} shorter than ${MIN_REDACT_LENGTH} ` +
+    `characters — too short to keep out of logs, errors and artifacts. Use a value of at least ` +
+    `${MIN_REDACT_LENGTH} characters.`;
+}
 
 /**
  * Every spelling of the secret values that must be redacted from job output
@@ -155,63 +165,102 @@ export const MIN_REDACT_LENGTH = 4;
 export function secretNeedles(secrets: Record<string, string>): string[] {
   return Array.from(new Set(
     Object.values(secrets)
-      .filter((v) => v.length >= MIN_REDACT_LENGTH)
+      .filter((v) => v.length > 0)
       .flatMap((v) => [v, yamlEscape(v), ...urlForms(v)]),
   ));
 }
 
-const MAX_SCRUB_BYTES = 50 * 1024 * 1024;
+const MAX_TEXT_SCRUB_BYTES = 50 * 1024 * 1024;
 const BINARY_SNIFF_BYTES = 8192;
+const SCAN_CHUNK_BYTES = 1024 * 1024;
 
 export interface ScrubResult {
-  /** Files rewritten (text) or deleted (a binary holding a secret, or too big to scrub). */
+  /** Files rewritten (text) or deleted (a binary holding a secret, or text too big to scrub). */
   changed: string[];
+  /** Of `changed`, the files deleted — logged by name so a lost artifact can be diagnosed. */
+  deleted: string[];
   /** Files that could not be checked or removed — the job's artifacts must not be uploaded. */
   failed: string[];
 }
 
 /**
+ * Audio containers (WAV/OGG/FLAC/MP3) by magic bytes. Recordings are the
+ * job's main artifact and their samples cannot carry a secret as text, but a
+ * short needle matches random PCM bytes by chance often enough to delete a
+ * recording — so they are never byte-scanned.
+ */
+function isAudio(head: Buffer): boolean {
+  const at = (i: number, sig: string) => head.subarray(i, i + sig.length).toString('latin1') === sig;
+  return (at(0, 'RIFF') && at(8, 'WAVE')) || at(0, 'OggS') || at(0, 'fLaC') || at(0, 'ID3') ||
+    (head.length > 1 && head[0] === 0xff && (head[1] & 0xe0) === 0xe0);
+}
+
+/** Whether any needle occurs in the file — read in chunks, with overlap so a match across a boundary is found. */
+function fileContains(p: string, needles: Buffer[]): boolean {
+  const overlap = Math.max(...needles.map((n) => n.length)) - 1;
+  const fd = fs.openSync(p, 'r');
+  try {
+    const buf = Buffer.alloc(SCAN_CHUNK_BYTES + overlap);
+    let carry = 0;
+    let pos = 0;
+    for (;;) {
+      const read = fs.readSync(fd, buf, carry, SCAN_CHUNK_BYTES, pos);
+      if (read === 0) return false;
+      const window = buf.subarray(0, carry + read);
+      if (needles.some((n) => window.includes(n))) return true;
+      pos += read;
+      carry = Math.min(overlap, window.length);
+      window.copy(buf, 0, window.length - carry);
+    }
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+/**
  * Remove secret values from every artifact under dirs, in place, before upload
- * (the uploader sends every file). e.g. DialF's steps.json records a call.dial
- * number kept as a secret; aeval's output can hold a copy of the filled
- * scenario.
+ * (the uploader sends every regular file). e.g. DialF's steps.json records a
+ * call.dial number kept as a secret; aeval's output can hold a copy of the
+ * filled scenario.
  *
  * Text vs binary is decided by content (a NUL byte in the first 8 KB), not by
- * file name. Text is redacted; a binary that contains a secret cannot be
- * redacted safely and is deleted; other binaries (recordings) are kept. Text
- * over MAX_SCRUB_BYTES is deleted rather than uploaded unscrubbed. Best-effort
- * per file and fail-closed: a file that cannot be handled is deleted, and one
- * that cannot even be deleted is reported in `failed`.
+ * file name. Text is redacted byte-for-byte (nothing else in the file
+ * changes); text over MAX_TEXT_SCRUB_BYTES is deleted rather than uploaded
+ * unscrubbed. A binary that contains a secret cannot be redacted safely and is
+ * deleted; audio is never byte-scanned (see isAudio). Best-effort per file and
+ * fail-closed: a file that cannot be handled is deleted, and one that cannot
+ * even be deleted is reported in `failed`.
  */
 export function scrubSecretsFromArtifacts(dirs: string[], needles: string[]): ScrubResult {
-  const result: ScrubResult = { changed: [], failed: [] };
+  const result: ScrubResult = { changed: [], deleted: [], failed: [] };
   const values = needles.filter((v) => v.length > 0);
   if (values.length === 0) return result;
   const needleBytes = values.map((v) => Buffer.from(v, 'utf-8'));
+  // Text is edited as latin1 — one char per byte — so bytes that are not valid
+  // UTF-8 survive untouched; the needles are their UTF-8 bytes in the same form.
+  const needleLatin1 = needleBytes.map((b) => b.toString('latin1'));
   const remove = (p: string) => {
-    try { fs.rmSync(p, { force: true }); result.changed.push(p); } catch { result.failed.push(p); }
+    try {
+      fs.rmSync(p, { force: true });
+      result.changed.push(p);
+      result.deleted.push(p);
+    } catch {
+      result.failed.push(p);
+    }
   };
   const scrubFile = (p: string) => {
     const size = fs.statSync(p).size;
+    const head = Buffer.alloc(Math.min(size, BINARY_SNIFF_BYTES));
     const fd = fs.openSync(p, 'r');
-    let head: Buffer;
-    try {
-      head = Buffer.alloc(Math.min(size, BINARY_SNIFF_BYTES));
-      fs.readSync(fd, head, 0, head.length, 0);
-    } finally {
-      fs.closeSync(fd);
-    }
-    const binary = head.includes(0);
-    if (binary) {
-      if (size > MAX_SCRUB_BYTES) return; // e.g. a long call recording
-      const bytes = fs.readFileSync(p);
-      if (needleBytes.some((n) => bytes.includes(n))) remove(p);
+    try { fs.readSync(fd, head, 0, head.length, 0); } finally { fs.closeSync(fd); }
+    if (head.includes(0)) {
+      if (!isAudio(head) && fileContains(p, needleBytes)) remove(p);
       return;
     }
-    if (size > MAX_SCRUB_BYTES) { remove(p); return; }
-    const text = fs.readFileSync(p, 'utf-8');
-    const clean = redactValues(text, values);
-    if (clean !== text) { fs.writeFileSync(p, clean); result.changed.push(p); }
+    if (size > MAX_TEXT_SCRUB_BYTES) { remove(p); return; }
+    const text = fs.readFileSync(p).toString('latin1');
+    const clean = redactValues(text, needleLatin1);
+    if (clean !== text) { fs.writeFileSync(p, Buffer.from(clean, 'latin1')); result.changed.push(p); }
   };
   const walk = (dir: string) => {
     let entries: fs.Dirent[];
@@ -230,4 +279,34 @@ export function scrubSecretsFromArtifacts(dirs: string[], needles: string[]): Sc
   };
   for (const d of dirs) walk(d);
   return result;
+}
+
+/**
+ * Line-buffered logger for a child process's output that redacts every
+ * complete line before emitting it — aeval echoes filled steps, URLs and
+ * errors, and none may reach the agent's logs. Feed it DECODED text (a
+ * StringDecoder keeps multi-byte characters whole); each line of a multi-line
+ * value is redacted too, since the value is split across lines here.
+ */
+export function createRedactingLineLogger(emit: (line: string) => void, needles: string[]) {
+  const pieces = Array.from(new Set(
+    needles.flatMap((v) => [v, ...v.split(/\r\n|[\r\n\u2028\u2029]/)]).filter((v) => v.trim().length >= MIN_REDACT_LENGTH),
+  ));
+  let pending = '';
+  const out = (line: string) => {
+    const clean = redactValues(line, pieces).trim();
+    if (clean) emit(clean);
+  };
+  return {
+    write(text: string) {
+      pending += text;
+      const lines = pending.split(/\r\n|[\r\n\u2028\u2029]/);
+      pending = lines.pop() ?? '';
+      for (const l of lines) out(l);
+    },
+    flush() {
+      if (pending) out(pending);
+      pending = '';
+    },
+  };
 }

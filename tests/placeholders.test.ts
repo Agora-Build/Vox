@@ -4,7 +4,8 @@ import * as os from "os";
 import * as path from "path";
 import yaml from "js-yaml";
 import {
-  fillJobPlaceholders, unresolvedSecretsError, secretNeedles, scrubSecretsFromArtifacts, jobConfigVars, MIN_REDACT_LENGTH,
+  fillJobPlaceholders, unresolvedSecretsError, secretNeedles, scrubSecretsFromArtifacts, jobConfigVars,
+  shortSecretsError, createRedactingLineLogger, MIN_REDACT_LENGTH,
 } from "../vox_eval_agentd/placeholders";
 import { runPhoneJob } from "../vox_eval_agentd/phone-eval";
 
@@ -133,9 +134,11 @@ describe("secretNeedles", () => {
     expect(needles).toEqual(expect.arrayContaining(['a"b c', 'a\\"b c', "a%22b%20c"]));
   });
 
-  it(`skips values shorter than ${MIN_REDACT_LENGTH} characters, which would mangle unrelated text`, () => {
-    expect(secretNeedles({ PIN: "1", CODE: "abc" })).toEqual([]);
-    expect(secretNeedles({ PIN: "1234" })).toEqual(["1234"]);
+  it(`a job using a secret shorter than ${MIN_REDACT_LENGTH} characters is refused — names only, never the value`, () => {
+    expect(shortSecretsError({ PIN: "123", LONG: "abcdef" }))
+      .toBe(`Secret(s) PIN is shorter than ${MIN_REDACT_LENGTH} characters — too short to keep out of logs, errors and artifacts. Use a value of at least ${MIN_REDACT_LENGTH} characters.`);
+    expect(shortSecretsError({ A: "1", B: "22" })).toMatch(/^Secret\(s\) A, B are shorter/);
+    expect(shortSecretsError({ OK: "1234" })).toBeNull();
   });
 });
 
@@ -154,7 +157,7 @@ describe("scrubSecretsFromArtifacts", () => {
 
     const out = scrubSecretsFromArtifacts([dir], needles);
 
-    expect(out).toEqual({ changed: [path.join(dir, "dialf", "steps.json")], failed: [] });
+    expect(out).toEqual({ changed: [path.join(dir, "dialf", "steps.json")], deleted: [], failed: [] });
     const steps = fs.readFileSync(path.join(dir, "dialf", "steps.json"), "utf-8");
     expect(steps).not.toContain(SECRET);
     expect(steps).toContain("[redacted]");
@@ -177,8 +180,40 @@ describe("scrubSecretsFromArtifacts", () => {
     const dir = tmp();
     const bin = path.join(dir, "blob.bin");
     fs.writeFileSync(bin, Buffer.concat([Buffer.alloc(16), Buffer.from(SECRET), Buffer.alloc(16)]));
-    expect(scrubSecretsFromArtifacts([dir], needles)).toEqual({ changed: [bin], failed: [] });
+    expect(scrubSecretsFromArtifacts([dir], needles)).toEqual({ changed: [bin], deleted: [bin], failed: [] });
     expect(fs.existsSync(bin)).toBe(false);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("scans a large binary in chunks — a secret straddling a chunk boundary is still found", () => {
+    const dir = tmp();
+    const bin = path.join(dir, "big.bin");
+    const at = 1024 * 1024 - 5; // the 1 MiB scan chunk splits the needle
+    const buf = Buffer.alloc(3 * 1024 * 1024);
+    Buffer.from(SECRET).copy(buf, at);
+    fs.writeFileSync(bin, buf);
+    expect(scrubSecretsFromArtifacts([dir], needles).deleted).toEqual([bin]);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("never deletes a recording, even if its samples happen to contain a secret's bytes", () => {
+    const dir = tmp();
+    const wav = path.join(dir, "rx.wav");
+    const header = Buffer.alloc(44);
+    header.write("RIFF", 0, "latin1");
+    header.write("WAVE", 8, "latin1");
+    fs.writeFileSync(wav, Buffer.concat([header, Buffer.alloc(8), Buffer.from(SECRET), Buffer.alloc(8)]));
+    expect(scrubSecretsFromArtifacts([dir], needles)).toEqual({ changed: [], deleted: [], failed: [] });
+    expect(fs.existsSync(wav)).toBe(true);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("redacts text byte-for-byte: bytes that are not valid UTF-8 survive", () => {
+    const dir = tmp();
+    const f = path.join(dir, "raw.log");
+    fs.writeFileSync(f, Buffer.concat([Buffer.from([0xff, 0xfe, 0x41]), Buffer.from(` ${SECRET} é`)]));
+    scrubSecretsFromArtifacts([dir], needles);
+    expect(fs.readFileSync(f).equals(Buffer.concat([Buffer.from([0xff, 0xfe, 0x41]), Buffer.from(" [redacted] é")]))).toBe(true);
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
@@ -200,7 +235,32 @@ describe("scrubSecretsFromArtifacts", () => {
   });
 
   it("does nothing without secrets", () => {
-    expect(scrubSecretsFromArtifacts(["/nonexistent"], [])).toEqual({ changed: [], failed: [] });
+    expect(scrubSecretsFromArtifacts(["/nonexistent"], [])).toEqual({ changed: [], deleted: [], failed: [] });
+  });
+});
+
+describe("createRedactingLineLogger — aeval output reaches the agent's logs redacted", () => {
+  const run = (chunks: string[], values: string[]) => {
+    const lines: string[] = [];
+    const log = createRedactingLineLogger((l) => lines.push(l), values);
+    for (const c of chunks) log.write(c);
+    log.flush();
+    return lines;
+  };
+
+  it("redacts a secret split across output chunks", () => {
+    expect(run(["dialing +1234", "5952048 now\nnext line\n"], ["+12345952048"]))
+      .toEqual(["dialing [redacted] now", "next line"]);
+  });
+
+  it("redacts each line of a multi-line secret, and flushes a last line without a newline", () => {
+    const pem = "-----BEGIN KEY-----\nMIIEvQIBADANBg\n-----END KEY-----";
+    expect(run(["key: -----BEGIN KEY-----\n", "MIIEvQIBADANBg\n", "tail"], [pem]))
+      .toEqual(["key: [redacted]", "[redacted]", "tail"]);
+  });
+
+  it("with no secrets it passes lines through", () => {
+    expect(run(["a\r\nb"], [])).toEqual(["a", "b"]);
   });
 });
 

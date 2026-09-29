@@ -78,7 +78,7 @@ Browser automation executes with real credentials
 - The runner container itself is trusted with plaintext secrets (inherent to browser automation)
 - Brokered secrets (logins, `restful.request` API keys) never reach a runner: a broker acts server-side
 - Eval jobs: an eval set gets the eval flow's secrets only when trusted (same secret owner, and its owner can edit the eval flow) — checked by the server on every job-creating path (`secretGate`)
-- Eval jobs: secret values are redacted from every job error and scrubbed from every artifact before upload
+- Eval jobs: secret values are redacted from aeval's logged output and every job error, and scrubbed from every artifact before upload; a job using a secret shorter than 4 characters is refused
 
 ## Key Files
 

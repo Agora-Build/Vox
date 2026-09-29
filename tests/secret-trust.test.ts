@@ -139,6 +139,11 @@ describe("untrustedEvalSetConfigError — the whole eval-set config, not just it
       .toMatch(/sets config value\(s\) endpoint that this eval flow's Setup\/Teardown reads/);
   });
 
+  it("a flow whose Setup uses no secrets may still take its Setup config from any eval set", () => {
+    const flow = { stepsPrefix: "- type: x\n  url: ${config.endpoint}\n" };
+    expect(untrustedEvalSetConfigError(flow, { scenario: "steps: []", endpoint: "https://agent.example/" })).toBeNull();
+  });
+
   it("accepts an ordinary eval set: its own keys, reading the flow's plain config", () => {
     const flow = { url: "https://agent.example/", stepsPrefix: "- type: x\n  url: ${config.url}\n" };
     expect(untrustedEvalSetConfigError(flow, {
