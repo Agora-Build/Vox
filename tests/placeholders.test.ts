@@ -134,11 +134,14 @@ describe("secretNeedles", () => {
     expect(needles).toEqual(expect.arrayContaining(['a"b c', 'a\\"b c', "a%22b%20c"]));
   });
 
-  it(`a job using a secret shorter than ${MIN_REDACT_LENGTH} characters is refused — names only, never the value`, () => {
-    expect(shortSecretsError({ PIN: "123", LONG: "abcdef" }))
-      .toBe(`Secret(s) PIN is shorter than ${MIN_REDACT_LENGTH} characters — too short to keep out of logs, errors and artifacts. Use a value of at least ${MIN_REDACT_LENGTH} characters.`);
-    expect(shortSecretsError({ A: "1", B: "22" })).toMatch(/^Secret\(s\) A, B are shorter/);
-    expect(shortSecretsError({ OK: "1234" })).toBeNull();
+  it("a job using a secret that can't be kept out of logs is refused — names only, never the value", () => {
+    expect(shortSecretsError({ PIN: "123", LONG: "abcdef" })).toBe(
+      `Secret(s) PIN can't be kept out of logs, errors and artifacts: a value, and each line of it that ` +
+      `contains letters or digits, must be at least ${MIN_REDACT_LENGTH} characters. Update it under Console → Secrets.`,
+    );
+    // Stored before the line rule: each line would be logged on its own.
+    expect(shortSecretsError({ A: "1", MULTI: "A\nB\nC\nD" })).toMatch(/^Secret\(s\) A, MULTI can't be kept out/);
+    expect(shortSecretsError({ OK: "1234", JSON: '{\n  "k": "value-1"\n}' })).toBeNull();
   });
 });
 
@@ -217,6 +220,15 @@ describe("scrubSecretsFromArtifacts", () => {
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
+  it("redacts a multi-line secret written re-indented into a text artifact", () => {
+    const dir = tmp();
+    const f = path.join(dir, "scenario.yaml");
+    fs.writeFileSync(f, "creds: |\n    first-line-secret\n    second-line-secret\n");
+    scrubSecretsFromArtifacts([dir], secretNeedles({ C: "first-line-secret\nsecond-line-secret" }));
+    expect(fs.readFileSync(f, "utf-8")).toBe("creds: |\n    [redacted]\n    [redacted]\n");
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
   it("fails closed: a file it can neither rewrite nor remove is reported, never skipped", () => {
     if (process.getuid?.() === 0) return; // root ignores the permission this relies on
     const dir = tmp();
@@ -249,14 +261,22 @@ describe("createRedactingLineLogger — aeval output reaches the agent's logs re
   };
 
   it("redacts a secret split across output chunks", () => {
-    expect(run(["dialing +1234", "5952048 now\nnext line\n"], ["+12345952048"]))
+    expect(run(["dialing +1234", "5952048 now\nnext line\n"], secretNeedles({ P: "+12345952048" })))
       .toEqual(["dialing [redacted] now", "next line"]);
   });
 
   it("redacts each line of a multi-line secret, and flushes a last line without a newline", () => {
     const pem = "-----BEGIN KEY-----\nMIIEvQIBADANBg\n-----END KEY-----";
-    expect(run(["key: -----BEGIN KEY-----\n", "MIIEvQIBADANBg\n", "tail"], [pem]))
+    expect(run(["key: -----BEGIN KEY-----\n", "MIIEvQIBADANBg\n", "tail"], secretNeedles({ K: pem })))
       .toEqual(["key: [redacted]", "[redacted]", "tail"]);
+  });
+
+  it("redacts a multi-line secret echoed re-indented, line by line (YAML block scalar)", () => {
+    const key = "-----BEGIN KEY-----\nMIIEvQIBADANBg\nkqhkiG9w0BAQEF\n-----END KEY-----";
+    const echoed = ["key: |", "  -----BEGIN KEY-----", "  MIIEvQIBADANBg", "  kqhkiG9w0BAQEF", "  -----END KEY-----", ""].join("\n");
+    const lines = run([echoed], secretNeedles({ K: key }));
+    expect(lines.join("\n")).not.toMatch(/MIIEvQIBADANBg|kqhkiG9w0BAQEF|BEGIN KEY/);
+    expect(lines).toEqual(["key: |", "[redacted]", "[redacted]", "[redacted]", "[redacted]"]);
   });
 
   it("with no secrets it passes lines through", () => {

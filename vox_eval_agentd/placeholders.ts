@@ -12,7 +12,10 @@
  * - restful.request steps are never touched: Vox's server fills them from the
  *   job snapshot with secrets it never hands to an agent.
  */
-import { collectSecretRefs, resolveSecretPlaceholders, unresolvedSecretsMessage, untrustedEvalSetSecretsMessage, MIN_SECRET_VALUE_LENGTH } from '../shared/secrets';
+import {
+  collectSecretRefs, resolveSecretPlaceholders, unresolvedSecretsMessage, untrustedEvalSetSecretsMessage,
+  MIN_SECRET_VALUE_LENGTH, SECRET_LINE_BREAK, secretValueError,
+} from '../shared/secrets';
 import * as fs from 'fs';
 import * as path from 'path';
 import yaml from 'js-yaml';
@@ -138,27 +141,27 @@ function yamlEscape(value: string): string {
     .replace(/\0/g, '\\0');
 }
 
-/**
- * A secret shorter than this cannot be kept out of logs, errors and artifacts:
- * replacing a 1–3 character string everywhere would corrupt unrelated numbers
- * and words. Vox refuses to store one; a job that USES one anyway (stored
- * before the limit) is refused before it runs rather than run with it exposed.
- */
+/** Redaction targets shorter than this would corrupt unrelated text. */
 export const MIN_REDACT_LENGTH = MIN_SECRET_VALUE_LENGTH;
 
-/** The job error when a secret the job uses is too short to redact, or null. Names only. */
+/**
+ * The job error when a secret the job uses can't be kept out of logs, errors
+ * and artifacts (secretValueError: too short, or a short line with letters or
+ * digits), or null. Vox no longer stores such a value; this refuses a job
+ * that uses one stored earlier, before it runs. Names only, never a value.
+ */
 export function shortSecretsError(used: Record<string, string>): string | null {
-  const names = Object.keys(used).filter((n) => used[n].length < MIN_REDACT_LENGTH).sort();
+  const names = Object.keys(used).filter((n) => secretValueError(used[n]) !== null).sort();
   if (names.length === 0) return null;
-  return `Secret(s) ${names.join(', ')} ${names.length > 1 ? 'are' : 'is'} shorter than ${MIN_REDACT_LENGTH} ` +
-    `characters — too short to keep out of logs, errors and artifacts. Use a value of at least ` +
-    `${MIN_REDACT_LENGTH} characters.`;
+  return `Secret(s) ${names.join(', ')} can't be kept out of logs, errors and artifacts: a value, and ` +
+    `each line of it that contains letters or digits, must be at least ${MIN_REDACT_LENGTH} characters. ` +
+    `Update ${names.length > 1 ? 'them' : 'it'} under Console → Secrets.`;
 }
 
 /**
- * Every spelling of the secret values that must be redacted from job output
- * and errors: raw, YAML-escaped, and the URL encodings (shared with the
- * broker). Pass only the secrets the job actually used (FilledJob.used) —
+ * Every spelling of the secret values that must be redacted from job output,
+ * errors and logs: raw, YAML-escaped, the URL encodings (shared with the
+ * broker), and each line of a multi-line value. Pass only the secrets the job actually used (FilledJob.used) —
  * the server hands over every runtime secret of the owner.
  * Deduped: for an alphanumeric secret they are all the same string.
  */
@@ -166,8 +169,19 @@ export function secretNeedles(secrets: Record<string, string>): string[] {
   return Array.from(new Set(
     Object.values(secrets)
       .filter((v) => v.length > 0)
-      .flatMap((v) => [v, yamlEscape(v), ...urlForms(v)]),
+      .flatMap((v) => [v, yamlEscape(v), ...urlForms(v), ...lineFragments(v)]),
   ));
+}
+
+/**
+ * Each line of a multi-line value, as its own needle: output that echoes the
+ * value re-indented (a YAML block scalar, a pretty-printer) never contains the
+ * whole value, only its lines. Lines under MIN_REDACT_LENGTH are punctuation
+ * only (secretValueError guarantees it) and carry no secret.
+ */
+function lineFragments(value: string): string[] {
+  const lines = value.split(SECRET_LINE_BREAK).map((l) => l.trim());
+  return lines.length > 1 ? lines.filter((l) => l.length >= MIN_REDACT_LENGTH) : [];
 }
 
 const MAX_TEXT_SCRUB_BYTES = 50 * 1024 * 1024;
@@ -285,13 +299,11 @@ export function scrubSecretsFromArtifacts(dirs: string[], needles: string[]): Sc
  * Line-buffered logger for a child process's output that redacts every
  * complete line before emitting it — aeval echoes filled steps, URLs and
  * errors, and none may reach the agent's logs. Feed it DECODED text (a
- * StringDecoder keeps multi-byte characters whole); each line of a multi-line
- * value is redacted too, since the value is split across lines here.
+ * StringDecoder keeps multi-byte characters whole). Pass secretNeedles: they
+ * include each line of a multi-line value, which is split across lines here.
  */
 export function createRedactingLineLogger(emit: (line: string) => void, needles: string[]) {
-  const pieces = Array.from(new Set(
-    needles.flatMap((v) => [v, ...v.split(/\r\n|[\r\n\u2028\u2029]/)]).filter((v) => v.trim().length >= MIN_REDACT_LENGTH),
-  ));
+  const pieces = needles.filter((v) => v.length > 0);
   let pending = '';
   const out = (line: string) => {
     const clean = redactValues(line, pieces).trim();
@@ -300,7 +312,7 @@ export function createRedactingLineLogger(emit: (line: string) => void, needles:
   return {
     write(text: string) {
       pending += text;
-      const lines = pending.split(/\r\n|[\r\n\u2028\u2029]/);
+      const lines = pending.split(SECRET_LINE_BREAK);
       pending = lines.pop() ?? '';
       for (const l of lines) out(l);
     },

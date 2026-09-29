@@ -151,6 +151,20 @@ describe('Secrets - value length', () => {
     }
   });
 
+  // Review finding: "A\nB\nC\nD" passed the total-length check, and output
+  // that echoes a value line by line (a YAML block scalar) exposed each line.
+  it('refuses a multi-line value with a short line that has letters or digits', () => {
+    for (const v of ['A\nB\nC\nD', 'abcd\nxy', 'long-enough\r\n12', '  ab  ']) {
+      expect(secretValueError(v)).toMatch(/Each line of a secret value that contains letters or digits must be at least 4 characters/);
+    }
+  });
+
+  it('accepts multi-line values whose short lines are punctuation only: pretty JSON, PEM', () => {
+    expect(secretValueError('{\n  "private_key": "abcd1234",\n  "client_email": "x@y.iam"\n}\n')).toBeNull();
+    expect(secretValueError('[\n  "token-one",\n  "token-two"\n],')).toBeNull();
+    expect(secretValueError('-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEF\nAAOCAQ8A\n-----END PRIVATE KEY-----')).toBeNull();
+  });
+
   it('refuses a missing value and one over 10KB; accepts the rest', () => {
     expect(secretValueError('')).toBe('Secret value is required');
     expect(secretValueError(undefined)).toBe('Secret value is required');
@@ -405,14 +419,16 @@ describe('Secrets API', () => {
     expect(matches).toHaveLength(1);
   });
 
-  it('should refuse a value shorter than 4 characters, and store nothing', async () => {
+  it('should refuse a value shorter than 4 characters (or with a short line), and store nothing', async () => {
     if (!serverAvailable) return;
-    const res = await authFetch(adminSession, `${BASE_URL}/api/secrets`, {
-      method: 'POST',
-      body: JSON.stringify({ name: 'TEST_SECRET_SHORT', value: 'abc' }),
-    });
-    expect(res.status).toBe(400);
-    expect((await res.json()).error).toMatch(/at least 4 characters/);
+    for (const value of ['abc', 'A\nB\nC\nD']) {
+      const res = await authFetch(adminSession, `${BASE_URL}/api/secrets`, {
+        method: 'POST',
+        body: JSON.stringify({ name: 'TEST_SECRET_SHORT', value }),
+      });
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toMatch(/at least 4 characters/);
+    }
     const listRes = await authFetch(adminSession, `${BASE_URL}/api/secrets`);
     const { secrets } = await listRes.json();
     expect(secrets.map((s: { name: string }) => s.name)).not.toContain('TEST_SECRET_SHORT');

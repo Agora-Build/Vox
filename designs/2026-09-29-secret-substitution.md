@@ -213,7 +213,14 @@ ones would mangle artifacts).
 **Secrets shorter than 4 characters:** Vox refuses to store one — the
 console's secret forms say so and keep Save disabled, and both save routes
 (`POST /api/secrets`, `POST /api/org-secrets`) return 400; the rule is one
-shared function, `secretValueError` in `shared/secrets.ts`. A job that uses a
+shared function, `secretValueError` in `shared/secrets.ts`. The same applies
+to **each line of a multi-line value that contains letters or digits**:
+output that echoes the value line by line (a YAML block scalar) exposes each
+line on its own, so `A\nB\nC\nD` is refused. Lines of pure punctuation (JSON's
+`{`, `}`) carry no secret and are allowed, so pretty-printed JSON credentials
+and PEM keys (base64 lines are multiples of 4) still work. Each line of a
+multi-line value is also its own redaction target, so a re-indented echo is
+caught in logs, errors and artifacts. A job that uses a
 short secret stored before this limit is refused before it runs, naming the
 secret. Replacing a 1–3 character string everywhere would corrupt unrelated
 numbers and words, so such a value cannot be kept out of logs, errors and
@@ -256,6 +263,9 @@ written.
   characters is refused, by name.
 - A secret under 4 characters can't be stored: the shared rule, both save
   routes (nothing stored), and the console form (hint, Save disabled — E2E).
+- Multi-line values: a short line with letters or digits is refused
+  (`A\nB\nC\nD`); JSON punctuation lines and PEM keys are accepted; a value
+  echoed re-indented is redacted line by line in logs and artifacts.
 - aeval's output reaches the agent's logs redacted, including a secret split
   across output chunks and each line of a multi-line secret.
 - Artifacts: text is redacted whatever its file name (`steps.json`,
