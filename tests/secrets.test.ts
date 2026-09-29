@@ -434,6 +434,35 @@ describe('Secrets API', () => {
     expect(secrets.map((s: { name: string }) => s.name)).not.toContain('TEST_SECRET_SHORT');
   });
 
+  // #197: a value stored before the value rule is flagged on the list, so the
+  // owner can fix it before a job is refused. Stored straight into the DB —
+  // the API no longer accepts such a value.
+  it('flags a runtime secret stored before the value rule — the message, never the value', async () => {
+    if (!serverAvailable || !process.env.DATABASE_URL || !process.env.CREDENTIAL_ENCRYPTION_KEY) return;
+    const { storage, encryptValue, pool } = await import('../server/storage');
+    const adminId = (await pool.query('SELECT id FROM users WHERE email = $1', [ADMIN_EMAIL])).rows[0].id as number;
+    const rows = { OLD_SHORT_RT: 'abc', OLD_LINES_RT: 'A\nB\nC\nD', OLD_SHORT_BROKERED: 'xyz', OLD_FINE_RT: 'long-enough' };
+    try {
+      for (const [name, value] of Object.entries(rows)) {
+        await storage.createOrUpdateSecret(adminId, name, encryptValue(value),
+          name.endsWith('BROKERED') ? { brokerType: 'auth-session' } : {});
+      }
+      const res = await authFetch(adminSession, `${BASE_URL}/api/secrets`);
+      const body = await res.text();
+      const byName = Object.fromEntries((JSON.parse(body).secrets as Array<{ name: string; valueProblem?: string }>).map((x) => [x.name, x]));
+      expect(byName.OLD_SHORT_RT.valueProblem).toMatch(/at least 4 characters/);
+      expect(byName.OLD_LINES_RT.valueProblem).toMatch(/Each line of a secret value/);
+      // Brokered values never reach an agent, so no job fails on them.
+      expect(byName.OLD_SHORT_BROKERED.valueProblem).toBeUndefined();
+      expect(byName.OLD_FINE_RT.valueProblem).toBeUndefined();
+      // The response never carries a value.
+      expect(body).not.toContain('long-enough');
+      expect(body).not.toContain('"abc"');
+    } finally {
+      for (const name of Object.keys(rows)) await storage.deleteSecret(adminId, name);
+    }
+  });
+
   it('should delete a secret', async () => {
     if (!serverAvailable) return;
     const res = await authFetch(adminSession, `${BASE_URL}/api/secrets/TEST_SECRET_B`, {

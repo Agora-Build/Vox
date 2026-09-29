@@ -2809,6 +2809,21 @@ export async function registerRoutes(
     }
   }
 
+  // A runtime secret stored before the value rule (secretValueError: at least 4
+  // characters, and each line with letters or digits) makes every job that
+  // uses it fail before it runs. Flag it on the list so the owner can update
+  // it — the message only, never the value. Brokered secrets never reach an
+  // agent, so no job fails on them.
+  function secretValueProblem(s: { encryptedValue: string; brokerType: string | null }): { valueProblem?: string } {
+    if (s.brokerType != null) return {};
+    try {
+      const problem = secretValueError(decryptValue(s.encryptedValue));
+      return problem ? { valueProblem: problem } : {};
+    } catch {
+      return {};
+    }
+  }
+
   app.get("/api/secrets", requireAuth, async (req, res) => {
     try {
       const user = await getCurrentUser(req);
@@ -2833,6 +2848,7 @@ export async function registerRoutes(
           // has had to be diagnosed so far. Safe here because the query is
           // keyed by user.id: these are the caller's OWN secrets.
           ...secretFingerprint(s.encryptedValue),
+          ...secretValueProblem(s),
           createdAt: s.createdAt,
           updatedAt: s.updatedAt,
         })),
@@ -2940,10 +2956,13 @@ export async function registerRoutes(
       // is the failure this whole feature exists to prevent. Meanwhile whoever
       // actually set the current value would see nothing. Needs an updatedBy
       // column to do correctly; tracked separately.
+      // The value flag goes to those who can update the value (org owner/admin).
+      const canUpdate = user.membership.role === "owner" || user.membership.role === "admin";
       res.json(secrets.map(s => ({
         name: s.name,
         brokerType: s.brokerType,
         isTestAccount: s.isTestAccount,
+        ...(canUpdate ? secretValueProblem(s) : {}),
         createdAt: s.createdAt,
         updatedAt: s.updatedAt,
       })));

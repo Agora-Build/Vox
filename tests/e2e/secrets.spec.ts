@@ -42,4 +42,25 @@ test.describe("Secrets page", () => {
     await expect(save).toBeEnabled();
     // Nothing is saved: this test only checks the form.
   });
+
+  // #197: a value stored before the value rule is flagged on its row. The API
+  // no longer accepts such a value, so the row is written through storage.
+  test("a runtime secret stored before the value rule is flagged on the page", async ({ page }) => {
+    test.skip(!process.env.DATABASE_URL || !process.env.CREDENTIAL_ENCRYPTION_KEY, "needs the dev DB and encryption key");
+    test.setTimeout(60_000);
+    const { storage, encryptValue, pool } = await import("../../server/storage");
+    const adminId = (await pool.query("SELECT id FROM users WHERE email = $1", ["admin@vox.local"])).rows[0].id as number;
+    const name = `E2E_OLD_SHORT_${Date.now()}`;
+    await storage.createOrUpdateSecret(adminId, name, encryptValue("abc"));
+    try {
+      await loginUI(page);
+      await page.goto(`${BASE}/console/secrets`);
+      const row = page.getByRole("row").filter({ hasText: name });
+      await expect(row.getByTestId("secret-value-problem")).toContainText("at least 4 characters");
+      await expect(row.getByTestId("secret-value-problem")).toContainText("Jobs that use it are refused");
+      await expect(row).not.toContainText("abc");
+    } finally {
+      await storage.deleteSecret(adminId, name);
+    }
+  });
 });
