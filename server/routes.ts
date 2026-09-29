@@ -13,7 +13,7 @@ import { validateTierChoice, resolveTargetedDispatch, filterDispatchableAgents }
 import { getMarketplace } from "./marketplace";
 import { isAlreadyMemberError, getOrganizations, requireOrganizations, type Membership, type OrgSecretRow } from "./organizations";
 import { fingerprintCredential, formatLastFailedHttpStatus, parseLastFailedHttpStatus } from "@shared/credentials";
-import { sessionScopeForEvalFlow, areLoginSecretsAttested, ensureSession, stampOwnerSession, credentialKeyFor, SESSION_FRESH_MARGIN_SECONDS, classifyReferencedSecrets, findBrokeredMisuse, resolveBrokerType, type SessionNeed, detectSessionNeed, resolvableSecretSources, secretGate, evalSetMayUseSecrets } from "./auth-session";
+import { sessionScopeForEvalFlow, areLoginSecretsAttested, ensureSession, stampOwnerSession, credentialKeyFor, SESSION_FRESH_MARGIN_SECONDS, classifyReferencedSecrets, findBrokeredMisuse, resolveBrokerType, type SessionNeed, detectSessionNeed, resolvableSecretSources, secretGate, evalSetMayUseSecrets, untrustedEvalSetConfigError } from "./auth-session";
 import { validateRegisterPayload, cacheBrokerMintSecret, hasBrokerMintSecret, routeToBroker, executeViaBroker, KNOWN_BROKER_TYPES } from "./broker-registry";
 import { resolveRestfulTemplate } from "./restful-exec";
 import { validateRestfulTrigger, parseStepsScript, stepsContainCallDial, unsupportedFrameworkError } from "./storage";
@@ -5066,6 +5066,11 @@ export async function registerRoutes(
       // (the run itself re-checks and reports the outage), never a 500.
       const trusted = await evalSetMayUseSecrets(evalFlow, evalSetForRun).catch(() => false);
       const resolvableHere = collectSecretRefs(resolvableSecretSources(evalFlow.config, evalSetForRun?.config, trusted));
+      // The run route would refuse this eval set (secretGate): say so up front
+      // so the dialog can disable Run instead of the click returning a 400.
+      const evalSetProblem = evalSetForRun && !trusted
+        ? untrustedEvalSetConfigError(evalFlow.config, evalSetForRun.config)
+        : null;
       const referencedSecrets = classifiedRefs.map((c) => ({ ...c, resolvable: resolvableHere.has(c.name) }));
 
       // Same detector the run route enforces with — not "any brokered secret
@@ -5110,7 +5115,7 @@ export async function registerRoutes(
         { tier: "shared", available: false, reason: "not-pooled-yet" },
       ];
 
-      res.json({ agents: { mine, shared, public: publicFleet }, referencedSecrets, tiers });
+      res.json({ agents: { mine, shared, public: publicFleet }, referencedSecrets, evalSetProblem, tiers });
     } catch (error) {
       console.error("Error listing run targets:", error);
       res.status(500).json({ error: "Failed to list run targets" });

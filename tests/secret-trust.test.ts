@@ -280,6 +280,20 @@ async function newUser(admin: Session, tag: string): Promise<Session> {
     expect((await res.json()).job.config.evalSetSecrets).toBe(true);
   });
 
+  // #198: the run dialog learns up front what the run route would refuse.
+  it("run-targets reports the eval set problem the run would fail with — and none when trusted or clean", async () => {
+    const problem = async (s: Session, evalSetId: number) => {
+      const res = await call(s, "GET", `/api/eval-flows/${flowId}/run-targets?region=${BASE_NA}&evalSetId=${evalSetId}`);
+      expect(res.status).toBe(200);
+      return (await res.json()).evalSetProblem;
+    };
+    expect(await problem(stranger, strangersSetId)).toMatch(new RegExp(`The eval set uses secret\\(s\\) ${SECRET}, but it may not use`));
+    expect(await problem(owner, strangersSetId)).toMatch(/may not use this eval flow's secrets/);
+    expect(await problem(owner, ownSetId)).toBeNull();
+    expect(await problem(stranger, ownSetId)).toBeNull();
+    expect(await problem(stranger, strangersPlainSetId)).toBeNull();
+  });
+
   it("a stranger's eval set without secrets still runs on the flow — stamped evalSetSecrets: false", async () => {
     const res = await consoleRun(stranger, strangersPlainSetId);
     expect(res.status).toBe(200);

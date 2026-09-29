@@ -64,3 +64,73 @@ test.describe("Secrets page", () => {
     }
   });
 });
+
+// #198: the run dialog says up front that an eval set may not use this eval
+// flow's secrets, and disables Run — instead of the click returning a 400.
+test.describe("Run dialog — untrusted eval set", () => {
+  test("picking someone else's eval set that uses secrets shows why, and Run stays disabled", async ({ page, playwright }) => {
+    test.setTimeout(90_000);
+    const stamp = `${Date.now()}`;
+    const admin = await playwright.request.newContext({ baseURL: BASE });
+    await admin.post("/api/auth/login", { data: { email: "admin@vox.local", password: "admin123456" } });
+
+    // Someone else, with a public eval set that asks for a secret.
+    const email = `e2e-untrusted-${stamp}@example.com`;
+    const { token } = await (await admin.post("/api/admin/invite", { data: { email, plan: "premium" } })).json();
+    const other = await playwright.request.newContext({ baseURL: BASE });
+    expect((await other.post("/api/auth/register", { data: { username: `e2euntrusted${stamp}`, password: "TestPass123!", token } })).ok()).toBe(true);
+    await other.post("/api/auth/login", { data: { email, password: "TestPass123!" } });
+    const setName = `e2e-untrusted-set-${stamp}`;
+    const set = await (await other.post("/api/eval-sets", {
+      data: { name: setName, visibility: "public", config: { scenario: "steps:\n  - type: audio.wait_for_speech\n    description: ${secrets.E2E_OWNER_KEY}\n" } },
+    })).json();
+    // A clean one of the same author's, as the control: nothing else blocks Run.
+    const cleanName = `e2e-clean-set-${stamp}`;
+    const clean = await (await other.post("/api/eval-sets", {
+      data: { name: cleanName, visibility: "public", config: { scenario: "steps:\n  - type: audio.wait_for_speech\n" } },
+    })).json();
+
+    // The admin's own eval flow.
+    const providerId = (await (await admin.get("/api/providers")).json())[0].id;
+    const flow = await (await admin.post("/api/eval-flows", {
+      data: { name: `e2e-untrusted-flow-${stamp}`, visibility: "public", providerId, config: {} },
+    })).json();
+
+    // Options may be scrolled out of the (long) list: focus, then Enter.
+    const pick = async (combobox: import("@playwright/test").Locator, option: import("@playwright/test").Locator) => {
+      await combobox.click();
+      await option.first().focus();
+      await page.keyboard.press("Enter");
+    };
+
+    try {
+      await loginUI(page);
+      await page.goto(`${BASE}/console/eval-flows/${flow.id}`);
+      await page.getByRole("button", { name: "Run Eval Flow" }).click();
+      const dialog = page.getByRole("dialog");
+      const evalSetPicker = dialog.getByRole("combobox").first();
+      const run = dialog.getByRole("button", { name: "Run Evaluation" });
+
+      await pick(evalSetPicker, page.getByRole("option", { name: setName }));
+      await expect(evalSetPicker).toContainText(setName);
+      await pick(dialog.getByTestId("select-run-target"), page.getByRole("option", { name: /^Any (public agent|of my agents here)/ }));
+
+      await expect(dialog.getByTestId("eval-set-problem")).toContainText("E2E_OWNER_KEY");
+      await expect(dialog.getByTestId("eval-set-problem")).toContainText("may not use this eval flow's secrets");
+      await expect(run).toBeDisabled();
+
+      // Control: the same author's clean eval set, same target — Run is enabled.
+      await pick(evalSetPicker, page.getByRole("option", { name: cleanName }));
+      await expect(dialog.getByTestId("eval-set-problem")).toHaveCount(0);
+      await pick(dialog.getByTestId("select-run-target"), page.getByRole("option", { name: /^Any (public agent|of my agents here)/ }));
+      await expect(run).toBeEnabled();
+    } finally {
+      await admin.delete(`/api/eval-flows/${flow.id}`);
+      await other.delete(`/api/eval-sets/${set.id}`);
+      await other.delete(`/api/eval-sets/${clean.id}`);
+      await admin.dispose();
+      await other.dispose();
+    }
+  });
+});
+
