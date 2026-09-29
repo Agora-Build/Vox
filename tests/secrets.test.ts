@@ -1,6 +1,8 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import crypto from 'crypto';
-import { SECRET_NAME_PATTERN, SECRET_PLACEHOLDER_REGEX } from '@shared/secrets';
+import { SECRET_NAME_PATTERN } from '@shared/secrets';
+import yaml from 'js-yaml';
+import { fillJobPlaceholders, toYaml } from '../vox_eval_agentd/placeholders';
 import { BASE_NA } from './helpers/regions';
 
 // ---------------------------------------------------------------------------
@@ -139,143 +141,41 @@ describe('Secrets - Name Validation', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Unit tests: Secret placeholder resolution (mirrors daemon logic)
+// Unit tests: any secret value survives the agent's fill → YAML → aeval path
+// (the real code: vox_eval_agentd/placeholders.ts)
 // ---------------------------------------------------------------------------
 
-function resolveSecrets(content: string, secrets: Record<string, string>): string {
-  return content.replace(SECRET_PLACEHOLDER_REGEX, (_match, key) => {
-    if (key in secrets) {
-      const escaped = secrets[key]
-        .replace(/\\/g, '\\\\')
-        .replace(/"/g, '\\"')
-        .replace(/\n/g, '\\n')
-        .replace(/\r/g, '\\r')
-        .replace(/\t/g, '\\t')
-        .replace(/\0/g, '\\0');
-      return `"${escaped}"`;
-    }
-    return _match;
-  });
-}
+describe('Secrets - filled values round-trip through the YAML aeval reads', () => {
+  const roundTrip = (value: string, template = '${secrets.V}') => {
+    const filled = fillJobPlaceholders(
+      { scenario: undefined, stepsPrefix: [{ type: 'platform.setup', params: { password: template } }], stepsSuffix: undefined },
+      {}, { V: value }, { evalSetSecrets: false },
+    );
+    return (yaml.load(toYaml(filled.parts.stepsPrefix)) as Array<{ params: { password: string } }>)[0].params.password;
+  };
 
-describe('Secrets - Placeholder Resolution', () => {
-  it('should replace known placeholders with quoted values', () => {
-    const yaml = 'email: ${secrets.YOUR_EMAIL}\npassword: ${secrets.YOUR_PASSWORD}';
-    const secrets = { YOUR_EMAIL: 'test@example.com', YOUR_PASSWORD: 'p@ss123' };
-    const resolved = resolveSecrets(yaml, secrets);
-    expect(resolved).toBe('email: "test@example.com"\npassword: "p@ss123"');
-  });
-
-  it('should leave unknown placeholders intact', () => {
-    const yaml = 'key: ${secrets.UNKNOWN_KEY}';
-    const resolved = resolveSecrets(yaml, {});
-    expect(resolved).toBe('key: ${secrets.UNKNOWN_KEY}');
-  });
-
-  it('should not replace non-secret placeholders', () => {
-    const yaml = 'corpus_id: ${item}\nid: ${item.question_id}';
-    const resolved = resolveSecrets(yaml, { SOME_KEY: 'value' });
-    expect(resolved).toBe(yaml);
-  });
-
-  it('should handle multiple occurrences of same secret', () => {
-    const yaml = 'a: ${secrets.KEY}\nb: ${secrets.KEY}';
-    const resolved = resolveSecrets(yaml, { KEY: 'val' });
-    expect(resolved).toBe('a: "val"\nb: "val"');
-  });
-
-  it('should handle empty secrets map', () => {
-    const yaml = 'email: ${secrets.EMAIL}';
-    const resolved = resolveSecrets(yaml, {});
-    expect(resolved).toBe(yaml);
-  });
-
-  it('should handle content with no placeholders', () => {
-    const yaml = 'name: smoke_test\nsteps:\n  - type: audio.play';
-    const resolved = resolveSecrets(yaml, { KEY: 'value' });
-    expect(resolved).toBe(yaml);
-  });
-
-  it('should quote email addresses with @ safely', () => {
-    const yaml = '      email: ${secrets.AGORA_CONSOLE_EMAIL}';
-    const resolved = resolveSecrets(yaml, { AGORA_CONSOLE_EMAIL: 'user@agora.io' });
-    expect(resolved).toBe('      email: "user@agora.io"');
-  });
-
-  it('should escape double quotes in passwords', () => {
-    const yaml = 'password: ${secrets.PASS}';
-    const resolved = resolveSecrets(yaml, { PASS: 'he said "hello"' });
-    expect(resolved).toBe('password: "he said \\"hello\\""');
-  });
-
-  it('should escape backslashes in values', () => {
-    const yaml = 'path: ${secrets.WIN_PATH}';
-    const resolved = resolveSecrets(yaml, { WIN_PATH: 'C:\\Users\\admin' });
-    expect(resolved).toBe('path: "C:\\\\Users\\\\admin"');
-  });
-
-  it('should escape newlines and tabs in values', () => {
-    const yaml = 'token: ${secrets.MULTILINE_TOKEN}';
-    const resolved = resolveSecrets(yaml, { MULTILINE_TOKEN: 'line1\nline2\tend' });
-    expect(resolved).toBe('token: "line1\\nline2\\tend"');
-  });
-
-  it('should escape carriage returns', () => {
-    const yaml = 'val: ${secrets.CR_VAL}';
-    const resolved = resolveSecrets(yaml, { CR_VAL: 'a\r\nb' });
-    expect(resolved).toBe('val: "a\\r\\nb"');
-  });
-
-  it('should handle special characters in passwords', () => {
-    const yaml = 'password: ${secrets.PASS}';
-    const resolved = resolveSecrets(yaml, { PASS: 'p@$$w0rd!#&"<>' });
-    expect(resolved).toBe('password: "p@$$w0rd!#&\\"<>"');
-  });
-
-  it('should handle YAML-unsafe characters: colon, hash, brackets', () => {
-    const yaml = 'api_key: ${secrets.API_KEY}';
-    const resolved = resolveSecrets(yaml, { API_KEY: 'sk-live:abc#123[test]' });
-    expect(resolved).toBe('api_key: "sk-live:abc#123[test]"');
-  });
-
-  it('should handle empty string secret', () => {
-    const yaml = 'val: ${secrets.EMPTY}';
-    const resolved = resolveSecrets(yaml, { EMPTY: '' });
-    expect(resolved).toBe('val: ""');
-  });
-
-  it('should handle realistic platform.setup block', () => {
-    const yaml = `  - type: platform.setup
-    platform_id: agora
-    params:
-      mode: account
-      email: \${secrets.AGORA_CONSOLE_EMAIL}
-      password: \${secrets.AGORA_CONSOLE_PASSWORD}`;
-    const resolved = resolveSecrets(yaml, {
-      AGORA_CONSOLE_EMAIL: 'dev@agora.io',
-      AGORA_CONSOLE_PASSWORD: 'S3cur3!P@ss#2026',
+  for (const [label, value] of [
+    ['plain', 'p@ss123'],
+    ['double quotes', 'he said "hello"'],
+    ['backslashes', 'C:\\Users\\admin'],
+    ['newline and tab', 'line1\nline2\tend'],
+    ['CRLF', 'a\r\nb'],
+    ['YAML-special characters', 'p@$$w0rd!#&"<>'],
+    ['colon, hash, brackets', 'sk-live:abc#123[test]'],
+    ['leading dash / looks like a number', '-0012'],
+    ['empty', ''],
+  ] as const) {
+    it(`keeps a value with ${label} exactly`, () => {
+      expect(roundTrip(value)).toBe(value);
     });
-    expect(resolved).toContain('email: "dev@agora.io"');
-    expect(resolved).toContain('password: "S3cur3!P@ss#2026"');
+  }
+
+  it('fills a placeholder inside a longer string', () => {
+    expect(roundTrip('tok', 'Bearer ${secrets.V}')).toBe('Bearer tok');
   });
 
-  it('resolved YAML should be parseable', () => {
-    const yaml = `name: test
-params:
-  email: \${secrets.EMAIL}
-  password: \${secrets.PASS}
-  token: \${secrets.TOKEN}`;
-    const resolved = resolveSecrets(yaml, {
-      EMAIL: 'user@example.com',
-      PASS: 'p@ss:"word"',
-      TOKEN: 'abc123-def_456',
-    });
-    // Verify it parses as valid YAML
-    const { load: parse } = require('js-yaml');
-    const parsed = parse(resolved);
-    expect(parsed.params.email).toBe('user@example.com');
-    expect(parsed.params.password).toBe('p@ss:"word"');
-    expect(parsed.params.token).toBe('abc123-def_456');
+  it('leaves an unknown placeholder as written', () => {
+    expect(roundTrip('x', '${secrets.OTHER}')).toBe('${secrets.OTHER}');
   });
 });
 

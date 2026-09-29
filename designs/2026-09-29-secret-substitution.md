@@ -101,12 +101,14 @@ the rule, because secrets are filled after config.
 
 ## Vox server (job creation)
 
-1. **One gate, every path.** `secretRefsError(evalFlow, evalSet)`
-   (`server/auth-session.ts`) returns an error or null:
-   - an untrusted eval set referencing `${secrets.*}` →
-     *"The eval set uses secret(s) X, but it belongs to someone other than this
-     eval flow's owner. An eval set may use the eval flow owner's secrets only
-     when the same person or organization owns both."*
+1. **One gate, every path.** `secretGate(evalFlow, evalSet)`
+   (`server/auth-session.ts`) returns the `evalSetSecrets` answer and an error
+   or null:
+   - an untrusted eval set that breaks the whole-config rules below →
+     *"The eval set uses secret(s) X, but it may not use this eval flow's
+     secrets: an eval set gets them only when it belongs to the eval flow's
+     owner (or, for an organization's eval flow, to that organization and was
+     created by someone who can edit the eval flow)."*
    - otherwise, a referenced secret missing from the owner's scope → the
      existing "not configured for its owner" message.
 
@@ -117,7 +119,7 @@ the rule, because secrets are filled after config.
    narrowing.
 2. **One stamp.** `mergeEvalConfig(flowConfig, setConfig, { evalSetSecrets })`
    — the single function every path uses to build a job's config — strips any
-   `evalSetSecrets` either config carries and stamps the server's answer
+   `evalSetSecrets` either config carries and stamps `secretGate`'s answer
    (strip-then-stamp, like `sessionInjection`). The TypeScript signature makes
    the stamp mandatory, so no path can forget it.
 
@@ -149,7 +151,7 @@ created.
         · Setup + Teardown       — always
         · scenario (eval set)    — only if the job says evalSetSecrets: true
         · restful.request steps  — never (Vox's server fills them)
-   4. remember the secret values for redaction
+   4. remember the values of the secrets this job used, for redaction
         │
         ├── web:   auth-session injection (if stamped) → YAML → aeval run
         └── phone: restful.request via Vox → DialF job.run → aeval analyze
@@ -161,14 +163,15 @@ created.
 ```
 
 - **Parsed values, not YAML text.** `number: ${secrets.X}` and
-  `number: "${secrets.X}"` both work. (Today web pastes a quoted value into the
-  text, so the quoted form breaks YAML on web.) A part with nothing to fill is
+  `number: "${secrets.X}"` both work. (Before this change web pasted a quoted
+  value into the text, so the quoted form broke YAML on web.) A part with nothing to fill is
   passed on byte-for-byte; a filled part is re-written as YAML — web already
   re-writes Setup + scenario + Teardown when composing them.
 - **Step 5 runs after web session injection**, which removes brokered login
   references legitimately.
-- **Redaction:** raw value, YAML-escaped form and URL encodings, applied to
-  every job error in one place, plus aeval output as today.
+- **Redaction:** raw value, YAML-escaped form and URL encodings of the
+  secrets the job used, applied to every job error in one place and to every
+  artifact before upload (see below).
 
 ### Web vs phone after this change
 
@@ -187,7 +190,7 @@ created.
 Secret **names** may appear (e.g. "secret AGENT_PHONE is not configured") —
 they are needed to fix a run and are not secret. Secret **values** never:
 
-| Where | Today | After |
+| Where | Before | After |
 |---|---|---|
 | Vox server logs | counts only; a name on a decrypt failure | unchanged (audited) |
 | Agent logs | counts only | unchanged |
@@ -222,9 +225,10 @@ written.
   untrusted by a new agent: its eval set is not filled. A queued job whose
   trusted eval set uses secrets would fail with the untrusted message; rare,
   and re-running it fixes it.
-- **Behaviour change:** a public eval set that uses `${secrets.X}` stops
-  working for people who do not own the eval flow. They get the message above
-  before any job is created.
+- **Behaviour change:** a public eval set that uses `${secrets.X}` only runs
+  on eval flows its author could edit; anywhere else the run is refused with
+  the message above, before any job is created. Eval sets without secret
+  references run on any eval flow as before.
 - Agents need `./scripts/vox-upgrade.sh`, including the phone host (which also
   gets the original `call.dial` fix).
 
@@ -236,10 +240,17 @@ written.
   untrusted message; a secret value containing `${secrets.X}` is not flagged.
 - Phone end to end through `runPhoneJob` with filled steps: DialF receives the
   real number.
-- Artifacts: a secret value in a DialF `steps.json` / aeval output file is
-  gone after the scrub; audio files are untouched.
+- Only secrets the job filled are redacted; values under 4 characters are not.
+- Artifacts: text is redacted whatever its file name (`steps.json`,
+  extensionless, `.xml`, `.js`); a binary holding a secret is deleted; a
+  recording without one is untouched; a file that can be neither rewritten
+  nor removed is reported (no upload).
+- Any secret value (quotes, backslashes, newlines, `:`/`#`, empty) survives
+  fill → YAML → parse exactly.
 - Server: `evalSetMayUseSecrets` for every row of the table; `mergeEvalConfig`
-  strips a caller's `evalSetSecrets` and stamps the answer; the run route and
+  strips a caller's `evalSetSecrets` and stamps the answer; an untrusted eval
+  set's whole config (secrets in any key or through a `${config.*}` it reads;
+  a config value the flow's Setup reads); the run route and
   `/api/v1` refuse an untrusted eval set that references a secret, and accept
   the same eval set when the flow owner owns it.
 - Each test mutation-checked; full gate; agent Docker image built locally.

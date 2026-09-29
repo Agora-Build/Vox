@@ -462,7 +462,7 @@ export function untrustedEvalSetConfigError(evalFlowConfig: unknown, evalSetConf
  * Scope is the EVAL_FLOW OWNER's (secrets follow evalFlow ownership), which is
  * the same scope the job-secrets endpoint resolves against at claim time.
  */
-export async function missingSecretNames(
+async function missingSecretNames(
   scope: SessionScope,
   configs: unknown[],
 ): Promise<string[]> {

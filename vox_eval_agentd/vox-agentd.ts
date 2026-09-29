@@ -31,7 +31,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { fillJobPlaceholders, jobConfigVars, secretNeedles, unresolvedSecretsError, scrubSecretsFromArtifacts, MIN_REDACT_LENGTH, type FilledJob, type JobParts } from './placeholders';
+import { fillJobPlaceholders, jobConfigVars, secretNeedles, unresolvedSecretsError, scrubSecretsFromArtifacts, toYaml, MIN_REDACT_LENGTH, type FilledJob, type JobParts } from './placeholders';
 import { redactValues } from '../shared/credentials';
 import { summarizeAevalFailure, reduceUrlsSafely, createBoundedCapture } from './aeval-output';
 import { StringDecoder } from 'string_decoder';
@@ -2046,7 +2046,7 @@ class VoxEvalAgentDaemon {
     const toText = (original: string | undefined, before: unknown, after: unknown) =>
       original === undefined || JSON.stringify(before) === JSON.stringify(after)
         ? original
-        : yaml.dump(after, { lineWidth: -1, noRefs: true });
+        : toYaml(after);
     const scenario = toText(config.scenario, parsed.scenario, filled.parts.scenario)!;
     let stepsPrefix = toText(config.stepsPrefix, parsed.stepsPrefix, filled.parts.stepsPrefix);
     const stepsSuffix = toText(config.stepsSuffix, parsed.stepsSuffix, filled.parts.stepsSuffix);

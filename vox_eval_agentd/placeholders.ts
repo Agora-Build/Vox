@@ -6,14 +6,16 @@
  *   `number: ${secrets.X}` and `number: "${secrets.X}"` both work.
  * - Setup/Teardown (the eval flow's own steps) are always filled. The scenario
  *   comes from the eval set, which may belong to someone else: it gets the
- *   eval flow owner's secrets only when Vox stamped `evalSetSecrets: true` on
- *   the job (same owner or same org). ${config.*} is filled everywhere.
+ *   eval flow's secrets only when Vox stamped `evalSetSecrets: true` on the job
+ *   (server/auth-session.ts evalSetMayUseSecrets). ${config.*} is filled
+ *   everywhere.
  * - restful.request steps are never touched: Vox's server fills them from the
  *   job snapshot with secrets it never hands to an agent.
  */
 import { collectSecretRefs, resolveSecretPlaceholders, unresolvedSecretsMessage, untrustedEvalSetSecretsMessage } from '../shared/secrets';
 import * as fs from 'fs';
 import * as path from 'path';
+import yaml from 'js-yaml';
 import { redactValues, urlForms } from '../shared/credentials';
 
 export interface JobParts {
@@ -99,6 +101,11 @@ export function fillJobPlaceholders(
   };
 }
 
+/** A filled part back to the YAML aeval reads. */
+export function toYaml(value: unknown): string {
+  return yaml.dump(value, { lineWidth: -1, noRefs: true });
+}
+
 /**
  * The job error for secret references left in what will actually run, or null.
  * Call it on the parts as they will run — after web session injection, which
@@ -121,7 +128,7 @@ export function unresolvedSecretsError(
 }
 
 /** Double-quoted-YAML escaping: how a value can appear in YAML aeval reads. */
-export function yamlEscape(value: string): string {
+function yamlEscape(value: string): string {
   return value
     .replace(/\\/g, '\\\\')
     .replace(/"/g, '\\"')
