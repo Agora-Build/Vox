@@ -231,6 +231,13 @@ async function newUser(admin: Session, tag: string): Promise<Session> {
     expect((await res.json()).job.config.evalSetSecrets).toBe(true);
   });
 
+  it("anyone may run the owner's public eval flow with the owner's public eval set — trusted, whoever runs it", async () => {
+    // Trust is about who owns the eval set and the eval flow, not who clicks Run.
+    const res = await consoleRun(stranger, ownSetId);
+    expect(res.status).toBe(200);
+    expect((await res.json()).job.config.evalSetSecrets).toBe(true);
+  });
+
   it("a stranger's eval set without secrets still runs on the flow — stamped evalSetSecrets: false", async () => {
     const res = await consoleRun(stranger, strangersPlainSetId);
     expect(res.status).toBe(200);
