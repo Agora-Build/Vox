@@ -937,7 +937,10 @@ export async function registerRoutes(
     }
   });
 
-  app.post("/api/providers", requireAuth, requireAdmin, async (req, res) => {
+  // Provider writes are admin-only, so they live under /api/admin like every
+  // admin-only route (tests/admin-routes.test.ts); reads stay public at
+  // GET /api/providers for the eval-flow pages and run pickers.
+  app.post("/api/admin/providers", requireAuth, requireAdmin, async (req, res) => {
     try {
       const { name, sku, description } = req.body;
       
@@ -962,7 +965,7 @@ export async function registerRoutes(
     }
   });
 
-  app.patch("/api/providers/:id", requireAuthOrApiKey, requireAdmin, async (req, res) => {
+  app.patch("/api/admin/providers/:id", requireAuth, requireAdmin, async (req, res) => {
     try {
       const { id } = req.params;
       const { name, description, brandColor, platformId, isActive } = req.body;
@@ -7228,8 +7231,10 @@ export async function registerRoutes(
     }
   });
 
-  // List all registered clash runners (admin + principal/fellow)
-  app.get("/api/admin/clash-runners", requireAuth, async (req, res) => {
+  // List all registered clash runners (admin + principal/fellow). Not under
+  // /api/admin: it is deliberately open beyond admins, and everything under
+  // /api/admin is admin-only (tests/admin-routes.test.ts).
+  app.get("/api/clash/runners", requireAuth, async (req, res) => {
     const user = await getCurrentUser(req);
     if (!user) return res.status(401).json({ error: "Not authenticated" });
     const isScout = user.isAdmin || user.plan === "principal" || user.plan === "fellow";

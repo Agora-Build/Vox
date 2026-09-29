@@ -250,7 +250,7 @@ describe("Clash Runner Lifecycle", () => {
 
   describe("Runner Listing", () => {
     it("admin can list registered runners", async () => {
-      const res = await authFetch(admin, `${BASE_URL}/api/admin/clash-runners`);
+      const res = await authFetch(admin, `${BASE_URL}/api/clash/runners`);
       expect(res.status).toBe(200);
       const runners = await res.json();
       expect(Array.isArray(runners)).toBe(true);
@@ -261,7 +261,7 @@ describe("Clash Runner Lifecycle", () => {
     });
 
     it("unauthenticated user cannot list runners", async () => {
-      const res = await fetch(`${BASE_URL}/api/admin/clash-runners`);
+      const res = await fetch(`${BASE_URL}/api/clash/runners`);
       expect(res.status).toBe(401);
     });
   });

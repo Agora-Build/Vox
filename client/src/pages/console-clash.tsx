@@ -171,7 +171,7 @@ export default function ConsoleClash() {
   const { data: clashRunners, isLoading: loadingClashRunners } = useQuery<
     { id: number; runnerId: string; siteId: string; state: string; currentMatchId: number | null; lastHeartbeatAt: string | null; createdAt: string }[]
   >({
-    queryKey: ["/api/admin/clash-runners"],
+    queryKey: ["/api/clash/runners"],
     enabled: isScout,
     refetchInterval: 10000,
   });

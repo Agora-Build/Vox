@@ -4992,7 +4992,7 @@ describe('Vox API Tests', () => {
       const provider = providers[0];
       const newColor = '#FF5733';
 
-      const res = await authFetch(adminSession, `${BASE_URL}/api/providers/${provider.id}`, {
+      const res = await authFetch(adminSession, `${BASE_URL}/api/admin/providers/${provider.id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ brandColor: newColor }),
@@ -5002,7 +5002,7 @@ describe('Vox API Tests', () => {
       expect(updated.brandColor).toBe(newColor);
 
       // Restore original color
-      await authFetch(adminSession, `${BASE_URL}/api/providers/${provider.id}`, {
+      await authFetch(adminSession, `${BASE_URL}/api/admin/providers/${provider.id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ brandColor: provider.brandColor }),
@@ -5015,7 +5015,7 @@ describe('Vox API Tests', () => {
       if (providers.length === 0) return;
 
       const provider = providers[0];
-      const res = await authFetch(adminSession, `${BASE_URL}/api/providers/${provider.id}`, {
+      const res = await authFetch(adminSession, `${BASE_URL}/api/admin/providers/${provider.id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ brandColor: null }),
@@ -5025,7 +5025,7 @@ describe('Vox API Tests', () => {
       expect(updated.brandColor).toBeNull();
 
       // Restore
-      await authFetch(adminSession, `${BASE_URL}/api/providers/${provider.id}`, {
+      await authFetch(adminSession, `${BASE_URL}/api/admin/providers/${provider.id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ brandColor: provider.brandColor }),
@@ -5033,7 +5033,7 @@ describe('Vox API Tests', () => {
     });
 
     it('should return 404 for non-existent provider', async () => {
-      const res = await authFetch(adminSession, `${BASE_URL}/api/providers/nonexistent`, {
+      const res = await authFetch(adminSession, `${BASE_URL}/api/admin/providers/nonexistent`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ brandColor: '#000000' }),
@@ -5042,7 +5042,7 @@ describe('Vox API Tests', () => {
     });
 
     it('should require admin for PATCH', async () => {
-      const res = await fetch(`${BASE_URL}/api/providers/any-id`, {
+      const res = await fetch(`${BASE_URL}/api/admin/providers/any-id`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ brandColor: '#000000' }),
@@ -5056,7 +5056,7 @@ describe('Vox API Tests', () => {
       if (providers.length === 0) return;
 
       const provider = providers[providers.length - 1]; // use last to avoid renaming key providers
-      const res = await authFetch(adminSession, `${BASE_URL}/api/providers/${provider.id}`, {
+      const res = await authFetch(adminSession, `${BASE_URL}/api/admin/providers/${provider.id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: 'Test Rename' }),
@@ -5065,7 +5065,7 @@ describe('Vox API Tests', () => {
       expect((await res.json()).name).toBe('Test Rename');
 
       // Restore
-      await authFetch(adminSession, `${BASE_URL}/api/providers/${provider.id}`, {
+      await authFetch(adminSession, `${BASE_URL}/api/admin/providers/${provider.id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: provider.name }),
