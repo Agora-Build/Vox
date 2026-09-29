@@ -341,7 +341,8 @@ export function registerApiV1Routes(app: Express): void {
       // Owner only — deliberately STRICTER than the console, where anyone may
       // run a public evalFlow (canRunEvalFlow) so people can try an easy test
       // run in the browser. The API is for automation on your own flows; it
-      // does not get that exception. Decision: #200.
+      // does not get that exception — nor the org-manager one: "owner" means
+      // the flow's ownerId, even for an org-owned flow. Decision: #200.
       if (evalFlow.ownerId !== user.id) {
         return res.status(403).json({ error: "Not authorized to run this evalFlow" });
       }

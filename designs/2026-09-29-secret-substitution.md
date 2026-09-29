@@ -62,12 +62,14 @@ to an agent that predates the stamp.
 
 | Where | Who may run an eval flow |
 |---|---|
-| Console (`POST /api/eval-flows/:id/run`) | its owner or org managers; **anyone, if the flow is public** |
-| API (`POST /api/v1/eval-flows/:id/run`) | **its owner only** |
+| Console (`POST /api/eval-flows/:evalFlowId/run`) | its owner or org managers; **anyone, if the flow is public** |
+| API (`POST /api/v1/eval-flows/:id/run`) | **its owner only** — not org managers either, even for an org-owned flow |
 
 The difference is deliberate (decision #200). The console exception exists so
 anyone can try Vox with an easy test run on a published flow; the API is for
-automation on your own flows and stays strict. This is also why the trust rule
+automation on your own flows and stays strict — "owner" literally means the
+flow's `ownerId`, so an org manager runs an org flow they don't own from the
+console, not the API. This is also why the trust rule
 below is needed: in the console, someone else can run your public flow with an
 eval set they wrote. Keep the two rules as they are — don't unify them.
 
