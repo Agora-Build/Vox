@@ -39,7 +39,7 @@ import yaml from 'js-yaml';
 import { injectStorageSession } from './session-inject';
 import { normalizeDialableNumber } from '../shared/steps';
 import { DialfClient, probeDialf, resolveDialfSocketPath, type DialfProbe } from './dialf-client';
-import { runPhoneJob, computePhoneRateEntries } from './phone-eval';
+import { runPhoneJob, finishPhoneMetrics } from './phone-eval';
 import {
   CHUNK_SIZE,
   type ParsedScenario,
@@ -2006,15 +2006,14 @@ class VoxEvalAgentDaemon {
       this.lastCallMetadata = out.callMetadata;
       this.jobOutputDirs.push(out.sessionDir); // artifact upload covers the session
 
-      // TSR + rates: attribute analyzed turns to eval-set samples via the DialF
-      // step timeline (both on the recording clock), then reuse the web path's
-      // rate computation. Soft-fail: latencies still report, rates stay NA.
+      // Transcripts + TSR/rates on the REPORTED metrics (#206: they used to be
+      // joined into a throwaway copy, so phone jobs showed no transcripts).
+      // Rates attribute analyzed turns to eval-set samples via the DialF step
+      // timeline, then reuse the web path's computation. Soft-fail: latencies
+      // still report, rates stay NA.
       try {
-        const metricsObj = JSON.parse(fs.readFileSync(path.join(out.sessionDir, 'analysis', 'metrics.json'), 'utf-8')) as Record<string, unknown>;
-        const turns = parseTurnsJson(fs.readFileSync(path.join(out.sessionDir, 'analysis', 'turns.json'), 'utf-8')) ?? [];
-        enrichMetricsWithTurns(metricsObj, turns);
-        const outcomes = JSON.parse(fs.readFileSync(path.join(out.sessionDir, 'dialf', 'steps.json'), 'utf-8')) as Array<Record<string, unknown>>;
-        const entries = computePhoneRateEntries(outcomes, metricsObj);
+        const rawData = (out.result as unknown as EvalResult).rawData as Record<string, unknown>;
+        const entries = finishPhoneMetrics(rawData, out.sessionDir);
         if (entries.length > 0) {
           this.attachRates(out.result as unknown as EvalResult, entries);
         } else {

@@ -379,13 +379,31 @@ export function stagePlayFiles(steps: DialfStep[], exchangeDir: string | null): 
 
 // ---- rate attribution (TSR on the phone path) -------------------------------
 
-import type { ChunkMetricsEntry } from './chunking';
+import { enrichMetricsWithTurns, parseTurnsJson, type ChunkMetricsEntry } from './chunking';
 
 const MARKER_PREFIX = 'trace case_sample_start';
 
 function turnLevelOf(metrics: Record<string, unknown>, family: string): Record<string, unknown>[] {
   const lat = (metrics[family] as Record<string, unknown> | undefined)?.latency as Record<string, unknown> | undefined;
   return Array.isArray(lat?.turn_level) ? (lat!.turn_level as Record<string, unknown>[]) : [];
+}
+
+/**
+ * Finish a phone job's analysed metrics, IN PLACE on the metrics that get
+ * reported (the result's rawData): join turns.json — STT text and turn
+ * boundaries, which the job page's Transcript column reads — exactly as the
+ * web path does, then compute the per-sample rate entries from that same
+ * object. The two are independent: a missing turns.json only means no
+ * transcripts; a missing steps.json throws (rates stay NA; the caller warns).
+ */
+export function finishPhoneMetrics(rawData: Record<string, unknown>, sessionDir: string): ChunkMetricsEntry[] {
+  const turnsFile = path.join(sessionDir, 'analysis', 'turns.json');
+  if (fs.existsSync(turnsFile)) {
+    const turns = parseTurnsJson(fs.readFileSync(turnsFile, 'utf-8'));
+    if (turns) enrichMetricsWithTurns(rawData, turns);
+  }
+  const outcomes = JSON.parse(fs.readFileSync(path.join(sessionDir, 'dialf', 'steps.json'), 'utf-8')) as Array<Record<string, unknown>>;
+  return computePhoneRateEntries(outcomes, rawData);
 }
 
 /**

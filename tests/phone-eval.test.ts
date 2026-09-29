@@ -4,7 +4,7 @@ import * as os from "os";
 import * as path from "path";
 import {
   compilePhoneConversation, splitPhoneScript, ensureTrailingHangup, sumStepTimeouts,
-  computePhoneRateEntries, toCallMetadata, buildSessionDir, runPhoneJob, stagePlayFiles,
+  computePhoneRateEntries, toCallMetadata, buildSessionDir, runPhoneJob, stagePlayFiles, finishPhoneMetrics,
 } from "../vox_eval_agentd/phone-eval";
 
 const corpus = (id: string) => (id.startsWith("known") ? `/abs/corpus/${id}.wav` : null);
@@ -510,6 +510,52 @@ describe("computePhoneRateEntries → computePerCaseAndRates (TSR on the phone p
     const noTs = outcomes.map(({ t_start_ms, ...rest }) => rest);
     expect(computePhoneRateEntries(noTs as any, enriched as any)).toEqual([]);
     expect(computePhoneRateEntries([mk(0, "audio.play")] as any, enriched as any)).toEqual([]);
+  });
+});
+
+// #206: phone jobs reported no transcripts — turns.json was joined into a
+// throwaway copy used only for rates, never into the reported metrics.
+describe("finishPhoneMetrics — transcripts on the reported phone metrics", () => {
+  const session = (files: { turns?: unknown; steps?: unknown }) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "phone-finish-"));
+    fs.mkdirSync(path.join(dir, "analysis"));
+    fs.mkdirSync(path.join(dir, "dialf"));
+    if (files.turns !== undefined) fs.writeFileSync(path.join(dir, "analysis", "turns.json"), JSON.stringify(files.turns));
+    if (files.steps !== undefined) fs.writeFileSync(path.join(dir, "dialf", "steps.json"), JSON.stringify(files.steps));
+    return dir;
+  };
+  const metrics = () => ({ response_metrics: { latency: { turn_level: [{ turn_index: 0, latency_ms: 900 }] } } }) as Record<string, any>;
+  const turns = [{
+    index: 0, start: 1.5, end: 6.0,
+    user_segments: [{ start: 1.5, end: 2.5, text: "what time is it" }],
+    agent_segments: [{ start: 3.4, end: 5.0, text: "it is three" }, { start: 5.1, end: 6.0, text: "o'clock" }],
+  }];
+
+  it("joins STT text and turn boundaries into the object that is reported", () => {
+    const dir = session({ turns, steps: [] });
+    const rawData = metrics();
+    finishPhoneMetrics(rawData, dir);
+    expect(rawData.response_metrics.latency.turn_level[0]).toMatchObject({
+      turn_index: 0, latency_ms: 900, turn_start: 1.5, turn_end: 6.0,
+      user_transcript: "what time is it", agent_transcript: "it is three o'clock",
+    });
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("transcripts survive a missing steps.json (rates then fail on their own)", () => {
+    const dir = session({ turns });
+    const rawData = metrics();
+    expect(() => finishPhoneMetrics(rawData, dir)).toThrow();
+    expect(rawData.response_metrics.latency.turn_level[0].agent_transcript).toBe("it is three o'clock");
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("no turns.json: no transcripts, and rates are still computed", () => {
+    const dir = session({ steps: [] });
+    const rawData = metrics();
+    expect(finishPhoneMetrics(rawData, dir)).toEqual([]);
+    expect(rawData.response_metrics.latency.turn_level[0].user_transcript).toBeUndefined();
+    fs.rmSync(dir, { recursive: true, force: true });
   });
 });
 
