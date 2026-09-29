@@ -556,7 +556,12 @@ describe('Secrets - Agent Endpoint', () => {
       const providerId = providers[0]?.id;
       const wfRes = await authFetch(adminSession, `${BASE_URL}/api/eval-flows`, {
         method: 'POST',
-        body: JSON.stringify({ name: `Secrets Agent Test WF ${Date.now()}`, providerId, config: { framework: 'aeval' } }),
+        // The flow's Setup uses AGENT_TEST_SECRET: the endpoint releases only
+        // what the job fills (#203), so a flow that used nothing would get {}.
+        body: JSON.stringify({
+          name: `Secrets Agent Test WF ${Date.now()}`, providerId,
+          config: { framework: 'aeval', stepsPrefix: '- type: control.log\n  message: ${secrets.AGENT_TEST_SECRET}\n' },
+        }),
       });
       if (wfRes.ok) {
         evalFlowId = (await wfRes.json()).id;
@@ -650,6 +655,8 @@ describe('Secrets - Agent Endpoint', () => {
     const secrets = await res.json();
     expect(typeof secrets).toBe('object');
     expect(secrets.AGENT_TEST_SECRET).toBe('agent-test-value');
+    // Least privilege (#203): the owner's other secrets are not released.
+    expect(Object.keys(secrets)).toEqual(['AGENT_TEST_SECRET']);
   });
 
   it('should reject secrets for completed job (status guard)', async () => {

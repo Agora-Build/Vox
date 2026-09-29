@@ -10,6 +10,7 @@
 import { createHash } from "crypto";
 import { collectSecretRefs, isAuthFieldName, untrustedEvalSetSecretsMessage } from "@shared/secrets";
 import yaml from "js-yaml";
+import { fillJobPlaceholders, jobConfigVars, type JobParts } from "@shared/placeholders";
 import { storage, encryptValue, decryptValue, type SessionScope } from "./storage";
 import { getOrganizations, type OrgSecretRow } from "./organizations";
 import { isOwnerOrOrgManager } from "./permissions";
@@ -453,6 +454,34 @@ export function untrustedEvalSetConfigError(evalFlowConfig: unknown, evalSetConf
       `reads, but it may not: only the eval flow's owner may configure its Setup. Define them in the eval flow instead.`;
   }
   return null;
+}
+
+/**
+ * The secrets a job will actually fill (#203) — what the job-secrets endpoint
+ * releases, instead of every runtime secret of the owner. Computed from the
+ * job's FROZEN config with the agent's own filling function
+ * (shared/placeholders.ts), so the two agree by construction: Setup/Teardown,
+ * the eval set's scenario only when the job is stamped evalSetSecrets: true,
+ * secrets reached through a ${config.*} value those parts read, and nothing
+ * from restful.request steps (Core fills those itself). Also enforces the
+ * trust rule here: an agent that predates the stamp can't fill what it never
+ * receives. A config that doesn't parse releases nothing — the agent fails
+ * that job on the same parse anyway.
+ */
+export function secretsJobFills(
+  jobConfig: unknown,
+  available: Record<string, string>,
+): Record<string, string> {
+  const cfg = (jobConfig ?? {}) as Record<string, unknown>;
+  const parse = (t: unknown) => (typeof t === "string" && t.trim() !== "" ? yaml.load(t) : undefined);
+  let parts: JobParts;
+  try {
+    parts = { scenario: parse(cfg.scenario), stepsPrefix: parse(cfg.stepsPrefix), stepsSuffix: parse(cfg.stepsSuffix) };
+  } catch {
+    return {};
+  }
+  const { used } = fillJobPlaceholders(parts, jobConfigVars(cfg), available, { evalSetSecrets: cfg.evalSetSecrets === true });
+  return Object.fromEntries(used.map((n) => [n, available[n]]));
 }
 
 /**

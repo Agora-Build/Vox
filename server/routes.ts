@@ -13,7 +13,7 @@ import { validateTierChoice, resolveTargetedDispatch, filterDispatchableAgents }
 import { getMarketplace } from "./marketplace";
 import { isAlreadyMemberError, getOrganizations, requireOrganizations, type Membership, type OrgSecretRow } from "./organizations";
 import { fingerprintCredential, formatLastFailedHttpStatus, parseLastFailedHttpStatus } from "@shared/credentials";
-import { sessionScopeForEvalFlow, areLoginSecretsAttested, ensureSession, stampOwnerSession, credentialKeyFor, SESSION_FRESH_MARGIN_SECONDS, classifyReferencedSecrets, findBrokeredMisuse, resolveBrokerType, type SessionNeed, detectSessionNeed, resolvableSecretSources, secretGate, evalSetMayUseSecrets, untrustedEvalSetConfigError } from "./auth-session";
+import { sessionScopeForEvalFlow, areLoginSecretsAttested, ensureSession, stampOwnerSession, credentialKeyFor, SESSION_FRESH_MARGIN_SECONDS, classifyReferencedSecrets, findBrokeredMisuse, resolveBrokerType, type SessionNeed, detectSessionNeed, resolvableSecretSources, secretGate, evalSetMayUseSecrets, untrustedEvalSetConfigError, secretsJobFills } from "./auth-session";
 import { validateRegisterPayload, cacheBrokerMintSecret, hasBrokerMintSecret, routeToBroker, executeViaBroker, KNOWN_BROKER_TYPES } from "./broker-registry";
 import { resolveRestfulTemplate } from "./restful-exec";
 import { validateRestfulTrigger, parseStepsScript, stepsContainCallDial, unsupportedFrameworkError } from "./storage";
@@ -4366,7 +4366,11 @@ export async function registerRoutes(
         console.log(`[Secrets] Job ${jobId}: personal evalFlow → ${userSecrets.length} personal secret(s)`);
       }
 
-      res.json(decrypted);
+      // Least privilege (#203): release only what this job will fill — computed
+      // from its frozen config by the same function the agent fills with.
+      const released = secretsJobFills(auth.job.config, decrypted);
+      console.log(`[Secrets] Job ${jobId}: releasing ${Object.keys(released).length} of ${Object.keys(decrypted).length} secret(s)`);
+      res.json(released);
     } catch (error) {
       console.error("Error fetching job secrets:", error);
       if (error instanceof Error && error.message.includes("CREDENTIAL_ENCRYPTION_KEY")) {

@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, beforeAll, afterAll } from "vitest";
 import { BASE_NA } from "./helpers/regions";
 import { setOrganizations, resetOrganizations, type OrganizationsProvider, type Membership } from "../server/organizations";
-import { evalSetMayUseSecrets, resolvableSecretSources, secretGate, untrustedEvalSetConfigError } from "../server/auth-session";
+import { evalSetMayUseSecrets, resolvableSecretSources, secretGate, untrustedEvalSetConfigError, secretsJobFills } from "../server/auth-session";
 import { mergeEvalConfig } from "../server/storage";
 
 // "Only when trusted" (designs/2026-09-29-secret-substitution.md): an eval set
@@ -157,6 +157,37 @@ describe("untrustedEvalSetConfigError — the whole eval-set config, not just it
       .toMatch(/may not use this eval flow's secrets/);
     // The owner's own eval set may mention it (in a key the agent never fills).
     expect((await secretGate({ ...personalFlow, config: {} }, { ...set(1, null), config: cfg })).error).toBeNull();
+  });
+});
+
+// #203: the job-secrets endpoint releases only what the job will fill.
+describe("secretsJobFills — least privilege for the job-secrets endpoint", () => {
+  const owner = { PHONE: "+15551234567", API_KEY: "sk-live-1234", UNUSED_1: "aaaa", UNUSED_2: "bbbb" };
+
+  it("a phone job gets only the call.dial number, not the owner's other secrets", () => {
+    const cfg = { stepsPrefix: "- type: call.dial\n  number: ${secrets.PHONE}\n- type: call.wait_answered\n", evalSetSecrets: false };
+    expect(secretsJobFills(cfg, owner)).toEqual({ PHONE: "+15551234567" });
+  });
+
+  it("the eval set's scenario counts only when the job is stamped trusted", () => {
+    const scenario = "steps:\n  - type: log\n    text: ${secrets.API_KEY}\n";
+    expect(secretsJobFills({ scenario, evalSetSecrets: false }, owner)).toEqual({});
+    expect(secretsJobFills({ scenario }, owner)).toEqual({}); // unstamped (older job) = untrusted
+    expect(secretsJobFills({ scenario, evalSetSecrets: true }, owner)).toEqual({ API_KEY: "sk-live-1234" });
+  });
+
+  it("includes a secret reached through a ${config.*} value the Setup reads", () => {
+    const cfg = { url: "https://api.example/?k=${secrets.API_KEY}", stepsPrefix: "- type: x\n  url: ${config.url}\n" };
+    expect(secretsJobFills(cfg, owner)).toEqual({ API_KEY: "sk-live-1234" });
+  });
+
+  it("releases nothing for restful.request steps — Core fills those itself", () => {
+    const cfg = { stepsPrefix: "- type: restful.request\n  url: https://x.example/${secrets.API_KEY}\n- type: call.dial\n  number: ${secrets.PHONE}\n" };
+    expect(secretsJobFills(cfg, owner)).toEqual({ PHONE: "+15551234567" });
+  });
+
+  it("a config that doesn't parse releases nothing", () => {
+    expect(secretsJobFills({ stepsPrefix: "- type: [unclosed\n  number: ${secrets.PHONE}" }, owner)).toEqual({});
   });
 });
 

@@ -203,7 +203,10 @@ describe('Secrets class — job-secrets withhold', () => {
       body: JSON.stringify({
         name: `Secrets Class Withhold WF ${stamp}`,
         providerId,
-        config: { framework: 'aeval' },
+        // Uses the runtime secret: the endpoint releases only what the job
+        // fills (#203). (A brokered secret can't be referenced outside a
+        // login step — the run route refuses it — so it is not referenced.)
+        config: { framework: 'aeval', stepsPrefix: `- type: control.log\n  message: \${secrets.${runtimeName}}\n` },
       }),
     });
     if (wfRes.ok) {
