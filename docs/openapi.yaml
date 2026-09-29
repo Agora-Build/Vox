@@ -807,6 +807,7 @@ paths:
       summary: Run eval flow
       description: |
         Creates an eval job to run the eval flow. Only the eval flow's owner may run it through the API.
+        (Deliberately stricter than the console, which lets anyone run a public eval flow for an easy test run.)
 
         Secrets: the eval flow's Setup/Teardown steps get the eval flow's secrets
         (its organization's for an org eval flow, otherwise its owner's). The eval

@@ -338,7 +338,10 @@ export function registerApiV1Routes(app: Express): void {
         return res.status(404).json({ error: "Eval Flow not found" });
       }
 
-      // Check access: owner only can run
+      // Owner only — deliberately STRICTER than the console, where anyone may
+      // run a public evalFlow (canRunEvalFlow) so people can try an easy test
+      // run in the browser. The API is for automation on your own flows; it
+      // does not get that exception. Decision: #200.
       if (evalFlow.ownerId !== user.id) {
         return res.status(403).json({ error: "Not authorized to run this evalFlow" });
       }

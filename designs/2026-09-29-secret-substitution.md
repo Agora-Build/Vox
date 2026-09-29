@@ -58,6 +58,19 @@ server and agent agree by construction. That also enforces the trust rule on
 the server: an eval set that isn't trusted gets nothing released for it, even
 to an agent that predates the stamp.
 
+## Who may run a job
+
+| Where | Who may run an eval flow |
+|---|---|
+| Console (`POST /api/eval-flows/:id/run`) | its owner or org managers; **anyone, if the flow is public** |
+| API (`POST /api/v1/eval-flows/:id/run`) | **its owner only** |
+
+The difference is deliberate (decision #200). The console exception exists so
+anyone can try Vox with an easy test run on a published flow; the API is for
+automation on your own flows and stays strict. This is also why the trust rule
+below is needed: in the console, someone else can run your public flow with an
+eval set they wrote. Keep the two rules as they are — don't unify them.
+
 ## The trust rule
 
 **An eval set gets the secrets only if its author could already have put the

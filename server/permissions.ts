@@ -101,8 +101,11 @@ export function canEditResource(user: AuthUser, resource: OrgResource): boolean 
   return user.isAdmin || isOwnerOrOrgManager(user, resource);
 }
 
-// Run-once rights: a public evalFlow can be run by anyone (a one-off on the
-// owner's key, which they opted into by publishing). A PRIVATE evalFlow can be
+// Run-once rights IN THE CONSOLE: a public evalFlow can be run by anyone (a
+// one-off on the owner's key, which they opted into by publishing). This is a
+// deliberate console-only exception so people can try Vox with an easy test
+// run; the public API (/api/v1/eval-flows/:id/run) is stricter — owner only —
+// and does not use this function. Decision: #200. A PRIVATE evalFlow can be
 // run only by its owner or, for an org-owned evalFlow, its org managers — no
 // system-admin and no principal/fellow bypass. This is safe because secrets
 // follow ownership: a personal evalFlow spends the owner's personal key (so only
