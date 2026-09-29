@@ -1931,9 +1931,9 @@ class VoxEvalAgentDaemon {
     const evalSetSecrets = config.evalSetSecrets === true;
     const secrets = await this.fetchSecrets(job.id);
     const filled = fillJobPlaceholders(parsed, jobConfigVars(config), secrets, { evalSetSecrets });
-    // Redact only what this job used: the server hands over every runtime
-    // secret of the owner, and scrubbing unrelated short values would mangle
-    // artifacts. Names only in the warning — never a value.
+    // Redact exactly what this job filled. The server releases only that
+    // (#203, secretsJobFills); an older server sends every runtime secret of
+    // the owner, and scrubbing unrelated values would mangle artifacts.
     const used = Object.fromEntries(filled.used.map((n) => [n, secrets[n]]));
     // Fail closed before anything runs: a value too short to redact would
     // otherwise reach logs, errors and artifacts.
