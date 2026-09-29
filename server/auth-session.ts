@@ -12,6 +12,7 @@ import { collectSecretRefs, isAuthFieldName } from "@shared/secrets";
 import yaml from "js-yaml";
 import { storage, encryptValue, decryptValue, type SessionScope } from "./storage";
 import { getOrganizations, type OrgSecretRow } from "./organizations";
+import { isOwnerOrOrgManager } from "./permissions";
 import { brokerAvailable, routeToBroker, mintViaBroker, isKnownBrokerType, mintTimeoutSeconds } from "./broker-registry";
 
 export interface PlatformSetupInfo {
@@ -331,13 +332,45 @@ export async function stampOwnerSession(
   return { kind: "ok", snapshotInjection: null };
 }
 
+type SecretOwner = { ownerId: number; organizationId: number | null };
+type EvalFlowLike = SecretOwner & { config: unknown; createdBy?: number | null };
+type EvalSetLike = SecretOwner & { config: unknown };
+
 /**
- * The config fields whose ${secrets.X} placeholders the daemon actually feeds
- * to aeval, per vox-agentd executeJob: scenario, stepsPrefix, stepsSuffix.
- * Gating on anything wider rejects runs that work today — and, worse, can
- * silently disable a recurring schedule on its next tick.
+ * May this eval set use the eval flow's secrets? (design
+ * 2026-09-29-secret-substitution.md, "only when trusted"). The eval set is the
+ * conversation in the middle of the job and can be anyone's — anyone may run a
+ * public eval flow with an eval set they wrote. So it is filled only when its
+ * author could already have put the same references into the eval flow's
+ * Setup: the same secret owner (the org when there is one — org eval flows use
+ * org secrets only — otherwise the user), AND its owner can edit the eval flow
+ * now. The second part matters for orgs: any member may create an org-owned
+ * eval set, but only the flow's owner and org managers may edit the flow.
  *
- * NOT exhaustive: executeJob expands ${config.X} BEFORE ${secrets.X}, so a
+ * A failing organizations provider throws (like the rest of the secret gate)
+ * rather than answering "untrusted": a schedule tick must skip, not disable.
+ */
+export async function evalSetMayUseSecrets(
+  evalFlow: SecretOwner & { createdBy?: number | null },
+  evalSet: SecretOwner | null | undefined,
+): Promise<boolean> {
+  if (!evalSet) return false;
+  if (evalFlow.organizationId == null) {
+    return evalSet.organizationId == null && evalSet.ownerId === evalFlow.ownerId;
+  }
+  if (evalSet.organizationId !== evalFlow.organizationId) return false;
+  const membership = (await getOrganizations()?.getMembership(evalSet.ownerId)) ?? null;
+  return isOwnerOrOrgManager({ id: evalSet.ownerId, isAdmin: false, membership }, evalFlow);
+}
+
+/**
+ * The config fields whose ${secrets.X} placeholders the daemon actually fills
+ * (vox_eval_agentd/placeholders.ts): the eval flow's stepsPrefix/stepsSuffix,
+ * and the eval set's scenario only when it may use the secrets. Gating on
+ * anything wider rejects runs that work today — and, worse, can silently
+ * disable a recurring schedule on its next tick.
+ *
+ * NOT exhaustive: the daemon expands ${config.X} BEFORE ${secrets.X}, so a
  * secret reached only through config indirection (config.url = "${secrets.K}",
  * used as ${config.url}) is invisible here. That direction is fail-safe — the
  * run is accepted and the daemon's own scan reports it clearly — whereas
@@ -346,13 +379,49 @@ export async function stampOwnerSession(
  * Picked per config rather than via mergeEvalConfig, which throws on
  * conflicting keys and would turn a clean 400 into a 500.
  */
-export function resolvableSecretSources(configs: unknown[]): unknown[] {
-  const cfgs = configs.map((c) => (c ?? {}) as Record<string, unknown>);
-  const out: unknown[] = [];
-  for (const c of cfgs) {
-    out.push(c.scenario, c.stepsPrefix, c.stepsSuffix);
+export function resolvableSecretSources(
+  evalFlowConfig: unknown,
+  evalSetConfig: unknown,
+  evalSetSecrets: boolean,
+): unknown[] {
+  const pick = (c: unknown) => {
+    const cfg = (c ?? {}) as Record<string, unknown>;
+    return [cfg.scenario, cfg.stepsPrefix, cfg.stepsSuffix];
+  };
+  return evalSetSecrets ? [...pick(evalFlowConfig), ...pick(evalSetConfig)] : pick(evalFlowConfig);
+}
+
+// Deliberately avoids "you have not configured": secrets resolve in the EVAL_FLOW
+// OWNER's scope, so someone running another user's public evalFlow cannot fix
+// this themselves.
+export const MISSING_SECRETS_MSG = (names: string[]) =>
+  `This evalFlow references secret(s) ${names.join(", ")} that are not configured for its owner. If the evalFlow is yours, create them under Console → Secrets (names must match exactly); otherwise ask its owner to.`;
+
+export const UNTRUSTED_EVAL_SET_SECRETS_MSG = (names: string[]) =>
+  `The eval set uses secret(s) ${names.join(", ")}, but it may not use this eval flow's secrets: an eval set gets them only when it belongs to the eval flow's owner (or, for an organization's eval flow, to that organization and was created by someone who can edit the eval flow).`;
+
+/**
+ * The secret gate every job-creating path runs — console run, API run,
+ * schedule create/enable/run-now, and the scheduler tick. Returns the
+ * `evalSetSecrets` stamp for mergeEvalConfig and the error to report (or
+ * null): an untrusted eval set referencing secrets first — the agent would
+ * refuse it anyway — then secrets missing from the owner's scope.
+ */
+export async function secretGate(
+  evalFlow: EvalFlowLike,
+  evalSet: EvalSetLike | null | undefined,
+): Promise<{ evalSetSecrets: boolean; error: string | null }> {
+  const evalSetSecrets = await evalSetMayUseSecrets(evalFlow, evalSet);
+  if (!evalSetSecrets && evalSet) {
+    const cfg = (evalSet.config ?? {}) as Record<string, unknown>;
+    const untrusted = Array.from(collectSecretRefs([cfg.scenario, cfg.stepsPrefix, cfg.stepsSuffix])).sort();
+    if (untrusted.length > 0) return { evalSetSecrets, error: UNTRUSTED_EVAL_SET_SECRETS_MSG(untrusted) };
   }
-  return out;
+  const missing = await missingSecretNames(
+    sessionScopeForEvalFlow(evalFlow),
+    resolvableSecretSources(evalFlow.config, evalSet?.config, evalSetSecrets),
+  );
+  return { evalSetSecrets, error: missing.length > 0 ? MISSING_SECRETS_MSG(missing) : null };
 }
 
 /**

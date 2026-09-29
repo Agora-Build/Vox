@@ -3075,7 +3075,7 @@ describe('Vox API Tests', () => {
       expect(jobConfig.scenario).toBe('steps:\n  - action: speak\n    file: test.mp3');
     });
 
-    it('stamps only the framework when both evalFlow and eval set have no config', async () => {
+    it('stamps only the framework and evalSetSecrets when both evalFlow and eval set have no config', async () => {
       // Create an evalFlow with no config
       const wfRes = await authFetch(adminSession, `${BASE_URL}/api/eval-flows`, {
         method: 'POST',
@@ -3109,8 +3109,9 @@ describe('Vox API Tests', () => {
       expect(response.ok).toBe(true);
       const result = await response.json();
       // framework is stamped even on an otherwise-empty merge, so a job never
-      // inherits the claiming agent's EVAL_FRAMEWORK default.
-      expect(result.job.config).toEqual({ framework: 'aeval' });
+      // inherits the claiming agent's EVAL_FRAMEWORK default. evalSetSecrets is
+      // always stamped too: the same user owns both, so the eval set is trusted.
+      expect(result.job.config).toEqual({ framework: 'aeval', evalSetSecrets: true });
     });
   });
 

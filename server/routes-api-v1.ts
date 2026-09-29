@@ -10,7 +10,7 @@
 import { Express, Request, Response } from "express";
 import { storage, mergeEvalConfig, buildJobSnapshot, validateEvalFlowConfig, validateEvalSetConfig, unsupportedFrameworkError } from "./storage";
 import { requireAuthOrApiKey, getCurrentUserOrApiKeyUser } from "./auth";
-import { parsePlatformSetup, sessionScopeForEvalFlow, evaluateSessionRequirement, getBrokeredSecretNames, ensureSession, missingSecretNames, resolvableSecretSources } from "./auth-session";
+import { parsePlatformSetup, sessionScopeForEvalFlow, evaluateSessionRequirement, getBrokeredSecretNames, ensureSession, secretGate } from "./auth-session";
 import { regionSiteSequence } from "@shared/regions";
 import { hasOrg, sameOrg, isOwnerOrOrgManager, canAccessResource, canViewJob, canCancelJob, parseJobScope, jobListFilter } from "./permissions";
 import { getOrganizations } from "./organizations";
@@ -421,21 +421,18 @@ export function registerApiV1Routes(app: Express): void {
         if (frameworkError) return res.status(400).json({ error: frameworkError });
       }
 
-      // Guaranteed-failure gate, same as the console run path: an unconfigured
-      // secret means the daemon ships an unresolved placeholder and aeval aborts
-      // with an opaque exit. Reject with the exact names instead.
-      const missingSecrets = await missingSecretNames(scope, resolvableSecretSources([evalFlow.config, evalSet.config]));
-      if (missingSecrets.length > 0) {
-        return res.status(400).json({
-          error: `This evalFlow references secret(s) ${missingSecrets.join(", ")} that are not configured. Create them (names must match exactly), then run again.`,
-        });
-      }
+      // The secret gate every job-creating path shares (auth-session.ts): an
+      // untrusted eval set may not use this eval flow's secrets, and an
+      // unconfigured secret means a job that can only fail. Same messages as
+      // the console.
+      const gate = await secretGate(evalFlow, evalSet);
+      if (gate.error) return res.status(400).json({ error: gate.error });
 
       // Create eval job (merge configs + capture the immutable snapshot, same as the
       // console run path — otherwise these jobs lose provenance/attribution/tiering).
       const provider = await storage.getProvider(evalFlow.providerId);
 
-      const jobConfig = mergeEvalConfig(evalFlow.config, evalSet.config);
+      const jobConfig = mergeEvalConfig(evalFlow.config, evalSet.config, { evalSetSecrets: gate.evalSetSecrets });
       delete (jobConfig as Record<string, unknown>).sessionInjection; // server-stamped only
       const baseSnapshot = buildJobSnapshot(evalFlow, evalSet, provider, user.plan);
       const snapshot = sessionNeed

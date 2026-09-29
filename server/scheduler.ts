@@ -10,7 +10,7 @@ import { canScheduleEvalFlow, sessionPoolViolation } from "./permissions";
 import { parseNextCronRun } from "./cron";
 import { getMarketplace } from "./marketplace";
 import { getOrganizations, type Membership } from "./organizations";
-import { stampOwnerSession, detectSessionNeed, missingSecretNames, sessionScopeForEvalFlow, resolvableSecretSources } from "./auth-session";
+import { stampOwnerSession, detectSessionNeed, secretGate } from "./auth-session";
 import { log } from "./log";
 
 // Global hard cap on how long a single eval job may stay "running" before the
@@ -248,7 +248,21 @@ export async function processScheduledJobs() {
         // /session derives from it, not live data. A split-class credential pair
         // can never run safely (it would leak the runtime-class secret) — disable
         // the schedule so it stops firing failing/unsafe jobs every tick.
-        const jobConfig = mergeEvalConfig(evalFlow.config, evalSet?.config);
+        // The shared secret gate (auth-session.ts). Its error disables the
+        // schedule: a secret the evalFlow references can be deleted AFTER the
+        // schedule was created, or the eval set may no longer be trusted
+        // (e.g. its creator lost org-manager rights), and every tick would
+        // then emit a job that can only fail. This keys on whether the secret
+        // ROW exists, not on whether it reaches the agent — so a brokered
+        // login secret that exists is fine (Core mints from it). A failing
+        // organizations provider throws instead — skipped, never disabled.
+        const gate = await secretGate(evalFlow, evalSet);
+        if (gate.error) {
+          log(`Schedule "${schedule.name}": ${gate.error} — disabling`, "scheduler");
+          await storage.updateEvalSchedule(schedule.id, { isEnabled: false });
+          continue;
+        }
+        const jobConfig = mergeEvalConfig(evalFlow.config, evalSet?.config, { evalSetSecrets: gate.evalSetSecrets });
         // The evalFlow's secrets are mutable after schedule creation: a
         // public/team schedule whose evalFlow LATER gained a login-class
         // secret would emit an unclaimable session job every tick (the claim
@@ -264,22 +278,6 @@ export async function processScheduledJobs() {
           });
           if (violation) {
             log(`Schedule "${schedule.name}" would dispatch into a disallowed pool (${violation}) — disabling`, "scheduler");
-            await storage.updateEvalSchedule(schedule.id, { isEnabled: false });
-            continue;
-          }
-        }
-        // A secret the evalFlow references can be deleted AFTER the schedule
-        // was created; every tick would then emit a job that can only fail on
-        // an unresolved ${secrets.X}. Mirror the misconfigured/pool handling:
-        // disable the schedule with a named reason instead of queueing doomed
-        // work forever. This keys on whether the secret ROW exists, not on
-        // whether it reaches the agent — so a brokered login secret that
-        // exists is fine (Core mints from it), and one that doesn't is
-        // correctly flagged, since the mint would fail too.
-        {
-          const missing = await missingSecretNames(sessionScopeForEvalFlow(evalFlow), resolvableSecretSources([evalFlow.config, evalSet?.config]));
-          if (missing.length > 0) {
-            log(`Schedule "${schedule.name}" references unconfigured secret(s) ${missing.join(", ")} — disabling`, "scheduler");
             await storage.updateEvalSchedule(schedule.id, { isEnabled: false });
             continue;
           }

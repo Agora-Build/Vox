@@ -805,7 +805,16 @@ paths:
       tags:
         - Eval Flows
       summary: Run eval flow
-      description: Creates an eval job to run the eval flow
+      description: |
+        Creates an eval job to run the eval flow. Only the eval flow's owner may run it through the API.
+
+        Secrets: the eval flow's Setup/Teardown steps get the eval flow's secrets
+        (its organization's for an org eval flow, otherwise its owner's). The eval
+        set's scenario gets them only when the eval set belongs to the same owner
+        (or, for an org eval flow, to that organization and was created by someone
+        who can edit the eval flow). An eval set that references `${secrets.*}`
+        without that is refused with 400, as is a reference to a secret that is not
+        configured.
       security:
         - BearerAuth: []
       parameters:
@@ -834,6 +843,12 @@ paths:
                         $ref: '#/components/schemas/EvalJob'
                       message:
                         type: string
+        '400':
+          description: Invalid request, or the secret check failed (an untrusted eval set references a secret, or a referenced secret is not configured)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '401':
           description: Authentication required
           content:
