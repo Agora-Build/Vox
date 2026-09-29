@@ -45,11 +45,17 @@ type SaveDecision =
   | { action: "mismatch"; yamlPlatform: string; providerName: string };
 
 // Decide whether an evalFlow save can proceed, must switch to Custom, or should warn.
+// Web only: a web evalFlow's Setup logs in to one platform (platform.setup →
+// platform_id), so the provider must match it. A phone evalFlow's Setup dials a
+// number (call.dial) and names no platform — the agent behind that number can
+// be any provider, so the one the user picked stands.
 function evaluateSave(
   stepsPrefix: string,
   providerId: string,
   providers: Provider[] | undefined,
+  transport: string,
 ): SaveDecision {
+  if (transport === "phone") return { action: "ok" };
   const yamlPlatform = extractPlatformId(stepsPrefix);
   const selected = providers?.find((p) => p.id === providerId);
   const custom = providers?.find((p) => p.name === "Custom" || (!p.platformId && p.name.toLowerCase() === "custom"));
@@ -254,7 +260,7 @@ export default function ConsoleEvalFlows() {
 
   // Run the provider/platform_id guard, then create. Warns on mismatch, auto-switches to Custom.
   const handleCreateClick = () => {
-    const decision = evaluateSave(stepsPrefix, providerId, providers);
+    const decision = evaluateSave(stepsPrefix, providerId, providers, transport);
     if (decision.action === "mismatch") {
       setPendingMismatch({ kind: "create", yamlPlatform: decision.yamlPlatform, providerName: decision.providerName });
       return;
@@ -269,7 +275,7 @@ export default function ConsoleEvalFlows() {
   };
 
   const handleEditClick = () => {
-    const decision = evaluateSave(editStepsPrefix, editProviderId, providers);
+    const decision = evaluateSave(editStepsPrefix, editProviderId, providers, editTransport);
     if (decision.action === "mismatch") {
       setPendingMismatch({ kind: "edit", yamlPlatform: decision.yamlPlatform, providerName: decision.providerName });
       return;
