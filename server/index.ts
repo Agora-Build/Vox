@@ -22,6 +22,13 @@ const { Pool } = pkg;
 
 const app = express();
 const httpServer = createServer(app);
+// Keep idle connections open longer than clients and proxies reuse them.
+// Node's 5 s default closes a socket just as a client sends its next request
+// on it — "socket hang up" / ECONNRESET (seen in the E2E suite, #201; the same
+// race applies behind a reverse proxy such as Coolify's). headersTimeout must
+// exceed keepAliveTimeout.
+httpServer.keepAliveTimeout = 65_000;
+httpServer.headersTimeout = 66_000;
 
 // Security headers (CSP disabled — Vite injects inline scripts, shadcn/ui uses inline styles)
 app.use(helmet({ contentSecurityPolicy: false }));
