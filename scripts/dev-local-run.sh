@@ -182,8 +182,20 @@ stop_postgres() {
 # ==================== Database Operations ====================
 
 push_schema() {
-    log_info "Pushing database schema..."
     cd "$PROJECT_DIR"
+    # A database the version-based runner manages (it has _schema_version —
+    # created by docker mode or the test gate) is brought up to date the way
+    # production is, never with db:push: push drops what migrations create but
+    # shared/schema.ts doesn't declare (expression and partial indexes), and it
+    # stops at a prompt to drop _schema_version itself, which hangs a
+    # non-interactive start (#199).
+    if docker exec "$DB_CONTAINER" psql -U vox -d vox -Atc "SELECT to_regclass('public._schema_version')" 2>/dev/null | grep -q _schema_version; then
+        log_info "Database is migration-managed — applying pending migrations..."
+        DATABASE_URL="$DB_URL" npx tsx server/migrate.ts
+        log_success "Database migrated"
+        return
+    fi
+    log_info "Pushing database schema..."
     DATABASE_URL="$DB_URL" npm run db:push
     log_success "Database schema pushed"
 }

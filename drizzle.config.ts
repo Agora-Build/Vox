@@ -11,11 +11,10 @@ export default defineConfig({
   dbCredentials: {
     url: process.env.DATABASE_URL,
   },
-  // _schema_version and _plugin_schema_versions are runtime-owned bookkeeping
-  // (created by server/migrate.ts and server/plugins/migrate.ts, deliberately
-  // absent from shared/schema.ts). Without this filter `db:push` sees them as
-  // unknown tables and offers to DROP them — which hangs a non-interactive
-  // `dev-local-run.sh start` on the prompt, or, if accepted, makes the next
-  // runner start re-apply migrations that already ran and crash.
-  tablesFilter: ["!_schema_version", "!_plugin_schema_versions"],
+  // _plugin_schema_versions is runtime-owned bookkeeping (created by
+  // server/plugins/migrate.ts, deliberately absent from shared/schema.ts).
+  // Without this filter `db:push` sees it as an unknown table and DROPS it,
+  // which makes the next startup re-run every plugin migration into its
+  // still-populated plugin schema and crash with "relation already exists".
+  tablesFilter: ["!_plugin_schema_versions"],
 });
