@@ -90,6 +90,24 @@ export function isAuthFieldName(name: string): boolean {
 }
 
 /**
+ * Minimum length of a secret value. A shorter value cannot be kept out of
+ * logs, errors and artifacts — redacting a 1–3 character string everywhere
+ * would corrupt unrelated text — so Vox refuses to store one (UI and server),
+ * and the eval agent refuses a job that uses one.
+ */
+export const MIN_SECRET_VALUE_LENGTH = 4;
+
+/** Why a secret value can't be stored, or null. Shared by the UI and the server. */
+export function secretValueError(value: unknown): string | null {
+  if (typeof value !== "string" || value.length === 0) return "Secret value is required";
+  if (value.length < MIN_SECRET_VALUE_LENGTH) {
+    return `Secret value must be at least ${MIN_SECRET_VALUE_LENGTH} characters — shorter values can't be kept out of logs and artifacts`;
+  }
+  if (value.length > 10000) return "Secret value too large (max 10KB)";
+  return null;
+}
+
+/**
  * Resolve ${secrets.KEY} placeholders in a string.
  * Unresolved placeholders are left as-is.
  */

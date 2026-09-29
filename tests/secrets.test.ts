@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import crypto from 'crypto';
-import { SECRET_NAME_PATTERN } from '@shared/secrets';
+import { SECRET_NAME_PATTERN, secretValueError, MIN_SECRET_VALUE_LENGTH } from '@shared/secrets';
 import yaml from 'js-yaml';
 import { fillJobPlaceholders, toYaml } from '../vox_eval_agentd/placeholders';
 import { BASE_NA } from './helpers/regions';
@@ -137,6 +137,26 @@ describe('Secrets - Name Validation', () => {
     for (const name of invalidNames) {
       expect(SECRET_NAME_PATTERN.test(name), `Expected "${name}" to be invalid`).toBe(false);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Unit tests: the value rule shared by the console form and the server
+// ---------------------------------------------------------------------------
+
+describe('Secrets - value length', () => {
+  it(`refuses values shorter than ${MIN_SECRET_VALUE_LENGTH} characters — they can't be kept out of logs`, () => {
+    for (const v of ['a', '12', 'abc']) {
+      expect(secretValueError(v)).toMatch(new RegExp(`at least ${MIN_SECRET_VALUE_LENGTH} characters`));
+    }
+  });
+
+  it('refuses a missing value and one over 10KB; accepts the rest', () => {
+    expect(secretValueError('')).toBe('Secret value is required');
+    expect(secretValueError(undefined)).toBe('Secret value is required');
+    expect(secretValueError('x'.repeat(10001))).toMatch(/too large/);
+    expect(secretValueError('abcd')).toBeNull();
+    expect(secretValueError('x'.repeat(10000))).toBeNull();
   });
 });
 
@@ -383,6 +403,19 @@ describe('Secrets API', () => {
     const { secrets } = await listRes.json();
     const matches = secrets.filter((s: { name: string }) => s.name === 'TEST_SECRET_A');
     expect(matches).toHaveLength(1);
+  });
+
+  it('should refuse a value shorter than 4 characters, and store nothing', async () => {
+    if (!serverAvailable) return;
+    const res = await authFetch(adminSession, `${BASE_URL}/api/secrets`, {
+      method: 'POST',
+      body: JSON.stringify({ name: 'TEST_SECRET_SHORT', value: 'abc' }),
+    });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toMatch(/at least 4 characters/);
+    const listRes = await authFetch(adminSession, `${BASE_URL}/api/secrets`);
+    const { secrets } = await listRes.json();
+    expect(secrets.map((s: { name: string }) => s.name)).not.toContain('TEST_SECRET_SHORT');
   });
 
   it('should delete a secret', async () => {

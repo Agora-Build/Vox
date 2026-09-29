@@ -388,7 +388,7 @@ d("restful secret class", () => {
     fetch(`${BASE_URL}/api/secrets`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Cookie: cookie },
-      body: JSON.stringify({ name: secretName, value: "v1", ...body }),
+      body: JSON.stringify({ name: secretName, value: "value-1", ...body }),
     });
 
   it("accepts brokerType 'restful' and echoes it", async () => {
@@ -403,11 +403,11 @@ d("restful secret class", () => {
   });
 
   it("value-only update preserves the class; explicit null reclassification is blocked", async () => {
-    const keep = await postSecret({ value: "v2" });
+    const keep = await postSecret({ value: "value-2" });
     expect(keep.ok).toBe(true);
     expect((await keep.json()).brokerType).toBe("restful");
 
-    const downgrade = await postSecret({ value: "v3", brokerType: null });
+    const downgrade = await postSecret({ value: "value-3", brokerType: null });
     expect(downgrade.status).toBe(400);
   });
 

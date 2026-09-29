@@ -210,10 +210,14 @@ are on hosts the eval flow's owner or the agent's operator already controls.
 server hands the agent every runtime secret of the owner; redacting unrelated
 ones would mangle artifacts).
 
-**Secrets shorter than 4 characters:** a job that uses one is refused before
-it runs, naming the secret. Replacing a 1–3 character string everywhere would
-corrupt unrelated numbers and words, so such a value cannot be kept out of
-logs, errors and artifacts — and running with it exposed is not an option.
+**Secrets shorter than 4 characters:** Vox refuses to store one — the
+console's secret forms say so and keep Save disabled, and both save routes
+(`POST /api/secrets`, `POST /api/org-secrets`) return 400; the rule is one
+shared function, `secretValueError` in `shared/secrets.ts`. A job that uses a
+short secret stored before this limit is refused before it runs, naming the
+secret. Replacing a 1–3 character string everywhere would corrupt unrelated
+numbers and words, so such a value cannot be kept out of logs, errors and
+artifacts — and running with it exposed is not an option.
 
 **Recordings:** audio (WAV/OGG/FLAC/MP3, by magic bytes) is never
 byte-scanned. Its samples cannot carry a secret as text, but a short needle
@@ -250,6 +254,8 @@ written.
   real number.
 - Only secrets the job filled are redacted; a job using a secret under 4
   characters is refused, by name.
+- A secret under 4 characters can't be stored: the shared rule, both save
+  routes (nothing stored), and the console form (hint, Save disabled — E2E).
 - aeval's output reaches the agent's logs redacted, including a secret split
   across output chunks and each line of a multi-line secret.
 - Artifacts: text is redacted whatever its file name (`steps.json`,

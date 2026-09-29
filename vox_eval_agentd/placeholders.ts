@@ -12,7 +12,7 @@
  * - restful.request steps are never touched: Vox's server fills them from the
  *   job snapshot with secrets it never hands to an agent.
  */
-import { collectSecretRefs, resolveSecretPlaceholders, unresolvedSecretsMessage, untrustedEvalSetSecretsMessage } from '../shared/secrets';
+import { collectSecretRefs, resolveSecretPlaceholders, unresolvedSecretsMessage, untrustedEvalSetSecretsMessage, MIN_SECRET_VALUE_LENGTH } from '../shared/secrets';
 import * as fs from 'fs';
 import * as path from 'path';
 import yaml from 'js-yaml';
@@ -141,10 +141,10 @@ function yamlEscape(value: string): string {
 /**
  * A secret shorter than this cannot be kept out of logs, errors and artifacts:
  * replacing a 1–3 character string everywhere would corrupt unrelated numbers
- * and words. So a job that USES one is refused before it runs
- * (shortSecretsError) rather than run with the value exposed.
+ * and words. Vox refuses to store one; a job that USES one anyway (stored
+ * before the limit) is refused before it runs rather than run with it exposed.
  */
-export const MIN_REDACT_LENGTH = 4;
+export const MIN_REDACT_LENGTH = MIN_SECRET_VALUE_LENGTH;
 
 /** The job error when a secret the job uses is too short to redact, or null. Names only. */
 export function shortSecretsError(used: Record<string, string>): string | null {

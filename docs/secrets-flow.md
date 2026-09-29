@@ -13,7 +13,7 @@ Both runners follow the same pattern: user stores encrypted secrets in the Vox U
 
 | Step | Eval Agentd | Clash Runner |
 |---|---|---|
-| **1. Store secrets** | User stores in `/console/secrets` -> AES-256-GCM -> `secrets` table | Same |
+| **1. Store secrets** | User stores in `/console/secrets` -> AES-256-GCM -> `secrets` table; values must be at least 4 characters | Same |
 | **2. Placeholders** | `${secrets.KEY}` in the eval flow's Setup/Teardown YAML, and in the eval set's scenario only when the eval set is trusted | `${secrets.KEY}` in profile setup steps JSON |
 | **3. Name validation** | `^[A-Z][A-Z0-9_]*$` (`shared/secrets.ts`) | Same |
 | **4. Token type** | `ev...` (eval agent token) | `cr...` (clash runner token) |

@@ -4,7 +4,7 @@ import { z } from "zod";
 import { storage, hashToken, generateSecureToken, generateEvalAgentToken, generateBrokerRegistrationToken, mergeEvalConfig, buildJobSnapshot, validateEvalFlowConfig, validateEvalSetConfig, encryptValue, decryptValue, isEncryptionConfigured, type MetricSourceRow, type RegionQueryScope, type MetricTier } from "./storage";
 import { parseNextCronRun } from "./cron";
 import { compareVersions } from "./aeval-seed";
-import { SECRET_NAME_PATTERN, collectSecretRefs } from "@shared/secrets";
+import { SECRET_NAME_PATTERN, collectSecretRefs, secretValueError } from "@shared/secrets";
 import { deriveScheduleStatus } from "@shared/schedule-status";
 import { regionSiteSequence } from "@shared/regions";
 import { registerApiV1Routes } from "./routes-api-v1";
@@ -2853,18 +2853,14 @@ export async function registerRoutes(
       if (!name || typeof name !== "string" || !name.trim()) {
         return res.status(400).json({ error: "Secret name is required" });
       }
-      if (!value || typeof value !== "string") {
-        return res.status(400).json({ error: "Secret value is required" });
-      }
+      const valueError = secretValueError(value);
+      if (valueError) return res.status(400).json({ error: valueError });
       const trimmedName = name.trim();
       if (!SECRET_NAME_PATTERN.test(trimmedName)) {
         return res.status(400).json({ error: "Secret name must be uppercase letters, digits, and underscores (e.g., YOUR_EMAIL)" });
       }
       if (trimmedName.length > 256) {
         return res.status(400).json({ error: "Secret name too long (max 256 characters)" });
-      }
-      if (value.length > 10000) {
-        return res.status(400).json({ error: "Secret value too large (max 10KB)" });
       }
       const bodyBrokerType = req.body.brokerType === undefined ? undefined : req.body.brokerType;
       const isTestAccount = req.body.isTestAccount === undefined ? undefined : req.body.isTestAccount === true;
@@ -2968,18 +2964,17 @@ export async function registerRoutes(
         return res.status(403).json({ error: "Organization membership required" });
       }
       const { name, value } = req.body;
-      if (!name || !value) {
+      if (!name || typeof name !== "string") {
         return res.status(400).json({ error: "Name and value are required" });
       }
+      const valueError = secretValueError(value);
+      if (valueError) return res.status(400).json({ error: valueError });
       const trimmedName = name.trim();
       if (!SECRET_NAME_PATTERN.test(trimmedName)) {
         return res.status(400).json({ error: "Name must be uppercase letters, digits, and underscores (e.g., MY_SECRET)" });
       }
       if (trimmedName.length > 100) {
         return res.status(400).json({ error: "Name too long (max 100 characters)" });
-      }
-      if (value.length > 10000) {
-        return res.status(400).json({ error: "Value too long (max 10000 characters)" });
       }
       if (!isEncryptionConfigured()) {
         return res.status(503).json({ error: "Encryption not configured on server" });
