@@ -4623,7 +4623,9 @@ export async function registerRoutes(
 
       // Public evalFlows can be run by anyone; a private evalFlow only by its
       // owner or, for an org evalFlow, its org managers (no admin / principal-
-      // fellow bypass — see canRunEvalFlow).
+      // fellow bypass — see canRunEvalFlow). "Anyone on a public flow" is a
+      // deliberate console exception for easy test runs; /api/v1 run stays
+      // owner-only (#200).
       if (!canRunEvalFlow(user, evalFlow)) {
         return res.status(403).json({ error: "Not authorized to run this evalFlow" });
       }

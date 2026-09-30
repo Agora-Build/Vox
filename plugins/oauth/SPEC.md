@@ -45,7 +45,9 @@ Core with plugin API ≥ 1.1.0 (for `vox.identity`). No other plugins.
 Set the callback URLs explicitly in production.
 
 ## Database configuration
-Schema `plugin_oauth`, one table:
+Schema `plugin_oauth`, two tables. `used_states (value PRIMARY KEY, used_at)`
+records each OAuth state as it is claimed, so single use is atomic (rows over a
+day old are pruned on claim). And the account links:
 `identities (provider, subject, user_id, created_at)` —
 `PRIMARY KEY (provider, subject)`, `UNIQUE (provider, user_id)`, provider in
 `('github','google')`. `user_id` is a Core user id held as an opaque integer
@@ -71,6 +73,7 @@ plugin is off, Core logs a startup warning.
 
 ## Migrations and upgrades
 - `0001_init.sql` — the `identities` table.
+- `0003_used_states.sql` — the `used_states` table (atomic single-use states).
 - `0002_copy_from_core.sql` — one-shot copy of every `users.github_id` /
   `users.google_id` into `identities`, then checks counts and values match;
   any mismatch aborts the transaction and the app refuses to start. A database
@@ -94,8 +97,10 @@ tokens.
 - Only provider-verified emails are used: GitHub's primary verified address from
   `/user/emails` (the profile's public `email` carries no verified flag and is
   ignored); Google requires `email_verified: true`.
-- Anti-forgery `state`: random, stored on the session, single-use, bound to its
-  provider.
+- Anti-forgery `state`: random, stored on the session, bound to its provider,
+  and single-use atomically — claimed with an `INSERT … ON CONFLICT DO NOTHING`
+  into `used_states`, so of two callbacks carrying the same state (even ones
+  that loaded the session at the same moment) exactly one proceeds.
 - `signIn` regenerates the session (no session fixation). Starting a sign-in
   signs out whoever was signed in on that session.
 - Client secrets never reach the browser; the code exchange is server-side.

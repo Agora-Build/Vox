@@ -53,9 +53,9 @@ d("oauth plugin — copying existing links out of Core", () => {
     ]);
   });
 
-  it("records both migrations as applied, so the copy never runs twice", async () => {
+  it("records its migrations as applied, so the copy (2) never runs twice", async () => {
     const { rows } = await pool.query(
       `SELECT version FROM _plugin_schema_versions WHERE plugin_id = 'oauth' ORDER BY version`);
-    expect(rows.map((r) => r.version)).toEqual([1, 2]);
+    expect(rows.map((r) => r.version)).toEqual([1, 2, 3]); // 3 = used_states
   });
 });

@@ -15,6 +15,11 @@ async function start(provider: "github" | "google", cookie = "") {
     redirect: "manual",
     headers: cookie ? { Cookie: cookie } : {},
   });
+  // Wait for the whole response, as a browser does before following the
+  // redirect: express-session finishes saving the session (and the state in
+  // it) as the response ends, so a callback sent on the headers alone can
+  // arrive before the state exists.
+  await res.text();
   const location = new URL(res.headers.get("location") || "http://invalid/");
   return { res, location, state: location.searchParams.get("state"), cookie: cookieOf(res) || cookie };
 }
@@ -63,6 +68,24 @@ describe("oauth plugin routes", () => {
     // The failed attempt consumed the real state too: replaying it is refused.
     const replay = await githubCallback(cookie, { code: "x", state });
     expect(replay.status).toBe(403);
+  });
+
+  // Review of #210: two callbacks with the same state that load the session at
+  // the same moment both used to pass (200 of 200 concurrent pairs). The state
+  // is now claimed atomically in plugin_oauth.used_states.
+  it("a state is single-use even for two callbacks sent at the same moment", async () => {
+    const outcomes = await Promise.all(Array.from({ length: 20 }, async () => {
+      const { cookie, state } = await start("github");
+      const bodies = await Promise.all([1, 2].map(async () => {
+        const r = await githubCallback(cookie, { code: "x", state });
+        return r.text();
+      }));
+      // Counted by the state refusal itself, not by status: the one that gets
+      // past the state goes on to exchange the fake code with GitHub, and what
+      // GitHub answers (usually 401 here) is not this test's business.
+      return bodies.filter((b) => b.includes("Invalid OAuth state")).length;
+    }));
+    expect(outcomes).toEqual(Array(20).fill(1)); // exactly one of each pair is refused on the state
   });
 
   it("a state from one provider is not accepted by the other", async () => {

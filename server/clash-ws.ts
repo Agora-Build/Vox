@@ -71,7 +71,14 @@ export function setupClashWebSocket(httpServer: Server): void {
       return;
     }
 
-    // Not a clash WebSocket path — don't handle (let other upgrade handlers or destroy)
+    // Vite's dev-server HMR socket is handled by Vite's own upgrade listener,
+    // which exists only outside production (index.ts: setupVite unless
+    // NODE_ENV=production). Destroying it here broke hot reload locally; in
+    // production nothing handles it, so it is refused like any other path —
+    // an unhandled upgrade would otherwise stay open forever.
+    if (url.pathname === "/vite-hmr" && process.env.NODE_ENV !== "production") return;
+
+    // Not a clash WebSocket path and nobody else's — refuse it.
     socket.destroy();
   });
 }

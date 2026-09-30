@@ -1,6 +1,6 @@
 import crypto from "crypto";
 import type { Request } from "express";
-import type { IdentityService, VoxPlugin, VoxPluginContext } from "@vox/plugin-sdk";
+import type { IdentityService, PluginDb, VoxPlugin, VoxPluginContext } from "@vox/plugin-sdk";
 import { findOrLinkOrCreate, LoginRefused, type Provider } from "./link";
 import { github, google } from "./providers";
 
@@ -17,10 +17,25 @@ function beginSignIn(req: Request, identity: IdentityService, provider: Provider
   return value;
 }
 
-function consumeState(req: Request, provider: Provider, state: unknown): boolean {
+async function consumeState(req: Request, db: PluginDb, provider: Provider, state: unknown): Promise<boolean> {
   const expected = session(req).oauthState;
   delete session(req).oauthState;
-  return !!expected && expected.provider === provider && typeof state === "string" && state === expected.value;
+  // Persist the removal from the session too, so a later request on it finds
+  // nothing. Fail closed: if it can't be saved, the state isn't accepted.
+  const saved = await new Promise<boolean>((resolve) => req.session.save((err) => resolve(!err)));
+  if (!saved || !expected) return false;
+  // Single use, atomically: the PRIMARY KEY lets exactly one claim of this
+  // state value succeed. Two callbacks that loaded the session at the same
+  // moment both see `expected` above — only one gets past here.
+  let claimed = false;
+  try {
+    const r = await db.query("INSERT INTO used_states (value) VALUES ($1) ON CONFLICT DO NOTHING RETURNING value", [expected.value]);
+    claimed = r.rows.length === 1;
+    db.query("DELETE FROM used_states WHERE used_at < now() - interval '1 day'").catch(() => {});
+  } catch {
+    return false;
+  }
+  return claimed && expected.provider === provider && typeof state === "string" && state === expected.value;
 }
 
 const origin = (req: Request) => `${req.protocol}://${req.get("host")}`;
@@ -56,7 +71,7 @@ const plugin: VoxPlugin = {
       r.post("/github/callback", async (req, res) => {
         const { code, state } = req.body ?? {};
         if (!code || !state) return res.status(400).json({ error: "Missing code or state" });
-        if (!consumeState(req, "github", state)) return res.status(403).json({ error: "Invalid OAuth state" });
+        if (!(await consumeState(req, db, "github", state))) return res.status(403).json({ error: "Invalid OAuth state" });
         try {
           const profile = await github.profileFromCode(config, code);
           const user = await findOrLinkOrCreate(db, identity, { provider: "github", ...profile });
@@ -79,7 +94,7 @@ const plugin: VoxPlugin = {
       // Google redirects the browser here directly.
       r.get("/google/callback", async (req, res) => {
         const { code, state, error } = req.query as Record<string, string | undefined>;
-        const ok = consumeState(req, "google", state);
+        const ok = await consumeState(req, db, "google", state);
         if (error || !code || !ok) return res.redirect("/login?error=oauth_failed");
         try {
           const profile = await google.profileFromCode(config, code, origin(req));
