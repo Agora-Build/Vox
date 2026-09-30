@@ -573,9 +573,11 @@ describe("Job Recovery - Unclaimed Pending Jobs", () => {
     status: "pending" | "running" | "completed" | "failed";
     siteId: string;
     createdAt: Date;
-    // Set when a job is requeued (releaseStaleJobs / releaseAgentRunningJobs bump
-    // updated_at = NOW() on the way back to pending). Both reapers age from
-    // GREATEST(created_at, updated_at), so a requeue resets the wait clock.
+    // Set when a job is requeued (the no-agent reaper, releaseStaleJobs and
+    // releaseAgentRunningJobs bump updated_at = NOW() on the way back to
+    // pending). The no-agent reaper ages from GREATEST(created_at, updated_at),
+    // so a requeue restarts its 15-min grace; the 24h backstop ages from
+    // created_at, so no requeue extends a job's life past a day.
     updatedAt?: Date;
   }
 
@@ -601,7 +603,7 @@ describe("Job Recovery - Unclaimed Pending Jobs", () => {
 
   const shouldFailExpired = (job: Job): boolean =>
     job.status === "pending" &&
-    pendingSince(job) < minsAgo(PENDING_MAX_WAIT_MINUTES);
+    job.createdAt < minsAgo(PENDING_MAX_WAIT_MINUTES);
 
   describe("no-agent fast-fail", () => {
     it("fails a pending job past the timeout when its site has no agent", () => {
@@ -686,14 +688,16 @@ describe("Job Recovery - Unclaimed Pending Jobs", () => {
       expect(shouldFailExpired(job)).toBe(false);
     });
 
-    it("does NOT expire a day-old job that was just requeued (clock resets)", () => {
+    it("expires a day-old job even if it was just requeued (the clock does not reset)", () => {
+      // A paid dispatch's escrow must outlast the job: a requeue that restarted
+      // this clock let a job stay pending for days, past the leak reaper's TTL.
       const job: Job = {
         status: "pending",
         siteId: "na-us-sea-01",
         createdAt: minsAgo(25 * 60),
         updatedAt: minsAgo(5),
       };
-      expect(shouldFailExpired(job)).toBe(false);
+      expect(shouldFailExpired(job)).toBe(true);
     });
   });
 

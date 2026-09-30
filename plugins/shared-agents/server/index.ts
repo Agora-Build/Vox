@@ -1,14 +1,19 @@
 import type { VoxPlugin } from "@vox/plugin-sdk";
 import { createMarketplaceService, type CreditsPort } from "./service";
 
-const LEAK_REAPER_INTERVAL_MS = 5 * 60 * 1000;
-const LEAK_TTL_MS = 26 * 60 * 60 * 1000; // > max legitimate job lifetime (24h pending + 90m run)
+export const LEAK_REAPER_INTERVAL_MS = 5 * 60 * 1000;
+// A dispatch hold older than this is a leak and gets refunded. It must exceed
+// the longest legitimate hold — Core's 24h pending backstop + 90m run cap =
+// 25.5h — and stay below credits' stale-hold alarm (STALE_HOLD_MS, 32h), so the
+// reaper refunds a leak before credits calls it an invariant violation (#91).
+// Pinned by tests/shared-agents-timing.test.ts.
+export const LEAK_TTL_MS = 30 * 60 * 60 * 1000;
 const LEAK_REAP_LIMIT = 200;
 
 const sharedAgentsPlugin: VoxPlugin = {
   async activate(ctx) {
     const credits = ctx.services.require<CreditsPort>("vox.credits", "^1.0.0");
-    const service = createMarketplaceService(ctx.db, credits);
+    const service = createMarketplaceService(ctx.db, credits, ctx.logger);
 
     ctx.worker({
       id: "leak-reaper",

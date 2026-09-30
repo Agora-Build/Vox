@@ -3173,6 +3173,20 @@ export async function registerRoutes(
     }
   });
 
+  // A revoked token must stop being offered on the marketplace (#93). The
+  // revoke is what matters and has already happened, so a failure here is
+  // logged, not returned — and the dispatchable listing below also skips
+  // revoked tokens, so a stale listing is never shown to renters.
+  async function unlistRevokedToken(tokenId: number): Promise<void> {
+    const marketplace = getMarketplace();
+    if (!marketplace) return;
+    try {
+      await marketplace.setListing(tokenId, null);
+    } catch (err) {
+      console.error(`[marketplace] failed to deactivate the listing of revoked token ${tokenId}:`, err);
+    }
+  }
+
   app.post("/api/eval-agent-tokens/:id/revoke", requireAuth, async (req, res) => {
     try {
       const user = await getCurrentUser(req);
@@ -3193,6 +3207,7 @@ export async function registerRoutes(
       }
 
       await storage.revokeEvalAgentToken(parseInt(id));
+      await unlistRevokedToken(parseInt(id));
       res.json({ message: "Eval agent token revoked" });
     } catch (error) {
       console.error("Error revoking eval agent token:", error);
@@ -3234,6 +3249,9 @@ export async function registerRoutes(
         pricePerUnit: pricePerUnit ?? null,
       });
       if (!decision.ok) return res.status(decision.status).json({ error: decision.reason });
+      // A revoked token stays off the marketplace (#93): switching it back to
+      // shared would reactivate its listing.
+      if (token.isRevoked) return res.status(409).json({ error: "This token is revoked" });
 
       // Core writes only its own column.
       await storage.updateEvalAgentTokenDispatchTier(id, dispatchTier);
@@ -3359,6 +3377,7 @@ export async function registerRoutes(
     try {
       const { id } = req.params;
       await storage.revokeEvalAgentToken(parseInt(id));
+      await unlistRevokedToken(parseInt(id));
       res.json({ message: "Eval agent token revoked" });
     } catch (error) {
       console.error("Error revoking eval agent token:", error);
@@ -3567,7 +3586,11 @@ export async function registerRoutes(
       const regionRowByTokenId = new Map(agents.map((a) => [a.tokenId, a.tokenRegion]));
 
       const marketplace = getMarketplace();
-      const shared = marketplace ? await marketplace.listDispatchable(user.id) : [];
+      const listed = marketplace ? await marketplace.listDispatchable(user.id) : [];
+      // Never offer a revoked (or deleted) token, including listings left
+      // active by a revoke made before revokes unlisted (#93).
+      const liveTokens = await storage.getLiveEvalAgentTokenIds(listed.map((l) => l.tokenId));
+      const shared = listed.filter((l) => liveTokens.has(l.tokenId));
 
       return res.json({
         free: free.map((a) => ({ tokenId: a.tokenId, siteId: a.region, region: regionRowByTokenId.get(a.tokenId) ?? null, dispatchTier: a.dispatchTier, state: a.state })),
@@ -4118,6 +4141,11 @@ export async function registerRoutes(
               hasResult,
               settlementContext: (settledJob.snapshot as { settlementContext?: unknown } | null)?.settlementContext,
             });
+            // Resolved: nothing more to do for this job's settlement — keep it
+            // out of the reap-settle sweep (#97). If this write fails, the sweep
+            // settles it again (a no-op) and marks it then.
+            await storage.markSettlementDone(settledJob).catch((markErr) =>
+              console.error(`Settled job ${settledJob.id}, but marking it settled failed:`, markErr));
           }
         }
       } catch (settleErr) {
@@ -4878,7 +4906,7 @@ export async function registerRoutes(
         // throws synchronously on conflicting shared evalFlow/eval-set keys, and if a
         // shared-tier authorizeDispatch above already placed an escrow hold, that throw
         // must still hit the catch below so voidDispatch runs — otherwise the hold leaks
-        // until the 26h reaper.
+        // until the leak reaper (LEAK_TTL_MS, 30h).
         const jobConfig = mergeEvalConfig(evalFlow.config, evalSet.config, { evalSetSecrets: gate.evalSetSecrets });
         delete (jobConfig as Record<string, unknown>).sessionInjection; // server-stamped only
         if (sessionNeed) {
@@ -4908,7 +4936,7 @@ export async function registerRoutes(
       } catch (createErr) {
         // A shared dispatch was authorized (escrow hold placed) but no job now exists
         // to settle it. Compensate by releasing the hold immediately rather than
-        // stranding it for the 26h leak-reaper (review M4). Best-effort; the reaper
+        // stranding it for the leak reaper (30h) (review M4). Best-effort; the reaper
         // remains the backstop if this also fails.
         if (settlementContext !== undefined) {
           try {

@@ -1036,6 +1036,16 @@ export class DatabaseStorage {
     return result[0];
   }
 
+  // The ids among `ids` that name an existing, unrevoked token — one query.
+  // Revocation is what stops an agent (heartbeat, job fetch and dispatch all
+  // check it). expires_at is not: nothing sets it on eval agent tokens (#215).
+  async getLiveEvalAgentTokenIds(ids: number[]): Promise<Set<number>> {
+    if (ids.length === 0) return new Set();
+    const rows = await db.select({ id: evalAgentTokens.id }).from(evalAgentTokens)
+      .where(and(inArray(evalAgentTokens.id, Array.from(new Set(ids))), eq(evalAgentTokens.isRevoked, false)));
+    return new Set(rows.map((r) => r.id));
+  }
+
   async getEvalAgentTokenByHash(tokenHash: string): Promise<EvalAgentToken | undefined> {
     const result = await db.select().from(evalAgentTokens).where(eq(evalAgentTokens.tokenHash, tokenHash));
     return result[0];
@@ -1405,8 +1415,16 @@ export class DatabaseStorage {
   // only once it has waited timeoutMinutes AND no such agent exists — so a brief
   // agent restart/redeploy (host reboot, vox-upgrade) doesn't trip it, but a
   // genuinely unstaffed site gives the user an actionable result in minutes
-  // instead of hanging "pending" forever. Terminal (failed): retrying can't
-  // summon an agent that isn't there. Job pickup is exact site-equality and an
+  // instead of hanging "pending" forever. Each strike requeues (unclaimed_count++,
+  // updated_at = NOW() → a fresh window), failing only once unclaimed_count has
+  // reached max_retries — the same shape as releaseStaleJobs. A site with an
+  // agent that is only temporarily away (a slow image pull, a long vox-upgrade,
+  // a user who queues a job and then boots their agent) gets max_retries more
+  // windows instead of a permanent failure (#82); a genuinely unstaffed site
+  // still fails, after (max_retries + 1) × timeout. The strikes are counted in
+  // unclaimed_count, NOT retry_count: retry_count is the budget for recovering
+  // a job whose agent dies mid-run, and a job that merely waited for an agent
+  // must still have all of it once claimed. Job pickup is exact site-equality and an
   // agent registers under its token's site, so eval_agents.site_id = the job's
   // site_id is the correct "an agent serves this site" signal.
   //
@@ -1435,12 +1453,20 @@ export class DatabaseStorage {
     const timeoutCutoff = new Date(Date.now() - timeoutMinutes * 60 * 1000);
     const onlineCutoff = new Date(Date.now() - onlineWithinMinutes * 60 * 1000);
     const prefix = "No eval agent available for region ";
-    const suffix = ` (unclaimed for ${timeoutMinutes} min)`;
+    const suffix = ` (unclaimed for ${timeoutMinutes} min, `;
     const result = await db.execute(sql`
       UPDATE eval_jobs
-      SET status = 'failed'::eval_job_status,
-          error = ${prefix} || site_id || ${suffix},
-          completed_at = NOW(),
+      SET status = CASE
+            WHEN unclaimed_count >= max_retries THEN 'failed'::eval_job_status
+            ELSE 'pending'::eval_job_status
+          END,
+          error = CASE
+            WHEN unclaimed_count >= max_retries
+              THEN ${prefix} || site_id || ${suffix} || (unclaimed_count + 1) || ' times)'
+            ELSE error
+          END,
+          completed_at = CASE WHEN unclaimed_count >= max_retries THEN NOW() ELSE NULL END,
+          unclaimed_count = unclaimed_count + 1,
           updated_at = NOW()
       WHERE status = 'pending'::eval_job_status
       AND site_id IS NOT NULL
@@ -1459,12 +1485,24 @@ export class DatabaseStorage {
   // Backstop: fail any pending job that has waited longer than maxWaitMinutes,
   // regardless of agent availability. Catches pathological cases the no-agent
   // fast-fail misses (e.g. a region that always has an online agent which somehow
-  // never claims the job). Terminal (failed). Ages from GREATEST(created_at,
-  // updated_at) for the same requeue reason as failPendingJobsWithNoAgent above.
+  // never claims the job). Terminal (failed). Ages from created_at — NOT
+  // GREATEST(created_at, updated_at) like the no-agent reaper: every requeue
+  // (no-agent, stale agent, agent restart) bumps updated_at, and a clock that
+  // restarts on each requeue let a job stay pending for days. A paid dispatch's
+  // escrow is sized to "a day in the queue, then one run" (see
+  // tests/shared-agents-timing.test.ts); past that the leak reaper refunds it
+  // while the job could still run, unpaid. So a job more than a day old fails,
+  // however many times it was requeued.
   // excludeTeamTier: see failPendingJobsWithNoAgent above — same reason, same
   // caller-supplied condition (organizations provider absent), and likewise
   // REQUIRED so a future sweep caller cannot omit it by accident.
-  async failExpiredPendingJobs(maxWaitMinutes: number, excludeTeamTier: boolean): Promise<number> {
+  // Batched (#83): each round fails at most batchSize rows, so a large backlog —
+  // the first tick after a deploy, or after an outage — is many short writes
+  // instead of one long one. SKIP LOCKED: a row another transaction holds (a
+  // claim in flight) is left for the next tick instead of waited on.
+  async failExpiredPendingJobs(maxWaitMinutes: number, excludeTeamTier: boolean, batchSize = 500): Promise<number> {
+    // A batch of 0 would update nothing and never leave the loop.
+    if (!Number.isInteger(batchSize) || batchSize < 1) throw new Error(`batchSize must be a positive integer, got ${batchSize}`);
     const cutoff = new Date(Date.now() - maxWaitMinutes * 60 * 1000);
     const message = `Not claimed by any eval agent within ${maxWaitMinutes} min`;
     // Pooled backstop message (24h by default): render hours when the window is
@@ -1472,21 +1510,68 @@ export class DatabaseStorage {
     // ("within 1440 min"), and avoid the "eligible eligible agent" repeat when
     // target_tier is somehow null on a pooled row.
     const pooledWaitLabel = maxWaitMinutes % 60 === 0 ? `${maxWaitMinutes / 60}h` : `${maxWaitMinutes} min`;
-    const result = await db.execute(sql`
-      UPDATE eval_jobs
-      SET status = 'failed'::eval_job_status,
-          error = CASE
-            WHEN target_region IS NOT NULL
-              THEN 'No eligible ' || COALESCE(target_tier::text, 'matching') || ' agent in ' || target_region || ' claimed the job within ' || ${pooledWaitLabel}
-            ELSE ${message}
-          END,
-          completed_at = NOW(),
-          updated_at = NOW()
-      WHERE status = 'pending'::eval_job_status
-      AND GREATEST(created_at, updated_at) < ${cutoff}
-      ${excludeTeamTier ? sql`AND target_tier IS DISTINCT FROM 'team'` : sql``}
-    `);
-    return (result as unknown as { rowCount: number }).rowCount || 0;
+    let total = 0;
+    for (;;) {
+      const result = await db.execute(sql`
+        UPDATE eval_jobs
+        SET status = 'failed'::eval_job_status,
+            error = CASE
+              -- retry_count moves only when a claimed job's agent stopped
+              -- mid-run, so this job was claimed and then lost its agent.
+              WHEN retry_count > 0
+                THEN 'Still pending ' || ${pooledWaitLabel} || ' after it was queued; its eval agent stopped mid-run ' || retry_count || ' time(s)'
+              WHEN target_region IS NOT NULL
+                THEN 'No eligible ' || COALESCE(target_tier::text, 'matching') || ' agent in ' || target_region || ' claimed the job within ' || ${pooledWaitLabel}
+              ELSE ${message}
+            END
+            -- A healthy, heartbeating agent skips a job that needs a newer
+            -- framework than it has (GET /api/eval-agent/jobs filters on it), so
+            -- the fast-fail spares the job and only this backstop fires. Say
+            -- what the job needed instead of leaving the user to guess (#81).
+            -- Only for a job no agent ever took (retry_count = 0), and only a
+            -- version-shaped value (1.2, 0.4.1-rc1): the config can come from
+            -- someone else's public eval set, and this text is shown to the
+            -- job's owner.
+            || CASE
+              WHEN retry_count = 0
+                AND length(config->>'frameworkVersion') <= 32
+                AND config->>'frameworkVersion' ~ '^[0-9]+(\\.[0-9]+)+([-+][0-9A-Za-z.]+)?$'
+                THEN ' (requires eval-agent frameworkVersion >= ' || (config->>'frameworkVersion') || ')'
+              ELSE ''
+            END,
+            completed_at = NOW(),
+            updated_at = NOW()
+        WHERE id IN (
+          SELECT id FROM eval_jobs
+          WHERE status = 'pending'::eval_job_status
+          AND created_at < ${cutoff}
+          ${excludeTeamTier ? sql`AND target_tier IS DISTINCT FROM 'team'` : sql``}
+          ORDER BY id
+          LIMIT ${batchSize}
+          FOR UPDATE SKIP LOCKED
+        )
+      `);
+      const n = (result as unknown as { rowCount: number }).rowCount || 0;
+      total += n;
+      if (n < batchSize) return total;
+    }
+  }
+
+  // Record that marketplace.settle() resolved for this job. `settled` is the
+  // job as it was handed to settle(): the mark is written only if that status
+  // was terminal AND the row still has it. settle() quietly ignores a
+  // non-terminal job (e.g. one the complete route rolled back to running), so
+  // marking it — even after a reaper fails it a moment later — would hide an
+  // unsettled job from the sweep. The sweep skips marked jobs (#97).
+  async markSettlementDone(settled: { id: number; status: string }): Promise<void> {
+    if (settled.status !== "completed" && settled.status !== "failed") return;
+    await db.update(evalJobs)
+      .set({ settlementDoneAt: new Date() })
+      .where(and(
+        eq(evalJobs.id, settled.id),
+        eq(evalJobs.status, settled.status),
+        isNull(evalJobs.settlementDoneAt),
+      ));
   }
 
   // Recently-terminal targeted jobs (completed or failed) that may still hold an
@@ -1520,16 +1605,21 @@ export class DatabaseStorage {
         // Both terminal outcomes carry an unsettled dispatch: a `failed` job
         // refunds, a `completed` job whose complete-route settle threw still needs
         // capturing. Widened from failed-only so a completed-but-unsettled job is
-        // re-driven (captured) here rather than eventually released by the 26h
+        // re-driven (captured) here rather than eventually released by the 30h
         // leak-reaper — which would refund valid completed work (review C1).
         inArray(evalJobs.status, ["completed", "failed"]),
         isNotNull(evalJobs.targetTokenId),
         gte(evalJobs.completedAt, windowStart),
         lte(evalJobs.completedAt, graceCutoff),
         sql`${evalJobs.snapshot} -> 'settlementContext' IS NOT NULL`,
+        // Already settled (settle() resolved): nothing left to do. Without this,
+        // settled rows stayed eligible for the whole lookback window and, under
+        // load, filled every batch — an unsettled job behind them aged out and
+        // fell to the leak reaper's refund (#97).
+        isNull(evalJobs.settlementDoneAt),
       ))
       // Ascending (oldest-first): if more than `limit` targeted jobs terminate in
-      // one window, drain the ones closest to aging out to the 26h leak-reaper
+      // one window, drain the ones closest to aging out to the 30h leak-reaper
       // first. Descending dropped exactly those, letting valid completed work be
       // refunded by the leak-reaper instead of captured here (GitHub #90 / #7).
       // Secondary key on id breaks completed_at ties (ms precision → ties possible)

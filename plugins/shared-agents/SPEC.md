@@ -18,6 +18,10 @@ drives dispatch through the provided service, not a plugin route), credit-in/cas
 
 ## Services provided and consumed
 - Provides: `vox.eval-marketplace@1.0.0` — `{ setListing, listDispatchable, authorizeDispatch, settle, voidDispatch, reapLeaks, countStuckPending }`.
+  `settle` contract Core relies on: **resolving means nothing more is needed** for
+  that job (settled, refunded, already done, or nothing to settle) — Core then
+  stamps `eval_jobs.settlement_done_at` and the reap-settle sweep stops re-offering
+  it (#97); **throwing means retry**. Core calls it only for a terminal job.
 - Consumes: `vox.credits@^1.0.0` — the escrow slice `{ hold, capture, release }` (duck-typed `CreditsPort`; no import from the credits package).
 
 ## HTTP and WebSocket URLs
@@ -56,8 +60,10 @@ listing (`not-for-sale`) or whose payer lacks credits (`insufficient-credits`).
 
 ## Workers
 - `leak-reaper` — singleton, every 5 min. Releases escrow holds for settlements
-  stuck `pending` past a 26h TTL (chosen `> max legitimate job lifetime`: 24h
-  pending + 90m run), up to 200 per sweep. Each release uses the settle lock
+  stuck `pending` past a 30h TTL (`LEAK_TTL_MS`: longer than the longest
+  legitimate hold, 24h pending + 90m run, and shorter than credits' 32h
+  stale-hold alarm — pinned by `tests/shared-agents-timing.test.ts`, #91), up to
+  200 per sweep. Each release uses the settle lock
   discipline (guard under a short lock, release the lock before the credits call,
   finalize under a fresh lock re-guarding on `pending`) so it never holds a pooled
   connection across a credits call.

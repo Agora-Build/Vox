@@ -1,4 +1,4 @@
-import type { PluginDb } from "@vox/plugin-sdk";
+import type { PluginDb, Logger } from "@vox/plugin-sdk";
 import { computeCharge, computeFee, assertValidSplit } from "./pricing";
 import * as repo from "./repo";
 
@@ -45,7 +45,14 @@ function isInsufficientCredits(err: unknown): boolean {
 
 const PRICE_UNITS = 1; // Phase B: flat pricing.
 
-export function createMarketplaceService(db: PluginDb, credits: CreditsPort): MarketplaceService {
+/** Used when no plugin logger is passed (unit tests); the plugin passes ctx.logger. */
+const consoleLogger: Logger = {
+  info: (m, meta) => console.log(`[shared-agents] ${m}`, meta ?? ""),
+  warn: (m, meta) => console.warn(`[shared-agents] ${m}`, meta ?? ""),
+  error: (m, meta) => console.error(`[shared-agents] ${m}`, meta ?? ""),
+};
+
+export function createMarketplaceService(db: PluginDb, credits: CreditsPort, logger: Logger = consoleLogger): MarketplaceService {
   return {
     async setListing(tokenId, pricePerUnit, meta) {
       if (pricePerUnit == null) {
@@ -74,7 +81,7 @@ export function createMarketplaceService(db: PluginDb, credits: CreditsPort): Ma
       const fee = computeFee(charge);
       assertValidSplit(charge, charge - fee, fee);
 
-      // Mint our own settlement id first; it is the credits idempotencyKey (no jobId yet).
+      // Mint our own settlement id first; it keys the credits hold (no jobId yet).
       const settlementId = await repo.insertPendingSettlement(db, {
         payerUserId: userId, earnerUserId: listing.ownerId,
         priceUnits: PRICE_UNITS, pricePerUnit: listing.pricePerUnit, chargeCredits: charge, feeCredits: fee,
@@ -83,7 +90,11 @@ export function createMarketplaceService(db: PluginDb, credits: CreditsPort): Ma
       let holdId: number;
       try {
         ({ holdId } = await credits.hold({
-          payerUserId: userId, credits: charge, idempotencyKey: String(settlementId),
+          // Namespaced: credits' idempotency keys are one global space shared by
+          // every caller (deposits, other plugins). A bare "123" would collide
+          // with another caller's key — for another hold, credits would hand back
+          // THAT hold and this dispatch would ride someone else's escrow (#92).
+          payerUserId: userId, credits: charge, idempotencyKey: `shared-agents:dispatch:${settlementId}`,
           ref: { type: "shared-agent-dispatch", id: String(settlementId) },
         }));
       } catch (err) {
@@ -105,7 +116,7 @@ export function createMarketplaceService(db: PluginDb, credits: CreditsPort): Ma
         // the leak-reaper (hold_id NOT NULL) can never reach. Leave it pending +
         // unmarked so credits' reconcile surfaces the orphaned hold. countStuckPending
         // ignores hold_id-null rows, so health won't flap on it (review M5).
-        console.error(`[shared-agents] credits.hold failed for settlement ${settlementId}:`, err);
+        logger.error("credits.hold failed", { settlementId, error: String(err) });
         return { ok: false, reason: "dispatch-failed" };
       }
 
@@ -121,7 +132,7 @@ export function createMarketplaceService(db: PluginDb, credits: CreditsPort): Ma
         try {
           await credits.release(holdId);
         } catch (relErr) {
-          console.error(`[shared-agents] failed to release hold ${holdId} after setSettlementHold error:`, relErr);
+          logger.error("failed to release a hold after setSettlementHold failed", { holdId, settlementId, error: String(relErr) });
           return { ok: false, reason: "dispatch-failed" };
         }
         await db.withTransaction(async (tx) => {
@@ -146,7 +157,7 @@ export function createMarketplaceService(db: PluginDb, credits: CreditsPort): Ma
       // Guard explicitly rather than let the `else` branch treat anything ≠ completed
       // as a refund (review M3).
       if (outcome.status !== "completed" && outcome.status !== "failed") {
-        console.error(`[shared-agents] settle ignored non-terminal job ${outcome.jobId} (status=${outcome.status})`);
+        logger.error("settle ignored a non-terminal job", { jobId: outcome.jobId, status: outcome.status });
         return;
       }
 
@@ -246,7 +257,7 @@ export function createMarketplaceService(db: PluginDb, credits: CreditsPort): Ma
         } catch (err) {
           // A hold already captured (rare unmarked-completed race) throws here;
           // leave it pending + log so health surfaces it. Never abort the sweep.
-          console.error(`[shared-agents] leak-reaper failed for settlement ${id}:`, err);
+          logger.error("leak-reaper failed for a settlement", { settlementId: id, error: String(err) });
         }
       }
       return released;

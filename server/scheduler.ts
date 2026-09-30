@@ -15,7 +15,7 @@ import { log } from "./log";
 
 // Global hard cap on how long a single eval job may stay "running" before the
 // background reaper fails it (agent zombied/superseded/killed). Tune here.
-const MAX_JOB_RUN_MINUTES = 90;
+export const MAX_JOB_RUN_MINUTES = 90;
 
 // A "pending" job is one no agent has claimed yet. Two reapers keep it from
 // hanging forever (nothing else touches the pending state):
@@ -25,8 +25,14 @@ const MAX_JOB_RUN_MINUTES = 90;
 //     actionable "no agent for site X" result in minutes, not a full day.
 //   - PENDING_MAX_WAIT_MINUTES: absolute backstop for anything the fast-fail
 //     misses (site has an online agent that somehow never claims the job).
-const PENDING_NO_AGENT_TIMEOUT_MINUTES = 15;
-const PENDING_MAX_WAIT_MINUTES = 24 * 60;
+// Each no-agent strike requeues the job and counts in unclaimed_count (not the
+// crash-recovery retry_count; see failPendingJobsWithNoAgent), so an unstaffed
+// site fails after (max_retries + 1) × this. Operators can widen it without a
+// redeploy: PENDING_NO_AGENT_TIMEOUT_MINUTES (#82). The backstop still fails any
+// job a day after it was created, so past (max_retries + 1) × timeout ≥ 24h the
+// no-agent reaper never gets to fail it — the backstop does, with its message.
+export const PENDING_NO_AGENT_TIMEOUT_MINUTES = positiveIntEnv("PENDING_NO_AGENT_TIMEOUT_MINUTES", 15);
+export const PENDING_MAX_WAIT_MINUTES = 24 * 60;
 const REAP_SETTLE_LOOKBACK_MINUTES = 15; // window for the prompt reap-settle sweep
 // Skip jobs that turned terminal within the last minute: the complete route commits
 // `completed` before it writes the eval-result row, so a sweep in that window would
@@ -38,6 +44,16 @@ const REAP_SETTLE_LOOKBACK_MINUTES = 15; // window for the prompt reap-settle sw
 const REAP_SETTLE_GRACE_MINUTES = 1;
 
 const STALE_THRESHOLD_MINUTES = 5;
+
+/** A positive integer from the environment, or the default (a bad value is ignored, loudly). */
+export function positiveIntEnv(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw === "") return fallback;
+  const n = Number(raw);
+  if (Number.isInteger(n) && n > 0) return n;
+  console.warn(`[scheduler] ${name}=${JSON.stringify(raw)} is not a positive integer — using ${fallback}`);
+  return fallback;
+}
 
 export async function runMaintenanceTasks() {
   try {
@@ -67,7 +83,7 @@ export async function runMaintenanceTasks() {
       excludeTeamTier,
     );
     if (noAgent > 0) {
-      log(`Failed ${noAgent} pending job(s) with no agent for their site`, "worker");
+      log(`No agent for their site: requeued or failed ${noAgent} pending job(s)`, "worker");
     }
 
     // Backstop: fail any pending job that has waited past the hard cap.
@@ -91,21 +107,18 @@ export async function runMaintenanceTasks() {
     // Promptly settle shared-dispatch escrow for recently-terminal targeted jobs:
     // capture on `completed`, release on `failed`. This is the prompt path so a
     // completed-but-unsettled job (complete-route settle threw) is captured here,
-    // not eventually released by the 26h leak-reaper. No-op when the marketplace
+    // not eventually released by the leak reaper (30h). No-op when the marketplace
     // seam is absent; settle() is idempotent, so re-visiting a settled job is cheap.
     const marketplace = getMarketplace();
     if (marketplace) {
       const REAP_SETTLE_BATCH = 200;
       const reapable = await storage.getReapableSharedJobs(REAP_SETTLE_LOOKBACK_MINUTES, REAP_SETTLE_GRACE_MINUTES, REAP_SETTLE_BATCH);
-      // Honest saturation signal (not a cry-wolf): a FULL batch alone is normal —
-      // settled jobs stay query-eligible (no settled-marker yet), so ~lookback×rate
-      // rows always sit in the window even when we're keeping up. The real danger is
-      // only when the batch is full AND its oldest row (front of the oldest-first
-      // scan) is within 2 min of falling out of the lookback window — that means the
-      // rows behind the batch cap are even older and will age out to the 26h
-      // leak-reaper unsettled. Warn only then; stays quiet under healthy throughput.
-      // The cure (stop settled rows consuming the batch) is a settled-marker
-      // follow-up — see GitHub #90.
+      // Saturation signal: settled jobs leave the query (settlement_done_at,
+      // #97), so a full batch means that many jobs genuinely still need
+      // settling. Warn when the batch is full AND its oldest row (front of the
+      // oldest-first scan) is within 2 min of falling out of the lookback
+      // window: rows behind the batch cap are older still and would age out to
+      // the leak reaper unsettled. Quiet under healthy throughput.
       const oldestCompletedAt = reapable[0]?.completedAt;
       if (
         reapable.length === REAP_SETTLE_BATCH &&
@@ -127,6 +140,13 @@ export async function runMaintenanceTasks() {
           });
         } catch (settleErr) {
           console.error(`Reap settlement failed for job ${job.id}:`, settleErr);
+          continue;
+        }
+        try {
+          await storage.markSettlementDone(job); // settled: leave the sweep (#97)
+        } catch (markErr) {
+          // Settled, but not marked: the next sweep settles it again (a no-op).
+          console.error(`Settled job ${job.id}, but marking it settled failed:`, markErr);
         }
       }
     }

@@ -1,6 +1,12 @@
 import type { PluginDb } from "@vox/plugin-sdk";
 
-export const STALE_HOLD_MS = 24 * 60 * 60 * 1000;
+// A 'held' hold older than this breaks invariant 3 (logged at error level, and
+// health turns degraded). It must be longer than any legitimate hold PLUS the
+// time shared-agents' leak reaper takes to refund a leak (its LEAK_TTL_MS, 30h,
+// plus one 5-min sweep). At 24h it fired on the documented worst case — a
+// dispatch waiting in the queue for a day — a guaranteed false alarm (#91).
+// Pinned by tests/shared-agents-timing.test.ts.
+export const STALE_HOLD_MS = 32 * 60 * 60 * 1000;
 
 export async function checkInvariants(
   db: PluginDb,
