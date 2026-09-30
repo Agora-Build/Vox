@@ -215,6 +215,13 @@ app.use((req, res, next) => {
   process.on("SIGTERM", shutdown);
   process.on("SIGINT", shutdown);
 
+  // Every Core and plugin API route is registered above. Anything else under
+  // /api is a 404 — not the web app's index.html with a 200, which the SPA
+  // fallback below would otherwise send for any path and any method (#212).
+  app.use("/api", (_req: Request, res: Response) => {
+    res.status(404).json({ error: "Not found" });
+  });
+
   app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
     const status = err.status || err.statusCode || 500;
     const message = err.message || "Internal Server Error";
