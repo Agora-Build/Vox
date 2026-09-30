@@ -65,6 +65,7 @@ const MIGRATIONS: Array<{ version: number; description: string; file: string | n
   { version: 41, description: "unified steps model: phoneDial/restfulTrigger dissolve into Setup/Teardown step scripts", file: "0040_steps_model.sql" },
   { version: 42, description: "voice-agent-tester removed: delete VAT evalflows, fail their queued jobs, drop stray app keys", file: "0041_remove_vat.sql" },
   { version: 43, description: "evalflow → eval_flow: table, FK columns, snapshot key, tier indexes (aligns the eval-* family)", file: "0042_eval_flow_rename.sql" },
+  { version: 44, description: "index eval_agents (site_id, last_seen_at) for the no-agent reaper", file: "0043_eval_agents_site_index.sql" },
 ];
 
 const TARGET_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version;

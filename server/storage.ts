@@ -1477,7 +1477,11 @@ export class DatabaseStorage {
   // excludeTeamTier: see failPendingJobsWithNoAgent above — same reason, same
   // caller-supplied condition (organizations provider absent), and likewise
   // REQUIRED so a future sweep caller cannot omit it by accident.
-  async failExpiredPendingJobs(maxWaitMinutes: number, excludeTeamTier: boolean): Promise<number> {
+  // Batched (#83): each round fails at most batchSize rows, so a large backlog —
+  // the first tick after a deploy, or after an outage — is many short writes
+  // instead of one long one. SKIP LOCKED: a row another transaction holds (a
+  // claim in flight) is left for the next tick instead of waited on.
+  async failExpiredPendingJobs(maxWaitMinutes: number, excludeTeamTier: boolean, batchSize = 500): Promise<number> {
     const cutoff = new Date(Date.now() - maxWaitMinutes * 60 * 1000);
     const message = `Not claimed by any eval agent within ${maxWaitMinutes} min`;
     // Pooled backstop message (24h by default): render hours when the window is
@@ -1485,30 +1489,41 @@ export class DatabaseStorage {
     // ("within 1440 min"), and avoid the "eligible eligible agent" repeat when
     // target_tier is somehow null on a pooled row.
     const pooledWaitLabel = maxWaitMinutes % 60 === 0 ? `${maxWaitMinutes / 60}h` : `${maxWaitMinutes} min`;
-    const result = await db.execute(sql`
-      UPDATE eval_jobs
-      SET status = 'failed'::eval_job_status,
-          error = CASE
-            WHEN target_region IS NOT NULL
-              THEN 'No eligible ' || COALESCE(target_tier::text, 'matching') || ' agent in ' || target_region || ' claimed the job within ' || ${pooledWaitLabel}
-            ELSE ${message}
-          END
-          -- A healthy, heartbeating agent skips a job that needs a newer
-          -- framework than it has (GET /api/eval-agent/jobs filters on it), so
-          -- the fast-fail spares the job and only this backstop fires. Say
-          -- what the job needed instead of leaving the user to guess (#81).
-          || CASE
-            WHEN config->>'frameworkVersion' IS NOT NULL
-              THEN ' (requires eval-agent frameworkVersion >= ' || (config->>'frameworkVersion') || ')'
-            ELSE ''
-          END,
-          completed_at = NOW(),
-          updated_at = NOW()
-      WHERE status = 'pending'::eval_job_status
-      AND GREATEST(created_at, updated_at) < ${cutoff}
-      ${excludeTeamTier ? sql`AND target_tier IS DISTINCT FROM 'team'` : sql``}
-    `);
-    return (result as unknown as { rowCount: number }).rowCount || 0;
+    let total = 0;
+    for (;;) {
+      const result = await db.execute(sql`
+        UPDATE eval_jobs
+        SET status = 'failed'::eval_job_status,
+            error = CASE
+              WHEN target_region IS NOT NULL
+                THEN 'No eligible ' || COALESCE(target_tier::text, 'matching') || ' agent in ' || target_region || ' claimed the job within ' || ${pooledWaitLabel}
+              ELSE ${message}
+            END
+            -- A healthy, heartbeating agent skips a job that needs a newer
+            -- framework than it has (GET /api/eval-agent/jobs filters on it), so
+            -- the fast-fail spares the job and only this backstop fires. Say
+            -- what the job needed instead of leaving the user to guess (#81).
+            || CASE
+              WHEN config->>'frameworkVersion' IS NOT NULL
+                THEN ' (requires eval-agent frameworkVersion >= ' || (config->>'frameworkVersion') || ')'
+              ELSE ''
+            END,
+            completed_at = NOW(),
+            updated_at = NOW()
+        WHERE id IN (
+          SELECT id FROM eval_jobs
+          WHERE status = 'pending'::eval_job_status
+          AND GREATEST(created_at, updated_at) < ${cutoff}
+          ${excludeTeamTier ? sql`AND target_tier IS DISTINCT FROM 'team'` : sql``}
+          ORDER BY id
+          LIMIT ${batchSize}
+          FOR UPDATE SKIP LOCKED
+        )
+      `);
+      const n = (result as unknown as { rowCount: number }).rowCount || 0;
+      total += n;
+      if (n < batchSize) return total;
+    }
   }
 
   // Recently-terminal targeted jobs (completed or failed) that may still hold an

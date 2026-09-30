@@ -209,6 +209,16 @@ d("pending reapers (real SQL)", () => {
     expect(done!.completedAt).not.toBeNull();
   });
 
+  it("#83: the backstop drains a backlog larger than one batch", async () => {
+    const stamp = Date.now();
+    const jobs = await Promise.all([1, 2, 3, 4, 5].map((i) => mkPinned(`zz-batch-${stamp}-0${i}`, 0)));
+    for (const j of jobs) await backdate(j.id, 25 * 60);
+    // Batches of 2: five of ours (plus any other stale rows) take several rounds.
+    const failed = await storage.failExpiredPendingJobs(24 * 60, true, 2);
+    expect(failed).toBeGreaterThanOrEqual(5);
+    for (const j of jobs) expect((await storage.getEvalJob(j.id))!.status).toBe("failed");
+  });
+
   it("#81: the 24h backstop names the frameworkVersion a job required", async () => {
     const gated = await mkPinned(`zz-backstop-${Date.now()}-01`, 0, { frameworkVersion: "0.9.0" });
     const plain = await mkPinned(`zz-backstop-${Date.now()}-02`, 0);
