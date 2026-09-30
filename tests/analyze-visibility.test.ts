@@ -48,12 +48,14 @@ d("analyze results: where they show (real SQL)", () => {
     analyzeResultId = (await storage.createEvalResult({
       evalJobId: a.id, providerId: provider.id, siteId: null, recordingRegion: REGION, responseLatencyMedian: 900,
     } as any)).id;
-    // Control: an ordinary job of the same user.
+    // Control: an ordinary job of the same user. 'failed', not 'completed':
+    // other suites pick "the newest completed job" off the shared dev DB, and
+    // this one is deleted in afterAll.
     const e = await storage.createEvalJob({
       evalFlowId: null, triggerType: 2, evalSetId: null, createdBy: ME,
       siteId: "na-us-seattle-01", targetRegion: null, targetTier: null, config: {},
       snapshot: { provider: null, evalFlow: null, evalSet: null, creatorPlan: null } as any,
-      status: "completed", priority: 0, retryCount: 0, maxRetries: 3,
+      status: "failed", priority: 0, retryCount: 0, maxRetries: 3,
     } as any);
     evalJobId = e.id; jobIds.push(e.id);
   });
