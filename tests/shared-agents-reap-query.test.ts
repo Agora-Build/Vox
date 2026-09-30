@@ -175,7 +175,7 @@ d("storage.getReapableSharedJobs", () => {
     const settled: number[] = [];
     for (let i = 0; i < 5; i++) settled.push(await mk(818180 + i, 50.9 - i * 0.01));
     const unsettled = await mk(818189, 50.5);
-    for (const id of settled) await storage.markSettlementDone(id);
+    for (const id of settled) await storage.markSettlementDone((await storage.getEvalJob(id))!);
 
     // Window [now-51m, now-50m], batch of 3: before the marker, the 3 oldest
     // (settled) rows filled it and the unsettled job was never reached.
@@ -198,10 +198,16 @@ d("storage.getReapableSharedJobs", () => {
       status: "running", priority: 0, retryCount: 0, maxRetries: 3,
     } as any);
     jobIds.push(job.id);
-    await storage.markSettlementDone(job.id);
+    await storage.markSettlementDone({ id: job.id, status: "running" });
     expect((await storage.getEvalJob(job.id))!.settlementDoneAt).toBeNull();
+    // settle() saw it running (and did nothing); a reaper then fails it before
+    // the mark is written. The mark must still not hide it from the sweep.
     await storage.finalizeRunningJob(job.id, undefined);
-    await storage.markSettlementDone(job.id);
+    await storage.markSettlementDone({ id: job.id, status: "running" });
+    expect((await storage.getEvalJob(job.id))!.settlementDoneAt).toBeNull();
+    // Settled as terminal: marked.
+    const final = (await storage.getEvalJob(job.id))!;
+    await storage.markSettlementDone(final);
     expect((await storage.getEvalJob(job.id))!.settlementDoneAt).not.toBeNull();
   });
 });

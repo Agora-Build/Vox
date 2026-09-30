@@ -143,7 +143,7 @@ export async function runMaintenanceTasks() {
           continue;
         }
         try {
-          await storage.markSettlementDone(job.id); // settled: leave the sweep (#97)
+          await storage.markSettlementDone(job); // settled: leave the sweep (#97)
         } catch (markErr) {
           // Settled, but not marked: the next sweep settles it again (a no-op).
           console.error(`Settled job ${job.id}, but marking it settled failed:`, markErr);

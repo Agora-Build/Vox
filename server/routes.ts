@@ -4141,7 +4141,7 @@ export async function registerRoutes(
             // Resolved: nothing more to do for this job's settlement — keep it
             // out of the reap-settle sweep (#97). If this write fails, the sweep
             // settles it again (a no-op) and marks it then.
-            await storage.markSettlementDone(settledJob.id).catch((markErr) =>
+            await storage.markSettlementDone(settledJob).catch((markErr) =>
               console.error(`Settled job ${settledJob.id}, but marking it settled failed:`, markErr));
           }
         }

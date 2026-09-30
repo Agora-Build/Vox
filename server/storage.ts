@@ -1036,11 +1036,15 @@ export class DatabaseStorage {
     return result[0];
   }
 
-  // The ids among `ids` that name an existing, unrevoked token — one query.
+  // The ids among `ids` that name an existing, unrevoked, unexpired token — one query.
   async getLiveEvalAgentTokenIds(ids: number[]): Promise<Set<number>> {
     if (ids.length === 0) return new Set();
     const rows = await db.select({ id: evalAgentTokens.id }).from(evalAgentTokens)
-      .where(and(inArray(evalAgentTokens.id, Array.from(new Set(ids))), eq(evalAgentTokens.isRevoked, false)));
+      .where(and(
+        inArray(evalAgentTokens.id, Array.from(new Set(ids))),
+        eq(evalAgentTokens.isRevoked, false),
+        or(isNull(evalAgentTokens.expiresAt), gte(evalAgentTokens.expiresAt, new Date())),
+      ));
     return new Set(rows.map((r) => r.id));
   }
 
@@ -1549,16 +1553,19 @@ export class DatabaseStorage {
     }
   }
 
-  // Record that marketplace.settle() resolved for this job — only for a
-  // terminal job: settle() quietly ignores a non-terminal one (e.g. a job the
-  // complete route rolled back to running), and marking that would hide it
-  // from the sweep. The sweep skips marked jobs (#97).
-  async markSettlementDone(jobId: number): Promise<void> {
+  // Record that marketplace.settle() resolved for this job. `settled` is the
+  // job as it was handed to settle(): the mark is written only if that status
+  // was terminal AND the row still has it. settle() quietly ignores a
+  // non-terminal job (e.g. one the complete route rolled back to running), so
+  // marking it — even after a reaper fails it a moment later — would hide an
+  // unsettled job from the sweep. The sweep skips marked jobs (#97).
+  async markSettlementDone(settled: { id: number; status: string }): Promise<void> {
+    if (settled.status !== "completed" && settled.status !== "failed") return;
     await db.update(evalJobs)
       .set({ settlementDoneAt: new Date() })
       .where(and(
-        eq(evalJobs.id, jobId),
-        inArray(evalJobs.status, ["completed", "failed"]),
+        eq(evalJobs.id, settled.id),
+        eq(evalJobs.status, settled.status),
         isNull(evalJobs.settlementDoneAt),
       ));
   }
