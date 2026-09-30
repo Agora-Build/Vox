@@ -228,15 +228,17 @@ async function flowWithJob(owner: Session, runner: Session, visibility: "public"
     // Re-sending the current name changes nothing, whoever is allowed.
     const body = JSON.stringify({ name: providers[0].name });
 
-    const viaKey = await fetch(`${BASE_URL}/api/providers/${providers[0].id}`, {
+    // /api/admin routes are browser-session only: an API key — even an
+    // admin's — is not accepted as a login there at all.
+    const viaKey = await fetch(`${BASE_URL}/api/admin/providers/${providers[0].id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${adminKey}` },
       body,
     });
-    expect(viaKey.status).toBe(403);
+    expect(viaKey.status).toBe(401);
 
-    // Proves the 403 is about the key, not a broken route.
-    const viaBrowser = await call(admin, "PATCH", `/api/providers/${providers[0].id}`, { name: providers[0].name });
+    // Proves the refusal is about the key, not a broken route.
+    const viaBrowser = await call(admin, "PATCH", `/api/admin/providers/${providers[0].id}`, { name: providers[0].name });
     expect(viaBrowser.status).toBe(200);
   });
 

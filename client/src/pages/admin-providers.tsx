@@ -36,7 +36,7 @@ export default function AdminProviders() {
 
   const updateMutation = useMutation({
     mutationFn: async ({ id, data }: { id: string; data: Record<string, unknown> }) => {
-      return apiRequest("PATCH", `/api/providers/${id}`, data);
+      return apiRequest("PATCH", `/api/admin/providers/${id}`, data);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/providers"] });

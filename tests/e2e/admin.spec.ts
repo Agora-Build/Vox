@@ -322,7 +322,7 @@ test.describe("Admin Provider Management", () => {
   });
 
   test("should create new provider as admin", async () => {
-    const response = await adminRequest.post("/api/providers", {
+    const response = await adminRequest.post("/api/admin/providers", {
       data: {
         name: `Test Provider ${Date.now()}`,
         sku: "convoai",

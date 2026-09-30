@@ -49,7 +49,7 @@ test.describe("Admin User E2E Tests", () => {
   });
 
   test("admin can create providers", async () => {
-    const response = await adminRequest.post("/api/providers", {
+    const response = await adminRequest.post("/api/admin/providers", {
       data: {
         name: `Admin Test Provider ${Date.now()}`,
         sku: "convoai",
