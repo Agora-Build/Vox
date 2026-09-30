@@ -30,6 +30,14 @@ describe("the /api/admin prefix is exact", () => {
     expect(routes.filter((r) => r.path.startsWith("/api/admin")).length).toBeGreaterThan(25);
   });
 
+  it("the scan reads every route declaration — none in a form it can't parse", () => {
+    // A path in a variable, or a named handler instead of an inline one, would
+    // not match the scan; counting every declaration makes that fail here
+    // instead of the route silently escaping the checks below.
+    const declared = (src.match(/app\.(get|post|put|patch|delete)\(/g) ?? []).length;
+    expect(routes.length).toBe(declared);
+  });
+
   it("every route path is a plain double-quoted string the scan can read", () => {
     // A path in single quotes or a template literal would be skipped silently.
     const unreadable = Array.from(src.matchAll(/app\.(get|post|put|patch|delete)\(\s*[`']/g),
