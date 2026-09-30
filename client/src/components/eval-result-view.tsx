@@ -133,9 +133,9 @@ export function EvalResultView({ result }: { result: EvalResult }) {
           <CardTitle className="text-sm">Other Metrics</CardTitle>
         </CardHeader>
         <CardContent className="space-y-1">
-          <div className="flex justify-between"><span className="text-sm text-muted-foreground">Network</span><span className="text-sm font-mono">{result.networkResilience != null ? `${result.networkResilience}%` : "NA"}</span></div>
-          <div className="flex justify-between"><span className="text-sm text-muted-foreground">Naturalness</span><span className="text-sm font-mono">{result.naturalness != null ? `${result.naturalness}/5` : "NA"}</span></div>
-          <div className="flex justify-between"><span className="text-sm text-muted-foreground">Noise Red.</span><span className="text-sm font-mono">{result.noiseReduction != null ? `${result.noiseReduction}%` : "NA"}</span></div>
+          <div className="flex justify-between"><span className="text-sm text-muted-foreground">Network</span><span className="text-sm font-mono">{result.networkResilience != null ? `${result.networkResilience}%` : "N/A"}</span></div>
+          <div className="flex justify-between"><span className="text-sm text-muted-foreground">Naturalness</span><span className="text-sm font-mono">{result.naturalness != null ? `${result.naturalness}/5` : "N/A"}</span></div>
+          <div className="flex justify-between"><span className="text-sm text-muted-foreground">Noise Red.</span><span className="text-sm font-mono">{result.noiseReduction != null ? `${result.noiseReduction}%` : "N/A"}</span></div>
         </CardContent>
       </Card>
     </div>
