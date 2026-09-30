@@ -36,14 +36,13 @@ export async function runAnalyzeUpload(deps: AnalyzeUploadDeps): Promise<{ resul
 
     // The file lives in the uploader's own bucket, which they can change after
     // uploading: run only the recording Core checked, byte for byte.
-    const got = fs.readFileSync(wavPath);
-    if (got.length !== expected.sizeBytes || createHash('sha256').update(got).digest('hex') !== expected.sha256) {
+    const size = fs.statSync(wavPath).size;
+    if (size !== expected.sizeBytes || (await sha256OfFile(wavPath)) !== expected.sha256) {
       throw new Error("The file in storage isn't the recording that was uploaded (it changed afterwards).");
     }
 
     // Core checked it at upload; check again here, where a bad file would
     // otherwise cost a full aeval run.
-    const size = fs.statSync(wavPath).size;
     const fd = fs.openSync(wavPath, 'r');
     const head = Buffer.alloc(Math.min(size, HEADER_BYTES));
     try {
@@ -78,6 +77,13 @@ export async function runAnalyzeUpload(deps: AnalyzeUploadDeps): Promise<{ resul
     // What the pages show — metrics, turns, transcripts — is in the result.
     fs.rmSync(sessionDir, { recursive: true, force: true });
   }
+}
+
+/** SHA-256 of a file, read as a stream (it can be 100 MB). */
+async function sha256OfFile(file: string): Promise<string> {
+  const hash = createHash('sha256');
+  await pipeline(fs.createReadStream(file), hash);
+  return hash.digest('hex');
 }
 
 /** Stream `body` to `dest`, failing once it passes `maxBytes`. */

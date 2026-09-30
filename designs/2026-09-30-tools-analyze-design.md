@@ -164,6 +164,11 @@ used.
 - **Kept until deleted.** The WAV stays with the result until the analysis is
   deleted. Deleting is soft (`deleted_at`): the result and the file go, the
   row stays so the daily cap still counts it.
+- **Storage can change afterwards.** Each upload records where it went
+  (endpoint and bucket, never credentials). If the user later changes or
+  removes their storage, downloads refuse with that location, and delete
+  removes the analysis from Vox and tells them where the file still is.
+  Nothing is wrongly reported as deleted.
 - **No artifacts.** Everything the pages show is in the result row, so the
   agent uploads nothing and deletes its work dir. `/storage-config` refuses
   analyze jobs: an agent the uploader doesn't run never gets their

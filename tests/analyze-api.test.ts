@@ -221,12 +221,24 @@ d("Tools → Analyze API", () => {
       const job = await storage.createEvalJob({
         kind: "analyze", evalFlowId: null, triggerType: 2, evalSetId: null, createdBy: user.id,
         siteId: null, targetRegion: null, targetTier: null, config: {},
-        snapshot: { provider: null, evalFlow: null, evalSet: null, creatorPlan: "premium" } as any,
+        // With upload details, so only the job's state decides whether the
+        // recording is served.
+        snapshot: { provider: null, evalFlow: null, evalSet: null, creatorPlan: "premium",
+          analyze: { fileName: "x.wav", s3Key: "vox-analyze/x.wav", sha256: "0", sizeBytes: 1, durationSec: 1, recordingRegion: region } } as any,
         status: "running", priority: -10, retryCount: 0, maxRetries: 3, evalAgentId: agent.id,
       } as any);
       const res = await fetch(`${BASE_URL}/api/eval-agent/jobs/${job.id}/storage-config?leaseId=${agent.leaseId}`, { headers: auth });
       expect(res.status).toBe(404);
       expect(JSON.stringify(await res.json())).not.toContain("placeholder-secret");
+      // Nor can it attach artifact links to the result.
+      const art = await fetch(`${BASE_URL}/api/eval-agent/jobs/${job.id}/artifacts`, {
+        method: "POST", headers: auth, body: JSON.stringify({ leaseId: agent.leaseId, zipUrl: "https://elsewhere.example/x.zip", files: [] }),
+      });
+      expect(art.status).toBe(404);
+      // And once the job is over, the recording is no longer served to it.
+      await pool.query("UPDATE eval_jobs SET status = 'completed' WHERE id = $1", [job.id]);
+      const late = await fetch(`${BASE_URL}/api/eval-agent/jobs/${job.id}/upload?leaseId=${agent.leaseId}`, { headers: auth });
+      expect(late.status).toBe(404);
     } finally {
       await pool.query("DELETE FROM eval_jobs WHERE eval_agent_id IN (SELECT id FROM eval_agents WHERE token_id = $1)", [tok.id]);
       await pool.query("DELETE FROM eval_agents WHERE token_id = $1", [tok.id]);
@@ -294,6 +306,25 @@ d("Tools → Analyze API", () => {
       await pool.query("DELETE FROM eval_jobs WHERE id = $1", [job.id]);
       await pool.query("DELETE FROM user_storage_config WHERE user_id = $1", [other.id]);
     }
+  });
+
+  it("storage settings changed since the upload: delete says where the file stayed; download refuses", async () => {
+    // Uploaded to a bucket the user no longer has configured (theirs is "b").
+    const job = await storage.createEvalJob({
+      kind: "analyze", evalFlowId: null, triggerType: 2, evalSetId: null, createdBy: user.id,
+      siteId: null, targetRegion: null, targetTier: null, config: {},
+      snapshot: { provider: null, evalFlow: null, evalSet: null, creatorPlan: "premium", transport: "web",
+        analyze: { fileName: "x.wav", s3Key: "vox-analyze/old.wav", sha256: "0", sizeBytes: 1, durationSec: 1, recordingRegion: region,
+          storage: { endpoint: "https://old-storage.example", bucket: "old-bucket" } } } as any,
+      status: "completed", priority: -10, retryCount: 0, maxRetries: 3,
+    } as any);
+    const dl = await fetch(`${BASE_URL}/api/tools/analyze/${job.id}/recording`, { headers: { Cookie: user.cookie } });
+    expect(dl.status).toBe(409);
+    expect((await dl.json()).error).toMatch(/storage settings changed/i);
+    const del = await fetch(`${BASE_URL}/api/tools/analyze/${job.id}`, { method: "DELETE", headers: { Cookie: user.cookie } });
+    expect(del.status).toBe(200);
+    expect(await del.json()).toMatchObject({ leftInStorage: { endpoint: "https://old-storage.example", bucket: "old-bucket", key: "vox-analyze/old.wav" } });
+    expect((await storage.getEvalJob(job.id))!.deletedAt).not.toBeNull(); // gone from Vox
   });
 
   it("the list shows only the caller's analyses", async () => {

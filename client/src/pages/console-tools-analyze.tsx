@@ -156,10 +156,17 @@ export default function ConsoleToolsAnalyze() {
   });
 
   const remove = useMutation({
-    mutationFn: async (id: number) => { await apiRequest("DELETE", `/api/tools/analyze/${id}`); },
-    onSuccess: () => {
+    mutationFn: async (id: number) => {
+      const res = await apiRequest("DELETE", `/api/tools/analyze/${id}`);
+      // 200 (not 204): removed from Vox, but the file stayed in storage the
+      // user no longer has configured.
+      return res.status === 200 ? (await res.json()) as { leftInStorage?: { endpoint: string; bucket: string; key: string } } : {};
+    },
+    onSuccess: ({ leftInStorage }) => {
       queryClient.invalidateQueries({ queryKey: ["/api/tools/analyze"] });
-      toast({ title: "Analysis deleted", description: "The recording was removed from your storage too." });
+      toast(leftInStorage
+        ? { title: "Analysis deleted from Vox", description: `Your storage settings changed since the upload, so the recording is still in bucket "${leftInStorage.bucket}" at ${leftInStorage.endpoint} (${leftInStorage.key}). Delete it there if you no longer need it.` }
+        : { title: "Analysis deleted", description: "The recording was removed from your storage too." });
     },
     onError: (e: Error) => toast({ title: "Couldn't delete the analysis", description: e.message, variant: "destructive" }),
   });

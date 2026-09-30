@@ -114,6 +114,12 @@ export class NoUserStorageError extends Error {
   }
 }
 
+/** Where the user's storage points now (no credentials), or null. */
+export async function userStorageLocation(userId: number): Promise<{ endpoint: string; bucket: string } | null> {
+  const c = await storage.getUserStorageConfig(userId);
+  return c ? { endpoint: c.s3Endpoint, bucket: c.s3Bucket } : null;
+}
+
 /** The user's own bucket, or null when they haven't set one. */
 export async function userBucket(userId: number): Promise<{ client: S3Client; bucket: string } | null> {
   const userConfig = await storage.getUserStorageConfig(userId);

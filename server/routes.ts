@@ -10,7 +10,7 @@ import { SECRET_NAME_PATTERN, collectSecretRefs, secretValueError } from "@share
 import { deriveScheduleStatus } from "@shared/schedule-status";
 import { regionSiteSequence } from "@shared/regions";
 import { registerApiV1Routes } from "./routes-api-v1";
-import { generateSignedUrlForUser, putUserObject, getUserObjectStream, deleteUserObject } from "./s3";
+import { generateSignedUrlForUser, putUserObject, getUserObjectStream, deleteUserObject, userStorageLocation } from "./s3";
 import { parseWavHeader, analyzeWavError, ANALYZE_MAX_BYTES } from "@shared/wav";
 import type { EvalJob, InsertEvalJob, JobSnapshot } from "@shared/schema";
 import { forAgentJobList } from "./analyze";
@@ -1540,6 +1540,17 @@ export async function registerRoutes(
     return undefined;
   };
 
+  // Whether an analysis's recording is no longer where the uploader's storage
+  // points (they changed or removed it since): its key would resolve against
+  // the wrong bucket. Rows from before the location was recorded: unknown.
+  const recordingMoved = async (userId: number, a: NonNullable<JobSnapshot["analyze"]>) => {
+    if (!a.storage) return false;
+    const now = await userStorageLocation(userId);
+    return !now || now.endpoint !== a.storage.endpoint || now.bucket !== a.storage.bucket;
+  };
+  const movedMessage = (a: NonNullable<JobSnapshot["analyze"]>) =>
+    `Your storage settings changed since this recording was uploaded: it is in bucket "${a.storage?.bucket}" at ${a.storage?.endpoint}.`;
+
   // Stream a file from the uploader's storage to a response. Their endpoint
   // can fail mid-stream (it's theirs); pipe() would leave the response open
   // forever, so end it instead.
@@ -1615,6 +1626,7 @@ export async function registerRoutes(
       if (wavError || "error" in info) return res.status(400).json({ error: wavError });
 
       const s3Key = `vox-analyze/${user.id}/${randomUUID()}.wav`;
+      const location = await userStorageLocation(user.id);
       try {
         await putUserObject(user.id, s3Key, body, "audio/wav");
       } catch (err) {
@@ -1648,6 +1660,7 @@ export async function registerRoutes(
             sizeBytes: body.length,
             durationSec: info.durationSec,
             recordingRegion: region.baseId,
+            ...(location ? { storage: location } : {}),
           },
         },
         status: "pending",
@@ -1704,6 +1717,7 @@ export async function registerRoutes(
       const job = await findAnalyzeJob(req.params.id, user);
       const a = (job?.snapshot as JobSnapshot | null)?.analyze;
       if (!job || !a) return res.status(404).json({ error: "Analysis not found" });
+      if (await recordingMoved(job.createdBy!, a)) return res.status(409).json({ error: movedMessage(a) });
       const { body, contentLength } = await getUserObjectStream(job.createdBy!, a.s3Key);
       res.setHeader("Content-Type", "audio/wav");
       // ASCII fallback plus the real (UTF-8) name, RFC 6266 — a raw non-Latin-1
@@ -1731,6 +1745,13 @@ export async function registerRoutes(
       // 2. The recording leaves the bucket. If that fails, the row (and the
       //    key to the file) stays, so deleting again retries.
       const a = (job.snapshot as JobSnapshot | null)?.analyze;
+      if (a && (await recordingMoved(job.createdBy!, a))) {
+        // The file isn't in the storage Vox can reach now; it's in the
+        // user's own old bucket. Remove the analysis from Vox and say where
+        // the file is, rather than claim it was deleted.
+        await storage.finishAnalyzeJobDelete(job.id);
+        return res.json({ leftInStorage: { endpoint: a.storage!.endpoint, bucket: a.storage!.bucket, key: a.s3Key } });
+      }
       if (a) {
         try {
           await deleteUserObject(job.createdBy!, a.s3Key);
@@ -4440,6 +4461,8 @@ export async function registerRoutes(
       // Only the agent that ran this job (matching lease) may store its artifacts.
       const auth = await authorizeJobAgent(jobId, evalAgentToken.id, leaseId);
       if (auth.status !== "ok") { denyJobAgent(res, auth); return; }
+      // An analysis has no artifacts (Tools → Analyze).
+      if (auth.job.kind === "analyze") return res.status(404).json({ error: "An analysis has no artifacts to store" });
 
       if (!zipUrl) {
         return res.status(400).json({ error: "zipUrl is required" });
@@ -4615,9 +4638,12 @@ export async function registerRoutes(
       const auth = await authorizeJobAgent(parseInt(req.params.jobId), evalAgentToken.id, req.query.leaseId);
       if (auth.status !== "ok") { denyJobAgent(res, auth); return; }
       const a = (auth.job.snapshot as JobSnapshot | null)?.analyze;
-      if (auth.job.kind !== "analyze" || !a || !auth.job.createdBy || auth.job.deletedAt) {
+      // Only while the job runs: a finished job keeps its agent id, and that
+      // agent must not keep fetching the uploader's recording.
+      if (auth.job.kind !== "analyze" || !a || !auth.job.createdBy || auth.job.deletedAt || auth.job.status !== "running") {
         return res.status(404).json({ error: "This job has no uploaded recording" });
       }
+      if (await recordingMoved(auth.job.createdBy, a)) return res.status(409).json({ error: movedMessage(a) });
       const { body, contentLength } = await getUserObjectStream(auth.job.createdBy, a.s3Key);
       // The uploader can replace the object in their own bucket: serve only a
       // file of the size recorded at upload, and tell the agent its SHA-256

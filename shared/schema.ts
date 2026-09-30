@@ -408,6 +408,9 @@ export type AnalyzeSnapshot = {
   sizeBytes: number;
   durationSec: number;
   recordingRegion: string;
+  // Where the file was stored (never credentials). The user can change their
+  // storage later; reads and deletes must know the file isn't there.
+  storage?: { endpoint: string; bucket: string };
 };
 
 export const evalJobs = pgTable("eval_jobs", {
