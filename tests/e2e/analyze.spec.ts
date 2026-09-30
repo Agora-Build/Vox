@@ -111,4 +111,61 @@ test.describe("Tools → Analyze", () => {
       await api.dispose();
     }
   });
+
+  test("a marketplace agent, for credits: cost shown, consent required, marked on the row", async ({ page, playwright }) => {
+    const s3 = ["S3_ENDPOINT", "S3_BUCKET", "S3_ACCESS_KEY_ID", "S3_SECRET_ACCESS_KEY"].map((k) => process.env[k]);
+    test.skip(s3.some((v) => !v), "needs S3 settings in the environment (.env)");
+    test.setTimeout(3 * 60_000);
+    const { email, api } = await newPremiumUser(playwright);
+    const admin = await playwright.request.newContext({ baseURL: BASE });
+    await admin.post("/api/auth/login", { data: { email: "admin@vox.local", password: "admin123456" } });
+    const wavPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "e2e-analyze-")), "paid.wav");
+    fs.writeFileSync(wavPath, makeConversationWav());
+    // A marketplace agent (the admin's) that can analyze, at 7 credits a file.
+    const base = (await (await admin.get("/api/region-locations")).json()).find((r: { isActive: boolean }) => r.isActive).baseId;
+    const tok = await (await admin.post("/api/eval-agent-tokens", { data: { name: `e2e-paid-${Date.now()}`, regionLocationBaseId: base, dispatchTier: "public" } })).json();
+    try {
+      const reg = await admin.post("/api/eval-agent/register", { headers: { Authorization: `Bearer ${tok.token}` }, data: { name: "e2e-paid-agent", capabilities: ["analyze"] } });
+      expect(reg.ok()).toBe(true);
+      expect((await admin.patch(`/api/eval-agent-tokens/${tok.id}`, { data: { dispatchTier: "shared", pricePerUnit: 7 } })).ok()).toBe(true);
+      const me = await (await api.get("/api/auth/status")).json();
+      expect((await admin.post("/api/plugins/credits/grants", { data: { userId: me.user.id, credits: 50, reason: "e2e", idempotencyKey: `e2e-paid-${Date.now()}` } })).ok()).toBe(true);
+      expect((await api.put("/api/user/storage-config", {
+        data: { s3Endpoint: s3[0], s3Bucket: s3[1], s3AccessKeyId: s3[2], s3SecretAccessKey: s3[3], s3Region: process.env.S3_REGION || "auto" },
+      })).ok()).toBe(true);
+
+      await loginUI(page, email);
+      await page.goto(`${BASE}/console/tools/analyze`);
+      await page.getByTestId("analyze-file-input").setInputFiles(wavPath);
+      const pick = async (testId: string, option: string | RegExp) => {
+        await page.getByTestId(testId).click();
+        await page.getByRole("option", { name: option }).first().focus();
+        await page.keyboard.press("Enter");
+      };
+      await pick("analyze-all-provider", "Agora ConvoAI Engine");
+      await pick("analyze-all-region", /.+/);
+      await pick("analyze-all-source", "Web session");
+      const submit = page.getByTestId("analyze-submit");
+      await expect(submit).toBeEnabled(); // free: no consent needed
+
+      await pick("analyze-run-on", /7 credits per file/);
+      await expect(page.getByTestId("analyze-cost")).toContainText("1 file × 7 = 7 credits");
+      await expect(page.getByTestId("analyze-cost")).toContainText("you have 50");
+      await expect(submit).toBeDisabled(); // consent first
+      await page.getByTestId("analyze-consent").click();
+      await expect(submit).toBeEnabled();
+      await submit.click();
+
+      const row = page.getByTestId("analyze-row").filter({ hasText: "paid.wav" });
+      await expect(row).toContainText("Marketplace");
+      expect((await (await api.get("/api/plugins/credits/balance")).json()).credits).toBe(43); // 7 held
+    } finally {
+      // Delete the queued paid analysis (the sweep refunds its hold), then tidy up.
+      for (const a of await (await api.get("/api/tools/analyze")).json()) await api.delete(`/api/tools/analyze/${a.id}`);
+      await api.delete("/api/user/storage-config");
+      await admin.post(`/api/eval-agent-tokens/${tok.id}/revoke`);
+      await api.dispose();
+      await admin.dispose();
+    }
+  });
 });

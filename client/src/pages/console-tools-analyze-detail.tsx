@@ -51,6 +51,7 @@ export default function ConsoleToolsAnalyzeDetail({ id }: { id: number }) {
               {" · "}recorded in {job.recordingRegion ? formatRegion(job.recordingRegion) : "-"}
               {" · "}{job.source === "phone" ? "phone call" : "web session"}
               {" · "}{formatDuration(job.durationSec)}
+              {job.runOn === "marketplace" && " · on a marketplace agent"}
               {" · "}submitted {formatSmartTimestamp(job.createdAt)}
             </p>
           </div>

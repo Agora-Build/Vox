@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -13,7 +14,7 @@ import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, 
 import { AudioWaveform, CheckCircle, Clock, FileAudio, HardDrive, Loader2, Trash2, Upload, X, XCircle } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import { formatRegion, formatSmartTimestamp, type RegionLocation } from "@/lib/utils";
+import { formatRegion, formatSite, formatSmartTimestamp, type RegionLocation } from "@/lib/utils";
 import { parseWavHeader, analyzeWavError, ANALYZE_HEADER_BYTES } from "@shared/wav";
 
 // Tools → Analyze: upload stereo recordings (left = user, right = agent) and
@@ -30,8 +31,11 @@ export interface AnalysisRow {
   durationSec: number | null;
   createdAt: string;
   completedAt: string | null;
+  runOn: "vox" | "marketplace";
   hasResult: boolean;
 }
+
+interface MarketplaceAgent { tokenId: number; siteId: string; pricePerUnit: number }
 
 interface Provider { id: string; name: string }
 type Source = "web" | "phone";
@@ -100,6 +104,9 @@ export default function ConsoleToolsAnalyze() {
   const [shared, setShared] = useState<Choice>(EMPTY);
   const [dragging, setDragging] = useState(false);
   const [deleting, setDeleting] = useState<AnalysisRow | null>(null);
+  // "vox" = the free Vox agents; otherwise a marketplace agent's token id.
+  const [runOn, setRunOn] = useState<string>("vox");
+  const [consent, setConsent] = useState(false);
 
   const { data: auth } = useQuery<{ user: { plan: string } | null }>({ queryKey: ["/api/auth/status"] });
   const isBasic = auth?.user?.plan === "basic";
@@ -110,6 +117,9 @@ export default function ConsoleToolsAnalyze() {
   const ready = !!auth?.user && !isBasic && !!storageConfig;
   const { data: providers = [] } = useQuery<Provider[]>({ queryKey: ["/api/providers"], enabled: ready });
   const { data: regions = [] } = useQuery<RegionLocation[]>({ queryKey: ["/api/region-locations"], enabled: ready });
+  const { data: marketplaceAgents = [] } = useQuery<MarketplaceAgent[]>({ queryKey: ["/api/tools/analyze/agents"], enabled: ready });
+  const paidAgent = marketplaceAgents.find((a) => String(a.tokenId) === runOn) ?? null;
+  const { data: credits } = useQuery<{ credits: number }>({ queryKey: ["/api/plugins/credits/balance"], enabled: ready && !!paidAgent });
   const { data: analyses, isLoading: listLoading } = useQuery<AnalysisRow[]>({
     queryKey: ["/api/tools/analyze"],
     enabled: ready,
@@ -125,14 +135,17 @@ export default function ConsoleToolsAnalyze() {
   };
 
   const choiceFor = (f: PickedFile) => (sameForAll ? shared : f.choice);
-  const canSubmit = picked.length > 0 && picked.every((f) => !f.problem && complete(choiceFor(f)));
+  const totalCost = paidAgent ? paidAgent.pricePerUnit * picked.length : 0;
+  const canSubmit = picked.length > 0 && picked.every((f) => !f.problem && complete(choiceFor(f)))
+    && (!paidAgent || consent);
 
   const upload = useMutation({
     mutationFn: async () => {
       const failed: string[] = [];
       for (const f of picked) {
         const c = choiceFor(f);
-        const q = new URLSearchParams({ provider: c.provider, region: c.region, source: c.source, fileName: f.file.name });
+        const q = new URLSearchParams({ provider: c.provider, region: c.region, source: c.source, fileName: f.file.name,
+          ...(paidAgent ? { agent: String(paidAgent.tokenId), consent: consent ? "1" : "0" } : {}) });
         const res = await fetch(`/api/tools/analyze?${q}`, {
           method: "POST", credentials: "include", headers: { "Content-Type": "audio/wav" }, body: f.file,
         });
@@ -145,6 +158,7 @@ export default function ConsoleToolsAnalyze() {
     },
     onSuccess: ({ sent, failed }) => {
       queryClient.invalidateQueries({ queryKey: ["/api/tools/analyze"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/plugins/credits/balance"] });
       if (failed.length === 0) {
         toast({ title: sent === 1 ? "Analysis queued" : `${sent} analyses queued`, description: "Results appear below when the analysis is done." });
         setPicked([]);
@@ -264,6 +278,34 @@ export default function ConsoleToolsAnalyze() {
                   </div>
                 ))}
               </div>
+              <div className="space-y-2 rounded-md border p-3">
+                <Label>Run on</Label>
+                <Select value={runOn} onValueChange={(v) => { setRunOn(v); setConsent(false); }}>
+                  <SelectTrigger data-testid="analyze-run-on" className="sm:max-w-md"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="vox">Vox agents (free)</SelectItem>
+                    {marketplaceAgents.map((a) => (
+                      <SelectItem key={a.tokenId} value={String(a.tokenId)}>
+                        Marketplace agent · {formatSite(a.siteId)} · {a.pricePerUnit} credits per file
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                {paidAgent && (
+                  <>
+                    <p className="text-sm text-muted-foreground" data-testid="analyze-cost">
+                      {picked.length} file{picked.length !== 1 ? "s" : ""} × {paidAgent.pricePerUnit} = <span className="font-medium text-foreground">{totalCost} credits</span>
+                      {credits != null && <> (you have {credits.credits})</>}. Held when you upload; charged when an analysis finishes, refunded if it fails.
+                    </p>
+                    <div className="flex items-start gap-2">
+                      <Checkbox id="analyze-consent" checked={consent} onCheckedChange={(v) => setConsent(v === true)} data-testid="analyze-consent" />
+                      <Label htmlFor="analyze-consent" className="text-sm font-normal leading-snug">
+                        I understand that this agent is run by someone else, and its operator will receive my recording{picked.length !== 1 ? "s" : ""}.
+                      </Label>
+                    </div>
+                  </>
+                )}
+              </div>
               <Button onClick={() => upload.mutate()} disabled={!canSubmit || upload.isPending} className="gap-2" data-testid="analyze-submit">
                 {upload.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
                 {upload.isPending ? "Uploading…" : picked.length === 1 ? "Analyze" : `Analyze ${picked.length} files`}
@@ -302,6 +344,7 @@ export default function ConsoleToolsAnalyze() {
                       <TableCell>
                         <Link href={`/console/tools/analyze/${a.id}`} className="font-medium text-primary hover:underline">{a.fileName ?? `#${a.id}`}</Link>
                         <span className="ml-2 text-xs text-muted-foreground">{formatDuration(a.durationSec)}</span>
+                        {a.runOn === "marketplace" && <Badge variant="outline" className="ml-2">Marketplace</Badge>}
                       </TableCell>
                       <TableCell>{a.provider?.name ?? "-"}</TableCell>
                       <TableCell>{a.recordingRegion ? formatRegion(a.recordingRegion) : "-"}</TableCell>

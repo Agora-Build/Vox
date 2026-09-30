@@ -92,6 +92,20 @@ My Evals queries all keep working unchanged.
   with other resources. Deleting an analysis deletes the job (its result cascades)
   and the stored WAV.
 
+### Marketplace agents, for credits (added after review)
+
+The uploader can instead pick a marketplace (shared) agent from a "Run on"
+choice (default: Vox agents, free). This is the existing paid-dispatch flow:
+
+- The form lists marketplace agents that report `analyze`, with their price
+  (`GET /api/tools/analyze/agents`), and shows the total: files × price.
+- The uploader must tick consent: the agent is run by someone else, and its
+  operator receives the recording. Recorded as `snapshot.recordingConsent`.
+- Price: one unit at the agent's listed price per file (same as one eval run),
+  held by `authorizeDispatch` at upload (402 when short), captured when a
+  result comes back, refunded if the analysis fails or is deleted while queued.
+- The job targets that token; only it may claim the analysis.
+
 ### Which agent runs it
 
 Analysis doesn't depend on where the agent is, so an analyze job has no site and
