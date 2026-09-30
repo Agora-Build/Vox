@@ -1483,8 +1483,14 @@ export class DatabaseStorage {
   // Backstop: fail any pending job that has waited longer than maxWaitMinutes,
   // regardless of agent availability. Catches pathological cases the no-agent
   // fast-fail misses (e.g. a region that always has an online agent which somehow
-  // never claims the job). Terminal (failed). Ages from GREATEST(created_at,
-  // updated_at) for the same requeue reason as failPendingJobsWithNoAgent above.
+  // never claims the job). Terminal (failed). Ages from created_at — NOT
+  // GREATEST(created_at, updated_at) like the no-agent reaper: every requeue
+  // (no-agent, stale agent, agent restart) bumps updated_at, and a clock that
+  // restarts on each requeue let a job stay pending for days. A paid dispatch's
+  // escrow is sized to "a day in the queue, then one run" (see
+  // tests/shared-agents-timing.test.ts); past that the leak reaper refunds it
+  // while the job could still run, unpaid. So a job more than a day old fails,
+  // however many times it was requeued.
   // excludeTeamTier: see failPendingJobsWithNoAgent above — same reason, same
   // caller-supplied condition (organizations provider absent), and likewise
   // REQUIRED so a future sweep caller cannot omit it by accident.
@@ -1493,6 +1499,8 @@ export class DatabaseStorage {
   // instead of one long one. SKIP LOCKED: a row another transaction holds (a
   // claim in flight) is left for the next tick instead of waited on.
   async failExpiredPendingJobs(maxWaitMinutes: number, excludeTeamTier: boolean, batchSize = 500): Promise<number> {
+    // A batch of 0 would update nothing and never leave the loop.
+    if (!Number.isInteger(batchSize) || batchSize < 1) throw new Error(`batchSize must be a positive integer, got ${batchSize}`);
     const cutoff = new Date(Date.now() - maxWaitMinutes * 60 * 1000);
     const message = `Not claimed by any eval agent within ${maxWaitMinutes} min`;
     // Pooled backstop message (24h by default): render hours when the window is
@@ -1524,7 +1532,7 @@ export class DatabaseStorage {
         WHERE id IN (
           SELECT id FROM eval_jobs
           WHERE status = 'pending'::eval_job_status
-          AND GREATEST(created_at, updated_at) < ${cutoff}
+          AND created_at < ${cutoff}
           ${excludeTeamTier ? sql`AND target_tier IS DISTINCT FROM 'team'` : sql``}
           ORDER BY id
           LIMIT ${batchSize}

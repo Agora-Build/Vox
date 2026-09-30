@@ -7,6 +7,9 @@ import { STALE_HOLD_MS } from "../plugins/credits/server/reconcile";
 // legitimate long wait trips credits' invariant alarm (error log + degraded
 // health) before the leak reaper has had a chance to refund a real leak:
 //   longest legitimate hold  <  leak-reaper TTL  <  credits stale-hold alarm
+// The longest legitimate hold is a day in the queue and then one full run. That
+// holds however often a job is requeued, because the 24h backstop counts from
+// the job's creation, not from its last requeue (tests/tier-pool-claim.test.ts).
 const MIN = 60 * 1000;
 
 describe("dispatch hold timings", () => {

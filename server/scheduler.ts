@@ -135,9 +135,15 @@ export async function runMaintenanceTasks() {
             hasResult,
             settlementContext: (job.snapshot as { settlementContext?: unknown } | null)?.settlementContext,
           });
-          await storage.markSettlementDone(job.id); // settled: leave the sweep (#97)
         } catch (settleErr) {
           console.error(`Reap settlement failed for job ${job.id}:`, settleErr);
+          continue;
+        }
+        try {
+          await storage.markSettlementDone(job.id); // settled: leave the sweep (#97)
+        } catch (markErr) {
+          // Settled, but not marked: the next sweep settles it again (a no-op).
+          console.error(`Settled job ${job.id}, but marking it settled failed:`, markErr);
         }
       }
     }

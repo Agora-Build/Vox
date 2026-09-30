@@ -239,6 +239,22 @@ d("pending reapers (real SQL)", () => {
     for (const j of jobs) expect((await storage.getEvalJob(j.id))!.status).toBe("failed");
   });
 
+  it("the 24h backstop counts from creation: a requeue does not buy a day-old job more time", async () => {
+    // Otherwise every no-agent or stale-agent requeue restarted the 24h clock,
+    // and a paid dispatch could stay pending past the leak reaper's TTL.
+    const job = await mkPinned(`zz-backstop-requeued-${Date.now()}-01`, 1);
+    await pool.query(
+      `UPDATE eval_jobs SET created_at = now() - interval '25 hours', updated_at = now() - interval '5 minutes' WHERE id = $1`,
+      [job.id],
+    );
+    await storage.failExpiredPendingJobs(24 * 60, true);
+    expect((await storage.getEvalJob(job.id))!.status).toBe("failed");
+  });
+
+  it("the backstop refuses a batch size that would never finish", async () => {
+    await expect(storage.failExpiredPendingJobs(24 * 60, true, 0)).rejects.toThrow("batchSize must be a positive integer");
+  });
+
   it("#81: the 24h backstop names the frameworkVersion a job required", async () => {
     const gated = await mkPinned(`zz-backstop-${Date.now()}-01`, 0, { frameworkVersion: "0.9.0" });
     const plain = await mkPinned(`zz-backstop-${Date.now()}-02`, 0);
