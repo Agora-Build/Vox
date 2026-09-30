@@ -40,7 +40,9 @@ test("a finished eval job shows its result: cards, turns and transcripts", async
     await expect(page.getByText("1234ms").first()).toBeVisible();
     await expect(page.getByText("Response Turn-Level Latency")).toBeVisible();
     await expect(page.getByText("A: hi, how can I help")).toBeVisible();
-    // Not measured shows as N/A, never as a number.
+    // Not measured shows as N/A, never as a number: the latency boxes (this
+    // result has no interruptions) and Other Metrics alike.
+    await expect(page.getByText("Interrupt Latency", { exact: true }).locator("../..")).toContainText("N/A");
     for (const metric of ["Network", "Naturalness", "Noise Red."]) {
       await expect(page.getByText(metric, { exact: true }).locator("..")).toContainText("N/A");
     }

@@ -41,7 +41,7 @@ export function EvalResultView({ result }: { result: EvalResult }) {
   const pct = (v: number | null | undefined) => v == null ? "-" : `${Math.round(v * 100)}%`;
   const fmtT = (v: unknown) => v == null ? "-" : `${Number(v).toFixed(1)}s`;
   // null latency = NA (agent didn't respond) — never render it as 0 ms.
-  const ms = (v: number | null | undefined) => v == null ? "NA" : `${Math.round(v)}ms`;
+  const ms = (v: number | null | undefined) => v == null ? "N/A" : `${Math.round(v)}ms`;
 
   // Split interruptions into true vs false interrupts via each turn's case_id
   // (annotated at merge time). Turns without case_id (single-file runs) are
