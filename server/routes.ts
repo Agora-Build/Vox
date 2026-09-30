@@ -4025,10 +4025,6 @@ export async function registerRoutes(
         return res.status(403).json({ error: "Eval agent token has been revoked" });
       }
 
-      if (evalAgentToken.expiresAt && new Date() > new Date(evalAgentToken.expiresAt)) {
-        return res.status(403).json({ error: "Eval agent token has expired" });
-      }
-
       const { name, metadata } = req.body;
 
       // Capability declaration (design 2026-09-21 §8): validated allowlist; the

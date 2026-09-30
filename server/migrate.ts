@@ -70,6 +70,7 @@ const MIGRATIONS: Array<{ version: number; description: string; file: string | n
   { version: 46, description: "eval_jobs.unclaimed_count — no-agent requeues don't spend the crash-recovery retries", file: "0045_eval_job_unclaimed_count.sql" },
   { version: 47, description: "Tools → Analyze: eval_jobs.kind + eval_results.recording_region", file: "0046_tools_analyze.sql" },
   { version: 48, description: "#217: clear the placeholder Network/Naturalness/Noise triple from eval_results", file: "0047_clear_placeholder_metrics.sql" },
+  { version: 49, description: "#215: drop eval_agent_tokens.expires_at (never set; tokens are revoked, not expired)", file: "0048_drop_eval_agent_token_expiry.sql" },
 ];
 
 const TARGET_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version;
