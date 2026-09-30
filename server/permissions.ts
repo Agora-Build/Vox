@@ -240,8 +240,12 @@ export function isClaimable(
   // the phone gate: a phone recording's call has already happened, so its
   // analysis needs no phone.
   if (job.kind === "analyze") {
-    return token.analyzeCapable === true && token.dispatchTier !== "shared"
-      && (token.dispatchTier === "public" || token.createdBy === job.createdBy);
+    if (token.analyzeCapable !== true) return false;
+    // Paid: dispatched (with the uploader's consent) to one marketplace agent —
+    // that agent only.
+    if (job.targetTokenId != null) return job.targetTokenId === token.id;
+    // Free: any public agent, or the uploader's own; never a marketplace one.
+    return token.dispatchTier !== "shared" && (token.dispatchTier === "public" || token.createdBy === job.createdBy);
   }
 
   // Phone-transport jobs require the phone capability (design 2026-09-21 §8) —

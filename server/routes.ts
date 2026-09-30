@@ -1526,8 +1526,17 @@ export async function registerRoutes(
       durationSec: snap?.analyze?.durationSec ?? null,
       createdAt: job.createdAt,
       completedAt: job.completedAt,
+      // Paid analyses are dispatched to one marketplace agent.
+      runOn: job.targetTokenId != null ? "marketplace" as const : "vox" as const,
       hasResult,
     };
+  };
+
+  // Whether a token's agent reports the analyze capability (its latest agent).
+  const agentCanAnalyze = async (tokenId: number) => {
+    const agents = await storage.getEvalAgentsByTokenId(tokenId);
+    const caps = agents[0]?.capabilities;
+    return Array.isArray(caps) && (caps as string[]).includes("analyze");
   };
 
   // The analysis if the caller may see it: its uploader's; an admin's only
@@ -1616,6 +1625,22 @@ export async function registerRoutes(
       if (source !== "web" && source !== "phone") return res.status(400).json({ error: "Choose the recording's source: web or phone." });
       const fileName = (typeof q.fileName === "string" ? path.basename(q.fileName) : "").slice(0, 200) || "recording.wav";
 
+      // Paid: a marketplace agent the uploader picked. Its operator receives
+      // the recording, so that needs the uploader's explicit consent.
+      let paidToken: { id: number; siteId: string | null } | null = null;
+      if (typeof q.agent === "string" && q.agent !== "") {
+        const tokenId = Number(q.agent);
+        const token = Number.isInteger(tokenId) && tokenId > 0 ? await storage.getEvalAgentToken(tokenId) : undefined;
+        if (!token || token.isRevoked || token.dispatchTier !== "shared" || !getMarketplace()) {
+          return res.status(400).json({ error: "Choose a marketplace agent from the list." });
+        }
+        if (!(await agentCanAnalyze(token.id))) return res.status(400).json({ error: "That agent can't run analyses. Choose another." });
+        if (q.consent !== "1") {
+          return res.status(400).json({ error: "Confirm that the agent's operator will receive your recording (consent)." });
+        }
+        paidToken = { id: token.id, siteId: token.siteId };
+      }
+
       const body = req.body;
       if (!Buffer.isBuffer(body) || body.length === 0) {
         return res.status(400).json({ error: "Send the WAV file as the request body (Content-Type: audio/wav)." });
@@ -1636,6 +1661,20 @@ export async function registerRoutes(
         return res.status(502).json({ error: "Couldn't store the file in your storage. Check the settings on the Storage page." });
       }
 
+      // Paid: hold the price (one unit at the agent's listed price) now; it's
+      // captured when a result comes back and refunded otherwise.
+      let settlementContext: unknown = undefined;
+      if (paidToken) {
+        const authz = await getMarketplace()!.authorizeDispatch(user.id, paidToken.id, {
+          evalFlowId: null, evalSetId: null, region: paidToken.siteId, createdBy: user.id,
+        });
+        if (!authz.ok) {
+          await deleteObject(bucket, s3Key).catch(() => {});
+          return res.status(402).json({ error: authz.reason ?? "Not enough credits for this agent." });
+        }
+        settlementContext = authz.settlementContext;
+      }
+
       let job: EvalJob;
       try {
         job = await storage.createEvalJob({
@@ -1648,8 +1687,10 @@ export async function registerRoutes(
         siteId: null,
         targetRegion: null,
         targetTier: null,
+        targetTokenId: paidToken?.id ?? null,
         config: {},
         snapshot: {
+          ...(settlementContext !== undefined ? { settlementContext, recordingConsent: true } : {}),
           provider: { id: provider.id, name: provider.name, platformId: provider.platformId ?? null },
           evalFlow: null,
           evalSet: null,
@@ -1672,6 +1713,12 @@ export async function registerRoutes(
         maxRetries: 3,
       } as InsertEvalJob);
       } catch (err) {
+        // No job to settle: release the hold now instead of leaving it to the
+        // leak reaper.
+        if (settlementContext !== undefined) {
+          await getMarketplace()?.voidDispatch(settlementContext).catch((e) =>
+            console.error("[analyze] voiding a paid dispatch after a failed insert failed:", e));
+        }
         // No row will ever point at the file: take it back out of the bucket.
         await deleteObject(bucket, s3Key).catch((e) =>
           console.error(`[analyze] removing ${s3Key} after a failed insert failed:`, e instanceof Error ? e.message : e));
@@ -1695,6 +1742,28 @@ export async function registerRoutes(
     } catch (error) {
       console.error("Error listing analyses:", error);
       res.status(500).json({ error: "Failed to list analyses" });
+    }
+  });
+
+  // Marketplace agents that can run an analysis, with their price per file.
+  app.get("/api/tools/analyze/agents", requireAuth, async (req, res) => {
+    try {
+      const user = await getCurrentUser(req);
+      if (!user) return res.status(401).json({ error: "Not authenticated" });
+      const marketplace = getMarketplace();
+      if (!marketplace) return res.json([]);
+      const listed = await marketplace.listDispatchable(user.id);
+      const live = await storage.getLiveEvalAgentTokenIds(listed.map((l) => l.tokenId));
+      const out: Array<{ tokenId: number; siteId: string; pricePerUnit: number }> = [];
+      for (const l of listed) {
+        if (live.has(l.tokenId) && (await agentCanAnalyze(l.tokenId))) {
+          out.push({ tokenId: l.tokenId, siteId: l.region, pricePerUnit: l.pricePerUnit });
+        }
+      }
+      res.json(out);
+    } catch (error) {
+      console.error("Error listing analysis agents:", error);
+      res.status(500).json({ error: "Failed to list agents" });
     }
   });
 

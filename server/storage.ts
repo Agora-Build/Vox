@@ -1295,11 +1295,13 @@ export class DatabaseStorage {
                     OR ( $4 = 'public' AND (ej.config -> 'sessionInjection') IS NULL )
              ) )
            ) )
-           -- Tools → Analyze (design 2026-09-30): an analyze-capable agent the
-           -- uploader may use (public, or their own), never a marketplace one;
-           -- region and site play no part.
-           OR ( ej.kind = 'analyze' AND $9::boolean = true AND $4 <> 'shared'
-                AND ( $4 = 'public' OR ej.created_by = $5 ) ) )
+           -- Tools → Analyze (design 2026-09-30): an analyze-capable agent —
+           -- free: public or the uploader's own, never a marketplace one; paid:
+           -- the marketplace agent it was dispatched to. Region/site: no part.
+           -- Paid: dispatched to one marketplace agent — that agent only.
+           OR ( ej.kind = 'analyze' AND $9::boolean = true AND (
+                  ej.target_token_id = $2
+                  OR ( ej.target_token_id IS NULL AND $4 <> 'shared' AND ( $4 = 'public' OR ej.created_by = $5 ) ) ) ) )
          FOR UPDATE OF ej SKIP LOCKED`,
         [jobId, identity.id, identity.region, identity.dispatchTier, identity.createdBy, identity.ownerOrgId, identity.siteId, identity.phoneCapable === true, identity.analyzeCapable === true]
       );
@@ -1364,8 +1366,9 @@ export class DatabaseStorage {
             ) )
           ) )
           -- Tools → Analyze: see claimEvalJob.
-          OR ( ej.kind = 'analyze' AND $8::boolean = true AND $4 <> 'shared'
-               AND ( $4 = 'public' OR ej.created_by = $5 ) ) )
+          OR ( ej.kind = 'analyze' AND $8::boolean = true AND (
+                 ej.target_token_id = $1
+                 OR ( ej.target_token_id IS NULL AND $4 <> 'shared' AND ( $4 = 'public' OR ej.created_by = $5 ) ) ) ) )
         ORDER BY ej.priority DESC, ej.created_at ASC`,
       [identity.id, identity.region, identity.siteId, identity.dispatchTier, identity.createdBy, identity.ownerOrgId, identity.phoneCapable === true, identity.analyzeCapable === true],
     );

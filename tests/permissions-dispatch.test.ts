@@ -152,6 +152,13 @@ describe("isClaimable — analyze jobs", () => {
     expect(isClaimable(job, tok("public", 99))).toBe(false);
     expect(isClaimable(job, tok("private", 7, false))).toBe(false);
   });
+  it("aimed at a marketplace agent (paid): only that agent, and only if it can analyze", () => {
+    const paid = { ...job, targetTokenId: 5 };
+    expect(isClaimable(paid, { ...tok("shared", 99, true), id: 5 })).toBe(true);
+    expect(isClaimable(paid, { ...tok("shared", 99, false), id: 5 })).toBe(false);
+    expect(isClaimable(paid, { ...tok("public", 99, true), id: 6 })).toBe(false);  // not the one paid for
+    expect(isClaimable(paid, { ...tok("private", 7, true), id: 6 })).toBe(false); // not even the uploader's own
+  });
   it("an eval job is not claimable through the analyze rule", () => {
     // A site-pinned eval job for another site: the capability doesn't open it.
     const evalJob = { kind: "eval" as const, targetTokenId: null, targetRegion: null, siteId: "na-us-seattle-01", createdBy: 7 };

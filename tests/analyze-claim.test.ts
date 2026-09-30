@@ -34,9 +34,9 @@ const identity = (t: { id: number; siteId: string | null; region: string | null;
   id: t.id, siteId: t.siteId, region: t.region, dispatchTier: t.dispatchTier, createdBy: t.createdBy,
   ownerOrgId: null, locationTrust: "trusted", analyzeCapable,
 });
-const mkAnalyzeJob = async (createdBy = UPLOADER, transport: "web" | "phone" = "web") => {
+const mkAnalyzeJob = async (createdBy = UPLOADER, transport: "web" | "phone" = "web", targetTokenId: number | null = null) => {
   const j = await storage.createEvalJob({
-    kind: "analyze", evalFlowId: null, triggerType: 2, evalSetId: null, createdBy,
+    kind: "analyze", evalFlowId: null, triggerType: 2, evalSetId: null, createdBy, targetTokenId,
     siteId: null, targetRegion: null, targetTier: null, config: {},
     snapshot: { provider: null, evalFlow: null, evalSet: null, creatorPlan: null, transport } as any,
     status: "pending", priority: -10, retryCount: 0, maxRetries: 3,
@@ -87,6 +87,17 @@ d("analyze jobs: who may claim them (real SQL)", () => {
     expect(await listed(tok, true)).toContain(job.id); // phoneCapable not passed
     const agent = await storage.createEvalAgent({ tokenId: tok.id, name: `analyze-ph-${Date.now()}`, siteId: tok.siteId, state: "idle", metadata: {} } as any);
     expect(await storage.claimEvalJob(job.id, agent.id, identity(tok, true))).toBeDefined();
+  });
+
+  it("a paid analysis goes to the marketplace agent it was dispatched to, and only that one", async () => {
+    const shared = await mkToken("shared", OTHER);
+    const job = await mkAnalyzeJob(UPLOADER, "web", shared.id);
+    const bystander = await mkToken("public", OTHER);
+    expect(await listed(bystander, true)).not.toContain(job.id);
+    expect(await listed(shared, false)).not.toContain(job.id); // can't analyze: not offered
+    expect(await listed(shared, true)).toContain(job.id);
+    const agent = await storage.createEvalAgent({ tokenId: shared.id, name: `analyze-paid-${Date.now()}`, siteId: shared.siteId, state: "idle", metadata: {} } as any);
+    expect(await storage.claimEvalJob(job.id, agent.id, identity(shared, true))).toMatchObject({ status: "running", siteId: null });
   });
 
   it("an agent takes a waiting eval run before an analysis", async () => {

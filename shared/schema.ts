@@ -399,6 +399,9 @@ export type JobSnapshot = {
   // uploaded recording, in the uploader's own bucket, and where they said it
   // was made.
   analyze?: AnalyzeSnapshot;
+  // True iff the uploader acknowledged that the marketplace agent they paid
+  // for — a stranger's — receives the recording (paid analyses only).
+  recordingConsent?: boolean;
 };
 
 export type AnalyzeSnapshot = {
