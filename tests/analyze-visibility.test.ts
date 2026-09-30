@@ -81,6 +81,35 @@ d("analyze results: where they show (real SQL)", () => {
     }
   });
 
+  it("the My Evals region picker offers the stated region", async () => {
+    const { baseIds } = await storage.getAvailableRegions("myEvals", 24, ME);
+    expect(baseIds).toContain(REGION);
+  });
+
+  it("the /api/v1 results list keeps to eval runs", async () => {
+    const rows = await storage.getEvalResults({ ownerId: ME, limit: 500 });
+    expect(rows.some((r) => r.id === analyzeResultId)).toBe(false);
+  });
+
+  it("a deleted analysis leaves My Evals, even if its result arrived after the delete", async () => {
+    await pool.query("UPDATE eval_jobs SET deleted_at = now() WHERE id = $1", [analyzeJobId]);
+    try {
+      expect(has(await storage.getMyEvalMetrics(ME, 24, undefined, "web"))).toBe(false);
+    } finally {
+      await pool.query("UPDATE eval_jobs SET deleted_at = NULL WHERE id = $1", [analyzeJobId]);
+    }
+  });
+
+  it("the Analyze list shows a job once, even with two result rows", async () => {
+    const extra = await storage.createEvalResult({ evalJobId: analyzeJobId, providerId: (await storage.getAllProviders())[0].id, siteId: null } as any);
+    try {
+      const rows = await storage.getAnalyzeJobs(ME);
+      expect(rows.filter((r) => r.job.id === analyzeJobId)).toHaveLength(1);
+    } finally {
+      await pool.query("DELETE FROM eval_results WHERE id = $1", [extra.id]);
+    }
+  });
+
   it("files under the region the uploader stated, and not under Unverified", async () => {
     expect(has(await storage.getMyEvalMetrics(ME, 24, { baseIds: [REGION] }, "web"))).toBe(true);
     expect(has(await storage.getMyEvalMetrics(ME, 24, { baseIds: ["eu-de-frankfurt"] }, "web"))).toBe(false);

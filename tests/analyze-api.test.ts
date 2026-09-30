@@ -254,6 +254,48 @@ d("Tools → Analyze API", () => {
     expect(await third.json()).not.toMatchObject({ error: expect.stringMatching(/one upload at a time/i) });
   });
 
+  it("a storage endpoint that drops the download midway: the download ends, Core stays up", async () => {
+    // The user controls their storage endpoint: this one sends the headers of
+    // a 1000-byte object, then cuts the connection.
+    const { createServer } = await import("http");
+    const hostile = createServer((req, res) => {
+      res.writeHead(200, { "Content-Type": "audio/wav", "Content-Length": "1000" });
+      res.write(Buffer.alloc(10));
+      setTimeout(() => res.socket?.destroy(), 50);
+    });
+    await new Promise<void>((r) => hostile.listen(0, "127.0.0.1", () => r()));
+    const port = (hostile.address() as { port: number }).port;
+    const put = await fetch(`${BASE_URL}/api/user/storage-config`, {
+      method: "PUT", headers: { "Content-Type": "application/json", Cookie: other.cookie },
+      body: JSON.stringify({ s3Endpoint: `http://127.0.0.1:${port}`, s3Bucket: "b", s3AccessKeyId: "placeholder-id", s3SecretAccessKey: "placeholder-secret" }),
+    });
+    expect(put.ok).toBe(true);
+    const job = await storage.createEvalJob({
+      kind: "analyze", evalFlowId: null, triggerType: 2, evalSetId: null, createdBy: other.id,
+      siteId: null, targetRegion: null, targetTier: null, config: {},
+      snapshot: { provider: null, evalFlow: null, evalSet: null, creatorPlan: "premium", transport: "web",
+        analyze: { fileName: "x.wav", s3Key: "vox-analyze/x.wav", sha256: "0", sizeBytes: 1000, durationSec: 1, recordingRegion: region } } as any,
+      status: "completed", priority: -10, retryCount: 0, maxRetries: 3,
+    } as any);
+    try {
+      // The download fails — and must end, not hang with the connection open.
+      const started = Date.now();
+      const outcome = await Promise.race([
+        fetch(`${BASE_URL}/api/tools/analyze/${job.id}/recording`, { headers: { Cookie: other.cookie } })
+          .then((res) => res.arrayBuffer()).then(() => "ended", () => "ended"),
+        new Promise((r) => setTimeout(() => r("hung"), 5000)),
+      ]);
+      expect(outcome).toBe("ended");
+      expect(Date.now() - started).toBeLessThan(5000);
+      // Core is still up.
+      expect((await fetch(`${BASE_URL}/api/auth/status`)).ok).toBe(true);
+    } finally {
+      hostile.close();
+      await pool.query("DELETE FROM eval_jobs WHERE id = $1", [job.id]);
+      await pool.query("DELETE FROM user_storage_config WHERE user_id = $1", [other.id]);
+    }
+  });
+
   it("the list shows only the caller's analyses", async () => {
     const res = await fetch(`${BASE_URL}/api/tools/analyze`, { headers: { Cookie: other.cookie } });
     expect(res.status).toBe(200);

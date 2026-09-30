@@ -1891,7 +1891,11 @@ export class DatabaseStorage {
       .where(and(eq(evalJobs.kind, "analyze"), eq(evalJobs.createdBy, userId), isNull(evalJobs.deletedAt)))
       .orderBy(desc(evalJobs.createdAt))
       .limit(limit);
-    return rows.map((r) => ({ job: r.eval_jobs, result: r.eval_results }));
+    // One row per analysis, even if a job ever carried two results.
+    const seen = new Set<number>();
+    return rows
+      .filter((r) => !seen.has(r.eval_jobs.id) && !!seen.add(r.eval_jobs.id))
+      .map((r) => ({ job: r.eval_jobs, result: r.eval_results }));
   }
 
   /**
@@ -2020,6 +2024,8 @@ export class DatabaseStorage {
       if (filters.ownerId) {
         conditions.push(eq(evalJobs.createdBy, filters.ownerId));
       }
+      // Eval runs only: an analysis (Tools → Analyze) is served by its own routes.
+      conditions.push(eq(evalJobs.kind, "eval"));
 
       if (conditions.length > 0) {
         query = query.where(and(...conditions)) as typeof query;
@@ -2147,7 +2153,8 @@ export class DatabaseStorage {
           eq(evalJobs.createdBy, userId),
         ),
         // An uploaded recording analyzed by Tools → Analyze: its uploader's.
-        and(eq(evalJobs.kind, "analyze"), eq(evalJobs.createdBy, userId)),
+        // (Not once deleted — even if its result landed after the delete.)
+        and(eq(evalJobs.kind, "analyze"), eq(evalJobs.createdBy, userId), isNull(evalJobs.deletedAt)),
       ),
     ];
     if (hoursBack) {
@@ -2272,13 +2279,14 @@ export class DatabaseStorage {
   // hasUnverified rather than mixed into baseIds.
   async getAvailableRegions(tier: MetricTier, hoursBack?: number, userId?: number): Promise<{ baseIds: string[]; hasUnverified: boolean }> {
     const conditions = this.tierConditions(tier, hoursBack, userId);
+    // A result's region: where it was measured (its site), or, for an analyzed
+    // recording, where its uploader said it was made (recording_region).
+    const region = sql<string | null>`COALESCE(${evalResults.recordingRegion}, regexp_replace(${evalResults.siteId}, '-\\d+$', ''))`;
     const rows = await this.applyTierJoins(tier, db
-      .select({
-        baseId: sql<string | null>`regexp_replace(${evalResults.siteId}, '-\\d+$', '')`,
-      })
+      .select({ baseId: region })
       .from(evalResults))
       .where(and(...conditions))
-      .groupBy(sql`regexp_replace(${evalResults.siteId}, '-\\d+$', '')`);
+      .groupBy(region);
     return {
       baseIds: rows.filter((r: { baseId: string | null }) => r.baseId != null).map((r: { baseId: string | null }) => r.baseId as string).sort(),
       hasUnverified: rows.some((r: { baseId: string | null }) => r.baseId == null),

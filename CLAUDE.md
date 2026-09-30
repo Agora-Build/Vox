@@ -95,7 +95,7 @@ Region locations are admin-managed; site IDs are `<location-base>-<sequence>` (e
 - **Storage:** the WAV lives only in the uploader's own bucket (Storage page, `user_storage_config`, so Premium and up); no system fallback.
 - **Nothing leaves the agent:** an analysis uploads **no artifacts**. The agent deletes its work dir, and `/storage-config` refuses analyze jobs, so an agent the uploader doesn't run never gets their credentials.
 - **Access:** the job routes never serve an analysis (`canViewJob`/`canCancelJob` refuse `kind = 'analyze'`, admins included); only `/api/tools/analyze/*` does, for its uploader.
-- **Uploads and delete:** one upload in flight per user (8 in total). Delete is soft (`deleted_at`) so the daily cap still counts the row; a failed removal from the bucket keeps the row for a retry.
+- **Uploads and delete:** one upload in flight per user (3 in total). Delete is soft (`deleted_at`) so the daily cap still counts the row; a failed removal from the bucket keeps the row for a retry.
 - **Where results show:** kept out of the Eval Jobs lists (`evalJobConditions`) and off Mainline/Community; shown in the uploader's My Evals, filed by `eval_results.recording_region` (`site_id` stays NULL).
 - **Honest metrics:** network/naturalness/noise are reported as null, not measured (see #217).
 

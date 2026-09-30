@@ -261,7 +261,7 @@ Put a reverse proxy (nginx, Caddy, Traefik) in front for SSL termination.
 - [ ] HTTPS is working (check the `Secure` cookie flag)
 - [ ] Sign-in providers (if enabled): `GET /api/plugins/oauth/providers` shows them on, and each registered callback URL matches your domain
 - [ ] Stripe webhook endpoint is registered (if enabled): `https://your-domain.com/api/webhooks/stripe`
-- [ ] Tools → Analyze: at least one online public eval agent reports the `analyze` capability (Console → Eval Agents). Analyze keeps recordings in each user's own bucket (Storage page); Core needs no S3 settings for it. Core holds each upload in memory while it checks and stores it: at most 8 at once (≤ 100 MB each, so about 800 MB), one per user. These limits live in the Core process, like the rate limiter, which is right for Vox's single Core container; running several Core processes would need a shared limiter
+- [ ] Tools → Analyze: at least one online public eval agent reports the `analyze` capability (Console → Eval Agents). Analyze keeps recordings in each user's own bucket (Storage page); Core needs no S3 settings for it. Core holds each upload in memory while it checks and stores it: at most 3 at once (≤ 100 MB each, so about 300 MB), one per user. These limits live in the Core process, like the rate limiter, which is right for Vox's single Core container; running several Core processes would need a shared limiter
 
 ## Troubleshooting
 

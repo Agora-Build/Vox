@@ -1,5 +1,6 @@
 import express, { type Express, type Request, type Response, type NextFunction } from "express";
 import { randomUUID, createHash } from "crypto";
+import { pipeline } from "stream/promises";
 import { type Server } from "http";
 import { z } from "zod";
 import { storage, hashToken, generateSecureToken, generateEvalAgentToken, generateBrokerRegistrationToken, mergeEvalConfig, buildJobSnapshot, validateEvalFlowConfig, validateEvalSetConfig, encryptValue, decryptValue, isEncryptionConfigured, type MetricSourceRow, type RegionQueryScope, type MetricTier } from "./storage";
@@ -1507,7 +1508,7 @@ export async function registerRoutes(
   // Uploads Core is reading right now. A whole file is held in memory while
   // it's checked and stored, so: one at a time per user (which also keeps the
   // daily cap exact), and a few in total.
-  const ANALYZE_MAX_UPLOADS_IN_FLIGHT = 8;
+  const ANALYZE_MAX_UPLOADS_IN_FLIGHT = 3; // ≤ 100 MB each: ~300 MB at most
   // userId → the request holding that user's slot.
   const analyzeUploadsInFlight = new Map<number, symbol>();
 
@@ -1537,6 +1538,16 @@ export async function registerRoutes(
     if (!job || job.kind !== "analyze" || job.deletedAt) return undefined;
     if (job.createdBy === user.id || (allowAdmin && user.isAdmin)) return job;
     return undefined;
+  };
+
+  // Stream a file from the uploader's storage to a response. Their endpoint
+  // can fail mid-stream (it's theirs); pipe() would leave the response open
+  // forever, so end it instead.
+  const pipeToResponse = (body: NodeJS.ReadableStream, res: Response, what: string) => {
+    pipeline(body, res).catch((err) => {
+      console.warn(`[analyze] streaming ${what} failed:`, err instanceof Error ? err.message : err);
+      res.destroy();
+    });
   };
 
   // Who may upload at all — checked before the body parser, so neither a
@@ -1700,7 +1711,7 @@ export async function registerRoutes(
       const asciiName = a.fileName.replace(/[^\x20-\x7e]|["\\]/g, "_");
       res.setHeader("Content-Disposition", `attachment; filename="${asciiName}"; filename*=UTF-8''${encodeURIComponent(a.fileName)}`);
       if (contentLength != null) res.setHeader("Content-Length", String(contentLength));
-      body.pipe(res);
+      pipeToResponse(body, res, `recording of analysis ${job.id}`);
     } catch (error) {
       console.error("Error downloading a recording:", error instanceof Error ? error.message : error);
       if (!res.headersSent) res.status(502).json({ error: "Couldn't read the recording from your storage" });
@@ -4232,7 +4243,7 @@ export async function registerRoutes(
 
       await storage.updateEvalAgent(agentId, { state: "occupied", lastJobAt: new Date() });
 
-      res.json(job);
+      res.json(forAgentJobList(job));
     } catch (error) {
       console.error("Error claiming job:", error);
       res.status(500).json({ error: "Failed to claim job" });
@@ -4618,7 +4629,7 @@ export async function registerRoutes(
       res.setHeader("Content-Type", "audio/wav");
       res.setHeader("Content-Length", String(a.sizeBytes));
       res.setHeader("X-Vox-Upload-Sha256", a.sha256);
-      body.pipe(res);
+      pipeToResponse(body, res, `upload of job ${auth.job.id} to its agent`);
     } catch (error) {
       console.error("Error serving an upload to an agent:", error instanceof Error ? error.message : error);
       if (!res.headersSent) res.status(502).json({ error: "Couldn't read the recording from the uploader's storage" });
