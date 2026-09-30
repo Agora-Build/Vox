@@ -1036,6 +1036,14 @@ export class DatabaseStorage {
     return result[0];
   }
 
+  // The ids among `ids` that name an existing, unrevoked token — one query.
+  async getLiveEvalAgentTokenIds(ids: number[]): Promise<Set<number>> {
+    if (ids.length === 0) return new Set();
+    const rows = await db.select({ id: evalAgentTokens.id }).from(evalAgentTokens)
+      .where(and(inArray(evalAgentTokens.id, Array.from(new Set(ids))), eq(evalAgentTokens.isRevoked, false)));
+    return new Set(rows.map((r) => r.id));
+  }
+
   async getEvalAgentTokenByHash(tokenHash: string): Promise<EvalAgentToken | undefined> {
     const result = await db.select().from(evalAgentTokens).where(eq(evalAgentTokens.tokenHash, tokenHash));
     return result[0];
@@ -1405,13 +1413,16 @@ export class DatabaseStorage {
   // only once it has waited timeoutMinutes AND no such agent exists — so a brief
   // agent restart/redeploy (host reboot, vox-upgrade) doesn't trip it, but a
   // genuinely unstaffed site gives the user an actionable result in minutes
-  // instead of hanging "pending" forever. Each strike uses one retry and
-  // requeues (retry_count++, updated_at = NOW() → a fresh window), failing only
-  // once retries are exhausted — the same shape as releaseStaleJobs. A site with
-  // an agent that is only temporarily away (a slow image pull, a long
-  // vox-upgrade, a user who queues a job and then boots their agent) gets
-  // max_retries more windows instead of a permanent failure (#82); a genuinely
-  // unstaffed site still fails, after (max_retries + 1) × timeout. Job pickup is exact site-equality and an
+  // instead of hanging "pending" forever. Each strike requeues (unclaimed_count++,
+  // updated_at = NOW() → a fresh window), failing only once unclaimed_count has
+  // reached max_retries — the same shape as releaseStaleJobs. A site with an
+  // agent that is only temporarily away (a slow image pull, a long vox-upgrade,
+  // a user who queues a job and then boots their agent) gets max_retries more
+  // windows instead of a permanent failure (#82); a genuinely unstaffed site
+  // still fails, after (max_retries + 1) × timeout. The strikes are counted in
+  // unclaimed_count, NOT retry_count: retry_count is the budget for recovering
+  // a job whose agent dies mid-run, and a job that merely waited for an agent
+  // must still have all of it once claimed. Job pickup is exact site-equality and an
   // agent registers under its token's site, so eval_agents.site_id = the job's
   // site_id is the correct "an agent serves this site" signal.
   //
@@ -1444,16 +1455,16 @@ export class DatabaseStorage {
     const result = await db.execute(sql`
       UPDATE eval_jobs
       SET status = CASE
-            WHEN retry_count >= max_retries THEN 'failed'::eval_job_status
+            WHEN unclaimed_count >= max_retries THEN 'failed'::eval_job_status
             ELSE 'pending'::eval_job_status
           END,
           error = CASE
-            WHEN retry_count >= max_retries
-              THEN ${prefix} || site_id || ${suffix} || (retry_count + 1) || ' times)'
+            WHEN unclaimed_count >= max_retries
+              THEN ${prefix} || site_id || ${suffix} || (unclaimed_count + 1) || ' times)'
             ELSE NULL
           END,
-          completed_at = CASE WHEN retry_count >= max_retries THEN NOW() ELSE NULL END,
-          retry_count = retry_count + 1,
+          completed_at = CASE WHEN unclaimed_count >= max_retries THEN NOW() ELSE NULL END,
+          unclaimed_count = unclaimed_count + 1,
           updated_at = NOW()
       WHERE status = 'pending'::eval_job_status
       AND site_id IS NOT NULL

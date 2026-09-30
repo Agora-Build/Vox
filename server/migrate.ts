@@ -67,6 +67,7 @@ const MIGRATIONS: Array<{ version: number; description: string; file: string | n
   { version: 43, description: "evalflow → eval_flow: table, FK columns, snapshot key, tier indexes (aligns the eval-* family)", file: "0042_eval_flow_rename.sql" },
   { version: 44, description: "index eval_agents (site_id, last_seen_at) for the no-agent reaper", file: "0043_eval_agents_site_index.sql" },
   { version: 45, description: "eval_jobs.settlement_done_at — settled jobs leave the reap-settle sweep", file: "0044_eval_job_settlement_done.sql" },
+  { version: 46, description: "eval_jobs.unclaimed_count — no-agent requeues don't spend the crash-recovery retries", file: "0045_eval_job_unclaimed_count.sql" },
 ];
 
 const TARGET_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version;

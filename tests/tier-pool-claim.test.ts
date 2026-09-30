@@ -60,9 +60,9 @@ d("pooled claim SQL mirrors isClaimable", () => {
       evalFlowId: null, triggerType: 2, evalSetId: null, createdBy: 2,
       siteId: "sa-br-saopaulo-01", targetRegion: null, targetTier: null,
       config: {}, snapshot: { provider: null, evalFlow: null, evalSet: null, creatorPlan: null } as any,
-      // Retries already used up: this case checks the terminal strike (#82
-      // made earlier strikes requeue — see the test below).
-      status: "pending", priority: 0, retryCount: 3, maxRetries: 3,
+      // No-agent requeues already used up: this case checks the terminal
+      // strike (#82 made earlier strikes requeue — see the tests below).
+      status: "pending", priority: 0, retryCount: 0, unclaimedCount: 3, maxRetries: 3,
     } as any);
     // timeoutMinutes=0: everything pending is past the cutoff immediately.
     // excludeTeamTier is now a required argument (a future sweep caller must
@@ -175,31 +175,31 @@ const backdate = (id: number, minutes: number) =>
     `UPDATE eval_jobs SET created_at = now() - make_interval(mins => $2), updated_at = now() - make_interval(mins => $2) WHERE id = $1`,
     [id, minutes],
   );
-const mkPinned = (siteId: string, retryCount: number, config: Record<string, unknown> = {}) =>
+const mkPinned = (siteId: string, unclaimedCount: number, config: Record<string, unknown> = {}) =>
   storage.createEvalJob({
     evalFlowId: null, triggerType: 2, evalSetId: null, createdBy: 2,
     siteId, targetRegion: null, targetTier: null,
     config, snapshot: { provider: null, evalFlow: null, evalSet: null, creatorPlan: null } as any,
-    status: "pending", priority: 0, retryCount, maxRetries: 3,
+    status: "pending", priority: 0, retryCount: 0, unclaimedCount, maxRetries: 3,
   } as any);
 
 d("pending reapers (real SQL)", () => {
-  it("#82: a no-agent strike uses a retry and requeues; only the strike after the last retry fails", async () => {
+  it("#82: a no-agent strike requeues; only the strike after max_retries fails", async () => {
     const site = `zz-noagent-${Date.now()}-01`; // no agent ever registers here
     const job = await mkPinned(site, 0);
     await backdate(job.id, 20);
     await storage.failPendingJobsWithNoAgent(15, 5, true);
     const after1 = await storage.getEvalJob(job.id);
-    expect(after1).toMatchObject({ status: "pending", retryCount: 1, error: null, completedAt: null });
+    expect(after1).toMatchObject({ status: "pending", unclaimedCount: 1, retryCount: 0, error: null, completedAt: null });
     // Requeued with a fresh window: an immediate second sweep leaves it alone.
     await storage.failPendingJobsWithNoAgent(15, 5, true);
-    expect((await storage.getEvalJob(job.id))!.retryCount).toBe(1);
+    expect((await storage.getEvalJob(job.id))!.unclaimedCount).toBe(1);
 
     // Strikes 2 and 3 requeue; the 4th (retries exhausted) fails for good.
     for (const expected of [2, 3]) {
       await backdate(job.id, 20);
       await storage.failPendingJobsWithNoAgent(15, 5, true);
-      expect(await storage.getEvalJob(job.id)).toMatchObject({ status: "pending", retryCount: expected });
+      expect(await storage.getEvalJob(job.id)).toMatchObject({ status: "pending", unclaimedCount: expected, retryCount: 0 });
     }
     await backdate(job.id, 20);
     await storage.failPendingJobsWithNoAgent(15, 5, true);
@@ -207,6 +207,26 @@ d("pending reapers (real SQL)", () => {
     expect(done!.status).toBe("failed");
     expect(done!.error).toBe(`No eval agent available for region ${site} (unclaimed for 15 min, 4 times)`);
     expect(done!.completedAt).not.toBeNull();
+  });
+
+  it("#82: waiting for an agent doesn't use up the retries that recover a crashed run", async () => {
+    // Three no-agent strikes, then an agent finally shows up and claims it.
+    const site = `zz-strikes-${Date.now()}-01`;
+    const job = await mkPinned(site, 0);
+    for (let i = 0; i < 3; i++) {
+      await backdate(job.id, 20);
+      await storage.failPendingJobsWithNoAgent(15, 5, true);
+    }
+    expect(await storage.getEvalJob(job.id)).toMatchObject({ status: "pending", unclaimedCount: 3, retryCount: 0 });
+    const tok = await mkToken(`zz-strikes-tok-${Date.now()}`, site);
+    const arg = { id: tok.id, siteId: tok.siteId, region: tok.region, dispatchTier: tok.dispatchTier, createdBy: tok.createdBy, ownerOrgId: null, locationTrust: "trusted" };
+    const agent = await storage.createEvalAgent({ tokenId: tok.id, name: `zz-strikes-a-${Date.now()}`, siteId: site, state: "idle", metadata: {} } as any);
+    expect(await storage.claimEvalJob(job.id, agent.id, arg)).toBeDefined();
+
+    // Its agent stops heartbeating mid-run: the job is requeued, not failed.
+    await pool.query(`UPDATE eval_agents SET last_seen_at = now() - interval '10 minutes' WHERE id = $1`, [agent.id]);
+    await storage.releaseStaleJobs(5);
+    expect(await storage.getEvalJob(job.id)).toMatchObject({ status: "pending", retryCount: 1, error: null });
   });
 
   it("#83: the backstop drains a backlog larger than one batch", async () => {

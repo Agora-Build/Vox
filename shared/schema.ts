@@ -429,6 +429,9 @@ export const evalJobs = pgTable("eval_jobs", {
   priority: integer("priority").default(0).notNull(),
   retryCount: integer("retry_count").default(0).notNull(),
   maxRetries: integer("max_retries").default(3).notNull(),
+  // No-agent requeues (#82), limited by maxRetries but counted apart from
+  // retryCount: waiting for an agent must not use up crash recovery.
+  unclaimedCount: integer("unclaimed_count").default(0).notNull(),
   config: jsonb("config").default({}).notNull(),
   // Immutable run-time snapshot (see JobSnapshot). Nullable for rows created before
   // this column; backfilled from live tables by migration 0016.

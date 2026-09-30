@@ -3586,8 +3586,8 @@ export async function registerRoutes(
       const listed = marketplace ? await marketplace.listDispatchable(user.id) : [];
       // Never offer a revoked (or deleted) token, including listings left
       // active by a revoke made before revokes unlisted (#93).
-      const listedTokens = await Promise.all(listed.map((l) => storage.getEvalAgentToken(l.tokenId)));
-      const shared = listed.filter((_l, i) => listedTokens[i] && !listedTokens[i]!.isRevoked);
+      const liveTokens = await storage.getLiveEvalAgentTokenIds(listed.map((l) => l.tokenId));
+      const shared = listed.filter((l) => liveTokens.has(l.tokenId));
 
       return res.json({
         free: free.map((a) => ({ tokenId: a.tokenId, siteId: a.region, region: regionRowByTokenId.get(a.tokenId) ?? null, dispatchTier: a.dispatchTier, state: a.state })),
