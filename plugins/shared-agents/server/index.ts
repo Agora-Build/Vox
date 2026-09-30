@@ -13,7 +13,7 @@ const LEAK_REAP_LIMIT = 200;
 const sharedAgentsPlugin: VoxPlugin = {
   async activate(ctx) {
     const credits = ctx.services.require<CreditsPort>("vox.credits", "^1.0.0");
-    const service = createMarketplaceService(ctx.db, credits);
+    const service = createMarketplaceService(ctx.db, credits, ctx.logger);
 
     ctx.worker({
       id: "leak-reaper",

@@ -68,6 +68,17 @@ d("shared-agents authorizeDispatch", () => {
     });
   });
 
+  // #95: the service reports through the plugin's logger (ctx.logger), not console.
+  it("reports a failed hold through the logger it is given", async () => {
+    const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    const failingCredits = { ...h.credits, hold: async () => { throw new Error("db down"); } };
+    const svc = createMarketplaceService(h.marketplaceDb, failingCredits as any, logger);
+    await svc.setListing(304, 10, { ownerId: 7, region: "na-us-ashburn-01" });
+    const res = await svc.authorizeDispatch(3, 304, JOB_CTX);
+    expect(res).toMatchObject({ ok: false, reason: "dispatch-failed" });
+    expect(logger.error).toHaveBeenCalledWith("credits.hold failed", expect.objectContaining({ error: "Error: db down" }));
+  });
+
   it("insufficient-credits leaves no leaked hold and no pending settlement", async () => {
     const svc = createMarketplaceService(h.marketplaceDb, h.credits as any);
     await svc.setListing(302, 1000, { ownerId: 7, region: "na-us-ashburn-01" });
