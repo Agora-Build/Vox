@@ -64,9 +64,9 @@ interface ConfigData {
 }
 
 // Latency of null = NA (agent didn't respond). Render NA, never "0ms".
-const fmtMs = (v: number | null | undefined) => v == null ? "NA" : `${Math.round(v).toLocaleString()}ms`;
+const fmtMs = (v: number | null | undefined) => v == null ? "N/A" : `${Math.round(v).toLocaleString()}ms`;
 // Turn Success Rate is 0..1; null = no evaluable turns. Render as a percentage.
-const fmtPct = (v: number | null | undefined) => v == null ? "NA" : `${Math.round(v * 100)}%`;
+const fmtPct = (v: number | null | undefined) => v == null ? "N/A" : `${Math.round(v * 100)}%`;
 
 interface HealthData {
   status: "operational" | "degraded" | "down";
@@ -654,7 +654,7 @@ function MetricsSection({ metrics, isLoading, timeRangeLabel, regionLabel, testI
                       Share of turns the agent handled correctly — responded when expected, stopped promptly on interrupt, and avoided false barge-in.
                     </p>
                     <p className="text-xs text-muted-foreground pt-2 border-t">
-                      A no-response turn counts as a failure, so this stays meaningful under network impairment where latency is NA.
+                      A no-response turn counts as a failure, so this stays meaningful under network impairment where latency is N/A.
                     </p>
                   </div>
                 </PopoverContent>
