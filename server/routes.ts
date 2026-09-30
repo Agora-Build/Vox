@@ -3173,6 +3173,20 @@ export async function registerRoutes(
     }
   });
 
+  // A revoked token must stop being offered on the marketplace (#93). The
+  // revoke is what matters and has already happened, so a failure here is
+  // logged, not returned — and the dispatchable listing below also skips
+  // revoked tokens, so a stale listing is never shown to renters.
+  async function unlistRevokedToken(tokenId: number): Promise<void> {
+    const marketplace = getMarketplace();
+    if (!marketplace) return;
+    try {
+      await marketplace.setListing(tokenId, null);
+    } catch (err) {
+      console.error(`[marketplace] failed to deactivate the listing of revoked token ${tokenId}:`, err);
+    }
+  }
+
   app.post("/api/eval-agent-tokens/:id/revoke", requireAuth, async (req, res) => {
     try {
       const user = await getCurrentUser(req);
@@ -3193,6 +3207,7 @@ export async function registerRoutes(
       }
 
       await storage.revokeEvalAgentToken(parseInt(id));
+      await unlistRevokedToken(parseInt(id));
       res.json({ message: "Eval agent token revoked" });
     } catch (error) {
       console.error("Error revoking eval agent token:", error);
@@ -3359,6 +3374,7 @@ export async function registerRoutes(
     try {
       const { id } = req.params;
       await storage.revokeEvalAgentToken(parseInt(id));
+      await unlistRevokedToken(parseInt(id));
       res.json({ message: "Eval agent token revoked" });
     } catch (error) {
       console.error("Error revoking eval agent token:", error);
@@ -3567,7 +3583,11 @@ export async function registerRoutes(
       const regionRowByTokenId = new Map(agents.map((a) => [a.tokenId, a.tokenRegion]));
 
       const marketplace = getMarketplace();
-      const shared = marketplace ? await marketplace.listDispatchable(user.id) : [];
+      const listed = marketplace ? await marketplace.listDispatchable(user.id) : [];
+      // Never offer a revoked (or deleted) token, including listings left
+      // active by a revoke made before revokes unlisted (#93).
+      const listedTokens = await Promise.all(listed.map((l) => storage.getEvalAgentToken(l.tokenId)));
+      const shared = listed.filter((_l, i) => listedTokens[i] && !listedTokens[i]!.isRevoked);
 
       return res.json({
         free: free.map((a) => ({ tokenId: a.tokenId, siteId: a.region, region: regionRowByTokenId.get(a.tokenId) ?? null, dispatchTier: a.dispatchTier, state: a.state })),
