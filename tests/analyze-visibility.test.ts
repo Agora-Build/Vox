@@ -7,7 +7,9 @@ import { storage, pool } from "../server/storage";
 const hasDb = !!process.env.DATABASE_URL;
 const d = hasDb ? describe : describe.skip;
 
-const ME = 2;    // scout
+// A user of its own: parallel suites create jobs for the seeded users, which
+// would move the counts below mid-test.
+let ME = 0;
 const OTHER = 1; // admin
 const REGION = "na-us-seattle";
 const jobIds: number[] = [];
@@ -18,10 +20,15 @@ let evalJobId: number;
 
 afterAll(async () => {
   if (hasDb && jobIds.length) await pool.query("DELETE FROM eval_jobs WHERE id = ANY($1)", [jobIds]);
+  if (hasDb && ME) await pool.query("DELETE FROM users WHERE id = $1", [ME]);
 });
 
 d("analyze results: where they show (real SQL)", () => {
   beforeAll(async () => {
+    const stamp = `${Date.now()}${Math.floor(Math.random() * 1000)}`;
+    ME = (await storage.createUser({
+      username: `analyzevis${stamp}`, email: `analyze-vis-${stamp}@test.local`, passwordHash: "x", plan: "premium", isActive: true,
+    } as any)).id;
     const provider = (await storage.getAllProviders())[0];
     // Snapshot deliberately dressed as public + mainline + principal on a
     // public agent: only kind keeps it off the public boards.
@@ -59,8 +66,11 @@ d("analyze results: where they show (real SQL)", () => {
     expect(jobs.map((j) => j.id)).not.toContain(analyzeJobId);
     const withBoth = await storage.countEvalJobs({ ownerId: ME });
     await pool.query("UPDATE eval_jobs SET kind = 'eval' WHERE id = $1", [analyzeJobId]);
-    expect(await storage.countEvalJobs({ ownerId: ME })).toBe(withBoth + 1);
-    await pool.query("UPDATE eval_jobs SET kind = 'analyze' WHERE id = $1", [analyzeJobId]);
+    try {
+      expect(await storage.countEvalJobs({ ownerId: ME })).toBe(withBoth + 1);
+    } finally {
+      await pool.query("UPDATE eval_jobs SET kind = 'analyze' WHERE id = $1", [analyzeJobId]);
+    }
   });
 
   it("is in its creator's My Evals, in the transport they chose only", async () => {
