@@ -1036,6 +1036,25 @@ export class DatabaseStorage {
     return result[0];
   }
 
+  /** Tokens by id, in one query (a marketplace can list many). */
+  async getEvalAgentTokensByIds(ids: number[]): Promise<Map<number, EvalAgentToken>> {
+    if (ids.length === 0) return new Map();
+    const rows = await db.select().from(evalAgentTokens).where(inArray(evalAgentTokens.id, Array.from(new Set(ids))));
+    return new Map(rows.map((t) => [t.id, t]));
+  }
+
+  /** Each token's latest agent's capabilities, in one query. */
+  async getLatestAgentCapabilities(tokenIds: number[]): Promise<Map<number, string[]>> {
+    if (tokenIds.length === 0) return new Map();
+    const result = await pool.query(
+      `SELECT DISTINCT ON (token_id) token_id, capabilities FROM eval_agents
+        WHERE token_id = ANY($1) ORDER BY token_id, created_at DESC`,
+      [Array.from(new Set(tokenIds))],
+    );
+    return new Map(result.rows.map((r: { token_id: number; capabilities: unknown }) =>
+      [r.token_id, Array.isArray(r.capabilities) ? (r.capabilities as string[]) : []]));
+  }
+
   // The ids among `ids` that name an existing, unrevoked token — one query.
   // Revocation is what stops an agent (heartbeat, job fetch and dispatch all
   // check it). expires_at is not: nothing sets it on eval agent tokens (#215).

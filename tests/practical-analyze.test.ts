@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { storage, pool } from "../server/storage";
-import { userBucket, getObjectStream } from "../server/s3";
+import { userBucket, getObjectStream, putObject, deleteObject } from "../server/s3";
+import { createHash } from "crypto";
 import { makeConversationWav, REPLY_GAP_S } from "./fixtures/make-conversation-wav";
 
 // Tools → Analyze end to end, nothing faked (design 2026-09-30): a real stereo
@@ -81,13 +82,15 @@ d("practical: Tools → Analyze, upload to My Evals", () => {
     expect(up.status).toBe(201);
     const { id } = await up.json();
 
-    // The analysis runs on the local agent: poll until it's done.
-    const deadline = Date.now() + 10 * 60 * 1000;
+    // The analysis runs on the local agent: poll until it's done. Analyses run
+    // after eval runs (priority), and in the full gate other suites queue ~30
+    // eval runs on this agent first: allow for that queue.
+    const deadline = Date.now() + 20 * 60 * 1000;
     let detail: any;
     for (;;) {
       detail = await (await fetch(`${BASE_URL}/api/tools/analyze/${id}`, { headers: { Cookie: cookie } })).json();
       if (detail.job.status === "completed" || detail.job.status === "failed") break;
-      if (Date.now() > deadline) throw new Error(`analysis ${id} still ${detail.job.status} after 10 min`);
+      if (Date.now() > deadline) throw new Error(`analysis ${id} still ${detail.job.status} after 20 min`);
       await new Promise((r) => setTimeout(r, 5000));
     }
     expect(detail.job.error ?? null).toBeNull();
@@ -130,5 +133,85 @@ d("practical: Tools → Analyze, upload to My Evals", () => {
     // The row stays, marked deleted, so the daily cap still counts it.
     expect((await storage.getEvalJob(id))!.deletedAt).not.toBeNull();
     await expect(getObjectStream((await userBucket(userId))!, key)).rejects.toThrow();
-  }, 15 * 60 * 1000);
+  }, 25 * 60 * 1000);
+
+  /** Poll an analysis until it finishes (completed or failed). */
+  async function finished(id: number): Promise<any> {
+    const deadline = Date.now() + 20 * 60 * 1000; // see above: the gate's eval-run queue
+    for (;;) {
+      const d = await (await fetch(`${BASE_URL}/api/tools/analyze/${id}`, { headers: { Cookie: cookie } })).json();
+      if (d.job.status === "completed" || d.job.status === "failed") return d;
+      if (Date.now() > deadline) throw new Error(`analysis ${id} still ${d.job.status} after 20 min`);
+      await new Promise((r) => setTimeout(r, 5000));
+    }
+  }
+
+  it("a batch of three, each with its own provider, region and source, lands in the right My Evals views", async () => {
+    const providers = await storage.getAllProviders();
+    const regions = (await storage.getAllRegionLocations()).filter((l) => l.isActive);
+    const [pA, pB] = [providers[0].id, providers[1].id];
+    const [r1, r2] = [regions[0].baseId, regions[1].baseId];
+    const files = [
+      { provider: pA, region: r1, source: "web", fileName: "one.wav" },
+      { provider: pB, region: r2, source: "phone", fileName: "two.wav" },
+      { provider: pA, region: r2, source: "web", fileName: "three.wav" },
+    ];
+    const ids: number[] = [];
+    for (const f of files) { // one upload at a time per user
+      const up = await fetch(`${BASE_URL}/api/tools/analyze?${new URLSearchParams(f)}`, {
+        method: "POST", headers: { "Content-Type": "audio/wav", Cookie: cookie }, body: wav,
+      });
+      expect(up.status).toBe(201);
+      ids.push((await up.json()).id);
+    }
+    const results = [];
+    for (const id of ids) {
+      const d = await finished(id);
+      expect(d.job.error ?? null).toBeNull();
+      results.push(d);
+    }
+    results.forEach((d, i) => {
+      expect(d.result).toMatchObject({ providerId: files[i].provider, recordingRegion: files[i].region, siteId: null });
+      expect(d.job.source).toBe(files[i].source);
+      expect(d.result.responseLatencyMedian).toBeGreaterThanOrEqual(REPLY_GAP_S * 1000);
+    });
+    // Web and phone never mix; each result sits under its own region.
+    const inView = async (transport: "web" | "phone", baseIds?: string[]) =>
+      (await storage.getMyEvalMetrics(userId, 24, baseIds ? { baseIds } : undefined, transport)).map((r) => r.evalJobId);
+    const web = await inView("web");
+    const phone = await inView("phone");
+    expect(web).toEqual(expect.arrayContaining([ids[0], ids[2]]));
+    expect(web).not.toContain(ids[1]);
+    expect(phone).toContain(ids[1]);
+    expect(phone).not.toContain(ids[0]);
+    const webR2 = await inView("web", [r2]);
+    expect(webR2).toContain(ids[2]);
+    expect(webR2).not.toContain(ids[0]);
+  }, 30 * 60 * 1000);
+
+  it("a recording changed in the bucket after upload is refused by the agent, and nothing is stored", async () => {
+    // The object in the bucket isn't the one Core recorded (same size, other
+    // bytes), as if the uploader replaced it: the real agent must refuse it.
+    const bucket = (await userBucket(userId))!;
+    const key = `vox-analyze/${userId}/tampered-${Date.now()}.wav`;
+    const tampered = Buffer.from(wav); tampered[1000] ^= 0xff;
+    await putObject(bucket, key, tampered, "audio/wav");
+    const provider = (await storage.getAllProviders())[0];
+    const job = await storage.createEvalJob({
+      kind: "analyze", evalFlowId: null, triggerType: 2, evalSetId: null, createdBy: userId,
+      siteId: null, targetRegion: null, targetTier: null, config: {},
+      snapshot: { provider: { id: provider.id, name: provider.name, platformId: null }, evalFlow: null, evalSet: null, creatorPlan: "premium", transport: "web",
+        analyze: { fileName: "tampered.wav", s3Key: key, sha256: createHash("sha256").update(Buffer.from(wav)).digest("hex"),
+          sizeBytes: wav.length, durationSec: 20, recordingRegion: region, storage: { endpoint: bucket.endpoint, bucket: bucket.bucket } } } as any,
+      status: "pending", priority: -10, retryCount: 0, maxRetries: 3,
+    } as any);
+    try {
+      const d = await finished(job.id);
+      expect(d.job.status).toBe("failed");
+      expect(d.job.error).toMatch(/isn't the recording that was uploaded/);
+      expect(d.result).toBeNull();
+    } finally {
+      await deleteObject(bucket, key).catch(() => {});
+    }
+  }, 25 * 60 * 1000);
 });

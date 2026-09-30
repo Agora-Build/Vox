@@ -185,6 +185,12 @@ describe("dispatch integration — session stamping, pre-warm, shared-tier gates
       expect(patchRes.ok).toBe(true);
     });
 
+    // Revoke it (which also takes its listing off the marketplace, #93): these
+    // leaked ~2 active listings per run, which slowed every listing scan.
+    afterAll(async () => {
+      if (sharedTokenId) await authFetch(admin, `${BASE_URL}/api/eval-agent-tokens/${sharedTokenId}/revoke`, { method: "POST" });
+    });
+
     it("4a. rejects targeted dispatch to a shared agent without credentialConsent", async () => {
       const res = await authFetch(admin, `${BASE_URL}/api/eval-flows/${sessionEvalFlowId}/run`, {
         method: "POST",
@@ -534,6 +540,10 @@ describe("dispatch integration — session stamping, pre-warm, shared-tier gates
       // Mirrors the "4-5" block's beforeAll: fail loudly if the marketplace plugin
       // isn't loaded rather than letting this degrade into a silent no-op.
       expect(patchRes.ok).toBe(true);
+    });
+
+    afterAll(async () => {
+      if (runtimeSharedTokenId) await authFetch(admin, `${BASE_URL}/api/eval-agent-tokens/${runtimeSharedTokenId}/revoke`, { method: "POST" });
     });
 
     it("9a. blocks a shared run exposing runtime secrets without consent", async () => {

@@ -1753,14 +1753,11 @@ export async function registerRoutes(
       const marketplace = getMarketplace();
       if (!marketplace) return res.json([]);
       const listed = await marketplace.listDispatchable(user.id);
-      const live = await storage.getLiveEvalAgentTokenIds(listed.map((l) => l.tokenId));
-      const out: Array<{ tokenId: number; siteId: string; pricePerUnit: number }> = [];
-      for (const l of listed) {
-        if (live.has(l.tokenId) && (await agentCanAnalyze(l.tokenId))) {
-          out.push({ tokenId: l.tokenId, siteId: l.region, pricePerUnit: l.pricePerUnit });
-        }
-      }
-      res.json(out);
+      const ids = listed.map((l) => l.tokenId);
+      const [live, caps] = await Promise.all([storage.getLiveEvalAgentTokenIds(ids), storage.getLatestAgentCapabilities(ids)]);
+      res.json(listed
+        .filter((l) => live.has(l.tokenId) && (caps.get(l.tokenId) ?? []).includes("analyze"))
+        .map((l) => ({ tokenId: l.tokenId, siteId: l.region, pricePerUnit: l.pricePerUnit })));
     } catch (error) {
       console.error("Error listing analysis agents:", error);
       res.status(500).json({ error: "Failed to list agents" });
@@ -5458,9 +5455,10 @@ export async function registerRoutes(
       const shared: Agent[] = [];
       if (marketplace) {
         const listings = await marketplace.listDispatchable(user.id);
+        const listedTokens = await storage.getEvalAgentTokensByIds(listings.map((l) => l.tokenId)); // one query, not one per listing
         for (const l of listings) {
           if (region && !l.region.startsWith(region + "-")) continue;
-          const tok = await storage.getEvalAgentToken(l.tokenId);
+          const tok = listedTokens.get(l.tokenId);
           if (!tok || tok.isRevoked) continue;
           const eff = effectiveDispatchIdentity(tok, agentByTokenId.get(l.tokenId));
           // Unverified shared agent: not dispatchable at all (a re-detection

@@ -167,4 +167,45 @@ d("practical: Analyze on a marketplace agent, for credits", () => {
     expect(detail.job).toMatchObject({ status: "completed", runOn: "marketplace" });
     expect(detail.result).toMatchObject({ responseLatencyMedian: 1200, recordingRegion: region });
   }, 120_000);
+
+  it("an analysis the agent fails is refunded at once, and its operator isn't paid", async () => {
+    const r = await renter(100);
+    const renterBefore = await balance(r.cookie);
+    const operatorBefore = await balance(admin);
+    const up = await upload(r.cookie, { agent: String(paidAgent.tokenId), consent: "1" });
+    expect(up.status).toBe(201);
+    const { id } = await up.json();
+    expect(await balance(r.cookie)).toBe(renterBefore - computeCharge(PRICE, 1)); // held
+
+    const auth = { "Content-Type": "application/json", Authorization: `Bearer ${paidAgent.raw}` };
+    expect((await fetch(`${BASE_URL}/api/eval-agent/jobs/${id}/claim`, {
+      method: "POST", headers: auth, body: JSON.stringify({ agentId: paidAgent.agentId, leaseId: paidAgent.leaseId }),
+    })).status).toBe(200);
+    expect((await fetch(`${BASE_URL}/api/eval-agent/jobs/${id}/complete`, {
+      method: "POST", headers: auth, body: JSON.stringify({ agentId: paidAgent.agentId, leaseId: paidAgent.leaseId, error: "aeval analyze exited 1" }),
+    })).ok).toBe(true);
+
+    expect(await balance(r.cookie)).toBe(renterBefore); // refunded
+    expect(await balance(admin)).toBe(operatorBefore);  // nothing paid
+    const detail = await (await call(r.cookie, "GET", `/api/tools/analyze/${id}`)).json();
+    expect(detail.job).toMatchObject({ status: "failed", error: "aeval analyze exited 1" });
+    expect(detail.result).toBeNull();
+  }, 120_000);
+
+  it("a paid analysis deleted while queued is refunded by the settlement sweep", async () => {
+    const r = await renter(100);
+    const before = await balance(r.cookie);
+    const up = await upload(r.cookie, { agent: String(paidAgent.tokenId), consent: "1" });
+    expect(up.status).toBe(201);
+    const { id } = await up.json();
+    expect(await balance(r.cookie)).toBe(before - computeCharge(PRICE, 1));
+    expect((await call(r.cookie, "DELETE", `/api/tools/analyze/${id}`)).status).toBe(204);
+    // The scheduler's reap-settle sweep releases the hold (after its 1-minute grace).
+    const deadline = Date.now() + 4 * 60 * 1000;
+    while ((await balance(r.cookie)) !== before && Date.now() < deadline) {
+      await new Promise((res) => setTimeout(res, 5000));
+    }
+    expect(await balance(r.cookie)).toBe(before);
+    expect((await storage.getEvalJob(id))!.settlementDoneAt).not.toBeNull();
+  }, 6 * 60 * 1000);
 });
