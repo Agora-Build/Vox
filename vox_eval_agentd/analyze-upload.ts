@@ -1,0 +1,62 @@
+// Tools → Analyze on the eval agent (design 2026-09-30). An uploaded stereo
+// WAV (left = user, right = agent) is the same input the phone path gives
+// `aeval analyze`: one mixed recording at <session>/recordings/recording.wav.
+// So it is staged the same way and analyzed with the same (phone) preset.
+// Network and aeval are injected, so this runs in tests without either.
+
+import fs from 'fs';
+import path from 'path';
+import { spawnSync } from 'child_process';
+import { parseWavHeader, analyzeWavError } from '../shared/wav';
+
+export interface AnalyzeUploadDeps {
+  workDir: string;
+  /** Write the uploaded recording to `dest`. */
+  download: (dest: string) => Promise<void>;
+  /** `aeval analyze <sessionDir>`; throws on a non-zero exit. */
+  analyze: (sessionDir: string) => Promise<void>;
+  /** The metrics aeval wrote, or null when there are none. */
+  parseMetrics: (sessionDir: string) => Record<string, unknown> | null;
+}
+
+const HEADER_BYTES = 1 << 20; // the WAV header check needs only the start
+
+export async function runAnalyzeUpload(deps: AnalyzeUploadDeps): Promise<{ result: Record<string, unknown>; sessionDir: string }> {
+  const sessionDir = deps.workDir;
+  const recordings = path.join(sessionDir, 'recordings');
+  fs.mkdirSync(recordings, { recursive: true });
+  const wavPath = path.join(recordings, 'recording.wav');
+  await deps.download(wavPath);
+
+  // Core checked it at upload; check again here, where a bad file would
+  // otherwise cost a full aeval run.
+  const size = fs.statSync(wavPath).size;
+  const fd = fs.openSync(wavPath, 'r');
+  const head = Buffer.alloc(Math.min(size, HEADER_BYTES));
+  try {
+    fs.readSync(fd, head, 0, head.length, 0);
+  } finally {
+    fs.closeSync(fd);
+  }
+  const problem = analyzeWavError(parseWavHeader(new Uint8Array(head.buffer, head.byteOffset, head.length)), size);
+  if (problem) throw new Error(problem);
+
+  await deps.analyze(sessionDir); // throws → the job fails (failure policy)
+  const result = deps.parseMetrics(sessionDir);
+  if (!result) throw new Error('analysis produced no usable metrics');
+  return { result, sessionDir };
+}
+
+/** What this agent can do beyond web evals, for register/heartbeat. */
+export function capabilitiesFor(has: { dialf: boolean; aeval: boolean }): string[] {
+  return [...(has.dialf ? ['phone'] : []), ...(has.aeval ? ['analyze'] : [])];
+}
+
+let aevalRuns: boolean | null = null;
+/** Whether `aeval` runs on this host. Checked once: it doesn't come and go. */
+export function aevalOnPath(): boolean {
+  if (aevalRuns === null) {
+    aevalRuns = spawnSync('aeval', ['--version'], { stdio: 'ignore', timeout: 30_000 }).status === 0;
+  }
+  return aevalRuns;
+}

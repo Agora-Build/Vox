@@ -224,9 +224,15 @@ d("pending reapers (real SQL)", () => {
     expect(await storage.claimEvalJob(job.id, agent.id, arg)).toBeDefined();
 
     // Its agent stops heartbeating mid-run: the job is requeued, not failed.
-    await pool.query(`UPDATE eval_agents SET last_seen_at = now() - interval '10 minutes' WHERE id = $1`, [agent.id]);
-    await storage.releaseStaleJobs(5);
-    expect(await storage.getEvalJob(job.id)).toMatchObject({ status: "pending", retryCount: 1, error: null });
+    try {
+      await pool.query(`UPDATE eval_agents SET last_seen_at = now() - interval '10 minutes' WHERE id = $1`, [agent.id]);
+      await storage.releaseStaleJobs(5);
+      expect(await storage.getEvalJob(job.id)).toMatchObject({ status: "pending", retryCount: 1, error: null });
+    } finally {
+      await pool.query("DELETE FROM eval_jobs WHERE id = $1", [job.id]);
+      await pool.query("DELETE FROM eval_agents WHERE id = $1", [agent.id]);
+      await pool.query("DELETE FROM eval_agent_tokens WHERE id = $1", [tok.id]);
+    }
   });
 
   it("#83: the backstop drains a backlog larger than one batch", async () => {
