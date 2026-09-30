@@ -121,6 +121,44 @@ describe("isClaimable — pooled arms (tier-targeting)", () => {
   });
 });
 
+// Tools → Analyze (design 2026-09-30): an uploaded recording, claimable by an
+// analyze-capable agent the uploader may use (public, or their own), never a
+// marketplace agent. Region and site play no part. Mirrored in both claim SQL
+// paths (tests/analyze-claim.test.ts).
+describe("isClaimable — analyze jobs", () => {
+  const job = { kind: "analyze" as const, targetTokenId: null, targetRegion: null, targetTier: null, siteId: null, createdBy: 7 };
+  const tok = (dispatchTier: string, createdBy: number, analyzeCapable?: boolean) =>
+    ({ id: 1, dispatchTier, createdBy, siteId: "eu-de-frankfurt-01", region: "eu-de-frankfurt", analyzeCapable });
+
+  it("a capable public agent takes it, wherever it is", () => {
+    expect(isClaimable(job, tok("public", 99, true))).toBe(true);
+  });
+  it("so does the uploader's own private or team agent", () => {
+    expect(isClaimable(job, tok("private", 7, true))).toBe(true);
+    expect(isClaimable(job, tok("team", 7, true))).toBe(true);
+  });
+  it("someone else's private or team agent doesn't", () => {
+    expect(isClaimable(job, tok("private", 99, true))).toBe(false);
+    expect(isClaimable(job, tok("team", 99, true))).toBe(false);
+  });
+  it("a marketplace agent never does, even the uploader's own", () => {
+    expect(isClaimable(job, tok("shared", 99, true))).toBe(false);
+    expect(isClaimable(job, tok("shared", 7, true))).toBe(false);
+  });
+  it("a phone recording doesn't need a phone-capable agent", () => {
+    expect(isClaimable({ ...job, transport: "phone" }, tok("public", 99, true))).toBe(true);
+  });
+  it("an agent without the analyze capability doesn't", () => {
+    expect(isClaimable(job, tok("public", 99))).toBe(false);
+    expect(isClaimable(job, tok("private", 7, false))).toBe(false);
+  });
+  it("an eval job is not claimable through the analyze rule", () => {
+    // A site-pinned eval job for another site: the capability doesn't open it.
+    const evalJob = { kind: "eval" as const, targetTokenId: null, targetRegion: null, siteId: "na-us-seattle-01", createdBy: 7 };
+    expect(isClaimable(evalJob, tok("public", 99, true))).toBe(false);
+  });
+});
+
 describe("isSessionServable (owner + team + attested-shared)", () => {
   // EvalFlow owned by user 7, no org.
   const personalJob = { targetTokenId: null, evalFlowOwnerId: 7, evalFlowOrgId: null, consent: false };

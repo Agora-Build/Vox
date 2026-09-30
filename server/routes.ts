@@ -3615,7 +3615,7 @@ export async function registerRoutes(
   // Agent capability allowlist (design 2026-09-21 §8). parseCapabilities returns:
   // undefined = field absent (leave unchanged), string[] = validated value,
   // INVALID_CAPABILITIES sentinel = 400 (unknown capability or wrong shape).
-  const ALLOWED_CAPABILITIES = ["phone"] as const;
+  const ALLOWED_CAPABILITIES = ["phone", "analyze"] as const;
   const INVALID_CAPABILITIES = Symbol("invalid-capabilities");
   const parseCapabilities = (raw: unknown): string[] | undefined | typeof INVALID_CAPABILITIES => {
     if (raw === undefined) return undefined;
@@ -3891,6 +3891,7 @@ export async function registerRoutes(
         createdBy: evalAgentToken.createdBy,
         ownerOrgId: ownerMembership?.organizationId ?? null,
         phoneCapable: Array.isArray(latestAgent?.capabilities) && (latestAgent!.capabilities as string[]).includes("phone"),
+        analyzeCapable: Array.isArray(latestAgent?.capabilities) && (latestAgent!.capabilities as string[]).includes("analyze"),
       });
 
       // Version-gate: if the requesting agent has a frameworkVersion, filter out
@@ -3979,6 +3980,7 @@ export async function registerRoutes(
         ownerOrgId: ownerMembership?.organizationId ?? null,
         locationTrust: eff.locationTrust,
         phoneCapable: Array.isArray(agent?.capabilities) && (agent!.capabilities as string[]).includes("phone"),
+        analyzeCapable: Array.isArray(agent?.capabilities) && (agent!.capabilities as string[]).includes("analyze"),
       });
       if (!job) {
         return res.status(409).json({ error: "Job already claimed or not found" });

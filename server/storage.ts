@@ -1263,7 +1263,7 @@ export class DatabaseStorage {
   async claimEvalJob(
     jobId: number,
     agentId: number,
-    identity: { id: number; siteId: string | null; region: string | null; dispatchTier: string; createdBy: number; ownerOrgId: number | null; locationTrust: string; phoneCapable?: boolean },
+    identity: { id: number; siteId: string | null; region: string | null; dispatchTier: string; createdBy: number; ownerOrgId: number | null; locationTrust: string; phoneCapable?: boolean; analyzeCapable?: boolean },
   ): Promise<EvalJob | undefined> {
     const client = await pool.connect();
     try {
@@ -1276,8 +1276,9 @@ export class DatabaseStorage {
          WHERE ej.id = $1 AND ej.status = 'pending'::eval_job_status
            -- Phone-transport jobs require the phone capability (design §8) —
            -- applies to every arm below, targeted included.
-           AND ( ej.transport = 'web'::transport OR $8::boolean = true )
-           AND (
+           -- (An analysis needs no phone: its call has already happened.)
+           AND ( ej.transport = 'web'::transport OR ej.kind = 'analyze' OR $8::boolean = true )
+           AND ( ( ej.kind = 'eval' AND (
              ej.target_token_id = $2
              OR ( ej.target_token_id IS NULL AND ej.target_region IS NOT NULL AND ej.target_region = $3 AND (
                     ( ej.target_tier = 'private'::dispatch_tier AND ej.created_by = $5 )
@@ -1293,9 +1294,14 @@ export class DatabaseStorage {
                     ej.created_by = $5
                     OR ( $4 = 'public' AND (ej.config -> 'sessionInjection') IS NULL )
              ) )
-           )
+           ) )
+           -- Tools → Analyze (design 2026-09-30): an analyze-capable agent the
+           -- uploader may use (public, or their own), never a marketplace one;
+           -- region and site play no part.
+           OR ( ej.kind = 'analyze' AND $9::boolean = true AND $4 <> 'shared'
+                AND ( $4 = 'public' OR ej.created_by = $5 ) ) )
          FOR UPDATE OF ej SKIP LOCKED`,
-        [jobId, identity.id, identity.region, identity.dispatchTier, identity.createdBy, identity.ownerOrgId, identity.siteId, identity.phoneCapable === true]
+        [jobId, identity.id, identity.region, identity.dispatchTier, identity.createdBy, identity.ownerOrgId, identity.siteId, identity.phoneCapable === true, identity.analyzeCapable === true]
       );
       if (selectResult.rows.length === 0) {
         await client.query('ROLLBACK');
@@ -1308,7 +1314,9 @@ export class DatabaseStorage {
         `UPDATE eval_jobs
          SET eval_agent_id = $1, status = 'running'::eval_job_status, started_at = NOW(), updated_at = NOW(),
              token_dispatch_tier = $3,
-             site_id = COALESCE(site_id, $4),
+             -- An analysis keeps no site: the agent's location says nothing
+             -- about where the recording was made (Tools → Analyze).
+             site_id = CASE WHEN kind = 'analyze' THEN NULL ELSE COALESCE(site_id, $4) END,
              location_trust = $5
          WHERE id = $2
          RETURNING *`,
@@ -1325,7 +1333,7 @@ export class DatabaseStorage {
   }
 
   async getClaimableJobsForToken(identity: {
-    id: number; siteId: string | null; region: string | null; dispatchTier: string; createdBy: number; ownerOrgId: number | null; phoneCapable?: boolean;
+    id: number; siteId: string | null; region: string | null; dispatchTier: string; createdBy: number; ownerOrgId: number | null; phoneCapable?: boolean; analyzeCapable?: boolean;
   }): Promise<EvalJob[]> {
     // Mirrors permissions.isClaimable() bit for bit (targeted / pooled / legacy).
     // A NULL region/siteId (Unverified agent) never matches the pooled/legacy
@@ -1334,8 +1342,8 @@ export class DatabaseStorage {
       `SELECT ej.* FROM eval_jobs ej
         WHERE ej.status = 'pending'::eval_job_status
           -- Phone-transport jobs require the phone capability (design §8).
-          AND ( ej.transport = 'web'::transport OR $7::boolean = true )
-          AND (
+          AND ( ej.transport = 'web'::transport OR ej.kind = 'analyze' OR $7::boolean = true )
+          AND ( ( ej.kind = 'eval' AND (
             ej.target_token_id = $1
             OR ( ej.target_token_id IS NULL AND ej.target_region IS NOT NULL AND ej.target_region = $2 AND (
                    ( ej.target_tier = 'private'::dispatch_tier AND ej.created_by = $5 )
@@ -1350,9 +1358,12 @@ export class DatabaseStorage {
                    ej.created_by = $5
                    OR ( $4 = 'public' AND (ej.config -> 'sessionInjection') IS NULL )
             ) )
-          )
+          ) )
+          -- Tools → Analyze: see claimEvalJob.
+          OR ( ej.kind = 'analyze' AND $8::boolean = true AND $4 <> 'shared'
+               AND ( $4 = 'public' OR ej.created_by = $5 ) ) )
         ORDER BY ej.priority DESC, ej.created_at ASC`,
-      [identity.id, identity.region, identity.siteId, identity.dispatchTier, identity.createdBy, identity.ownerOrgId, identity.phoneCapable === true],
+      [identity.id, identity.region, identity.siteId, identity.dispatchTier, identity.createdBy, identity.ownerOrgId, identity.phoneCapable === true, identity.analyzeCapable === true],
     );
     return result.rows.map((r) => snakeToCamel(r) as EvalJob);
   }

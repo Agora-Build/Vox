@@ -224,10 +224,22 @@ export function isClaimable(
     createdBy: number | null;
     sessionInjected?: boolean;
     transport?: "web" | "phone" | null;
+    kind?: "eval" | "analyze";
   },
-  token: Pick<DispatchToken, "id" | "dispatchTier" | "createdBy"> & { region?: string; siteId?: string; phoneCapable?: boolean },
+  token: Pick<DispatchToken, "id" | "dispatchTier" | "createdBy"> & { region?: string; siteId?: string; phoneCapable?: boolean; analyzeCapable?: boolean },
   orgs?: { tokenOwnerOrgId: number | null; creatorOrgId: number | null },
 ): boolean {
+  // Tools → Analyze (design 2026-09-30): an uploaded recording goes to an
+  // analyze-capable agent the uploader may use — a public one, or their own —
+  // never a marketplace agent (the audio is theirs). Region and site play no
+  // part: where the analysis runs doesn't change the numbers. Checked before
+  // the phone gate: a phone recording's call has already happened, so its
+  // analysis needs no phone.
+  if (job.kind === "analyze") {
+    return token.analyzeCapable === true && token.dispatchTier !== "shared"
+      && (token.dispatchTier === "public" || token.createdBy === job.createdBy);
+  }
+
   // Phone-transport jobs require the phone capability (design 2026-09-21 §8) —
   // applies to every arm below, targeted included. Absent transport = web.
   if (job.transport === "phone" && token.phoneCapable !== true) return false;
