@@ -183,9 +183,14 @@ run_e2e_tests() {
     # into the dev DB; enough of them makes pages slow enough to time out E2E
     # tests — thousands of users on the unpaginated /console/users page failed
     # the admin login tests (#201). Purge first. Refuses a non-local DB.
+    # Fail rather than run on an uncleaned DB: a green E2E there would not have
+    # exercised the conditions this gate promises, and a red one would be noise.
     log_info "Cleaning test data before E2E..."
-    if ! "$PROJECT_DIR/scripts/dev-local-run.sh" clean-test-data --yes < /dev/null > /dev/null 2>&1; then
-        log_warn "clean-test-data failed — running E2E on an uncleaned DB"
+    local clean_log
+    if ! clean_log=$("$PROJECT_DIR/scripts/dev-local-run.sh" clean-test-data --yes < /dev/null 2>&1); then
+        log_error "clean-test-data failed — not running E2E. Its output:"
+        echo "$clean_log" | tail -30
+        return 1
     fi
 
     if npx playwright test $verbose; then
