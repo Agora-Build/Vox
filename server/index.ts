@@ -1,6 +1,6 @@
 import express, { type Request, Response, NextFunction } from "express";
 import helmet from "helmet";
-import { isSensitiveResponsePath } from "./sensitive-paths";
+import { requestLogLine } from "./request-log";
 import { registerRoutes } from "./routes";
 import { serveStatic } from "./static";
 import { createServer } from "http";
@@ -22,6 +22,13 @@ const { Pool } = pkg;
 
 const app = express();
 const httpServer = createServer(app);
+// Keep idle connections open longer than clients and proxies reuse them.
+// Node's 5 s default closes a socket just as a client sends its next request
+// on it — "socket hang up" / ECONNRESET (seen in the E2E suite, #201; the same
+// race applies behind a reverse proxy such as Coolify's). headersTimeout must
+// exceed keepAliveTimeout.
+httpServer.keepAliveTimeout = 65_000;
+httpServer.headersTimeout = 66_000;
 
 // Security headers (CSP disabled — Vite injects inline scripts, shadcn/ui uses inline styles)
 app.use(helmet({ contentSecurityPolicy: false }));
@@ -148,13 +155,8 @@ app.use((req, res, next) => {
   res.on("finish", () => {
     const duration = Date.now() - start;
     if (path.startsWith("/api")) {
-      let logLine = `${req.method} ${path} ${res.statusCode} in ${duration}ms`;
-      const isSensitive = isSensitiveResponsePath(path);
-      if (capturedJsonResponse && !isSensitive) {
-        logLine += ` :: ${JSON.stringify(capturedJsonResponse)}`;
-      }
-
-      log(logLine);
+      // Bodies only on failure, capped and without URL query strings (#208).
+      log(requestLogLine(req.method, path, res.statusCode, duration, capturedJsonResponse));
     }
   });
 

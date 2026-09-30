@@ -941,6 +941,50 @@ DELETE FROM plugin_organizations.org_secrets
 DELETE FROM plugin_organizations.organizations
       WHERE name LIKE 'r2-org-%' OR name LIKE 'abs-org-%';
 
+-- Test users (@example.com, @test.local): suites invite a fresh user per run and never
+-- delete it. At ~5,000 of them the unpaginated /console/users page took so
+-- long to render that the admin login E2E tests timed out waiting on it
+-- (#201). Drop what such a user owns outright, then the user itself — one at
+-- a time, keeping any a surviving job, eval flow, schedule or eval set still
+-- points at (the rows kept above) — then plugin rows left without a user.
+-- stripe.spec.ts's fixture user is kept on purpose: it is reused across runs
+-- (one user, one org), and deleting it would leak an org every gate.
+DELETE FROM api_keys            WHERE created_by IN (SELECT id FROM users WHERE (email LIKE '%@example.com' OR email LIKE '%@test.local') AND email <> 'stripe-e2e-fixture@test.local');
+DELETE FROM activation_tokens   WHERE user_id    IN (SELECT id FROM users WHERE (email LIKE '%@example.com' OR email LIKE '%@test.local') AND email <> 'stripe-e2e-fixture@test.local');
+DELETE FROM secrets             WHERE user_id    IN (SELECT id FROM users WHERE (email LIKE '%@example.com' OR email LIKE '%@test.local') AND email <> 'stripe-e2e-fixture@test.local');
+DELETE FROM web_sessions        WHERE user_id    IN (SELECT id FROM users WHERE (email LIKE '%@example.com' OR email LIKE '%@test.local') AND email <> 'stripe-e2e-fixture@test.local');
+DELETE FROM user_storage_config WHERE user_id    IN (SELECT id FROM users WHERE (email LIKE '%@example.com' OR email LIKE '%@test.local') AND email <> 'stripe-e2e-fixture@test.local');
+DO $$
+DECLARE u integer;
+BEGIN
+  FOR u IN SELECT id FROM users WHERE (email LIKE '%@example.com' OR email LIKE '%@test.local') AND email <> 'stripe-e2e-fixture@test.local' LOOP
+    BEGIN
+      DELETE FROM users WHERE id = u;
+    EXCEPTION WHEN foreign_key_violation THEN
+      NULL; -- still referenced by a kept row: keep the user too
+    END;
+  END LOOP;
+  IF to_regclass('plugin_organizations.memberships') IS NOT NULL THEN
+    DELETE FROM plugin_organizations.memberships m WHERE NOT EXISTS (SELECT 1 FROM users WHERE id = m.user_ref);
+  END IF;
+  IF to_regclass('plugin_oauth.identities') IS NOT NULL THEN
+    DELETE FROM plugin_oauth.identities i WHERE NOT EXISTS (SELECT 1 FROM users WHERE id = i.user_id);
+  END IF;
+  -- Stripe fixture orgs left without members (leaked by earlier runs of the
+  -- user purge, before the fixture user was kept), with their seat rows.
+  IF to_regclass('plugin_organizations.organizations') IS NOT NULL THEN
+    CREATE TEMP TABLE dead_fixture_orgs ON COMMIT DROP AS
+      SELECT o.id FROM plugin_organizations.organizations o
+       WHERE o.name = 'Stripe E2E Fixture Org'
+         AND NOT EXISTS (SELECT 1 FROM plugin_organizations.memberships m WHERE m.org_ref = o.id);
+    DELETE FROM organization_seats WHERE organization_id IN (SELECT id FROM dead_fixture_orgs);
+    DELETE FROM invite_tokens      WHERE organization_id IN (SELECT id FROM dead_fixture_orgs);
+    DELETE FROM payment_methods    WHERE organization_id IN (SELECT id FROM dead_fixture_orgs);
+    DELETE FROM plugin_organizations.org_secrets WHERE org_ref IN (SELECT id FROM dead_fixture_orgs);
+    DELETE FROM plugin_organizations.organizations WHERE id IN (SELECT id FROM dead_fixture_orgs);
+  END IF;
+END $$;
+
 -- FULL, because a plain VACUUM marks the pages reusable but hands nothing
 -- back to the OS, and the point here is to undo a 500 MB table. It takes an
 -- ACCESS EXCLUSIVE lock, which is why this is a deliberate maintenance
