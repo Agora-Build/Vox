@@ -74,7 +74,7 @@ export function createMarketplaceService(db: PluginDb, credits: CreditsPort): Ma
       const fee = computeFee(charge);
       assertValidSplit(charge, charge - fee, fee);
 
-      // Mint our own settlement id first; it is the credits idempotencyKey (no jobId yet).
+      // Mint our own settlement id first; it keys the credits hold (no jobId yet).
       const settlementId = await repo.insertPendingSettlement(db, {
         payerUserId: userId, earnerUserId: listing.ownerId,
         priceUnits: PRICE_UNITS, pricePerUnit: listing.pricePerUnit, chargeCredits: charge, feeCredits: fee,
@@ -83,7 +83,11 @@ export function createMarketplaceService(db: PluginDb, credits: CreditsPort): Ma
       let holdId: number;
       try {
         ({ holdId } = await credits.hold({
-          payerUserId: userId, credits: charge, idempotencyKey: String(settlementId),
+          // Namespaced: credits' idempotency keys are one global space shared by
+          // every caller (deposits, other plugins). A bare "123" would collide
+          // with another caller's key — for another hold, credits would hand back
+          // THAT hold and this dispatch would ride someone else's escrow (#92).
+          payerUserId: userId, credits: charge, idempotencyKey: `shared-agents:dispatch:${settlementId}`,
           ref: { type: "shared-agent-dispatch", id: String(settlementId) },
         }));
       } catch (err) {

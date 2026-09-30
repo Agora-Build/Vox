@@ -43,6 +43,31 @@ d("shared-agents authorizeDispatch", () => {
     });
   });
 
+  // #92: another credits caller holding under the bare settlement id must not
+  // be handed to this dispatch. Before, credits returned THAT hold for the same
+  // key: the dispatch "succeeded" on someone else's escrow and the renter was
+  // never charged.
+  it("its credits hold is namespaced — another caller's key equal to the settlement id is not reused", async () => {
+    const svc = createMarketplaceService(h.marketplaceDb, h.credits as any);
+    await h.credits.deposit({ userId: 3, credits: 100, reason: "test-seed", idempotencyKey: "seed-3-ns" });
+    await h.credits.deposit({ userId: 9, credits: 100, reason: "test-seed", idempotencyKey: "seed-9-ns" });
+    await svc.setListing(303, 10, { ownerId: 7, region: "na-us-ashburn-01" });
+
+    const { rows } = await h.pool.query(`SELECT COALESCE(MAX(id), 0) + 1 AS next FROM ${h.sharedSchema}.settlements`);
+    const nextSettlementId = Number(rows[0].next);
+    const other = await h.credits.hold({ payerUserId: 9, credits: 5, idempotencyKey: String(nextSettlementId) });
+
+    const renterBefore = await h.credits.getBalance(3);
+    const res = await svc.authorizeDispatch(3, 303, JOB_CTX);
+    expect(res.ok).toBe(true);
+    const settlementId = (res.settlementContext as { settlementId: number }).settlementId;
+    expect(settlementId).toBe(nextSettlementId); // the collision was really set up
+    expect(await h.credits.getBalance(3)).toBe(renterBefore - 10); // the renter paid
+    await h.marketplaceDb.withTransaction(async (tx) => {
+      expect((await repo.getSettlementForUpdate(tx, settlementId))!.holdId).not.toBe(other.holdId);
+    });
+  });
+
   it("insufficient-credits leaves no leaked hold and no pending settlement", async () => {
     const svc = createMarketplaceService(h.marketplaceDb, h.credits as any);
     await svc.setListing(302, 1000, { ownerId: 7, region: "na-us-ashburn-01" });
