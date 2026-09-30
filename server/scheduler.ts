@@ -15,7 +15,7 @@ import { log } from "./log";
 
 // Global hard cap on how long a single eval job may stay "running" before the
 // background reaper fails it (agent zombied/superseded/killed). Tune here.
-const MAX_JOB_RUN_MINUTES = 90;
+export const MAX_JOB_RUN_MINUTES = 90;
 
 // A "pending" job is one no agent has claimed yet. Two reapers keep it from
 // hanging forever (nothing else touches the pending state):
@@ -29,7 +29,7 @@ const MAX_JOB_RUN_MINUTES = 90;
 // so an unstaffed site fails after (max_retries + 1) × this. Operators can widen
 // it without a redeploy: PENDING_NO_AGENT_TIMEOUT_MINUTES (#82).
 export const PENDING_NO_AGENT_TIMEOUT_MINUTES = positiveIntEnv("PENDING_NO_AGENT_TIMEOUT_MINUTES", 15);
-const PENDING_MAX_WAIT_MINUTES = 24 * 60;
+export const PENDING_MAX_WAIT_MINUTES = 24 * 60;
 const REAP_SETTLE_LOOKBACK_MINUTES = 15; // window for the prompt reap-settle sweep
 // Skip jobs that turned terminal within the last minute: the complete route commits
 // `completed` before it writes the eval-result row, so a sweep in that window would
