@@ -113,9 +113,10 @@ interface EvalResult {
   // no-response turns as failures, so it's the resilience signal. null when no
   // evaluable turns.
   turnSuccessRate: number | null;
-  networkResilience: number;
-  naturalness: number;
-  noiseReduction: number;
+  // null = not measured (Tools → Analyze reports these as such).
+  networkResilience: number | null;
+  naturalness: number | null;
+  noiseReduction: number | null;
   rawData?: Record<string, unknown>;
 }
 

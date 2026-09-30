@@ -1,12 +1,13 @@
 import fs from "fs";
 import path from "path";
+import { fileURLToPath } from "url";
 
 // A real stereo conversation for Tools → Analyze tests, built from corpus
 // speech: the user's question on the left channel, a spoken reply on the right
 // starting REPLY_GAP_S after the question ends, three turns. aeval measures a
 // real response latency from it.
 
-const AUDIO = path.resolve(__dirname, "../../vox_eval_agentd/aeval-data/corpus/turn_taking/en/audio");
+const AUDIO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../vox_eval_agentd/aeval-data/corpus/turn_taking/en/audio");
 const RATE = 16000;
 export const REPLY_GAP_S = 0.8;
 

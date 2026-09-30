@@ -8,6 +8,7 @@ import fs from 'fs';
 import path from 'path';
 import { spawnSync } from 'child_process';
 import { parseWavHeader, analyzeWavError } from '../shared/wav';
+import { enrichMetricsWithTurns, parseTurnsJson } from './chunking';
 
 export interface AnalyzeUploadDeps {
   workDir: string;
@@ -44,6 +45,19 @@ export async function runAnalyzeUpload(deps: AnalyzeUploadDeps): Promise<{ resul
   await deps.analyze(sessionDir); // throws → the job fails (failure policy)
   const result = deps.parseMetrics(sessionDir);
   if (!result) throw new Error('analysis produced no usable metrics');
+
+  // Transcripts and turn boundaries onto each turn, as the phone path does (#206).
+  const turnsFile = path.join(sessionDir, 'analysis', 'turns.json');
+  const rawData = result.rawData as Record<string, unknown> | undefined;
+  if (rawData && fs.existsSync(turnsFile)) {
+    const turns = parseTurnsJson(fs.readFileSync(turnsFile, 'utf-8'));
+    if (turns) enrichMetricsWithTurns(rawData, turns);
+  }
+  // A recording measures none of these: say so, rather than send the daemon's
+  // placeholder defaults as if they were results.
+  result.networkResilience = null;
+  result.naturalness = null;
+  result.noiseReduction = null;
   return { result, sessionDir };
 }
 

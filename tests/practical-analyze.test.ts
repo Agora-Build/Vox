@@ -97,6 +97,11 @@ d("practical: Tools → Analyze, upload to My Evals", () => {
     expect(turns).toHaveLength(3);
     for (const t of turns) expect(t.latency_ms).toBeGreaterThanOrEqual(REPLY_GAP_S * 1000);
     expect(detail.result.responseLatencyMedian).toBeGreaterThanOrEqual(REPLY_GAP_S * 1000);
+    // aeval's speech-to-text, joined onto the turns; and nothing unmeasured
+    // reported as a number.
+    expect(turns.some((t: any) => typeof t.agent_transcript === "string" && t.agent_transcript.length > 0)).toBe(true);
+    expect(turns.some((t: any) => typeof t.user_transcript === "string" && t.user_transcript.length > 0)).toBe(true);
+    expect(detail.result).toMatchObject({ networkResilience: null, naturalness: null, noiseReduction: null });
     // Filed under the stated region, from no site.
     expect(detail.result.recordingRegion).toBe(region);
     expect(detail.result.siteId).toBeNull();
