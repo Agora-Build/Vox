@@ -442,6 +442,11 @@ export const evalJobs = pgTable("eval_jobs", {
   locationTrust: varchar("location_trust", { length: 16 }),
   startedAt: timestamp("started_at"),
   completedAt: timestamp("completed_at"),
+  // Set once marketplace.settle() has resolved for this (terminal) job: its
+  // settlement needs nothing more, so the reap-settle sweep skips it (#97).
+  // Opaque to Core — the plugin decides settlement; this only records that
+  // Core's call returned. Migration 0044.
+  settlementDoneAt: timestamp("settlement_done_at"),
   error: text("error"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),

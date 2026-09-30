@@ -4138,6 +4138,9 @@ export async function registerRoutes(
               hasResult,
               settlementContext: (settledJob.snapshot as { settlementContext?: unknown } | null)?.settlementContext,
             });
+            // Resolved: nothing more to do for this job's settlement — keep it
+            // out of the reap-settle sweep (#97).
+            await storage.markSettlementDone(settledJob.id);
           }
         }
       } catch (settleErr) {
@@ -4898,7 +4901,7 @@ export async function registerRoutes(
         // throws synchronously on conflicting shared evalFlow/eval-set keys, and if a
         // shared-tier authorizeDispatch above already placed an escrow hold, that throw
         // must still hit the catch below so voidDispatch runs — otherwise the hold leaks
-        // until the 26h reaper.
+        // until the leak reaper (LEAK_TTL_MS, 30h).
         const jobConfig = mergeEvalConfig(evalFlow.config, evalSet.config, { evalSetSecrets: gate.evalSetSecrets });
         delete (jobConfig as Record<string, unknown>).sessionInjection; // server-stamped only
         if (sessionNeed) {
@@ -4928,7 +4931,7 @@ export async function registerRoutes(
       } catch (createErr) {
         // A shared dispatch was authorized (escrow hold placed) but no job now exists
         // to settle it. Compensate by releasing the hold immediately rather than
-        // stranding it for the 26h leak-reaper (review M4). Best-effort; the reaper
+        // stranding it for the leak reaper (30h) (review M4). Best-effort; the reaper
         // remains the backstop if this also fails.
         if (settlementContext !== undefined) {
           try {

@@ -43,7 +43,14 @@ export interface SettlementOutcome {
 export interface EvalMarketplace {
   listDispatchable(userId: number): Promise<AgentSummary[]>;
   authorizeDispatch(userId: number, tokenId: number, jobContext: JobContext): Promise<DispatchAuthorization>;
-  settle(outcome: SettlementOutcome): Promise<void>; // capture | release, idempotent by settlement
+  /**
+   * Capture or release the job's escrow; idempotent by settlement. Contract Core
+   * relies on: **resolving means nothing more is needed for this job** (settled,
+   * refunded, already done, or nothing to settle), so Core marks the job and the
+   * reap-settle sweep stops re-offering it (#97). **Throw** when it must be
+   * retried — the sweep will try again. Core only calls it for a terminal job.
+   */
+  settle(outcome: SettlementOutcome): Promise<void>;
   /**
    * Compensating release when a dispatch was authorized (escrow hold placed) but the
    * job was never created — releases the hold immediately instead of stranding it for

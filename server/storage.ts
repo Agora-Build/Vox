@@ -1526,6 +1526,20 @@ export class DatabaseStorage {
     }
   }
 
+  // Record that marketplace.settle() resolved for this job — only for a
+  // terminal job: settle() quietly ignores a non-terminal one (e.g. a job the
+  // complete route rolled back to running), and marking that would hide it
+  // from the sweep. The sweep skips marked jobs (#97).
+  async markSettlementDone(jobId: number): Promise<void> {
+    await db.update(evalJobs)
+      .set({ settlementDoneAt: new Date() })
+      .where(and(
+        eq(evalJobs.id, jobId),
+        inArray(evalJobs.status, ["completed", "failed"]),
+        isNull(evalJobs.settlementDoneAt),
+      ));
+  }
+
   // Recently-terminal targeted jobs (completed or failed) that may still hold an
   // unsettled shared dispatch. Read-only; the maintenance loop calls
   // marketplace.settle() on each (idempotent). Money stays in the plugin — this
@@ -1557,16 +1571,21 @@ export class DatabaseStorage {
         // Both terminal outcomes carry an unsettled dispatch: a `failed` job
         // refunds, a `completed` job whose complete-route settle threw still needs
         // capturing. Widened from failed-only so a completed-but-unsettled job is
-        // re-driven (captured) here rather than eventually released by the 26h
+        // re-driven (captured) here rather than eventually released by the 30h
         // leak-reaper — which would refund valid completed work (review C1).
         inArray(evalJobs.status, ["completed", "failed"]),
         isNotNull(evalJobs.targetTokenId),
         gte(evalJobs.completedAt, windowStart),
         lte(evalJobs.completedAt, graceCutoff),
         sql`${evalJobs.snapshot} -> 'settlementContext' IS NOT NULL`,
+        // Already settled (settle() resolved): nothing left to do. Without this,
+        // settled rows stayed eligible for the whole lookback window and, under
+        // load, filled every batch — an unsettled job behind them aged out and
+        // fell to the leak reaper's refund (#97).
+        isNull(evalJobs.settlementDoneAt),
       ))
       // Ascending (oldest-first): if more than `limit` targeted jobs terminate in
-      // one window, drain the ones closest to aging out to the 26h leak-reaper
+      // one window, drain the ones closest to aging out to the 30h leak-reaper
       // first. Descending dropped exactly those, letting valid completed work be
       // refunded by the leak-reaper instead of captured here (GitHub #90 / #7).
       // Secondary key on id breaks completed_at ties (ms precision → ties possible)

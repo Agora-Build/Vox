@@ -104,21 +104,18 @@ export async function runMaintenanceTasks() {
     // Promptly settle shared-dispatch escrow for recently-terminal targeted jobs:
     // capture on `completed`, release on `failed`. This is the prompt path so a
     // completed-but-unsettled job (complete-route settle threw) is captured here,
-    // not eventually released by the 26h leak-reaper. No-op when the marketplace
+    // not eventually released by the leak reaper (30h). No-op when the marketplace
     // seam is absent; settle() is idempotent, so re-visiting a settled job is cheap.
     const marketplace = getMarketplace();
     if (marketplace) {
       const REAP_SETTLE_BATCH = 200;
       const reapable = await storage.getReapableSharedJobs(REAP_SETTLE_LOOKBACK_MINUTES, REAP_SETTLE_GRACE_MINUTES, REAP_SETTLE_BATCH);
-      // Honest saturation signal (not a cry-wolf): a FULL batch alone is normal —
-      // settled jobs stay query-eligible (no settled-marker yet), so ~lookback×rate
-      // rows always sit in the window even when we're keeping up. The real danger is
-      // only when the batch is full AND its oldest row (front of the oldest-first
-      // scan) is within 2 min of falling out of the lookback window — that means the
-      // rows behind the batch cap are even older and will age out to the 26h
-      // leak-reaper unsettled. Warn only then; stays quiet under healthy throughput.
-      // The cure (stop settled rows consuming the batch) is a settled-marker
-      // follow-up — see GitHub #90.
+      // Saturation signal: settled jobs leave the query (settlement_done_at,
+      // #97), so a full batch means that many jobs genuinely still need
+      // settling. Warn when the batch is full AND its oldest row (front of the
+      // oldest-first scan) is within 2 min of falling out of the lookback
+      // window: rows behind the batch cap are older still and would age out to
+      // the leak reaper unsettled. Quiet under healthy throughput.
       const oldestCompletedAt = reapable[0]?.completedAt;
       if (
         reapable.length === REAP_SETTLE_BATCH &&
@@ -138,6 +135,7 @@ export async function runMaintenanceTasks() {
             hasResult,
             settlementContext: (job.snapshot as { settlementContext?: unknown } | null)?.settlementContext,
           });
+          await storage.markSettlementDone(job.id); // settled: leave the sweep (#97)
         } catch (settleErr) {
           console.error(`Reap settlement failed for job ${job.id}:`, settleErr);
         }

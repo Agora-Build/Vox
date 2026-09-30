@@ -148,4 +148,61 @@ d("storage.getReapableSharedJobs", () => {
     const sorted = [...times].sort((a, b) => a - b);
     expect(times).toEqual(sorted); // completed_at ascending (robust to equal-time ties)
   });
+
+  // #97: settled jobs used to stay eligible for the whole lookback window, so
+  // under load they filled every batch and an unsettled job behind them aged
+  // out to the leak reaper's refund. Jobs here sit in a private completion-time
+  // window (50–51 min ago) so the shared dev DB can't crowd the batch.
+  it("settled jobs leave the sweep, so a backlog larger than the batch still reaches the unsettled job", async () => {
+    const token = await storage.createEvalAgentToken({
+      name: "reap-done-test", tokenHash: `reap-done-${Date.now()}`, siteId: "na-us-ashburn-01", createdBy: 1,
+    } as any);
+    tokenIds.push(token.id);
+    const mk = async (settlementId: number, minutesAgo: number) => {
+      const job = await storage.createEvalJob({
+        evalFlowId: null, triggerType: 2, evalSetId: null, createdBy: 1,
+        siteId: "na-us-ashburn-01", targetTokenId: token.id,
+        config: {}, snapshot: { provider: null, evalFlow: null, evalSet: null, creatorPlan: null,
+          settlementContext: { settlementId } } as any,
+        status: "running", priority: 0, retryCount: 0, maxRetries: 3,
+      } as any);
+      jobIds.push(job.id);
+      await storage.finalizeRunningJob(job.id, undefined);
+      await pool.query("UPDATE eval_jobs SET completed_at = now() - make_interval(secs => $2) WHERE id = $1", [job.id, minutesAgo * 60]);
+      return job.id;
+    };
+    // Five already-settled jobs, older than the one that still needs settling.
+    const settled: number[] = [];
+    for (let i = 0; i < 5; i++) settled.push(await mk(818180 + i, 50.9 - i * 0.01));
+    const unsettled = await mk(818189, 50.5);
+    for (const id of settled) await storage.markSettlementDone(id);
+
+    // Window [now-51m, now-50m], batch of 3: before the marker, the 3 oldest
+    // (settled) rows filled it and the unsettled job was never reached.
+    const rows = await storage.getReapableSharedJobs(51, 50, 3);
+    const ids = rows.map((r) => r.id);
+    expect(ids).toContain(unsettled);
+    for (const id of settled) expect(ids).not.toContain(id);
+  });
+
+  it("markSettlementDone only marks a terminal job — a job rolled back to running stays sweepable", async () => {
+    const token = await storage.createEvalAgentToken({
+      name: "reap-done-running", tokenHash: `reap-done-run-${Date.now()}`, siteId: "na-us-ashburn-01", createdBy: 1,
+    } as any);
+    tokenIds.push(token.id);
+    const job = await storage.createEvalJob({
+      evalFlowId: null, triggerType: 2, evalSetId: null, createdBy: 1,
+      siteId: "na-us-ashburn-01", targetTokenId: token.id,
+      config: {}, snapshot: { provider: null, evalFlow: null, evalSet: null, creatorPlan: null,
+        settlementContext: { settlementId: 818199 } } as any,
+      status: "running", priority: 0, retryCount: 0, maxRetries: 3,
+    } as any);
+    jobIds.push(job.id);
+    await storage.markSettlementDone(job.id);
+    expect((await storage.getEvalJob(job.id))!.settlementDoneAt).toBeNull();
+    await storage.finalizeRunningJob(job.id, undefined);
+    await storage.markSettlementDone(job.id);
+    expect((await storage.getEvalJob(job.id))!.settlementDoneAt).not.toBeNull();
+  });
 });
+

@@ -352,6 +352,12 @@ describe("Task 13: practical shared-agents marketplace + credits e2e", () => {
       const ownerAfter = await pollUntil(() => getBalance(owner.session), (b) => b === ownerBefore + earnerShare, 150_000, 5_000);
       expect(ownerAfter).toBe(ownerBefore + earnerShare); // owner +80%
 
+      // Settled → marked, so the reap-settle sweep stops re-offering it (#97).
+      // Whichever path settled it (the complete route, or the sweep as backstop)
+      // stamps the marker once settle() resolves.
+      const { storage } = await import("../server/storage");
+      expect((await storage.getEvalJob(jobId))!.settlementDoneAt).not.toBeNull();
+
       const dispatcherAfter = await getBalance(rich.session);
       expect(dispatcherAfter).toBe(dispatcherBefore); // hold already left the dispatcher's balance; capture doesn't touch it again
 
