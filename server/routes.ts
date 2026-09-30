@@ -1,4 +1,5 @@
-import type { Express } from "express";
+import express, { type Express } from "express";
+import { randomUUID, createHash } from "crypto";
 import { type Server } from "http";
 import { z } from "zod";
 import { storage, hashToken, generateSecureToken, generateEvalAgentToken, generateBrokerRegistrationToken, mergeEvalConfig, buildJobSnapshot, validateEvalFlowConfig, validateEvalSetConfig, encryptValue, decryptValue, isEncryptionConfigured, type MetricSourceRow, type RegionQueryScope, type MetricTier } from "./storage";
@@ -8,7 +9,9 @@ import { SECRET_NAME_PATTERN, collectSecretRefs, secretValueError } from "@share
 import { deriveScheduleStatus } from "@shared/schedule-status";
 import { regionSiteSequence } from "@shared/regions";
 import { registerApiV1Routes } from "./routes-api-v1";
-import { generateSignedUrlForUser } from "./s3";
+import { generateSignedUrlForUser, putUserObject, getUserObjectStream, deleteUserObject } from "./s3";
+import { parseWavHeader, analyzeWavError, ANALYZE_MAX_BYTES } from "@shared/wav";
+import type { EvalJob, InsertEvalJob, JobSnapshot } from "@shared/schema";
 import { validateTierChoice, resolveTargetedDispatch, filterDispatchableAgents } from "./dispatch";
 import { getMarketplace } from "./marketplace";
 import { isAlreadyMemberError, getOrganizations, requireOrganizations, type Membership, type OrgSecretRow } from "./organizations";
@@ -1491,6 +1494,190 @@ export async function registerRoutes(
     } catch (error) {
       console.error("Error removing storage config:", error);
       res.status(500).json({ error: "Failed to remove storage config" });
+    }
+  });
+
+  // ==================== TOOLS → ANALYZE ====================
+  // An uploaded stereo recording (L = user, R = agent), analyzed by an eval
+  // agent as a hidden job of kind 'analyze'. The file lives in the user's own
+  // bucket (Storage page) — no system fallback. Design:
+  // designs/2026-09-30-tools-analyze-design.md.
+  const ANALYZE_DAILY_CAP = 50;
+
+  // What the Analyze pages show about one analysis, from its frozen snapshot.
+  const analyzeView = (job: EvalJob, hasResult: boolean) => {
+    const snap = job.snapshot as JobSnapshot | null;
+    return {
+      id: job.id,
+      status: job.status,
+      error: job.error,
+      fileName: snap?.analyze?.fileName ?? null,
+      provider: snap?.provider ?? null,
+      recordingRegion: snap?.analyze?.recordingRegion ?? null,
+      source: snap?.transport ?? "web",
+      durationSec: snap?.analyze?.durationSec ?? null,
+      createdAt: job.createdAt,
+      completedAt: job.completedAt,
+      hasResult,
+    };
+  };
+
+  // The analysis if the caller may see it: its uploader's; an admin's only
+  // where `allowAdmin` (deleting, as moderation). Anything else reads as absent.
+  const findAnalyzeJob = async (rawId: string, user: { id: number; isAdmin: boolean }, allowAdmin = false) => {
+    const id = Number(rawId);
+    const job = Number.isInteger(id) && id > 0 ? await storage.getEvalJob(id) : undefined;
+    if (!job || job.kind !== "analyze") return undefined;
+    if (job.createdBy === user.id || (allowAdmin && user.isAdmin)) return job;
+    return undefined;
+  };
+
+  // Upload one WAV (the raw file is the body) and queue its analysis.
+  // requireAuth comes before the body parser, so a stranger can't make Core
+  // buffer 100 MB.
+  app.post("/api/tools/analyze", requireAuth, express.raw({ type: "audio/wav", limit: ANALYZE_MAX_BYTES }), async (req, res) => {
+    try {
+      const user = await getCurrentUser(req);
+      if (!user) return res.status(401).json({ error: "Not authenticated" });
+      if (user.plan === "basic") {
+        return res.status(409).json({ error: "Analyze needs Premium: recordings are kept in your own storage, a Premium feature.", needs: "premium" });
+      }
+      if (!(await storage.getUserStorageConfig(user.id))) {
+        return res.status(409).json({ error: "Set up your storage first: recordings are kept in your own bucket.", needs: "storage" });
+      }
+      if (await storage.countAnalyzeJobsSince(user.id, new Date(Date.now() - 24 * 60 * 60 * 1000)) >= ANALYZE_DAILY_CAP) {
+        return res.status(429).json({ error: `You can analyze up to ${ANALYZE_DAILY_CAP} recordings a day.` });
+      }
+
+      const q = req.query;
+      const provider = typeof q.provider === "string" ? await storage.getProvider(q.provider) : undefined;
+      if (!provider) return res.status(400).json({ error: "Choose a provider." });
+      const region = typeof q.region === "string" ? await storage.getRegionLocationByBaseId(q.region) : undefined;
+      if (!region) return res.status(400).json({ error: "Choose the region the recording was made in." });
+      const source = q.source;
+      if (source !== "web" && source !== "phone") return res.status(400).json({ error: "Choose the recording's source: web or phone." });
+      const fileName = (typeof q.fileName === "string" ? path.basename(q.fileName) : "").slice(0, 200) || "recording.wav";
+
+      const body = req.body;
+      if (!Buffer.isBuffer(body) || body.length === 0) {
+        return res.status(400).json({ error: "Send the WAV file as the request body (Content-Type: audio/wav)." });
+      }
+      const wavError = analyzeWavError(parseWavHeader(new Uint8Array(body.buffer, body.byteOffset, body.length)), body.length);
+      if (wavError) return res.status(400).json({ error: wavError });
+      const info = parseWavHeader(new Uint8Array(body.buffer, body.byteOffset, body.length)) as { durationSec: number };
+
+      const s3Key = `vox-analyze/${user.id}/${randomUUID()}.wav`;
+      try {
+        await putUserObject(user.id, s3Key, body, "audio/wav");
+      } catch (err) {
+        console.error(`[analyze] storing an upload for user ${user.id} failed:`, err instanceof Error ? err.message : err);
+        return res.status(502).json({ error: "Couldn't store the file in your storage. Check the settings on the Storage page." });
+      }
+
+      const job = await storage.createEvalJob({
+        kind: "analyze",
+        evalFlowId: null,
+        evalSetId: null,
+        triggerType: 2, // manual
+        createdBy: user.id,
+        creatorOrgId: user.membership?.organizationId ?? null,
+        siteId: null,
+        targetRegion: null,
+        targetTier: null,
+        config: {},
+        snapshot: {
+          provider: { id: provider.id, name: provider.name, platformId: provider.platformId ?? null },
+          evalFlow: null,
+          evalSet: null,
+          creatorPlan: user.plan,
+          transport: source,
+          analyze: {
+            fileName,
+            s3Key,
+            sha256: createHash("sha256").update(body).digest("hex"),
+            sizeBytes: body.length,
+            durationSec: info.durationSec,
+            recordingRegion: region.baseId,
+          },
+        },
+        status: "pending",
+        // Behind eval runs: an agent always takes a waiting eval run first.
+        priority: -10,
+        retryCount: 0,
+        maxRetries: 3,
+      } as InsertEvalJob);
+      res.status(201).json(analyzeView(job, false));
+    } catch (error) {
+      console.error("Error queueing an analysis:", error);
+      res.status(500).json({ error: "Failed to queue the analysis" });
+    }
+  });
+
+  app.get("/api/tools/analyze", requireAuth, async (req, res) => {
+    try {
+      const user = await getCurrentUser(req);
+      if (!user) return res.status(401).json({ error: "Not authenticated" });
+      const rows = await storage.getAnalyzeJobs(user.id);
+      res.json(rows.map((r) => analyzeView(r.job, r.result != null)));
+    } catch (error) {
+      console.error("Error listing analyses:", error);
+      res.status(500).json({ error: "Failed to list analyses" });
+    }
+  });
+
+  app.get("/api/tools/analyze/:id", requireAuth, async (req, res) => {
+    try {
+      const user = await getCurrentUser(req);
+      if (!user) return res.status(401).json({ error: "Not authenticated" });
+      const job = await findAnalyzeJob(req.params.id, user);
+      if (!job) return res.status(404).json({ error: "Analysis not found" });
+      const result = (await storage.getEvalResultsByJob(job.id))[0] ?? null;
+      res.json({ job: analyzeView(job, result != null), result });
+    } catch (error) {
+      console.error("Error fetching an analysis:", error);
+      res.status(500).json({ error: "Failed to fetch the analysis" });
+    }
+  });
+
+  app.get("/api/tools/analyze/:id/recording", requireAuth, async (req, res) => {
+    try {
+      const user = await getCurrentUser(req);
+      if (!user) return res.status(401).json({ error: "Not authenticated" });
+      const job = await findAnalyzeJob(req.params.id, user);
+      const a = (job?.snapshot as JobSnapshot | null)?.analyze;
+      if (!job || !a) return res.status(404).json({ error: "Analysis not found" });
+      const { body, contentLength } = await getUserObjectStream(job.createdBy!, a.s3Key);
+      res.setHeader("Content-Type", "audio/wav");
+      res.setHeader("Content-Disposition", `attachment; filename="${a.fileName.replace(/["\\\r\n]/g, "_")}"`);
+      if (contentLength != null) res.setHeader("Content-Length", String(contentLength));
+      body.pipe(res);
+    } catch (error) {
+      console.error("Error downloading a recording:", error instanceof Error ? error.message : error);
+      if (!res.headersSent) res.status(502).json({ error: "Couldn't read the recording from your storage" });
+    }
+  });
+
+  app.delete("/api/tools/analyze/:id", requireAuth, async (req, res) => {
+    try {
+      const user = await getCurrentUser(req);
+      if (!user) return res.status(401).json({ error: "Not authenticated" });
+      const job = await findAnalyzeJob(req.params.id, user, true);
+      if (!job) return res.status(404).json({ error: "Analysis not found" });
+      if (job.status === "running") return res.status(409).json({ error: "The analysis is running. Delete it once it finishes." });
+      const a = (job.snapshot as JobSnapshot | null)?.analyze;
+      if (a) {
+        try {
+          await deleteUserObject(job.createdBy!, a.s3Key);
+        } catch (err) {
+          // Already gone, or the storage settings changed: the row still goes.
+          console.warn(`[analyze] removing ${a.s3Key} failed:`, err instanceof Error ? err.message : err);
+        }
+      }
+      await storage.deleteEvalJob(job.id);
+      res.status(204).end();
+    } catch (error) {
+      console.error("Error deleting an analysis:", error);
+      res.status(500).json({ error: "Failed to delete the analysis" });
     }
   });
 
@@ -4337,6 +4524,35 @@ export async function registerRoutes(
     } catch (error) {
       console.error("Error getting storage config:", error);
       res.status(500).json({ error: "Failed to get storage config" });
+    }
+  });
+
+  // The uploaded recording of an analyze job (Tools → Analyze), streamed from
+  // the uploader's bucket to the agent running it — the agent never gets the
+  // bucket credentials for this. Lease-fenced like every job endpoint.
+  app.get("/api/eval-agent/jobs/:jobId/upload", async (req, res) => {
+    try {
+      const authHeader = req.headers.authorization;
+      if (!authHeader || !authHeader.startsWith("Bearer ")) {
+        return res.status(401).json({ error: "Eval agent token required" });
+      }
+      const evalAgentToken = await storage.getEvalAgentTokenByHash(hashToken(authHeader.slice(7)));
+      if (!evalAgentToken || evalAgentToken.isRevoked) {
+        return res.status(401).json({ error: "Invalid or revoked token" });
+      }
+      const auth = await authorizeJobAgent(parseInt(req.params.jobId), evalAgentToken.id, req.query.leaseId);
+      if (auth.status !== "ok") { denyJobAgent(res, auth); return; }
+      const a = (auth.job.snapshot as JobSnapshot | null)?.analyze;
+      if (auth.job.kind !== "analyze" || !a || !auth.job.createdBy) {
+        return res.status(404).json({ error: "This job has no uploaded recording" });
+      }
+      const { body, contentLength } = await getUserObjectStream(auth.job.createdBy, a.s3Key);
+      res.setHeader("Content-Type", "audio/wav");
+      if (contentLength != null) res.setHeader("Content-Length", String(contentLength));
+      body.pipe(res);
+    } catch (error) {
+      console.error("Error serving an upload to an agent:", error instanceof Error ? error.message : error);
+      if (!res.headersSent) res.status(502).json({ error: "Couldn't read the recording from the uploader's storage" });
     }
   });
 

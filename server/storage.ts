@@ -1872,6 +1872,29 @@ export class DatabaseStorage {
     return result[0];
   }
 
+  // ==================== TOOLS → ANALYZE ====================
+
+  async countAnalyzeJobsSince(userId: number, since: Date): Promise<number> {
+    const rows = await db.select({ count: sql<number>`count(*)::int` }).from(evalJobs)
+      .where(and(eq(evalJobs.kind, "analyze"), eq(evalJobs.createdBy, userId), gte(evalJobs.createdAt, since)));
+    return rows[0]?.count ?? 0;
+  }
+
+  /** The user's analyses, newest first, each with its result once there is one. */
+  async getAnalyzeJobs(userId: number, limit = 200): Promise<Array<{ job: EvalJob; result: EvalResult | null }>> {
+    const rows = await db.select().from(evalJobs)
+      .leftJoin(evalResults, eq(evalResults.evalJobId, evalJobs.id))
+      .where(and(eq(evalJobs.kind, "analyze"), eq(evalJobs.createdBy, userId)))
+      .orderBy(desc(evalJobs.createdAt))
+      .limit(limit);
+    return rows.map((r) => ({ job: r.eval_jobs, result: r.eval_results }));
+  }
+
+  /** Delete a job; its result goes with it (ON DELETE CASCADE). */
+  async deleteEvalJob(id: number): Promise<void> {
+    await db.delete(evalJobs).where(eq(evalJobs.id, id));
+  }
+
   async getEvalResultsByJob(jobId: number): Promise<EvalResult[]> {
     return db.select().from(evalResults).where(eq(evalResults.evalJobId, jobId)).orderBy(desc(evalResults.createdAt));
   }
