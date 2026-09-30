@@ -180,7 +180,7 @@ node dist/migrate.cjs
 
 Vox itself is one container, but a full deployment also runs:
 
-- **Eval agents** — run the evals, on hosts in each region. Install and upgrade with `scripts/vox-upgrade.sh` (reads `AGENT_TOKEN` and `VOX_SERVER` from an env file; see the README).
+- **Eval agents** — run the evals, on hosts in each region. Install and upgrade with `scripts/vox-upgrade.sh` (reads `AGENT_TOKEN` and `VOX_SERVER` from an env file; see the README). Agents also run **Tools → Analyze** (uploaded recordings): an agent takes those only once it reports the `analyze` capability, which the agent image does from the release that added Analyze. Upgrade the public agents with that release, or uploads stay queued and fail after 24 hours.
 - **Auth-session broker** and **REST broker** — sidecars (Dockerfile targets `broker` and `rest-broker` in `vox_eval_agentd/Dockerfile`) that log in to target sites and make API calls on behalf of evals, so credentials never reach an eval agent. Each registers with Vox using `VOX_CORE_URL` and a `BROKER_REG_TOKEN` minted in **Console → Brokers**, and must be reachable only on the internal network.
 
 ## Other Platforms
@@ -261,6 +261,7 @@ Put a reverse proxy (nginx, Caddy, Traefik) in front for SSL termination.
 - [ ] HTTPS is working (check the `Secure` cookie flag)
 - [ ] Sign-in providers (if enabled): `GET /api/plugins/oauth/providers` shows them on, and each registered callback URL matches your domain
 - [ ] Stripe webhook endpoint is registered (if enabled): `https://your-domain.com/api/webhooks/stripe`
+- [ ] Tools → Analyze: at least one online public eval agent reports the `analyze` capability (Console → Eval Agents). Analyze keeps recordings in each user's own bucket (Storage page); Core needs no S3 settings for it
 
 ## Troubleshooting
 

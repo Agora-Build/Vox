@@ -1,6 +1,6 @@
 # Tools → Analyze: analyze uploaded recordings
 
-**Status:** draft for review · 2026-09-30
+**Status:** implemented on `feat/tools-analyze` · 2026-09-30
 
 ## What and why
 
