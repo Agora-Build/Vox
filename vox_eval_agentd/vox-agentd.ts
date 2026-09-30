@@ -2061,7 +2061,7 @@ class VoxEvalAgentDaemon {
           : null;
       },
     });
-    this.jobOutputDirs.push(out.sessionDir); // artifacts upload as usual
+    // No artifacts: the work dir is already gone (see runAnalyzeUpload).
     return out.result as unknown as EvalResult;
   }
 

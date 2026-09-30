@@ -162,7 +162,15 @@ used.
 - **The agent never gets the bucket credentials for this.** Core streams the
   file to the claiming agent through the lease-checked `/upload` endpoint.
 - **Kept until deleted.** The WAV stays with the result until the analysis is
-  deleted.
+  deleted. Deleting is soft (`deleted_at`): the result and the file go, the
+  row stays so the daily cap still counts it.
+- **No artifacts.** Everything the pages show is in the result row, so the
+  agent uploads nothing and deletes its work dir. `/storage-config` refuses
+  analyze jobs: an agent the uploader doesn't run never gets their
+  credentials, and nothing can fall back to another bucket.
+- **Not through the job routes.** `canViewJob` / `canCancelJob` refuse
+  analyze jobs for everyone, admins included. Only the Tools routes serve
+  them, to their uploader.
 
 ### Region
 

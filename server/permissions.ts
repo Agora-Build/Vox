@@ -34,9 +34,12 @@ export function canAccessResource(user: AuthUser, resource: OrgResource): boolea
 // being visible). Once the flow is deleted, only the person who ran the job may.
 export function canViewJob(
   user: AuthUser,
-  job: { createdBy: number | null },
+  job: { createdBy: number | null; kind?: "eval" | "analyze" },
   evalFlow: OrgResource | undefined,
 ): boolean {
+  // An analysis (Tools → Analyze) is its uploader's alone and served only by
+  // the /api/tools/analyze routes — never through the job routes, to anyone.
+  if (job.kind === "analyze") return false;
   if (user.isAdmin) return true;
   if (evalFlow) return canAccessResource(user, evalFlow);
   return job.createdBy === user.id;
@@ -71,9 +74,10 @@ export function jobListFilter(user: AuthUser, scope: JobScope) {
 // Merely being able to VIEW a flow (e.g. it is public) is never enough.
 export function canCancelJob(
   user: AuthUser,
-  job: { createdBy: number | null },
+  job: { createdBy: number | null; kind?: "eval" | "analyze" },
   evalFlow: OrgResource | undefined,
 ): boolean {
+  if (job.kind === "analyze") return false; // deleted on the Analyze page instead
   if (user.isAdmin) return true;
   if (job.createdBy === user.id) return true;
   return !!evalFlow && isOwnerOrOrgManager(user, evalFlow);

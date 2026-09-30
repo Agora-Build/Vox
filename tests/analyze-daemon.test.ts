@@ -17,14 +17,15 @@ describe("runAnalyzeUpload", () => {
     const wav = makeWav({ channels: 2, rate: 16000, bits: 16, seconds: 1 });
     const analyzed: string[] = [];
     let staged: Buffer | null = null;
+    const dir = workDir();
     const out = await runAnalyzeUpload({
-      workDir: workDir(),
+      workDir: dir,
       download: writer(wav),
       // What aeval sees while it runs.
       analyze: async (dir) => { analyzed.push(dir); staged = fs.readFileSync(path.join(dir, "recordings", "recording.wav")); },
       parseMetrics: () => ({ responseLatencyMedian: 850 }),
     });
-    expect(analyzed).toEqual([out.sessionDir]);
+    expect(analyzed).toEqual([dir]);
     expect(staged).toEqual(Buffer.from(wav));
     expect(out.result).toMatchObject({ responseLatencyMedian: 850 });
   });
@@ -55,15 +56,17 @@ describe("runAnalyzeUpload", () => {
     expect(out.result).toMatchObject({ responseLatencyMedian: 900, networkResilience: null, naturalness: null, noiseReduction: null });
   });
 
-  it("the recording never leaves as an artifact: it's gone from the session once analyzed", async () => {
-    const out = await runAnalyzeUpload({
-      workDir: workDir(),
+  it("nothing of an analysis stays on the agent or leaves as an artifact", async () => {
+    // The result (metrics, turns, transcripts) is reported to Core; the
+    // recording and aeval's output are the uploader's and go nowhere else.
+    const dir = workDir();
+    await runAnalyzeUpload({
+      workDir: dir,
       download: writer(makeWav({ channels: 2, rate: 16000, bits: 16, seconds: 1 })),
-      analyze: async (dir) => { fs.mkdirSync(path.join(dir, "analysis"), { recursive: true }); fs.writeFileSync(path.join(dir, "analysis", "report.html"), "ok"); },
+      analyze: async (d) => { fs.mkdirSync(path.join(d, "analysis"), { recursive: true }); fs.writeFileSync(path.join(d, "analysis", "turns.json"), "[]"); },
       parseMetrics: () => ({}),
     });
-    expect(fs.existsSync(path.join(out.sessionDir, "recordings"))).toBe(false);
-    expect(fs.existsSync(path.join(out.sessionDir, "analysis", "report.html"))).toBe(true); // the report stays
+    expect(fs.existsSync(dir)).toBe(false);
   });
 
   it("a failed analysis leaves nothing behind on the agent", async () => {

@@ -93,6 +93,9 @@ Region locations are admin-managed; site IDs are `<location-base>-<sequence>` (e
 - **Claim rule** (same in `permissions.isClaimable` and both claim SQL paths): an agent reporting the `analyze` capability (the daemon does when `aeval` runs) that the uploader may use: public, or their own. Never a marketplace agent. Region and site play no part, and the phone gate doesn't apply.
 - **On the agent:** it fetches the file through the lease-fenced `GET /api/eval-agent/jobs/:id/upload` and runs `aeval analyze` with the phone preset.
 - **Storage:** the WAV lives only in the uploader's own bucket (Storage page, `user_storage_config`, so Premium and up); no system fallback.
+- **Nothing leaves the agent:** an analysis uploads **no artifacts**. The agent deletes its work dir, and `/storage-config` refuses analyze jobs, so an agent the uploader doesn't run never gets their credentials.
+- **Access:** the job routes never serve an analysis (`canViewJob`/`canCancelJob` refuse `kind = 'analyze'`, admins included); only `/api/tools/analyze/*` does, for its uploader.
+- **Uploads and delete:** one upload in flight per user (8 in total). Delete is soft (`deleted_at`) so the daily cap still counts the row; a failed removal from the bucket keeps the row for a retry.
 - **Where results show:** kept out of the Eval Jobs lists (`evalJobConditions`) and off Mainline/Community; shown in the uploader's My Evals, filed by `eval_results.recording_region` (`site_id` stays NULL).
 - **Honest metrics:** network/naturalness/noise are reported as null, not measured (see #217).
 

@@ -1895,13 +1895,20 @@ export class DatabaseStorage {
   }
 
   /**
-   * Deleting an analysis, step 1: stop it, atomically — unless an agent is
-   * running it. A pending one can't be claimed after this. Returns false when
-   * it is running (or already deleted).
+   * Deleting an analysis, step 1, atomically: refuse if an agent is running
+   * it, and take a pending one off the queue so nothing claims it. A finished
+   * one is left as it is, so a delete that fails later changes nothing.
+   * Returns false when it is running (or already deleted).
    */
   async stopAnalyzeJobForDelete(id: number): Promise<boolean> {
+    const pending = sql`${evalJobs.status} = 'pending'`;
     const rows = await db.update(evalJobs)
-      .set({ status: "failed", error: "Deleted by its uploader", completedAt: sql`COALESCE(${evalJobs.completedAt}, NOW())`, updatedAt: new Date() })
+      .set({
+        status: sql`CASE WHEN ${pending} THEN 'failed'::eval_job_status ELSE ${evalJobs.status} END`,
+        error: sql`CASE WHEN ${pending} THEN 'Deleted by its uploader' ELSE ${evalJobs.error} END`,
+        completedAt: sql`CASE WHEN ${pending} THEN NOW() ELSE ${evalJobs.completedAt} END`,
+        updatedAt: new Date(),
+      })
       .where(and(eq(evalJobs.id, id), eq(evalJobs.kind, "analyze"), ne(evalJobs.status, "running"), isNull(evalJobs.deletedAt)))
       .returning({ id: evalJobs.id });
     return rows.length > 0;

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { storage, pool } from "../server/storage";
+import { storage, pool, hashToken } from "../server/storage";
 import { makeWav } from "./fixtures/make-wav";
 
 // Tools → Analyze API (design 2026-09-30), against the running dev server.
@@ -181,6 +181,77 @@ d("Tools → Analyze API", () => {
     expect(after.status).toBe("failed");         // no agent claims it any more
     const list = await (await fetch(`${BASE_URL}/api/tools/analyze`, { headers: { Cookie: user.cookie } })).json();
     expect(list.map((a: { id: number }) => a.id)).toContain(job.id); // still there to delete again
+  });
+
+  it("a failed delete leaves a finished analysis finished", async () => {
+    const job = await storage.createEvalJob({
+      kind: "analyze", evalFlowId: null, triggerType: 2, evalSetId: null, createdBy: user.id,
+      siteId: null, targetRegion: null, targetTier: null, config: {},
+      snapshot: { provider: null, evalFlow: null, evalSet: null, creatorPlan: "premium", transport: "web",
+        analyze: { fileName: "x.wav", s3Key: "vox-analyze/x.wav", sha256: "0", sizeBytes: 1, durationSec: 1, recordingRegion: region } } as any,
+      status: "completed", priority: -10, retryCount: 0, maxRetries: 3,
+    } as any);
+    const res = await fetch(`${BASE_URL}/api/tools/analyze/${job.id}`, { method: "DELETE", headers: { Cookie: user.cookie } });
+    expect(res.status).toBe(502); // placeholder storage can't be reached
+    expect(await storage.getEvalJob(job.id)).toMatchObject({ status: "completed", error: null, deletedAt: null });
+  });
+
+  it("the job routes don't serve an analysis, not even to an admin", async () => {
+    const job = await storage.createEvalJob({
+      kind: "analyze", evalFlowId: null, triggerType: 2, evalSetId: null, createdBy: user.id,
+      siteId: null, targetRegion: null, targetTier: null, config: {},
+      snapshot: { provider: null, evalFlow: null, evalSet: null, creatorPlan: "premium" } as any,
+      status: "completed", priority: -10, retryCount: 0, maxRetries: 3,
+    } as any);
+    for (const path of [`/api/eval-jobs/${job.id}`, `/api/eval-jobs/${job.id}/detail`]) {
+      expect((await fetch(`${BASE_URL}${path}`, { headers: { Cookie: admin } })).status).toBe(403);
+      expect((await fetch(`${BASE_URL}${path}`, { headers: { Cookie: user.cookie } })).status).toBe(403);
+    }
+    expect((await fetch(`${BASE_URL}/api/eval-jobs/${job.id}/reupload`, { method: "POST", headers: { Cookie: admin } })).status).toBe(404);
+  });
+
+  it("the agent running an analysis gets no storage credentials", async () => {
+    const raw = `vox_agent_analyze_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+    const tok = await storage.createEvalAgentToken({
+      name: `analyze-api-agent-${Date.now()}`, tokenHash: hashToken(raw), siteId: "na-us-ashburn-01", dispatchTier: "public", createdBy: 1,
+    } as any);
+    try {
+      const auth = { "Content-Type": "application/json", Authorization: `Bearer ${raw}` };
+      const agent = await (await fetch(`${BASE_URL}/api/eval-agent/register`, { method: "POST", headers: auth, body: JSON.stringify({ name: "analyze-api-agent" }) })).json();
+      const job = await storage.createEvalJob({
+        kind: "analyze", evalFlowId: null, triggerType: 2, evalSetId: null, createdBy: user.id,
+        siteId: null, targetRegion: null, targetTier: null, config: {},
+        snapshot: { provider: null, evalFlow: null, evalSet: null, creatorPlan: "premium" } as any,
+        status: "running", priority: -10, retryCount: 0, maxRetries: 3, evalAgentId: agent.id,
+      } as any);
+      const res = await fetch(`${BASE_URL}/api/eval-agent/jobs/${job.id}/storage-config?leaseId=${agent.leaseId}`, { headers: auth });
+      expect(res.status).toBe(404);
+      expect(JSON.stringify(await res.json())).not.toContain("placeholder-secret");
+    } finally {
+      await pool.query("DELETE FROM eval_jobs WHERE eval_agent_id IN (SELECT id FROM eval_agents WHERE token_id = $1)", [tok.id]);
+      await pool.query("DELETE FROM eval_agents WHERE token_id = $1", [tok.id]);
+      await pool.query("DELETE FROM eval_agent_tokens WHERE id = $1", [tok.id]);
+    }
+  });
+
+  it("one upload at a time per user: a second while the first is in flight is refused", async () => {
+    // The first upload's body arrives slowly; the second comes meanwhile.
+    let release!: () => void;
+    const held = new Promise<void>((r) => { release = r; });
+    const slow = new ReadableStream<Uint8Array>({
+      async start(c) { c.enqueue(stereo.slice(0, 44)); await held; c.enqueue(stereo.slice(44)); c.close(); },
+    });
+    const first = fetch(`${BASE_URL}/api/tools/analyze?${new URLSearchParams(good())}`, {
+      method: "POST", headers: { "Content-Type": "audio/wav", Cookie: user.cookie }, body: slow, duplex: "half",
+    } as RequestInit);
+    await new Promise((r) => setTimeout(r, 300));
+    const second = await upload(user.cookie, stereo, good());
+    expect(second.status).toBe(429);
+    expect((await second.json()).error).toMatch(/one upload at a time/i);
+    release();
+    await first; // finishes (502: placeholder storage), and frees the slot
+    const third = await upload(user.cookie, stereo, good());
+    expect(await third.json()).not.toMatchObject({ error: expect.stringMatching(/one upload at a time/i) });
   });
 
   it("the list shows only the caller's analyses", async () => {

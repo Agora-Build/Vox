@@ -22,7 +22,7 @@ export interface AnalyzeUploadDeps {
 
 const HEADER_BYTES = 1 << 20; // the WAV header check needs only the start
 
-export async function runAnalyzeUpload(deps: AnalyzeUploadDeps): Promise<{ result: Record<string, unknown>; sessionDir: string }> {
+export async function runAnalyzeUpload(deps: AnalyzeUploadDeps): Promise<{ result: Record<string, unknown> }> {
   const sessionDir = deps.workDir;
   const recordings = path.join(sessionDir, 'recordings');
   try {
@@ -60,15 +60,12 @@ export async function runAnalyzeUpload(deps: AnalyzeUploadDeps): Promise<{ resul
     result.naturalness = null;
     result.noiseReduction = null;
 
-    // The recording is the uploader's, and it is already in their bucket: it
-    // must not also leave in this job's artifacts (which may go to another
-    // bucket). The analysis output (report, metrics) stays for upload.
-    fs.rmSync(recordings, { recursive: true, force: true });
-    return { result, sessionDir };
-  } catch (err) {
-    // Nothing of a failed analysis stays on the agent, the recording least.
+    return { result };
+  } finally {
+    // Nothing of an analysis stays on the agent or leaves as an artifact: the
+    // recording and aeval's output (transcripts included) are the uploader's.
+    // What the pages show — metrics, turns, transcripts — is in the result.
     fs.rmSync(sessionDir, { recursive: true, force: true });
-    throw err;
   }
 }
 

@@ -1503,6 +1503,11 @@ export async function registerRoutes(
   // bucket (Storage page) — no system fallback. Design:
   // designs/2026-09-30-tools-analyze-design.md.
   const ANALYZE_DAILY_CAP = 50;
+  // Uploads Core is reading right now. A whole file is held in memory while
+  // it's checked and stored, so: one at a time per user (which also keeps the
+  // daily cap exact), and a few in total.
+  const ANALYZE_MAX_UPLOADS_IN_FLIGHT = 8;
+  const analyzeUploadsInFlight = new Set<number>();
 
   // What the Analyze pages show about one analysis, from its frozen snapshot.
   const analyzeView = (job: EvalJob, hasResult: boolean) => {
@@ -1548,6 +1553,20 @@ export async function registerRoutes(
       if (await storage.countAnalyzeJobsSince(user.id, new Date(Date.now() - 24 * 60 * 60 * 1000)) >= ANALYZE_DAILY_CAP) {
         return res.status(429).json({ error: `You can analyze up to ${ANALYZE_DAILY_CAP} recordings a day.` });
       }
+      if (analyzeUploadsInFlight.has(user.id)) {
+        return res.status(429).json({ error: "One upload at a time: wait for your current upload to finish." });
+      }
+      if (analyzeUploadsInFlight.size >= ANALYZE_MAX_UPLOADS_IN_FLIGHT) {
+        return res.status(503).json({ error: "Vox is busy receiving other uploads. Try again in a minute." });
+      }
+      analyzeUploadsInFlight.add(user.id);
+      // The upload handler frees the slot as it answers (its finally). These
+      // cover a request that never reaches it: a too-large body, or a dropped
+      // connection. (Events alone are too late: a client can send its next
+      // upload before "finish" fires.)
+      const free = () => analyzeUploadsInFlight.delete(user.id);
+      res.on("finish", free);
+      res.on("close", free);
       next();
     } catch (error) {
       console.error("Error checking an analysis upload:", error);
@@ -1557,9 +1576,9 @@ export async function registerRoutes(
 
   // Upload one WAV (the raw file is the body) and queue its analysis.
   app.post("/api/tools/analyze", requireAuth, analyzeUploadGate, express.raw({ type: "audio/wav", limit: ANALYZE_MAX_BYTES }), async (req, res) => {
+    const user = await getCurrentUser(req);
+    if (!user) return res.status(401).json({ error: "Not authenticated" });
     try {
-      const user = await getCurrentUser(req);
-      if (!user) return res.status(401).json({ error: "Not authenticated" });
 
       const q = req.query;
       const provider = typeof q.provider === "string" ? await storage.getProvider(q.provider) : undefined;
@@ -1630,6 +1649,8 @@ export async function registerRoutes(
     } catch (error) {
       console.error("Error queueing an analysis:", error);
       res.status(500).json({ error: "Failed to queue the analysis" });
+    } finally {
+      analyzeUploadsInFlight.delete(user.id); // same tick as the answer
     }
   });
 
@@ -4533,6 +4554,9 @@ export async function registerRoutes(
       const auth = await authorizeJobAgent(parseInt(req.params.jobId), evalAgentToken.id, req.query.leaseId);
       if (auth.status !== "ok") { denyJobAgent(res, auth); return; }
       const { job } = auth;
+      // An analysis uploads no artifacts, so its agent — often a public one the
+      // uploader doesn't run — never gets the uploader's storage credentials.
+      if (job.kind === "analyze") return res.status(404).json({ error: "An analysis has no artifacts to store" });
 
       // Check if job creator has custom storage config
       if (job.createdBy) {
@@ -4558,8 +4582,9 @@ export async function registerRoutes(
   });
 
   // The uploaded recording of an analyze job (Tools → Analyze), streamed from
-  // the uploader's bucket to the agent running it — the agent never gets the
-  // bucket credentials for this. Lease-fenced like every job endpoint.
+  // the uploader's bucket to the agent running it. The agent never gets the
+  // bucket credentials: an analysis uploads no artifacts, so /storage-config
+  // refuses analyze jobs. Lease-fenced like every job endpoint.
   app.get("/api/eval-agent/jobs/:jobId/upload", async (req, res) => {
     try {
       const authHeader = req.headers.authorization;
@@ -5598,7 +5623,8 @@ export async function registerRoutes(
 
       const jobId = parseInt(req.params.id);
       const job = await storage.getEvalJob(jobId);
-      if (!job) return res.status(404).json({ error: "Job not found" });
+      // An analysis uploads no artifacts (Tools → Analyze).
+      if (!job || job.kind === "analyze") return res.status(404).json({ error: "Job not found" });
 
       // Authorization: job creator, schedule creator, or admin
       let authorized = user.isAdmin || job.createdBy === user.id;

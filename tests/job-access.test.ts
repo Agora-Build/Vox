@@ -10,6 +10,24 @@ import { BASE_NA } from "./helpers/regions";
 
 const u = (id: number, over: Partial<AuthUser> = {}): AuthUser => ({ id, isAdmin: false, membership: null, ...over });
 
+// Tools → Analyze: an analysis is its uploader's alone, served only by the
+// /api/tools/analyze routes. The job routes don't serve it to anyone — not an
+// admin (who would read the transcripts), and not its uploader either.
+describe("analyze jobs through the job routes", () => {
+  const analysis = { createdBy: 2, kind: "analyze" as const };
+  it("nobody may view one there, admin included", () => {
+    expect(canViewJob(u(9, { isAdmin: true }), analysis, undefined)).toBe(false);
+    expect(canViewJob(u(2), analysis, undefined)).toBe(false);
+  });
+  it("nobody may cancel one there (delete it on the Analyze page)", () => {
+    expect(canCancelJob(u(9, { isAdmin: true }), analysis, undefined)).toBe(false);
+    expect(canCancelJob(u(2), analysis, undefined)).toBe(false);
+  });
+  it("an eval job is unaffected", () => {
+    expect(canViewJob(u(2), { createdBy: 2, kind: "eval" }, undefined)).toBe(true);
+  });
+});
+
 describe("canViewJob", () => {
   const job = { createdBy: 2 };
 
