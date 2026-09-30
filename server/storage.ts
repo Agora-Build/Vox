@@ -110,7 +110,7 @@ import { regionSiteSequence, haversineKm, type RegionCandidate } from "@shared/r
 import { drizzle } from "drizzle-orm/node-postgres";
 import pkg from "pg";
 const { Pool } = pkg;
-import { asc, desc, eq, and, or, not, sql, gte, lte, inArray, isNotNull, isNull } from "drizzle-orm";
+import { asc, desc, eq, ne, and, or, not, sql, gte, lte, inArray, isNotNull, isNull } from "drizzle-orm";
 import crypto from "crypto";
 
 // Realtime-metrics windowing policy (server-owned; the client never sets these).
@@ -1036,6 +1036,25 @@ export class DatabaseStorage {
     return result[0];
   }
 
+  /** Tokens by id, in one query (a marketplace can list many). */
+  async getEvalAgentTokensByIds(ids: number[]): Promise<Map<number, EvalAgentToken>> {
+    if (ids.length === 0) return new Map();
+    const rows = await db.select().from(evalAgentTokens).where(inArray(evalAgentTokens.id, Array.from(new Set(ids))));
+    return new Map(rows.map((t) => [t.id, t]));
+  }
+
+  /** Each token's latest agent's capabilities, in one query. */
+  async getLatestAgentCapabilities(tokenIds: number[]): Promise<Map<number, string[]>> {
+    if (tokenIds.length === 0) return new Map();
+    const result = await pool.query(
+      `SELECT DISTINCT ON (token_id) token_id, capabilities FROM eval_agents
+        WHERE token_id = ANY($1) ORDER BY token_id, created_at DESC`,
+      [Array.from(new Set(tokenIds))],
+    );
+    return new Map(result.rows.map((r: { token_id: number; capabilities: unknown }) =>
+      [r.token_id, Array.isArray(r.capabilities) ? (r.capabilities as string[]) : []]));
+  }
+
   // The ids among `ids` that name an existing, unrevoked token — one query.
   // Revocation is what stops an agent (heartbeat, job fetch and dispatch all
   // check it). expires_at is not: nothing sets it on eval agent tokens (#215).
@@ -1263,7 +1282,7 @@ export class DatabaseStorage {
   async claimEvalJob(
     jobId: number,
     agentId: number,
-    identity: { id: number; siteId: string | null; region: string | null; dispatchTier: string; createdBy: number; ownerOrgId: number | null; locationTrust: string; phoneCapable?: boolean },
+    identity: { id: number; siteId: string | null; region: string | null; dispatchTier: string; createdBy: number; ownerOrgId: number | null; locationTrust: string; phoneCapable?: boolean; analyzeCapable?: boolean },
   ): Promise<EvalJob | undefined> {
     const client = await pool.connect();
     try {
@@ -1276,8 +1295,9 @@ export class DatabaseStorage {
          WHERE ej.id = $1 AND ej.status = 'pending'::eval_job_status
            -- Phone-transport jobs require the phone capability (design §8) —
            -- applies to every arm below, targeted included.
-           AND ( ej.transport = 'web'::transport OR $8::boolean = true )
-           AND (
+           -- (An analysis needs no phone: its call has already happened.)
+           AND ( ej.transport = 'web'::transport OR ej.kind = 'analyze' OR $8::boolean = true )
+           AND ( ( ej.kind = 'eval' AND (
              ej.target_token_id = $2
              OR ( ej.target_token_id IS NULL AND ej.target_region IS NOT NULL AND ej.target_region = $3 AND (
                     ( ej.target_tier = 'private'::dispatch_tier AND ej.created_by = $5 )
@@ -1293,9 +1313,16 @@ export class DatabaseStorage {
                     ej.created_by = $5
                     OR ( $4 = 'public' AND (ej.config -> 'sessionInjection') IS NULL )
              ) )
-           )
+           ) )
+           -- Tools → Analyze (design 2026-09-30): an analyze-capable agent —
+           -- free: public or the uploader's own, never a marketplace one; paid:
+           -- the marketplace agent it was dispatched to. Region/site: no part.
+           -- Paid: dispatched to one marketplace agent — that agent only.
+           OR ( ej.kind = 'analyze' AND $9::boolean = true AND (
+                  ej.target_token_id = $2
+                  OR ( ej.target_token_id IS NULL AND $4 <> 'shared' AND ( $4 = 'public' OR ej.created_by = $5 ) ) ) ) )
          FOR UPDATE OF ej SKIP LOCKED`,
-        [jobId, identity.id, identity.region, identity.dispatchTier, identity.createdBy, identity.ownerOrgId, identity.siteId, identity.phoneCapable === true]
+        [jobId, identity.id, identity.region, identity.dispatchTier, identity.createdBy, identity.ownerOrgId, identity.siteId, identity.phoneCapable === true, identity.analyzeCapable === true]
       );
       if (selectResult.rows.length === 0) {
         await client.query('ROLLBACK');
@@ -1308,7 +1335,13 @@ export class DatabaseStorage {
         `UPDATE eval_jobs
          SET eval_agent_id = $1, status = 'running'::eval_job_status, started_at = NOW(), updated_at = NOW(),
              token_dispatch_tier = $3,
-             site_id = COALESCE(site_id, $4),
+             -- An analysis keeps no site: the agent's location says nothing
+             -- about where the recording was made (Tools → Analyze). A pooled
+             -- job takes the site of the agent claiming it now — a requeued
+             -- one still carries its first claimer's site (#216).
+             site_id = CASE WHEN kind = 'analyze' THEN NULL
+                            WHEN target_region IS NOT NULL THEN $4
+                            ELSE COALESCE(site_id, $4) END,
              location_trust = $5
          WHERE id = $2
          RETURNING *`,
@@ -1325,7 +1358,7 @@ export class DatabaseStorage {
   }
 
   async getClaimableJobsForToken(identity: {
-    id: number; siteId: string | null; region: string | null; dispatchTier: string; createdBy: number; ownerOrgId: number | null; phoneCapable?: boolean;
+    id: number; siteId: string | null; region: string | null; dispatchTier: string; createdBy: number; ownerOrgId: number | null; phoneCapable?: boolean; analyzeCapable?: boolean;
   }): Promise<EvalJob[]> {
     // Mirrors permissions.isClaimable() bit for bit (targeted / pooled / legacy).
     // A NULL region/siteId (Unverified agent) never matches the pooled/legacy
@@ -1334,8 +1367,8 @@ export class DatabaseStorage {
       `SELECT ej.* FROM eval_jobs ej
         WHERE ej.status = 'pending'::eval_job_status
           -- Phone-transport jobs require the phone capability (design §8).
-          AND ( ej.transport = 'web'::transport OR $7::boolean = true )
-          AND (
+          AND ( ej.transport = 'web'::transport OR ej.kind = 'analyze' OR $7::boolean = true )
+          AND ( ( ej.kind = 'eval' AND (
             ej.target_token_id = $1
             OR ( ej.target_token_id IS NULL AND ej.target_region IS NOT NULL AND ej.target_region = $2 AND (
                    ( ej.target_tier = 'private'::dispatch_tier AND ej.created_by = $5 )
@@ -1350,9 +1383,13 @@ export class DatabaseStorage {
                    ej.created_by = $5
                    OR ( $4 = 'public' AND (ej.config -> 'sessionInjection') IS NULL )
             ) )
-          )
+          ) )
+          -- Tools → Analyze: see claimEvalJob.
+          OR ( ej.kind = 'analyze' AND $8::boolean = true AND (
+                 ej.target_token_id = $1
+                 OR ( ej.target_token_id IS NULL AND $4 <> 'shared' AND ( $4 = 'public' OR ej.created_by = $5 ) ) ) ) )
         ORDER BY ej.priority DESC, ej.created_at ASC`,
-      [identity.id, identity.region, identity.siteId, identity.dispatchTier, identity.createdBy, identity.ownerOrgId, identity.phoneCapable === true],
+      [identity.id, identity.region, identity.siteId, identity.dispatchTier, identity.createdBy, identity.ownerOrgId, identity.phoneCapable === true, identity.analyzeCapable === true],
     );
     return result.rows.map((r) => snakeToCamel(r) as EvalJob);
   }
@@ -1659,7 +1696,9 @@ export class DatabaseStorage {
 
   // Get all jobs with optional filters
   private evalJobConditions(filters?: EvalJobFilters) {
-    const conditions = [];
+    // Eval runs only: an uploaded recording's analysis (Tools → Analyze) has
+    // its own page and never appears in the Eval Jobs lists.
+    const conditions = [eq(evalJobs.kind, "eval")];
     if (filters?.status) {
       conditions.push(eq(evalJobs.status, filters.status));
     }
@@ -1859,6 +1898,79 @@ export class DatabaseStorage {
     return result[0];
   }
 
+  // ==================== TOOLS → ANALYZE ====================
+
+  async countAnalyzeJobsSince(userId: number, since: Date): Promise<number> {
+    const rows = await db.select({ count: sql<number>`count(*)::int` }).from(evalJobs)
+      .where(and(eq(evalJobs.kind, "analyze"), eq(evalJobs.createdBy, userId), gte(evalJobs.createdAt, since)));
+    return rows[0]?.count ?? 0;
+  }
+
+  /** The user's analyses, newest first, each with its result once there is one. */
+  async getAnalyzeJobs(userId: number, limit = 200): Promise<Array<{ job: EvalJob; result: EvalResult | null }>> {
+    const rows = await db.select().from(evalJobs)
+      .leftJoin(evalResults, eq(evalResults.evalJobId, evalJobs.id))
+      .where(and(eq(evalJobs.kind, "analyze"), eq(evalJobs.createdBy, userId), isNull(evalJobs.deletedAt)))
+      .orderBy(desc(evalJobs.createdAt))
+      .limit(limit);
+    // One row per analysis, even if a job ever carried two results.
+    const seen = new Set<number>();
+    return rows
+      .filter((r) => !seen.has(r.eval_jobs.id) && !!seen.add(r.eval_jobs.id))
+      .map((r) => ({ job: r.eval_jobs, result: r.eval_results }));
+  }
+
+  /**
+   * Deleting an analysis, step 1, atomically: refuse if an agent is running
+   * it, and take a pending one off the queue so nothing claims it. A finished
+   * one is left as it is, so a delete that fails later changes nothing.
+   * Returns false when it is running (or already deleted).
+   */
+  async stopAnalyzeJobForDelete(id: number): Promise<boolean> {
+    const pending = sql`${evalJobs.status} = 'pending'`;
+    const rows = await db.update(evalJobs)
+      .set({
+        status: sql`CASE WHEN ${pending} THEN 'failed'::eval_job_status ELSE ${evalJobs.status} END`,
+        error: sql`CASE WHEN ${pending} THEN 'Deleted by its uploader' ELSE ${evalJobs.error} END`,
+        completedAt: sql`CASE WHEN ${pending} THEN NOW() ELSE ${evalJobs.completedAt} END`,
+        updatedAt: new Date(),
+      })
+      .where(and(eq(evalJobs.id, id), eq(evalJobs.kind, "analyze"), ne(evalJobs.status, "running"), isNull(evalJobs.deletedAt)))
+      .returning({ id: evalJobs.id });
+    return rows.length > 0;
+  }
+
+  /**
+   * Store an analysis's result — unless the analysis was deleted in the
+   * meantime (its completion finalizes the job, then inserts the result; a
+   * delete can land in between). Serialized with finishAnalyzeJobDelete on the
+   * job row. Returns null when it was deleted, and stores nothing.
+   */
+  async createAnalyzeResult(result: InsertEvalResult): Promise<EvalResult | null> {
+    return db.transaction(async (tx) => {
+      const rows = await tx.execute(sql`SELECT deleted_at FROM eval_jobs WHERE id = ${result.evalJobId} FOR UPDATE`);
+      const row = (rows as unknown as { rows: Array<{ deleted_at: Date | null }> }).rows[0];
+      if (!row || row.deleted_at) return null;
+      const [created] = await tx.insert(evalResults).values(result).returning();
+      return created;
+    });
+  }
+
+  /**
+   * Deleting an analysis, last step (after its recording left the bucket):
+   * drop its result and mark it deleted. The row stays so the daily upload
+   * cap still counts it.
+   */
+  async finishAnalyzeJobDelete(id: number): Promise<void> {
+    await db.transaction(async (tx) => {
+      // Locks the row against createAnalyzeResult: a result arriving now
+      // waits, then sees the job deleted and isn't stored.
+      await tx.execute(sql`SELECT id FROM eval_jobs WHERE id = ${id} FOR UPDATE`);
+      await tx.delete(evalResults).where(eq(evalResults.evalJobId, id));
+      await tx.update(evalJobs).set({ deletedAt: new Date() }).where(eq(evalJobs.id, id));
+    });
+  }
+
   async getEvalResultsByJob(jobId: number): Promise<EvalResult[]> {
     return db.select().from(evalResults).where(eq(evalResults.evalJobId, jobId)).orderBy(desc(evalResults.createdAt));
   }
@@ -1920,6 +2032,7 @@ export class DatabaseStorage {
         evalJobId: evalResults.evalJobId,
         providerId: evalResults.providerId,
         siteId: evalResults.siteId,
+        recordingRegion: evalResults.recordingRegion,
         responseLatencyMedian: evalResults.responseLatencyMedian,
         responseLatencySd: evalResults.responseLatencySd,
         responseLatencyP95: evalResults.responseLatencyP95,
@@ -1952,6 +2065,8 @@ export class DatabaseStorage {
       if (filters.ownerId) {
         conditions.push(eq(evalJobs.createdBy, filters.ownerId));
       }
+      // Eval runs only: an analysis (Tools → Analyze) is served by its own routes.
+      conditions.push(eq(evalJobs.kind, "eval"));
 
       if (conditions.length > 0) {
         query = query.where(and(...conditions)) as typeof query;
@@ -1987,10 +2102,16 @@ export class DatabaseStorage {
     if (!scope) return undefined;
     if (scope.siteId) return eq(evalResults.siteId, scope.siteId);
     const parts: any[] = [];
+    // A region matches a result measured at one of its sites, or an analyzed
+    // recording its uploader said was made there (recording_region; Tools →
+    // Analyze). Unverified = neither.
     if (scope.baseIds && scope.baseIds.length > 0) {
-      parts.push(or(...scope.baseIds.map((baseId) => sql<boolean>`${evalResults.siteId} LIKE ${baseId + "-%"}`)));
+      parts.push(or(...scope.baseIds.map((baseId) => or(
+        sql<boolean>`${evalResults.siteId} LIKE ${baseId + "-%"}`,
+        eq(evalResults.recordingRegion, baseId),
+      ))));
     }
-    if (scope.unverified) parts.push(isNull(evalResults.siteId));
+    if (scope.unverified) parts.push(and(isNull(evalResults.siteId), isNull(evalResults.recordingRegion)));
     if (scope.baseIds && scope.baseIds.length === 0 && !scope.unverified) return sql<boolean>`false`;
     if (parts.length === 0) return undefined;
     return parts.length === 1 ? parts[0] : or(...parts);
@@ -2000,6 +2121,7 @@ export class DatabaseStorage {
     const snap = evalJobs.snapshot;
     const conditions = [
       eq(evalJobs.status, "completed"),
+      eq(evalJobs.kind, "eval"), // an analysis is its uploader's alone (Tools → Analyze)
       sql`${snap}->'evalFlow'->>'visibility' = 'public'`,
       // Compare as text ('true'/'false') so the text expression index is usable.
       sql`${snap}->'evalFlow'->>'isMainline' = 'true'`,
@@ -2021,6 +2143,7 @@ export class DatabaseStorage {
     const snap = evalJobs.snapshot;
     const conditions = [
       eq(evalJobs.status, "completed"),
+      eq(evalJobs.kind, "eval"), // an analysis is its uploader's alone (Tools → Analyze)
       sql`${snap}->'evalFlow'->>'visibility' = 'public'`,
       sql`${snap}->'evalSet'->>'visibility' = 'public'`,
       // Agent gate (tier as restriction): only public/shared agents feed a public
@@ -2070,6 +2193,9 @@ export class DatabaseStorage {
           inArray(evalJobs.tokenDispatchTier, ["private", "team"]),
           eq(evalJobs.createdBy, userId),
         ),
+        // An uploaded recording analyzed by Tools → Analyze: its uploader's.
+        // (Not once deleted — even if its result landed after the delete.)
+        and(eq(evalJobs.kind, "analyze"), eq(evalJobs.createdBy, userId), isNull(evalJobs.deletedAt)),
       ),
     ];
     if (hoursBack) {
@@ -2194,13 +2320,14 @@ export class DatabaseStorage {
   // hasUnverified rather than mixed into baseIds.
   async getAvailableRegions(tier: MetricTier, hoursBack?: number, userId?: number): Promise<{ baseIds: string[]; hasUnverified: boolean }> {
     const conditions = this.tierConditions(tier, hoursBack, userId);
+    // A result's region: where it was measured (its site), or, for an analyzed
+    // recording, where its uploader said it was made (recording_region).
+    const region = sql<string | null>`COALESCE(${evalResults.recordingRegion}, regexp_replace(${evalResults.siteId}, '-\\d+$', ''))`;
     const rows = await this.applyTierJoins(tier, db
-      .select({
-        baseId: sql<string | null>`regexp_replace(${evalResults.siteId}, '-\\d+$', '')`,
-      })
+      .select({ baseId: region })
       .from(evalResults))
       .where(and(...conditions))
-      .groupBy(sql`regexp_replace(${evalResults.siteId}, '-\\d+$', '')`);
+      .groupBy(region);
     return {
       baseIds: rows.filter((r: { baseId: string | null }) => r.baseId != null).map((r: { baseId: string | null }) => r.baseId as string).sort(),
       hasUnverified: rows.some((r: { baseId: string | null }) => r.baseId == null),

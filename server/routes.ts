@@ -1,4 +1,5 @@
-import type { Express } from "express";
+import express, { type Express, type Request, type Response, type NextFunction } from "express";
+import { randomUUID, createHash } from "crypto";
 import { type Server } from "http";
 import { z } from "zod";
 import { storage, hashToken, generateSecureToken, generateEvalAgentToken, generateBrokerRegistrationToken, mergeEvalConfig, buildJobSnapshot, validateEvalFlowConfig, validateEvalSetConfig, encryptValue, decryptValue, isEncryptionConfigured, type MetricSourceRow, type RegionQueryScope, type MetricTier } from "./storage";
@@ -8,7 +9,11 @@ import { SECRET_NAME_PATTERN, collectSecretRefs, secretValueError } from "@share
 import { deriveScheduleStatus } from "@shared/schedule-status";
 import { regionSiteSequence } from "@shared/regions";
 import { registerApiV1Routes } from "./routes-api-v1";
-import { generateSignedUrlForUser } from "./s3";
+import { generateSignedUrlForUser, userBucket, putObject, getObjectStream, deleteObject, type UserBucket } from "./s3";
+import { checkStorageEndpoint } from "./storage-endpoint";
+import { parseWavHeader, analyzeWavError, ANALYZE_MAX_BYTES, ANALYZE_HEADER_BYTES } from "@shared/wav";
+import type { EvalJob, InsertEvalJob, JobSnapshot } from "@shared/schema";
+import { forAgentJobList, pipeToResponse } from "./analyze";
 import { validateTierChoice, resolveTargetedDispatch, filterDispatchableAgents } from "./dispatch";
 import { getMarketplace } from "./marketplace";
 import { isAlreadyMemberError, getOrganizations, requireOrganizations, type Membership, type OrgSecretRow } from "./organizations";
@@ -1491,6 +1496,346 @@ export async function registerRoutes(
     } catch (error) {
       console.error("Error removing storage config:", error);
       res.status(500).json({ error: "Failed to remove storage config" });
+    }
+  });
+
+  // ==================== TOOLS → ANALYZE ====================
+  // An uploaded stereo recording (L = user, R = agent), analyzed by an eval
+  // agent as a hidden job of kind 'analyze'. The file lives in the user's own
+  // bucket (Storage page) — no system fallback. Design:
+  // designs/2026-09-30-tools-analyze-design.md.
+  const ANALYZE_DAILY_CAP = 50;
+  // Uploads Core is reading right now. A whole file is held in memory while
+  // it's checked and stored, so: one at a time per user (which also keeps the
+  // daily cap exact), and a few in total.
+  const ANALYZE_MAX_UPLOADS_IN_FLIGHT = 3; // ≤ 100 MB each: ~300 MB at most
+  // userId → the request holding that user's slot.
+  const analyzeUploadsInFlight = new Map<number, symbol>();
+
+  // What the Analyze pages show about one analysis, from its frozen snapshot.
+  const analyzeView = (job: EvalJob, hasResult: boolean) => {
+    const snap = job.snapshot as JobSnapshot | null;
+    return {
+      id: job.id,
+      status: job.status,
+      error: job.error,
+      fileName: snap?.analyze?.fileName ?? null,
+      provider: snap?.provider ?? null,
+      recordingRegion: snap?.analyze?.recordingRegion ?? null,
+      source: snap?.transport ?? "web",
+      durationSec: snap?.analyze?.durationSec ?? null,
+      createdAt: job.createdAt,
+      completedAt: job.completedAt,
+      // Paid analyses are dispatched to one marketplace agent.
+      runOn: job.targetTokenId != null ? "marketplace" as const : "vox" as const,
+      hasResult,
+    };
+  };
+
+  // Whether a token's agent reports the analyze capability (its latest agent).
+  const agentCanAnalyze = async (tokenId: number) => {
+    const agents = await storage.getEvalAgentsByTokenId(tokenId);
+    const caps = agents[0]?.capabilities;
+    return Array.isArray(caps) && (caps as string[]).includes("analyze");
+  };
+
+  // The analysis if the caller may see it: its uploader's; an admin's only
+  // where `allowAdmin` (deleting, as moderation). Anything else reads as absent.
+  const findAnalyzeJob = async (rawId: string, user: { id: number; isAdmin: boolean }, allowAdmin = false) => {
+    const id = Number(rawId);
+    const job = Number.isInteger(id) && id > 0 ? await storage.getEvalJob(id) : undefined;
+    if (!job || job.kind !== "analyze" || job.deletedAt) return undefined;
+    if (job.createdBy === user.id || (allowAdmin && user.isAdmin)) return job;
+    return undefined;
+  };
+
+  // The uploader's storage as ONE resolved handle (null: none set, or an
+  // endpoint Core may not connect to). Each operation checks and uses this
+  // same handle, so the bucket it compares is the bucket it touches.
+  const ownersBucket = (userId: number) => userBucket(userId).catch(() => null);
+  // Whether the recording isn't in that bucket: the user changed or removed
+  // their storage since the upload. (Rows from before the location was
+  // recorded: only "no usable storage" counts.)
+  const recordingMoved = (b: UserBucket | null, a: NonNullable<JobSnapshot["analyze"]>) =>
+    !b || (!!a.storage && (b.endpoint !== a.storage.endpoint || b.bucket !== a.storage.bucket));
+  const movedMessage = (a: NonNullable<JobSnapshot["analyze"]>) => a.storage
+    ? `Your storage settings changed since this recording was uploaded: it is in bucket "${a.storage.bucket}" at ${a.storage.endpoint}.`
+    : "Your storage settings changed since this recording was uploaded.";
+
+  // Who may upload at all — checked before the body parser, so neither a
+  // stranger nor a user who'd be refused can make Core buffer 100 MB.
+  const analyzeUploadGate = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const user = await getCurrentUser(req);
+      if (!user) return res.status(401).json({ error: "Not authenticated" });
+      if (user.plan === "basic") {
+        return res.status(409).json({ error: "Analyze needs Premium: recordings are kept in your own storage, a Premium feature.", needs: "premium" });
+      }
+      const storageConfig = await storage.getUserStorageConfig(user.id);
+      if (!storageConfig) {
+        return res.status(409).json({ error: "Set up your storage first: recordings are kept in your own bucket.", needs: "storage" });
+      }
+      try {
+        checkStorageEndpoint(storageConfig.s3Endpoint); // Core connects to it itself
+      } catch (e) {
+        return res.status(409).json({ error: e instanceof Error ? e.message : "Storage endpoint not allowed", needs: "storage" });
+      }
+      // Deleted analyses count too: deleting one doesn't give back a slot.
+      if (await storage.countAnalyzeJobsSince(user.id, new Date(Date.now() - 24 * 60 * 60 * 1000)) >= ANALYZE_DAILY_CAP) {
+        return res.status(429).json({ error: `You can analyze up to ${ANALYZE_DAILY_CAP} recordings a day.` });
+      }
+      if (analyzeUploadsInFlight.has(user.id)) {
+        return res.status(429).json({ error: "One upload at a time: wait for your current upload to finish." });
+      }
+      if (analyzeUploadsInFlight.size >= ANALYZE_MAX_UPLOADS_IN_FLIGHT) {
+        return res.status(503).json({ error: "Vox is busy receiving other uploads. Try again in a minute." });
+      }
+      // Each request frees only its own slot: its late "finish"/"close" must
+      // not free the slot of the user's next upload.
+      const slot = Symbol("analyze-upload");
+      analyzeUploadsInFlight.set(user.id, slot);
+      const free = () => { if (analyzeUploadsInFlight.get(user.id) === slot) analyzeUploadsInFlight.delete(user.id); };
+      res.locals.freeAnalyzeSlot = free;
+      // The handler frees it as it answers (its finally). These cover a request
+      // that never reaches it: a too-large body, or a dropped connection.
+      // (Events alone are too late: a client can send its next upload before
+      // "finish" fires.)
+      res.on("finish", free);
+      res.on("close", free);
+      next();
+    } catch (error) {
+      console.error("Error checking an analysis upload:", error);
+      res.status(500).json({ error: "Failed to queue the analysis" });
+    }
+  };
+
+  // Upload one WAV (the raw file is the body) and queue its analysis.
+  app.post("/api/tools/analyze", requireAuth, analyzeUploadGate, express.raw({ type: "audio/wav", limit: ANALYZE_MAX_BYTES }), async (req, res) => {
+    const user = await getCurrentUser(req);
+    if (!user) return res.status(401).json({ error: "Not authenticated" });
+    try {
+
+      const q = req.query;
+      const provider = typeof q.provider === "string" ? await storage.getProvider(q.provider) : undefined;
+      if (!provider) return res.status(400).json({ error: "Choose a provider." });
+      const region = typeof q.region === "string" ? await storage.getRegionLocationByBaseId(q.region) : undefined;
+      // Active regions only: a retired one takes no new results.
+      if (!region || !region.isActive) return res.status(400).json({ error: "Choose the region the recording was made in." });
+      const source = q.source;
+      if (source !== "web" && source !== "phone") return res.status(400).json({ error: "Choose the recording's source: web or phone." });
+      const fileName = (typeof q.fileName === "string" ? path.basename(q.fileName) : "").slice(0, 200) || "recording.wav";
+
+      // Paid: a marketplace agent the uploader picked. Its operator receives
+      // the recording, so that needs the uploader's explicit consent.
+      let paidToken: { id: number; siteId: string | null } | null = null;
+      if (typeof q.agent === "string" && q.agent !== "") {
+        const tokenId = Number(q.agent);
+        const token = Number.isInteger(tokenId) && tokenId > 0 ? await storage.getEvalAgentToken(tokenId) : undefined;
+        if (!token || token.isRevoked || token.dispatchTier !== "shared" || !getMarketplace()) {
+          return res.status(400).json({ error: "Choose a marketplace agent from the list." });
+        }
+        if (!(await agentCanAnalyze(token.id))) return res.status(400).json({ error: "That agent can't run analyses. Choose another." });
+        if (q.consent !== "1") {
+          return res.status(400).json({ error: "Confirm that the agent's operator will receive your recording (consent)." });
+        }
+        paidToken = { id: token.id, siteId: token.siteId };
+      }
+
+      const body = req.body;
+      if (!Buffer.isBuffer(body) || body.length === 0) {
+        return res.status(400).json({ error: "Send the WAV file as the request body (Content-Type: audio/wav)." });
+      }
+      // The same first-1-MB view the browser and the agent check.
+      const info = parseWavHeader(new Uint8Array(body.buffer, body.byteOffset, Math.min(body.length, ANALYZE_HEADER_BYTES)), body.length);
+      const wavError = analyzeWavError(info, body.length);
+      if (wavError || "error" in info) return res.status(400).json({ error: wavError });
+
+      const s3Key = `vox-analyze/${user.id}/${randomUUID()}.wav`;
+      const bucket = await ownersBucket(user.id);
+      if (!bucket) return res.status(409).json({ error: "Set up your storage first: recordings are kept in your own bucket.", needs: "storage" });
+      const location = { endpoint: bucket.endpoint, bucket: bucket.bucket };
+      try {
+        await putObject(bucket, s3Key, body, "audio/wav");
+      } catch (err) {
+        console.error(`[analyze] storing an upload for user ${user.id} failed:`, err instanceof Error ? err.message : err);
+        return res.status(502).json({ error: "Couldn't store the file in your storage. Check the settings on the Storage page." });
+      }
+
+      // Paid: hold the price (one unit at the agent's listed price) now; it's
+      // captured when a result comes back and refunded otherwise.
+      let settlementContext: unknown = undefined;
+      if (paidToken) {
+        const authz = await getMarketplace()!.authorizeDispatch(user.id, paidToken.id, {
+          evalFlowId: null, evalSetId: null, region: paidToken.siteId, createdBy: user.id,
+        });
+        if (!authz.ok) {
+          await deleteObject(bucket, s3Key).catch(() => {});
+          return res.status(402).json({ error: authz.reason ?? "Not enough credits for this agent." });
+        }
+        settlementContext = authz.settlementContext;
+      }
+
+      let job: EvalJob;
+      try {
+        job = await storage.createEvalJob({
+        kind: "analyze",
+        evalFlowId: null,
+        evalSetId: null,
+        triggerType: 2, // manual
+        createdBy: user.id,
+        creatorOrgId: user.membership?.organizationId ?? null,
+        siteId: null,
+        targetRegion: null,
+        targetTier: null,
+        targetTokenId: paidToken?.id ?? null,
+        config: {},
+        snapshot: {
+          ...(settlementContext !== undefined ? { settlementContext, recordingConsent: true } : {}),
+          provider: { id: provider.id, name: provider.name, platformId: provider.platformId ?? null },
+          evalFlow: null,
+          evalSet: null,
+          creatorPlan: user.plan,
+          transport: source,
+          analyze: {
+            fileName,
+            s3Key,
+            sha256: createHash("sha256").update(body).digest("hex"),
+            sizeBytes: body.length,
+            durationSec: info.durationSec,
+            recordingRegion: region.baseId,
+            storage: location,
+          },
+        },
+        status: "pending",
+        // Behind eval runs: an agent always takes a waiting eval run first.
+        priority: -10,
+        retryCount: 0,
+        maxRetries: 3,
+      } as InsertEvalJob);
+      } catch (err) {
+        // No job to settle: release the hold now instead of leaving it to the
+        // leak reaper.
+        if (settlementContext !== undefined) {
+          await getMarketplace()?.voidDispatch(settlementContext).catch((e) =>
+            console.error("[analyze] voiding a paid dispatch after a failed insert failed:", e));
+        }
+        // No row will ever point at the file: take it back out of the bucket.
+        await deleteObject(bucket, s3Key).catch((e) =>
+          console.error(`[analyze] removing ${s3Key} after a failed insert failed:`, e instanceof Error ? e.message : e));
+        throw err;
+      }
+      res.status(201).json(analyzeView(job, false));
+    } catch (error) {
+      console.error("Error queueing an analysis:", error);
+      res.status(500).json({ error: "Failed to queue the analysis" });
+    } finally {
+      (res.locals.freeAnalyzeSlot as (() => void) | undefined)?.(); // same tick as the answer
+    }
+  });
+
+  app.get("/api/tools/analyze", requireAuth, async (req, res) => {
+    try {
+      const user = await getCurrentUser(req);
+      if (!user) return res.status(401).json({ error: "Not authenticated" });
+      const rows = await storage.getAnalyzeJobs(user.id);
+      res.json(rows.map((r) => analyzeView(r.job, r.result != null)));
+    } catch (error) {
+      console.error("Error listing analyses:", error);
+      res.status(500).json({ error: "Failed to list analyses" });
+    }
+  });
+
+  // Marketplace agents that can run an analysis, with their price per file.
+  app.get("/api/tools/analyze/agents", requireAuth, async (req, res) => {
+    try {
+      const user = await getCurrentUser(req);
+      if (!user) return res.status(401).json({ error: "Not authenticated" });
+      const marketplace = getMarketplace();
+      if (!marketplace) return res.json([]);
+      const listed = await marketplace.listDispatchable(user.id);
+      const ids = listed.map((l) => l.tokenId);
+      const [live, caps] = await Promise.all([storage.getLiveEvalAgentTokenIds(ids), storage.getLatestAgentCapabilities(ids)]);
+      res.json(listed
+        .filter((l) => live.has(l.tokenId) && (caps.get(l.tokenId) ?? []).includes("analyze"))
+        .map((l) => ({ tokenId: l.tokenId, siteId: l.region, pricePerUnit: l.pricePerUnit })));
+    } catch (error) {
+      console.error("Error listing analysis agents:", error);
+      res.status(500).json({ error: "Failed to list agents" });
+    }
+  });
+
+  app.get("/api/tools/analyze/:id", requireAuth, async (req, res) => {
+    try {
+      const user = await getCurrentUser(req);
+      if (!user) return res.status(401).json({ error: "Not authenticated" });
+      const job = await findAnalyzeJob(req.params.id, user);
+      if (!job) return res.status(404).json({ error: "Analysis not found" });
+      const result = (await storage.getEvalResultsByJob(job.id))[0] ?? null;
+      res.json({ job: analyzeView(job, result != null), result });
+    } catch (error) {
+      console.error("Error fetching an analysis:", error);
+      res.status(500).json({ error: "Failed to fetch the analysis" });
+    }
+  });
+
+  app.get("/api/tools/analyze/:id/recording", requireAuth, async (req, res) => {
+    try {
+      const user = await getCurrentUser(req);
+      if (!user) return res.status(401).json({ error: "Not authenticated" });
+      const job = await findAnalyzeJob(req.params.id, user);
+      const a = (job?.snapshot as JobSnapshot | null)?.analyze;
+      if (!job || !a) return res.status(404).json({ error: "Analysis not found" });
+      const bucket = await ownersBucket(job.createdBy!);
+      if (recordingMoved(bucket, a)) return res.status(409).json({ error: movedMessage(a) });
+      const { body, contentLength } = await getObjectStream(bucket!, a.s3Key);
+      res.setHeader("Content-Type", "audio/wav");
+      // ASCII fallback plus the real (UTF-8) name, RFC 6266 — a raw non-Latin-1
+      // name in a header would make Node throw.
+      const asciiName = a.fileName.replace(/[^\x20-\x7e]|["\\]/g, "_");
+      res.setHeader("Content-Disposition", `attachment; filename="${asciiName}"; filename*=UTF-8''${encodeURIComponent(a.fileName)}`);
+      if (contentLength != null) res.setHeader("Content-Length", String(contentLength));
+      pipeToResponse(body, res, `recording of analysis ${job.id}`);
+    } catch (error) {
+      console.error("Error downloading a recording:", error instanceof Error ? error.message : error);
+      if (!res.headersSent) res.status(502).json({ error: "Couldn't read the recording from your storage" });
+    }
+  });
+
+  app.delete("/api/tools/analyze/:id", requireAuth, async (req, res) => {
+    try {
+      const user = await getCurrentUser(req);
+      if (!user) return res.status(401).json({ error: "Not authenticated" });
+      const job = await findAnalyzeJob(req.params.id, user, true);
+      if (!job) return res.status(404).json({ error: "Analysis not found" });
+      // 1. Stop it, atomically, unless an agent is running it right now.
+      if (!(await storage.stopAnalyzeJobForDelete(job.id))) {
+        return res.status(409).json({ error: "The analysis is running. Delete it once it finishes (if its eval agent stopped, the analysis is back in the queue within a few minutes)." });
+      }
+      // 2. The recording leaves the bucket. If that fails, the row (and the
+      //    key to the file) stays, so deleting again retries.
+      const a = (job.snapshot as JobSnapshot | null)?.analyze;
+      const bucket = a ? await ownersBucket(job.createdBy!) : null;
+      if (a && recordingMoved(bucket, a)) {
+        // The file isn't in the storage Vox can reach now; it's in the
+        // user's own old bucket. Remove the analysis from Vox and say where
+        // the file is, rather than claim it was deleted.
+        await storage.finishAnalyzeJobDelete(job.id);
+        return res.json({ leftInStorage: { endpoint: a.storage?.endpoint ?? null, bucket: a.storage?.bucket ?? null, key: a.s3Key } });
+      }
+      if (a) {
+        try {
+          await deleteObject(bucket!, a.s3Key);
+        } catch (err) {
+          console.warn(`[analyze] removing ${a.s3Key} failed:`, err instanceof Error ? err.message : err);
+          return res.status(502).json({ error: "Couldn't remove the recording from your storage, so the analysis wasn't deleted (if it was still queued, it has been cancelled). Check the Storage page, then delete again." });
+        }
+      }
+      // 3. Its result goes; the row stays, marked deleted, for the daily cap.
+      await storage.finishAnalyzeJobDelete(job.id);
+      res.status(204).end();
+    } catch (error) {
+      console.error("Error deleting an analysis:", error);
+      res.status(500).json({ error: "Failed to delete the analysis" });
     }
   });
 
@@ -3615,7 +3960,7 @@ export async function registerRoutes(
   // Agent capability allowlist (design 2026-09-21 §8). parseCapabilities returns:
   // undefined = field absent (leave unchanged), string[] = validated value,
   // INVALID_CAPABILITIES sentinel = 400 (unknown capability or wrong shape).
-  const ALLOWED_CAPABILITIES = ["phone"] as const;
+  const ALLOWED_CAPABILITIES = ["phone", "analyze"] as const;
   const INVALID_CAPABILITIES = Symbol("invalid-capabilities");
   const parseCapabilities = (raw: unknown): string[] | undefined | typeof INVALID_CAPABILITIES => {
     if (raw === undefined) return undefined;
@@ -3891,6 +4236,7 @@ export async function registerRoutes(
         createdBy: evalAgentToken.createdBy,
         ownerOrgId: ownerMembership?.organizationId ?? null,
         phoneCapable: Array.isArray(latestAgent?.capabilities) && (latestAgent!.capabilities as string[]).includes("phone"),
+        analyzeCapable: Array.isArray(latestAgent?.capabilities) && (latestAgent!.capabilities as string[]).includes("analyze"),
       });
 
       // Version-gate: if the requesting agent has a frameworkVersion, filter out
@@ -3913,7 +4259,7 @@ export async function registerRoutes(
         return true;
       });
 
-      res.json(jobs);
+      res.json(jobs.map(forAgentJobList));
     } catch (error) {
       console.error("Error fetching jobs:", error);
       res.status(500).json({ error: "Failed to fetch jobs" });
@@ -3961,8 +4307,9 @@ export async function registerRoutes(
       // site — NULL for Unverified.
       const eff = effectiveDispatchIdentity(evalAgentToken, agent);
       // Site fence for site-pinned rows only (targeted + legacy). Pooled jobs
-      // (siteId null) are fenced by region+tier inside claimEvalJob's predicate.
-      if (existingJob.siteId != null && existingJob.siteId !== eff.siteId) {
+      // are fenced by region+tier inside claimEvalJob's predicate — including a
+      // requeued one, which still carries its first claimer's site (#216).
+      if (existingJob.targetRegion == null && existingJob.siteId != null && existingJob.siteId !== eff.siteId) {
         return res.status(403).json({ error: "Job site does not match agent site" });
       }
 
@@ -3979,6 +4326,7 @@ export async function registerRoutes(
         ownerOrgId: ownerMembership?.organizationId ?? null,
         locationTrust: eff.locationTrust,
         phoneCapable: Array.isArray(agent?.capabilities) && (agent!.capabilities as string[]).includes("phone"),
+        analyzeCapable: Array.isArray(agent?.capabilities) && (agent!.capabilities as string[]).includes("analyze"),
       });
       if (!job) {
         return res.status(409).json({ error: "Job already claimed or not found" });
@@ -3986,7 +4334,7 @@ export async function registerRoutes(
 
       await storage.updateEvalAgent(agentId, { state: "occupied", lastJobAt: new Date() });
 
-      res.json(job);
+      res.json(forAgentJobList(job));
     } catch (error) {
       console.error("Error claiming job:", error);
       res.status(500).json({ error: "Failed to claim job" });
@@ -4085,10 +4433,14 @@ export async function registerRoutes(
 
         if (providerId) {
           try {
-            await storage.createEvalResult({
+            // An analysis's result goes in only if it wasn't deleted meanwhile
+            // (the delete and this insert are serialized on the job row).
+            await (job.kind === "analyze" ? storage.createAnalyzeResult.bind(storage) : storage.createEvalResult.bind(storage))({
               evalJobId: parseInt(jobId),
               providerId,
               siteId: job.siteId,
+              // Tools → Analyze: where the uploader said the recording was made.
+              recordingRegion: job.kind === "analyze" ? (job.snapshot?.analyze?.recordingRegion ?? null) : null,
               // Pass latencies through as-is: null = NA (agent didn't respond).
               // Do NOT coerce to 0 — a 0 ms "response" would rank a dead agent as
               // the fastest and poison latency averages. responseRate carries the
@@ -4181,6 +4533,8 @@ export async function registerRoutes(
       // Only the agent that ran this job (matching lease) may store its artifacts.
       const auth = await authorizeJobAgent(jobId, evalAgentToken.id, leaseId);
       if (auth.status !== "ok") { denyJobAgent(res, auth); return; }
+      // An analysis has no artifacts (Tools → Analyze).
+      if (auth.job.kind === "analyze") return res.status(404).json({ error: "An analysis has no artifacts to store" });
 
       if (!zipUrl) {
         return res.status(400).json({ error: "zipUrl is required" });
@@ -4312,6 +4666,9 @@ export async function registerRoutes(
       const auth = await authorizeJobAgent(parseInt(req.params.jobId), evalAgentToken.id, req.query.leaseId);
       if (auth.status !== "ok") { denyJobAgent(res, auth); return; }
       const { job } = auth;
+      // An analysis uploads no artifacts, so its agent — often a public one the
+      // uploader doesn't run — never gets the uploader's storage credentials.
+      if (job.kind === "analyze") return res.status(404).json({ error: "An analysis has no artifacts to store" });
 
       // Check if job creator has custom storage config
       if (job.createdBy) {
@@ -4333,6 +4690,51 @@ export async function registerRoutes(
     } catch (error) {
       console.error("Error getting storage config:", error);
       res.status(500).json({ error: "Failed to get storage config" });
+    }
+  });
+
+  // The uploaded recording of an analyze job (Tools → Analyze), streamed from
+  // the uploader's bucket to the agent running it. The agent never gets the
+  // bucket credentials: an analysis uploads no artifacts, so /storage-config
+  // refuses analyze jobs. Lease-fenced like every job endpoint.
+  app.get("/api/eval-agent/jobs/:jobId/upload", async (req, res) => {
+    try {
+      const authHeader = req.headers.authorization;
+      if (!authHeader || !authHeader.startsWith("Bearer ")) {
+        return res.status(401).json({ error: "Eval agent token required" });
+      }
+      const evalAgentToken = await storage.getEvalAgentTokenByHash(hashToken(authHeader.slice(7)));
+      if (!evalAgentToken || evalAgentToken.isRevoked) {
+        return res.status(401).json({ error: "Invalid or revoked token" });
+      }
+      const auth = await authorizeJobAgent(parseInt(req.params.jobId), evalAgentToken.id, req.query.leaseId);
+      if (auth.status !== "ok") { denyJobAgent(res, auth); return; }
+      const a = (auth.job.snapshot as JobSnapshot | null)?.analyze;
+      // Only while the job runs: a finished job keeps its agent id, and that
+      // agent must not keep fetching the uploader's recording.
+      if (auth.job.kind !== "analyze" || !a || !auth.job.createdBy || auth.job.deletedAt || auth.job.status !== "running") {
+        return res.status(404).json({ error: "This job has no uploaded recording" });
+      }
+      const bucket = await ownersBucket(auth.job.createdBy);
+      // Nothing about where the uploader's file lives: this goes to the agent.
+      if (recordingMoved(bucket, a)) return res.status(409).json({ error: "The uploader's storage settings changed since this recording was uploaded." });
+      const { body, contentLength } = await getObjectStream(bucket!, a.s3Key);
+      // The uploader can replace the object in their own bucket: serve only a
+      // file of the size recorded at upload, and tell the agent its SHA-256
+      // to check before running anything.
+      // (Some S3-compatible stores omit the length; the agent still checks
+      // size and hash itself.)
+      if (contentLength != null && contentLength !== a.sizeBytes) {
+        body.destroy();
+        return res.status(409).json({ error: "The file in storage isn't the recording that was uploaded (it changed afterwards)." });
+      }
+      res.setHeader("Content-Type", "audio/wav");
+      res.setHeader("Content-Length", String(a.sizeBytes));
+      res.setHeader("X-Vox-Upload-Sha256", a.sha256);
+      pipeToResponse(body, res, `upload of job ${auth.job.id} to its agent`);
+    } catch (error) {
+      console.error("Error serving an upload to an agent:", error instanceof Error ? error.message : error);
+      if (!res.headersSent) res.status(502).json({ error: "Couldn't read the recording from the uploader's storage" });
     }
   });
 
@@ -5053,9 +5455,10 @@ export async function registerRoutes(
       const shared: Agent[] = [];
       if (marketplace) {
         const listings = await marketplace.listDispatchable(user.id);
+        const listedTokens = await storage.getEvalAgentTokensByIds(listings.map((l) => l.tokenId)); // one query, not one per listing
         for (const l of listings) {
           if (region && !l.region.startsWith(region + "-")) continue;
-          const tok = await storage.getEvalAgentToken(l.tokenId);
+          const tok = listedTokens.get(l.tokenId);
           if (!tok || tok.isRevoked) continue;
           const eff = effectiveDispatchIdentity(tok, agentByTokenId.get(l.tokenId));
           // Unverified shared agent: not dispatchable at all (a re-detection
@@ -5348,7 +5751,8 @@ export async function registerRoutes(
 
       const jobId = parseInt(req.params.id);
       const job = await storage.getEvalJob(jobId);
-      if (!job) return res.status(404).json({ error: "Job not found" });
+      // An analysis uploads no artifacts (Tools → Analyze).
+      if (!job || job.kind === "analyze") return res.status(404).json({ error: "Job not found" });
 
       // Authorization: job creator, schedule creator, or admin
       let authorized = user.isAdmin || job.createdBy === user.id;

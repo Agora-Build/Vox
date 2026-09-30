@@ -46,9 +46,9 @@ type SortField = "rank" | "responseLatency" | "interruptLatency" | "turnSuccessR
 type SortDirection = "asc" | "desc";
 
 // null latency = NA (every run in the group was non-responsive).
-const naNum = (v: number | null, suffix = "") => v == null ? "NA" : `${v}${suffix}`;
+const naNum = (v: number | null, suffix = "") => v == null ? "N/A" : `${v}${suffix}`;
 // Turn Success Rate is 0..1; null = no evaluable turns. Show as a percentage.
-const naPct = (v: number | null) => v == null ? "NA" : `${Math.round(v * 100)}%`;
+const naPct = (v: number | null) => v == null ? "N/A" : `${Math.round(v * 100)}%`;
 
 export default function Leaderboard() {
   const [regionScopes, setRegionScopes] = useState<string[]>(["all"]);

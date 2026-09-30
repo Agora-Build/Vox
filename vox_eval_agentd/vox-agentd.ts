@@ -40,6 +40,9 @@ import { injectStorageSession } from './session-inject';
 import { normalizeDialableNumber } from '../shared/steps';
 import { DialfClient, probeDialf, resolveDialfSocketPath, type DialfProbe } from './dialf-client';
 import { runPhoneJob, finishPhoneMetrics } from './phone-eval';
+import { runAnalyzeUpload, capabilitiesFor, aevalOnPath, writeLimited } from './analyze-upload';
+import { claimFirstAvailable } from './job-pick';
+import { Readable } from 'stream';
 import {
   CHUNK_SIZE,
   type ParsedScenario,
@@ -83,6 +86,8 @@ interface EvalJob {
   config: Record<string, unknown> | null;
   // Conversation transport frozen on the job (Phase A); absent on legacy rows = web.
   transport?: string;
+  // 'analyze' = an uploaded recording to analyze (Tools → Analyze); absent = eval.
+  kind?: string;
 }
 
 interface EvalResult {
@@ -107,9 +112,10 @@ interface EvalResult {
   // no-response turns as failures, so it's the resilience signal. null when no
   // evaluable turns.
   turnSuccessRate: number | null;
-  networkResilience: number;
-  naturalness: number;
-  noiseReduction: number;
+  // null = not measured (Tools → Analyze reports these as such).
+  networkResilience: number | null;
+  naturalness: number | null;
+  noiseReduction: number | null;
   rawData?: Record<string, unknown>;
 }
 
@@ -338,7 +344,8 @@ class VoxEvalAgentDaemon {
       }
       this.dialfProbeCache = { at: now, probe };
     }
-    return this.dialfProbeCache.probe.ok ? ['phone'] : [];
+    // 'analyze' whenever aeval runs here (Tools → Analyze) — always, in the image.
+    return capabilitiesFor({ dialf: this.dialfProbeCache.probe.ok, aeval: aevalOnPath() });
   }
 
   async register(): Promise<boolean> {
@@ -2029,7 +2036,43 @@ class VoxEvalAgentDaemon {
     }
   }
 
+  /** Tools → Analyze: fetch the uploaded recording from Core and run the same
+   *  `aeval analyze` + phone preset the phone path uses on its mix. TSR and the
+   *  rates stay NA: a free-form recording has no eval-set sample timeline. */
+  async executeAnalyzeJob(job: EvalJob): Promise<EvalResult> {
+    console.log(`[Daemon] Executing ANALYZE job ${job.id} (uploaded recording)`);
+    const workDir = fs.mkdtempSync(path.join(os.tmpdir(), `vox-analyze-${job.id}-`));
+    const out = await runAnalyzeUpload({
+      workDir,
+      download: async (dest) => {
+        const res = await this.fetch(`/api/eval-agent/jobs/${job.id}/upload?leaseId=${encodeURIComponent(this.leaseId ?? '')}`);
+        if (!res.ok || !res.body) {
+          const detail = await res.text().catch(() => '');
+          throw new Error(`could not fetch the uploaded recording: ${res.status}${detail ? ` ${detail.slice(0, 200)}` : ''}`);
+        }
+        // Core states what it recorded at upload; the file must match it.
+        const sizeBytes = Number(res.headers.get('content-length'));
+        const sha256 = res.headers.get('x-vox-upload-sha256') ?? '';
+        if (!Number.isFinite(sizeBytes) || sizeBytes <= 0 || !sha256) throw new Error('Core sent the recording without its size and checksum');
+        await writeLimited(Readable.fromWeb(res.body as import('stream/web').ReadableStream), dest, sizeBytes);
+        return { sizeBytes, sha256 };
+      },
+      analyze: (dir) => this.runAevalAnalyze(dir),
+      parseMetrics: (dir) => {
+        const metricsFile = path.join(dir, 'analysis', 'metrics.json');
+        return fs.existsSync(metricsFile)
+          ? (this.tryParseMetricsJson(metricsFile) as Record<string, unknown> | null)
+          : null;
+      },
+    });
+    // No artifacts: the work dir is already gone (see runAnalyzeUpload).
+    return out.result as unknown as EvalResult;
+  }
+
   async executeJob(job: EvalJob): Promise<EvalResult> {
+    // Before the phone branch: an analysis of a phone recording has transport
+    // 'phone', but its call has already happened.
+    if (job.kind === 'analyze') return this.executeAnalyzeJob(job);
     if (job.transport === 'phone') return this.executePhoneJob(job);
 
     console.log(`[Daemon] Executing job ${job.id}`);
@@ -2159,9 +2202,10 @@ class VoxEvalAgentDaemon {
 
     console.log(`[Daemon] Found ${jobs.length} pending job(s)`);
 
-    const job = jobs[0];
-    const claimed = await this.claimJob(job.id);
-    if (!claimed) return;
+    // The first job that accepts the claim, not always jobs[0]: a refused
+    // claim must not stall this agent on one row (#216).
+    const job = await claimFirstAvailable(jobs, (j) => this.claimJob(j.id));
+    if (!job) return;
 
     this.isRunningJob = true;
     this.currentJobId = job.id;

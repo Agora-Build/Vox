@@ -27,6 +27,8 @@ import ConsoleSecrets from "@/pages/console-secrets";
 import ConsoleEvalJobDetail from "@/pages/console-eval-job-detail";
 import ConsoleApiKeys from "@/pages/console-api-keys";
 import ConsoleStorageSettings from "@/pages/console-storage-settings";
+import ConsoleToolsAnalyze from "@/pages/console-tools-analyze";
+import ConsoleToolsAnalyzeDetail from "@/pages/console-tools-analyze-detail";
 import ConsoleClash from "@/pages/console-clash";
 import Clash from "@/pages/clash";
 import ClashDetail from "@/pages/clash-detail";
@@ -486,6 +488,79 @@ function ConsoleStorageSettingsWrapper() {
   return (
     <ConsoleLayout>
       <ConsoleStorageSettings />
+    </ConsoleLayout>
+  );
+}
+
+function ConsoleToolsAnalyzeWrapper() {
+  const [, setLocation] = useLocation();
+  const { data: authStatus, isLoading, isFetching } = useQuery<AuthStatus>({
+    queryKey: ["/api/auth/status"],
+  });
+
+  useEffect(() => {
+    if (!isLoading && !isFetching && authStatus?.initialized && !authStatus.user) {
+      setLocation("/login");
+    }
+  }, [isLoading, isFetching, authStatus, setLocation]);
+
+  if ((isLoading || isFetching) && !authStatus?.user) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="animate-pulse text-muted-foreground">Loading...</div>
+      </div>
+    );
+  }
+
+  if (!authStatus?.initialized) return <ConsoleInit />;
+  if (!authStatus.user) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="animate-pulse text-muted-foreground">Redirecting...</div>
+      </div>
+    );
+  }
+
+  return (
+    <ConsoleLayout>
+      <ConsoleToolsAnalyze />
+    </ConsoleLayout>
+  );
+}
+
+function ConsoleToolsAnalyzeDetailWrapper() {
+  const [, setLocation] = useLocation();
+  const [match, params] = useRoute("/console/tools/analyze/:id");
+  const { data: authStatus, isLoading, isFetching } = useQuery<AuthStatus>({
+    queryKey: ["/api/auth/status"],
+  });
+
+  useEffect(() => {
+    if (!isLoading && !isFetching && authStatus?.initialized && !authStatus.user) {
+      setLocation("/login");
+    }
+  }, [isLoading, isFetching, authStatus, setLocation]);
+
+  if ((isLoading || isFetching) && !authStatus?.user) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="animate-pulse text-muted-foreground">Loading...</div>
+      </div>
+    );
+  }
+
+  if (!authStatus?.initialized) return <ConsoleInit />;
+  if (!authStatus.user || !match || !params) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="animate-pulse text-muted-foreground">Redirecting...</div>
+      </div>
+    );
+  }
+
+  return (
+    <ConsoleLayout>
+      <ConsoleToolsAnalyzeDetail id={parseInt(params.id)} />
     </ConsoleLayout>
   );
 }
@@ -1025,6 +1100,12 @@ function Router() {
       </Route>
       <Route path="/console/storage-settings">
         <ConsoleStorageSettingsWrapper />
+      </Route>
+      <Route path="/console/tools/analyze/:id">
+        <ConsoleToolsAnalyzeDetailWrapper />
+      </Route>
+      <Route path="/console/tools/analyze">
+        <ConsoleToolsAnalyzeWrapper />
       </Route>
       <Route path="/console/clash">
         <ConsoleClashWrapper />

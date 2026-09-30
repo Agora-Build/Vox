@@ -65,6 +65,7 @@ Needs `oauth` in `VOX_PLUGINS`. Each provider turns on only when both its ID and
 | `MAXMIND_LICENSE_KEY` | Fallback only; normally set in Console → Regions. Without any key, the free DB-IP Lite database is used. | — |
 | `VOX_CONTACT_EMAIL` / `VOX_GITHUB_URL` / `VOX_X_URL` | Footer contact links (the X icon is hidden when unset) | `vox@agora.build` / Vox repo / — |
 | `RATE_LIMIT_DISABLED` | `"true"` turns API rate limiting off. Never set in production. | — |
+| `VOX_STORAGE_ALLOW_PRIVATE` | `"1"` lets Tools → Analyze use a storage endpoint on a private address (e.g. MinIO on localhost). Local development only. Never set in production: Core connects to the endpoint a user types, and this guard keeps that off Core's own network. | — |
 
 ### Generating Secrets
 
@@ -180,7 +181,7 @@ node dist/migrate.cjs
 
 Vox itself is one container, but a full deployment also runs:
 
-- **Eval agents** — run the evals, on hosts in each region. Install and upgrade with `scripts/vox-upgrade.sh` (reads `AGENT_TOKEN` and `VOX_SERVER` from an env file; see the README).
+- **Eval agents** — run the evals, on hosts in each region. Install and upgrade with `scripts/vox-upgrade.sh` (reads `AGENT_TOKEN` and `VOX_SERVER` from an env file; see the README). Agents also run **Tools → Analyze** (uploaded recordings): an agent takes those only once it reports the `analyze` capability, which the agent image does from the release that added Analyze. Upgrade the public agents with that release, or uploads stay queued and fail after 24 hours.
 - **Auth-session broker** and **REST broker** — sidecars (Dockerfile targets `broker` and `rest-broker` in `vox_eval_agentd/Dockerfile`) that log in to target sites and make API calls on behalf of evals, so credentials never reach an eval agent. Each registers with Vox using `VOX_CORE_URL` and a `BROKER_REG_TOKEN` minted in **Console → Brokers**, and must be reachable only on the internal network.
 
 ## Other Platforms
@@ -261,6 +262,7 @@ Put a reverse proxy (nginx, Caddy, Traefik) in front for SSL termination.
 - [ ] HTTPS is working (check the `Secure` cookie flag)
 - [ ] Sign-in providers (if enabled): `GET /api/plugins/oauth/providers` shows them on, and each registered callback URL matches your domain
 - [ ] Stripe webhook endpoint is registered (if enabled): `https://your-domain.com/api/webhooks/stripe`
+- [ ] Tools → Analyze: at least one online public eval agent reports the `analyze` capability (Console → Eval Agents). Analyze keeps recordings in each user's own bucket (Storage page); Core needs no S3 settings for it. Core holds each upload in memory while it checks and stores it: at most 3 at once (≤ 100 MB each, so about 300 MB), one per user. These limits live in the Core process, like the rate limiter, which is right for Vox's single Core container; running several Core processes would need a shared limiter
 
 ## Troubleshooting
 

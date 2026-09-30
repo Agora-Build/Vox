@@ -436,6 +436,16 @@ d("phone transport — agent capability declaration (HTTP, dev server)", () => {
     expect(res.status).toBe(400);
   });
 
+  it("register accepts the analyze capability (Tools → Analyze) alongside phone", async () => {
+    const res = await fetch(`${BASE_URL}/api/eval-agent/register`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${rawToken}` },
+      body: JSON.stringify({ name: `phA-cap-agent-${suffix}`, capabilities: ["phone", "analyze"] }),
+    });
+    expect(res.ok).toBe(true);
+    expect((await storage.getEvalAgent((await res.json()).id))!.capabilities).toEqual(["phone", "analyze"]);
+  });
+
   it("heartbeat with capabilities:[] clears them (self-healing); omitted field leaves them", async () => {
     // Re-register to get a fresh lease (the reject test above didn't supersede it,
     // but be explicit): capabilities back to ["phone"].

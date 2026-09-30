@@ -5,7 +5,9 @@
  * (userStorageConfig table with encrypted credentials).
  */
 
-import { S3Client, GetObjectCommand } from "@aws-sdk/client-s3";
+import { S3Client, GetObjectCommand, PutObjectCommand, DeleteObjectCommand } from "@aws-sdk/client-s3";
+import type { Readable } from "stream";
+import { checkStorageEndpoint, guardedRequestHandler } from "./storage-endpoint";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { storage, decryptValue } from "./storage";
 
@@ -101,4 +103,51 @@ export async function generateSignedUrlForUser(
  */
 export function isS3Configured(): boolean {
   return getSystemS3Config() !== null;
+}
+
+// ==================== THE USER'S OWN BUCKET (Tools → Analyze) ====================
+// Uploaded recordings live only in the bucket the user set on the Storage page
+// (design 2026-09-30): no system fallback, the audio is theirs. Core connects
+// to that endpoint itself here, so the endpoint is checked and every
+// connection is guarded (server/storage-endpoint.ts).
+
+/** One resolved view of a user's bucket: check it and use it together. */
+export interface UserBucket {
+  client: S3Client;
+  bucket: string;
+  endpoint: string;
+}
+
+/**
+ * The user's own bucket, or null when they haven't set one. Throws when Core
+ * may not connect to its endpoint (not public HTTPS).
+ */
+export async function userBucket(userId: number): Promise<UserBucket | null> {
+  const userConfig = await storage.getUserStorageConfig(userId);
+  if (!userConfig) return null;
+  checkStorageEndpoint(userConfig.s3Endpoint);
+  const client = new S3Client({
+    endpoint: userConfig.s3Endpoint,
+    region: userConfig.s3Region,
+    credentials: {
+      accessKeyId: decryptValue(userConfig.s3AccessKeyId),
+      secretAccessKey: decryptValue(userConfig.s3SecretAccessKey),
+    },
+    forcePathStyle: true,
+    requestHandler: guardedRequestHandler(),
+  });
+  return { client, bucket: userConfig.s3Bucket, endpoint: userConfig.s3Endpoint };
+}
+
+export async function putObject(b: UserBucket, key: string, body: Buffer, contentType: string): Promise<void> {
+  await b.client.send(new PutObjectCommand({ Bucket: b.bucket, Key: key, Body: body, ContentType: contentType }));
+}
+
+export async function getObjectStream(b: UserBucket, key: string): Promise<{ body: Readable; contentLength?: number }> {
+  const out = await b.client.send(new GetObjectCommand({ Bucket: b.bucket, Key: key }));
+  return { body: out.Body as Readable, contentLength: out.ContentLength };
+}
+
+export async function deleteObject(b: UserBucket, key: string): Promise<void> {
+  await b.client.send(new DeleteObjectCommand({ Bucket: b.bucket, Key: key }));
 }

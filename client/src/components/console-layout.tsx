@@ -18,11 +18,12 @@ import {
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { GradientAvatar } from "@/components/gradient-avatar";
 import { ProfileDialog } from "@/components/profile-dialog";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import { Users, Workflow as EvalFlowIcon, FileText, LogOut, Shield, Gem, Sparkles, Rocket, Server, Building2, CreditCard, Settings, FolderKanban, ClipboardList, KeyRound, Swords, HardDrive, Box, ChevronsUpDown, Mail, UserCog, MapPinned, Radio } from "lucide-react";
+import { Users, Workflow as EvalFlowIcon, FileText, LogOut, Shield, Gem, Sparkles, Rocket, Server, Building2, CreditCard, Settings, FolderKanban, ClipboardList, KeyRound, Swords, HardDrive, Box, ChevronsUpDown, Mail, UserCog, MapPinned, Radio, AudioWaveform, ChevronDown } from "lucide-react";
 import { ThemeToggle } from "@/components/theme-toggle";
 
 interface AuthStatus {
@@ -49,6 +50,12 @@ export default function ConsoleLayout({ children }: ConsoleLayoutProps) {
   const [location, setLocation] = useLocation();
   const [profileOpen, setProfileOpen] = useState(false);
   const [profileDialogOpen, setProfileDialogOpen] = useState(false);
+  // Tools group: open unless the user closed it (kept across visits).
+  const [toolsOpen, setToolsOpen] = useState(() => localStorage.getItem("vox.sidebar.tools") !== "closed");
+  const setToolsOpenPersisted = (open: boolean) => {
+    setToolsOpen(open);
+    localStorage.setItem("vox.sidebar.tools", open ? "open" : "closed");
+  };
   const { toast } = useToast();
 
   const { data: authStatus, isLoading } = useQuery<AuthStatus>({
@@ -215,6 +222,16 @@ export default function ConsoleLayout({ children }: ConsoleLayoutProps) {
     });
   }
 
+  // Tools section: collapsible, remembers whether it was closed.
+  const toolNavItems = [
+    {
+      title: "Analyze",
+      url: "/console/tools/analyze",
+      icon: AudioWaveform,
+      active: location.startsWith("/console/tools/analyze"),
+    },
+  ];
+
   // Organization section
   const orgNavItems = [];
 
@@ -284,6 +301,32 @@ export default function ConsoleLayout({ children }: ConsoleLayoutProps) {
                 </SidebarMenu>
               </SidebarGroupContent>
             </SidebarGroup>
+            <Collapsible open={toolsOpen} onOpenChange={setToolsOpenPersisted} className="group/tools">
+              <SidebarGroup>
+                <SidebarGroupLabel asChild>
+                  <CollapsibleTrigger className="w-full hover:bg-sidebar-accent hover:text-sidebar-accent-foreground" data-testid="sidebar-tools-toggle">
+                    Tools
+                    <ChevronDown className="ml-auto transition-transform group-data-[state=closed]/tools:-rotate-90" />
+                  </CollapsibleTrigger>
+                </SidebarGroupLabel>
+                <CollapsibleContent>
+                  <SidebarGroupContent>
+                    <SidebarMenu>
+                      {toolNavItems.map((item) => (
+                        <SidebarMenuItem key={item.title}>
+                          <SidebarMenuButton asChild isActive={item.active}>
+                            <Link href={item.url} data-testid={`sidebar-tool-${item.title.toLowerCase()}`}>
+                              <item.icon className="h-4 w-4" />
+                              <span>{item.title}</span>
+                            </Link>
+                          </SidebarMenuButton>
+                        </SidebarMenuItem>
+                      ))}
+                    </SidebarMenu>
+                  </SidebarGroupContent>
+                </CollapsibleContent>
+              </SidebarGroup>
+            </Collapsible>
             <SidebarGroup>
               <SidebarGroupLabel>Organization</SidebarGroupLabel>
               <SidebarGroupContent>

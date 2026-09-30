@@ -34,9 +34,12 @@ export function canAccessResource(user: AuthUser, resource: OrgResource): boolea
 // being visible). Once the flow is deleted, only the person who ran the job may.
 export function canViewJob(
   user: AuthUser,
-  job: { createdBy: number | null },
+  job: { createdBy: number | null; kind?: "eval" | "analyze" },
   evalFlow: OrgResource | undefined,
 ): boolean {
+  // An analysis (Tools → Analyze) is its uploader's alone and served only by
+  // the /api/tools/analyze routes — never through the job routes, to anyone.
+  if (job.kind === "analyze") return false;
   if (user.isAdmin) return true;
   if (evalFlow) return canAccessResource(user, evalFlow);
   return job.createdBy === user.id;
@@ -71,9 +74,10 @@ export function jobListFilter(user: AuthUser, scope: JobScope) {
 // Merely being able to VIEW a flow (e.g. it is public) is never enough.
 export function canCancelJob(
   user: AuthUser,
-  job: { createdBy: number | null },
+  job: { createdBy: number | null; kind?: "eval" | "analyze" },
   evalFlow: OrgResource | undefined,
 ): boolean {
+  if (job.kind === "analyze") return false; // deleted on the Analyze page instead
   if (user.isAdmin) return true;
   if (job.createdBy === user.id) return true;
   return !!evalFlow && isOwnerOrOrgManager(user, evalFlow);
@@ -224,10 +228,26 @@ export function isClaimable(
     createdBy: number | null;
     sessionInjected?: boolean;
     transport?: "web" | "phone" | null;
+    kind?: "eval" | "analyze";
   },
-  token: Pick<DispatchToken, "id" | "dispatchTier" | "createdBy"> & { region?: string; siteId?: string; phoneCapable?: boolean },
+  token: Pick<DispatchToken, "id" | "dispatchTier" | "createdBy"> & { region?: string; siteId?: string; phoneCapable?: boolean; analyzeCapable?: boolean },
   orgs?: { tokenOwnerOrgId: number | null; creatorOrgId: number | null },
 ): boolean {
+  // Tools → Analyze (design 2026-09-30): an uploaded recording goes to an
+  // analyze-capable agent the uploader may use — a public one, or their own —
+  // never a marketplace agent (the audio is theirs). Region and site play no
+  // part: where the analysis runs doesn't change the numbers. Checked before
+  // the phone gate: a phone recording's call has already happened, so its
+  // analysis needs no phone.
+  if (job.kind === "analyze") {
+    if (token.analyzeCapable !== true) return false;
+    // Paid: dispatched (with the uploader's consent) to one marketplace agent —
+    // that agent only.
+    if (job.targetTokenId != null) return job.targetTokenId === token.id;
+    // Free: any public agent, or the uploader's own; never a marketplace one.
+    return token.dispatchTier !== "shared" && (token.dispatchTier === "public" || token.createdBy === job.createdBy);
+  }
+
   // Phone-transport jobs require the phone capability (design 2026-09-21 §8) —
   // applies to every arm below, targeted included. Absent transport = web.
   if (job.transport === "phone" && token.phoneCapable !== true) return false;
