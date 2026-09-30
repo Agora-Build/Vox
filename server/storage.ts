@@ -1036,15 +1036,13 @@ export class DatabaseStorage {
     return result[0];
   }
 
-  // The ids among `ids` that name an existing, unrevoked, unexpired token — one query.
+  // The ids among `ids` that name an existing, unrevoked token — one query.
+  // Revocation is what stops an agent (heartbeat, job fetch and dispatch all
+  // check it). expires_at is not: nothing sets it on eval agent tokens (#215).
   async getLiveEvalAgentTokenIds(ids: number[]): Promise<Set<number>> {
     if (ids.length === 0) return new Set();
     const rows = await db.select({ id: evalAgentTokens.id }).from(evalAgentTokens)
-      .where(and(
-        inArray(evalAgentTokens.id, Array.from(new Set(ids))),
-        eq(evalAgentTokens.isRevoked, false),
-        or(isNull(evalAgentTokens.expiresAt), gte(evalAgentTokens.expiresAt, new Date())),
-      ));
+      .where(and(inArray(evalAgentTokens.id, Array.from(new Set(ids))), eq(evalAgentTokens.isRevoked, false)));
     return new Set(rows.map((r) => r.id));
   }
 
@@ -1530,8 +1528,10 @@ export class DatabaseStorage {
             -- framework than it has (GET /api/eval-agent/jobs filters on it), so
             -- the fast-fail spares the job and only this backstop fires. Say
             -- what the job needed instead of leaving the user to guess (#81).
+            -- Only a version-shaped value: the config can come from someone
+            -- else's public eval set, and this text is shown to the job's owner.
             || CASE
-              WHEN config->>'frameworkVersion' IS NOT NULL
+              WHEN config->>'frameworkVersion' ~ '^[0-9A-Za-z.+-]{1,32}$'
                 THEN ' (requires eval-agent frameworkVersion >= ' || (config->>'frameworkVersion') || ')'
               ELSE ''
             END,

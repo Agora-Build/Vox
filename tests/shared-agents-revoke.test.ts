@@ -68,10 +68,4 @@ const hasDb = !!process.env.DATABASE_URL;
     expect(await listingActive(id)).toBe(true); // the stale listing really is there
     expect(await listed(id)).toBe(false);
   });
-
-  it("an expired token is not offered either", async () => {
-    const id = await sharedToken();
-    await pool.query("UPDATE eval_agent_tokens SET expires_at = now() - interval '1 minute' WHERE id = $1", [id]);
-    expect(await listed(id)).toBe(false);
-  });
 });

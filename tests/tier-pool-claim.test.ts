@@ -275,6 +275,11 @@ d("pending reapers (real SQL)", () => {
     expect((await storage.getEvalJob(gated.id))!.error)
       .toBe("Not claimed by any eval agent within 1440 min (requires eval-agent frameworkVersion >= 0.9.0)");
     expect((await storage.getEvalJob(plain.id))!.error).toBe("Not claimed by any eval agent within 1440 min");
+    // Anything that isn't version-shaped is left out of the message.
+    const odd = await mkPinned(`zz-backstop-${Date.now()}-03`, 0, { frameworkVersion: "1.0 — see http://example.com" });
+    await backdate(odd.id, 25 * 60);
+    await storage.failExpiredPendingJobs(24 * 60, true);
+    expect((await storage.getEvalJob(odd.id))!.error).toBe("Not claimed by any eval agent within 1440 min");
   });
 });
 
