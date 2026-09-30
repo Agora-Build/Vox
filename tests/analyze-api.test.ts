@@ -93,6 +93,9 @@ d("Tools → Analyze API", () => {
       [stereo, { ...good(), provider: "nope" }, /provider/i],
       [stereo, { ...good(), region: "xx-nowhere" }, /region/i],
       [stereo, { ...good(), region: retiredRegion }, /region/i],
+      // Valid WAV, but its audio starts past the first 1 MB (metadata before
+      // it): the agent reads only that much, so Core refuses it up front.
+      [makeWav({ channels: 2, rate: 16000, bits: 16, seconds: 1, extra: [["JUNK", 1100 * 1024]] }), good(), /first 1 MB/],
       [stereo, { ...good(), source: "carrier-pigeon" }, /source/i],
     ];
     for (const [body, q, reason] of cases) {

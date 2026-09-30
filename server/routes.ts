@@ -11,7 +11,7 @@ import { regionSiteSequence } from "@shared/regions";
 import { registerApiV1Routes } from "./routes-api-v1";
 import { generateSignedUrlForUser, userBucket, putObject, getObjectStream, deleteObject, type UserBucket } from "./s3";
 import { checkStorageEndpoint } from "./storage-endpoint";
-import { parseWavHeader, analyzeWavError, ANALYZE_MAX_BYTES } from "@shared/wav";
+import { parseWavHeader, analyzeWavError, ANALYZE_MAX_BYTES, ANALYZE_HEADER_BYTES } from "@shared/wav";
 import type { EvalJob, InsertEvalJob, JobSnapshot } from "@shared/schema";
 import { forAgentJobList, pipeToResponse } from "./analyze";
 import { validateTierChoice, resolveTargetedDispatch, filterDispatchableAgents } from "./dispatch";
@@ -1620,7 +1620,8 @@ export async function registerRoutes(
       if (!Buffer.isBuffer(body) || body.length === 0) {
         return res.status(400).json({ error: "Send the WAV file as the request body (Content-Type: audio/wav)." });
       }
-      const info = parseWavHeader(new Uint8Array(body.buffer, body.byteOffset, body.length));
+      // The same first-1-MB view the browser and the agent check.
+      const info = parseWavHeader(new Uint8Array(body.buffer, body.byteOffset, Math.min(body.length, ANALYZE_HEADER_BYTES)), body.length);
       const wavError = analyzeWavError(info, body.length);
       if (wavError || "error" in info) return res.status(400).json({ error: wavError });
 
@@ -4366,7 +4367,9 @@ export async function registerRoutes(
 
         if (providerId) {
           try {
-            await storage.createEvalResult({
+            // An analysis's result goes in only if it wasn't deleted meanwhile
+            // (the delete and this insert are serialized on the job row).
+            await (job.kind === "analyze" ? storage.createAnalyzeResult.bind(storage) : storage.createEvalResult.bind(storage))({
               evalJobId: parseInt(jobId),
               providerId,
               siteId: job.siteId,

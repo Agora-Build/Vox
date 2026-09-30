@@ -13,6 +13,9 @@ export type WavInfo = {
 
 export const ANALYZE_MAX_BYTES = 100 * 1024 * 1024;
 export const ANALYZE_MAX_SECONDS = 30 * 60;
+// Where the audio (the data chunk) must start. The browser, Core and the
+// agent all read just this much to check a file, so they agree on it.
+export const ANALYZE_HEADER_BYTES = 1 << 20;
 
 const PCM_FORMATS = new Set([1, 3]);
 
@@ -64,7 +67,9 @@ export function parseWavHeader(bytes: Uint8Array, totalBytes: number = bytes.len
     }
     off += 8 + size + (size % 2); // chunks are padded to an even length
   }
-  return { error: "The WAV header is incomplete or has no audio." };
+  return bytes.length < totalBytes
+    ? { error: "The WAV file's audio must start within its first 1 MB (there's too much metadata before it)." }
+    : { error: "The WAV header is incomplete or has no audio." };
 }
 
 /** Why a recording can't be analyzed, or null when it can. */

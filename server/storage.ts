@@ -1919,12 +1919,31 @@ export class DatabaseStorage {
   }
 
   /**
+   * Store an analysis's result — unless the analysis was deleted in the
+   * meantime (its completion finalizes the job, then inserts the result; a
+   * delete can land in between). Serialized with finishAnalyzeJobDelete on the
+   * job row. Returns null when it was deleted, and stores nothing.
+   */
+  async createAnalyzeResult(result: InsertEvalResult): Promise<EvalResult | null> {
+    return db.transaction(async (tx) => {
+      const rows = await tx.execute(sql`SELECT deleted_at FROM eval_jobs WHERE id = ${result.evalJobId} FOR UPDATE`);
+      const row = (rows as unknown as { rows: Array<{ deleted_at: Date | null }> }).rows[0];
+      if (!row || row.deleted_at) return null;
+      const [created] = await tx.insert(evalResults).values(result).returning();
+      return created;
+    });
+  }
+
+  /**
    * Deleting an analysis, last step (after its recording left the bucket):
    * drop its result and mark it deleted. The row stays so the daily upload
    * cap still counts it.
    */
   async finishAnalyzeJobDelete(id: number): Promise<void> {
     await db.transaction(async (tx) => {
+      // Locks the row against createAnalyzeResult: a result arriving now
+      // waits, then sees the job deleted and isn't stored.
+      await tx.execute(sql`SELECT id FROM eval_jobs WHERE id = ${id} FOR UPDATE`);
       await tx.delete(evalResults).where(eq(evalResults.evalJobId, id));
       await tx.update(evalJobs).set({ deletedAt: new Date() }).where(eq(evalJobs.id, id));
     });

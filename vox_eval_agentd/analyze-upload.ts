@@ -10,7 +10,7 @@ import { spawnSync } from 'child_process';
 import { createHash } from 'crypto';
 import { Transform, type Readable } from 'stream';
 import { pipeline } from 'stream/promises';
-import { parseWavHeader, analyzeWavError } from '../shared/wav';
+import { parseWavHeader, analyzeWavError, ANALYZE_HEADER_BYTES } from '../shared/wav';
 import { enrichMetricsWithTurns, parseTurnsJson } from './chunking';
 
 export interface AnalyzeUploadDeps {
@@ -24,7 +24,6 @@ export interface AnalyzeUploadDeps {
   parseMetrics: (sessionDir: string) => Record<string, unknown> | null;
 }
 
-const HEADER_BYTES = 1 << 20; // the WAV header check needs only the start
 
 export async function runAnalyzeUpload(deps: AnalyzeUploadDeps): Promise<{ result: Record<string, unknown> }> {
   const sessionDir = deps.workDir;
@@ -44,7 +43,7 @@ export async function runAnalyzeUpload(deps: AnalyzeUploadDeps): Promise<{ resul
     // Core checked it at upload; check again here, where a bad file would
     // otherwise cost a full aeval run.
     const fd = fs.openSync(wavPath, 'r');
-    const head = Buffer.alloc(Math.min(size, HEADER_BYTES));
+    const head = Buffer.alloc(Math.min(size, ANALYZE_HEADER_BYTES));
     try {
       fs.readSync(fd, head, 0, head.length, 0);
     } finally {

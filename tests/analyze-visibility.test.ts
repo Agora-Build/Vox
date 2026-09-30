@@ -120,6 +120,30 @@ d("analyze results: where they show (real SQL)", () => {
     }
   });
 
+  it("a result that arrives after the analysis was deleted is not stored", async () => {
+    const provider = (await storage.getAllProviders())[0];
+    const job = await storage.createEvalJob({
+      kind: "analyze", evalFlowId: null, triggerType: 2, evalSetId: null, createdBy: ME,
+      siteId: null, targetRegion: null, targetTier: null, config: {},
+      snapshot: { provider: null, evalFlow: null, evalSet: null, creatorPlan: null } as any,
+      status: "completed", priority: -10, retryCount: 0, maxRetries: 3,
+    } as any);
+    jobIds.push(job.id);
+    await storage.finishAnalyzeJobDelete(job.id); // the delete wins the race
+    const stored = await storage.createAnalyzeResult({ evalJobId: job.id, providerId: provider.id, siteId: null, rawData: { transcript: "private" } } as any);
+    expect(stored).toBeNull();
+    expect(await storage.getEvalResultsByJob(job.id)).toEqual([]);
+    // Before a delete it is stored as usual.
+    const other = await storage.createEvalJob({
+      kind: "analyze", evalFlowId: null, triggerType: 2, evalSetId: null, createdBy: ME,
+      siteId: null, targetRegion: null, targetTier: null, config: {},
+      snapshot: { provider: null, evalFlow: null, evalSet: null, creatorPlan: null } as any,
+      status: "completed", priority: -10, retryCount: 0, maxRetries: 3,
+    } as any);
+    jobIds.push(other.id);
+    expect(await storage.createAnalyzeResult({ evalJobId: other.id, providerId: provider.id, siteId: null } as any)).not.toBeNull();
+  });
+
   it("files under the region the uploader stated, and not under Unverified", async () => {
     expect(has(await storage.getMyEvalMetrics(ME, 24, { baseIds: [REGION] }, "web"))).toBe(true);
     expect(has(await storage.getMyEvalMetrics(ME, 24, { baseIds: ["eu-de-frankfurt"] }, "web"))).toBe(false);

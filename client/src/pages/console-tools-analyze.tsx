@@ -14,7 +14,7 @@ import { AudioWaveform, CheckCircle, Clock, FileAudio, HardDrive, Loader2, Trash
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { formatRegion, formatSmartTimestamp, type RegionLocation } from "@/lib/utils";
-import { parseWavHeader, analyzeWavError } from "@shared/wav";
+import { parseWavHeader, analyzeWavError, ANALYZE_HEADER_BYTES } from "@shared/wav";
 
 // Tools → Analyze: upload stereo recordings (left = user, right = agent) and
 // get Vox metrics for them. Design: designs/2026-09-30-tools-analyze-design.md.
@@ -56,7 +56,7 @@ export const formatDuration = (sec: number | null | undefined) => {
 
 /** Check a file in the browser: only its header, so a large file costs nothing. */
 async function checkFile(file: File): Promise<Pick<PickedFile, "durationSec" | "problem">> {
-  const head = new Uint8Array(await file.slice(0, 1 << 20).arrayBuffer());
+  const head = new Uint8Array(await file.slice(0, ANALYZE_HEADER_BYTES).arrayBuffer());
   const info = parseWavHeader(head, file.size);
   const problem = analyzeWavError(info, file.size);
   return { durationSec: "error" in info ? null : info.durationSec, problem };

@@ -69,8 +69,10 @@ export function guardedLookup(
 /** The S3 client's HTTP handler for user storage: every connection guarded. */
 export function guardedRequestHandler(): NodeHttpHandler {
   return new NodeHttpHandler({
-    httpsAgent: new https.Agent({ lookup: guardedLookup as unknown as net.LookupFunction, keepAlive: true }),
-    httpAgent: new http.Agent({ lookup: guardedLookup as unknown as net.LookupFunction, keepAlive: true }),
+    // No keep-alive: each operation builds its own client, so pooled sockets
+    // would never be reused — only leaked.
+    httpsAgent: new https.Agent({ lookup: guardedLookup as unknown as net.LookupFunction, keepAlive: false }),
+    httpAgent: new http.Agent({ lookup: guardedLookup as unknown as net.LookupFunction, keepAlive: false }),
     connectionTimeout: 10_000,
     requestTimeout: 120_000,
   });
