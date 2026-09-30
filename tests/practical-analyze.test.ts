@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { storage, pool } from "../server/storage";
-import { getUserObjectStream } from "../server/s3";
+import { userBucket, getObjectStream } from "../server/s3";
 import { makeConversationWav, REPLY_GAP_S } from "./fixtures/make-conversation-wav";
 
 // Tools → Analyze end to end, nothing faked (design 2026-09-30): a real stereo
@@ -129,6 +129,6 @@ d("practical: Tools → Analyze, upload to My Evals", () => {
     expect(await storage.getEvalResultsByJob(id)).toEqual([]);
     // The row stays, marked deleted, so the daily cap still counts it.
     expect((await storage.getEvalJob(id))!.deletedAt).not.toBeNull();
-    await expect(getUserObjectStream(userId, key)).rejects.toThrow();
+    await expect(getObjectStream((await userBucket(userId))!, key)).rejects.toThrow();
   }, 15 * 60 * 1000);
 });

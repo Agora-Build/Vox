@@ -7,6 +7,7 @@
 
 import { S3Client, GetObjectCommand, PutObjectCommand, DeleteObjectCommand } from "@aws-sdk/client-s3";
 import type { Readable } from "stream";
+import { checkStorageEndpoint, guardedRequestHandler } from "./storage-endpoint";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { storage, decryptValue } from "./storage";
 
@@ -106,52 +107,47 @@ export function isS3Configured(): boolean {
 
 // ==================== THE USER'S OWN BUCKET (Tools → Analyze) ====================
 // Uploaded recordings live only in the bucket the user set on the Storage page
-// (design 2026-09-30): no system fallback, the audio is theirs.
+// (design 2026-09-30): no system fallback, the audio is theirs. Core connects
+// to that endpoint itself here, so the endpoint is checked and every
+// connection is guarded (server/storage-endpoint.ts).
 
-export class NoUserStorageError extends Error {
-  constructor() {
-    super("Set up your storage first");
-  }
+/** One resolved view of a user's bucket: check it and use it together. */
+export interface UserBucket {
+  client: S3Client;
+  bucket: string;
+  endpoint: string;
 }
 
-/** Where the user's storage points now (no credentials), or null. */
-export async function userStorageLocation(userId: number): Promise<{ endpoint: string; bucket: string } | null> {
-  const c = await storage.getUserStorageConfig(userId);
-  return c ? { endpoint: c.s3Endpoint, bucket: c.s3Bucket } : null;
-}
-
-/** The user's own bucket, or null when they haven't set one. */
-export async function userBucket(userId: number): Promise<{ client: S3Client; bucket: string } | null> {
+/**
+ * The user's own bucket, or null when they haven't set one. Throws when Core
+ * may not connect to its endpoint (not public HTTPS).
+ */
+export async function userBucket(userId: number): Promise<UserBucket | null> {
   const userConfig = await storage.getUserStorageConfig(userId);
   if (!userConfig) return null;
-  const config: S3Config = {
+  checkStorageEndpoint(userConfig.s3Endpoint);
+  const client = new S3Client({
     endpoint: userConfig.s3Endpoint,
-    bucket: userConfig.s3Bucket,
     region: userConfig.s3Region,
-    accessKeyId: decryptValue(userConfig.s3AccessKeyId),
-    secretAccessKey: decryptValue(userConfig.s3SecretAccessKey),
-  };
-  return { client: createClient(config), bucket: config.bucket };
+    credentials: {
+      accessKeyId: decryptValue(userConfig.s3AccessKeyId),
+      secretAccessKey: decryptValue(userConfig.s3SecretAccessKey),
+    },
+    forcePathStyle: true,
+    requestHandler: guardedRequestHandler(),
+  });
+  return { client, bucket: userConfig.s3Bucket, endpoint: userConfig.s3Endpoint };
 }
 
-async function requireUserBucket(userId: number) {
-  const b = await userBucket(userId);
-  if (!b) throw new NoUserStorageError();
-  return b;
+export async function putObject(b: UserBucket, key: string, body: Buffer, contentType: string): Promise<void> {
+  await b.client.send(new PutObjectCommand({ Bucket: b.bucket, Key: key, Body: body, ContentType: contentType }));
 }
 
-export async function putUserObject(userId: number, key: string, body: Buffer, contentType: string): Promise<void> {
-  const { client, bucket } = await requireUserBucket(userId);
-  await client.send(new PutObjectCommand({ Bucket: bucket, Key: key, Body: body, ContentType: contentType }));
-}
-
-export async function getUserObjectStream(userId: number, key: string): Promise<{ body: Readable; contentLength?: number }> {
-  const { client, bucket } = await requireUserBucket(userId);
-  const out = await client.send(new GetObjectCommand({ Bucket: bucket, Key: key }));
+export async function getObjectStream(b: UserBucket, key: string): Promise<{ body: Readable; contentLength?: number }> {
+  const out = await b.client.send(new GetObjectCommand({ Bucket: b.bucket, Key: key }));
   return { body: out.Body as Readable, contentLength: out.ContentLength };
 }
 
-export async function deleteUserObject(userId: number, key: string): Promise<void> {
-  const { client, bucket } = await requireUserBucket(userId);
-  await client.send(new DeleteObjectCommand({ Bucket: bucket, Key: key }));
+export async function deleteObject(b: UserBucket, key: string): Promise<void> {
+  await b.client.send(new DeleteObjectCommand({ Bucket: b.bucket, Key: key }));
 }

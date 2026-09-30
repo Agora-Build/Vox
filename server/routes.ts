@@ -1,6 +1,5 @@
 import express, { type Express, type Request, type Response, type NextFunction } from "express";
 import { randomUUID, createHash } from "crypto";
-import { pipeline } from "stream/promises";
 import { type Server } from "http";
 import { z } from "zod";
 import { storage, hashToken, generateSecureToken, generateEvalAgentToken, generateBrokerRegistrationToken, mergeEvalConfig, buildJobSnapshot, validateEvalFlowConfig, validateEvalSetConfig, encryptValue, decryptValue, isEncryptionConfigured, type MetricSourceRow, type RegionQueryScope, type MetricTier } from "./storage";
@@ -10,10 +9,11 @@ import { SECRET_NAME_PATTERN, collectSecretRefs, secretValueError } from "@share
 import { deriveScheduleStatus } from "@shared/schedule-status";
 import { regionSiteSequence } from "@shared/regions";
 import { registerApiV1Routes } from "./routes-api-v1";
-import { generateSignedUrlForUser, putUserObject, getUserObjectStream, deleteUserObject, userStorageLocation } from "./s3";
+import { generateSignedUrlForUser, userBucket, putObject, getObjectStream, deleteObject, type UserBucket } from "./s3";
+import { checkStorageEndpoint } from "./storage-endpoint";
 import { parseWavHeader, analyzeWavError, ANALYZE_MAX_BYTES } from "@shared/wav";
 import type { EvalJob, InsertEvalJob, JobSnapshot } from "@shared/schema";
-import { forAgentJobList } from "./analyze";
+import { forAgentJobList, pipeToResponse } from "./analyze";
 import { validateTierChoice, resolveTargetedDispatch, filterDispatchableAgents } from "./dispatch";
 import { getMarketplace } from "./marketplace";
 import { isAlreadyMemberError, getOrganizations, requireOrganizations, type Membership, type OrgSecretRow } from "./organizations";
@@ -1540,26 +1540,18 @@ export async function registerRoutes(
     return undefined;
   };
 
-  // Whether an analysis's recording is no longer where the uploader's storage
-  // points (they changed or removed it since): its key would resolve against
-  // the wrong bucket. Rows from before the location was recorded: unknown.
-  const recordingMoved = async (userId: number, a: NonNullable<JobSnapshot["analyze"]>) => {
-    if (!a.storage) return false;
-    const now = await userStorageLocation(userId);
-    return !now || now.endpoint !== a.storage.endpoint || now.bucket !== a.storage.bucket;
-  };
-  const movedMessage = (a: NonNullable<JobSnapshot["analyze"]>) =>
-    `Your storage settings changed since this recording was uploaded: it is in bucket "${a.storage?.bucket}" at ${a.storage?.endpoint}.`;
-
-  // Stream a file from the uploader's storage to a response. Their endpoint
-  // can fail mid-stream (it's theirs); pipe() would leave the response open
-  // forever, so end it instead.
-  const pipeToResponse = (body: NodeJS.ReadableStream, res: Response, what: string) => {
-    pipeline(body, res).catch((err) => {
-      console.warn(`[analyze] streaming ${what} failed:`, err instanceof Error ? err.message : err);
-      res.destroy();
-    });
-  };
+  // The uploader's storage as ONE resolved handle (null: none set, or an
+  // endpoint Core may not connect to). Each operation checks and uses this
+  // same handle, so the bucket it compares is the bucket it touches.
+  const ownersBucket = (userId: number) => userBucket(userId).catch(() => null);
+  // Whether the recording isn't in that bucket: the user changed or removed
+  // their storage since the upload. (Rows from before the location was
+  // recorded: only "no usable storage" counts.)
+  const recordingMoved = (b: UserBucket | null, a: NonNullable<JobSnapshot["analyze"]>) =>
+    !b || (!!a.storage && (b.endpoint !== a.storage.endpoint || b.bucket !== a.storage.bucket));
+  const movedMessage = (a: NonNullable<JobSnapshot["analyze"]>) => a.storage
+    ? `Your storage settings changed since this recording was uploaded: it is in bucket "${a.storage.bucket}" at ${a.storage.endpoint}.`
+    : "Your storage settings changed since this recording was uploaded.";
 
   // Who may upload at all — checked before the body parser, so neither a
   // stranger nor a user who'd be refused can make Core buffer 100 MB.
@@ -1570,8 +1562,14 @@ export async function registerRoutes(
       if (user.plan === "basic") {
         return res.status(409).json({ error: "Analyze needs Premium: recordings are kept in your own storage, a Premium feature.", needs: "premium" });
       }
-      if (!(await storage.getUserStorageConfig(user.id))) {
+      const storageConfig = await storage.getUserStorageConfig(user.id);
+      if (!storageConfig) {
         return res.status(409).json({ error: "Set up your storage first: recordings are kept in your own bucket.", needs: "storage" });
+      }
+      try {
+        checkStorageEndpoint(storageConfig.s3Endpoint); // Core connects to it itself
+      } catch (e) {
+        return res.status(409).json({ error: e instanceof Error ? e.message : "Storage endpoint not allowed", needs: "storage" });
       }
       // Deleted analyses count too: deleting one doesn't give back a slot.
       if (await storage.countAnalyzeJobsSince(user.id, new Date(Date.now() - 24 * 60 * 60 * 1000)) >= ANALYZE_DAILY_CAP) {
@@ -1626,9 +1624,11 @@ export async function registerRoutes(
       if (wavError || "error" in info) return res.status(400).json({ error: wavError });
 
       const s3Key = `vox-analyze/${user.id}/${randomUUID()}.wav`;
-      const location = await userStorageLocation(user.id);
+      const bucket = await ownersBucket(user.id);
+      if (!bucket) return res.status(409).json({ error: "Set up your storage first: recordings are kept in your own bucket.", needs: "storage" });
+      const location = { endpoint: bucket.endpoint, bucket: bucket.bucket };
       try {
-        await putUserObject(user.id, s3Key, body, "audio/wav");
+        await putObject(bucket, s3Key, body, "audio/wav");
       } catch (err) {
         console.error(`[analyze] storing an upload for user ${user.id} failed:`, err instanceof Error ? err.message : err);
         return res.status(502).json({ error: "Couldn't store the file in your storage. Check the settings on the Storage page." });
@@ -1660,7 +1660,7 @@ export async function registerRoutes(
             sizeBytes: body.length,
             durationSec: info.durationSec,
             recordingRegion: region.baseId,
-            ...(location ? { storage: location } : {}),
+            storage: location,
           },
         },
         status: "pending",
@@ -1671,7 +1671,7 @@ export async function registerRoutes(
       } as InsertEvalJob);
       } catch (err) {
         // No row will ever point at the file: take it back out of the bucket.
-        await deleteUserObject(user.id, s3Key).catch((e) =>
+        await deleteObject(bucket, s3Key).catch((e) =>
           console.error(`[analyze] removing ${s3Key} after a failed insert failed:`, e instanceof Error ? e.message : e));
         throw err;
       }
@@ -1717,8 +1717,9 @@ export async function registerRoutes(
       const job = await findAnalyzeJob(req.params.id, user);
       const a = (job?.snapshot as JobSnapshot | null)?.analyze;
       if (!job || !a) return res.status(404).json({ error: "Analysis not found" });
-      if (await recordingMoved(job.createdBy!, a)) return res.status(409).json({ error: movedMessage(a) });
-      const { body, contentLength } = await getUserObjectStream(job.createdBy!, a.s3Key);
+      const bucket = await ownersBucket(job.createdBy!);
+      if (recordingMoved(bucket, a)) return res.status(409).json({ error: movedMessage(a) });
+      const { body, contentLength } = await getObjectStream(bucket!, a.s3Key);
       res.setHeader("Content-Type", "audio/wav");
       // ASCII fallback plus the real (UTF-8) name, RFC 6266 — a raw non-Latin-1
       // name in a header would make Node throw.
@@ -1745,16 +1746,17 @@ export async function registerRoutes(
       // 2. The recording leaves the bucket. If that fails, the row (and the
       //    key to the file) stays, so deleting again retries.
       const a = (job.snapshot as JobSnapshot | null)?.analyze;
-      if (a && (await recordingMoved(job.createdBy!, a))) {
+      const bucket = a ? await ownersBucket(job.createdBy!) : null;
+      if (a && recordingMoved(bucket, a)) {
         // The file isn't in the storage Vox can reach now; it's in the
         // user's own old bucket. Remove the analysis from Vox and say where
         // the file is, rather than claim it was deleted.
         await storage.finishAnalyzeJobDelete(job.id);
-        return res.json({ leftInStorage: { endpoint: a.storage!.endpoint, bucket: a.storage!.bucket, key: a.s3Key } });
+        return res.json({ leftInStorage: { endpoint: a.storage?.endpoint ?? null, bucket: a.storage?.bucket ?? null, key: a.s3Key } });
       }
       if (a) {
         try {
-          await deleteUserObject(job.createdBy!, a.s3Key);
+          await deleteObject(bucket!, a.s3Key);
         } catch (err) {
           console.warn(`[analyze] removing ${a.s3Key} failed:`, err instanceof Error ? err.message : err);
           return res.status(502).json({ error: "Couldn't remove the recording from your storage. Check the Storage page, then delete again." });
@@ -4643,12 +4645,15 @@ export async function registerRoutes(
       if (auth.job.kind !== "analyze" || !a || !auth.job.createdBy || auth.job.deletedAt || auth.job.status !== "running") {
         return res.status(404).json({ error: "This job has no uploaded recording" });
       }
-      if (await recordingMoved(auth.job.createdBy, a)) return res.status(409).json({ error: movedMessage(a) });
-      const { body, contentLength } = await getUserObjectStream(auth.job.createdBy, a.s3Key);
+      const bucket = await ownersBucket(auth.job.createdBy);
+      if (recordingMoved(bucket, a)) return res.status(409).json({ error: movedMessage(a) });
+      const { body, contentLength } = await getObjectStream(bucket!, a.s3Key);
       // The uploader can replace the object in their own bucket: serve only a
       // file of the size recorded at upload, and tell the agent its SHA-256
       // to check before running anything.
-      if (contentLength !== a.sizeBytes) {
+      // (Some S3-compatible stores omit the length; the agent still checks
+      // size and hash itself.)
+      if (contentLength != null && contentLength !== a.sizeBytes) {
         body.destroy();
         return res.status(409).json({ error: "The file in storage isn't the recording that was uploaded (it changed afterwards)." });
       }

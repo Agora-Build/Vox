@@ -65,6 +65,7 @@ Needs `oauth` in `VOX_PLUGINS`. Each provider turns on only when both its ID and
 | `MAXMIND_LICENSE_KEY` | Fallback only; normally set in Console → Regions. Without any key, the free DB-IP Lite database is used. | — |
 | `VOX_CONTACT_EMAIL` / `VOX_GITHUB_URL` / `VOX_X_URL` | Footer contact links (the X icon is hidden when unset) | `vox@agora.build` / Vox repo / — |
 | `RATE_LIMIT_DISABLED` | `"true"` turns API rate limiting off. Never set in production. | — |
+| `VOX_STORAGE_ALLOW_PRIVATE` | `"1"` lets Tools → Analyze use a storage endpoint on a private address (e.g. MinIO on localhost). Local development only. Never set in production: Core connects to the endpoint a user types, and this guard keeps that off Core's own network. | — |
 
 ### Generating Secrets
 
