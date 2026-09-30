@@ -1920,6 +1920,7 @@ export class DatabaseStorage {
         evalJobId: evalResults.evalJobId,
         providerId: evalResults.providerId,
         siteId: evalResults.siteId,
+        recordingRegion: evalResults.recordingRegion,
         responseLatencyMedian: evalResults.responseLatencyMedian,
         responseLatencySd: evalResults.responseLatencySd,
         responseLatencyP95: evalResults.responseLatencyP95,

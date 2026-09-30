@@ -395,6 +395,19 @@ export type JobSnapshot = {
   // credentialConsent; the run route's shared branch requires it before an
   // escrow hold is placed.
   runtimeSecretConsent?: boolean;
+  // Tools → Analyze (design 2026-09-30): present iff kind = 'analyze'. The
+  // uploaded recording, in the uploader's own bucket, and where they said it
+  // was made.
+  analyze?: AnalyzeSnapshot;
+};
+
+export type AnalyzeSnapshot = {
+  fileName: string;
+  s3Key: string;
+  sha256: string;
+  sizeBytes: number;
+  durationSec: number;
+  recordingRegion: string;
 };
 
 export const evalJobs = pgTable("eval_jobs", {
@@ -432,6 +445,10 @@ export const evalJobs = pgTable("eval_jobs", {
   // No-agent requeues (#82), limited by maxRetries but counted apart from
   // retryCount: waiting for an agent must not use up crash recovery.
   unclaimedCount: integer("unclaimed_count").default(0).notNull(),
+  // 'eval' = a run of an eval flow; 'analyze' = an uploaded recording analyzed
+  // by Tools → Analyze. Analyze jobs are kept out of the Eval Jobs lists and
+  // the public boards, and have their own claim rule.
+  kind: varchar("kind", { length: 16 }).$type<"eval" | "analyze">().default("eval").notNull(),
   config: jsonb("config").default({}).notNull(),
   // Immutable run-time snapshot (see JobSnapshot). Nullable for rows created before
   // this column; backfilled from live tables by migration 0016.
@@ -509,6 +526,9 @@ export const evalResults = pgTable("eval_results", {
   // Phone-transport call metadata (design §7): {callId, disposition, answeredAfterMs,
   // durationMs, fromRedacted, sim}. NULL for web results.
   callMetadata: jsonb("call_metadata"),
+  // Tools → Analyze only: the region the uploader said the recording was made
+  // in (a region location base id). site_id stays NULL for these results.
+  recordingRegion: varchar("recording_region", { length: 64 }),
   networkResilience: integer("network_resilience"),
   naturalness: real("naturalness"),
   noiseReduction: integer("noise_reduction"),
