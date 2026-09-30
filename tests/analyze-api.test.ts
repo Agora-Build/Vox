@@ -41,6 +41,7 @@ d("Tools → Analyze API", () => {
   let other: { id: number; cookie: string };
   let provider = "";
   let region = "";
+  let retiredRegion = "";
   const stereo = makeWav({ channels: 2, rate: 16000, bits: 16, seconds: 1 });
 
   const upload = (cookie: string, body: Uint8Array, q: Record<string, string>) =>
@@ -54,11 +55,20 @@ d("Tools → Analyze API", () => {
     user = await newUser(admin, "premium");
     other = await newUser(admin, "premium");
     provider = (await storage.getAllProviders())[0].id;
-    region = (await storage.getAllRegionLocations())[0].baseId;
+    const regions = await storage.getAllRegionLocations();
+    region = regions.find((r) => r.isActive)!.baseId;
+    // A retired region: exists, but new results may not be filed under it.
+    retiredRegion = `zz-retired-${Date.now()}`;
+    await pool.query(
+      `INSERT INTO region_locations (base_id, display_name, city, country_code, country_name, macro_region_code, macro_region_name, is_active)
+       SELECT $1, 'Retired', city, country_code, country_name, macro_region_code, macro_region_name, false FROM region_locations LIMIT 1`,
+      [retiredRegion],
+    );
   });
 
   afterAll(async () => {
     if (!user) return;
+    await pool.query("DELETE FROM region_locations WHERE base_id = $1", [retiredRegion]);
     const ids = [user.id, other.id];
     await pool.query("DELETE FROM eval_jobs WHERE created_by = ANY($1)", [ids]);
     await pool.query("DELETE FROM user_storage_config WHERE user_id = ANY($1)", [ids]);
@@ -82,6 +92,7 @@ d("Tools → Analyze API", () => {
       [new TextEncoder().encode("not audio at all, not even close"), good(), /WAV/],
       [stereo, { ...good(), provider: "nope" }, /provider/i],
       [stereo, { ...good(), region: "xx-nowhere" }, /region/i],
+      [stereo, { ...good(), region: retiredRegion }, /region/i],
       [stereo, { ...good(), source: "carrier-pigeon" }, /source/i],
     ];
     for (const [body, q, reason] of cases) {
@@ -224,7 +235,8 @@ d("Tools → Analyze API", () => {
         // With upload details, so only the job's state decides whether the
         // recording is served.
         snapshot: { provider: null, evalFlow: null, evalSet: null, creatorPlan: "premium",
-          analyze: { fileName: "x.wav", s3Key: "vox-analyze/x.wav", sha256: "0", sizeBytes: 1, durationSec: 1, recordingRegion: region } } as any,
+          analyze: { fileName: "x.wav", s3Key: "vox-analyze/x.wav", sha256: "0", sizeBytes: 1, durationSec: 1, recordingRegion: region,
+            storage: { endpoint: "https://old-storage.example", bucket: "users-old-bucket" } } } as any,
         status: "running", priority: -10, retryCount: 0, maxRetries: 3, evalAgentId: agent.id,
       } as any);
       const res = await fetch(`${BASE_URL}/api/eval-agent/jobs/${job.id}/storage-config?leaseId=${agent.leaseId}`, { headers: auth });
@@ -235,6 +247,13 @@ d("Tools → Analyze API", () => {
         method: "POST", headers: auth, body: JSON.stringify({ leaseId: agent.leaseId, zipUrl: "https://elsewhere.example/x.zip", files: [] }),
       });
       expect(art.status).toBe(404);
+      // Storage moved since the upload: the agent learns nothing about where
+      // the uploader's file lives.
+      const moved = await fetch(`${BASE_URL}/api/eval-agent/jobs/${job.id}/upload?leaseId=${agent.leaseId}`, { headers: auth });
+      expect(moved.status).toBe(409);
+      const movedBody = JSON.stringify(await moved.json());
+      expect(movedBody).not.toContain("users-old-bucket");
+      expect(movedBody).not.toContain("old-storage.example");
       // And once the job is over, the recording is no longer served to it.
       await pool.query("UPDATE eval_jobs SET status = 'completed' WHERE id = $1", [job.id]);
       const late = await fetch(`${BASE_URL}/api/eval-agent/jobs/${job.id}/upload?leaseId=${agent.leaseId}`, { headers: auth });

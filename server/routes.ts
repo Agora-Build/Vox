@@ -1610,7 +1610,8 @@ export async function registerRoutes(
       const provider = typeof q.provider === "string" ? await storage.getProvider(q.provider) : undefined;
       if (!provider) return res.status(400).json({ error: "Choose a provider." });
       const region = typeof q.region === "string" ? await storage.getRegionLocationByBaseId(q.region) : undefined;
-      if (!region) return res.status(400).json({ error: "Choose the region the recording was made in." });
+      // Active regions only: a retired one takes no new results.
+      if (!region || !region.isActive) return res.status(400).json({ error: "Choose the region the recording was made in." });
       const source = q.source;
       if (source !== "web" && source !== "phone") return res.status(400).json({ error: "Choose the recording's source: web or phone." });
       const fileName = (typeof q.fileName === "string" ? path.basename(q.fileName) : "").slice(0, 200) || "recording.wav";
@@ -1741,7 +1742,7 @@ export async function registerRoutes(
       if (!job) return res.status(404).json({ error: "Analysis not found" });
       // 1. Stop it, atomically, unless an agent is running it right now.
       if (!(await storage.stopAnalyzeJobForDelete(job.id))) {
-        return res.status(409).json({ error: "The analysis is running. Delete it once it finishes." });
+        return res.status(409).json({ error: "The analysis is running. Delete it once it finishes (if its eval agent stopped, the analysis is back in the queue within a few minutes)." });
       }
       // 2. The recording leaves the bucket. If that fails, the row (and the
       //    key to the file) stays, so deleting again retries.
@@ -4646,7 +4647,8 @@ export async function registerRoutes(
         return res.status(404).json({ error: "This job has no uploaded recording" });
       }
       const bucket = await ownersBucket(auth.job.createdBy);
-      if (recordingMoved(bucket, a)) return res.status(409).json({ error: movedMessage(a) });
+      // Nothing about where the uploader's file lives: this goes to the agent.
+      if (recordingMoved(bucket, a)) return res.status(409).json({ error: "The uploader's storage settings changed since this recording was uploaded." });
       const { body, contentLength } = await getObjectStream(bucket!, a.s3Key);
       // The uploader can replace the object in their own bucket: serve only a
       // file of the size recorded at upload, and tell the agent its SHA-256

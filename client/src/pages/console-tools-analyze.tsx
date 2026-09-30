@@ -76,7 +76,7 @@ function ChoiceSelects({ choice, onChange, providers, regions, testId }: {
       <Select value={choice.region} onValueChange={(region) => onChange({ ...choice, region })}>
         <SelectTrigger data-testid={`${testId}-region`} aria-label="Region the recording was made in"><SelectValue placeholder="Region it was recorded in" /></SelectTrigger>
         <SelectContent>
-          {regions.map((r) => <SelectItem key={r.baseId} value={r.baseId}>{formatRegion(r.baseId)}</SelectItem>)}
+          {regions.filter((r) => r.isActive).map((r) => <SelectItem key={r.baseId} value={r.baseId}>{formatRegion(r.baseId)}</SelectItem>)}
         </SelectContent>
       </Select>
       <Select value={choice.source} onValueChange={(source) => onChange({ ...choice, source: source as Source })}>

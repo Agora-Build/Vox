@@ -14,24 +14,26 @@ import { NodeHttpHandler } from "@smithy/node-http-handler";
 
 const allowPrivate = () => process.env.VOX_STORAGE_ALLOW_PRIVATE === "1";
 
-const BLOCKED_V4: Array<[string, number]> = [
+// net.BlockList parses addresses properly and matches IPv4-mapped IPv6
+// (::ffff:7f00:1 as well as ::ffff:127.0.0.1) against the IPv4 rules — a
+// hand-written string match missed the hex form.
+const blocked = new net.BlockList();
+for (const [base, bits] of [
   ["0.0.0.0", 8], ["10.0.0.0", 8], ["100.64.0.0", 10], ["127.0.0.0", 8], ["169.254.0.0", 16],
   ["172.16.0.0", 12], ["192.0.0.0", 24], ["192.168.0.0", 16], ["198.18.0.0", 15], ["224.0.0.0", 3],
-];
-const v4ToInt = (ip: string) => ip.split(".").reduce((n, o) => (n << 8) + Number(o), 0) >>> 0;
+] as const) blocked.addSubnet(base, bits, "ipv4");
+for (const [base, bits] of [
+  ["::", 96],        // unspecified, loopback, and IPv4-compatible ::a.b.c.d
+  ["64:ff9b::", 96], // NAT64: reaches IPv4, internal addresses included
+  ["fe80::", 10],    // link-local
+  ["fc00::", 7],     // unique local
+  ["ff00::", 8],     // multicast
+] as const) blocked.addSubnet(base, bits, "ipv6");
 
 /** Whether Core must not connect to this address. */
 export function isBlockedAddress(ip: string): boolean {
-  if (net.isIPv4(ip)) {
-    const n = v4ToInt(ip);
-    return BLOCKED_V4.some(([base, bits]) => (n >>> (32 - bits)) === (v4ToInt(base) >>> (32 - bits)));
-  }
-  if (net.isIPv6(ip)) {
-    const h = ip.toLowerCase();
-    const mapped = h.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
-    if (mapped) return isBlockedAddress(mapped[1]);
-    return h === "::" || h === "::1" || /^fe[89ab]/.test(h) || /^f[cd]/.test(h) || h.startsWith("ff");
-  }
+  if (net.isIPv4(ip)) return blocked.check(ip, "ipv4");
+  if (net.isIPv6(ip)) return blocked.check(ip, "ipv6");
   return true; // not an address at all
 }
 
