@@ -6,8 +6,8 @@
 
 A new **Tools** section in the console, starting with one tool: **Analyze**. A user
 uploads one or more stereo WAV recordings of a conversation with a voice agent
-(left channel = user, right channel = agent), picks the provider each one was
-made with, and Vox runs the same analysis it runs on its own eval recordings.
+(left channel = user, right channel = agent), picks the provider and the region
+each one was made with, and Vox runs the same analysis it runs on its own eval recordings.
 The results show on the Analyze page and in **My Evals**, next to results from
 real eval runs. They do not show under Eval Jobs.
 
@@ -25,7 +25,8 @@ uploaded recording is that same input.
 |---|---|
 | Where does analysis run? | On **eval agents**, as a new job kind. Agents already have aeval and the analyze code; Core stays free of Python/ML dependencies. |
 | Which My Evals view? | The user picks **Web** or **Phone** per file. Web and phone stay a hard split. |
-| Several files at once? | **One result per file**, each with its own provider. |
+| Several files at once? | **One result per file**, each with its own provider and region. |
+| Region? | Picked per file at upload: **where the recording was made**. Any capable agent can run the analysis, since where it runs doesn't change the numbers. |
 | Who can use it? | **Every signed-in user**, with a daily cap. |
 | Show under Eval Jobs? | **No.** Only on the Analyze page and in My Evals. |
 
@@ -40,11 +41,15 @@ remembers whether it was collapsed. It holds one entry, **Analyze**
 - **Upload card.**
   - Drop or pick one or more `.wav` files. Each file becomes a row with:
     - **Provider** (required): the provider list from `GET /api/providers`.
+    - **Region** (required): where the recording was made, from the admin-managed
+      region locations (`GET /api/region-locations`), e.g. `na-us-seattle`.
     - **Source** (required): Web or Phone. This decides which My Evals view the result lands in.
+    - With several files, a "same for all files" option fills Provider, Region
+      and Source for every row from the first.
   - Hint text: "Stereo WAV: left channel = user, right channel = agent."
-  - The **Analyze** button stays disabled until every row has a provider and a source.
+  - The **Analyze** button stays disabled until every row has a provider, a region and a source.
   - The browser checks each file before upload (a WAV with 2 channels, within the limits below). The server checks again; the browser check is only for a quick message.
-- **My analyses** list: file name, provider, source, status (Queued / Analyzing /
+- **My analyses** list: file name, provider, region, source, status (Queued / Analyzing /
   Done / Failed + reason), submitted time. It polls while anything is queued or
   running. Each row can be deleted.
 
@@ -58,8 +63,8 @@ a download link for the uploaded WAV.
 - It is extracted into one component, used by both the eval job page and the
   analysis page, so the two never drift apart.
 
-**My Evals.** Each finished analysis adds a result under the chosen provider, in
-the Web or Phone view the user picked.
+**My Evals.** Each finished analysis adds a result under the chosen provider and
+region, in the Web or Phone view the user picked.
 
 ## 2. How an analysis runs
 
@@ -71,7 +76,7 @@ My Evals queries all keep working unchanged.
 - **New column** `eval_jobs.kind`: `'eval'` (default, every existing row) or
   `'analyze'`. Hand-written migration, registered in `server/migrate.ts`.
 - `eval_flow_id` and `eval_set_id` are NULL. The frozen `snapshot` carries the
-  provider, the source (`web`/`phone`), the file name, the S3 key, the file's
+  provider, the recording region, the source (`web`/`phone`), the file name, the S3 key, the file's
   SHA-256 and its size and duration, plus the creator's plan, as today.
 - `eval_jobs.transport` is stamped from the source, so the existing transport
   split in the metrics queries needs no change.
@@ -129,9 +134,24 @@ used.
 
 ### Region
 
-The result's `site_id` is NULL. We can't know where a recording was made, and the
-analyzing agent's location says nothing about it. In My Evals it appears under
-"All regions" and in the existing Unverified bucket.
+The region picked at upload is **where the recording was made**, not where it
+was analyzed. The analyzing agent's location says nothing about the
+conversation, so it isn't recorded as the result's site.
+
+- **New column** `eval_results.recording_region` (nullable, a region location
+  base id such as `na-us-seattle`). It is set only for analyze results. The
+  result's `site_id` stays NULL, because no Vox agent measured the conversation
+  from that site.
+- **My Evals region filter.** The region filter (`regionScopeCondition`) matches
+  `site_id LIKE '<base>-%' OR recording_region = '<base>'`, so an analysis
+  appears under the region the user picked. The Unverified bucket becomes
+  `site_id IS NULL AND recording_region IS NULL`, so these results don't also
+  show up there.
+- **It's the user's own claim.** Vox can't verify where a recording was made.
+  That's acceptable because analyze results only ever appear in their creator's
+  My Evals, never on Mainline or Community, where region is trusted
+  (zero-trust agent region).
+- **Validated on upload.** The region must be an existing region location.
 
 ### Limits
 
@@ -149,7 +169,7 @@ A running analysis is bounded by the existing 90-minute run limit.
 
 | Method | Path | Notes |
 |---|---|---|
-| `POST` | `/api/tools/analyze` | Multipart: files plus `{provider, source}` per file. Creates one job per file and returns them. |
+| `POST` | `/api/tools/analyze` | Multipart: files plus `{provider, region, source}` per file. Creates one job per file and returns them. |
 | `GET` | `/api/tools/analyze` | The caller's analyses, newest first. |
 | `GET` | `/api/tools/analyze/:id` | Status plus the result, if done. |
 | `GET` | `/api/tools/analyze/:id/recording` | Download the uploaded WAV (owner only). |
@@ -164,14 +184,15 @@ A running analysis is bounded by the existing 90-minute run limit.
 - **Visibility:**
   - analyze jobs are missing from the Eval Jobs list and `/api/v1` lists;
   - they appear in the creator's My Evals, in the chosen transport only;
+  - they appear under the chosen region in the My Evals region filter, and not in Unverified;
   - they never appear on Mainline or Community;
   - another user can't see them.
-- **Upload checks** (server): mono, not a WAV, too large or too long, over the daily cap, and no provider are each refused.
+- **Upload checks** (server): mono, not a WAV, too large or too long, over the daily cap, no provider, and a missing or unknown region are each refused.
 - **Agent:**
   - the session directory is laid out the same as on the phone path;
   - a failed analyze fails the job, with no results reported.
 - **E2E:**
-  - upload a stereo WAV and pick a provider;
+  - upload a stereo WAV and pick a provider, a region and a source;
   - the row goes Queued → Done;
   - the detail page shows the result cards;
   - the result appears in My Evals.
@@ -180,5 +201,4 @@ A running analysis is bounded by the existing 90-minute run limit.
 ## Not in this version
 
 - Mono files, or a separate WAV per speaker.
-- Letting the user state the recording's region.
 - More tools. The Tools group is built to take more entries later.
