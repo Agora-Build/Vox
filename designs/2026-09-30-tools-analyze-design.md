@@ -103,6 +103,23 @@ no region. It can be claimed by an agent that:
    - **Marketplace (shared) agents are never used.** The audio belongs to the
      user, and a shared agent is run by someone else.
 
+**Who actually takes it.** Agents pull work: each agent polls Core for jobs,
+and the first eligible agent to poll claims the analysis. There is no picker on
+the upload form ("any eligible agent"). In practice the admin-operated public
+agents take most analyses, since most users run no agent of their own.
+
+- **Lower priority than eval runs.** Analyze jobs are created with
+  `priority = -10` (eval jobs use 0). Both claim paths already order by
+  `priority DESC, created_at ASC`, so an agent always takes a waiting eval run
+  first. An upload never delays a scheduled eval, and a batch of 10 files
+  doesn't hold up everyone's runs.
+- **Agents need the new daemon.** The `analyze` capability ships in the daemon
+  release that carries this feature. Until agents are upgraded
+  (`vox-upgrade.sh`), nothing claims analyze jobs, and they fail after 24h with
+  the reason. Upgrade the public agents in the same rollout.
+- **Nobody is online.** The job stays Queued, and after 24h it fails with the
+  existing backstop's reason.
+
 This is a third claim rule, next to site-pinned and region-pooled. It goes into
 both claim SQL paths (`claimEvalJob`, `getClaimableJobsForToken`) and into
 `permissions.isClaimable`, kept in step as the codebase already requires.
@@ -178,6 +195,7 @@ A running analysis is bounded by the existing 90-minute run limit.
 
 ## Testing
 
+- **Priority:** with an eval job and an analyze job both waiting, an agent claims the eval job first.
 - **Claim rule** on the real SQL, both paths plus `isClaimable`:
   - taken by an agent with `analyze` that the user may use (public, or their own);
   - refused by an agent without the capability, by a marketplace agent, and by someone else's private agent.
@@ -202,3 +220,4 @@ A running analysis is bounded by the existing 90-minute run limit.
 
 - Mono files, or a separate WAV per speaker.
 - More tools. The Tools group is built to take more entries later.
+- Choosing the agent ("my agents only" vs any), or preferring a user's own agent.
