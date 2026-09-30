@@ -1315,8 +1315,12 @@ export class DatabaseStorage {
          SET eval_agent_id = $1, status = 'running'::eval_job_status, started_at = NOW(), updated_at = NOW(),
              token_dispatch_tier = $3,
              -- An analysis keeps no site: the agent's location says nothing
-             -- about where the recording was made (Tools → Analyze).
-             site_id = CASE WHEN kind = 'analyze' THEN NULL ELSE COALESCE(site_id, $4) END,
+             -- about where the recording was made (Tools → Analyze). A pooled
+             -- job takes the site of the agent claiming it now — a requeued
+             -- one still carries its first claimer's site (#216).
+             site_id = CASE WHEN kind = 'analyze' THEN NULL
+                            WHEN target_region IS NOT NULL THEN $4
+                            ELSE COALESCE(site_id, $4) END,
              location_trust = $5
          WHERE id = $2
          RETURNING *`,

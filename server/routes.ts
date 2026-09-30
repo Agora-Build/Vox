@@ -4149,8 +4149,9 @@ export async function registerRoutes(
       // site — NULL for Unverified.
       const eff = effectiveDispatchIdentity(evalAgentToken, agent);
       // Site fence for site-pinned rows only (targeted + legacy). Pooled jobs
-      // (siteId null) are fenced by region+tier inside claimEvalJob's predicate.
-      if (existingJob.siteId != null && existingJob.siteId !== eff.siteId) {
+      // are fenced by region+tier inside claimEvalJob's predicate — including a
+      // requeued one, which still carries its first claimer's site (#216).
+      if (existingJob.targetRegion == null && existingJob.siteId != null && existingJob.siteId !== eff.siteId) {
         return res.status(403).json({ error: "Job site does not match agent site" });
       }
 

@@ -41,6 +41,7 @@ import { normalizeDialableNumber } from '../shared/steps';
 import { DialfClient, probeDialf, resolveDialfSocketPath, type DialfProbe } from './dialf-client';
 import { runPhoneJob, finishPhoneMetrics } from './phone-eval';
 import { runAnalyzeUpload, capabilitiesFor, aevalOnPath } from './analyze-upload';
+import { claimFirstAvailable } from './job-pick';
 import { Readable } from 'stream';
 import { pipeline } from 'stream/promises';
 import {
@@ -2196,9 +2197,10 @@ class VoxEvalAgentDaemon {
 
     console.log(`[Daemon] Found ${jobs.length} pending job(s)`);
 
-    const job = jobs[0];
-    const claimed = await this.claimJob(job.id);
-    if (!claimed) return;
+    // The first job that accepts the claim, not always jobs[0]: a refused
+    // claim must not stall this agent on one row (#216).
+    const job = await claimFirstAvailable(jobs, (j) => this.claimJob(j.id));
+    if (!job) return;
 
     this.isRunningJob = true;
     this.currentJobId = job.id;
