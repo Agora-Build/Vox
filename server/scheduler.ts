@@ -25,9 +25,12 @@ export const MAX_JOB_RUN_MINUTES = 90;
 //     actionable "no agent for site X" result in minutes, not a full day.
 //   - PENDING_MAX_WAIT_MINUTES: absolute backstop for anything the fast-fail
 //     misses (site has an online agent that somehow never claims the job).
-// Each no-agent strike uses one retry and requeues (see failPendingJobsWithNoAgent),
-// so an unstaffed site fails after (max_retries + 1) × this. Operators can widen
-// it without a redeploy: PENDING_NO_AGENT_TIMEOUT_MINUTES (#82).
+// Each no-agent strike requeues the job and counts in unclaimed_count (not the
+// crash-recovery retry_count; see failPendingJobsWithNoAgent), so an unstaffed
+// site fails after (max_retries + 1) × this. Operators can widen it without a
+// redeploy: PENDING_NO_AGENT_TIMEOUT_MINUTES (#82). The backstop still fails any
+// job a day after it was created, so past (max_retries + 1) × timeout ≥ 24h the
+// no-agent reaper never gets to fail it — the backstop does, with its message.
 export const PENDING_NO_AGENT_TIMEOUT_MINUTES = positiveIntEnv("PENDING_NO_AGENT_TIMEOUT_MINUTES", 15);
 export const PENDING_MAX_WAIT_MINUTES = 24 * 60;
 const REAP_SETTLE_LOOKBACK_MINUTES = 15; // window for the prompt reap-settle sweep

@@ -251,6 +251,17 @@ d("pending reapers (real SQL)", () => {
     expect((await storage.getEvalJob(job.id))!.status).toBe("failed");
   });
 
+  it("a day-old job that was claimed and lost its agent says so, not 'not claimed'", async () => {
+    const job = await mkPinned(`zz-backstop-crashed-${Date.now()}-01`, 0);
+    await pool.query(
+      `UPDATE eval_jobs SET retry_count = 1, created_at = now() - interval '25 hours', updated_at = now() - interval '5 minutes' WHERE id = $1`,
+      [job.id],
+    );
+    await storage.failExpiredPendingJobs(24 * 60, true);
+    expect((await storage.getEvalJob(job.id))!.error)
+      .toBe("Still pending 24h after it was queued; its eval agent stopped mid-run 1 time(s)");
+  });
+
   it("the backstop refuses a batch size that would never finish", async () => {
     await expect(storage.failExpiredPendingJobs(24 * 60, true, 0)).rejects.toThrow("batchSize must be a positive integer");
   });

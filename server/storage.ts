@@ -1514,6 +1514,10 @@ export class DatabaseStorage {
         UPDATE eval_jobs
         SET status = 'failed'::eval_job_status,
             error = CASE
+              -- retry_count moves only when a claimed job's agent stopped
+              -- mid-run, so this job was claimed and then lost its agent.
+              WHEN retry_count > 0
+                THEN 'Still pending ' || ${pooledWaitLabel} || ' after it was queued; its eval agent stopped mid-run ' || retry_count || ' time(s)'
               WHEN target_region IS NOT NULL
                 THEN 'No eligible ' || COALESCE(target_tier::text, 'matching') || ' agent in ' || target_region || ' claimed the job within ' || ${pooledWaitLabel}
               ELSE ${message}
