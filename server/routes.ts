@@ -1761,7 +1761,7 @@ export async function registerRoutes(
           await deleteObject(bucket!, a.s3Key);
         } catch (err) {
           console.warn(`[analyze] removing ${a.s3Key} failed:`, err instanceof Error ? err.message : err);
-          return res.status(502).json({ error: "Couldn't remove the recording from your storage. Check the Storage page, then delete again." });
+          return res.status(502).json({ error: "Couldn't remove the recording from your storage, so the analysis wasn't deleted (if it was still queued, it has been cancelled). Check the Storage page, then delete again." });
         }
       }
       // 3. Its result goes; the row stays, marked deleted, for the daily cap.
