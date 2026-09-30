@@ -1,0 +1,184 @@
+# Tools → Analyze: analyze uploaded recordings
+
+**Status:** draft for review · 2026-09-30
+
+## What and why
+
+A new **Tools** section in the console, starting with one tool: **Analyze**. A user
+uploads one or more stereo WAV recordings of a conversation with a voice agent
+(left channel = user, right channel = agent), picks the provider each one was
+made with, and Vox runs the same analysis it runs on its own eval recordings.
+The results show on the Analyze page and in **My Evals**, next to results from
+real eval runs. They do not show under Eval Jobs.
+
+This lets someone get Vox numbers for a conversation they already recorded,
+without writing an eval flow or running an agent.
+
+Nothing new is needed for the analysis itself. The phone path already writes one
+stereo WAV (left = user, right = agent) into a session directory and runs
+`aeval analyze` on it (`vox_eval_agentd/phone-eval.ts`, `buildSessionDir`). An
+uploaded recording is that same input.
+
+## Decisions (made in discussion)
+
+| Question | Decision |
+|---|---|
+| Where does analysis run? | On **eval agents**, as a new job kind. Agents already have aeval and the analyze code; Core stays free of Python/ML dependencies. |
+| Which My Evals view? | The user picks **Web** or **Phone** per file. Web and phone stay a hard split. |
+| Several files at once? | **One result per file**, each with its own provider. |
+| Who can use it? | **Every signed-in user**, with a daily cap. |
+| Show under Eval Jobs? | **No.** Only on the Analyze page and in My Evals. |
+
+## 1. What the user sees
+
+**Sidebar.** A collapsible **Tools** group after Storage, open by default, that
+remembers whether it was collapsed. It holds one entry, **Analyze**
+(`/console/tools/analyze`), and is visible to every signed-in user.
+
+**Analyze page** (`/console/tools/analyze`):
+
+- **Upload card.**
+  - Drop or pick one or more `.wav` files. Each file becomes a row with:
+    - **Provider** (required): the provider list from `GET /api/providers`.
+    - **Source** (required): Web or Phone. This decides which My Evals view the result lands in.
+  - Hint text: "Stereo WAV: left channel = user, right channel = agent."
+  - The **Analyze** button stays disabled until every row has a provider and a source.
+  - The browser checks each file before upload (a WAV with 2 channels, within the limits below). The server checks again; the browser check is only for a quick message.
+- **My analyses** list: file name, provider, source, status (Queued / Analyzing /
+  Done / Failed + reason), submitted time. It polls while anything is queued or
+  running. Each row can be deleted.
+
+**Analysis detail** (`/console/tools/analyze/:id`): the shared result view, plus
+a download link for the uploaded WAV.
+
+- **The shared result view** is the results part of the eval job page
+  (`console-eval-job-detail.tsx`): the Response Latency, Interrupt Latency, Turn
+  Success Rate and Other Metrics cards, Per-Case Results, and the turn-level
+  latency table.
+- It is extracted into one component, used by both the eval job page and the
+  analysis page, so the two never drift apart.
+
+**My Evals.** Each finished analysis adds a result under the chosen provider, in
+the Web or Phone view the user picked.
+
+## 2. How an analysis runs
+
+### Job row (hidden)
+
+Each file becomes one `eval_jobs` row, so results, artifacts, the reapers and the
+My Evals queries all keep working unchanged.
+
+- **New column** `eval_jobs.kind`: `'eval'` (default, every existing row) or
+  `'analyze'`. Hand-written migration, registered in `server/migrate.ts`.
+- `eval_flow_id` and `eval_set_id` are NULL. The frozen `snapshot` carries the
+  provider, the source (`web`/`phone`), the file name, the S3 key, the file's
+  SHA-256 and its size and duration, plus the creator's plan, as today.
+- `eval_jobs.transport` is stamped from the source, so the existing transport
+  split in the metrics queries needs no change.
+- **Hidden from job lists.** The Eval Jobs list (`storage.evalJobConditions`) and
+  the `/api/v1` job lists filter to `kind = 'eval'`.
+- **Kept off the public boards.** The Mainline and Community conditions add
+  `kind = 'eval'` explicitly. They would already exclude these rows (no public
+  eval flow in the snapshot), but the tiers shouldn't rely on that by accident.
+- **Added to My Evals.** `myEvalConditions` gets one more condition:
+  `kind = 'analyze' AND created_by = <me>`.
+- **Who can see it.** Only the creator. An admin may delete one (moderation), as
+  with other resources. Deleting an analysis deletes the job (its result cascades)
+  and the stored WAV.
+
+### Which agent runs it
+
+Analysis doesn't depend on where the agent is, so an analyze job has no site and
+no region. It can be claimed by an agent that:
+
+1. declares a new **`analyze` capability** on register/heartbeat, like `phone`.
+   An agent that doesn't declare it (an older daemon) never takes an analyze job.
+2. is one the user is allowed to use: an **admin-operated public agent**, or one
+   of the **user's own private/team agents**.
+   - **Marketplace (shared) agents are never used.** The audio belongs to the
+     user, and a shared agent is run by someone else.
+
+This is a third claim rule, next to site-pinned and region-pooled. It goes into
+both claim SQL paths (`claimEvalJob`, `getClaimableJobsForToken`) and into
+`permissions.isClaimable`, kept in step as the codebase already requires.
+
+### On the agent
+
+1. Download the WAV through a new lease-checked endpoint,
+   `GET /api/eval-agent/jobs/:jobId/upload`. Core streams it from S3, so the
+   agent never gets bucket credentials.
+2. Check it: a WAV with 2 channels, within the limits. Otherwise fail the job
+   with the reason.
+3. Lay out the session directory the way the phone path does
+   (`recordings/recording.wav`).
+4. Run `aeval analyze` with a recording preset (no browser stages, like the
+   phone preset).
+5. Report through the existing complete and artifacts endpoints.
+
+The same failure rule applies: if aeval exits with an error, the job fails and no
+partial results are kept. No secrets are involved, so the job-secrets path is not
+used.
+
+### Storage
+
+- Upload path: browser → Core → S3. It uses the user's own bucket when they set
+  one on the Storage page, otherwise the system bucket, the same as job
+  artifacts.
+- If neither is configured, the Analyze page says so and the upload is refused.
+- The WAV is kept with the result until the analysis is deleted.
+
+### Region
+
+The result's `site_id` is NULL. We can't know where a recording was made, and the
+analyzing agent's location says nothing about it. In My Evals it appears under
+"All regions" and in the existing Unverified bucket.
+
+### Limits
+
+| Limit | Value |
+|---|---|
+| Analyses per user per day | 50 |
+| File size | 100 MB |
+| Recording length | 30 min |
+| Files per upload | 10 |
+| Unclaimed | fails after 24h (existing backstop), with the reason |
+
+A running analysis is bounded by the existing 90-minute run limit.
+
+## API
+
+| Method | Path | Notes |
+|---|---|---|
+| `POST` | `/api/tools/analyze` | Multipart: files plus `{provider, source}` per file. Creates one job per file and returns them. |
+| `GET` | `/api/tools/analyze` | The caller's analyses, newest first. |
+| `GET` | `/api/tools/analyze/:id` | Status plus the result, if done. |
+| `GET` | `/api/tools/analyze/:id/recording` | Download the uploaded WAV (owner only). |
+| `DELETE` | `/api/tools/analyze/:id` | Deletes the job, its result and the stored WAV. |
+| `GET` | `/api/eval-agent/jobs/:jobId/upload` | Agent side, lease-checked. |
+
+## Testing
+
+- **Claim rule** on the real SQL, both paths plus `isClaimable`:
+  - taken by an agent with `analyze` that the user may use (public, or their own);
+  - refused by an agent without the capability, by a marketplace agent, and by someone else's private agent.
+- **Visibility:**
+  - analyze jobs are missing from the Eval Jobs list and `/api/v1` lists;
+  - they appear in the creator's My Evals, in the chosen transport only;
+  - they never appear on Mainline or Community;
+  - another user can't see them.
+- **Upload checks** (server): mono, not a WAV, too large or too long, over the daily cap, and no provider are each refused.
+- **Agent:**
+  - the session directory is laid out the same as on the phone path;
+  - a failed analyze fails the job, with no results reported.
+- **E2E:**
+  - upload a stereo WAV and pick a provider;
+  - the row goes Queued → Done;
+  - the detail page shows the result cards;
+  - the result appears in My Evals.
+- **Delete:** the job, its result and the S3 object are all gone.
+
+## Not in this version
+
+- Mono files, or a separate WAV per speaker.
+- Letting the user state the recording's region.
+- More tools. The Tools group is built to take more entries later.
