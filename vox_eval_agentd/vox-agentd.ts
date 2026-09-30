@@ -42,6 +42,7 @@ import { DialfClient, probeDialf, resolveDialfSocketPath, type DialfProbe } from
 import { runPhoneJob, finishPhoneMetrics } from './phone-eval';
 import { runAnalyzeUpload, capabilitiesFor, aevalOnPath, writeLimited } from './analyze-upload';
 import { claimFirstAvailable } from './job-pick';
+import { UNMEASURED_DEFAULTS } from './result-defaults';
 import { Readable } from 'stream';
 import {
   CHUNK_SIZE,
@@ -169,9 +170,8 @@ const RESULT_DEFAULTS: EvalResult = {
   interruptRate: null,
   falseInterruptRate: null,
   turnSuccessRate: null,
-  networkResilience: 85,
-  naturalness: 3.5,
-  noiseReduction: 90,
+  // Nothing measures these yet: N/A, never a placeholder number (#217).
+  ...UNMEASURED_DEFAULTS,
 };
 
 // ---------------------------------------------------------------------------

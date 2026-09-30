@@ -4456,9 +4456,11 @@ export async function registerRoutes(
               falseInterruptRate: results.falseInterruptRate ?? null,
               turnSuccessRate: results.turnSuccessRate ?? null,
               callMetadata: callMetadata ?? null,
-              networkResilience: results.networkResilience,
-              naturalness: results.naturalness,
-              noiseReduction: results.noiseReduction,
+              // An eval agent older than #217 still sends its placeholder
+              // triple (85 / 3.5 / 90), never measured: store N/A instead.
+              ...(results.networkResilience === 85 && results.naturalness === 3.5 && results.noiseReduction === 90
+                ? { networkResilience: null, naturalness: null, noiseReduction: null }
+                : { networkResilience: results.networkResilience ?? null, naturalness: results.naturalness ?? null, noiseReduction: results.noiseReduction ?? null }),
               rawData: results.rawData || {},
             });
           } catch (resultError) {
@@ -5865,9 +5867,10 @@ export async function registerRoutes(
       // Turn Success Rate (0..1), or null. The quality/resilience axis — kept as
       // null (not 0) so "no data" doesn't read as "0% success".
       turnSuccessRate: r.turnSuccessRate ?? null,
-      networkResilience: r.networkResilience || 0,
-      naturalness: r.naturalness || 0,
-      noiseReduction: r.noiseReduction || 0,
+      // null = not measured (N/A), never 0 (#217).
+      networkResilience: r.networkResilience ?? null,
+      naturalness: r.naturalness ?? null,
+      noiseReduction: r.noiseReduction ?? null,
       timestamp: r.createdAt,
       // EvalFlow identity for the hover tooltip (raw rows only; null on buckets).
       evalFlowId: r.evalFlowId ?? null,

@@ -51,3 +51,42 @@ test("a finished eval job shows its result: cards, turns and transcripts", async
     await pool.query("DELETE FROM eval_jobs WHERE id = $1", [job.id]);
   }
 });
+
+// #217: nothing measures Network / Naturalness / Noise yet, so the leaderboard
+// shows N/A for them — never "null%" or "null/5.0" (what it rendered before).
+test("the leaderboard shows N/A, not null, for what isn't measured", async ({ page }) => {
+  test.skip(!process.env.DATABASE_URL, "needs the dev DB");
+  test.setTimeout(90_000);
+  const { storage, pool } = await import("../../server/storage");
+  // A provider of its own with one mainline result (public + mainline flow and
+  // set, principal creator, public agent) that measured none of the three.
+  const name = `E2E N/A Provider ${Date.now()}`;
+  const provider = await storage.createProvider({ name, sku: "convoai", description: "e2e" } as any);
+  const scoutId = (await pool.query("SELECT id FROM users WHERE email = $1", ["scout@vox.ai"])).rows[0].id as number;
+  const mainline = { visibility: "public", isMainline: true, config: {}, ownerId: scoutId };
+  const job = await storage.createEvalJob({
+    evalFlowId: null, triggerType: 2, evalSetId: null, createdBy: scoutId, siteId: null, targetRegion: null, targetTier: null, config: {},
+    snapshot: { provider: { id: provider.id, name, platformId: null }, evalFlow: { name: "f", organizationId: null, ...mainline }, evalSet: { name: "s", ...mainline }, creatorPlan: "principal" } as any,
+    status: "completed", priority: 0, retryCount: 0, maxRetries: 3, tokenDispatchTier: "public",
+  } as any);
+  try {
+    // A site in an active region: the board's default scope is the regions.
+    const base = (await storage.getAllRegionLocations()).find((l) => l.isActive)!.baseId;
+    await storage.createEvalResult({
+      evalJobId: job.id, providerId: provider.id, siteId: `${base}-01`, responseLatencyMedian: 1000,
+      networkResilience: null, naturalness: null, noiseReduction: null,
+    } as any);
+    // The leaderboard response is cached for 30 s: let a cached copy expire.
+    await page.waitForTimeout(31_000);
+    await page.goto(`${BASE}/leaderboard`);
+    const row = page.getByRole("row").filter({ hasText: name });
+    await expect(row).toBeVisible();
+    // Each of the three cells says N/A (the old page printed a bare "%").
+    for (const cell of ["text-network-", "text-naturalness-", "text-noise-"]) {
+      await expect(row.locator(`[data-testid^="${cell}"]`)).toHaveText("N/A");
+    }
+  } finally {
+    await pool.query("DELETE FROM eval_jobs WHERE id = $1", [job.id]);
+    await pool.query("DELETE FROM providers WHERE id = $1", [provider.id]);
+  }
+});

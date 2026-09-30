@@ -45,7 +45,8 @@ interface LeaderboardEntry {
 type SortField = "rank" | "responseLatency" | "interruptLatency" | "turnSuccessRate" | "networkResilience" | "naturalness" | "noiseReduction";
 type SortDirection = "asc" | "desc";
 
-// null latency = NA (every run in the group was non-responsive).
+// null = not measured: latency when every run was non-responsive; Network /
+// Naturalness / Noise until something measures them (#217).
 const naNum = (v: number | null, suffix = "") => v == null ? "N/A" : `${v}${suffix}`;
 // Turn Success Rate is 0..1; null = no evaluable turns. Show as a percentage.
 const naPct = (v: number | null) => v == null ? "N/A" : `${Math.round(v * 100)}%`;
@@ -315,15 +316,15 @@ export default function Leaderboard() {
                     <TableCell className="text-right font-mono font-semibold" data-testid={`text-turn-success-${entry.rank}`}>{naPct(entry.turnSuccessRate)}</TableCell>
                     <TableCell className="text-right w-[150px]">
                       <div className="flex items-center justify-end gap-2">
-                        <span className="font-mono text-xs" data-testid={`text-network-${entry.rank}`}>{entry.networkResilience}%</span>
-                        <Progress value={entry.networkResilience} className="w-[60px] h-2" />
+                        <span className="font-mono text-xs" data-testid={`text-network-${entry.rank}`}>{naNum(entry.networkResilience, "%")}</span>
+                        {entry.networkResilience != null && <Progress value={entry.networkResilience} className="w-[60px] h-2" />}
                       </div>
                     </TableCell>
-                    <TableCell className="text-right font-mono" data-testid={`text-naturalness-${entry.rank}`}>{entry.naturalness}/5.0</TableCell>
+                    <TableCell className="text-right font-mono" data-testid={`text-naturalness-${entry.rank}`}>{naNum(entry.naturalness, "/5.0")}</TableCell>
                     <TableCell className="text-right w-[150px]">
                       <div className="flex items-center justify-end gap-2">
-                        <span className="font-mono text-xs" data-testid={`text-noise-${entry.rank}`}>{entry.noiseReduction}%</span>
-                        <Progress value={entry.noiseReduction} className="w-[60px] h-2" />
+                        <span className="font-mono text-xs" data-testid={`text-noise-${entry.rank}`}>{naNum(entry.noiseReduction, "%")}</span>
+                        {entry.noiseReduction != null && <Progress value={entry.noiseReduction} className="w-[60px] h-2" />}
                       </div>
                     </TableCell>
                   </TableRow>
@@ -397,19 +398,19 @@ export default function Leaderboard() {
                 <div className="flex items-center justify-between">
                   <span className="text-sm">Network Resilience</span>
                   <div className="flex items-center gap-2">
-                    <Progress value={selectedEntry.networkResilience} className="w-24 h-2" />
-                    <span className="font-mono text-sm w-12 text-right">{selectedEntry.networkResilience}%</span>
+                    {selectedEntry.networkResilience != null && <Progress value={selectedEntry.networkResilience} className="w-24 h-2" />}
+                    <span className="font-mono text-sm w-12 text-right">{naNum(selectedEntry.networkResilience, "%")}</span>
                   </div>
                 </div>
                 <div className="flex items-center justify-between">
                   <span className="text-sm">Naturalness</span>
-                  <span className="font-mono text-sm">{selectedEntry.naturalness}/5.0</span>
+                  <span className="font-mono text-sm">{naNum(selectedEntry.naturalness, "/5.0")}</span>
                 </div>
                 <div className="flex items-center justify-between">
                   <span className="text-sm">Noise Reduction</span>
                   <div className="flex items-center gap-2">
-                    <Progress value={selectedEntry.noiseReduction} className="w-24 h-2" />
-                    <span className="font-mono text-sm w-12 text-right">{selectedEntry.noiseReduction}%</span>
+                    {selectedEntry.noiseReduction != null && <Progress value={selectedEntry.noiseReduction} className="w-24 h-2" />}
+                    <span className="font-mono text-sm w-12 text-right">{naNum(selectedEntry.noiseReduction, "%")}</span>
                   </div>
                 </div>
               </div>
