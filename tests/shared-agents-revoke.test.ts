@@ -55,6 +55,14 @@ const hasDb = !!process.env.DATABASE_URL;
     expect(await listed(id)).toBe(false);
   });
 
+  it("a revoked token can't be put back on sale", async () => {
+    const id = await sharedToken();
+    expect((await call("POST", `/api/eval-agent-tokens/${id}/revoke`)).ok).toBe(true);
+    const res = await call("PATCH", `/api/eval-agent-tokens/${id}`, { dispatchTier: "shared", pricePerUnit: 5 });
+    expect(res.status).toBe(409);
+    expect(await listingActive(id)).toBe(false);
+  });
+
   it("the admin revoke does too", async () => {
     const id = await sharedToken();
     expect((await call("POST", `/api/admin/eval-agent-tokens/${id}/revoke`)).ok).toBe(true);

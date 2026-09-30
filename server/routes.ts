@@ -3249,6 +3249,9 @@ export async function registerRoutes(
         pricePerUnit: pricePerUnit ?? null,
       });
       if (!decision.ok) return res.status(decision.status).json({ error: decision.reason });
+      // A revoked token stays off the marketplace (#93): switching it back to
+      // shared would reactivate its listing.
+      if (token.isRevoked) return res.status(409).json({ error: "This token is revoked" });
 
       // Core writes only its own column.
       await storage.updateEvalAgentTokenDispatchTier(id, dispatchTier);
