@@ -40,10 +40,9 @@ import { injectStorageSession } from './session-inject';
 import { normalizeDialableNumber } from '../shared/steps';
 import { DialfClient, probeDialf, resolveDialfSocketPath, type DialfProbe } from './dialf-client';
 import { runPhoneJob, finishPhoneMetrics } from './phone-eval';
-import { runAnalyzeUpload, capabilitiesFor, aevalOnPath } from './analyze-upload';
+import { runAnalyzeUpload, capabilitiesFor, aevalOnPath, writeLimited } from './analyze-upload';
 import { claimFirstAvailable } from './job-pick';
 import { Readable } from 'stream';
-import { pipeline } from 'stream/promises';
 import {
   CHUNK_SIZE,
   type ParsedScenario,
@@ -2051,7 +2050,12 @@ class VoxEvalAgentDaemon {
           const detail = await res.text().catch(() => '');
           throw new Error(`could not fetch the uploaded recording: ${res.status}${detail ? ` ${detail.slice(0, 200)}` : ''}`);
         }
-        await pipeline(Readable.fromWeb(res.body as import('stream/web').ReadableStream), fs.createWriteStream(dest));
+        // Core states what it recorded at upload; the file must match it.
+        const sizeBytes = Number(res.headers.get('content-length'));
+        const sha256 = res.headers.get('x-vox-upload-sha256') ?? '';
+        if (!Number.isFinite(sizeBytes) || sizeBytes <= 0 || !sha256) throw new Error('Core sent the recording without its size and checksum');
+        await writeLimited(Readable.fromWeb(res.body as import('stream/web').ReadableStream), dest, sizeBytes);
+        return { sizeBytes, sha256 };
       },
       analyze: (dir) => this.runAevalAnalyze(dir),
       parseMetrics: (dir) => {

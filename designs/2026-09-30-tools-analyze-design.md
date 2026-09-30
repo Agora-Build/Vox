@@ -201,7 +201,8 @@ conversation, so it isn't recorded as the result's site.
 | File size | 100 MB |
 | Recording length | 30 min |
 | Files per upload | 10 |
-| Unclaimed | fails after 24h (existing backstop), with the reason |
+| Unclaimed | fails after 24h (existing backstop), with the reason. An analysis has no site, so the 15-minute no-agent reaper never applies: with no eligible agent it waits the full day, and the detail page says so |
+| Uploads in flight | one per user, 8 in total (Core holds each file in memory while checking and storing it; per process, as Vox runs one Core) |
 
 A running analysis is bounded by the existing 90-minute run limit.
 

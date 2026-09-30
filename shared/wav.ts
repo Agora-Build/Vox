@@ -28,12 +28,13 @@ export function parseWavHeader(bytes: Uint8Array, totalBytes: number = bytes.len
   const tag = (off: number) => String.fromCharCode(bytes[off], bytes[off + 1], bytes[off + 2], bytes[off + 3]);
   if (bytes.length < 12 || tag(0) !== "RIFF" || tag(8) !== "WAVE") return { error: "Not a WAV file." };
 
-  let fmt: Omit<WavInfo, "durationSec"> & { byteRate: number } | null = null;
+  let fmt: Omit<WavInfo, "durationSec"> & { byteRate: number; blockAlign: number } | null = null;
   let off = 12;
   while (off + 8 <= bytes.length) {
     const id = tag(off);
     const size = v.getUint32(off + 4, true);
     if (id === "fmt ") {
+      if (size < 16) return { error: "The WAV file's format chunk is too short." };
       if (off + 8 + 16 > bytes.length) break;
       const format = v.getUint16(off + 8, true);
       // WAVE_FORMAT_EXTENSIBLE: the real format is the first two bytes of its
@@ -44,12 +45,19 @@ export function parseWavHeader(bytes: Uint8Array, totalBytes: number = bytes.len
         channels: v.getUint16(off + 10, true),
         sampleRate: v.getUint32(off + 12, true),
         byteRate: v.getUint32(off + 16, true),
+        blockAlign: v.getUint16(off + 20, true),
         bitsPerSample: v.getUint16(off + 22, true),
       };
+      // The duration comes from these, so they must agree with each other.
+      const { channels, sampleRate, byteRate, blockAlign, bitsPerSample } = fmt;
+      if (![8, 16, 24, 32].includes(bitsPerSample) || channels === 0 || sampleRate === 0
+        || blockAlign !== channels * (bitsPerSample / 8) || byteRate !== sampleRate * blockAlign) {
+        return { error: "The WAV file's format chunk is inconsistent." };
+      }
     } else if (id === "data") {
       if (!fmt) return { error: "The WAV file has no format chunk before its audio." };
       if (fmt.byteRate === 0) return { error: "The WAV file's format chunk is invalid." };
-      const { byteRate, ...info } = fmt;
+      const { byteRate, blockAlign: _blockAlign, ...info } = fmt;
       const available = Math.max(0, totalBytes - (off + 8));
       const dataBytes = size === 0 || size > available ? available : size;
       return { ...info, durationSec: dataBytes / byteRate };

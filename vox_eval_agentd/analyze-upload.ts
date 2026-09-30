@@ -7,13 +7,17 @@
 import fs from 'fs';
 import path from 'path';
 import { spawnSync } from 'child_process';
+import { createHash } from 'crypto';
+import { Transform, type Readable } from 'stream';
+import { pipeline } from 'stream/promises';
 import { parseWavHeader, analyzeWavError } from '../shared/wav';
 import { enrichMetricsWithTurns, parseTurnsJson } from './chunking';
 
 export interface AnalyzeUploadDeps {
   workDir: string;
-  /** Write the uploaded recording to `dest`. */
-  download: (dest: string) => Promise<void>;
+  /** Write the uploaded recording to `dest`; returns the size and SHA-256
+   *  Core recorded when it was uploaded. */
+  download: (dest: string) => Promise<{ sizeBytes: number; sha256: string }>;
   /** `aeval analyze <sessionDir>`; throws on a non-zero exit. */
   analyze: (sessionDir: string) => Promise<void>;
   /** The metrics aeval wrote, or null when there are none. */
@@ -28,7 +32,14 @@ export async function runAnalyzeUpload(deps: AnalyzeUploadDeps): Promise<{ resul
   try {
     fs.mkdirSync(recordings, { recursive: true });
     const wavPath = path.join(recordings, 'recording.wav');
-    await deps.download(wavPath);
+    const expected = await deps.download(wavPath);
+
+    // The file lives in the uploader's own bucket, which they can change after
+    // uploading: run only the recording Core checked, byte for byte.
+    const got = fs.readFileSync(wavPath);
+    if (got.length !== expected.sizeBytes || createHash('sha256').update(got).digest('hex') !== expected.sha256) {
+      throw new Error("The file in storage isn't the recording that was uploaded (it changed afterwards).");
+    }
 
     // Core checked it at upload; check again here, where a bad file would
     // otherwise cost a full aeval run.
@@ -67,6 +78,19 @@ export async function runAnalyzeUpload(deps: AnalyzeUploadDeps): Promise<{ resul
     // What the pages show — metrics, turns, transcripts — is in the result.
     fs.rmSync(sessionDir, { recursive: true, force: true });
   }
+}
+
+/** Stream `body` to `dest`, failing once it passes `maxBytes`. */
+export async function writeLimited(body: Readable, dest: string, maxBytes: number): Promise<void> {
+  let seen = 0;
+  const limit = new Transform({
+    transform(chunk: Buffer, _enc, done) {
+      seen += chunk.length;
+      if (seen > maxBytes) done(new Error("The file in storage is larger than the uploaded recording."));
+      else done(null, chunk);
+    },
+  });
+  await pipeline(body, limit, fs.createWriteStream(dest));
 }
 
 /** What this agent can do beyond web evals, for register/heartbeat. */

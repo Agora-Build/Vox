@@ -2,7 +2,9 @@ import { describe, it, expect } from "vitest";
 import fs from "fs";
 import os from "os";
 import path from "path";
-import { runAnalyzeUpload, capabilitiesFor } from "../vox_eval_agentd/analyze-upload";
+import { runAnalyzeUpload, capabilitiesFor, writeLimited } from "../vox_eval_agentd/analyze-upload";
+import { Readable } from "stream";
+import { createHash } from "crypto";
 import { makeWav } from "./fixtures/make-wav";
 
 // Tools → Analyze on the eval agent (design 2026-09-30): download the upload,
@@ -10,7 +12,11 @@ import { makeWav } from "./fixtures/make-wav";
 // report its metrics. Real files, fake network and aeval.
 
 const workDir = () => fs.mkdtempSync(path.join(os.tmpdir(), "analyze-daemon-test-"));
-const writer = (bytes: Uint8Array) => async (dest: string) => { fs.writeFileSync(dest, bytes); };
+// Serves `bytes`, and reports them as what was uploaded (as Core does).
+const writer = (bytes: Uint8Array) => async (dest: string) => {
+  fs.writeFileSync(dest, bytes);
+  return { sizeBytes: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") };
+};
 
 describe("runAnalyzeUpload", () => {
   it("stages the recording where aeval analyze expects it, then reports the metrics", async () => {
@@ -78,6 +84,31 @@ describe("runAnalyzeUpload", () => {
       parseMetrics: () => ({}),
     })).rejects.toThrow();
     expect(fs.existsSync(dir)).toBe(false);
+  });
+
+  it("refuses a file that isn't the one uploaded (replaced in the uploader's bucket)", async () => {
+    // Core tells the agent the size and SHA-256 it recorded at upload.
+    const uploaded = makeWav({ channels: 2, rate: 16000, bits: 16, seconds: 1 });
+    const expected = { sizeBytes: uploaded.length, sha256: createHash("sha256").update(uploaded).digest("hex") };
+    const serving = (bytes: Uint8Array) => async (dest: string) => { fs.writeFileSync(dest, bytes); return expected; };
+    let ran = false;
+    const run = (bytes: Uint8Array) => runAnalyzeUpload({ workDir: workDir(), download: serving(bytes), analyze: async () => { ran = true; }, parseMetrics: () => ({}) });
+    await expect(run(makeWav({ channels: 2, rate: 16000, bits: 16, seconds: 2 }))).rejects.toThrow("isn't the recording that was uploaded");
+    const tampered = new Uint8Array(uploaded); tampered[100] ^= 0xff; // same size, other bytes
+    await expect(run(tampered)).rejects.toThrow("isn't the recording that was uploaded");
+    expect(ran).toBe(false);
+    await run(uploaded);
+    expect(ran).toBe(true);
+  });
+
+  it("writeLimited stops a download that runs past the uploaded size", async () => {
+    const dest = path.join(workDir(), "x.wav");
+    await writeLimited(Readable.from([Buffer.alloc(600), Buffer.alloc(600)]), dest, 1000).then(
+      () => { throw new Error("should have stopped"); },
+      (e: Error) => expect(e.message).toMatch("larger than the uploaded recording"),
+    );
+    await writeLimited(Readable.from([Buffer.alloc(600), Buffer.alloc(400)]), dest, 1000);
+    expect(fs.statSync(dest).size).toBe(1000);
   });
 
   it("refuses a mono file before running aeval", async () => {

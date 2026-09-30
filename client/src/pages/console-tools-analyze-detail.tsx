@@ -73,7 +73,7 @@ export default function ConsoleToolsAnalyzeDetail({ id }: { id: number }) {
           <CardContent className="pt-6 flex items-center gap-2 text-sm text-muted-foreground">
             <Loader2 className="h-4 w-4 animate-spin" />
             {job.status === "pending"
-              ? "Waiting for an eval agent. Analyses run after scheduled evals, so this can take a few minutes."
+              ? "Waiting for an eval agent. Analyses run after scheduled evals, so this can take a few minutes. If no agent can take it within a day, it fails."
               : "Analyzing the recording…"}
           </CardContent>
         </Card>

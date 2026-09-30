@@ -40,6 +40,23 @@ describe("parseWavHeader", () => {
     expect(analyzeWavError(mk(0x55), 100)).toMatch(/PCM/); // MP3 in an extensible wrapper
   });
 
+  it("refuses a format chunk whose numbers don't agree (a way to under-report duration)", () => {
+    const wav = makeWav({ channels: 2, rate: 16000, bits: 16, seconds: 60 });
+    const v = new DataView(wav.buffer);
+    v.setUint32(28, 16000 * 4 * 100, true); // byte rate 100x too high → "0.6 s"
+    expect(parseWavHeader(wav)).toHaveProperty("error");
+    const badAlign = makeWav({ channels: 2, rate: 16000, bits: 16, seconds: 1 });
+    new DataView(badAlign.buffer).setUint16(32, 3, true); // block align ≠ channels × bytes
+    expect(parseWavHeader(badAlign)).toHaveProperty("error");
+    expect(parseWavHeader(makeWav({ channels: 2, rate: 16000, bits: 12, seconds: 1 }))).toHaveProperty("error");
+  });
+
+  it("refuses a format chunk too short to hold a format", () => {
+    const wav = makeWav({ channels: 2, rate: 16000, bits: 16, seconds: 1 });
+    new DataView(wav.buffer).setUint32(16, 8, true); // fmt size 8
+    expect(parseWavHeader(wav)).toHaveProperty("error");
+  });
+
   it("refuses what isn't a WAV file", () => {
     expect(parseWavHeader(new TextEncoder().encode("ID3\u0003 not a wav file at all, just text"))).toHaveProperty("error");
     const rifx = makeWav({ channels: 2, rate: 16000, bits: 16, seconds: 1 });

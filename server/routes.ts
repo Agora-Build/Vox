@@ -12,6 +12,7 @@ import { registerApiV1Routes } from "./routes-api-v1";
 import { generateSignedUrlForUser, putUserObject, getUserObjectStream, deleteUserObject } from "./s3";
 import { parseWavHeader, analyzeWavError, ANALYZE_MAX_BYTES } from "@shared/wav";
 import type { EvalJob, InsertEvalJob, JobSnapshot } from "@shared/schema";
+import { forAgentJobList } from "./analyze";
 import { validateTierChoice, resolveTargetedDispatch, filterDispatchableAgents } from "./dispatch";
 import { getMarketplace } from "./marketplace";
 import { isAlreadyMemberError, getOrganizations, requireOrganizations, type Membership, type OrgSecretRow } from "./organizations";
@@ -1507,7 +1508,8 @@ export async function registerRoutes(
   // it's checked and stored, so: one at a time per user (which also keeps the
   // daily cap exact), and a few in total.
   const ANALYZE_MAX_UPLOADS_IN_FLIGHT = 8;
-  const analyzeUploadsInFlight = new Set<number>();
+  // userId → the request holding that user's slot.
+  const analyzeUploadsInFlight = new Map<number, symbol>();
 
   // What the Analyze pages show about one analysis, from its frozen snapshot.
   const analyzeView = (job: EvalJob, hasResult: boolean) => {
@@ -1559,12 +1561,16 @@ export async function registerRoutes(
       if (analyzeUploadsInFlight.size >= ANALYZE_MAX_UPLOADS_IN_FLIGHT) {
         return res.status(503).json({ error: "Vox is busy receiving other uploads. Try again in a minute." });
       }
-      analyzeUploadsInFlight.add(user.id);
-      // The upload handler frees the slot as it answers (its finally). These
-      // cover a request that never reaches it: a too-large body, or a dropped
-      // connection. (Events alone are too late: a client can send its next
-      // upload before "finish" fires.)
-      const free = () => analyzeUploadsInFlight.delete(user.id);
+      // Each request frees only its own slot: its late "finish"/"close" must
+      // not free the slot of the user's next upload.
+      const slot = Symbol("analyze-upload");
+      analyzeUploadsInFlight.set(user.id, slot);
+      const free = () => { if (analyzeUploadsInFlight.get(user.id) === slot) analyzeUploadsInFlight.delete(user.id); };
+      res.locals.freeAnalyzeSlot = free;
+      // The handler frees it as it answers (its finally). These cover a request
+      // that never reaches it: a too-large body, or a dropped connection.
+      // (Events alone are too late: a client can send its next upload before
+      // "finish" fires.)
       res.on("finish", free);
       res.on("close", free);
       next();
@@ -1650,7 +1656,7 @@ export async function registerRoutes(
       console.error("Error queueing an analysis:", error);
       res.status(500).json({ error: "Failed to queue the analysis" });
     } finally {
-      analyzeUploadsInFlight.delete(user.id); // same tick as the answer
+      (res.locals.freeAnalyzeSlot as (() => void) | undefined)?.(); // same tick as the answer
     }
   });
 
@@ -4151,7 +4157,7 @@ export async function registerRoutes(
         return true;
       });
 
-      res.json(jobs);
+      res.json(jobs.map(forAgentJobList));
     } catch (error) {
       console.error("Error fetching jobs:", error);
       res.status(500).json({ error: "Failed to fetch jobs" });
@@ -4602,8 +4608,16 @@ export async function registerRoutes(
         return res.status(404).json({ error: "This job has no uploaded recording" });
       }
       const { body, contentLength } = await getUserObjectStream(auth.job.createdBy, a.s3Key);
+      // The uploader can replace the object in their own bucket: serve only a
+      // file of the size recorded at upload, and tell the agent its SHA-256
+      // to check before running anything.
+      if (contentLength !== a.sizeBytes) {
+        body.destroy();
+        return res.status(409).json({ error: "The file in storage isn't the recording that was uploaded (it changed afterwards)." });
+      }
       res.setHeader("Content-Type", "audio/wav");
-      if (contentLength != null) res.setHeader("Content-Length", String(contentLength));
+      res.setHeader("Content-Length", String(a.sizeBytes));
+      res.setHeader("X-Vox-Upload-Sha256", a.sha256);
       body.pipe(res);
     } catch (error) {
       console.error("Error serving an upload to an agent:", error instanceof Error ? error.message : error);
