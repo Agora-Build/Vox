@@ -252,7 +252,8 @@ d("pending reapers (real SQL)", () => {
   });
 
   it("a day-old job that was claimed and lost its agent says so, not 'not claimed'", async () => {
-    const job = await mkPinned(`zz-backstop-crashed-${Date.now()}-01`, 0);
+    // A version requirement didn't stop it being claimed, so it isn't named.
+    const job = await mkPinned(`zz-backstop-crashed-${Date.now()}-01`, 0, { frameworkVersion: "0.9.0" });
     await pool.query(
       `UPDATE eval_jobs SET retry_count = 1, created_at = now() - interval '25 hours', updated_at = now() - interval '5 minutes' WHERE id = $1`,
       [job.id],
@@ -276,10 +277,15 @@ d("pending reapers (real SQL)", () => {
       .toBe("Not claimed by any eval agent within 1440 min (requires eval-agent frameworkVersion >= 0.9.0)");
     expect((await storage.getEvalJob(plain.id))!.error).toBe("Not claimed by any eval agent within 1440 min");
     // Anything that isn't version-shaped is left out of the message.
-    const odd = await mkPinned(`zz-backstop-${Date.now()}-03`, 0, { frameworkVersion: "1.0 — see http://example.com" });
-    await backdate(odd.id, 25 * 60);
+    const odd = await Promise.all(["1.0 — see http://example.com", "productionToken", "7", "1x0"].map((v, i) =>
+      mkPinned(`zz-backstop-${Date.now()}-1${i}`, 0, { frameworkVersion: v })));
+    for (const j of odd) await backdate(j.id, 25 * 60);
+    const rc = await mkPinned(`zz-backstop-${Date.now()}-04`, 0, { frameworkVersion: "0.4.1-rc1" });
+    await backdate(rc.id, 25 * 60);
     await storage.failExpiredPendingJobs(24 * 60, true);
-    expect((await storage.getEvalJob(odd.id))!.error).toBe("Not claimed by any eval agent within 1440 min");
+    for (const j of odd) expect((await storage.getEvalJob(j.id))!.error).toBe("Not claimed by any eval agent within 1440 min");
+    expect((await storage.getEvalJob(rc.id))!.error)
+      .toBe("Not claimed by any eval agent within 1440 min (requires eval-agent frameworkVersion >= 0.4.1-rc1)");
   });
 });
 

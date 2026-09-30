@@ -1463,7 +1463,7 @@ export class DatabaseStorage {
           error = CASE
             WHEN unclaimed_count >= max_retries
               THEN ${prefix} || site_id || ${suffix} || (unclaimed_count + 1) || ' times)'
-            ELSE NULL
+            ELSE error
           END,
           completed_at = CASE WHEN unclaimed_count >= max_retries THEN NOW() ELSE NULL END,
           unclaimed_count = unclaimed_count + 1,
@@ -1528,10 +1528,14 @@ export class DatabaseStorage {
             -- framework than it has (GET /api/eval-agent/jobs filters on it), so
             -- the fast-fail spares the job and only this backstop fires. Say
             -- what the job needed instead of leaving the user to guess (#81).
-            -- Only a version-shaped value: the config can come from someone
-            -- else's public eval set, and this text is shown to the job's owner.
+            -- Only for a job no agent ever took (retry_count = 0), and only a
+            -- version-shaped value (1.2, 0.4.1-rc1): the config can come from
+            -- someone else's public eval set, and this text is shown to the
+            -- job's owner.
             || CASE
-              WHEN config->>'frameworkVersion' ~ '^[0-9A-Za-z.+-]{1,32}$'
+              WHEN retry_count = 0
+                AND length(config->>'frameworkVersion') <= 32
+                AND config->>'frameworkVersion' ~ '^[0-9]+(\\.[0-9]+)+([-+][0-9A-Za-z.]+)?$'
                 THEN ' (requires eval-agent frameworkVersion >= ' || (config->>'frameworkVersion') || ')'
               ELSE ''
             END,
