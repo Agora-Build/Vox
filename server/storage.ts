@@ -1670,7 +1670,9 @@ export class DatabaseStorage {
 
   // Get all jobs with optional filters
   private evalJobConditions(filters?: EvalJobFilters) {
-    const conditions = [];
+    // Eval runs only: an uploaded recording's analysis (Tools → Analyze) has
+    // its own page and never appears in the Eval Jobs lists.
+    const conditions = [eq(evalJobs.kind, "eval")];
     if (filters?.status) {
       conditions.push(eq(evalJobs.status, filters.status));
     }
@@ -1999,10 +2001,16 @@ export class DatabaseStorage {
     if (!scope) return undefined;
     if (scope.siteId) return eq(evalResults.siteId, scope.siteId);
     const parts: any[] = [];
+    // A region matches a result measured at one of its sites, or an analyzed
+    // recording its uploader said was made there (recording_region; Tools →
+    // Analyze). Unverified = neither.
     if (scope.baseIds && scope.baseIds.length > 0) {
-      parts.push(or(...scope.baseIds.map((baseId) => sql<boolean>`${evalResults.siteId} LIKE ${baseId + "-%"}`)));
+      parts.push(or(...scope.baseIds.map((baseId) => or(
+        sql<boolean>`${evalResults.siteId} LIKE ${baseId + "-%"}`,
+        eq(evalResults.recordingRegion, baseId),
+      ))));
     }
-    if (scope.unverified) parts.push(isNull(evalResults.siteId));
+    if (scope.unverified) parts.push(and(isNull(evalResults.siteId), isNull(evalResults.recordingRegion)));
     if (scope.baseIds && scope.baseIds.length === 0 && !scope.unverified) return sql<boolean>`false`;
     if (parts.length === 0) return undefined;
     return parts.length === 1 ? parts[0] : or(...parts);
@@ -2012,6 +2020,7 @@ export class DatabaseStorage {
     const snap = evalJobs.snapshot;
     const conditions = [
       eq(evalJobs.status, "completed"),
+      eq(evalJobs.kind, "eval"), // an analysis is its uploader's alone (Tools → Analyze)
       sql`${snap}->'evalFlow'->>'visibility' = 'public'`,
       // Compare as text ('true'/'false') so the text expression index is usable.
       sql`${snap}->'evalFlow'->>'isMainline' = 'true'`,
@@ -2033,6 +2042,7 @@ export class DatabaseStorage {
     const snap = evalJobs.snapshot;
     const conditions = [
       eq(evalJobs.status, "completed"),
+      eq(evalJobs.kind, "eval"), // an analysis is its uploader's alone (Tools → Analyze)
       sql`${snap}->'evalFlow'->>'visibility' = 'public'`,
       sql`${snap}->'evalSet'->>'visibility' = 'public'`,
       // Agent gate (tier as restriction): only public/shared agents feed a public
@@ -2082,6 +2092,8 @@ export class DatabaseStorage {
           inArray(evalJobs.tokenDispatchTier, ["private", "team"]),
           eq(evalJobs.createdBy, userId),
         ),
+        // An uploaded recording analyzed by Tools → Analyze: its uploader's.
+        and(eq(evalJobs.kind, "analyze"), eq(evalJobs.createdBy, userId)),
       ),
     ];
     if (hoursBack) {

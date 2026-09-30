@@ -4091,6 +4091,8 @@ export async function registerRoutes(
               evalJobId: parseInt(jobId),
               providerId,
               siteId: job.siteId,
+              // Tools → Analyze: where the uploader said the recording was made.
+              recordingRegion: job.kind === "analyze" ? (job.snapshot?.analyze?.recordingRegion ?? null) : null,
               // Pass latencies through as-is: null = NA (agent didn't respond).
               // Do NOT coerce to 0 — a 0 ms "response" would rank a dead agent as
               // the fastest and poison latency averages. responseRate carries the
