@@ -57,7 +57,7 @@ export const formatDuration = (sec: number | null | undefined) => {
 /** Check a file in the browser: only its header, so a large file costs nothing. */
 async function checkFile(file: File): Promise<Pick<PickedFile, "durationSec" | "problem">> {
   const head = new Uint8Array(await file.slice(0, 1 << 20).arrayBuffer());
-  const info = parseWavHeader(head);
+  const info = parseWavHeader(head, file.size);
   const problem = analyzeWavError(info, file.size);
   return { durationSec: "error" in info ? null : info.durationSec, problem };
 }

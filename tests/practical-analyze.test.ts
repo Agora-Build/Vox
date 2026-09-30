@@ -72,7 +72,9 @@ d("practical: Tools → Analyze, upload to My Evals", () => {
   });
 
   it("uploads, is analyzed by a real agent, lands in My Evals, and deletes cleanly", async () => {
-    const q = new URLSearchParams({ provider: provider.id, region, source: "web", fileName: "conversation.wav" });
+    // A non-ASCII name: it must survive into the download's header.
+    const fileName = "通话 录音.wav";
+    const q = new URLSearchParams({ provider: provider.id, region, source: "web", fileName });
     const up = await fetch(`${BASE_URL}/api/tools/analyze?${q}`, {
       method: "POST", headers: { "Content-Type": "audio/wav", Cookie: cookie }, body: wav,
     });
@@ -117,6 +119,7 @@ d("practical: Tools → Analyze, upload to My Evals", () => {
     // The recording downloads byte for byte.
     const rec = await fetch(`${BASE_URL}/api/tools/analyze/${id}/recording`, { headers: { Cookie: cookie } });
     expect(rec.status).toBe(200);
+    expect(rec.headers.get("content-disposition")).toContain(`filename*=UTF-8''${encodeURIComponent(fileName)}`);
     expect(Buffer.from(await rec.arrayBuffer()).equals(Buffer.from(wav))).toBe(true);
 
     // Delete: the row, its result and the object in the bucket all go.
@@ -124,6 +127,8 @@ d("practical: Tools → Analyze, upload to My Evals", () => {
     expect((await fetch(`${BASE_URL}/api/tools/analyze/${id}`, { method: "DELETE", headers: { Cookie: cookie } })).status).toBe(204);
     expect((await fetch(`${BASE_URL}/api/tools/analyze/${id}`, { headers: { Cookie: cookie } })).status).toBe(404);
     expect(await storage.getEvalResultsByJob(id)).toEqual([]);
+    // The row stays, marked deleted, so the daily cap still counts it.
+    expect((await storage.getEvalJob(id))!.deletedAt).not.toBeNull();
     await expect(getUserObjectStream(userId, key)).rejects.toThrow();
   }, 15 * 60 * 1000);
 });

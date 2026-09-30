@@ -1,4 +1,4 @@
-import express, { type Express } from "express";
+import express, { type Express, type Request, type Response, type NextFunction } from "express";
 import { randomUUID, createHash } from "crypto";
 import { type Server } from "http";
 import { z } from "zod";
@@ -1527,15 +1527,14 @@ export async function registerRoutes(
   const findAnalyzeJob = async (rawId: string, user: { id: number; isAdmin: boolean }, allowAdmin = false) => {
     const id = Number(rawId);
     const job = Number.isInteger(id) && id > 0 ? await storage.getEvalJob(id) : undefined;
-    if (!job || job.kind !== "analyze") return undefined;
+    if (!job || job.kind !== "analyze" || job.deletedAt) return undefined;
     if (job.createdBy === user.id || (allowAdmin && user.isAdmin)) return job;
     return undefined;
   };
 
-  // Upload one WAV (the raw file is the body) and queue its analysis.
-  // requireAuth comes before the body parser, so a stranger can't make Core
-  // buffer 100 MB.
-  app.post("/api/tools/analyze", requireAuth, express.raw({ type: "audio/wav", limit: ANALYZE_MAX_BYTES }), async (req, res) => {
+  // Who may upload at all — checked before the body parser, so neither a
+  // stranger nor a user who'd be refused can make Core buffer 100 MB.
+  const analyzeUploadGate = async (req: Request, res: Response, next: NextFunction) => {
     try {
       const user = await getCurrentUser(req);
       if (!user) return res.status(401).json({ error: "Not authenticated" });
@@ -1545,9 +1544,22 @@ export async function registerRoutes(
       if (!(await storage.getUserStorageConfig(user.id))) {
         return res.status(409).json({ error: "Set up your storage first: recordings are kept in your own bucket.", needs: "storage" });
       }
+      // Deleted analyses count too: deleting one doesn't give back a slot.
       if (await storage.countAnalyzeJobsSince(user.id, new Date(Date.now() - 24 * 60 * 60 * 1000)) >= ANALYZE_DAILY_CAP) {
         return res.status(429).json({ error: `You can analyze up to ${ANALYZE_DAILY_CAP} recordings a day.` });
       }
+      next();
+    } catch (error) {
+      console.error("Error checking an analysis upload:", error);
+      res.status(500).json({ error: "Failed to queue the analysis" });
+    }
+  };
+
+  // Upload one WAV (the raw file is the body) and queue its analysis.
+  app.post("/api/tools/analyze", requireAuth, analyzeUploadGate, express.raw({ type: "audio/wav", limit: ANALYZE_MAX_BYTES }), async (req, res) => {
+    try {
+      const user = await getCurrentUser(req);
+      if (!user) return res.status(401).json({ error: "Not authenticated" });
 
       const q = req.query;
       const provider = typeof q.provider === "string" ? await storage.getProvider(q.provider) : undefined;
@@ -1562,9 +1574,9 @@ export async function registerRoutes(
       if (!Buffer.isBuffer(body) || body.length === 0) {
         return res.status(400).json({ error: "Send the WAV file as the request body (Content-Type: audio/wav)." });
       }
-      const wavError = analyzeWavError(parseWavHeader(new Uint8Array(body.buffer, body.byteOffset, body.length)), body.length);
-      if (wavError) return res.status(400).json({ error: wavError });
-      const info = parseWavHeader(new Uint8Array(body.buffer, body.byteOffset, body.length)) as { durationSec: number };
+      const info = parseWavHeader(new Uint8Array(body.buffer, body.byteOffset, body.length));
+      const wavError = analyzeWavError(info, body.length);
+      if (wavError || "error" in info) return res.status(400).json({ error: wavError });
 
       const s3Key = `vox-analyze/${user.id}/${randomUUID()}.wav`;
       try {
@@ -1574,7 +1586,9 @@ export async function registerRoutes(
         return res.status(502).json({ error: "Couldn't store the file in your storage. Check the settings on the Storage page." });
       }
 
-      const job = await storage.createEvalJob({
+      let job: EvalJob;
+      try {
+        job = await storage.createEvalJob({
         kind: "analyze",
         evalFlowId: null,
         evalSetId: null,
@@ -1606,6 +1620,12 @@ export async function registerRoutes(
         retryCount: 0,
         maxRetries: 3,
       } as InsertEvalJob);
+      } catch (err) {
+        // No row will ever point at the file: take it back out of the bucket.
+        await deleteUserObject(user.id, s3Key).catch((e) =>
+          console.error(`[analyze] removing ${s3Key} after a failed insert failed:`, e instanceof Error ? e.message : e));
+        throw err;
+      }
       res.status(201).json(analyzeView(job, false));
     } catch (error) {
       console.error("Error queueing an analysis:", error);
@@ -1648,7 +1668,10 @@ export async function registerRoutes(
       if (!job || !a) return res.status(404).json({ error: "Analysis not found" });
       const { body, contentLength } = await getUserObjectStream(job.createdBy!, a.s3Key);
       res.setHeader("Content-Type", "audio/wav");
-      res.setHeader("Content-Disposition", `attachment; filename="${a.fileName.replace(/["\\\r\n]/g, "_")}"`);
+      // ASCII fallback plus the real (UTF-8) name, RFC 6266 — a raw non-Latin-1
+      // name in a header would make Node throw.
+      const asciiName = a.fileName.replace(/[^\x20-\x7e]|["\\]/g, "_");
+      res.setHeader("Content-Disposition", `attachment; filename="${asciiName}"; filename*=UTF-8''${encodeURIComponent(a.fileName)}`);
       if (contentLength != null) res.setHeader("Content-Length", String(contentLength));
       body.pipe(res);
     } catch (error) {
@@ -1663,17 +1686,23 @@ export async function registerRoutes(
       if (!user) return res.status(401).json({ error: "Not authenticated" });
       const job = await findAnalyzeJob(req.params.id, user, true);
       if (!job) return res.status(404).json({ error: "Analysis not found" });
-      if (job.status === "running") return res.status(409).json({ error: "The analysis is running. Delete it once it finishes." });
+      // 1. Stop it, atomically, unless an agent is running it right now.
+      if (!(await storage.stopAnalyzeJobForDelete(job.id))) {
+        return res.status(409).json({ error: "The analysis is running. Delete it once it finishes." });
+      }
+      // 2. The recording leaves the bucket. If that fails, the row (and the
+      //    key to the file) stays, so deleting again retries.
       const a = (job.snapshot as JobSnapshot | null)?.analyze;
       if (a) {
         try {
           await deleteUserObject(job.createdBy!, a.s3Key);
         } catch (err) {
-          // Already gone, or the storage settings changed: the row still goes.
           console.warn(`[analyze] removing ${a.s3Key} failed:`, err instanceof Error ? err.message : err);
+          return res.status(502).json({ error: "Couldn't remove the recording from your storage. Check the Storage page, then delete again." });
         }
       }
-      await storage.deleteEvalJob(job.id);
+      // 3. Its result goes; the row stays, marked deleted, for the daily cap.
+      await storage.finishAnalyzeJobDelete(job.id);
       res.status(204).end();
     } catch (error) {
       console.error("Error deleting an analysis:", error);
@@ -4544,7 +4573,7 @@ export async function registerRoutes(
       const auth = await authorizeJobAgent(parseInt(req.params.jobId), evalAgentToken.id, req.query.leaseId);
       if (auth.status !== "ok") { denyJobAgent(res, auth); return; }
       const a = (auth.job.snapshot as JobSnapshot | null)?.analyze;
-      if (auth.job.kind !== "analyze" || !a || !auth.job.createdBy) {
+      if (auth.job.kind !== "analyze" || !a || !auth.job.createdBy || auth.job.deletedAt) {
         return res.status(404).json({ error: "This job has no uploaded recording" });
       }
       const { body, contentLength } = await getUserObjectStream(auth.job.createdBy, a.s3Key);

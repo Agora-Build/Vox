@@ -25,40 +25,51 @@ const HEADER_BYTES = 1 << 20; // the WAV header check needs only the start
 export async function runAnalyzeUpload(deps: AnalyzeUploadDeps): Promise<{ result: Record<string, unknown>; sessionDir: string }> {
   const sessionDir = deps.workDir;
   const recordings = path.join(sessionDir, 'recordings');
-  fs.mkdirSync(recordings, { recursive: true });
-  const wavPath = path.join(recordings, 'recording.wav');
-  await deps.download(wavPath);
-
-  // Core checked it at upload; check again here, where a bad file would
-  // otherwise cost a full aeval run.
-  const size = fs.statSync(wavPath).size;
-  const fd = fs.openSync(wavPath, 'r');
-  const head = Buffer.alloc(Math.min(size, HEADER_BYTES));
   try {
-    fs.readSync(fd, head, 0, head.length, 0);
-  } finally {
-    fs.closeSync(fd);
-  }
-  const problem = analyzeWavError(parseWavHeader(new Uint8Array(head.buffer, head.byteOffset, head.length)), size);
-  if (problem) throw new Error(problem);
+    fs.mkdirSync(recordings, { recursive: true });
+    const wavPath = path.join(recordings, 'recording.wav');
+    await deps.download(wavPath);
 
-  await deps.analyze(sessionDir); // throws → the job fails (failure policy)
-  const result = deps.parseMetrics(sessionDir);
-  if (!result) throw new Error('analysis produced no usable metrics');
+    // Core checked it at upload; check again here, where a bad file would
+    // otherwise cost a full aeval run.
+    const size = fs.statSync(wavPath).size;
+    const fd = fs.openSync(wavPath, 'r');
+    const head = Buffer.alloc(Math.min(size, HEADER_BYTES));
+    try {
+      fs.readSync(fd, head, 0, head.length, 0);
+    } finally {
+      fs.closeSync(fd);
+    }
+    const problem = analyzeWavError(parseWavHeader(new Uint8Array(head.buffer, head.byteOffset, head.length), size), size);
+    if (problem) throw new Error(problem);
 
-  // Transcripts and turn boundaries onto each turn, as the phone path does (#206).
-  const turnsFile = path.join(sessionDir, 'analysis', 'turns.json');
-  const rawData = result.rawData as Record<string, unknown> | undefined;
-  if (rawData && fs.existsSync(turnsFile)) {
-    const turns = parseTurnsJson(fs.readFileSync(turnsFile, 'utf-8'));
-    if (turns) enrichMetricsWithTurns(rawData, turns);
+    await deps.analyze(sessionDir); // throws → the job fails (failure policy)
+    const result = deps.parseMetrics(sessionDir);
+    if (!result) throw new Error('analysis produced no usable metrics');
+
+    // Transcripts and turn boundaries onto each turn, as the phone path does (#206).
+    const turnsFile = path.join(sessionDir, 'analysis', 'turns.json');
+    const rawData = result.rawData as Record<string, unknown> | undefined;
+    if (rawData && fs.existsSync(turnsFile)) {
+      const turns = parseTurnsJson(fs.readFileSync(turnsFile, 'utf-8'));
+      if (turns) enrichMetricsWithTurns(rawData, turns);
+    }
+    // A recording measures none of these: say so, rather than send the daemon's
+    // placeholder defaults as if they were results.
+    result.networkResilience = null;
+    result.naturalness = null;
+    result.noiseReduction = null;
+
+    // The recording is the uploader's, and it is already in their bucket: it
+    // must not also leave in this job's artifacts (which may go to another
+    // bucket). The analysis output (report, metrics) stays for upload.
+    fs.rmSync(recordings, { recursive: true, force: true });
+    return { result, sessionDir };
+  } catch (err) {
+    // Nothing of a failed analysis stays on the agent, the recording least.
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+    throw err;
   }
-  // A recording measures none of these: say so, rather than send the daemon's
-  // placeholder defaults as if they were results.
-  result.networkResilience = null;
-  result.naturalness = null;
-  result.noiseReduction = null;
-  return { result, sessionDir };
 }
 
 /** What this agent can do beyond web evals, for register/heartbeat. */

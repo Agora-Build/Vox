@@ -93,20 +93,25 @@ d("Tools → Analyze API", () => {
     expect((await pool.query("SELECT count(*)::int c FROM eval_jobs WHERE created_by = $1", [user.id])).rows[0].c).toBe(0);
   });
 
-  it("a Basic user is told Analyze needs Premium", async () => {
+  it("a Basic user is told Analyze needs Premium — before Core reads the body", async () => {
     const basic = await newUser(admin, "basic");
     try {
       const res = await upload(basic.cookie, stereo, good());
       expect(res.status).toBe(409);
       expect(await res.json()).toMatchObject({ needs: "premium" });
+      // A body over the upload limit: refused as Basic (409), not buffered
+      // first and refused as too large (413).
+      const big = await upload(basic.cookie, new Uint8Array(101 * 1024 * 1024), good());
+      expect(big.status).toBe(409);
     } finally {
       await pool.query("DELETE FROM eval_jobs WHERE created_by = $1", [basic.id]);
     }
   });
 
-  it("the daily cap: the 51st analysis today is refused", async () => {
-    const rows = Array.from({ length: 50 }, () => `(${user.id}, 'analyze', 2, 'failed', -10, '{}'::jsonb)`).join(",");
-    await pool.query(`INSERT INTO eval_jobs (created_by, kind, trigger_type, status, priority, config) VALUES ${rows}`);
+  it("the daily cap: the 51st analysis today is refused, deleted ones included", async () => {
+    // Deleting an analysis must not give back a slot: these were all deleted.
+    const rows = Array.from({ length: 50 }, () => `(${user.id}, 'analyze', 2, 'failed', -10, '{}'::jsonb, now())`).join(",");
+    await pool.query(`INSERT INTO eval_jobs (created_by, kind, trigger_type, status, priority, config, deleted_at) VALUES ${rows}`);
     try {
       const res = await upload(user.cookie, stereo, good());
       expect(res.status).toBe(429);
@@ -145,6 +150,37 @@ d("Tools → Analyze API", () => {
     } as any);
     const res = await fetch(`${BASE_URL}/api/tools/analyze/${job.id}`, { method: "DELETE", headers: { Cookie: user.cookie } });
     expect(res.status).toBe(409);
+  });
+
+  it("a deleted analysis is gone from the list and the detail", async () => {
+    const job = await storage.createEvalJob({
+      kind: "analyze", evalFlowId: null, triggerType: 2, evalSetId: null, createdBy: user.id,
+      siteId: null, targetRegion: null, targetTier: null, config: {},
+      snapshot: { provider: null, evalFlow: null, evalSet: null, creatorPlan: "premium" } as any,
+      status: "completed", priority: -10, retryCount: 0, maxRetries: 3,
+    } as any);
+    await pool.query("UPDATE eval_jobs SET deleted_at = now() WHERE id = $1", [job.id]);
+    const list = await (await fetch(`${BASE_URL}/api/tools/analyze`, { headers: { Cookie: user.cookie } })).json();
+    expect(list.map((a: { id: number }) => a.id)).not.toContain(job.id);
+    expect((await fetch(`${BASE_URL}/api/tools/analyze/${job.id}`, { headers: { Cookie: user.cookie } })).status).toBe(404);
+  });
+
+  it("if the file can't be removed from storage, delete says so, keeps the row, and stops it running", async () => {
+    // Placeholder storage (s3.invalid) cannot be reached.
+    const job = await storage.createEvalJob({
+      kind: "analyze", evalFlowId: null, triggerType: 2, evalSetId: null, createdBy: user.id,
+      siteId: null, targetRegion: null, targetTier: null, config: {},
+      snapshot: { provider: null, evalFlow: null, evalSet: null, creatorPlan: "premium", transport: "web",
+        analyze: { fileName: "x.wav", s3Key: "vox-analyze/x.wav", sha256: "0", sizeBytes: 1, durationSec: 1, recordingRegion: region } } as any,
+      status: "pending", priority: -10, retryCount: 0, maxRetries: 3,
+    } as any);
+    const res = await fetch(`${BASE_URL}/api/tools/analyze/${job.id}`, { method: "DELETE", headers: { Cookie: user.cookie } });
+    expect(res.status).toBe(502);
+    const after = (await storage.getEvalJob(job.id))!;
+    expect(after.deletedAt).toBeNull();          // kept: its key is how a retry finds the file
+    expect(after.status).toBe("failed");         // no agent claims it any more
+    const list = await (await fetch(`${BASE_URL}/api/tools/analyze`, { headers: { Cookie: user.cookie } })).json();
+    expect(list.map((a: { id: number }) => a.id)).toContain(job.id); // still there to delete again
   });
 
   it("the list shows only the caller's analyses", async () => {

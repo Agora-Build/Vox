@@ -449,6 +449,9 @@ export const evalJobs = pgTable("eval_jobs", {
   // by Tools → Analyze. Analyze jobs are kept out of the Eval Jobs lists and
   // the public boards, and have their own claim rule.
   kind: varchar("kind", { length: 16 }).$type<"eval" | "analyze">().default("eval").notNull(),
+  // Tools → Analyze: when the uploader deleted it. The row stays so the daily
+  // upload cap still counts it; its result and recording are gone.
+  deletedAt: timestamp("deleted_at"),
   config: jsonb("config").default({}).notNull(),
   // Immutable run-time snapshot (see JobSnapshot). Nullable for rows created before
   // this column; backfilled from live tables by migration 0016.

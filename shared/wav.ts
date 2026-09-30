@@ -6,7 +6,7 @@ export type WavInfo = {
   channels: number;
   sampleRate: number;
   bitsPerSample: number;
-  // 1 = PCM, 3 = IEEE float, 0xFFFE = extensible; anything else is compressed.
+  // 1 = PCM, 3 = IEEE float (an extensible file's subformat); else compressed.
   format: number;
   durationSec: number;
 };
@@ -14,13 +14,16 @@ export type WavInfo = {
 export const ANALYZE_MAX_BYTES = 100 * 1024 * 1024;
 export const ANALYZE_MAX_SECONDS = 30 * 60;
 
-const PCM_FORMATS = new Set([1, 3, 0xfffe]);
+const PCM_FORMATS = new Set([1, 3]);
 
 /**
  * Read a WAV header. Only the bytes up to the start of the data chunk are
- * needed, so a caller may pass just the first part of a large file.
+ * needed, so a caller may pass just the first part of a large file, plus the
+ * whole file's size (`totalBytes`): streaming recorders leave the data size as
+ * a placeholder (0 or 0xFFFFFFFF), so the audio's length comes from the bytes
+ * actually there whenever the declared size doesn't fit the file.
  */
-export function parseWavHeader(bytes: Uint8Array): WavInfo | { error: string } {
+export function parseWavHeader(bytes: Uint8Array, totalBytes: number = bytes.length): WavInfo | { error: string } {
   const v = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const tag = (off: number) => String.fromCharCode(bytes[off], bytes[off + 1], bytes[off + 2], bytes[off + 3]);
   if (bytes.length < 12 || tag(0) !== "RIFF" || tag(8) !== "WAVE") return { error: "Not a WAV file." };
@@ -32,8 +35,12 @@ export function parseWavHeader(bytes: Uint8Array): WavInfo | { error: string } {
     const size = v.getUint32(off + 4, true);
     if (id === "fmt ") {
       if (off + 8 + 16 > bytes.length) break;
+      const format = v.getUint16(off + 8, true);
+      // WAVE_FORMAT_EXTENSIBLE: the real format is the first two bytes of its
+      // subformat GUID, 24 bytes into the chunk.
+      const extensible = format === 0xfffe && size >= 40 && off + 8 + 26 <= bytes.length;
       fmt = {
-        format: v.getUint16(off + 8, true),
+        format: extensible ? v.getUint16(off + 8 + 24, true) : format,
         channels: v.getUint16(off + 10, true),
         sampleRate: v.getUint32(off + 12, true),
         byteRate: v.getUint32(off + 16, true),
@@ -43,7 +50,9 @@ export function parseWavHeader(bytes: Uint8Array): WavInfo | { error: string } {
       if (!fmt) return { error: "The WAV file has no format chunk before its audio." };
       if (fmt.byteRate === 0) return { error: "The WAV file's format chunk is invalid." };
       const { byteRate, ...info } = fmt;
-      return { ...info, durationSec: size / byteRate };
+      const available = Math.max(0, totalBytes - (off + 8));
+      const dataBytes = size === 0 || size > available ? available : size;
+      return { ...info, durationSec: dataBytes / byteRate };
     }
     off += 8 + size + (size % 2); // chunks are padded to an even length
   }

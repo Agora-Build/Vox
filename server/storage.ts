@@ -110,7 +110,7 @@ import { regionSiteSequence, haversineKm, type RegionCandidate } from "@shared/r
 import { drizzle } from "drizzle-orm/node-postgres";
 import pkg from "pg";
 const { Pool } = pkg;
-import { asc, desc, eq, and, or, not, sql, gte, lte, inArray, isNotNull, isNull } from "drizzle-orm";
+import { asc, desc, eq, ne, and, or, not, sql, gte, lte, inArray, isNotNull, isNull } from "drizzle-orm";
 import crypto from "crypto";
 
 // Realtime-metrics windowing policy (server-owned; the client never sets these).
@@ -1888,15 +1888,35 @@ export class DatabaseStorage {
   async getAnalyzeJobs(userId: number, limit = 200): Promise<Array<{ job: EvalJob; result: EvalResult | null }>> {
     const rows = await db.select().from(evalJobs)
       .leftJoin(evalResults, eq(evalResults.evalJobId, evalJobs.id))
-      .where(and(eq(evalJobs.kind, "analyze"), eq(evalJobs.createdBy, userId)))
+      .where(and(eq(evalJobs.kind, "analyze"), eq(evalJobs.createdBy, userId), isNull(evalJobs.deletedAt)))
       .orderBy(desc(evalJobs.createdAt))
       .limit(limit);
     return rows.map((r) => ({ job: r.eval_jobs, result: r.eval_results }));
   }
 
-  /** Delete a job; its result goes with it (ON DELETE CASCADE). */
-  async deleteEvalJob(id: number): Promise<void> {
-    await db.delete(evalJobs).where(eq(evalJobs.id, id));
+  /**
+   * Deleting an analysis, step 1: stop it, atomically — unless an agent is
+   * running it. A pending one can't be claimed after this. Returns false when
+   * it is running (or already deleted).
+   */
+  async stopAnalyzeJobForDelete(id: number): Promise<boolean> {
+    const rows = await db.update(evalJobs)
+      .set({ status: "failed", error: "Deleted by its uploader", completedAt: sql`COALESCE(${evalJobs.completedAt}, NOW())`, updatedAt: new Date() })
+      .where(and(eq(evalJobs.id, id), eq(evalJobs.kind, "analyze"), ne(evalJobs.status, "running"), isNull(evalJobs.deletedAt)))
+      .returning({ id: evalJobs.id });
+    return rows.length > 0;
+  }
+
+  /**
+   * Deleting an analysis, last step (after its recording left the bucket):
+   * drop its result and mark it deleted. The row stays so the daily upload
+   * cap still counts it.
+   */
+  async finishAnalyzeJobDelete(id: number): Promise<void> {
+    await db.transaction(async (tx) => {
+      await tx.delete(evalResults).where(eq(evalResults.evalJobId, id));
+      await tx.update(evalJobs).set({ deletedAt: new Date() }).where(eq(evalJobs.id, id));
+    });
   }
 
   async getEvalResultsByJob(jobId: number): Promise<EvalResult[]> {
