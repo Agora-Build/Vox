@@ -27,7 +27,8 @@ uploaded recording is that same input.
 | Which My Evals view? | The user picks **Web** or **Phone** per file. Web and phone stay a hard split. |
 | Several files at once? | **One result per file**, each with its own provider and region. |
 | Region? | Picked per file at upload: **where the recording was made**. Any capable agent can run the analysis, since where it runs doesn't change the numbers. |
-| Who can use it? | **Every signed-in user**, with a daily cap. |
+| Who can use it? | **Tools** shows for every signed-in user. **Analyze** works once the user has set their own storage on the Storage page (Premium and up, since Storage is hidden for Basic); until then the page says what to do. Daily cap applies. |
+| Where do WAVs live? | In the **user's own bucket** from the Storage page. No system fallback: production Core has no S3 configured, and the audio is the user's. |
 | Show under Eval Jobs? | **No.** Only on the Analyze page and in My Evals. |
 
 ## 1. What the user sees
@@ -97,7 +98,9 @@ Analysis doesn't depend on where the agent is, so an analyze job has no site and
 no region. It can be claimed by an agent that:
 
 1. declares a new **`analyze` capability** on register/heartbeat, like `phone`.
-   An agent that doesn't declare it (an older daemon) never takes an analyze job.
+   The daemon declares it when the `aeval` binary is on its PATH, which is
+   always true in the Docker image. An agent that doesn't declare it (an older
+   daemon, or a host without aeval) never takes an analyze job.
 2. is one the user is allowed to use: an **admin-operated public agent**, or one
    of the **user's own private/team agents**.
    - **Marketplace (shared) agents are never used.** The audio belongs to the
@@ -133,8 +136,12 @@ both claim SQL paths (`claimEvalJob`, `getClaimableJobsForToken`) and into
    with the reason.
 3. Lay out the session directory the way the phone path does
    (`recordings/recording.wav`).
-4. Run `aeval analyze` with a recording preset (no browser stages, like the
-   phone preset).
+4. Run `aeval analyze` with the existing phone preset
+   (`analysis-presets/phone.yaml`). It already analyzes one mixed recording
+   with no browser stages, which is exactly an upload.
+   - Latency comes out as usual.
+   - TSR and the three rates stay NA: they need the eval set's sample timeline,
+     which a free-form recording doesn't have.
 5. Report through the existing complete and artifacts endpoints.
 
 The same failure rule applies: if aeval exits with an error, the job fails and no
@@ -143,11 +150,19 @@ used.
 
 ### Storage
 
-- Upload path: browser → Core → S3. It uses the user's own bucket when they set
-  one on the Storage page, otherwise the system bucket, the same as job
-  artifacts.
-- If neither is configured, the Analyze page says so and the upload is refused.
-- The WAV is kept with the result until the analysis is deleted.
+- **The user's own bucket only.** Uploads go browser → Core → the bucket the
+  user set on the Storage page (`user_storage_config`), under
+  `vox-analyze/<userId>/<uuid>.wav`. There is no system fallback.
+- **Without storage, no Analyze.** The page says "Set up your storage first",
+  with a link to the Storage page. Basic users, who can't open that page, are
+  told that Analyze needs Premium. The upload route refuses with 409 as well.
+- **One file per request.** The browser sends each WAV as its own request with
+  the raw file as the body (`Content-Type: audio/wav`), so no multipart library
+  is needed. Core checks the WAV header, then writes the file to the bucket.
+- **The agent never gets the bucket credentials for this.** Core streams the
+  file to the claiming agent through the lease-checked `/upload` endpoint.
+- **Kept until deleted.** The WAV stays with the result until the analysis is
+  deleted.
 
 ### Region
 
@@ -196,6 +211,13 @@ A running analysis is bounded by the existing 90-minute run limit.
 ## Testing
 
 - **Priority:** with an eval job and an analyze job both waiting, an agent claims the eval job first.
+- **Practical test** (real agent, real aeval, real bucket): upload a stereo WAV
+  built from two corpus clips (user question on the left, reply 0.8 s after it
+  on the right, a few turns), wait for the local agent to analyze it, then check:
+  - the result has a response latency;
+  - it's in My Evals under the chosen provider and region;
+  - it isn't in the Eval Jobs list;
+  - deleting it removes the object from the bucket.
 - **Claim rule** on the real SQL, both paths plus `isClaimable`:
   - taken by an agent with `analyze` that the user may use (public, or their own);
   - refused by an agent without the capability, by a marketplace agent, and by someone else's private agent.
