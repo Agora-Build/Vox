@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { storage } from "../server/storage";
+import { storage, pool } from "../server/storage";
 
 const hasDb = !!process.env.DATABASE_URL;
 const d = hasDb ? describe : describe.skip;
@@ -60,7 +60,9 @@ d("pooled claim SQL mirrors isClaimable", () => {
       evalFlowId: null, triggerType: 2, evalSetId: null, createdBy: 2,
       siteId: "sa-br-saopaulo-01", targetRegion: null, targetTier: null,
       config: {}, snapshot: { provider: null, evalFlow: null, evalSet: null, creatorPlan: null } as any,
-      status: "pending", priority: 0, retryCount: 0, maxRetries: 3,
+      // Retries already used up: this case checks the terminal strike (#82
+      // made earlier strikes requeue — see the test below).
+      status: "pending", priority: 0, retryCount: 3, maxRetries: 3,
     } as any);
     // timeoutMinutes=0: everything pending is past the cutoff immediately.
     // excludeTeamTier is now a required argument (a future sweep caller must
@@ -164,3 +166,58 @@ d("getEvalJobs region filter", () => {
     expect(ids).not.toContain(otherPool.id);
   });
 });
+
+// Pending-job reapers on the real SQL (#81, #82). Each job is backdated and the
+// reaper is called with its real window, so only genuinely old rows are touched
+// — a 0-minute window would sweep every pending job of the parallel suites.
+const backdate = (id: number, minutes: number) =>
+  pool.query(
+    `UPDATE eval_jobs SET created_at = now() - make_interval(mins => $2), updated_at = now() - make_interval(mins => $2) WHERE id = $1`,
+    [id, minutes],
+  );
+const mkPinned = (siteId: string, retryCount: number, config: Record<string, unknown> = {}) =>
+  storage.createEvalJob({
+    evalFlowId: null, triggerType: 2, evalSetId: null, createdBy: 2,
+    siteId, targetRegion: null, targetTier: null,
+    config, snapshot: { provider: null, evalFlow: null, evalSet: null, creatorPlan: null } as any,
+    status: "pending", priority: 0, retryCount, maxRetries: 3,
+  } as any);
+
+d("pending reapers (real SQL)", () => {
+  it("#82: a no-agent strike uses a retry and requeues; only the strike after the last retry fails", async () => {
+    const site = `zz-noagent-${Date.now()}-01`; // no agent ever registers here
+    const job = await mkPinned(site, 0);
+    await backdate(job.id, 20);
+    await storage.failPendingJobsWithNoAgent(15, 5, true);
+    const after1 = await storage.getEvalJob(job.id);
+    expect(after1).toMatchObject({ status: "pending", retryCount: 1, error: null, completedAt: null });
+    // Requeued with a fresh window: an immediate second sweep leaves it alone.
+    await storage.failPendingJobsWithNoAgent(15, 5, true);
+    expect((await storage.getEvalJob(job.id))!.retryCount).toBe(1);
+
+    // Strikes 2 and 3 requeue; the 4th (retries exhausted) fails for good.
+    for (const expected of [2, 3]) {
+      await backdate(job.id, 20);
+      await storage.failPendingJobsWithNoAgent(15, 5, true);
+      expect(await storage.getEvalJob(job.id)).toMatchObject({ status: "pending", retryCount: expected });
+    }
+    await backdate(job.id, 20);
+    await storage.failPendingJobsWithNoAgent(15, 5, true);
+    const done = await storage.getEvalJob(job.id);
+    expect(done!.status).toBe("failed");
+    expect(done!.error).toBe(`No eval agent available for region ${site} (unclaimed for 15 min, 4 times)`);
+    expect(done!.completedAt).not.toBeNull();
+  });
+
+  it("#81: the 24h backstop names the frameworkVersion a job required", async () => {
+    const gated = await mkPinned(`zz-backstop-${Date.now()}-01`, 0, { frameworkVersion: "0.9.0" });
+    const plain = await mkPinned(`zz-backstop-${Date.now()}-02`, 0);
+    await backdate(gated.id, 25 * 60);
+    await backdate(plain.id, 25 * 60);
+    await storage.failExpiredPendingJobs(24 * 60, true);
+    expect((await storage.getEvalJob(gated.id))!.error)
+      .toBe("Not claimed by any eval agent within 1440 min (requires eval-agent frameworkVersion >= 0.9.0)");
+    expect((await storage.getEvalJob(plain.id))!.error).toBe("Not claimed by any eval agent within 1440 min");
+  });
+});
+

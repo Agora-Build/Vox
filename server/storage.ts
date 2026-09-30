@@ -1405,8 +1405,13 @@ export class DatabaseStorage {
   // only once it has waited timeoutMinutes AND no such agent exists — so a brief
   // agent restart/redeploy (host reboot, vox-upgrade) doesn't trip it, but a
   // genuinely unstaffed site gives the user an actionable result in minutes
-  // instead of hanging "pending" forever. Terminal (failed): retrying can't
-  // summon an agent that isn't there. Job pickup is exact site-equality and an
+  // instead of hanging "pending" forever. Each strike uses one retry and
+  // requeues (retry_count++, updated_at = NOW() → a fresh window), failing only
+  // once retries are exhausted — the same shape as releaseStaleJobs. A site with
+  // an agent that is only temporarily away (a slow image pull, a long
+  // vox-upgrade, a user who queues a job and then boots their agent) gets
+  // max_retries more windows instead of a permanent failure (#82); a genuinely
+  // unstaffed site still fails, after (max_retries + 1) × timeout. Job pickup is exact site-equality and an
   // agent registers under its token's site, so eval_agents.site_id = the job's
   // site_id is the correct "an agent serves this site" signal.
   //
@@ -1435,12 +1440,20 @@ export class DatabaseStorage {
     const timeoutCutoff = new Date(Date.now() - timeoutMinutes * 60 * 1000);
     const onlineCutoff = new Date(Date.now() - onlineWithinMinutes * 60 * 1000);
     const prefix = "No eval agent available for region ";
-    const suffix = ` (unclaimed for ${timeoutMinutes} min)`;
+    const suffix = ` (unclaimed for ${timeoutMinutes} min, `;
     const result = await db.execute(sql`
       UPDATE eval_jobs
-      SET status = 'failed'::eval_job_status,
-          error = ${prefix} || site_id || ${suffix},
-          completed_at = NOW(),
+      SET status = CASE
+            WHEN retry_count >= max_retries THEN 'failed'::eval_job_status
+            ELSE 'pending'::eval_job_status
+          END,
+          error = CASE
+            WHEN retry_count >= max_retries
+              THEN ${prefix} || site_id || ${suffix} || (retry_count + 1) || ' times)'
+            ELSE NULL
+          END,
+          completed_at = CASE WHEN retry_count >= max_retries THEN NOW() ELSE NULL END,
+          retry_count = retry_count + 1,
           updated_at = NOW()
       WHERE status = 'pending'::eval_job_status
       AND site_id IS NOT NULL
@@ -1479,6 +1492,15 @@ export class DatabaseStorage {
             WHEN target_region IS NOT NULL
               THEN 'No eligible ' || COALESCE(target_tier::text, 'matching') || ' agent in ' || target_region || ' claimed the job within ' || ${pooledWaitLabel}
             ELSE ${message}
+          END
+          -- A healthy, heartbeating agent skips a job that needs a newer
+          -- framework than it has (GET /api/eval-agent/jobs filters on it), so
+          -- the fast-fail spares the job and only this backstop fires. Say
+          -- what the job needed instead of leaving the user to guess (#81).
+          || CASE
+            WHEN config->>'frameworkVersion' IS NOT NULL
+              THEN ' (requires eval-agent frameworkVersion >= ' || (config->>'frameworkVersion') || ')'
+            ELSE ''
           END,
           completed_at = NOW(),
           updated_at = NOW()

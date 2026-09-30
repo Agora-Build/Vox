@@ -25,7 +25,10 @@ const MAX_JOB_RUN_MINUTES = 90;
 //     actionable "no agent for site X" result in minutes, not a full day.
 //   - PENDING_MAX_WAIT_MINUTES: absolute backstop for anything the fast-fail
 //     misses (site has an online agent that somehow never claims the job).
-const PENDING_NO_AGENT_TIMEOUT_MINUTES = 15;
+// Each no-agent strike uses one retry and requeues (see failPendingJobsWithNoAgent),
+// so an unstaffed site fails after (max_retries + 1) × this. Operators can widen
+// it without a redeploy: PENDING_NO_AGENT_TIMEOUT_MINUTES (#82).
+export const PENDING_NO_AGENT_TIMEOUT_MINUTES = positiveIntEnv("PENDING_NO_AGENT_TIMEOUT_MINUTES", 15);
 const PENDING_MAX_WAIT_MINUTES = 24 * 60;
 const REAP_SETTLE_LOOKBACK_MINUTES = 15; // window for the prompt reap-settle sweep
 // Skip jobs that turned terminal within the last minute: the complete route commits
@@ -38,6 +41,16 @@ const REAP_SETTLE_LOOKBACK_MINUTES = 15; // window for the prompt reap-settle sw
 const REAP_SETTLE_GRACE_MINUTES = 1;
 
 const STALE_THRESHOLD_MINUTES = 5;
+
+/** A positive integer from the environment, or the default (a bad value is ignored, loudly). */
+export function positiveIntEnv(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw === "") return fallback;
+  const n = Number(raw);
+  if (Number.isInteger(n) && n > 0) return n;
+  console.warn(`[scheduler] ${name}=${JSON.stringify(raw)} is not a positive integer — using ${fallback}`);
+  return fallback;
+}
 
 export async function runMaintenanceTasks() {
   try {
@@ -67,7 +80,7 @@ export async function runMaintenanceTasks() {
       excludeTeamTier,
     );
     if (noAgent > 0) {
-      log(`Failed ${noAgent} pending job(s) with no agent for their site`, "worker");
+      log(`No agent for their site: requeued or failed ${noAgent} pending job(s)`, "worker");
     }
 
     // Backstop: fail any pending job that has waited past the hard cap.
