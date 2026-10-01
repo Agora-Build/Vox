@@ -344,8 +344,24 @@ export default function Layout({ children }: { children: React.ReactNode }) {
         <div className="border-t border-border/40">
           <div className="container mx-auto px-4 py-4">
             <div className="flex flex-col sm:flex-row items-center justify-between gap-2 text-xs text-muted-foreground">
-              <p>{new Date().getFullYear()} Vox. All rights reserved.</p>
-              <div className="flex items-center gap-4">
+              <p>{new Date().getFullYear()} Vox. Build with 💖 by Community</p>
+              <div className="flex flex-wrap items-center justify-center gap-x-4 gap-y-2">
+                {publicConfig?.githubUrl && (
+                  <span className="inline-flex flex-wrap items-center justify-center gap-1.5">
+                    <span>Host your own Vox? Check it out at</span>
+                    <a
+                      href={publicConfig.githubUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1 hover:text-foreground transition-colors"
+                      data-testid="link-footer-self-host"
+                      aria-label="View Vox on GitHub"
+                      title="GitHub"
+                    >
+                      <Github className="h-3.5 w-3.5" />
+                    </a>
+                  </span>
+                )}
                 <Link href="/privacy" className="hover:text-foreground transition-colors" data-testid="link-footer-privacy">Privacy</Link>
                 <Link href="/terms" className="hover:text-foreground transition-colors" data-testid="link-footer-terms">Terms</Link>
               </div>
