@@ -583,12 +583,18 @@ class VoxEvalAgentDaemon {
         return { storageState: body.storageState, platformId: body.platformId };
       }
       if (response.status === 202) {
-        if (Date.now() > deadline) throw new Error('target login failed: timed out waiting for session mint');
+        if (Date.now() > deadline) throw new Error('session mint failed: timed out waiting for it');
         console.log(`[Daemon] Session minting for job ${jobId} — waiting...`);
         await new Promise((r) => setTimeout(r, 5000));
         continue;
       }
-      throw new Error(`target login failed: ${body.error ?? `session fetch HTTP ${response.status}`}`);
+      // Not "target login failed": Core's error now says which part failed —
+      // the target refused the login, Core couldn't reach its broker, or the
+      // broker refused Core (#129). The prefix only says where it surfaced.
+      // Core's generic reply (to an agent it doesn't show the cause) already
+      // starts "session mint failed"; don't say it twice.
+      const reason: string = body.error ?? `session fetch HTTP ${response.status}`;
+      throw new Error(reason.startsWith('session mint failed') ? reason : `session mint failed: ${reason}`);
     }
   }
 

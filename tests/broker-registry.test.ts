@@ -106,7 +106,9 @@ describe("mintViaBroker error propagation", () => {
   });
 
   it("still reports the status when the body is not JSON", async () => {
-    await expect(mintViaBroker(target, req, respond(502, null, false))).rejects.toThrow("broker mint failed: 502");
+    // 502 is the broker's "the login itself failed" (#129: named as such).
+    await expect(mintViaBroker(target, req, respond(502, null, false))).rejects.toThrow("target login failed (HTTP 502)");
+    await expect(mintViaBroker(target, req, respond(500, null, false))).rejects.toThrow("the session broker failed: HTTP 500");
   });
 
   it("re-redacts with Core's own credentials rather than trusting the broker", async () => {
@@ -137,7 +139,7 @@ describe("mintViaBroker error propagation", () => {
   it("caps third-party detail before it reaches a durable field", async () => {
     const huge = "x".repeat(5000);
     await expect(mintViaBroker(target, req, respond(502, { error: huge }))).rejects.toThrow(
-      /^broker mint failed: 502: x{500}$/,
+      /^target login failed: x{500}$/,
     );
   });
 

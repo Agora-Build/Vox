@@ -9,6 +9,7 @@ import { storage, mergeEvalConfig, buildJobSnapshot, unsupportedFrameworkError }
 import { canScheduleEvalFlow, sessionPoolViolation } from "./permissions";
 import { parseNextCronRun } from "./cron";
 import { getMarketplace } from "./marketplace";
+import { probeAndRecordBroker } from "./broker-registry";
 import { getOrganizations, type Membership } from "./organizations";
 import { stampOwnerSession, detectSessionNeed, secretGate } from "./auth-session";
 import { log } from "./log";
@@ -103,6 +104,11 @@ export async function runMaintenanceTasks() {
     if (offlineBrokers > 0) {
       log(`Marked ${offlineBrokers} broker(s) as offline`, "worker");
     }
+
+    // Can Core still reach each live broker (#129)? Heartbeats prove only the
+    // broker→Core direction. In parallel, each bounded by its own timeout.
+    const liveBrokers = (await storage.getAllBrokers()).filter((b) => b.state !== "offline");
+    await Promise.all(liveBrokers.map((b) => probeAndRecordBroker(b)));
 
     // Promptly settle shared-dispatch escrow for recently-terminal targeted jobs:
     // capture on `completed`, release on `failed`. This is the prompt path so a

@@ -22,9 +22,25 @@ type Broker = {
   state: string;
   currentLeaseId: string | null;
   lastSeenAt: string | null;
+  // #129: Core's last probe of `url`. Error null + checkedAt set = reachable.
+  reachabilityCheckedAt: string | null;
+  reachabilityError: string | null;
   createdAt: string;
   updatedAt: string;
 };
+
+// Heartbeats prove only that the broker reaches Core; a mint needs Core to
+// reach the broker's advertised URL, which is what this shows (#129).
+function ReachabilityCell({ broker }: { broker: Broker }) {
+  if (!broker.reachabilityCheckedAt) return <span className="text-xs text-muted-foreground">Not checked yet</span>;
+  if (!broker.reachabilityError) return <Badge variant="outline" className="border-green-600 text-green-700">Reachable</Badge>;
+  return (
+    <div className="space-y-1" data-testid={`broker-unreachable-${broker.id}`}>
+      <Badge variant="outline" className="border-red-600 text-red-700">Unreachable</Badge>
+      <div className="text-xs text-muted-foreground">{broker.reachabilityError} — check its BROKER_ADVERTISE_URL</div>
+    </div>
+  );
+}
 
 type BrokerToken = {
   id: number;
@@ -139,6 +155,7 @@ export default function AdminBrokers() {
                   <TableHead>Type</TableHead>
                   <TableHead>Advertise URL</TableHead>
                   <TableHead>State</TableHead>
+                  <TableHead>From Core</TableHead>
                   <TableHead>Last Seen</TableHead>
                 </TableRow>
               </TableHeader>
@@ -149,6 +166,7 @@ export default function AdminBrokers() {
                     <TableCell><Badge variant="outline">{brokerTypeLabel(broker.brokerType)}</Badge></TableCell>
                     <TableCell className="font-mono text-xs break-all">{broker.url}</TableCell>
                     <TableCell><StateBadge state={broker.state} /></TableCell>
+                    <TableCell><ReachabilityCell broker={broker} /></TableCell>
                     <TableCell className="text-xs text-muted-foreground">{fmt(broker.lastSeenAt)}</TableCell>
                   </TableRow>
                 ))}

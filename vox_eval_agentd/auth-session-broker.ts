@@ -438,19 +438,41 @@ async function register(): Promise<void> {
   state = await res.json();
 }
 
+/**
+ * Heartbeat outcome logging (#129). A failing heartbeat used to log nothing
+ * at all, so a broker could stop reaching Core with no trace. Says so once
+ * when it starts failing (and again if the reason changes), and once when it
+ * recovers — not every minute.
+ */
+export function createHeartbeatLog(log: (line: string) => void = (l) => console.error(l)) {
+  let failing: string | null = null;
+  return (problem: string | null): void => {
+    if (problem && problem !== failing) log(`[Broker] heartbeat to Core failing: ${problem}`);
+    else if (!problem && failing) log(`[Broker] heartbeat to Core recovered`);
+    failing = problem;
+  };
+}
+const noteHeartbeat = createHeartbeatLog();
+
 export async function heartbeat(): Promise<void> {
   try {
-    if (!state) { await register(); return; }
+    if (!state) { await register(); noteHeartbeat(null); return; }
     const res = await fetch(`${CORE_URL}/api/brokers/heartbeat`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', authorization: `Bearer ${REG_TOKEN}` },
       body: JSON.stringify({ brokerId: state.brokerId, leaseId: state.leaseId, state: 'idle' }),
-    }).catch(() => null);
-    if (!res || !res.ok) return;
+    });
+    if (!res.ok) {
+      noteHeartbeat(`Core answered HTTP ${res.status}${res.status === 401 ? ' (registration token revoked?)' : ''}`);
+      return;
+    }
+    noteHeartbeat(null);
     const body = await res.json().catch(() => ({}));
     if (body.reregister || body.superseded) { state = null; await register(); }
   } catch (err) {
-    console.error('[Broker] heartbeat error:', err instanceof Error ? err.message : err);
+    // undici's bare "fetch failed" keeps the reason (ENOTFOUND, ECONNREFUSED…) in cause.
+    const code = (err as { cause?: { code?: string } })?.cause?.code;
+    noteHeartbeat(`${err instanceof Error ? err.message : String(err)}${code ? ` (${code})` : ''}`);
   }
 }
 
@@ -460,13 +482,16 @@ if (process.argv[1] && process.argv[1].endsWith('auth-session-broker.js')) {
   const timeoutMs = mintTimeoutSeconds() * 1000;
   const server = createBrokerServer({ mint: (r) => mintWithAeval(r, timeoutMs), getSecret: () => state?.mintSecret });
   (async () => {
+    // Listen first, then register (#129): Core probes the advertised URL as
+    // soon as registration lands, so the server has to be answering by then.
+    server.listen(port, '0.0.0.0', () => console.log(`[Broker] Auth session broker listening on :${port}`));
     try {
       await register();
     } catch (err) {
-      console.error('[Broker] registration failed:', err instanceof Error ? err.message : err);
+      const code = (err as { cause?: { code?: string } })?.cause?.code; // undici keeps ENOTFOUND etc. here
+      console.error('[Broker] registration failed:', err instanceof Error ? err.message : err, code ? `(${code}) — is VOX_CORE_URL reachable from this container?` : '');
       process.exit(1);
     }
-    server.listen(port, '0.0.0.0', () => console.log(`[Broker] Auth session broker listening on :${port}`));
     setInterval(heartbeat, HEARTBEAT_MS);
   })();
 }

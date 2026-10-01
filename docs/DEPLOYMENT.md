@@ -182,7 +182,7 @@ node dist/migrate.cjs
 Vox itself is one container, but a full deployment also runs:
 
 - **Eval agents** — run the evals, on hosts in each region. Install and upgrade with `scripts/vox-upgrade.sh` (reads `AGENT_TOKEN` and `VOX_SERVER` from an env file; see the README). Agents also run **Tools → Analyze** (uploaded recordings): an agent takes those only once it reports the `analyze` capability, which the agent image does from the release that added Analyze. Upgrade the public agents with that release, or uploads stay queued and fail after 24 hours.
-- **Auth-session broker** and **REST broker** — sidecars (Dockerfile targets `broker` and `rest-broker` in `vox_eval_agentd/Dockerfile`) that log in to target sites and make API calls on behalf of evals, so credentials never reach an eval agent. Each registers with Vox using `VOX_CORE_URL` and a `BROKER_REG_TOKEN` minted in **Console → Brokers**, and must be reachable only on the internal network.
+- **Auth-session broker** and **REST broker** — sidecars (Dockerfile targets `broker` and `rest-broker` in `vox_eval_agentd/Dockerfile`) that log in to target sites and make API calls on behalf of evals, so credentials never reach an eval agent. Each registers with Vox using `VOX_CORE_URL` and a `BROKER_REG_TOKEN` minted in **Console → Brokers**, and must be reachable only on the internal network. `BROKER_ADVERTISE_URL` is the address **Vox** uses to call the broker, so it must resolve from the Vox container: on Coolify that is the broker's network alias, not its application UUID. Vox checks it when the broker registers and every minute after; **Console → Brokers** shows the result in the **From Core** column, with the reason when it can't connect.
 
 ## Other Platforms
 
