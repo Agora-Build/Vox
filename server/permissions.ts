@@ -99,6 +99,18 @@ export function isOwnerOrOrgManager(user: AuthUser, resource: OrgResource): bool
   return false;
 }
 
+/**
+ * Can this user create the secrets an eval flow resolves (#130)? Personal flow:
+ * its owner, in their own Secrets. Org flow: an org owner or admin — org secret
+ * writes are requireOrgAdmin, so a plain member who created the flow can't, and
+ * isOwnerOrOrgManager (which lets them edit it) is the wrong question here.
+ */
+export function canCreateEvalFlowSecrets(user: AuthUser, flow: { ownerId: number; organizationId: number | null }): boolean {
+  if (flow.organizationId == null) return flow.ownerId === user.id;
+  return user.membership?.organizationId === flow.organizationId
+    && (user.membership.role === "owner" || user.membership.role === "admin");
+}
+
 // Edit/delete gate that DOES include the system-admin bypass — kept for the
 // delete routes (admin moderation) and other admin-capable operations.
 export function canEditResource(user: AuthUser, resource: OrgResource): boolean {

@@ -40,13 +40,14 @@ export const DEFAULT_MINT_TIMEOUT_SECONDS = 180;
 export const MAX_MINT_TIMEOUT_SECONDS = 200;
 
 export function mintTimeoutSeconds(): number {
-  // parseInt never returns Infinity, so isFinite here is exactly a NaN check.
-  const configured = Number.parseInt(
-    process.env.WEB_SESSION_MINT_TIMEOUT_SECONDS || String(DEFAULT_MINT_TIMEOUT_SECONDS),
-    10,
-  );
-  if (!Number.isFinite(configured) || configured <= 0) {
-    warnOnce(`WEB_SESSION_MINT_TIMEOUT_SECONDS=${process.env.WEB_SESSION_MINT_TIMEOUT_SECONDS} is not a positive integer; using ${DEFAULT_MINT_TIMEOUT_SECONDS}s`);
+  // Trimmed: a CRLF-edited .env leaves "120\r" (#225 review).
+  const raw = process.env.WEB_SESSION_MINT_TIMEOUT_SECONDS?.trim();
+  if (raw === undefined || raw === "") return DEFAULT_MINT_TIMEOUT_SECONDS;
+  // The whole string, digits only: parseInt would read "120abc" or "1.5" as a
+  // number and accept it without a word (#224 review).
+  const configured = /^[0-9]+$/.test(raw) ? Number(raw) : NaN;
+  if (!Number.isSafeInteger(configured) || configured <= 0) {
+    warnOnce(`WEB_SESSION_MINT_TIMEOUT_SECONDS=${JSON.stringify(raw)} is not a positive whole number of seconds; using ${DEFAULT_MINT_TIMEOUT_SECONDS}s`);
     return DEFAULT_MINT_TIMEOUT_SECONDS;
   }
   if (configured > MAX_MINT_TIMEOUT_SECONDS) {

@@ -406,10 +406,10 @@ describe("mint failure summary (what the broker reports)", () => {
     // an SSO redirect uses, and the HTML entities a quoted page uses (#139).
     // Deduped, so a value that survives an encoding unchanged contributes only
     // once.
-    expect(credentialForms(['a"b'])).toEqual(['a"b', 'a\\"b', 'a%22b', "a&quot;b", "a&#34;b", "a&#x22;b"]);
+    expect(credentialForms(['a"b'])).toEqual(['a"b', 'a\\"b', 'a%22b', "a&quot;b", "a&#34;b", "a&#034;b", "a&#x22;b", "a&#X22;b"]);
     expect(credentialForms(["plain"])).toEqual(["plain"]);
     expect(credentialForms([""])).toEqual([]);
-    expect(credentialForms(["a b"])).toEqual(["a b", "a%20b", "a+b", "a&#32;b", "a&#x20;b"]);
+    expect(credentialForms(["a b"])).toEqual(["a b", "a%20b", "a+b", "a&#32;b", "a&#032;b", "a&#x20;b", "a&#X20;b"]);
   });
 
   it("never throws on a lone surrogate — that would kill the sidecar", () => {

@@ -77,6 +77,15 @@ function ValueFingerprint({ length, fingerprint }: { length?: number; fingerprin
   );
 }
 
+// An eval flow's missing-secrets badge and alert (#130) are computed from the
+// secrets that exist, and queries never go stale on their own here: refresh
+// every eval flow query (list and detail keys) when a secret changes.
+function invalidateEvalFlowSecretState() {
+  queryClient.invalidateQueries({
+    predicate: (q) => typeof q.queryKey[0] === "string" && q.queryKey[0].startsWith("/api/eval-flows"),
+  });
+}
+
 export default function ConsoleSecrets() {
   const { toast } = useToast();
   const [, setLocation] = useLocation();
@@ -145,6 +154,7 @@ export default function ConsoleSecrets() {
       setIsTestAccount(false);
       setCreateOpen(false);
       queryClient.invalidateQueries({ queryKey: ["/api/secrets"] });
+      invalidateEvalFlowSecretState();
       toast({ title: "Secret saved" });
     },
     onError: (error: Error) => {
@@ -159,6 +169,7 @@ export default function ConsoleSecrets() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/secrets"] });
+      invalidateEvalFlowSecretState();
       toast({ title: "Secret deleted" });
     },
     onError: (error: Error) => {
@@ -194,6 +205,7 @@ export default function ConsoleSecrets() {
       setOrgIsTestAccount(false);
       setOrgCreateOpen(false);
       queryClient.invalidateQueries({ queryKey: ["/api/org-secrets"] });
+      invalidateEvalFlowSecretState();
       toast({ title: "Org secret saved" });
     },
     onError: (error: Error) => {
@@ -207,6 +219,7 @@ export default function ConsoleSecrets() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/org-secrets"] });
+      invalidateEvalFlowSecretState();
       toast({ title: "Org secret deleted" });
     },
     onError: (error: Error) => {

@@ -14,11 +14,15 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
-import { Plus, Workflow as EvalFlowIcon, Globe, Lock, Star, StarOff, ChevronRight, Pencil, FolderKanban, Copy, Trash2, Phone } from "lucide-react";
+import { Plus, Workflow as EvalFlowIcon, Globe, Lock, Star, StarOff, ChevronRight, Pencil, FolderKanban, Copy, Trash2, Phone, KeyRound } from "lucide-react";
 import { useState } from "react";
 import { useLocation } from "wouter";
 import { load as loadYaml } from "js-yaml";
 import type { EvalFlow as EvalFlowType, Provider, Project } from "@shared/schema";
+
+// missingSecrets (#130): set by the server only on flows the caller can fix;
+// null = couldn't be checked (organizations unavailable).
+type EvalFlowRow = EvalFlowType & { missingSecrets?: string[] | null };
 
 // Extract `platform_id` from the aeval `platform.setup` step in a stepsPrefix YAML.
 // Checks both the step's top level and its `params`. Returns null if absent/unparseable.
@@ -111,12 +115,12 @@ export default function ConsoleEvalFlows() {
   });
 
   // All eval flows I can see (own + org + others' public) — drives the Public tab.
-  const { data: evalFlows, isLoading } = useQuery<EvalFlowType[]>({
+  const { data: evalFlows, isLoading } = useQuery<EvalFlowRow[]>({
     queryKey: ["/api/eval-flows?includePublic=true"],
   });
 
   // My own (+ org) eval flows — drives the default "My Eval Flows" tab.
-  const { data: myEvalFlows, isLoading: myLoading } = useQuery<EvalFlowType[]>({
+  const { data: myEvalFlows, isLoading: myLoading } = useQuery<EvalFlowRow[]>({
     queryKey: ["/api/eval-flows"],
   });
 
@@ -209,14 +213,21 @@ export default function ConsoleEvalFlows() {
   });
 
   const cloneMutation = useMutation({
-    mutationFn: async (id: number) => {
+    mutationFn: async (id: number): Promise<EvalFlowRow> => {
       const res = await apiRequest("POST", `/api/eval-flows/${id}/clone`, {});
       return res.json();
     },
-    onSuccess: () => {
+    onSuccess: (cloned) => {
       queryClient.invalidateQueries({ queryKey: ["/api/eval-flows?includePublic=true"] });
       queryClient.invalidateQueries({ queryKey: ["/api/eval-flows"] });
-      toast({ title: "Eval Flow cloned" });
+      const missing = cloned.missingSecrets ?? [];
+      // The clone has the references, not the values (#130): say what to create.
+      toast(missing.length > 0
+        ? {
+            title: "Eval Flow cloned — it needs your secrets",
+            description: `It uses ${missing.length > 1 ? "secrets" : "a secret"} you don't have yet: ${missing.join(", ")}. Create ${missing.length > 1 ? "them" : "it"} under Console → Secrets with the same name${missing.length > 1 ? "s" : ""} before running it.`,
+          }
+        : { title: "Eval Flow cloned" });
     },
     onError: (error: Error) => {
       toast({ title: "Failed to clone Eval Flow", description: error.message, variant: "destructive" });
@@ -305,7 +316,7 @@ export default function ConsoleEvalFlows() {
   const myFlowIds = new Set((myEvalFlows ?? []).map((f) => f.id));
   const publicEvalFlows = (evalFlows ?? []).filter((f) => !myFlowIds.has(f.id));
 
-  const renderEvalFlowTable = (flows: EvalFlowType[] | undefined, loading: boolean, emptyMsg: string) => (
+  const renderEvalFlowTable = (flows: EvalFlowRow[] | undefined, loading: boolean, emptyMsg: string) => (
     <>
             {loading ? (
               <div className="space-y-4">
@@ -368,6 +379,16 @@ export default function ConsoleEvalFlows() {
                           {evalFlow.transport === "phone" && (
                             <Badge variant="outline" className="gap-1" data-testid={`badge-phone-${evalFlow.id}`}>
                               <Phone className="h-3 w-3" /> Phone
+                            </Badge>
+                          )}
+                          {!!evalFlow.missingSecrets?.length && (
+                            <Badge
+                              variant="outline"
+                              className="gap-1 border-amber-500 text-amber-600"
+                              title={`Create under Console → Secrets: ${evalFlow.missingSecrets.join(", ")}`}
+                              data-testid={`badge-missing-secrets-${evalFlow.id}`}
+                            >
+                              <KeyRound className="h-3 w-3" /> Missing secrets
                             </Badge>
                           )}
                         </div>

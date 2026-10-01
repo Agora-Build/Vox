@@ -544,6 +544,36 @@ async function missingSecretNames(
 }
 
 /**
+ * #130: per eval flow, the secrets its own steps reference (what every run
+ * fills, as the run gate sees it) that don't exist in the scope they resolve
+ * in — the owner's, or the org's. A clone copies the references, not the
+ * values, so this is what its new owner has to create. Rows are read once per
+ * scope across the batch. null when the scope can't be read (organizations
+ * provider absent or failing): unknown, not "nothing missing".
+ */
+export async function missingEvalFlowSecrets(
+  flows: Array<{ id: number; ownerId: number; organizationId: number | null; config: unknown }>,
+): Promise<Map<number, string[] | null>> {
+  const namesByScope = new Map<string, Promise<Set<string> | null>>();
+  const scopeNames = (scope: SessionScope) => {
+    const key = "userId" in scope ? `u${scope.userId}` : `o${scope.organizationId}`;
+    if (!namesByScope.has(key)) {
+      const rows = "userId" in scope ? storage.getSecretsByUserId(scope.userId) : orgSecretRowsViaSeam(scope.organizationId);
+      namesByScope.set(key, rows.then((r) => new Set(r.map((x) => x.name)), () => null));
+    }
+    return namesByScope.get(key)!;
+  };
+  const out = new Map<number, string[] | null>();
+  for (const flow of flows) {
+    const refs = collectSecretRefs(resolvableSecretSources(flow.config, undefined, false));
+    if (refs.size === 0) { out.set(flow.id, []); continue; }
+    const have = await scopeNames(sessionScopeForEvalFlow(flow));
+    out.set(flow.id, have === null ? null : Array.from(refs).filter((n) => !have.has(n)).sort());
+  }
+  return out;
+}
+
+/**
  * Join referenced secret NAMES against the scope's secret rows, attaching each
  * name's brokerType and whether it exists. Names with no matching row default to
  * brokerType null / present:false (a dangling ref delivers nothing).
