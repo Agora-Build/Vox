@@ -14,6 +14,17 @@ describe("#215 agent tokens have no expiry", () => {
   });
 });
 
+// #221: and the database no longer has it either (migration v50).
+const dbOnly = process.env.DATABASE_URL ? describe : describe.skip;
+dbOnly("#221 the column is dropped", () => {
+  it("eval_agent_tokens has no expires_at", async () => {
+    const r = await pool.query(
+      "SELECT 1 FROM information_schema.columns WHERE table_name = 'eval_agent_tokens' AND column_name = 'expires_at'",
+    );
+    expect(r.rowCount).toBe(0);
+  });
+});
+
 const d = process.env.DATABASE_URL ? describe : describe.skip;
 
 d("#219 the analyze lookups have their index", () => {

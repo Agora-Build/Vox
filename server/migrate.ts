@@ -71,6 +71,7 @@ const MIGRATIONS: Array<{ version: number; description: string; file: string | n
   { version: 47, description: "Tools → Analyze: eval_jobs.kind + eval_results.recording_region", file: "0046_tools_analyze.sql" },
   { version: 48, description: "#217: clear the placeholder Network/Naturalness/Noise triple from eval_results", file: "0047_clear_placeholder_metrics.sql" },
   { version: 49, description: "#219: partial index for a user's analyses (kind = 'analyze')", file: "0048_analyze_jobs_index.sql" },
+  { version: 50, description: "#221: drop eval_agent_tokens.expires_at (unread since #220)", file: "0049_drop_eval_agent_token_expiry.sql" },
 ];
 
 const TARGET_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version;
