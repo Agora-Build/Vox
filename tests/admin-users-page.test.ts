@@ -57,13 +57,17 @@ d("#209 admin users list is paginated", () => {
     expect((await list({ q: stamp })).total).toBe(3);
   });
 
-  it("counts across all users, not the page", async () => {
-    const { stats, total } = await list({ limit: "1" });
-    expect(stats.total).toBe(total);
-    const real = (await pool.query(
-      "SELECT count(*)::int total, count(*) FILTER (WHERE is_admin)::int admins, count(*) FILTER (WHERE plan = 'premium')::int premium FROM users",
-    )).rows[0];
-    expect(stats).toEqual(real);
+  it("counts across all users, not the page or the search", async () => {
+    // A search that matches only this suite's 3 premium users: the page and
+    // its total are those 3, but the summary still covers everyone — more
+    // users, and the admin, who isn't among them. (Other suites add and remove
+    // users concurrently, so exact totals aren't compared.)
+    const { data, total, stats } = await list({ q: stamp });
+    expect(total).toBe(3);
+    expect(data.every((u) => emails.includes(u.email))).toBe(true);
+    expect(stats.total).toBeGreaterThan(total);
+    expect(stats.admins).toBeGreaterThanOrEqual(1);
+    expect(stats.premium).toBeGreaterThanOrEqual(3);
   });
 
   it("rejects a bad page request", async () => {
