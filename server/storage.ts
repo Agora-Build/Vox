@@ -1919,29 +1919,50 @@ export class DatabaseStorage {
    * running for the agent's retry. Exactly one caller finalizes a job:
    * undefined when it wasn't running (a duplicate completion, or already
    * failed by a reaper). An analysis deleted meanwhile keeps no result.
-   * With `agentId`, only while that agent still holds the job: the caller's
-   * ownership check and this write can't be split by a requeue + re-claim,
-   * so a late completion never finishes another agent's run.
+   * With `holder`, only while that agent instance still holds the job — the
+   * job assigned to that agent, and the agent's lease still the one it called
+   * with — so the caller's checks and this write can't be split by a requeue +
+   * re-claim, by another agent or by a re-registered instance of this one: a
+   * late completion never finishes a run that isn't its own. (The lease is
+   * read under a share lock after the job row is held: a successor's re-claim
+   * needs that job row, so if the lease still matches, this run is the
+   * caller's.)
    */
-  async finalizeRunningJobWithResult(jobId: number, error: string | undefined, result: InsertEvalResult | null, agentId?: number): Promise<EvalJob | undefined> {
-    return db.transaction(async (tx) => {
-      const [done] = await tx.update(evalJobs)
-        .set({
-          status: error ? "failed" : "completed",
-          completedAt: new Date(),
-          error: error || null,
-          updatedAt: new Date(),
-        })
-        .where(and(
-          eq(evalJobs.id, jobId),
-          eq(evalJobs.status, "running"),
-          agentId === undefined ? undefined : eq(evalJobs.evalAgentId, agentId),
-        ))
-        .returning();
-      if (!done) return undefined;
-      if (result && !error && !done.deletedAt) await tx.insert(evalResults).values(result);
-      return done;
-    });
+  async finalizeRunningJobWithResult(
+    jobId: number, error: string | undefined, result: InsertEvalResult | null,
+    holder?: { agentId: number; leaseId: unknown },
+  ): Promise<EvalJob | undefined> {
+    const superseded = new Error("superseded lease");
+    try {
+      return await db.transaction(async (tx) => {
+        const [done] = await tx.update(evalJobs)
+          .set({
+            status: error ? "failed" : "completed",
+            completedAt: new Date(),
+            error: error || null,
+            updatedAt: new Date(),
+          })
+          .where(and(
+            eq(evalJobs.id, jobId),
+            eq(evalJobs.status, "running"),
+            holder ? eq(evalJobs.evalAgentId, holder.agentId) : undefined,
+          ))
+          .returning();
+        if (!done) return undefined;
+        if (holder) {
+          // After the job row (the order claims and reapers lock in).
+          const [agent] = await tx.select({ lease: evalAgents.currentLeaseId }).from(evalAgents)
+            .where(eq(evalAgents.id, holder.agentId)).for("share");
+          // Same rule as the routes' isSupersededLease.
+          if (!agent || (!!agent.lease && agent.lease !== holder.leaseId)) throw superseded;
+        }
+        if (result && !error && !done.deletedAt) await tx.insert(evalResults).values(result);
+        return done;
+      });
+    } catch (err) {
+      if (err === superseded) return undefined;
+      throw err;
+    }
   }
 
   async completeEvalJob(jobId: number, error?: string): Promise<EvalJob | undefined> {

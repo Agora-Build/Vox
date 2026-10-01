@@ -71,12 +71,30 @@ d("#94 a job and its result are finalized together", () => {
     const job = await mkRunning();
     await pool.query("UPDATE eval_jobs SET eval_agent_id = $2 WHERE id = $1", [job.id, next.id]); // re-claimed
     const p = await provider();
-    expect(await storage.finalizeRunningJobWithResult(job.id, undefined, { evalJobId: job.id, providerId: p, siteId: null } as any, first.id)).toBeUndefined();
+    expect(await storage.finalizeRunningJobWithResult(job.id, undefined, { evalJobId: job.id, providerId: p, siteId: null } as any, { agentId: first.id, leaseId: null })).toBeUndefined();
     expect((await storage.getEvalJob(job.id))!).toMatchObject({ status: "running", evalAgentId: next.id, completedAt: null });
     expect(await storage.getEvalResultsByJob(job.id)).toEqual([]);
     // Its current agent still can.
-    expect(await storage.finalizeRunningJobWithResult(job.id, undefined, { evalJobId: job.id, providerId: p, siteId: null } as any, next.id)).toMatchObject({ status: "completed" });
+    expect(await storage.finalizeRunningJobWithResult(job.id, undefined, { evalJobId: job.id, providerId: p, siteId: null } as any, { agentId: next.id, leaseId: null })).toMatchObject({ status: "completed" });
     expect(await storage.getEvalResultsByJob(job.id)).toHaveLength(1);
+  });
+
+  it("a superseded instance of the same agent doesn't finish the run its successor re-claimed", async () => {
+    // Same agent row, re-registered (new lease); the job was requeued and
+    // re-claimed by it. The old instance's late completion must not land.
+    const tok = await storage.createEvalAgentToken({
+      name: `atomic-lease-${Date.now()}`, tokenHash: `atomic-lease-${Date.now()}-${Math.random()}`, siteId: null, dispatchTier: "private", createdBy: 1,
+    } as any);
+    tokenIds.push(tok.id);
+    const agent = await storage.createEvalAgent({ tokenId: tok.id, name: "atomic-lease", state: "occupied", metadata: {} } as any);
+    await pool.query("UPDATE eval_agents SET current_lease_id = 'lease-new' WHERE id = $1", [agent.id]);
+    const job = await mkRunning();
+    await pool.query("UPDATE eval_jobs SET eval_agent_id = $2 WHERE id = $1", [job.id, agent.id]);
+    const p = await provider();
+    expect(await storage.finalizeRunningJobWithResult(job.id, undefined, { evalJobId: job.id, providerId: p, siteId: null } as any, { agentId: agent.id, leaseId: "lease-old" })).toBeUndefined();
+    expect((await storage.getEvalJob(job.id))!).toMatchObject({ status: "running", completedAt: null });
+    expect(await storage.getEvalResultsByJob(job.id)).toEqual([]);
+    expect(await storage.finalizeRunningJobWithResult(job.id, undefined, { evalJobId: job.id, providerId: p, siteId: null } as any, { agentId: agent.id, leaseId: "lease-new" })).toMatchObject({ status: "completed" });
   });
 
   it("a failed run is finalized without a result", async () => {
