@@ -198,17 +198,17 @@ export async function mintViaBroker(
     // Not the URL-shaped forms, though — reduceUrlsSafely redacts those itself
     // together with the rest of their URL; replacing just the needle first
     // would strand its query (?access_token=…) outside anything URL-like.
-    // URL schemes are shielded from that first pass: a credential that is,
-    // or ends like, a scheme ("https") would otherwise turn
+    // URL schemes are kept out of that first pass: a credential that is, or
+    // ends like, a scheme ("https") would otherwise turn
     // https://host/?access_token=… into [redacted]://host/…, which no longer
     // looks like a URL, so its path and query would survive the reduction.
-    // Each scheme becomes one private-use character (a credential would have
-    // to contain one to collide); the body is capped at 8 KiB, far below the
-    // 6,400 such characters.
-    const schemes: string[] = [];
-    const shielded = detail.replace(/(?:https?|wss?):\/\//gi, (m) => String.fromCharCode(0xe000 + schemes.push(m) - 1));
-    const pre = redactValues(shielded, forms.filter((f) => !f.includes("://")))
-      .replace(/[\ue000-\uf8ff]/g, (c) => schemes[c.charCodeAt(0) - 0xe000] ?? c);
+    // Split at the schemes and redact only the text between them — positional,
+    // so no marker character exists for a credential to collide with.
+    const nonUrlForms = forms.filter((f) => !f.includes("://"));
+    const pre = detail
+      .split(/((?:https?|wss?):\/\/)/i) // odd indices are the schemes themselves
+      .map((part, i) => (i % 2 === 1 ? part : redactValues(part, nonUrlForms)))
+      .join("");
     detail = redactValues(reduceUrlsSafely(pre, forms), forms).slice(0, 500);
     throw new Error(`broker mint failed: ${res.status}${detail ? `: ${detail}` : ""}`);
   }

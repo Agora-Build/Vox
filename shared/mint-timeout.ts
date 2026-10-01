@@ -40,10 +40,11 @@ export const DEFAULT_MINT_TIMEOUT_SECONDS = 180;
 export const MAX_MINT_TIMEOUT_SECONDS = 200;
 
 export function mintTimeoutSeconds(): number {
-  const raw = process.env.WEB_SESSION_MINT_TIMEOUT_SECONDS;
+  // Trimmed: a CRLF-edited .env leaves "120\r" (#225 review).
+  const raw = process.env.WEB_SESSION_MINT_TIMEOUT_SECONDS?.trim();
   if (raw === undefined || raw === "") return DEFAULT_MINT_TIMEOUT_SECONDS;
-  // The whole string, digits only: parseInt would read "120abc", "1.5" or
-  // " 120" as a number and accept it without a word (#224 review).
+  // The whole string, digits only: parseInt would read "120abc" or "1.5" as a
+  // number and accept it without a word (#224 review).
   const configured = /^[0-9]+$/.test(raw) ? Number(raw) : NaN;
   if (!Number.isSafeInteger(configured) || configured <= 0) {
     warnOnce(`WEB_SESSION_MINT_TIMEOUT_SECONDS=${JSON.stringify(raw)} is not a positive whole number of seconds; using ${DEFAULT_MINT_TIMEOUT_SECONDS}s`);

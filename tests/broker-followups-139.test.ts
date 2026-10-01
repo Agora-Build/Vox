@@ -66,6 +66,13 @@ describe("#139 Core's backstop URL-reduces the broker's error", () => {
     expect(err.message).toContain("://sso.example.com/…");
   });
 
+  it("a credential with a private-use character can't break the scheme handling (#225 review)", async () => {
+    const err = await mintViaBroker(target, { platformId: "p", email: "ann@agora.io", password: "\uE000sso" },
+      brokerSays("callback https://sso.example.com/cb?access_token=JWT-SECRET failed")).catch((e) => e as Error);
+    expect(err.message).not.toMatch(/JWT-SECRET|access_token/);
+    expect(err.message).toContain("https://sso.example.com/…");
+  });
+
   it("a URL-valued credential is redacted whole, not cut apart by the reduction", async () => {
     const err = await mintViaBroker(target, { platformId: "p", email: "ann@agora.io", password: "wss://proj.example.cloud/rtc" },
       brokerSays("connect failed: wss://proj.example.cloud/rtc?access_token=JWT")).catch((e) => e as Error);
@@ -96,7 +103,7 @@ describe("#139 the mint-timeout clamp is said out loud", () => {
   it("a value that isn't a whole positive number warns and uses the default — parseInt's leniency doesn't sneak it through", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const { mintTimeoutSeconds, DEFAULT_MINT_TIMEOUT_SECONDS } = await import("../shared/mint-timeout");
-    for (const bad of ["120abc", "1.5", " 120", "0", "-5", "1e3"]) {
+    for (const bad of ["120abc", "1.5", "1 20", "0", "-5", "1e3"]) {
       process.env.WEB_SESSION_MINT_TIMEOUT_SECONDS = bad;
       expect(mintTimeoutSeconds()).toBe(DEFAULT_MINT_TIMEOUT_SECONDS);
     }
@@ -110,6 +117,8 @@ describe("#139 the mint-timeout clamp is said out loud", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const { mintTimeoutSeconds } = await import("../shared/mint-timeout");
     process.env.WEB_SESSION_MINT_TIMEOUT_SECONDS = "120";
+    expect(mintTimeoutSeconds()).toBe(120);
+    process.env.WEB_SESSION_MINT_TIMEOUT_SECONDS = " 120\r\n"; // a CRLF-edited .env
     expect(mintTimeoutSeconds()).toBe(120);
     expect(warn).not.toHaveBeenCalled();
   });
