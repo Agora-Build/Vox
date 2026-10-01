@@ -18,7 +18,7 @@ import { validateTierChoice, resolveTargetedDispatch, filterDispatchableAgents }
 import { getMarketplace } from "./marketplace";
 import { isAlreadyMemberError, getOrganizations, requireOrganizations, type Membership, type OrgSecretRow } from "./organizations";
 import { fingerprintCredential, formatLastFailedHttpStatus, parseLastFailedHttpStatus } from "@shared/credentials";
-import { sessionScopeForEvalFlow, areLoginSecretsAttested, ensureSession, stampOwnerSession, credentialKeyFor, SESSION_FRESH_MARGIN_SECONDS, classifyReferencedSecrets, findBrokeredMisuse, resolveBrokerType, type SessionNeed, detectSessionNeed, resolvableSecretSources, secretGate, evalSetMayUseSecrets, secretsJobFills, runDialogEvalSetProblem } from "./auth-session";
+import { sessionScopeForEvalFlow, areLoginSecretsAttested, ensureSession, stampOwnerSession, credentialKeyFor, SESSION_FRESH_MARGIN_SECONDS, classifyReferencedSecrets, findBrokeredMisuse, resolveBrokerType, type SessionNeed, detectSessionNeed, resolvableSecretSources, secretGate, evalSetMayUseSecrets, secretsJobFills, runDialogEvalSetProblem, missingEvalFlowSecrets } from "./auth-session";
 import { validateRegisterPayload, cacheBrokerMintSecret, hasBrokerMintSecret, routeToBroker, executeViaBroker, KNOWN_BROKER_TYPES } from "./broker-registry";
 import { resolveRestfulTemplate } from "./restful-exec";
 import { validateRestfulTrigger, parseStepsScript, stepsContainCallDial, unsupportedFrameworkError } from "./storage";
@@ -2143,17 +2143,26 @@ export async function registerRoutes(
       // Attach the server's own authorization decision so the client doesn't have
       // to re-derive it (and risk getting it wrong): canSchedule gates the
       // recurring-schedule UI, matching the schedule route's canScheduleEvalFlow.
-      const withPerms = (list: typeof ownEvalFlows) =>
-        list.map(w => ({ ...w, canSchedule: canScheduleEvalFlow(user, w) }));
+      // missingSecrets (#130): only on flows the caller can fix — they create
+      // the secrets in their own (or their org's) scope; for anyone else's
+      // flow it's not theirs to act on, and not theirs to know.
+      const withPerms = async (list: typeof ownEvalFlows) => {
+        const missing = await missingEvalFlowSecrets(list.filter((w) => isOwnerOrOrgManager(user, w)));
+        return list.map(w => ({
+          ...w,
+          canSchedule: canScheduleEvalFlow(user, w),
+          ...(missing.has(w.id) ? { missingSecrets: missing.get(w.id) } : {}),
+        }));
+      };
 
       if (req.query.includePublic === "true") {
         const publicEvalFlows = await storage.getPublicEvalFlows();
         const seenIds = new Set([...ownEvalFlows, ...orgEvalFlows].map(w => w.id));
         const merged = [...ownEvalFlows, ...orgEvalFlows, ...publicEvalFlows.filter(w => !seenIds.has(w.id))];
-        return res.json(withPerms(merged));
+        return res.json(await withPerms(merged));
       }
 
-      res.json(withPerms([...ownEvalFlows, ...orgEvalFlows]));
+      res.json(await withPerms([...ownEvalFlows, ...orgEvalFlows]));
     } catch (error) {
       console.error("Error fetching evalFlows:", error);
       res.status(500).json({ error: "Failed to fetch evalFlows" });
@@ -2177,7 +2186,11 @@ export async function registerRoutes(
       // shows who owns the flow, and a public flow is readable by people who
       // can't look the id up themselves.
       const owner = evalFlow.ownerId != null ? await storage.getUser(evalFlow.ownerId) : undefined;
-      res.json({ ...evalFlow, ownerName: owner?.username ?? null });
+      // Same rule as the list (#130): only for someone who can fix it.
+      const missingSecrets = isOwnerOrOrgManager(user, evalFlow)
+        ? (await missingEvalFlowSecrets([evalFlow])).get(evalFlow.id)
+        : undefined;
+      res.json({ ...evalFlow, ownerName: owner?.username ?? null, ...(missingSecrets !== undefined ? { missingSecrets } : {}) });
     } catch (error) {
       console.error("Error fetching evalFlow:", error);
       res.status(500).json({ error: "Failed to fetch evalFlow" });
@@ -2440,7 +2453,11 @@ export async function registerRoutes(
         config: source.config || {},
       });
 
-      res.json(cloned);
+      // A clone copies ${secrets.X} references, not values: secrets resolve in
+      // the new owner's scope, so say which ones they must create (#130)
+      // rather than let them find out from a refused run.
+      const missingSecrets = (await missingEvalFlowSecrets([cloned])).get(cloned.id) ?? [];
+      res.json({ ...cloned, missingSecrets });
     } catch (error) {
       console.error("Error cloning evalFlow:", error);
       res.status(500).json({ error: "Failed to clone evalFlow" });

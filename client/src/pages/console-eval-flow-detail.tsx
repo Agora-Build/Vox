@@ -12,12 +12,14 @@ import { Alert, AlertTitle, AlertDescription } from "@/components/ui/alert";
 import { Checkbox } from "@/components/ui/checkbox";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import { ArrowLeft, Play, Settings, History, Clock, CheckCircle, XCircle, Loader2, RefreshCw } from "lucide-react";
+import { ArrowLeft, Play, Settings, History, Clock, CheckCircle, XCircle, Loader2, RefreshCw, KeyRound } from "lucide-react";
 import { useState, useEffect, useMemo } from "react";
 import type { EvalFlow, Provider, EvalJob, EvalSet } from "@shared/schema";
 
 /** The detail route enriches the row with the owner's display name. */
-type EvalFlowType = EvalFlow & { ownerName?: string | null };
+// missingSecrets (#130): set by the server only when the caller can fix it;
+// null = couldn't be checked (organizations unavailable).
+type EvalFlowType = EvalFlow & { ownerName?: string | null; missingSecrets?: string[] | null };
 import { formatSmartTimestamp, formatSite, formatRegion } from "@/lib/utils";
 import { useRegionLocationOptions } from "@/hooks/use-regions";
 import {
@@ -412,6 +414,18 @@ export default function ConsoleEvalFlowDetail() {
           </DialogContent>
         </Dialog>
       </div>
+
+      {!!evalFlow.missingSecrets?.length && (
+        <Alert data-testid="eval-flow-missing-secrets">
+          <KeyRound className="h-4 w-4" />
+          <AlertTitle>This Eval Flow needs secrets that don't exist yet</AlertTitle>
+          <AlertDescription>
+            Its steps use {evalFlow.missingSecrets.join(", ")}. Secrets belong to whoever owns the Eval Flow, so a
+            cloned one keeps the names but not the values. Create {evalFlow.missingSecrets.length > 1 ? "them" : "it"}{" "}
+            under Console → Secrets with the same name{evalFlow.missingSecrets.length > 1 ? "s" : ""}; runs are refused until then.
+          </AlertDescription>
+        </Alert>
+      )}
 
       <Card>
         <CardHeader>
