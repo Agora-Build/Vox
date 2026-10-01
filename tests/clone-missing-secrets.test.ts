@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { pool } from "../server/storage";
+import { canCreateEvalFlowSecrets } from "../server/permissions";
 
 // #130: cloning an eval flow copies its ${secrets.X} references but not the
 // values (secrets resolve in the owner's scope), so a clone was born unrunnable
@@ -85,5 +86,21 @@ d("#130 a clone says which secrets its new owner must create", () => {
     const listed = (await (await call(cloner, "GET", "/api/eval-flows?includePublic=true")).json()).find((f: { id: number }) => f.id === sourceId);
     expect(listed).toBeDefined();
     expect(listed).not.toHaveProperty("missingSecrets");
+  });
+});
+
+describe("#130 who is told about missing secrets: whoever can create them", () => {
+  const as = (id: number, membership: { organizationId: number; role: string } | null) => ({ id, membership }) as any;
+  it("a personal flow: its owner only", () => {
+    expect(canCreateEvalFlowSecrets(as(1, null), { ownerId: 1, organizationId: null })).toBe(true);
+    expect(canCreateEvalFlowSecrets(as(2, null), { ownerId: 1, organizationId: null })).toBe(false);
+  });
+  it("an org flow: the org's owners and admins — not a plain member, even the one who made it", () => {
+    const flow = { ownerId: 1, organizationId: 10 };
+    expect(canCreateEvalFlowSecrets(as(1, { organizationId: 10, role: "member" }), flow)).toBe(false);
+    expect(canCreateEvalFlowSecrets(as(2, { organizationId: 10, role: "admin" }), flow)).toBe(true);
+    expect(canCreateEvalFlowSecrets(as(3, { organizationId: 10, role: "owner" }), flow)).toBe(true);
+    expect(canCreateEvalFlowSecrets(as(4, { organizationId: 20, role: "admin" }), flow)).toBe(false);
+    expect(canCreateEvalFlowSecrets(as(1, null), flow)).toBe(false);
   });
 });

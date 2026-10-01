@@ -56,6 +56,16 @@ describe("#139 Core's backstop URL-reduces the broker's error", () => {
     expect(err.message).toContain("https://sso.example.com/…");
   });
 
+  it("a credential that is a URL scheme can't stop the reduction (#225 review)", async () => {
+    // "https" is a storable 5-character password. Redacting it first must not
+    // turn https://host/… into [redacted]://host/…, which no longer looks like
+    // a URL, so its query (a token) would survive.
+    const err = await mintViaBroker(target, { platformId: "p", email: "ann@agora.io", password: "https" },
+      brokerSays("callback https://sso.example.com/cb?access_token=JWT-SECRET failed")).catch((e) => e as Error);
+    expect(err.message).not.toMatch(/JWT-SECRET|access_token|\/cb/);
+    expect(err.message).toContain("://sso.example.com/…");
+  });
+
   it("a URL-valued credential is redacted whole, not cut apart by the reduction", async () => {
     const err = await mintViaBroker(target, { platformId: "p", email: "ann@agora.io", password: "wss://proj.example.cloud/rtc" },
       brokerSays("connect failed: wss://proj.example.cloud/rtc?access_token=JWT")).catch((e) => e as Error);

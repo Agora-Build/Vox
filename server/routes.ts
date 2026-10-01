@@ -88,6 +88,7 @@ import {
   canAccessResource,
   canEditResource,
   isOwnerOrOrgManager,
+  canCreateEvalFlowSecrets,
   canRunEvalFlow,
   canScheduleEvalFlow,
   sameOrg,
@@ -2144,10 +2145,10 @@ export async function registerRoutes(
       // to re-derive it (and risk getting it wrong): canSchedule gates the
       // recurring-schedule UI, matching the schedule route's canScheduleEvalFlow.
       // missingSecrets (#130): only on flows the caller can fix — they create
-      // the secrets in their own (or their org's) scope; for anyone else's
-      // flow it's not theirs to act on, and not theirs to know.
+      // the secrets in their own (or, as an org owner/admin, their org's)
+      // scope; for anyone else it's not theirs to act on, and not theirs to know.
       const withPerms = async (list: typeof ownEvalFlows) => {
-        const missing = await missingEvalFlowSecrets(list.filter((w) => isOwnerOrOrgManager(user, w)));
+        const missing = await missingEvalFlowSecrets(list.filter((w) => canCreateEvalFlowSecrets(user, w)));
         return list.map(w => ({
           ...w,
           canSchedule: canScheduleEvalFlow(user, w),
@@ -2187,7 +2188,7 @@ export async function registerRoutes(
       // can't look the id up themselves.
       const owner = evalFlow.ownerId != null ? await storage.getUser(evalFlow.ownerId) : undefined;
       // Same rule as the list (#130): only for someone who can fix it.
-      const missingSecrets = isOwnerOrOrgManager(user, evalFlow)
+      const missingSecrets = canCreateEvalFlowSecrets(user, evalFlow)
         ? (await missingEvalFlowSecrets([evalFlow])).get(evalFlow.id)
         : undefined;
       res.json({ ...evalFlow, ownerName: owner?.username ?? null, ...(missingSecrets !== undefined ? { missingSecrets } : {}) });
@@ -2456,7 +2457,8 @@ export async function registerRoutes(
       // A clone copies ${secrets.X} references, not values: secrets resolve in
       // the new owner's scope, so say which ones they must create (#130)
       // rather than let them find out from a refused run.
-      const missingSecrets = (await missingEvalFlowSecrets([cloned])).get(cloned.id) ?? [];
+      // null (couldn't be checked) stays null: never reported as "nothing missing".
+      const missingSecrets = (await missingEvalFlowSecrets([cloned])).get(cloned.id) ?? null;
       res.json({ ...cloned, missingSecrets });
     } catch (error) {
       console.error("Error cloning evalFlow:", error);
