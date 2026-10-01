@@ -1863,9 +1863,14 @@ export async function registerRoutes(
         // Without the marketplace the payment can't be captured now; deleting
         // the result would leave a later sweep to refund real work.
         if (!marketplace) return res.status(503).json({ error: "Payments are unavailable right now. Try deleting this analysis later." });
+        // Completed but its result isn't stored yet: the complete route is
+        // still finishing it, and settling now (with no result) would refund
+        // the work. Let that request settle it; delete afterwards.
+        if ((await storage.getEvalResultsByJob(job.id)).length === 0) {
+          return res.status(409).json({ error: "This analysis is still finishing. Try deleting it again in a moment." });
+        }
         try {
-          const hasResult = (await storage.getEvalResultsByJob(job.id)).length > 0;
-          await marketplace.settle({ jobId: job.id, status: job.status, hasResult, settlementContext });
+          await marketplace.settle({ jobId: job.id, status: job.status, hasResult: true, settlementContext });
           await storage.markSettlementDone(job);
         } catch (err) {
           console.error(`[analyze] settling analysis ${job.id} before its delete failed:`, err);
