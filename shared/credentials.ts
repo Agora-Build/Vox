@@ -52,23 +52,41 @@ export function urlForms(v: string): string[] {
  * A failed mint can quote page state (the broker's boundary note accepts that
  * DOM fragments reach its message), and a page writes an account the way HTML
  * does: `&amp;`/`&quot;` from ordinary escaping, or `&#64;` for the `@` of an
- * obfuscated email. Covered: the named escapes of & < > " ', and numeric
- * (decimal and both hex casings) escapes of either those characters plus `@`,
- * or of every non-alphanumeric character. A page that encodes some other
+ * obfuscated email. Covered: the named escapes of & < > " ' (both &#39; and
+ * &apos;), and numeric escapes — decimal, zero-padded decimal, hex with x or X
+ * in either digit case — of either those characters plus `@`, or of every
+ * non-alphanumeric character; and the mix of named escapes with a numeric `@`. A page that encodes some other
  * subset is not covered — the same best-effort line urlForms draws.
  */
 export function htmlForms(v: string): string[] {
-  const named: Record<string, string> = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
+  // Two spellings of the apostrophe's named escape: &#39; (what most escapers
+  // write) and &apos; (HTML5/XML).
+  const named: Record<string, string[]> = {
+    "&": ["&amp;"], "<": ["&lt;"], ">": ["&gt;"], '"': ["&quot;"], "'": ["&#39;", "&apos;"],
+  };
   const chars = Array.from(v); // by code point, so an astral character is one entity
   const encode = (pick: (c: string) => boolean, as: (c: string) => string) =>
     chars.map((c) => (pick(c) ? as(c) : c)).join("");
   const special = (c: string) => c in named || c === "@";
   const nonAlnum = (c: string) => !/^[A-Za-z0-9]$/.test(c);
-  const dec = (c: string) => `&#${c.codePointAt(0)};`;
-  const hex = (c: string) => `&#x${c.codePointAt(0)!.toString(16)};`;
-  const HEX = (c: string) => `&#x${c.codePointAt(0)!.toString(16).toUpperCase()};`;
-  const forms = [encode((c) => c in named, (c) => named[c])];
-  for (const pick of [special, nonAlnum]) for (const as of [dec, hex, HEX]) forms.push(encode(pick, as));
+  const cp = (c: string) => c.codePointAt(0)!;
+  // Numeric references as pages write them: decimal, decimal zero-padded to
+  // three digits (&#064; is a common email obfuscation), and hex with either
+  // x/X and either digit case.
+  const numeric = [
+    (c: string) => `&#${cp(c)};`,
+    (c: string) => `&#${String(cp(c)).padStart(3, "0")};`,
+    ...["x", "X"].flatMap((x) => [
+      (c: string) => `&#${x}${cp(c).toString(16)};`,
+      (c: string) => `&#${x}${cp(c).toString(16).toUpperCase()};`,
+    ]),
+  ];
+  const namedAs = (i: number) => (c: string) => named[c][i] ?? named[c][0];
+  const forms = [0, 1].map((i) => encode((c) => c in named, namedAs(i)));
+  for (const pick of [special, nonAlnum]) for (const as of numeric) forms.push(encode(pick, as));
+  // Mixed, as an escaper plus an email obfuscator write together: named
+  // escapes for & < > " ', a numeric one for @ (o&apos;brien&#X40;example.com).
+  for (const i of [0, 1]) for (const as of numeric) forms.push(encode(special, (c) => (c === "@" ? as(c) : namedAs(i)(c))));
   return Array.from(new Set(forms)).filter((f) => f !== v);
 }
 

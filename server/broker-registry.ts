@@ -192,7 +192,14 @@ export async function mintViaBroker(
     // (login_hint=) in a spelling no needle covers. reduceUrlsSafely redacts a
     // URL-shaped credential before the reduction could cut it apart.
     const forms = credentialForms([req.email, req.password]);
-    detail = redactValues(reduceUrlsSafely(detail, forms), forms).slice(0, 500);
+    // Redact before the reduction as well as after: a credential echoed inside
+    // a URL can contain a character that ends the URL run (" ' < > space), so
+    // the reduction would cut it in two and neither half would match a needle.
+    // Not the URL-shaped forms, though — reduceUrlsSafely redacts those itself
+    // together with the rest of their URL; replacing just the needle first
+    // would strand its query (?access_token=…) outside anything URL-like.
+    const pre = redactValues(detail, forms.filter((f) => !f.includes("://")));
+    detail = redactValues(reduceUrlsSafely(pre, forms), forms).slice(0, 500);
     throw new Error(`broker mint failed: ${res.status}${detail ? `: ${detail}` : ""}`);
   }
   return res.json();
