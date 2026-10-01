@@ -122,28 +122,26 @@ d("analyze results: where they show (real SQL)", () => {
     }
   });
 
-  it("a result that arrives after the analysis was deleted is not stored", async () => {
+  it("a completion for an analysis already marked deleted stores no result", async () => {
     const provider = (await storage.getAllProviders())[0];
-    const job = await storage.createEvalJob({
-      kind: "analyze", evalFlowId: null, triggerType: 2, evalSetId: null, createdBy: ME,
-      siteId: null, targetRegion: null, targetTier: null, config: {},
-      snapshot: { provider: null, evalFlow: null, evalSet: null, creatorPlan: null } as any,
-      status: "completed", priority: -10, retryCount: 0, maxRetries: 3,
-    } as any);
-    jobIds.push(job.id);
-    await storage.finishAnalyzeJobDelete(job.id); // the delete wins the race
-    const stored = await storage.createAnalyzeResult({ evalJobId: job.id, providerId: provider.id, siteId: null, rawData: { transcript: "private" } } as any);
-    expect(stored).toBeNull();
-    expect(await storage.getEvalResultsByJob(job.id)).toEqual([]);
-    // Before a delete it is stored as usual.
-    const other = await storage.createEvalJob({
-      kind: "analyze", evalFlowId: null, triggerType: 2, evalSetId: null, createdBy: ME,
-      siteId: null, targetRegion: null, targetTier: null, config: {},
-      snapshot: { provider: null, evalFlow: null, evalSet: null, creatorPlan: null } as any,
-      status: "completed", priority: -10, retryCount: 0, maxRetries: 3,
-    } as any);
-    jobIds.push(other.id);
-    expect(await storage.createAnalyzeResult({ evalJobId: other.id, providerId: provider.id, siteId: null } as any)).not.toBeNull();
+    const mk = async () => {
+      const job = await storage.createEvalJob({
+        kind: "analyze", evalFlowId: null, triggerType: 2, evalSetId: null, createdBy: ME,
+        siteId: null, targetRegion: null, targetTier: null, config: {},
+        snapshot: { provider: null, evalFlow: null, evalSet: null, creatorPlan: null } as any,
+        status: "running", priority: -10, retryCount: 0, maxRetries: 3,
+      } as any);
+      jobIds.push(job.id);
+      return job;
+    };
+    const deleted = await mk();
+    await pool.query("UPDATE eval_jobs SET deleted_at = now() WHERE id = $1", [deleted.id]);
+    await storage.finalizeRunningJobWithResult(deleted.id, undefined, { evalJobId: deleted.id, providerId: provider.id, siteId: null, rawData: { transcript: "private" } } as any);
+    expect(await storage.getEvalResultsByJob(deleted.id)).toEqual([]);
+    // Not deleted: stored as usual.
+    const kept = await mk();
+    await storage.finalizeRunningJobWithResult(kept.id, undefined, { evalJobId: kept.id, providerId: provider.id, siteId: null } as any);
+    expect(await storage.getEvalResultsByJob(kept.id)).toHaveLength(1);
   });
 
   it("files under the region the uploader stated, and not under Unverified", async () => {

@@ -43,7 +43,7 @@ const REAP_SETTLE_LOOKBACK_MINUTES = 15; // window for the prompt reap-settle sw
 // disables the catch-up path entirely.
 const REAP_SETTLE_GRACE_MINUTES = 1;
 
-const STALE_THRESHOLD_MINUTES = 5;
+export const STALE_THRESHOLD_MINUTES = 5;
 
 /** A positive integer from the environment, or the default (a bad value is ignored, loudly). */
 export function positiveIntEnv(name: string, fallback: number): number {

@@ -1673,14 +1673,12 @@ export class DatabaseStorage {
     const now = Date.now();
     const windowStart = new Date(now - sinceMinutes * 60 * 1000);
     // Grace-period upper bound: exclude jobs that turned terminal too recently.
-    // The complete route commits `status='completed'` in finalizeRunningJob BEFORE
-    // it writes the evalResults row; a sweep landing in that sub-second window would
-    // see hasResult=false and REFUND a job that produces a valid result an instant
-    // later (the H1 artifact gate makes the refund terminal, so the complete route's
-    // own settle then no-ops and the owner is never paid). Waiting graceMinutes puts
-    // the result row well in the past before we settle here. Prompt settlement still
-    // happens on the complete route itself; this sweep is only the catch-up path
-    // (GitHub #90).
+    // The complete route settles a job itself right after finalizing it; this
+    // sweep is only the catch-up path, so it leaves the newest jobs to that
+    // route. (It used to be load-bearing: completion committed 'completed'
+    // before the result row, and a sweep in between refunded done work (#90).
+    // Completion and result now commit together (#94), so the sweep never sees
+    // that state; the grace stays as a cheap buffer.)
     //
     // Clock note: these bounds are app-clock (Date.now()). The money path — a
     // `completed` job via finalizeRunningJob — writes completed_at with app-clock
@@ -1909,24 +1907,62 @@ export class DatabaseStorage {
   // completion or an already-terminal job returns undefined — so exactly one
   // completion creates the result.
   async finalizeRunningJob(jobId: number, error?: string): Promise<EvalJob | undefined> {
-    const result = await db.update(evalJobs)
-      .set({
-        status: error ? "failed" : "completed",
-        completedAt: new Date(),
-        error: error || null,
-        updatedAt: new Date(),
-      })
-      .where(and(eq(evalJobs.id, jobId), eq(evalJobs.status, "running")))
-      .returning();
-    return result[0];
+    return this.finalizeRunningJobWithResult(jobId, error, null);
   }
 
-  // Roll a just-finalized job back to running so a retry can re-attempt saving
-  // its result (used when the result insert failed transiently after finalize).
-  async resetJobToRunning(jobId: number): Promise<void> {
-    await db.update(evalJobs)
-      .set({ status: "running", completedAt: null, error: null, updatedAt: new Date() })
-      .where(eq(evalJobs.id, jobId));
+  /**
+   * Finish a running job and store its result IN ONE TRANSACTION (#94):
+   * running → completed/failed, plus the result row when there is one. Either
+   * both commit or neither does, so nothing (the reap-settle sweep above all)
+   * ever sees a job completed without its result — the window where a paid
+   * job used to be refunded for done work. A failed insert leaves the job
+   * running for the agent's retry. Exactly one caller finalizes a job:
+   * undefined when it wasn't running (a duplicate completion, or already
+   * failed by a reaper). An analysis deleted meanwhile keeps no result.
+   * With `holder`, only while that agent instance still holds the job — the
+   * job assigned to that agent, and the agent's lease still the one it called
+   * with — so the caller's checks and this write can't be split by a requeue +
+   * re-claim, by another agent or by a re-registered instance of this one: a
+   * late completion never finishes a run that isn't its own. (The lease is
+   * read under a share lock after the job row is held: a successor's re-claim
+   * needs that job row, so if the lease still matches, this run is the
+   * caller's.)
+   */
+  async finalizeRunningJobWithResult(
+    jobId: number, error: string | undefined, result: InsertEvalResult | null,
+    holder?: { agentId: number; leaseId: unknown },
+  ): Promise<EvalJob | undefined> {
+    const superseded = new Error("superseded lease");
+    try {
+      return await db.transaction(async (tx) => {
+        const [done] = await tx.update(evalJobs)
+          .set({
+            status: error ? "failed" : "completed",
+            completedAt: new Date(),
+            error: error || null,
+            updatedAt: new Date(),
+          })
+          .where(and(
+            eq(evalJobs.id, jobId),
+            eq(evalJobs.status, "running"),
+            holder ? eq(evalJobs.evalAgentId, holder.agentId) : undefined,
+          ))
+          .returning();
+        if (!done) return undefined;
+        if (holder) {
+          // After the job row (the order claims and reapers lock in).
+          const [agent] = await tx.select({ lease: evalAgents.currentLeaseId }).from(evalAgents)
+            .where(eq(evalAgents.id, holder.agentId)).for("share");
+          // Same rule as the routes' isSupersededLease.
+          if (!agent || (!!agent.lease && agent.lease !== holder.leaseId)) throw superseded;
+        }
+        if (result && !error && !done.deletedAt) await tx.insert(evalResults).values(result);
+        return done;
+      });
+    } catch (err) {
+      if (err === superseded) return undefined;
+      throw err;
+    }
   }
 
   async completeEvalJob(jobId: number, error?: string): Promise<EvalJob | undefined> {
@@ -1978,9 +2014,12 @@ export class DatabaseStorage {
    * Deleting an analysis, step 1, atomically: refuse if an agent is running
    * it, and take a pending one off the queue so nothing claims it. A finished
    * one is left as it is, so a delete that fails later changes nothing.
-   * Returns false when it is running (or already deleted).
+   * Returns the row as of this update — which waits out a completion
+   * committing concurrently, so a job that finished since the caller read it
+   * comes back completed. Decide settlement from this, never from an earlier
+   * read. Undefined when it is running (or already deleted).
    */
-  async stopAnalyzeJobForDelete(id: number): Promise<boolean> {
+  async stopAnalyzeJobForDelete(id: number): Promise<EvalJob | undefined> {
     const pending = sql`${evalJobs.status} = 'pending'`;
     const rows = await db.update(evalJobs)
       .set({
@@ -1990,24 +2029,8 @@ export class DatabaseStorage {
         updatedAt: new Date(),
       })
       .where(and(eq(evalJobs.id, id), eq(evalJobs.kind, "analyze"), ne(evalJobs.status, "running"), isNull(evalJobs.deletedAt)))
-      .returning({ id: evalJobs.id });
-    return rows.length > 0;
-  }
-
-  /**
-   * Store an analysis's result — unless the analysis was deleted in the
-   * meantime (its completion finalizes the job, then inserts the result; a
-   * delete can land in between). Serialized with finishAnalyzeJobDelete on the
-   * job row. Returns null when it was deleted, and stores nothing.
-   */
-  async createAnalyzeResult(result: InsertEvalResult): Promise<EvalResult | null> {
-    return db.transaction(async (tx) => {
-      const rows = await tx.execute(sql`SELECT deleted_at FROM eval_jobs WHERE id = ${result.evalJobId} FOR UPDATE`);
-      const row = (rows as unknown as { rows: Array<{ deleted_at: Date | null }> }).rows[0];
-      if (!row || row.deleted_at) return null;
-      const [created] = await tx.insert(evalResults).values(result).returning();
-      return created;
-    });
+      .returning();
+    return rows[0];
   }
 
   /**
@@ -2017,8 +2040,8 @@ export class DatabaseStorage {
    */
   async finishAnalyzeJobDelete(id: number): Promise<void> {
     await db.transaction(async (tx) => {
-      // Locks the row against createAnalyzeResult: a result arriving now
-      // waits, then sees the job deleted and isn't stored.
+      // Locks the row against finalizeRunningJobWithResult: a completion
+      // arriving now waits, then sees the job deleted and stores no result.
       await tx.execute(sql`SELECT id FROM eval_jobs WHERE id = ${id} FOR UPDATE`);
       await tx.delete(evalResults).where(eq(evalResults.evalJobId, id));
       await tx.update(evalJobs).set({ deletedAt: new Date() }).where(eq(evalJobs.id, id));

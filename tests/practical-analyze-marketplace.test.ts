@@ -246,7 +246,7 @@ d("practical: Analyze on a marketplace agent, for credits", () => {
     // Finished with a result, but its settle never ran (as when it threw on
     // completion): the hold is still held.
     await pool.query("UPDATE eval_jobs SET status = 'completed', completed_at = now(), eval_agent_id = $2 WHERE id = $1", [id, paidAgent.agentId]);
-    await storage.createAnalyzeResult({ evalJobId: id, providerId: provider, siteId: null, responseLatencyMedian: 900 } as any);
+    await storage.createEvalResult({ evalJobId: id, providerId: provider, siteId: null, responseLatencyMedian: 900 } as any);
     expect((await call(r.cookie, "DELETE", `/api/tools/analyze/${id}`)).status).toBe(204);
     const charge = computeCharge(PRICE, 1);
     expect(await operatorPaidFor(id)).toBe(charge - computeFee(charge));            // paid for the real result
@@ -271,24 +271,69 @@ d("practical: Analyze on a marketplace agent, for credits", () => {
     expect(await balance(r.cookie)).toBe(before); // refunded now, not after the backstop
   }, 120_000);
 
-  it("deleting a paid analysis that is still finishing (result not stored yet) waits, and refunds nothing", async () => {
+  it("a delete racing the completion settles what completed, not what it first read", async () => {
+    // The delete reads the analysis while it's running; the completion (job +
+    // result, one transaction) commits before the delete's stop. The delete
+    // must capture for that result before removing it — not settle from its
+    // stale 'running' read, skip the capture, and delete the result the
+    // operator is owed for (leaving the sweep to refund done work).
+    const r = await renter(100);
+    const renterBefore = await balance(r.cookie);
+    const up = await upload(r.cookie, { agent: String(paidAgent.tokenId), consent: "1" });
+    expect(up.status).toBe(201);
+    const { id } = await up.json();
+    await pool.query("UPDATE eval_jobs SET status = 'running', eval_agent_id = $2 WHERE id = $1", [id, paidAgent.agentId]);
+
+    // Pin that order. A SHARE lock on eval_jobs lets the delete's lookup (a
+    // read) through but holds its stop (an update); while it waits, the
+    // completion commits — the same writes finalizeRunningJobWithResult makes,
+    // job and result together. (Holding only the row instead wouldn't do: the
+    // stop skips a row whose committed status is 'running' without waiting, and
+    // answers 409.) The lock lasts milliseconds.
+    const completion = await pool.connect();
+    let deleting: Promise<Response>;
+    try {
+      await completion.query("BEGIN");
+      await completion.query("LOCK TABLE eval_jobs IN SHARE MODE");
+      deleting = call(r.cookie, "DELETE", `/api/tools/analyze/${id}`);
+      const deadline = Date.now() + 15_000;
+      // The stop is the only update that sets 'Deleted by its uploader'.
+      while ((await pool.query(
+        "SELECT count(*)::int c FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND query ILIKE 'update \"eval_jobs\"%' AND query LIKE '%THEN ''failed''::eval_job_status%'",
+      )).rows[0].c === 0) {
+        if (Date.now() > deadline) throw new Error("the delete never reached its stop");
+        await new Promise((res) => setTimeout(res, 20));
+      }
+      await completion.query("UPDATE eval_jobs SET status = 'completed', completed_at = now(), updated_at = now() WHERE id = $1 AND status = 'running'", [id]);
+      await completion.query("INSERT INTO eval_results (eval_job_id, provider_id, response_latency_median) VALUES ($1, $2, 900)", [id, provider]);
+      await completion.query("COMMIT");
+    } catch (err) {
+      await completion.query("ROLLBACK");
+      throw err;
+    } finally {
+      completion.release();
+    }
+    expect((await deleting).status).toBe(204);
+
+    const charge = computeCharge(PRICE, 1);
+    expect(await operatorPaidFor(id)).toBe(charge - computeFee(charge)); // paid for the result
+    expect(await balance(r.cookie)).toBe(renterBefore - charge);         // not refunded
+    expect(await storage.getEvalJob(id)).toMatchObject({ status: "completed" });
+    expect((await storage.getEvalJob(id))!.settlementDoneAt).not.toBeNull();
+    expect(await storage.getEvalResultsByJob(id)).toEqual([]);           // and the result is gone with the analysis
+  }, 120_000);
+
+  it("deleting a finished paid analysis that produced no result refunds it (and pays nothing)", async () => {
+    // Completion and result commit together (#94), so a completed job with no
+    // result is final: the run produced none, and the renter is refunded.
     const r = await renter(100);
     const before = await balance(r.cookie);
     const up = await upload(r.cookie, { agent: String(paidAgent.tokenId), consent: "1" });
     expect(up.status).toBe(201);
     const { id } = await up.json();
-    // Marked completed, but its result isn't stored yet (the complete route is mid-way).
     await pool.query("UPDATE eval_jobs SET status = 'completed', completed_at = now(), eval_agent_id = $2 WHERE id = $1", [id, paidAgent.agentId]);
-    const res = await call(r.cookie, "DELETE", `/api/tools/analyze/${id}`);
-    expect(res.status).toBe(409);
-    expect(await balance(r.cookie)).toBe(before - computeCharge(PRICE, 1)); // still held, not refunded
-    expect(await operatorPaidFor(id)).toBe(0);
-    const job = (await storage.getEvalJob(id))!;
-    expect(job.settlementDoneAt).toBeNull();
-    expect(job.deletedAt).toBeNull();
-    // Once the result is stored, the delete goes through and pays the operator.
-    await storage.createAnalyzeResult({ evalJobId: id, providerId: provider, siteId: null, responseLatencyMedian: 900 } as any);
     expect((await call(r.cookie, "DELETE", `/api/tools/analyze/${id}`)).status).toBe(204);
-    expect(await operatorPaidFor(id)).toBe(computeCharge(PRICE, 1) - computeFee(computeCharge(PRICE, 1)));
+    expect(await balance(r.cookie)).toBe(before); // refunded
+    expect(await operatorPaidFor(id)).toBe(0);
   }, 120_000);
 });

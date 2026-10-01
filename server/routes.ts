@@ -12,7 +12,7 @@ import { registerApiV1Routes } from "./routes-api-v1";
 import { generateSignedUrlForUser, userBucket, putObject, getObjectStream, deleteObject, type UserBucket } from "./s3";
 import { checkStorageEndpoint, StorageEndpointError } from "./storage-endpoint";
 import { parseWavHeader, analyzeWavError, ANALYZE_MAX_BYTES, ANALYZE_HEADER_BYTES } from "@shared/wav";
-import type { EvalJob, InsertEvalJob, JobSnapshot } from "@shared/schema";
+import type { EvalJob, InsertEvalJob, InsertEvalResult, JobSnapshot } from "@shared/schema";
 import { forAgentJobList, pipeToResponse } from "./analyze";
 import { validateTierChoice, resolveTargetedDispatch, filterDispatchableAgents } from "./dispatch";
 import { getMarketplace } from "./marketplace";
@@ -1848,10 +1848,15 @@ export async function registerRoutes(
     try {
       const user = await getCurrentUser(req);
       if (!user) return res.status(401).json({ error: "Not authenticated" });
-      const job = await findAnalyzeJob(req.params.id, user, true);
-      if (!job) return res.status(404).json({ error: "Analysis not found" });
-      // 1. Stop it, atomically, unless an agent is running it right now.
-      if (!(await storage.stopAnalyzeJobForDelete(job.id))) {
+      const found = await findAnalyzeJob(req.params.id, user, true);
+      if (!found) return res.status(404).json({ error: "Analysis not found" });
+      // 1. Stop it, atomically, unless an agent is running it right now. Use
+      //    the row the stop returns from here on: a completion that committed
+      //    since `found` was read (job + result together, #94) shows up in it,
+      //    and settling from the stale 'running' would skip the capture and
+      //    then delete the result the operator is owed for.
+      const job = await storage.stopAnalyzeJobForDelete(found.id);
+      if (!job) {
         return res.status(409).json({ error: "The analysis is running. Delete it once it finishes (if its eval agent stopped, the analysis is back in the queue within a few minutes)." });
       }
       // A finished paid analysis whose payment wasn't settled yet (its
@@ -1863,14 +1868,11 @@ export async function registerRoutes(
         // Without the marketplace the payment can't be captured now; deleting
         // the result would leave a later sweep to refund real work.
         if (!marketplace) return res.status(503).json({ error: "Payments are unavailable right now. Try deleting this analysis later." });
-        // Completed but its result isn't stored yet: the complete route is
-        // still finishing it, and settling now (with no result) would refund
-        // the work. Let that request settle it; delete afterwards.
-        if ((await storage.getEvalResultsByJob(job.id)).length === 0) {
-          return res.status(409).json({ error: "This analysis is still finishing. Try deleting it again in a moment." });
-        }
         try {
-          await marketplace.settle({ jobId: job.id, status: job.status, hasResult: true, settlementContext });
+          // A completed job and its result commit together (#94), so this is
+          // final: no result means the run produced none, and it's refunded.
+          const hasResult = (await storage.getEvalResultsByJob(job.id)).length > 0;
+          await marketplace.settle({ jobId: job.id, status: job.status, hasResult, settlementContext });
           await storage.markSettlementDone(job);
         } catch (err) {
           console.error(`[analyze] settling analysis ${job.id} before its delete failed:`, err);
@@ -4492,17 +4494,6 @@ export async function registerRoutes(
       if (job.evalAgentId !== agentId) {
         return res.status(403).json({ error: "Job not assigned to this agent" });
       }
-      // Atomically finalize (running → completed/failed). Exactly one caller wins,
-      // so a duplicate completion or an already-terminal job (e.g. one failed by
-      // the 90-min timeout) returns idempotently without creating a second result
-      // or resurrecting a finished job.
-      const finalized = await storage.finalizeRunningJob(parseInt(jobId), jobError);
-      if (!finalized) {
-        return res.json({ message: "Job already finalized" });
-      }
-
-      await storage.updateEvalAgent(agentId, { state: "idle" });
-
       // Record a result only on SUCCESS. A failed completion (jobError set) is a
       // measurement failure — no result row, so failed runs never enter metrics.
       // A run that completed but got no agent response is NOT a failure: it comes
@@ -4517,6 +4508,7 @@ export async function registerRoutes(
       // "Unverified" metrics bucket. Let siteId flow through as null into
       // eval_results (the column is nullable and the unverified metrics scope
       // already handles it) rather than silently dropping the result.
+      let resultRow: InsertEvalResult | null = null;
       if (results && !jobError && job.evalAgentId != null) {
         // Attribute the result to the provider snapshotted on the job at creation —
         // not the live evalFlow, which may have been re-pointed since. Fall back to a
@@ -4527,52 +4519,58 @@ export async function registerRoutes(
           const defaultProvider = providers.find(p => p.name.includes("LiveKit")) || providers[0];
           providerId = defaultProvider?.id;
         }
-
         if (providerId) {
-          try {
-            // An analysis's result goes in only if it wasn't deleted meanwhile
-            // (the delete and this insert are serialized on the job row).
-            await (job.kind === "analyze" ? storage.createAnalyzeResult.bind(storage) : storage.createEvalResult.bind(storage))({
-              evalJobId: parseInt(jobId),
-              providerId,
-              siteId: job.siteId,
-              // Tools → Analyze: where the uploader said the recording was made.
-              recordingRegion: job.kind === "analyze" ? (job.snapshot?.analyze?.recordingRegion ?? null) : null,
-              // Pass latencies through as-is: null = NA (agent didn't respond).
-              // Do NOT coerce to 0 — a 0 ms "response" would rank a dead agent as
-              // the fastest and poison latency averages. responseRate carries the
-              // real "answered 0%" signal.
-              responseLatencyMedian: results.responseLatencyMedian ?? null,
-              responseLatencySd: results.responseLatencySd ?? null,
-              responseLatencyP95: results.responseLatencyP95 ?? null,
-              interruptLatencyMedian: results.interruptLatencyMedian ?? null,
-              interruptLatencySd: results.interruptLatencySd ?? null,
-              interruptLatencyP95: results.interruptLatencyP95 ?? null,
-              responseRate: results.responseRate ?? null,
-              interruptRate: results.interruptRate ?? null,
-              falseInterruptRate: results.falseInterruptRate ?? null,
-              turnSuccessRate: results.turnSuccessRate ?? null,
-              callMetadata: callMetadata ?? null,
-              // An eval agent older than #217 still sends its placeholder
-              // triple (85 / 3.5 / 90), never measured: store N/A instead.
-              ...(results.networkResilience === 85 && results.naturalness === 3.5 && results.noiseReduction === 90
-                ? { networkResilience: null, naturalness: null, noiseReduction: null }
-                : { networkResilience: results.networkResilience ?? null, naturalness: results.naturalness ?? null, noiseReduction: results.noiseReduction ?? null }),
-              rawData: results.rawData || {},
-            });
-          } catch (resultError) {
-            console.error(`Failed to create eval result for job ${jobId}:`, resultError);
-            // The finalize above already marked the job completed. Roll it back to
-            // running so the agent's retry can re-finalize WITH the result (a 500
-            // is what an agent retries) instead of losing it to "already
-            // finalized". The 90-min reaper is the backstop if no retry comes.
-            await storage.resetJobToRunning(parseInt(jobId));
-            return res.status(500).json({ error: "Failed to save eval results" });
-          }
+          resultRow = {
+            evalJobId: parseInt(jobId),
+            providerId,
+            siteId: job.siteId,
+            // Tools → Analyze: where the uploader said the recording was made.
+            recordingRegion: job.kind === "analyze" ? (job.snapshot?.analyze?.recordingRegion ?? null) : null,
+            // Pass latencies through as-is: null = NA (agent didn't respond).
+            // Do NOT coerce to 0 — a 0 ms "response" would rank a dead agent as
+            // the fastest and poison latency averages. responseRate carries the
+            // real "answered 0%" signal.
+            responseLatencyMedian: results.responseLatencyMedian ?? null,
+            responseLatencySd: results.responseLatencySd ?? null,
+            responseLatencyP95: results.responseLatencyP95 ?? null,
+            interruptLatencyMedian: results.interruptLatencyMedian ?? null,
+            interruptLatencySd: results.interruptLatencySd ?? null,
+            interruptLatencyP95: results.interruptLatencyP95 ?? null,
+            responseRate: results.responseRate ?? null,
+            interruptRate: results.interruptRate ?? null,
+            falseInterruptRate: results.falseInterruptRate ?? null,
+            turnSuccessRate: results.turnSuccessRate ?? null,
+            callMetadata: callMetadata ?? null,
+            // An eval agent older than #217 still sends its placeholder
+            // triple (85 / 3.5 / 90), never measured: store N/A instead.
+            ...(results.networkResilience === 85 && results.naturalness === 3.5 && results.noiseReduction === 90
+              ? { networkResilience: null, naturalness: null, noiseReduction: null }
+              : { networkResilience: results.networkResilience ?? null, naturalness: results.naturalness ?? null, noiseReduction: results.noiseReduction ?? null }),
+            rawData: results.rawData || {},
+          };
         } else {
           console.warn(`No provider found for job ${jobId}, skipping eval result creation`);
         }
       }
+
+      // Finalize (running → completed/failed) and store the result in ONE
+      // transaction (#94): exactly one caller wins, so a duplicate completion or
+      // an already-terminal job (e.g. one failed by the 90-min timeout) returns
+      // idempotently, and nothing ever sees the job completed without its
+      // result. If the result can't be stored, nothing commits: the job stays
+      // running and the agent retries on the 500.
+      let finalized: EvalJob | undefined;
+      try {
+        finalized = await storage.finalizeRunningJobWithResult(parseInt(jobId), jobError, resultRow, { agentId, leaseId });
+      } catch (resultError) {
+        console.error(`Failed to save the result of job ${jobId}:`, resultError);
+        return res.status(500).json({ error: "Failed to save eval results" });
+      }
+      if (!finalized) {
+        return res.json({ message: "Job already finalized" });
+      }
+
+      await storage.updateEvalAgent(agentId, { state: "idle" });
 
       // Settle any shared-dispatch escrow tied to this job (plugin-owned; no-op
       // when the seam is absent or the job carries no settlementContext). Re-fetch
