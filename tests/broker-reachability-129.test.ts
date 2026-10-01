@@ -2,7 +2,7 @@ import { describe, it, expect, afterAll } from "vitest";
 import http from "http";
 import type { AddressInfo } from "net";
 import { pool } from "../server/storage";
-import { describeFetchFailure, probeBroker, mintViaBroker, executeViaBroker } from "../server/broker-registry";
+import { describeFetchFailure, probeBroker, mintViaBroker, executeViaBroker, cacheBrokerMintSecret, hasBrokerMintSecret } from "../server/broker-registry";
 import { createHeartbeatLog as authHeartbeatLog } from "../vox_eval_agentd/auth-session-broker";
 import { createHeartbeatLog as restHeartbeatLog } from "../vox_rest_broker/rest-broker";
 
@@ -30,8 +30,29 @@ describe("#129 a failed broker call says what failed", () => {
     expect(describeFetchFailure(fetchError("EAI_AGAIN"))).toMatch(/hostname doesn't resolve/);
     expect(describeFetchFailure(fetchError("ECONNREFUSED"))).toMatch(/connection refused/);
     expect(describeFetchFailure(Object.assign(new Error("t"), { name: "TimeoutError" }))).toBe("no answer in time");
-    // No code (a TLS failure keeps it deeper): the cause's message, not "fetch failed".
-    expect(describeFetchFailure(Object.assign(new TypeError("fetch failed"), { cause: { message: "self-signed certificate" } }))).toBe("self-signed certificate");
+    expect(describeFetchFailure(fetchError("UND_ERR_CONNECT_TIMEOUT"))).toBe("no answer in time (UND_ERR_CONNECT_TIMEOUT)");
+    // Anything else: the code only — the raw text names Core's internal
+    // addresses, and a mint error reaches the job's agent (#227 review). The
+    // full text only with `detail` (Core's log, the admin Brokers page).
+    const odd = Object.assign(new TypeError("fetch failed"), { cause: { code: "EPROTO", message: "connect EPROTO 10.0.3.7:8300" } });
+    expect(describeFetchFailure(odd)).toBe("network error (EPROTO)");
+    expect(describeFetchFailure(odd, { detail: true })).toBe("connect EPROTO 10.0.3.7:8300 (EPROTO)");
+    const tls = Object.assign(new TypeError("fetch failed"), { cause: { message: "Hostname/IP does not match certificate's altnames: Host: broker.internal" } });
+    expect(describeFetchFailure(tls)).not.toMatch(/broker\.internal/);
+    expect(describeFetchFailure(tls, { detail: true })).toMatch(/altnames/);
+  });
+
+  it("a mint error never carries Core's internal broker address", async () => {
+    const throws = (async () => { throw Object.assign(new TypeError("fetch failed"), { cause: { code: "ETIMEDOUT", message: "connect ETIMEDOUT 10.0.3.7:8300" } }); }) as unknown as typeof fetch;
+    const err = await mintViaBroker({ id: 1, url: "http://10.0.3.7:8300", mintSecret: "s" }, { platformId: "p", email: "ann@agora.io", password: "hunter2-pass" }, throws).catch((e) => e as Error);
+    expect(err.message).toBe("Core couldn't reach the session broker: no answer in time (ETIMEDOUT)");
+  });
+
+  it("a broker that refused Core is re-registered on its next heartbeat (#227 review)", async () => {
+    cacheBrokerMintSecret(424242, "stale");
+    await mintViaBroker({ id: 424242, url: "http://broker.test", mintSecret: "stale" }, { platformId: "p", email: "ann@agora.io", password: "hunter2-pass" },
+      (async () => new Response("{}", { status: 401 })) as unknown as typeof fetch).catch(() => {});
+    expect(hasBrokerMintSecret(424242)).toBe(false); // the heartbeat route answers { reregister: true }
   });
 
   it("never follows a redirect off the advertised address (#227 review)", async () => {

@@ -60,6 +60,13 @@ const mintSecretCache = new Map<number, string>();
 export function cacheBrokerMintSecret(id: number, secret: string): void { mintSecretCache.set(id, secret); }
 export function getCachedBrokerMintSecret(id: number): string | undefined { return mintSecretCache.get(id); }
 export function hasBrokerMintSecret(id: number): boolean { return mintSecretCache.has(id); }
+/**
+ * Forget a broker's mint secret after it refused Core (401/403): its next
+ * heartbeat is then told to re-register, which issues a fresh one — so the
+ * "retry in a minute" the refusal message promises actually holds (#227
+ * review), even when Core holds a stale secret while heartbeats succeed.
+ */
+export function evictBrokerMintSecret(id: number): void { mintSecretCache.delete(id); }
 export function clearBrokerMintSecret(id: number): void { mintSecretCache.delete(id); }
 
 export interface BrokerTarget { id: number; url: string; mintSecret: string; }
@@ -119,6 +126,7 @@ export async function executeViaBroker(
   }, fetchImpl);
   if (res.status === 401 || res.status === 403) {
     // As for mints: the broker restarted and hasn't re-registered yet.
+    evictBrokerMintSecret(target.id);
     throw new Error(`the REST broker refused Core (HTTP ${res.status}); it re-registers within a minute — retry then`);
   }
   const needles = credentialForms(redactNeedles.filter(Boolean));
@@ -150,7 +158,7 @@ export async function executeViaBroker(
  * what users saw as "target login failed: fetch failed" when Core couldn't even
  * resolve the broker's hostname.
  */
-export function describeFetchFailure(err: unknown): string {
+export function describeFetchFailure(err: unknown, opts: { detail?: boolean } = {}): string {
   const e = err as { name?: string; message?: string; cause?: { code?: string; message?: string } };
   if (e?.name === "TimeoutError" || e?.name === "AbortError") return "no answer in time";
   const code = e?.cause?.code;
@@ -166,11 +174,20 @@ export function describeFetchFailure(err: unknown): string {
     case "EHOSTUNREACH":
     case "ENETUNREACH":
       return `host unreachable (${code})`;
+    case "ETIMEDOUT":
+    case "UND_ERR_CONNECT_TIMEOUT":
+      return `no answer in time (${code})`;
   }
-  if (code) return `${e?.cause?.message ?? e?.message ?? "network error"} (${code})`;
-  // No code (TLS errors keep theirs deeper, or name it differently): the
-  // cause's message beats undici's bare "fetch failed".
-  return e?.cause?.message ?? e?.message ?? String(err);
+  // Anything else: the raw message names Core's internal addresses
+  // ("connect … 10.0.3.7:8300", TLS altnames), and a mint error reaches the
+  // job's own agent via web_sessions.last_error (#227 review). Only the code
+  // there; the full text only where `detail` is asked for (Core's log and
+  // the admin-only Brokers page).
+  if (opts.detail) {
+    const msg = e?.cause?.message ?? e?.message ?? String(err);
+    return code ? `${msg} (${code})` : msg;
+  }
+  return code ? `network error (${code})` : "network error (see Core's log and the Brokers page)";
 }
 
 const PROBE_TIMEOUT_MS = 5_000;
@@ -189,7 +206,7 @@ export async function probeBroker(url: string, fetchImpl: typeof fetch = fetch):
     if (res.status >= 300 && res.status < 400) return `GET /health redirected (HTTP ${res.status}); a broker must answer at its advertised URL`;
     return res.ok ? null : `GET /health answered HTTP ${res.status}`;
   } catch (err) {
-    return describeFetchFailure(err);
+    return describeFetchFailure(err, { detail: true }); // admin-only + Core's log
   }
 }
 
@@ -224,6 +241,7 @@ async function callBroker(what: string, url: string, init: RequestInit, fetchImp
     // just a failed call, reported with its status).
     return await fetchImpl(url, { ...init, redirect: "manual" });
   } catch (err) {
+    console.warn(`[Broker] ${what} broker call to ${url} failed: ${describeFetchFailure(err, { detail: true })}`);
     throw new Error(`Core couldn't reach the ${what} broker: ${describeFetchFailure(err)}`);
   }
 }
@@ -248,6 +266,7 @@ export async function mintViaBroker(
   if (res.status === 401 || res.status === 403) {
     // The broker doesn't know Core's mint secret: it restarted and hasn't
     // re-registered yet (it does on its next heartbeat). Not a login failure.
+    evictBrokerMintSecret(target.id);
     throw new Error(`the session broker refused Core (HTTP ${res.status}); it re-registers within a minute — retry then`);
   }
   if (!res.ok) {
