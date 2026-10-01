@@ -4561,7 +4561,7 @@ export async function registerRoutes(
       // running and the agent retries on the 500.
       let finalized: EvalJob | undefined;
       try {
-        finalized = await storage.finalizeRunningJobWithResult(parseInt(jobId), jobError, resultRow);
+        finalized = await storage.finalizeRunningJobWithResult(parseInt(jobId), jobError, resultRow, agentId);
       } catch (resultError) {
         console.error(`Failed to save the result of job ${jobId}:`, resultError);
         return res.status(500).json({ error: "Failed to save eval results" });

@@ -8,9 +8,14 @@ import { storage, pool } from "../server/storage";
 // result commit together, so that state is never visible.
 const d = process.env.DATABASE_URL ? describe : describe.skip;
 const jobIds: number[] = [];
+const tokenIds: number[] = [];
 
 afterAll(async () => {
   if (jobIds.length) await pool.query("DELETE FROM eval_jobs WHERE id = ANY($1)", [jobIds]);
+  if (tokenIds.length) {
+    await pool.query("DELETE FROM eval_agents WHERE token_id = ANY($1)", [tokenIds]);
+    await pool.query("DELETE FROM eval_agent_tokens WHERE id = ANY($1)", [tokenIds]);
+  }
 });
 
 d("#94 a job and its result are finalized together", () => {
@@ -51,6 +56,26 @@ d("#94 a job and its result are finalized together", () => {
     const p = await provider();
     await storage.finalizeRunningJobWithResult(job.id, undefined, { evalJobId: job.id, providerId: p, siteId: null } as any);
     expect(await storage.finalizeRunningJobWithResult(job.id, undefined, { evalJobId: job.id, providerId: p, siteId: null } as any)).toBeUndefined();
+    expect(await storage.getEvalResultsByJob(job.id)).toHaveLength(1);
+  });
+
+  it("a late completion from an agent that lost the job doesn't finish the next agent's run", async () => {
+    // The complete route checks the job is this agent's, then finalizes. If the
+    // job is requeued and re-claimed in between, the write must not land.
+    const tok = await storage.createEvalAgentToken({
+      name: `atomic-${Date.now()}`, tokenHash: `atomic-${Date.now()}-${Math.random()}`, siteId: null, dispatchTier: "private", createdBy: 1,
+    } as any);
+    tokenIds.push(tok.id);
+    const first = await storage.createEvalAgent({ tokenId: tok.id, name: "atomic-first", state: "idle", metadata: {} } as any);
+    const next = await storage.createEvalAgent({ tokenId: tok.id, name: "atomic-next", state: "occupied", metadata: {} } as any);
+    const job = await mkRunning();
+    await pool.query("UPDATE eval_jobs SET eval_agent_id = $2 WHERE id = $1", [job.id, next.id]); // re-claimed
+    const p = await provider();
+    expect(await storage.finalizeRunningJobWithResult(job.id, undefined, { evalJobId: job.id, providerId: p, siteId: null } as any, first.id)).toBeUndefined();
+    expect((await storage.getEvalJob(job.id))!).toMatchObject({ status: "running", evalAgentId: next.id, completedAt: null });
+    expect(await storage.getEvalResultsByJob(job.id)).toEqual([]);
+    // Its current agent still can.
+    expect(await storage.finalizeRunningJobWithResult(job.id, undefined, { evalJobId: job.id, providerId: p, siteId: null } as any, next.id)).toMatchObject({ status: "completed" });
     expect(await storage.getEvalResultsByJob(job.id)).toHaveLength(1);
   });
 

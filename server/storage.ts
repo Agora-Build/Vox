@@ -1919,8 +1919,11 @@ export class DatabaseStorage {
    * running for the agent's retry. Exactly one caller finalizes a job:
    * undefined when it wasn't running (a duplicate completion, or already
    * failed by a reaper). An analysis deleted meanwhile keeps no result.
+   * With `agentId`, only while that agent still holds the job: the caller's
+   * ownership check and this write can't be split by a requeue + re-claim,
+   * so a late completion never finishes another agent's run.
    */
-  async finalizeRunningJobWithResult(jobId: number, error: string | undefined, result: InsertEvalResult | null): Promise<EvalJob | undefined> {
+  async finalizeRunningJobWithResult(jobId: number, error: string | undefined, result: InsertEvalResult | null, agentId?: number): Promise<EvalJob | undefined> {
     return db.transaction(async (tx) => {
       const [done] = await tx.update(evalJobs)
         .set({
@@ -1929,7 +1932,11 @@ export class DatabaseStorage {
           error: error || null,
           updatedAt: new Date(),
         })
-        .where(and(eq(evalJobs.id, jobId), eq(evalJobs.status, "running")))
+        .where(and(
+          eq(evalJobs.id, jobId),
+          eq(evalJobs.status, "running"),
+          agentId === undefined ? undefined : eq(evalJobs.evalAgentId, agentId),
+        ))
         .returning();
       if (!done) return undefined;
       if (result && !error && !done.deletedAt) await tx.insert(evalResults).values(result);
