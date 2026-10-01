@@ -1848,10 +1848,15 @@ export async function registerRoutes(
     try {
       const user = await getCurrentUser(req);
       if (!user) return res.status(401).json({ error: "Not authenticated" });
-      const job = await findAnalyzeJob(req.params.id, user, true);
-      if (!job) return res.status(404).json({ error: "Analysis not found" });
-      // 1. Stop it, atomically, unless an agent is running it right now.
-      if (!(await storage.stopAnalyzeJobForDelete(job.id))) {
+      const found = await findAnalyzeJob(req.params.id, user, true);
+      if (!found) return res.status(404).json({ error: "Analysis not found" });
+      // 1. Stop it, atomically, unless an agent is running it right now. Use
+      //    the row the stop returns from here on: a completion that committed
+      //    since `found` was read (job + result together, #94) shows up in it,
+      //    and settling from the stale 'running' would skip the capture and
+      //    then delete the result the operator is owed for.
+      const job = await storage.stopAnalyzeJobForDelete(found.id);
+      if (!job) {
         return res.status(409).json({ error: "The analysis is running. Delete it once it finishes (if its eval agent stopped, the analysis is back in the queue within a few minutes)." });
       }
       // A finished paid analysis whose payment wasn't settled yet (its

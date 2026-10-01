@@ -1986,9 +1986,12 @@ export class DatabaseStorage {
    * Deleting an analysis, step 1, atomically: refuse if an agent is running
    * it, and take a pending one off the queue so nothing claims it. A finished
    * one is left as it is, so a delete that fails later changes nothing.
-   * Returns false when it is running (or already deleted).
+   * Returns the row as of this update — which waits out a completion
+   * committing concurrently, so a job that finished since the caller read it
+   * comes back completed. Decide settlement from this, never from an earlier
+   * read. Undefined when it is running (or already deleted).
    */
-  async stopAnalyzeJobForDelete(id: number): Promise<boolean> {
+  async stopAnalyzeJobForDelete(id: number): Promise<EvalJob | undefined> {
     const pending = sql`${evalJobs.status} = 'pending'`;
     const rows = await db.update(evalJobs)
       .set({
@@ -1998,8 +2001,8 @@ export class DatabaseStorage {
         updatedAt: new Date(),
       })
       .where(and(eq(evalJobs.id, id), eq(evalJobs.kind, "analyze"), ne(evalJobs.status, "running"), isNull(evalJobs.deletedAt)))
-      .returning({ id: evalJobs.id });
-    return rows.length > 0;
+      .returning();
+    return rows[0];
   }
 
   /**
