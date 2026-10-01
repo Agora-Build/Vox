@@ -3593,10 +3593,12 @@ export async function registerRoutes(
     }
   }
 
-  // A revoked token's queued jobs can never run (its agent is refused on every
-  // path): fail them now and settle any paid ones, so the renter is refunded
-  // at once instead of after a reaper or the 24h backstop (#214). Jobs created
-  // concurrently are covered by createEvalJobForLiveToken's lock.
+  // The jobs AIMED at a revoked token (targeted runs, paid analyses) can never
+  // run: its agent is refused on every path. Fail them now and settle the paid
+  // ones, so the renter is refunded at once instead of after a reaper or the
+  // 24h backstop (#214). Jobs created concurrently are covered by
+  // createEvalJobForLiveToken's lock. Pooled jobs the token's agent was running
+  // aren't touched: the reaper requeues them for another agent.
   async function failJobsOfRevokedToken(tokenId: number): Promise<void> {
     let failed: EvalJob[];
     try {
@@ -3641,8 +3643,9 @@ export async function registerRoutes(
       }
 
       await storage.revokeEvalAgentToken(parseInt(id));
-      await unlistRevokedToken(parseInt(id));
+      // Its jobs first: their refunds mustn't depend on the unlist step.
       await failJobsOfRevokedToken(parseInt(id));
+      await unlistRevokedToken(parseInt(id));
       res.json({ message: "Eval agent token revoked" });
     } catch (error) {
       console.error("Error revoking eval agent token:", error);
@@ -3812,8 +3815,9 @@ export async function registerRoutes(
     try {
       const { id } = req.params;
       await storage.revokeEvalAgentToken(parseInt(id));
-      await unlistRevokedToken(parseInt(id));
+      // Its jobs first: their refunds mustn't depend on the unlist step.
       await failJobsOfRevokedToken(parseInt(id));
+      await unlistRevokedToken(parseInt(id));
       res.json({ message: "Eval agent token revoked" });
     } catch (error) {
       console.error("Error revoking eval agent token:", error);

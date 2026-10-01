@@ -1,19 +1,20 @@
 import { describe, it, expect } from "vitest";
+import { getTableColumns } from "drizzle-orm";
+import { evalAgentTokens } from "../shared/schema";
 import { pool } from "../server/storage";
 
 // #215: agent tokens end by revocation (checked on every agent path); they
-// don't expire. The half-built expires_at column — never set, read only by
-// registration — is gone, so no check can behave differently from the others.
-const d = process.env.DATABASE_URL ? describe : describe.skip;
-
-d("#215 agent tokens have no expiry", () => {
-  it("eval_agent_tokens has no expires_at column", async () => {
-    const r = await pool.query(
-      "SELECT 1 FROM information_schema.columns WHERE table_name = 'eval_agent_tokens' AND column_name = 'expires_at'",
-    );
-    expect(r.rowCount).toBe(0);
+// don't expire. The half-built expires_at — never set, read only by
+// registration — is out of the code: nothing selects or checks it. (The
+// column itself is dropped in a later release, so during a deploy the old
+// container never queries a missing column.)
+describe("#215 agent tokens have no expiry", () => {
+  it("the code no longer has the column", () => {
+    expect(Object.keys(getTableColumns(evalAgentTokens))).not.toContain("expiresAt");
   });
 });
+
+const d = process.env.DATABASE_URL ? describe : describe.skip;
 
 d("#219 the analyze lookups have their index", () => {
   it("a user's analyses are read through eval_jobs_analyze_creator_idx", async () => {

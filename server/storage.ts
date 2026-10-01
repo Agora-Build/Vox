@@ -1120,9 +1120,11 @@ export class DatabaseStorage {
   }
 
   /**
-   * Fail the jobs aimed at a token that was just revoked (#214): queued ones,
-   * and running ones too — its agent is refused from now on, so a running job
+   * Fail the jobs AIMED at a token that was just revoked (#214) — queued ones,
+   * and running ones too: its agent is refused from now on, so a running job
    * could never complete, and requeued it would wait aimed at a dead token.
+   * Pooled jobs its agent happened to be running are left to the reaper,
+   * which requeues them for another agent.
    */
   async failOpenJobsForToken(tokenId: number): Promise<EvalJob[]> {
     return db.update(evalJobs)

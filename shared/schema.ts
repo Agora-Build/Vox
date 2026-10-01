@@ -233,6 +233,9 @@ export const evalAgentTokens = pgTable("eval_agent_tokens", {
   dispatchTier: dispatchTierEnum("dispatch_tier").default("public").notNull(),
   createdBy: integer("created_by").notNull().references(() => users.id),
   // Tokens end by revocation (checked on every agent path); they don't expire.
+  // (The old expires_at column still exists in the database, unread; it is
+  // dropped in a later release, so a deploy's old container never queries a
+  // missing column.)
   isRevoked: boolean("is_revoked").default(false).notNull(),
   lastUsedAt: timestamp("last_used_at"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
