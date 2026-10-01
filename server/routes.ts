@@ -10,7 +10,7 @@ import { deriveScheduleStatus } from "@shared/schedule-status";
 import { regionSiteSequence } from "@shared/regions";
 import { registerApiV1Routes } from "./routes-api-v1";
 import { generateSignedUrlForUser, userBucket, putObject, getObjectStream, deleteObject, type UserBucket } from "./s3";
-import { checkStorageEndpoint } from "./storage-endpoint";
+import { checkStorageEndpoint, StorageEndpointError } from "./storage-endpoint";
 import { parseWavHeader, analyzeWavError, ANALYZE_MAX_BYTES, ANALYZE_HEADER_BYTES } from "@shared/wav";
 import type { EvalJob, InsertEvalJob, JobSnapshot } from "@shared/schema";
 import { forAgentJobList, pipeToResponse } from "./analyze";
@@ -611,24 +611,41 @@ export async function registerRoutes(
 
   // ==================== ADMIN USER ROUTES ====================
 
+  // One page of users at a time (#209): ?limit= (default 50, at most 200),
+  // ?offset=, ?q= (email or username contains). Newest first. The summary
+  // counts cover all users.
   app.get("/api/admin/users", requireAuth, requireAdmin, async (req, res) => {
     try {
-      const users = await storage.getAllUsers();
+      const num = (v: unknown, fallback: number) => (v === undefined || v === "" ? fallback : Number(v));
+      const limit = num(req.query.limit, 50);
+      const offset = num(req.query.offset, 0);
+      if (!Number.isInteger(limit) || limit < 1 || !Number.isInteger(offset) || offset < 0) {
+        return res.status(400).json({ error: "limit must be a positive integer and offset a non-negative integer" });
+      }
+      const q = typeof req.query.q === "string" && req.query.q.trim() !== "" ? req.query.q.trim().slice(0, 200) : undefined;
+      const [{ rows: users, total }, stats] = await Promise.all([
+        storage.listUsersPage({ limit: Math.min(limit, 200), offset, q }),
+        storage.userStats(),
+      ]);
       // Other users' affiliation comes from the seam, not their raw rows — one
       // batch lookup, response shape unchanged. Absent provider ⇒ empty map,
       // same downstream effect as no member having an org.
       const memberships = (await getOrganizations()?.getMemberships(users.map(u => u.id))) ?? new Map<number, Membership>();
-      res.json(users.map(u => ({
-        id: u.id,
-        username: u.username,
-        email: u.email,
-        plan: u.plan,
-        isAdmin: u.isAdmin,
-        isEnabled: u.isEnabled,
-        emailVerified: !!u.emailVerifiedAt,
-        organizationId: memberships.get(u.id)?.organizationId ?? null,
-        createdAt: u.createdAt,
-      })));
+      res.json({
+        data: users.map(u => ({
+          id: u.id,
+          username: u.username,
+          email: u.email,
+          plan: u.plan,
+          isAdmin: u.isAdmin,
+          isEnabled: u.isEnabled,
+          emailVerified: !!u.emailVerifiedAt,
+          organizationId: memberships.get(u.id)?.organizationId ?? null,
+          createdAt: u.createdAt,
+        })),
+        total,
+        stats,
+      });
     } catch (error) {
       console.error("Error fetching users:", error);
       res.status(500).json({ error: "Failed to fetch users" });
@@ -1551,8 +1568,12 @@ export async function registerRoutes(
 
   // The uploader's storage as ONE resolved handle (null: none set, or an
   // endpoint Core may not connect to). Each operation checks and uses this
-  // same handle, so the bucket it compares is the bucket it touches.
-  const ownersBucket = (userId: number) => userBucket(userId).catch(() => null);
+  // same handle, so the bucket it compares is the bucket it touches. Any other
+  // failure (the database, a credential that won't decrypt) is not "storage
+  // moved": it propagates, so the caller answers with a retryable error and
+  // keeps the row (and the key to the file) (#219).
+  const ownersBucket = (userId: number) =>
+    userBucket(userId).catch((e) => { if (e instanceof StorageEndpointError) return null; throw e; });
   // Whether the recording isn't in that bucket: the user changed or removed
   // their storage since the upload. (Rows from before the location was
   // recorded: only "no usable storage" counts.)
@@ -1561,6 +1582,14 @@ export async function registerRoutes(
   const movedMessage = (a: NonNullable<JobSnapshot["analyze"]>) => a.storage
     ? `Your storage settings changed since this recording was uploaded: it is in bucket "${a.storage.bucket}" at ${a.storage.endpoint}.`
     : "Your storage settings changed since this recording was uploaded.";
+
+  type AnalyzeInput = {
+    provider: NonNullable<Awaited<ReturnType<typeof storage.getProvider>>>;
+    region: NonNullable<Awaited<ReturnType<typeof storage.getRegionLocationByBaseId>>>;
+    source: "web" | "phone";
+    fileName: string;
+    paidToken: { id: number; siteId: string | null } | null;
+  };
 
   // Who may upload at all — checked before the body parser, so neither a
   // stranger nor a user who'd be refused can make Core buffer 100 MB.
@@ -1580,6 +1609,35 @@ export async function registerRoutes(
       } catch (e) {
         return res.status(409).json({ error: e instanceof Error ? e.message : "Storage endpoint not allowed", needs: "storage" });
       }
+      // What is being uploaded, checked here — before the body (up to 100 MB)
+      // is read — so a request that will be refused costs nothing.
+      const q = req.query;
+      const provider = typeof q.provider === "string" ? await storage.getProvider(q.provider) : undefined;
+      if (!provider) return res.status(400).json({ error: "Choose a provider." });
+      const region = typeof q.region === "string" ? await storage.getRegionLocationByBaseId(q.region) : undefined;
+      // Active regions only: a retired one takes no new results.
+      if (!region || !region.isActive) return res.status(400).json({ error: "Choose the region the recording was made in." });
+      const source = q.source;
+      if (source !== "web" && source !== "phone") return res.status(400).json({ error: "Choose the recording's source: web or phone." });
+      const fileName = (typeof q.fileName === "string" ? path.basename(q.fileName) : "").slice(0, 200) || "recording.wav";
+
+      // Paid: a marketplace agent the uploader picked. Its operator receives
+      // the recording, so that needs the uploader's explicit consent.
+      let paidToken: { id: number; siteId: string | null } | null = null;
+      if (typeof q.agent === "string" && q.agent !== "") {
+        const tokenId = Number(q.agent);
+        const token = Number.isInteger(tokenId) && tokenId > 0 ? await storage.getEvalAgentToken(tokenId) : undefined;
+        if (!token || token.isRevoked || token.dispatchTier !== "shared" || !getMarketplace()) {
+          return res.status(400).json({ error: "Choose a marketplace agent from the list." });
+        }
+        if (!(await agentCanAnalyze(token.id))) return res.status(400).json({ error: "That agent can't run analyses. Choose another." });
+        if (q.consent !== "1") {
+          return res.status(400).json({ error: "Confirm that the agent's operator will receive your recording (consent)." });
+        }
+        paidToken = { id: token.id, siteId: token.siteId };
+      }
+      res.locals.analyzeInput = { provider, region, source, fileName, paidToken } satisfies AnalyzeInput;
+
       // Deleted analyses count too: deleting one doesn't give back a slot.
       if (await storage.countAnalyzeJobsSince(user.id, new Date(Date.now() - 24 * 60 * 60 * 1000)) >= ANALYZE_DAILY_CAP) {
         return res.status(429).json({ error: `You can analyze up to ${ANALYZE_DAILY_CAP} recordings a day.` });
@@ -1615,31 +1673,8 @@ export async function registerRoutes(
     if (!user) return res.status(401).json({ error: "Not authenticated" });
     try {
 
-      const q = req.query;
-      const provider = typeof q.provider === "string" ? await storage.getProvider(q.provider) : undefined;
-      if (!provider) return res.status(400).json({ error: "Choose a provider." });
-      const region = typeof q.region === "string" ? await storage.getRegionLocationByBaseId(q.region) : undefined;
-      // Active regions only: a retired one takes no new results.
-      if (!region || !region.isActive) return res.status(400).json({ error: "Choose the region the recording was made in." });
-      const source = q.source;
-      if (source !== "web" && source !== "phone") return res.status(400).json({ error: "Choose the recording's source: web or phone." });
-      const fileName = (typeof q.fileName === "string" ? path.basename(q.fileName) : "").slice(0, 200) || "recording.wav";
-
-      // Paid: a marketplace agent the uploader picked. Its operator receives
-      // the recording, so that needs the uploader's explicit consent.
-      let paidToken: { id: number; siteId: string | null } | null = null;
-      if (typeof q.agent === "string" && q.agent !== "") {
-        const tokenId = Number(q.agent);
-        const token = Number.isInteger(tokenId) && tokenId > 0 ? await storage.getEvalAgentToken(tokenId) : undefined;
-        if (!token || token.isRevoked || token.dispatchTier !== "shared" || !getMarketplace()) {
-          return res.status(400).json({ error: "Choose a marketplace agent from the list." });
-        }
-        if (!(await agentCanAnalyze(token.id))) return res.status(400).json({ error: "That agent can't run analyses. Choose another." });
-        if (q.consent !== "1") {
-          return res.status(400).json({ error: "Confirm that the agent's operator will receive your recording (consent)." });
-        }
-        paidToken = { id: token.id, siteId: token.siteId };
-      }
+      // Checked by analyzeUploadGate before the body was read.
+      const { provider, region, source, fileName, paidToken } = res.locals.analyzeInput as AnalyzeInput;
 
       const body = req.body;
       if (!Buffer.isBuffer(body) || body.length === 0) {
@@ -1675,9 +1710,9 @@ export async function registerRoutes(
         settlementContext = authz.settlementContext;
       }
 
-      let job: EvalJob;
+      let job: EvalJob | null;
       try {
-        job = await storage.createEvalJob({
+        const jobValues = {
         kind: "analyze",
         evalFlowId: null,
         evalSetId: null,
@@ -1711,7 +1746,10 @@ export async function registerRoutes(
         priority: -10,
         retryCount: 0,
         maxRetries: 3,
-      } as InsertEvalJob);
+      } as InsertEvalJob;
+        // Paid: only while the agent's token is live, locked against a
+        // concurrent revoke (#214).
+        job = paidToken ? await storage.createEvalJobForLiveToken(jobValues, paidToken.id) : await storage.createEvalJob(jobValues);
       } catch (err) {
         // No job to settle: release the hold now instead of leaving it to the
         // leak reaper.
@@ -1723,6 +1761,11 @@ export async function registerRoutes(
         await deleteObject(bucket, s3Key).catch((e) =>
           console.error(`[analyze] removing ${s3Key} after a failed insert failed:`, e instanceof Error ? e.message : e));
         throw err;
+      }
+      if (!job) {
+        if (settlementContext !== undefined) await getMarketplace()?.voidDispatch(settlementContext).catch(() => {});
+        await deleteObject(bucket, s3Key).catch(() => {});
+        return res.status(409).json({ error: "That agent was revoked. Choose another." });
       }
       res.status(201).json(analyzeView(job, false));
     } catch (error) {
@@ -1810,6 +1853,29 @@ export async function registerRoutes(
       // 1. Stop it, atomically, unless an agent is running it right now.
       if (!(await storage.stopAnalyzeJobForDelete(job.id))) {
         return res.status(409).json({ error: "The analysis is running. Delete it once it finishes (if its eval agent stopped, the analysis is back in the queue within a few minutes)." });
+      }
+      // A finished paid analysis whose payment wasn't settled yet (its
+      // settle threw on completion): capture it now, while its result still
+      // exists — deleting first would leave the sweep to refund real work.
+      const settlementContext = (job.snapshot as JobSnapshot | null)?.settlementContext;
+      const marketplace = getMarketplace();
+      if (job.status === "completed" && settlementContext !== undefined && !job.settlementDoneAt) {
+        // Without the marketplace the payment can't be captured now; deleting
+        // the result would leave a later sweep to refund real work.
+        if (!marketplace) return res.status(503).json({ error: "Payments are unavailable right now. Try deleting this analysis later." });
+        // Completed but its result isn't stored yet: the complete route is
+        // still finishing it, and settling now (with no result) would refund
+        // the work. Let that request settle it; delete afterwards.
+        if ((await storage.getEvalResultsByJob(job.id)).length === 0) {
+          return res.status(409).json({ error: "This analysis is still finishing. Try deleting it again in a moment." });
+        }
+        try {
+          await marketplace.settle({ jobId: job.id, status: job.status, hasResult: true, settlementContext });
+          await storage.markSettlementDone(job);
+        } catch (err) {
+          console.error(`[analyze] settling analysis ${job.id} before its delete failed:`, err);
+          return res.status(503).json({ error: "Settling this analysis's payment failed. Try deleting it again in a minute." });
+        }
       }
       // 2. The recording leaves the bucket. If that fails, the row (and the
       //    key to the file) stays, so deleting again retries.
@@ -3532,6 +3598,36 @@ export async function registerRoutes(
     }
   }
 
+  // The jobs AIMED at a revoked token (targeted runs, paid analyses) can never
+  // run: its agent is refused on every path. Fail them now and settle the paid
+  // ones, so the renter is refunded at once instead of after a reaper or the
+  // 24h backstop (#214). Jobs created concurrently are covered by
+  // createEvalJobForLiveToken's lock. Pooled jobs the token's agent was running
+  // aren't touched: the reaper requeues them for another agent.
+  async function failJobsOfRevokedToken(tokenId: number): Promise<void> {
+    let failed: EvalJob[];
+    try {
+      failed = await storage.failOpenJobsForToken(tokenId);
+    } catch (err) {
+      // The revoke itself has happened; don't report it as failed. The jobs
+      // fall to the reapers and the sweep then refunds them.
+      console.error(`[revoke] failing the jobs of revoked token ${tokenId} failed:`, err);
+      return;
+    }
+    const marketplace = getMarketplace();
+    for (const job of failed) {
+      const settlementContext = (job.snapshot as { settlementContext?: unknown } | null)?.settlementContext;
+      if (!marketplace || settlementContext === undefined) continue;
+      try {
+        await marketplace.settle({ jobId: job.id, status: job.status, hasResult: false, settlementContext });
+        await storage.markSettlementDone(job);
+      } catch (err) {
+        // The reap-settle sweep retries it.
+        console.error(`[marketplace] refunding job ${job.id} of revoked token ${tokenId} failed:`, err);
+      }
+    }
+  }
+
   app.post("/api/eval-agent-tokens/:id/revoke", requireAuth, async (req, res) => {
     try {
       const user = await getCurrentUser(req);
@@ -3552,6 +3648,8 @@ export async function registerRoutes(
       }
 
       await storage.revokeEvalAgentToken(parseInt(id));
+      // Its jobs first: their refunds mustn't depend on the unlist step.
+      await failJobsOfRevokedToken(parseInt(id));
       await unlistRevokedToken(parseInt(id));
       res.json({ message: "Eval agent token revoked" });
     } catch (error) {
@@ -3722,6 +3820,8 @@ export async function registerRoutes(
     try {
       const { id } = req.params;
       await storage.revokeEvalAgentToken(parseInt(id));
+      // Its jobs first: their refunds mustn't depend on the unlist step.
+      await failJobsOfRevokedToken(parseInt(id));
       await unlistRevokedToken(parseInt(id));
       res.json({ message: "Eval agent token revoked" });
     } catch (error) {
@@ -4025,10 +4125,6 @@ export async function registerRoutes(
         return res.status(403).json({ error: "Eval agent token has been revoked" });
       }
 
-      if (evalAgentToken.expiresAt && new Date() > new Date(evalAgentToken.expiresAt)) {
-        return res.status(403).json({ error: "Eval agent token has expired" });
-      }
-
       const { name, metadata } = req.body;
 
       // Capability declaration (design 2026-09-21 §8): validated allowlist; the
@@ -4310,7 +4406,8 @@ export async function registerRoutes(
       // are fenced by region+tier inside claimEvalJob's predicate — including a
       // requeued one, which still carries its first claimer's site (#216).
       if (existingJob.targetRegion == null && existingJob.siteId != null && existingJob.siteId !== eff.siteId) {
-        return res.status(403).json({ error: "Job site does not match agent site" });
+        // About this job, not this agent: 409, so the agent tries the next one.
+        return res.status(409).json({ error: "Job site does not match agent site" });
       }
 
       // Freeze the claiming agent's token dispatch tier onto the job in the SAME
@@ -4456,9 +4553,11 @@ export async function registerRoutes(
               falseInterruptRate: results.falseInterruptRate ?? null,
               turnSuccessRate: results.turnSuccessRate ?? null,
               callMetadata: callMetadata ?? null,
-              networkResilience: results.networkResilience,
-              naturalness: results.naturalness,
-              noiseReduction: results.noiseReduction,
+              // An eval agent older than #217 still sends its placeholder
+              // triple (85 / 3.5 / 90), never measured: store N/A instead.
+              ...(results.networkResilience === 85 && results.naturalness === 3.5 && results.noiseReduction === 90
+                ? { networkResilience: null, naturalness: null, noiseReduction: null }
+                : { networkResilience: results.networkResilience ?? null, naturalness: results.naturalness ?? null, noiseReduction: results.noiseReduction ?? null }),
               rawData: results.rawData || {},
             });
           } catch (resultError) {
@@ -5317,7 +5416,7 @@ export async function registerRoutes(
           // ensureSession never throws and records failures on the web_sessions row.
           void ensureSession(scope, sessionNeed);
         }
-        job = await storage.createEvalJob({
+        const jobValues = {
           evalFlowId: parseInt(evalFlowId),
           triggerType: 2, // manual (Run EvalFlow)
           evalSetId,
@@ -5330,11 +5429,18 @@ export async function registerRoutes(
           targetTokenId: targeting,
           config: jobConfig,
           snapshot,
-          status: "pending",
+          status: "pending" as const,
           priority: 0,
           retryCount: 0,
           maxRetries: 3,
-        });
+        };
+        // Aimed at one agent: create it only while that token is live, locked
+        // against a concurrent revoke (#214).
+        job = targeting == null ? await storage.createEvalJob(jobValues) : await storage.createEvalJobForLiveToken(jobValues, targeting);
+        if (!job) {
+          if (settlementContext !== undefined) await getMarketplace()?.voidDispatch(settlementContext).catch(() => {});
+          return res.status(409).json({ error: "That agent was revoked. Choose another." });
+        }
       } catch (createErr) {
         // A shared dispatch was authorized (escrow hold placed) but no job now exists
         // to settle it. Compensate by releasing the hold immediately rather than
@@ -5865,9 +5971,10 @@ export async function registerRoutes(
       // Turn Success Rate (0..1), or null. The quality/resilience axis — kept as
       // null (not 0) so "no data" doesn't read as "0% success".
       turnSuccessRate: r.turnSuccessRate ?? null,
-      networkResilience: r.networkResilience || 0,
-      naturalness: r.naturalness || 0,
-      noiseReduction: r.noiseReduction || 0,
+      // null = not measured (N/A), never 0 (#217).
+      networkResilience: r.networkResilience ?? null,
+      naturalness: r.naturalness ?? null,
+      noiseReduction: r.noiseReduction ?? null,
       timestamp: r.createdAt,
       // EvalFlow identity for the hover tooltip (raw rows only; null on buckets).
       evalFlowId: r.evalFlowId ?? null,

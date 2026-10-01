@@ -696,6 +696,27 @@ export class DatabaseStorage {
     return db.select().from(users).orderBy(desc(users.createdAt));
   }
 
+  /** One page of users, newest first, optionally filtered by email/username (#209). */
+  async listUsersPage(opts: { limit: number; offset: number; q?: string }): Promise<{ rows: User[]; total: number }> {
+    const like = opts.q ? `%${opts.q.replace(/[\\%_]/g, (c) => "\\" + c)}%` : null;
+    const where = like ? or(sql`${users.email} ILIKE ${like}`, sql`${users.username} ILIKE ${like}`) : undefined;
+    const [rows, count] = await Promise.all([
+      db.select().from(users).where(where).orderBy(desc(users.createdAt), desc(users.id)).limit(opts.limit).offset(opts.offset),
+      db.select({ n: sql<number>`count(*)::int` }).from(users).where(where),
+    ]);
+    return { rows, total: count[0]?.n ?? 0 };
+  }
+
+  /** The Users page's summary counts, over all users. */
+  async userStats(): Promise<{ total: number; admins: number; premium: number }> {
+    const [r] = await db.select({
+      total: sql<number>`count(*)::int`,
+      admins: sql<number>`count(*) FILTER (WHERE ${users.isAdmin})::int`,
+      premium: sql<number>`count(*) FILTER (WHERE ${users.plan} = 'premium')::int`,
+    }).from(users);
+    return r;
+  }
+
   // org-columns: provider — batch row fetch behind the deleted built-in
   // provider's getMemberships(); still used by non-org batch callers.
   async getUsersByIds(ids: number[]): Promise<User[]> {
@@ -1082,6 +1103,36 @@ export class DatabaseStorage {
     await db.update(evalAgentTokens).set({ isRevoked: true }).where(eq(evalAgentTokens.id, id));
   }
 
+  /**
+   * Create a job aimed at one token — only if that token isn't revoked (#214).
+   * The token row is locked for the insert, so this serializes with a revoke:
+   * either the revoke comes first and this returns null (no job), or the job
+   * exists before the revoke and failPendingJobsForToken sees it.
+   */
+  async createEvalJobForLiveToken(job: InsertEvalJob, tokenId: number): Promise<EvalJob | null> {
+    return db.transaction(async (tx) => {
+      const rows = await tx.execute(sql`SELECT is_revoked FROM eval_agent_tokens WHERE id = ${tokenId} FOR UPDATE`);
+      const row = (rows as unknown as { rows: Array<{ is_revoked: boolean }> }).rows[0];
+      if (!row || row.is_revoked) return null;
+      const [created] = await tx.insert(evalJobs).values(this.jobRow(job)).returning();
+      return created;
+    });
+  }
+
+  /**
+   * Fail the jobs AIMED at a token that was just revoked (#214) — queued ones,
+   * and running ones too: its agent is refused from now on, so a running job
+   * could never complete, and requeued it would wait aimed at a dead token.
+   * Pooled jobs its agent happened to be running are left to the reaper,
+   * which requeues them for another agent.
+   */
+  async failOpenJobsForToken(tokenId: number): Promise<EvalJob[]> {
+    return db.update(evalJobs)
+      .set({ status: "failed", error: "Its eval agent was revoked.", completedAt: new Date(), updatedAt: new Date() })
+      .where(and(eq(evalJobs.targetTokenId, tokenId), inArray(evalJobs.status, ["pending", "running"])))
+      .returning();
+  }
+
   async updateEvalAgentTokenDispatchTier(id: number, dispatchTier: string): Promise<void> {
     await db.update(evalAgentTokens)
       .set({ dispatchTier: dispatchTier as typeof evalAgentTokens.$inferInsert["dispatchTier"] })
@@ -1258,15 +1309,18 @@ export class DatabaseStorage {
     return result[0]?.count ?? 0;
   }
 
-  async createEvalJob(job: InsertEvalJob): Promise<EvalJob> {
-    // Stamp the frozen transport column from the snapshot (single choke point —
-    // covers the run route AND the scheduler; creator_org_id pattern, design §3).
+  // The row a new job is inserted as: the frozen transport column stamped from
+  // the snapshot (creator_org_id pattern, design §3). The single choke point
+  // for every job insert — createEvalJob and createEvalJobForLiveToken.
+  private jobRow(job: InsertEvalJob): typeof evalJobs.$inferInsert {
     const transport = ((job.snapshot as JobSnapshot | null)?.transport ?? "web") as "web" | "phone";
     // Cast: the Zod insert type widens the `snapshot` jsonb ($type<JobSnapshot>)
     // to a looser shape; the runtime value is a valid JobSnapshot.
-    const result = await db.insert(evalJobs)
-      .values({ ...(job as typeof evalJobs.$inferInsert), transport })
-      .returning();
+    return { ...(job as typeof evalJobs.$inferInsert), transport };
+  }
+
+  async createEvalJob(job: InsertEvalJob): Promise<EvalJob> {
+    const result = await db.insert(evalJobs).values(this.jobRow(job)).returning();
     return result[0];
   }
 

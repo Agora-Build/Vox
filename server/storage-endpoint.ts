@@ -28,6 +28,8 @@ for (const [base, bits] of [
   ["fe80::", 10],    // link-local
   ["fc00::", 7],     // unique local
   ["ff00::", 8],     // multicast
+  ["2002::", 16],    // 6to4: embeds an IPv4 address, internal ones included
+  ["2001::", 32],    // Teredo: likewise
 ] as const) blocked.addSubnet(base, bits, "ipv6");
 
 /** Whether Core must not connect to this address. */
@@ -37,15 +39,18 @@ export function isBlockedAddress(ip: string): boolean {
   return true; // not an address at all
 }
 
-/** Throws when Core may not use this storage endpoint. */
+/** The user's storage endpoint is one Core may not connect to. */
+export class StorageEndpointError extends Error {}
+
+/** Throws StorageEndpointError when Core may not use this storage endpoint. */
 export function checkStorageEndpoint(raw: string): void {
   let url: URL;
-  try { url = new URL(raw); } catch { throw new Error("The storage endpoint is not a valid URL."); }
+  try { url = new URL(raw); } catch { throw new StorageEndpointError("The storage endpoint is not a valid URL."); }
   if (allowPrivate()) return;
-  if (url.protocol !== "https:") throw new Error("Analyze needs storage at a public HTTPS address.");
+  if (url.protocol !== "https:") throw new StorageEndpointError("Analyze needs storage at a public HTTPS address.");
   const host = url.hostname.replace(/^\[|\]$/g, "").toLowerCase();
   if (host === "localhost" || host.endsWith(".localhost") || (net.isIP(host) && isBlockedAddress(host))) {
-    throw new Error("Analyze needs storage at a public HTTPS address.");
+    throw new StorageEndpointError("Analyze needs storage at a public HTTPS address.");
   }
 }
 
