@@ -225,4 +225,22 @@ d("practical: Analyze on a marketplace agent, for credits", () => {
     const again = await upload(r.cookie, { agent: String(agentToRevoke.tokenId), consent: "1" });
     expect(again.status).toBe(400);
   }, 120_000);
+
+  it("deleting a finished paid analysis whose payment wasn't settled captures it first (#219)", async () => {
+    const r = await renter(100);
+    const renterBefore = await balance(r.cookie);
+    const operatorBefore = await balance(admin);
+    const up = await upload(r.cookie, { agent: String(paidAgent.tokenId), consent: "1" });
+    expect(up.status).toBe(201);
+    const { id } = await up.json();
+    // Finished with a result, but its settle never ran (as when it threw on
+    // completion): the hold is still held.
+    await pool.query("UPDATE eval_jobs SET status = 'completed', completed_at = now(), eval_agent_id = $2 WHERE id = $1", [id, paidAgent.agentId]);
+    await storage.createAnalyzeResult({ evalJobId: id, providerId: provider, siteId: null, responseLatencyMedian: 900 } as any);
+    expect((await call(r.cookie, "DELETE", `/api/tools/analyze/${id}`)).status).toBe(204);
+    const charge = computeCharge(PRICE, 1);
+    expect(await balance(admin)).toBe(operatorBefore + charge - computeFee(charge)); // paid for the real result
+    expect(await balance(r.cookie)).toBe(renterBefore - charge);                    // not refunded
+    expect((await storage.getEvalJob(id))!.settlementDoneAt).not.toBeNull();
+  }, 120_000);
 });

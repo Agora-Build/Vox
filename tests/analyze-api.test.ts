@@ -98,6 +98,11 @@ d("Tools → Analyze API", () => {
       [makeWav({ channels: 2, rate: 16000, bits: 16, seconds: 1, extra: [["JUNK", 1100 * 1024]] }), good(), /first 1 MB/],
       [stereo, { ...good(), source: "carrier-pigeon" }, /source/i],
     ];
+    // Refused before the body is read: a 101 MB body with a bad provider is a
+    // 400 about the provider, not a 413 about its size.
+    const big = await upload(user.cookie, new Uint8Array(101 * 1024 * 1024), { ...good(), provider: "nope" });
+    expect(big.status).toBe(400);
+    expect((await big.json()).error).toMatch(/provider/i);
     for (const [body, q, reason] of cases) {
       const res = await upload(user.cookie, body, q);
       expect(res.status).toBe(400);
@@ -300,6 +305,27 @@ d("Tools → Analyze API", () => {
       expect((await res.json()).error).toMatch(/public HTTPS/);
     } finally {
       await pool.query("DELETE FROM user_storage_config WHERE user_id = $1", [other.id]);
+    }
+  });
+
+  it("a storage error that isn't 'storage moved' keeps the analysis, for a retry", async () => {
+    const job = await storage.createEvalJob({
+      kind: "analyze", evalFlowId: null, triggerType: 2, evalSetId: null, createdBy: user.id,
+      siteId: null, targetRegion: null, targetTier: null, config: {},
+      snapshot: { provider: null, evalFlow: null, evalSet: null, creatorPlan: "premium", transport: "web",
+        analyze: { fileName: "x.wav", s3Key: "vox-analyze/x.wav", sha256: "0", sizeBytes: 1, durationSec: 1, recordingRegion: region,
+          storage: { endpoint: "https://s3.invalid", bucket: "b" } } } as any,
+      status: "completed", priority: -10, retryCount: 0, maxRetries: 3,
+    } as any);
+    // The stored credential can't be decrypted (as after a key mix-up).
+    const saved = (await pool.query("SELECT s3_access_key_id FROM user_storage_config WHERE user_id = $1", [user.id])).rows[0].s3_access_key_id;
+    await pool.query("UPDATE user_storage_config SET s3_access_key_id = 'not-ciphertext' WHERE user_id = $1", [user.id]);
+    try {
+      const res = await fetch(`${BASE_URL}/api/tools/analyze/${job.id}`, { method: "DELETE", headers: { Cookie: user.cookie } });
+      expect(res.status).toBe(500);
+      expect((await storage.getEvalJob(job.id))!.deletedAt).toBeNull(); // still there, key and all
+    } finally {
+      await pool.query("UPDATE user_storage_config SET s3_access_key_id = $2 WHERE user_id = $1", [user.id, saved]);
     }
   });
 

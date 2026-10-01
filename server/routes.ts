@@ -10,7 +10,7 @@ import { deriveScheduleStatus } from "@shared/schedule-status";
 import { regionSiteSequence } from "@shared/regions";
 import { registerApiV1Routes } from "./routes-api-v1";
 import { generateSignedUrlForUser, userBucket, putObject, getObjectStream, deleteObject, type UserBucket } from "./s3";
-import { checkStorageEndpoint } from "./storage-endpoint";
+import { checkStorageEndpoint, StorageEndpointError } from "./storage-endpoint";
 import { parseWavHeader, analyzeWavError, ANALYZE_MAX_BYTES, ANALYZE_HEADER_BYTES } from "@shared/wav";
 import type { EvalJob, InsertEvalJob, JobSnapshot } from "@shared/schema";
 import { forAgentJobList, pipeToResponse } from "./analyze";
@@ -1551,8 +1551,12 @@ export async function registerRoutes(
 
   // The uploader's storage as ONE resolved handle (null: none set, or an
   // endpoint Core may not connect to). Each operation checks and uses this
-  // same handle, so the bucket it compares is the bucket it touches.
-  const ownersBucket = (userId: number) => userBucket(userId).catch(() => null);
+  // same handle, so the bucket it compares is the bucket it touches. Any other
+  // failure (the database, a credential that won't decrypt) is not "storage
+  // moved": it propagates, so the caller answers with a retryable error and
+  // keeps the row (and the key to the file) (#219).
+  const ownersBucket = (userId: number) =>
+    userBucket(userId).catch((e) => { if (e instanceof StorageEndpointError) return null; throw e; });
   // Whether the recording isn't in that bucket: the user changed or removed
   // their storage since the upload. (Rows from before the location was
   // recorded: only "no usable storage" counts.)
@@ -1561,6 +1565,14 @@ export async function registerRoutes(
   const movedMessage = (a: NonNullable<JobSnapshot["analyze"]>) => a.storage
     ? `Your storage settings changed since this recording was uploaded: it is in bucket "${a.storage.bucket}" at ${a.storage.endpoint}.`
     : "Your storage settings changed since this recording was uploaded.";
+
+  type AnalyzeInput = {
+    provider: NonNullable<Awaited<ReturnType<typeof storage.getProvider>>>;
+    region: NonNullable<Awaited<ReturnType<typeof storage.getRegionLocationByBaseId>>>;
+    source: "web" | "phone";
+    fileName: string;
+    paidToken: { id: number; siteId: string | null } | null;
+  };
 
   // Who may upload at all — checked before the body parser, so neither a
   // stranger nor a user who'd be refused can make Core buffer 100 MB.
@@ -1580,6 +1592,35 @@ export async function registerRoutes(
       } catch (e) {
         return res.status(409).json({ error: e instanceof Error ? e.message : "Storage endpoint not allowed", needs: "storage" });
       }
+      // What is being uploaded, checked here — before the body (up to 100 MB)
+      // is read — so a request that will be refused costs nothing.
+      const q = req.query;
+      const provider = typeof q.provider === "string" ? await storage.getProvider(q.provider) : undefined;
+      if (!provider) return res.status(400).json({ error: "Choose a provider." });
+      const region = typeof q.region === "string" ? await storage.getRegionLocationByBaseId(q.region) : undefined;
+      // Active regions only: a retired one takes no new results.
+      if (!region || !region.isActive) return res.status(400).json({ error: "Choose the region the recording was made in." });
+      const source = q.source;
+      if (source !== "web" && source !== "phone") return res.status(400).json({ error: "Choose the recording's source: web or phone." });
+      const fileName = (typeof q.fileName === "string" ? path.basename(q.fileName) : "").slice(0, 200) || "recording.wav";
+
+      // Paid: a marketplace agent the uploader picked. Its operator receives
+      // the recording, so that needs the uploader's explicit consent.
+      let paidToken: { id: number; siteId: string | null } | null = null;
+      if (typeof q.agent === "string" && q.agent !== "") {
+        const tokenId = Number(q.agent);
+        const token = Number.isInteger(tokenId) && tokenId > 0 ? await storage.getEvalAgentToken(tokenId) : undefined;
+        if (!token || token.isRevoked || token.dispatchTier !== "shared" || !getMarketplace()) {
+          return res.status(400).json({ error: "Choose a marketplace agent from the list." });
+        }
+        if (!(await agentCanAnalyze(token.id))) return res.status(400).json({ error: "That agent can't run analyses. Choose another." });
+        if (q.consent !== "1") {
+          return res.status(400).json({ error: "Confirm that the agent's operator will receive your recording (consent)." });
+        }
+        paidToken = { id: token.id, siteId: token.siteId };
+      }
+      res.locals.analyzeInput = { provider, region, source, fileName, paidToken } satisfies AnalyzeInput;
+
       // Deleted analyses count too: deleting one doesn't give back a slot.
       if (await storage.countAnalyzeJobsSince(user.id, new Date(Date.now() - 24 * 60 * 60 * 1000)) >= ANALYZE_DAILY_CAP) {
         return res.status(429).json({ error: `You can analyze up to ${ANALYZE_DAILY_CAP} recordings a day.` });
@@ -1615,31 +1656,8 @@ export async function registerRoutes(
     if (!user) return res.status(401).json({ error: "Not authenticated" });
     try {
 
-      const q = req.query;
-      const provider = typeof q.provider === "string" ? await storage.getProvider(q.provider) : undefined;
-      if (!provider) return res.status(400).json({ error: "Choose a provider." });
-      const region = typeof q.region === "string" ? await storage.getRegionLocationByBaseId(q.region) : undefined;
-      // Active regions only: a retired one takes no new results.
-      if (!region || !region.isActive) return res.status(400).json({ error: "Choose the region the recording was made in." });
-      const source = q.source;
-      if (source !== "web" && source !== "phone") return res.status(400).json({ error: "Choose the recording's source: web or phone." });
-      const fileName = (typeof q.fileName === "string" ? path.basename(q.fileName) : "").slice(0, 200) || "recording.wav";
-
-      // Paid: a marketplace agent the uploader picked. Its operator receives
-      // the recording, so that needs the uploader's explicit consent.
-      let paidToken: { id: number; siteId: string | null } | null = null;
-      if (typeof q.agent === "string" && q.agent !== "") {
-        const tokenId = Number(q.agent);
-        const token = Number.isInteger(tokenId) && tokenId > 0 ? await storage.getEvalAgentToken(tokenId) : undefined;
-        if (!token || token.isRevoked || token.dispatchTier !== "shared" || !getMarketplace()) {
-          return res.status(400).json({ error: "Choose a marketplace agent from the list." });
-        }
-        if (!(await agentCanAnalyze(token.id))) return res.status(400).json({ error: "That agent can't run analyses. Choose another." });
-        if (q.consent !== "1") {
-          return res.status(400).json({ error: "Confirm that the agent's operator will receive your recording (consent)." });
-        }
-        paidToken = { id: token.id, siteId: token.siteId };
-      }
+      // Checked by analyzeUploadGate before the body was read.
+      const { provider, region, source, fileName, paidToken } = res.locals.analyzeInput as AnalyzeInput;
 
       const body = req.body;
       if (!Buffer.isBuffer(body) || body.length === 0) {
@@ -1818,6 +1836,21 @@ export async function registerRoutes(
       // 1. Stop it, atomically, unless an agent is running it right now.
       if (!(await storage.stopAnalyzeJobForDelete(job.id))) {
         return res.status(409).json({ error: "The analysis is running. Delete it once it finishes (if its eval agent stopped, the analysis is back in the queue within a few minutes)." });
+      }
+      // A finished paid analysis whose payment wasn't settled yet (its
+      // settle threw on completion): capture it now, while its result still
+      // exists — deleting first would leave the sweep to refund real work.
+      const settlementContext = (job.snapshot as JobSnapshot | null)?.settlementContext;
+      const marketplace = getMarketplace();
+      if (job.status === "completed" && settlementContext !== undefined && !job.settlementDoneAt && marketplace) {
+        try {
+          const hasResult = (await storage.getEvalResultsByJob(job.id)).length > 0;
+          await marketplace.settle({ jobId: job.id, status: job.status, hasResult, settlementContext });
+          await storage.markSettlementDone(job);
+        } catch (err) {
+          console.error(`[analyze] settling analysis ${job.id} before its delete failed:`, err);
+          return res.status(503).json({ error: "Settling this analysis's payment failed. Try deleting it again in a minute." });
+        }
       }
       // 2. The recording leaves the bucket. If that fails, the row (and the
       //    key to the file) stays, so deleting again retries.
