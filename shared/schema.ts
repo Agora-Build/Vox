@@ -866,6 +866,10 @@ export const brokers = pgTable("brokers", {
   lastSeenAt: timestamp("last_seen_at"),
   observedIp: text("observed_ip"),
   observedIpAt: timestamp("observed_ip_at"),
+  // #129: Core's last probe of `url` (GET /health). Heartbeats only prove
+  // broker→Core; mints need Core→broker. Error null + checkedAt set = reachable.
+  reachabilityCheckedAt: timestamp("reachability_checked_at"),
+  reachabilityError: text("reachability_error"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 }, (table) => ({

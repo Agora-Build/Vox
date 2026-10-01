@@ -19,7 +19,7 @@ import { getMarketplace } from "./marketplace";
 import { isAlreadyMemberError, getOrganizations, requireOrganizations, type Membership, type OrgSecretRow } from "./organizations";
 import { fingerprintCredential, formatLastFailedHttpStatus, parseLastFailedHttpStatus } from "@shared/credentials";
 import { sessionScopeForEvalFlow, areLoginSecretsAttested, ensureSession, stampOwnerSession, credentialKeyFor, SESSION_FRESH_MARGIN_SECONDS, classifyReferencedSecrets, findBrokeredMisuse, resolveBrokerType, type SessionNeed, detectSessionNeed, resolvableSecretSources, secretGate, evalSetMayUseSecrets, secretsJobFills, runDialogEvalSetProblem, missingEvalFlowSecrets } from "./auth-session";
-import { validateRegisterPayload, cacheBrokerMintSecret, hasBrokerMintSecret, routeToBroker, executeViaBroker, KNOWN_BROKER_TYPES } from "./broker-registry";
+import { validateRegisterPayload, cacheBrokerMintSecret, hasBrokerMintSecret, routeToBroker, executeViaBroker, KNOWN_BROKER_TYPES, probeAndRecordBroker } from "./broker-registry";
 import { resolveRestfulTemplate } from "./restful-exec";
 import { validateRestfulTrigger, parseStepsScript, stepsContainCallDial, unsupportedFrameworkError } from "./storage";
 import { PHONE_NUMBER_RE } from "@shared/steps";
@@ -3907,6 +3907,8 @@ export async function registerRoutes(
         state: b.state,
         currentLeaseId: b.currentLeaseId,
         lastSeenAt: b.lastSeenAt,
+        reachabilityCheckedAt: b.reachabilityCheckedAt,
+        reachabilityError: b.reachabilityError,
         createdAt: b.createdAt,
         updatedAt: b.updatedAt,
       })));
@@ -3952,9 +3954,14 @@ export async function registerRoutes(
       let broker;
       if (existing.length > 0) {
         broker = existing[0];
+        // A new advertised URL hasn't been checked: don't show (or log
+        // against) the old URL's answer (#227 review).
+        const urlChanged = broker.url !== v.url;
         await storage.updateBroker(broker.id, {
           name: v.name, url: v.url, state: "idle", currentLeaseId: leaseId, lastSeenAt: new Date(),
+          ...(urlChanged ? { reachabilityCheckedAt: null, reachabilityError: null } : {}),
         });
+        if (urlChanged) broker = { ...broker, url: v.url, reachabilityCheckedAt: null, reachabilityError: null };
       } else {
         broker = await storage.createBroker({
           name: v.name, tokenId: tok.id, brokerType: v.brokerType, url: v.url,
@@ -3965,6 +3972,12 @@ export async function registerRoutes(
       storage.updateBrokerObservedIp(broker.id, req.ip ?? ""); // fire-and-forget
       storage.updateBrokerRegistrationTokenLastUsed(tok.id);
       res.json({ brokerId: broker.id, leaseId, mintSecret }); // mintSecret returned once
+      // #129: check Core can reach what it advertised — heartbeats only prove
+      // the other direction. After the response, and briefly delayed: a
+      // broker that registers before it listens (images before #129) gets a
+      // moment, and the maintenance worker re-probes every minute anyway.
+      const registered = { id: broker.id, name: v.name, url: v.url, reachabilityCheckedAt: broker.reachabilityCheckedAt ?? null, reachabilityError: broker.reachabilityError ?? null };
+      setTimeout(() => { void probeAndRecordBroker(registered); }, 2_000).unref();
     } catch (error) {
       console.error("Error registering broker:", error);
       res.status(500).json({ error: "Failed to register broker" });

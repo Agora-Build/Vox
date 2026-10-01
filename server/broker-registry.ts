@@ -60,6 +60,13 @@ const mintSecretCache = new Map<number, string>();
 export function cacheBrokerMintSecret(id: number, secret: string): void { mintSecretCache.set(id, secret); }
 export function getCachedBrokerMintSecret(id: number): string | undefined { return mintSecretCache.get(id); }
 export function hasBrokerMintSecret(id: number): boolean { return mintSecretCache.has(id); }
+/**
+ * Forget a broker's mint secret after it refused Core (401/403): its next
+ * heartbeat is then told to re-register, which issues a fresh one — so the
+ * "retry in a minute" the refusal message promises actually holds (#227
+ * review), even when Core holds a stale secret while heartbeats succeed.
+ */
+export function evictBrokerMintSecret(id: number): void { mintSecretCache.delete(id); }
 export function clearBrokerMintSecret(id: number): void { mintSecretCache.delete(id); }
 
 export interface BrokerTarget { id: number; url: string; mintSecret: string; }
@@ -111,12 +118,17 @@ export async function executeViaBroker(
   fetchImpl: typeof fetch = fetch,
 ): Promise<RestExecResult> {
   const abortMs = (req.timeoutMs ?? REST_EXEC_DEFAULT_TIMEOUT_MS) + 15_000;
-  const res = await fetchImpl(`${target.url}/execute`, {
+  const res = await callBroker("REST", `${target.url}/execute`, {
     method: "POST",
     headers: { "content-type": "application/json", authorization: `Bearer ${target.mintSecret}` },
     body: JSON.stringify(req),
     signal: AbortSignal.timeout(abortMs),
-  });
+  }, fetchImpl);
+  if (res.status === 401 || res.status === 403) {
+    // As for mints: the broker restarted and hasn't re-registered yet.
+    evictBrokerMintSecret(target.id);
+    throw new Error(`the REST broker refused Core (HTTP ${res.status}); it re-registers within a minute — retry then`);
+  }
   const needles = credentialForms(redactNeedles.filter(Boolean));
   if (!res.ok) {
     let detail = "";
@@ -140,6 +152,100 @@ export async function executeViaBroker(
   return { status, ok, bodyExcerpt };
 }
 
+/**
+ * What a failed fetch to a broker means, in words (#129). undici throws a bare
+ * "fetch failed" TypeError and keeps the reason in `cause`; that bare text is
+ * what users saw as "target login failed: fetch failed" when Core couldn't even
+ * resolve the broker's hostname.
+ */
+export function describeFetchFailure(err: unknown, opts: { detail?: boolean } = {}): string {
+  const e = err as { name?: string; message?: string; cause?: { code?: string; message?: string } };
+  if (e?.name === "TimeoutError" || e?.name === "AbortError") return "no answer in time";
+  const code = e?.cause?.code;
+  switch (code) {
+    case "ENOTFOUND":
+    case "EAI_AGAIN":
+      return `its hostname doesn't resolve from Core (${code})`;
+    case "ECONNREFUSED":
+      return "connection refused (nothing listening at its advertised address)";
+    case "ECONNRESET":
+    case "UND_ERR_SOCKET":
+      return `connection dropped (${code})`;
+    case "EHOSTUNREACH":
+    case "ENETUNREACH":
+      return `host unreachable (${code})`;
+    case "ETIMEDOUT":
+    case "UND_ERR_CONNECT_TIMEOUT":
+      return `no answer in time (${code})`;
+  }
+  // Anything else: the raw message names Core's internal addresses
+  // ("connect … 10.0.3.7:8300", TLS altnames), and a mint error reaches the
+  // job's own agent via web_sessions.last_error (#227 review). Only the code
+  // there; the full text only where `detail` is asked for (Core's log and
+  // the admin-only Brokers page).
+  if (opts.detail) {
+    const msg = e?.cause?.message ?? e?.message ?? String(err);
+    return code ? `${msg} (${code})` : msg;
+  }
+  return code ? `network error (${code})` : "network error (see Core's log and the Brokers page)";
+}
+
+const PROBE_TIMEOUT_MS = 5_000;
+
+/**
+ * #129: can Core reach this broker? Heartbeats prove only broker→Core; a mint
+ * needs Core→broker, and a wrong BROKER_ADVERTISE_URL used to look healthy
+ * until the first mint. Both brokers serve an unauthenticated GET /health.
+ * Returns null when reachable, else why not.
+ */
+export async function probeBroker(url: string, fetchImpl: typeof fetch = fetch): Promise<string | null> {
+  try {
+    // Never follow a redirect: a broker's address passed isInternalBrokerUrl,
+    // where it redirects to didn't (#227 review).
+    const res = await fetchImpl(`${url}/health`, { signal: AbortSignal.timeout(PROBE_TIMEOUT_MS), redirect: "manual" });
+    if (res.status >= 300 && res.status < 400) return `GET /health redirected (HTTP ${res.status}); a broker must answer at its advertised URL`;
+    return res.ok ? null : `GET /health answered HTTP ${res.status}`;
+  } catch (err) {
+    return describeFetchFailure(err, { detail: true }); // admin-only + Core's log
+  }
+}
+
+/**
+ * Probe a broker and record the answer on its row. Logs only when the answer
+ * changes (or on the first probe of an unreachable one), so a broker that
+ * stays down says so once rather than every minute. Never throws.
+ */
+export async function probeAndRecordBroker(
+  broker: Pick<Broker, "id" | "name" | "url" | "reachabilityCheckedAt" | "reachabilityError">,
+  fetchImpl: typeof fetch = fetch,
+): Promise<string | null> {
+  const error = await probeBroker(broker.url, fetchImpl);
+  try {
+    await storage.recordBrokerReachability(broker.id, broker.url, error);
+  } catch (err) {
+    console.error(`[Broker] recording reachability of broker ${broker.id} failed:`, err instanceof Error ? err.message : err);
+  }
+  const wasReachable = broker.reachabilityCheckedAt != null && broker.reachabilityError == null;
+  if (error && error !== broker.reachabilityError) {
+    console.warn(`[Broker] "${broker.name}" (#${broker.id}) is not reachable from Core at ${broker.url}: ${error}. Mints and REST calls routed to it will fail — check its BROKER_ADVERTISE_URL.`);
+  } else if (!error && !wasReachable && broker.reachabilityCheckedAt != null) {
+    console.log(`[Broker] "${broker.name}" (#${broker.id}) is reachable from Core again at ${broker.url}`);
+  }
+  return error;
+}
+
+/** Fetch to a broker, turning a transport failure into a stated cause. */
+async function callBroker(what: string, url: string, init: RequestInit, fetchImpl: typeof fetch): Promise<Response> {
+  try {
+    // Not followed: the advertised URL is the validated one (a 3xx is then
+    // just a failed call, reported with its status).
+    return await fetchImpl(url, { ...init, redirect: "manual" });
+  } catch (err) {
+    console.warn(`[Broker] ${what} broker call to ${url} failed: ${describeFetchFailure(err, { detail: true })}`);
+    throw new Error(`Core couldn't reach the ${what} broker: ${describeFetchFailure(err)}`);
+  }
+}
+
 export async function mintViaBroker(
   target: BrokerTarget,
   req: { platformId: string; email: string; password: string },
@@ -151,12 +257,18 @@ export async function mintViaBroker(
   // the row stuck in 'minting' until stale-reclaim, and ensureSession's catch
   // never fired.
   const abortMs = (mintTimeoutSeconds() + 15) * 1000;
-  const res = await fetchImpl(`${target.url}/mint`, {
+  const res = await callBroker("session", `${target.url}/mint`, {
     method: "POST",
     headers: { "content-type": "application/json", authorization: `Bearer ${target.mintSecret}` },
     body: JSON.stringify(req),
     signal: AbortSignal.timeout(abortMs),
-  });
+  }, fetchImpl);
+  if (res.status === 401 || res.status === 403) {
+    // The broker doesn't know Core's mint secret: it restarted and hasn't
+    // re-registered yet (it does on its next heartbeat). Not a login failure.
+    evictBrokerMintSecret(target.id);
+    throw new Error(`the session broker refused Core (HTTP ${res.status}); it re-registers within a minute — retry then`);
+  }
   if (!res.ok) {
     // Fold the broker's own diagnosis into the message. Without this the whole
     // selection/scrub/URL-reduction pipeline in auth-session-broker.ts only
@@ -210,7 +322,11 @@ export async function mintViaBroker(
       .map((part, i) => (i % 2 === 1 ? part : redactValues(part, nonUrlForms)))
       .join("");
     detail = redactValues(reduceUrlsSafely(pre, forms), forms).slice(0, 500);
-    throw new Error(`broker mint failed: ${res.status}${detail ? `: ${detail}` : ""}`);
+    // 502 is the broker's "the login itself failed" (aeval ran and the target
+    // refused or never finished); say so, so it isn't read as a broker fault.
+    throw new Error(res.status === 502
+      ? `target login failed${detail ? `: ${detail}` : " (HTTP 502)"}`
+      : `the session broker failed: HTTP ${res.status}${detail ? `: ${detail}` : ""}`);
   }
   return res.json();
 }

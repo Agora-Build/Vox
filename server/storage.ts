@@ -1281,6 +1281,15 @@ export class DatabaseStorage {
     await db.update(brokers).set({ lastSeenAt: new Date(), updatedAt: new Date() })
       .where(eq(brokers.id, id));
   }
+  /**
+   * #129: record Core's probe of a broker's advertised URL. Only while the row
+   * still advertises the URL that was probed — a broker that re-registered
+   * with a new URL mid-probe isn't marked by the old one's result.
+   */
+  async recordBrokerReachability(id: number, url: string, error: string | null): Promise<void> {
+    await db.update(brokers).set({ reachabilityCheckedAt: new Date(), reachabilityError: error })
+      .where(and(eq(brokers.id, id), eq(brokers.url, url)));
+  }
   async updateBrokerObservedIp(id: number, ip: string): Promise<void> {
     try {
       await db.update(brokers).set({ observedIp: ip, observedIpAt: new Date() })

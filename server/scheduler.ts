@@ -9,6 +9,7 @@ import { storage, mergeEvalConfig, buildJobSnapshot, unsupportedFrameworkError }
 import { canScheduleEvalFlow, sessionPoolViolation } from "./permissions";
 import { parseNextCronRun } from "./cron";
 import { getMarketplace } from "./marketplace";
+import { probeAndRecordBroker } from "./broker-registry";
 import { getOrganizations, type Membership } from "./organizations";
 import { stampOwnerSession, detectSessionNeed, secretGate } from "./auth-session";
 import { log } from "./log";
@@ -103,6 +104,14 @@ export async function runMaintenanceTasks() {
     if (offlineBrokers > 0) {
       log(`Marked ${offlineBrokers} broker(s) as offline`, "worker");
     }
+
+    // Can Core still reach each live broker (#129)? Heartbeats prove only the
+    // broker→Core direction. Not awaited: a slow broker (5 s probe timeout)
+    // mustn't delay escrow settlement below, and a failure here mustn't skip
+    // the rest of the tick.
+    void storage.getAllBrokers()
+      .then((all) => Promise.all(all.filter((b) => b.state !== "offline").map((b) => probeAndRecordBroker(b))))
+      .catch((err) => console.error("[Broker] reachability probes failed:", err instanceof Error ? err.message : err));
 
     // Promptly settle shared-dispatch escrow for recently-terminal targeted jobs:
     // capture on `completed`, release on `failed`. This is the prompt path so a
