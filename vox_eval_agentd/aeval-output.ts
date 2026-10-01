@@ -1,5 +1,7 @@
 import { redactValues } from '../shared/credentials';
-export { urlForms, credentialForms, redactValues } from '../shared/credentials';
+// The URL reducers live in shared/credentials.ts so Core's backstop applies
+// them too (#139); re-exported for the daemon and broker.
+export { urlForms, credentialForms, redactValues, reduceUrlsToHost, reduceUrlsSafely } from '../shared/credentials';
 
 /**
  * Pure helpers for interpreting an aeval run's console output.
@@ -172,49 +174,6 @@ export function summarizeAevalFailure(
   return scrub(tail || 'unknown error').slice(0, 500);
 }
 
-export function reduceUrlsToHost(text: string): string {
-  return text.replace(
-    /((?:https?|wss?):\/\/)(?:[^\s"'<>/?#]*@)?([^\s"'<>/?#]*)(?:[/?#][^\s"'<>]*)?/gi,
-    '$1$2/…',
-  );
-}
-
-/**
- * Reduce URLs in `text`, but redact any needle that IS a URL first.
- *
- * reduceUrlsToHost rewrites `scheme://host/path?query` to `scheme://host/…`.
- * If a CREDENTIAL's value is itself a URL — a LiveKit `wss://<project>.livekit.cloud/...`
- * server URL, a webhook endpoint, a reset link — that rewrite destroys the
- * needle that would have redacted it, and the host survives into a persisted,
- * user-visible error. Redacting the URL-shaped needles first closes that.
- *
- * Pre-redacting is safe for THIS subset specifically: a needle containing "://"
- * cannot occur inside a loguru timestamp/level prefix, so line classification
- * is untouched. That is why the general case still redacts after classifying
- * (see minNeedleLength).
- *
- * Shared by the broker and the daemon so the two cannot diverge on it.
- */
-export function reduceUrlsSafely(text: string, needles: string[]): string {
-  const urlish = needles
-    .filter((n) => n.length > 0 && n.includes('://'))
-    .sort((a, b) => b.length - a.length); // longest first, so wholes beat substrings
-  // Consume the REST of the URL run, not just the needle. A URL-valued secret
-  // is typically a PREFIX of what gets echoed — secret "wss://h/rtc" appearing
-  // as "wss://h/rtc?access_token=JWT" — and replacing only the needle leaves
-  // "[redacted]?access_token=JWT", which reduceUrlsToHost no longer recognizes
-  // as a URL, so the query survives.
-  const pre = urlish.reduce(
-    (acc, v) => acc.replace(new RegExp(escapeForRegExp(v) + '[^\\s"\'<>|]*', 'g'), '[redacted]'),
-    text,
-  );
-  return reduceUrlsToHost(pre);
-}
-
-/** Escape a literal for embedding in a RegExp. */
-function escapeForRegExp(v: string): string {
-  return v.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
 
 /**
  * Retention target per captured stream — NOT a hard ceiling.

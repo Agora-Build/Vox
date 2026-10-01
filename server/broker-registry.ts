@@ -51,7 +51,7 @@ export function isInternalBrokerUrl(raw: string): boolean {
 
 import { storage } from "./storage";
 import type { Broker } from "@shared/schema";
-import { credentialForms, redactValues } from "@shared/credentials";
+import { credentialForms, redactValues, reduceUrlsSafely } from "@shared/credentials";
 
 export { mintTimeoutSeconds } from "@shared/mint-timeout";
 import { mintTimeoutSeconds } from "@shared/mint-timeout";
@@ -187,7 +187,12 @@ export async function mintViaBroker(
     // Redact BEFORE truncating, the ordering this whole change argues for
     // elsewhere: slicing first can leave a partial credential that matches no
     // whole needle, and this string is persisted to web_sessions.last_error.
-    detail = redactValues(detail, credentialForms([req.email, req.password])).slice(0, 500);
+    // URL-reduced too, as the broker does (#139): a broker that failed to scrub
+    // also failed to reduce, and a full URL can carry the account in its query
+    // (login_hint=) in a spelling no needle covers. reduceUrlsSafely redacts a
+    // URL-shaped credential before the reduction could cut it apart.
+    const forms = credentialForms([req.email, req.password]);
+    detail = redactValues(reduceUrlsSafely(detail, forms), forms).slice(0, 500);
     throw new Error(`broker mint failed: ${res.status}${detail ? `: ${detail}` : ""}`);
   }
   return res.json();

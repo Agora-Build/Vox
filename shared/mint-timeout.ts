@@ -45,6 +45,23 @@ export function mintTimeoutSeconds(): number {
     process.env.WEB_SESSION_MINT_TIMEOUT_SECONDS || String(DEFAULT_MINT_TIMEOUT_SECONDS),
     10,
   );
-  if (!Number.isFinite(configured) || configured <= 0) return DEFAULT_MINT_TIMEOUT_SECONDS;
-  return Math.min(configured, MAX_MINT_TIMEOUT_SECONDS);
+  if (!Number.isFinite(configured) || configured <= 0) {
+    warnOnce(`WEB_SESSION_MINT_TIMEOUT_SECONDS=${process.env.WEB_SESSION_MINT_TIMEOUT_SECONDS} is not a positive integer; using ${DEFAULT_MINT_TIMEOUT_SECONDS}s`);
+    return DEFAULT_MINT_TIMEOUT_SECONDS;
+  }
+  if (configured > MAX_MINT_TIMEOUT_SECONDS) {
+    // Said out loud (#139): an operator who set 600 should not have to read
+    // this file to learn they got 200.
+    warnOnce(`WEB_SESSION_MINT_TIMEOUT_SECONDS=${configured} exceeds the ${MAX_MINT_TIMEOUT_SECONDS}s ceiling (the eval agent stops waiting for a session at 240s); using ${MAX_MINT_TIMEOUT_SECONDS}s`);
+    return MAX_MINT_TIMEOUT_SECONDS;
+  }
+  return configured;
+}
+
+// Read on every mint; say it once per process, not once per mint.
+const warned = new Set<string>();
+function warnOnce(message: string): void {
+  if (warned.has(message)) return;
+  warned.add(message);
+  console.warn(`[mint-timeout] ${message}`);
 }

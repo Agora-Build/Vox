@@ -402,13 +402,14 @@ describe("mint failure summary (what the broker reports)", () => {
   });
 
   it("credentialForms derives every encoding a credential can appear in", () => {
-    // Raw, the YAML/JSON scalar the scenario writes, and the two URL encodings
-    // an SSO redirect uses. Deduped, so a value that survives an encoding
-    // unchanged contributes only once.
-    expect(credentialForms(['a"b'])).toEqual(['a"b', 'a\\"b', 'a%22b']);
+    // Raw, the YAML/JSON scalar the scenario writes, the two URL encodings
+    // an SSO redirect uses, and the HTML entities a quoted page uses (#139).
+    // Deduped, so a value that survives an encoding unchanged contributes only
+    // once.
+    expect(credentialForms(['a"b'])).toEqual(['a"b', 'a\\"b', 'a%22b', "a&quot;b", "a&#34;b", "a&#x22;b"]);
     expect(credentialForms(["plain"])).toEqual(["plain"]);
     expect(credentialForms([""])).toEqual([]);
-    expect(credentialForms(["a b"])).toEqual(["a b", "a%20b", "a+b"]);
+    expect(credentialForms(["a b"])).toEqual(["a b", "a%20b", "a+b", "a&#32;b", "a&#x20;b"]);
   });
 
   it("never throws on a lone surrogate — that would kill the sidecar", () => {
