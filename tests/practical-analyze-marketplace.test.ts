@@ -28,6 +28,23 @@ const call = (cookie: string, method: string, path: string, body?: unknown) =>
   fetch(`${BASE_URL}${path}`, {
     method, headers: { "Content-Type": "application/json", Cookie: cookie }, body: body === undefined ? undefined : JSON.stringify(body),
   });
+/**
+ * What the operator (the admin, who owns the test agents) was paid for this
+ * job: its capture entries on this job's settlement. The admin's whole balance
+ * moves with other suites that dispatch as admin concurrently, so it isn't
+ * compared.
+ */
+async function operatorPaidFor(jobId: number): Promise<number> {
+  const settlementId = String(((await storage.getEvalJob(jobId))!.snapshot as { settlementContext?: { settlementId?: number } }).settlementContext?.settlementId);
+  const r = await pool.query(
+    `SELECT coalesce(sum(e.amount), 0)::int paid FROM plugin_credits.ledger_entries e
+       JOIN plugin_credits.accounts a ON a.id = e.account_id
+      WHERE e.ref_type = 'shared-agent-dispatch' AND e.ref_id = $1 AND e.reason = 'capture'
+        AND a.kind = 'user' AND a.user_ref = (SELECT id FROM users WHERE email = 'admin@vox.local')`,
+    [settlementId],
+  );
+  return r.rows[0].paid;
+}
 const balance = async (cookie: string) => (await (await call(cookie, "GET", "/api/plugins/credits/balance")).json()).credits as number;
 
 d("practical: Analyze on a marketplace agent, for credits", () => {
@@ -125,7 +142,6 @@ d("practical: Analyze on a marketplace agent, for credits", () => {
   it("holds the price at upload, runs on that agent only, and pays its operator on the result", async () => {
     const r = await renter(100);
     const renterBefore = await balance(r.cookie);
-    const operatorBefore = await balance(admin);
 
     const up = await upload(r.cookie, { agent: String(paidAgent.tokenId), consent: "1" });
     expect(up.status).toBe(201);
@@ -157,11 +173,7 @@ d("practical: Analyze on a marketplace agent, for credits", () => {
     expect(done.ok).toBe(true);
 
     // Settled: the operator gets the charge less the platform fee; the renter stays charged.
-    const deadline = Date.now() + 30_000;
-    while ((await balance(admin)) !== operatorBefore + charge - computeFee(charge) && Date.now() < deadline) {
-      await new Promise((res) => setTimeout(res, 1000));
-    }
-    expect(await balance(admin)).toBe(operatorBefore + charge - computeFee(charge));
+    expect(await operatorPaidFor(id)).toBe(charge - computeFee(charge));
     expect(await balance(r.cookie)).toBe(renterBefore - charge);
     const detail = await (await call(r.cookie, "GET", `/api/tools/analyze/${id}`)).json();
     expect(detail.job).toMatchObject({ status: "completed", runOn: "marketplace" });
@@ -171,7 +183,6 @@ d("practical: Analyze on a marketplace agent, for credits", () => {
   it("an analysis the agent fails is refunded at once, and its operator isn't paid", async () => {
     const r = await renter(100);
     const renterBefore = await balance(r.cookie);
-    const operatorBefore = await balance(admin);
     const up = await upload(r.cookie, { agent: String(paidAgent.tokenId), consent: "1" });
     expect(up.status).toBe(201);
     const { id } = await up.json();
@@ -186,7 +197,7 @@ d("practical: Analyze on a marketplace agent, for credits", () => {
     })).ok).toBe(true);
 
     expect(await balance(r.cookie)).toBe(renterBefore); // refunded
-    expect(await balance(admin)).toBe(operatorBefore);  // nothing paid
+    expect(await operatorPaidFor(id)).toBe(0);           // nothing paid
     const detail = await (await call(r.cookie, "GET", `/api/tools/analyze/${id}`)).json();
     expect(detail.job).toMatchObject({ status: "failed", error: "aeval analyze exited 1" });
     expect(detail.result).toBeNull();
@@ -229,7 +240,6 @@ d("practical: Analyze on a marketplace agent, for credits", () => {
   it("deleting a finished paid analysis whose payment wasn't settled captures it first (#219)", async () => {
     const r = await renter(100);
     const renterBefore = await balance(r.cookie);
-    const operatorBefore = await balance(admin);
     const up = await upload(r.cookie, { agent: String(paidAgent.tokenId), consent: "1" });
     expect(up.status).toBe(201);
     const { id } = await up.json();
@@ -239,7 +249,7 @@ d("practical: Analyze on a marketplace agent, for credits", () => {
     await storage.createAnalyzeResult({ evalJobId: id, providerId: provider, siteId: null, responseLatencyMedian: 900 } as any);
     expect((await call(r.cookie, "DELETE", `/api/tools/analyze/${id}`)).status).toBe(204);
     const charge = computeCharge(PRICE, 1);
-    expect(await balance(admin)).toBe(operatorBefore + charge - computeFee(charge)); // paid for the real result
+    expect(await operatorPaidFor(id)).toBe(charge - computeFee(charge));            // paid for the real result
     expect(await balance(r.cookie)).toBe(renterBefore - charge);                    // not refunded
     expect((await storage.getEvalJob(id))!.settlementDoneAt).not.toBeNull();
   }, 120_000);
