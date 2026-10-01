@@ -12,17 +12,21 @@ import {
 } from '../server/storage';
 
 describe('resolveMetricsMode (realtime window policy)', () => {
-  it('returns raw for windows up to and including 90 days', () => {
+  it('returns raw for windows up to and including 7 days', () => {
     expect(resolveMetricsMode(1 / 24)).toBe('raw');   // 1 hour
-    expect(resolveMetricsMode(1)).toBe('raw');         // 24 hours
-    expect(resolveMetricsMode(7)).toBe('raw');         // 7 days
-    expect(resolveMetricsMode(89)).toBe('raw');
-    expect(resolveMetricsMode(90)).toBe('raw');        // boundary is inclusive
+    expect(resolveMetricsMode(1)).toBe('raw');       // 24 hours
+    expect(resolveMetricsMode(7)).toBe('raw');       // 7 days
+  });
+
+  it('returns hourly buckets for windows over 7 and up to 90 days', () => {
+    expect(resolveMetricsMode(7.0001)).toBe('bucketHour');
+    expect(resolveMetricsMode(30)).toBe('bucketHour');
+    expect(resolveMetricsMode(90)).toBe('bucketHour');
   });
 
   it('returns daily buckets for windows longer than 90 days', () => {
     expect(resolveMetricsMode(90.0001)).toBe('bucketDay');
-    expect(resolveMetricsMode(100)).toBe('bucketDay'); // current all-time span
+    expect(resolveMetricsMode(100)).toBe('bucketDay');
     expect(resolveMetricsMode(365)).toBe('bucketDay');
   });
 

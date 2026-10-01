@@ -114,16 +114,17 @@ import { asc, desc, eq, ne, and, or, not, sql, gte, lte, inArray, isNotNull, isN
 import crypto from "crypto";
 
 // Realtime-metrics windowing policy (server-owned; the client never sets these).
-// Windows spanning <= 90 days return raw per-test points (capped by the ceiling
-// as a safety net); longer windows are aggregated into daily buckets so payload
-// stays bounded as history grows. "All time" is bounded to the last 3 years.
+// Short windows keep per-test detail, medium windows use hourly buckets, and
+// long/all-time windows use daily buckets so payload and chart work stay bounded.
+// "All time" is bounded to the last 3 years.
 // See DatabaseStorage.tierMetrics().
-const METRICS_RAW_MAX_DAYS = 90;
+const METRICS_RAW_MAX_DAYS = 7;
+const METRICS_HOURLY_MAX_DAYS = 90;
 const METRICS_RAW_ROW_CEILING = 20000;
 const METRICS_ALL_MAX_DAYS = 3 * 365; // "all time" shows at most the last 3 years
 
 export type MetricTier = "mainline" | "community" | "myEvals";
-export type MetricsMode = "raw" | "bucketDay";
+export type MetricsMode = "raw" | "bucketHour" | "bucketDay";
 export type RegionQueryScope = {
   siteId?: string;
   baseIds?: string[];
@@ -132,11 +133,13 @@ export type RegionQueryScope = {
 
 // Pure raw-vs-bucket decision for a window of `spanDays`. Exported for testing.
 export function resolveMetricsMode(spanDays: number): MetricsMode {
-  return spanDays > METRICS_RAW_MAX_DAYS ? "bucketDay" : "raw";
+  if (spanDays <= METRICS_RAW_MAX_DAYS) return "raw";
+  if (spanDays <= METRICS_HOURLY_MAX_DAYS) return "bucketHour";
+  return "bucketDay";
 }
 
 // The subset of eval-result columns the metrics dashboard consumes. Raw rows
-// (full EvalResult) and daily-bucket aggregates both satisfy this shape.
+// (full EvalResult) and time-bucket aggregates both satisfy this shape.
 export type MetricSourceRow = Pick<EvalResult,
   | "id" | "providerId" | "siteId"
   | "responseLatencyMedian" | "responseLatencySd" | "responseLatencyP95"
@@ -144,7 +147,7 @@ export type MetricSourceRow = Pick<EvalResult,
   | "turnSuccessRate"
   | "networkResilience" | "naturalness" | "noiseReduction" | "createdAt">
   // EvalFlow identity, from the job snapshot. Present only on raw (non-bucketed)
-  // rows, where each point maps to one job → one evalFlow; null on daily buckets
+  // rows, where each point maps to one job → one evalFlow; null on hourly/daily buckets
   // (which average many evalFlows) and when the snapshot predates the field.
   & { evalFlowId?: number | null; evalFlowName?: string | null }
   // Transport partition the row came from (design 2026-09-21 §11) — a constant
@@ -2307,19 +2310,12 @@ export class DatabaseStorage {
       : this.joinMyEvals(q);
   }
 
-  // Earliest createdAt for a tier (null if no rows) → used to size "all time".
-  private async tierSpanDays(tier: MetricTier, userId?: number, scope?: RegionQueryScope, transport: "web" | "phone" = "web"): Promise<number | null> {
-    const base = db.select({ minAt: sql<string | null>`min(${evalResults.createdAt})` }).from(evalResults);
-    const rows = await this.applyTierJoins(tier, base).where(and(...this.tierConditions(tier, undefined, userId, scope, transport)));
-    const minAt = rows[0]?.minAt;
-    if (!minAt) return null;
-    return (Date.now() - new Date(minAt).getTime()) / (24 * 60 * 60 * 1000);
-  }
-
-  // One averaged point per (day, provider, site). Same shape formatMetricsResults
+  // One averaged point per (period, provider, site). Same shape formatMetricsResults
   // consumes; SD/P95/secondary metrics are averages-of-aggregates (trend overview).
-  private async tierBucketedDaily(tier: MetricTier, hoursBack?: number, userId?: number, scope?: RegionQueryScope, transport: "web" | "phone" = "web"): Promise<MetricSourceRow[]> {
-    const day = sql`date_trunc('day', ${evalResults.createdAt})`;
+  private async tierBucketed(tier: MetricTier, bucket: "hour" | "day", hoursBack?: number, userId?: number, scope?: RegionQueryScope, transport: "web" | "phone" = "web"): Promise<MetricSourceRow[]> {
+    const period = bucket === "hour"
+      ? sql`date_trunc('hour', ${evalResults.createdAt})`
+      : sql`date_trunc('day', ${evalResults.createdAt})`;
     const base = db.select({
       id: sql<number>`min(${evalResults.id})::int`,
       providerId: evalResults.providerId,
@@ -2334,35 +2330,27 @@ export class DatabaseStorage {
       networkResilience: sql<number | null>`round(avg(${evalResults.networkResilience}))::int`,
       naturalness: sql<number | null>`avg(${evalResults.naturalness})::real`,
       noiseReduction: sql<number | null>`round(avg(${evalResults.noiseReduction}))::int`,
-      createdAt: sql<Date>`${day}`,
+      createdAt: sql<Date>`${period}`,
     }).from(evalResults);
     const rows = await this.applyTierJoins(tier, base)
       .where(and(...this.tierConditions(tier, hoursBack, userId, scope, transport)))
-      .groupBy(day, evalResults.providerId, evalResults.siteId)
-      .orderBy(day);
+      .groupBy(period, evalResults.providerId, evalResults.siteId)
+      .orderBy(period);
     // The query is partitioned to one transport, so it's a constant per row.
     return (rows as any[]).map((r) => ({ ...r, transport })) as MetricSourceRow[];
   }
 
   // Applies the windowing policy (see the module-level comment). "All time"
-  // (no hoursBack) is bounded to the retention cap and its raw-vs-bucket mode is
-  // sized from the actual data span, so a young deployment's "all" stays raw.
+  // always uses daily buckets and is bounded to the retention cap.
   private async tierMetrics(tier: MetricTier, hoursBack?: number, userId?: number, scope?: RegionQueryScope, transport: "web" | "phone" = "web"): Promise<MetricSourceRow[]> {
-    let effectiveHoursBack = hoursBack;
-    let spanDays: number;
-    if (hoursBack != null) {
-      spanDays = hoursBack / 24;
-    } else {
-      // "all time": clamp the window to the 3-year retention cap, and decide
-      // raw-vs-bucket from how much history actually exists (also clamped).
-      effectiveHoursBack = METRICS_ALL_MAX_DAYS * 24;
-      const actualSpan = (await this.tierSpanDays(tier, userId, scope, transport)) ?? 0;
-      spanDays = Math.min(actualSpan, METRICS_ALL_MAX_DAYS);
+    const effectiveHoursBack = hoursBack ?? METRICS_ALL_MAX_DAYS * 24;
+    const mode = hoursBack == null ? "bucketDay" : resolveMetricsMode(hoursBack / 24);
+
+    if (mode !== "raw") {
+      const bucket = mode === "bucketHour" ? "hour" : "day";
+      return this.tierBucketed(tier, bucket, effectiveHoursBack, userId, scope, transport);
     }
 
-    if (resolveMetricsMode(spanDays) === "bucketDay") {
-      return this.tierBucketedDaily(tier, effectiveHoursBack, userId, scope, transport);
-    }
     const rows = await this.applyTierJoins(tier, db.select().from(evalResults))
       .where(and(...this.tierConditions(tier, effectiveHoursBack, userId, scope, transport)))
       .orderBy(desc(evalResults.createdAt))
@@ -2396,7 +2384,8 @@ export class DatabaseStorage {
   // a NULL siteId (unverified/self-hosted agent) is reported separately via
   // hasUnverified rather than mixed into baseIds.
   async getAvailableRegions(tier: MetricTier, hoursBack?: number, userId?: number): Promise<{ baseIds: string[]; hasUnverified: boolean }> {
-    const conditions = this.tierConditions(tier, hoursBack, userId);
+    const effectiveHoursBack = hoursBack ?? METRICS_ALL_MAX_DAYS * 24;
+    const conditions = this.tierConditions(tier, effectiveHoursBack, userId);
     // A result's region: where it was measured (its site), or, for an analyzed
     // recording, where its uploader said it was made (recording_region).
     const region = sql<string | null>`COALESCE(${evalResults.recordingRegion}, regexp_replace(${evalResults.siteId}, '-\\d+$', ''))`;

@@ -5962,7 +5962,7 @@ export async function registerRoutes(
   // ==================== METRICS ROUTES ====================
 
   // Helper to transform DB eval results into the format the dashboard expects.
-  // Accepts both raw rows and daily-bucket aggregates (both are MetricSourceRow).
+  // Accepts both raw rows and hourly/daily bucket aggregates (both are MetricSourceRow).
   async function formatMetricsResults(results: MetricSourceRow[]) {
     const providerCache = new Map<string, string>();
     const [allProviders, locations] = await Promise.all([
