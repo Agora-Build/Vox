@@ -199,6 +199,13 @@ d("POST /api/eval-agent/jobs/:jobId/restful (integration, fake broker)", () => {
 
     // Fake REST broker: records what Core sends, replies like a broker would.
     fakeBroker = http.createServer((req, res) => {
+      // Like a real broker, it answers Core's reachability probe (#129) —
+      // which is not an exec call and isn't recorded as one.
+      if (req.method === "GET" && req.url === "/health") {
+        res.setHeader("content-type", "application/json");
+        res.end(JSON.stringify({ status: "ok" }));
+        return;
+      }
       let data = "";
       req.on("data", (c) => (data += c));
       req.on("end", () => {
