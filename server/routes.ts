@@ -3954,9 +3954,14 @@ export async function registerRoutes(
       let broker;
       if (existing.length > 0) {
         broker = existing[0];
+        // A new advertised URL hasn't been checked: don't show (or log
+        // against) the old URL's answer (#227 review).
+        const urlChanged = broker.url !== v.url;
         await storage.updateBroker(broker.id, {
           name: v.name, url: v.url, state: "idle", currentLeaseId: leaseId, lastSeenAt: new Date(),
+          ...(urlChanged ? { reachabilityCheckedAt: null, reachabilityError: null } : {}),
         });
+        if (urlChanged) broker = { ...broker, url: v.url, reachabilityCheckedAt: null, reachabilityError: null };
       } else {
         broker = await storage.createBroker({
           name: v.name, tokenId: tok.id, brokerType: v.brokerType, url: v.url,

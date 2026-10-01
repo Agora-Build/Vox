@@ -30,6 +30,27 @@ describe("#129 a failed broker call says what failed", () => {
     expect(describeFetchFailure(fetchError("EAI_AGAIN"))).toMatch(/hostname doesn't resolve/);
     expect(describeFetchFailure(fetchError("ECONNREFUSED"))).toMatch(/connection refused/);
     expect(describeFetchFailure(Object.assign(new Error("t"), { name: "TimeoutError" }))).toBe("no answer in time");
+    // No code (a TLS failure keeps it deeper): the cause's message, not "fetch failed".
+    expect(describeFetchFailure(Object.assign(new TypeError("fetch failed"), { cause: { message: "self-signed certificate" } }))).toBe("self-signed certificate");
+  });
+
+  it("never follows a redirect off the advertised address (#227 review)", async () => {
+    let elsewhereHit = 0;
+    const elsewhere = http.createServer((_req, res) => { elsewhereHit++; res.writeHead(200).end("{}"); }).listen(0, "127.0.0.1");
+    await new Promise((r) => elsewhere.once("listening", r));
+    const away = `http://127.0.0.1:${(elsewhere.address() as AddressInfo).port}/health`;
+    const redirector = http.createServer((_req, res) => res.writeHead(302, { Location: away }).end()).listen(0, "127.0.0.1");
+    await new Promise((r) => redirector.once("listening", r));
+    const base = `http://127.0.0.1:${(redirector.address() as AddressInfo).port}`;
+    try {
+      expect(await probeBroker(base)).toMatch(/redirected \(HTTP 302\)/);
+      await expect(mintViaBroker({ id: 1, url: base, mintSecret: "s" }, { platformId: "p", email: "ann@agora.io", password: "hunter2-pass" }))
+        .rejects.toThrow(/session broker failed: HTTP 302/);
+      expect(elsewhereHit).toBe(0);
+    } finally {
+      elsewhere.close();
+      redirector.close();
+    }
   });
 
   it("probes a real address: refused, unreachable name, and a healthy broker", async () => {
@@ -58,6 +79,11 @@ describe("#129 a failed broker call says what failed", () => {
     await expect(mintViaBroker(target, req, throws)).rejects.toThrow(/^Core couldn't reach the session broker: its hostname doesn't resolve/);
     await expect(mintViaBroker(target, req, answer(401, { error: "unauthorized" }))).rejects.toThrow(/session broker refused Core \(HTTP 401\)/);
     await expect(mintViaBroker(target, req, answer(502, { error: "Step 1 failed: platform.setup" }))).rejects.toThrow(/^target login failed: Step 1 failed/);
+  });
+
+  it("a REST broker that doesn't know Core's secret yet says so (#227 review)", async () => {
+    await expect(executeViaBroker(target, { method: "GET", url: "https://example.com" }, [], answer(401, { error: "unauthorized" })))
+      .rejects.toThrow(/REST broker refused Core \(HTTP 401\)/);
   });
 
   it("a REST call that can't reach its broker says so", async () => {
@@ -91,6 +117,7 @@ d("#129 Core probes a broker as it registers, and the Brokers page shows the ans
   const tokenIds: number[] = [];
   const servers: http.Server[] = [];
   let admin = "";
+  let lastToken = "";
 
   afterAll(async () => {
     for (const s of servers) s.close();
@@ -100,22 +127,31 @@ d("#129 Core probes a broker as it registers, and the Brokers page shows the ans
     }
   });
 
-  async function register(url: string): Promise<number> {
+  async function register(url: string, token?: string): Promise<number> {
     if (!admin) {
       admin = ((await fetch(`${BASE_URL}/api/auth/login`, {
         method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email: "admin@vox.local", password: "admin123456" }),
       })).headers.get("set-cookie") || "").split(";")[0];
     }
-    const tok = await (await fetch(`${BASE_URL}/api/admin/broker-tokens`, {
-      method: "POST", headers: { "Content-Type": "application/json", Cookie: admin }, body: JSON.stringify({ name: `reach-${Date.now()}-${Math.random()}` }),
-    })).json();
-    tokenIds.push(tok.id);
+    if (!token) {
+      const tok = await (await fetch(`${BASE_URL}/api/admin/broker-tokens`, {
+        method: "POST", headers: { "Content-Type": "application/json", Cookie: admin }, body: JSON.stringify({ name: `reach-${Date.now()}-${Math.random()}` }),
+      })).json();
+      tokenIds.push(tok.id);
+      token = tok.token as string;
+      lastToken = token;
+    }
     const reg = await fetch(`${BASE_URL}/api/brokers/register`, {
-      method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${tok.token}` },
+      method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
       body: JSON.stringify({ name: "reach-test", brokerType: "auth-session", url }),
     });
     expect(reg.status).toBe(200);
     return (await reg.json()).brokerId;
+  }
+
+  async function row(id: number) {
+    const rows = await (await fetch(`${BASE_URL}/api/admin/brokers`, { headers: { Cookie: admin } })).json();
+    return rows.find((b: { id: number }) => b.id === id);
   }
 
   async function listed(id: number) {
@@ -144,5 +180,18 @@ d("#129 Core probes a broker as it registers, and the Brokers page shows the ans
     const row = await listed(id);
     expect(row.reachabilityCheckedAt).not.toBeNull();
     expect(row.reachabilityError).toBeNull();
+  });
+
+  it("re-registering at a new URL drops the old URL's answer until the new one is checked (#227 review)", async () => {
+    const s = http.createServer((req, res) => res.writeHead(req.url === "/health" ? 200 : 404).end("{}")).listen(0, "127.0.0.1");
+    servers.push(s);
+    await new Promise((r) => s.once("listening", r));
+    const id = await register(`http://127.0.0.1:${(s.address() as AddressInfo).port}`);
+    expect((await listed(id)).reachabilityError).toBeNull(); // reachable at the first URL
+    expect(await register("http://tte9qzeqxt47w9afimmsrfy8:8200", lastToken)).toBe(id); // same row
+    const fresh = await row(id);
+    expect(fresh.url).toBe("http://tte9qzeqxt47w9afimmsrfy8:8200");
+    expect(fresh.reachabilityCheckedAt).toBeNull(); // not "Reachable" against the new URL
+    expect((await listed(id)).reachabilityError).toMatch(/hostname doesn't resolve/);
   });
 });

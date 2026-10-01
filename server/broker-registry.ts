@@ -117,6 +117,10 @@ export async function executeViaBroker(
     body: JSON.stringify(req),
     signal: AbortSignal.timeout(abortMs),
   }, fetchImpl);
+  if (res.status === 401 || res.status === 403) {
+    // As for mints: the broker restarted and hasn't re-registered yet.
+    throw new Error(`the REST broker refused Core (HTTP ${res.status}); it re-registers within a minute — retry then`);
+  }
   const needles = credentialForms(redactNeedles.filter(Boolean));
   if (!res.ok) {
     let detail = "";
@@ -163,7 +167,10 @@ export function describeFetchFailure(err: unknown): string {
     case "ENETUNREACH":
       return `host unreachable (${code})`;
   }
-  return code ? `${e?.cause?.message ?? e?.message ?? "network error"} (${code})` : (e?.message ?? String(err));
+  if (code) return `${e?.cause?.message ?? e?.message ?? "network error"} (${code})`;
+  // No code (TLS errors keep theirs deeper, or name it differently): the
+  // cause's message beats undici's bare "fetch failed".
+  return e?.cause?.message ?? e?.message ?? String(err);
 }
 
 const PROBE_TIMEOUT_MS = 5_000;
@@ -176,7 +183,10 @@ const PROBE_TIMEOUT_MS = 5_000;
  */
 export async function probeBroker(url: string, fetchImpl: typeof fetch = fetch): Promise<string | null> {
   try {
-    const res = await fetchImpl(`${url}/health`, { signal: AbortSignal.timeout(PROBE_TIMEOUT_MS) });
+    // Never follow a redirect: a broker's address passed isInternalBrokerUrl,
+    // where it redirects to didn't (#227 review).
+    const res = await fetchImpl(`${url}/health`, { signal: AbortSignal.timeout(PROBE_TIMEOUT_MS), redirect: "manual" });
+    if (res.status >= 300 && res.status < 400) return `GET /health redirected (HTTP ${res.status}); a broker must answer at its advertised URL`;
     return res.ok ? null : `GET /health answered HTTP ${res.status}`;
   } catch (err) {
     return describeFetchFailure(err);
@@ -210,7 +220,9 @@ export async function probeAndRecordBroker(
 /** Fetch to a broker, turning a transport failure into a stated cause. */
 async function callBroker(what: string, url: string, init: RequestInit, fetchImpl: typeof fetch): Promise<Response> {
   try {
-    return await fetchImpl(url, init);
+    // Not followed: the advertised URL is the validated one (a 3xx is then
+    // just a failed call, reported with its status).
+    return await fetchImpl(url, { ...init, redirect: "manual" });
   } catch (err) {
     throw new Error(`Core couldn't reach the ${what} broker: ${describeFetchFailure(err)}`);
   }

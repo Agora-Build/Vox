@@ -106,9 +106,12 @@ export async function runMaintenanceTasks() {
     }
 
     // Can Core still reach each live broker (#129)? Heartbeats prove only the
-    // broker→Core direction. In parallel, each bounded by its own timeout.
-    const liveBrokers = (await storage.getAllBrokers()).filter((b) => b.state !== "offline");
-    await Promise.all(liveBrokers.map((b) => probeAndRecordBroker(b)));
+    // broker→Core direction. Not awaited: a slow broker (5 s probe timeout)
+    // mustn't delay escrow settlement below, and a failure here mustn't skip
+    // the rest of the tick.
+    void storage.getAllBrokers()
+      .then((all) => Promise.all(all.filter((b) => b.state !== "offline").map((b) => probeAndRecordBroker(b))))
+      .catch((err) => console.error("[Broker] reachability probes failed:", err instanceof Error ? err.message : err));
 
     // Promptly settle shared-dispatch escrow for recently-terminal targeted jobs:
     // capture on `completed`, release on `failed`. This is the prompt path so a
