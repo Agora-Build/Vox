@@ -35,7 +35,7 @@ test.describe("Admin User E2E Tests", () => {
     const response = await adminRequest.get("/api/admin/users");
     // If admin is properly logged in, should get 200 or data
     if (response.ok()) {
-      const users = await response.json();
+      const users = (await response.json()).data; // one page (#209)
       expect(Array.isArray(users)).toBe(true);
     }
   });

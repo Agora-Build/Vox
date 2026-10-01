@@ -102,8 +102,11 @@ test.describe("Admin User Management", () => {
     const response = await adminRequest.get("/api/admin/users");
 
     if (response.ok()) {
-      const users = await response.json();
+      // One page of users (#209): { data, total, stats }.
+      const body = await response.json();
+      const users = body.data;
       expect(Array.isArray(users)).toBe(true);
+      expect(body.total).toBeGreaterThanOrEqual(users.length);
 
       // Should have at least admin user
       if (users.length > 0) {
@@ -122,7 +125,7 @@ test.describe("Admin User Management", () => {
     const listResponse = await adminRequest.get("/api/admin/users");
 
     if (listResponse.ok()) {
-      const users = await listResponse.json();
+      const users = (await listResponse.json()).data;
       if (users.length > 0) {
         const user = users[0];
         // Verify user object has expected fields

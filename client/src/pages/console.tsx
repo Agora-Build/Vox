@@ -9,7 +9,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
 import { Users, Shield, Sparkles, UserPlus, Link, Copy, Check } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -38,6 +38,15 @@ interface UserData {
   emailVerified: boolean;
   createdAt: string;
 }
+
+// One page of users from GET /api/admin/users (#209): the table never holds
+// more than PAGE_SIZE rows, and the summary counts come from the server.
+interface UsersPage {
+  data: UserData[];
+  total: number;
+  stats: { total: number; admins: number; premium: number };
+}
+const PAGE_SIZE = 50;
 
 const PLAN_OPTIONS = [
   { value: "basic", label: "Basic" },
@@ -74,10 +83,27 @@ export default function Console() {
     queryKey: ["/api/auth/status"],
   });
 
-  const { data: users, isLoading: usersLoading } = useQuery<UserData[]>({
-    queryKey: ["/api/admin/users"],
+  const [search, setSearch] = useState("");
+  const [query, setQuery] = useState(""); // the search, once typing pauses
+  const [offset, setOffset] = useState(0);
+  useEffect(() => {
+    const t = setTimeout(() => { setQuery(search.trim()); setOffset(0); }, 300);
+    return () => clearTimeout(t);
+  }, [search]);
+  const { data: usersPage, isLoading: usersLoading } = useQuery<UsersPage>({
+    // Keyed under "/api/admin/users", so updating a user refreshes every page.
+    queryKey: ["/api/admin/users", { offset, query }],
+    queryFn: async () => {
+      const params = new URLSearchParams({ limit: String(PAGE_SIZE), offset: String(offset), ...(query ? { q: query } : {}) });
+      const res = await fetch(`/api/admin/users?${params}`, { credentials: "include" });
+      if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
+      return res.json();
+    },
     enabled: !!authStatus?.user?.isAdmin,
+    placeholderData: (previous) => previous,
   });
+  const users = usersPage?.data;
+  const total = usersPage?.total ?? 0;
 
   const updateUserMutation = useMutation({
     mutationFn: async ({ id, ...data }: { id: string; isEnabled?: boolean; isAdmin?: boolean; plan?: string }) => {
@@ -191,7 +217,7 @@ export default function Console() {
             <Users className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold" data-testid="text-total-users">{users?.length || 0}</div>
+            <div className="text-2xl font-bold" data-testid="text-total-users">{usersPage?.stats.total ?? 0}</div>
           </CardContent>
         </Card>
         <Card>
@@ -201,7 +227,7 @@ export default function Console() {
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold" data-testid="text-admin-count">
-              {users?.filter(u => u.isAdmin).length || 0}
+              {usersPage?.stats.admins ?? 0}
             </div>
           </CardContent>
         </Card>
@@ -212,7 +238,7 @@ export default function Console() {
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold" data-testid="text-paid-count">
-              {users?.filter(u => u.plan === "premium").length || 0}
+              {usersPage?.stats.premium ?? 0}
             </div>
           </CardContent>
         </Card>
@@ -287,6 +313,26 @@ export default function Console() {
           </Dialog>
         </CardHeader>
         <CardContent>
+          <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
+            <Input
+              placeholder="Search by email or username"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="max-w-sm"
+              data-testid="input-user-search"
+            />
+            <div className="flex items-center gap-2 text-sm text-muted-foreground">
+              <span data-testid="text-user-range">
+                {total === 0 ? "No users" : `${offset + 1}–${Math.min(offset + PAGE_SIZE, total)} of ${total}`}
+              </span>
+              <Button variant="outline" size="sm" disabled={offset === 0} onClick={() => setOffset(Math.max(0, offset - PAGE_SIZE))} data-testid="button-users-prev">
+                Previous
+              </Button>
+              <Button variant="outline" size="sm" disabled={offset + PAGE_SIZE >= total} onClick={() => setOffset(offset + PAGE_SIZE)} data-testid="button-users-next">
+                Next
+              </Button>
+            </div>
+          </div>
           {usersLoading ? (
             <div className="space-y-4">
               {[1, 2, 3].map((i) => (

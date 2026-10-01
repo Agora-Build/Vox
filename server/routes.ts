@@ -611,24 +611,41 @@ export async function registerRoutes(
 
   // ==================== ADMIN USER ROUTES ====================
 
+  // One page of users at a time (#209): ?limit= (default 50, at most 200),
+  // ?offset=, ?q= (email or username contains). Newest first. The summary
+  // counts cover all users.
   app.get("/api/admin/users", requireAuth, requireAdmin, async (req, res) => {
     try {
-      const users = await storage.getAllUsers();
+      const num = (v: unknown, fallback: number) => (v === undefined || v === "" ? fallback : Number(v));
+      const limit = num(req.query.limit, 50);
+      const offset = num(req.query.offset, 0);
+      if (!Number.isInteger(limit) || limit < 1 || !Number.isInteger(offset) || offset < 0) {
+        return res.status(400).json({ error: "limit must be a positive integer and offset a non-negative integer" });
+      }
+      const q = typeof req.query.q === "string" && req.query.q.trim() !== "" ? req.query.q.trim().slice(0, 200) : undefined;
+      const [{ rows: users, total }, stats] = await Promise.all([
+        storage.listUsersPage({ limit: Math.min(limit, 200), offset, q }),
+        storage.userStats(),
+      ]);
       // Other users' affiliation comes from the seam, not their raw rows — one
       // batch lookup, response shape unchanged. Absent provider ⇒ empty map,
       // same downstream effect as no member having an org.
       const memberships = (await getOrganizations()?.getMemberships(users.map(u => u.id))) ?? new Map<number, Membership>();
-      res.json(users.map(u => ({
-        id: u.id,
-        username: u.username,
-        email: u.email,
-        plan: u.plan,
-        isAdmin: u.isAdmin,
-        isEnabled: u.isEnabled,
-        emailVerified: !!u.emailVerifiedAt,
-        organizationId: memberships.get(u.id)?.organizationId ?? null,
-        createdAt: u.createdAt,
-      })));
+      res.json({
+        data: users.map(u => ({
+          id: u.id,
+          username: u.username,
+          email: u.email,
+          plan: u.plan,
+          isAdmin: u.isAdmin,
+          isEnabled: u.isEnabled,
+          emailVerified: !!u.emailVerifiedAt,
+          organizationId: memberships.get(u.id)?.organizationId ?? null,
+          createdAt: u.createdAt,
+        })),
+        total,
+        stats,
+      });
     } catch (error) {
       console.error("Error fetching users:", error);
       res.status(500).json({ error: "Failed to fetch users" });

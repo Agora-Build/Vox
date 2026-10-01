@@ -696,6 +696,27 @@ export class DatabaseStorage {
     return db.select().from(users).orderBy(desc(users.createdAt));
   }
 
+  /** One page of users, newest first, optionally filtered by email/username (#209). */
+  async listUsersPage(opts: { limit: number; offset: number; q?: string }): Promise<{ rows: User[]; total: number }> {
+    const like = opts.q ? `%${opts.q.replace(/[\\%_]/g, (c) => "\\" + c)}%` : null;
+    const where = like ? or(sql`${users.email} ILIKE ${like}`, sql`${users.username} ILIKE ${like}`) : undefined;
+    const [rows, count] = await Promise.all([
+      db.select().from(users).where(where).orderBy(desc(users.createdAt), desc(users.id)).limit(opts.limit).offset(opts.offset),
+      db.select({ n: sql<number>`count(*)::int` }).from(users).where(where),
+    ]);
+    return { rows, total: count[0]?.n ?? 0 };
+  }
+
+  /** The Users page's summary counts, over all users. */
+  async userStats(): Promise<{ total: number; admins: number; premium: number }> {
+    const [r] = await db.select({
+      total: sql<number>`count(*)::int`,
+      admins: sql<number>`count(*) FILTER (WHERE ${users.isAdmin})::int`,
+      premium: sql<number>`count(*) FILTER (WHERE ${users.plan} = 'premium')::int`,
+    }).from(users);
+    return r;
+  }
+
   // org-columns: provider — batch row fetch behind the deleted built-in
   // provider's getMemberships(); still used by non-org batch callers.
   async getUsersByIds(ids: number[]): Promise<User[]> {
