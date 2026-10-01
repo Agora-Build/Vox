@@ -1675,9 +1675,9 @@ export async function registerRoutes(
         settlementContext = authz.settlementContext;
       }
 
-      let job: EvalJob;
+      let job: EvalJob | null;
       try {
-        job = await storage.createEvalJob({
+        const jobValues = {
         kind: "analyze",
         evalFlowId: null,
         evalSetId: null,
@@ -1711,7 +1711,10 @@ export async function registerRoutes(
         priority: -10,
         retryCount: 0,
         maxRetries: 3,
-      } as InsertEvalJob);
+      } as InsertEvalJob;
+        // Paid: only while the agent's token is live, locked against a
+        // concurrent revoke (#214).
+        job = paidToken ? await storage.createEvalJobForLiveToken(jobValues, paidToken.id) : await storage.createEvalJob(jobValues);
       } catch (err) {
         // No job to settle: release the hold now instead of leaving it to the
         // leak reaper.
@@ -1723,6 +1726,11 @@ export async function registerRoutes(
         await deleteObject(bucket, s3Key).catch((e) =>
           console.error(`[analyze] removing ${s3Key} after a failed insert failed:`, e instanceof Error ? e.message : e));
         throw err;
+      }
+      if (!job) {
+        if (settlementContext !== undefined) await getMarketplace()?.voidDispatch(settlementContext).catch(() => {});
+        await deleteObject(bucket, s3Key).catch(() => {});
+        return res.status(409).json({ error: "That agent was revoked. Choose another." });
       }
       res.status(201).json(analyzeView(job, false));
     } catch (error) {
@@ -3532,6 +3540,26 @@ export async function registerRoutes(
     }
   }
 
+  // A revoked token's queued jobs can never run (its agent is refused on every
+  // path): fail them now and settle any paid ones, so the renter is refunded
+  // at once instead of after a reaper or the 24h backstop (#214). Jobs created
+  // concurrently are covered by createEvalJobForLiveToken's lock.
+  async function failJobsOfRevokedToken(tokenId: number): Promise<void> {
+    const failed = await storage.failPendingJobsForToken(tokenId);
+    const marketplace = getMarketplace();
+    for (const job of failed) {
+      const settlementContext = (job.snapshot as { settlementContext?: unknown } | null)?.settlementContext;
+      if (!marketplace || settlementContext === undefined) continue;
+      try {
+        await marketplace.settle({ jobId: job.id, status: job.status, hasResult: false, settlementContext });
+        await storage.markSettlementDone(job);
+      } catch (err) {
+        // The reap-settle sweep retries it.
+        console.error(`[marketplace] refunding job ${job.id} of revoked token ${tokenId} failed:`, err);
+      }
+    }
+  }
+
   app.post("/api/eval-agent-tokens/:id/revoke", requireAuth, async (req, res) => {
     try {
       const user = await getCurrentUser(req);
@@ -3553,6 +3581,7 @@ export async function registerRoutes(
 
       await storage.revokeEvalAgentToken(parseInt(id));
       await unlistRevokedToken(parseInt(id));
+      await failJobsOfRevokedToken(parseInt(id));
       res.json({ message: "Eval agent token revoked" });
     } catch (error) {
       console.error("Error revoking eval agent token:", error);
@@ -3723,6 +3752,7 @@ export async function registerRoutes(
       const { id } = req.params;
       await storage.revokeEvalAgentToken(parseInt(id));
       await unlistRevokedToken(parseInt(id));
+      await failJobsOfRevokedToken(parseInt(id));
       res.json({ message: "Eval agent token revoked" });
     } catch (error) {
       console.error("Error revoking eval agent token:", error);
@@ -5315,7 +5345,7 @@ export async function registerRoutes(
           // ensureSession never throws and records failures on the web_sessions row.
           void ensureSession(scope, sessionNeed);
         }
-        job = await storage.createEvalJob({
+        const jobValues = {
           evalFlowId: parseInt(evalFlowId),
           triggerType: 2, // manual (Run EvalFlow)
           evalSetId,
@@ -5328,11 +5358,18 @@ export async function registerRoutes(
           targetTokenId: targeting,
           config: jobConfig,
           snapshot,
-          status: "pending",
+          status: "pending" as const,
           priority: 0,
           retryCount: 0,
           maxRetries: 3,
-        });
+        };
+        // Aimed at one agent: create it only while that token is live, locked
+        // against a concurrent revoke (#214).
+        job = targeting == null ? await storage.createEvalJob(jobValues) : await storage.createEvalJobForLiveToken(jobValues, targeting);
+        if (!job) {
+          if (settlementContext !== undefined) await getMarketplace()?.voidDispatch(settlementContext).catch(() => {});
+          return res.status(409).json({ error: "That agent was revoked. Choose another." });
+        }
       } catch (createErr) {
         // A shared dispatch was authorized (escrow hold placed) but no job now exists
         // to settle it. Compensate by releasing the hold immediately rather than

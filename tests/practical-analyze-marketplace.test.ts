@@ -208,4 +208,21 @@ d("practical: Analyze on a marketplace agent, for credits", () => {
     expect(await balance(r.cookie)).toBe(before);
     expect((await storage.getEvalJob(id))!.settlementDoneAt).not.toBeNull();
   }, 6 * 60 * 1000);
+
+  it("revoking the agent fails its queued paid analysis and refunds it at once (#214)", async () => {
+    const r = await renter(100);
+    const before = await balance(r.cookie);
+    const agentToRevoke = await sharedAgent(["analyze"]);
+    const up = await upload(r.cookie, { agent: String(agentToRevoke.tokenId), consent: "1" });
+    expect(up.status).toBe(201);
+    const { id } = await up.json();
+    expect(await balance(r.cookie)).toBe(before - computeCharge(PRICE, 1)); // held
+    expect((await call(admin, "POST", `/api/eval-agent-tokens/${agentToRevoke.tokenId}/revoke`)).ok).toBe(true);
+    const job = (await storage.getEvalJob(id))!;
+    expect(job).toMatchObject({ status: "failed", error: "Its eval agent was revoked before it could run this." });
+    expect(await balance(r.cookie)).toBe(before); // refunded now, not after a reaper
+    // And it can't be dispatched to again.
+    const again = await upload(r.cookie, { agent: String(agentToRevoke.tokenId), consent: "1" });
+    expect(again.status).toBe(400);
+  }, 120_000);
 });

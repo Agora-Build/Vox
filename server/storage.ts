@@ -1082,6 +1082,31 @@ export class DatabaseStorage {
     await db.update(evalAgentTokens).set({ isRevoked: true }).where(eq(evalAgentTokens.id, id));
   }
 
+  /**
+   * Create a job aimed at one token — only if that token isn't revoked (#214).
+   * The token row is locked for the insert, so this serializes with a revoke:
+   * either the revoke comes first and this returns null (no job), or the job
+   * exists before the revoke and failPendingJobsForToken sees it.
+   */
+  async createEvalJobForLiveToken(job: InsertEvalJob, tokenId: number): Promise<EvalJob | null> {
+    return db.transaction(async (tx) => {
+      const rows = await tx.execute(sql`SELECT is_revoked FROM eval_agent_tokens WHERE id = ${tokenId} FOR UPDATE`);
+      const row = (rows as unknown as { rows: Array<{ is_revoked: boolean }> }).rows[0];
+      if (!row || row.is_revoked) return null;
+      const transport = ((job.snapshot as JobSnapshot | null)?.transport ?? "web") as "web" | "phone";
+      const [created] = await tx.insert(evalJobs).values({ ...(job as typeof evalJobs.$inferInsert), transport }).returning();
+      return created;
+    });
+  }
+
+  /** Fail the pending jobs aimed at a token that was just revoked (#214). */
+  async failPendingJobsForToken(tokenId: number): Promise<EvalJob[]> {
+    return db.update(evalJobs)
+      .set({ status: "failed", error: "Its eval agent was revoked before it could run this.", completedAt: new Date(), updatedAt: new Date() })
+      .where(and(eq(evalJobs.targetTokenId, tokenId), eq(evalJobs.status, "pending")))
+      .returning();
+  }
+
   async updateEvalAgentTokenDispatchTier(id: number, dispatchTier: string): Promise<void> {
     await db.update(evalAgentTokens)
       .set({ dispatchTier: dispatchTier as typeof evalAgentTokens.$inferInsert["dispatchTier"] })
