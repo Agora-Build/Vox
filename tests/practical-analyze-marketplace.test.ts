@@ -246,7 +246,7 @@ d("practical: Analyze on a marketplace agent, for credits", () => {
     // Finished with a result, but its settle never ran (as when it threw on
     // completion): the hold is still held.
     await pool.query("UPDATE eval_jobs SET status = 'completed', completed_at = now(), eval_agent_id = $2 WHERE id = $1", [id, paidAgent.agentId]);
-    await storage.createAnalyzeResult({ evalJobId: id, providerId: provider, siteId: null, responseLatencyMedian: 900 } as any);
+    await storage.createEvalResult({ evalJobId: id, providerId: provider, siteId: null, responseLatencyMedian: 900 } as any);
     expect((await call(r.cookie, "DELETE", `/api/tools/analyze/${id}`)).status).toBe(204);
     const charge = computeCharge(PRICE, 1);
     expect(await operatorPaidFor(id)).toBe(charge - computeFee(charge));            // paid for the real result
@@ -271,24 +271,17 @@ d("practical: Analyze on a marketplace agent, for credits", () => {
     expect(await balance(r.cookie)).toBe(before); // refunded now, not after the backstop
   }, 120_000);
 
-  it("deleting a paid analysis that is still finishing (result not stored yet) waits, and refunds nothing", async () => {
+  it("deleting a finished paid analysis that produced no result refunds it (and pays nothing)", async () => {
+    // Completion and result commit together (#94), so a completed job with no
+    // result is final: the run produced none, and the renter is refunded.
     const r = await renter(100);
     const before = await balance(r.cookie);
     const up = await upload(r.cookie, { agent: String(paidAgent.tokenId), consent: "1" });
     expect(up.status).toBe(201);
     const { id } = await up.json();
-    // Marked completed, but its result isn't stored yet (the complete route is mid-way).
     await pool.query("UPDATE eval_jobs SET status = 'completed', completed_at = now(), eval_agent_id = $2 WHERE id = $1", [id, paidAgent.agentId]);
-    const res = await call(r.cookie, "DELETE", `/api/tools/analyze/${id}`);
-    expect(res.status).toBe(409);
-    expect(await balance(r.cookie)).toBe(before - computeCharge(PRICE, 1)); // still held, not refunded
-    expect(await operatorPaidFor(id)).toBe(0);
-    const job = (await storage.getEvalJob(id))!;
-    expect(job.settlementDoneAt).toBeNull();
-    expect(job.deletedAt).toBeNull();
-    // Once the result is stored, the delete goes through and pays the operator.
-    await storage.createAnalyzeResult({ evalJobId: id, providerId: provider, siteId: null, responseLatencyMedian: 900 } as any);
     expect((await call(r.cookie, "DELETE", `/api/tools/analyze/${id}`)).status).toBe(204);
-    expect(await operatorPaidFor(id)).toBe(computeCharge(PRICE, 1) - computeFee(computeCharge(PRICE, 1)));
+    expect(await balance(r.cookie)).toBe(before); // refunded
+    expect(await operatorPaidFor(id)).toBe(0);
   }, 120_000);
 });
