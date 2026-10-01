@@ -14,3 +14,22 @@ d("#215 agent tokens have no expiry", () => {
     expect(r.rowCount).toBe(0);
   });
 });
+
+d("#219 the analyze lookups have their index", () => {
+  it("a user's analyses are read through eval_jobs_analyze_creator_idx", async () => {
+    const def = await pool.query("SELECT indexdef FROM pg_indexes WHERE indexname = 'eval_jobs_analyze_creator_idx'");
+    expect(def.rows[0]?.indexdef).toMatch(/\(created_by, created_at DESC\) WHERE \(\(kind\)::text = 'analyze'::text\)/);
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query("SET LOCAL enable_seqscan = off"); // the dev table is small; ask for the plan the index allows
+      const plan = await client.query(
+        "EXPLAIN SELECT count(*) FROM eval_jobs WHERE kind = 'analyze' AND created_by = 2 AND created_at >= now() - interval '1 day'",
+      );
+      expect(plan.rows.map((r) => r["QUERY PLAN"]).join("\n")).toContain("eval_jobs_analyze_creator_idx");
+    } finally {
+      await client.query("ROLLBACK");
+      client.release();
+    }
+  });
+});

@@ -13,9 +13,11 @@ describe("isBlockedAddress", () => {
     // IPv4-mapped in hex (what the URL parser turns [::ffff:127.0.0.1] into),
     // IPv4-compatible, and NAT64 forms of internal addresses.
     "::ffff:7f00:1", "::ffff:a00:1", "::ffff:a9fe:a9fe", "::7f00:1", "64:ff9b::a9fe:a9fe",
+    // 6to4 (2002::/16) and Teredo (2001::/32) can carry an internal IPv4 too.
+    "2002:7f00:1::1", "2002:a9fe:a9fe::1", "2001:0:4136:e378::1",
   ])("refuses %s", (ip) => expect(isBlockedAddress(ip)).toBe(true));
 
-  it.each(["104.18.1.1", "52.216.1.2", "172.32.0.1", "100.128.0.1", "2606:4700::1", "::ffff:6812:101"])("allows %s", (ip) =>
+  it.each(["104.18.1.1", "52.216.1.2", "172.32.0.1", "100.128.0.1", "2606:4700::1", "::ffff:6812:101", "2001:4860:4860::8888"])("allows %s", (ip) =>
     expect(isBlockedAddress(ip)).toBe(false));
 });
 

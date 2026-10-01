@@ -28,6 +28,8 @@ for (const [base, bits] of [
   ["fe80::", 10],    // link-local
   ["fc00::", 7],     // unique local
   ["ff00::", 8],     // multicast
+  ["2002::", 16],    // 6to4: embeds an IPv4 address, internal ones included
+  ["2001::", 32],    // Teredo: likewise
 ] as const) blocked.addSubnet(base, bits, "ipv6");
 
 /** Whether Core must not connect to this address. */

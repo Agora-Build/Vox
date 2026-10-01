@@ -41,7 +41,7 @@ import { normalizeDialableNumber } from '../shared/steps';
 import { DialfClient, probeDialf, resolveDialfSocketPath, type DialfProbe } from './dialf-client';
 import { runPhoneJob, finishPhoneMetrics } from './phone-eval';
 import { runAnalyzeUpload, capabilitiesFor, aevalOnPath, writeLimited } from './analyze-upload';
-import { claimFirstAvailable } from './job-pick';
+import { claimFirstAvailable, claimOutcome, type ClaimOutcome } from './job-pick';
 import { UNMEASURED_DEFAULTS } from './result-defaults';
 import { Readable } from 'stream';
 import {
@@ -456,7 +456,7 @@ class VoxEvalAgentDaemon {
     }
   }
 
-  async claimJob(jobId: number): Promise<boolean> {
+  async claimJob(jobId: number): Promise<ClaimOutcome> {
     try {
       const response = await this.fetch(`/api/eval-agent/jobs/${jobId}/claim`, {
         method: 'POST',
@@ -464,17 +464,18 @@ class VoxEvalAgentDaemon {
       });
 
       await this.exitIfSuperseded(response);
-      if (!response.ok) {
-        console.error(`[Daemon] Failed to claim job ${jobId}`);
-        return false;
+      const outcome = claimOutcome(response.status);
+      if (outcome !== 'claimed') {
+        console.error(`[Daemon] Failed to claim job ${jobId} (${response.status})`);
+        return outcome;
       }
 
       console.log(`[Daemon] Claimed job ${jobId}`);
-      return true;
+      return 'claimed';
     } catch (error: unknown) {
       const msg = error instanceof Error ? error.message : String(error);
       console.error(`[Daemon] Error claiming job:`, msg);
-      return false;
+      return 'error';
     }
   }
 
