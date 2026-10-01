@@ -41,17 +41,27 @@ d("#214 dispatch vs revoke", () => {
     expect((await pool.query("SELECT count(*)::int c FROM eval_jobs WHERE target_token_id = $1", [t.id])).rows[0].c).toBe(0);
   });
 
-  it("a revoke fails the token's queued jobs (and only those)", async () => {
+  it("a revoke fails the token's queued and running jobs (and only those)", async () => {
     const t = await mkToken();
     const queued = (await storage.createEvalJobForLiveToken(values(t.id), t.id))!;
-    jobIds.push(queued.id);
+    const running = (await storage.createEvalJobForLiveToken({ ...values(t.id), status: "running" }, t.id))!;
+    jobIds.push(queued.id, running.id);
     const other = await mkToken();
     const bystander = (await storage.createEvalJobForLiveToken(values(other.id), other.id))!;
     jobIds.push(bystander.id);
     await storage.revokeEvalAgentToken(t.id);
-    const failed = await storage.failPendingJobsForToken(t.id);
-    expect(failed.map((j) => j.id)).toEqual([queued.id]);
-    expect(await storage.getEvalJob(queued.id)).toMatchObject({ status: "failed", error: "Its eval agent was revoked before it could run this." });
+    const failed = await storage.failOpenJobsForToken(t.id);
+    expect(failed.map((j) => j.id).sort()).toEqual([queued.id, running.id].sort());
+    for (const id of [queued.id, running.id]) {
+      expect(await storage.getEvalJob(id)).toMatchObject({ status: "failed", error: "Its eval agent was revoked." });
+    }
     expect((await storage.getEvalJob(bystander.id))!.status).toBe("pending");
+  });
+
+  it("stamps the transport like any other job (one insert path)", async () => {
+    const t = await mkToken();
+    const job = (await storage.createEvalJobForLiveToken({ ...values(t.id), snapshot: { provider: null, evalFlow: null, evalSet: null, creatorPlan: null, transport: "phone" } }, t.id))!;
+    jobIds.push(job.id);
+    expect(job.transport).toBe("phone");
   });
 });

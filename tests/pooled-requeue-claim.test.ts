@@ -67,6 +67,30 @@ d("#216 requeued pooled job", () => {
   });
 });
 
+d("a site-pinned job for another site", () => {
+  it("is refused with 409 — about the job — so the agent tries its next one", async () => {
+    const raw = `vox_agent_pinned_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+    const tok = await storage.createEvalAgentToken({
+      name: `pinned-${Date.now()}`, tokenHash: hashToken(raw), siteId: "na-us-ashburn-01", dispatchTier: "public", createdBy: 1,
+    } as any);
+    tokenIds.push(tok.id);
+    const auth = { "Content-Type": "application/json", Authorization: `Bearer ${raw}` };
+    const agent = await (await fetch(`${BASE_URL}/api/eval-agent/register`, { method: "POST", headers: auth, body: JSON.stringify({ name: "pinned-agent" }) })).json();
+    const job = await storage.createEvalJob({
+      evalFlowId: null, triggerType: 2, evalSetId: null, createdBy: 1,
+      siteId: "na-us-ashburn-98", targetRegion: null, targetTier: null, config: {},
+      snapshot: { provider: null, evalFlow: null, evalSet: null, creatorPlan: null } as any,
+      status: "pending", priority: 0, retryCount: 0, maxRetries: 3,
+    } as any);
+    jobIds.push(job.id);
+    const res = await fetch(`${BASE_URL}/api/eval-agent/jobs/${job.id}/claim`, {
+      method: "POST", headers: auth, body: JSON.stringify({ agentId: agent.id, leaseId: agent.leaseId }),
+    });
+    expect(res.status).toBe(409);
+    expect(claimOutcome(res.status)).toBe("taken");
+  });
+});
+
 describe("#216 the agent moves past a job it can't claim", () => {
   it("claims the first job that accepts, in list order", async () => {
     const tried: number[] = [];
@@ -83,8 +107,9 @@ describe("#216 the agent moves past a job it can't claim", () => {
   });
   it("reads a claim response: refusals about the job move on, anything else stops", () => {
     expect(claimOutcome(200)).toBe("claimed");
-    for (const s of [409, 403, 404]) expect(claimOutcome(s)).toBe("taken");
-    for (const s of [500, 502, 503, 401]) expect(claimOutcome(s)).toBe("error");
+    for (const s of [409, 404]) expect(claimOutcome(s)).toBe("taken");
+    // 403 is about the agent itself (refused, revoked): stop, don't walk the list.
+    for (const s of [403, 500, 502, 503, 401]) expect(claimOutcome(s)).toBe("error");
   });
   it("returns null when none can be claimed", async () => {
     expect(await claimFirstAvailable([{ id: 1 }], async () => "taken")).toBeNull();

@@ -1114,17 +1114,20 @@ export class DatabaseStorage {
       const rows = await tx.execute(sql`SELECT is_revoked FROM eval_agent_tokens WHERE id = ${tokenId} FOR UPDATE`);
       const row = (rows as unknown as { rows: Array<{ is_revoked: boolean }> }).rows[0];
       if (!row || row.is_revoked) return null;
-      const transport = ((job.snapshot as JobSnapshot | null)?.transport ?? "web") as "web" | "phone";
-      const [created] = await tx.insert(evalJobs).values({ ...(job as typeof evalJobs.$inferInsert), transport }).returning();
+      const [created] = await tx.insert(evalJobs).values(this.jobRow(job)).returning();
       return created;
     });
   }
 
-  /** Fail the pending jobs aimed at a token that was just revoked (#214). */
-  async failPendingJobsForToken(tokenId: number): Promise<EvalJob[]> {
+  /**
+   * Fail the jobs aimed at a token that was just revoked (#214): queued ones,
+   * and running ones too — its agent is refused from now on, so a running job
+   * could never complete, and requeued it would wait aimed at a dead token.
+   */
+  async failOpenJobsForToken(tokenId: number): Promise<EvalJob[]> {
     return db.update(evalJobs)
-      .set({ status: "failed", error: "Its eval agent was revoked before it could run this.", completedAt: new Date(), updatedAt: new Date() })
-      .where(and(eq(evalJobs.targetTokenId, tokenId), eq(evalJobs.status, "pending")))
+      .set({ status: "failed", error: "Its eval agent was revoked.", completedAt: new Date(), updatedAt: new Date() })
+      .where(and(eq(evalJobs.targetTokenId, tokenId), inArray(evalJobs.status, ["pending", "running"])))
       .returning();
   }
 
@@ -1304,15 +1307,18 @@ export class DatabaseStorage {
     return result[0]?.count ?? 0;
   }
 
-  async createEvalJob(job: InsertEvalJob): Promise<EvalJob> {
-    // Stamp the frozen transport column from the snapshot (single choke point —
-    // covers the run route AND the scheduler; creator_org_id pattern, design §3).
+  // The row a new job is inserted as: the frozen transport column stamped from
+  // the snapshot (creator_org_id pattern, design §3). The single choke point
+  // for every job insert — createEvalJob and createEvalJobForLiveToken.
+  private jobRow(job: InsertEvalJob): typeof evalJobs.$inferInsert {
     const transport = ((job.snapshot as JobSnapshot | null)?.transport ?? "web") as "web" | "phone";
     // Cast: the Zod insert type widens the `snapshot` jsonb ($type<JobSnapshot>)
     // to a looser shape; the runtime value is a valid JobSnapshot.
-    const result = await db.insert(evalJobs)
-      .values({ ...(job as typeof evalJobs.$inferInsert), transport })
-      .returning();
+    return { ...(job as typeof evalJobs.$inferInsert), transport };
+  }
+
+  async createEvalJob(job: InsertEvalJob): Promise<EvalJob> {
+    const result = await db.insert(evalJobs).values(this.jobRow(job)).returning();
     return result[0];
   }
 

@@ -219,7 +219,7 @@ d("practical: Analyze on a marketplace agent, for credits", () => {
     expect(await balance(r.cookie)).toBe(before - computeCharge(PRICE, 1)); // held
     expect((await call(admin, "POST", `/api/eval-agent-tokens/${agentToRevoke.tokenId}/revoke`)).ok).toBe(true);
     const job = (await storage.getEvalJob(id))!;
-    expect(job).toMatchObject({ status: "failed", error: "Its eval agent was revoked before it could run this." });
+    expect(job).toMatchObject({ status: "failed", error: "Its eval agent was revoked." });
     expect(await balance(r.cookie)).toBe(before); // refunded now, not after a reaper
     // And it can't be dispatched to again.
     const again = await upload(r.cookie, { agent: String(agentToRevoke.tokenId), consent: "1" });
@@ -242,5 +242,22 @@ d("practical: Analyze on a marketplace agent, for credits", () => {
     expect(await balance(admin)).toBe(operatorBefore + charge - computeFee(charge)); // paid for the real result
     expect(await balance(r.cookie)).toBe(renterBefore - charge);                    // not refunded
     expect((await storage.getEvalJob(id))!.settlementDoneAt).not.toBeNull();
+  }, 120_000);
+
+  it("revoking an agent while it runs a paid analysis fails it and refunds at once (#214)", async () => {
+    const r = await renter(100);
+    const before = await balance(r.cookie);
+    const agent = await sharedAgent(["analyze"]);
+    const up = await upload(r.cookie, { agent: String(agent.tokenId), consent: "1" });
+    expect(up.status).toBe(201);
+    const { id } = await up.json();
+    const auth = { "Content-Type": "application/json", Authorization: `Bearer ${agent.raw}` };
+    expect((await fetch(`${BASE_URL}/api/eval-agent/jobs/${id}/claim`, {
+      method: "POST", headers: auth, body: JSON.stringify({ agentId: agent.agentId, leaseId: agent.leaseId }),
+    })).status).toBe(200);
+    expect((await storage.getEvalJob(id))!.status).toBe("running");
+    expect((await call(admin, "POST", `/api/eval-agent-tokens/${agent.tokenId}/revoke`)).ok).toBe(true);
+    expect(await storage.getEvalJob(id)).toMatchObject({ status: "failed", error: "Its eval agent was revoked." });
+    expect(await balance(r.cookie)).toBe(before); // refunded now, not after the backstop
   }, 120_000);
 });

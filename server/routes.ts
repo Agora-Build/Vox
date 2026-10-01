@@ -1859,7 +1859,10 @@ export async function registerRoutes(
       // exists — deleting first would leave the sweep to refund real work.
       const settlementContext = (job.snapshot as JobSnapshot | null)?.settlementContext;
       const marketplace = getMarketplace();
-      if (job.status === "completed" && settlementContext !== undefined && !job.settlementDoneAt && marketplace) {
+      if (job.status === "completed" && settlementContext !== undefined && !job.settlementDoneAt) {
+        // Without the marketplace the payment can't be captured now; deleting
+        // the result would leave a later sweep to refund real work.
+        if (!marketplace) return res.status(503).json({ error: "Payments are unavailable right now. Try deleting this analysis later." });
         try {
           const hasResult = (await storage.getEvalResultsByJob(job.id)).length > 0;
           await marketplace.settle({ jobId: job.id, status: job.status, hasResult, settlementContext });
@@ -3595,7 +3598,15 @@ export async function registerRoutes(
   // at once instead of after a reaper or the 24h backstop (#214). Jobs created
   // concurrently are covered by createEvalJobForLiveToken's lock.
   async function failJobsOfRevokedToken(tokenId: number): Promise<void> {
-    const failed = await storage.failPendingJobsForToken(tokenId);
+    let failed: EvalJob[];
+    try {
+      failed = await storage.failOpenJobsForToken(tokenId);
+    } catch (err) {
+      // The revoke itself has happened; don't report it as failed. The jobs
+      // fall to the reapers and the sweep then refunds them.
+      console.error(`[revoke] failing the jobs of revoked token ${tokenId} failed:`, err);
+      return;
+    }
     const marketplace = getMarketplace();
     for (const job of failed) {
       const settlementContext = (job.snapshot as { settlementContext?: unknown } | null)?.settlementContext;
@@ -4386,7 +4397,8 @@ export async function registerRoutes(
       // are fenced by region+tier inside claimEvalJob's predicate — including a
       // requeued one, which still carries its first claimer's site (#216).
       if (existingJob.targetRegion == null && existingJob.siteId != null && existingJob.siteId !== eff.siteId) {
-        return res.status(403).json({ error: "Job site does not match agent site" });
+        // About this job, not this agent: 409, so the agent tries the next one.
+        return res.status(409).json({ error: "Job site does not match agent site" });
       }
 
       // Freeze the claiming agent's token dispatch tier onto the job in the SAME
