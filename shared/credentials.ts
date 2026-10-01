@@ -47,9 +47,35 @@ export function urlForms(v: string): string[] {
 }
 
 /**
+ * HTML-entity spellings of `v`, best-effort (#139).
+ *
+ * A failed mint can quote page state (the broker's boundary note accepts that
+ * DOM fragments reach its message), and a page writes an account the way HTML
+ * does: `&amp;`/`&quot;` from ordinary escaping, or `&#64;` for the `@` of an
+ * obfuscated email. Covered: the named escapes of & < > " ', and numeric
+ * (decimal and both hex casings) escapes of either those characters plus `@`,
+ * or of every non-alphanumeric character. A page that encodes some other
+ * subset is not covered — the same best-effort line urlForms draws.
+ */
+export function htmlForms(v: string): string[] {
+  const named: Record<string, string> = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
+  const chars = Array.from(v); // by code point, so an astral character is one entity
+  const encode = (pick: (c: string) => boolean, as: (c: string) => string) =>
+    chars.map((c) => (pick(c) ? as(c) : c)).join("");
+  const special = (c: string) => c in named || c === "@";
+  const nonAlnum = (c: string) => !/^[A-Za-z0-9]$/.test(c);
+  const dec = (c: string) => `&#${c.codePointAt(0)};`;
+  const hex = (c: string) => `&#x${c.codePointAt(0)!.toString(16)};`;
+  const HEX = (c: string) => `&#x${c.codePointAt(0)!.toString(16).toUpperCase()};`;
+  const forms = [encode((c) => c in named, (c) => named[c])];
+  for (const pick of [special, nonAlnum]) for (const as of [dec, hex, HEX]) forms.push(encode(pick, as));
+  return Array.from(new Set(forms)).filter((f) => f !== v);
+}
+
+/**
  * Every spelling a credential can take in third-party output, so a redaction
  * can match it: raw, the JSON/YAML double-quoted scalar it is embedded as, and
- * the URL encodings above.
+ * the URL and HTML-entity encodings above.
  *
  * The escaped form is derived from the SAME `JSON.stringify` that writes the
  * scenario YAML rather than a hand-rolled escaper, so the two cannot drift:
@@ -63,7 +89,7 @@ export function credentialForms(values: string[]): string[] {
     new Set(
       values
         .filter((v) => v.length > 0)
-        .flatMap((v) => [v, JSON.stringify(v).slice(1, -1), ...urlForms(v)]),
+        .flatMap((v) => [v, JSON.stringify(v).slice(1, -1), ...urlForms(v), ...htmlForms(v)]),
     ),
   );
 }
@@ -85,6 +111,55 @@ export function redactValues(message: string, values: string[]): string {
     .filter((v) => v.length > 0)
     .sort((a, b) => b.length - a.length)
     .reduce((acc, v) => acc.split(v).join("[redacted]"), message);
+}
+
+/**
+ * Reduce every URL in `text` to `scheme://host/…` — paths and queries carry
+ * account hints (`login_hint=`), tokens and reset links.
+ */
+export function reduceUrlsToHost(text: string): string {
+  return text.replace(
+    /((?:https?|wss?):\/\/)(?:[^\s"'<>/?#]*@)?([^\s"'<>/?#]*)(?:[/?#][^\s"'<>]*)?/gi,
+    '$1$2/…',
+  );
+}
+
+/**
+ * Reduce URLs in `text`, but redact any needle that IS a URL first.
+ *
+ * reduceUrlsToHost rewrites `scheme://host/path?query` to `scheme://host/…`.
+ * If a CREDENTIAL's value is itself a URL — a LiveKit `wss://<project>.livekit.cloud/...`
+ * server URL, a webhook endpoint, a reset link — that rewrite destroys the
+ * needle that would have redacted it, and the host survives into a persisted,
+ * user-visible error. Redacting the URL-shaped needles first closes that.
+ *
+ * Pre-redacting is safe for THIS subset specifically: a needle containing "://"
+ * cannot occur inside a loguru timestamp/level prefix, so line classification
+ * is untouched. That is why the general case still redacts after classifying
+ * (see minNeedleLength).
+ *
+ * Shared by the broker, the daemon and Core's backstop (mintViaBroker) so they
+ * cannot diverge on it.
+ */
+export function reduceUrlsSafely(text: string, needles: string[]): string {
+  const urlish = needles
+    .filter((n) => n.length > 0 && n.includes('://'))
+    .sort((a, b) => b.length - a.length); // longest first, so wholes beat substrings
+  // Consume the REST of the URL run, not just the needle. A URL-valued secret
+  // is typically a PREFIX of what gets echoed — secret "wss://h/rtc" appearing
+  // as "wss://h/rtc?access_token=JWT" — and replacing only the needle leaves
+  // "[redacted]?access_token=JWT", which reduceUrlsToHost no longer recognizes
+  // as a URL, so the query survives.
+  const pre = urlish.reduce(
+    (acc, v) => acc.replace(new RegExp(escapeForRegExp(v) + '[^\\s"\'<>|]*', 'g'), '[redacted]'),
+    text,
+  );
+  return reduceUrlsToHost(pre);
+}
+
+/** Escape a literal for embedding in a RegExp. */
+function escapeForRegExp(v: string): string {
+  return v.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 /**

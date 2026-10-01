@@ -355,7 +355,13 @@ export async function mintWithAeval(req: MintRequest, timeoutMs: number): Promis
     if (!fs.existsSync(storageFile)) {
       throw new Error('login completed but no storage state was saved');
     }
-    return JSON.parse(fs.readFileSync(storageFile, 'utf8'));
+    // A malformed file gets a stated cause, not a raw SyntaxError (#139) — and
+    // never its content: it is the minted session's cookies.
+    try {
+      return JSON.parse(fs.readFileSync(storageFile, 'utf8'));
+    } catch {
+      throw new Error('login completed but the saved storage state is not valid JSON');
+    }
   } finally {
     fs.rmSync(workDir, { recursive: true, force: true });
   }
