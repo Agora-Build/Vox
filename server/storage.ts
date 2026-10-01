@@ -1937,10 +1937,6 @@ export class DatabaseStorage {
     });
   }
 
-  // Roll a just-finalized job back to running so a retry can re-attempt saving
-  // its result (used when the result insert failed transiently after finalize).
-
-
   async completeEvalJob(jobId: number, error?: string): Promise<EvalJob | undefined> {
     const result = await db.update(evalJobs)
       .set({ 

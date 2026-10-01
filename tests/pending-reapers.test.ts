@@ -1,5 +1,6 @@
 import { describe, it, expect, afterAll } from "vitest";
 import { storage, pool } from "../server/storage";
+import { PENDING_NO_AGENT_TIMEOUT_MINUTES, PENDING_MAX_WAIT_MINUTES, STALE_THRESHOLD_MINUTES } from "../server/scheduler";
 
 // #84: the two pending-job reapers on the real SQL (they used to be tested
 // through TypeScript copies of their predicates, which a regression in the
@@ -9,8 +10,11 @@ import { storage, pool } from "../server/storage";
 //     a requeue restarts that clock (#82 then requeues it, counting the strike);
 //   failExpiredPendingJobs — fails any job still pending 24 h after it was
 //     CREATED (#213: a requeue doesn't buy more time).
-// Every case uses its own site and backdates only its own rows: the dev DB is
-// shared with parallel suites, so no zero-minute (global) sweeps.
+// Every case uses its own site and backdates only its own rows. The sweeps
+// themselves are global, so they run with the scheduler's own thresholds (and
+// excludeTeamTier = true, a subset): exactly what the dev server's maintenance
+// worker already does to this database every minute — nothing another suite's
+// rows wouldn't get anyway. Never call them with tighter values here.
 const d = process.env.DATABASE_URL ? describe : describe.skip;
 const jobIds: number[] = [];
 const tokenIds: number[] = [];
@@ -50,7 +54,7 @@ async function agentAt(siteId: string, state: "idle" | "occupied", seenMin: numb
   await pool.query("UPDATE eval_agents SET last_seen_at = now() - make_interval(mins => $2) WHERE id = $1", [agent.id, seenMin]);
 }
 
-const sweep = () => storage.failPendingJobsWithNoAgent(15, 5, true);
+const sweep = () => storage.failPendingJobsWithNoAgent(PENDING_NO_AGENT_TIMEOUT_MINUTES, STALE_THRESHOLD_MINUTES, true);
 const struck = async (id: number) => (await storage.getEvalJob(id))!.unclaimedCount > 0;
 
 d("#84 no-agent reaper (real SQL)", () => {
@@ -133,7 +137,7 @@ d("#84 24 h backstop (real SQL)", () => {
     await agentAt(young, "idle", 1);
     const dayOld = await pinnedJob(old, 25 * 60);
     const almost = await pinnedJob(young, 23 * 60);
-    await storage.failExpiredPendingJobs(24 * 60, true);
+    await storage.failExpiredPendingJobs(PENDING_MAX_WAIT_MINUTES, true);
     expect((await storage.getEvalJob(dayOld))!.status).toBe("failed");
     expect((await storage.getEvalJob(almost))!.status).toBe("pending");
   });
@@ -142,14 +146,14 @@ d("#84 24 h backstop (real SQL)", () => {
     const s = site("day-requeued");
     await agentAt(s, "idle", 1);
     const job = await pinnedJob(s, 25 * 60, 5);
-    await storage.failExpiredPendingJobs(24 * 60, true);
+    await storage.failExpiredPendingJobs(PENDING_MAX_WAIT_MINUTES, true);
     expect((await storage.getEvalJob(job))!.status).toBe("failed");
   });
 
   it("never touches a finished job", async () => {
     const job = await pinnedJob(site("day-done"), 48 * 60);
     await pool.query("UPDATE eval_jobs SET status = 'completed' WHERE id = $1", [job]);
-    await storage.failExpiredPendingJobs(24 * 60, true);
+    await storage.failExpiredPendingJobs(PENDING_MAX_WAIT_MINUTES, true);
     expect((await storage.getEvalJob(job))!.status).toBe("completed");
   });
 });
