@@ -20,6 +20,17 @@ export function chartRangeDomain(range: ChartRange, totalLength: number): ChartD
   return [current.start - 0.5, current.end - 0.5];
 }
 
+/** Return the integer point indices that intersect the continuous chart domain. */
+export function visibleChartRange(range: ChartRange, totalLength: number): ChartRange {
+  const total = Math.max(0, totalLength);
+  if (total === 0) return { start: 0, end: 0 };
+  const current = clampChartRange(range, total);
+  return {
+    start: Math.max(0, Math.ceil(current.start - 0.5)),
+    end: Math.min(total, Math.floor(current.end - 0.5) + 1),
+  };
+}
+
 /** Retain integer points outside the domain so path entry/exit stays clipped. */
 export function overscanChartRange(
   range: ChartRange,
@@ -27,20 +38,58 @@ export function overscanChartRange(
   overscan = 1,
 ): ChartRange {
   const total = Math.max(0, totalLength);
-  if (total === 0) return { start: 0, end: 0 };
-  const current = clampChartRange(range, total);
+  const visible = visibleChartRange(range, total);
   const padding = Math.max(0, Math.floor(overscan));
   return {
-    start: Math.max(0, Math.floor(current.start) - padding),
-    end: Math.min(total, Math.ceil(current.end) + padding),
+    start: Math.max(0, visible.start - padding),
+    end: Math.min(total, visible.end + padding),
   };
+}
+
+function lowerBound(values: readonly number[], target: number): number {
+  let low = 0;
+  let high = values.length;
+  while (low < high) {
+    const middle = Math.floor((low + high) / 2);
+    if (values[middle] < target) low = middle + 1;
+    else high = middle;
+  }
+  return low;
+}
+
+/** Include the nearest point outside each visible sparse segment for clipped paths. */
+export function segmentOverscanChartRange(
+  range: ChartRange,
+  totalLength: number,
+  segments: ReadonlyArray<readonly number[]>,
+): ChartRange {
+  const visible = visibleChartRange(range, totalLength);
+  const bounds = overscanChartRange(range, totalLength);
+
+  for (const dataIndices of segments) {
+    if (dataIndices.length === 0) continue;
+    const first = dataIndices[0];
+    const last = dataIndices[dataIndices.length - 1];
+    if (last < visible.start || first >= visible.end) continue;
+
+    const firstVisible = lowerBound(dataIndices, visible.start);
+    if (firstVisible > 0) bounds.start = Math.min(bounds.start, dataIndices[firstVisible - 1]);
+
+    const firstAfter = lowerBound(dataIndices, visible.end);
+    if (firstAfter < dataIndices.length) {
+      bounds.end = Math.max(bounds.end, dataIndices[firstAfter] + 1);
+    }
+  }
+
+  return bounds;
 }
 
 /** Build stable, evenly positioned ticks for a moving numeric domain. */
 export function chartDomainTicks(domain: ChartDomain, count = 7): number[] {
-  const tickCount = Math.max(2, Math.floor(count));
+  const tickCount = Math.max(1, Math.floor(count));
   const span = domain[1] - domain[0];
   if (!Number.isFinite(span) || span <= 0) return [domain[0]];
+  if (tickCount === 1) return [domain[0] + span / 2];
   return Array.from(
     { length: tickCount },
     (_, index) => domain[0] + (span * index) / (tickCount - 1),

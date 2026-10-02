@@ -7,7 +7,9 @@ import {
   overscanChartRange,
   panChartRange,
   resizeChartRange,
+  segmentOverscanChartRange,
   stableYAxisMax,
+  visibleChartRange,
   wheelZoomScale,
   zoomChartRange,
 } from "../client/src/lib/chart-zoom";
@@ -52,14 +54,25 @@ describe("chart zoom range math", () => {
     expect(chartRangeDomain({ start: 0, end: 0 }, 0)).toEqual([0, 1]);
   });
 
-  it("retains overscan rows outside the visible domain", () => {
-    expect(overscanChartRange({ start: 20.25, end: 60.25 }, 100)).toEqual({ start: 19, end: 62 });
-    expect(overscanChartRange({ start: 0, end: 20 }, 100, 2)).toEqual({ start: 0, end: 22 });
-    expect(overscanChartRange({ start: 80, end: 100 }, 100, 2)).toEqual({ start: 78, end: 100 });
+  it("retains the right overscan points for dense and sparse series", () => {
+    expect(visibleChartRange({ start: 20.75, end: 60.75 }, 100))
+      .toEqual({ start: 21, end: 61 });
+    expect(overscanChartRange({ start: 20.25, end: 60.25 }, 100))
+      .toEqual({ start: 19, end: 61 });
+    expect(overscanChartRange({ start: 0, end: 20 }, 100, 2))
+      .toEqual({ start: 0, end: 22 });
+    expect(overscanChartRange({ start: 80, end: 100 }, 100, 2))
+      .toEqual({ start: 78, end: 100 });
+    expect(segmentOverscanChartRange(
+      { start: 20, end: 40 },
+      100,
+      [[5, 25, 60], [0, 4]],
+    )).toEqual({ start: 5, end: 61 });
   });
 
   it("builds tick positions and padded Y bounds", () => {
     expect(chartDomainTicks([10, 40], 4)).toEqual([10, 20, 30, 40]);
+    expect(chartDomainTicks([-0.5, 0.5], 1)).toEqual([0]);
     expect(stableYAxisMax([
       { alpha: 1200, beta: 2600 },
       { alpha: 800, beta: null },

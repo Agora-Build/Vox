@@ -24,7 +24,9 @@ import {
   overscanChartRange,
   panChartRange,
   resizeChartRange,
+  segmentOverscanChartRange,
   stableYAxisMax,
+  visibleChartRange,
   wheelZoomScale,
   zoomChartRange,
   type ChartRange,
@@ -244,8 +246,30 @@ function buildSegmentedData(
   return { rows, lines };
 }
 
+function visibleSegmentLines(
+  lines: SegmentLineInfo[],
+  bounds: ChartRange,
+): SegmentLineInfo[] {
+  const visible: SegmentLineInfo[] = [];
+  const legendProviders = new Set<string>();
+
+  for (const line of lines) {
+    const first = line.dataIndices[0];
+    const last = line.dataIndices[line.dataIndices.length - 1];
+    if (first == null || last < bounds.start || first >= bounds.end) continue;
+
+    const providerKey = line.segKey.replace(/_s\d+$/, "");
+    const showLegend = !legendProviders.has(providerKey);
+    legendProviders.add(providerKey);
+    visible.push(showLegend === line.showLegend ? line : { ...line, showLegend });
+  }
+
+  return visible;
+}
+
 const NAVIGATION_IDLE_MS = 100;
 const NAVIGATION_ANIMATION_MS = 220;
+type NavigationPhase = "idle" | "buffered" | "animating" | "direct";
 
 function rangesAreEqual(a: ChartRange, b: ChartRange): boolean {
   return Math.abs(a.start - b.start) < 0.001 && Math.abs(a.end - b.end) < 0.001;
@@ -260,6 +284,7 @@ function useChartZoom(totalLength: number) {
   const idleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const animationFrameRef = useRef<number | null>(null);
   const hasNavigatedRef = useRef(false);
+  const navigationPhaseRef = useRef<NavigationPhase>("idle");
 
   const cancelAnimation = useCallback(() => {
     if (animationFrameRef.current != null) {
@@ -280,11 +305,13 @@ function useChartZoom(totalLength: number) {
     const from = clampChartRange(displayedRangeRef.current, totalLength);
     const to = clampChartRange(targetRangeRef.current, totalLength);
     if (rangesAreEqual(from, to)) {
+      navigationPhaseRef.current = "idle";
       displayedRangeRef.current = to;
       setRange(to);
       setIsNavigating(false);
       return;
     }
+    navigationPhaseRef.current = "animating";
     const startedAt = performance.now();
 
     const step = (now: number) => {
@@ -303,6 +330,7 @@ function useChartZoom(totalLength: number) {
         animationFrameRef.current = requestAnimationFrame(step);
       } else {
         animationFrameRef.current = null;
+        navigationPhaseRef.current = "idle";
         setIsNavigating(false);
       }
     };
@@ -312,6 +340,7 @@ function useChartZoom(totalLength: number) {
 
   const zoom = useCallback((scale: number, anchorRatio: number) => {
     hasNavigatedRef.current = true;
+    navigationPhaseRef.current = "buffered";
     cancelAnimation();
     const base = clampChartRange(targetRangeRef.current, totalLength);
     targetRangeRef.current = zoomChartRange(base, totalLength, scale, anchorRatio);
@@ -326,6 +355,7 @@ function useChartZoom(totalLength: number) {
   // Dragging updates the displayed range once per frame so content tracks the pointer.
   const pan = useCallback((deltaRatio: number) => {
     hasNavigatedRef.current = true;
+    navigationPhaseRef.current = "direct";
     cancelAnimation();
     clearIdleTimer();
     const displayed = clampChartRange(displayedRangeRef.current, totalLength);
@@ -349,6 +379,7 @@ function useChartZoom(totalLength: number) {
   // Pinching stays under the user's fingers while wheel zoom remains buffered.
   const zoomDirect = useCallback((scale: number, anchorRatio: number) => {
     hasNavigatedRef.current = true;
+    navigationPhaseRef.current = "direct";
     cancelAnimation();
     clearIdleTimer();
     const nextDisplayed = zoomChartRange(
@@ -372,6 +403,7 @@ function useChartZoom(totalLength: number) {
   const finishNavigation = useCallback(() => {
     clearIdleTimer();
     if (rangesAreEqual(displayedRangeRef.current, targetRangeRef.current)) {
+      navigationPhaseRef.current = "idle";
       setIsNavigating(false);
       return;
     }
@@ -382,30 +414,59 @@ function useChartZoom(totalLength: number) {
   useEffect(() => {
     const previousLength = prevLenRef.current;
     const shouldReset = Math.abs(totalLength - previousLength) > 5;
-    const wasAtLiveEdge = targetRangeRef.current.end >= previousLength - 0.001;
+    const displayedWasAtLiveEdge = displayedRangeRef.current.end >= previousLength - 0.001;
+    const targetWasAtLiveEdge = targetRangeRef.current.end >= previousLength - 0.001;
+    const phase = navigationPhaseRef.current;
     prevLenRef.current = totalLength;
 
     cancelAnimation();
     clearIdleTimer();
 
-    let next: ChartRange;
     if (shouldReset || !hasNavigatedRef.current) {
-      next = defaultChartRange(totalLength);
+      const next = defaultChartRange(totalLength);
+      displayedRangeRef.current = next;
+      targetRangeRef.current = next;
       if (shouldReset) hasNavigatedRef.current = false;
-    } else {
-      next = resizeChartRange(
-        targetRangeRef.current,
-        previousLength,
-        totalLength,
-        wasAtLiveEdge,
-      );
+      navigationPhaseRef.current = "idle";
+      setRange(next);
+      setIsNavigating(false);
+      return;
     }
 
-    displayedRangeRef.current = next;
-    targetRangeRef.current = next;
-    setRange(next);
-    setIsNavigating(false);
-  }, [cancelAnimation, clearIdleTimer, totalLength]);
+    const nextDisplayed = resizeChartRange(
+      displayedRangeRef.current,
+      previousLength,
+      totalLength,
+      displayedWasAtLiveEdge,
+    );
+    const nextTarget = resizeChartRange(
+      targetRangeRef.current,
+      previousLength,
+      totalLength,
+      targetWasAtLiveEdge,
+    );
+    displayedRangeRef.current = nextDisplayed;
+    targetRangeRef.current = nextTarget;
+    setRange(nextDisplayed);
+
+    if (phase === "buffered") {
+      navigationPhaseRef.current = "buffered";
+      setIsNavigating(true);
+      idleTimerRef.current = setTimeout(() => {
+        idleTimerRef.current = null;
+        animateToTarget();
+      }, NAVIGATION_IDLE_MS);
+    } else if (phase === "animating") {
+      setIsNavigating(true);
+      animateToTarget();
+    } else if (phase === "direct") {
+      navigationPhaseRef.current = "direct";
+      setIsNavigating(true);
+    } else {
+      navigationPhaseRef.current = "idle";
+      setIsNavigating(false);
+    }
+  }, [animateToTarget, cancelAnimation, clearIdleTimer, totalLength]);
 
   useEffect(() => () => {
     cancelAnimation();
@@ -579,7 +640,7 @@ function ZoomableChart({ children, totalLength, zoomState }: {
     }
   }, [getAnchorRatio, getTouchDist, schedulePan, scheduleZoom]);
 
-  const handleTouchEnd = useCallback(() => {
+  const handleTouchEnd = useCallback((e: React.TouchEvent) => {
     const wasNavigating = pinchRef.current != null || touchStartRef.current != null;
     if (zoomFrameRef.current != null) {
       cancelAnimationFrame(zoomFrameRef.current);
@@ -593,7 +654,9 @@ function ZoomableChart({ children, totalLength, zoomState }: {
     flushPan();
     if (wasNavigating) finishNavigation();
     pinchRef.current = null;
-    touchStartRef.current = null;
+    touchStartRef.current = e.touches.length === 1
+      ? { x: e.touches[0].clientX }
+      : null;
   }, [finishNavigation, flushPan, flushZoom]);
 
   return (
@@ -752,22 +815,26 @@ function MetricsSection({ metrics, isLoading, timeRangeLabel, timeRange, regionL
   // Show latest single test result (metrics are ordered by createdAt DESC)
   const latest = filteredMetrics[0] ?? null;
 
-  // Zoom/pan state — shared across both charts so they stay in sync
+  // Zoom/pan state is shared across all three charts so they stay in sync.
   const chartZoom = useChartZoom(combinedData.length);
-  const chartDomain = useMemo(
-    () => chartRangeDomain({ start: chartZoom.start, end: chartZoom.end }, combinedData.length),
-    [chartZoom.start, chartZoom.end, combinedData.length],
+  const chartRange = useMemo(
+    () => ({ start: chartZoom.start, end: chartZoom.end }),
+    [chartZoom.end, chartZoom.start],
   );
-  const chartTicks = useMemo(() => chartDomainTicks(chartDomain), [chartDomain]);
+  const chartDomain = useMemo(
+    () => chartRangeDomain(chartRange, combinedData.length),
+    [chartRange, combinedData.length],
+  );
+  const chartTickCount = Math.min(7, Math.max(1, Math.ceil(chartZoom.windowSize)));
+  const chartTicks = useMemo(
+    () => chartDomainTicks(chartDomain, chartTickCount),
+    [chartDomain, chartTickCount],
+  );
   const formatChartTick = useCallback((value: number) => {
     if (combinedData.length === 0) return "";
     const index = Math.max(0, Math.min(combinedData.length - 1, Math.round(value)));
     return format(new Date(combinedData[index].rawTime), "MM/dd HH:mm");
   }, [combinedData]);
-  const visibleBounds = useMemo(
-    () => overscanChartRange({ start: chartZoom.start, end: chartZoom.end }, combinedData.length),
-    [chartZoom.start, chartZoom.end, combinedData.length],
-  );
   const segmentGapMs = timeRange === "all" ? 36 * 60 * 60 * 1000 : GAP_MS;
 
   // Segment the complete selected range once so line identities stay stable.
@@ -778,9 +845,50 @@ function MetricsSection({ metrics, isLoading, timeRangeLabel, timeRange, regionL
   const responseChart = useMemo(() => buildSegmentedData(combinedData, responseProviders, segmentGapMs), [combinedData, responseProviders, segmentGapMs]);
   const interruptChart = useMemo(() => buildSegmentedData(combinedData, interruptProviders, segmentGapMs), [combinedData, interruptProviders, segmentGapMs]);
   const tsrChart = useMemo(() => buildSegmentedData(combinedData, tsrProviders, segmentGapMs), [combinedData, segmentGapMs, tsrProviders]);
-  const responseRows = useMemo(() => responseChart.rows.slice(visibleBounds.start, visibleBounds.end), [responseChart.rows, visibleBounds]);
-  const interruptRows = useMemo(() => interruptChart.rows.slice(visibleBounds.start, visibleBounds.end), [interruptChart.rows, visibleBounds]);
-  const tsrRows = useMemo(() => tsrChart.rows.slice(visibleBounds.start, visibleBounds.end), [tsrChart.rows, visibleBounds]);
+  const visibleBounds = useMemo(
+    () => visibleChartRange(chartRange, combinedData.length),
+    [chartRange, combinedData.length],
+  );
+  const responseRenderBounds = useMemo(
+    () => segmentOverscanChartRange(chartRange, combinedData.length, responseChart.lines.map(line => line.dataIndices)),
+    [chartRange, combinedData.length, responseChart.lines],
+  );
+  const interruptRenderBounds = useMemo(
+    () => segmentOverscanChartRange(chartRange, combinedData.length, interruptChart.lines.map(line => line.dataIndices)),
+    [chartRange, combinedData.length, interruptChart.lines],
+  );
+  const tsrRenderBounds = useMemo(
+    () => segmentOverscanChartRange(chartRange, combinedData.length, tsrChart.lines.map(line => line.dataIndices)),
+    [chartRange, combinedData.length, tsrChart.lines],
+  );
+  const responseRows = useMemo(
+    () => responseChart.rows.slice(responseRenderBounds.start, responseRenderBounds.end),
+    [responseChart.rows, responseRenderBounds.end, responseRenderBounds.start],
+  );
+  const interruptRows = useMemo(
+    () => interruptChart.rows.slice(interruptRenderBounds.start, interruptRenderBounds.end),
+    [interruptChart.rows, interruptRenderBounds.end, interruptRenderBounds.start],
+  );
+  const tsrRows = useMemo(
+    () => tsrChart.rows.slice(tsrRenderBounds.start, tsrRenderBounds.end),
+    [tsrChart.rows, tsrRenderBounds.end, tsrRenderBounds.start],
+  );
+  const visibleRows = useMemo(
+    () => combinedData.slice(visibleBounds.start, visibleBounds.end),
+    [combinedData, visibleBounds.end, visibleBounds.start],
+  );
+  const responseLines = useMemo(
+    () => visibleSegmentLines(responseChart.lines, visibleBounds),
+    [responseChart.lines, visibleBounds.end, visibleBounds.start],
+  );
+  const interruptLines = useMemo(
+    () => visibleSegmentLines(interruptChart.lines, visibleBounds),
+    [interruptChart.lines, visibleBounds.end, visibleBounds.start],
+  );
+  const tsrLines = useMemo(
+    () => visibleSegmentLines(tsrChart.lines, visibleBounds),
+    [tsrChart.lines, visibleBounds.end, visibleBounds.start],
+  );
   const responseDataKeys = useMemo(
     () => responseProviders.map(provider => provider.dataKey),
     [responseProviders],
@@ -790,12 +898,12 @@ function MetricsSection({ metrics, isLoading, timeRangeLabel, timeRange, regionL
     [interruptProviders],
   );
   const responseYMax = useSettledYAxisMax(
-    responseRows,
+    visibleRows,
     responseDataKeys,
     chartZoom.isNavigating,
   );
   const interruptYMax = useSettledYAxisMax(
-    interruptRows,
+    visibleRows,
     interruptDataKeys,
     chartZoom.isNavigating,
   );
@@ -981,7 +1089,7 @@ function MetricsSection({ metrics, isLoading, timeRangeLabel, timeRange, regionL
                       <YAxis stroke="hsl(var(--muted-foreground))" fontSize={12} tickLine={false} axisLine={false} domain={[0, 100]} tickFormatter={(value) => `${value}%`} />
                       {!chartZoom.isNavigating && <Tooltip content={<EvalFlowTooltip showEvalFlow={showEvalFlow} unit="%" />} wrapperStyle={{ pointerEvents: 'auto' }} />}
                       <Legend />
-                      {tsrChart.lines.map(l => (
+                      {tsrLines.map(l => (
                         <Line key={l.segKey} type="monotone" dataKey={l.segKey} name={l.name} stroke={l.stroke} strokeWidth={2} dot={makeEndpointDot(l.dataIndices, l.stroke)} activeDot={{ r: 6 }} connectNulls isAnimationActive={false} legendType={l.showLegend ? "line" : "none"} />
                       ))}
                     </LineChart>
@@ -1023,7 +1131,7 @@ function MetricsSection({ metrics, isLoading, timeRangeLabel, timeRange, regionL
                       <YAxis stroke="hsl(var(--muted-foreground))" fontSize={12} tickLine={false} axisLine={false} domain={[0, responseYMax]} tickFormatter={(value) => `${value}ms`} />
                       {!chartZoom.isNavigating && <Tooltip content={<EvalFlowTooltip showEvalFlow={showEvalFlow} />} wrapperStyle={{ pointerEvents: 'auto' }} />}
                       <Legend />
-                      {responseChart.lines.map(l => (
+                      {responseLines.map(l => (
                         <Line key={l.segKey} type="monotone" dataKey={l.segKey} name={l.name} stroke={l.stroke} strokeWidth={2} dot={makeEndpointDot(l.dataIndices, l.stroke)} activeDot={{ r: 6 }} connectNulls isAnimationActive={false} legendType={l.showLegend ? "line" : "none"} />
                       ))}
                     </LineChart>
@@ -1065,7 +1173,7 @@ function MetricsSection({ metrics, isLoading, timeRangeLabel, timeRange, regionL
                       <YAxis stroke="hsl(var(--muted-foreground))" fontSize={12} tickLine={false} axisLine={false} domain={[0, interruptYMax]} tickFormatter={(value) => `${value}ms`} />
                       {!chartZoom.isNavigating && <Tooltip content={<EvalFlowTooltip showEvalFlow={showEvalFlow} />} wrapperStyle={{ pointerEvents: 'auto' }} />}
                       <Legend />
-                      {interruptChart.lines.map(l => (
+                      {interruptLines.map(l => (
                         <Line key={l.segKey} type="monotone" dataKey={l.segKey} name={l.name} stroke={l.stroke} strokeWidth={2} dot={makeEndpointDot(l.dataIndices, l.stroke)} activeDot={{ r: 6 }} connectNulls isAnimationActive={false} legendType={l.showLegend ? "line" : "none"} />
                       ))}
                     </LineChart>
