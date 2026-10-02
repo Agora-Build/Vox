@@ -23,6 +23,7 @@ import {
   defaultChartRange,
   overscanChartRange,
   panChartRange,
+  resizeChartRange,
   stableYAxisMax,
   wheelZoomScale,
   zoomChartRange,
@@ -258,6 +259,7 @@ function useChartZoom(totalLength: number) {
   const targetRangeRef = useRef(currentRange);
   const idleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const animationFrameRef = useRef<number | null>(null);
+  const hasNavigatedRef = useRef(false);
 
   const cancelAnimation = useCallback(() => {
     if (animationFrameRef.current != null) {
@@ -309,6 +311,7 @@ function useChartZoom(totalLength: number) {
   }, [cancelAnimation, totalLength]);
 
   const zoom = useCallback((scale: number, anchorRatio: number) => {
+    hasNavigatedRef.current = true;
     cancelAnimation();
     const base = clampChartRange(targetRangeRef.current, totalLength);
     targetRangeRef.current = zoomChartRange(base, totalLength, scale, anchorRatio);
@@ -322,6 +325,7 @@ function useChartZoom(totalLength: number) {
 
   // Dragging updates the displayed range once per frame so content tracks the pointer.
   const pan = useCallback((deltaRatio: number) => {
+    hasNavigatedRef.current = true;
     cancelAnimation();
     clearIdleTimer();
     const displayed = clampChartRange(displayedRangeRef.current, totalLength);
@@ -344,6 +348,7 @@ function useChartZoom(totalLength: number) {
 
   // Pinching stays under the user's fingers while wheel zoom remains buffered.
   const zoomDirect = useCallback((scale: number, anchorRatio: number) => {
+    hasNavigatedRef.current = true;
     cancelAnimation();
     clearIdleTimer();
     const nextDisplayed = zoomChartRange(
@@ -375,23 +380,31 @@ function useChartZoom(totalLength: number) {
 
   const prevLenRef = useRef(totalLength);
   useEffect(() => {
-    const shouldReset = Math.abs(totalLength - prevLenRef.current) > 5;
+    const previousLength = prevLenRef.current;
+    const shouldReset = Math.abs(totalLength - previousLength) > 5;
+    const wasAtLiveEdge = targetRangeRef.current.end >= previousLength - 0.001;
     prevLenRef.current = totalLength;
-    if (shouldReset) {
-      cancelAnimation();
-      clearIdleTimer();
-      const next = defaultChartRange(totalLength);
-      displayedRangeRef.current = next;
-      targetRangeRef.current = next;
-      setRange(next);
-      setIsNavigating(false);
-      return;
+
+    cancelAnimation();
+    clearIdleTimer();
+
+    let next: ChartRange;
+    if (shouldReset || !hasNavigatedRef.current) {
+      next = defaultChartRange(totalLength);
+      if (shouldReset) hasNavigatedRef.current = false;
+    } else {
+      next = resizeChartRange(
+        targetRangeRef.current,
+        previousLength,
+        totalLength,
+        wasAtLiveEdge,
+      );
     }
 
-    const nextDisplayed = clampChartRange(displayedRangeRef.current, totalLength);
-    displayedRangeRef.current = nextDisplayed;
-    targetRangeRef.current = clampChartRange(targetRangeRef.current, totalLength);
-    setRange(nextDisplayed);
+    displayedRangeRef.current = next;
+    targetRangeRef.current = next;
+    setRange(next);
+    setIsNavigating(false);
   }, [cancelAnimation, clearIdleTimer, totalLength]);
 
   useEffect(() => () => {

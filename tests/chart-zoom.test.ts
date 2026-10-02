@@ -6,6 +6,7 @@ import {
   defaultChartRange,
   overscanChartRange,
   panChartRange,
+  resizeChartRange,
   stableYAxisMax,
   wheelZoomScale,
   zoomChartRange,
@@ -32,6 +33,15 @@ describe("chart zoom range math", () => {
     expect(panChartRange({ start: 20, end: 60 }, 100, 100)).toEqual({ start: 60, end: 100 });
   });
 
+  it("keeps a live-edge window pinned when new data arrives", () => {
+    expect(resizeChartRange({ start: 150, end: 250 }, 250, 251, true))
+      .toEqual({ start: 151, end: 251 });
+    expect(resizeChartRange({ start: 100, end: 200 }, 250, 251, false))
+      .toEqual({ start: 100, end: 200 });
+    expect(resizeChartRange({ start: 150, end: 250 }, 250, 240, true))
+      .toEqual({ start: 140, end: 240 });
+  });
+
   it("enforces the minimum window and handles an empty dataset", () => {
     expect(clampChartRange({ start: 20, end: 21 }, 100)).toEqual({ start: 20, end: 30 });
     expect(clampChartRange({ start: 10, end: 20 }, 0)).toEqual({ start: 0, end: 0 });
@@ -48,7 +58,7 @@ describe("chart zoom range math", () => {
     expect(overscanChartRange({ start: 80, end: 100 }, 100, 2)).toEqual({ start: 78, end: 100 });
   });
 
-  it("keeps tick positions and Y domains stable during navigation", () => {
+  it("builds tick positions and padded Y bounds", () => {
     expect(chartDomainTicks([10, 40], 4)).toEqual([10, 20, 30, 40]);
     expect(stableYAxisMax([
       { alpha: 1200, beta: 2600 },

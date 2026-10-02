@@ -47,7 +47,7 @@ export function chartDomainTicks(domain: ChartDomain, count = 7): number[] {
   );
 }
 
-/** Calculate one padded Y maximum for the complete selected time range. */
+/** Calculate a padded Y maximum for the supplied row window. */
 export function stableYAxisMax(
   rows: ReadonlyArray<Record<string, unknown>>,
   dataKeys: readonly string[],
@@ -84,6 +84,21 @@ export function clampChartRange(range: ChartRange, totalLength: number): ChartRa
   const windowSize = clamp(requestedWindow, minWindow, total);
   const start = clamp(range.start, 0, total - windowSize);
   return { start, end: start + windowSize };
+}
+
+/** Reconcile a window after data length changes, optionally keeping its live edge pinned. */
+export function resizeChartRange(
+  range: ChartRange,
+  previousLength: number,
+  nextLength: number,
+  pinToLatest: boolean,
+): ChartRange {
+  const previous = clampChartRange(range, previousLength);
+  if (!pinToLatest) return clampChartRange(previous, nextLength);
+
+  const total = Math.max(0, nextLength);
+  const windowSize = Math.min(previous.end - previous.start, total);
+  return { start: total - windowSize, end: total };
 }
 
 export function zoomChartRange(
