@@ -26,7 +26,6 @@ import {
   stableYAxisMax,
   wheelZoomScale,
   zoomChartRange,
-  type ChartDomain,
   type ChartRange,
 } from "@/lib/chart-zoom";
 import { useRegionLocations } from "@/hooks/use-regions";
@@ -247,17 +246,18 @@ function buildSegmentedData(
 const NAVIGATION_IDLE_MS = 100;
 const NAVIGATION_ANIMATION_MS = 220;
 
+function rangesAreEqual(a: ChartRange, b: ChartRange): boolean {
+  return Math.abs(a.start - b.start) < 0.001 && Math.abs(a.end - b.end) < 0.001;
+}
+
 function useChartZoom(totalLength: number) {
-  const [range, setRange] = useState<ChartRange | null>(null);
+  const [range, setRange] = useState<ChartRange>(() => defaultChartRange(totalLength));
   const [isNavigating, setIsNavigating] = useState(false);
-  const currentRange = range
-    ? clampChartRange(range, totalLength)
-    : defaultChartRange(totalLength);
+  const currentRange = clampChartRange(range, totalLength);
   const displayedRangeRef = useRef(currentRange);
   const targetRangeRef = useRef(currentRange);
   const idleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const animationFrameRef = useRef<number | null>(null);
-  displayedRangeRef.current = currentRange;
 
   const cancelAnimation = useCallback(() => {
     if (animationFrameRef.current != null) {
@@ -266,10 +266,23 @@ function useChartZoom(totalLength: number) {
     }
   }, []);
 
+  const clearIdleTimer = useCallback(() => {
+    if (idleTimerRef.current != null) {
+      clearTimeout(idleTimerRef.current);
+      idleTimerRef.current = null;
+    }
+  }, []);
+
   const animateToTarget = useCallback(() => {
     cancelAnimation();
     const from = clampChartRange(displayedRangeRef.current, totalLength);
     const to = clampChartRange(targetRangeRef.current, totalLength);
+    if (rangesAreEqual(from, to)) {
+      displayedRangeRef.current = to;
+      setRange(to);
+      setIsNavigating(false);
+      return;
+    }
     const startedAt = performance.now();
 
     const step = (now: number) => {
@@ -295,57 +308,112 @@ function useChartZoom(totalLength: number) {
     animationFrameRef.current = requestAnimationFrame(step);
   }, [cancelAnimation, totalLength]);
 
-  const updateTarget = useCallback((update: (current: ChartRange) => ChartRange) => {
-    if (animationFrameRef.current != null) {
-      cancelAnimation();
-      targetRangeRef.current = displayedRangeRef.current;
-    }
+  const zoom = useCallback((scale: number, anchorRatio: number) => {
+    cancelAnimation();
     const base = clampChartRange(targetRangeRef.current, totalLength);
-    targetRangeRef.current = update(base);
+    targetRangeRef.current = zoomChartRange(base, totalLength, scale, anchorRatio);
     setIsNavigating(true);
-    if (idleTimerRef.current != null) clearTimeout(idleTimerRef.current);
+    clearIdleTimer();
     idleTimerRef.current = setTimeout(() => {
       idleTimerRef.current = null;
       animateToTarget();
     }, NAVIGATION_IDLE_MS);
-  }, [animateToTarget, cancelAnimation, totalLength]);
+  }, [animateToTarget, cancelAnimation, clearIdleTimer, totalLength]);
 
-  const zoom = useCallback((scale: number, anchorRatio: number) => {
-    updateTarget(current => zoomChartRange(current, totalLength, scale, anchorRatio));
-  }, [totalLength, updateTarget]);
+  // Dragging updates the displayed range once per frame so content tracks the pointer.
+  const pan = useCallback((deltaRatio: number) => {
+    cancelAnimation();
+    clearIdleTimer();
+    const displayed = clampChartRange(displayedRangeRef.current, totalLength);
+    const target = clampChartRange(targetRangeRef.current, totalLength);
+    const nextDisplayed = panChartRange(
+      displayed,
+      totalLength,
+      deltaRatio * (displayed.end - displayed.start),
+    );
+    const nextTarget = panChartRange(
+      target,
+      totalLength,
+      deltaRatio * (target.end - target.start),
+    );
+    displayedRangeRef.current = nextDisplayed;
+    targetRangeRef.current = nextTarget;
+    setRange(nextDisplayed);
+    setIsNavigating(true);
+  }, [cancelAnimation, clearIdleTimer, totalLength]);
 
-  const pan = useCallback((deltaPoints: number) => {
-    updateTarget(current => panChartRange(current, totalLength, deltaPoints));
-  }, [totalLength, updateTarget]);
+  // Pinching stays under the user's fingers while wheel zoom remains buffered.
+  const zoomDirect = useCallback((scale: number, anchorRatio: number) => {
+    cancelAnimation();
+    clearIdleTimer();
+    const nextDisplayed = zoomChartRange(
+      displayedRangeRef.current,
+      totalLength,
+      scale,
+      anchorRatio,
+    );
+    const nextTarget = zoomChartRange(
+      targetRangeRef.current,
+      totalLength,
+      scale,
+      anchorRatio,
+    );
+    displayedRangeRef.current = nextDisplayed;
+    targetRangeRef.current = nextTarget;
+    setRange(nextDisplayed);
+    setIsNavigating(true);
+  }, [cancelAnimation, clearIdleTimer, totalLength]);
+
+  const finishNavigation = useCallback(() => {
+    clearIdleTimer();
+    if (rangesAreEqual(displayedRangeRef.current, targetRangeRef.current)) {
+      setIsNavigating(false);
+      return;
+    }
+    animateToTarget();
+  }, [animateToTarget, clearIdleTimer]);
 
   const prevLenRef = useRef(totalLength);
   useEffect(() => {
     const shouldReset = Math.abs(totalLength - prevLenRef.current) > 5;
     prevLenRef.current = totalLength;
-    const next = shouldReset
-      ? defaultChartRange(totalLength)
-      : clampChartRange(displayedRangeRef.current, totalLength);
-    displayedRangeRef.current = next;
-    targetRangeRef.current = next;
     if (shouldReset) {
       cancelAnimation();
-      if (idleTimerRef.current != null) clearTimeout(idleTimerRef.current);
-      idleTimerRef.current = null;
+      clearIdleTimer();
+      const next = defaultChartRange(totalLength);
+      displayedRangeRef.current = next;
+      targetRangeRef.current = next;
       setRange(next);
       setIsNavigating(false);
+      return;
     }
-  }, [cancelAnimation, totalLength]);
+
+    const nextDisplayed = clampChartRange(displayedRangeRef.current, totalLength);
+    displayedRangeRef.current = nextDisplayed;
+    targetRangeRef.current = clampChartRange(targetRangeRef.current, totalLength);
+    setRange(nextDisplayed);
+  }, [cancelAnimation, clearIdleTimer, totalLength]);
 
   useEffect(() => () => {
     cancelAnimation();
-    if (idleTimerRef.current != null) clearTimeout(idleTimerRef.current);
-  }, [cancelAnimation]);
+    clearIdleTimer();
+  }, [cancelAnimation, clearIdleTimer]);
 
   const start = currentRange.start;
   const end = currentRange.end;
   const windowSize = end - start;
   const isShowingAll = start <= 0 && end >= totalLength;
-  return { start, end, windowSize, isShowingAll, isNavigating, zoom, pan };
+  return {
+    start,
+    end,
+    windowSize,
+    isShowingAll,
+    isNavigating,
+    zoom,
+    zoomDirect,
+    pan,
+    finishNavigation,
+  };
 }
 
 function ZoomableChart({ children, totalLength, zoomState }: {
@@ -358,10 +426,10 @@ function ZoomableChart({ children, totalLength, zoomState }: {
   const pinchRef = useRef<{ dist: number } | null>(null);
   const touchStartRef = useRef<{ x: number } | null>(null);
   const zoomFrameRef = useRef<number | null>(null);
-  const pendingZoomRef = useRef({ scale: 1, anchorRatio: 0.5 });
+  const pendingZoomRef = useRef({ scale: 1, anchorRatio: 0.5, direct: false });
   const panFrameRef = useRef<number | null>(null);
   const pendingPanRef = useRef(0);
-  const { zoom, pan } = zoomState;
+  const { zoom, zoomDirect, pan, finishNavigation } = zoomState;
 
   const getTouchDist = useCallback((touches: React.TouchList) => {
     if (touches.length < 2) return 0;
@@ -376,30 +444,45 @@ function ZoomableChart({ children, totalLength, zoomState }: {
     return Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
   }, []);
 
-  const scheduleZoom = useCallback((scale: number, anchorRatio: number) => {
+  const flushZoom = useCallback(() => {
+    const pending = pendingZoomRef.current;
+    pendingZoomRef.current = {
+      scale: 1,
+      anchorRatio: pending.anchorRatio,
+      direct: pending.direct,
+    };
+    if (pending.scale === 1) return;
+    if (pending.direct) zoomDirect(pending.scale, pending.anchorRatio);
+    else zoom(pending.scale, pending.anchorRatio);
+  }, [zoom, zoomDirect]);
+
+  const scheduleZoom = useCallback((scale: number, anchorRatio: number, direct = false) => {
     pendingZoomRef.current.scale *= scale;
     pendingZoomRef.current.anchorRatio = anchorRatio;
+    pendingZoomRef.current.direct = direct;
     if (zoomFrameRef.current != null) return;
 
     zoomFrameRef.current = requestAnimationFrame(() => {
       zoomFrameRef.current = null;
-      const pending = pendingZoomRef.current;
-      pendingZoomRef.current = { scale: 1, anchorRatio: pending.anchorRatio };
-      zoom(pending.scale, pending.anchorRatio);
+      flushZoom();
     });
-  }, [zoom]);
+  }, [flushZoom]);
 
-  const schedulePan = useCallback((deltaPoints: number) => {
-    pendingPanRef.current += deltaPoints;
+  const flushPan = useCallback(() => {
+    const pending = pendingPanRef.current;
+    pendingPanRef.current = 0;
+    if (pending !== 0) pan(pending);
+  }, [pan]);
+
+  const schedulePan = useCallback((deltaRatio: number) => {
+    pendingPanRef.current += deltaRatio;
     if (panFrameRef.current != null) return;
 
     panFrameRef.current = requestAnimationFrame(() => {
       panFrameRef.current = null;
-      const pending = pendingPanRef.current;
-      pendingPanRef.current = 0;
-      pan(pending);
+      flushPan();
     });
-  }, [pan]);
+  }, [flushPan]);
 
   useEffect(() => () => {
     if (zoomFrameRef.current != null) cancelAnimationFrame(zoomFrameRef.current);
@@ -434,17 +517,26 @@ function ZoomableChart({ children, totalLength, zoomState }: {
 
     const rect = containerRef.current?.getBoundingClientRect();
     if (!rect || rect.width <= 0) return;
-    schedulePan(-dx * (zoomState.windowSize / rect.width));
+    schedulePan(-dx / rect.width);
     dragRef.current.lastX = e.clientX;
-  }, [schedulePan, zoomState.windowSize]);
+  }, [schedulePan]);
 
   const handlePointerUp = useCallback((e: React.PointerEvent) => {
     if (e.pointerType === "touch") return;
+    const wasDragging = dragRef.current.isDragging;
     dragRef.current = { lastX: 0, active: false, isDragging: false };
+    if (panFrameRef.current != null) {
+      cancelAnimationFrame(panFrameRef.current);
+      panFrameRef.current = null;
+    }
+    if (wasDragging) {
+      flushPan();
+      finishNavigation();
+    }
     if (containerRef.current?.hasPointerCapture(e.pointerId)) {
       containerRef.current.releasePointerCapture(e.pointerId);
     }
-  }, []);
+  }, [finishNavigation, flushPan]);
 
   // Touch: single-finger drag = pan, two-finger pinch = zoom.
   const handleTouchStart = useCallback((e: React.TouchEvent) => {
@@ -462,28 +554,41 @@ function ZoomableChart({ children, totalLength, zoomState }: {
       const newDist = getTouchDist(e.touches);
       const midX = (e.touches[0].clientX + e.touches[1].clientX) / 2;
       if (newDist > 0 && Math.abs(newDist - pinchRef.current.dist) > 1) {
-        scheduleZoom(pinchRef.current.dist / newDist, getAnchorRatio(midX));
+        scheduleZoom(pinchRef.current.dist / newDist, getAnchorRatio(midX), true);
         pinchRef.current.dist = newDist;
       }
     } else if (e.touches.length === 1 && touchStartRef.current) {
       const dx = e.touches[0].clientX - touchStartRef.current.x;
       const rect = containerRef.current?.getBoundingClientRect();
       if (!rect || rect.width <= 0) return;
-      schedulePan(-dx * (zoomState.windowSize / rect.width));
+      schedulePan(-dx / rect.width);
       touchStartRef.current.x = e.touches[0].clientX;
     }
-  }, [getAnchorRatio, getTouchDist, schedulePan, scheduleZoom, zoomState.windowSize]);
+  }, [getAnchorRatio, getTouchDist, schedulePan, scheduleZoom]);
 
   const handleTouchEnd = useCallback(() => {
+    const wasNavigating = pinchRef.current != null || touchStartRef.current != null;
+    if (zoomFrameRef.current != null) {
+      cancelAnimationFrame(zoomFrameRef.current);
+      zoomFrameRef.current = null;
+    }
+    if (panFrameRef.current != null) {
+      cancelAnimationFrame(panFrameRef.current);
+      panFrameRef.current = null;
+    }
+    flushZoom();
+    flushPan();
+    if (wasNavigating) finishNavigation();
     pinchRef.current = null;
     touchStartRef.current = null;
-  }, []);
+  }, [finishNavigation, flushPan, flushZoom]);
 
   return (
     <div className="relative">
       <div
         ref={containerRef}
-        style={{ touchAction: "none", cursor: "grab", userSelect: "none" }}
+        className="cursor-grab active:cursor-grabbing"
+        style={{ touchAction: "none", userSelect: "none" }}
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerUp}
@@ -491,6 +596,7 @@ function ZoomableChart({ children, totalLength, zoomState }: {
         onTouchStart={handleTouchStart}
         onTouchMove={handleTouchMove}
         onTouchEnd={handleTouchEnd}
+        onTouchCancel={handleTouchEnd}
       >
         {children}
       </div>
@@ -578,6 +684,24 @@ function EvalFlowTooltip({ active, payload, label, showEvalFlow, unit = "ms" }: 
   );
 }
 
+function useSettledYAxisMax(
+  rows: CombinedRow[],
+  dataKeys: string[],
+  isNavigating: boolean,
+): number {
+  const nextMaximum = useMemo(
+    () => stableYAxisMax(rows, dataKeys),
+    [dataKeys, rows],
+  );
+  const [maximum, setMaximum] = useState(nextMaximum);
+
+  useEffect(() => {
+    if (!isNavigating) setMaximum(nextMaximum);
+  }, [isNavigating, nextMaximum]);
+
+  return maximum;
+}
+
 interface MetricsSectionProps {
   metrics: EvalResult[] | undefined;
   isLoading: boolean;
@@ -590,35 +714,6 @@ interface MetricsSectionProps {
   /** Provider ids to hide from the charts (multi-select filter). */
   hiddenProviders?: Set<string>;
 }
-function ContinuousTimeAxis({ data, domain, ticks }: {
-  data: CombinedRow[];
-  domain: ChartDomain;
-  ticks: number[];
-}) {
-  const formatTick = useCallback((value: number) => {
-    if (data.length === 0) return "";
-    const index = Math.max(0, Math.min(data.length - 1, Math.round(value)));
-    return format(new Date(data[index].rawTime), "MM/dd HH:mm");
-  }, [data]);
-
-  return (
-    <XAxis
-      dataKey="chartIndex"
-      type="number"
-      domain={domain}
-      ticks={ticks}
-      allowDataOverflow
-      minTickGap={24}
-      interval="preserveStartEnd"
-      stroke="hsl(var(--muted-foreground))"
-      fontSize={12}
-      tickLine={false}
-      axisLine={false}
-      tickFormatter={formatTick}
-    />
-  );
-}
-
 
 function MetricsSection({ metrics, isLoading, timeRangeLabel, timeRange, regionLabel, testIdPrefix = "", showEvalFlow = false, hiddenProviders }: MetricsSectionProps) {
   const { data: providerList } = useQuery<Array<{ id: string; brandColor: string | null }>>({
@@ -651,6 +746,11 @@ function MetricsSection({ metrics, isLoading, timeRangeLabel, timeRange, regionL
     [chartZoom.start, chartZoom.end, combinedData.length],
   );
   const chartTicks = useMemo(() => chartDomainTicks(chartDomain), [chartDomain]);
+  const formatChartTick = useCallback((value: number) => {
+    if (combinedData.length === 0) return "";
+    const index = Math.max(0, Math.min(combinedData.length - 1, Math.round(value)));
+    return format(new Date(combinedData[index].rawTime), "MM/dd HH:mm");
+  }, [combinedData]);
   const visibleBounds = useMemo(
     () => overscanChartRange({ start: chartZoom.start, end: chartZoom.end }, combinedData.length),
     [chartZoom.start, chartZoom.end, combinedData.length],
@@ -668,13 +768,23 @@ function MetricsSection({ metrics, isLoading, timeRangeLabel, timeRange, regionL
   const responseRows = useMemo(() => responseChart.rows.slice(visibleBounds.start, visibleBounds.end), [responseChart.rows, visibleBounds]);
   const interruptRows = useMemo(() => interruptChart.rows.slice(visibleBounds.start, visibleBounds.end), [interruptChart.rows, visibleBounds]);
   const tsrRows = useMemo(() => tsrChart.rows.slice(visibleBounds.start, visibleBounds.end), [tsrChart.rows, visibleBounds]);
-  const responseYMax = useMemo(
-    () => stableYAxisMax(combinedData, responseProviders.map(provider => provider.dataKey)),
-    [combinedData, responseProviders],
+  const responseDataKeys = useMemo(
+    () => responseProviders.map(provider => provider.dataKey),
+    [responseProviders],
   );
-  const interruptYMax = useMemo(
-    () => stableYAxisMax(combinedData, interruptProviders.map(provider => provider.dataKey)),
-    [combinedData, interruptProviders],
+  const interruptDataKeys = useMemo(
+    () => interruptProviders.map(provider => provider.dataKey),
+    [interruptProviders],
+  );
+  const responseYMax = useSettledYAxisMax(
+    responseRows,
+    responseDataKeys,
+    chartZoom.isNavigating,
+  );
+  const interruptYMax = useSettledYAxisMax(
+    interruptRows,
+    interruptDataKeys,
+    chartZoom.isNavigating,
   );
 
   return (
@@ -841,7 +951,20 @@ function MetricsSection({ metrics, isLoading, timeRangeLabel, timeRange, regionL
                   <ResponsiveContainer width="100%" height="100%">
                     <LineChart data={tsrRows}>
                       <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" vertical={false} />
-                      <ContinuousTimeAxis data={combinedData} domain={chartDomain} ticks={chartTicks} />
+                      <XAxis
+                        dataKey="chartIndex"
+                        type="number"
+                        domain={chartDomain}
+                        ticks={chartTicks}
+                        allowDataOverflow
+                        minTickGap={24}
+                        interval="preserveStartEnd"
+                        stroke="hsl(var(--muted-foreground))"
+                        fontSize={12}
+                        tickLine={false}
+                        axisLine={false}
+                        tickFormatter={formatChartTick}
+                      />
                       <YAxis stroke="hsl(var(--muted-foreground))" fontSize={12} tickLine={false} axisLine={false} domain={[0, 100]} tickFormatter={(value) => `${value}%`} />
                       {!chartZoom.isNavigating && <Tooltip content={<EvalFlowTooltip showEvalFlow={showEvalFlow} unit="%" />} wrapperStyle={{ pointerEvents: 'auto' }} />}
                       <Legend />
@@ -870,7 +993,20 @@ function MetricsSection({ metrics, isLoading, timeRangeLabel, timeRange, regionL
                   <ResponsiveContainer width="100%" height="100%">
                     <LineChart data={responseRows}>
                       <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" vertical={false} />
-                      <ContinuousTimeAxis data={combinedData} domain={chartDomain} ticks={chartTicks} />
+                      <XAxis
+                        dataKey="chartIndex"
+                        type="number"
+                        domain={chartDomain}
+                        ticks={chartTicks}
+                        allowDataOverflow
+                        minTickGap={24}
+                        interval="preserveStartEnd"
+                        stroke="hsl(var(--muted-foreground))"
+                        fontSize={12}
+                        tickLine={false}
+                        axisLine={false}
+                        tickFormatter={formatChartTick}
+                      />
                       <YAxis stroke="hsl(var(--muted-foreground))" fontSize={12} tickLine={false} axisLine={false} domain={[0, responseYMax]} tickFormatter={(value) => `${value}ms`} />
                       {!chartZoom.isNavigating && <Tooltip content={<EvalFlowTooltip showEvalFlow={showEvalFlow} />} wrapperStyle={{ pointerEvents: 'auto' }} />}
                       <Legend />
@@ -899,7 +1035,20 @@ function MetricsSection({ metrics, isLoading, timeRangeLabel, timeRange, regionL
                   <ResponsiveContainer width="100%" height="100%">
                     <LineChart data={interruptRows}>
                       <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" vertical={false} />
-                      <ContinuousTimeAxis data={combinedData} domain={chartDomain} ticks={chartTicks} />
+                      <XAxis
+                        dataKey="chartIndex"
+                        type="number"
+                        domain={chartDomain}
+                        ticks={chartTicks}
+                        allowDataOverflow
+                        minTickGap={24}
+                        interval="preserveStartEnd"
+                        stroke="hsl(var(--muted-foreground))"
+                        fontSize={12}
+                        tickLine={false}
+                        axisLine={false}
+                        tickFormatter={formatChartTick}
+                      />
                       <YAxis stroke="hsl(var(--muted-foreground))" fontSize={12} tickLine={false} axisLine={false} domain={[0, interruptYMax]} tickFormatter={(value) => `${value}ms`} />
                       {!chartZoom.isNavigating && <Tooltip content={<EvalFlowTooltip showEvalFlow={showEvalFlow} />} wrapperStyle={{ pointerEvents: 'auto' }} />}
                       <Legend />
