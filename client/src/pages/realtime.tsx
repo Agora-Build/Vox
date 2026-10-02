@@ -16,6 +16,14 @@ import { Link } from "wouter";
 import { Skeleton } from "@/components/ui/skeleton";
 import { format } from "date-fns";
 import { appendRegionScopes, formatRegionScopeSelection } from "@/lib/utils";
+import {
+  clampChartRange,
+  defaultChartRange,
+  panChartRange,
+  wheelZoomScale,
+  zoomChartRange,
+  type ChartRange,
+} from "@/lib/chart-zoom";
 import { useRegionLocations } from "@/hooks/use-regions";
 import { RegionScopeSelector } from "@/components/region-scope-selector";
 
@@ -130,14 +138,16 @@ function buildCombinedData(filteredMetrics: EvalResult[], colorMap: Map<string, 
   const nameToKey = new Map(providers.map(p => [p.name, p.key]));
 
   // Group by timestamp, one slot per provider
-  const timeGroups = new Map<string, { rawTime: number; values: Map<string, EvalResult> }>();
+  const timeGroups = new Map<number, { rawTime: number; values: Map<string, EvalResult> }>();
 
   for (const m of filteredMetrics) {
     const date = new Date(m.timestamp);
     if (isNaN(date.getTime())) continue;
-    const timeKey = format(date, "MM/dd HH:mm");
+    // Group to the minute without using the display label as identity. Labels
+    // repeat across years and sort incorrectly around New Year.
+    const timeKey = Math.floor(date.getTime() / 60000) * 60000;
     if (!timeGroups.has(timeKey)) {
-      timeGroups.set(timeKey, { rawTime: date.getTime(), values: new Map() });
+      timeGroups.set(timeKey, { rawTime: timeKey, values: new Map() });
     }
     const group = timeGroups.get(timeKey)!;
     const pk = nameToKey.get(m.provider);
@@ -146,10 +156,13 @@ function buildCombinedData(filteredMetrics: EvalResult[], colorMap: Map<string, 
     }
   }
 
-  const data = Array.from(timeGroups.entries())
-    .sort((a, b) => a[0].localeCompare(b[0]))
-    .map(([timestamp, group]) => {
-      const row: CombinedRow = { timestamp, rawTime: group.rawTime };
+  const data = Array.from(timeGroups.values())
+    .sort((a, b) => a.rawTime - b.rawTime)
+    .map((group) => {
+      const row: CombinedRow = {
+        timestamp: format(new Date(group.rawTime), "MM/dd/yy HH:mm"),
+        rawTime: group.rawTime,
+      };
       for (const p of providers) {
         const m = group.values.get(p.key);
         // null latency (NA) → undefined so the chart's connectNulls skips the
@@ -189,6 +202,7 @@ interface SegmentLineInfo {
 function buildSegmentedData(
   data: CombinedRow[],
   providers: Array<{ dataKey: string; name: string; stroke: string }>,
+  gapMs = GAP_MS,
 ): { rows: CombinedRow[]; lines: SegmentLineInfo[] } {
   // Deep-copy rows so we don't mutate the original
   const rows = data.map(r => ({ ...r }));
@@ -204,7 +218,7 @@ function buildSegmentedData(
       if (rows[i][dataKey] != null) {
         if (segStart === -1) {
           segStart = i;
-        } else if (lastIdx >= 0 && rows[i].rawTime - rows[lastIdx].rawTime > GAP_MS) {
+        } else if (lastIdx >= 0 && rows[i].rawTime - rows[lastIdx].rawTime > gapMs) {
           segments.push({ start: segStart, end: lastIdx });
           segStart = i;
         }
@@ -232,63 +246,40 @@ function buildSegmentedData(
   return { rows, lines };
 }
 
-const DEFAULT_WINDOW = 100;
-const MIN_WINDOW = 10;
-
 function useChartZoom(totalLength: number) {
-  const [range, setRange] = useState<{ start: number; end: number } | null>(null);
-
-  // Default: show last DEFAULT_WINDOW points
-  const start = range?.start ?? Math.max(0, totalLength - DEFAULT_WINDOW);
-  const end = range?.end ?? totalLength;
+  const [range, setRange] = useState<ChartRange | null>(null);
+  const currentRange = range
+    ? clampChartRange(range, totalLength)
+    : defaultChartRange(totalLength);
+  const start = currentRange.start;
+  const end = currentRange.end;
   const windowSize = end - start;
-  const isShowingAll = start === 0 && end >= totalLength;
+  const isShowingAll = start <= 0 && end >= totalLength;
 
-  const zoom = useCallback((delta: number, anchorRatio: number) => {
-    setRange(prev => {
-      const s = prev?.start ?? Math.max(0, totalLength - DEFAULT_WINDOW);
-      const e = prev?.end ?? totalLength;
-      const ws = e - s;
-
-      // delta > 0 = zoom out, delta < 0 = zoom in
-      const factor = delta > 0 ? 1.2 : 0.8;
-      let newWs = Math.round(ws * factor);
-      newWs = Math.max(MIN_WINDOW, Math.min(totalLength, newWs));
-
-      const anchor = s + ws * anchorRatio;
-      let newStart = Math.round(anchor - newWs * anchorRatio);
-      let newEnd = newStart + newWs;
-
-      if (newStart < 0) { newStart = 0; newEnd = newWs; }
-      if (newEnd > totalLength) { newEnd = totalLength; newStart = Math.max(0, newEnd - newWs); }
-
-      return { start: newStart, end: newEnd };
-    });
+  const zoom = useCallback((scale: number, anchorRatio: number) => {
+    setRange(prev => zoomChartRange(
+      prev ?? defaultChartRange(totalLength),
+      totalLength,
+      scale,
+      anchorRatio,
+    ));
   }, [totalLength]);
 
   const pan = useCallback((deltaPoints: number) => {
-    setRange(prev => {
-      const s = prev?.start ?? Math.max(0, totalLength - DEFAULT_WINDOW);
-      const e = prev?.end ?? totalLength;
-      const ws = e - s;
-
-      let newStart = s + deltaPoints;
-      let newEnd = e + deltaPoints;
-
-      if (newStart < 0) { newStart = 0; newEnd = ws; }
-      if (newEnd > totalLength) { newEnd = totalLength; newStart = Math.max(0, newEnd - ws); }
-
-      return { start: newStart, end: newEnd };
-    });
+    setRange(prev => panChartRange(
+      prev ?? defaultChartRange(totalLength),
+      totalLength,
+      deltaPoints,
+    ));
   }, [totalLength]);
 
-  // Reset when data changes significantly (e.g., new time range selected)
+  // Reset after a range change without scheduling state during render.
   const prevLenRef = useRef(totalLength);
-  if (Math.abs(totalLength - prevLenRef.current) > 5) {
+  useEffect(() => {
+    const shouldReset = Math.abs(totalLength - prevLenRef.current) > 5;
     prevLenRef.current = totalLength;
-    if (range) setRange(null); // reset to default
-  }
-  prevLenRef.current = totalLength;
+    if (shouldReset) setRange(null);
+  }, [totalLength]);
 
   return { start, end, windowSize, isShowingAll, zoom, pan };
 }
@@ -299,97 +290,125 @@ function ZoomableChart({ children, totalLength, zoomState }: {
   zoomState: ReturnType<typeof useChartZoom>;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
-  const dragRef = useRef<{ startX: number; startY: number; isDragging: boolean }>({ startX: 0, startY: 0, isDragging: false });
+  const dragRef = useRef({ lastX: 0, active: false, isDragging: false });
   const pinchRef = useRef<{ dist: number } | null>(null);
+  const touchStartRef = useRef<{ x: number } | null>(null);
+  const zoomFrameRef = useRef<number | null>(null);
+  const pendingZoomRef = useRef({ scale: 1, anchorRatio: 0.5 });
+  const panFrameRef = useRef<number | null>(null);
+  const pendingPanRef = useRef(0);
+  const { zoom, pan } = zoomState;
 
-  const getTouchDist = (touches: React.TouchList) => {
+  const getTouchDist = useCallback((touches: React.TouchList) => {
     if (touches.length < 2) return 0;
     const dx = touches[1].clientX - touches[0].clientX;
     const dy = touches[1].clientY - touches[0].clientY;
     return Math.sqrt(dx * dx + dy * dy);
-  };
+  }, []);
 
-  const getAnchorRatio = (clientX: number) => {
+  const getAnchorRatio = useCallback((clientX: number) => {
     const rect = containerRef.current?.getBoundingClientRect();
     if (!rect) return 0.5;
     return Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
-  };
+  }, []);
 
-  // Attach wheel listener as non-passive so preventDefault() works
+  const scheduleZoom = useCallback((scale: number, anchorRatio: number) => {
+    pendingZoomRef.current.scale *= scale;
+    pendingZoomRef.current.anchorRatio = anchorRatio;
+    if (zoomFrameRef.current != null) return;
+
+    zoomFrameRef.current = requestAnimationFrame(() => {
+      zoomFrameRef.current = null;
+      const pending = pendingZoomRef.current;
+      pendingZoomRef.current = { scale: 1, anchorRatio: pending.anchorRatio };
+      zoom(pending.scale, pending.anchorRatio);
+    });
+  }, [zoom]);
+
+  const schedulePan = useCallback((deltaPoints: number) => {
+    pendingPanRef.current += deltaPoints;
+    if (panFrameRef.current != null) return;
+
+    panFrameRef.current = requestAnimationFrame(() => {
+      panFrameRef.current = null;
+      const pending = pendingPanRef.current;
+      pendingPanRef.current = 0;
+      pan(pending);
+    });
+  }, [pan]);
+
+  useEffect(() => () => {
+    if (zoomFrameRef.current != null) cancelAnimationFrame(zoomFrameRef.current);
+    if (panFrameRef.current != null) cancelAnimationFrame(panFrameRef.current);
+  }, []);
+
+  // Wheel events can arrive much faster than React can redraw three charts.
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
     const onWheel = (e: WheelEvent) => {
       e.preventDefault();
       const anchor = getAnchorRatio(e.clientX);
-      zoomState.zoom(e.deltaY, anchor);
+      const pageHeight = containerRef.current?.clientHeight ?? window.innerHeight;
+      scheduleZoom(wheelZoomScale(e.deltaY, e.deltaMode, pageHeight), anchor);
     };
     el.addEventListener("wheel", onWheel, { passive: false });
     return () => el.removeEventListener("wheel", onWheel);
-  }, [zoomState]);
+  }, [getAnchorRatio, scheduleZoom]);
 
   const handlePointerDown = useCallback((e: React.PointerEvent) => {
-    if (e.pointerType === "touch") return; // handled by touch events
-    dragRef.current = { startX: e.clientX, startY: e.clientY, isDragging: false };
+    if (e.pointerType === "touch" || e.button !== 0) return;
+    dragRef.current = { lastX: e.clientX, active: true, isDragging: false };
     containerRef.current?.setPointerCapture(e.pointerId);
   }, []);
 
   const handlePointerMove = useCallback((e: React.PointerEvent) => {
-    if (e.pointerType === "touch") return;
-    if (!dragRef.current.startX && !dragRef.current.isDragging) return;
-    const dx = e.clientX - dragRef.current.startX;
+    if (e.pointerType === "touch" || !dragRef.current.active) return;
+    const dx = e.clientX - dragRef.current.lastX;
     if (Math.abs(dx) > 3) dragRef.current.isDragging = true;
     if (!dragRef.current.isDragging) return;
 
     const rect = containerRef.current?.getBoundingClientRect();
-    if (!rect) return;
-    const pointsPerPx = zoomState.windowSize / rect.width;
-    const deltaPoints = Math.round(-dx * pointsPerPx);
-    if (deltaPoints !== 0) {
-      zoomState.pan(deltaPoints);
-      dragRef.current.startX = e.clientX;
-    }
-  }, [zoomState]);
+    if (!rect || rect.width <= 0) return;
+    schedulePan(-dx * (zoomState.windowSize / rect.width));
+    dragRef.current.lastX = e.clientX;
+  }, [schedulePan, zoomState.windowSize]);
 
   const handlePointerUp = useCallback((e: React.PointerEvent) => {
     if (e.pointerType === "touch") return;
-    dragRef.current = { startX: 0, startY: 0, isDragging: false };
+    dragRef.current = { lastX: 0, active: false, isDragging: false };
+    if (containerRef.current?.hasPointerCapture(e.pointerId)) {
+      containerRef.current.releasePointerCapture(e.pointerId);
+    }
   }, []);
 
-  // Touch: single-finger drag = pan, two-finger pinch = zoom
-  const touchStartRef = useRef<{ x: number } | null>(null);
-
+  // Touch: single-finger drag = pan, two-finger pinch = zoom.
   const handleTouchStart = useCallback((e: React.TouchEvent) => {
     if (e.touches.length === 2) {
       pinchRef.current = { dist: getTouchDist(e.touches) };
+      touchStartRef.current = null;
     } else if (e.touches.length === 1) {
       touchStartRef.current = { x: e.touches[0].clientX };
     }
-  }, []);
+  }, [getTouchDist]);
 
   const handleTouchMove = useCallback((e: React.TouchEvent) => {
     if (e.touches.length === 2 && pinchRef.current) {
       e.preventDefault();
       const newDist = getTouchDist(e.touches);
-      const delta = pinchRef.current.dist - newDist; // pinch in = zoom in (negative delta)
       const midX = (e.touches[0].clientX + e.touches[1].clientX) / 2;
-      const anchor = getAnchorRatio(midX);
-      if (Math.abs(delta) > 5) {
-        zoomState.zoom(delta, anchor);
+      if (newDist > 0 && Math.abs(newDist - pinchRef.current.dist) > 1) {
+        scheduleZoom(pinchRef.current.dist / newDist, getAnchorRatio(midX));
         pinchRef.current.dist = newDist;
       }
     } else if (e.touches.length === 1 && touchStartRef.current) {
       const dx = e.touches[0].clientX - touchStartRef.current.x;
       const rect = containerRef.current?.getBoundingClientRect();
-      if (!rect) return;
-      const pointsPerPx = zoomState.windowSize / rect.width;
-      const deltaPoints = Math.round(-dx * pointsPerPx);
-      if (deltaPoints !== 0) {
-        zoomState.pan(deltaPoints);
-        touchStartRef.current.x = e.touches[0].clientX;
-      }
+      if (!rect || rect.width <= 0) return;
+      schedulePan(-dx * (zoomState.windowSize / rect.width));
+      touchStartRef.current.x = e.touches[0].clientX;
     }
-  }, [zoomState]);
+  }, [getAnchorRatio, getTouchDist, schedulePan, scheduleZoom, zoomState.windowSize]);
 
   const handleTouchEnd = useCallback(() => {
     pinchRef.current = null;
@@ -404,6 +423,7 @@ function ZoomableChart({ children, totalLength, zoomState }: {
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerUp}
+        onPointerCancel={handlePointerUp}
         onTouchStart={handleTouchStart}
         onTouchMove={handleTouchMove}
         onTouchEnd={handleTouchEnd}
@@ -417,7 +437,7 @@ function ZoomableChart({ children, totalLength, zoomState }: {
       )}
       {!zoomState.isShowingAll && totalLength > 0 && (
         <div className="text-center text-xs text-muted-foreground mt-1">
-          {zoomState.windowSize} of {totalLength} points — scroll to zoom, drag to pan
+          {Math.round(zoomState.windowSize)} of {totalLength} points — scroll to zoom, drag to pan
         </div>
       )}
     </div>
@@ -496,6 +516,7 @@ interface MetricsSectionProps {
   metrics: EvalResult[] | undefined;
   isLoading: boolean;
   timeRangeLabel: string;
+  timeRange: string;
   regionLabel: string;
   testIdPrefix?: string;
   /** Show the evalFlow name/link in the tooltip (Community / My Evals only). */
@@ -504,7 +525,7 @@ interface MetricsSectionProps {
   hiddenProviders?: Set<string>;
 }
 
-function MetricsSection({ metrics, isLoading, timeRangeLabel, regionLabel, testIdPrefix = "", showEvalFlow = false, hiddenProviders }: MetricsSectionProps) {
+function MetricsSection({ metrics, isLoading, timeRangeLabel, timeRange, regionLabel, testIdPrefix = "", showEvalFlow = false, hiddenProviders }: MetricsSectionProps) {
   const { data: providerList } = useQuery<Array<{ id: string; brandColor: string | null }>>({
     queryKey: ["/api/providers"],
     staleTime: 60000,
@@ -518,7 +539,10 @@ function MetricsSection({ metrics, isLoading, timeRangeLabel, regionLabel, testI
     return map;
   }, [providerList]);
 
-  const filteredMetrics = metrics?.filter(m => !(hiddenProviders?.has(m.providerId))) || [];
+  const filteredMetrics = useMemo(
+    () => metrics?.filter(m => !(hiddenProviders?.has(m.providerId))) ?? [],
+    [hiddenProviders, metrics],
+  );
 
   const { data: combinedData, providers } = useMemo(() => buildCombinedData(filteredMetrics, colorMap), [filteredMetrics, colorMap]);
 
@@ -527,16 +551,20 @@ function MetricsSection({ metrics, isLoading, timeRangeLabel, regionLabel, testI
 
   // Zoom/pan state — shared across both charts so they stay in sync
   const chartZoom = useChartZoom(combinedData.length);
-  const visibleData = useMemo(() => combinedData.slice(chartZoom.start, chartZoom.end), [combinedData, chartZoom.start, chartZoom.end]);
+  const visibleData = useMemo(
+    () => combinedData.slice(Math.floor(chartZoom.start), Math.ceil(chartZoom.end)),
+    [combinedData, chartZoom.start, chartZoom.end],
+  );
+  const segmentGapMs = timeRange === "all" ? 36 * 60 * 60 * 1000 : GAP_MS;
 
-  // Pre-compute segmented chart data (breaks lines at 2h gaps)
+  // Pre-compute segmented chart data using a gap threshold that matches the bucket size.
   const responseProviders = useMemo(() => providers.map(p => ({ dataKey: `${p.key}_response`, name: p.name, stroke: p.stroke })), [providers]);
   const interruptProviders = useMemo(() => providers.map(p => ({ dataKey: `${p.key}_interrupt`, name: p.name, stroke: p.stroke })), [providers]);
   const tsrProviders = useMemo(() => providers.map(p => ({ dataKey: `${p.key}_tsr`, name: p.name, stroke: p.stroke })), [providers]);
 
-  const responseChart = useMemo(() => buildSegmentedData(visibleData, responseProviders), [visibleData, responseProviders]);
-  const interruptChart = useMemo(() => buildSegmentedData(visibleData, interruptProviders), [visibleData, interruptProviders]);
-  const tsrChart = useMemo(() => buildSegmentedData(visibleData, tsrProviders), [visibleData, tsrProviders]);
+  const responseChart = useMemo(() => buildSegmentedData(visibleData, responseProviders, segmentGapMs), [segmentGapMs, visibleData, responseProviders]);
+  const interruptChart = useMemo(() => buildSegmentedData(visibleData, interruptProviders, segmentGapMs), [interruptProviders, segmentGapMs, visibleData]);
+  const tsrChart = useMemo(() => buildSegmentedData(visibleData, tsrProviders, segmentGapMs), [segmentGapMs, tsrProviders, visibleData]);
 
   return (
     <>
@@ -707,7 +735,7 @@ function MetricsSection({ metrics, isLoading, timeRangeLabel, regionLabel, testI
                       <Tooltip content={<EvalFlowTooltip showEvalFlow={showEvalFlow} unit="%" />} wrapperStyle={{ pointerEvents: 'auto' }} />
                       <Legend />
                       {tsrChart.lines.map(l => (
-                        <Line key={l.segKey} type="monotone" dataKey={l.segKey} name={l.name} stroke={l.stroke} strokeWidth={2} dot={makeEndpointDot(l.dataIndices, l.stroke)} activeDot={{ r: 6 }} connectNulls legendType={l.showLegend ? "line" : "none"} />
+                        <Line key={l.segKey} type="monotone" dataKey={l.segKey} name={l.name} stroke={l.stroke} strokeWidth={2} dot={makeEndpointDot(l.dataIndices, l.stroke)} activeDot={{ r: 6 }} connectNulls isAnimationActive={false} legendType={l.showLegend ? "line" : "none"} />
                       ))}
                     </LineChart>
                   </ResponsiveContainer>
@@ -736,7 +764,7 @@ function MetricsSection({ metrics, isLoading, timeRangeLabel, regionLabel, testI
                       <Tooltip content={<EvalFlowTooltip showEvalFlow={showEvalFlow} />} wrapperStyle={{ pointerEvents: 'auto' }} />
                       <Legend />
                       {responseChart.lines.map(l => (
-                        <Line key={l.segKey} type="monotone" dataKey={l.segKey} name={l.name} stroke={l.stroke} strokeWidth={2} dot={makeEndpointDot(l.dataIndices, l.stroke)} activeDot={{ r: 6 }} connectNulls legendType={l.showLegend ? "line" : "none"} />
+                        <Line key={l.segKey} type="monotone" dataKey={l.segKey} name={l.name} stroke={l.stroke} strokeWidth={2} dot={makeEndpointDot(l.dataIndices, l.stroke)} activeDot={{ r: 6 }} connectNulls isAnimationActive={false} legendType={l.showLegend ? "line" : "none"} />
                       ))}
                     </LineChart>
                   </ResponsiveContainer>
@@ -765,7 +793,7 @@ function MetricsSection({ metrics, isLoading, timeRangeLabel, regionLabel, testI
                       <Tooltip content={<EvalFlowTooltip showEvalFlow={showEvalFlow} />} wrapperStyle={{ pointerEvents: 'auto' }} />
                       <Legend />
                       {interruptChart.lines.map(l => (
-                        <Line key={l.segKey} type="monotone" dataKey={l.segKey} name={l.name} stroke={l.stroke} strokeWidth={2} dot={makeEndpointDot(l.dataIndices, l.stroke)} activeDot={{ r: 6 }} connectNulls legendType={l.showLegend ? "line" : "none"} />
+                        <Line key={l.segKey} type="monotone" dataKey={l.segKey} name={l.name} stroke={l.stroke} strokeWidth={2} dot={makeEndpointDot(l.dataIndices, l.stroke)} activeDot={{ r: 6 }} connectNulls isAnimationActive={false} legendType={l.showLegend ? "line" : "none"} />
                       ))}
                     </LineChart>
                   </ResponsiveContainer>
@@ -782,7 +810,7 @@ function MetricsSection({ metrics, isLoading, timeRangeLabel, regionLabel, testI
 export default function Dashboard() {
   const [regionScopes, setRegionScopes] = useState<string[]>(["all"]);
   const [refreshInterval, setRefreshInterval] = useState<number>(30000);
-  const [timeRange, setTimeRange] = useState<string>("24");
+  const [timeRange, setTimeRange] = useState<string>("168");
   // Evaluation Mode (design §11): web and phone are separate measurement
   // categories, never mixed — the switch scopes the whole page; switching
   // refetches with the transport param.
@@ -932,6 +960,7 @@ export default function Dashboard() {
     : timeRange === "6" ? "Last 6 hours"
     : timeRange === "24" ? "Last 24 hours"
     : timeRange === "168" ? "Last 7 days"
+    : timeRange === "720" ? "Last 30 days"
     : "All time";
 
   return (
@@ -1015,6 +1044,7 @@ export default function Dashboard() {
               <SelectItem value="6">6 hours</SelectItem>
               <SelectItem value="24">24 hours</SelectItem>
               <SelectItem value="168">7 days</SelectItem>
+              <SelectItem value="720">30 days</SelectItem>
               <SelectItem value="all">All time</SelectItem>
             </SelectContent>
           </Select>
@@ -1103,6 +1133,7 @@ export default function Dashboard() {
             metrics={mainlineMetrics}
             isLoading={mainlineLoading}
             timeRangeLabel={timeRangeLabel}
+            timeRange={timeRange}
             regionLabel={regionLabel}
             testIdPrefix=""
             hiddenProviders={hiddenProviders}
@@ -1114,6 +1145,7 @@ export default function Dashboard() {
             metrics={communityMetrics}
             isLoading={communityLoading}
             timeRangeLabel={timeRangeLabel}
+            timeRange={timeRange}
             regionLabel={regionLabel}
             testIdPrefix="community-"
             showEvalFlow
@@ -1127,6 +1159,7 @@ export default function Dashboard() {
               metrics={myEvalsMetrics}
               isLoading={myEvalsLoading}
               timeRangeLabel={timeRangeLabel}
+              timeRange={timeRange}
               regionLabel={regionLabel}
               testIdPrefix="my-evals-"
               showEvalFlow
