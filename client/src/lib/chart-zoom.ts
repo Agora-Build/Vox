@@ -16,6 +16,7 @@ export interface ChartMetric {
   timestamp: string;
   evalFlowId?: number | null;
   evalFlowName?: string | null;
+  resolution?: string;
 }
 
 export interface CombinedChartRow {
@@ -54,6 +55,7 @@ export function buildCombinedChartData(
   metrics: readonly ChartMetric[],
   colorMap: ReadonlyMap<string, string>,
   hiddenProviders?: ReadonlySet<string>,
+  timeBucketMs = 60000,
 ): ChartProviders {
   if (metrics.length === 0) return { data: [], providers: [] };
 
@@ -79,7 +81,7 @@ export function buildCombinedChartData(
   for (const metric of metrics) {
     const time = new Date(metric.timestamp).getTime();
     if (!Number.isFinite(time)) continue;
-    const timeKey = Math.floor(time / 60000) * 60000;
+    const timeKey = Math.floor(time / timeBucketMs) * timeBucketMs;
     const group = timeGroups.get(timeKey) ?? { rawTime: timeKey, values: new Map() };
     timeGroups.set(timeKey, group);
     const key = nameToKey.get(metric.provider);
@@ -93,6 +95,7 @@ export function buildCombinedChartData(
         chartIndex,
         timestamp: format(new Date(group.rawTime), "MM/dd/yy HH:mm"),
         rawTime: group.rawTime,
+        resolution: group.values.values().next().value?.resolution,
       };
       for (const provider of providers) {
         const metric = group.values.get(provider.key);
@@ -151,12 +154,12 @@ export function overscanChartRange(
   };
 }
 
-function lowerBound(values: readonly number[], target: number): number {
+function lowerBound(values: readonly number[], target: number, position = (value: number) => value): number {
   let low = 0;
   let high = values.length;
   while (low < high) {
     const middle = Math.floor((low + high) / 2);
-    if (values[middle] < target) low = middle + 1;
+    if (position(values[middle]) < target) low = middle + 1;
     else high = middle;
   }
   return low;
@@ -167,9 +170,10 @@ export function segmentRenderIndices(
   range: ChartRange,
   totalLength: number,
   segments: ReadonlyArray<readonly number[]>,
+  exactBounds = false,
 ): number[] {
   const total = Math.max(0, totalLength);
-  const visible = visibleChartRange(range, total);
+  const visible = exactBounds ? range : visibleChartRange(range, total);
   const selected = new Set<number>();
 
   for (let index = visible.start; index < visible.end; index++) selected.add(index);
@@ -236,9 +240,11 @@ export function segmentYAxisMax(
   rows: ReadonlyArray<Record<string, unknown>>,
   segments: ReadonlyArray<{ segKey: string; dataIndices: readonly number[] }>,
   range: ChartRange,
+  timeDomain?: ChartDomain,
 ): number {
   if (rows.length === 0) return 1;
-  const [left, right] = chartRangeDomain(range, rows.length);
+  const [left, right] = timeDomain ?? chartRangeDomain(range, rows.length);
+  const x = (index: number) => timeDomain ? Number(rows[index].rawTime) : index;
   let maximum = 0;
 
   const valueAt = (segKey: string, index: number): number | null => {
@@ -250,25 +256,25 @@ export function segmentYAxisMax(
     if (dataIndices.length === 0) continue;
     const first = dataIndices[0];
     const last = dataIndices[dataIndices.length - 1];
-    if (last < left || first > right) continue;
+    if (x(last) < left || x(first) > right) continue;
 
-    const firstInside = lowerBound(dataIndices, left);
+    const firstInside = lowerBound(dataIndices, left, x);
     for (let position = firstInside; position < dataIndices.length; position++) {
       const index = dataIndices[position];
-      if (index > right) break;
+      if (x(index) > right) break;
       const value = valueAt(segKey, index);
       if (value != null) maximum = Math.max(maximum, value);
     }
 
     for (const boundary of [left, right]) {
-      const after = lowerBound(dataIndices, boundary);
-      if (after <= 0 || after >= dataIndices.length || dataIndices[after] === boundary) continue;
+      const after = lowerBound(dataIndices, boundary, x);
+      if (after <= 0 || after >= dataIndices.length || x(dataIndices[after]) === boundary) continue;
       const beforeIndex = dataIndices[after - 1];
       const afterIndex = dataIndices[after];
       const beforeValue = valueAt(segKey, beforeIndex);
       const afterValue = valueAt(segKey, afterIndex);
       if (beforeValue == null || afterValue == null) continue;
-      const ratio = (boundary - beforeIndex) / (afterIndex - beforeIndex);
+      const ratio = (boundary - x(beforeIndex)) / (x(afterIndex) - x(beforeIndex));
       maximum = Math.max(maximum, beforeValue + (afterValue - beforeValue) * ratio);
     }
   }
@@ -276,10 +282,10 @@ export function segmentYAxisMax(
   return paddedYAxisMax(maximum);
 }
 
-export function defaultChartRange(totalLength: number): ChartRange {
+export function defaultChartRange(totalLength: number, defaultWindow = DEFAULT_CHART_WINDOW): ChartRange {
   const total = Math.max(0, totalLength);
   return {
-    start: Math.max(0, total - DEFAULT_CHART_WINDOW),
+    start: Math.max(0, total - defaultWindow),
     end: total,
   };
 }
@@ -347,6 +353,21 @@ export function panChartRange(
 
   const start = clamp(current.start + deltaPoints, 0, total - windowSize);
   return { start, end: start + windowSize };
+}
+
+/** Find row offsets in a temporal viewport, including empty windows between sparse points. */
+export function timeDomainBounds(rows: readonly CombinedChartRow[], domain: ChartDomain): ChartRange {
+  const bound = (target: number) => {
+    let low = 0;
+    let high = rows.length;
+    while (low < high) {
+      const middle = Math.floor((low + high) / 2);
+      if (rows[middle].rawTime < target) low = middle + 1;
+      else high = middle;
+    }
+    return low;
+  };
+  return { start: bound(domain[0]), end: bound(domain[1] + 1) };
 }
 
 /** Convert browser wheel units into a bounded, proportional zoom scale. */

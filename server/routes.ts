@@ -8,6 +8,7 @@ import { compareVersions } from "./aeval-seed";
 import { SECRET_NAME_PATTERN, collectSecretRefs, secretValueError } from "@shared/secrets";
 import { deriveScheduleStatus } from "@shared/schedule-status";
 import { regionSiteSequence } from "@shared/regions";
+import { parseMetricsDetailWindow } from "@shared/metrics-window";
 import { registerApiV1Routes } from "./routes-api-v1";
 import { generateSignedUrlForUser, userBucket, putObject, getObjectStream, deleteObject, type UserBucket } from "./s3";
 import { checkStorageEndpoint, StorageEndpointError } from "./storage-endpoint";
@@ -6023,6 +6024,12 @@ export async function registerRoutes(
   }
 
   function setCache(key: string, data: unknown): void {
+    const now = Date.now();
+    for (const [cachedKey, entry] of Array.from(metricsCache.entries())) {
+      if (entry.expiry <= now) metricsCache.delete(cachedKey);
+    }
+    // Viewport requests have many distinct keys; keep the shared TTL cache bounded.
+    if (metricsCache.size >= 128) metricsCache.delete(metricsCache.keys().next().value!);
     metricsCache.set(key, { data, expiry: Date.now() + CACHE_TTL });
   }
 
@@ -6114,6 +6121,36 @@ export async function registerRoutes(
     } catch (error) {
       console.error("Error fetching my eval metrics:", error);
       res.status(500).json({ error: "Failed to fetch my eval metrics" });
+    }
+  });
+
+  app.get("/api/metrics/:tier/detail", async (req, res) => {
+    try {
+      const tierMap: Record<string, MetricTier> = { realtime: "mainline", community: "community", "my-evals": "myEvals" };
+      const tier = Object.hasOwn(tierMap, req.params.tier) ? tierMap[req.params.tier] : undefined;
+      if (!tier) return res.status(400).json({ error: "tier must be realtime, community, or my-evals" });
+      let userId: number | undefined;
+      if (tier === "myEvals") {
+        const user = await getCurrentUser(req);
+        if (!user) return res.status(401).json({ error: "Not authenticated" });
+        userId = user.id;
+      }
+      const window = parseMetricsDetailWindow(req.query.from, req.query.to);
+      if ("error" in window) return res.status(400).json({ error: window.error });
+      const regionScope = await parseRegionQueryScope(req.query);
+      if ("error" in regionScope) return res.status(400).json({ error: regionScope.error });
+      const tp = parseMetricsTransport(req.query.transport);
+      if ("error" in tp) return res.status(400).json({ error: tp.error });
+      const key = `detail:${tier}:${userId ?? ""}:${window.from}:${window.to}:${regionScope.cacheKey}:${tp.transport}`;
+      const cached = getCached(key);
+      if (cached) return res.json(cached);
+      const result = await storage.getMetricsDetail(tier, window, userId, regionScope.scope, tp.transport);
+      const data = { ...result, metrics: await formatMetricsResults(result.metrics) };
+      setCache(key, data);
+      res.json(data);
+    } catch (error) {
+      console.error("Error fetching metrics detail:", error);
+      res.status(500).json({ error: "Failed to fetch metrics detail" });
     }
   });
 
