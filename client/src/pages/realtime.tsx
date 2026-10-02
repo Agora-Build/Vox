@@ -25,7 +25,7 @@ import {
   panChartRange,
   resizeChartRange,
   segmentOverscanChartRange,
-  stableYAxisMax,
+  segmentYAxisMax,
   visibleChartRange,
   wheelZoomScale,
   zoomChartRange,
@@ -250,21 +250,29 @@ function visibleSegmentLines(
   lines: SegmentLineInfo[],
   bounds: ChartRange,
 ): SegmentLineInfo[] {
-  const visible: SegmentLineInfo[] = [];
-  const legendProviders = new Set<string>();
-
+  const providerGroups = new Map<string, SegmentLineInfo[]>();
   for (const line of lines) {
-    const first = line.dataIndices[0];
-    const last = line.dataIndices[line.dataIndices.length - 1];
-    if (first == null || last < bounds.start || first >= bounds.end) continue;
-
     const providerKey = line.segKey.replace(/_s\d+$/, "");
-    const showLegend = !legendProviders.has(providerKey);
-    legendProviders.add(providerKey);
-    visible.push(showLegend === line.showLegend ? line : { ...line, showLegend });
+    const group = providerGroups.get(providerKey) ?? [];
+    group.push(line);
+    providerGroups.set(providerKey, group);
   }
 
-  return visible;
+  const selected: SegmentLineInfo[] = [];
+  for (const group of Array.from(providerGroups.values())) {
+    const visible = group.filter(line => {
+      const first = line.dataIndices[0];
+      const last = line.dataIndices[line.dataIndices.length - 1];
+      return first != null && last >= bounds.start && first < bounds.end;
+    });
+    const rendered = visible.length > 0 ? visible : [group[0]];
+    rendered.forEach((line, index) => {
+      const showLegend = index === 0;
+      selected.push(showLegend === line.showLegend ? line : { ...line, showLegend });
+    });
+  }
+
+  return selected;
 }
 
 const NAVIGATION_IDLE_MS = 100;
@@ -275,7 +283,7 @@ function rangesAreEqual(a: ChartRange, b: ChartRange): boolean {
   return Math.abs(a.start - b.start) < 0.001 && Math.abs(a.end - b.end) < 0.001;
 }
 
-function useChartZoom(totalLength: number) {
+function useChartZoom(totalLength: number, resetKey: string) {
   const [range, setRange] = useState<ChartRange>(() => defaultChartRange(totalLength));
   const [isNavigating, setIsNavigating] = useState(false);
   const currentRange = clampChartRange(range, totalLength);
@@ -411,13 +419,15 @@ function useChartZoom(totalLength: number) {
   }, [animateToTarget, clearIdleTimer]);
 
   const prevLenRef = useRef(totalLength);
+  const prevResetKeyRef = useRef(resetKey);
   useEffect(() => {
     const previousLength = prevLenRef.current;
-    const shouldReset = Math.abs(totalLength - previousLength) > 5;
+    const shouldReset = prevResetKeyRef.current !== resetKey;
     const displayedWasAtLiveEdge = displayedRangeRef.current.end >= previousLength - 0.001;
     const targetWasAtLiveEdge = targetRangeRef.current.end >= previousLength - 0.001;
     const phase = navigationPhaseRef.current;
     prevLenRef.current = totalLength;
+    prevResetKeyRef.current = resetKey;
 
     cancelAnimation();
     clearIdleTimer();
@@ -466,7 +476,7 @@ function useChartZoom(totalLength: number) {
       navigationPhaseRef.current = "idle";
       setIsNavigating(false);
     }
-  }, [animateToTarget, cancelAnimation, clearIdleTimer, totalLength]);
+  }, [animateToTarget, cancelAnimation, clearIdleTimer, resetKey, totalLength]);
 
   useEffect(() => () => {
     cancelAnimation();
@@ -761,14 +771,9 @@ function EvalFlowTooltip({ active, payload, label, showEvalFlow, unit = "ms" }: 
 }
 
 function useSettledYAxisMax(
-  rows: CombinedRow[],
-  dataKeys: string[],
+  nextMaximum: number,
   isNavigating: boolean,
 ): number {
-  const nextMaximum = useMemo(
-    () => stableYAxisMax(rows, dataKeys),
-    [dataKeys, rows],
-  );
   const [maximum, setMaximum] = useState(nextMaximum);
 
   useEffect(() => {
@@ -784,6 +789,7 @@ interface MetricsSectionProps {
   timeRangeLabel: string;
   timeRange: string;
   regionLabel: string;
+  navigationKey: string;
   testIdPrefix?: string;
   /** Show the evalFlow name/link in the tooltip (Community / My Evals only). */
   showEvalFlow?: boolean;
@@ -791,7 +797,7 @@ interface MetricsSectionProps {
   hiddenProviders?: Set<string>;
 }
 
-function MetricsSection({ metrics, isLoading, timeRangeLabel, timeRange, regionLabel, testIdPrefix = "", showEvalFlow = false, hiddenProviders }: MetricsSectionProps) {
+function MetricsSection({ metrics, isLoading, timeRangeLabel, timeRange, regionLabel, navigationKey, testIdPrefix = "", showEvalFlow = false, hiddenProviders }: MetricsSectionProps) {
   const { data: providerList } = useQuery<Array<{ id: string; brandColor: string | null }>>({
     queryKey: ["/api/providers"],
     staleTime: 60000,
@@ -816,7 +822,7 @@ function MetricsSection({ metrics, isLoading, timeRangeLabel, timeRange, regionL
   const latest = filteredMetrics[0] ?? null;
 
   // Zoom/pan state is shared across all three charts so they stay in sync.
-  const chartZoom = useChartZoom(combinedData.length);
+  const chartZoom = useChartZoom(combinedData.length, navigationKey);
   const chartRange = useMemo(
     () => ({ start: chartZoom.start, end: chartZoom.end }),
     [chartZoom.end, chartZoom.start],
@@ -833,8 +839,9 @@ function MetricsSection({ metrics, isLoading, timeRangeLabel, timeRange, regionL
   const formatChartTick = useCallback((value: number) => {
     if (combinedData.length === 0) return "";
     const index = Math.max(0, Math.min(combinedData.length - 1, Math.round(value)));
-    return format(new Date(combinedData[index].rawTime), "MM/dd HH:mm");
-  }, [combinedData]);
+    const tickFormat = timeRange === "all" ? "MM/dd/yy" : "MM/dd HH:mm";
+    return format(new Date(combinedData[index].rawTime), tickFormat);
+  }, [combinedData, timeRange]);
   const segmentGapMs = timeRange === "all" ? 36 * 60 * 60 * 1000 : GAP_MS;
 
   // Segment the complete selected range once so line identities stay stable.
@@ -873,10 +880,6 @@ function MetricsSection({ metrics, isLoading, timeRangeLabel, timeRange, regionL
     () => tsrChart.rows.slice(tsrRenderBounds.start, tsrRenderBounds.end),
     [tsrChart.rows, tsrRenderBounds.end, tsrRenderBounds.start],
   );
-  const visibleRows = useMemo(
-    () => combinedData.slice(visibleBounds.start, visibleBounds.end),
-    [combinedData, visibleBounds.end, visibleBounds.start],
-  );
   const responseLines = useMemo(
     () => visibleSegmentLines(responseChart.lines, visibleBounds),
     [responseChart.lines, visibleBounds.end, visibleBounds.start],
@@ -889,22 +892,20 @@ function MetricsSection({ metrics, isLoading, timeRangeLabel, timeRange, regionL
     () => visibleSegmentLines(tsrChart.lines, visibleBounds),
     [tsrChart.lines, visibleBounds.end, visibleBounds.start],
   );
-  const responseDataKeys = useMemo(
-    () => responseProviders.map(provider => provider.dataKey),
-    [responseProviders],
+  const nextResponseYMax = useMemo(
+    () => segmentYAxisMax(responseChart.rows, responseLines, chartRange),
+    [chartRange, responseChart.rows, responseLines],
   );
-  const interruptDataKeys = useMemo(
-    () => interruptProviders.map(provider => provider.dataKey),
-    [interruptProviders],
+  const nextInterruptYMax = useMemo(
+    () => segmentYAxisMax(interruptChart.rows, interruptLines, chartRange),
+    [chartRange, interruptChart.rows, interruptLines],
   );
   const responseYMax = useSettledYAxisMax(
-    visibleRows,
-    responseDataKeys,
+    nextResponseYMax,
     chartZoom.isNavigating,
   );
   const interruptYMax = useSettledYAxisMax(
-    visibleRows,
-    interruptDataKeys,
+    nextInterruptYMax,
     chartZoom.isNavigating,
   );
 
@@ -1128,7 +1129,7 @@ function MetricsSection({ metrics, isLoading, timeRangeLabel, timeRange, regionL
                         axisLine={false}
                         tickFormatter={formatChartTick}
                       />
-                      <YAxis stroke="hsl(var(--muted-foreground))" fontSize={12} tickLine={false} axisLine={false} domain={[0, responseYMax]} tickFormatter={(value) => `${value}ms`} />
+                      <YAxis stroke="hsl(var(--muted-foreground))" fontSize={12} tickLine={false} axisLine={false} domain={[0, responseYMax]} allowDataOverflow tickFormatter={(value) => `${value}ms`} />
                       {!chartZoom.isNavigating && <Tooltip content={<EvalFlowTooltip showEvalFlow={showEvalFlow} />} wrapperStyle={{ pointerEvents: 'auto' }} />}
                       <Legend />
                       {responseLines.map(l => (
@@ -1170,7 +1171,7 @@ function MetricsSection({ metrics, isLoading, timeRangeLabel, timeRange, regionL
                         axisLine={false}
                         tickFormatter={formatChartTick}
                       />
-                      <YAxis stroke="hsl(var(--muted-foreground))" fontSize={12} tickLine={false} axisLine={false} domain={[0, interruptYMax]} tickFormatter={(value) => `${value}ms`} />
+                      <YAxis stroke="hsl(var(--muted-foreground))" fontSize={12} tickLine={false} axisLine={false} domain={[0, interruptYMax]} allowDataOverflow tickFormatter={(value) => `${value}ms`} />
                       {!chartZoom.isNavigating && <Tooltip content={<EvalFlowTooltip showEvalFlow={showEvalFlow} />} wrapperStyle={{ pointerEvents: 'auto' }} />}
                       <Legend />
                       {interruptLines.map(l => (
@@ -1516,6 +1517,7 @@ export default function Dashboard() {
             timeRangeLabel={timeRangeLabel}
             timeRange={timeRange}
             regionLabel={regionLabel}
+            navigationKey={`${timeRange}:${regionScopeKey}:${evalMode}`}
             testIdPrefix=""
             hiddenProviders={hiddenProviders}
           />
@@ -1528,6 +1530,7 @@ export default function Dashboard() {
             timeRangeLabel={timeRangeLabel}
             timeRange={timeRange}
             regionLabel={regionLabel}
+            navigationKey={`${timeRange}:${regionScopeKey}:${evalMode}`}
             testIdPrefix="community-"
             showEvalFlow
             hiddenProviders={hiddenProviders}
@@ -1542,6 +1545,7 @@ export default function Dashboard() {
               timeRangeLabel={timeRangeLabel}
               timeRange={timeRange}
               regionLabel={regionLabel}
+              navigationKey={`${timeRange}:${regionScopeKey}:${evalMode}`}
               testIdPrefix="my-evals-"
               showEvalFlow
               hiddenProviders={hiddenProviders}

@@ -8,6 +8,7 @@ import {
   panChartRange,
   resizeChartRange,
   segmentOverscanChartRange,
+  segmentYAxisMax,
   stableYAxisMax,
   visibleChartRange,
   wheelZoomScale,
@@ -78,6 +79,18 @@ describe("chart zoom range math", () => {
       { alpha: 800, beta: null },
     ], ["alpha", "beta"])).toBe(2800);
     expect(stableYAxisMax([{ alpha: null }], ["alpha"])).toBe(1);
+    expect(stableYAxisMax([{ alpha: 0.5 }], ["alpha"])).toBe(0.53);
+
+    const rows = Array.from({ length: 61 }, () => ({} as Record<string, number>));
+    rows[5].series = 9000;
+    rows[25].series = 100;
+    rows[30].series = 200;
+    rows[60].series = 5000;
+    expect(segmentYAxisMax(
+      rows,
+      [{ segKey: "series", dataIndices: [5, 25, 30, 60] }],
+      { start: 20, end: 40 },
+    )).toBe(2700);
   });
 
   it("converts wheel direction and units into proportional scales", () => {

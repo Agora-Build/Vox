@@ -96,6 +96,13 @@ export function chartDomainTicks(domain: ChartDomain, count = 7): number[] {
   );
 }
 
+function paddedYAxisMax(maximum: number): number {
+  if (maximum <= 0) return 1;
+  const padded = maximum * 1.05;
+  const step = 10 ** Math.floor(Math.log10(padded)) / 10;
+  return Number((Math.ceil(padded / step) * step).toPrecision(12));
+}
+
 /** Calculate a padded Y maximum for the supplied row window. */
 export function stableYAxisMax(
   rows: ReadonlyArray<Record<string, unknown>>,
@@ -108,10 +115,52 @@ export function stableYAxisMax(
       if (typeof value === "number" && Number.isFinite(value)) maximum = Math.max(maximum, value);
     }
   }
-  if (maximum <= 0) return 1;
-  const padded = maximum * 1.05;
-  const step = 10 ** Math.floor(Math.log10(padded)) / 10;
-  return Math.ceil(padded / step) * step;
+  return paddedYAxisMax(maximum);
+}
+
+/** Calculate the visible maximum, including interpolated sparse-line edge crossings. */
+export function segmentYAxisMax(
+  rows: ReadonlyArray<Record<string, unknown>>,
+  segments: ReadonlyArray<{ segKey: string; dataIndices: readonly number[] }>,
+  range: ChartRange,
+): number {
+  if (rows.length === 0) return 1;
+  const [left, right] = chartRangeDomain(range, rows.length);
+  let maximum = 0;
+
+  const valueAt = (segKey: string, index: number): number | null => {
+    const value = rows[index]?.[segKey];
+    return typeof value === "number" && Number.isFinite(value) ? value : null;
+  };
+
+  for (const { segKey, dataIndices } of segments) {
+    if (dataIndices.length === 0) continue;
+    const first = dataIndices[0];
+    const last = dataIndices[dataIndices.length - 1];
+    if (last < left || first > right) continue;
+
+    const firstInside = lowerBound(dataIndices, left);
+    for (let position = firstInside; position < dataIndices.length; position++) {
+      const index = dataIndices[position];
+      if (index > right) break;
+      const value = valueAt(segKey, index);
+      if (value != null) maximum = Math.max(maximum, value);
+    }
+
+    for (const boundary of [left, right]) {
+      const after = lowerBound(dataIndices, boundary);
+      if (after <= 0 || after >= dataIndices.length || dataIndices[after] === boundary) continue;
+      const beforeIndex = dataIndices[after - 1];
+      const afterIndex = dataIndices[after];
+      const beforeValue = valueAt(segKey, beforeIndex);
+      const afterValue = valueAt(segKey, afterIndex);
+      if (beforeValue == null || afterValue == null) continue;
+      const ratio = (boundary - beforeIndex) / (afterIndex - beforeIndex);
+      maximum = Math.max(maximum, beforeValue + (afterValue - beforeValue) * ratio);
+    }
+  }
+
+  return paddedYAxisMax(maximum);
 }
 
 export function defaultChartRange(totalLength: number): ChartRange {
