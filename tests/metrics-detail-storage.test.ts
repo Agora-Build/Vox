@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { PgDialect } from "drizzle-orm/pg-core";
+import { PgDialect, getTableConfig } from "drizzle-orm/pg-core";
+import { readFileSync } from "node:fs";
 import { db, storage } from "../server/storage";
+import { evalResults } from "../shared/schema";
 
 const FROM = Date.UTC(2026, 0, 1);
 const DAY = 86400000;
@@ -31,6 +33,14 @@ function captureQueries(results: unknown[][]) {
 afterEach(() => vi.restoreAllMocks());
 
 describe("metrics detail storage", () => {
+  it("declares the time-range index and registers its deployment migration", () => {
+    const index = getTableConfig(evalResults).indexes.find(index => index.config.name === "eval_results_created_at_idx");
+    expect(index?.config.columns[0]).toHaveProperty("name", "created_at");
+    const migration = readFileSync(new URL("../migrations/0051_metrics_time_index.sql", import.meta.url), "utf8");
+    expect(migration).toContain("ON eval_results (created_at)");
+    const runner = readFileSync(new URL("../server/migrate.ts", import.meta.url), "utf8");
+    expect(runner).toContain('file: "0051_metrics_time_index.sql"');
+  });
   it("queries historical bounds with the mainline snapshot, trust, region, and transport gates", async () => {
     const { predicates, limits } = captureQueries([]);
     await storage.getMetricsDetail("mainline", { from: FROM, to: FROM + DAY }, undefined, { baseIds: ["eu-de-frankfurt"] }, "phone");
@@ -65,21 +75,31 @@ describe("metrics detail storage", () => {
   });
 
   it("preserves raw test identity from immutable job snapshots", async () => {
-    const { selections } = captureQueries([[{ id: 9, evalFlowId: 7, evalFlowName: "Historic flow" }]]);
+    const { selections } = captureQueries([[{ id: 9 }], [{ id: 9, evalFlowId: 7, evalFlowName: "Historic flow" }]]);
     const result = await storage.getMetricsDetail("community", { from: FROM, to: FROM + DAY });
     expect(result).toMatchObject({ from: FROM, to: FROM + DAY, resolution: "raw", truncated: false });
     expect(result.metrics).toEqual([{ id: 9, evalFlowId: 7, evalFlowName: "Historic flow", transport: "web" }]);
-    expect(selections[0]).toHaveProperty("evalFlowName");
-    expect(selections[0]).not.toHaveProperty("snapshot");
-    expect(selections[0]).not.toHaveProperty("config");
+    expect(Object.keys(selections[0] as object)).toEqual(["id"]);
+    expect(selections[1]).toHaveProperty("evalFlowName");
+    expect(selections[1]).not.toHaveProperty("snapshot");
+    expect(selections[1]).not.toHaveProperty("config");
   });
 
   it("falls back to complete hourly buckets when raw detail exceeds the ceiling", async () => {
-    const { limits } = captureQueries([Array(20001).fill({}), [{ id: 1 }]]);
+    const { limits, selections } = captureQueries([Array(20001).fill({}), [{ id: 1 }]]);
     const result = await storage.getMetricsDetail("community", { from: FROM + 60000, to: FROM + 120000 });
     expect(result).toMatchObject({ from: FROM, to: FROM + 3600000, resolution: "hour", truncated: false });
     expect(result.metrics).toEqual([{ id: 1, transport: "web" }]);
     expect(limits).toEqual([20001, 20001]);
+    expect(Object.keys(selections[0] as object)).toEqual(["id"]);
+    expect(selections[1]).not.toHaveProperty("evalFlowName");
+  });
+
+  it("falls back safely if new rows arrive between the density probe and raw read", async () => {
+    captureQueries([[{ id: 9 }], Array(20001).fill({ id: 9 }), [{ id: 1 }]]);
+    const result = await storage.getMetricsDetail("community", { from: FROM, to: FROM + 3600000 });
+    expect(result).toMatchObject({ resolution: "hour", truncated: false });
+    expect(result.metrics).toEqual([{ id: 1, transport: "web" }]);
   });
 
   it("falls back to daily buckets for an oversized hourly payload and reports any final truncation", async () => {

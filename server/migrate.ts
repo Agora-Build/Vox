@@ -73,6 +73,7 @@ const MIGRATIONS: Array<{ version: number; description: string; file: string | n
   { version: 49, description: "#219: partial index for a user's analyses (kind = 'analyze')", file: "0048_analyze_jobs_index.sql" },
   { version: 50, description: "#221: drop eval_agent_tokens.expires_at (unread since #220)", file: "0049_drop_eval_agent_token_expiry.sql" },
   { version: 51, description: "#129: brokers record whether Core can reach them", file: "0050_broker_reachability.sql" },
+  { version: 52, description: "#232: index historical metric windows by creation time", file: "0051_metrics_time_index.sql" },
 ];
 
 const TARGET_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version;

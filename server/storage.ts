@@ -2400,34 +2400,43 @@ export class DatabaseStorage {
     let resolution: MetricsResolution = metricsDetailResolution(window.to - window.from);
     const retentionHours = METRICS_RETENTION_DAYS * 24;
     if (resolution === "raw") {
-      const rows = await this.applyTierJoins(tier, db.select({
-        id: evalResults.id,
-        providerId: evalResults.providerId,
-        siteId: evalResults.siteId,
-        responseLatencyMedian: evalResults.responseLatencyMedian,
-        responseLatencySd: evalResults.responseLatencySd,
-        responseLatencyP95: evalResults.responseLatencyP95,
-        interruptLatencyMedian: evalResults.interruptLatencyMedian,
-        interruptLatencySd: evalResults.interruptLatencySd,
-        interruptLatencyP95: evalResults.interruptLatencyP95,
-        turnSuccessRate: evalResults.turnSuccessRate,
-        networkResilience: evalResults.networkResilience,
-        naturalness: evalResults.naturalness,
-        noiseReduction: evalResults.noiseReduction,
-        createdAt: evalResults.createdAt,
-        evalFlowId: evalJobs.evalFlowId,
-        evalFlowName: sql<string | null>`${evalJobs.snapshot}->'evalFlow'->>'name'`,
-      }).from(evalResults))
-        .where(and(...this.tierConditions(tier, retentionHours, userId, scope, transport),
-          gte(evalResults.createdAt, new Date(window.from)),
-          lt(evalResults.createdAt, new Date(window.to))))
+      const conditions = and(...this.tierConditions(tier, retentionHours, userId, scope, transport),
+        gte(evalResults.createdAt, new Date(window.from)),
+        lt(evalResults.createdAt, new Date(window.to)));
+      // Probe only IDs so dense windows skip transferring raw chart rows entirely.
+      const probe = await this.applyTierJoins(tier, db.select({ id: evalResults.id }).from(evalResults))
+        .where(conditions)
         .orderBy(desc(evalResults.createdAt))
         .limit(METRICS_ROW_CEILING + 1);
-      if (rows.length <= METRICS_ROW_CEILING) {
-        return { ...window, metrics: rows.map((r: MetricSourceRow) => ({
-          ...r,
-          transport,
-        })), resolution, truncated: false };
+      if (probe.length === 0) return { ...window, metrics: [], resolution, truncated: false };
+      if (probe.length <= METRICS_ROW_CEILING) {
+        const rows = await this.applyTierJoins(tier, db.select({
+          id: evalResults.id,
+          providerId: evalResults.providerId,
+          siteId: evalResults.siteId,
+          responseLatencyMedian: evalResults.responseLatencyMedian,
+          responseLatencySd: evalResults.responseLatencySd,
+          responseLatencyP95: evalResults.responseLatencyP95,
+          interruptLatencyMedian: evalResults.interruptLatencyMedian,
+          interruptLatencySd: evalResults.interruptLatencySd,
+          interruptLatencyP95: evalResults.interruptLatencyP95,
+          turnSuccessRate: evalResults.turnSuccessRate,
+          networkResilience: evalResults.networkResilience,
+          naturalness: evalResults.naturalness,
+          noiseReduction: evalResults.noiseReduction,
+          createdAt: evalResults.createdAt,
+          evalFlowId: evalJobs.evalFlowId,
+          evalFlowName: sql<string | null>`${evalJobs.snapshot}->'evalFlow'->>'name'`,
+        }).from(evalResults))
+          .where(conditions)
+          .orderBy(desc(evalResults.createdAt))
+          .limit(METRICS_ROW_CEILING + 1);
+        if (rows.length <= METRICS_ROW_CEILING) {
+          return { ...window, metrics: rows.map((r: MetricSourceRow) => ({
+            ...r,
+            transport,
+          })), resolution, truncated: false };
+        }
       }
       // Never replace a complete overview with silently truncated raw history.
       resolution = "hour";
