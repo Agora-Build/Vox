@@ -17,11 +17,16 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { format } from "date-fns";
 import { appendRegionScopes, formatRegionScopeSelection } from "@/lib/utils";
 import {
+  chartDomainTicks,
+  chartRangeDomain,
   clampChartRange,
   defaultChartRange,
+  overscanChartRange,
   panChartRange,
+  stableYAxisMax,
   wheelZoomScale,
   zoomChartRange,
+  type ChartDomain,
   type ChartRange,
 } from "@/lib/chart-zoom";
 import { useRegionLocations } from "@/hooks/use-regions";
@@ -84,6 +89,7 @@ interface HealthData {
 
 
 interface CombinedRow {
+  chartIndex: number;
   timestamp: string;
   rawTime: number;
   [key: string]: string | number | undefined;
@@ -158,8 +164,9 @@ function buildCombinedData(filteredMetrics: EvalResult[], colorMap: Map<string, 
 
   const data = Array.from(timeGroups.values())
     .sort((a, b) => a.rawTime - b.rawTime)
-    .map((group) => {
+    .map((group, chartIndex) => {
       const row: CombinedRow = {
+        chartIndex,
         timestamp: format(new Date(group.rawTime), "MM/dd/yy HH:mm"),
         rawTime: group.rawTime,
       };
@@ -204,84 +211,141 @@ function buildSegmentedData(
   providers: Array<{ dataKey: string; name: string; stroke: string }>,
   gapMs = GAP_MS,
 ): { rows: CombinedRow[]; lines: SegmentLineInfo[] } {
-  // Deep-copy rows so we don't mutate the original
   const rows = data.map(r => ({ ...r }));
   const lines: SegmentLineInfo[] = [];
 
   for (const { dataKey, name, stroke } of providers) {
-    // Find segments: groups of consecutive points within GAP_MS
-    const segments: Array<{ start: number; end: number }> = [];
-    let segStart = -1;
-    let lastIdx = -1;
+    let segment: SegmentLineInfo | null = null;
+    let segmentIndex = -1;
+    let lastTime = -1;
 
     for (let i = 0; i < rows.length; i++) {
-      if (rows[i][dataKey] != null) {
-        if (segStart === -1) {
-          segStart = i;
-        } else if (lastIdx >= 0 && rows[i].rawTime - rows[lastIdx].rawTime > gapMs) {
-          segments.push({ start: segStart, end: lastIdx });
-          segStart = i;
-        }
-        lastIdx = i;
-      }
-    }
-    if (segStart >= 0 && lastIdx >= 0) {
-      segments.push({ start: segStart, end: lastIdx });
-    }
+      const value = rows[i][dataKey];
+      if (value == null) continue;
 
-    // Bake segment keys into rows
-    for (let si = 0; si < segments.length; si++) {
-      const seg = segments[si];
-      const segKey = `${dataKey}_s${si}`;
-      const dataIndices: number[] = [];
-      for (let i = 0; i < rows.length; i++) {
-        const val = (i >= seg.start && i <= seg.end) ? rows[i][dataKey] : undefined;
-        rows[i][segKey] = val;
-        if (val != null) dataIndices.push(i);
+      if (!segment || rows[i].rawTime - lastTime > gapMs) {
+        segmentIndex += 1;
+        segment = {
+          segKey: `${dataKey}_s${segmentIndex}`,
+          name,
+          stroke,
+          showLegend: segmentIndex === 0,
+          dataIndices: [],
+        };
+        lines.push(segment);
       }
-      lines.push({ segKey, name, stroke, showLegend: si === 0, dataIndices });
+
+      rows[i][segment.segKey] = value;
+      segment.dataIndices.push(rows[i].chartIndex);
+      lastTime = rows[i].rawTime;
     }
   }
 
   return { rows, lines };
 }
 
+const NAVIGATION_IDLE_MS = 100;
+const NAVIGATION_ANIMATION_MS = 220;
+
 function useChartZoom(totalLength: number) {
   const [range, setRange] = useState<ChartRange | null>(null);
+  const [isNavigating, setIsNavigating] = useState(false);
   const currentRange = range
     ? clampChartRange(range, totalLength)
     : defaultChartRange(totalLength);
-  const start = currentRange.start;
-  const end = currentRange.end;
-  const windowSize = end - start;
-  const isShowingAll = start <= 0 && end >= totalLength;
+  const displayedRangeRef = useRef(currentRange);
+  const targetRangeRef = useRef(currentRange);
+  const idleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const animationFrameRef = useRef<number | null>(null);
+  displayedRangeRef.current = currentRange;
+
+  const cancelAnimation = useCallback(() => {
+    if (animationFrameRef.current != null) {
+      cancelAnimationFrame(animationFrameRef.current);
+      animationFrameRef.current = null;
+    }
+  }, []);
+
+  const animateToTarget = useCallback(() => {
+    cancelAnimation();
+    const from = clampChartRange(displayedRangeRef.current, totalLength);
+    const to = clampChartRange(targetRangeRef.current, totalLength);
+    const startedAt = performance.now();
+
+    const step = (now: number) => {
+      const progress = Math.min(1, (now - startedAt) / NAVIGATION_ANIMATION_MS);
+      const eased = progress < 0.5
+        ? 4 * progress ** 3
+        : 1 - ((-2 * progress + 2) ** 3) / 2;
+      const next = {
+        start: from.start + (to.start - from.start) * eased,
+        end: from.end + (to.end - from.end) * eased,
+      };
+      displayedRangeRef.current = next;
+      setRange(next);
+
+      if (progress < 1) {
+        animationFrameRef.current = requestAnimationFrame(step);
+      } else {
+        animationFrameRef.current = null;
+        setIsNavigating(false);
+      }
+    };
+
+    animationFrameRef.current = requestAnimationFrame(step);
+  }, [cancelAnimation, totalLength]);
+
+  const updateTarget = useCallback((update: (current: ChartRange) => ChartRange) => {
+    if (animationFrameRef.current != null) {
+      cancelAnimation();
+      targetRangeRef.current = displayedRangeRef.current;
+    }
+    const base = clampChartRange(targetRangeRef.current, totalLength);
+    targetRangeRef.current = update(base);
+    setIsNavigating(true);
+    if (idleTimerRef.current != null) clearTimeout(idleTimerRef.current);
+    idleTimerRef.current = setTimeout(() => {
+      idleTimerRef.current = null;
+      animateToTarget();
+    }, NAVIGATION_IDLE_MS);
+  }, [animateToTarget, cancelAnimation, totalLength]);
 
   const zoom = useCallback((scale: number, anchorRatio: number) => {
-    setRange(prev => zoomChartRange(
-      prev ?? defaultChartRange(totalLength),
-      totalLength,
-      scale,
-      anchorRatio,
-    ));
-  }, [totalLength]);
+    updateTarget(current => zoomChartRange(current, totalLength, scale, anchorRatio));
+  }, [totalLength, updateTarget]);
 
   const pan = useCallback((deltaPoints: number) => {
-    setRange(prev => panChartRange(
-      prev ?? defaultChartRange(totalLength),
-      totalLength,
-      deltaPoints,
-    ));
-  }, [totalLength]);
+    updateTarget(current => panChartRange(current, totalLength, deltaPoints));
+  }, [totalLength, updateTarget]);
 
-  // Reset after a range change without scheduling state during render.
   const prevLenRef = useRef(totalLength);
   useEffect(() => {
     const shouldReset = Math.abs(totalLength - prevLenRef.current) > 5;
     prevLenRef.current = totalLength;
-    if (shouldReset) setRange(null);
-  }, [totalLength]);
+    const next = shouldReset
+      ? defaultChartRange(totalLength)
+      : clampChartRange(displayedRangeRef.current, totalLength);
+    displayedRangeRef.current = next;
+    targetRangeRef.current = next;
+    if (shouldReset) {
+      cancelAnimation();
+      if (idleTimerRef.current != null) clearTimeout(idleTimerRef.current);
+      idleTimerRef.current = null;
+      setRange(next);
+      setIsNavigating(false);
+    }
+  }, [cancelAnimation, totalLength]);
 
-  return { start, end, windowSize, isShowingAll, zoom, pan };
+  useEffect(() => () => {
+    cancelAnimation();
+    if (idleTimerRef.current != null) clearTimeout(idleTimerRef.current);
+  }, [cancelAnimation]);
+
+  const start = currentRange.start;
+  const end = currentRange.end;
+  const windowSize = end - start;
+  const isShowingAll = start <= 0 && end >= totalLength;
+  return { start, end, windowSize, isShowingAll, isNavigating, zoom, pan };
 }
 
 function ZoomableChart({ children, totalLength, zoomState }: {
@@ -448,15 +512,17 @@ function ZoomableChart({ children, totalLength, zoomState }: {
 function makeEndpointDot(dataIndices: number[], stroke: string) {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return (props: any) => {
-    const { cx, cy, index } = props;
-    if (cx == null || cy == null) return <g />;
+    const { cx, cy, payload } = props;
+    const index = payload?.chartIndex;
+    const key = `${stroke}-${index ?? props.index ?? "empty"}`;
+    if (cx == null || cy == null) return <g key={key} />;
     const first = dataIndices[0];
     const last = dataIndices[dataIndices.length - 1];
     const isSingle = dataIndices.length === 1;
     const isEndpoint = index === first || index === last;
-    if (!isEndpoint && !isSingle) return <g />;
+    if (!isEndpoint && !isSingle) return <g key={key} />;
     return (
-      <g>
+      <g key={key}>
         <circle cx={cx} cy={cy} r={6} fill={stroke} opacity={0.3} />
         <circle cx={cx} cy={cy} r={4} fill={stroke} />
         <circle cx={cx} cy={cy} r={2} fill="white" />
@@ -485,7 +551,7 @@ function EvalFlowTooltip({ active, payload, label, showEvalFlow, unit = "ms" }: 
   if (items.length === 0) return null;
   return (
     <div className="rounded-lg border bg-popover text-popover-foreground shadow-md px-3 py-2 text-sm">
-      <div className="font-medium mb-1">{label}</div>
+      <div className="font-medium mb-1">{row.timestamp ?? label}</div>
       {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
       {items.map((e: any) => {
         const prefix = providerPrefixFromDataKey(String(e.dataKey));
@@ -524,6 +590,35 @@ interface MetricsSectionProps {
   /** Provider ids to hide from the charts (multi-select filter). */
   hiddenProviders?: Set<string>;
 }
+function ContinuousTimeAxis({ data, domain, ticks }: {
+  data: CombinedRow[];
+  domain: ChartDomain;
+  ticks: number[];
+}) {
+  const formatTick = useCallback((value: number) => {
+    if (data.length === 0) return "";
+    const index = Math.max(0, Math.min(data.length - 1, Math.round(value)));
+    return format(new Date(data[index].rawTime), "MM/dd HH:mm");
+  }, [data]);
+
+  return (
+    <XAxis
+      dataKey="chartIndex"
+      type="number"
+      domain={domain}
+      ticks={ticks}
+      allowDataOverflow
+      minTickGap={24}
+      interval="preserveStartEnd"
+      stroke="hsl(var(--muted-foreground))"
+      fontSize={12}
+      tickLine={false}
+      axisLine={false}
+      tickFormatter={formatTick}
+    />
+  );
+}
+
 
 function MetricsSection({ metrics, isLoading, timeRangeLabel, timeRange, regionLabel, testIdPrefix = "", showEvalFlow = false, hiddenProviders }: MetricsSectionProps) {
   const { data: providerList } = useQuery<Array<{ id: string; brandColor: string | null }>>({
@@ -551,20 +646,36 @@ function MetricsSection({ metrics, isLoading, timeRangeLabel, timeRange, regionL
 
   // Zoom/pan state — shared across both charts so they stay in sync
   const chartZoom = useChartZoom(combinedData.length);
-  const visibleData = useMemo(
-    () => combinedData.slice(Math.floor(chartZoom.start), Math.ceil(chartZoom.end)),
-    [combinedData, chartZoom.start, chartZoom.end],
+  const chartDomain = useMemo(
+    () => chartRangeDomain({ start: chartZoom.start, end: chartZoom.end }, combinedData.length),
+    [chartZoom.start, chartZoom.end, combinedData.length],
+  );
+  const chartTicks = useMemo(() => chartDomainTicks(chartDomain), [chartDomain]);
+  const visibleBounds = useMemo(
+    () => overscanChartRange({ start: chartZoom.start, end: chartZoom.end }, combinedData.length),
+    [chartZoom.start, chartZoom.end, combinedData.length],
   );
   const segmentGapMs = timeRange === "all" ? 36 * 60 * 60 * 1000 : GAP_MS;
 
-  // Pre-compute segmented chart data using a gap threshold that matches the bucket size.
+  // Segment the complete selected range once so line identities stay stable.
   const responseProviders = useMemo(() => providers.map(p => ({ dataKey: `${p.key}_response`, name: p.name, stroke: p.stroke })), [providers]);
   const interruptProviders = useMemo(() => providers.map(p => ({ dataKey: `${p.key}_interrupt`, name: p.name, stroke: p.stroke })), [providers]);
   const tsrProviders = useMemo(() => providers.map(p => ({ dataKey: `${p.key}_tsr`, name: p.name, stroke: p.stroke })), [providers]);
 
-  const responseChart = useMemo(() => buildSegmentedData(visibleData, responseProviders, segmentGapMs), [segmentGapMs, visibleData, responseProviders]);
-  const interruptChart = useMemo(() => buildSegmentedData(visibleData, interruptProviders, segmentGapMs), [interruptProviders, segmentGapMs, visibleData]);
-  const tsrChart = useMemo(() => buildSegmentedData(visibleData, tsrProviders, segmentGapMs), [segmentGapMs, tsrProviders, visibleData]);
+  const responseChart = useMemo(() => buildSegmentedData(combinedData, responseProviders, segmentGapMs), [combinedData, responseProviders, segmentGapMs]);
+  const interruptChart = useMemo(() => buildSegmentedData(combinedData, interruptProviders, segmentGapMs), [combinedData, interruptProviders, segmentGapMs]);
+  const tsrChart = useMemo(() => buildSegmentedData(combinedData, tsrProviders, segmentGapMs), [combinedData, segmentGapMs, tsrProviders]);
+  const responseRows = useMemo(() => responseChart.rows.slice(visibleBounds.start, visibleBounds.end), [responseChart.rows, visibleBounds]);
+  const interruptRows = useMemo(() => interruptChart.rows.slice(visibleBounds.start, visibleBounds.end), [interruptChart.rows, visibleBounds]);
+  const tsrRows = useMemo(() => tsrChart.rows.slice(visibleBounds.start, visibleBounds.end), [tsrChart.rows, visibleBounds]);
+  const responseYMax = useMemo(
+    () => stableYAxisMax(combinedData, responseProviders.map(provider => provider.dataKey)),
+    [combinedData, responseProviders],
+  );
+  const interruptYMax = useMemo(
+    () => stableYAxisMax(combinedData, interruptProviders.map(provider => provider.dataKey)),
+    [combinedData, interruptProviders],
+  );
 
   return (
     <>
@@ -728,11 +839,11 @@ function MetricsSection({ metrics, isLoading, timeRangeLabel, timeRange, regionL
                   <Skeleton className="h-full w-full" />
                 ) : (
                   <ResponsiveContainer width="100%" height="100%">
-                    <LineChart data={tsrChart.rows}>
+                    <LineChart data={tsrRows}>
                       <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" vertical={false} />
-                      <XAxis dataKey="timestamp" stroke="hsl(var(--muted-foreground))" fontSize={12} tickLine={false} axisLine={false} />
+                      <ContinuousTimeAxis data={combinedData} domain={chartDomain} ticks={chartTicks} />
                       <YAxis stroke="hsl(var(--muted-foreground))" fontSize={12} tickLine={false} axisLine={false} domain={[0, 100]} tickFormatter={(value) => `${value}%`} />
-                      <Tooltip content={<EvalFlowTooltip showEvalFlow={showEvalFlow} unit="%" />} wrapperStyle={{ pointerEvents: 'auto' }} />
+                      {!chartZoom.isNavigating && <Tooltip content={<EvalFlowTooltip showEvalFlow={showEvalFlow} unit="%" />} wrapperStyle={{ pointerEvents: 'auto' }} />}
                       <Legend />
                       {tsrChart.lines.map(l => (
                         <Line key={l.segKey} type="monotone" dataKey={l.segKey} name={l.name} stroke={l.stroke} strokeWidth={2} dot={makeEndpointDot(l.dataIndices, l.stroke)} activeDot={{ r: 6 }} connectNulls isAnimationActive={false} legendType={l.showLegend ? "line" : "none"} />
@@ -757,11 +868,11 @@ function MetricsSection({ metrics, isLoading, timeRangeLabel, timeRange, regionL
                   <Skeleton className="h-full w-full" />
                 ) : (
                   <ResponsiveContainer width="100%" height="100%">
-                    <LineChart data={responseChart.rows}>
+                    <LineChart data={responseRows}>
                       <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" vertical={false} />
-                      <XAxis dataKey="timestamp" stroke="hsl(var(--muted-foreground))" fontSize={12} tickLine={false} axisLine={false} />
-                      <YAxis stroke="hsl(var(--muted-foreground))" fontSize={12} tickLine={false} axisLine={false} tickFormatter={(value) => `${value}ms`} />
-                      <Tooltip content={<EvalFlowTooltip showEvalFlow={showEvalFlow} />} wrapperStyle={{ pointerEvents: 'auto' }} />
+                      <ContinuousTimeAxis data={combinedData} domain={chartDomain} ticks={chartTicks} />
+                      <YAxis stroke="hsl(var(--muted-foreground))" fontSize={12} tickLine={false} axisLine={false} domain={[0, responseYMax]} tickFormatter={(value) => `${value}ms`} />
+                      {!chartZoom.isNavigating && <Tooltip content={<EvalFlowTooltip showEvalFlow={showEvalFlow} />} wrapperStyle={{ pointerEvents: 'auto' }} />}
                       <Legend />
                       {responseChart.lines.map(l => (
                         <Line key={l.segKey} type="monotone" dataKey={l.segKey} name={l.name} stroke={l.stroke} strokeWidth={2} dot={makeEndpointDot(l.dataIndices, l.stroke)} activeDot={{ r: 6 }} connectNulls isAnimationActive={false} legendType={l.showLegend ? "line" : "none"} />
@@ -786,11 +897,11 @@ function MetricsSection({ metrics, isLoading, timeRangeLabel, timeRange, regionL
                   <Skeleton className="h-full w-full" />
                 ) : (
                   <ResponsiveContainer width="100%" height="100%">
-                    <LineChart data={interruptChart.rows}>
+                    <LineChart data={interruptRows}>
                       <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" vertical={false} />
-                      <XAxis dataKey="timestamp" stroke="hsl(var(--muted-foreground))" fontSize={12} tickLine={false} axisLine={false} />
-                      <YAxis stroke="hsl(var(--muted-foreground))" fontSize={12} tickLine={false} axisLine={false} tickFormatter={(value) => `${value}ms`} />
-                      <Tooltip content={<EvalFlowTooltip showEvalFlow={showEvalFlow} />} wrapperStyle={{ pointerEvents: 'auto' }} />
+                      <ContinuousTimeAxis data={combinedData} domain={chartDomain} ticks={chartTicks} />
+                      <YAxis stroke="hsl(var(--muted-foreground))" fontSize={12} tickLine={false} axisLine={false} domain={[0, interruptYMax]} tickFormatter={(value) => `${value}ms`} />
+                      {!chartZoom.isNavigating && <Tooltip content={<EvalFlowTooltip showEvalFlow={showEvalFlow} />} wrapperStyle={{ pointerEvents: 'auto' }} />}
                       <Legend />
                       {interruptChart.lines.map(l => (
                         <Line key={l.segKey} type="monotone" dataKey={l.segKey} name={l.name} stroke={l.stroke} strokeWidth={2} dot={makeEndpointDot(l.dataIndices, l.stroke)} activeDot={{ r: 6 }} connectNulls isAnimationActive={false} legendType={l.showLegend ? "line" : "none"} />

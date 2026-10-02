@@ -3,11 +3,66 @@ export interface ChartRange {
   end: number;
 }
 
+export type ChartDomain = [number, number];
+
 export const DEFAULT_CHART_WINDOW = 100;
 export const MIN_CHART_WINDOW = 10;
 
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
+}
+
+/** Map a fractional point range to a continuous numeric axis domain. */
+export function chartRangeDomain(range: ChartRange, totalLength: number): ChartDomain {
+  if (totalLength <= 0) return [0, 1];
+  const current = clampChartRange(range, totalLength);
+  // Point indices sit at cell centers, preserving the category chart's spacing.
+  return [current.start - 0.5, current.end - 0.5];
+}
+
+/** Retain integer points outside the domain so path entry/exit stays clipped. */
+export function overscanChartRange(
+  range: ChartRange,
+  totalLength: number,
+  overscan = 1,
+): ChartRange {
+  const total = Math.max(0, totalLength);
+  if (total === 0) return { start: 0, end: 0 };
+  const current = clampChartRange(range, total);
+  const padding = Math.max(0, Math.floor(overscan));
+  return {
+    start: Math.max(0, Math.floor(current.start) - padding),
+    end: Math.min(total, Math.ceil(current.end) + padding),
+  };
+}
+
+/** Build stable, evenly positioned ticks for a moving numeric domain. */
+export function chartDomainTicks(domain: ChartDomain, count = 7): number[] {
+  const tickCount = Math.max(2, Math.floor(count));
+  const span = domain[1] - domain[0];
+  if (!Number.isFinite(span) || span <= 0) return [domain[0]];
+  return Array.from(
+    { length: tickCount },
+    (_, index) => domain[0] + (span * index) / (tickCount - 1),
+  );
+}
+
+/** Calculate one padded Y maximum for the complete selected time range. */
+export function stableYAxisMax(
+  rows: ReadonlyArray<Record<string, unknown>>,
+  dataKeys: readonly string[],
+): number {
+  let maximum = 0;
+  for (const row of rows) {
+    for (const key of dataKeys) {
+      const value = row[key];
+      if (typeof value === "number" && Number.isFinite(value)) maximum = Math.max(maximum, value);
+    }
+  }
+  if (maximum <= 0) return 1;
+  const padded = maximum * 1.05;
+  const step = 10 ** Math.floor(Math.log10(padded)) / 10;
+  return Math.ceil(padded / step) * step;
 }
 
 export function defaultChartRange(totalLength: number): ChartRange {

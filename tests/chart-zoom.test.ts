@@ -1,8 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
+  chartDomainTicks,
+  chartRangeDomain,
   clampChartRange,
   defaultChartRange,
+  overscanChartRange,
   panChartRange,
+  stableYAxisMax,
   wheelZoomScale,
   zoomChartRange,
 } from "../client/src/lib/chart-zoom";
@@ -31,6 +35,26 @@ describe("chart zoom range math", () => {
   it("enforces the minimum window and handles an empty dataset", () => {
     expect(clampChartRange({ start: 20, end: 21 }, 100)).toEqual({ start: 20, end: 30 });
     expect(clampChartRange({ start: 10, end: 20 }, 0)).toEqual({ start: 0, end: 0 });
+  });
+
+  it("maps fractional windows to continuous centered domains", () => {
+    expect(chartRangeDomain({ start: 20.25, end: 60.25 }, 100)).toEqual([19.75, 59.75]);
+    expect(chartRangeDomain({ start: 0, end: 0 }, 0)).toEqual([0, 1]);
+  });
+
+  it("retains overscan rows outside the visible domain", () => {
+    expect(overscanChartRange({ start: 20.25, end: 60.25 }, 100)).toEqual({ start: 19, end: 62 });
+    expect(overscanChartRange({ start: 0, end: 20 }, 100, 2)).toEqual({ start: 0, end: 22 });
+    expect(overscanChartRange({ start: 80, end: 100 }, 100, 2)).toEqual({ start: 78, end: 100 });
+  });
+
+  it("keeps tick positions and Y domains stable during navigation", () => {
+    expect(chartDomainTicks([10, 40], 4)).toEqual([10, 20, 30, 40]);
+    expect(stableYAxisMax([
+      { alpha: 1200, beta: 2600 },
+      { alpha: 800, beta: null },
+    ], ["alpha", "beta"])).toBe(2800);
+    expect(stableYAxisMax([{ alpha: null }], ["alpha"])).toBe(1);
   });
 
   it("converts wheel direction and units into proportional scales", () => {
