@@ -53,6 +53,7 @@ export function mergeMetricDetail<T extends { timestamp: string }>(
   return [
     ...overview.filter(row => {
       const time = new Date(row.timestamp).getTime();
+      // Drop whole overlapping days: brief offscreen gaps are preferable to mixed-resolution averages.
       return time + METRICS_DAY_MS <= detail.from || time >= detail.to;
     }),
     ...detail.metrics,

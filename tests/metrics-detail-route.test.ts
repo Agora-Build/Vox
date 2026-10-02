@@ -68,10 +68,17 @@ describe("metrics detail routes", () => {
   });
 
   it("limits public detail request bursts without affecting overview requests", async () => {
+    vi.stubEnv("NODE_ENV", "production");
     vi.stubEnv("RATE_LIMIT_DISABLED", "false");
     for (let i = 0; i < 60; i++) await request(app).get(`/api/metrics/realtime/detail?${windowQuery}`).expect(200);
     await request(app).get(`/api/metrics/realtime/detail?${windowQuery}`).expect(429);
     vi.spyOn(storage, "getMainlineMetrics").mockResolvedValue([]);
     await request(app).get("/api/metrics/realtime").expect(200);
+  });
+
+  it("does not rate-limit local detail navigation", async () => {
+    vi.stubEnv("NODE_ENV", "development");
+    vi.stubEnv("RATE_LIMIT_DISABLED", "false");
+    for (let i = 0; i < 61; i++) await request(app).get(`/api/metrics/realtime/detail?${windowQuery}`).expect(200);
   });
 });

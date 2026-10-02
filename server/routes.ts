@@ -6125,7 +6125,7 @@ export async function registerRoutes(
     standardHeaders: true,
     legacyHeaders: false,
     message: { error: "Too many chart detail requests. Please wait a moment." },
-    skip: () => process.env.RATE_LIMIT_DISABLED === "true",
+    skip: () => process.env.NODE_ENV !== "production" || process.env.RATE_LIMIT_DISABLED === "true",
   });
   app.get("/api/metrics/:tier/detail", detailLimiter, async (req, res) => {
     try {

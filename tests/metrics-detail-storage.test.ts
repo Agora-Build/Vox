@@ -37,7 +37,7 @@ describe("metrics detail storage", () => {
     const index = getTableConfig(evalResults).indexes.find(index => index.config.name === "eval_results_created_at_idx");
     expect(index?.config.columns[0]).toHaveProperty("name", "created_at");
     const migration = readFileSync(new URL("../migrations/0051_metrics_time_index.sql", import.meta.url), "utf8");
-    expect(migration).toContain("ON eval_results (created_at)");
+    expect(migration).toContain("CREATE INDEX CONCURRENTLY eval_results_created_at_idx ON public.eval_results (created_at)");
     expect(migration).not.toContain("IF NOT EXISTS");
     const runner = readFileSync(new URL("../server/migrate.ts", import.meta.url), "utf8");
     expect(runner).toContain('file: "0051_metrics_time_index.sql"');

@@ -7,8 +7,9 @@ Vox uses a version-based migration system defined in `server/migrate.ts`. Every 
 - `_schema_version` table stores one row: the current schema version integer
 - `server/migrate.ts` defines a `MIGRATIONS` list — one entry per version, pointing to a SQL file
 - On startup: compare DB version vs `TARGET_VERSION`; run any missing steps in order
-- Each step runs in a **transaction** — SQL + version update are atomic
-- `pg_advisory_lock` prevents concurrent migrations across multiple instances (one runs, others wait)
+- Ordinary steps run in a **transaction** — SQL + version update are atomic
+- Explicit `concurrentIndex` steps build a single-column B-tree index outside a transaction, then commit the version atomically. This avoids blocking ingestion writes on a large history table.
+- A session advisory lock prevents concurrent migrations across multiple instances (one runs, others poll)
 - If migration fails: rollback, `process.exit(1)`, container stops — server never starts with a broken schema
 
 ## Startup entry point
@@ -24,7 +25,7 @@ node dist/migrate.cjs && node dist/index.cjs
 ## Multi-instance safety
 
 When multiple instances start simultaneously:
-1. All call `pg_advisory_lock(987654321)` — one gets it, others block
+1. All poll `pg_try_advisory_lock(987654321)` — one gets it, others retry every 250 ms without holding a snapshot that could deadlock a concurrent index build
 2. First instance runs migrations, updates version, releases lock
 3. Remaining instances acquire lock one by one, see version is current, skip immediately
 4. All instances start normally
@@ -70,6 +71,7 @@ When multiple instances start simultaneously:
 - **Never skip version numbers** — increment by 1 each time
 - **Always commit SQL file and MIGRATIONS entry together** — they must stay in sync
 - **Keep SQL clean** — plain `CREATE TABLE`, `ALTER TABLE`. No `IF NOT EXISTS`, no `DO...EXCEPTION`
+- **Concurrent indexes:** register `concurrentIndex: { name, table, column }` and use exactly `CREATE INDEX CONCURRENTLY <name> ON public.<table> (<column>);`. The runner holds one connection's advisory lock through the build and version commit. A retry reuses a matching valid index, drops/rebuilds a matching invalid index, and refuses an unexpected definition. Do not combine other SQL with this step; ordinary migrations remain transactional.
 - **Never use `db:push` or `drizzle-kit push --force` in production** — diffs live schema, may drop columns silently
 
 ## Emergency: apply without redeploy
