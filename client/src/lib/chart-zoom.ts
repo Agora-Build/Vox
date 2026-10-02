@@ -1,9 +1,114 @@
+import { format } from "date-fns";
+
 export interface ChartRange {
   start: number;
   end: number;
 }
 
 export type ChartDomain = [number, number];
+
+export interface ChartMetric {
+  providerId: string;
+  provider: string;
+  responseLatency: number | null;
+  interruptLatency: number | null;
+  turnSuccessRate: number | null;
+  timestamp: string;
+  evalFlowId?: number | null;
+  evalFlowName?: string | null;
+}
+
+export interface CombinedChartRow {
+  chartIndex: number;
+  timestamp: string;
+  rawTime: number;
+  [key: string]: string | number | undefined;
+}
+
+interface ChartProviders {
+  data: CombinedChartRow[];
+  providers: Array<{ key: string; name: string; stroke: string }>;
+}
+
+const PROVIDER_PALETTE = [
+  "#f97316",
+  "#22c55e",
+  "#a855f7",
+  "#ef4444",
+  "#eab308",
+];
+
+function fallbackProviderColor(id: string): string {
+  let hash = 0;
+  for (let index = 0; index < id.length; index++) {
+    hash = ((hash << 5) - hash + id.charCodeAt(index)) | 0;
+  }
+  return PROVIDER_PALETTE[((hash % PROVIDER_PALETTE.length) + PROVIDER_PALETTE.length) % PROVIDER_PALETTE.length];
+}
+
+function providerKey(name: string): string {
+  return name.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
+}
+
+export function buildCombinedChartData(
+  metrics: readonly ChartMetric[],
+  colorMap: ReadonlyMap<string, string>,
+  hiddenProviders?: ReadonlySet<string>,
+): ChartProviders {
+  if (metrics.length === 0) return { data: [], providers: [] };
+
+  const providerInfo = new Map<string, { id: string; name: string }>();
+  for (const metric of metrics) {
+    if (hiddenProviders?.has(metric.providerId)) continue;
+    if (!providerInfo.has(metric.providerId)) {
+      providerInfo.set(metric.providerId, { id: metric.providerId, name: metric.provider });
+    }
+  }
+
+  const providers = Array.from(providerInfo.values())
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .map(({ id, name }) => ({
+      key: providerKey(name),
+      name,
+      stroke: colorMap.get(id) || fallbackProviderColor(id),
+    }));
+  const nameToKey = new Map(providers.map(provider => [provider.name, provider.key]));
+  const timeGroups = new Map<number, { rawTime: number; values: Map<string, ChartMetric> }>();
+
+  // Keep every timestamp on the X axis so hiding a provider cannot shift the view.
+  for (const metric of metrics) {
+    const time = new Date(metric.timestamp).getTime();
+    if (!Number.isFinite(time)) continue;
+    const timeKey = Math.floor(time / 60000) * 60000;
+    const group = timeGroups.get(timeKey) ?? { rawTime: timeKey, values: new Map() };
+    timeGroups.set(timeKey, group);
+    const key = nameToKey.get(metric.provider);
+    if (key && !group.values.has(key)) group.values.set(key, metric);
+  }
+
+  const data = Array.from(timeGroups.values())
+    .sort((a, b) => a.rawTime - b.rawTime)
+    .map((group, chartIndex) => {
+      const row: CombinedChartRow = {
+        chartIndex,
+        timestamp: format(new Date(group.rawTime), "MM/dd/yy HH:mm"),
+        rawTime: group.rawTime,
+      };
+      for (const provider of providers) {
+        const metric = group.values.get(provider.key);
+        row[`${provider.key}_response`] = metric?.responseLatency ?? undefined;
+        row[`${provider.key}_interrupt`] = metric?.interruptLatency ?? undefined;
+        row[`${provider.key}_tsr`] = metric?.turnSuccessRate != null
+          ? Math.round(metric.turnSuccessRate * 100)
+          : undefined;
+        row[`${provider.key}_wfname`] = metric?.evalFlowName ?? undefined;
+        row[`${provider.key}_wfid`] = metric?.evalFlowId ?? undefined;
+      }
+      return row;
+    });
+
+  return { data, providers };
+}
 
 export const DEFAULT_CHART_WINDOW = 100;
 export const MIN_CHART_WINDOW = 10;

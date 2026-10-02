@@ -17,6 +17,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { format } from "date-fns";
 import { appendRegionScopes, formatRegionScopeSelection } from "@/lib/utils";
 import {
+  buildCombinedChartData,
   chartDomainTicks,
   chartRangeDomain,
   clampChartRange,
@@ -29,6 +30,7 @@ import {
   wheelZoomScale,
   zoomChartRange,
   type ChartRange,
+  type CombinedChartRow,
 } from "@/lib/chart-zoom";
 import { useRegionLocations } from "@/hooks/use-regions";
 import { RegionScopeSelector } from "@/components/region-scope-selector";
@@ -88,108 +90,6 @@ interface HealthData {
 }
 
 
-
-interface CombinedRow {
-  chartIndex: number;
-  timestamp: string;
-  rawTime: number;
-  [key: string]: string | number | undefined;
-}
-
-// Fallback palette for providers without brandColor
-const PALETTE = [
-  "#f97316", // orange
-  "#22c55e", // green
-  "#a855f7", // purple
-  "#ef4444", // red
-  "#eab308", // yellow
-];
-
-function fallbackColor(id: string): string {
-  let hash = 0;
-  for (let i = 0; i < id.length; i++) {
-    hash = ((hash << 5) - hash + id.charCodeAt(i)) | 0;
-  }
-  return PALETTE[((hash % PALETTE.length) + PALETTE.length) % PALETTE.length];
-}
-
-/** Convert provider name to a safe key prefix: "Agora ConvoAI Engine" → "agora_convoai_engine" */
-function providerKey(name: string): string {
-  return name.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
-}
-
-interface ChartProviders {
-  data: CombinedRow[];
-  providers: Array<{ key: string; name: string; stroke: string }>;
-}
-
-function buildCombinedData(filteredMetrics: EvalResult[], colorMap: Map<string, string>): ChartProviders {
-  if (!filteredMetrics || filteredMetrics.length === 0) return { data: [], providers: [] };
-
-  // Discover providers — keyed by providerId for stable color
-  const providerInfo = new Map<string, { id: string; name: string }>();
-  for (const m of filteredMetrics) {
-    if (!providerInfo.has(m.providerId)) {
-      providerInfo.set(m.providerId, { id: m.providerId, name: m.provider });
-    }
-  }
-
-  const providers = Array.from(providerInfo.values())
-    .sort((a, b) => a.name.localeCompare(b.name))
-    .map(({ id, name }) => ({
-      key: providerKey(name),
-      name,
-      stroke: colorMap.get(id) || fallbackColor(id),
-    }));
-
-  const nameToKey = new Map(providers.map(p => [p.name, p.key]));
-
-  // Group by timestamp, one slot per provider
-  const timeGroups = new Map<number, { rawTime: number; values: Map<string, EvalResult> }>();
-
-  for (const m of filteredMetrics) {
-    const date = new Date(m.timestamp);
-    if (isNaN(date.getTime())) continue;
-    // Group to the minute without using the display label as identity. Labels
-    // repeat across years and sort incorrectly around New Year.
-    const timeKey = Math.floor(date.getTime() / 60000) * 60000;
-    if (!timeGroups.has(timeKey)) {
-      timeGroups.set(timeKey, { rawTime: timeKey, values: new Map() });
-    }
-    const group = timeGroups.get(timeKey)!;
-    const pk = nameToKey.get(m.provider);
-    if (pk && !group.values.has(pk)) {
-      group.values.set(pk, m);
-    }
-  }
-
-  const data = Array.from(timeGroups.values())
-    .sort((a, b) => a.rawTime - b.rawTime)
-    .map((group, chartIndex) => {
-      const row: CombinedRow = {
-        chartIndex,
-        timestamp: format(new Date(group.rawTime), "MM/dd/yy HH:mm"),
-        rawTime: group.rawTime,
-      };
-      for (const p of providers) {
-        const m = group.values.get(p.key);
-        // null latency (NA) → undefined so the chart's connectNulls skips the
-        // point (a gap) rather than plotting it as 0.
-        row[`${p.key}_response`] = m?.responseLatency ?? undefined;
-        row[`${p.key}_interrupt`] = m?.interruptLatency ?? undefined;
-        // Turn Success Rate as a percentage (0..100); undefined when no data so
-        // connectNulls skips it.
-        row[`${p.key}_tsr`] = m?.turnSuccessRate != null ? Math.round(m.turnSuccessRate * 100) : undefined;
-        // Carry the evalFlow behind this point so the tooltip can name/link it.
-        row[`${p.key}_wfname`] = m?.evalFlowName ?? undefined;
-        row[`${p.key}_wfid`] = m?.evalFlowId ?? undefined;
-      }
-      return row;
-    });
-
-  return { data, providers };
-}
-
 // Connect consecutive points into one line when they're within this window;
 // break into a separate segment only when the gap is longer (a real outage).
 const GAP_MS = 6 * 60 * 60 * 1000; // 6 hours
@@ -208,10 +108,10 @@ interface SegmentLineInfo {
  * Returns a new data array with segment keys baked in, plus line descriptors.
  */
 function buildSegmentedData(
-  data: CombinedRow[],
+  data: CombinedChartRow[],
   providers: Array<{ dataKey: string; name: string; stroke: string }>,
   gapMs = GAP_MS,
-): { rows: CombinedRow[]; lines: SegmentLineInfo[] } {
+): { rows: CombinedChartRow[]; lines: SegmentLineInfo[] } {
   const rows = data.map(r => ({ ...r }));
   const lines: SegmentLineInfo[] = [];
 
@@ -743,7 +643,7 @@ function providerPrefixFromDataKey(dataKey: string): string {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function EvalFlowTooltip({ active, payload, label, showEvalFlow, unit = "ms" }: any) {
   if (!active || !Array.isArray(payload) || payload.length === 0) return null;
-  const row = (payload[0]?.payload ?? {}) as CombinedRow;
+  const row = (payload[0]?.payload ?? {}) as CombinedChartRow;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const items = payload.filter((e: any) => e.value != null);
   if (items.length === 0) return null;
@@ -781,10 +681,11 @@ function useSettledYAxisMax(
   nextMaximum: number,
   isNavigating: boolean,
 ): number {
-  const [maximum, setMaximum] = useState(nextMaximum);
+  const settledMaximumRef = useRef(nextMaximum);
+  const maximum = isNavigating ? settledMaximumRef.current : nextMaximum;
 
   useEffect(() => {
-    if (!isNavigating) setMaximum(nextMaximum);
+    if (!isNavigating) settledMaximumRef.current = nextMaximum;
   }, [isNavigating, nextMaximum]);
 
   return maximum;
@@ -823,7 +724,10 @@ function MetricsSection({ metrics, isLoading, timeRangeLabel, timeRange, regionL
     [hiddenProviders, metrics],
   );
 
-  const { data: combinedData, providers } = useMemo(() => buildCombinedData(filteredMetrics, colorMap), [filteredMetrics, colorMap]);
+  const { data: combinedData, providers } = useMemo(
+    () => buildCombinedChartData(metrics ?? [], colorMap, hiddenProviders),
+    [colorMap, hiddenProviders, metrics],
+  );
 
   // Show latest single test result (metrics are ordered by createdAt DESC)
   const latest = filteredMetrics[0] ?? null;

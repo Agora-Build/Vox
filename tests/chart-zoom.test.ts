@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildCombinedChartData,
   chartDomainTicks,
   chartRangeDomain,
   clampChartRange,
@@ -13,6 +14,7 @@ import {
   visibleChartRange,
   wheelZoomScale,
   zoomChartRange,
+  type ChartMetric,
 } from "../client/src/lib/chart-zoom";
 
 describe("chart zoom range math", () => {
@@ -107,5 +109,30 @@ describe("chart zoom range math", () => {
     expect(wheelZoomScale(100, 0, 600)).toBeGreaterThan(1);
     expect(wheelZoomScale(-100, 0, 600)).toBeLessThan(1);
     expect(wheelZoomScale(3, 1, 600)).toBeGreaterThan(wheelZoomScale(3, 0, 600));
+  });
+});
+
+describe("realtime chart data", () => {
+  it("keeps timestamp indices stable when providers with unique times are hidden", () => {
+    const metric = (providerId: string, provider: string, timestamp: string): ChartMetric => ({
+      providerId,
+      provider,
+      responseLatency: 400,
+      interruptLatency: 200,
+      turnSuccessRate: 0.9,
+      timestamp,
+    });
+    const metrics = [
+      metric("alpha", "Alpha", "2026-01-01T00:00:00.000Z"),
+      metric("beta", "Beta", "2026-01-02T00:00:00.000Z"),
+    ];
+
+    const allProviders = buildCombinedChartData(metrics, new Map());
+    const betaOnly = buildCombinedChartData(metrics, new Map(), new Set(["alpha"]));
+
+    expect(betaOnly.data.map(row => row.rawTime))
+      .toEqual(allProviders.data.map(row => row.rawTime));
+    expect(betaOnly.data.map(row => row.chartIndex)).toEqual([0, 1]);
+    expect(betaOnly.providers.map(provider => provider.name)).toEqual(["Beta"]);
   });
 });
