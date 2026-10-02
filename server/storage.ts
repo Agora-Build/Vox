@@ -120,7 +120,7 @@ import crypto from "crypto";
 // See DatabaseStorage.tierMetrics().
 const METRICS_RAW_MAX_DAYS = 7;
 const METRICS_HOURLY_MAX_DAYS = 90;
-const METRICS_RAW_ROW_CEILING = 20000;
+const METRICS_ROW_CEILING = 20000;
 const METRICS_ALL_MAX_DAYS = 3 * 365; // "all time" shows at most the last 3 years
 
 export type MetricTier = "mainline" | "community" | "myEvals";
@@ -2310,8 +2310,8 @@ export class DatabaseStorage {
       : this.joinMyEvals(q);
   }
 
-  // One averaged point per (period, provider, site). Same shape formatMetricsResults
-  // consumes; SD/P95/secondary metrics are averages-of-aggregates (trend overview).
+  // One averaged point per (period, provider) across the selected region scope.
+  // Matching the chart dimensions avoids arbitrary site selection and keeps payloads bounded.
   private async tierBucketed(tier: MetricTier, bucket: "hour" | "day", hoursBack?: number, userId?: number, scope?: RegionQueryScope, transport: "web" | "phone" = "web"): Promise<MetricSourceRow[]> {
     const period = bucket === "hour"
       ? sql`date_trunc('hour', ${evalResults.createdAt})`
@@ -2319,7 +2319,14 @@ export class DatabaseStorage {
     const base = db.select({
       id: sql<number>`min(${evalResults.id})::int`,
       providerId: evalResults.providerId,
-      siteId: evalResults.siteId,
+      // Preserve a site only when every contributing row belongs to that site.
+      // Multi-site aggregates intentionally have no single site identity.
+      siteId: sql<string | null>`case
+        when count(distinct ${evalResults.siteId}) = 1
+          and count(*) filter (where ${evalResults.siteId} is null) = 0
+        then min(${evalResults.siteId})
+        else null
+      end`,
       responseLatencyMedian: sql<number>`round(avg(${evalResults.responseLatencyMedian}))::int`,
       responseLatencySd: sql<number>`avg(${evalResults.responseLatencySd})::real`,
       responseLatencyP95: sql<number>`round(avg(${evalResults.responseLatencyP95}))::int`,
@@ -2334,8 +2341,9 @@ export class DatabaseStorage {
     }).from(evalResults);
     const rows = await this.applyTierJoins(tier, base)
       .where(and(...this.tierConditions(tier, hoursBack, userId, scope, transport)))
-      .groupBy(period, evalResults.providerId, evalResults.siteId)
-      .orderBy(period);
+      .groupBy(period, evalResults.providerId)
+      .orderBy(desc(period), asc(evalResults.providerId))
+      .limit(METRICS_ROW_CEILING);
     // The query is partitioned to one transport, so it's a constant per row.
     return (rows as any[]).map((r) => ({ ...r, transport })) as MetricSourceRow[];
   }
@@ -2354,7 +2362,7 @@ export class DatabaseStorage {
     const rows = await this.applyTierJoins(tier, db.select().from(evalResults))
       .where(and(...this.tierConditions(tier, effectiveHoursBack, userId, scope, transport)))
       .orderBy(desc(evalResults.createdAt))
-      .limit(METRICS_RAW_ROW_CEILING);
+      .limit(METRICS_ROW_CEILING);
     // evalJobs is already inner-joined (joinTier) for tiering, so its snapshot +
     // evalFlowId ride along — attach the evalFlow identity for the hover tooltip.
     return rows.map((r: any) => ({
