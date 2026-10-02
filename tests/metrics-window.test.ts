@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { detailWindow, mergeMetricDetail, metricsResolution, METRICS_DAY_MS as DAY, parseMetricsDetailWindow } from "../shared/metrics-window";
+import { detailWindow, mergeMetricDetail, metricsDetailResolution, metricsResolution, METRICS_DAY_MS as DAY, parseMetricsDetailWindow } from "../shared/metrics-window";
 import { buildCombinedChartData, defaultChartRange, segmentRenderIndices, segmentYAxisMax, timeDomainBounds, zoomChartRange, type ChartMetric } from "../client/src/lib/chart-zoom";
 
 describe("adaptive metrics windows", () => {
@@ -27,12 +27,35 @@ describe("adaptive metrics windows", () => {
     }
   });
 
+  it("canonicalizes server cache keys and rejects overly broad detail requests", () => {
+    expect(parseMetricsDetailWindow("1", "59999")).toEqual(parseMetricsDetailWindow("2", "59998"));
+    expect(parseMetricsDetailWindow("0", String(91 * DAY))).toHaveProperty("error");
+  });
+
+  it("retains the intended resolution at outward-aligned seven- and ninety-day boundaries", () => {
+    const from = Date.parse("2026-01-01T12:01:01Z");
+    for (const [days, resolution] of [[7, "raw"], [90, "hour"]] as const) {
+      const request = detailWindow(from, from + days * DAY)!;
+      const parsed = parseMetricsDetailWindow(String(request.from), String(request.to));
+      expect(parsed).not.toHaveProperty("error");
+      if ("error" in parsed) throw new Error(parsed.error);
+      expect(parsed).toEqual(request);
+      expect(metricsDetailResolution(parsed.to - parsed.from)).toBe(resolution);
+    }
+  });
+
   it("replaces buckets only within the requested historical interval, including empty detail", () => {
     const overview = [0, DAY, 2 * DAY].map(time => ({ timestamp: new Date(time).toISOString(), value: 100 }));
     const detail = { from: DAY, to: 2 * DAY, metrics: [{ timestamp: new Date(DAY + 3600000).toISOString(), value: 250 }] };
     expect(mergeMetricDetail(overview, detail).map(row => row.value)).toEqual([100, 100, 250]);
     expect(mergeMetricDetail(overview, { ...detail, metrics: [] })).toEqual([overview[0], overview[2]]);
     expect(mergeMetricDetail(overview, null)).toEqual(overview);
+  });
+
+  it("removes daily buckets overlapping partial-day detail on either boundary", () => {
+    const overview = [0, DAY, 2 * DAY, 3 * DAY].map(time => ({ timestamp: new Date(time).toISOString() }));
+    const detail = { from: DAY + 3600000, to: 2 * DAY + 3600000, metrics: [{ timestamp: new Date(DAY + 3600000).toISOString() }] };
+    expect(mergeMetricDetail(overview, detail)).toEqual([overview[0], overview[3], detail.metrics[0]]);
   });
 });
 

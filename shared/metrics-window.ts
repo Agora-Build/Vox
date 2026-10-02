@@ -13,6 +13,11 @@ export function metricsResolution(spanMs: number): MetricsResolution {
   return "day";
 }
 
+/** Detail requests expand by at most one bucket when aligned outward. */
+export function metricsDetailResolution(spanMs: number): "raw" | "hour" {
+  return spanMs <= 7 * METRICS_DAY_MS + 60000 ? "raw" : "hour";
+}
+
 /** Align requests for cache reuse and complete buckets without moving the viewport. */
 export function detailWindow(from: number, to: number): MetricsWindow | null {
   if (!Number.isFinite(from) || !Number.isFinite(to) || to <= from) return null;
@@ -29,10 +34,14 @@ export function parseMetricsDetailWindow(from: unknown, to: unknown): MetricsWin
   const start = Number(from);
   const end = Number(to);
   if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || end <= start
-    || end > 8640000000000000 || end - start > METRICS_RETENTION_DAYS * METRICS_DAY_MS) {
-    return { error: "from and to must define an ordered window of at most three years" };
+    || end > 8640000000000000 || end - start > 90 * METRICS_DAY_MS + 3600000) {
+    return { error: "from and to must define an ordered detail window of at most 90 days (plus bucket alignment)" };
   }
-  return { from: start, to: end };
+  const minuteWindow = { from: Math.floor(start / 60000) * 60000, to: Math.ceil(end / 60000) * 60000 };
+  const unit = metricsDetailResolution(minuteWindow.to - minuteWindow.from) === "raw" ? 60000 : 3600000;
+  const window = { from: Math.floor(start / unit) * unit, to: Math.ceil(end / unit) * unit };
+  if (window.to - window.from > 90 * METRICS_DAY_MS + 3600000) return { error: "aligned detail window exceeds 90 days" };
+  return window;
 }
 
 /** Replace overview buckets in the loaded interval, never average two resolutions together. */
@@ -44,7 +53,7 @@ export function mergeMetricDetail<T extends { timestamp: string }>(
   return [
     ...overview.filter(row => {
       const time = new Date(row.timestamp).getTime();
-      return time < detail.from || time >= detail.to;
+      return time + METRICS_DAY_MS <= detail.from || time >= detail.to;
     }),
     ...detail.metrics,
   ];

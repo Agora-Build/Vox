@@ -9,6 +9,7 @@ import { SECRET_NAME_PATTERN, collectSecretRefs, secretValueError } from "@share
 import { deriveScheduleStatus } from "@shared/schedule-status";
 import { regionSiteSequence } from "@shared/regions";
 import { parseMetricsDetailWindow } from "@shared/metrics-window";
+import { MetricsCache } from "./metrics-cache";
 import { registerApiV1Routes } from "./routes-api-v1";
 import { generateSignedUrlForUser, userBucket, putObject, getObjectStream, deleteObject, type UserBucket } from "./s3";
 import { checkStorageEndpoint, StorageEndpointError } from "./storage-endpoint";
@@ -6014,23 +6015,16 @@ export async function registerRoutes(
   }
 
   // Simple TTL cache for metrics queries (30s) — prevents identical 7-table joins from hammering the DB
-  const metricsCache = new Map<string, { data: unknown; expiry: number }>();
-  const CACHE_TTL = 30000; // 30 seconds
+  const metricsCache = new MetricsCache(128);
+  // Public detail requests cannot evict the overview used by normal page loads.
+  const detailCache = new MetricsCache(32);
 
   function getCached<T>(key: string): T | null {
-    const entry = metricsCache.get(key);
-    if (entry && Date.now() < entry.expiry) return entry.data as T;
-    return null;
+    return (key.startsWith("detail:") ? detailCache : metricsCache).get<T>(key);
   }
 
   function setCache(key: string, data: unknown): void {
-    const now = Date.now();
-    for (const [cachedKey, entry] of Array.from(metricsCache.entries())) {
-      if (entry.expiry <= now) metricsCache.delete(cachedKey);
-    }
-    // Viewport requests have many distinct keys; keep the shared TTL cache bounded.
-    if (metricsCache.size >= 128) metricsCache.delete(metricsCache.keys().next().value!);
-    metricsCache.set(key, { data, expiry: Date.now() + CACHE_TTL });
+    (key.startsWith("detail:") ? detailCache : metricsCache).set(key, data);
   }
 
   // Parse the only client-supplied metrics knob: the time window. `hours` must be
@@ -6132,7 +6126,7 @@ export async function registerRoutes(
       let userId: number | undefined;
       if (tier === "myEvals") {
         const user = await getCurrentUser(req);
-        if (!user) return res.status(401).json({ error: "Not authenticated" });
+        if (!user || !user.isEnabled) return res.status(401).json({ error: "Not authenticated or account disabled" });
         userId = user.id;
       }
       const window = parseMetricsDetailWindow(req.query.from, req.query.to);

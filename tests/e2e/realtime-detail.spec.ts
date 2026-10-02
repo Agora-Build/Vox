@@ -13,11 +13,19 @@ function metric(timestamp: number, index: number) {
   };
 }
 
-async function mockDashboard(page: Page, requests: URL[], truncated = false) {
+async function mockDashboard(page: Page, requests: URL[], truncated = false, account?: { userId: string | null }) {
   await page.route("**/api/**", async route => {
     const url = new URL(route.request().url());
     let data: unknown = [];
-    if (url.pathname === "/api/auth/status") data = { initialized: true, user: null };
+    const user = account?.userId ? { id: account.userId, username: `Account ${account.userId}`, plan: "premium", isAdmin: false } : null;
+    if (url.pathname === "/api/auth/status") data = { initialized: true, user };
+    else if (url.pathname === "/api/auth/logout") {
+      if (account) account.userId = null;
+      data = {};
+    } else if (url.pathname === "/api/auth/login") {
+      if (account) account.userId = "B";
+      data = { user: { ...user, id: "B", username: "Account B" } };
+    }
     else if (url.pathname === "/api/config") data = {};
     else if (url.pathname === "/api/health") data = { status: "operational", agents: { total: 1, online: 1, offline: 0 } };
     else if (url.pathname === "/api/providers") data = [{ id: "alpha", name: "Alpha", brandColor: "#f97316" }];
@@ -32,9 +40,9 @@ async function mockDashboard(page: Page, requests: URL[], truncated = false) {
       for (let time = Math.max(from, START), i = 0; time < Math.min(to, END); time += step, i++) metrics.push(metric(time, i));
       // Allow assertions while the chart still displays the coarse data.
       await new Promise(resolve => setTimeout(resolve, 350));
-      data = { from, to, resolution: raw ? "raw" : "hour", truncated, metrics };
+      data = { from, to, resolution: raw ? "raw" : "hour", truncated, metrics: metrics.map(row => ({ ...row, ...(account ? { provider: `Account ${account.userId}` } : {}) })) };
     } else if (url.pathname.startsWith("/api/metrics/")) {
-      data = Array.from({ length: 180 }, (_, i) => metric(END - (i + 1) * DAY, i));
+      data = Array.from({ length: 180 }, (_, i) => ({ ...metric(END - (i + 1) * DAY, i), ...(account ? { provider: `Account ${account.userId}` } : {}) }));
     }
     await route.fulfill({ json: data });
   });
@@ -146,4 +154,42 @@ test("an incomplete detail response keeps the complete cached overview", async (
   await expect(status).toHaveText("Detail limit reached - showing cached data");
   expect(await chart.locator(".recharts-xAxis .recharts-cartesian-axis-tick-value").allTextContents()).toEqual(ticks);
   expect(await chart.locator(".recharts-line-curve").first().getAttribute("d")).toEqual(path);
+});
+
+test("My Evals does not reuse another user's overview or detail after account switching", async ({ page }) => {
+  test.setTimeout(60000);
+  const requests: URL[] = [];
+  const account = { userId: "A" as string | null };
+  await mockDashboard(page, requests, false, account);
+  await page.goto("/realtime?tab=my-evals");
+  await page.getByRole("combobox").filter({ hasText: "7 days" }).click();
+  await page.getByRole("option", { name: "All time" }).click();
+  const status = page.getByTestId("my-evals-chart-detail-status");
+  await expect(status).toHaveText("Daily averages");
+  await pinch(page.locator(".recharts-wrapper").first(), -60, 8);
+  await expect(status).toHaveText("Hourly averages");
+  await expect(page.getByTestId("my-evals-text-latest-provider")).toHaveText("Latest: Account A");
+
+  await page.getByTestId("button-user-menu").click();
+  await page.getByRole("menuitem", { name: "Sign Out" }).click();
+  await page.getByTestId("button-sign-in").click();
+  await page.locator('input[type="email"]').fill("b@example.com");
+  await page.locator('input[type="password"]').fill("example-password");
+  await page.getByRole("button", { name: "Sign In", exact: true }).click();
+  await page.waitForURL(/console/);
+  // SPA navigation keeps the query cache alive, unlike a full page reload.
+  await page.evaluate(() => {
+    history.pushState(null, "", "/realtime");
+    window.dispatchEvent(new PopStateEvent("popstate"));
+  });
+  await page.getByRole("tab", { name: "My Evals" }).click();
+  await expect(page.getByTestId("my-evals-text-latest-provider")).toHaveText("Latest: Account B");
+  await page.getByRole("combobox").filter({ hasText: "7 days" }).click();
+  await page.getByRole("option", { name: "All time" }).click();
+  await expect(status).toHaveText("Daily averages");
+  const previousRequests = requests.length;
+  await pinch(page.locator(".recharts-wrapper").first(), -60, 8);
+  await expect(status).toHaveText("Hourly averages");
+  expect(requests.length).toBeGreaterThan(previousRequests);
+  await expect(page.locator(".recharts-default-legend").first()).toHaveText("Account B");
 });

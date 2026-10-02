@@ -9,8 +9,10 @@ const DAY = 86400000;
 function captureQueries(results: unknown[][]) {
   const predicates: Array<{ sql: string; params: unknown[] }> = [];
   const limits: number[] = [];
+  const selections: unknown[] = [];
   const dialect = new PgDialect();
-  vi.spyOn(db, "select").mockImplementation((() => {
+  vi.spyOn(db, "select").mockImplementation(((selection: unknown) => {
+    selections.push(selection);
     const query: Record<string, unknown> = {};
     for (const method of ["from", "innerJoin", "leftJoin", "orderBy", "groupBy"]) query[method] = () => query;
     query.where = (predicate: Parameters<PgDialect["sqlToQuery"]>[0]) => {
@@ -23,7 +25,7 @@ function captureQueries(results: unknown[][]) {
     };
     return query;
   }) as typeof db.select);
-  return { predicates, limits };
+  return { predicates, limits, selections };
 }
 
 afterEach(() => vi.restoreAllMocks());
@@ -63,10 +65,13 @@ describe("metrics detail storage", () => {
   });
 
   it("preserves raw test identity from immutable job snapshots", async () => {
-    captureQueries([[{ eval_results: { id: 9 }, eval_jobs: { evalFlowId: 7, snapshot: { evalFlow: { name: "Historic flow" } } } }]]);
+    const { selections } = captureQueries([[{ id: 9, evalFlowId: 7, evalFlowName: "Historic flow" }]]);
     const result = await storage.getMetricsDetail("community", { from: FROM, to: FROM + DAY });
     expect(result).toMatchObject({ from: FROM, to: FROM + DAY, resolution: "raw", truncated: false });
     expect(result.metrics).toEqual([{ id: 9, evalFlowId: 7, evalFlowName: "Historic flow", transport: "web" }]);
+    expect(selections[0]).toHaveProperty("evalFlowName");
+    expect(selections[0]).not.toHaveProperty("snapshot");
+    expect(selections[0]).not.toHaveProperty("config");
   });
 
   it("falls back to complete hourly buckets when raw detail exceeds the ceiling", async () => {

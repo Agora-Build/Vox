@@ -748,6 +748,7 @@ interface MetricsSectionProps {
   regionScopes: string[];
   transport: "web" | "phone";
   refreshInterval: number;
+  userId?: string;
   testIdPrefix?: string;
   /** Show the evalFlow name/link in the tooltip (Community / My Evals only). */
   showEvalFlow?: boolean;
@@ -755,7 +756,7 @@ interface MetricsSectionProps {
   hiddenProviders?: Set<string>;
 }
 
-function MetricsSection({ metrics, isLoading, timeRangeLabel, timeRange, regionLabel, navigationKey, detailEndpoint, regionScopes, transport, refreshInterval, testIdPrefix = "", showEvalFlow = false, hiddenProviders }: MetricsSectionProps) {
+function MetricsSection({ metrics, isLoading, timeRangeLabel, timeRange, regionLabel, navigationKey, detailEndpoint, regionScopes, transport, refreshInterval, userId, testIdPrefix = "", showEvalFlow = false, hiddenProviders }: MetricsSectionProps) {
   const { data: providerList } = useQuery<Array<{ id: string; brandColor: string | null }>>({
     queryKey: ["/api/providers"],
     staleTime: 60000,
@@ -779,7 +780,7 @@ function MetricsSection({ metrics, isLoading, timeRangeLabel, timeRange, regionL
 
   // Zoom/pan state is shared across all three charts so they stay in sync.
   const isTemporal = timeRange === "all";
-  const scopeKey = `${detailEndpoint}:${navigationKey}`;
+  const scopeKey = `${detailEndpoint}:${navigationKey}:${userId ?? "public"}`;
   const overviewData = useMemo(() => buildCombinedChartData(metrics ?? [], colorMap, hiddenProviders).data, [metrics, colorMap, hiddenProviders]);
   // Keep the origin tied to the overview, never to the extra rows loaded on zoom.
   const originRef = useRef({ key: scopeKey, value: 0 });
@@ -787,7 +788,7 @@ function MetricsSection({ metrics, isLoading, timeRangeLabel, timeRange, regionL
   if (originRef.current.value === 0 && overviewData.length) originRef.current.value = overviewData[0].rawTime;
   const origin = originRef.current.value;
   const timeLength = overviewData.length ? (overviewData[overviewData.length - 1].rawTime + METRICS_DAY_MS - origin) / 60000 : 0;
-  const chartZoom = useChartZoom(isTemporal ? timeLength : overviewData.length, `${navigationKey}:${isTemporal ? origin : "indices"}`, isTemporal ? 100 * 24 * 60 : 100);
+  const chartZoom = useChartZoom(isTemporal ? timeLength : overviewData.length, `${scopeKey}:${isTemporal ? origin : "indices"}`, isTemporal ? 100 * 24 * 60 : 100);
   const chartRange = useMemo(
     () => ({ start: chartZoom.start, end: chartZoom.end }),
     [chartZoom.end, chartZoom.start],
@@ -1229,7 +1230,7 @@ export default function Dashboard() {
 
   const availabilityTier = activeTab === "mainline" ? "realtime" : activeTab === "community" ? "community" : "my-evals";
   const { data: regionAvailability } = useQuery<{ availableRegions: string[]; hasUnverified: boolean }>({
-    queryKey: ["/api/metrics/available-regions", availabilityTier, timeRange],
+    queryKey: ["/api/metrics/available-regions", availabilityTier, availabilityTier === "my-evals" ? authStatus?.user?.id : null, timeRange],
     queryFn: async () => {
       const params = new URLSearchParams({ tier: availabilityTier });
       if (timeRange !== "all") params.set("hours", timeRange);
@@ -1287,13 +1288,13 @@ export default function Dashboard() {
   });
 
   const { data: myEvalsMetrics, isLoading: myEvalsLoading, refetch: refetchMyEvals, isFetching: myEvalsFetching } = useQuery<EvalResult[]>({
-    queryKey: ['/api/metrics/my-evals', timeRange, regionScopeKey, evalMode],
-    queryFn: async () => {
+    queryKey: ['/api/metrics/my-evals', authStatus?.user?.id, timeRange, regionScopeKey, evalMode],
+    queryFn: async ({ signal }) => {
       const params = new URLSearchParams();
       if (timeRange !== "all") params.set("hours", timeRange);
       if (evalMode !== "web") params.set("transport", evalMode);
       appendRegionScopes(params, regionScopes);
-      const res = await fetch(`/api/metrics/my-evals?${params}`);
+      const res = await fetch(`/api/metrics/my-evals?${params}`, { signal });
       if (!res.ok) throw new Error("Failed to fetch my eval metrics");
       return res.json();
     },
@@ -1567,6 +1568,7 @@ export default function Dashboard() {
               regionLabel={regionLabel}
               navigationKey={`${timeRange}:${regionScopeKey}:${evalMode}`}
               detailEndpoint="/api/metrics/my-evals/detail"
+              userId={authStatus?.user?.id}
               regionScopes={regionScopes}
               transport={evalMode}
               refreshInterval={refreshInterval}

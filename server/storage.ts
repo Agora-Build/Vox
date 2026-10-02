@@ -1,5 +1,5 @@
 import * as yaml from "js-yaml";
-import { metricsResolution, METRICS_DAY_MS, METRICS_RETENTION_DAYS, type MetricsWindow, type MetricsResolution } from "@shared/metrics-window";
+import { metricsResolution, metricsDetailResolution, METRICS_DAY_MS, METRICS_RETENTION_DAYS, type MetricsWindow, type MetricsResolution } from "@shared/metrics-window";
 import {
   PHONE_NUMBER_RE, illegalPhoneStepType, illegalWebStepType, illegalWebVocabInPhone,
   walkStepList, type StepSegment,
@@ -2397,20 +2397,35 @@ export class DatabaseStorage {
 
   async getMetricsDetail(tier: MetricTier, window: MetricsWindow, userId?: number, scope?: RegionQueryScope, transport: "web" | "phone" = "web"): Promise<MetricsWindow & { metrics: MetricSourceRow[]; resolution: MetricsResolution; truncated: boolean }> {
     if (tier === "myEvals" && userId == null) throw new Error("My Evals detail requires a user");
-    let resolution = metricsResolution(window.to - window.from);
+    let resolution: MetricsResolution = metricsDetailResolution(window.to - window.from);
     const retentionHours = METRICS_RETENTION_DAYS * 24;
     if (resolution === "raw") {
-      const rows = await this.applyTierJoins(tier, db.select().from(evalResults))
+      const rows = await this.applyTierJoins(tier, db.select({
+        id: evalResults.id,
+        providerId: evalResults.providerId,
+        siteId: evalResults.siteId,
+        responseLatencyMedian: evalResults.responseLatencyMedian,
+        responseLatencySd: evalResults.responseLatencySd,
+        responseLatencyP95: evalResults.responseLatencyP95,
+        interruptLatencyMedian: evalResults.interruptLatencyMedian,
+        interruptLatencySd: evalResults.interruptLatencySd,
+        interruptLatencyP95: evalResults.interruptLatencyP95,
+        turnSuccessRate: evalResults.turnSuccessRate,
+        networkResilience: evalResults.networkResilience,
+        naturalness: evalResults.naturalness,
+        noiseReduction: evalResults.noiseReduction,
+        createdAt: evalResults.createdAt,
+        evalFlowId: evalJobs.evalFlowId,
+        evalFlowName: sql<string | null>`${evalJobs.snapshot}->'evalFlow'->>'name'`,
+      }).from(evalResults))
         .where(and(...this.tierConditions(tier, retentionHours, userId, scope, transport),
           gte(evalResults.createdAt, new Date(window.from)),
           lt(evalResults.createdAt, new Date(window.to))))
         .orderBy(desc(evalResults.createdAt))
         .limit(METRICS_ROW_CEILING + 1);
       if (rows.length <= METRICS_ROW_CEILING) {
-        return { ...window, metrics: rows.map((r: any) => ({
-          ...r.eval_results,
-          evalFlowId: r.eval_jobs?.evalFlowId ?? null,
-          evalFlowName: (r.eval_jobs?.snapshot as JobSnapshot | null)?.evalFlow?.name ?? null,
+        return { ...window, metrics: rows.map((r: MetricSourceRow) => ({
+          ...r,
           transport,
         })), resolution, truncated: false };
       }
