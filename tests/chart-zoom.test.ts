@@ -45,6 +45,13 @@ describe("chart zoom range math", () => {
       .toEqual({ start: 140, end: 240 });
   });
 
+  it("preserves a custom window while provider filters hide all data", () => {
+    const hidden = resizeChartRange({ start: 100, end: 200 }, 250, 0, false);
+    expect(hidden).toEqual({ start: 100, end: 200 });
+    expect(resizeChartRange(hidden, 250, 300, false))
+      .toEqual({ start: 100, end: 200 });
+  });
+
   it("enforces the minimum window and handles an empty dataset", () => {
     expect(clampChartRange({ start: 20, end: 21 }, 100)).toEqual({ start: 20, end: 30 });
     expect(clampChartRange({ start: 10, end: 20 }, 0)).toEqual({ start: 0, end: 0 });

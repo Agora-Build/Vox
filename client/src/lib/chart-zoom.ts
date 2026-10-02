@@ -199,10 +199,12 @@ export function resizeChartRange(
   nextLength: number,
   pinToLatest: boolean,
 ): ChartRange {
-  const previous = clampChartRange(range, previousLength);
-  if (!pinToLatest) return clampChartRange(previous, nextLength);
-
   const total = Math.max(0, nextLength);
+  // Preserve the window while provider filters temporarily hide every point.
+  if (total === 0) return { ...range };
+
+  const previous = clampChartRange(range, previousLength);
+  if (!pinToLatest) return clampChartRange(previous, total);
   const windowSize = Math.min(previous.end - previous.start, total);
   return { start: total - windowSize, end: total };
 }

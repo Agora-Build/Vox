@@ -425,7 +425,7 @@ function useChartZoom(totalLength: number, resetKey: string) {
     const displayedWasAtLiveEdge = displayedRangeRef.current.end >= previousLength - 0.001;
     const targetWasAtLiveEdge = targetRangeRef.current.end >= previousLength - 0.001;
     const phase = navigationPhaseRef.current;
-    prevLenRef.current = totalLength;
+    if (totalLength > 0) prevLenRef.current = totalLength;
     prevResetKeyRef.current = resetKey;
 
     cancelAnimation();
@@ -457,6 +457,13 @@ function useChartZoom(totalLength: number, resetKey: string) {
     displayedRangeRef.current = nextDisplayed;
     targetRangeRef.current = nextTarget;
     setRange(nextDisplayed);
+
+    if (totalLength === 0) {
+      targetRangeRef.current = nextDisplayed;
+      navigationPhaseRef.current = "idle";
+      setIsNavigating(false);
+      return;
+    }
 
     if (phase === "buffered") {
       navigationPhaseRef.current = "buffered";
@@ -769,6 +776,7 @@ function EvalFlowTooltip({ active, payload, label, showEvalFlow, unit = "ms" }: 
   );
 }
 
+// Freeze the Y domain during navigation; clipped peaks rescale once movement settles.
 function useSettledYAxisMax(
   nextMaximum: number,
   isNavigating: boolean,
