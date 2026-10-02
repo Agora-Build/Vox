@@ -68,7 +68,7 @@ describe("temporal chart navigation", () => {
     const before = buildCombinedChartData(overview, new Map(), undefined, 1).data;
     const detailed = buildCombinedChartData([...overview, ...Array.from({ length: 24 }, (_, i) => metric(DAY + i * 3600000))], new Map(), undefined, 1).data;
     expect(timeDomainBounds(before, domain)).toEqual({ start: 1, end: 3 });
-    expect(timeDomainBounds(detailed, domain)).toEqual({ start: 1, end: 26 });
+    expect(timeDomainBounds(detailed, domain)).toEqual({ start: 1, end: 27 });
     expect(defaultChartRange(200 * 1440, 100 * 1440)).toEqual({ start: 100 * 1440, end: 200 * 1440 });
     const range = { start: 1440, end: 2880 };
     const zoomed = zoomChartRange(range, 4320, 0.5, 0.25);
@@ -78,6 +78,34 @@ describe("temporal chart navigation", () => {
 
   it("preserves individual tests in the same minute", () => {
     expect(buildCombinedChartData([metric(DAY + 1), metric(DAY + 2)], new Map(), undefined, 1).data).toHaveLength(2);
+  });
+
+  it("keeps every raw test at a shared timestamp with stable X positions when providers are hidden", () => {
+    const metrics = [
+      { ...metric(DAY), id: 1, responseLatency: 100 },
+      { ...metric(DAY), id: 2, responseLatency: 900 },
+      { ...metric(DAY), id: 3, providerId: "beta", provider: "Beta" },
+    ];
+    const rows = buildCombinedChartData(metrics, new Map(), undefined, 1).data;
+    expect(rows).toHaveLength(2);
+    expect(rows.map(row => row.alpha_response)).toEqual([100, 900]);
+    expect(rows.map(row => row.rawTime)).toEqual([DAY, DAY]);
+    expect(new Set(rows.map(row => row.chartTime)).size).toBe(2);
+    expect(rows[1].chartTime! - DAY).toBeLessThan(1);
+    const filtered = buildCombinedChartData(metrics, new Map(), new Set(["alpha"]), 1).data;
+    expect(filtered.map(row => row.chartTime)).toEqual(rows.map(row => row.chartTime));
+    expect(buildCombinedChartData([...metrics].reverse(), new Map(), undefined, 1).data).toEqual(rows);
+  });
+
+  it("keeps dense same-millisecond batches monotonic despite epoch floating-point precision", () => {
+    const time = Date.UTC(2026, 0, 1);
+    const metrics = Array.from({ length: 5000 }, (_, id) => ({ ...metric(time), id }));
+    metrics.push({ ...metric(time + 1), id: 5000 });
+    const rows = buildCombinedChartData(metrics, new Map(), undefined, 1).data;
+    expect(rows).toHaveLength(5001);
+    expect(new Set(rows.map(row => row.chartTime)).size).toBe(rows.length);
+    expect(rows.every((row, index) => index === 0 || row.chartTime! > rows[index - 1].chartTime!)).toBe(true);
+    expect(rows[rows.length - 1].rawTime).toBe(time + 1);
   });
 
   it("retains sparse crossing neighbors in an empty temporal window", () => {

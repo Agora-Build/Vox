@@ -28,7 +28,10 @@ beforeEach(async () => {
   vi.spyOn(storage, "getMetricsDetail").mockResolvedValue({ from: FROM, to: FROM + 3600000, resolution: "raw", truncated: false, metrics: [] });
 });
 
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.unstubAllEnvs();
+});
 
 describe("metrics detail routes", () => {
   it("rejects unauthenticated and disabled users before querying or reading cached private data", async () => {
@@ -62,5 +65,13 @@ describe("metrics detail routes", () => {
     await request(app).get(`/api/metrics/realtime/detail?${windowQuery}&transport=other`).expect(400);
     await request(app).get(`/api/metrics/realtime/detail?from=${FROM}&to=${FROM + 91 * 86400000}`).expect(400);
     expect(storage.getMetricsDetail).not.toHaveBeenCalled();
+  });
+
+  it("limits public detail request bursts without affecting overview requests", async () => {
+    vi.stubEnv("RATE_LIMIT_DISABLED", "false");
+    for (let i = 0; i < 60; i++) await request(app).get(`/api/metrics/realtime/detail?${windowQuery}`).expect(200);
+    await request(app).get(`/api/metrics/realtime/detail?${windowQuery}`).expect(429);
+    vi.spyOn(storage, "getMainlineMetrics").mockResolvedValue([]);
+    await request(app).get("/api/metrics/realtime").expect(200);
   });
 });

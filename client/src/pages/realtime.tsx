@@ -1087,7 +1087,7 @@ function MetricsSection({ metrics, isLoading, timeRangeLabel, timeRange, regionL
                     <LineChart data={tsrRows}>
                       <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" vertical={false} />
                       <XAxis
-                        dataKey={isTemporal ? "rawTime" : "chartIndex"}
+                        dataKey={isTemporal ? "chartTime" : "chartIndex"}
                         type="number"
                         domain={chartDomain}
                         ticks={chartTicks}
@@ -1129,7 +1129,7 @@ function MetricsSection({ metrics, isLoading, timeRangeLabel, timeRange, regionL
                     <LineChart data={responseRows}>
                       <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" vertical={false} />
                       <XAxis
-                        dataKey={isTemporal ? "rawTime" : "chartIndex"}
+                        dataKey={isTemporal ? "chartTime" : "chartIndex"}
                         type="number"
                         domain={chartDomain}
                         ticks={chartTicks}
@@ -1171,7 +1171,7 @@ function MetricsSection({ metrics, isLoading, timeRangeLabel, timeRange, regionL
                     <LineChart data={interruptRows}>
                       <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" vertical={false} />
                       <XAxis
-                        dataKey={isTemporal ? "rawTime" : "chartIndex"}
+                        dataKey={isTemporal ? "chartTime" : "chartIndex"}
                         type="number"
                         domain={chartDomain}
                         ticks={chartTicks}

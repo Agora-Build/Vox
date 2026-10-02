@@ -10,6 +10,7 @@ import { deriveScheduleStatus } from "@shared/schedule-status";
 import { regionSiteSequence } from "@shared/regions";
 import { parseMetricsDetailWindow } from "@shared/metrics-window";
 import { MetricsCache } from "./metrics-cache";
+import rateLimit from "express-rate-limit";
 import { registerApiV1Routes } from "./routes-api-v1";
 import { generateSignedUrlForUser, userBucket, putObject, getObjectStream, deleteObject, type UserBucket } from "./s3";
 import { checkStorageEndpoint, StorageEndpointError } from "./storage-endpoint";
@@ -6118,7 +6119,15 @@ export async function registerRoutes(
     }
   });
 
-  app.get("/api/metrics/:tier/detail", async (req, res) => {
+  const detailLimiter = rateLimit({
+    windowMs: 60000,
+    limit: 60,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: "Too many chart detail requests. Please wait a moment." },
+    skip: () => process.env.RATE_LIMIT_DISABLED === "true",
+  });
+  app.get("/api/metrics/:tier/detail", detailLimiter, async (req, res) => {
     try {
       const tierMap: Record<string, MetricTier> = { realtime: "mainline", community: "community", "my-evals": "myEvals" };
       const tier = Object.hasOwn(tierMap, req.params.tier) ? tierMap[req.params.tier] : undefined;
