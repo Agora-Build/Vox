@@ -7,7 +7,7 @@ import {
   overscanChartRange,
   panChartRange,
   resizeChartRange,
-  segmentOverscanChartRange,
+  segmentRenderIndices,
   segmentYAxisMax,
   stableYAxisMax,
   visibleChartRange,
@@ -64,11 +64,14 @@ describe("chart zoom range math", () => {
       .toEqual({ start: 0, end: 22 });
     expect(overscanChartRange({ start: 80, end: 100 }, 100, 2))
       .toEqual({ start: 78, end: 100 });
-    expect(segmentOverscanChartRange(
+    expect(segmentRenderIndices(
       { start: 20, end: 40 },
       100,
       [[5, 25, 60], [0, 4]],
-    )).toEqual({ start: 5, end: 61 });
+    )).toEqual([
+      5, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29,
+      30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 60,
+    ]);
   });
 
   it("builds tick positions and padded Y bounds", () => {

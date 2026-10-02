@@ -57,14 +57,19 @@ function lowerBound(values: readonly number[], target: number): number {
   return low;
 }
 
-/** Include the nearest point outside each visible sparse segment for clipped paths. */
-export function segmentOverscanChartRange(
+/** Select visible rows plus only the sparse neighbors needed for clipped paths. */
+export function segmentRenderIndices(
   range: ChartRange,
   totalLength: number,
   segments: ReadonlyArray<readonly number[]>,
-): ChartRange {
-  const visible = visibleChartRange(range, totalLength);
-  const bounds = overscanChartRange(range, totalLength);
+): number[] {
+  const total = Math.max(0, totalLength);
+  const visible = visibleChartRange(range, total);
+  const selected = new Set<number>();
+
+  for (let index = visible.start; index < visible.end; index++) selected.add(index);
+  if (visible.start > 0) selected.add(visible.start - 1);
+  if (visible.end < total) selected.add(visible.end);
 
   for (const dataIndices of segments) {
     if (dataIndices.length === 0) continue;
@@ -73,26 +78,29 @@ export function segmentOverscanChartRange(
     if (last < visible.start || first >= visible.end) continue;
 
     const firstVisible = lowerBound(dataIndices, visible.start);
-    if (firstVisible > 0) bounds.start = Math.min(bounds.start, dataIndices[firstVisible - 1]);
+    if (firstVisible > 0) selected.add(dataIndices[firstVisible - 1]);
 
     const firstAfter = lowerBound(dataIndices, visible.end);
-    if (firstAfter < dataIndices.length) {
-      bounds.end = Math.max(bounds.end, dataIndices[firstAfter] + 1);
-    }
+    if (firstAfter < dataIndices.length) selected.add(dataIndices[firstAfter]);
   }
 
-  return bounds;
+  return Array.from(selected).sort((a, b) => a - b);
 }
 
-/** Build stable, evenly positioned ticks for a moving numeric domain. */
+/** Build stable ticks snapped to real point indices inside a numeric domain. */
 export function chartDomainTicks(domain: ChartDomain, count = 7): number[] {
-  const tickCount = Math.max(1, Math.floor(count));
-  const span = domain[1] - domain[0];
-  if (!Number.isFinite(span) || span <= 0) return [domain[0]];
-  if (tickCount === 1) return [domain[0] + span / 2];
+  const requestedCount = Math.max(1, Math.floor(count));
+  const first = Math.ceil(domain[0]);
+  const last = Math.floor(domain[1]);
+  if (!Number.isFinite(first) || !Number.isFinite(last) || first > last) {
+    return [(domain[0] + domain[1]) / 2];
+  }
+
+  const tickCount = Math.min(requestedCount, last - first + 1);
+  if (tickCount === 1) return [Math.round((first + last) / 2)];
   return Array.from(
     { length: tickCount },
-    (_, index) => domain[0] + (span * index) / (tickCount - 1),
+    (_, index) => Math.round(first + ((last - first) * index) / (tickCount - 1)),
   );
 }
 

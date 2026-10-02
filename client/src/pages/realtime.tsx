@@ -21,10 +21,9 @@ import {
   chartRangeDomain,
   clampChartRange,
   defaultChartRange,
-  overscanChartRange,
   panChartRange,
   resizeChartRange,
-  segmentOverscanChartRange,
+  segmentRenderIndices,
   segmentYAxisMax,
   visibleChartRange,
   wheelZoomScale,
@@ -856,41 +855,43 @@ function MetricsSection({ metrics, isLoading, timeRangeLabel, timeRange, regionL
     () => visibleChartRange(chartRange, combinedData.length),
     [chartRange, combinedData.length],
   );
-  const responseRenderBounds = useMemo(
-    () => segmentOverscanChartRange(chartRange, combinedData.length, responseChart.lines.map(line => line.dataIndices)),
-    [chartRange, combinedData.length, responseChart.lines],
+  const visibleStart = visibleBounds.start;
+  const visibleEnd = visibleBounds.end;
+  const responseRenderIndices = useMemo(
+    () => segmentRenderIndices({ start: visibleStart, end: visibleEnd }, combinedData.length, responseChart.lines.map(line => line.dataIndices)),
+    [combinedData.length, responseChart.lines, visibleEnd, visibleStart],
   );
-  const interruptRenderBounds = useMemo(
-    () => segmentOverscanChartRange(chartRange, combinedData.length, interruptChart.lines.map(line => line.dataIndices)),
-    [chartRange, combinedData.length, interruptChart.lines],
+  const interruptRenderIndices = useMemo(
+    () => segmentRenderIndices({ start: visibleStart, end: visibleEnd }, combinedData.length, interruptChart.lines.map(line => line.dataIndices)),
+    [combinedData.length, interruptChart.lines, visibleEnd, visibleStart],
   );
-  const tsrRenderBounds = useMemo(
-    () => segmentOverscanChartRange(chartRange, combinedData.length, tsrChart.lines.map(line => line.dataIndices)),
-    [chartRange, combinedData.length, tsrChart.lines],
+  const tsrRenderIndices = useMemo(
+    () => segmentRenderIndices({ start: visibleStart, end: visibleEnd }, combinedData.length, tsrChart.lines.map(line => line.dataIndices)),
+    [combinedData.length, tsrChart.lines, visibleEnd, visibleStart],
   );
   const responseRows = useMemo(
-    () => responseChart.rows.slice(responseRenderBounds.start, responseRenderBounds.end),
-    [responseChart.rows, responseRenderBounds.end, responseRenderBounds.start],
+    () => responseRenderIndices.map(index => responseChart.rows[index]),
+    [responseChart.rows, responseRenderIndices],
   );
   const interruptRows = useMemo(
-    () => interruptChart.rows.slice(interruptRenderBounds.start, interruptRenderBounds.end),
-    [interruptChart.rows, interruptRenderBounds.end, interruptRenderBounds.start],
+    () => interruptRenderIndices.map(index => interruptChart.rows[index]),
+    [interruptChart.rows, interruptRenderIndices],
   );
   const tsrRows = useMemo(
-    () => tsrChart.rows.slice(tsrRenderBounds.start, tsrRenderBounds.end),
-    [tsrChart.rows, tsrRenderBounds.end, tsrRenderBounds.start],
+    () => tsrRenderIndices.map(index => tsrChart.rows[index]),
+    [tsrChart.rows, tsrRenderIndices],
   );
   const responseLines = useMemo(
-    () => visibleSegmentLines(responseChart.lines, visibleBounds),
-    [responseChart.lines, visibleBounds.end, visibleBounds.start],
+    () => visibleSegmentLines(responseChart.lines, { start: visibleStart, end: visibleEnd }),
+    [responseChart.lines, visibleEnd, visibleStart],
   );
   const interruptLines = useMemo(
-    () => visibleSegmentLines(interruptChart.lines, visibleBounds),
-    [interruptChart.lines, visibleBounds.end, visibleBounds.start],
+    () => visibleSegmentLines(interruptChart.lines, { start: visibleStart, end: visibleEnd }),
+    [interruptChart.lines, visibleEnd, visibleStart],
   );
   const tsrLines = useMemo(
-    () => visibleSegmentLines(tsrChart.lines, visibleBounds),
-    [tsrChart.lines, visibleBounds.end, visibleBounds.start],
+    () => visibleSegmentLines(tsrChart.lines, { start: visibleStart, end: visibleEnd }),
+    [tsrChart.lines, visibleEnd, visibleStart],
   );
   const nextResponseYMax = useMemo(
     () => segmentYAxisMax(responseChart.rows, responseLines, chartRange),
