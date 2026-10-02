@@ -176,6 +176,8 @@ function visibleSegmentLines(
 
 const NAVIGATION_IDLE_MS = 100;
 const NAVIGATION_ANIMATION_MS = 220;
+const TRACKPAD_PINCH_IDLE_MS = 80;
+const TRACKPAD_PINCH_SENSITIVITY = 1.75;
 type NavigationPhase = "idle" | "buffered" | "animating" | "direct";
 
 function rangesAreEqual(a: ChartRange, b: ChartRange): boolean {
@@ -416,6 +418,7 @@ function ZoomableChart({ children, totalLength, zoomState }: {
   const pinchRef = useRef<{ dist: number } | null>(null);
   const touchStartRef = useRef<{ x: number } | null>(null);
   const zoomFrameRef = useRef<number | null>(null);
+  const trackpadPinchIdleRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingZoomRef = useRef({ scale: 1, anchorRatio: 0.5, direct: false });
   const panFrameRef = useRef<number | null>(null);
   const pendingPanRef = useRef(0);
@@ -477,6 +480,7 @@ function ZoomableChart({ children, totalLength, zoomState }: {
   useEffect(() => () => {
     if (zoomFrameRef.current != null) cancelAnimationFrame(zoomFrameRef.current);
     if (panFrameRef.current != null) cancelAnimationFrame(panFrameRef.current);
+    if (trackpadPinchIdleRef.current != null) clearTimeout(trackpadPinchIdleRef.current);
   }, []);
 
   // Wheel events can arrive much faster than React can redraw three charts.
@@ -487,11 +491,35 @@ function ZoomableChart({ children, totalLength, zoomState }: {
       e.preventDefault();
       const anchor = getAnchorRatio(e.clientX);
       const pageHeight = containerRef.current?.clientHeight ?? window.innerHeight;
-      scheduleZoom(wheelZoomScale(e.deltaY, e.deltaMode, pageHeight), anchor);
+      // Browsers expose laptop trackpad pinch gestures as Ctrl+wheel events.
+      const isTrackpadPinch = e.ctrlKey;
+      if (!isTrackpadPinch && trackpadPinchIdleRef.current != null) {
+        clearTimeout(trackpadPinchIdleRef.current);
+        trackpadPinchIdleRef.current = null;
+      }
+      const sensitivity = isTrackpadPinch ? TRACKPAD_PINCH_SENSITIVITY : 1;
+      scheduleZoom(
+        wheelZoomScale(e.deltaY, e.deltaMode, pageHeight, sensitivity),
+        anchor,
+        isTrackpadPinch,
+      );
+
+      if (isTrackpadPinch) {
+        if (trackpadPinchIdleRef.current != null) clearTimeout(trackpadPinchIdleRef.current);
+        trackpadPinchIdleRef.current = setTimeout(() => {
+          trackpadPinchIdleRef.current = null;
+          if (zoomFrameRef.current != null) {
+            cancelAnimationFrame(zoomFrameRef.current);
+            zoomFrameRef.current = null;
+            flushZoom();
+          }
+          finishNavigation();
+        }, TRACKPAD_PINCH_IDLE_MS);
+      }
     };
     el.addEventListener("wheel", onWheel, { passive: false });
     return () => el.removeEventListener("wheel", onWheel);
-  }, [getAnchorRatio, scheduleZoom]);
+  }, [finishNavigation, flushZoom, getAnchorRatio, scheduleZoom]);
 
   const handlePointerDown = useCallback((e: React.PointerEvent) => {
     if (e.pointerType === "touch" || e.button !== 0) return;
