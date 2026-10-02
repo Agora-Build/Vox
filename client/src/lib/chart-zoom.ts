@@ -350,8 +350,13 @@ export function panChartRange(
 }
 
 /** Convert browser wheel units into a bounded, proportional zoom scale. */
-export function wheelZoomScale(deltaY: number, deltaMode: number, pageHeight: number): number {
+export function wheelZoomScale(
+  deltaY: number,
+  deltaMode: number,
+  pageHeight: number,
+  sensitivity = 1,
+): number {
   const unit = deltaMode === 1 ? 16 : deltaMode === 2 ? Math.max(1, pageHeight) : 1;
   const normalizedDelta = clamp(deltaY * unit, -240, 240);
-  return Math.exp(normalizedDelta * 0.0015);
+  return Math.exp(normalizedDelta * 0.0015 * Math.max(0, sensitivity));
 }

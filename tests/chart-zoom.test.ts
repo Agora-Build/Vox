@@ -109,6 +109,10 @@ describe("chart zoom range math", () => {
     expect(wheelZoomScale(100, 0, 600)).toBeGreaterThan(1);
     expect(wheelZoomScale(-100, 0, 600)).toBeLessThan(1);
     expect(wheelZoomScale(3, 1, 600)).toBeGreaterThan(wheelZoomScale(3, 0, 600));
+    expect(wheelZoomScale(-20, 0, 600, 1.75))
+      .toBeLessThan(wheelZoomScale(-20, 0, 600));
+    expect(wheelZoomScale(20, 0, 600, 1.75))
+      .toBeGreaterThan(wheelZoomScale(20, 0, 600));
   });
 });
 
