@@ -8,6 +8,9 @@ import { compareVersions } from "./aeval-seed";
 import { SECRET_NAME_PATTERN, collectSecretRefs, secretValueError } from "@shared/secrets";
 import { deriveScheduleStatus } from "@shared/schedule-status";
 import { regionSiteSequence } from "@shared/regions";
+import { parseMetricsDetailWindow } from "@shared/metrics-window";
+import { MetricsCache } from "./metrics-cache";
+import rateLimit from "express-rate-limit";
 import { registerApiV1Routes } from "./routes-api-v1";
 import { generateSignedUrlForUser, userBucket, putObject, getObjectStream, deleteObject, type UserBucket } from "./s3";
 import { checkStorageEndpoint, StorageEndpointError } from "./storage-endpoint";
@@ -6013,17 +6016,16 @@ export async function registerRoutes(
   }
 
   // Simple TTL cache for metrics queries (30s) — prevents identical 7-table joins from hammering the DB
-  const metricsCache = new Map<string, { data: unknown; expiry: number }>();
-  const CACHE_TTL = 30000; // 30 seconds
+  const metricsCache = new MetricsCache(128);
+  // Public detail requests cannot evict the overview used by normal page loads.
+  const detailCache = new MetricsCache(32);
 
   function getCached<T>(key: string): T | null {
-    const entry = metricsCache.get(key);
-    if (entry && Date.now() < entry.expiry) return entry.data as T;
-    return null;
+    return (key.startsWith("detail:") ? detailCache : metricsCache).get<T>(key);
   }
 
   function setCache(key: string, data: unknown): void {
-    metricsCache.set(key, { data, expiry: Date.now() + CACHE_TTL });
+    (key.startsWith("detail:") ? detailCache : metricsCache).set(key, data);
   }
 
   // Parse the only client-supplied metrics knob: the time window. `hours` must be
@@ -6114,6 +6116,44 @@ export async function registerRoutes(
     } catch (error) {
       console.error("Error fetching my eval metrics:", error);
       res.status(500).json({ error: "Failed to fetch my eval metrics" });
+    }
+  });
+
+  const detailLimiter = rateLimit({
+    windowMs: 60000,
+    limit: 60,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: "Too many chart detail requests. Please wait a moment." },
+    skip: () => process.env.NODE_ENV !== "production" || process.env.RATE_LIMIT_DISABLED === "true",
+  });
+  app.get("/api/metrics/:tier/detail", detailLimiter, async (req, res) => {
+    try {
+      const tierMap: Record<string, MetricTier> = { realtime: "mainline", community: "community", "my-evals": "myEvals" };
+      const tier = Object.hasOwn(tierMap, req.params.tier) ? tierMap[req.params.tier] : undefined;
+      if (!tier) return res.status(400).json({ error: "tier must be realtime, community, or my-evals" });
+      let userId: number | undefined;
+      if (tier === "myEvals") {
+        const user = await getCurrentUser(req);
+        if (!user || !user.isEnabled) return res.status(401).json({ error: "Not authenticated or account disabled" });
+        userId = user.id;
+      }
+      const window = parseMetricsDetailWindow(req.query.from, req.query.to);
+      if ("error" in window) return res.status(400).json({ error: window.error });
+      const regionScope = await parseRegionQueryScope(req.query);
+      if ("error" in regionScope) return res.status(400).json({ error: regionScope.error });
+      const tp = parseMetricsTransport(req.query.transport);
+      if ("error" in tp) return res.status(400).json({ error: tp.error });
+      const key = `detail:${tier}:${userId ?? ""}:${window.from}:${window.to}:${regionScope.cacheKey}:${tp.transport}`;
+      const cached = getCached(key);
+      if (cached) return res.json(cached);
+      const result = await storage.getMetricsDetail(tier, window, userId, regionScope.scope, tp.transport);
+      const data = { ...result, metrics: await formatMetricsResults(result.metrics) };
+      setCache(key, data);
+      res.json(data);
+    } catch (error) {
+      console.error("Error fetching metrics detail:", error);
+      res.status(500).json({ error: "Failed to fetch metrics detail" });
     }
   });
 

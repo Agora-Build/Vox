@@ -548,6 +548,7 @@ export const evalResults = pgTable("eval_results", {
   createdAt: timestamp("created_at").defaultNow().notNull(),
 }, (table) => ({
   providerSiteIdx: index("eval_results_provider_site_idx").on(table.providerId, table.siteId),
+  createdAtIdx: index("eval_results_created_at_idx").on(table.createdAt),
 }));
 
 export const insertEvalResultSchema = createInsertSchema(evalResults).omit({

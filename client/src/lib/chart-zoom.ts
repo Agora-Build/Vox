@@ -8,6 +8,7 @@ export interface ChartRange {
 export type ChartDomain = [number, number];
 
 export interface ChartMetric {
+  id?: number;
   providerId: string;
   provider: string;
   responseLatency: number | null;
@@ -16,12 +17,14 @@ export interface ChartMetric {
   timestamp: string;
   evalFlowId?: number | null;
   evalFlowName?: string | null;
+  resolution?: string;
 }
 
 export interface CombinedChartRow {
   chartIndex: number;
   timestamp: string;
   rawTime: number;
+  chartTime?: number;
   [key: string]: string | number | undefined;
 }
 
@@ -54,6 +57,7 @@ export function buildCombinedChartData(
   metrics: readonly ChartMetric[],
   colorMap: ReadonlyMap<string, string>,
   hiddenProviders?: ReadonlySet<string>,
+  timeBucketMs = 60000,
 ): ChartProviders {
   if (metrics.length === 0) return { data: [], providers: [] };
 
@@ -73,26 +77,45 @@ export function buildCombinedChartData(
       stroke: colorMap.get(id) || fallbackProviderColor(id),
     }));
   const nameToKey = new Map(providers.map(provider => [provider.name, provider.key]));
-  const timeGroups = new Map<number, { rawTime: number; values: Map<string, ChartMetric> }>();
+  const timeGroups = new Map<number, {
+    counts: Map<string, number>;
+    layers: Array<{ rawTime: number; values: Map<string, ChartMetric> }>;
+  }>();
 
   // Keep every timestamp on the X axis so hiding a provider cannot shift the view.
-  for (const metric of metrics) {
+  const orderedMetrics = timeBucketMs === 1 ? [...metrics].sort((a, b) => (a.id ?? 0) - (b.id ?? 0)) : metrics;
+  for (const metric of orderedMetrics) {
     const time = new Date(metric.timestamp).getTime();
     if (!Number.isFinite(time)) continue;
-    const timeKey = Math.floor(time / 60000) * 60000;
-    const group = timeGroups.get(timeKey) ?? { rawTime: timeKey, values: new Map() };
-    timeGroups.set(timeKey, group);
+    const timeKey = Math.floor(time / timeBucketMs) * timeBucketMs;
+    const timeGroup = timeGroups.get(timeKey) ?? { counts: new Map(), layers: [] };
+    timeGroups.set(timeKey, timeGroup);
+    // Raw tests can share a timestamp. Allocate layers before filtering providers.
+    const layer = timeBucketMs === 1 ? timeGroup.counts.get(metric.providerId) ?? 0 : 0;
+    timeGroup.counts.set(metric.providerId, layer + 1);
+    const group = timeGroup.layers[layer] ?? { rawTime: timeKey, values: new Map() };
+    timeGroup.layers[layer] = group;
     const key = nameToKey.get(metric.provider);
     if (key && !group.values.has(key)) group.values.set(key, metric);
   }
 
+  let previousChartTime = -Infinity;
   const data = Array.from(timeGroups.values())
-    .sort((a, b) => a.rawTime - b.rawTime)
+    .sort((a, b) => a.layers[0].rawTime - b.layers[0].rawTime)
+    .flatMap(({ layers }) => layers.map((group, index) => {
+      // Tiny collision-safe offsets retain every test; tooltips keep the original timestamp.
+      const step = Math.max(0.000001, Math.abs(group.rawTime) * Number.EPSILON);
+      const chartTime = Math.max(group.rawTime + index / layers.length, previousChartTime + step);
+      previousChartTime = chartTime;
+      return { ...group, chartTime };
+    }))
     .map((group, chartIndex) => {
       const row: CombinedChartRow = {
         chartIndex,
         timestamp: format(new Date(group.rawTime), "MM/dd/yy HH:mm"),
         rawTime: group.rawTime,
+        chartTime: group.chartTime,
+        resolution: group.values.values().next().value?.resolution,
       };
       for (const provider of providers) {
         const metric = group.values.get(provider.key);
@@ -151,12 +174,12 @@ export function overscanChartRange(
   };
 }
 
-function lowerBound(values: readonly number[], target: number): number {
+function lowerBound(values: readonly number[], target: number, position = (value: number) => value): number {
   let low = 0;
   let high = values.length;
   while (low < high) {
     const middle = Math.floor((low + high) / 2);
-    if (values[middle] < target) low = middle + 1;
+    if (position(values[middle]) < target) low = middle + 1;
     else high = middle;
   }
   return low;
@@ -167,9 +190,10 @@ export function segmentRenderIndices(
   range: ChartRange,
   totalLength: number,
   segments: ReadonlyArray<readonly number[]>,
+  exactBounds = false,
 ): number[] {
   const total = Math.max(0, totalLength);
-  const visible = visibleChartRange(range, total);
+  const visible = exactBounds ? range : visibleChartRange(range, total);
   const selected = new Set<number>();
 
   for (let index = visible.start; index < visible.end; index++) selected.add(index);
@@ -236,9 +260,11 @@ export function segmentYAxisMax(
   rows: ReadonlyArray<Record<string, unknown>>,
   segments: ReadonlyArray<{ segKey: string; dataIndices: readonly number[] }>,
   range: ChartRange,
+  timeDomain?: ChartDomain,
 ): number {
   if (rows.length === 0) return 1;
-  const [left, right] = chartRangeDomain(range, rows.length);
+  const [left, right] = timeDomain ?? chartRangeDomain(range, rows.length);
+  const x = (index: number) => timeDomain ? Number(rows[index].chartTime ?? rows[index].rawTime) : index;
   let maximum = 0;
 
   const valueAt = (segKey: string, index: number): number | null => {
@@ -250,25 +276,25 @@ export function segmentYAxisMax(
     if (dataIndices.length === 0) continue;
     const first = dataIndices[0];
     const last = dataIndices[dataIndices.length - 1];
-    if (last < left || first > right) continue;
+    if (x(last) < left || x(first) > right) continue;
 
-    const firstInside = lowerBound(dataIndices, left);
+    const firstInside = lowerBound(dataIndices, left, x);
     for (let position = firstInside; position < dataIndices.length; position++) {
       const index = dataIndices[position];
-      if (index > right) break;
+      if (x(index) > right) break;
       const value = valueAt(segKey, index);
       if (value != null) maximum = Math.max(maximum, value);
     }
 
     for (const boundary of [left, right]) {
-      const after = lowerBound(dataIndices, boundary);
-      if (after <= 0 || after >= dataIndices.length || dataIndices[after] === boundary) continue;
+      const after = lowerBound(dataIndices, boundary, x);
+      if (after <= 0 || after >= dataIndices.length || x(dataIndices[after]) === boundary) continue;
       const beforeIndex = dataIndices[after - 1];
       const afterIndex = dataIndices[after];
       const beforeValue = valueAt(segKey, beforeIndex);
       const afterValue = valueAt(segKey, afterIndex);
       if (beforeValue == null || afterValue == null) continue;
-      const ratio = (boundary - beforeIndex) / (afterIndex - beforeIndex);
+      const ratio = (boundary - x(beforeIndex)) / (x(afterIndex) - x(beforeIndex));
       maximum = Math.max(maximum, beforeValue + (afterValue - beforeValue) * ratio);
     }
   }
@@ -276,10 +302,10 @@ export function segmentYAxisMax(
   return paddedYAxisMax(maximum);
 }
 
-export function defaultChartRange(totalLength: number): ChartRange {
+export function defaultChartRange(totalLength: number, defaultWindow = DEFAULT_CHART_WINDOW): ChartRange {
   const total = Math.max(0, totalLength);
   return {
-    start: Math.max(0, total - DEFAULT_CHART_WINDOW),
+    start: Math.max(0, total - defaultWindow),
     end: total,
   };
 }
@@ -347,6 +373,21 @@ export function panChartRange(
 
   const start = clamp(current.start + deltaPoints, 0, total - windowSize);
   return { start, end: start + windowSize };
+}
+
+/** Find row offsets in a temporal viewport, including empty windows between sparse points. */
+export function timeDomainBounds(rows: readonly CombinedChartRow[], domain: ChartDomain): ChartRange {
+  const bound = (target: number) => {
+    let low = 0;
+    let high = rows.length;
+    while (low < high) {
+      const middle = Math.floor((low + high) / 2);
+      if ((rows[middle].chartTime ?? rows[middle].rawTime) < target) low = middle + 1;
+      else high = middle;
+    }
+    return low;
+  };
+  return { start: bound(domain[0]), end: bound(domain[1] + 1) };
 }
 
 /** Convert browser wheel units into a bounded, proportional zoom scale. */

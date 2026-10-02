@@ -1,4 +1,5 @@
 import * as yaml from "js-yaml";
+import { metricsResolution, metricsDetailResolution, METRICS_DAY_MS, METRICS_RETENTION_DAYS, type MetricsWindow, type MetricsResolution } from "@shared/metrics-window";
 import {
   PHONE_NUMBER_RE, illegalPhoneStepType, illegalWebStepType, illegalWebVocabInPhone,
   walkStepList, type StepSegment,
@@ -110,7 +111,7 @@ import { regionSiteSequence, haversineKm, type RegionCandidate } from "@shared/r
 import { drizzle } from "drizzle-orm/node-postgres";
 import pkg from "pg";
 const { Pool } = pkg;
-import { asc, desc, eq, ne, and, or, not, sql, gte, lte, inArray, isNotNull, isNull } from "drizzle-orm";
+import { asc, desc, eq, ne, and, or, not, sql, gte, lt, lte, inArray, isNotNull, isNull } from "drizzle-orm";
 import crypto from "crypto";
 
 // Realtime-metrics windowing policy (server-owned; the client never sets these).
@@ -118,10 +119,8 @@ import crypto from "crypto";
 // long/all-time windows use daily buckets so payload and chart work stay bounded.
 // "All time" is bounded to the last 3 years.
 // See DatabaseStorage.tierMetrics().
-const METRICS_RAW_MAX_DAYS = 7;
-const METRICS_HOURLY_MAX_DAYS = 90;
 const METRICS_ROW_CEILING = 20000;
-const METRICS_ALL_MAX_DAYS = 3 * 365; // "all time" shows at most the last 3 years
+const METRICS_ALL_MAX_DAYS = METRICS_RETENTION_DAYS;
 
 export type MetricTier = "mainline" | "community" | "myEvals";
 export type MetricsMode = "raw" | "bucketHour" | "bucketDay";
@@ -133,9 +132,8 @@ export type RegionQueryScope = {
 
 // Pure raw-vs-bucket decision for a window of `spanDays`. Exported for testing.
 export function resolveMetricsMode(spanDays: number): MetricsMode {
-  if (spanDays <= METRICS_RAW_MAX_DAYS) return "raw";
-  if (spanDays <= METRICS_HOURLY_MAX_DAYS) return "bucketHour";
-  return "bucketDay";
+  const resolution = metricsResolution(spanDays * METRICS_DAY_MS);
+  return resolution === "raw" ? "raw" : resolution === "hour" ? "bucketHour" : "bucketDay";
 }
 
 // The subset of eval-result columns the metrics dashboard consumes. Raw rows
@@ -2321,7 +2319,7 @@ export class DatabaseStorage {
 
   // One averaged point per (period, provider) across the selected region scope.
   // Matching the chart dimensions avoids arbitrary site selection and keeps payloads bounded.
-  private async tierBucketed(tier: MetricTier, bucket: "hour" | "day", hoursBack?: number, userId?: number, scope?: RegionQueryScope, transport: "web" | "phone" = "web"): Promise<MetricSourceRow[]> {
+  private async tierBucketed(tier: MetricTier, bucket: "hour" | "day", hoursBack?: number, userId?: number, scope?: RegionQueryScope, transport: "web" | "phone" = "web", window?: MetricsWindow): Promise<MetricSourceRow[]> {
     const period = bucket === "hour"
       ? sql`date_trunc('hour', ${evalResults.createdAt})`
       : sql`date_trunc('day', ${evalResults.createdAt})`;
@@ -2349,10 +2347,13 @@ export class DatabaseStorage {
       createdAt: sql<Date>`${period}`,
     }).from(evalResults);
     const rows = await this.applyTierJoins(tier, base)
-      .where(and(...this.tierConditions(tier, hoursBack, userId, scope, transport)))
+      .where(and(...this.tierConditions(tier, hoursBack, userId, scope, transport), ...(window ? [
+        gte(evalResults.createdAt, new Date(window.from)),
+        lt(evalResults.createdAt, new Date(window.to)),
+      ] : [])))
       .groupBy(period, evalResults.providerId)
       .orderBy(desc(period), asc(evalResults.providerId))
-      .limit(METRICS_ROW_CEILING);
+      .limit(METRICS_ROW_CEILING + (window ? 1 : 0));
     // The query is partitioned to one transport, so it's a constant per row.
     return (rows as any[]).map((r) => ({ ...r, transport })) as MetricSourceRow[];
   }
@@ -2392,6 +2393,66 @@ export class DatabaseStorage {
   }
   getMyEvalMetrics(userId: number, hoursBack?: number, scope?: RegionQueryScope, transport: "web" | "phone" = "web"): Promise<MetricSourceRow[]> {
     return this.tierMetrics("myEvals", hoursBack, userId, scope, transport);
+  }
+
+  async getMetricsDetail(tier: MetricTier, window: MetricsWindow, userId?: number, scope?: RegionQueryScope, transport: "web" | "phone" = "web"): Promise<MetricsWindow & { metrics: MetricSourceRow[]; resolution: MetricsResolution; truncated: boolean }> {
+    if (tier === "myEvals" && userId == null) throw new Error("My Evals detail requires a user");
+    let resolution: MetricsResolution = metricsDetailResolution(window.to - window.from);
+    const retentionHours = METRICS_RETENTION_DAYS * 24;
+    if (resolution === "raw") {
+      const conditions = and(...this.tierConditions(tier, retentionHours, userId, scope, transport),
+        gte(evalResults.createdAt, new Date(window.from)),
+        lt(evalResults.createdAt, new Date(window.to)));
+      // Probe only IDs so dense windows skip transferring raw chart rows entirely.
+      const probe = await this.applyTierJoins(tier, db.select({ id: evalResults.id }).from(evalResults))
+        .where(conditions)
+        .orderBy(desc(evalResults.createdAt))
+        .limit(METRICS_ROW_CEILING + 1);
+      if (probe.length === 0) return { ...window, metrics: [], resolution, truncated: false };
+      if (probe.length <= METRICS_ROW_CEILING) {
+        const rows = await this.applyTierJoins(tier, db.select({
+          id: evalResults.id,
+          providerId: evalResults.providerId,
+          siteId: evalResults.siteId,
+          responseLatencyMedian: evalResults.responseLatencyMedian,
+          responseLatencySd: evalResults.responseLatencySd,
+          responseLatencyP95: evalResults.responseLatencyP95,
+          interruptLatencyMedian: evalResults.interruptLatencyMedian,
+          interruptLatencySd: evalResults.interruptLatencySd,
+          interruptLatencyP95: evalResults.interruptLatencyP95,
+          turnSuccessRate: evalResults.turnSuccessRate,
+          networkResilience: evalResults.networkResilience,
+          naturalness: evalResults.naturalness,
+          noiseReduction: evalResults.noiseReduction,
+          createdAt: evalResults.createdAt,
+          evalFlowId: evalJobs.evalFlowId,
+          evalFlowName: sql<string | null>`${evalJobs.snapshot}->'evalFlow'->>'name'`,
+        }).from(evalResults))
+          .where(conditions)
+          .orderBy(desc(evalResults.createdAt))
+          .limit(METRICS_ROW_CEILING + 1);
+        if (rows.length <= METRICS_ROW_CEILING) {
+          return { ...window, metrics: rows.map((r: MetricSourceRow) => ({
+            ...r,
+            transport,
+          })), resolution, truncated: false };
+        }
+      }
+      // Never replace a complete overview with silently truncated raw history.
+      resolution = "hour";
+    }
+    const align = (bucket: "hour" | "day"): MetricsWindow => {
+      const unit = bucket === "hour" ? 3600000 : METRICS_DAY_MS;
+      return { from: Math.floor(window.from / unit) * unit, to: Math.ceil(window.to / unit) * unit };
+    };
+    let actualWindow = align(resolution);
+    let rows = await this.tierBucketed(tier, resolution, retentionHours, userId, scope, transport, actualWindow);
+    if (rows.length > METRICS_ROW_CEILING && resolution === "hour") {
+      resolution = "day";
+      actualWindow = align(resolution);
+      rows = await this.tierBucketed(tier, resolution, retentionHours, userId, scope, transport, actualWindow);
+    }
+    return { ...actualWindow, metrics: rows.slice(0, METRICS_ROW_CEILING), resolution, truncated: rows.length > METRICS_ROW_CEILING };
   }
 
   // Available regions for a tier's picker: same tier conditions as the metrics

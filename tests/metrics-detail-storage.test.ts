@@ -1,0 +1,113 @@
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { PgDialect, getTableConfig } from "drizzle-orm/pg-core";
+import { readFileSync } from "node:fs";
+import { db, storage } from "../server/storage";
+import { evalResults } from "../shared/schema";
+
+const FROM = Date.UTC(2026, 0, 1);
+const DAY = 86400000;
+
+/** Capture real tier predicates while replacing only query execution. */
+function captureQueries(results: unknown[][]) {
+  const predicates: Array<{ sql: string; params: unknown[] }> = [];
+  const limits: number[] = [];
+  const selections: unknown[] = [];
+  const dialect = new PgDialect();
+  vi.spyOn(db, "select").mockImplementation(((selection: unknown) => {
+    selections.push(selection);
+    const query: Record<string, unknown> = {};
+    for (const method of ["from", "innerJoin", "leftJoin", "orderBy", "groupBy"]) query[method] = () => query;
+    query.where = (predicate: Parameters<PgDialect["sqlToQuery"]>[0]) => {
+      predicates.push(dialect.sqlToQuery(predicate));
+      return query;
+    };
+    query.limit = (limit: number) => {
+      limits.push(limit);
+      return Promise.resolve(results.shift() ?? []);
+    };
+    return query;
+  }) as typeof db.select);
+  return { predicates, limits, selections };
+}
+
+afterEach(() => vi.restoreAllMocks());
+
+describe("metrics detail storage", () => {
+  it("declares the time-range index and registers its deployment migration", () => {
+    const index = getTableConfig(evalResults).indexes.find(index => index.config.name === "eval_results_created_at_idx");
+    expect(index?.config.columns[0]).toHaveProperty("name", "created_at");
+    const migration = readFileSync(new URL("../migrations/0051_metrics_time_index.sql", import.meta.url), "utf8");
+    expect(migration).toContain("CREATE INDEX CONCURRENTLY eval_results_created_at_idx ON public.eval_results (created_at)");
+    expect(migration).not.toContain("IF NOT EXISTS");
+    const runner = readFileSync(new URL("../server/migrate.ts", import.meta.url), "utf8");
+    expect(runner).toContain('file: "0051_metrics_time_index.sql"');
+  });
+  it("queries historical bounds with the mainline snapshot, trust, region, and transport gates", async () => {
+    const { predicates, limits } = captureQueries([]);
+    await storage.getMetricsDetail("mainline", { from: FROM, to: FROM + DAY }, undefined, { baseIds: ["eu-de-frankfurt"] }, "phone");
+    const { sql, params } = predicates[0];
+    expect(sql).toContain('"eval_results"."created_at" >=');
+    expect(sql).toContain('"eval_results"."created_at" <');
+    expect(sql).toContain('"eval_jobs"."transport"');
+    expect(sql).toContain('"eval_jobs"."snapshot"');
+    expect(sql).toContain('"eval_jobs"."token_dispatch_tier"');
+    expect(params).toContain("phone");
+    expect(params).toContain(new Date(FROM).toISOString());
+    expect(params).toContain(new Date(FROM + DAY).toISOString());
+    expect(params.some(value => String(value).includes("eu-de-frankfurt"))).toBe(true);
+    expect(limits).toEqual([20001]);
+  });
+
+  it("applies Community location trust gates to fine-detail queries", async () => {
+    const { predicates } = captureQueries([]);
+    await storage.getMetricsDetail("community", { from: FROM, to: FROM + DAY });
+    expect(predicates[0].sql).toContain('"eval_jobs"."location_trust"');
+    expect(predicates[0].params).toContain("trusted");
+  });
+
+  it("keeps My Evals user-scoped and rejects unauthenticated storage calls", async () => {
+    const { predicates } = captureQueries([]);
+    await expect(storage.getMetricsDetail("myEvals", { from: FROM, to: FROM + DAY })).rejects.toThrow("requires a user");
+    expect(predicates).toHaveLength(0);
+    await storage.getMetricsDetail("myEvals", { from: FROM, to: FROM + DAY }, 123, { unverified: true });
+    expect(predicates[0].params).toContain(123);
+    expect(predicates[0].sql).toContain('"eval_jobs"."created_by"');
+    expect(predicates[0].sql).toContain('is null');
+  });
+
+  it("preserves raw test identity from immutable job snapshots", async () => {
+    const { selections } = captureQueries([[{ id: 9 }], [{ id: 9, evalFlowId: 7, evalFlowName: "Historic flow" }]]);
+    const result = await storage.getMetricsDetail("community", { from: FROM, to: FROM + DAY });
+    expect(result).toMatchObject({ from: FROM, to: FROM + DAY, resolution: "raw", truncated: false });
+    expect(result.metrics).toEqual([{ id: 9, evalFlowId: 7, evalFlowName: "Historic flow", transport: "web" }]);
+    expect(Object.keys(selections[0] as object)).toEqual(["id"]);
+    expect(selections[1]).toHaveProperty("evalFlowName");
+    expect(selections[1]).not.toHaveProperty("snapshot");
+    expect(selections[1]).not.toHaveProperty("config");
+  });
+
+  it("falls back to complete hourly buckets when raw detail exceeds the ceiling", async () => {
+    const { limits, selections } = captureQueries([Array(20001).fill({}), [{ id: 1 }]]);
+    const result = await storage.getMetricsDetail("community", { from: FROM + 60000, to: FROM + 120000 });
+    expect(result).toMatchObject({ from: FROM, to: FROM + 3600000, resolution: "hour", truncated: false });
+    expect(result.metrics).toEqual([{ id: 1, transport: "web" }]);
+    expect(limits).toEqual([20001, 20001]);
+    expect(Object.keys(selections[0] as object)).toEqual(["id"]);
+    expect(selections[1]).not.toHaveProperty("evalFlowName");
+  });
+
+  it("falls back safely if new rows arrive between the density probe and raw read", async () => {
+    captureQueries([[{ id: 9 }], Array(20001).fill({ id: 9 }), [{ id: 1 }]]);
+    const result = await storage.getMetricsDetail("community", { from: FROM, to: FROM + 3600000 });
+    expect(result).toMatchObject({ resolution: "hour", truncated: false });
+    expect(result.metrics).toEqual([{ id: 1, transport: "web" }]);
+  });
+
+  it("falls back to daily buckets for an oversized hourly payload and reports any final truncation", async () => {
+    captureQueries([Array(20001).fill({}), Array(20001).fill({ id: 1 })]);
+    const result = await storage.getMetricsDetail("community", { from: FROM, to: FROM + 30 * DAY });
+    expect(result.resolution).toBe("day");
+    expect(result.truncated).toBe(true);
+    expect(result.metrics).toHaveLength(20000);
+  });
+});

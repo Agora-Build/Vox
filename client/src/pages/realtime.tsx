@@ -30,8 +30,11 @@ import {
   wheelZoomScale,
   zoomChartRange,
   type ChartRange,
+  type ChartDomain,
   type CombinedChartRow,
+  timeDomainBounds,
 } from "@/lib/chart-zoom";
+import { detailWindow, mergeMetricDetail, METRICS_DAY_MS, type MetricsResolution, type MetricsWindow } from "@shared/metrics-window";
 import { useRegionLocations } from "@/hooks/use-regions";
 import { RegionScopeSelector } from "@/components/region-scope-selector";
 
@@ -62,6 +65,13 @@ interface EvalResult {
   // Present on Community / My Evals (raw) points; null on aggregated buckets.
   evalFlowId?: number | null;
   evalFlowName?: string | null;
+  resolution?: MetricsResolution;
+}
+
+interface MetricsDetail extends MetricsWindow {
+  metrics: EvalResult[];
+  resolution: MetricsResolution;
+  truncated: boolean;
 }
 
 interface AuthStatus {
@@ -119,12 +129,15 @@ function buildSegmentedData(
     let segment: SegmentLineInfo | null = null;
     let segmentIndex = -1;
     let lastTime = -1;
+    let lastResolution: string | number | undefined;
 
     for (let i = 0; i < rows.length; i++) {
       const value = rows[i][dataKey];
       if (value == null) continue;
 
-      if (!segment || rows[i].rawTime - lastTime > gapMs) {
+      const resolution = rows[i].resolution;
+      const pointGapMs = resolution === "day" ? 36 * 60 * 60 * 1000 : gapMs;
+      if (!segment || rows[i].rawTime - lastTime > pointGapMs || resolution !== lastResolution) {
         segmentIndex += 1;
         segment = {
           segKey: `${dataKey}_s${segmentIndex}`,
@@ -139,6 +152,7 @@ function buildSegmentedData(
       rows[i][segment.segKey] = value;
       segment.dataIndices.push(rows[i].chartIndex);
       lastTime = rows[i].rawTime;
+      lastResolution = resolution;
     }
   }
 
@@ -184,15 +198,19 @@ function rangesAreEqual(a: ChartRange, b: ChartRange): boolean {
   return Math.abs(a.start - b.start) < 0.001 && Math.abs(a.end - b.end) < 0.001;
 }
 
-function useChartZoom(totalLength: number, resetKey: string) {
-  const [range, setRange] = useState<ChartRange>(() => defaultChartRange(totalLength));
+function useChartZoom(totalLength: number, resetKey: string, defaultWindow = 100) {
+  const [range, setRange] = useState<ChartRange>(() => defaultChartRange(totalLength, defaultWindow));
   const [isNavigating, setIsNavigating] = useState(false);
-  const currentRange = clampChartRange(range, totalLength);
+  const hasNavigatedRef = useRef(false);
+  const prevResetKeyRef = useRef(resetKey);
+  // A mode switch must not briefly interpret old point indices as time units.
+  const currentRange = !hasNavigatedRef.current || prevResetKeyRef.current !== resetKey
+    ? defaultChartRange(totalLength, defaultWindow)
+    : clampChartRange(range, totalLength);
   const displayedRangeRef = useRef(currentRange);
   const targetRangeRef = useRef(currentRange);
   const idleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const animationFrameRef = useRef<number | null>(null);
-  const hasNavigatedRef = useRef(false);
   const navigationPhaseRef = useRef<NavigationPhase>("idle");
 
   const cancelAnimation = useCallback(() => {
@@ -320,7 +338,6 @@ function useChartZoom(totalLength: number, resetKey: string) {
   }, [animateToTarget, clearIdleTimer]);
 
   const prevLenRef = useRef(totalLength);
-  const prevResetKeyRef = useRef(resetKey);
   useEffect(() => {
     const previousLength = prevLenRef.current;
     const shouldReset = prevResetKeyRef.current !== resetKey;
@@ -334,7 +351,7 @@ function useChartZoom(totalLength: number, resetKey: string) {
     clearIdleTimer();
 
     if (shouldReset || !hasNavigatedRef.current) {
-      const next = defaultChartRange(totalLength);
+      const next = defaultChartRange(totalLength, defaultWindow);
       displayedRangeRef.current = next;
       targetRangeRef.current = next;
       if (shouldReset) hasNavigatedRef.current = false;
@@ -384,7 +401,7 @@ function useChartZoom(totalLength: number, resetKey: string) {
       navigationPhaseRef.current = "idle";
       setIsNavigating(false);
     }
-  }, [animateToTarget, cancelAnimation, clearIdleTimer, resetKey, totalLength]);
+  }, [animateToTarget, cancelAnimation, clearIdleTimer, defaultWindow, resetKey, totalLength]);
 
   useEffect(() => () => {
     cancelAnimation();
@@ -408,9 +425,10 @@ function useChartZoom(totalLength: number, resetKey: string) {
   };
 }
 
-function ZoomableChart({ children, totalLength, zoomState }: {
+function ZoomableChart({ children, totalLength, visibleCount, zoomState }: {
   children: React.ReactNode;
   totalLength: number;
+  visibleCount?: number;
   zoomState: ReturnType<typeof useChartZoom>;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -627,7 +645,7 @@ function ZoomableChart({ children, totalLength, zoomState }: {
       )}
       {!zoomState.isShowingAll && totalLength > 0 && (
         <div className="text-center text-xs text-muted-foreground mt-1">
-          {Math.round(zoomState.windowSize)} of {totalLength} points — scroll to zoom, drag to pan
+          {visibleCount ?? Math.round(zoomState.windowSize)} of {totalLength} points — scroll to zoom, drag to pan
         </div>
       )}
     </div>
@@ -726,6 +744,11 @@ interface MetricsSectionProps {
   timeRange: string;
   regionLabel: string;
   navigationKey: string;
+  detailEndpoint: string;
+  regionScopes: string[];
+  transport: "web" | "phone";
+  refreshInterval: number;
+  userId?: string;
   testIdPrefix?: string;
   /** Show the evalFlow name/link in the tooltip (Community / My Evals only). */
   showEvalFlow?: boolean;
@@ -733,7 +756,7 @@ interface MetricsSectionProps {
   hiddenProviders?: Set<string>;
 }
 
-function MetricsSection({ metrics, isLoading, timeRangeLabel, timeRange, regionLabel, navigationKey, testIdPrefix = "", showEvalFlow = false, hiddenProviders }: MetricsSectionProps) {
+function MetricsSection({ metrics, isLoading, timeRangeLabel, timeRange, regionLabel, navigationKey, detailEndpoint, regionScopes, transport, refreshInterval, userId, testIdPrefix = "", showEvalFlow = false, hiddenProviders }: MetricsSectionProps) {
   const { data: providerList } = useQuery<Array<{ id: string; brandColor: string | null }>>({
     queryKey: ["/api/providers"],
     staleTime: 60000,
@@ -752,23 +775,69 @@ function MetricsSection({ metrics, isLoading, timeRangeLabel, timeRange, regionL
     [hiddenProviders, metrics],
   );
 
-  const { data: combinedData, providers } = useMemo(
-    () => buildCombinedChartData(metrics ?? [], colorMap, hiddenProviders),
-    [colorMap, hiddenProviders, metrics],
-  );
-
   // Show latest single test result (metrics are ordered by createdAt DESC)
   const latest = filteredMetrics[0] ?? null;
 
   // Zoom/pan state is shared across all three charts so they stay in sync.
-  const chartZoom = useChartZoom(combinedData.length, navigationKey);
+  const isTemporal = timeRange === "all";
+  const scopeKey = `${detailEndpoint}:${navigationKey}:${userId ?? "public"}`;
+  const overviewData = useMemo(() => buildCombinedChartData(metrics ?? [], colorMap, hiddenProviders).data, [metrics, colorMap, hiddenProviders]);
+  // Keep the origin tied to the overview, never to the extra rows loaded on zoom.
+  const originRef = useRef({ key: scopeKey, value: 0 });
+  if (originRef.current.key !== scopeKey) originRef.current = { key: scopeKey, value: 0 };
+  if (originRef.current.value === 0 && overviewData.length) originRef.current.value = overviewData[0].rawTime;
+  const origin = originRef.current.value;
+  const timeLength = overviewData.length ? (overviewData[overviewData.length - 1].rawTime + METRICS_DAY_MS - origin) / 60000 : 0;
+  const chartZoom = useChartZoom(isTemporal ? timeLength : overviewData.length, `${scopeKey}:${isTemporal ? origin : "indices"}`, isTemporal ? 100 * 24 * 60 : 100);
   const chartRange = useMemo(
     () => ({ start: chartZoom.start, end: chartZoom.end }),
     [chartZoom.end, chartZoom.start],
   );
-  const chartDomain = useMemo(
-    () => chartRangeDomain(chartRange, combinedData.length),
-    [chartRange, combinedData.length],
+  const chartDomain = useMemo<ChartDomain>(
+    () => isTemporal ? [origin + chartRange.start * 60000, origin + chartRange.end * 60000] : chartRangeDomain(chartRange, overviewData.length),
+    [chartRange, isTemporal, origin, overviewData.length],
+  );
+  const requestedWindow = isTemporal && timeLength > 0 ? detailWindow(...chartDomain) : null;
+  const requestFrom = requestedWindow?.from;
+  const requestTo = requestedWindow?.to;
+  const [settledRequest, setSettledRequest] = useState<{ scope: string; window: MetricsWindow | null }>({ scope: scopeKey, window: null });
+  useEffect(() => {
+    if (!chartZoom.isNavigating) setSettledRequest({ scope: scopeKey, window: requestFrom != null && requestTo != null ? { from: requestFrom, to: requestTo } : null });
+  }, [chartZoom.isNavigating, requestFrom, requestTo, scopeKey]);
+  const detailQuery = useQuery<MetricsDetail>({
+    queryKey: [detailEndpoint, scopeKey, settledRequest.window?.from, settledRequest.window?.to],
+    queryFn: async ({ signal }) => {
+      const window = settledRequest.window!;
+      const params = new URLSearchParams({ from: String(window.from), to: String(window.to), transport });
+      appendRegionScopes(params, regionScopes);
+      const res = await fetch(`${detailEndpoint}?${params}`, { signal });
+      if (!res.ok) throw new Error("Failed to load chart detail");
+      return res.json();
+    },
+    enabled: isTemporal && !chartZoom.isNavigating && settledRequest.scope === scopeKey && !!settledRequest.window
+      && settledRequest.window.from === requestFrom && settledRequest.window.to === requestTo,
+    staleTime: 30000,
+    gcTime: 60000,
+    refetchInterval: refreshInterval,
+  });
+  const [appliedDetail, setAppliedDetail] = useState<{ scope: string; data: MetricsDetail } | null>(null);
+  useEffect(() => {
+    if (chartZoom.isNavigating) return;
+    if (requestFrom == null) {
+      setAppliedDetail(null);
+    } else if (detailQuery.data && settledRequest.scope === scopeKey
+      && settledRequest.window?.from === requestFrom && settledRequest.window?.to === requestTo && !detailQuery.data.truncated) {
+      setAppliedDetail({ scope: scopeKey, data: detailQuery.data });
+    }
+  }, [chartZoom.isNavigating, detailQuery.data, requestFrom, requestTo, scopeKey, settledRequest]);
+  const activeDetail = isTemporal && appliedDetail?.scope === scopeKey ? appliedDetail.data : null;
+  const chartMetrics = useMemo(() => isTemporal ? mergeMetricDetail(
+    (metrics ?? []).map(row => ({ ...row, resolution: "day" as const })),
+    activeDetail ? { ...activeDetail, metrics: activeDetail.metrics.map(row => ({ ...row, resolution: activeDetail.resolution })) } : null,
+  ) : metrics ?? [], [activeDetail, isTemporal, metrics]);
+  const { data: combinedData, providers } = useMemo(
+    () => buildCombinedChartData(chartMetrics, colorMap, hiddenProviders, isTemporal ? 1 : 60000),
+    [chartMetrics, colorMap, hiddenProviders, isTemporal],
   );
   const chartTickCount = Math.min(7, Math.max(1, Math.ceil(chartZoom.windowSize)));
   const chartTicks = useMemo(
@@ -778,10 +847,10 @@ function MetricsSection({ metrics, isLoading, timeRangeLabel, timeRange, regionL
   const formatChartTick = useCallback((value: number) => {
     if (combinedData.length === 0) return "";
     const index = Math.max(0, Math.min(combinedData.length - 1, Math.round(value)));
-    const tickFormat = timeRange === "all" ? "MM/dd/yy" : "MM/dd HH:mm";
-    return format(new Date(combinedData[index].rawTime), tickFormat);
-  }, [combinedData, timeRange]);
-  const segmentGapMs = timeRange === "all" ? 36 * 60 * 60 * 1000 : GAP_MS;
+    const tickFormat = isTemporal && chartDomain[1] - chartDomain[0] > 7 * METRICS_DAY_MS ? "MM/dd/yy" : "MM/dd HH:mm";
+    return format(new Date(isTemporal ? value : combinedData[index].rawTime), tickFormat);
+  }, [chartDomain, combinedData, isTemporal]);
+  const segmentGapMs = GAP_MS;
 
   // Segment the complete selected range once so line identities stay stable.
   const responseProviders = useMemo(() => providers.map(p => ({ dataKey: `${p.key}_response`, name: p.name, stroke: p.stroke })), [providers]);
@@ -792,22 +861,22 @@ function MetricsSection({ metrics, isLoading, timeRangeLabel, timeRange, regionL
   const interruptChart = useMemo(() => buildSegmentedData(combinedData, interruptProviders, segmentGapMs), [combinedData, interruptProviders, segmentGapMs]);
   const tsrChart = useMemo(() => buildSegmentedData(combinedData, tsrProviders, segmentGapMs), [combinedData, segmentGapMs, tsrProviders]);
   const visibleBounds = useMemo(
-    () => visibleChartRange(chartRange, combinedData.length),
-    [chartRange, combinedData.length],
+    () => isTemporal ? timeDomainBounds(combinedData, chartDomain) : visibleChartRange(chartRange, combinedData.length),
+    [chartDomain, chartRange, combinedData, isTemporal],
   );
   const visibleStart = visibleBounds.start;
   const visibleEnd = visibleBounds.end;
   const responseRenderIndices = useMemo(
-    () => segmentRenderIndices({ start: visibleStart, end: visibleEnd }, combinedData.length, responseChart.lines.map(line => line.dataIndices)),
-    [combinedData.length, responseChart.lines, visibleEnd, visibleStart],
+    () => segmentRenderIndices({ start: visibleStart, end: visibleEnd }, combinedData.length, responseChart.lines.map(line => line.dataIndices), isTemporal),
+    [combinedData.length, isTemporal, responseChart.lines, visibleEnd, visibleStart],
   );
   const interruptRenderIndices = useMemo(
-    () => segmentRenderIndices({ start: visibleStart, end: visibleEnd }, combinedData.length, interruptChart.lines.map(line => line.dataIndices)),
-    [combinedData.length, interruptChart.lines, visibleEnd, visibleStart],
+    () => segmentRenderIndices({ start: visibleStart, end: visibleEnd }, combinedData.length, interruptChart.lines.map(line => line.dataIndices), isTemporal),
+    [combinedData.length, interruptChart.lines, isTemporal, visibleEnd, visibleStart],
   );
   const tsrRenderIndices = useMemo(
-    () => segmentRenderIndices({ start: visibleStart, end: visibleEnd }, combinedData.length, tsrChart.lines.map(line => line.dataIndices)),
-    [combinedData.length, tsrChart.lines, visibleEnd, visibleStart],
+    () => segmentRenderIndices({ start: visibleStart, end: visibleEnd }, combinedData.length, tsrChart.lines.map(line => line.dataIndices), isTemporal),
+    [combinedData.length, isTemporal, tsrChart.lines, visibleEnd, visibleStart],
   );
   const responseRows = useMemo(
     () => responseRenderIndices.map(index => responseChart.rows[index]),
@@ -834,12 +903,12 @@ function MetricsSection({ metrics, isLoading, timeRangeLabel, timeRange, regionL
     [tsrChart.lines, visibleEnd, visibleStart],
   );
   const nextResponseYMax = useMemo(
-    () => segmentYAxisMax(responseChart.rows, responseLines, chartRange),
-    [chartRange, responseChart.rows, responseLines],
+    () => segmentYAxisMax(responseChart.rows, responseLines, chartRange, isTemporal ? chartDomain : undefined),
+    [chartDomain, chartRange, isTemporal, responseChart.rows, responseLines],
   );
   const nextInterruptYMax = useMemo(
-    () => segmentYAxisMax(interruptChart.rows, interruptLines, chartRange),
-    [chartRange, interruptChart.rows, interruptLines],
+    () => segmentYAxisMax(interruptChart.rows, interruptLines, chartRange, isTemporal ? chartDomain : undefined),
+    [chartDomain, chartRange, interruptChart.rows, interruptLines, isTemporal],
   );
   const responseYMax = useSettledYAxisMax(
     nextResponseYMax,
@@ -1006,7 +1075,10 @@ function MetricsSection({ metrics, isLoading, timeRangeLabel, timeRange, regionL
             <CardDescription>Responds · stops on interrupt · no false barge-in - {regionLabel}</CardDescription>
           </CardHeader>
           <CardContent>
-            <ZoomableChart totalLength={combinedData.length} zoomState={chartZoom}>
+            {isTemporal && <div className="mb-2 text-xs text-muted-foreground" role="status" data-testid={`${testIdPrefix}chart-detail-status`}>
+              {detailQuery.isError ? "Detail unavailable - showing cached data" : detailQuery.data?.truncated ? "Detail limit reached - showing cached data" : detailQuery.isFetching ? "Loading detail..." : activeDetail?.resolution === "raw" ? "Individual tests" : activeDetail?.resolution === "hour" ? "Hourly averages" : "Daily averages"}
+            </div>}
+            <ZoomableChart totalLength={combinedData.length} visibleCount={visibleEnd - visibleStart} zoomState={chartZoom}>
               <div className="h-[300px] w-full">
                 {isLoading ? (
                   <Skeleton className="h-full w-full" />
@@ -1015,7 +1087,7 @@ function MetricsSection({ metrics, isLoading, timeRangeLabel, timeRange, regionL
                     <LineChart data={tsrRows}>
                       <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" vertical={false} />
                       <XAxis
-                        dataKey="chartIndex"
+                        dataKey={isTemporal ? "chartTime" : "chartIndex"}
                         type="number"
                         domain={chartDomain}
                         ticks={chartTicks}
@@ -1048,7 +1120,7 @@ function MetricsSection({ metrics, isLoading, timeRangeLabel, timeRange, regionL
             <CardDescription>Time to First Audio (TTFA) - {regionLabel}</CardDescription>
           </CardHeader>
           <CardContent>
-            <ZoomableChart totalLength={combinedData.length} zoomState={chartZoom}>
+            <ZoomableChart totalLength={combinedData.length} visibleCount={visibleEnd - visibleStart} zoomState={chartZoom}>
               <div className="h-[300px] w-full">
                 {isLoading ? (
                   <Skeleton className="h-full w-full" />
@@ -1057,7 +1129,7 @@ function MetricsSection({ metrics, isLoading, timeRangeLabel, timeRange, regionL
                     <LineChart data={responseRows}>
                       <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" vertical={false} />
                       <XAxis
-                        dataKey="chartIndex"
+                        dataKey={isTemporal ? "chartTime" : "chartIndex"}
                         type="number"
                         domain={chartDomain}
                         ticks={chartTicks}
@@ -1090,7 +1162,7 @@ function MetricsSection({ metrics, isLoading, timeRangeLabel, timeRange, regionL
             <CardDescription>Time to Interrupt (TTI) - {regionLabel}</CardDescription>
           </CardHeader>
           <CardContent>
-            <ZoomableChart totalLength={combinedData.length} zoomState={chartZoom}>
+            <ZoomableChart totalLength={combinedData.length} visibleCount={visibleEnd - visibleStart} zoomState={chartZoom}>
               <div className="h-[300px] w-full">
                 {isLoading ? (
                   <Skeleton className="h-full w-full" />
@@ -1099,7 +1171,7 @@ function MetricsSection({ metrics, isLoading, timeRangeLabel, timeRange, regionL
                     <LineChart data={interruptRows}>
                       <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" vertical={false} />
                       <XAxis
-                        dataKey="chartIndex"
+                        dataKey={isTemporal ? "chartTime" : "chartIndex"}
                         type="number"
                         domain={chartDomain}
                         ticks={chartTicks}
@@ -1158,7 +1230,7 @@ export default function Dashboard() {
 
   const availabilityTier = activeTab === "mainline" ? "realtime" : activeTab === "community" ? "community" : "my-evals";
   const { data: regionAvailability } = useQuery<{ availableRegions: string[]; hasUnverified: boolean }>({
-    queryKey: ["/api/metrics/available-regions", availabilityTier, timeRange],
+    queryKey: ["/api/metrics/available-regions", availabilityTier, availabilityTier === "my-evals" ? authStatus?.user?.id : null, timeRange],
     queryFn: async () => {
       const params = new URLSearchParams({ tier: availabilityTier });
       if (timeRange !== "all") params.set("hours", timeRange);
@@ -1216,13 +1288,13 @@ export default function Dashboard() {
   });
 
   const { data: myEvalsMetrics, isLoading: myEvalsLoading, refetch: refetchMyEvals, isFetching: myEvalsFetching } = useQuery<EvalResult[]>({
-    queryKey: ['/api/metrics/my-evals', timeRange, regionScopeKey, evalMode],
-    queryFn: async () => {
+    queryKey: ['/api/metrics/my-evals', authStatus?.user?.id, timeRange, regionScopeKey, evalMode],
+    queryFn: async ({ signal }) => {
       const params = new URLSearchParams();
       if (timeRange !== "all") params.set("hours", timeRange);
       if (evalMode !== "web") params.set("transport", evalMode);
       appendRegionScopes(params, regionScopes);
-      const res = await fetch(`/api/metrics/my-evals?${params}`);
+      const res = await fetch(`/api/metrics/my-evals?${params}`, { signal });
       if (!res.ok) throw new Error("Failed to fetch my eval metrics");
       return res.json();
     },
@@ -1459,6 +1531,10 @@ export default function Dashboard() {
             timeRange={timeRange}
             regionLabel={regionLabel}
             navigationKey={`${timeRange}:${regionScopeKey}:${evalMode}`}
+            detailEndpoint="/api/metrics/realtime/detail"
+            regionScopes={regionScopes}
+            transport={evalMode}
+            refreshInterval={refreshInterval}
             testIdPrefix=""
             hiddenProviders={hiddenProviders}
           />
@@ -1472,6 +1548,10 @@ export default function Dashboard() {
             timeRange={timeRange}
             regionLabel={regionLabel}
             navigationKey={`${timeRange}:${regionScopeKey}:${evalMode}`}
+            detailEndpoint="/api/metrics/community/detail"
+            regionScopes={regionScopes}
+            transport={evalMode}
+            refreshInterval={refreshInterval}
             testIdPrefix="community-"
             showEvalFlow
             hiddenProviders={hiddenProviders}
@@ -1487,6 +1567,11 @@ export default function Dashboard() {
               timeRange={timeRange}
               regionLabel={regionLabel}
               navigationKey={`${timeRange}:${regionScopeKey}:${evalMode}`}
+              detailEndpoint="/api/metrics/my-evals/detail"
+              userId={authStatus?.user?.id}
+              regionScopes={regionScopes}
+              transport={evalMode}
+              refreshInterval={refreshInterval}
               testIdPrefix="my-evals-"
               showEvalFlow
               hiddenProviders={hiddenProviders}
