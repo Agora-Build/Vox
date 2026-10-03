@@ -514,7 +514,7 @@ ensure_submodules() {
 # aeval's bundled Python Playwright expects its exact browser build in the
 # Playwright cache (aeval 0.4.x = playwright 1.57 = chromium-1200).
 # Keep both pins in sync with vox_eval_agentd/Dockerfile on aeval bumps.
-AEVAL_MIN_VERSION="0.4.1"
+AEVAL_MIN_VERSION="0.4.2"
 AEVAL_PLAYWRIGHT_VERSION="1.57.0"
 AEVAL_CHROMIUM_BUILD="chromium-1200"
 

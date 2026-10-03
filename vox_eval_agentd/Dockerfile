@@ -73,7 +73,7 @@ WORKDIR /app
 # default and aeval resolves the card ID by reading it. The broker target
 # never does audio I/O (setup:account only) and needs none of this.
 ARG TARGETARCH
-ARG AEVAL_VERSION=v0.4.1
+ARG AEVAL_VERSION=v0.4.2
 RUN ARCH=$(case "${TARGETARCH}" in arm64) echo "arm64" ;; *) echo "x86_64" ;; esac) && \
     if [ "${AEVAL_VERSION}" = "latest" ]; then \
       DOWNLOAD_URL="https://github.com/Agora-Build/aeval/releases/latest/download/aeval-linux-${ARCH}"; \
