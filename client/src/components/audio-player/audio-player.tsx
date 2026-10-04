@@ -62,11 +62,12 @@ export function AudioPlayer({ src, waveformSrc, title = "Recording", subtitle, c
   };
   const keyDown = (event: KeyboardEvent) => {
     const targets: Record<string, number> = { ArrowLeft: playback.time - 5, ArrowRight: playback.time + 5, ArrowDown: playback.time - 5, ArrowUp: playback.time + 5, PageDown: playback.time - 10, PageUp: playback.time + 10, Home: 0, End: playback.duration };
-    if (event.key in targets) { event.preventDefault(); playback.seek(targets[event.key]); }
+    if (event.key in targets) { event.preventDefault(); if (playback.duration > 0) playback.seek(targets[event.key]); }
     if (event.key === " ") { event.preventDefault(); playback.toggle(); }
   };
   return <div ref={rootRef} className={cn("vox-audio-player", className)} data-testid="audio-player" aria-label={`${title} audio player`}>
-    <audio ref={playback.audioRef} src={src} preload="metadata" controls={playback.unknownDuration} className="w-full px-4 sm:px-5" style={{ display: playback.unknownDuration ? "block" : "none" }} aria-label={`${title} native audio controls`} data-testid="player-audio" onLoadedMetadata={() => {
+    {/* Media supplies playback only; custom controls stay visible even before duration is known. */}
+    <audio ref={playback.audioRef} src={src} preload="metadata" hidden style={{ display: "none" }} aria-hidden="true" data-testid="player-audio" onLoadedMetadata={() => {
       const audio = playback.audioRef.current;
       if (audio) { audio.defaultPlaybackRate = rate; audio.playbackRate = rate; audio.volume = volume; }
     }} />
@@ -93,7 +94,7 @@ export function AudioPlayer({ src, waveformSrc, title = "Recording", subtitle, c
       </div>
     </div>
     {playback.error && <p role="alert" className="px-5 pb-3 text-sm text-destructive">{playback.error}</p>}
-    {playback.unknownDuration && <p className="px-5 pb-3 text-xs text-muted-foreground">This recording has no duration metadata. Native audio controls remain available for seeking.</p>}
+    {playback.unknownDuration && !waveform.loading && !waveform.data?.duration && <p className="px-5 pb-3 text-xs text-muted-foreground">Duration is unavailable. Playback and 10-second skip controls still work; timeline seeking requires a known duration.</p>}
     <div className="mx-3 overflow-hidden rounded-lg border bg-background/60 sm:mx-4">
       <div className="audio-wave-scroll">
         <div ref={timelineRef} className="audio-wave-timeline" style={{ width: `${zoom * 100}%` }} role="slider" tabIndex={0}
