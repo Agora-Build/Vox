@@ -74,10 +74,14 @@ export default function AdminRegions() {
     refetchInterval: (query) => (query.state.data?.state === "refreshing" ? 2000 : false),
   });
   const [maxmindKeyInput, setMaxmindKeyInput] = useState("");
+  const loadedCredit = Object.values(GEOIP_ATTRIBUTIONS).find(
+    (credit) => credit.attribution === geoipStatus?.attribution,
+  );
 
   useEffect(() => {
     if (geoipStatus?.lastRefresh?.at) {
       queryClient.invalidateQueries({ queryKey: ["/api/config"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/geoip/attribution"] });
     }
   }, [geoipStatus?.lastRefresh?.at]);
 
@@ -256,10 +260,13 @@ export default function AdminRegions() {
 
               {geoipStatus.attribution && (
                 <p className="text-xs text-muted-foreground">
-                  {geoipStatus.attribution} —{" "}
-                  <a href={GEOIP_ATTRIBUTIONS[geoipStatus.source].url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 underline">
-                    {GEOIP_ATTRIBUTIONS[geoipStatus.source].provider}<ExternalLink className="h-3 w-3" />
-                  </a>
+                  {geoipStatus.attribution}
+                  {loadedCredit && <>
+                    {" — "}
+                    <a href={loadedCredit.url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 underline">
+                      {loadedCredit.provider}<ExternalLink className="h-3 w-3" />
+                    </a>
+                  </>}
                 </p>
               )}
 

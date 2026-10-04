@@ -8,7 +8,6 @@ import { compareVersions } from "./aeval-seed";
 import { SECRET_NAME_PATTERN, collectSecretRefs, secretValueError } from "@shared/secrets";
 import { deriveScheduleStatus } from "@shared/schedule-status";
 import { regionSiteSequence } from "@shared/regions";
-import { geoipAttributionForSource } from "@shared/geoip-attribution";
 import { parseMetricsDetailWindow } from "@shared/metrics-window";
 import { MetricsCache } from "./metrics-cache";
 import rateLimit from "express-rate-limit";
@@ -1197,7 +1196,7 @@ export async function registerRoutes(
         state,
         databases,
         lastRefresh: lastResult,
-        attribution: geoipAttributionForSource(source),
+        attribution: getGeoipAttribution(),
         maxmindKey: { configured: !!maxmindKey, source: keySource },
       });
     } catch (error) {
@@ -6372,6 +6371,12 @@ export async function registerRoutes(
   });
 
   // ==================== CONFIG ROUTES ====================
+
+  // The footer can revalidate its license credit without querying config rows.
+  app.get("/api/geoip/attribution", (_req, res) => {
+    res.set("Cache-Control", "no-cache");
+    res.json({ geoipAttribution: getGeoipAttribution() });
+  });
 
   app.get("/api/config", async (req, res) => {
     try {

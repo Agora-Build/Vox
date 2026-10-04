@@ -135,6 +135,15 @@ test.describe("System Configuration", () => {
     expect(body).toBeDefined();
   });
 
+  test("GET /api/geoip/attribution - returns the public in-memory license notice", async ({ request }) => {
+    const response = await request.get("/api/geoip/attribution");
+    expect(response.ok()).toBeTruthy();
+    expect(response.headers()["cache-control"]).toBe("no-cache");
+    const body = await response.json();
+    expect(body.geoipAttribution === null || typeof body.geoipAttribution === "string").toBe(true);
+    expect(Object.keys(body)).toEqual(["geoipAttribution"]);
+  });
+
   test("GET /api/plugins/oauth/providers - should report sign-in providers", async ({
     request,
   }) => {

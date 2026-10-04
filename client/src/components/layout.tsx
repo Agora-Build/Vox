@@ -62,12 +62,20 @@ export default function Layout({ children }: { children: React.ReactNode }) {
     xUrl?: string;
   }>({
     queryKey: ["/api/config"],
+    staleTime: 60 * 60 * 1000,
+  });
+
+  const { data: geoipConfig } = useQuery<{ geoipAttribution: string | null }>({
+    queryKey: ["/api/geoip/attribution"],
     staleTime: 60 * 1000,
     refetchInterval: 60 * 1000,
   });
 
+  // Retain the config notice while a cached client/server pair is upgrading.
+  const geoipAttribution = geoipConfig !== undefined
+    ? geoipConfig.geoipAttribution : publicConfig?.geoipAttribution;
   const geoipCredit = Object.values(GEOIP_ATTRIBUTIONS).find(
-    (credit) => credit.attribution === publicConfig?.geoipAttribution,
+    (credit) => credit.attribution === geoipAttribution,
   );
 
   const logoutMutation = useMutation({
@@ -377,7 +385,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
               </div>
             </div>
             {/* License credit for the configured data source, separate from Thanks. */}
-            {publicConfig?.geoipAttribution && (
+            {geoipAttribution && (
               <p className="mt-2 text-center sm:text-left text-[11px] text-muted-foreground/70" data-testid="text-geoip-attribution">
                 {geoipCredit ? (
                   <>
@@ -385,7 +393,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
                     <a href={geoipCredit.url} target="_blank" rel="noopener noreferrer" className="underline hover:text-foreground transition-colors">{geoipCredit.provider}</a>,
                     {" "}available from {geoipCredit.url}
                   </>
-                ) : publicConfig.geoipAttribution}
+                ) : geoipAttribution}
               </p>
             )}
           </div>

@@ -214,6 +214,9 @@ identifies the loaded source from the database header or legacy filename, using
 CC BY 4.0 credit, and GeoLite2 retains the MaxMind data notice required by the
 [GeoLite EULA](https://www.maxmind.com/en/geolite2/eula). Changing or removing
 Thanks-page entries must not remove these source-specific license notices.
+Public pages revalidate the in-memory `/api/geoip/attribution` notice once a
+minute without querying persistent configuration; `/api/config` retains its
+one-hour client cache. Admin refresh completion invalidates both queries.
 
 ### Generating Secrets
 

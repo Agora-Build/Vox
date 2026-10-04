@@ -88,7 +88,7 @@ test.describe("Thanks page", () => {
     test(`preserves the ${source} license notice in the footer, not the Thanks credits`, async ({ page }) => {
       const credit = GEOIP_ATTRIBUTIONS[source];
       await page.setViewportSize({ width: 375, height: 812 });
-      await page.route("**/api/config", (route) => route.fulfill({
+      await page.route("**/api/geoip/attribution", (route) => route.fulfill({
         json: { system_initialized: "true", geoipAttribution: credit.attribution },
       }));
       await page.goto("/thanks");
@@ -105,6 +105,7 @@ test.describe("Thanks page", () => {
 
   test("does not show a data-provider notice without an active source", async ({ page }) => {
     await page.route("**/api/config", (route) => route.fulfill({ json: { system_initialized: "true" } }));
+    await page.route("**/api/geoip/attribution", (route) => route.fulfill({ json: { geoipAttribution: null } }));
     await page.goto("/thanks");
     await expect(page.getByTestId("link-footer-thanks")).toBeVisible();
     await expect(page.getByTestId("text-geoip-attribution")).toHaveCount(0);
@@ -112,16 +113,21 @@ test.describe("Thanks page", () => {
 
   test("retains a server license notice that differs from the client bundle", async ({ page }) => {
     const attribution = "GeoLite2 data created by MaxMind, https://www.maxmind.com (updated wording).";
-    await page.route("**/api/config", (route) => route.fulfill({ json: { geoipAttribution: attribution } }));
+    await page.route("**/api/geoip/attribution", (route) => route.fulfill({ json: { geoipAttribution: attribution } }));
     await page.goto("/thanks");
     await expect(page.getByTestId("text-geoip-attribution")).toHaveText(attribution);
   });
 
   test("refreshes the notice after the active source changes while the page stays open", async ({ page }) => {
-    let source: "dbip" | "geolite2" = "dbip";
+    let source: "dbip" | "geolite2" | null = "dbip";
+    let configRequests = 0;
     await page.clock.install();
-    await page.route("**/api/config", (route) => route.fulfill({
-      json: { geoipAttribution: GEOIP_ATTRIBUTIONS[source].attribution },
+    await page.route("**/api/config", (route) => {
+      configRequests += 1;
+      return route.fulfill({ json: { geoipAttribution: "Cached config notice" } });
+    });
+    await page.route("**/api/geoip/attribution", (route) => route.fulfill({
+      json: { geoipAttribution: source ? GEOIP_ATTRIBUTIONS[source].attribution : null },
     }));
     await page.goto("/thanks");
     const notice = page.getByTestId("text-geoip-attribution");
@@ -130,6 +136,10 @@ test.describe("Thanks page", () => {
     await page.clock.fastForward(61_000);
     await expect(notice).toContainText("MaxMind");
     await expect(notice).not.toContainText("DB-IP");
+    source = null;
+    await page.clock.fastForward(61_000);
+    await expect(notice).toHaveCount(0);
+    expect(configRequests).toBe(1);
   });
 
   for (const theme of ["dark", "light"]) {
