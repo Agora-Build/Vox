@@ -44,6 +44,7 @@ import AdminRegions from "@/pages/admin-regions";
 import AdminBrokers from "@/pages/admin-brokers";
 import Privacy from "@/pages/privacy";
 import Terms from "@/pages/terms";
+import Thanks from "@/pages/thanks";
 import Activate from "@/pages/activate";
 import AuthGithubCallback from "@/pages/auth-github-callback";
 import NotFound from "@/pages/not-found";
@@ -1133,6 +1134,11 @@ function Router() {
       <Route path="/privacy">
         <Layout>
           <Privacy />
+        </Layout>
+      </Route>
+      <Route path="/thanks">
+        <Layout>
+          <Thanks />
         </Layout>
       </Route>
       <Route path="/terms">
