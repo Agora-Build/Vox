@@ -6,6 +6,7 @@ import { Download, Play, Phone } from "lucide-react";
 import type { EvalResult } from "@shared/schema";
 import { useState } from "react";
 import { EvalRecordingPlayer } from "@/components/eval-recording-player";
+import { isRecordingArtifact } from "@/lib/recording-transcript";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
 // One eval result, as the eval job page shows it: call details, the metric
@@ -70,7 +71,7 @@ export function EvalResultView({ result }: { result: EvalResult }) {
       Number(r.source_turn_index) === Number(turn.source_turn_index) + 1);
 
   // Find special artifact files
-  const audioFiles = artifactFiles.filter(f => /\.(webm|wav|mp3|ogg|m4a|aac|flac)$/i.test(f.name) && f.size > 0);
+  const audioFiles = artifactFiles.filter(isRecordingArtifact);
   const recording = audioFiles.find((file) => file.name === recordingName) ?? audioFiles[0];
   const screenshotFiles = artifactFiles.filter(f => /\.(png|jpg|jpeg)$/i.test(f.name));
 

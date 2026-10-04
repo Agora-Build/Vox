@@ -4,11 +4,15 @@ import { MAX_TRANSCRIPT_SEGMENTS } from "../components/audio-player/utils";
 export interface RecordingArtifact { name: string; url: string; size: number; contentType: string }
 const record = (value: unknown): Record<string, unknown> => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 
+export const isRecordingArtifact = (file: Pick<RecordingArtifact, "name" | "size">) => /\.(webm|wav|mp3|ogg|m4a|aac|flac)$/i.test(file.name) && file.size > 0;
+
 export function findRecordingTranscript(recording: string, files: readonly RecordingArtifact[]) {
+  const recordings = files.filter(isRecordingArtifact);
+  const singleRecording = recordings.length === 1 && recordings[0].name === recording;
   const candidates = files.filter((file) => /(?:^|\/)turns\.json$/i.test(file.name)).map((file) => {
     const folder = file.name.slice(0, -"turns.json".length).replace(/(?:^|\/)analysis\/$/i, "/").replace(/^\//, "");
     return { file, folder };
-  }).filter(({ folder }) => recording.startsWith(folder) && (folder.length > 0 || !/^vox-[^/]+\//.test(recording))).sort((a, b) => b.folder.length - a.folder.length);
+  }).filter(({ folder }) => recording.startsWith(folder) && (folder.length > 0 || (singleRecording && !/^vox-[^/]+\//.test(recording)))).sort((a, b) => b.folder.length - a.folder.length);
   // Each chunk has its own clock. Never reuse a transcript from another chunk.
   return candidates.length && (candidates.length === 1 || candidates[0].folder.length > candidates[1].folder.length) ? candidates[0].file : undefined;
 }
@@ -69,14 +73,13 @@ export function transcriptFromMetrics(rawData: unknown, recordingName: string): 
     const turns = record(record(raw[family]).latency).turn_level;
     return Array.isArray(turns) ? turns.map(record) : [];
   });
-  const groups = Array.from(new Set(all.map((turn) => `${turn.case_id ?? ""}\u0000${turn.chunk_id ?? ""}`)));
   // Mirror the agent's sanitizeForFilename, including trimming and the 64-character cap.
   const safe = (value: unknown) => String(value ?? "").replace(/[^A-Za-z0-9._-]/g, "-").replace(/\.{2,}/g, "-").replace(/^[-.]+|[-.]+$/g, "").slice(0, 64) || "x";
-  const scoped = /^vox-[^/]+\//.test(recordingName);
   // Generated folders end with Date.now() and a base36 nonce. Strip that suffix,
   // then compare the complete identity so chunk_001 cannot match chunk_001-extra.
   const identity = recordingName.split("/")[0].match(/^vox-(.+)-\d{10,}-[a-z0-9]+$/)?.[1];
-  const selected = scoped || groups.length > 1 ? all.filter((turn) => identity && turn.case_id != null && turn.chunk_id != null && identity === `${safe(turn.case_id)}-${safe(turn.chunk_id)}`) : all;
+  if (!identity) return [];
+  const selected = all.filter((turn) => turn.case_id != null && turn.chunk_id != null && identity === `${safe(turn.case_id)}-${safe(turn.chunk_id)}`);
   const selectedGroups = new Set(selected.map((turn) => `${turn.case_id ?? ""}\u0000${turn.chunk_id ?? ""}`));
   if (selectedGroups.size > 1) return [];
   const segments = new Map<string, AudioTranscriptSegment>();

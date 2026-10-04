@@ -19,16 +19,16 @@ function recordingWav(channels = 2, duration = 12) {
   return buffer;
 }
 
-async function mockRecording(page: Page, options: { channels?: number; blockWaveform?: boolean; unsupportedWaveform?: boolean; largeTranscript?: boolean; overlappingTranscript?: boolean; multiple?: boolean; transcriptError?: boolean; scroll?: boolean } = {}) {
+async function mockRecording(page: Page, options: { channels?: number; blockWaveform?: boolean; unsupportedWaveform?: boolean; largeTranscript?: boolean; overlappingTranscript?: boolean; flat?: boolean; multiple?: boolean; transcriptError?: boolean; scroll?: boolean } = {}) {
   const wav = recordingWav(options.channels ?? 2);
   const alternate = recordingWav(1, 8);
-  const prefix = "vox-RSP-chunk_001-abc";
+  const prefix = options.flat ? "" : "vox-RSP-chunk_001-abc/";
   const artifacts = [
-    { name: `${prefix}/recording.wav`, url: "/fixture-audio/recording.wav", size: wav.length, contentType: "audio/wav" },
-    { name: `${prefix}/analysis/turns.json`, url: "/fixture-audio/turns.json", size: 500, contentType: "application/json" },
+    { name: `${prefix}recording.wav`, url: "/fixture-audio/recording.wav", size: wav.length, contentType: "audio/wav" },
+    { name: `${prefix}analysis/turns.json`, url: "/fixture-audio/turns.json", size: 500, contentType: "application/json" },
     ...(options.multiple ? [
-      { name: "vox-INT-chunk_002-def/recording.wav", url: "/fixture-audio/alternate.wav", size: alternate.length, contentType: "audio/wav" },
-      { name: "vox-INT-chunk_002-def/analysis/turns.json", url: "/fixture-audio/alternate-turns.json", size: 100, contentType: "application/json" },
+      { name: options.flat ? "alternate.wav" : "vox-INT-chunk_002-def/recording.wav", url: "/fixture-audio/alternate.wav", size: alternate.length, contentType: "audio/wav" },
+      ...(!options.flat ? [{ name: "vox-INT-chunk_002-def/analysis/turns.json", url: "/fixture-audio/alternate-turns.json", size: 100, contentType: "application/json" }] : []),
     ] : []),
   ];
   await page.route("**/fixture-audio/**", async (route) => {
@@ -132,6 +132,22 @@ test("overlapping speech has one indexed highlight consistent with transcript fo
   await expect(player.locator('[aria-current="true"]')).toHaveCount(1);
   await expect(player.locator('[aria-current="true"]')).toContainText("Agent speaking");
 });
+
+for (const multiple of [false, true]) {
+  test(`flat-layout root transcripts ${multiple ? "are omitted for multiple recordings" : "work for one recording"}`, async ({ page }) => {
+    const player = await mockRecording(page, { flat: true, multiple });
+    await expect(player.getByTestId("player-channel")).toHaveCount(2);
+    if (!multiple) await expect(player.getByText("Can you help me build something?", { exact: true })).toBeVisible();
+    else {
+      await expect(player.getByText("No timed transcript is available", { exact: false })).toBeVisible();
+      await page.getByRole("combobox", { name: "Choose recording" }).click();
+      await page.getByRole("option", { name: "alternate.wav", exact: true }).click();
+      await expect(player.getByTestId("player-channel")).toHaveCount(1);
+      await expect(player.getByText("No timed transcript is available", { exact: false })).toBeVisible();
+      await expect(player.getByText("Can you help me build something?", { exact: true })).toHaveCount(0);
+    }
+  });
+}
 
 test("the player is not hard-coded to stereo", async ({ page }) => {
   const player = await mockRecording(page, { channels: 6 });

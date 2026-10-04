@@ -102,6 +102,9 @@ as turn-level timing. Ambiguous or other-chunk transcripts are not attached.
 Metric fallbacks match the complete agent-sanitized case/chunk identity after
 stripping its generated timestamp/nonce suffix; unknown folder formats and
 colliding identities are rejected instead of guessing from a prefix.
+Unscoped filenames never receive a metric-backed transcript. Historical
+root-level turns.json artifacts are accepted only when the job has exactly one
+audio recording; multiple flat-layout recordings need an explicit association.
 Python non-finite JSON tokens are sanitized with a linear, quote-aware scan;
 speech strings and escaped quotes are preserved without regex backtracking.
 The player never generates speech recognition or sends recordings to a new

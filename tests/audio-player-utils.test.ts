@@ -135,7 +135,7 @@ describe("recording transcripts", () => {
     expect(findRecordingTranscript("vox-RSP-chunk_003-xyz/recording.wav", files)).toBeUndefined();
   });
   it("accepts single-run layout, prefers precise folders and refuses ambiguous matches", () => {
-    expect(findRecordingTranscript("recordings/stereo.wav", [file("analysis/turns.json")])?.name).toBe("analysis/turns.json");
+    expect(findRecordingTranscript("recordings/stereo.wav", [file("recordings/stereo.wav"), file("analysis/turns.json")])?.name).toBe("analysis/turns.json");
     expect(findRecordingTranscript("chunk/recording.wav", [file("analysis/turns.json"), file("chunk/analysis/turns.json")])?.name).toBe("chunk/analysis/turns.json");
     expect(findRecordingTranscript("recording.wav", [file("turns.json"), file("analysis/turns.json")])).toBeUndefined();
   });
@@ -146,6 +146,12 @@ describe("recording transcripts", () => {
       { start: 3, end: 4, text: "Hello", speaker: "Agent", channel: 1 },
     ]);
     expect(() => parseRecordingTranscript("{}")).toThrow();
+  });
+  it("does not reuse a root transcript for multiple unrelated recordings", () => {
+    const artifacts = [file("recordings/a.wav"), file("recordings/b.wav"), file("analysis/turns.json")];
+    expect(findRecordingTranscript("recordings/a.wav", artifacts)).toBeUndefined();
+    expect(findRecordingTranscript("recordings/b.wav", artifacts)).toBeUndefined();
+    expect(findRecordingTranscript("other.wav", [file("recordings/a.wav"), file("analysis/turns.json")])).toBeUndefined();
   });
   it("preserves escaped quotes and backslashes while replacing only non-finite values", () => {
     const speech = 'He said "NaN, Infinity, -Infinity"; path C:\\audio\\clip';
@@ -159,10 +165,11 @@ describe("recording transcripts", () => {
     expect(parseRecordingTranscript(`[${padding}{"x":NaN${padding},"user_segments":[{"start":0,"end":1,"text":"hello"}]}]`)[0].text).toBe("hello");
     expect(() => parseRecordingTranscript('[{"text":"' + '\\"'.repeat(100_000))).toThrow();
   });
-  it("uses turn-level fallback only for an unambiguous recording and deduplicates metric families", () => {
-    const turn = { turn_start: 1, turn_end: 4, user_transcript: "hello", agent_transcript: "hi" };
+  it("uses turn-level fallback only for a matched recording and deduplicates metric families", () => {
+    const turn = { turn_start: 1, turn_end: 4, user_transcript: "hello", agent_transcript: "hi", case_id: "RSP", chunk_id: "chunk_001" };
     const metrics = { response_metrics: { latency: { turn_level: [turn] } }, interruption_metrics: { latency: { turn_level: [turn] } } };
-    expect(transcriptFromMetrics(metrics, "recording.wav")).toHaveLength(2);
+    expect(transcriptFromMetrics(metrics, "vox-RSP-chunk_001-1791100800000-abc/recording.wav")).toHaveLength(2);
+    expect(transcriptFromMetrics(metrics, "other.wav")).toEqual([]);
     const multiple = { response_metrics: { latency: { turn_level: [{ ...turn, case_id: "RSP", chunk_id: "chunk_001" }, { ...turn, case_id: "INT", chunk_id: "chunk_002" }] } } };
     expect(transcriptFromMetrics(multiple, "recording.wav")).toEqual([]);
     expect(transcriptFromMetrics(multiple, "vox-INT-chunk_002-1791100800000-abc/recording.wav")).toHaveLength(2);
