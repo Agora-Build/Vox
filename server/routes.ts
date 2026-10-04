@@ -641,6 +641,7 @@ export async function registerRoutes(
           username: u.username,
           email: u.email,
           plan: u.plan,
+          personalPremium: u.personalPremium,
           isAdmin: u.isAdmin,
           isEnabled: u.isEnabled,
           emailVerified: !!u.emailVerifiedAt,

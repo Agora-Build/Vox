@@ -4,6 +4,8 @@ import creditsPlugin from "./credits/server/index";
 import sharedAgentsPlugin from "./shared-agents/server/index";
 import organizationsPlugin from "./organizations/server/index";
 import oauthPlugin from "./oauth/server/index";
+import notificationsPlugin from "./notifications/server/index";
+import paymentsPlugin from "./payments/server/index";
 
 export const BUILTIN_PLUGINS: Record<string, VoxPlugin> = {
   sample: samplePlugin,
@@ -11,4 +13,6 @@ export const BUILTIN_PLUGINS: Record<string, VoxPlugin> = {
   "shared-agents": sharedAgentsPlugin,
   organizations: organizationsPlugin,
   oauth: oauthPlugin,
+  notifications: notificationsPlugin,
+  payments: paymentsPlugin,
 };

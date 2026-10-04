@@ -1,10 +1,27 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, beforeAll, afterAll } from "vitest";
+
+await vi.hoisted(async () => {
+  if (process.env.DATABASE_URL) {
+    const { prepareIsolatedCoreDb } = await import("./helpers/isolated-core-db");
+    process.env.DATABASE_URL = await prepareIsolatedCoreDb(process.env.DATABASE_URL, "vox_test_tier_pool_claim");
+  }
+});
 import { storage, pool } from "../server/storage";
 
 const hasDb = !!process.env.DATABASE_URL;
 const d = hasDb ? describe : describe.skip;
 
-// admin (id 1) exists after dev-DB init. Tokens created via createEvalAgentToken
+beforeAll(async () => {
+  if (!hasDb) return;
+  // Global maintenance sweeps cannot share fixtures with a live scheduler.
+  await pool.query(`INSERT INTO users(id,username,email,plan,is_admin,is_enabled)
+    VALUES(1,'ClaimAdmin','claim-admin@test.local','principal',true,true),
+          (2,'ClaimScout','claim-scout@test.local','principal',false,true)`);
+  await pool.query("SELECT setval(pg_get_serial_sequence('users','id'),2)");
+});
+afterAll(async () => { await pool.end(); });
+
+// The isolated fixtures seed admin (id 1). Tokens created via createEvalAgentToken
 // derive region from siteId (Task 1).
 const mkToken = (name: string, siteId: string, tier = "public", createdBy = 1) =>
   storage.createEvalAgentToken({
@@ -294,4 +311,3 @@ d("pending reapers (real SQL)", () => {
       .toBe("Not claimed by any eval agent within 1440 min (requires eval-agent frameworkVersion >= 0.4.1-rc1)");
   });
 });
-

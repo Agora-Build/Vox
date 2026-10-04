@@ -105,3 +105,35 @@ export interface IdentityService {
   /** Ends any Core session on this request. */
   signOut(req: Request): void;
 }
+
+export interface UserDirectoryService {
+  getUsers(ids: number[]): Promise<IdentityUser[]>;
+  listIds(afterId: number, limit: number): Promise<number[]>;
+}
+
+export interface VerificationProof {
+  initCode: string;
+  challengeId: string;
+  code: string;
+}
+
+/** Core verifies and consumes an approval bound to the exact operation. */
+export interface VerificationService {
+  consume(req: Request, action: "credits.grant" | "payments.pricing", payload: unknown, proof: VerificationProof): Promise<string>;
+}
+
+export interface NotificationsService {
+  canSendEmail(): boolean;
+  sendEmail(input: { to: string; subject: string; text: string; idempotencyKey: string; expiresAt?: Date }): Promise<void>;
+}
+
+/** A separate personal entitlement never overwrites the user's base tier. */
+export interface PersonalEntitlementsService {
+  setPremium(userId: number, sourceRef: string, expiresAt: Date | null): Promise<void>;
+}
+
+export interface SecretEncryptionService {
+  encrypt(value: string): string;
+  decrypt(value: string): string;
+  configured(): boolean;
+}

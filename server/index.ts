@@ -9,6 +9,10 @@ import connectPgSimple from "connect-pg-simple";
 import rateLimit from "express-rate-limit";
 import { authenticateApiKey } from "./auth";
 import { identityService } from "./identity";
+import { verificationService, registerVerificationRoutes, setVerificationNotifications } from "./verification";
+import { personalEntitlementsService, userDirectoryService } from "./personal-entitlements";
+import { encryptValue, decryptValue, isEncryptionConfigured } from "./storage";
+import type { NotificationsService } from "@vox/plugin-sdk";
 import { pool } from "./storage";
 import { startLocationServices } from "./location";
 import { setupClashWebSocket } from "./clash-ws";
@@ -170,6 +174,7 @@ app.use((req, res, next) => {
   startLocationServices();
 
   await registerRoutes(httpServer, app);
+  registerVerificationRoutes(app);
   setupClashWebSocket(httpServer);
 
   // Load enabled plugins (routes mounted before the error handler + vite catch-all).
@@ -177,7 +182,12 @@ app.use((req, res, next) => {
   // vox.identity: Core users and sessions, for plugins that sign people in (oauth).
   const plugins = await loadPlugins(app, pool, undefined, undefined, {
     "vox.identity": { version: "1.0.0", impl: identityService },
+    "vox.users": { version: "1.0.0", impl: userDirectoryService },
+    "vox.verification": { version: "1.0.0", impl: verificationService },
+    "vox.personal-entitlements": { version: "1.0.0", impl: personalEntitlementsService },
+    "vox.encryption": { version: "1.0.0", impl: { encrypt: encryptValue, decrypt: decryptValue, configured: isEncryptionConfigured } },
   });
+  setVerificationNotifications(plugins.services.optional<NotificationsService>("vox.notifications", "^1.0.0"));
   // Sign-in with GitHub/Google lives in the oauth plugin. Credentials without
   // the plugin would otherwise just make the buttons vanish, indistinguishable
   // from "not configured".
@@ -274,4 +284,3 @@ function startBackgroundWorker() {
 
   log("Background worker started (stale job detection + job scheduler)", "worker");
 }
-

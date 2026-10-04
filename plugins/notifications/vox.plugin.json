@@ -1,0 +1,9 @@
+{
+  "id": "notifications",
+  "version": "1.0.0",
+  "voxPluginApi": "^1.1.0",
+  "providesServices": { "vox.notifications": "1.0.0" },
+  "requiresServices": { "vox.encryption": "^1.0.0" },
+  "migrations": "migrations",
+  "routes": []
+}

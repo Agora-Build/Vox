@@ -41,7 +41,7 @@ export default tseslint.config(
     // the strong `**/server/**` globs (they match a relative escape like
     // ../../server/storage anywhere in the specifier) preserves the boundary for
     // real plugin files while letting the registry wire plugins up.
-    files: ['plugins/*/**/*.ts'],
+    files: ['plugins/*/**/*.{ts,tsx}'],
     // Exempt plugin TEST files: a plugin's test legitimately imports its own
     // entrypoint by relative path (e.g. ../server/index), whose specifier contains
     // "server/" and would otherwise trip the Core-`server/` denylist below. Tests

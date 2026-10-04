@@ -1,5 +1,6 @@
 @import "tailwindcss";
 @import "tw-animate-css";
+@source "../../plugins";
 
 @custom-variant dark (&:is(.dark *));
 
@@ -172,4 +173,3 @@
   50%  { background-position: -100% center; }
   100% { background-position: -100% center; }
 }
-

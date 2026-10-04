@@ -26,7 +26,10 @@ d("credits plugin end-to-end", () => {
     process.env.VOX_PLUGINS = "credits";
     app = express();
     app.use(express.json());
-    loaded = await loadPlugins(app, pool, BUILTIN_PLUGINS);
+    loaded = await loadPlugins(app, pool, BUILTIN_PLUGINS, undefined, {
+      "vox.users": { version: "1.0.0", impl: { listIds: async () => [], getUsers: async () => [] } },
+      "vox.verification": { version: "1.0.0", impl: { consume: async () => { throw new Error("No approval in schema-only fixture"); } } },
+    });
   });
 
   afterAll(async () => {
@@ -37,12 +40,12 @@ d("credits plugin end-to-end", () => {
     await pool.end();
   });
 
-  it("creates all four tables via migration", async () => {
+  it("creates ledger and personal usage tables via migration", async () => {
     const { rows } = await pool.query(
       `SELECT table_name FROM information_schema.tables
        WHERE table_schema = 'plugin_credits' ORDER BY table_name`);
     expect(rows.map((r) => r.table_name)).toEqual(
-      ["accounts", "credit_holds", "idempotency_keys", "ledger_entries"]);
+      ["accounts", "credit_holds", "grant_batches", "grant_recipients", "idempotency_keys", "ledger_entries", "welcome_backfill"]);
   });
 
   it("seeds exactly the three system accounts with zero balance", async () => {
@@ -61,7 +64,7 @@ d("credits plugin end-to-end", () => {
     expect(health.body).toEqual({ status: "ok" });
     const list = await request(app).get("/api/plugins");
     expect(list.body).toContainEqual(
-      { id: "credits", version: "1.0.0", servicesProvided: ["vox.credits"], servicesRequired: [] });
+      { id: "credits", version: "1.1.0", servicesProvided: ["vox.credits"], servicesRequired: ["vox.users", "vox.verification"] });
 
     const bal = await request(app).get("/api/plugins/credits/balance");
     expect(bal.status).toBe(401); // requireAuth with no session

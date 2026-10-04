@@ -24,10 +24,10 @@ CHECK).
 Under `/api/plugins/oauth/`:
 - `GET providers` → `{ github: boolean, google: boolean }` — the login page uses
   it to decide which buttons to show (404 when the plugin is off → no buttons).
-- `GET github/start` → 302 to GitHub. `POST github/callback` `{ code, state }` —
+- `GET /api/plugins/oauth/github/start` → 302 to GitHub. `POST /api/plugins/oauth/github/callback` `{ code, state }` —
   called by the Core web page `/auth/github/callback`, which is the URL
   registered with GitHub.
-- `GET google/start` → 302 to Google. `GET google/callback` — Google redirects
+- `GET /api/plugins/oauth/google/start` → 302 to Google. `GET /api/plugins/oauth/google/callback` — Google redirects
   the browser here directly; success → `/console`, failure →
   `/login?error=oauth_failed`.
 
