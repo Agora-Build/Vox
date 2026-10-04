@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import type { AudioWaveform } from "./types";
 import { hasEncodedAudioHeader, hasWaveHeader, MAX_WAVEFORM_BYTES } from "./pcm-waveform";
 import { WaveformByteBuffer } from "./waveform-buffer";
+import { fetchPreview } from "../../lib/preview-fetch";
 
 export function useWaveform(src: string, enabled: boolean) {
   const [state, setState] = useState<{ src: string; data?: AudioWaveform; loading: boolean; error?: string }>({ src, loading: true });
@@ -12,7 +13,7 @@ export function useWaveform(src: string, enabled: boolean) {
     let processingTimer: ReturnType<typeof setTimeout> | undefined;
     setState({ src, loading: true });
     const load = async () => {
-      const response = await fetch(src, { signal: controller.signal });
+      const response = await fetchPreview(src, controller.signal);
       if (!response.ok) throw new Error(response.status === 413 ? "Recording too large" : "Recording unavailable");
       const encoding = response.headers.get("Content-Encoding");
       // fetch streams decoded bytes; compressed Content-Length is not their size.
@@ -69,6 +70,8 @@ export function useWaveform(src: string, enabled: boolean) {
     void load().catch((error: unknown) => {
       if (!controller.signal.aborted) setState({ src, loading: false, error: error instanceof Error && error.message === "Recording too large"
         ? "Waveform previews are limited to recordings under 64 MB. Playback still works."
+        : error instanceof Error && error.message === "Preview busy"
+        ? "Waveform previews are busy. Please try again shortly. Playback still works."
         : error instanceof Error && error.message === "Unsupported waveform format"
         ? "This recording's format or channel layout is not supported for waveform previews. Playback still works."
         : error instanceof Error && error.message === "Waveform decoder unavailable"

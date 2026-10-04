@@ -1,8 +1,8 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import express from "express";
 import request from "supertest";
 import { PassThrough, Readable } from "stream";
-import { artifactPreviewUrl, previewArtifact, registerArtifactPreviewRoutes } from "../server/artifact-preview";
+import { artifactPreviewUrl, previewArtifact, registerArtifactPreviewRoutes, PREVIEW_GLOBAL_LIMIT, PREVIEW_USER_LIMIT, PREVIEW_OPEN_TIMEOUT, PREVIEW_IDLE_TIMEOUT, PREVIEW_TOTAL_TIMEOUT } from "../server/artifact-preview";
 import { canViewJob } from "../server/permissions";
 import type { AuthUser } from "../server/auth";
 import type { EvalJob, EvalFlow } from "../shared/schema";
@@ -28,6 +28,7 @@ describe("job artifact preview streaming", () => {
     app = express();
     registerArtifactPreviewRoutes(app, { user: async () => user, job: async () => job, flow: async () => flow, results: async () => [{ artifactFiles: files }], canView: canViewJob, open });
   });
+  afterEach(() => vi.useRealTimers());
   it("streams only the owner's listed object with private response headers", async () => {
     const result = await request(app).get(url()).buffer(true).parse((response, callback) => {
       const chunks: Buffer[] = []; response.on("data", (chunk: Buffer) => chunks.push(chunk)); response.on("end", () => callback(null, Buffer.concat(chunks)));
@@ -126,18 +127,18 @@ describe("job artifact preview streaming", () => {
       const body = new PassThrough(); bodies.push(body); signals.push(signal);
       return { body, close: () => body.destroy() };
     });
-    const first = request(app).get(url()); const second = request(app).get(url());
-    const pending = [first, second].map((test) => test.then(() => {}, () => {}));
-    await vi.waitFor(() => expect(open).toHaveBeenCalledTimes(2));
+    const downloads = Array.from({ length: PREVIEW_USER_LIMIT }, () => request(app).get(url()));
+    const pending = downloads.map((test) => test.then(() => {}, () => {}));
+    await vi.waitFor(() => expect(open).toHaveBeenCalledTimes(PREVIEW_USER_LIMIT));
     expect((await request(app).get(url())).status).toBe(429);
-    first.abort(); second.abort();
+    downloads.forEach((download) => download.abort());
     await Promise.all(pending);
     await vi.waitFor(() => expect(signals.every((signal) => signal.aborted)).toBe(true));
     expect(bodies.every((body) => body.destroyed)).toBe(true);
     open.mockResolvedValue({ body: Readable.from([Buffer.from("abc")]), contentLength: 3, close });
     expect((await request(app).get(url())).status).toBe(200);
   });
-  it("limits all users together to four concurrent streams and releases aborted requests", async () => {
+  it("limits all users together and releases aborted requests", async () => {
     const bodies: PassThrough[] = [];
     open.mockImplementation(async () => {
       const body = new PassThrough(); bodies.push(body);
@@ -146,7 +147,7 @@ describe("job artifact preview streaming", () => {
     user!.isAdmin = true;
     const downloads: { abort(): unknown }[] = [];
     const pending: Promise<unknown>[] = [];
-    for (let index = 0; index < 4; index++) {
+    for (let index = 0; index < PREVIEW_GLOBAL_LIMIT; index++) {
       user = { ...user!, id: index + 10 };
       const download = request(app).get(url());
       downloads.push(download);
@@ -160,5 +161,50 @@ describe("job artifact preview streaming", () => {
     await vi.waitFor(() => expect(bodies.every((body) => body.destroyed)).toBe(true));
     open.mockResolvedValue({ body: Readable.from([Buffer.from("abc")]), contentLength: 3, close });
     expect((await request(app).get(url())).status).toBe(200);
+  });
+  it("allows a steadily progressing stream to continue beyond the storage-open deadline", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const body = new PassThrough();
+    open.mockResolvedValue({ body, close: () => { close(); body.destroy(); } });
+    const pending = request(app).get(url()).then((response) => response);
+    await vi.waitFor(() => expect(open).toHaveBeenCalledOnce());
+    for (let index = 0; index < 3; index++) {
+      body.write(Buffer.from("a"));
+      await vi.advanceTimersByTimeAsync(20_000);
+    }
+    body.end(Buffer.from("b"));
+    expect((await pending).status).toBe(200);
+    expect(close).toHaveBeenCalledOnce();
+  });
+  it("aborts an idle stream and releases its storage resources", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const body = new PassThrough(); const signal: AbortSignal[] = [];
+    open.mockImplementation(async (_id, _key, current: AbortSignal) => { signal.push(current); return { body, close: () => { close(); body.destroy(); } }; });
+    const pending = request(app).get(url()).then(() => {}, () => {});
+    await vi.waitFor(() => expect(open).toHaveBeenCalledOnce());
+    await vi.advanceTimersByTimeAsync(PREVIEW_IDLE_TIMEOUT + 1); await pending;
+    expect(signal[0].aborted).toBe(true); expect(body.destroyed).toBe(true); expect(close).toHaveBeenCalledOnce();
+  });
+  it("keeps a finite total deadline even for a continuously progressing stream", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const body = new PassThrough();
+    open.mockResolvedValue({ body, close: () => { close(); body.destroy(); } });
+    const pending = request(app).get(url()).then(() => {}, () => {});
+    await vi.waitFor(() => expect(open).toHaveBeenCalledOnce());
+    for (let elapsed = 0; elapsed < PREVIEW_TOTAL_TIMEOUT; elapsed += 20_000) {
+      if (!body.destroyed) body.write(Buffer.from("a"));
+      await vi.advanceTimersByTimeAsync(20_000);
+    }
+    await pending;
+    expect(body.destroyed).toBe(true); expect(close).toHaveBeenCalledOnce();
+  });
+  it("bounds waiting for storage to open independently of stream progress", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    open.mockImplementation(async (_id, _key, signal: AbortSignal) => new Promise((_resolve, reject) => signal.addEventListener("abort", () => reject(new Error("Cancelled")), { once: true })));
+    const pending = request(app).get(url()).then((response) => response);
+    await vi.waitFor(() => expect(open).toHaveBeenCalledOnce());
+    await vi.advanceTimersByTimeAsync(PREVIEW_OPEN_TIMEOUT + 1);
+    expect((await pending).status).toBe(504);
+    expect(close).not.toHaveBeenCalled();
   });
 });

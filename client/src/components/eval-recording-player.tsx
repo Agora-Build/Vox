@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { AudioPlayer, type AudioTranscriptSegment } from "@/components/audio-player";
 import { findRecordingTranscript, parseRecordingTranscript, transcriptFromMetrics, type RecordingArtifact } from "@/lib/recording-transcript";
+import { fetchPreview } from "@/lib/preview-fetch";
 
 const MAX_TRANSCRIPT_BYTES = 5 * 1024 * 1024;
 
@@ -14,7 +15,7 @@ export function EvalRecordingPlayer({ recording, artifacts, rawData }: { recordi
     const controller = new AbortController();
     setLoaded({ url, loading: true });
     const load = async () => {
-      const response = await fetch(url, { signal: controller.signal });
+      const response = await fetchPreview(url, controller.signal);
       if (!response.ok) throw new Error("Transcript unavailable");
       if (Number(response.headers.get("Content-Length")) > MAX_TRANSCRIPT_BYTES) {
         await response.body?.cancel(); throw new Error("Transcript too large");
@@ -34,8 +35,10 @@ export function EvalRecordingPlayer({ recording, artifacts, rawData }: { recordi
       const segments = parseRecordingTranscript(text);
       if (!controller.signal.aborted) setLoaded({ url, segments, loading: false });
     };
-    void load().catch(() => {
-      if (!controller.signal.aborted) setLoaded({ url, loading: false, error: "Transcript could not be loaded. Playback is still available." });
+    void load().catch((error: unknown) => {
+      if (!controller.signal.aborted) setLoaded({ url, loading: false, error: error instanceof Error && error.message === "Preview busy"
+        ? "Transcript previews are busy. Please try again shortly. Playback is still available."
+        : "Transcript could not be loaded. Playback is still available." });
     });
     return () => controller.abort();
   }, [url]);

@@ -133,9 +133,14 @@ Analyze jobs, and accepts only listed artifacts with an exact `jobs/:id/:name`
 storage key. It reads from the job owner's user bucket or the system bucket.
 User-defined endpoints receive the same per-connection DNS/SSRF safeguards as
 Analyze; failures never fall back to a different bucket. No URL supplied by the
-browser is fetched by Core. Streams are private/no-store, have a 45-second
-deadline, enforce actual-byte limits, and allow at most two streams per user / four
-per process. Disconnects abort storage access and release resources. No server
+browser is fetched by Core. Streams are private/no-store, allow 45 seconds for
+storage to open, reset a 30-second idle deadline on transfer progress, and retain
+a five-minute total bound. They enforce actual-byte limits and allow at most four
+streams per user / 32 per process, supporting two simultaneous result pages per
+user. Both preview readers retry HTTP 429 up to three times with bounded
+Retry-After/backoff delays; persistent throttling shows an explicit busy message.
+Source changes cancel requests and pending retry timers. Disconnects abort
+storage access and release resources. No server
 audio decoder, FFmpeg runtime dependency, schema migration, bucket policy change,
 or new environment configuration is needed.
 
@@ -174,7 +179,7 @@ source archive link are served at `/licenses/mediabunny.txt`.
 ## Tests
 
 ```sh
-npm exec -- vitest run tests/audio-player-utils.test.ts tests/encoded-waveform.test.ts tests/artifact-preview.test.ts tests/artifact-storage.test.ts
+npm exec -- vitest run tests/audio-player-utils.test.ts tests/encoded-waveform.test.ts tests/artifact-preview.test.ts tests/artifact-storage.test.ts tests/preview-fetch.test.ts
 PLAYWRIGHT_BASE_URL=http://127.0.0.1:5178 npm exec -- playwright test tests/e2e/audio-player.spec.ts
 ```
 
@@ -184,7 +189,8 @@ regenerated with `node tests/fixtures/audio/generate.mjs` when FFmpeg is availab
 running the tests does not require it. They cover genuine canvas waveforms,
 independent WebM stereo channels, MP3/MP4/M4A/AAC/Ogg/FLAC, six-channel Opus,
 an 82-second durationless WebM,
-same-origin previews, unavailable WebCodecs, malformed media, decoder deadlines,
+same-origin previews, transient/persistent throttling, unavailable WebCodecs,
+malformed media, decoder deadlines,
 and cancellation, as well as playback, drag/keyboard/transcript seeking,
 source switching, graceful failures,
 PCM-derived duration fallback, and mobile touch scrubbing.

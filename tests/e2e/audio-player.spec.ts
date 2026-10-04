@@ -20,7 +20,7 @@ function recordingWav(channels = 2, duration = 12) {
   return buffer;
 }
 
-async function mockRecording(page: Page, options: { encoded?: "stereo" | "stereo-live" | "six-channel" | "long-stereo" | "mp3" | "mp4" | "m4a" | "aac" | "ogg" | "flac"; preview?: boolean; channels?: number; blockWaveform?: boolean; unsupportedWaveform?: boolean; malformedWaveform?: boolean; largeTranscript?: boolean; overlappingTranscript?: boolean; flat?: boolean; multiple?: boolean; transcriptError?: boolean; scroll?: boolean } = {}) {
+async function mockRecording(page: Page, options: { encoded?: "stereo" | "stereo-live" | "six-channel" | "long-stereo" | "mp3" | "mp4" | "m4a" | "aac" | "ogg" | "flac"; preview?: boolean; previewBusy?: number; channels?: number; blockWaveform?: boolean; unsupportedWaveform?: boolean; malformedWaveform?: boolean; largeTranscript?: boolean; overlappingTranscript?: boolean; flat?: boolean; multiple?: boolean; transcriptError?: boolean; scroll?: boolean } = {}) {
   const webm = options.encoded && ["stereo", "stereo-live", "six-channel", "long-stereo"].includes(options.encoded);
   const extension = options.encoded ? webm ? "webm" : options.encoded : "wav";
   const filename = options.encoded ? webm ? `${options.encoded}.webm` : `stereo.${extension}` : "";
@@ -37,9 +37,15 @@ async function mockRecording(page: Page, options: { encoded?: "stereo" | "stereo
       ...(!options.flat ? [{ name: "vox-INT-chunk_002-def/analysis/turns.json", url: "/fixture-audio/alternate-turns.json", size: 100, contentType: "application/json" }] : []),
     ] : []),
   ];
+  const previewAttempts = new Map<string, number>();
   const serveArtifact = async (route: Route, preview = false) => {
     const url = new URL(route.request().url());
     const path = preview ? url.searchParams.get("name")! : url.pathname;
+    if (preview && options.previewBusy) {
+      const attempts = (previewAttempts.get(path) ?? 0) + 1;
+      previewAttempts.set(path, attempts);
+      if (attempts <= options.previewBusy) { await route.fulfill({ status: 429, headers: { "Retry-After": "0" }, body: "Busy" }); return; }
+    }
     if (/\.(wav|webm|mp3|mp4|m4a|aac|ogg|flac)$/.test(path)) {
       if (options.blockWaveform && !preview && route.request().resourceType() === "fetch") { await route.abort("failed"); return; }
       if (options.unsupportedWaveform && route.request().resourceType() === "fetch") { await route.fulfill({ body: Buffer.from("not an audio fixture") }); return; }
@@ -159,6 +165,21 @@ test("same-origin preview URLs bypass blocked storage reads while playback keeps
   expect(reads.some((url) => url.includes("/fixture-audio/"))).toBe(false);
   expect(reads.filter((url) => url.includes("/artifact-preview")).length).toBe(2);
   await expect(player.getByTestId("player-audio")).toHaveAttribute("src", "/fixture-audio/recording.webm");
+  await player.getByRole("button", { name: "Play recording", exact: true }).click();
+  await expect.poll(() => player.getByTestId("player-audio").evaluate((audio: HTMLAudioElement) => audio.currentTime)).toBeGreaterThan(0.2);
+});
+
+test("busy previews retry automatically and recover both waveform and transcript", async ({ page }) => {
+  const player = await mockRecording(page, { encoded: "stereo-live", preview: true, previewBusy: 1 });
+  await expect(player.getByTestId("player-channel")).toHaveCount(2);
+  await expect(player.getByText("Can you help me build something?", { exact: true })).toBeVisible();
+  await expect(player.getByText("Waveform unavailable.", { exact: false })).toHaveCount(0);
+});
+
+test("persistent preview throttling is explained without misleading storage/CORS errors", async ({ page }) => {
+  const player = await mockRecording(page, { encoded: "stereo", preview: true, previewBusy: Infinity });
+  await expect(player.getByText("Waveform previews are busy.", { exact: false })).toBeVisible();
+  await expect(player.getByText("Transcript previews are busy.", { exact: false })).toBeVisible();
   await player.getByRole("button", { name: "Play recording", exact: true }).click();
   await expect.poll(() => player.getByTestId("player-audio").evaluate((audio: HTMLAudioElement) => audio.currentTime)).toBeGreaterThan(0.2);
 });

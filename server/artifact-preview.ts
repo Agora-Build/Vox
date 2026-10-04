@@ -6,6 +6,11 @@ import type { AuthUser } from "./auth";
 
 const AUDIO_LIMIT = 64 * 1024 * 1024;
 const TRANSCRIPT_LIMIT = 5 * 1024 * 1024;
+export const PREVIEW_GLOBAL_LIMIT = 32;
+export const PREVIEW_USER_LIMIT = 4;
+export const PREVIEW_OPEN_TIMEOUT = 45_000;
+export const PREVIEW_IDLE_TIMEOUT = 30_000;
+export const PREVIEW_TOTAL_TIMEOUT = 5 * 60_000;
 
 export interface ArtifactObject {
   body: Readable;
@@ -43,6 +48,7 @@ export function artifactPreviewUrl(jobId: number, file: unknown) {
 }
 
 export function registerArtifactPreviewRoutes(app: Express, services: PreviewServices) {
+  // Per-process streaming limits; bodies are piped, not retained in memory.
   let active = 0;
   const byUser = new Map<number, number>();
   app.get("/api/eval-jobs/:id/artifact-preview", async (req, res) => {
@@ -51,7 +57,12 @@ export function registerArtifactPreviewRoutes(app: Express, services: PreviewSer
     const controller = new AbortController();
     const closed = () => controller.abort();
     res.on("close", closed);
-    const timer = setTimeout(() => controller.abort(), 45_000);
+    let idleTimer = setTimeout(() => controller.abort(), PREVIEW_OPEN_TIMEOUT);
+    const totalTimer = setTimeout(() => controller.abort(), PREVIEW_TOTAL_TIMEOUT);
+    const progress = () => {
+      clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => controller.abort(), PREVIEW_IDLE_TIMEOUT);
+    };
     try {
       const user = await services.user(req);
       if (!user || !user.isEnabled) return void res.status(401).json({ error: "Not authenticated" });
@@ -68,7 +79,7 @@ export function registerArtifactPreviewRoutes(app: Express, services: PreviewSer
       const artifact = previewArtifact(jobId, file);
       if (!artifact) return void res.status(404).json({ error: "Preview artifact not found" });
       const count = byUser.get(user.id) ?? 0;
-      if (active >= 4 || count >= 2) { res.set("Retry-After", "3"); return void res.status(429).json({ error: "Too many artifact previews" }); }
+      if (active >= PREVIEW_GLOBAL_LIMIT || count >= PREVIEW_USER_LIMIT) { res.set("Retry-After", "1"); return void res.status(429).json({ error: "Too many artifact previews" }); }
       active++; byUser.set(user.id, count + 1);
       release = () => { active--; const remaining = (byUser.get(user.id) ?? 1) - 1; if (remaining) byUser.set(user.id, remaining); else byUser.delete(user.id); };
       if (controller.signal.aborted) throw new Error("Preview aborted");
@@ -77,11 +88,14 @@ export function registerArtifactPreviewRoutes(app: Express, services: PreviewSer
       if (object.contentEncoding && !["identity", "gzip", "deflate", "br"].includes(object.contentEncoding)) throw new Error("Unsupported storage encoding");
       if (object.contentLength != null && object.contentLength > artifact.limit) return void res.status(413).json({ error: "Preview artifact too large" });
       if (controller.signal.aborted) throw new Error("Preview aborted");
+      progress();
+      res.on("drain", progress);
       res.set({ "Content-Type": artifact.contentType, "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff" });
       if (object.contentLength != null) res.set("Content-Length", String(object.contentLength));
       if (object.contentEncoding && ["gzip", "deflate", "br"].includes(object.contentEncoding)) res.set("Content-Encoding", object.contentEncoding);
       let downloaded = 0;
       const bounded = new Transform({ transform(chunk: Buffer, _encoding, callback) {
+        progress();
         downloaded += chunk.length;
         callback(downloaded > artifact.limit ? new Error("Preview artifact too large") : null, downloaded > artifact.limit ? undefined : chunk);
       } });
@@ -90,7 +104,7 @@ export function registerArtifactPreviewRoutes(app: Express, services: PreviewSer
       if (!res.headersSent && !res.destroyed) res.status(controller.signal.aborted ? 504 : 502).json({ error: "Artifact storage is unavailable" });
       else res.destroy();
     } finally {
-      clearTimeout(timer); res.off("close", closed); controller.abort();
+      clearTimeout(idleTimer); clearTimeout(totalTimer); res.off("close", closed); res.off("drain", progress); controller.abort();
       object?.close(); release?.();
     }
   });
