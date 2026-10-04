@@ -48,7 +48,7 @@ const plugin: VoxPlugin = {
 
     async function ensureCustomer(db: PluginDb, userId: number, user: { email: string; username: string }): Promise<string> {
       await db.query("INSERT INTO customers(user_ref) VALUES($1) ON CONFLICT(user_ref) DO NOTHING", [userId]);
-      const { rows: [customer] } = await db.query<{ stripe_customer_id: string | null }>("SELECT stripe_customer_id FROM customers WHERE user_ref=$1 FOR UPDATE", [userId]);
+      const { rows: [customer] } = await db.query<{ stripe_customer_id: string | null }>("SELECT stripe_customer_id FROM customers WHERE user_ref=$1", [userId]);
       if (customer.stripe_customer_id) return customer.stripe_customer_id;
       const created = await client().customers.create({ email: user.email, name: user.username, metadata: { vox_personal_user: String(userId) } }, { idempotencyKey: `vox-personal-customer:${userId}` });
       await db.query("UPDATE customers SET stripe_customer_id=$2 WHERE user_ref=$1", [userId, created.id]);
@@ -56,7 +56,7 @@ const plugin: VoxPlugin = {
     }
     async function ensurePrice(db: PluginDb, row: CatalogRow, kind: "topup" | "premium"): Promise<string> {
       const field = kind === "premium" ? "premium_stripe_price" : "topup_stripe_price";
-      const locked = (await db.query<CatalogRow>("SELECT * FROM catalog_versions WHERE id=$1 FOR UPDATE", [row.id])).rows[0];
+      const locked = (await db.query<CatalogRow>("SELECT * FROM catalog_versions WHERE id=$1", [row.id])).rows[0];
       if (locked[field]) return locked[field]!;
       const price = await client().prices.create({
         currency: "usd", unit_amount: kind === "premium" ? row.premium_price_cents : row.topup_price_cents,
@@ -143,7 +143,7 @@ const plugin: VoxPlugin = {
           if (!owned.rows.length) fail("Billing event lease expired; please retry", 503);
           return tx.query<T>(sql, params);
         }),
-        withTransaction: () => { throw new Error("Webhook effects use short individual transactions"); },
+        withTransaction: () => { throw new Error("Billing effects use short individual transactions"); },
       };
     }
 
@@ -183,55 +183,65 @@ const plugin: VoxPlugin = {
         const userId = req.session.userId!;
         const user = await identity.getUserById(userId);
         if (!user?.isEnabled) fail("Account unavailable", 401);
-        const customerId = await ctx.db.withTransaction((tx) => ensureCustomer(tx, userId, user));
-        // Commit the purchase snapshot before a remote call can create a payable
-        // session. A timeout/retry must not pick up a newer catalog version.
-        const purchase = await ctx.db.withTransaction(async (tx) => {
-          await tx.query("SELECT user_ref FROM customers WHERE user_ref=$1 FOR UPDATE", [userId]);
-          const { rows: [existing] } = await tx.query<Purchase>("SELECT * FROM purchases WHERE id=$1 FOR UPDATE", [input.requestId]);
-          if (existing) {
-            if (existing.user_ref !== userId || existing.kind !== input.kind || existing.packs !== input.packs) fail("Checkout request ID already used", 409);
-            return existing;
-          }
-          if (input.kind === "premium") {
-            const subscriptions = await stripeClient.subscriptions.list({ customer: customerId, status: "all", limit: 100 });
-            if (subscriptions.data.some((sub) => ["active", "trialing", "past_due", "unpaid", "incomplete", "paused"].includes(sub.status))) fail("Manage your existing subscription instead", 409);
-            const pending = await tx.query<Purchase>("SELECT * FROM purchases WHERE user_ref=$1 AND kind='premium' AND status='pending' ORDER BY created_at", [userId]);
-            for (const old of pending.rows) {
-              if (!old.stripe_checkout_id) return old;
-              const oldSession = await stripeClient.checkout.sessions.retrieve(old.stripe_checkout_id);
-              if (oldSession.status === "open") return old;
-              if (oldSession.status === "complete") fail("Payment is being processed; please refresh shortly", 409);
-              await tx.query("UPDATE purchases SET status='expired' WHERE stripe_checkout_id=$1", [old.stripe_checkout_id]);
+        const leaseKey = `checkout:${userId}`;
+        const lease = randomUUID();
+        const { rows: claimed } = await ctx.db.query(`INSERT INTO webhook_claims(customer_key,token,expires_at) VALUES($1,$2,now()+interval '5 minutes')
+          ON CONFLICT(customer_key) DO UPDATE SET token=EXCLUDED.token,expires_at=EXCLUDED.expires_at
+          WHERE webhook_claims.token IS NULL OR webhook_claims.expires_at<=now() RETURNING customer_key`, [leaseKey, lease]);
+        if (!claimed.length) fail("Your checkout is already processing; please retry shortly", 409);
+        try {
+          const tx = leasedDb(leaseKey, lease);
+          const customerId = await ensureCustomer(tx, userId, user);
+          // Commit the purchase snapshot before a remote call can create a payable
+          // session. A timeout/retry must not pick up a newer catalog version.
+          const purchase = await (async () => {
+            const { rows: [existing] } = await tx.query<Purchase>("SELECT * FROM purchases WHERE id=$1", [input.requestId]);
+            if (existing) {
+              if (existing.user_ref !== userId || existing.kind !== input.kind || existing.packs !== input.packs) fail("Checkout request ID already used", 409);
+              return existing;
             }
-          }
-          const row = await catalog(tx);
-          const amount = (input.kind === "topup" ? row.topup_price_cents : row.premium_price_cents) * input.packs;
-          const creditAmount = input.kind === "topup" ? row.topup_credits * input.packs : 0;
-          const { rows: [created] } = await tx.query<Purchase>("INSERT INTO purchases(id,user_ref,kind,packs,catalog_version,amount_cents,credits) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING *",
-            [input.requestId, userId, input.kind, input.packs, row.id, amount, creditAmount]);
-          return created;
-        });
-        const session = await ctx.db.withTransaction(async (tx) => {
-          const savedPurchase = (await tx.query<Purchase>("SELECT * FROM purchases WHERE id=$1 FOR UPDATE", [purchase.id])).rows[0];
-          if (savedPurchase.stripe_checkout_id) {
-            const saved = await stripeClient.checkout.sessions.retrieve(savedPurchase.stripe_checkout_id);
-            if (saved.status !== "open" || !saved.url) fail("Checkout already completed or expired; start again", 409);
-            return saved;
-          }
-          const row = (await tx.query<CatalogRow>("SELECT * FROM catalog_versions WHERE id=$1", [purchase.catalog_version])).rows[0];
-          const priceId = await ensurePrice(tx, row, purchase.kind);
-          const created = await stripeClient.checkout.sessions.create({ customer: customerId,
-            mode: purchase.kind === "topup" ? "payment" : "subscription", line_items: [{ price: priceId, quantity: purchase.packs }],
-            metadata: { vox_purchase: purchase.id },
-            subscription_data: purchase.kind === "premium" ? { metadata: { vox_personal_user: String(userId) } } : undefined,
-            success_url: `${origin}/console/usage?tab=${purchase.kind === "topup" ? "credits" : "plan"}&checkout={CHECKOUT_SESSION_ID}`,
-            cancel_url: `${origin}/console/usage?tab=${purchase.kind === "topup" ? "credits" : "plan"}`,
-          }, { idempotencyKey: `vox-checkout:${purchase.id}` });
-          await tx.query("UPDATE purchases SET stripe_checkout_id=$2 WHERE id=$1", [purchase.id, created.id]);
-          return created;
-        });
-        res.json({ url: session.url });
+            if (input.kind === "premium") {
+              const subscriptions = await stripeClient.subscriptions.list({ customer: customerId, status: "all", limit: 100 });
+              if (subscriptions.data.some((sub) => ["active", "trialing", "past_due", "unpaid", "incomplete", "paused"].includes(sub.status))) fail("Manage your existing subscription instead", 409);
+              const pending = await tx.query<Purchase>("SELECT * FROM purchases WHERE user_ref=$1 AND kind='premium' AND status='pending' ORDER BY created_at", [userId]);
+              for (const old of pending.rows) {
+                if (!old.stripe_checkout_id) return old;
+                const oldSession = await stripeClient.checkout.sessions.retrieve(old.stripe_checkout_id);
+                if (oldSession.status === "open") return old;
+                if (oldSession.status === "complete") fail("Payment is being processed; please refresh shortly", 409);
+                await tx.query("UPDATE purchases SET status='expired' WHERE stripe_checkout_id=$1", [old.stripe_checkout_id]);
+              }
+            }
+            const row = await catalog(tx);
+            const amount = (input.kind === "topup" ? row.topup_price_cents : row.premium_price_cents) * input.packs;
+            const creditAmount = input.kind === "topup" ? row.topup_credits * input.packs : 0;
+            const { rows: [created] } = await tx.query<Purchase>("INSERT INTO purchases(id,user_ref,kind,packs,catalog_version,amount_cents,credits) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING *",
+              [input.requestId, userId, input.kind, input.packs, row.id, amount, creditAmount]);
+            return created;
+          })();
+          const session = await (async () => {
+            const savedPurchase = (await tx.query<Purchase>("SELECT * FROM purchases WHERE id=$1", [purchase.id])).rows[0];
+            if (savedPurchase.stripe_checkout_id) {
+              const saved = await stripeClient.checkout.sessions.retrieve(savedPurchase.stripe_checkout_id);
+              if (saved.status !== "open" || !saved.url) fail("Checkout already completed or expired; start again", 409);
+              return saved;
+            }
+            const row = (await tx.query<CatalogRow>("SELECT * FROM catalog_versions WHERE id=$1", [purchase.catalog_version])).rows[0];
+            const priceId = await ensurePrice(tx, row, purchase.kind);
+            const created = await stripeClient.checkout.sessions.create({ customer: customerId,
+              mode: purchase.kind === "topup" ? "payment" : "subscription", line_items: [{ price: priceId, quantity: purchase.packs }],
+              metadata: { vox_purchase: purchase.id },
+              subscription_data: purchase.kind === "premium" ? { metadata: { vox_personal_user: String(userId) } } : undefined,
+              success_url: `${origin}/console/usage?tab=${purchase.kind === "topup" ? "credits" : "plan"}&checkout={CHECKOUT_SESSION_ID}`,
+              cancel_url: `${origin}/console/usage?tab=${purchase.kind === "topup" ? "credits" : "plan"}`,
+            }, { idempotencyKey: `vox-checkout:${purchase.id}` });
+            await tx.query("UPDATE purchases SET stripe_checkout_id=$2 WHERE id=$1", [purchase.id, created.id]);
+            return created;
+          })();
+          res.json({ url: session.url });
+        } finally {
+          await ctx.db.query("UPDATE webhook_claims SET token=NULL,expires_at=NULL WHERE customer_key=$1 AND token=$2", [leaseKey, lease]);
+        }
       }));
       r.post("/portal", r.requireAuth, route(async (req, res) => {
         const { rows: [customer] } = await ctx.db.query<{ stripe_customer_id: string }>("SELECT stripe_customer_id FROM customers WHERE user_ref=$1", [req.session.userId]);

@@ -35,6 +35,9 @@ reclaimable after five minutes. Event completion is recorded after all effects,
 so a crash replays the same idempotent operations and repairs partial progress.
 Unrelated customers process concurrently. Short database operations renew and
 check lease ownership; a reclaimed lease cannot update payment state.
+Checkout uses a separate per-user durable claim too: Stripe calls never hold
+a database connection or row lock, and customer/price/session creation use
+stable idempotency keys. A concurrent checkout asks that user to retry shortly.
 
 Top-up refunds/disputes are recorded for explicit admin review, not silently
 removed from a wallet with in-flight escrow. The Usage page surfaces review state.

@@ -97,7 +97,7 @@ integration("personal billing and Core verification", () => {
     app = express();
     app.use(express.json({ verify(req, _res, buf) { (req as any).rawBody = buf; } }));
     app.use(session({ secret: "personal-test-session", resave: false, saveUninitialized: false }));
-    app.post("/test/signin", (req, res) => { req.session.userId = req.body.userId; res.json({ ok: true }); });
+    app.post("/test/signin", (req, res) => { req.session.userId = req.body.userId; req.session.oauthVerifiedAt = req.body.staleOAuth ? Date.now() - 10 * 60_000 : Date.now(); res.json({ ok: true }); });
     security.registerVerificationRoutes(app);
     loaded = await loader.loadPlugins(app, core.pool, undefined, undefined, {
       "vox.identity": { version: "1.0.0", impl: (await import("../server/identity")).identityService },
@@ -219,6 +219,9 @@ integration("personal billing and Core verification", () => {
     expect((await core.pool.query("SELECT payload_ciphertext FROM plugin_notifications.deliveries WHERE idempotency_key=$1", [verification.challengeId])).rows[0].payload_ciphertext).toBeNull();
   });
   it("enrolls a real authenticator and recovers without revealing stored secrets", async () => {
+    const stale = request.agent(app);
+    await stale.post("/test/signin").send({ userId: memberId, staleOAuth: true });
+    await stale.post("/api/user/security/totp/enroll").send({}).expect(403);
     const enrollment = await member.post("/api/user/security/totp/enroll").send({}).expect(200);
     expect(enrollment.body.qrCode).toMatch(/^data:image\/png;base64,/);
     const row = (await core.pool.query("SELECT encrypted_secret FROM user_verification_factors WHERE user_id=$1", [memberId])).rows[0];

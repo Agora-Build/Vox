@@ -48,6 +48,8 @@ async function reauthenticate(req: Request): Promise<void> {
     if (typeof req.body?.password !== "string" || !await verifyPassword(req.body.password, user.passwordHash)) reject("Current password required");
   } else if (user.isAdmin && (typeof req.body?.initCode !== "string" || !safeEqual(req.body.initCode, getInitCode()))) {
     reject("Initialization code required for admin authenticator setup");
+  } else if (!user.isAdmin && (!req.session.oauthVerifiedAt || req.session.oauthVerifiedAt > Date.now() || req.session.oauthVerifiedAt < Date.now() - 5 * 60_000)) {
+    reject("Sign in again with Google or GitHub before changing your authenticator (within five minutes)");
   }
 }
 

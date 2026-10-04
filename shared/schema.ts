@@ -89,7 +89,7 @@ export const userVerificationFactors = pgTable("user_verification_factors", {
   enabled: boolean("enabled").default(false).notNull(),
   lastStep: bigint("last_step", { mode: "number" }).default(-1).notNull(),
   recoveryHashes: jsonb("recovery_hashes").default([]).notNull(),
-  createdAt: timestamp("created_at").defaultNow().notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 });
 
 export const verificationChallenges = pgTable("verification_challenges", {
@@ -101,9 +101,9 @@ export const verificationChallenges = pgTable("verification_challenges", {
   method: text("method").notNull(),
   codeHash: text("code_hash"),
   attempts: integer("attempts").default(0).notNull(),
-  expiresAt: timestamp("expires_at").notNull(),
-  consumedAt: timestamp("consumed_at"),
-  createdAt: timestamp("created_at").defaultNow().notNull(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  consumedAt: timestamp("consumed_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 }, (table) => [index("verification_challenges_user_created_idx").on(table.userId, table.createdAt)]);
 
 export const securityAudit = pgTable("security_audit", {
@@ -112,13 +112,13 @@ export const securityAudit = pgTable("security_audit", {
   action: text("action").notNull(),
   payloadHash: text("payload_hash").notNull(),
   method: text("method").notNull(),
-  createdAt: timestamp("created_at").defaultNow().notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 });
 
 export const personalEntitlements = pgTable("personal_entitlements", {
   userId: integer("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
   sourceRef: text("source_ref").notNull(),
-  expiresAt: timestamp("expires_at"),
+  expiresAt: timestamp("expires_at", { withTimezone: true }),
 }, (table) => [primaryKey({ columns: [table.userId, table.sourceRef] })]);
 
 // ==================== PROVIDERS ====================
