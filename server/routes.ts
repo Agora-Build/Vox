@@ -6373,7 +6373,7 @@ export async function registerRoutes(
   // ==================== CONFIG ROUTES ====================
 
   // The footer can revalidate its license credit without querying config rows.
-  app.get("/api/geoip/attribution", (_req, res) => {
+  app.get("/api/geoip/attribution", async (_req, res) => {
     res.set("Cache-Control", "no-cache");
     res.json({ geoipAttribution: getGeoipAttribution() });
   });
