@@ -1,15 +1,25 @@
-import { useEffect, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { Captions, LocateFixed } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { AudioTranscriptSegment } from "./types";
-import { formatAudioTime } from "./utils";
+import { activeTranscriptIndex, formatAudioTime, transcriptEndIndex } from "./utils";
 
-export function AudioTranscript({ segments, time, playing, loading, error, note, onSeek }: {
-  segments: readonly AudioTranscriptSegment[]; time: number; playing: boolean; loading?: boolean; error?: string; note?: string; onSeek: (time: number) => void;
+const TranscriptRow = memo(function TranscriptRow({ segment, index, active, onSeek }: {
+  segment: AudioTranscriptSegment; index: number; active: boolean; onSeek: (time: number) => void;
+}) {
+  return <button type="button" data-segment-index={index} aria-current={active ? "true" : undefined} onClick={() => onSeek(segment.start)} className={`audio-transcript-row ${active ? "is-active" : ""}`}>
+    <span className="font-mono text-xs tabular-nums text-muted-foreground">{formatAudioTime(segment.start)}</span>
+    <span className="min-w-0"><span className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">{segment.speaker ?? (segment.channel != null ? `Channel ${segment.channel + 1}` : "Speech")}</span><span className="block text-sm leading-relaxed">{segment.text}</span></span>
+  </button>;
+});
+
+export function AudioTranscript({ segments, time, playing, loading, error, note, limited, onSeek }: {
+  segments: readonly AudioTranscriptSegment[]; time: number; playing: boolean; loading?: boolean; error?: string; note?: string; limited?: boolean; onSeek: (time: number) => void;
 }) {
   const listRef = useRef<HTMLDivElement>(null);
   const [follow, setFollow] = useState(true);
-  const active = segments.findIndex((segment) => segment.start <= time && segment.end > time);
+  const ends = useMemo(() => transcriptEndIndex(segments), [segments]);
+  const active = activeTranscriptIndex(segments, ends, time);
   useEffect(() => {
     if (!follow || !playing || active < 0) return;
     const list = listRef.current;
@@ -26,14 +36,11 @@ export function AudioTranscript({ segments, time, playing, loading, error, note,
       {segments.length > 0 && <Button variant="ghost" size="sm" aria-pressed={follow} onClick={() => setFollow(!follow)} className="h-7 gap-1.5 text-xs"><LocateFixed className="h-3.5 w-3.5" /> Follow playback</Button>}
     </div>
     {note && segments.length > 0 && <p className="px-5 pb-2 text-xs text-muted-foreground">{note}</p>}
+    {limited && <p role="status" className="px-5 pb-2 text-xs text-muted-foreground">Transcript preview is limited to 1,000 segments and 4,000 characters per segment. Additional transcript content is not shown in this preview.</p>}
     {loading ? <p role="status" className="px-5 pb-4 text-sm text-muted-foreground">Loading transcript...</p>
       : !segments.length ? <p className="px-5 pb-4 text-sm text-muted-foreground">{error ?? "No timed transcript is available for this recording."}</p>
       : <div ref={listRef} className="audio-transcript-list" onWheel={() => setFollow(false)} onTouchMove={() => setFollow(false)}>
-        {segments.map((segment, index) => <button key={segment.id ?? index} type="button" data-segment-index={index}
-          aria-current={segment.start <= time && segment.end > time ? "true" : undefined} onClick={() => onSeek(segment.start)} className={`audio-transcript-row ${segment.start <= time && segment.end > time ? "is-active" : ""}`}>
-          <span className="font-mono text-xs tabular-nums text-muted-foreground">{formatAudioTime(segment.start)}</span>
-          <span className="min-w-0"><span className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">{segment.speaker ?? (segment.channel != null ? `Channel ${segment.channel + 1}` : "Speech")}</span><span className="block text-sm leading-relaxed">{segment.text}</span></span>
-        </button>)}
+        {segments.map((segment, index) => <TranscriptRow key={segment.id ?? index} segment={segment} index={index} active={segment.start <= time && segment.end > time} onSeek={onSeek} />)}
       </div>}
   </section>;
 }

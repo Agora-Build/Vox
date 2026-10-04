@@ -62,8 +62,8 @@ export function usePlayback(src: string, onFrame: (time: number, duration: numbe
       if (!audio.paused || scrub.current) frame.current = requestAnimationFrame(tick);
     };
     const metadata = () => { setDuration(Number.isFinite(audio.duration) ? audio.duration : durationFallback.current); sample(true); };
-    const started = () => { setPlaying(true); setBuffering(false); cancelAnimationFrame(frame.current); tick(); };
-    const paused = () => { setPlaying(false); cancelAnimationFrame(frame.current); sample(true); };
+    const started = () => { setPlaying(true); setBuffering(false); setError(undefined); cancelAnimationFrame(frame.current); tick(); };
+    const paused = () => { setPlaying(false); setBuffering(false); cancelAnimationFrame(frame.current); sample(true); };
     const waiting = () => setBuffering(true);
     const ready = () => { setBuffering(false); setError(undefined); };
     const failed = () => { setBuffering(false); setPlaying(false); setError("Recording could not be loaded. Check storage access or download it to listen locally."); };

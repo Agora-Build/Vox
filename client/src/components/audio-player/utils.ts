@@ -1,5 +1,8 @@
 import type { AudioTranscriptSegment } from "./types";
 
+export const MAX_TRANSCRIPT_SEGMENTS = 1000;
+export const MAX_TRANSCRIPT_TEXT = 4000;
+
 export function clampTime(time: number, duration: number) {
   return Number.isFinite(time) && Number.isFinite(duration) ? Math.max(0, Math.min(time, Math.max(0, duration))) : 0;
 }
@@ -23,10 +26,26 @@ export function timelineTicks(duration: number, zoom = 1) {
 }
 
 export function normalizeTranscript(segments: readonly AudioTranscriptSegment[]) {
-  return segments.filter((segment) => Number.isFinite(segment.start) && segment.start >= 0
+  return segments.slice(0, MAX_TRANSCRIPT_SEGMENTS).filter((segment) => Number.isFinite(segment.start) && segment.start >= 0
     && Number.isFinite(segment.end) && segment.end > segment.start && typeof segment.text === "string" && segment.text.trim())
-    .map((segment) => ({ ...segment, text: segment.text.trim() }))
+    .map((segment) => ({ ...segment, text: segment.text.length > MAX_TRANSCRIPT_TEXT ? `${segment.text.slice(0, MAX_TRANSCRIPT_TEXT).trim()}...` : segment.text.trim() }))
     .sort((a, b) => a.start - b.start || a.end - b.end);
+}
+
+export function transcriptEndIndex(segments: readonly AudioTranscriptSegment[]) {
+  let end = 0;
+  return segments.map((segment) => { end = Math.max(end, segment.end); return end; });
+}
+
+export function activeTranscriptIndex(segments: readonly AudioTranscriptSegment[], ends: readonly number[], time: number) {
+  let left = 0; let right = ends.length;
+  // Prefix-max ends find the first active segment even when speech overlaps.
+  while (left < right) {
+    const middle = Math.floor((left + right) / 2);
+    if (ends[middle] <= time) left = middle + 1;
+    else right = middle;
+  }
+  return left < segments.length && segments[left].start <= time ? left : -1;
 }
 
 export function buildWaveformPeaks(samples: Float32Array, bins = 4096) {

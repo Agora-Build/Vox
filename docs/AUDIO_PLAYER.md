@@ -26,12 +26,17 @@ const transcript: AudioTranscriptSegment[] = [
 
 - `src` is the playable audio URL. Keep authorization in the page/API that
   supplies it. Cross-origin storage needs GET CORS permission for waveform
-  decoding; native audio playback can still work without the waveform.
-- The decoded file determines the number of waveform lanes, not `channels`.
+  extraction; native audio playback can still work without the waveform.
+- The PCM WAV file determines the number of waveform lanes, not `channels`.
   `channels` supplies optional labels and CSS colors; unlabeled lanes use
-  numbered labels. Mono, stereo, and multichannel files share the same module.
+  numbered labels. Mono, stereo, and multichannel files (up to 32 channels) share
+  the same module. Integer PCM at 8/16/24/32 bits, float PCM at 32/64 bits, and
+  WAVE_FORMAT_EXTENSIBLE PCM are supported.
 - Transcript `start` and `end` are seconds relative to this recording, not the
   whole job. `channel` is zero-based. Overlapping speech is supported.
+- Transcript previews are bounded to the first 1,000 supplied segments and
+  4,000 characters per segment. A visible notice explains truncation; the eval
+  result's original transcript artifact remains available for download.
 - Use `transcriptLoading`, `transcriptError`, and `transcriptNote` to describe
   the page's transcript-loading state. `showTranscript={false}` hides the panel.
 - `onTimeChange` reports committed playback positions, at roughly 10 Hz while
@@ -45,7 +50,7 @@ const transcript: AudioTranscriptSegment[] = [
 
 Playback uses the browser's native audio element. A frame-synchronized playhead
 and clipped played-waveform overlay update without repainting the waveform
-canvases. Peak extraction runs in a worker; canvases redraw for data, size, or
+canvases. PCM sample reading and peak extraction run in a worker; canvases redraw for data, size, or
 theme changes. Zoom supports 1x, 2x, 4x, and 8x with horizontal scrolling.
 
 Dragging pauses audio and previews a position. Releasing commits one seek and
@@ -56,10 +61,20 @@ the beginning/end, and Space toggles playback. Clicking a transcript seeks to
 its start. Scrolling the transcript turns off automatic following.
 
 Waveform downloads are capped at 64 MiB, including responses without a
-Content-Length header. Larger files, failed CORS requests, and unsupported
-decoding formats show a clear message instead of a fabricated waveform; audio
-controls remain available when the browser can play the file. Decoding loads
-the recording into memory, so this is not a streaming waveform implementation.
+Content-Length header. The bounded encoded buffer transfers to the worker,
+which reads PCM samples directly into at most 4,096 peaks per channel. It does
+not allocate full decoded channel arrays or invoke `decodeAudioData`, so a long
+compressed file cannot expand into unbounded waveform-processing memory.
+
+Compressed formats (MP3, WebM, Ogg, AAC, M4A, FLAC) remain playable using native
+audio, but their waveform previews are unavailable. Non-WAV waveform fetches
+stop after the header is recognized. Large WAVs, unsupported WAV encodings, and
+failed CORS requests also show a clear message instead of a fabricated waveform.
+The native audio element preloads metadata rather than downloading the whole
+recording before playback. This is not a streaming waveform implementation.
+
+Transcript previews use bounded counts/text, an indexed active-segment lookup,
+and memoized rows so playback does not rerender every speech row.
 
 ## Eval integration
 
@@ -81,4 +96,7 @@ PLAYWRIGHT_BASE_URL=http://127.0.0.1:5177 npm exec -- playwright test tests/e2e/
 The browser tests use local generated audio and mocked APIs; point them at a
 local Vox build/preview. They cover genuine canvas waveforms, six channels,
 playback, drag/keyboard/transcript seeking, source switching, graceful failures,
-decoded-duration fallback, and mobile touch scrubbing.
+PCM-derived duration fallback, and mobile touch scrubbing.
+Additional regressions cover PCM encodings and malformed files, safe unsupported
+format handling, transcript limits, stalled-playback pause, and speed preservation
+when the native media source reloads without remounting.

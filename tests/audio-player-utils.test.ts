@@ -1,6 +1,58 @@
 import { describe, expect, it } from "vitest";
-import { buildWaveformPeaks, clampTime, formatAudioTime, normalizeTranscript, timelineTicks } from "../client/src/components/audio-player/utils";
+import { activeTranscriptIndex, buildWaveformPeaks, clampTime, formatAudioTime, MAX_TRANSCRIPT_SEGMENTS, MAX_TRANSCRIPT_TEXT, normalizeTranscript, timelineTicks, transcriptEndIndex } from "../client/src/components/audio-player/utils";
+import { pcmWaveform } from "../client/src/components/audio-player/pcm-waveform";
 import { findRecordingTranscript, parseRecordingTranscript, transcriptFromMetrics } from "../client/src/lib/recording-transcript";
+
+function pcmFixture(bits = 16, codec = 1, channels = 2, extensible = false) {
+  const values = [0, -0.5, 0.75, 0];
+  const alignment = channels * bits / 8;
+  const fmtSize = extensible ? 40 : 16;
+  const dataOffset = 28 + fmtSize;
+  const bytes = Buffer.alloc(dataOffset + values.length * alignment);
+  bytes.write("RIFF"); bytes.writeUInt32LE(bytes.length - 8, 4); bytes.write("WAVEfmt ", 8); bytes.writeUInt32LE(fmtSize, 16);
+  bytes.writeUInt16LE(extensible ? 0xfffe : codec, 20); bytes.writeUInt16LE(channels, 22); bytes.writeUInt32LE(16000, 24); bytes.writeUInt32LE(16000 * alignment, 28); bytes.writeUInt16LE(alignment, 32); bytes.writeUInt16LE(bits, 34);
+  if (extensible) {
+    bytes.writeUInt16LE(22, 36); bytes.writeUInt16LE(bits, 38); bytes.writeUInt32LE(codec, 44);
+    bytes.set([0, 0, 16, 0, 128, 0, 0, 170, 0, 56, 155, 113], 48);
+  }
+  bytes.write("data", dataOffset - 8); bytes.writeUInt32LE(values.length * alignment, dataOffset - 4);
+  for (let frame = 0; frame < values.length; frame++) for (let channel = 0; channel < channels; channel++) {
+    const offset = dataOffset + frame * alignment + channel * bits / 8;
+    const value = channel % 2 ? 0 : values[frame];
+    if (codec === 3) { if (bits === 32) bytes.writeFloatLE(value, offset); else bytes.writeDoubleLE(value, offset); }
+    else if (bits === 8) bytes.writeUInt8(Math.round(value * 128 + 128), offset);
+    else bytes.writeIntLE(Math.round(value * 2 ** (bits - 1)), offset, bits / 8);
+  }
+  return bytes;
+}
+const arrayBuffer = (bytes: Buffer) => bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+
+describe("bounded PCM waveform extraction", () => {
+  for (const [bits, codec] of [[8, 1], [16, 1], [24, 1], [32, 1], [32, 3], [64, 3]]) {
+    it(`reads ${bits}-bit ${codec === 1 ? "integer" : "float"} samples without a browser decoder`, () => {
+      const waveform = pcmWaveform(arrayBuffer(pcmFixture(bits, codec)));
+      expect(waveform.duration).toBe(4 / 16000);
+      expect(Array.from(waveform.channels[0])).toEqual([0, 0.5, 0.75, 0]);
+      expect(Array.from(waveform.channels[1])).toEqual([0, 0, 0, 0]);
+    });
+  }
+  it("supports extensible multichannel PCM WAVs", () => {
+    expect(pcmWaveform(arrayBuffer(pcmFixture(24, 1, 6, true))).channels).toHaveLength(6);
+  });
+  it("rejects compressed and invalid formats before any sample allocation", () => {
+    expect(() => pcmWaveform(arrayBuffer(Buffer.from("OggS compressed audio")))).toThrow("Unsupported waveform format");
+    expect(() => pcmWaveform(new ArrayBuffer(0))).toThrow("Unsupported waveform format");
+    const badData = pcmFixture(); badData.writeUInt32LE(0xffffffff, 40);
+    expect(() => pcmWaveform(arrayBuffer(badData))).toThrow("Invalid WAV data");
+    const tooManyChannels = pcmFixture(8, 1, 33);
+    expect(() => pcmWaveform(arrayBuffer(tooManyChannels))).toThrow("Unsupported waveform format");
+  });
+  it("ignores non-finite float samples and clamps out-of-range peaks", () => {
+    const bytes = pcmFixture(32, 3, 1);
+    bytes.writeFloatLE(NaN, 44); bytes.writeFloatLE(Infinity, 48); bytes.writeFloatLE(-2, 52);
+    expect(Array.from(pcmWaveform(arrayBuffer(bytes)).channels[0])).toEqual([0, 0, 1, 0]);
+  });
+});
 
 describe("audio timeline", () => {
   it("formats fractional and hour-long positions without floating-point drift", () => {
@@ -68,5 +120,26 @@ describe("recording transcripts", () => {
   });
   it("filters invalid timing/text and orders valid segments", () => {
     expect(normalizeTranscript([{ start: 2, end: 4, text: " second " }, { start: -1, end: 2, text: "bad" }, { start: 1, end: 1, text: "empty" }, { start: 0, end: 1, text: "first" }, { start: NaN, end: 2, text: "bad" }])).toEqual([{ start: 0, end: 1, text: "first" }, { start: 2, end: 4, text: "second" }]);
+  });
+  it("bounds preview segment count and text without modifying the supplied transcript", () => {
+    const original = Array.from({ length: MAX_TRANSCRIPT_SEGMENTS + 10 }, (_, index) => ({ start: index, end: index + 1, text: "a".repeat(MAX_TRANSCRIPT_TEXT + 10) }));
+    const normalized = normalizeTranscript(original);
+    expect(normalized).toHaveLength(MAX_TRANSCRIPT_SEGMENTS);
+    expect(normalized[0].text).toHaveLength(MAX_TRANSCRIPT_TEXT + 3);
+    expect(original[0].text).toHaveLength(MAX_TRANSCRIPT_TEXT + 10);
+  });
+  it("bounds parsed transcript objects while retaining a truncation indicator", () => {
+    const source = [{ user_segments: Array.from({ length: MAX_TRANSCRIPT_SEGMENTS + 10 }, (_, index) => ({ start: index, end: index + 1, text: "speech" })) }];
+    expect(parseRecordingTranscript(JSON.stringify(source))).toHaveLength(MAX_TRANSCRIPT_SEGMENTS + 1);
+  });
+  it("indexes active speech through overlap, gaps, and exact end boundaries", () => {
+    const overlapping = normalizeTranscript([{ start: 0, end: 100, text: "long" }, { start: 1, end: 2, text: "short" }, { start: 3, end: 4, text: "later" }]);
+    const ends = transcriptEndIndex(overlapping);
+    expect(activeTranscriptIndex(overlapping, ends, 50)).toBe(0);
+    expect(activeTranscriptIndex(overlapping, ends, 100)).toBe(-1);
+    const separate = normalizeTranscript([{ start: 0, end: 2, text: "first" }, { start: 5, end: 6, text: "second" }]);
+    expect(activeTranscriptIndex(separate, transcriptEndIndex(separate), 3)).toBe(-1);
+    expect(activeTranscriptIndex(separate, transcriptEndIndex(separate), 5)).toBe(1);
+    expect(activeTranscriptIndex([], [], 0)).toBe(-1);
   });
 });

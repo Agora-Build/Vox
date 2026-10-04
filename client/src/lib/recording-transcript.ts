@@ -1,4 +1,5 @@
 import type { AudioTranscriptSegment } from "../components/audio-player/types";
+import { MAX_TRANSCRIPT_SEGMENTS } from "../components/audio-player/utils";
 
 export interface RecordingArtifact { name: string; url: string; size: number; contentType: string }
 const record = (value: unknown): Record<string, unknown> => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
@@ -27,6 +28,7 @@ export function parseRecordingTranscript(text: string): AudioTranscriptSegment[]
         const segment = record(value);
         if (typeof segment.start === "number" && typeof segment.end === "number" && typeof segment.text === "string") {
           segments.push({ start: segment.start, end: segment.end, text: segment.text, speaker, channel });
+          if (segments.length > MAX_TRANSCRIPT_SEGMENTS) return segments;
         }
       }
     }
@@ -52,6 +54,7 @@ export function transcriptFromMetrics(rawData: unknown, recordingName: string): 
       if (typeof turn[field] !== "string" || !turn[field]) continue;
       const segment = { start: turn.turn_start, end: turn.turn_end, text: turn[field], speaker, channel };
       segments.set(JSON.stringify(segment), segment);
+      if (segments.size > MAX_TRANSCRIPT_SEGMENTS) return Array.from(segments.values());
     }
   }
   return Array.from(segments.values());

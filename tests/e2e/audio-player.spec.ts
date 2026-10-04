@@ -19,7 +19,7 @@ function recordingWav(channels = 2, duration = 12) {
   return buffer;
 }
 
-async function mockRecording(page: Page, options: { channels?: number; blockWaveform?: boolean; multiple?: boolean; transcriptError?: boolean } = {}) {
+async function mockRecording(page: Page, options: { channels?: number; blockWaveform?: boolean; unsupportedWaveform?: boolean; largeTranscript?: boolean; multiple?: boolean; transcriptError?: boolean } = {}) {
   const wav = recordingWav(options.channels ?? 2);
   const alternate = recordingWav(1, 8);
   const prefix = "vox-RSP-chunk_001-abc";
@@ -35,13 +35,16 @@ async function mockRecording(page: Page, options: { channels?: number; blockWave
     const path = new URL(route.request().url()).pathname;
     if (path.endsWith(".wav")) {
       if (options.blockWaveform && route.request().resourceType() === "fetch") { await route.abort("failed"); return; }
+      if (options.unsupportedWaveform && route.request().resourceType() === "fetch") { await route.fulfill({ body: Buffer.from("OggS compressed fixture") }); return; }
       const body = path.includes("alternate") ? alternate : wav;
       const range = route.request().headers().range?.match(/^bytes=(\d+)-(\d*)$/);
       const start = range ? Number(range[1]) : 0;
       const end = range?.[2] ? Math.min(Number(range[2]), body.length - 1) : body.length - 1;
       await route.fulfill({ status: range ? 206 : 200, contentType: "audio/wav", headers: { "Accept-Ranges": "bytes", ...(range ? { "Content-Range": `bytes ${start}-${end}/${body.length}` } : {}) }, body: body.subarray(start, end + 1) });
     } else if (options.transcriptError) await route.fulfill({ status: 403, body: "Forbidden" });
-    else await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(path.includes("alternate") ? [
+    else await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(options.largeTranscript ? [
+      { user_segments: Array.from({ length: 1500 }, (_, index) => ({ start: index * 0.01, end: index * 0.01 + 0.1, text: `Segment ${index}` })) },
+    ] : path.includes("alternate") ? [
       { agent_segments: [{ start: 1, end: 5, text: "Another recording, another transcript." }] },
     ] : [
       { user_segments: [{ start: 0, end: 4, text: "Can you help me build something?" }], agent_segments: [{ start: 4, end: 8, text: "Absolutely. What do you have in mind?" }] },
@@ -142,13 +145,51 @@ test("waveform and transcript failures never block native audio playback", async
   await expect.poll(() => player.getByTestId("player-audio").evaluate((audio: HTMLAudioElement) => audio.currentTime)).toBeGreaterThan(0.2);
 });
 
-test("decoded duration supports seekable recordings whose native duration is infinite", async ({ page }) => {
+test("PCM duration supports seekable recordings whose native duration is infinite", async ({ page }) => {
   await page.addInitScript(() => Object.defineProperty(HTMLMediaElement.prototype, "duration", { get: () => Infinity, configurable: true }));
   const player = await mockRecording(page);
   const timeline = player.getByRole("slider", { name: "Recording timeline" });
   await expect(timeline).toHaveAttribute("aria-valuemax", "12");
   await timeline.focus(); await timeline.press("ArrowRight");
   await expect(timeline).toHaveAttribute("aria-valuenow", "5");
+});
+
+test("unsupported waveform encodings do not invoke an unbounded audio decoder", async ({ page }) => {
+  await page.addInitScript(() => {
+    AudioContext.prototype.decodeAudioData = async () => { throw new Error("Unbounded decoder invoked"); };
+  });
+  const player = await mockRecording(page, { unsupportedWaveform: true });
+  await expect(player.getByText("Waveform previews support PCM WAV recordings", { exact: false })).toBeVisible();
+  await player.getByRole("button", { name: "Play recording", exact: true }).click();
+  await expect.poll(() => player.getByTestId("player-audio").evaluate((audio: HTMLAudioElement) => audio.currentTime)).toBeGreaterThan(0.2);
+});
+
+test("pausing while waiting clears the loading spinner", async ({ page }) => {
+  const player = await mockRecording(page);
+  await player.getByRole("button", { name: "Play recording", exact: true }).click();
+  await expect.poll(() => player.getByTestId("player-audio").evaluate((audio: HTMLAudioElement) => audio.paused)).toBe(false);
+  await player.getByTestId("player-audio").evaluate((audio: HTMLAudioElement) => audio.dispatchEvent(new Event("waiting")));
+  await expect(player.getByRole("button", { name: "Pause recording", exact: true }).locator(".animate-spin")).toHaveCount(1);
+  await player.getByRole("button", { name: "Pause recording", exact: true }).click();
+  await expect(player.getByRole("button", { name: "Play recording", exact: true }).locator(".animate-spin")).toHaveCount(0);
+});
+
+test("playback speed stays correct when media reloads without remounting the player", async ({ page }) => {
+  const player = await mockRecording(page);
+  await expect(player.getByTestId("player-channel")).toHaveCount(2);
+  await player.getByLabel("Playback speed").selectOption("1.5");
+  await player.getByTestId("player-audio").evaluate((audio: HTMLAudioElement) => { audio.src = "/fixture-audio/alternate.wav"; audio.load(); });
+  await expect.poll(() => player.getByTestId("player-audio").evaluate((audio: HTMLAudioElement) => audio.readyState)).toBeGreaterThanOrEqual(1);
+  await expect(player.getByLabel("Playback speed")).toHaveValue("1.5");
+  expect(await player.getByTestId("player-audio").evaluate((audio: HTMLAudioElement) => audio.playbackRate)).toBe(1.5);
+});
+
+test("large transcripts have a bounded, clearly labeled preview", async ({ page }) => {
+  const player = await mockRecording(page, { largeTranscript: true });
+  await expect(player.getByText("Transcript preview is limited", { exact: false })).toBeVisible();
+  await expect(player.locator("[data-segment-index]")).toHaveCount(1000);
+  await player.getByRole("button", { name: "Play recording", exact: true }).click();
+  await expect.poll(() => player.getByTestId("player-audio").evaluate((audio: HTMLAudioElement) => audio.currentTime)).toBeGreaterThan(0.2);
 });
 
 test("mobile player stays within the page and supports pointer scrubbing", async ({ page }, info) => {
