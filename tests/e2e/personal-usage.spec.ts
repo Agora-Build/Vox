@@ -2,8 +2,8 @@ import { test, expect } from "@playwright/test";
 import * as OTPAuth from "otpauth";
 test.skip(!process.env.PERSONAL_BILLING_E2E, "Run against the isolated personal billing preview server");
 
-async function mockAccount(page: import("@playwright/test").Page, pluginIds = ["credits", "payments"], admin = false, billing: { paymentsEnabled?: boolean; activeSubscription?: boolean } = {}) {
-  const user = { id: 1, username: "Builder", email: "builder@example.test", plan: "basic", isAdmin: admin, isEnabled: true, emailVerified: true, organizationId: null, orgRole: null, hasPassword: true };
+async function mockAccount(page: import("@playwright/test").Page, pluginIds = ["credits", "payments"], admin = false, billing: { paymentsEnabled?: boolean; activeSubscription?: boolean; expiredSubscription?: boolean; plan?: "basic" | "premium" | "principal" | "fellow" } = {}) {
+  const user = { id: 1, username: "Builder", email: "builder@example.test", plan: billing.plan ?? (billing.activeSubscription ? "premium" : "basic"), isAdmin: admin, isEnabled: true, emailVerified: true, organizationId: null, orgRole: null, hasPassword: true };
   await page.route("**/api/**", async (route) => {
     const url = new URL(route.request().url());
     const catalog = { version: 1, premiumPriceCents: 1200, topupPriceCents: 500, topupCredits: 100 };
@@ -12,7 +12,7 @@ async function mockAccount(page: import("@playwright/test").Page, pluginIds = ["
       "/api/plugins": pluginIds.map((id) => ({ id })),
       "/api/plugins/credits/usage": { available: 100, reserved: 0, spent: 0, spentThisMonth: 0 },
       "/api/plugins/credits/statement": { entries: [{ id: 1, amount: 100, reason: "welcome", refType: "welcome", createdAt: "2026-10-04T00:00:00Z" }], nextCursor: null },
-      "/api/plugins/payments/usage": { catalog, paymentsEnabled: billing.paymentsEnabled ?? false, subscription: billing.activeSubscription ? { status: "active", paid_through: "2099-01-01T00:00:00Z", cancel_at_period_end: false, price_cents: 1200 } : null, purchases: [] },
+      "/api/plugins/payments/usage": { catalog, paymentsEnabled: billing.paymentsEnabled ?? false, subscription: billing.activeSubscription || billing.expiredSubscription ? { status: billing.expiredSubscription ? "canceled" : "active", paid_through: billing.expiredSubscription ? "2000-01-01T00:00:00Z" : "2099-01-01T00:00:00Z", cancel_at_period_end: false, price_cents: 1200 } : null, purchases: [] },
       "/api/plugins/payments/pricing": { catalog, history: [], reviews: [] },
       "/api/user/security": { totpEnabled: false, hasPassword: true, emailAvailable: false, encryptionConfigured: true },
       "/api/admin/users": { data: [user, { ...user, id: 2, username: "Second" }], total: 2, stats: { total: 2, admins: 1, premium: 0 } },
@@ -90,6 +90,65 @@ test("an existing personal subscription also explains disabled billing managemen
   await expect(page.getByRole("status").filter({ hasText: "Stripe is not configured." })).toBeVisible();
   await expect(page.getByRole("button", { name: "Manage subscription & billing" })).toBeDisabled();
   await expect(page.getByRole("button", { name: "Upgrade to Premium" })).toHaveCount(0);
+});
+for (const plan of ["principal", "fellow", "premium"] as const) {
+  const label = plan.charAt(0).toUpperCase() + plan.slice(1);
+  test(`assigned ${label} access is not mislabeled Basic without a subscription`, async ({ page }) => {
+    await mockAccount(page, ["credits", "payments"], false, { plan, paymentsEnabled: true });
+    await page.goto("/console/usage?tab=plan", { waitUntil: "domcontentloaded" });
+    const account = page.getByTestId("personal-account-plan");
+    await expect(account.getByText(label, { exact: true })).toBeVisible();
+    await expect(account.getByText("Basic", { exact: true })).toHaveCount(0);
+    await expect(account.getByText(`Your ${label} access does not require a paid personal subscription.`, { exact: true })).toBeVisible();
+    await expect(page.getByTestId("personal-subscription")).toContainText("No active paid subscription");
+    await expect(page.getByRole("button", { name: "Upgrade to Premium" })).toHaveCount(0);
+    await expect(page.getByText("Current subscription", { exact: true })).toHaveCount(0);
+  });
+}
+for (const plan of ["principal", "fellow"] as const) {
+  const label = plan.charAt(0).toUpperCase() + plan.slice(1);
+  test(`${label} access stays prominent with a paid Premium subscription`, async ({ page }) => {
+    await mockAccount(page, ["credits", "payments"], false, { plan, activeSubscription: true, paymentsEnabled: true });
+    await page.goto("/console/usage?tab=plan", { waitUntil: "domcontentloaded" });
+    await expect(page.getByTestId("personal-account-plan").getByText(label, { exact: true })).toBeVisible();
+    await expect(page.getByTestId("personal-subscription")).toContainText("Premium");
+    await expect(page.getByText("Current subscription", { exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Manage subscription & billing" })).toBeEnabled();
+    await expect(page.getByRole("button", { name: "Upgrade to Premium" })).toHaveCount(0);
+  });
+}
+test("paid Premium access is distinct from assigned access", async ({ page }) => {
+  await mockAccount(page, ["credits", "payments"], false, { activeSubscription: true, paymentsEnabled: true });
+  await page.goto("/console/usage?tab=plan", { waitUntil: "domcontentloaded" });
+  await expect(page.getByTestId("personal-account-plan").getByText("Premium", { exact: true })).toBeVisible();
+  await expect(page.getByText("Premium features are included with your active personal subscription.", { exact: true })).toBeVisible();
+  await expect(page.getByTestId("personal-subscription")).toContainText("$12.00 / month");
+});
+test("expired personal billing does not downgrade Principal account access", async ({ page }) => {
+  await mockAccount(page, ["credits", "payments"], false, { plan: "principal", expiredSubscription: true });
+  await page.goto("/console/usage?tab=plan", { waitUntil: "domcontentloaded" });
+  await expect(page.getByTestId("personal-account-plan").getByText("Principal", { exact: true })).toBeVisible();
+  await expect(page.getByTestId("personal-subscription")).toContainText("No active paid subscription");
+  await expect(page.getByText("Current subscription", { exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Upgrade to Premium" })).toHaveCount(0);
+});
+for (const expiredSubscription of [false, true]) {
+  test(`Basic remains free ${expiredSubscription ? "after a subscription expires" : "without a subscription"}`, async ({ page }) => {
+    await mockAccount(page, ["credits", "payments"], false, { expiredSubscription, paymentsEnabled: true });
+    await page.goto("/console/usage?tab=plan", { waitUntil: "domcontentloaded" });
+    await expect(page.getByTestId("personal-account-plan").getByText("Basic", { exact: true })).toBeVisible();
+    await expect(page.getByTestId("personal-subscription")).toContainText("No active paid subscription");
+    await expect(page.getByRole("button", { name: "Upgrade to Premium" })).toBeEnabled();
+    await expect(page.getByText("Current subscription", { exact: true })).toHaveCount(0);
+  });
+}
+test("mobile Scout account shows Principal without changing purchase pricing", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await mockAccount(page, ["credits", "payments"], false, { plan: "principal" });
+  await page.goto("/console/usage?tab=plan", { waitUntil: "domcontentloaded" });
+  await expect(page.getByTestId("personal-account-plan").getByText("Principal", { exact: true })).toBeVisible();
+  await expect(page.getByText("$12.00", { exact: false })).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 });
 test("admin can select a user batch and preview total credits before verification", async ({ page }) => {
   await mockAccount(page, ["credits", "payments"], true);
