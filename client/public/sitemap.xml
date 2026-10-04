@@ -8,5 +8,6 @@
   <url><loc>https://vox.agora.build/run-your-own</loc><changefreq>weekly</changefreq><priority>0.7</priority></url>
   <url><loc>https://vox.agora.build/api-docs</loc><changefreq>weekly</changefreq><priority>0.8</priority></url>
   <url><loc>https://vox.agora.build/privacy</loc><changefreq>yearly</changefreq><priority>0.2</priority></url>
+  <url><loc>https://vox.agora.build/thanks</loc><changefreq>monthly</changefreq><priority>0.3</priority></url>
   <url><loc>https://vox.agora.build/terms</loc><changefreq>yearly</changefreq><priority>0.2</priority></url>
 </urlset>

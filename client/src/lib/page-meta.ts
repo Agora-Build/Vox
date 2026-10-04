@@ -50,6 +50,11 @@ const PUBLIC_PAGES: Record<string, PageMeta> = {
       "Create eval flows, run them against your voice agents, and read latency and turn-success results over HTTP with an API key.",
   },
   "/privacy": { title: "Privacy Policy | Vox", description: DEFAULT.description },
+  "/thanks": {
+    title: "Thanks | Vox",
+    description:
+      "Meet the open-source projects, libraries, tools, and services that make Vox possible. Thank you to their maintainers and communities.",
+  },
   "/terms": { title: "Terms of Use | Vox", description: DEFAULT.description },
 };
 

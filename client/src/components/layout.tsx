@@ -307,6 +307,11 @@ export default function Layout({ children }: { children: React.ReactNode }) {
                     API Docs
                   </Link>
                 </li>
+                <li>
+                  <Link href="/thanks" className="text-sm hover:text-foreground transition-colors text-muted-foreground" data-testid="link-footer-thanks">
+                    Thanks
+                  </Link>
+                </li>
               </ul>
             </div>
 
