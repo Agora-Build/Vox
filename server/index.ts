@@ -11,6 +11,7 @@ import { authenticateApiKey } from "./auth";
 import { identityService } from "./identity";
 import { verificationService, registerVerificationRoutes, setVerificationNotifications } from "./verification";
 import { personalEntitlementsService, userDirectoryService } from "./personal-entitlements";
+import { notificationDataService } from "./notification-data";
 import { encryptValue, decryptValue, isEncryptionConfigured } from "./storage";
 import type { NotificationsService } from "@vox/plugin-sdk";
 import { pool } from "./storage";
@@ -183,6 +184,7 @@ app.use((req, res, next) => {
   const plugins = await loadPlugins(app, pool, undefined, undefined, {
     "vox.identity": { version: "1.0.0", impl: identityService },
     "vox.users": { version: "1.0.0", impl: userDirectoryService },
+    "vox.notification-data": { version: "1.0.0", impl: notificationDataService },
     "vox.verification": { version: "1.0.0", impl: verificationService },
     "vox.personal-entitlements": { version: "1.0.0", impl: personalEntitlementsService },
     "vox.encryption": { version: "1.0.0", impl: { encrypt: encryptValue, decrypt: decryptValue, configured: isEncryptionConfigured } },

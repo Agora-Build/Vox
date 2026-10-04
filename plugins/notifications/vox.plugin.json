@@ -1,9 +1,23 @@
 {
   "id": "notifications",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "voxPluginApi": "^1.1.0",
   "providesServices": { "vox.notifications": "1.0.0" },
   "requiresServices": { "vox.encryption": "^1.0.0" },
   "migrations": "migrations",
-  "routes": []
+  "routes": [
+    "GET /api/plugins/notifications/settings",
+    "GET /api/plugins/notifications/channels",
+    "POST /api/plugins/notifications/channels",
+    "PATCH /api/plugins/notifications/channels/:id",
+    "GET /api/plugins/notifications/rules",
+    "POST /api/plugins/notifications/rules",
+    "PATCH /api/plugins/notifications/rules/:id",
+    "POST /api/plugins/notifications/preview",
+    "GET /api/plugins/notifications/activity",
+    "GET /api/plugins/notifications/access",
+    "POST /api/plugins/notifications/access",
+    "POST /api/plugins/notifications/groups",
+    "PATCH /api/plugins/notifications/groups/:id"
+  ]
 }

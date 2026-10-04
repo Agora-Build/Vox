@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { apiRequest, queryClient } from "@/lib/queryClient";
+import { PluginSlot } from "@vox/web-plugin-sdk";
 
 export default function PersonalSettings() {
   const security = useQuery<{ totpEnabled: boolean; hasPassword: boolean; emailAvailable: boolean; encryptionConfigured: boolean }>({ queryKey: ["/api/user/security"] });
@@ -24,6 +25,7 @@ export default function PersonalSettings() {
     finally { setPending(false); setPassword(""); setInitCode(""); setCode(""); }
   }
   return <div className="mx-auto max-w-3xl space-y-6"><div><h1 className="text-3xl font-semibold tracking-tight">Settings</h1><p className="mt-2 text-muted-foreground">Personal account security. Google sign-in remains your existing login option.</p></div>
+    <PluginSlot name="personal-notifications" />
     <Card><CardHeader><CardTitle>Google Authenticator</CardTitle><CardDescription>Use time-based one-time codes to approve sensitive admin changes. Any compatible authenticator app works.</CardDescription></CardHeader><CardContent className="space-y-4">
       {security.isLoading ? <p>Loading security settings...</p> : security.isError ? <p role="alert">Could not load security settings.</p> : !security.data?.encryptionConfigured ? <p>Server encryption must be configured before enabling an authenticator or verification codes.</p> : <>
         <p className="text-sm">Authenticator: <strong>{security.data.totpEnabled ? "Enabled" : "Not enabled"}</strong> &middot; Email verification: {security.data.emailAvailable ? "Available" : "Not configured"}</p>

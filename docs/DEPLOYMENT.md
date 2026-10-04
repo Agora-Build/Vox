@@ -99,8 +99,44 @@ For email codes, enable `notifications` and set `SMTP_HOST`, `SMTP_PORT` (587),
 optionally `SMTP_REQUIRE_TLS` (true). Only server-configured destinations from
 the authenticated user's account receive security codes. Message bodies are
 encrypted at rest and cleared on delivery or expiry; delivery retries stop after
-five attempts or expiry. TOTP works without this plugin. Discord, WhatsApp and
-SMS adapters are not implemented yet.
+five attempts or expiry. TOTP works without this plugin. Discord is available
+for automation alerts, never security verification. WhatsApp and SMS adapters
+are not implemented yet. For automation, see the section below.
+
+#### Notification channels and automation
+
+Enable `notifications` to show a Notifications link in personal Settings.
+Apply Core migration v55 and the plugin's forward-only migrations on deployment.
+Channels, rules/content, activity, and admin Access & Groups are separate from
+the credits/payment plugins. Email uses each recipient's verified account email;
+Discord uses an encrypted official webhook URL. Configure channels and preview
+rules before enabling them. Queued delivery does not guarantee immediate receipt.
+
+Admins explicitly assign Scout / Editor access to selected users and audiences;
+paid tiers never grant it automatically. Notification groups are plugin-owned
+audiences, not organizations. Assigned editors can read numeric monitoring data
+and route messages for the group's current members, so grant access only to
+trusted users. JavaScript and LLM permissions are independent opt-ins.
+
+Comparisons and isolated JavaScript require no external analysis provider.
+JavaScript has no network, files, secrets or Node access; `loadData()` supplies
+only the bounded personal snapshot. For optional LLM rules, configure:
+
+| Variable | Purpose |
+|----------|---------|
+| `NOTIFICATIONS_LLM_PROVIDER` | `anthropic` (only supported provider initially) |
+| `NOTIFICATIONS_LLM_API_KEY` | Provider credential; server environment only |
+| `NOTIFICATIONS_LLM_MODEL` | Explicit supported provider model id |
+| `NOTIFICATIONS_LLM_DAILY_LIMIT` | Instance-wide requests/day UTC, default 100; 0 disables |
+
+Numeric personal metrics and recent samples go to the external provider, not
+names, emails, transcripts or recordings. Do not include secrets or personal
+data in analysis instructions. Previews consume the same budget.
+Calls have a ten-second timeout and 256 output-token limit; also configure a
+provider-side spending cap. Disabled/misconfigured analysis never simulates
+success. Rule/channel edits or permission/member removal cancel stale queued
+alerts; an already-started remote send cannot be recalled. Full contract and
+failure semantics are documented in `plugins/notifications/SPEC.md`.
 
 Refunds/disputes are surfaced in personal billing and the admin pricing panel for
 manual review. This release does not automatically claw back credits with active

@@ -78,6 +78,7 @@ const MIGRATIONS: Array<{ version: number; description: string; file: string | n
   { version: 52, description: "#232: index historical metric windows by creation time", file: "0051_metrics_time_index.sql", concurrentIndex: { name: "eval_results_created_at_idx", table: "eval_results", column: "created_at" } },
   { version: 53, description: "personal verification factors, approvals and entitlements", file: "0052_personal_security.sql" },
   { version: 54, description: "timezone-aware personal security expiry", file: "0053_personal_security_timezones.sql" },
+  { version: 55, description: "bounded personal notification data queries", file: "0054_notification_data_indexes.sql" },
 ];
 
 const TARGET_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version;
