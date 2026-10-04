@@ -2,7 +2,7 @@ import { test, expect } from "@playwright/test";
 import * as OTPAuth from "otpauth";
 test.skip(!process.env.PERSONAL_BILLING_E2E, "Run against the isolated personal billing preview server");
 
-async function mockAccount(page: import("@playwright/test").Page, pluginIds = ["credits", "payments"], admin = false) {
+async function mockAccount(page: import("@playwright/test").Page, pluginIds = ["credits", "payments"], admin = false, billing: { paymentsEnabled?: boolean; activeSubscription?: boolean } = {}) {
   const user = { id: 1, username: "Builder", email: "builder@example.test", plan: "basic", isAdmin: admin, isEnabled: true, emailVerified: true, organizationId: null, orgRole: null, hasPassword: true };
   await page.route("**/api/**", async (route) => {
     const url = new URL(route.request().url());
@@ -12,7 +12,7 @@ async function mockAccount(page: import("@playwright/test").Page, pluginIds = ["
       "/api/plugins": pluginIds.map((id) => ({ id })),
       "/api/plugins/credits/usage": { available: 100, reserved: 0, spent: 0, spentThisMonth: 0 },
       "/api/plugins/credits/statement": { entries: [{ id: 1, amount: 100, reason: "welcome", refType: "welcome", createdAt: "2026-10-04T00:00:00Z" }], nextCursor: null },
-      "/api/plugins/payments/usage": { catalog, paymentsEnabled: false, subscription: null, purchases: [] },
+      "/api/plugins/payments/usage": { catalog, paymentsEnabled: billing.paymentsEnabled ?? false, subscription: billing.activeSubscription ? { status: "active", paid_through: "2099-01-01T00:00:00Z", cancel_at_period_end: false, price_cents: 1200 } : null, purchases: [] },
       "/api/plugins/payments/pricing": { catalog, history: [], reviews: [] },
       "/api/user/security": { totpEnabled: false, hasPassword: true, emailAvailable: false, encryptionConfigured: true },
       "/api/admin/users": { data: [user, { ...user, id: 2, username: "Second" }], total: 2, stats: { total: 2, admins: 1, premium: 0 } },
@@ -57,8 +57,39 @@ test("credits alone renders both tabs without loading payment UI", async ({ page
   await mockAccount(page, ["credits"]);
   const requests: string[] = []; page.on("request", (request) => requests.push(request.url()));
   await page.goto("/console/usage?tab=plan", { waitUntil: "domcontentloaded" });
-  await expect(page.getByText("Personal subscriptions require the payments plugin.", { exact: false })).toBeVisible();
+  await expect(page.getByText("Personal billing is not enabled on this site, so subscriptions are unavailable.", { exact: false })).toBeVisible();
+  await expect(page.getByText("Stripe is not configured.", { exact: false })).toHaveCount(0);
+  await page.getByRole("tab", { name: "Credits & Usage" }).click();
+  await expect(page.getByText("Personal billing is not enabled on this site. Credit top-ups are unavailable.", { exact: true })).toBeVisible();
   expect(requests.some((url) => /\/assets\/panels-|\/api\/plugins\/payments\//.test(url))).toBe(false);
+});
+test("unconfigured Stripe shows a clear warning on both personal Usage tabs", async ({ page }) => {
+  await mockAccount(page);
+  const requests: string[] = []; page.on("request", (request) => requests.push(request.url()));
+  await page.goto("/console/usage", { waitUntil: "domcontentloaded" });
+  const warning = page.getByRole("status").filter({ hasText: "Stripe is not configured. Personal top-ups, subscriptions, and payment-method updates are disabled." });
+  await expect(warning).toBeVisible();
+  await expect(page.getByRole("button", { name: /Buy 100 credits/ })).toBeDisabled();
+  await page.getByRole("tab", { name: "Plan", exact: true }).click();
+  await expect(warning).toBeVisible();
+  await expect(page.getByRole("button", { name: "Upgrade to Premium" })).toBeDisabled();
+  expect(requests.some((url) => /\/api\/plugins\/payments\/(checkout|portal)/.test(url))).toBe(false);
+});
+test("configured personal billing enables purchases without an unavailable warning", async ({ page }) => {
+  await mockAccount(page, ["credits", "payments"], false, { paymentsEnabled: true });
+  await page.goto("/console/usage", { waitUntil: "domcontentloaded" });
+  await expect(page.getByRole("button", { name: /Buy 100 credits/ })).toBeEnabled();
+  await expect(page.getByText("Stripe is not configured.", { exact: false })).toHaveCount(0);
+  await page.getByRole("tab", { name: "Plan", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Upgrade to Premium" })).toBeEnabled();
+  await expect(page.getByText("Stripe is not configured.", { exact: false })).toHaveCount(0);
+});
+test("an existing personal subscription also explains disabled billing management", async ({ page }) => {
+  await mockAccount(page, ["credits", "payments"], false, { activeSubscription: true });
+  await page.goto("/console/usage?tab=plan", { waitUntil: "domcontentloaded" });
+  await expect(page.getByRole("status").filter({ hasText: "Stripe is not configured." })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Manage subscription & billing" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Upgrade to Premium" })).toHaveCount(0);
 });
 test("admin can select a user batch and preview total credits before verification", async ({ page }) => {
   await mockAccount(page, ["credits", "payments"], true);
@@ -75,6 +106,7 @@ test("mobile Usage fits the viewport and keeps both tabs usable", async ({ page 
   await expect(page.getByRole("tab", { name: "Credits & Usage" })).toBeVisible();
   await page.getByRole("tab", { name: "Plan", exact: true }).click();
   await expect(page.getByText("$12.00", { exact: false })).toBeVisible();
+  await expect(page.getByRole("status").filter({ hasText: "Stripe is not configured." })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 });
 

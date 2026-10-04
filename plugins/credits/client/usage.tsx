@@ -36,7 +36,7 @@ export default function UsagePage() {
           <Card><CardHeader><CardDescription>Reserved for running jobs</CardDescription><CardTitle className="font-mono text-3xl tabular-nums">{usage?.reserved.toLocaleString() ?? "..."}</CardTitle></CardHeader><CardContent className="text-sm text-muted-foreground">Released if a job is refunded.</CardContent></Card>
           <Card><CardHeader><CardDescription>Spent this month</CardDescription><CardTitle className="font-mono text-3xl tabular-nums">{usage?.spentThisMonth.toLocaleString() ?? "..."}</CardTitle></CardHeader><CardContent className="text-sm text-muted-foreground">{usage?.spent.toLocaleString() ?? "..."} credits spent all time.</CardContent></Card>
         </div>}
-        <PluginSlot name="personal-topup" fallback={<Card><CardHeader><CardTitle>Top up credits</CardTitle><CardDescription>Purchases are available when the payments plugin is enabled and Stripe is configured.</CardDescription></CardHeader></Card>} />
+        <PluginSlot name="personal-topup" fallback={<Card><CardHeader><CardTitle>Top up credits</CardTitle><CardDescription>Personal billing is not enabled on this site. Credit top-ups are unavailable.</CardDescription></CardHeader></Card>} />
         <Card><CardHeader><CardTitle>Credit activity</CardTitle><CardDescription>Grants, purchases, reservations, refunds and agent earnings.</CardDescription></CardHeader><CardContent>
           {statement.isError ? <p role="alert">Could not load credit history.</p> : statement.isLoading ? <p>Loading activity...</p> : <Table><TableHeader><TableRow><TableHead>Activity</TableHead><TableHead>Date</TableHead><TableHead className="text-right">Credits</TableHead></TableRow></TableHeader><TableBody>
             {statement.data?.pages.flatMap((page) => page.entries).map((entry) => <TableRow key={entry.id}><TableCell>{entry.refType === "admin_grant" ? `Admin grant: ${entry.reason}` : labels[entry.reason] ?? entry.reason}</TableCell><TableCell className="text-muted-foreground">{new Date(entry.createdAt).toLocaleString()}</TableCell><TableCell className="text-right font-mono tabular-nums">{entry.amount > 0 ? "+" : ""}{entry.amount.toLocaleString()}</TableCell></TableRow>)}
@@ -44,7 +44,7 @@ export default function UsagePage() {
           {statement.hasNextPage && <Button className="mt-4" variant="outline" disabled={statement.isFetchingNextPage} onClick={() => statement.fetchNextPage()}>Load more</Button>}
         </CardContent></Card>
       </TabsContent>
-      <TabsContent value="plan" className="space-y-6 pt-4"><PluginSlot name="personal-plan" fallback={<Card><CardHeader><CardTitle>Current access: {auth?.user.plan ?? "Basic"}</CardTitle><CardDescription>Basic is free. Personal subscriptions require the payments plugin.</CardDescription></CardHeader></Card>} /></TabsContent>
+      <TabsContent value="plan" className="space-y-6 pt-4"><PluginSlot name="personal-plan" fallback={<Card><CardHeader><CardTitle>Current access: {auth?.user.plan ?? "Basic"}</CardTitle><CardDescription>Basic is free. Personal billing is not enabled on this site, so subscriptions are unavailable.</CardDescription></CardHeader></Card>} /></TabsContent>
     </Tabs>
     {auth?.user.isAdmin && <PluginSlot name="personal-pricing" />}
   </div>;
