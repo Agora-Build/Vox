@@ -14,6 +14,9 @@ export function useBilling() {
   useEffect(() => { const timer = setTimeout(() => setPoll(false), 60_000); return () => clearTimeout(timer); }, []);
   return useQuery<Billing>({ queryKey: ["/api/plugins/payments/usage"], refetchInterval: poll ? 3000 : false });
 }
+function BillingUnavailableNotice() {
+  return <p role="status" className="rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-700 dark:text-amber-400">Stripe is not configured. Personal top-ups, subscriptions, and payment-method updates are disabled.</p>;
+}
 function useRedirect() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -43,7 +46,7 @@ export function TopupPanel() {
         {checkout.busy ? "Opening Stripe..." : Number.isInteger(quantity) && quantity > 0 && quantity <= 20 ? `Buy ${(quantity * data.catalog.topupCredits).toLocaleString()} credits \u00b7 ${money(quantity * data.catalog.topupPriceCents)}` : "Choose 1-20 packs"}
       </Button>
     </div><p className="text-xs text-muted-foreground">One-time payment through Stripe. Credits never expire. Prices are in USD.</p>
-    {!data.paymentsEnabled && <p className="text-sm text-muted-foreground">Purchases are unavailable until Stripe billing is configured.</p>}
+    {!data.paymentsEnabled && <BillingUnavailableNotice />}
     {checkout.error && <p role="alert" className="text-sm text-destructive">{checkout.error}</p>}
   </CardContent></Card>;
 }
@@ -58,6 +61,7 @@ export function PlanPanel() {
   if (!data || billing.isError) return <p role="alert">Could not load your personal plan.</p>;
   const active = !!paidUntil && new Date(paidUntil).getTime() > Date.now();
   return <div className="space-y-6">
+    {!data.paymentsEnabled && <BillingUnavailableNotice />}
     <Card><CardHeader><CardDescription>Your personal subscription</CardDescription><CardTitle className="text-2xl">{active ? "Premium" : "Basic"}</CardTitle></CardHeader><CardContent className="space-y-3">
       <p>{active ? `${money(data.subscription!.price_cents)} / month` : "Free, always. Top up credits whenever you need them."}</p>
       {paidUntil && <p className="text-sm text-muted-foreground">{data.subscription?.cancel_at_period_end ? "Access until" : "Paid through"} {new Date(paidUntil).toLocaleDateString()} &middot; {data.subscription?.status}</p>}
@@ -68,7 +72,6 @@ export function PlanPanel() {
       <Card><CardHeader><CardTitle>Basic</CardTitle><div className="font-mono text-3xl">$0 <span className="font-sans text-sm text-muted-foreground">/ free</span></div></CardHeader><CardContent className="space-y-2 text-sm"><p>Public evaluation resources</p><p>100 welcome credits, once per user</p><p>Buy credit packs without subscribing</p></CardContent></Card>
       <Card className="border-primary/30 bg-gradient-to-br from-primary/5 to-background"><CardHeader><div className="flex items-center justify-between"><CardTitle>Premium</CardTitle>{active && <Badge>Current plan</Badge>}</div><div className="font-mono text-3xl">{money(data.catalog.premiumPriceCents)} <span className="font-sans text-sm text-muted-foreground">/ month</span></div></CardHeader><CardContent className="space-y-3 text-sm"><p>Private evaluation flows and sets</p><p>Your own storage and recording analysis</p><p>Private evaluation agents</p><p className="text-muted-foreground">Feature access only. No recurring credits. Your existing credits stay yours.</p>
         {!active && auth?.user.plan === "basic" && <Button disabled={!data.paymentsEnabled || action.busy} onClick={() => action.redirect("/api/plugins/payments/checkout", { requestId: crypto.randomUUID(), kind: "premium", packs: 1 })}>{action.busy ? "Opening Stripe..." : "Upgrade to Premium"}</Button>}
-        {!data.paymentsEnabled && <p className="text-muted-foreground">Subscriptions are unavailable until Stripe is configured.</p>}
       </CardContent></Card>
     </div>
     {action.error && <p role="alert" className="text-sm text-destructive">{action.error}</p>}

@@ -71,7 +71,11 @@ Needs `oauth` in `VOX_PLUGINS`. Each provider turns on only when both its ID and
 Every existing and new user receives exactly one additive 100-credit welcome
 deposit. Existing balances are not reset; a resumable worker backfills users.
 Credits do not expire. Without `payments`, wallet/history and grants still work,
-but paid checkout is unavailable. Organization billing is unchanged.
+but paid checkout is unavailable and both tabs explain that personal billing is
+not enabled on the site. With `payments` enabled but Stripe incomplete, the
+catalog remains visible and both tabs show a Stripe configuration warning;
+purchase and billing-management buttons stay disabled. Existing credits and
+access do not change. Organization billing is unchanged.
 
 For personal purchases, add `payments` alongside existing plugin IDs (do not
 remove organizations from an instance with org data). Configure:
@@ -240,11 +244,15 @@ If your PostgreSQL is a Coolify-managed database, use the internal hostname (e.g
 **Changing `VOX_PLUGINS` on a live instance:** a running container is unaffected until the next deploy, but a *restart* of the current build picks the new value up. So when a new plugin ships in a release, add it right before that release deploys — an older build that restarts with a plugin id it doesn't know will refuse to start.
 
 **Verified Vox production configuration (2026-10-04):**
-`credits,shared-agents,organizations,oauth,notifications`; notifications v1.1.0
-is enabled and healthy. SMTP and the notification LLM provider are not yet
+`credits,shared-agents,organizations,oauth,notifications,payments`; notifications
+v1.1.0 and personal payments v1.0.0 are enabled and healthy. Personal payments
+is read-only: `STRIPE_SECRET_KEY`, `STRIPE_PERSONAL_WEBHOOK_SECRET`, and `APP_URL`
+are not configured. Plans and credit packs are visible, but purchases and
+billing management remain disabled until those settings and the Stripe
+webhook/Customer Portal are configured. SMTP and the notification LLM provider are not yet
 configured, so email codes/alerts and LLM analysis remain unavailable. Discord
-requires each user's reviewed webhook; the optional personal `payments` plugin
-is not enabled. This is a deployment snapshot, not a default for all forks.
+requires each user's reviewed webhook. This is a deployment snapshot, not a
+default for all forks.
 Keep preview environment settings separate and preserve encryption/OAuth/org
 configuration when changing the production-only plugin value.
 
@@ -415,6 +423,7 @@ Put a reverse proxy (nginx, Caddy, Traefik) in front for SSL termination.
 - [ ] Notification readiness is checked separately from plugin health; configure SMTP and perform a reviewed live delivery test before relying on email alerts/codes
 - [ ] Optional LLM analysis uses server-owned configuration and a provider-side spending cap; no secrets or personal data go into rule instructions
 - [ ] Personal payments (if enabled): register `/api/plugins/payments/webhook` with its separate signing secret, without changing the organization webhook
+- [ ] Personal Usage shows an unavailable-billing explanation on both tabs when `payments` is absent or Stripe is incomplete; unconfigured checkout and billing-management controls stay disabled
 - [ ] Tools → Analyze: at least one online public eval agent reports the `analyze` capability (Console → Eval Agents). Analyze keeps recordings in each user's own bucket (Storage page); Core needs no S3 settings for it. Core holds each upload in memory while it checks and stores it: at most 3 at once (≤ 100 MB each, so about 300 MB), one per user. These limits live in the Core process, like the rate limiter, which is right for Vox's single Core container; running several Core processes would need a shared limiter
 
 ## Troubleshooting

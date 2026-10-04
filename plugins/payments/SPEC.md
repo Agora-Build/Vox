@@ -51,6 +51,9 @@ Principal/Fellow privileges in this release.
 Lazy personal Top Up, Plan and admin pricing contributions, only available under
 the credits Usage page. Without Stripe configuration the read-only catalog and
 plan still work; purchases fail closed with 503, never simulate success.
+Both Usage tabs show a visible Stripe configuration warning when billing is
+unavailable. Top-ups, upgrades, and subscription/billing management remain
+disabled until configuration is complete; existing credits and access remain.
 
 `STRIPE_SECRET_KEY`, `STRIPE_PERSONAL_WEBHOOK_SECRET` (separate endpoint secret),
 `APP_URL` (public HTTPS origin in production). Configure Stripe Customer Portal
