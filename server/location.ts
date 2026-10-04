@@ -5,7 +5,7 @@ import path from "path";
 import { storage } from "./storage";
 import { getMarketplace } from "./marketplace";
 import type { RegionCandidate } from "@shared/regions";
-import { refreshGeoipDatabases } from "./geoip-refresh";
+import { refreshGeoipDatabases, type GeoipSource } from "./geoip-refresh";
 import { geoipAttributionForSource } from "@shared/geoip-attribution";
 
 export type { RegionCandidate };
@@ -226,8 +226,8 @@ let torExits: Set<string> = new Set();
 let asnClassification: Record<string, "vpn" | "hosting"> = {};
 let asnClassificationLoaded = false;
 let warnedPrivateIp = false;
-// Derived from geoip-meta.json's `source` field (written by refreshGeoipDatabases)
-// whenever a DB is (re)loaded. Both DB-IP Lite and GeoLite2 require public
+// Derived from loaded readers, with geoip-meta.json as a fallback for an
+// unrecognized database header. Both DB-IP Lite and GeoLite2 require public
 // attribution. Exposed via /api/config → footer.
 let geoipAttribution: string | null = null;
 
@@ -235,21 +235,35 @@ export function getGeoipAttribution(): string | null {
   return geoipAttribution;
 }
 
-async function tryOpen<T extends MmdbResponse>(names: string[], opener: (p: string) => Promise<Reader<T>>): Promise<Reader<T> | null> {
+interface LoadedGeoReader<T extends MmdbResponse> {
+  reader: Reader<T>;
+  source: GeoipSource | null;
+}
+
+async function tryOpen<T extends MmdbResponse>(names: string[], opener: (p: string) => Promise<Reader<T>>): Promise<LoadedGeoReader<T> | null> {
   for (const name of names) {
-    try { return await opener(path.join(GEOIP_DIR, name)); }
+    try {
+      const reader = await opener(path.join(GEOIP_DIR, name));
+      const databaseType = reader.metadata?.databaseType?.toLowerCase() ?? "";
+      const source = databaseType.startsWith("geolite2") ? "geolite2"
+        : databaseType.startsWith("dbip") ? "dbip"
+        : name.startsWith("GeoLite2-") ? "geolite2" : null;
+      return { reader, source };
+    }
     catch { /* try the next name */ }
   }
   return null;
 }
 
-function refreshAttributionFromMeta(): void {
-  try {
-    const meta = JSON.parse(readFileSync(path.join(GEOIP_DIR, "geoip-meta.json"), "utf8")) as { source?: unknown };
-    geoipAttribution = geoipAttributionForSource(meta.source);
-  } catch {
-    geoipAttribution = null; // No source metadata is available yet.
+function refreshAttribution(sources: Array<GeoipSource | null>): void {
+  const activeSources = new Set(sources.filter((source): source is GeoipSource => source !== null));
+  if (activeSources.size === 0 && (cityReader || asnReader)) {
+    try {
+      const meta = JSON.parse(readFileSync(path.join(GEOIP_DIR, "geoip-meta.json"), "utf8")) as { source?: unknown };
+      if (meta.source === "dbip" || meta.source === "geolite2") activeSources.add(meta.source);
+    } catch { /* Legacy/manual databases may have no refresh metadata. */ }
   }
+  geoipAttribution = Array.from(activeSources).map(geoipAttributionForSource).join(" ") || null;
 }
 
 /**
@@ -266,13 +280,13 @@ export async function reloadGeoReaders(): Promise<void> {
   // that still have files under the old script's names.
   const city = await tryOpen<CityResponse>(["City.mmdb", "GeoLite2-City.mmdb"], maxmindOpen);
   if (!city) console.log("[location] no City mmdb found — geolocation disabled (all agents Unverified)");
-  cityReader = city;
+  cityReader = city?.reader ?? null;
 
   const asn = await tryOpen<AsnResponse>(["ASN.mmdb", "GeoLite2-ASN.mmdb"], maxmindOpen);
   if (!asn) console.log("[location] no ASN mmdb found — ASN signals disabled");
-  asnReader = asn;
+  asnReader = asn?.reader ?? null;
 
-  refreshAttributionFromMeta();
+  refreshAttribution([city?.source ?? null, asn?.source ?? null]);
 }
 
 export function startLocationServices(): void {

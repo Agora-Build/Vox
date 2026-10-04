@@ -110,6 +110,28 @@ test.describe("Thanks page", () => {
     await expect(page.getByTestId("text-geoip-attribution")).toHaveCount(0);
   });
 
+  test("retains a server license notice that differs from the client bundle", async ({ page }) => {
+    const attribution = "GeoLite2 data created by MaxMind, https://www.maxmind.com (updated wording).";
+    await page.route("**/api/config", (route) => route.fulfill({ json: { geoipAttribution: attribution } }));
+    await page.goto("/thanks");
+    await expect(page.getByTestId("text-geoip-attribution")).toHaveText(attribution);
+  });
+
+  test("refreshes the notice after the active source changes while the page stays open", async ({ page }) => {
+    let source: "dbip" | "geolite2" = "dbip";
+    await page.clock.install();
+    await page.route("**/api/config", (route) => route.fulfill({
+      json: { geoipAttribution: GEOIP_ATTRIBUTIONS[source].attribution },
+    }));
+    await page.goto("/thanks");
+    const notice = page.getByTestId("text-geoip-attribution");
+    await expect(notice).toContainText("DB-IP");
+    source = "geolite2";
+    await page.clock.fastForward(61_000);
+    await expect(notice).toContainText("MaxMind");
+    await expect(notice).not.toContainText("DB-IP");
+  });
+
   for (const theme of ["dark", "light"]) {
     test(`fits a phone viewport in the ${theme} theme`, async ({ page }) => {
       await page.setViewportSize({ width: 375, height: 812 });

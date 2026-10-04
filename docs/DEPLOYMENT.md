@@ -209,7 +209,8 @@ plugin tests to avoid their existing CREATE DATABASE race.
 | `VOX_STORAGE_ALLOW_PRIVATE` | `"1"` lets Tools → Analyze use a storage endpoint on a private address (e.g. MinIO on localhost). Local development only. Never set in production: Core connects to the endpoint a user types, and this guard keeps that off Core's own network. | — |
 
 GeoIP license attribution is separate from the curated Thanks page. The footer
-uses the loaded source recorded in `geoip-meta.json`: DB-IP Lite retains its
+identifies the loaded source from the database header or legacy filename, using
+`geoip-meta.json` as a fallback: DB-IP Lite retains its
 CC BY 4.0 credit, and GeoLite2 retains the MaxMind data notice required by the
 [GeoLite EULA](https://www.maxmind.com/en/geolite2/eula). Changing or removing
 Thanks-page entries must not remove these source-specific license notices.

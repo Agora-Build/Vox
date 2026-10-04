@@ -8,6 +8,7 @@ import { compareVersions } from "./aeval-seed";
 import { SECRET_NAME_PATTERN, collectSecretRefs, secretValueError } from "@shared/secrets";
 import { deriveScheduleStatus } from "@shared/schedule-status";
 import { regionSiteSequence } from "@shared/regions";
+import { geoipAttributionForSource } from "@shared/geoip-attribution";
 import { parseMetricsDetailWindow } from "@shared/metrics-window";
 import { MetricsCache } from "./metrics-cache";
 import rateLimit from "express-rate-limit";
@@ -38,7 +39,6 @@ import {
   saveMaxmindKey,
   clearMaxmindKey,
   validateMaxmindKeyInput,
-  DBIP_ATTRIBUTION,
   GEOIP_DIR,
 } from "./geoip-refresh";
 import { promises as fsp } from "fs";
@@ -1197,7 +1197,7 @@ export async function registerRoutes(
         state,
         databases,
         lastRefresh: lastResult,
-        attribution: source === "dbip" ? DBIP_ATTRIBUTION : null,
+        attribution: geoipAttributionForSource(source),
         maxmindKey: { configured: !!maxmindKey, source: keySource },
       });
     } catch (error) {

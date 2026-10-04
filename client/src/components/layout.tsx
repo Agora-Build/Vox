@@ -62,7 +62,8 @@ export default function Layout({ children }: { children: React.ReactNode }) {
     xUrl?: string;
   }>({
     queryKey: ["/api/config"],
-    staleTime: 60 * 60 * 1000,
+    staleTime: 60 * 1000,
+    refetchInterval: 60 * 1000,
   });
 
   const geoipCredit = Object.values(GEOIP_ATTRIBUTIONS).find(
@@ -376,11 +377,15 @@ export default function Layout({ children }: { children: React.ReactNode }) {
               </div>
             </div>
             {/* License credit for the configured data source, separate from Thanks. */}
-            {geoipCredit && (
+            {publicConfig?.geoipAttribution && (
               <p className="mt-2 text-center sm:text-left text-[11px] text-muted-foreground/70" data-testid="text-geoip-attribution">
-                This product includes {geoipCredit.dataName} data created by{" "}
-                <a href={geoipCredit.url} target="_blank" rel="noopener noreferrer" className="underline hover:text-foreground transition-colors">{geoipCredit.provider}</a>,
-                {" "}available from {geoipCredit.url}
+                {geoipCredit ? (
+                  <>
+                    This product includes {geoipCredit.dataName} data created by{" "}
+                    <a href={geoipCredit.url} target="_blank" rel="noopener noreferrer" className="underline hover:text-foreground transition-colors">{geoipCredit.provider}</a>,
+                    {" "}available from {geoipCredit.url}
+                  </>
+                ) : publicConfig.geoipAttribution}
               </p>
             )}
           </div>
