@@ -96,8 +96,10 @@ recording before playback. Waveform fetching starts only when the player enters
 the viewport. This is not a streaming waveform implementation.
 
 If neither native metadata nor decoded waveform duration is available, recordings
-retain visible native audio controls and relative seeking. The custom timeline
-becomes available once duration is known; it never guesses the recording's length.
+retain the custom playback and relative skip controls. The underlying audio
+element is always hidden and never enables browser-native controls, including
+while WebM duration and waveform previews are loading. The custom timeline becomes
+available once duration is known; it never guesses the recording's length.
 
 Transcript previews use bounded counts/text, an indexed active-segment lookup,
 and a memoized row list that reconciles only when the active segment changes,
@@ -198,4 +200,5 @@ Additional regressions cover PCM encodings and malformed files, safe unsupported
 format handling, transcript limits, stalled-playback pause, and speed preservation
 when the native media source reloads without remounting.
 Canvas bounds are tested with 32 channels, 8x zoom, and DPR 2. Browser tests also
-cover deferred waveform requests and unknown-duration native-control fallback.
+cover deferred waveform requests, custom-only unknown-duration playback, and
+absence of native-player flashes during delayed WebM waveform decoding.

@@ -378,16 +378,53 @@ test("unsupported waveform encodings do not invoke an unbounded audio decoder", 
   await expect.poll(() => player.getByTestId("player-audio").evaluate((audio: HTMLAudioElement) => audio.currentTime)).toBeGreaterThan(0.2);
 });
 
-test("non-WAV recordings with unknown duration retain native seeking controls", async ({ page }) => {
+test("recordings with unknown duration retain custom playback and skip controls", async ({ page }) => {
   await page.addInitScript(() => Object.defineProperty(HTMLMediaElement.prototype, "duration", { get: () => Infinity, configurable: true }));
   const player = await mockRecording(page, { unsupportedWaveform: true });
   const media = player.getByTestId("player-audio");
-  await expect(media).toHaveAttribute("controls", "");
-  await expect(media).toBeVisible();
-  await expect(player.getByText("Native audio controls remain available for seeking.", { exact: false })).toBeVisible();
+  await expect(media).not.toHaveAttribute("controls");
+  await expect(media).toBeHidden();
+  await expect(player.getByText("Duration is unavailable.", { exact: false })).toBeVisible();
+  await expect(player.getByRole("slider", { name: "Recording timeline" })).toHaveAttribute("aria-disabled", "true");
   await expect(player.getByRole("button", { name: "Forward 10 seconds" })).toBeEnabled();
   await player.getByRole("button", { name: "Forward 10 seconds" }).click();
   await expect.poll(() => media.evaluate((audio: HTMLAudioElement) => audio.currentTime)).toBeGreaterThanOrEqual(9.9);
+  await player.getByRole("button", { name: "Back 10 seconds" }).click();
+  await player.getByRole("button", { name: "Play recording", exact: true }).click();
+  await expect.poll(() => media.evaluate((audio: HTMLAudioElement) => audio.currentTime)).toBeGreaterThan(0.2);
+  await player.getByRole("button", { name: "Pause recording", exact: true }).click();
+  await expect.poll(() => media.evaluate((audio: HTMLAudioElement) => audio.paused)).toBe(true);
+});
+
+test("slow WebM waveform loading never flashes native controls", async ({ page }) => {
+  await page.addInitScript(() => {
+    Object.defineProperty(HTMLMediaElement.prototype, "duration", { get: () => Infinity, configurable: true });
+    const state = { observed: false, nativeShown: false };
+    Object.assign(window, { audioVisibility: state });
+    new MutationObserver(() => {
+      for (const audio of document.querySelectorAll<HTMLAudioElement>('audio[data-testid="player-audio"]')) {
+        state.observed = true;
+        if (audio.controls || getComputedStyle(audio).display !== "none") state.nativeShown = true;
+      }
+    }).observe(document, { childList: true, subtree: true, attributes: true, attributeFilter: ["controls", "hidden", "style"] });
+  });
+  await page.route("**/*waveform.worker*", async (route) => {
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    await route.continue();
+  });
+  const player = await mockRecording(page, { encoded: "stereo-live" });
+  const media = player.getByTestId("player-audio");
+  await expect(player.getByText("Building channel waveforms...", { exact: true })).toBeVisible();
+  await expect(player.getByRole("button", { name: "Play recording", exact: true })).toBeVisible();
+  await expect(media).toBeHidden();
+  await expect(media).not.toHaveAttribute("controls");
+  const timeline = player.getByRole("slider", { name: "Recording timeline" });
+  await expect.poll(async () => Number(await timeline.getAttribute("aria-valuemax"))).toBeCloseTo(12, 1);
+  await expect(timeline).toHaveAttribute("aria-disabled", "false");
+  await expect(player.getByText("Duration is unavailable.", { exact: false })).toHaveCount(0);
+  expect(await page.evaluate(() => (window as typeof window & { audioVisibility: { observed: boolean; nativeShown: boolean } }).audioVisibility)).toEqual({ observed: true, nativeShown: false });
+  await timeline.focus(); await timeline.press("ArrowRight");
+  await expect(timeline).toHaveAttribute("aria-valuenow", "5");
 });
 
 test("waveform downloads wait until the player is visible", async ({ page }) => {
