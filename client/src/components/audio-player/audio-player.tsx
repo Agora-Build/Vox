@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent } from "react";
 import { AudioLines, Captions, Download, Loader2, Pause, Play, RotateCcw, RotateCw, Volume2, VolumeX, ZoomIn, ZoomOut } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -20,6 +20,16 @@ export function AudioPlayer({ src, title = "Recording", subtitle, channels, tran
   const [rate, setRate] = useState(1);
   const [volume, setVolume] = useState(1);
   const [transcriptOpen, setTranscriptOpen] = useState(true);
+  const [waveformEnabled, setWaveformEnabled] = useState(false);
+  useEffect(() => {
+    const root = rootRef.current;
+    if (!root) return;
+    const observer = new IntersectionObserver((entries) => {
+      if (entries.some((entry) => entry.isIntersecting)) { setWaveformEnabled(true); observer.disconnect(); }
+    });
+    observer.observe(root);
+    return () => observer.disconnect();
+  }, []);
   const onFrame = useCallback((time: number, duration: number) => {
     const progress = duration > 0 ? Math.min(100, time / duration * 100) : 0;
     // Only the playhead/clip changes each frame; canvas peaks stay static.
@@ -27,7 +37,7 @@ export function AudioPlayer({ src, title = "Recording", subtitle, channels, tran
     playheadRef.current?.classList.toggle("is-near-end", progress > 90);
     if (timeLabelRef.current) timeLabelRef.current.textContent = formatAudioTime(time, true);
   }, []);
-  const waveform = useWaveform(src);
+  const waveform = useWaveform(src, waveformEnabled);
   const playback = usePlayback(src, onFrame, onTimeChange, waveform.data?.duration);
   const segments = useMemo(() => normalizeTranscript(transcript), [transcript]);
   const transcriptLimited = useMemo(() => transcript.length > MAX_TRANSCRIPT_SEGMENTS || transcript.slice(0, MAX_TRANSCRIPT_SEGMENTS).some((segment) => typeof segment.text === "string" && segment.text.length > MAX_TRANSCRIPT_TEXT), [transcript]);
@@ -56,7 +66,7 @@ export function AudioPlayer({ src, title = "Recording", subtitle, channels, tran
     if (event.key === " ") { event.preventDefault(); playback.toggle(); }
   };
   return <div ref={rootRef} className={cn("vox-audio-player", className)} data-testid="audio-player" aria-label={`${title} audio player`}>
-    <audio ref={playback.audioRef} src={src} preload="metadata" data-testid="player-audio" onLoadedMetadata={() => {
+    <audio ref={playback.audioRef} src={src} preload="metadata" controls={playback.unknownDuration} className="w-full px-4 sm:px-5" style={{ display: playback.unknownDuration ? "block" : "none" }} aria-label={`${title} native audio controls`} data-testid="player-audio" onLoadedMetadata={() => {
       const audio = playback.audioRef.current;
       if (audio) { audio.defaultPlaybackRate = rate; audio.playbackRate = rate; audio.volume = volume; }
     }} />
@@ -69,11 +79,11 @@ export function AudioPlayer({ src, title = "Recording", subtitle, channels, tran
     </div>
     <div className="flex flex-wrap items-center gap-x-4 gap-y-3 px-4 py-4 sm:px-5">
       <div className="flex items-center gap-1.5">
-        <Button variant="ghost" size="icon" className="h-8 w-8" aria-label="Back 10 seconds" disabled={!playback.duration} onClick={() => playback.seek(playback.time - 10)}><RotateCcw className="h-4 w-4" /></Button>
+        <Button variant="ghost" size="icon" className="h-8 w-8" aria-label="Back 10 seconds" disabled={!playback.duration && !playback.unknownDuration} onClick={() => playback.seek(playback.time - 10)}><RotateCcw className="h-4 w-4" /></Button>
         <Button size="icon" className="h-11 w-11 rounded-full shadow-lg shadow-primary/10" aria-label={playback.playing ? "Pause recording" : "Play recording"} onClick={playback.toggle}>{playback.buffering ? <Loader2 className="h-5 w-5 animate-spin" /> : playback.playing ? <Pause className="h-5 w-5 fill-current" /> : <Play className="ml-0.5 h-5 w-5 fill-current" />}</Button>
-        <Button variant="ghost" size="icon" className="h-8 w-8" aria-label="Forward 10 seconds" disabled={!playback.duration} onClick={() => playback.seek(playback.time + 10)}><RotateCw className="h-4 w-4" /></Button>
+        <Button variant="ghost" size="icon" className="h-8 w-8" aria-label="Forward 10 seconds" disabled={!playback.duration && !playback.unknownDuration} onClick={() => playback.seek(playback.time + 10)}><RotateCw className="h-4 w-4" /></Button>
       </div>
-      <div className="font-mono text-xs tabular-nums"><span data-testid="player-current-time">{formatAudioTime(playback.time, true)}</span><span className="mx-2 text-muted-foreground">/</span><span className="text-muted-foreground">{formatAudioTime(playback.duration)}</span></div>
+      <div className="font-mono text-xs tabular-nums"><span data-testid="player-current-time">{formatAudioTime(playback.time, true)}</span><span className="mx-2 text-muted-foreground">/</span><span className="text-muted-foreground">{playback.unknownDuration ? "--:--" : formatAudioTime(playback.duration)}</span></div>
       <div className="ml-auto flex items-center gap-2">
         <select aria-label="Playback speed" className="h-8 rounded-md border bg-background px-2 font-mono text-xs" value={rate} onChange={(event) => { const next = Number(event.target.value); setRate(next); if (playback.audioRef.current) { playback.audioRef.current.defaultPlaybackRate = next; playback.audioRef.current.playbackRate = next; } }}>
           {[0.5, 0.75, 1, 1.25, 1.5, 2].map((speed) => <option key={speed} value={speed}>{speed}x</option>)}
@@ -83,10 +93,11 @@ export function AudioPlayer({ src, title = "Recording", subtitle, channels, tran
       </div>
     </div>
     {playback.error && <p role="alert" className="px-5 pb-3 text-sm text-destructive">{playback.error}</p>}
+    {playback.unknownDuration && <p className="px-5 pb-3 text-xs text-muted-foreground">This recording has no duration metadata. Native audio controls remain available for seeking.</p>}
     <div className="mx-3 overflow-hidden rounded-lg border bg-background/60 sm:mx-4">
       <div className="audio-wave-scroll">
         <div ref={timelineRef} className="audio-wave-timeline" style={{ width: `${zoom * 100}%` }} role="slider" tabIndex={0}
-          aria-label="Recording timeline" aria-valuemin={0} aria-valuemax={playback.duration} aria-valuenow={playback.time} aria-valuetext={formatAudioTime(playback.time, true)} aria-disabled={!playback.duration}
+          aria-label="Recording timeline" aria-valuemin={0} aria-valuemax={playback.duration} aria-valuenow={Math.min(playback.time, playback.duration)} aria-valuetext={formatAudioTime(playback.time, true)} aria-disabled={!playback.duration}
           onPointerDown={down} onPointerMove={(event) => { if (pointerRef.current === event.pointerId) playback.moveScrub(atPointer(event)); }}
           onPointerUp={(event) => finish(event)} onPointerCancel={(event) => finish(event, true)} onLostPointerCapture={(event) => finish(event, true)} onKeyDown={keyDown}>
           {waveform.data?.channels.map((peaks, index) => <div key={index} className="audio-channel-row" data-testid="player-channel" style={{ "--channel-color": channels?.[index]?.color ?? `var(--audio-channel-${index % 6 + 1})` } as CSSProperties}>

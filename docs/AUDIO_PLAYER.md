@@ -50,8 +50,11 @@ const transcript: AudioTranscriptSegment[] = [
 
 Playback uses the browser's native audio element. A frame-synchronized playhead
 and clipped played-waveform overlay update without repainting the waveform
-canvases. PCM sample reading and peak extraction run in a worker; canvases redraw for data, size, or
-theme changes. Zoom supports 1x, 2x, 4x, and 8x with horizontal scrolling.
+canvases. PCM sample reading and peak extraction run in a worker; viewport-local
+canvases redraw for data, size, scroll, or theme changes, coalesced to one frame.
+Each canvas backing store is limited to 2,048 by 128 pixels, independently of
+zoom and DPR; even 32 channels' two surfaces total at most 64 MiB of pixel data.
+Zoom supports 1x, 2x, 4x, and 8x with horizontal scrolling.
 
 Dragging pauses audio and previews a position. Releasing commits one seek and
 resumes only if playback was running before the drag. Touch supports horizontal
@@ -71,7 +74,12 @@ audio, but their waveform previews are unavailable. Non-WAV waveform fetches
 stop after the header is recognized. Large WAVs, unsupported WAV encodings, and
 failed CORS requests also show a clear message instead of a fabricated waveform.
 The native audio element preloads metadata rather than downloading the whole
-recording before playback. This is not a streaming waveform implementation.
+recording before playback. Waveform fetching starts only when the player enters
+the viewport. This is not a streaming waveform implementation.
+
+Non-WAV recordings without finite duration metadata retain visible native audio
+controls and relative seeking. The custom full-duration waveform slider remains
+unavailable until duration is known; it never guesses the recording's length.
 
 Transcript previews use bounded counts/text, an indexed active-segment lookup,
 and memoized rows so playback does not rerender every speech row.
@@ -100,3 +108,5 @@ PCM-derived duration fallback, and mobile touch scrubbing.
 Additional regressions cover PCM encodings and malformed files, safe unsupported
 format handling, transcript limits, stalled-playback pause, and speed preservation
 when the native media source reloads without remounting.
+Canvas bounds are tested with 32 channels, 8x zoom, and DPR 2. Browser tests also
+cover deferred waveform requests and unknown-duration native-control fallback.

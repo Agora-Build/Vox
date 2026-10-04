@@ -44,7 +44,8 @@ export function transcriptFromMetrics(rawData: unknown, recordingName: string): 
   });
   const groups = Array.from(new Set(all.map((turn) => `${turn.case_id ?? ""}\u0000${turn.chunk_id ?? ""}`)));
   const safe = (value: unknown) => String(value ?? "").replace(/[^a-zA-Z0-9_-]/g, "_");
-  const selected = groups.length > 1 ? all.filter((turn) => turn.case_id != null && turn.chunk_id != null && recordingName.includes(`vox-${safe(turn.case_id)}-${safe(turn.chunk_id)}-`)) : all;
+  const scoped = /^vox-[^/]+\//.test(recordingName);
+  const selected = scoped || groups.length > 1 ? all.filter((turn) => turn.case_id != null && turn.chunk_id != null && recordingName.startsWith(`vox-${safe(turn.case_id)}-${safe(turn.chunk_id)}-`)) : all;
   const selectedGroups = new Set(selected.map((turn) => `${turn.case_id ?? ""}\u0000${turn.chunk_id ?? ""}`));
   if (selectedGroups.size > 1) return [];
   const segments = new Map<string, AudioTranscriptSegment>();

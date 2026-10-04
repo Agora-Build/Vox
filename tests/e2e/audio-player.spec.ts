@@ -19,7 +19,7 @@ function recordingWav(channels = 2, duration = 12) {
   return buffer;
 }
 
-async function mockRecording(page: Page, options: { channels?: number; blockWaveform?: boolean; unsupportedWaveform?: boolean; largeTranscript?: boolean; multiple?: boolean; transcriptError?: boolean } = {}) {
+async function mockRecording(page: Page, options: { channels?: number; blockWaveform?: boolean; unsupportedWaveform?: boolean; largeTranscript?: boolean; multiple?: boolean; transcriptError?: boolean; scroll?: boolean } = {}) {
   const wav = recordingWav(options.channels ?? 2);
   const alternate = recordingWav(1, 8);
   const prefix = "vox-RSP-chunk_001-abc";
@@ -64,7 +64,9 @@ async function mockRecording(page: Page, options: { channels?: number; blockWave
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(responses[path] ?? {}) });
   });
   await page.goto("/console/eval-jobs/101", { waitUntil: "domcontentloaded" });
-  return page.getByTestId("audio-player");
+  const player = page.getByTestId("audio-player");
+  if (options.scroll !== false) await player.scrollIntoViewIfNeeded();
+  return player;
 }
 
 test("recordings show genuine per-channel waveforms and a timed transcript", async ({ page }) => {
@@ -162,6 +164,48 @@ test("unsupported waveform encodings do not invoke an unbounded audio decoder", 
   await expect(player.getByText("Waveform previews support PCM WAV recordings", { exact: false })).toBeVisible();
   await player.getByRole("button", { name: "Play recording", exact: true }).click();
   await expect.poll(() => player.getByTestId("player-audio").evaluate((audio: HTMLAudioElement) => audio.currentTime)).toBeGreaterThan(0.2);
+});
+
+test("non-WAV recordings with unknown duration retain native seeking controls", async ({ page }) => {
+  await page.addInitScript(() => Object.defineProperty(HTMLMediaElement.prototype, "duration", { get: () => Infinity, configurable: true }));
+  const player = await mockRecording(page, { unsupportedWaveform: true });
+  const media = player.getByTestId("player-audio");
+  await expect(media).toHaveAttribute("controls", "");
+  await expect(media).toBeVisible();
+  await expect(player.getByText("Native audio controls remain available for seeking.", { exact: false })).toBeVisible();
+  await expect(player.getByRole("button", { name: "Forward 10 seconds" })).toBeEnabled();
+  await player.getByRole("button", { name: "Forward 10 seconds" }).click();
+  await expect.poll(() => media.evaluate((audio: HTMLAudioElement) => audio.currentTime)).toBeGreaterThanOrEqual(9.9);
+});
+
+test("waveform downloads wait until the player is visible", async ({ page }) => {
+  await page.setViewportSize({ width: 1200, height: 300 });
+  let waveformRequests = 0;
+  page.on("request", (request) => { if (request.url().includes("/fixture-audio/recording.wav") && request.resourceType() === "fetch") waveformRequests++; });
+  const player = await mockRecording(page, { scroll: false });
+  await expect(player).toBeAttached();
+  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  expect(waveformRequests).toBe(0);
+  await player.scrollIntoViewIfNeeded();
+  await expect(player.getByTestId("player-channel")).toHaveCount(2);
+  expect(waveformRequests).toBe(1);
+});
+
+test.describe("maximum-channel canvas bounds", () => {
+  test.use({ viewport: { width: 1920, height: 1080 }, deviceScaleFactor: 2 });
+  test("32 channels at 8x zoom keep bounded viewport-local canvases", async ({ page }) => {
+    const player = await mockRecording(page, { channels: 32 });
+    await expect(player.getByTestId("player-channel")).toHaveCount(32);
+    for (let zoom = 0; zoom < 3; zoom++) await player.getByRole("button", { name: "Zoom in waveform" }).click();
+    const viewport = player.locator(".audio-wave-scroll");
+    await viewport.evaluate((element) => { element.scrollLeft = element.scrollWidth / 2; });
+    await expect.poll(() => player.locator("canvas").first().evaluate((canvas: HTMLCanvasElement) => parseFloat(canvas.style.left))).toBeGreaterThan(0);
+    const dimensions = await player.locator("canvas").evaluateAll((canvases: HTMLCanvasElement[]) => canvases.map((canvas) => ({ width: canvas.width, height: canvas.height })));
+    expect(dimensions).toHaveLength(64);
+    expect(dimensions.every(({ width, height }) => width > 0 && width <= 2048 && height > 0 && height <= 128)).toBe(true);
+    expect(dimensions.reduce((bytes, { width, height }) => bytes + width * height * 4, 0)).toBeLessThanOrEqual(64 * 1024 * 1024);
+    expect(await player.locator("canvas").first().evaluate((canvas: HTMLCanvasElement) => canvas.getContext("2d")!.getImageData(0, 0, canvas.width, canvas.height).data.some((value, index) => index % 4 === 3 && value > 0))).toBe(true);
+  });
 });
 
 test("pausing while waiting clears the loading spinner", async ({ page }) => {

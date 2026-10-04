@@ -2,9 +2,10 @@ import { useEffect, useState } from "react";
 import type { AudioWaveform } from "./types";
 import { hasWaveHeader, MAX_WAVEFORM_BYTES } from "./pcm-waveform";
 
-export function useWaveform(src: string) {
+export function useWaveform(src: string, enabled: boolean) {
   const [state, setState] = useState<{ src: string; data?: AudioWaveform; loading: boolean; error?: string }>({ src, loading: true });
   useEffect(() => {
+    if (!enabled) return;
     const controller = new AbortController();
     let worker: Worker | undefined;
     setState({ src, loading: true });
@@ -77,6 +78,6 @@ export function useWaveform(src: string) {
       controller.abort();
       worker?.terminate();
     };
-  }, [src]);
+  }, [src, enabled]);
   return state.src === src ? state : { src, loading: true };
 }

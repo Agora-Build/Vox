@@ -15,6 +15,7 @@ export function usePlayback(src: string, onFrame: (time: number, duration: numbe
   durationFallback.current = decodedDuration;
   const [time, setTime] = useState(0);
   const [duration, setDuration] = useState(0);
+  const [unknownDuration, setUnknownDuration] = useState(false);
   const [playing, setPlaying] = useState(false);
   const [buffering, setBuffering] = useState(false);
   const [error, setError] = useState<string>();
@@ -46,8 +47,8 @@ export function usePlayback(src: string, onFrame: (time: number, duration: numbe
     const audio = audioRef.current;
     if (!audio) return;
     const total = Number.isFinite(audio.duration) ? audio.duration : durationFallback.current;
-    if (!total) return;
-    audio.currentTime = clampTime(target, total);
+    if (!total && (audio.readyState < 1 || !Number.isFinite(target))) return;
+    audio.currentTime = total ? clampTime(target, total) : Math.max(0, target);
     sample(true);
   }, [sample]);
   useEffect(() => {
@@ -55,13 +56,13 @@ export function usePlayback(src: string, onFrame: (time: number, duration: numbe
     if (!audio) return;
     const effectGeneration = ++generation.current;
     scrub.current = null;
-    setTime(0); setDuration(0); setPlaying(false); setBuffering(false); setError(undefined); setScrubbing(false);
+    setTime(0); setDuration(0); setUnknownDuration(false); setPlaying(false); setBuffering(false); setError(undefined); setScrubbing(false);
     frameCallback.current(0, 0);
     const tick = () => {
       sample();
       if (!audio.paused || scrub.current) frame.current = requestAnimationFrame(tick);
     };
-    const metadata = () => { setDuration(Number.isFinite(audio.duration) ? audio.duration : durationFallback.current); sample(true); };
+    const metadata = () => { const total = Number.isFinite(audio.duration) ? audio.duration : durationFallback.current; setDuration(total); setUnknownDuration(!total); sample(true); };
     const started = () => { setPlaying(true); setBuffering(false); setError(undefined); cancelAnimationFrame(frame.current); tick(); };
     const paused = () => { setPlaying(false); setBuffering(false); cancelAnimationFrame(frame.current); sample(true); };
     const waiting = () => setBuffering(true);
@@ -82,7 +83,7 @@ export function usePlayback(src: string, onFrame: (time: number, duration: numbe
   }, [src, sample]);
   useEffect(() => {
     const audio = audioRef.current;
-    if (audio) setDuration(Number.isFinite(audio.duration) ? audio.duration : decodedDuration);
+    if (audio) { const total = Number.isFinite(audio.duration) ? audio.duration : decodedDuration; setDuration(total); setUnknownDuration(audio.readyState >= 1 && !total); }
     sample(true);
   }, [decodedDuration, sample]);
 
@@ -108,6 +109,6 @@ export function usePlayback(src: string, onFrame: (time: number, duration: numbe
     seek(cancel ? state.original : state.time);
     if (state.resume) void play();
   }, [play, seek]);
-  return { audioRef, time, duration, playing, buffering, error, scrubbing, play, seek, beginScrub, moveScrub, endScrub,
+  return { audioRef, time, duration, unknownDuration, playing, buffering, error, scrubbing, play, seek, beginScrub, moveScrub, endScrub,
     toggle: () => { if (audioRef.current?.paused) void play(); else audioRef.current?.pause(); } };
 }

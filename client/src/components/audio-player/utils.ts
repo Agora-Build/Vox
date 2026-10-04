@@ -3,6 +3,11 @@ import type { AudioTranscriptSegment } from "./types";
 export const MAX_TRANSCRIPT_SEGMENTS = 1000;
 export const MAX_TRANSCRIPT_TEXT = 4000;
 
+export function waveformCanvasSize(width: number, height: number, dpr: number) {
+  const ratio = Number.isFinite(dpr) ? Math.max(1, Math.min(dpr, 2)) : 1;
+  return { width: Math.max(1, Math.min(2048, Math.round(width * ratio))), height: Math.max(1, Math.min(128, Math.round(height * ratio))) };
+}
+
 export function clampTime(time: number, duration: number) {
   return Number.isFinite(time) && Number.isFinite(duration) ? Math.max(0, Math.min(time, Math.max(0, duration))) : 0;
 }

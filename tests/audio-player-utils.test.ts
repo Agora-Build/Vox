@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { activeTranscriptIndex, buildWaveformPeaks, clampTime, formatAudioTime, MAX_TRANSCRIPT_SEGMENTS, MAX_TRANSCRIPT_TEXT, normalizeTranscript, timelineTicks, transcriptEndIndex } from "../client/src/components/audio-player/utils";
+import { activeTranscriptIndex, buildWaveformPeaks, clampTime, formatAudioTime, MAX_TRANSCRIPT_SEGMENTS, MAX_TRANSCRIPT_TEXT, normalizeTranscript, timelineTicks, transcriptEndIndex, waveformCanvasSize } from "../client/src/components/audio-player/utils";
 import { pcmWaveform } from "../client/src/components/audio-player/pcm-waveform";
 import { findRecordingTranscript, parseRecordingTranscript, transcriptFromMetrics } from "../client/src/lib/recording-transcript";
 
@@ -88,6 +88,12 @@ describe("real waveform peaks", () => {
     expect(buildWaveformPeaks(new Float32Array(10000))).toHaveLength(4096);
     expect(buildWaveformPeaks(new Float32Array(10), NaN)).toHaveLength(10);
   });
+  it("bounds canvas dimensions and the total 32-channel surface memory", () => {
+    const size = waveformCanvasSize(1920 * 8, 84, 2);
+    expect(size).toEqual({ width: 2048, height: 128 });
+    expect(size.width * size.height * 4 * 2 * 32).toBeLessThanOrEqual(64 * 1024 * 1024);
+    expect(waveformCanvasSize(390, 76, 1)).toEqual({ width: 390, height: 76 });
+  });
 });
 
 describe("recording transcripts", () => {
@@ -117,6 +123,13 @@ describe("recording transcripts", () => {
     const multiple = { response_metrics: { latency: { turn_level: [{ ...turn, case_id: "RSP", chunk_id: "chunk_001" }, { ...turn, case_id: "INT", chunk_id: "chunk_002" }] } } };
     expect(transcriptFromMetrics(multiple, "recording.wav")).toEqual([]);
     expect(transcriptFromMetrics(multiple, "vox-INT-chunk_002-abc/recording.wav")).toHaveLength(2);
+  });
+  it("does not attach a lone metric chunk or unidentified clock to a different recording", () => {
+    const turn = { turn_start: 1, turn_end: 4, user_transcript: "hello", case_id: "RSP", chunk_id: "chunk_001" };
+    const metrics = { response_metrics: { latency: { turn_level: [turn] } } };
+    expect(transcriptFromMetrics(metrics, "vox-INT-chunk_002-abc/recording.wav")).toEqual([]);
+    expect(transcriptFromMetrics(metrics, "vox-RSP-chunk_001-abc/recording.wav")).toHaveLength(1);
+    expect(transcriptFromMetrics({ response_metrics: { latency: { turn_level: [{ turn_start: 1, turn_end: 4, user_transcript: "no chunk identity" }] } } }, "vox-RSP-chunk_001-abc/recording.wav")).toEqual([]);
   });
   it("filters invalid timing/text and orders valid segments", () => {
     expect(normalizeTranscript([{ start: 2, end: 4, text: " second " }, { start: -1, end: 2, text: "bad" }, { start: 1, end: 1, text: "empty" }, { start: 0, end: 1, text: "first" }, { start: NaN, end: 2, text: "bad" }])).toEqual([{ start: 0, end: 1, text: "first" }, { start: 2, end: 4, text: "second" }]);
