@@ -52,26 +52,35 @@ export function TopupPanel() {
 }
 export function PlanPanel() {
   const billing = useBilling();
-  const { data: auth } = useQuery<{ user: { plan: string } }>({ queryKey: ["/api/auth/status"] });
+  const auth = useQuery<{ user: { plan: string } | null }>({ queryKey: ["/api/auth/status"] });
   const action = useRedirect();
   const data = billing.data;
   const paidUntil = data?.subscription?.paid_through;
   useEffect(() => { if (paidUntil) queryClient.invalidateQueries({ queryKey: ["/api/auth/status"] }); }, [paidUntil]);
-  if (billing.isLoading) return <p>Loading your plan...</p>;
+  if (billing.isLoading || auth.isLoading) return <p>Loading your plan...</p>;
   if (!data || billing.isError) return <p role="alert">Could not load your personal plan.</p>;
+  if (!auth.data?.user || auth.isError) return <p role="alert">Could not load your current account access.</p>;
+  // Core resolves effective access without replacing assigned Principal/Fellow tiers.
+  const accountPlan = auth.data.user.plan;
+  const accountPlanLabel = accountPlan.charAt(0).toUpperCase() + accountPlan.slice(1);
   const active = !!paidUntil && new Date(paidUntil).getTime() > Date.now();
   return <div className="space-y-6">
     {!data.paymentsEnabled && <BillingUnavailableNotice />}
-    <Card><CardHeader><CardDescription>Your personal subscription</CardDescription><CardTitle className="text-2xl">{active ? "Premium" : "Basic"}</CardTitle></CardHeader><CardContent className="space-y-3">
-      <p>{active ? `${money(data.subscription!.price_cents)} / month` : "Free, always. Top up credits whenever you need them."}</p>
-      {paidUntil && <p className="text-sm text-muted-foreground">{data.subscription?.cancel_at_period_end ? "Access until" : "Paid through"} {new Date(paidUntil).toLocaleDateString()} &middot; {data.subscription?.status}</p>}
-      {auth?.user.plan !== "basic" && !active && <p className="text-sm text-muted-foreground">Your account has {auth?.user.plan} access separately from personal subscriptions. Purchasing a plan is not required to keep that access.</p>}
+    <Card data-testid="personal-account-plan"><CardHeader><CardDescription>Current account access</CardDescription><CardTitle className="text-2xl">{accountPlanLabel}</CardTitle></CardHeader><CardContent className="space-y-3">
+      {accountPlan === "basic" ? <p>Basic is free. Top up credits whenever you need them.</p>
+        : accountPlan === "premium" && active ? <p>Premium features are included with your active personal subscription.</p>
+        : <p>Your {accountPlanLabel} access does not require a paid personal subscription.</p>}
+      <div className="space-y-2 rounded-md border bg-muted/30 p-3" data-testid="personal-subscription">
+        <p className="text-sm font-medium">Personal billing subscription</p>
+        <p>{active ? `Premium \u00b7 ${money(data.subscription!.price_cents)} / month` : "No active paid subscription"}</p>
+        {paidUntil && <p className="text-sm text-muted-foreground">{data.subscription?.cancel_at_period_end ? "Subscription paid until" : "Paid through"} {new Date(paidUntil).toLocaleDateString()} &middot; {data.subscription?.status}</p>}
+      </div>
       {data.subscription && <Button variant="outline" disabled={!data.paymentsEnabled || action.busy} onClick={() => action.redirect("/api/plugins/payments/portal")}>Manage subscription &amp; billing</Button>}
     </CardContent></Card>
     <div className="grid gap-4 md:grid-cols-2">
       <Card><CardHeader><CardTitle>Basic</CardTitle><div className="font-mono text-3xl">$0 <span className="font-sans text-sm text-muted-foreground">/ free</span></div></CardHeader><CardContent className="space-y-2 text-sm"><p>Public evaluation resources</p><p>100 welcome credits, once per user</p><p>Buy credit packs without subscribing</p></CardContent></Card>
-      <Card className="border-primary/30 bg-gradient-to-br from-primary/5 to-background"><CardHeader><div className="flex items-center justify-between"><CardTitle>Premium</CardTitle>{active && <Badge>Current plan</Badge>}</div><div className="font-mono text-3xl">{money(data.catalog.premiumPriceCents)} <span className="font-sans text-sm text-muted-foreground">/ month</span></div></CardHeader><CardContent className="space-y-3 text-sm"><p>Private evaluation flows and sets</p><p>Your own storage and recording analysis</p><p>Private evaluation agents</p><p className="text-muted-foreground">Feature access only. No recurring credits. Your existing credits stay yours.</p>
-        {!active && auth?.user.plan === "basic" && <Button disabled={!data.paymentsEnabled || action.busy} onClick={() => action.redirect("/api/plugins/payments/checkout", { requestId: crypto.randomUUID(), kind: "premium", packs: 1 })}>{action.busy ? "Opening Stripe..." : "Upgrade to Premium"}</Button>}
+      <Card className="border-primary/30 bg-gradient-to-br from-primary/5 to-background"><CardHeader><div className="flex items-center justify-between"><CardTitle>Premium</CardTitle>{active && <Badge>Current subscription</Badge>}</div><div className="font-mono text-3xl">{money(data.catalog.premiumPriceCents)} <span className="font-sans text-sm text-muted-foreground">/ month</span></div></CardHeader><CardContent className="space-y-3 text-sm"><p>Private evaluation flows and sets</p><p>Your own storage and recording analysis</p><p>Private evaluation agents</p><p className="text-muted-foreground">Feature access only. No recurring credits. Your existing credits stay yours.</p>
+        {!active && accountPlan === "basic" && <Button disabled={!data.paymentsEnabled || action.busy} onClick={() => action.redirect("/api/plugins/payments/checkout", { requestId: crypto.randomUUID(), kind: "premium", packs: 1 })}>{action.busy ? "Opening Stripe..." : "Upgrade to Premium"}</Button>}
       </CardContent></Card>
     </div>
     {action.error && <p role="alert" className="text-sm text-destructive">{action.error}</p>}

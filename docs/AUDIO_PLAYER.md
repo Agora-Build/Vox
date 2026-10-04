@@ -1,0 +1,151 @@
+# Reusable audio player
+
+`client/src/components/audio-player` exports `AudioPlayer` and its public types.
+The module owns playback, waveform rendering, seeking, and timed-transcript UI.
+It does not know about eval jobs, artifact APIs, storage, or account permissions.
+
+## Use on another page
+
+```tsx
+import { AudioPlayer, type AudioTranscriptSegment } from "@/components/audio-player";
+
+const transcript: AudioTranscriptSegment[] = [
+  { start: 0.5, end: 2.8, text: "Hello!", speaker: "User", channel: 0 },
+  { start: 3, end: 5.2, text: "How can I help?", speaker: "Agent", channel: 1 },
+];
+
+<AudioPlayer
+  key={recordingId}
+  src={recordingUrl}
+  title="Conversation recording"
+  channels={[{ label: "User / left" }, { label: "Agent / right" }]}
+  transcript={transcript}
+  downloadUrl={recordingUrl}
+/>
+```
+
+- `src` is the playable audio URL. Keep authorization in the page/API that
+  supplies it. Cross-origin storage needs GET CORS permission for waveform
+  extraction; native audio playback can still work without the waveform.
+- The PCM WAV file determines the number of waveform lanes, not `channels`.
+  `channels` supplies optional labels and CSS colors; unlabeled lanes use
+  numbered labels. Mono, stereo, and multichannel files (up to 32 channels) share
+  the same module. Integer PCM at 8/16/24/32 bits, float PCM at 32/64 bits, and
+  WAVE_FORMAT_EXTENSIBLE PCM are supported.
+- Transcript `start` and `end` are seconds relative to this recording, not the
+  whole job. `channel` is zero-based. Overlapping speech is supported.
+- Transcript previews are bounded to the first 1,000 supplied segments and
+  4,000 characters per segment. A visible notice explains truncation; the eval
+  result's original transcript artifact remains available for download.
+- Use `transcriptLoading`, `transcriptError`, and `transcriptNote` to describe
+  the page's transcript-loading state. `showTranscript={false}` hides the panel.
+- `onTimeChange` reports committed playback positions, at roughly 10 Hz while
+  playing. Drag previews do not trigger it. Native media events can also update
+  the position.
+- A changed `src` resets playback and cancels old waveform work. Key by the
+  recording's stable identity to also reset zoom, control preferences, and
+  transcript-follow state when selecting a different recording.
+
+## Interaction and performance
+
+Playback uses the browser's native audio element. A frame-synchronized playhead
+and clipped played-waveform overlay update without repainting the waveform
+canvases. PCM sample reading and peak extraction run in a worker; viewport-local
+canvases redraw for data, size, scroll, or theme changes, coalesced to one frame.
+Each canvas backing store is limited to 2,048 by 128 pixels, independently of
+zoom and DPR; even 32 channels' two surfaces total at most 64 MiB of pixel data.
+Zoom supports 1x, 2x, 4x, and 8x with horizontal scrolling.
+
+Dragging pauses audio and previews a position. Releasing commits one seek and
+resumes only if playback was running before the drag. Touch supports horizontal
+scrubbing while preserving vertical page scrolling. The timeline is keyboard
+accessible: arrows seek 5 seconds, Page Up/Down seek 10 seconds, Home/End jump to
+the beginning/end, and Space toggles playback. Clicking a transcript seeks to
+its start. Scrolling the transcript turns off automatic following.
+
+Waveform downloads are capped at 64 MiB, including responses without a
+Content-Length header. The bounded encoded buffer transfers to the worker,
+which reads PCM samples directly into at most 4,096 peaks per channel. It does
+not allocate full decoded channel arrays or invoke `decodeAudioData`, so a long
+compressed file cannot expand into unbounded waveform-processing memory.
+Downloads accumulate into one capped buffer, using the Content-Length when
+present or a resizable ArrayBuffer otherwise, instead of retaining all chunks
+and then copying the whole recording. Older browsers without resizable buffers
+need Content-Length for a waveform preview; native playback still works.
+Encoded HTTP responses use the resizable-buffer path because fetch supplies
+decoded bytes, not the compressed size reported by Content-Length.
+
+Compressed formats (MP3, WebM, Ogg, AAC, M4A, FLAC) remain playable using native
+audio, but their waveform previews are unavailable. Non-WAV waveform fetches
+stop after the header is recognized. Large WAVs, unsupported WAV encodings, and
+failed CORS requests also show a clear message instead of a fabricated waveform.
+The native audio element preloads metadata rather than downloading the whole
+recording before playback. Waveform fetching starts only when the player enters
+the viewport. This is not a streaming waveform implementation.
+
+Non-WAV recordings without finite duration metadata retain visible native audio
+controls and relative seeking. The custom full-duration waveform slider remains
+unavailable until duration is known; it never guesses the recording's length.
+
+Transcript previews use bounded counts/text, an indexed active-segment lookup,
+and a memoized row list that reconciles only when the active segment changes,
+not on every playback-clock update. For overlapping speech, the first active
+segment is highlighted and followed; all supplied segments remain visible.
+
+## Eval integration
+
+`EvalRecordingPlayer` adapts job artifacts to the generic player. It loads only
+the selected recording, selects a folder-matching `analysis/turns.json`, and
+uses speaker-segment timestamps when available. The transcript download is
+capped at 5 MiB. An unambiguous raw-metric transcript is a fallback and is labeled
+as turn-level timing. Ambiguous or other-chunk transcripts are not attached.
+Metric fallbacks match the complete agent-sanitized case/chunk identity after
+stripping its generated timestamp/nonce suffix; unknown folder formats and
+colliding identities are rejected instead of guessing from a prefix.
+Unscoped filenames never receive a metric-backed transcript. Historical
+root-level turns.json artifacts are accepted only when the job has exactly one
+audio recording; multiple flat-layout recordings need an explicit association.
+Python non-finite JSON tokens are sanitized with a linear, quote-aware scan;
+speech strings and escaped quotes are preserved without regex backtracking.
+The player never generates speech recognition or sends recordings to a new
+third-party service.
+
+## Storage CORS
+
+Native audio playback does not require CORS, but waveform and transcript reads
+do. Configure both the system artifact bucket and each user-supplied bucket to
+allow GET from the Vox origin. For an S3-compatible bucket, a CORS rule is:
+
+```json
+[
+  {
+    "AllowedOrigins": ["https://vox.agora.build"],
+    "AllowedMethods": ["GET", "HEAD"],
+    "AllowedHeaders": ["*"],
+    "ExposeHeaders": ["Content-Length", "Content-Encoding"],
+    "MaxAgeSeconds": 3600
+  }
+]
+```
+
+Replace the origin with the deployed instance's origin. This is a bucket-owner
+configuration step, not a public-read policy; object access still requires the
+signed URL. Check the browser network panel for CORS errors if previews are
+unavailable while audio playback works. Vox does not change bucket policies.
+
+## Tests
+
+```sh
+npm exec -- vitest run tests/audio-player-utils.test.ts
+PLAYWRIGHT_BASE_URL=http://127.0.0.1:5177 npm exec -- playwright test tests/e2e/audio-player.spec.ts
+```
+
+The browser tests use local generated audio and mocked APIs; point them at a
+local Vox build/preview. They cover genuine canvas waveforms, six channels,
+playback, drag/keyboard/transcript seeking, source switching, graceful failures,
+PCM-derived duration fallback, and mobile touch scrubbing.
+Additional regressions cover PCM encodings and malformed files, safe unsupported
+format handling, transcript limits, stalled-playback pause, and speed preservation
+when the native media source reloads without remounting.
+Canvas bounds are tested with 32 channels, 8x zoom, and DPR 2. Browser tests also
+cover deferred waveform requests and unknown-duration native-control fallback.
