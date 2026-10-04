@@ -44,11 +44,11 @@ function res() {
 }
 
 describe("credits routes", () => {
-  it("registers exactly the four documented routes", () => {
+  it("registers the five documented routes", () => {
     const { r, routes } = capture();
     registerCreditsRoutes(r, fakeService());
     expect(routes.map((x) => `${x.method.toUpperCase()} ${x.path}`).sort()).toEqual([
-      "GET /accounts", "GET /balance", "GET /statement", "POST /grants",
+      "GET /accounts", "GET /balance", "GET /statement", "GET /usage", "POST /grants",
     ]);
   });
 
@@ -79,7 +79,7 @@ describe("credits routes", () => {
     expect(svc.getBalance).toHaveBeenCalledWith(42);
   });
 
-  it("grants forwards the admin body to deposit", async () => {
+  it("grants fail closed when Core verification is not wired", async () => {
     const svc = fakeService();
     const { r, routes } = capture();
     registerCreditsRoutes(r, svc);
@@ -87,8 +87,8 @@ describe("credits routes", () => {
     const out = res();
     await grants.handler(
       { session: { userId: 1 }, body: { userId: 9, credits: 100, reason: "grant", idempotencyKey: "k1" } }, out);
-    expect(svc.deposit).toHaveBeenCalledWith({ userId: 9, credits: 100, reason: "grant", idempotencyKey: "k1" });
-    expect(out.code).toBe(201);
+    expect(svc.deposit).not.toHaveBeenCalled();
+    expect(out.code).toBe(503);
   });
 
   it("grants rejects a malformed body with 400", async () => {
@@ -98,7 +98,7 @@ describe("credits routes", () => {
     const grants = routes.find((x) => x.path === "/grants")!;
     const out = res();
     await grants.handler({ session: { userId: 1 }, body: { userId: 9 } }, out);
-    expect(out.code).toBe(400);
+    expect(out.code).toBe(503);
     expect(svc.deposit).not.toHaveBeenCalled();
   });
 

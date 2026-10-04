@@ -1,5 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { Pool } from "pg";
+import crypto from "node:crypto";
+import * as OTPAuth from "otpauth";
 import { BASE_NA } from "./helpers/regions";
 import { computeCharge, computeFee, PLATFORM_FEE_BPS } from "../plugins/shared-agents/server/pricing";
 
@@ -30,6 +32,11 @@ const dbPool = new Pool({ connectionString: process.env.DATABASE_URL });
 const createdTokenIds: number[] = [];
 
 interface AuthSession { cookie: string }
+let grantAdmin: AuthSession;
+let grantAdminId: number | undefined;
+let grantTotp: OTPAuth.TOTP;
+let recoveryCode: string | undefined;
+const grantApprovals = new Map<string, { batchId: string; userIds: number[]; credits: number; reason: string; verification: { initCode: string; challengeId: string; code: string } }>();
 
 async function login(email: string, password: string): Promise<AuthSession> {
   const res = await fetch(`${BASE_URL}/api/auth/login`, {
@@ -92,9 +99,19 @@ async function getStatement(session: AuthSession, limit = 20): Promise<Array<{ i
   return body.entries;
 }
 
-async function deposit(admin: AuthSession, userId: number, credits: number, idempotencyKey: string, reason = "task13-grant"): Promise<Response> {
-  return authFetch(admin, `${BASE_URL}/api/plugins/credits/grants`, {
-    method: "POST", body: JSON.stringify({ userId, credits, reason, idempotencyKey }),
+async function deposit(userId: number, credits: number, idempotencyKey: string, reason = "task13-grant"): Promise<Response> {
+  let proposal = grantApprovals.get(idempotencyKey);
+  if (!proposal) {
+    const payload = { batchId: crypto.randomUUID(), userIds: [userId], credits, reason };
+    const challenge = await authFetch(grantAdmin, `${BASE_URL}/api/user/verification/challenges`, {
+      method: "POST", body: JSON.stringify({ action: "credits.grant", method: "totp", payload }),
+    });
+    expect(challenge.status).toBe(201);
+    proposal = { ...payload, verification: { initCode: process.env.INIT_CODE || "VOX-DEBUG-2024", challengeId: (await challenge.json()).challengeId, code: grantTotp.generate() } };
+    grantApprovals.set(idempotencyKey, proposal);
+  }
+  return authFetch(grantAdmin, `${BASE_URL}/api/plugins/credits/grants`, {
+    method: "POST", body: JSON.stringify(proposal),
   });
 }
 
@@ -227,6 +244,22 @@ describe("Task 13: practical shared-agents marketplace + credits e2e", () => {
 
   beforeAll(async () => {
     admin = await login(ADMIN_EMAIL, ADMIN_PASSWORD);
+    const approver = await makeUser(admin, "premium", "grant-admin", stamp);
+    expect((await authFetch(admin, `${BASE_URL}/api/admin/users/${approver.id}`, {
+      method: "PATCH", body: JSON.stringify({ isAdmin: true }),
+    })).ok).toBe(true);
+    grantAdmin = approver.session;
+    grantAdminId = approver.id;
+    const enrollment = await authFetch(grantAdmin, `${BASE_URL}/api/user/security/totp/enroll`, {
+      method: "POST", body: JSON.stringify({ password: "t13-pass-123" }),
+    });
+    expect(enrollment.ok).toBe(true);
+    grantTotp = new OTPAuth.TOTP({ secret: OTPAuth.Secret.fromBase32((await enrollment.json()).secret), algorithm: "SHA1", digits: 6, period: 30 });
+    const confirmed = await authFetch(grantAdmin, `${BASE_URL}/api/user/security/totp/confirm`, {
+      method: "POST", body: JSON.stringify({ code: grantTotp.generate({ timestamp: Date.now() - 30_000 }) }),
+    });
+    expect(confirmed.ok).toBe(true);
+    recoveryCode = (await confirmed.json()).recoveryCodes[0];
 
     // Confirm both plugins are actually active in this running server (the
     // brief's non-negotiable: the reap-settle worker + marketplace seam must
@@ -253,6 +286,16 @@ describe("Task 13: practical shared-agents marketplace + credits e2e", () => {
     for (const id of createdTokenIds) {
       await authFetch(admin, `${BASE_URL}/api/eval-agent-tokens/${id}/revoke`, { method: "POST" });
     }
+    if (recoveryCode) {
+      expect((await authFetch(grantAdmin, `${BASE_URL}/api/user/security/totp/recover`, {
+        method: "POST", body: JSON.stringify({ password: "t13-pass-123", recoveryCode }),
+      })).ok).toBe(true);
+    }
+    if (grantAdminId !== undefined) {
+      expect((await authFetch(admin, `${BASE_URL}/api/admin/users/${grantAdminId}`, {
+        method: "PATCH", body: JSON.stringify({ isAdmin: false, isEnabled: false }),
+      })).ok).toBe(true);
+    }
     await dbPool.end();
   });
 
@@ -262,13 +305,13 @@ describe("Task 13: practical shared-agents marketplace + credits e2e", () => {
 
     it("admin deposits credits to the dispatcher account; balance and statement reflect it", async () => {
       const before = await getBalance(rich.session);
-      expect(before).toBe(0);
+      expect(before).toBe(100);
 
-      const res = await deposit(admin, rich.id, 100_000, idemKey, "task13 basics grant");
+      const res = await deposit(rich.id, 100_000, idemKey, "task13 basics grant");
       expect(res.status).toBe(201);
 
       const after = await getBalance(rich.session);
-      expect(after).toBe(100_000);
+      expect(after).toBe(before + 100_000);
 
       const entries = await getStatement(rich.session, 5);
       expect(entries[0].amount).toBe(100_000);
@@ -276,11 +319,11 @@ describe("Task 13: practical shared-agents marketplace + credits e2e", () => {
     });
 
     it("repeating the same idempotencyKey does not double-credit", async () => {
-      const res = await deposit(admin, rich.id, 100_000, idemKey, "task13 basics grant");
+      const res = await deposit(rich.id, 100_000, idemKey, "task13 basics grant");
       expect(res.status).toBe(201); // idempotent success, not an error
 
       const balance = await getBalance(rich.session);
-      expect(balance).toBe(100_000); // unchanged — no double-credit
+      expect(balance).toBe(100_100); // welcome grant plus the one approved batch
     });
   });
 
@@ -467,7 +510,7 @@ describe("Task 13: practical shared-agents marketplace + credits e2e", () => {
   });
 
   // ── 4. Insufficient credits soft-gate ────────────────────────────────
-  describe("4. Insufficient credits soft-gate: zero-balance dispatcher gets 402, no hold", () => {
+  describe("4. Insufficient credits soft-gate: welcome balance gets 402, no hold", () => {
     let gateTokenId: number;
 
     beforeAll(async () => {
@@ -478,9 +521,9 @@ describe("Task 13: practical shared-agents marketplace + credits e2e", () => {
       expect(tier.ok).toBe(true);
     });
 
-    it("targeting the shared token with zero credits returns 402 and never touches the balance", async () => {
+    it("targeting a shared token priced above welcome credits returns 402 without a hold", async () => {
       const before = await getBalance(broke.session);
-      expect(before).toBe(0);
+      expect(before).toBe(100);
 
       const evalFlowId = await createEvalFlow(broke.session, `t13-402-wf-${stamp}`, providerId);
       const evalSetId = await createEvalSet(broke.session, `t13-402-es-${stamp}`);
@@ -493,7 +536,7 @@ describe("Task 13: practical shared-agents marketplace + credits e2e", () => {
       expect(body.error).toBe("insufficient-credits");
 
       const after = await getBalance(broke.session);
-      expect(after).toBe(0); // unchanged — no hold was ever placed
+      expect(after).toBe(before); // unchanged — no hold was ever placed
     });
   });
 
@@ -589,9 +632,9 @@ describe("Task 13: practical shared-agents marketplace + credits e2e", () => {
       freeTokenId = t.id; freeTokenPlain = t.token;
     });
 
-    it("6a. free-tier untargeted (pooled) run completes with a zero-credits dispatcher — no 402, no movement", async () => {
+    it("6a. free-tier untargeted (pooled) run preserves the welcome balance", async () => {
       const before = await getBalance(broke.session);
-      expect(before).toBe(0);
+      expect(before).toBe(100);
 
       // Register the agent BEFORE creating the job so the claim attempt below is
       // immediate. This is an UNTARGETED job in a shared region: any other live
@@ -637,15 +680,15 @@ describe("Task 13: practical shared-agents marketplace + credits e2e", () => {
       const complete = await completeJob(freeTokenPlain, agent.id, agent.leaseId, job!.id, { results: SAMPLE_RESULTS });
       expect(complete.ok).toBe(true);
 
-      expect(await getBalance(broke.session)).toBe(0);
+      expect(await getBalance(broke.session)).toBe(before);
     });
 
-    it("6b. private-tier targeted dispatch (self) completes with a zero-credits dispatcher — no 402, no movement", async () => {
+    it("6b. private-tier targeted dispatch (self) preserves the welcome balance", async () => {
       const tier = await setDispatchTier(broke.session, freeTokenId, "private");
       expect(tier.ok).toBe(true);
 
       const before = await getBalance(broke.session);
-      expect(before).toBe(0);
+      expect(before).toBe(100);
 
       const evalFlowId = await createEvalFlow(broke.session, `t13-free2-wf-${stamp}`, providerId);
       const evalSetId = await createEvalSet(broke.session, `t13-free2-es-${stamp}`);
@@ -663,7 +706,7 @@ describe("Task 13: practical shared-agents marketplace + credits e2e", () => {
       const complete = await completeJob(freeTokenPlain, agent.id, agent.leaseId, job.id, { results: SAMPLE_RESULTS });
       expect(complete.ok).toBe(true);
 
-      expect(await getBalance(broke.session)).toBe(0);
+      expect(await getBalance(broke.session)).toBe(before);
     });
   });
 

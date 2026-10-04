@@ -68,7 +68,7 @@ describeDb("zero-trust metrics gates", () => {
   });
 
   it("community includes trusted + legacy(NULL) shared rows, excludes anonymized", async () => {
-    const rows = await storage.getCommunityMetrics(undefined, undefined);
+    const rows = await storage.getCommunityMetrics(24, undefined);
     const ids = rows.map(r => r.id);
     expect(ids).toContain(trustedShared);
     expect(ids).toContain(legacyShared);
@@ -77,14 +77,14 @@ describeDb("zero-trust metrics gates", () => {
   });
 
   it("unverified scope selects NULL-siteId rows for my-evals", async () => {
-    const rows = await storage.getMyEvalMetrics(1, undefined, { unverified: true });
+    const rows = await storage.getMyEvalMetrics(1, 24, { unverified: true });
     expect(rows.map(r => r.id)).toContain(myPrivateUnverified);
     expect(rows.map(r => r.id)).not.toContain(myPrivateTrusted);
     expect(rows.map(r => r.id)).not.toContain(trustedShared); // shared tier never reaches My Evals
   });
 
   it("unverified + baseIds compose as OR", async () => {
-    const rows = await storage.getMyEvalMetrics(1, undefined, { baseIds: [BASE_NA], unverified: true });
+    const rows = await storage.getMyEvalMetrics(1, 24, { baseIds: [BASE_NA], unverified: true });
     const ids = rows.map(r => r.id);
     expect(ids).toContain(myPrivateUnverified);
     expect(ids).toContain(myPrivateTrusted);

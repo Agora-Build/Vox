@@ -1,14 +1,15 @@
 {
   "id": "credits",
-  "version": "1.0.0",
-  "voxPluginApi": "^1.0.0",
+  "version": "1.1.0",
+  "voxPluginApi": "^1.1.0",
   "providesServices": { "vox.credits": "1.0.0" },
-  "requiresServices": {},
+  "requiresServices": { "vox.users": "^1.0.0", "vox.verification": "^1.0.0" },
   "optionalServices": {},
   "migrations": "migrations",
   "routes": [
     "GET /api/plugins/credits/balance",
     "GET /api/plugins/credits/statement",
+    "GET /api/plugins/credits/usage",
     "POST /api/plugins/credits/grants",
     "GET /api/plugins/credits/accounts"
   ]

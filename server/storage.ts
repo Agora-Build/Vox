@@ -111,7 +111,7 @@ import { regionSiteSequence, haversineKm, type RegionCandidate } from "@shared/r
 import { drizzle } from "drizzle-orm/node-postgres";
 import pkg from "pg";
 const { Pool } = pkg;
-import { asc, desc, eq, ne, and, or, not, sql, gte, lt, lte, inArray, isNotNull, isNull } from "drizzle-orm";
+import { asc, desc, eq, ne, and, or, not, sql, gte, lt, lte, inArray, isNotNull, isNull, getTableColumns } from "drizzle-orm";
 import crypto from "crypto";
 
 // Realtime-metrics windowing policy (server-owned; the client never sets these).
@@ -652,22 +652,30 @@ export interface EvalJobFilters {
   visibleTo?: { userId: number; organizationId: number | null; isAdmin: boolean };
 }
 
+const personalPremiumExists = sql<boolean>`EXISTS (SELECT 1 FROM personal_entitlements WHERE user_id=${users.id} AND expires_at>now())`;
+// Authenticated feature reads use the effective tier; bulk/admin directory reads
+// retain the stored tier so editing an account cannot persist a subscription.
+const effectiveUserFields = {
+  ...getTableColumns(users),
+  plan: sql<User["plan"]>`CASE WHEN ${users.plan}='basic' AND ${personalPremiumExists} THEN 'premium'::user_plan ELSE ${users.plan} END`,
+};
+
 export class DatabaseStorage {
   // org-columns: provider — returns the raw User row (organizationId/orgRole
   // included). Those two columns are FROZEN since the Release A flip: membership
   // comes from the vox.organizations plugin, and Release B drops them.
   async getUser(id: number): Promise<User | undefined> {
-    const result = await db.select().from(users).where(eq(users.id, id));
+    const result = await db.select(effectiveUserFields).from(users).where(eq(users.id, id));
     return result[0];
   }
 
   async getUserByUsername(username: string): Promise<User | undefined> {
-    const result = await db.select().from(users).where(eq(users.username, username));
+    const result = await db.select(effectiveUserFields).from(users).where(eq(users.username, username));
     return result[0];
   }
 
   async getUserByEmail(email: string): Promise<User | undefined> {
-    const result = await db.select().from(users).where(eq(users.email, email));
+    const result = await db.select(effectiveUserFields).from(users).where(eq(users.email, email));
     return result[0];
   }
 
@@ -698,11 +706,11 @@ export class DatabaseStorage {
   }
 
   /** One page of users, newest first, optionally filtered by email/username (#209). */
-  async listUsersPage(opts: { limit: number; offset: number; q?: string }): Promise<{ rows: User[]; total: number }> {
+  async listUsersPage(opts: { limit: number; offset: number; q?: string }): Promise<{ rows: Array<User & { personalPremium: boolean }>; total: number }> {
     const like = opts.q ? `%${opts.q.replace(/[\\%_]/g, (c) => "\\" + c)}%` : null;
     const where = like ? or(sql`${users.email} ILIKE ${like}`, sql`${users.username} ILIKE ${like}`) : undefined;
     const [rows, count] = await Promise.all([
-      db.select().from(users).where(where).orderBy(desc(users.createdAt), desc(users.id)).limit(opts.limit).offset(opts.offset),
+      db.select({ ...getTableColumns(users), personalPremium: personalPremiumExists }).from(users).where(where).orderBy(desc(users.createdAt), desc(users.id)).limit(opts.limit).offset(opts.offset),
       db.select({ n: sql<number>`count(*)::int` }).from(users).where(where),
     ]);
     return { rows, total: count[0]?.n ?? 0 };
@@ -713,7 +721,7 @@ export class DatabaseStorage {
     const [r] = await db.select({
       total: sql<number>`count(*)::int`,
       admins: sql<number>`count(*) FILTER (WHERE ${users.isAdmin})::int`,
-      premium: sql<number>`count(*) FILTER (WHERE ${users.plan} = 'premium')::int`,
+      premium: sql<number>`count(*) FILTER (WHERE ${users.plan} = 'premium' OR ${personalPremiumExists})::int`,
     }).from(users);
     return r;
   }

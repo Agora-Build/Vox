@@ -1,4 +1,4 @@
-import { pgTable, text, varchar, integer, real, timestamp, serial, boolean, pgEnum, jsonb, index, uniqueIndex, check, doublePrecision } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, integer, real, timestamp, serial, boolean, pgEnum, jsonb, index, uniqueIndex, check, doublePrecision, bigint, primaryKey } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
@@ -82,6 +82,44 @@ export const insertUserSchema = createInsertSchema(users).omit({
 
 export type InsertUser = z.infer<typeof insertUserSchema>;
 export type User = typeof users.$inferSelect;
+
+export const userVerificationFactors = pgTable("user_verification_factors", {
+  userId: integer("user_id").primaryKey().references(() => users.id, { onDelete: "cascade" }),
+  encryptedSecret: text("encrypted_secret").notNull(),
+  enabled: boolean("enabled").default(false).notNull(),
+  lastStep: bigint("last_step", { mode: "number" }).default(-1).notNull(),
+  recoveryHashes: jsonb("recovery_hashes").default([]).notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+});
+
+export const verificationChallenges = pgTable("verification_challenges", {
+  id: text("id").primaryKey(),
+  userId: integer("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  sessionHash: text("session_hash").notNull(),
+  action: text("action").notNull(),
+  payloadHash: text("payload_hash").notNull(),
+  method: text("method").notNull(),
+  codeHash: text("code_hash"),
+  attempts: integer("attempts").default(0).notNull(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  consumedAt: timestamp("consumed_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [index("verification_challenges_user_created_idx").on(table.userId, table.createdAt)]);
+
+export const securityAudit = pgTable("security_audit", {
+  id: text("id").primaryKey(),
+  userId: integer("user_id").notNull(),
+  action: text("action").notNull(),
+  payloadHash: text("payload_hash").notNull(),
+  method: text("method").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+});
+
+export const personalEntitlements = pgTable("personal_entitlements", {
+  userId: integer("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  sourceRef: text("source_ref").notNull(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }),
+}, (table) => [primaryKey({ columns: [table.userId, table.sourceRef] })]);
 
 // ==================== PROVIDERS ====================
 

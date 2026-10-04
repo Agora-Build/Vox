@@ -1,0 +1,21 @@
+{
+  "id": "payments",
+  "version": "1.0.0",
+  "voxPluginApi": "^1.1.0",
+  "providesServices": {},
+  "requiresServices": {
+    "vox.credits": "^1.0.0",
+    "vox.identity": "^1.0.0",
+    "vox.verification": "^1.0.0",
+    "vox.personal-entitlements": "^1.0.0"
+  },
+  "migrations": "migrations",
+  "routes": [
+    "GET /api/plugins/payments/usage",
+    "POST /api/plugins/payments/checkout",
+    "POST /api/plugins/payments/portal",
+    "GET /api/plugins/payments/pricing",
+    "PATCH /api/plugins/payments/pricing",
+    "POST /api/plugins/payments/webhook"
+  ]
+}

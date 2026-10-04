@@ -18,7 +18,8 @@
     "paths": {
       "@/*": ["./client/src/*"],
       "@shared/*": ["./shared/*"],
-      "@vox/plugin-sdk": ["./packages/plugin-sdk/index.ts"]
+      "@vox/plugin-sdk": ["./packages/plugin-sdk/index.ts"],
+      "@vox/web-plugin-sdk": ["./packages/web-plugin-sdk/index.tsx"]
     }
   }
 }

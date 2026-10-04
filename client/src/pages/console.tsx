@@ -14,6 +14,9 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Checkbox } from "@/components/ui/checkbox";
+import { PluginSlot } from "@vox/web-plugin-sdk";
+import { usePluginAvailability } from "@/plugin-ui";
 
 interface AuthStatus {
   initialized: boolean;
@@ -33,6 +36,7 @@ interface UserData {
   username: string;
   email: string;
   plan: string;
+  personalPremium?: boolean;
   isAdmin: boolean;
   isEnabled: boolean;
   emailVerified: boolean;
@@ -59,13 +63,15 @@ function getPaidStatus(user: UserData): { label: string; variant: "default" | "s
   if (user.isAdmin || user.plan === "principal" || user.plan === "fellow") {
     return { label: "\u2014", variant: "outline" };
   }
-  if (user.plan === "premium") {
+  if (user.plan === "premium" || user.personalPremium) {
     return { label: "Yes", variant: "default" };
   }
   return { label: "No", variant: "outline" };
 }
 
 export default function Console() {
+  const plugins = usePluginAvailability();
+  const [selectedUsers, setSelectedUsers] = useState<Record<string, string>>({});
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const [inviteOpen, setInviteOpen] = useState(false);
@@ -333,6 +339,16 @@ export default function Console() {
               </Button>
             </div>
           </div>
+          {plugins.enabled("credits") && <div className="mb-4 flex flex-wrap items-center gap-2">
+            <Button variant="outline" size="sm" onClick={() => setSelectedUsers((previous) => {
+              const next = { ...previous };
+              for (const user of users ?? []) { if (Object.keys(next).length >= 500 && !next[user.id]) break; next[user.id] = `${user.username} (${user.email})`; }
+              return next;
+            })}>Select this page</Button>
+            <Button variant="ghost" size="sm" disabled={!Object.keys(selectedUsers).length} onClick={() => setSelectedUsers({})}>Clear selection</Button>
+            <span className="text-sm text-muted-foreground">{Object.keys(selectedUsers).length} selected across pages (max 500)</span>
+            <PluginSlot name="admin-credit-grant" props={{ userIds: Object.keys(selectedUsers).map(Number), names: Object.values(selectedUsers) }} />
+          </div>}
           {usersLoading ? (
             <div className="space-y-4">
               {[1, 2, 3].map((i) => (
@@ -343,6 +359,7 @@ export default function Console() {
             <Table>
               <TableHeader>
                 <TableRow>
+                  {plugins.enabled("credits") && <TableHead className="w-10">Select</TableHead>}
                   <TableHead>User</TableHead>
                   <TableHead>Plan</TableHead>
                   <TableHead>Paid</TableHead>
@@ -355,6 +372,9 @@ export default function Console() {
                   const paid = getPaidStatus(user);
                   return (
                     <TableRow key={user.id} data-testid={`row-user-${user.id}`}>
+                      {plugins.enabled("credits") && <TableCell><Checkbox aria-label={`Select ${user.username}`} checked={!!selectedUsers[user.id]} disabled={!selectedUsers[user.id] && Object.keys(selectedUsers).length >= 500} onCheckedChange={(checked) => setSelectedUsers((previous) => {
+                        const next = { ...previous }; if (checked) next[user.id] = `${user.username} (${user.email})`; else delete next[user.id]; return next;
+                      })} /></TableCell>}
                       <TableCell>
                         <div>
                           <div className="font-medium">{user.username}</div>
@@ -388,6 +408,7 @@ export default function Console() {
                       </TableCell>
                       <TableCell className="text-right">
                         <div className="flex items-center justify-end gap-4">
+                          <PluginSlot name="admin-credit-grant" props={{ userIds: [Number(user.id)], names: [`${user.username} (${user.email})`] }} />
                           {!user.emailVerified && (
                             <Button
                               size="sm"

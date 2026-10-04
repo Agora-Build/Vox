@@ -60,6 +60,7 @@ export async function resolveMembership(
 declare module "express-session" {
   interface SessionData {
     userId: number;
+    oauthVerifiedAt?: number;
   }
 }
 

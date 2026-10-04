@@ -78,6 +78,7 @@ export const identityService: IdentityService = {
       req.session.regenerate((regenErr) => {
         if (regenErr) return reject(regenErr);
         req.session.userId = userId;
+        req.session.oauthVerifiedAt = Date.now();
         req.session.save((saveErr) => (saveErr ? reject(saveErr) : resolve()));
       });
     });
@@ -85,5 +86,6 @@ export const identityService: IdentityService = {
 
   signOut(req) {
     delete req.session.userId;
+    delete req.session.oauthVerifiedAt;
   },
 };

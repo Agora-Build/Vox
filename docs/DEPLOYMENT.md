@@ -16,7 +16,7 @@ This guide covers deploying Vox to production using Coolify (what vox.agora.buil
 |----------|-------------|---------|
 | `DATABASE_URL` | PostgreSQL connection string | `postgresql://user:pass@host:5432/vox` |
 | `SESSION_SECRET` | Key for signing session cookies. **Must be set in production** or the app refuses to start. | Generate with `openssl rand -hex 32` |
-| `INIT_CODE` | One-time code used to create the initial admin user via `/api/auth/init` | Any strong secret string |
+| `INIT_CODE` | Bootstrap secret for `/api/auth/init`, also required alongside fresh verification for personal pricing changes and credit grants | Any strong secret string |
 | `NODE_ENV` | Must be `production`. The container does not set it; it turns on secure cookies and rate limiting. | `production` |
 
 ### Plugins
@@ -28,7 +28,9 @@ This guide covers deploying Vox to production using Coolify (what vox.agora.buil
 | Plugin | What it adds |
 |--------|--------------|
 | `organizations` | Organizations, membership, org secrets. **Once enabled on an instance with org data, never remove it** — membership would silently go inert. |
-| `credits` | Credit ledger for paid dispatch |
+| `credits` | Personal Usage, credit ledger, one-time 100-credit welcome grant and protected admin grants |
+| `payments` | Personal Stripe top-ups and Premium subscriptions (needs `credits`) |
+| `notifications` | Email delivery and retry queue; Core still owns verification |
 | `shared-agents` | Running evals on other people's eval agents (needs `credits`) |
 | `oauth` | Sign in with GitHub and Google (see below) |
 | `sample` | A minimal example plugin; not for production |
@@ -47,6 +49,78 @@ Needs `oauth` in `VOX_PLUGINS`. Each provider turns on only when both its ID and
 | `GOOGLE_CALLBACK_URL` | `https://your-domain.com/api/plugins/oauth/google/callback`. Register exactly this as an *Authorized redirect URI*. |
 
 **Upgrading from a release before the plugin:** Google's callback moved from `/api/auth/google/callback` to `/api/plugins/oauth/google/callback` — update the registered redirect URI and `GOOGLE_CALLBACK_URL`. GitHub's callback URL is unchanged. Existing account links are copied into the plugin automatically on first start.
+
+### Personal Usage, billing and verification
+
+`credits` enables the personal Usage menu and its Credits & Usage / Plan tabs.
+Every existing and new user receives exactly one additive 100-credit welcome
+deposit. Existing balances are not reset; a resumable worker backfills users.
+Credits do not expire. Without `payments`, wallet/history and grants still work,
+but paid checkout is unavailable. Organization billing is unchanged.
+
+For personal purchases, add `payments` alongside existing plugin IDs (do not
+remove organizations from an instance with org data). Configure:
+
+| Variable | Purpose |
+|----------|---------|
+| `APP_URL` | Public HTTPS origin, e.g. `https://vox.example.com`, without a path |
+| `STRIPE_SECRET_KEY` | Stripe account API key |
+| `STRIPE_PERSONAL_WEBHOOK_SECRET` | Signing secret for the new personal endpoint |
+| `CREDENTIAL_ENCRYPTION_KEY` | Required for encrypted TOTP secrets and verification |
+
+Register `https://<your-domain>/api/plugins/payments/webhook` in Stripe. It is
+separate from the existing organization endpoint `/api/webhooks/stripe` and
+does not use that endpoint's `STRIPE_WEBHOOK_SECRET`. Subscribe to:
+
+- `checkout.session.completed`, `checkout.session.async_payment_succeeded`, `checkout.session.async_payment_failed`, `checkout.session.expired`
+- `invoice.paid`, `invoice.payment_failed`
+- `customer.subscription.updated`, `customer.subscription.deleted`
+- `charge.refunded`, `charge.dispute.created`
+
+Configure Stripe Customer Portal for personal cancellation and payment-method
+updates; do not enable arbitrary subscription product switching. Payments are
+not simulated when configuration is absent. Initial USD pricing is Basic free,
+Premium $12/month with feature access only (no recurring credits), and 100 credits
+for $5. An admin can publish a new Premium price or top-up price/quantity from
+Usage. Existing subscription prices and purchase snapshots are retained.
+
+Core Settings supports Google Authenticator-compatible TOTP enrollment and
+recovery codes. This is separate from Google OAuth login. Pricing changes and
+individual/bulk credit grants require an active admin session, `INIT_CODE`, and
+fresh TOTP or email verification bound to that exact change. Save recovery codes
+offline when shown; recovery resets the factor and invalidates remaining codes.
+Keep `INIT_CODE` after initialization and keep its value out of logs and source.
+Recovery hashes and in-flight challenges use `CREDENTIAL_ENCRYPTION_KEY` too;
+rotating that key invalidates recovery codes and pending approvals. Plan a secure
+authenticator reset/re-enrollment alongside any encryption-key rotation.
+
+For email codes, enable `notifications` and set `SMTP_HOST`, `SMTP_PORT` (587),
+`SMTP_SECURE` (false), `SMTP_USER`, `SMTP_PASSWORD`, `NOTIFICATIONS_FROM`, and
+optionally `SMTP_REQUIRE_TLS` (true). Only server-configured destinations from
+the authenticated user's account receive security codes. Message bodies are
+encrypted at rest and cleared on delivery or expiry; delivery retries stop after
+five attempts or expiry. TOTP works without this plugin. Discord, WhatsApp and
+SMS adapters are not implemented yet.
+
+Refunds/disputes are surfaced in personal billing and the admin pricing panel for
+manual review. This release does not automatically claw back credits with active
+escrow, issue cash refunds, or migrate existing subscriptions to new pricing.
+
+#### Isolated verification
+
+`tests/personal-billing.test.ts` runs only when `TEST_PERSONAL_DATABASE_URL` points
+to a dedicated local database named `vox_billing_test`. Apply Core migrations to
+that database first. Tests mock Stripe's remote API and SMTP while using real
+signature verification, TOTP and PostgreSQL transactions. Browser checks in
+`tests/e2e/personal-usage.spec.ts` require `PERSONAL_BILLING_E2E=1` and an isolated
+server selected with `PLAYWRIGHT_BASE_URL`; default scenarios mock account APIs
+and never make real purchases. `PERSONAL_BILLING_REAL_E2E=1` additionally tests
+Core enrollment and a protected grant against the local port-5151 preview fixture
+(`billing-preview@example.test`, initialized with dummy test-only credentials in
+the spec); it resets the fixture's authenticator afterward. Never point this at
+production. Do not run the shared dev-data purge gate against another agent's
+database. Pre-create the dedicated plugin-test database before parallel legacy
+plugin tests to avoid their existing CREATE DATABASE race.
 
 ### Optional
 

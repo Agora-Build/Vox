@@ -25,6 +25,7 @@ import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { Users, Workflow as EvalFlowIcon, FileText, LogOut, Shield, Gem, Sparkles, Rocket, Server, Building2, CreditCard, Settings, FolderKanban, ClipboardList, KeyRound, Swords, HardDrive, Box, ChevronsUpDown, Mail, UserCog, MapPinned, Radio, AudioWaveform, ChevronDown } from "lucide-react";
 import { ThemeToggle } from "@/components/theme-toggle";
+import { PluginContributions, usePluginAvailability } from "@/plugin-ui";
 
 interface AuthStatus {
   initialized: boolean;
@@ -47,6 +48,7 @@ interface ConsoleLayoutProps {
 }
 
 export default function ConsoleLayout({ children }: ConsoleLayoutProps) {
+  const plugins = usePluginAvailability();
   const [location, setLocation] = useLocation();
   const [profileOpen, setProfileOpen] = useState(false);
   const [profileDialogOpen, setProfileDialogOpen] = useState(false);
@@ -272,7 +274,7 @@ export default function ConsoleLayout({ children }: ConsoleLayoutProps) {
   }
 
   return (
-    <SidebarProvider style={style as React.CSSProperties}>
+    <PluginContributions><SidebarProvider style={style as React.CSSProperties}>
       <div className="flex h-screen w-full">
         <Sidebar>
           <SidebarHeader className="p-4 border-b">
@@ -382,12 +384,12 @@ export default function ConsoleLayout({ children }: ConsoleLayoutProps) {
                       <button onClick={() => { setProfileOpen(false); setProfileDialogOpen(true); }} className="flex items-center gap-2 w-full rounded-md px-2 py-1.5 text-sm hover:bg-accent transition-colors" data-testid="button-edit-profile">
                         <UserCog className="h-4 w-4 text-muted-foreground" /> Edit profile
                       </button>
-                      <button onClick={() => go("/console/api-keys")} className="flex items-center gap-2 w-full rounded-md px-2 py-1.5 text-sm hover:bg-accent transition-colors" data-testid="link-profile-api-keys">
-                        <KeyRound className="h-4 w-4 text-muted-foreground" /> API Keys
+                      <button onClick={() => go("/console/settings")} className="flex items-center gap-2 w-full rounded-md px-2 py-1.5 text-sm hover:bg-accent transition-colors" data-testid="link-profile-settings">
+                        <Settings className="h-4 w-4 text-muted-foreground" /> Settings
                       </button>
-                      {user.organizationId && (
-                        <button onClick={() => go("/console/organization")} className="flex items-center gap-2 w-full rounded-md px-2 py-1.5 text-sm hover:bg-accent transition-colors" data-testid="link-profile-org">
-                          <Building2 className="h-4 w-4 text-muted-foreground" /> Organization
+                      {plugins.enabled("credits") && (
+                        <button onClick={() => go("/console/usage")} className="flex items-center gap-2 w-full rounded-md px-2 py-1.5 text-sm hover:bg-accent transition-colors" data-testid="link-profile-usage">
+                          <CreditCard className="h-4 w-4 text-muted-foreground" /> Usage
                         </button>
                       )}
                     </div>
@@ -435,6 +437,6 @@ export default function ConsoleLayout({ children }: ConsoleLayoutProps) {
       {user && (
         <ProfileDialog user={user} open={profileDialogOpen} onOpenChange={setProfileDialogOpen} />
       )}
-    </SidebarProvider>
+    </SidebarProvider></PluginContributions>
   );
 }

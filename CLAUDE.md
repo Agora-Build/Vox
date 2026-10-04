@@ -80,6 +80,29 @@ Monorepo: **client/** (React + Vite), **server/** (Express), **shared/** (Drizzl
 ### Plugins
 Optional, additive backends loaded by `server/plugins/loader.ts` from `VOX_PLUGINS` (see Environment Variables above). Builtins live under `plugins/<id>/` and are registered in `plugins/index.ts`: `sample`, `credits`, `shared-agents`, `organizations`, `oauth`. Each gets its own Postgres schema (`plugin_<id>`, `server/plugins/db.ts:schemaForPlugin`), in-app migrations (`server/plugins/migrate.ts`, fail-closed — a bad migration aborts the transaction and the app refuses to start), and namespaced routes under `/api/plugins/<id>/*` plus a generic `GET /api/plugins/<id>/health`; `GET /api/plugins` lists what activated. A successful load logs exactly one line: `plugins loaded: <id, id, ...>`. Plugin↔Core contracts (`vox.organizations`, `vox.credits`, ...) are looked up via `services.require`/`services.optional`; the `organizations` contract is additionally locked at compile time by `server/plugins/contract-checks.ts`. Since plugin API 1.1 the other direction exists too: **Core provides services to plugins**, passed to `loadPlugins` and registered before any plugin activates. The one today is `vox.identity@1.0.0` (`server/identity.ts`, contract in `@vox/plugin-sdk`): find/create a user, mark an email verified, sign in/out — the only way a plugin touches Core users or sessions. The `oauth` plugin uses it; its account links live in `plugin_oauth.identities` (copied from `users.github_id`/`google_id` by its migration 0002, fail-closed on a count mismatch — those Core columns are frozen, dropped later). Design: `designs/2026-09-27-oauth-plugin-design.md`.
 
+### Personal Usage and security
+
+`credits` adds lazy personal Usage UI, additive one-time 100-credit welcome grants
+for all users (including a resumable backfill), non-expiring credits, and protected
+individual/bulk admin grants. Core owns TOTP/email-code verification and recovery
+(`server/verification.ts`, migration 0052); plugins consume `vox.verification` and
+never implement a bypass. Sensitive operations require `INIT_CODE` + fresh,
+single-use, actor/session/payload-bound verification. Keep `INIT_CODE` after init.
+
+Optional `payments` depends on `credits`: Stripe hosted personal top-ups and
+Premium subscriptions. Defaults are Basic $0, Premium $12/month (features only,
+no recurring credits), and 100 credits/$5. Admin pricing is versioned; existing
+subscriptions and purchase snapshots do not change. Personal entitlements are
+separate from base roles/org access (`vox.personal-entitlements`). Personal Stripe
+webhook: `/api/plugins/payments/webhook`, `STRIPE_PERSONAL_WEBHOOK_SECRET`, not the
+organization webhook secret. `APP_URL` must be a production HTTPS origin. Refunds
+and disputes are surfaced for manual review, never a silent escrow clawback.
+
+Optional `notifications` provides `vox.notifications`: encrypted queued email
+delivery via SMTP, retries limited by attempts/expiry; future channel adapters
+are not implemented. Core owns verification; OAuth login is unchanged. TOTP does
+not require notifications. Full configuration/runbook: `docs/DEPLOYMENT.md`.
+
 ### Eval Agent System
 1. Admin or non-basic users mint eval agent tokens with region assignment (admin: public/private visibility; non-admin: private only)
 2. Agents register with a token, then heartbeat and fetch/claim jobs for their region (`evalJobs`: `pending` → `running` → `completed`/`failed`)

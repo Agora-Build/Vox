@@ -41,6 +41,7 @@ export async function loadPlugins(
 ): Promise<LoadedPlugins> {
   const ids = (process.env.VOX_PLUGINS ?? "").split(",").map((s) => s.trim()).filter(Boolean);
   if (ids.length === 0) {
+    app.get("/api/plugins", (_req, res) => { res.json([]); });
     return { shutdown: async () => {}, services: makeServicesView(new ServiceRegistry()) };
   }
 
