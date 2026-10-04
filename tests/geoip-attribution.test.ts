@@ -104,4 +104,17 @@ describe("loaded GeoIP source attribution", () => {
     expect(getGeoipAttribution()).toContain(GEOIP_ATTRIBUTIONS.dbip.attribution);
     expect(getGeoipAttribution()).toContain(GEOIP_ATTRIBUTIONS.geolite2.attribution);
   });
+
+  it.each([
+    ["GeoLite2-City", "dbip"], ["DBIP-City-Lite", "geolite2"],
+  ] as const)("applies refresh metadata to an unresolved reader beside %s", async (databaseType, source) => {
+    openDatabase.mockImplementation(async (file: string) => ({
+      metadata: { databaseType: path.basename(file) === "City.mmdb" ? databaseType : "Unrecognized-ASN" },
+    }));
+    setMetadata(JSON.stringify({ source }));
+    await reloadGeoReaders();
+    expect(getGeoipAttribution()).toContain(GEOIP_ATTRIBUTIONS.dbip.attribution);
+    expect(getGeoipAttribution()).toContain(GEOIP_ATTRIBUTIONS.geolite2.attribution);
+    expect(readFileSync).toHaveBeenCalled();
+  });
 });

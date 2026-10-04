@@ -257,13 +257,13 @@ async function tryOpen<T extends MmdbResponse>(names: string[], opener: (p: stri
 
 function refreshAttribution(sources: Array<GeoipSource | null>): void {
   const activeSources = new Set(sources.filter((source): source is GeoipSource => source !== null));
-  if (activeSources.size === 0 && (cityReader || asnReader)) {
+  if (sources.includes(null)) {
     try {
       const meta = JSON.parse(readFileSync(path.join(GEOIP_DIR, "geoip-meta.json"), "utf8")) as { source?: unknown };
       if (meta.source === "dbip" || meta.source === "geolite2") activeSources.add(meta.source);
     } catch { /* Legacy/manual databases may have no refresh metadata. */ }
   }
-  geoipAttribution = Array.from(activeSources).map(geoipAttributionForSource).join(" ") || null;
+  geoipAttribution = Array.from(activeSources).map(geoipAttributionForSource).join("; ") || null;
 }
 
 /**
@@ -286,7 +286,8 @@ export async function reloadGeoReaders(): Promise<void> {
   if (!asn) console.log("[location] no ASN mmdb found — ASN signals disabled");
   asnReader = asn?.reader ?? null;
 
-  refreshAttribution([city?.source ?? null, asn?.source ?? null]);
+  const loaded = [city, asn].filter((reader) => reader !== null);
+  refreshAttribution(loaded.map((reader) => reader.source));
 }
 
 export function startLocationServices(): void {
