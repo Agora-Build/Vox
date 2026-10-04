@@ -385,7 +385,13 @@ test("recordings with unknown duration retain custom playback and skip controls"
   await expect(media).not.toHaveAttribute("controls");
   await expect(media).toBeHidden();
   await expect(player.getByText("Duration is unavailable.", { exact: false })).toBeVisible();
-  await expect(player.getByRole("slider", { name: "Recording timeline" })).toHaveAttribute("aria-disabled", "true");
+  const timeline = player.getByRole("slider", { name: "Recording timeline" });
+  await expect(timeline).toHaveAttribute("aria-disabled", "true");
+  await timeline.focus();
+  for (const key of ["ArrowLeft", "ArrowRight", "ArrowDown", "ArrowUp", "PageDown", "PageUp", "Home", "End"]) {
+    await timeline.press(key);
+    expect(await media.evaluate((audio: HTMLAudioElement) => audio.currentTime)).toBe(0);
+  }
   await expect(player.getByRole("button", { name: "Forward 10 seconds" })).toBeEnabled();
   await player.getByRole("button", { name: "Forward 10 seconds" }).click();
   await expect.poll(() => media.evaluate((audio: HTMLAudioElement) => audio.currentTime)).toBeGreaterThanOrEqual(9.9);

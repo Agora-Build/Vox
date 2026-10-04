@@ -62,7 +62,7 @@ export function AudioPlayer({ src, waveformSrc, title = "Recording", subtitle, c
   };
   const keyDown = (event: KeyboardEvent) => {
     const targets: Record<string, number> = { ArrowLeft: playback.time - 5, ArrowRight: playback.time + 5, ArrowDown: playback.time - 5, ArrowUp: playback.time + 5, PageDown: playback.time - 10, PageUp: playback.time + 10, Home: 0, End: playback.duration };
-    if (event.key in targets) { event.preventDefault(); playback.seek(targets[event.key]); }
+    if (event.key in targets) { event.preventDefault(); if (playback.duration > 0) playback.seek(targets[event.key]); }
     if (event.key === " ") { event.preventDefault(); playback.toggle(); }
   };
   return <div ref={rootRef} className={cn("vox-audio-player", className)} data-testid="audio-player" aria-label={`${title} audio player`}>
