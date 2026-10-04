@@ -103,7 +103,7 @@ notification audience groups are separate from organizations.
 ## Tech Stack
 
 The public [Thanks page](https://vox.agora.build/thanks) acknowledges notable
-open-source projects, libraries, tools, and optional services used by Vox.
+open-source projects, libraries, and open data used by Vox.
 Its curated descriptions and links live in
 `client/src/lib/acknowledgments.ts`; keep them aligned with actual dependencies
 and integrations. This is not an exhaustive license inventory. Existing

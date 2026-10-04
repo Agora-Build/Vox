@@ -1,11 +1,8 @@
-import { ArrowUpRight, AudioLines, Braces, Heart, Layers, Server, Wrench, type LucideIcon } from "lucide-react";
+import { ArrowUpRight, AudioLines, Braces, Heart, type LucideIcon } from "lucide-react";
 import { acknowledgmentGroups } from "@/lib/acknowledgments";
 
 const groupIcons: Record<string, LucideIcon> = {
   evaluation: AudioLines,
-  interface: Layers,
-  platform: Server,
-  tooling: Wrench,
   integrations: Braces,
 };
 
@@ -26,7 +23,7 @@ export default function Thanks() {
           <p className="max-w-2xl text-sm leading-7 text-muted-foreground md:text-base">
             To the maintainers, contributors, and communities behind the projects
             we build on: thank you for sharing your work. These are some of the
-            libraries, tools, and services that help bring Vox to life.
+            projects, libraries, and open data that help bring Vox to life.
           </p>
         </div>
         <nav aria-label="Acknowledgment categories" className="relative mt-8 flex flex-wrap gap-2">
@@ -76,8 +73,8 @@ export default function Thanks() {
         <p className="font-medium text-foreground">And to everyone who contributes to Vox: thank you.</p>
         <p className="mt-1">
           This is a curated acknowledgment, not a complete dependency or license
-          inventory. Each project retains its own license and each service its
-          own terms. Links are credits, not claims of affiliation or endorsement.
+          inventory. Each project and dataset retains its own license.
+          Links are credits, not claims of affiliation or endorsement.
         </p>
       </aside>
     </div>

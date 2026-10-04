@@ -1,4 +1,5 @@
 import { test, expect } from "@playwright/test";
+import { acknowledgmentGroups } from "../../client/src/lib/acknowledgments";
 
 test.describe("Thanks page", () => {
   test("is public and has page-specific search metadata", async ({ page }) => {
@@ -8,24 +9,59 @@ test.describe("Thanks page", () => {
     await expect(page.locator('meta[name="description"]')).toHaveAttribute("content", /open-source projects/);
     await expect(page.locator('meta[name="robots"]')).toHaveAttribute("content", /index, follow/);
     await expect(page.locator('link[rel="canonical"]')).toHaveAttribute("href", "https://vox.agora.build/thanks");
-    for (const title of ["Evaluation & audio", "The interface", "The platform", "Building & shipping", "Data & optional services"]) {
+    for (const title of ["Evaluation & audio", "Data attribution"]) {
       await expect(page.getByRole("heading", { level: 2, name: title, exact: true })).toBeVisible();
+    }
+  });
+
+  test("omits the interface, platform, and building/shipping sections and category links", async ({ page }) => {
+    await page.goto("/thanks");
+    await expect(page.getByRole("heading", { level: 1, name: "Thanks." })).toBeVisible();
+    const categories = page.getByRole("navigation", { name: "Acknowledgment categories" });
+    for (const name of ["The interface", "The platform", "Building & shipping"]) {
+      await expect(page.getByRole("heading", { level: 2, name, exact: true })).toHaveCount(0);
+      await expect(categories.getByRole("link", { name, exact: true })).toHaveCount(0);
+    }
+    await expect(page.locator("main #interface, main #platform, main #tooling")).toHaveCount(0);
+    await expect(page.locator("main h2")).toHaveCount(2);
+  });
+
+  test("does not show the removed commercial-company credits", async ({ page }) => {
+    await page.goto("/thanks");
+    await expect(page.getByRole("heading", { level: 1, name: "Thanks." })).toBeVisible();
+    for (const name of ["Stripe", "Google", "Discord", "Anthropic", "MaxMind"]) {
+      await expect(page.locator("main").getByRole("link", { name: new RegExp(`^${name}\\b`) })).toHaveCount(0);
     }
   });
 
   test("is reachable through the public footer", async ({ page }) => {
     await page.goto("/privacy");
     const link = page.getByTestId("link-footer-thanks");
+    await expect(link).toHaveCount(1);
+    await expect(page.getByTestId("footer-community-credit").getByTestId("link-footer-thanks")).toHaveCount(1);
     await expect(link).toHaveAttribute("href", "/thanks");
     await link.click();
     await expect(page).toHaveURL(/\/thanks$/);
     await expect(page.getByRole("heading", { level: 1, name: "Thanks." })).toBeVisible();
   });
 
+  test("places the Thanks link in the footer's left-side community credit", async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await page.goto("/thanks");
+    const credit = page.getByTestId("footer-community-credit");
+    await expect(credit).toContainText("Built with");
+    const thanks = credit.getByTestId("link-footer-thanks");
+    await thanks.scrollIntoViewIfNeeded();
+    await expect(thanks).toBeVisible();
+    const thanksBox = (await thanks.boundingBox())!;
+    const privacyBox = (await page.getByTestId("link-footer-privacy").boundingBox())!;
+    expect(thanksBox.x).toBeLessThan(privacyBox.x);
+  });
+
   test("links to real projects and their license notices safely", async ({ page, request }) => {
     await page.goto("/thanks");
     const projects = page.locator('main section li > a:first-child');
-    expect(await projects.count()).toBeGreaterThan(25);
+    await expect(projects).toHaveCount(acknowledgmentGroups.reduce((count, group) => count + group.projects.length, 0));
     for (const link of await projects.all()) {
       await expect(link).toHaveAttribute("href", /^https:\/\//);
       await expect(link).toHaveAttribute("target", "_blank");
@@ -41,10 +77,10 @@ test.describe("Thanks page", () => {
 
   test("supports category navigation", async ({ page }) => {
     await page.goto("/thanks");
-    await page.getByRole("navigation", { name: "Acknowledgment categories" }).getByRole("link", { name: "Data & optional services" }).click();
+    await page.getByRole("navigation", { name: "Acknowledgment categories" }).getByRole("link", { name: "Data attribution" }).click();
     await expect(page).toHaveURL(/\/thanks#integrations$/);
     await expect(page.locator("#integrations")).toBeInViewport();
-    await expect(page.locator("#integrations")).toContainText("not a list of services enabled on every deployment");
+    await expect(page.locator("#integrations")).toContainText("active source depends on the deployment's configuration");
   });
 
   for (const theme of ["dark", "light"]) {
