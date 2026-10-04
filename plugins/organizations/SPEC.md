@@ -38,6 +38,16 @@ the seam — this plugin mounts nothing on `HttpHost`.
 ## Web UI contributions
 None (backend-only; the seam is the only integration point).
 
+Core's console exposes `/console/organization` for the dashboard and the
+organization's management controls: name/address editing, personal resource
+transfers, and leaving with confirmation. Owners/admins retain the existing
+management access; owners cannot leave and regular members see only the
+read-only dashboard. Members and Billing remain separate sidebar entries.
+There is no organization Settings entry: the legacy
+`/console/organization/settings` route redirects to `/console/organization`.
+Personal Settings remains above Usage in the profile menu. This UI consolidation
+does not change the plugin service, organization permissions, billing, or schema.
+
 ## Dependencies and minimum versions
 None.
 

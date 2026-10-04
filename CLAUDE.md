@@ -64,7 +64,7 @@ Optional:
 - `GEOIP_DB_DIR` (default `./geoip`) — absent DBs = non-public agents stay Unverified (safe default; self-heals on refresh)
 - `MAXMIND_LICENSE_KEY` — bootstrap-only fallback; the key is normally console-managed (Regions page, stored encrypted in `systemConfig`). `server/geoip-refresh.ts` refreshes in-app (startup when missing/stale >7d, weekly timer, admin Refresh button); no key → automatic DB-IP Lite fallback (no account needed)
 - `VOX_CONTACT_EMAIL` (default `vox@agora.build`), `VOX_GITHUB_URL` (default `https://github.com/Agora-Build/Vox`), `VOX_X_URL` (no default) — public footer contact links, served from `GET /api/config` at runtime so a fork or rebrand changes them with an env var + restart, not a rebuild. **Unset ⇒ the icon is not rendered**, deliberately: a social link that goes nowhere is worse than none (the footer previously shipped a bare `https://twitter.com`).
-- `VOX_PLUGINS` — comma-separated builtin plugin ids to activate (`sample`, `credits`, `shared-agents`, `organizations`, `oauth`); unset/empty = none load. Unknown id = **crash-before-listen** (`server/plugins/loader.ts`) — treat it like `DATABASE_URL`, not an optional feature flag. Dev default (`dev-local-run.sh`, `docker-compose.yml`): `credits,shared-agents,organizations,oauth`.
+- `VOX_PLUGINS` — comma-separated builtin plugin ids to activate (`sample`, `credits`, `payments`, `notifications`, `shared-agents`, `organizations`, `oauth`); unset/empty = none load. Unknown id = **crash-before-listen** (`server/plugins/loader.ts`) — treat it like `DATABASE_URL`, not an optional feature flag. Dev default (`dev-local-run.sh`, `docker-compose.yml`): `credits,shared-agents,organizations,oauth`. When both load, keep `credits` before `notifications` for its optional balance source.
 
 Broker sidecar only (not read by Core): `VOX_CORE_URL`, `BROKER_REG_TOKEN`, `BROKER_ADVERTISE_URL` (internal-only callback), `BROKER_NAME`, `BROKER_PORT`. The same family drives **both** sidecars — the auth-session broker and the REST broker (`vox_rest_broker/rest-broker.ts`, Dockerfile target `rest-broker`, declares `brokerType: "restful"`; `REST_BROKER_ALLOW_PRIVATE=1` opens private/loopback targets for dev only).
 
@@ -78,7 +78,26 @@ Monorepo: **client/** (React + Vite), **server/** (Express), **shared/** (Drizzl
 - API docs: Swagger UI at `/api/docs`, spec at `/api/v1/openapi.json`, source `docs/openapi.yaml`. Don't enumerate routes here — read `server/routes.ts`.
 
 ### Plugins
-Optional, additive backends loaded by `server/plugins/loader.ts` from `VOX_PLUGINS` (see Environment Variables above). Builtins live under `plugins/<id>/` and are registered in `plugins/index.ts`: `sample`, `credits`, `shared-agents`, `organizations`, `oauth`. Each gets its own Postgres schema (`plugin_<id>`, `server/plugins/db.ts:schemaForPlugin`), in-app migrations (`server/plugins/migrate.ts`, fail-closed — a bad migration aborts the transaction and the app refuses to start), and namespaced routes under `/api/plugins/<id>/*` plus a generic `GET /api/plugins/<id>/health`; `GET /api/plugins` lists what activated. A successful load logs exactly one line: `plugins loaded: <id, id, ...>`. Plugin↔Core contracts (`vox.organizations`, `vox.credits`, ...) are looked up via `services.require`/`services.optional`; the `organizations` contract is additionally locked at compile time by `server/plugins/contract-checks.ts`. Since plugin API 1.1 the other direction exists too: **Core provides services to plugins**, passed to `loadPlugins` and registered before any plugin activates. The one today is `vox.identity@1.0.0` (`server/identity.ts`, contract in `@vox/plugin-sdk`): find/create a user, mark an email verified, sign in/out — the only way a plugin touches Core users or sessions. The `oauth` plugin uses it; its account links live in `plugin_oauth.identities` (copied from `users.github_id`/`google_id` by its migration 0002, fail-closed on a count mismatch — those Core columns are frozen, dropped later). Design: `designs/2026-09-27-oauth-plugin-design.md`.
+Optional, additive backends load through `server/plugins/loader.ts` from
+`VOX_PLUGINS`. Builtins under `plugins/<id>/`, registered in `plugins/index.ts`:
+`sample`, `credits`, `payments`, `notifications`, `shared-agents`, `organizations`,
+and `oauth`. Each owns a `plugin_<id>` PostgreSQL schema, checksum-frozen
+forward-only migrations, and a generic `/api/plugins/<id>/health` route.
+Plugin HTTP routes are namespaced; `/api/plugins` lists activated plugins.
+Migration failure aborts startup, never exposing a partial data move.
+A successful load logs exactly one line: `plugins loaded: <id, id, ...>`.
+
+Contracts use `services.require`/`services.optional`; Core provides services
+before any plugin activates. These include `vox.identity`, `vox.users`,
+`vox.verification`, `vox.encryption`, `vox.personal-entitlements`, and
+`vox.notification-data`. Plugins access Core users only through these seams;
+`vox.organizations` remains compile-time locked in
+`server/plugins/contract-checks.ts`. `vox.identity@1.0.0` finds/creates users,
+marks emails verified, and signs sessions in/out; its contract lives in
+`@vox/plugin-sdk` and Core implementation in `server/identity.ts`. OAuth links live in
+`plugin_oauth.identities`, copied from frozen Core provider-id columns by its
+0002 migration (fail-closed on a count mismatch). OAuth design:
+`designs/2026-09-27-oauth-plugin-design.md`.
 
 ### Personal Usage and security
 
@@ -98,10 +117,21 @@ webhook: `/api/plugins/payments/webhook`, `STRIPE_PERSONAL_WEBHOOK_SECRET`, not 
 organization webhook secret. `APP_URL` must be a production HTTPS origin. Refunds
 and disputes are surfaced for manual review, never a silent escrow clawback.
 
-Optional `notifications` provides `vox.notifications`: encrypted queued email
-delivery via SMTP, retries limited by attempts/expiry; future channel adapters
-are not implemented. Core owns verification; OAuth login is unchanged. TOTP does
+Optional `notifications` v1.1.0 provides `vox.notifications`: encrypted queued
+email/Discord delivery, personal/group rules and editable content, comparisons,
+isolated QuickJS scripts, and optional server-configured Anthropic analysis.
+Scout / Editor access and JavaScript/LLM grants are explicitly admin-assigned,
+never inferred from a paid tier; audiences are not organizations. Core supplies
+bounded numeric personal data through `vox.notification-data`. WhatsApp/SMS are
+future adapters. Core owns verification; OAuth login is unchanged. TOTP does
 not require notifications. Full configuration/runbook: `docs/DEPLOYMENT.md`.
+
+Personal Settings remains above Usage in the profile menu. Organization
+management is consolidated into `/console/organization` using
+`client/src/components/organization-management.tsx`; the organization sidebar
+has no Settings item and the old `/console/organization/settings` route redirects.
+Preserve owner/admin management gates, the owner's leave restriction, and the
+read-only member view. Resource-transfer HTTP behavior is unchanged.
 
 ### Eval Agent System
 1. Admin or non-basic users mint eval agent tokens with region assignment (admin: public/private visibility; non-admin: private only)
@@ -247,7 +277,8 @@ Run `./scripts/dev-local-run.sh clean-test-data [--yes]` on a DB that has accumu
 - Default providers (all `convoai`): Agora ConvoAI Engine (`agora`), LiveKit Agents (`livekit`), ElevenLabs Agents (`elevenlabs`), Custom (no `platformId`). `providers.platformId` matches the eval flow's `platform.setup → platform_id`; seeding is idempotent-by-name from both migrations and `/api/auth/init`
 - Common tasks: new table → schema.ts → migration → storage.ts → routes.ts; new page → `client/src/pages/` → route in `App.tsx` → `ConsoleLayout` + TanStack Query
 - Deployment guide for humans: `docs/DEPLOYMENT.md` (env vars, `VOX_PLUGINS`, Coolify, migrations, brokers, checklist) — keep it in step with this file.
-- **OAuth plugin — LIVE in prod (2026-09-27).** `VOX_PLUGINS=credits,shared-agents,organizations,oauth` on Coolify; GitHub sign-in on, Google off until a Google OAuth client exists (redirect URI `https://vox.agora.build/api/plugins/oauth/google/callback`, `GOOGLE_CALLBACK_URL` already set). Rollout rule for any **new plugin id**: add it to `VOX_PLUGINS` right before the release that contains it deploys — earlier, a restart of the old build crash-loops on the unknown id; later, the new build boots without the feature.
+- **Notifications v1.1.0 — LIVE in prod (2026-10-04).** Coolify production uses `VOX_PLUGINS=credits,shared-agents,organizations,oauth,notifications`; all five plugin health checks passed. Preview settings were left unchanged. SMTP and notification LLM credentials are not configured; do not claim email/LLM readiness from a healthy plugin response. Personal `payments` remains disabled. Preserve this production plugin list when deploying UI-only changes.
+- **OAuth rollout snapshot (2026-09-27, historical).** At rollout, Coolify used `VOX_PLUGINS=credits,shared-agents,organizations,oauth`; this is not the current plugin list. Preserve the notifications-inclusive production list above. GitHub sign-in was on, Google off until a Google OAuth client exists (redirect URI `https://vox.agora.build/api/plugins/oauth/google/callback`, `GOOGLE_CALLBACK_URL` already set). Rollout rule for any **new plugin id**: add it to `VOX_PLUGINS` right before the release that contains it deploys — earlier, a restart of the old build crash-loops on the unknown id; later, the new build boots without the feature.
 - **Plugin migrations are checksummed** (`_plugin_schema_versions`): editing one after it has run on a database stops that instance from starting (`checksum mismatch`). Add a new migration instead. Locally, if you edited one during development, reset that plugin: `DROP SCHEMA plugin_<id> CASCADE; DELETE FROM _plugin_schema_versions WHERE plugin_id = '<id>';`.
 
 ### Organizations Plugin — Release A Runbook

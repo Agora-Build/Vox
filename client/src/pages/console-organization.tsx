@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
+import { OrganizationManagement } from "@/components/organization-management";
 import { Building2, Users, CreditCard, CheckCircle, XCircle } from "lucide-react";
 
 interface Organization {
@@ -43,10 +44,11 @@ export default function ConsoleOrganization() {
   }
 
   const availableSeats = Math.max(0, org.totalSeats - org.usedSeats);
+  const canManage = org.orgRole === "owner" || org.orgRole === "admin";
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-2xl font-bold">{org.name}</h1>
           <p className="text-muted-foreground">Organization Dashboard</p>
@@ -63,7 +65,7 @@ export default function ConsoleOrganization() {
               Pending Verification
             </Badge>
           )}
-          {(org.orgRole === "owner" || org.orgRole === "admin") && (
+          {canManage && (
             <Badge variant="outline">Admin</Badge>
           )}
         </div>
@@ -114,7 +116,7 @@ export default function ConsoleOrganization() {
         </Card>
       </div>
 
-      {org.address && (
+      {!canManage && org.address && (
         <Card>
           <CardHeader>
             <CardTitle className="text-sm font-medium">Address</CardTitle>
@@ -124,6 +126,8 @@ export default function ConsoleOrganization() {
           </CardContent>
         </Card>
       )}
+
+      {canManage && <OrganizationManagement organization={org} role={org.orgRole} />}
 
       <Card>
         <CardHeader>
@@ -136,11 +140,10 @@ export default function ConsoleOrganization() {
           </p>
           <ul className="list-disc list-inside text-sm text-muted-foreground space-y-1">
             <li>View and manage team members</li>
-            {(org.orgRole === "owner" || org.orgRole === "admin") && (
+            {canManage && (
               <>
                 <li>Purchase additional seats</li>
                 <li>Manage billing and payment methods</li>
-                <li>Update organization settings</li>
               </>
             )}
           </ul>
