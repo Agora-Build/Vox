@@ -100,6 +100,9 @@ retain the custom playback and relative skip controls. The underlying audio
 element is always hidden and never enables browser-native controls, including
 while WebM duration and waveform previews are loading. The custom timeline becomes
 available once duration is known; it never guesses the recording's length.
+An unavailable-duration notice appears only after waveform loading finishes, not
+as a transient warning during decoding. Vite pre-bundles the waveform dependency
+so the first local preview does not reload other open development pages.
 
 Transcript previews use bounded counts/text, an indexed active-segment lookup,
 and a memoized row list that reconciles only when the active segment changes,

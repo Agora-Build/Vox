@@ -406,7 +406,7 @@ test("slow WebM waveform loading never flashes native controls", async ({ page }
         state.observed = true;
         if (audio.controls || getComputedStyle(audio).display !== "none") state.nativeShown = true;
       }
-    }).observe(document, { childList: true, subtree: true, attributes: true, attributeFilter: ["controls", "hidden", "style"] });
+    }).observe(document, { childList: true, subtree: true, attributes: true, attributeFilter: ["controls", "hidden", "style", "class"] });
   });
   await page.route("**/*waveform.worker*", async (route) => {
     await new Promise((resolve) => setTimeout(resolve, 1500));
@@ -415,6 +415,7 @@ test("slow WebM waveform loading never flashes native controls", async ({ page }
   const player = await mockRecording(page, { encoded: "stereo-live" });
   const media = player.getByTestId("player-audio");
   await expect(player.getByText("Building channel waveforms...", { exact: true })).toBeVisible();
+  await expect(player.getByText("Duration is unavailable.", { exact: false })).toHaveCount(0);
   await expect(player.getByRole("button", { name: "Play recording", exact: true })).toBeVisible();
   await expect(media).toBeHidden();
   await expect(media).not.toHaveAttribute("controls");

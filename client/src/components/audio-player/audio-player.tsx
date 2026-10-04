@@ -94,7 +94,7 @@ export function AudioPlayer({ src, waveformSrc, title = "Recording", subtitle, c
       </div>
     </div>
     {playback.error && <p role="alert" className="px-5 pb-3 text-sm text-destructive">{playback.error}</p>}
-    {playback.unknownDuration && <p className="px-5 pb-3 text-xs text-muted-foreground">Duration is unavailable. Playback and 10-second skip controls still work; timeline seeking requires a known duration.</p>}
+    {playback.unknownDuration && !waveform.loading && !waveform.data?.duration && <p className="px-5 pb-3 text-xs text-muted-foreground">Duration is unavailable. Playback and 10-second skip controls still work; timeline seeking requires a known duration.</p>}
     <div className="mx-3 overflow-hidden rounded-lg border bg-background/60 sm:mx-4">
       <div className="audio-wave-scroll">
         <div ref={timelineRef} className="audio-wave-timeline" style={{ width: `${zoom * 100}%` }} role="slider" tabIndex={0}
