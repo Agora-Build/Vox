@@ -72,6 +72,8 @@ Downloads accumulate into one capped buffer, using the Content-Length when
 present or a resizable ArrayBuffer otherwise, instead of retaining all chunks
 and then copying the whole recording. Older browsers without resizable buffers
 need Content-Length for a waveform preview; native playback still works.
+Encoded HTTP responses use the resizable-buffer path because fetch supplies
+decoded bytes, not the compressed size reported by Content-Length.
 
 Compressed formats (MP3, WebM, Ogg, AAC, M4A, FLAC) remain playable using native
 audio, but their waveform previews are unavailable. Non-WAV waveform fetches
@@ -86,7 +88,9 @@ controls and relative seeking. The custom full-duration waveform slider remains
 unavailable until duration is known; it never guesses the recording's length.
 
 Transcript previews use bounded counts/text, an indexed active-segment lookup,
-and memoized rows so playback does not rerender every speech row.
+and a memoized row list that reconciles only when the active segment changes,
+not on every playback-clock update. For overlapping speech, the first active
+segment is highlighted and followed; all supplied segments remain visible.
 
 ## Eval integration
 
@@ -95,10 +99,36 @@ the selected recording, selects a folder-matching `analysis/turns.json`, and
 uses speaker-segment timestamps when available. The transcript download is
 capped at 5 MiB. An unambiguous raw-metric transcript is a fallback and is labeled
 as turn-level timing. Ambiguous or other-chunk transcripts are not attached.
+Metric fallbacks match the complete agent-sanitized case/chunk identity after
+stripping its generated timestamp/nonce suffix; unknown folder formats and
+colliding identities are rejected instead of guessing from a prefix.
 Python non-finite JSON tokens are sanitized with a linear, quote-aware scan;
 speech strings and escaped quotes are preserved without regex backtracking.
 The player never generates speech recognition or sends recordings to a new
 third-party service.
+
+## Storage CORS
+
+Native audio playback does not require CORS, but waveform and transcript reads
+do. Configure both the system artifact bucket and each user-supplied bucket to
+allow GET from the Vox origin. For an S3-compatible bucket, a CORS rule is:
+
+```json
+[
+  {
+    "AllowedOrigins": ["https://vox.agora.build"],
+    "AllowedMethods": ["GET", "HEAD"],
+    "AllowedHeaders": ["*"],
+    "ExposeHeaders": ["Content-Length", "Content-Encoding"],
+    "MaxAgeSeconds": 3600
+  }
+]
+```
+
+Replace the origin with the deployed instance's origin. This is a bucket-owner
+configuration step, not a public-read policy; object access still requires the
+signed URL. Check the browser network panel for CORS errors if previews are
+unavailable while audio playback works. Vox does not change bucket policies.
 
 ## Tests
 

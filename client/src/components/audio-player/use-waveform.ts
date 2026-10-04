@@ -13,6 +13,9 @@ export function useWaveform(src: string, enabled: boolean) {
     const load = async () => {
       const response = await fetch(src, { signal: controller.signal });
       if (!response.ok) throw new Error("Recording unavailable");
+      const encoding = response.headers.get("Content-Encoding");
+      // fetch streams decoded bytes; compressed Content-Length is not their size.
+      const expectedBytes = encoding && encoding !== "identity" ? 0 : Number(response.headers.get("Content-Length"));
       if (Number(response.headers.get("Content-Length")) > MAX_WAVEFORM_BYTES) {
         await response.body?.cancel();
         throw new Error("Recording too large");
@@ -37,7 +40,7 @@ export function useWaveform(src: string, enabled: boolean) {
           header.set(part, headerSize); headerSize += part.length;
           if (headerSize < 12) continue;
           if (!hasWaveHeader(header.buffer)) { await reader.cancel(); throw new Error("Unsupported waveform format"); }
-          bytes = new WaveformByteBuffer(Number(response.headers.get("Content-Length")));
+          bytes = new WaveformByteBuffer(expectedBytes);
           bytes.append(header); bytes.append(value.subarray(part.length));
         } else bytes.append(value);
       }

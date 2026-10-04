@@ -70,9 +70,13 @@ export function transcriptFromMetrics(rawData: unknown, recordingName: string): 
     return Array.isArray(turns) ? turns.map(record) : [];
   });
   const groups = Array.from(new Set(all.map((turn) => `${turn.case_id ?? ""}\u0000${turn.chunk_id ?? ""}`)));
-  const safe = (value: unknown) => String(value ?? "").replace(/[^a-zA-Z0-9_-]/g, "_");
+  // Mirror the agent's sanitizeForFilename, including trimming and the 64-character cap.
+  const safe = (value: unknown) => String(value ?? "").replace(/[^A-Za-z0-9._-]/g, "-").replace(/\.{2,}/g, "-").replace(/^[-.]+|[-.]+$/g, "").slice(0, 64) || "x";
   const scoped = /^vox-[^/]+\//.test(recordingName);
-  const selected = scoped || groups.length > 1 ? all.filter((turn) => turn.case_id != null && turn.chunk_id != null && recordingName.startsWith(`vox-${safe(turn.case_id)}-${safe(turn.chunk_id)}-`)) : all;
+  // Generated folders end with Date.now() and a base36 nonce. Strip that suffix,
+  // then compare the complete identity so chunk_001 cannot match chunk_001-extra.
+  const identity = recordingName.split("/")[0].match(/^vox-(.+)-\d{10,}-[a-z0-9]+$/)?.[1];
+  const selected = scoped || groups.length > 1 ? all.filter((turn) => identity && turn.case_id != null && turn.chunk_id != null && identity === `${safe(turn.case_id)}-${safe(turn.chunk_id)}`) : all;
   const selectedGroups = new Set(selected.map((turn) => `${turn.case_id ?? ""}\u0000${turn.chunk_id ?? ""}`));
   if (selectedGroups.size > 1) return [];
   const segments = new Map<string, AudioTranscriptSegment>();

@@ -37,12 +37,15 @@ d("#209 admin users list is paginated", () => {
   });
 
   it("returns one page, newest first, with the total", async () => {
-    const page = await list({ limit: "2" });
+    // Other suites create users concurrently, shifting offsets in the global list.
+    const page = await list({ q: stamp, limit: "2" });
     expect(page.data).toHaveLength(2);
-    expect(page.total).toBeGreaterThanOrEqual(3);
+    expect(page.total).toBe(3);
     expect(new Date(page.data[0].createdAt) >= new Date(page.data[1].createdAt)).toBe(true);
-    const next = await list({ limit: "2", offset: "2" });
+    const next = await list({ q: stamp, limit: "2", offset: "2" });
+    expect(next.data).toHaveLength(1);
     expect(next.data.map((u) => u.id)).not.toContain(page.data[0].id);
+    expect(next.data.map((u) => u.id)).not.toContain(page.data[1].id);
   });
 
   it("defaults to a bounded page, and caps a huge limit", async () => {

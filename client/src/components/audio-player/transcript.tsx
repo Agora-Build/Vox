@@ -13,6 +13,12 @@ const TranscriptRow = memo(function TranscriptRow({ segment, index, active, onSe
   </button>;
 });
 
+const TranscriptRows = memo(function TranscriptRows({ segments, active, onSeek }: {
+  segments: readonly AudioTranscriptSegment[]; active: number; onSeek: (time: number) => void;
+}) {
+  return <>{segments.map((segment, index) => <TranscriptRow key={segment.id ?? index} segment={segment} index={index} active={index === active} onSeek={onSeek} />)}</>;
+});
+
 export function AudioTranscript({ segments, time, playing, loading, error, note, limited, onSeek }: {
   segments: readonly AudioTranscriptSegment[]; time: number; playing: boolean; loading?: boolean; error?: string; note?: string; limited?: boolean; onSeek: (time: number) => void;
 }) {
@@ -40,7 +46,7 @@ export function AudioTranscript({ segments, time, playing, loading, error, note,
     {loading ? <p role="status" className="px-5 pb-4 text-sm text-muted-foreground">Loading transcript...</p>
       : !segments.length ? <p className="px-5 pb-4 text-sm text-muted-foreground">{error ?? "No timed transcript is available for this recording."}</p>
       : <div ref={listRef} className="audio-transcript-list" onWheel={() => setFollow(false)} onTouchMove={() => setFollow(false)}>
-        {segments.map((segment, index) => <TranscriptRow key={segment.id ?? index} segment={segment} index={index} active={segment.start <= time && segment.end > time} onSeek={onSeek} />)}
+        <TranscriptRows segments={segments} active={active} onSeek={onSeek} />
       </div>}
   </section>;
 }

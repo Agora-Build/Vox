@@ -165,14 +165,27 @@ describe("recording transcripts", () => {
     expect(transcriptFromMetrics(metrics, "recording.wav")).toHaveLength(2);
     const multiple = { response_metrics: { latency: { turn_level: [{ ...turn, case_id: "RSP", chunk_id: "chunk_001" }, { ...turn, case_id: "INT", chunk_id: "chunk_002" }] } } };
     expect(transcriptFromMetrics(multiple, "recording.wav")).toEqual([]);
-    expect(transcriptFromMetrics(multiple, "vox-INT-chunk_002-abc/recording.wav")).toHaveLength(2);
+    expect(transcriptFromMetrics(multiple, "vox-INT-chunk_002-1791100800000-abc/recording.wav")).toHaveLength(2);
   });
   it("does not attach a lone metric chunk or unidentified clock to a different recording", () => {
     const turn = { turn_start: 1, turn_end: 4, user_transcript: "hello", case_id: "RSP", chunk_id: "chunk_001" };
     const metrics = { response_metrics: { latency: { turn_level: [turn] } } };
     expect(transcriptFromMetrics(metrics, "vox-INT-chunk_002-abc/recording.wav")).toEqual([]);
-    expect(transcriptFromMetrics(metrics, "vox-RSP-chunk_001-abc/recording.wav")).toHaveLength(1);
+    expect(transcriptFromMetrics(metrics, "vox-RSP-chunk_001-1791100800000-abc/recording.wav")).toHaveLength(1);
     expect(transcriptFromMetrics({ response_metrics: { latency: { turn_level: [{ turn_start: 1, turn_end: 4, user_transcript: "no chunk identity" }] } } }, "vox-RSP-chunk_001-abc/recording.wav")).toEqual([]);
+  });
+  it("rejects chunk prefix collisions, unknown suffixes, and sanitized identity collisions", () => {
+    const turn = { turn_start: 1, turn_end: 4, user_transcript: "hello", case_id: "RSP", chunk_id: "chunk_001" };
+    const metrics = { response_metrics: { latency: { turn_level: [turn] } } };
+    expect(transcriptFromMetrics(metrics, "vox-RSP-chunk_001-extra-1791100800000-abc/recording.wav")).toEqual([]);
+    expect(transcriptFromMetrics(metrics, "vox-RSP-chunk_001-abc/recording.wav")).toEqual([]);
+    const collisions = { response_metrics: { latency: { turn_level: [{ ...turn, case_id: "RSP/a" }, { ...turn, case_id: "RSP-a" }] } } };
+    expect(transcriptFromMetrics(collisions, "vox-RSP-a-chunk_001-1791100800000-abc/recording.wav")).toEqual([]);
+  });
+  it("matches complete agent-sanitized identities, including dots and long names", () => {
+    const turn = { turn_start: 1, turn_end: 4, user_transcript: "hello", case_id: "../RSP.test/", chunk_id: "chunk_" + "a".repeat(100) };
+    const metrics = { response_metrics: { latency: { turn_level: [turn] } } };
+    expect(transcriptFromMetrics(metrics, `vox-RSP.test-${turn.chunk_id.slice(0, 64)}-1791100800000-abc/recording.wav`)).toHaveLength(1);
   });
   it("filters invalid timing/text and orders valid segments", () => {
     expect(normalizeTranscript([{ start: 2, end: 4, text: " second " }, { start: -1, end: 2, text: "bad" }, { start: 1, end: 1, text: "empty" }, { start: 0, end: 1, text: "first" }, { start: NaN, end: 2, text: "bad" }])).toEqual([{ start: 0, end: 1, text: "first" }, { start: 2, end: 4, text: "second" }]);

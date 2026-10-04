@@ -19,7 +19,7 @@ function recordingWav(channels = 2, duration = 12) {
   return buffer;
 }
 
-async function mockRecording(page: Page, options: { channels?: number; blockWaveform?: boolean; unsupportedWaveform?: boolean; largeTranscript?: boolean; multiple?: boolean; transcriptError?: boolean; scroll?: boolean } = {}) {
+async function mockRecording(page: Page, options: { channels?: number; blockWaveform?: boolean; unsupportedWaveform?: boolean; largeTranscript?: boolean; overlappingTranscript?: boolean; multiple?: boolean; transcriptError?: boolean; scroll?: boolean } = {}) {
   const wav = recordingWav(options.channels ?? 2);
   const alternate = recordingWav(1, 8);
   const prefix = "vox-RSP-chunk_001-abc";
@@ -44,6 +44,8 @@ async function mockRecording(page: Page, options: { channels?: number; blockWave
     } else if (options.transcriptError) await route.fulfill({ status: 403, body: "Forbidden" });
     else await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(options.largeTranscript ? [
       { user_segments: Array.from({ length: 1500 }, (_, index) => ({ start: index * 0.01, end: index * 0.01 + 0.1, text: `Segment ${index}` })) },
+    ] : options.overlappingTranscript ? [
+      { user_segments: [{ start: 0, end: 4, text: "User speaking" }], agent_segments: [{ start: 1, end: 8, text: "Agent speaking" }] },
     ] : path.includes("alternate") ? [
       { agent_segments: [{ start: 1, end: 5, text: "Another recording, another transcript." }] },
     ] : [
@@ -82,9 +84,9 @@ test("recordings show genuine per-channel waveforms and a timed transcript", asy
   })).toBe(true);
 });
 
-for (const variant of ["known length", "unknown length", "legacy browser"] as const) {
+for (const variant of ["known length", "unknown length", "decoded compressed", "legacy browser"] as const) {
   test(`split WAV headers work with ${variant} downloads`, async ({ page }) => {
-    await page.addInitScript(({ unknownLength, legacy }) => {
+    await page.addInitScript(({ unknownLength, encoded, legacy }) => {
       if (legacy) Object.defineProperty(ArrayBuffer.prototype, "resize", { value: undefined, configurable: true });
       const originalFetch = window.fetch;
       window.fetch = async (...args) => {
@@ -94,6 +96,7 @@ for (const variant of ["known length", "unknown length", "legacy browser"] as co
         const headers = new Headers(response.headers);
         if (unknownLength) headers.delete("Content-Length");
         else headers.set("Content-Length", String(bytes.byteLength));
+        if (encoded) { headers.set("Content-Encoding", "gzip"); headers.set("Content-Length", "16"); }
         let offset = 0;
         const body = new ReadableStream<Uint8Array>({
           pull(controller) {
@@ -104,7 +107,7 @@ for (const variant of ["known length", "unknown length", "legacy browser"] as co
         });
         return new Response(body, { status: response.status, headers });
       };
-    }, { unknownLength: variant !== "known length", legacy: variant === "legacy browser" });
+    }, { unknownLength: variant === "unknown length" || variant === "legacy browser", encoded: variant === "decoded compressed", legacy: variant === "legacy browser" });
     const player = await mockRecording(page);
     if (variant === "legacy browser") {
       await expect(player.getByText("Waveform previews require a Content-Length", { exact: false })).toBeVisible();
@@ -116,6 +119,19 @@ for (const variant of ["known length", "unknown length", "legacy browser"] as co
     }
   });
 }
+
+test("overlapping speech has one indexed highlight consistent with transcript following", async ({ page }) => {
+  const player = await mockRecording(page, { overlappingTranscript: true });
+  await expect(player.getByTestId("player-channel")).toHaveCount(2);
+  await expect(player.getByText("Agent speaking", { exact: true })).toBeVisible();
+  const media = player.getByTestId("player-audio");
+  await media.evaluate((audio: HTMLAudioElement) => { audio.currentTime = 2; });
+  await expect(player.locator('[aria-current="true"]')).toHaveCount(1);
+  await expect(player.locator('[aria-current="true"]')).toContainText("User speaking");
+  await media.evaluate((audio: HTMLAudioElement) => { audio.currentTime = 5; });
+  await expect(player.locator('[aria-current="true"]')).toHaveCount(1);
+  await expect(player.locator('[aria-current="true"]')).toContainText("Agent speaking");
+});
 
 test("the player is not hard-coded to stereo", async ({ page }) => {
   const player = await mockRecording(page, { channels: 6 });
