@@ -127,6 +127,14 @@ export interface NotificationsService {
   sendEmail(input: { to: string; subject: string; text: string; idempotencyKey: string; expiresAt?: Date }): Promise<void>;
 }
 
+/** Numeric personal monitoring data; the consuming plugin enforces audience access. */
+export interface NotificationDataService {
+  getSnapshot(userId: number): Promise<{
+    metrics: Record<string, number | null>;
+    samples: Array<{ id: number; at: string; values: Record<string, number | null> }>;
+  }>;
+}
+
 /** A separate personal entitlement never overwrites the user's base tier. */
 export interface PersonalEntitlementsService {
   setPremium(userId: number, sourceRef: string, expiresAt: Date | null): Promise<void>;

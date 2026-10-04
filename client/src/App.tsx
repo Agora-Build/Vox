@@ -49,7 +49,7 @@ import Activate from "@/pages/activate";
 import AuthGithubCallback from "@/pages/auth-github-callback";
 import NotFound from "@/pages/not-found";
 import PersonalSettings from "@/pages/console-settings";
-import { PersonalUsagePage } from "@/plugin-ui";
+import { PersonalUsagePage, PersonalNotificationsPage } from "@/plugin-ui";
 
 const ChiselPanel = import.meta.env.DEV
   ? lazy(() => import("@agora-build/chisel-dev/react").then(m => ({ default: m.ChiselPanel })))
@@ -1059,12 +1059,12 @@ function AdminBrokersWrapper() {
   return <ConsoleLayout><AdminBrokers /></ConsoleLayout>;
 }
 
-function PersonalPageWrapper({ usage = false }: { usage?: boolean }) {
+function PersonalPageWrapper({ usage = false, notifications = false }: { usage?: boolean; notifications?: boolean }) {
   const { data: auth, isLoading } = useQuery<AuthStatus>({ queryKey: ["/api/auth/status"] });
   if (isLoading) return <p className="p-6">Loading...</p>;
   if (!auth?.initialized) return <ConsoleInit />;
   if (!auth.user) return <Redirect to="/login" />;
-  return <ConsoleLayout>{usage ? <PersonalUsagePage /> : <PersonalSettings />}</ConsoleLayout>;
+  return <ConsoleLayout>{notifications ? <PersonalNotificationsPage /> : usage ? <PersonalUsagePage /> : <PersonalSettings />}</ConsoleLayout>;
 }
 
 function Router() {
@@ -1080,6 +1080,7 @@ function Router() {
       </Route>
       <Route path="/console/settings"><PersonalPageWrapper /></Route>
       <Route path="/console/usage"><PersonalPageWrapper usage /></Route>
+      <Route path="/console/notifications"><PersonalPageWrapper notifications /></Route>
       <Route path="/console">
         <Redirect to="/console/users" />
       </Route>
