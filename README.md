@@ -102,6 +102,13 @@ notification audience groups are separate from organizations.
 
 ## Tech Stack
 
+The public [Thanks page](https://vox.agora.build/thanks) acknowledges notable
+open-source projects, libraries, tools, and optional services used by Vox.
+Its curated descriptions and links live in
+`client/src/lib/acknowledgments.ts`; keep them aligned with actual dependencies
+and integrations. This is not an exhaustive license inventory. Existing
+license notices and configuration-dependent GeoIP footer credits remain intact.
+
 ### Frontend
 - **React 19** with TypeScript
 - **Vite**, **Tailwind CSS** with shadcn/ui
