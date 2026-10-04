@@ -10,7 +10,7 @@ import { WaveformLane } from "./waveform-lane";
 import { formatAudioTime, MAX_TRANSCRIPT_SEGMENTS, MAX_TRANSCRIPT_TEXT, normalizeTranscript, timelineTicks } from "./utils";
 import "./audio-player.css";
 
-export function AudioPlayer({ src, title = "Recording", subtitle, channels, transcript = [], transcriptLoading, transcriptError, transcriptNote, showTranscript = true, downloadUrl, className, onTimeChange }: AudioPlayerProps) {
+export function AudioPlayer({ src, waveformSrc, title = "Recording", subtitle, channels, transcript = [], transcriptLoading, transcriptError, transcriptNote, showTranscript = true, downloadUrl, className, onTimeChange }: AudioPlayerProps) {
   const rootRef = useRef<HTMLDivElement>(null);
   const timelineRef = useRef<HTMLDivElement>(null);
   const playheadRef = useRef<HTMLDivElement>(null);
@@ -37,7 +37,7 @@ export function AudioPlayer({ src, title = "Recording", subtitle, channels, tran
     playheadRef.current?.classList.toggle("is-near-end", progress > 90);
     if (timeLabelRef.current) timeLabelRef.current.textContent = formatAudioTime(time, true);
   }, []);
-  const waveform = useWaveform(src, waveformEnabled);
+  const waveform = useWaveform(waveformSrc ?? src, waveformEnabled);
   const playback = usePlayback(src, onFrame, onTimeChange, waveform.data?.duration);
   const segments = useMemo(() => normalizeTranscript(transcript), [transcript]);
   const transcriptLimited = useMemo(() => transcript.length > MAX_TRANSCRIPT_SEGMENTS || transcript.slice(0, MAX_TRANSCRIPT_SEGMENTS).some((segment) => typeof segment.text === "string" && segment.text.length > MAX_TRANSCRIPT_TEXT), [transcript]);

@@ -6,7 +6,7 @@ const MAX_TRANSCRIPT_BYTES = 5 * 1024 * 1024;
 
 export function EvalRecordingPlayer({ recording, artifacts, rawData }: { recording: RecordingArtifact; artifacts: readonly RecordingArtifact[]; rawData: unknown }) {
   const transcriptFile = findRecordingTranscript(recording.name, artifacts);
-  const url = transcriptFile?.url;
+  const url = transcriptFile?.previewUrl ?? transcriptFile?.url;
   const [loaded, setLoaded] = useState<{ url: string; segments?: AudioTranscriptSegment[]; loading: boolean; error?: string }>();
   const fallback = useMemo(() => transcriptFromMetrics(rawData, recording.name), [rawData, recording.name]);
   useEffect(() => {
@@ -41,7 +41,7 @@ export function EvalRecordingPlayer({ recording, artifacts, rawData }: { recordi
   }, [url]);
   const current = loaded?.url === url ? loaded : undefined;
   const precise = !!current?.segments?.length;
-  return <AudioPlayer src={recording.url} title={recording.name.split("/").pop()} subtitle={`${recording.name} · ${(recording.size / (1024 * 1024)).toFixed(1)} MB`}
+  return <AudioPlayer src={recording.url} waveformSrc={recording.previewUrl} title={recording.name.split("/").pop()} subtitle={`${recording.name} · ${(recording.size / (1024 * 1024)).toFixed(1)} MB`}
     transcript={precise ? current.segments : fallback} transcriptNote={!precise && fallback.length ? "Turn-level timing; precise speech boundaries are not available." : undefined}
     transcriptLoading={!!url && (!current || current.loading)} transcriptError={current?.error} downloadUrl={recording.url} />;
 }

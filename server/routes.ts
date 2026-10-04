@@ -12,7 +12,8 @@ import { parseMetricsDetailWindow } from "@shared/metrics-window";
 import { MetricsCache } from "./metrics-cache";
 import rateLimit from "express-rate-limit";
 import { registerApiV1Routes } from "./routes-api-v1";
-import { generateSignedUrlForUser, userBucket, putObject, getObjectStream, deleteObject, type UserBucket } from "./s3";
+import { generateSignedUrlForUser, getArtifactObjectStream, userBucket, putObject, getObjectStream, deleteObject, type UserBucket } from "./s3";
+import { artifactPreviewUrl, registerArtifactPreviewRoutes } from "./artifact-preview";
 import { checkStorageEndpoint, StorageEndpointError } from "./storage-endpoint";
 import { parseWavHeader, analyzeWavError, ANALYZE_MAX_BYTES, ANALYZE_HEADER_BYTES } from "@shared/wav";
 import type { EvalJob, InsertEvalJob, InsertEvalResult, JobSnapshot } from "@shared/schema";
@@ -430,6 +431,14 @@ export async function registerRoutes(
   httpServer: Server,
   app: Express
 ): Promise<Server> {
+  registerArtifactPreviewRoutes(app, {
+    user: getCurrentUser,
+    job: (id) => storage.getEvalJob(id),
+    flow: (id) => storage.getEvalFlow(id),
+    results: (id) => storage.getEvalResultsByJob(id),
+    canView: canViewJob,
+    open: getArtifactObjectStream,
+  });
   
   // ==================== AUTH ROUTES ====================
 
@@ -5862,6 +5871,7 @@ export async function registerRoutes(
         signedFiles = await Promise.all(
           files.map(async (f) => ({
             ...f,
+            previewUrl: artifactPreviewUrl(jobId, f),
             url: (await generateSignedUrlForUser(ownerId, f.url)) ?? f.url,
           }))
         );
