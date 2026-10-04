@@ -1,10 +1,10 @@
 import type { AudioTranscriptSegment } from "../components/audio-player/types";
 import { MAX_TRANSCRIPT_SEGMENTS } from "../components/audio-player/utils";
 
-export interface RecordingArtifact { name: string; url: string; size: number; contentType: string }
+export interface RecordingArtifact { name: string; url: string; previewUrl?: string; size: number; contentType: string }
 const record = (value: unknown): Record<string, unknown> => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 
-export const isRecordingArtifact = (file: Pick<RecordingArtifact, "name" | "size">) => /\.(webm|wav|mp3|ogg|m4a|aac|flac)$/i.test(file.name) && file.size > 0;
+export const isRecordingArtifact = (file: Pick<RecordingArtifact, "name" | "size">) => /\.(webm|wav|mp3|mp4|ogg|m4a|aac|flac)$/i.test(file.name) && file.size > 0;
 
 export function findRecordingTranscript(recording: string, files: readonly RecordingArtifact[]) {
   const recordings = files.filter(isRecordingArtifact);

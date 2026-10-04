@@ -9,6 +9,15 @@ export function hasWaveHeader(bytes: ArrayBuffer) {
   return view.getUint32(0, false) === 0x52494646 && view.getUint32(8, false) === 0x57415645;
 }
 
+export function hasEncodedAudioHeader(bytes: ArrayBuffer) {
+  if (bytes.byteLength < 12) return false;
+  const view = new DataView(bytes);
+  const tag = view.getUint32(0, false);
+  return tag === 0x1a45dfa3 || tag === 0x4f676753 || tag === 0x664c6143
+    || view.getUint32(4, false) === 0x66747970 || tag >>> 8 === 0x494433
+    || (view.getUint16(0, false) & 0xffe0) === 0xffe0;
+}
+
 // Read PCM directly in the worker: compressed files never reach an unbounded decoder.
 export function pcmWaveform(bytes: ArrayBuffer): AudioWaveform {
   if (bytes.byteLength > MAX_WAVEFORM_BYTES) throw new Error("Recording too large");

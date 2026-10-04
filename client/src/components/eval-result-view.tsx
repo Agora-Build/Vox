@@ -17,6 +17,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 interface ArtifactFile {
   name: string;
   url: string;
+  previewUrl?: string;
   size: number;
   contentType: string;
 }

@@ -10,6 +10,7 @@ import type { Readable } from "stream";
 import { checkStorageEndpoint, guardedRequestHandler } from "./storage-endpoint";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { storage, decryptValue } from "./storage";
+import type { ArtifactObject } from "./artifact-preview";
 
 const DEFAULT_EXPIRES_IN = 3600; // 1 hour
 
@@ -103,6 +104,33 @@ export async function generateSignedUrlForUser(
  */
 export function isS3Configured(): boolean {
   return getSystemS3Config() !== null;
+}
+
+/** Stream a stored job artifact. Unlike signing, this connects from Core. */
+export async function getArtifactObjectStream(userId: number, key: string, signal: AbortSignal): Promise<ArtifactObject> {
+  const userConfig = await storage.getUserStorageConfig(userId);
+  let client: S3Client;
+  let bucket: string;
+  if (userConfig) {
+    checkStorageEndpoint(userConfig.s3Endpoint);
+    bucket = userConfig.s3Bucket;
+    client = new S3Client({
+      endpoint: userConfig.s3Endpoint, region: userConfig.s3Region, forcePathStyle: true,
+      credentials: { accessKeyId: decryptValue(userConfig.s3AccessKeyId), secretAccessKey: decryptValue(userConfig.s3SecretAccessKey) },
+      requestHandler: guardedRequestHandler(),
+    });
+  } else {
+    const config = getSystemS3Config();
+    if (!config) throw new Error("Artifact storage is not configured");
+    bucket = config.bucket;
+    client = createClient(config);
+  }
+  try {
+    const out = await client.send(new GetObjectCommand({ Bucket: bucket, Key: key }), { abortSignal: signal });
+    const body = out.Body as Readable | undefined;
+    if (!body) throw new Error("Artifact storage returned no data");
+    return { body, contentLength: out.ContentLength, contentEncoding: out.ContentEncoding, close: () => { body.destroy(); client.destroy(); } };
+  } catch (error) { client.destroy(); throw error; }
 }
 
 // ==================== THE USER'S OWN BUCKET (Tools → Analyze) ====================

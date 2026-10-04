@@ -14,6 +14,7 @@ export interface AudioChannel {
 
 export interface AudioPlayerProps {
   src: string;
+  waveformSrc?: string;
   title?: string;
   subtitle?: string;
   channels?: readonly AudioChannel[];

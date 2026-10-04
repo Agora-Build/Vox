@@ -1,0 +1,10 @@
+Mediabunny 1.61.1
+Copyright (c) 2026-present, Vanilagy and contributors
+
+The Vox waveform worker includes unmodified Mediabunny source code, subject to
+the Mozilla Public License, version 2.0 (MPL-2.0).
+
+License: https://www.mozilla.org/MPL/2.0/
+Source Code Form (including the full license and original notices):
+https://registry.npmjs.org/mediabunny/-/mediabunny-1.61.1.tgz
+Project: https://github.com/Vanilagy/mediabunny
