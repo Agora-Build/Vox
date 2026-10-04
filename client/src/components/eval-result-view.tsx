@@ -4,6 +4,9 @@ import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Download, Play, Phone } from "lucide-react";
 import type { EvalResult } from "@shared/schema";
+import { useState } from "react";
+import { EvalRecordingPlayer } from "@/components/eval-recording-player";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
 // One eval result, as the eval job page shows it: call details, the metric
 // cards, per-case results, recordings, screenshots, turn-level tables and
@@ -18,6 +21,7 @@ interface ArtifactFile {
 }
 
 export function EvalResultView({ result }: { result: EvalResult }) {
+  const [recordingName, setRecordingName] = useState("");
   const artifactFiles = (result.artifactFiles ?? []) as ArtifactFile[];
   const rawData = (result.rawData ?? {}) as Record<string, unknown>;
 
@@ -66,7 +70,8 @@ export function EvalResultView({ result }: { result: EvalResult }) {
       Number(r.source_turn_index) === Number(turn.source_turn_index) + 1);
 
   // Find special artifact files
-  const audioFiles = artifactFiles.filter(f => /\.(webm|wav|mp3|ogg)$/i.test(f.name) && f.size > 0);
+  const audioFiles = artifactFiles.filter(f => /\.(webm|wav|mp3|ogg|m4a|aac|flac)$/i.test(f.name) && f.size > 0);
+  const recording = audioFiles.find((file) => file.name === recordingName) ?? audioFiles[0];
   const screenshotFiles = artifactFiles.filter(f => /\.(png|jpg|jpeg)$/i.test(f.name));
 
   return (
@@ -203,13 +208,12 @@ export function EvalResultView({ result }: { result: EvalResult }) {
           </CardTitle>
           <CardDescription>{audioFiles.length} audio file{audioFiles.length !== 1 ? "s" : ""}</CardDescription>
         </CardHeader>
-        <CardContent className="space-y-3">
-          {audioFiles.map((f, i) => (
-            <div key={i} className="space-y-1">
-              <p className="text-xs text-muted-foreground font-mono">{f.name} ({Math.round(f.size / 1024)}KB)</p>
-              <audio controls className="w-full" src={f.url} />
-            </div>
-          ))}
+        <CardContent className="space-y-4">
+          {audioFiles.length > 1 && <Select value={recording.name} onValueChange={setRecordingName}>
+            <SelectTrigger aria-label="Choose recording"><SelectValue /></SelectTrigger>
+            <SelectContent>{audioFiles.map((file) => <SelectItem key={file.name} value={file.name}>{file.name}</SelectItem>)}</SelectContent>
+          </Select>}
+          <EvalRecordingPlayer key={`${result.id}:${recording.name}`} recording={recording} artifacts={artifactFiles} rawData={rawData} />
         </CardContent>
       </Card>
     )}
