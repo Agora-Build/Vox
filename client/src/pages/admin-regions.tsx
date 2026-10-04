@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { MapPin, Pencil, Plus, Trash2, RefreshCw, Database, ExternalLink } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
@@ -14,6 +14,7 @@ import { useToast } from "@/hooks/use-toast";
 import { useRegionLocations } from "@/hooks/use-regions";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import type { RegionLocation } from "@/lib/utils";
+import { GEOIP_ATTRIBUTIONS } from "@shared/geoip-attribution";
 
 type GeoipDatabaseInfo = {
   name: "City" | "ASN";
@@ -73,6 +74,16 @@ export default function AdminRegions() {
     refetchInterval: (query) => (query.state.data?.state === "refreshing" ? 2000 : false),
   });
   const [maxmindKeyInput, setMaxmindKeyInput] = useState("");
+  const loadedCredit = Object.values(GEOIP_ATTRIBUTIONS).find(
+    (credit) => credit.attribution === geoipStatus?.attribution,
+  );
+
+  useEffect(() => {
+    if (geoipStatus?.lastRefresh?.at) {
+      queryClient.invalidateQueries({ queryKey: ["/api/config"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/geoip/attribution"] });
+    }
+  }, [geoipStatus?.lastRefresh?.at]);
 
   const refreshGeoipMutation = useMutation({
     mutationFn: async () => apiRequest("POST", "/api/admin/geoip/refresh"),
@@ -247,12 +258,15 @@ export default function AdminRegions() {
                 ))}
               </div>
 
-              {geoipStatus.source === "dbip" && geoipStatus.attribution && (
+              {geoipStatus.attribution && (
                 <p className="text-xs text-muted-foreground">
-                  {geoipStatus.attribution} —{" "}
-                  <a href="https://db-ip.com" target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 underline">
-                    db-ip.com<ExternalLink className="h-3 w-3" />
-                  </a>
+                  {geoipStatus.attribution}
+                  {loadedCredit && <>
+                    {" — "}
+                    <a href={loadedCredit.url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 underline">
+                      {loadedCredit.provider}<ExternalLink className="h-3 w-3" />
+                    </a>
+                  </>}
                 </p>
               )}
 

@@ -33,6 +33,21 @@ describe("Thanks page acknowledgments", () => {
     const dbip = projects.find((project) => project.name === "DB-IP");
     expect(dbip?.description).toContain("IP geolocation data created by DB-IP");
     expect(dbip?.notice?.url).toBe("https://creativecommons.org/licenses/by/4.0/");
-    expect(acknowledgmentGroups.find((group) => group.id === "integrations")?.description).toContain("not a list of services enabled on every deployment");
+    expect(acknowledgmentGroups.find((group) => group.id === "integrations")?.description).toContain("active source depends on the deployment's configuration");
+  });
+
+  it("excludes the requested commercial-company acknowledgments", () => {
+    const names = acknowledgmentGroups.flatMap((group) => group.projects.map((project) => project.name));
+    for (const name of ["Stripe", "Google", "Discord", "Anthropic", "MaxMind"]) {
+      expect(names).not.toContain(name);
+    }
+  });
+
+  it("omits the interface, platform, and building/shipping sections", () => {
+    expect(acknowledgmentGroups.map((group) => group.id)).toEqual(["evaluation", "integrations"]);
+    const names = acknowledgmentGroups.flatMap((group) => group.projects.map((project) => project.name));
+    for (const name of ["React", "Wouter", "TanStack Query", "Tailwind CSS", "shadcn/ui", "Radix UI", "Lucide", "Recharts", "Node.js", "Express", "PostgreSQL", "Drizzle ORM", "Zod", "AWS SDK for JavaScript", "QuickJS / quickjs-emscripten", "Nodemailer", "OTPAuth", "TypeScript", "Vite", "Vitest", "Playwright", "Docker", "Coolify", "GitHub"]) {
+      expect(names).not.toContain(name);
+    }
   });
 });

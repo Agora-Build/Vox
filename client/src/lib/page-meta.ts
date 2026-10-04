@@ -53,7 +53,7 @@ const PUBLIC_PAGES: Record<string, PageMeta> = {
   "/thanks": {
     title: "Thanks | Vox",
     description:
-      "Meet the open-source projects, libraries, tools, and services that make Vox possible. Thank you to their maintainers and communities.",
+      "Meet the open-source projects, libraries, and open data that make Vox possible. Thank you to their maintainers and communities.",
   },
   "/terms": { title: "Terms of Use | Vox", description: DEFAULT.description },
 };

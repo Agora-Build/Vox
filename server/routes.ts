@@ -38,7 +38,6 @@ import {
   saveMaxmindKey,
   clearMaxmindKey,
   validateMaxmindKeyInput,
-  DBIP_ATTRIBUTION,
   GEOIP_DIR,
 } from "./geoip-refresh";
 import { promises as fsp } from "fs";
@@ -1197,7 +1196,7 @@ export async function registerRoutes(
         state,
         databases,
         lastRefresh: lastResult,
-        attribution: source === "dbip" ? DBIP_ATTRIBUTION : null,
+        attribution: getGeoipAttribution(),
         maxmindKey: { configured: !!maxmindKey, source: keySource },
       });
     } catch (error) {
@@ -6373,6 +6372,12 @@ export async function registerRoutes(
 
   // ==================== CONFIG ROUTES ====================
 
+  // The footer can revalidate its license credit without querying config rows.
+  app.get("/api/geoip/attribution", async (_req, res) => {
+    res.set("Cache-Control", "no-cache");
+    res.json({ geoipAttribution: getGeoipAttribution() });
+  });
+
   app.get("/api/config", async (req, res) => {
     try {
       const PUBLIC_CONFIG_KEYS = new Set(["system_initialized"]);
@@ -6383,8 +6388,7 @@ export async function registerRoutes(
           configObject[config.key] = config.value;
         }
       }
-      // CC-BY-4.0 credit line, present only when the loaded GeoIP data
-      // requires it (DB-IP Lite fallback) — rendered in the public footer.
+      // Required credit for the loaded GeoIP source, rendered in the footer.
       const geoipAttribution = getGeoipAttribution();
       if (geoipAttribution) configObject.geoipAttribution = geoipAttribution;
       // Read live provider state, not a constant — reflects reality even if a

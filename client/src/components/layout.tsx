@@ -16,6 +16,7 @@ import {
 import { ThemeToggle } from "@/components/theme-toggle";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient, getQueryFn } from "@/lib/queryClient";
+import { GEOIP_ATTRIBUTIONS } from "@shared/geoip-attribution";
 
 interface AuthStatus {
   initialized: boolean;
@@ -50,7 +51,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
     queryFn: getQueryFn({ on401: "returnNull" }),
   });
 
-  // Public config: the GeoIP credit (when DB-IP Lite's CC-BY-4.0 requires it)
+  // Public config: the required credit for the loaded GeoIP data source
   // and the deployment's contact links. Each link is rendered ONLY when the
   // server sends it, so an unconfigured deployment shows no icon rather than
   // one that goes nowhere.
@@ -63,6 +64,19 @@ export default function Layout({ children }: { children: React.ReactNode }) {
     queryKey: ["/api/config"],
     staleTime: 60 * 60 * 1000,
   });
+
+  const { data: geoipConfig } = useQuery<{ geoipAttribution: string | null }>({
+    queryKey: ["/api/geoip/attribution"],
+    staleTime: 60 * 1000,
+    refetchInterval: 60 * 1000,
+  });
+
+  // Retain the config notice while a cached client/server pair is upgrading.
+  const geoipAttribution = geoipConfig !== undefined
+    ? geoipConfig.geoipAttribution : publicConfig?.geoipAttribution;
+  const geoipCredit = Object.values(GEOIP_ATTRIBUTIONS).find(
+    (credit) => credit.attribution === geoipAttribution,
+  );
 
   const logoutMutation = useMutation({
     mutationFn: async () => {
@@ -307,11 +321,6 @@ export default function Layout({ children }: { children: React.ReactNode }) {
                     API Docs
                   </Link>
                 </li>
-                <li>
-                  <Link href="/thanks" className="text-sm hover:text-foreground transition-colors text-muted-foreground" data-testid="link-footer-thanks">
-                    Thanks
-                  </Link>
-                </li>
               </ul>
             </div>
 
@@ -349,7 +358,10 @@ export default function Layout({ children }: { children: React.ReactNode }) {
         <div className="border-t border-border/40">
           <div className="container mx-auto px-4 py-4">
             <div className="flex flex-col sm:flex-row items-center justify-between gap-2 text-xs text-muted-foreground">
-              <p>© {new Date().getFullYear()} Vox. Built with 💖 by the community.</p>
+              <div className="flex w-full flex-wrap items-center gap-x-4 gap-y-2 sm:w-auto" data-testid="footer-community-credit">
+                <p>© {new Date().getFullYear()} Vox. Built with 💖 by the community.</p>
+                <Link href="/thanks" className="hover:text-foreground transition-colors" data-testid="link-footer-thanks">Thanks</Link>
+              </div>
               <div className="flex flex-wrap items-center justify-center gap-x-4 gap-y-2">
                 {publicConfig?.githubUrl && (
                   <span className="inline-flex flex-wrap items-center justify-center gap-1.5">
@@ -372,12 +384,16 @@ export default function Layout({ children }: { children: React.ReactNode }) {
                 <Link href="/terms" className="hover:text-foreground transition-colors" data-testid="link-footer-terms">Terms</Link>
               </div>
             </div>
-            {/* CC-BY-4.0 credit — present only when the server loaded DB-IP data */}
-            {publicConfig?.geoipAttribution && (
+            {/* License credit for the configured data source, separate from Thanks. */}
+            {geoipAttribution && (
               <p className="mt-2 text-center sm:text-left text-[11px] text-muted-foreground/70" data-testid="text-geoip-attribution">
-                This product includes IP geolocation data created by{" "}
-                <a href="https://db-ip.com" target="_blank" rel="noopener noreferrer" className="underline hover:text-foreground transition-colors">DB-IP</a>,
-                {" "}available from https://db-ip.com
+                {geoipCredit ? (
+                  <>
+                    This product includes {geoipCredit.dataName} data created by{" "}
+                    <a href={geoipCredit.url} target="_blank" rel="noopener noreferrer" className="underline hover:text-foreground transition-colors">{geoipCredit.provider}</a>,
+                    {" "}available from {geoipCredit.url}
+                  </>
+                ) : geoipAttribution}
               </p>
             )}
           </div>

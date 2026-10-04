@@ -34,6 +34,7 @@ import { gunzip as gunzipCb } from "zlib";
 import { promisify } from "util";
 import { open as maxmindOpen } from "maxmind";
 import { storage, encryptValue, decryptValue, isEncryptionConfigured } from "./storage";
+import { GEOIP_ATTRIBUTIONS } from "@shared/geoip-attribution";
 
 const gunzipAsync = promisify(gunzipCb);
 
@@ -50,7 +51,7 @@ export const MAXMIND_KEY_CONFIG_KEY = "maxmind_license_key";
 export const DOWNLOAD_TIMEOUT_MS = 120_000;
 
 // CC BY 4.0 requires visible credit when DB-IP data ships in the product.
-export const DBIP_ATTRIBUTION = "IP Geolocation by DB-IP (db-ip.com), CC BY 4.0";
+export const DBIP_ATTRIBUTION = GEOIP_ATTRIBUTIONS.dbip.attribution;
 
 export type GeoipSource = "geolite2" | "dbip";
 export type MaxmindKeySource = "console" | "env" | null;
