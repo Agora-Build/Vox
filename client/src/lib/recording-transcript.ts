@@ -14,9 +14,36 @@ export function findRecordingTranscript(recording: string, files: readonly Recor
 }
 
 export function parseRecordingTranscript(text: string): AudioTranscriptSegment[] {
-  // Python's non-finite JSON tokens occur in metrics, not inside quoted speech.
-  const sanitized = text.replace(/"(?:\\.|[^"\\])*"|([:[,\s]+)(?:-?Infinity|NaN)(?=\s*[,}\]])/g,
-    (match, prefix: string | undefined) => prefix ? `${prefix}null` : match);
+  // Scan once: regex backtracking on padded or unterminated input can freeze the UI.
+  const parts: string[] = [];
+  let copied = 0; let quoted = false; let escaped = false; let valueExpected = true;
+  const whitespace = (code: number) => code === 32 || code === 9 || code === 10 || code === 13;
+  for (let index = 0; index < text.length; index++) {
+    const code = text.charCodeAt(index);
+    if (quoted) {
+      if (escaped) escaped = false;
+      else if (code === 92) escaped = true;
+      else if (code === 34) quoted = false;
+      continue;
+    }
+    if (code === 34) { quoted = true; valueExpected = false; continue; }
+    if (code === 58 || code === 91 || code === 44) { valueExpected = true; continue; }
+    if (whitespace(code)) continue;
+    if (valueExpected) {
+      const token = ["NaN", "Infinity", "-Infinity"].find((candidate) => text.startsWith(candidate, index));
+      if (token) {
+        let next = index + token.length;
+        while (next < text.length && whitespace(text.charCodeAt(next))) next++;
+        const following = text.charCodeAt(next);
+        if (next === text.length || following === 44 || following === 93 || following === 125) {
+          parts.push(text.slice(copied, index), "null");
+          copied = index + token.length; index = copied - 1;
+        }
+      }
+    }
+    valueExpected = false;
+  }
+  const sanitized = parts.length ? parts.concat(text.slice(copied)).join("") : text;
   const data: unknown = JSON.parse(sanitized);
   if (!Array.isArray(data)) throw new Error("Unsupported transcript format");
   const segments: AudioTranscriptSegment[] = [];

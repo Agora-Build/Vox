@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { activeTranscriptIndex, buildWaveformPeaks, clampTime, formatAudioTime, MAX_TRANSCRIPT_SEGMENTS, MAX_TRANSCRIPT_TEXT, normalizeTranscript, timelineTicks, transcriptEndIndex, waveformCanvasSize } from "../client/src/components/audio-player/utils";
-import { pcmWaveform } from "../client/src/components/audio-player/pcm-waveform";
+import { MAX_WAVEFORM_BYTES, pcmWaveform } from "../client/src/components/audio-player/pcm-waveform";
+import { WaveformByteBuffer } from "../client/src/components/audio-player/waveform-buffer";
 import { findRecordingTranscript, parseRecordingTranscript, transcriptFromMetrics } from "../client/src/lib/recording-transcript";
 
 function pcmFixture(bits = 16, codec = 1, channels = 2, extensible = false) {
@@ -26,6 +27,36 @@ function pcmFixture(bits = 16, codec = 1, channels = 2, extensible = false) {
   return bytes;
 }
 const arrayBuffer = (bytes: Buffer) => bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+
+describe("bounded waveform download buffer", () => {
+  it("appends split chunks to one fixed buffer without copying it at finish", () => {
+    const bytes = new WaveformByteBuffer(5);
+    bytes.append(new Uint8Array([1, 2]));
+    bytes.append(new Uint8Array([3, 4, 5]));
+    const result = bytes.finish();
+    expect(Array.from(new Uint8Array(result))).toEqual([1, 2, 3, 4, 5]);
+    expect(bytes.finish()).toBe(result);
+  });
+  it("refuses oversized and mismatched Content-Length values", () => {
+    expect(() => new WaveformByteBuffer(MAX_WAVEFORM_BYTES + 1)).toThrow("Recording too large");
+    const short = new WaveformByteBuffer(2);
+    short.append(new Uint8Array([1]));
+    expect(() => short.finish()).toThrow("Recording length changed");
+    expect(() => short.append(new Uint8Array([2, 3]))).toThrow("Recording length changed");
+  });
+  it("grows unknown-length downloads in place or rejects unsupported browsers", () => {
+    if (!("resize" in ArrayBuffer.prototype)) {
+      expect(() => new WaveformByteBuffer(0)).toThrow("Streaming buffer unavailable");
+      return;
+    }
+    const bytes = new WaveformByteBuffer(0);
+    bytes.append(new Uint8Array([1, 2]));
+    const original = bytes.finish();
+    bytes.append(new Uint8Array([3, 4, 5]));
+    expect(bytes.finish()).toBe(original);
+    expect(Array.from(new Uint8Array(bytes.finish()))).toEqual([1, 2, 3, 4, 5]);
+  });
+});
 
 describe("bounded PCM waveform extraction", () => {
   for (const [bits, codec] of [[8, 1], [16, 1], [24, 1], [32, 1], [32, 3], [64, 3]]) {
@@ -115,6 +146,18 @@ describe("recording transcripts", () => {
       { start: 3, end: 4, text: "Hello", speaker: "Agent", channel: 1 },
     ]);
     expect(() => parseRecordingTranscript("{}")).toThrow();
+  });
+  it("preserves escaped quotes and backslashes while replacing only non-finite values", () => {
+    const speech = 'He said "NaN, Infinity, -Infinity"; path C:\\audio\\clip';
+    const source = JSON.stringify([{ user_segments: [{ start: 0, end: 1, text: speech }] }]);
+    const pythonJson = source.replace('"start":0', '"start":0,"scores":[NaN, Infinity, -Infinity],"padding":NaN  ');
+    expect(parseRecordingTranscript(pythonJson)[0].text).toBe(speech);
+    expect(() => parseRecordingTranscript('[{"x":NaNextra}]')).toThrow();
+  });
+  it("handles heavily padded JSON and rejects unterminated escaped speech", () => {
+    const padding = " ".repeat(500_000);
+    expect(parseRecordingTranscript(`[${padding}{"x":NaN${padding},"user_segments":[{"start":0,"end":1,"text":"hello"}]}]`)[0].text).toBe("hello");
+    expect(() => parseRecordingTranscript('[{"text":"' + '\\"'.repeat(100_000))).toThrow();
   });
   it("uses turn-level fallback only for an unambiguous recording and deduplicates metric families", () => {
     const turn = { turn_start: 1, turn_end: 4, user_transcript: "hello", agent_transcript: "hi" };

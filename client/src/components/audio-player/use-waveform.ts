@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { AudioWaveform } from "./types";
 import { hasWaveHeader, MAX_WAVEFORM_BYTES } from "./pcm-waveform";
+import { WaveformByteBuffer } from "./waveform-buffer";
 
 export function useWaveform(src: string, enabled: boolean) {
   const [state, setState] = useState<{ src: string; data?: AudioWaveform; loading: boolean; error?: string }>({ src, loading: true });
@@ -19,9 +20,10 @@ export function useWaveform(src: string, enabled: boolean) {
       // Read incrementally so a missing Content-Length cannot bypass the memory cap.
       const reader = response.body?.getReader();
       if (!reader) throw new Error("Streaming is unavailable");
-      const chunks: Uint8Array[] = [];
+      const header = new Uint8Array(12);
+      let headerSize = 0;
+      let bytes: WaveformByteBuffer | undefined;
       let size = 0;
-      let checkedHeader = false;
       while (true) {
         const { value, done } = await reader.read();
         if (done) break;
@@ -30,23 +32,17 @@ export function useWaveform(src: string, enabled: boolean) {
           await reader.cancel();
           throw new Error("Recording too large");
         }
-        chunks.push(value);
-        if (!checkedHeader && size >= 12) {
-          const header = new Uint8Array(12);
-          let filled = 0;
-          for (const chunk of chunks) {
-            const part = chunk.subarray(0, 12 - filled);
-            header.set(part, filled); filled += part.length;
-            if (filled === 12) break;
-          }
-          checkedHeader = true;
+        if (!bytes) {
+          const part = value.subarray(0, 12 - headerSize);
+          header.set(part, headerSize); headerSize += part.length;
+          if (headerSize < 12) continue;
           if (!hasWaveHeader(header.buffer)) { await reader.cancel(); throw new Error("Unsupported waveform format"); }
-        }
+          bytes = new WaveformByteBuffer(Number(response.headers.get("Content-Length")));
+          bytes.append(header); bytes.append(value.subarray(part.length));
+        } else bytes.append(value);
       }
-      const bytes = new Uint8Array(size);
-      let offset = 0;
-      for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
-      chunks.length = 0;
+      if (!bytes) throw new Error("Unsupported waveform format");
+      const buffer = bytes.finish();
       if (controller.signal.aborted) return;
       worker = new Worker(new URL("./waveform.worker.ts", import.meta.url), { type: "module" });
       const data = await new Promise<AudioWaveform>((resolve, reject) => {
@@ -61,7 +57,7 @@ export function useWaveform(src: string, enabled: boolean) {
           controller.signal.removeEventListener("abort", aborted);
           reject(new Error("Waveform processing failed"));
         };
-        worker!.postMessage({ bytes: bytes.buffer }, [bytes.buffer]);
+        worker!.postMessage({ bytes: buffer }, [buffer]);
       });
       if (!controller.signal.aborted) setState({ src, data, loading: false });
     };
@@ -70,8 +66,11 @@ export function useWaveform(src: string, enabled: boolean) {
         ? "Waveform previews are limited to recordings under 64 MB. Playback still works."
         : error instanceof Error && error.message === "Unsupported waveform format"
         ? "Waveform previews support PCM WAV recordings with up to 32 channels. This format can still be played."
+        : error instanceof Error && error.message === "Streaming buffer unavailable"
+        ? "Waveform previews require a Content-Length header on this browser. Playback is still available."
         : "Waveform unavailable. Playback still works; the format or storage permissions may not allow waveform decoding." });
     }).finally(() => {
+      controller.abort();
       worker?.terminate();
     });
     return () => {

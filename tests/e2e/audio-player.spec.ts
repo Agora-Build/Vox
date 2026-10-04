@@ -82,6 +82,41 @@ test("recordings show genuine per-channel waveforms and a timed transcript", asy
   })).toBe(true);
 });
 
+for (const variant of ["known length", "unknown length", "legacy browser"] as const) {
+  test(`split WAV headers work with ${variant} downloads`, async ({ page }) => {
+    await page.addInitScript(({ unknownLength, legacy }) => {
+      if (legacy) Object.defineProperty(ArrayBuffer.prototype, "resize", { value: undefined, configurable: true });
+      const originalFetch = window.fetch;
+      window.fetch = async (...args) => {
+        const response = await originalFetch(...args);
+        if (!response.url.includes("/fixture-audio/") || !response.url.endsWith(".wav")) return response;
+        const bytes = new Uint8Array(await response.arrayBuffer());
+        const headers = new Headers(response.headers);
+        if (unknownLength) headers.delete("Content-Length");
+        else headers.set("Content-Length", String(bytes.byteLength));
+        let offset = 0;
+        const body = new ReadableStream<Uint8Array>({
+          pull(controller) {
+            if (offset === bytes.length) { controller.close(); return; }
+            const end = Math.min(bytes.length, offset < 12 ? offset + 5 : offset + 4096);
+            controller.enqueue(bytes.slice(offset, end)); offset = end;
+          },
+        });
+        return new Response(body, { status: response.status, headers });
+      };
+    }, { unknownLength: variant !== "known length", legacy: variant === "legacy browser" });
+    const player = await mockRecording(page);
+    if (variant === "legacy browser") {
+      await expect(player.getByText("Waveform previews require a Content-Length", { exact: false })).toBeVisible();
+      await player.getByRole("button", { name: "Play recording", exact: true }).click();
+      await expect.poll(() => player.getByTestId("player-audio").evaluate((audio: HTMLAudioElement) => audio.currentTime)).toBeGreaterThan(0.2);
+    } else {
+      await expect(player.getByTestId("player-channel")).toHaveCount(2);
+      await expect(player.getByRole("slider", { name: "Recording timeline" })).toHaveAttribute("aria-valuemax", "12");
+    }
+  });
+}
+
 test("the player is not hard-coded to stereo", async ({ page }) => {
   const player = await mockRecording(page, { channels: 6 });
   await expect(player.getByTestId("player-channel")).toHaveCount(6);
@@ -211,7 +246,8 @@ test.describe("maximum-channel canvas bounds", () => {
 test("pausing while waiting clears the loading spinner", async ({ page }) => {
   const player = await mockRecording(page);
   await player.getByRole("button", { name: "Play recording", exact: true }).click();
-  await expect.poll(() => player.getByTestId("player-audio").evaluate((audio: HTMLAudioElement) => audio.paused)).toBe(false);
+  // Let native startup events finish before simulating a subsequent network stall.
+  await expect.poll(() => player.getByTestId("player-audio").evaluate((audio: HTMLAudioElement) => audio.currentTime)).toBeGreaterThan(0.2);
   await player.getByTestId("player-audio").evaluate((audio: HTMLAudioElement) => audio.dispatchEvent(new Event("waiting")));
   await expect(player.getByRole("button", { name: "Pause recording", exact: true }).locator(".animate-spin")).toHaveCount(1);
   await player.getByRole("button", { name: "Pause recording", exact: true }).click();

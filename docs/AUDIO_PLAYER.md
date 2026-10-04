@@ -68,6 +68,10 @@ Content-Length header. The bounded encoded buffer transfers to the worker,
 which reads PCM samples directly into at most 4,096 peaks per channel. It does
 not allocate full decoded channel arrays or invoke `decodeAudioData`, so a long
 compressed file cannot expand into unbounded waveform-processing memory.
+Downloads accumulate into one capped buffer, using the Content-Length when
+present or a resizable ArrayBuffer otherwise, instead of retaining all chunks
+and then copying the whole recording. Older browsers without resizable buffers
+need Content-Length for a waveform preview; native playback still works.
 
 Compressed formats (MP3, WebM, Ogg, AAC, M4A, FLAC) remain playable using native
 audio, but their waveform previews are unavailable. Non-WAV waveform fetches
@@ -91,6 +95,8 @@ the selected recording, selects a folder-matching `analysis/turns.json`, and
 uses speaker-segment timestamps when available. The transcript download is
 capped at 5 MiB. An unambiguous raw-metric transcript is a fallback and is labeled
 as turn-level timing. Ambiguous or other-chunk transcripts are not attached.
+Python non-finite JSON tokens are sanitized with a linear, quote-aware scan;
+speech strings and escaped quotes are preserved without regex backtracking.
 The player never generates speech recognition or sends recordings to a new
 third-party service.
 
