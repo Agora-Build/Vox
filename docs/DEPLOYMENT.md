@@ -30,12 +30,27 @@ This guide covers deploying Vox to production using Coolify (what vox.agora.buil
 | `organizations` | Organizations, membership, org secrets. **Once enabled on an instance with org data, never remove it** — membership would silently go inert. |
 | `credits` | Personal Usage, credit ledger, one-time 100-credit welcome grant and protected admin grants |
 | `payments` | Personal Stripe top-ups and Premium subscriptions (needs `credits`) |
-| `notifications` | Email delivery and retry queue; Core still owns verification |
+| `notifications` | Email/Discord channels, scoped rules, isolated JavaScript and optional LLM analysis; Core still owns verification |
 | `shared-agents` | Running evals on other people's eval agents (needs `credits`) |
 | `oauth` | Sign in with GitHub and Google (see below) |
 | `sample` | A minimal example plugin; not for production |
 
 Each plugin has its own database schema (`plugin_<id>`) and its own migrations, applied at startup. A plugin migration that fails aborts startup, so a bad data move never goes live half-done. After deploying, `GET /api/plugins` lists what loaded, and `GET /api/plugins/<id>/health` reports each one.
+
+### Console navigation and organization management
+
+The profile menu contains Edit profile, Settings, Usage (when `credits` is
+enabled), and Sign out. Personal Settings stays above Usage; it contains
+authenticator/account security and a Notifications link when enabled.
+
+Organization administration lives at `/console/organization`: its dashboard
+includes name/address editing, personal-to-organization resource transfers,
+and the leave-confirmation dialog for organization owners/admins. Owners cannot
+leave; ordinary members keep the read-only dashboard. Members and Billing
+remain separate pages. There is no organization-specific Settings menu entry;
+old `/console/organization/settings` links redirect to the Organization page.
+Personal Usage/plans and notification audience groups do not become org billing
+or organization memberships.
 
 ### Sign in with GitHub / Google (`oauth` plugin)
 
@@ -106,11 +121,23 @@ are not implemented yet. For automation, see the section below.
 #### Notification channels and automation
 
 Enable `notifications` to show a Notifications link in personal Settings.
+Append it to the existing plugin list rather than replacing the list. When
+`credits` is enabled, keep it before `notifications` so the optional balance
+source is available at activation. For example:
+
+```bash
+VOX_PLUGINS=credits,shared-agents,organizations,oauth,notifications
+```
+
 Apply Core migration v55 and the plugin's forward-only migrations on deployment.
 Channels, rules/content, activity, and admin Access & Groups are separate from
 the credits/payment plugins. Email uses each recipient's verified account email;
 Discord uses an encrypted official webhook URL. Configure channels and preview
 rules before enabling them. Queued delivery does not guarantee immediate receipt.
+An unconfigured SMTP transport does not prevent the UI, comparisons, JavaScript,
+or configured Discord channels from loading. Email and LLM capabilities are
+reported separately: plugin health alone does not confirm either provider is
+ready. Do not send real alerts until destinations and rules have been reviewed.
 
 Admins explicitly assign Scout / Editor access to selected users and audiences;
 paid tiers never grant it automatically. Notification groups are plugin-owned
@@ -211,6 +238,15 @@ VOX_PLUGINS=credits,shared-agents,organizations,oauth
 If your PostgreSQL is a Coolify-managed database, use the internal hostname (e.g., `postgresql://vox:pass@vox-db:5432/vox`).
 
 **Changing `VOX_PLUGINS` on a live instance:** a running container is unaffected until the next deploy, but a *restart* of the current build picks the new value up. So when a new plugin ships in a release, add it right before that release deploys — an older build that restarts with a plugin id it doesn't know will refuse to start.
+
+**Verified Vox production configuration (2026-10-04):**
+`credits,shared-agents,organizations,oauth,notifications`; notifications v1.1.0
+is enabled and healthy. SMTP and the notification LLM provider are not yet
+configured, so email codes/alerts and LLM analysis remain unavailable. Discord
+requires each user's reviewed webhook; the optional personal `payments` plugin
+is not enabled. This is a deployment snapshot, not a default for all forks.
+Keep preview environment settings separate and preserve encryption/OAuth/org
+configuration when changing the production-only plugin value.
 
 ### 3. Configure Network
 
@@ -367,11 +403,18 @@ Put a reverse proxy (nginx, Caddy, Traefik) in front for SSL termination.
 - [ ] App starts without errors (`SESSION_SECRET` is set)
 - [ ] Database is reachable (`DATABASE_URL` is correct)
 - [ ] `GET /api/plugins` lists every plugin in `VOX_PLUGINS`
+- [ ] Every enabled plugin's `/api/plugins/<id>/health` reports `ok`
 - [ ] System initialized via `/api/auth/init`
 - [ ] Admin can log in at `/login`
 - [ ] HTTPS is working (check the `Secure` cookie flag)
 - [ ] Sign-in providers (if enabled): `GET /api/plugins/oauth/providers` shows them on, and each registered callback URL matches your domain
 - [ ] Stripe webhook endpoint is registered (if enabled): `https://your-domain.com/api/webhooks/stripe`
+- [ ] Organization owners/admins can edit details on `/console/organization`; members remain read-only, and old organization Settings links redirect there
+- [ ] The profile menu has personal Settings above Usage; the Organization sidebar has no separate Settings link
+- [ ] Notifications (if enabled): personal Settings links to `/console/notifications`, and `/api/plugins/notifications/settings` rejects unauthenticated requests
+- [ ] Notification readiness is checked separately from plugin health; configure SMTP and perform a reviewed live delivery test before relying on email alerts/codes
+- [ ] Optional LLM analysis uses server-owned configuration and a provider-side spending cap; no secrets or personal data go into rule instructions
+- [ ] Personal payments (if enabled): register `/api/plugins/payments/webhook` with its separate signing secret, without changing the organization webhook
 - [ ] Tools → Analyze: at least one online public eval agent reports the `analyze` capability (Console → Eval Agents). Analyze keeps recordings in each user's own bucket (Storage page); Core needs no S3 settings for it. Core holds each upload in memory while it checks and stores it: at most 3 at once (≤ 100 MB each, so about 300 MB), one per user. These limits live in the Core process, like the rate limiter, which is right for Vox's single Core container; running several Core processes would need a shared limiter
 
 ## Troubleshooting

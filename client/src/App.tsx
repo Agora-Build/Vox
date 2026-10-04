@@ -36,7 +36,6 @@ import ClashEvent from "@/pages/clash-event";
 import ConsoleOrganization from "@/pages/console-organization";
 import ConsoleOrganizationMembers from "@/pages/console-organization-members";
 import ConsoleOrganizationBilling from "@/pages/console-organization-billing";
-import ConsoleOrganizationSettings from "@/pages/console-organization-settings";
 import ConsoleOrganizationCreate from "@/pages/console-organization-create";
 import AdminOrganizations from "@/pages/admin-organizations";
 import AdminFundReturns from "@/pages/admin-fund-returns";
@@ -783,65 +782,6 @@ function ConsoleOrganizationBillingWrapper() {
   );
 }
 
-function ConsoleOrganizationSettingsWrapper() {
-  const [, setLocation] = useLocation();
-  const { data: authStatus, isLoading, isFetching } = useQuery<AuthStatus>({
-    queryKey: ["/api/auth/status"],
-  });
-  const { data: config, isLoading: configLoading } = useQuery<{ organizationsEnabled?: string }>({
-    queryKey: ["/api/config"],
-    staleTime: 60 * 60 * 1000,
-  });
-
-  useEffect(() => {
-    if (!isLoading && !isFetching && authStatus?.initialized && !authStatus.user) {
-      setLocation("/login");
-    }
-  }, [isLoading, isFetching, authStatus, setLocation]);
-
-  if ((isLoading || isFetching) && !authStatus?.user) {
-    return (
-      <div className="min-h-screen flex items-center justify-center">
-        <div className="animate-pulse text-muted-foreground">Loading...</div>
-      </div>
-    );
-  }
-
-  if (!authStatus?.initialized) {
-    return <ConsoleInit />;
-  }
-
-  if (!authStatus.user) {
-    return (
-      <div className="min-h-screen flex items-center justify-center">
-        <div className="animate-pulse text-muted-foreground">Redirecting...</div>
-      </div>
-    );
-  }
-
-  // Guard below reads config.organizationsEnabled; don't let it evaluate against
-  // an unresolved config query (defaults to "orgs enabled" and would fire the
-  // redirect before a genuinely org-less instance's config lands).
-  if (configLoading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center">
-        <div className="animate-pulse text-muted-foreground">Loading...</div>
-      </div>
-    );
-  }
-
-  if ((!authStatus.user.organizationId || !(authStatus.user.orgRole === "owner" || authStatus.user.orgRole === "admin")) && config?.organizationsEnabled !== "false") {
-    setLocation("/console/organization");
-    return null;
-  }
-
-  return (
-    <ConsoleLayout>
-      <ConsoleOrganizationSettings />
-    </ConsoleLayout>
-  );
-}
-
 function ConsoleOrganizationCreateWrapper() {
   const [, setLocation] = useLocation();
   const { data: authStatus, isLoading, isFetching } = useQuery<AuthStatus>({
@@ -1133,7 +1073,7 @@ function Router() {
         <ConsoleOrganizationBillingWrapper />
       </Route>
       <Route path="/console/organization/settings">
-        <ConsoleOrganizationSettingsWrapper />
+        <Redirect to="/console/organization" />
       </Route>
       <Route path="/console/organization/create">
         <ConsoleOrganizationCreateWrapper />

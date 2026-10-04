@@ -257,12 +257,6 @@ export default function ConsoleLayout({ children }: ConsoleLayoutProps) {
         icon: CreditCard,
         active: location === "/console/organization/billing",
       });
-      orgNavItems.push({
-        title: "Settings",
-        url: "/console/organization/settings",
-        icon: Settings,
-        active: location === "/console/organization/settings",
-      });
     }
   } else if (config?.organizationsEnabled !== "false") {
     orgNavItems.push({

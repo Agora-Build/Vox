@@ -51,6 +51,22 @@ Head-to-head matches between two agents on a shared topic, with a live moderator
 
 ### Organizations
 Team collaboration with seat-based pricing, member management, and shared eval flows and secrets.
+The Organization page contains the dashboard, organization details, resource
+transfers, and leave controls. Editing stays restricted to organization owners
+and admins; Members and Billing remain separate sidebar destinations.
+
+### Personal Settings, Usage, and Notifications
+The profile menu keeps Settings above Usage. Settings owns account security and
+Google Authenticator-compatible verification, independently of Google sign-in.
+The optional `credits` plugin adds non-expiring personal credits and a one-time
+100-credit welcome grant. Optional `payments` adds Stripe top-ups and Premium
+subscriptions, separate from organization seat billing.
+
+Enable `notifications` to add Channels, Rules & Content, Activity, and admin
+Access & Groups, reached from personal Settings. Email and Discord alerts support
+numeric comparisons, isolated JavaScript, and opt-in server-configured LLM
+analysis. Scout / Editor access is explicitly admin-assigned, not a paid tier;
+notification audience groups are separate from organizations.
 
 ### 6 Key Metrics
 - **Turn Success Rate** - Share of turns handled correctly: responded, stopped on interrupt, no false barge-in (%) - *Higher is better*
@@ -96,7 +112,7 @@ Team collaboration with seat-based pricing, member management, and shared eval f
 - **Node.js 22** with Express, TypeScript (ESM)
 - **Drizzle ORM** with PostgreSQL
 - **Passport.js** for OAuth (Google, GitHub)
-- **Stripe** for organization seat billing
+- **Stripe** for personal top-ups/subscriptions and separate organization seat billing
 - **@aws-sdk/client-s3** for S3-compatible artifact storage
 
 ---
@@ -156,18 +172,22 @@ See **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)**: environment variables, `VOX_PL
 |----------|-------------|
 | `DATABASE_URL` | PostgreSQL connection string |
 | `SESSION_SECRET` | Session encryption key |
-| `INIT_CODE` | System initialization code |
+| `INIT_CODE` | Bootstrap code, also required with fresh verification for admin credit grants and pricing changes |
 
 ### Optional
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `PORT` | `5000` | Server port |
-| `VOX_PLUGINS` | none | Comma-separated plugins to load: `credits`, `shared-agents`, `organizations`, `oauth`, `sample`. An unknown id stops the server at startup, so treat it like a required setting. |
+| `VOX_PLUGINS` | none | Comma-separated plugins to load: `credits`, `payments`, `notifications`, `shared-agents`, `organizations`, `oauth`, `sample`. An unknown id stops the server at startup, so treat it like a required setting. |
 | `CREDENTIAL_ENCRYPTION_KEY` | - | 32-byte hex key (AES-256-GCM) for stored secrets. Generate with `openssl rand -hex 32` |
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` / `GOOGLE_CALLBACK_URL` | - | Google sign-in (needs the `oauth` plugin). Redirect URI: `<your site>/api/plugins/oauth/google/callback` |
 | `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET` / `GITHUB_CALLBACK_URL` | - | GitHub sign-in (needs the `oauth` plugin). Callback URL: `<your site>/auth/github/callback` |
 | `STRIPE_SECRET_KEY` / `STRIPE_PUBLISHABLE_KEY` / `STRIPE_WEBHOOK_SECRET` | - | Organization seat billing |
+| `STRIPE_PERSONAL_WEBHOOK_SECRET` | - | Separate personal Stripe webhook signing secret (needs `payments` and `credits`) |
+| `SMTP_HOST` / `NOTIFICATIONS_FROM` | - | Enable email delivery; configure SMTP port, TLS, and credentials as needed (see deployment guide) |
+| `NOTIFICATIONS_LLM_PROVIDER` / `NOTIFICATIONS_LLM_API_KEY` / `NOTIFICATIONS_LLM_MODEL` | - | Optional notification analysis provider; initially `anthropic`, with an explicit model id |
+| `NOTIFICATIONS_LLM_DAILY_LIMIT` | `100` | Shared daily LLM request budget, including previews and failures; `0` disables analysis |
 | `APP_URL` | `http://localhost:5000` | Public base URL, used for billing return links |
 | `AGORA_APP_ID` / `AGORA_APP_CERTIFICATE` / `AGORA_CONVOAI_CONFIG` | - | Agora RTC and the Clash live moderator |
 | `WEB_SESSION_TTL_HOURS` | `1` | How long a minted login session stays fresh |
@@ -325,11 +345,18 @@ Optional backends load from `VOX_PLUGINS`. Each gets its own PostgreSQL schema, 
 |--------|------|
 | `organizations` | Organizations, membership, and org secrets |
 | `oauth` | Sign in with GitHub and Google (each on when its credentials are set) |
-| `credits` | Credit ledger for paid dispatch |
+| `credits` | Paid-dispatch ledger, personal Usage, one-time 100 credits, and protected admin grants |
+| `payments` | Personal Stripe top-ups and Premium subscriptions (needs `credits`) |
+| `notifications` | Email/Discord channels, scoped rules, isolated scripts, and optional LLM analysis |
 | `shared-agents` | A marketplace for running evals on other people's eval agents |
 | `sample` | A minimal example plugin |
 
 `GET /api/plugins` lists what loaded.
+Plugins remain opt-in. Preserve the existing list when adding one; keep
+`credits` before `notifications` so its optional balance source is available.
+Email needs SMTP configuration, while Discord uses user-configured official
+webhooks. LLM rules remain unavailable until the server provider is configured.
+See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for rollout and verification.
 
 ---
 
@@ -340,7 +367,7 @@ Vox/
 ├── client/              # React frontend
 ├── server/              # Express backend (routes, storage, auth, migrations)
 ├── shared/              # Drizzle schema and types shared by client and server
-├── plugins/             # Built-in plugins (organizations, credits, shared-agents, sample)
+├── plugins/             # Optional organizations, credits, payments, notifications, OAuth, and shared agents
 ├── packages/            # Plugin SDK
 ├── vox_eval_agentd/     # Eval agent daemon, plus the auth-session and REST broker images
 ├── vox_rest_broker/     # REST broker

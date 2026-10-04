@@ -6,7 +6,6 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { Skeleton } from "@/components/ui/skeleton";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Badge } from "@/components/ui/badge";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog";
@@ -15,14 +14,6 @@ import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { Save, LogOut, ArrowRight, FolderKanban, Workflow as EvalFlowIcon, FileText, CalendarClock } from "lucide-react";
 import { formatRegion } from "@/lib/utils";
-
-interface AuthStatus {
-  user: {
-    id: number;
-    organizationId: number | null;
-    orgRole: string | null;
-  } | null;
-}
 
 interface Organization {
   id: number;
@@ -35,21 +26,12 @@ interface EvalFlowItem { id: number; name: string; projectId: number | null; org
 interface EvalSetItem { id: number; name: string; organizationId: number | null; }
 interface ScheduleItem { id: number; name: string; evalFlowName: string; region: string; targetTier: string; organizationId: number | null; }
 
-export default function ConsoleOrganizationSettings() {
+export function OrganizationManagement({ organization: org, role }: { organization: Organization; role: string | null }) {
   const { toast } = useToast();
   const [, setLocation] = useLocation();
 
-  const { data: authStatus } = useQuery<AuthStatus>({
-    queryKey: ["/api/auth/status"],
-  });
-
-  const { data: org, isLoading } = useQuery<Organization>({
-    queryKey: ["/api/user/organization"],
-    enabled: !!authStatus?.user?.organizationId,
-  });
-
-  const [name, setName] = useState("");
-  const [address, setAddress] = useState("");
+  const [name, setName] = useState(org.name);
+  const [address, setAddress] = useState(org.address || "");
   const [moveOpen, setMoveOpen] = useState(false);
 
   useEffect(() => {
@@ -61,11 +43,11 @@ export default function ConsoleOrganizationSettings() {
 
   const updateMutation = useMutation({
     mutationFn: async () => {
-      await apiRequest("PATCH", `/api/organizations/${org?.id}`, { name, address });
+      await apiRequest("PATCH", `/api/organizations/${org.id}`, { name, address });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/user/organization"] });
-      toast({ title: "Settings saved" });
+      toast({ title: "Organization saved" });
     },
     onError: (error: Error) => {
       toast({ title: "Failed to save", description: error.message, variant: "destructive" });
@@ -74,7 +56,7 @@ export default function ConsoleOrganizationSettings() {
 
   const leaveMutation = useMutation({
     mutationFn: async () => {
-      await apiRequest("POST", `/api/organizations/${org?.id}/leave`);
+      await apiRequest("POST", `/api/organizations/${org.id}/leave`);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/auth/status"] });
@@ -89,17 +71,8 @@ export default function ConsoleOrganizationSettings() {
 
   const handleSave = () => updateMutation.mutate();
 
-  if (isLoading) {
-    return <div className="space-y-6"><Skeleton className="h-48 w-full" /></div>;
-  }
-
   return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold">Organization Settings</h1>
-        <p className="text-muted-foreground">Manage your organization</p>
-      </div>
-
+    <section aria-label="Organization management" className="space-y-6">
       <Card>
         <CardHeader>
           <CardTitle>General</CardTitle>
@@ -129,14 +102,14 @@ export default function ConsoleOrganizationSettings() {
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <Button variant="outline" className="gap-2" onClick={() => setMoveOpen(true)}>
-            <ArrowRight className="h-4 w-4" />
+          <Button variant="outline" className="h-auto max-w-full gap-2 whitespace-normal text-left" onClick={() => setMoveOpen(true)}>
+            <ArrowRight className="h-4 w-4 shrink-0" />
             Move resources from personal to organization
           </Button>
         </CardContent>
       </Card>
 
-      <MoveResourcesDialog open={moveOpen} onOpenChange={setMoveOpen} orgName={org?.name || "Organization"} />
+      <MoveResourcesDialog open={moveOpen} onOpenChange={setMoveOpen} orgName={org.name} />
 
       {/* Danger Zone */}
       <Card className="border-red-500/50">
@@ -147,7 +120,7 @@ export default function ConsoleOrganizationSettings() {
         <CardContent>
           <AlertDialog>
             <AlertDialogTrigger asChild>
-              <Button variant="destructive" disabled={authStatus?.user?.orgRole === 'owner'}>
+              <Button variant="destructive" disabled={role === "owner" || leaveMutation.isPending}>
                 <LogOut className="mr-2 h-4 w-4" />
                 Leave Organization
               </Button>
@@ -173,7 +146,7 @@ export default function ConsoleOrganizationSettings() {
           </AlertDialog>
         </CardContent>
       </Card>
-    </div>
+    </section>
   );
 }
 
