@@ -22,7 +22,7 @@ async function mockAccount(page: import("@playwright/test").Page, pluginIds = ["
 }
 test("profile menu has Settings then Usage and no API Keys or Organization shortcut", async ({ page }) => {
   await mockAccount(page);
-  await page.goto("/console/usage");
+  await page.goto("/console/usage", { waitUntil: "domcontentloaded" });
   await expect(page.getByRole("heading", { name: "Usage", exact: true })).toBeVisible();
   await page.getByTestId("button-profile-menu").click();
   const menu = page.getByTestId("popover-profile");
@@ -31,7 +31,7 @@ test("profile menu has Settings then Usage and no API Keys or Organization short
   await expect(menu.getByText("Organization", { exact: true })).toHaveCount(0);
 });
 test("tabs navigate by URL and preserve free Basic and $12 Premium pricing", async ({ page }) => {
-  await mockAccount(page); await page.goto("/console/usage");
+  await mockAccount(page); await page.goto("/console/usage", { waitUntil: "domcontentloaded" });
   await expect(page.getByText("Welcome credits", { exact: true })).toBeVisible();
   expect(await page.getByTestId("usage-available-credits").evaluate((element) => parseFloat(getComputedStyle(element).fontSize))).toBeGreaterThanOrEqual(36);
   await expect(page.getByText("100 credits for $5.00.", { exact: false })).toBeVisible();
@@ -40,29 +40,29 @@ test("tabs navigate by URL and preserve free Basic and $12 Premium pricing", asy
   await expect(page.getByText("$12.00", { exact: false })).toBeVisible();
   await expect(page.getByText("Feature access only. No recurring credits.", { exact: false })).toBeVisible();
   await expect(page.getByRole("button", { name: "Upgrade to Premium" })).toBeDisabled();
-  await page.reload(); await expect(page.getByRole("tab", { name: "Plan", exact: true })).toHaveAttribute("data-state", "active");
+  await page.reload({ waitUntil: "domcontentloaded" }); await expect(page.getByRole("tab", { name: "Plan", exact: true })).toHaveAttribute("data-state", "active");
 });
 test("disabled credits hides Usage and does not fetch the plugin's page chunk or APIs", async ({ page }) => {
   await mockAccount(page, []);
   const requests: string[] = []; page.on("request", (request) => requests.push(request.url()));
-  await page.goto("/console/settings");
+  await page.goto("/console/settings", { waitUntil: "domcontentloaded" });
   await expect(page.getByRole("heading", { name: "Settings", exact: true })).toBeVisible();
   await page.getByTestId("button-profile-menu").click();
   await expect(page.getByTestId("link-profile-usage")).toHaveCount(0);
-  await page.goto("/console/usage");
+  await page.goto("/console/usage", { waitUntil: "domcontentloaded" });
   await expect(page.getByText("Personal Usage is unavailable", { exact: false })).toBeVisible();
   expect(requests.some((url) => /\/assets\/usage-|\/api\/plugins\/credits\//.test(url))).toBe(false);
 });
 test("credits alone renders both tabs without loading payment UI", async ({ page }) => {
   await mockAccount(page, ["credits"]);
   const requests: string[] = []; page.on("request", (request) => requests.push(request.url()));
-  await page.goto("/console/usage?tab=plan");
+  await page.goto("/console/usage?tab=plan", { waitUntil: "domcontentloaded" });
   await expect(page.getByText("Personal subscriptions require the payments plugin.", { exact: false })).toBeVisible();
   expect(requests.some((url) => /\/assets\/panels-|\/api\/plugins\/payments\//.test(url))).toBe(false);
 });
 test("admin can select a user batch and preview total credits before verification", async ({ page }) => {
   await mockAccount(page, ["credits", "payments"], true);
-  await page.goto("/console/users");
+  await page.goto("/console/users", { waitUntil: "domcontentloaded" });
   await page.getByRole("button", { name: "Select this page" }).click();
   await page.getByRole("button", { name: "Grant credits (2)", exact: true }).click();
   await expect(page.getByText("2 recipients \u00b7 200 total credits", { exact: false })).toBeVisible();
@@ -71,7 +71,7 @@ test("admin can select a user batch and preview total credits before verificatio
 });
 test("mobile Usage fits the viewport and keeps both tabs usable", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 }); await mockAccount(page);
-  await page.goto("/console/usage");
+  await page.goto("/console/usage", { waitUntil: "domcontentloaded" });
   await expect(page.getByRole("tab", { name: "Credits & Usage" })).toBeVisible();
   await page.getByRole("tab", { name: "Plan", exact: true }).click();
   await expect(page.getByText("$12.00", { exact: false })).toBeVisible();
@@ -87,7 +87,7 @@ test("real Core enrollment and protected grant work through the browser", async 
   expect(login.ok()).toBe(true);
   const status = await (await page.request.get("/api/auth/status")).json();
   const before = await (await page.request.get("/api/plugins/credits/usage")).json();
-  await page.goto("/console/settings");
+  await page.goto("/console/settings", { waitUntil: "domcontentloaded" });
   await page.getByLabel("Current password", { exact: true }).fill(password);
   await page.getByRole("button", { name: "Set up authenticator", exact: true }).click();
   await expect(page.getByAltText("Authenticator enrollment QR code")).toBeVisible();
@@ -100,7 +100,7 @@ test("real Core enrollment and protected grant work through the browser", async 
   const recoveryCode = await page.locator("code").first().textContent();
   try {
     await page.getByRole("button", { name: "I saved these codes" }).click();
-    await page.goto("/console/users");
+    await page.goto("/console/users", { waitUntil: "domcontentloaded" });
     await page.getByPlaceholder("Search by email or username").fill("billing-preview@example.test");
     await page.getByTestId(`row-user-${status.user.id}`).getByRole("button", { name: "Grant credits", exact: true }).click();
     await page.getByLabel("Reason", { exact: true }).fill("Isolated browser verification");
@@ -109,7 +109,7 @@ test("real Core enrollment and protected grant work through the browser", async 
     await page.getByLabel("Six-digit verification code", { exact: true }).fill(totp.generate());
     await page.getByRole("button", { name: "Approve grant", exact: true }).click();
     await expect(page.getByText("Grant approved.", { exact: false })).toBeVisible();
-    await page.goto("/console/usage");
+    await page.goto("/console/usage", { waitUntil: "domcontentloaded" });
     const after = await (await page.request.get("/api/plugins/credits/usage")).json();
     expect(after.available).toBe(before.available + 100);
     await expect(page.getByRole("heading", { name: "Usage", exact: true })).toBeVisible();
