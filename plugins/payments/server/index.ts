@@ -1,4 +1,5 @@
 import Stripe from "stripe";
+import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import type { Request } from "express";
 import type { VoxPlugin, PluginDb, Handler, IdentityService, VerificationService, PersonalEntitlementsService, VerificationProof } from "@vox/plugin-sdk";
@@ -21,8 +22,8 @@ function objectId(value: unknown): string | null {
 const route = (handler: Handler): Handler => (req, res, next) => {
   Promise.resolve(handler(req, res, next)).catch((error) => {
     const verificationStatus = (error as { status?: number }).status;
-    const status = error instanceof PaymentError ? error.status : error instanceof z.ZodError ? 400 : verificationStatus === 403 || verificationStatus === 401 ? verificationStatus : 500;
-    res.status(status).json({ error: error instanceof PaymentError || status === 403 || status === 401 ? error.message : status === 400 ? "Invalid request" : "Billing operation failed; please retry" });
+    const status = error instanceof PaymentError ? error.status : error instanceof z.ZodError ? 400 : verificationStatus === 403 || verificationStatus === 401 || verificationStatus === 429 ? verificationStatus : 500;
+    res.status(status).json({ error: error instanceof PaymentError || status === 403 || status === 401 || status === 429 ? error.message : status === 400 ? "Invalid request" : "Billing operation failed; please retry" });
   });
 };
 
@@ -34,7 +35,7 @@ const plugin: VoxPlugin = {
     const entitlements = ctx.services.require<PersonalEntitlementsService>("vox.personal-entitlements", "^1.0.0");
     const key = ctx.config.get("STRIPE_SECRET_KEY");
     const webhookSecret = ctx.config.get("STRIPE_PERSONAL_WEBHOOK_SECRET");
-    const stripe = key ? new Stripe(key) : null;
+    const stripe = key ? new Stripe(key, { timeout: 10_000, maxNetworkRetries: 1 }) : null;
     const configuredOrigin = ctx.config.get("APP_URL");
     const origin = configuredOrigin ?? (ctx.config.get("NODE_ENV") === "production" ? null : "http://localhost:5000");
     if (origin) {
@@ -45,12 +46,10 @@ const plugin: VoxPlugin = {
     const client = () => { if (!paymentsEnabled || !stripe) fail("Personal Stripe billing is not configured", 503); return stripe; };
     const catalog = async (db = ctx.db): Promise<CatalogRow> => (await db.query<CatalogRow>("SELECT * FROM catalog_versions ORDER BY id DESC LIMIT 1")).rows[0];
 
-    async function ensureCustomer(db: PluginDb, userId: number): Promise<string> {
+    async function ensureCustomer(db: PluginDb, userId: number, user: { email: string; username: string }): Promise<string> {
       await db.query("INSERT INTO customers(user_ref) VALUES($1) ON CONFLICT(user_ref) DO NOTHING", [userId]);
       const { rows: [customer] } = await db.query<{ stripe_customer_id: string | null }>("SELECT stripe_customer_id FROM customers WHERE user_ref=$1 FOR UPDATE", [userId]);
       if (customer.stripe_customer_id) return customer.stripe_customer_id;
-      const user = await identity.getUserById(userId);
-      if (!user?.isEnabled) fail("Account unavailable", 401);
       const created = await client().customers.create({ email: user.email, name: user.username, metadata: { vox_personal_user: String(userId) } }, { idempotencyKey: `vox-personal-customer:${userId}` });
       await db.query("UPDATE customers SET stripe_customer_id=$2 WHERE user_ref=$1", [userId, created.id]);
       return created.id;
@@ -74,8 +73,11 @@ const plugin: VoxPlugin = {
       if (session.payment_status !== "paid") return;
       const purchaseId = session.metadata?.vox_purchase;
       if (!purchaseId) return;
-      await ctx.db.withTransaction(async (tx) => {
-        const { rows: [purchase] } = await tx.query<Purchase>("SELECT * FROM purchases WHERE id=$1 FOR UPDATE", [purchaseId]);
+      // The durable webhook lease serializes effects without reserving a pool
+      // connection across Stripe or cross-plugin service calls.
+      {
+        const tx = ctx.db;
+        const { rows: [purchase] } = await tx.query<Purchase>("SELECT * FROM purchases WHERE id=$1", [purchaseId]);
         if (!purchase) throw new Error("Purchase not committed yet");
         const { rows: [customer] } = await tx.query<{ stripe_customer_id: string }>("SELECT stripe_customer_id FROM customers WHERE user_ref=$1", [purchase.user_ref]);
         if (purchase.stripe_checkout_id !== session.id || objectId(session.customer) !== customer?.stripe_customer_id ||
@@ -95,15 +97,16 @@ const plugin: VoxPlugin = {
         }
         await tx.query("UPDATE purchases SET status='paid',paid_at=now(),stripe_payment_intent=$2,stripe_subscription_id=$3 WHERE id=$1",
           [purchase.id, objectId(session.payment_intent), objectId(session.subscription)]);
-      });
+      }
     }
 
     async function syncSubscription(subscriptionId: string, paidInvoiceId?: string) {
-      // Read live Stripe state *inside* the customer lock, not an old event snapshot.
+      // The webhook lease, not a pooled connection, protects this live read.
       const initial = await client().subscriptions.retrieve(subscriptionId);
       const customerId = objectId(initial.customer);
-      await ctx.db.withTransaction(async (tx) => {
-        const { rows: [customer] } = await tx.query<{ user_ref: number }>("SELECT user_ref FROM customers WHERE stripe_customer_id=$1 FOR UPDATE", [customerId]);
+      {
+        const tx = ctx.db;
+        const { rows: [customer] } = await tx.query<{ user_ref: number }>("SELECT user_ref FROM customers WHERE stripe_customer_id=$1", [customerId]);
         if (!customer) return; // organization or another application
         const subscription = await client().subscriptions.retrieve(subscriptionId, { expand: ["latest_invoice"] });
         const price = subscription.items.data[0]?.price;
@@ -129,7 +132,7 @@ const plugin: VoxPlugin = {
           price_cents=EXCLUDED.price_cents,updated_at=now()`,
           [customer.user_ref, subscription.id, subscription.status, paidThrough, subscription.cancel_at_period_end, price?.unit_amount ?? 0]);
         await entitlements.setPremium(customer.user_ref, "payments", paidThrough);
-      });
+      }
     }
 
     ctx.http((r) => {
@@ -148,12 +151,13 @@ const plugin: VoxPlugin = {
       r.patch("/pricing", r.requireAuth, r.requireAdmin, route(async (req, res) => {
         const { verification: proof, ...input } = req.body ?? {};
         const values = pricingSchema.parse(input);
+        if ((await catalog()).id !== values.baseVersion) fail("Pricing changed; reload and verify the new proposal", 409);
+        const receipt = await verification.consume(req, "payments.pricing", values, proof as VerificationProof);
         const result = await ctx.db.withTransaction(async (tx) => {
           // Serializes publication of catalog versions; stale edits cannot overwrite.
           await tx.query("SELECT pg_advisory_xact_lock(7312459)");
           const current = await catalog(tx);
           if (current.id !== values.baseVersion) fail("Pricing changed; reload and verify the new proposal", 409);
-          const receipt = await verification.consume(req, "payments.pricing", values, proof as VerificationProof);
           const { rows: [row] } = await tx.query<CatalogRow>("INSERT INTO catalog_versions(premium_price_cents,topup_price_cents,topup_credits,admin_user_id,verification_receipt) VALUES($1,$2,$3,$4,$5) RETURNING *",
             [values.premiumPriceCents, values.topupPriceCents, values.topupCredits, req.session.userId, receipt]);
           return publicCatalog(row);
@@ -165,7 +169,9 @@ const plugin: VoxPlugin = {
         if (input.kind === "premium" && input.packs !== 1) fail("Premium quantity must be one");
         const stripeClient = client();
         const userId = req.session.userId!;
-        const customerId = await ctx.db.withTransaction((tx) => ensureCustomer(tx, userId));
+        const user = await identity.getUserById(userId);
+        if (!user?.isEnabled) fail("Account unavailable", 401);
+        const customerId = await ctx.db.withTransaction((tx) => ensureCustomer(tx, userId, user));
         // Commit the purchase snapshot before a remote call can create a payable
         // session. A timeout/retry must not pick up a newer catalog version.
         const purchase = await ctx.db.withTransaction(async (tx) => {
@@ -228,9 +234,15 @@ const plugin: VoxPlugin = {
         let event: Stripe.Event;
         try { event = client().webhooks.constructEvent(raw, signature, webhookSecret!); } catch { fail("Invalid webhook signature"); }
         await ctx.db.query("INSERT INTO webhook_events(id,event_type) VALUES($1,$2) ON CONFLICT(id) DO NOTHING", [event.id, event.type]);
-        await ctx.db.withTransaction(async (tx) => {
-          const { rows: [saved] } = await tx.query<{ status: string }>("SELECT status FROM webhook_events WHERE id=$1 FOR UPDATE", [event.id]);
-          if (saved.status === "processed") return;
+        const { rows: [already] } = await ctx.db.query<{ status: string }>("SELECT status FROM webhook_events WHERE id=$1", [event.id]);
+        if (already.status === "processed") { res.json({ received: true }); return; }
+        const lease = randomUUID();
+        const { rows: claimed } = await ctx.db.query("UPDATE webhook_lease SET token=$1,expires_at=now()+interval '5 minutes' WHERE id=1 AND (token IS NULL OR expires_at<=now()) RETURNING id", [lease]);
+        if (!claimed.length) fail("Another personal billing event is processing; please retry", 503);
+        try {
+          const tx = ctx.db;
+          const { rows: [saved] } = await tx.query<{ status: string }>("SELECT status FROM webhook_events WHERE id=$1", [event.id]);
+          if (saved.status === "processed") { res.json({ received: true }); return; }
           const object = event.data.object;
           if (event.type === "checkout.session.completed" || event.type === "checkout.session.async_payment_succeeded") {
             const checkout = object as Stripe.Checkout.Session;
@@ -256,7 +268,9 @@ const plugin: VoxPlugin = {
               [event.id, purchase?.user_ref ?? customer.user_ref, purchase?.id ?? null, event.type, intent]);
           }
           await tx.query("UPDATE webhook_events SET status='processed',processed_at=now() WHERE id=$1", [event.id]);
-        });
+        } finally {
+          await ctx.db.query("UPDATE webhook_lease SET token=NULL,expires_at=NULL WHERE id=1 AND token=$1", [lease]);
+        }
         res.json({ received: true });
       }));
     });

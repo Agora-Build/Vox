@@ -76,6 +76,11 @@ Every Core user receives exactly one 100-credit welcome deposit, including
 existing users, without replacing any balance. A resumable directory worker
 backfills users; first balance/statement/hold initializes immediately. Credits
 never expire. Granted credits are additive, not a balance setter.
+The unconditional welcome allocation is deliberate: it includes existing,
+unverified and disabled accounts, per the initial 100-credit product policy.
+Registration abuse/account farming is a risk; these are spend-only credits,
+not cash or a cash-return entitlement. Disablement still blocks authenticated
+spending. Email-gated eligibility or anti-abuse changes require a product decision.
 
 Grants accept `{batchId,userIds,credits,reason,verification}`. Recipients are
 deduplicated and sorted (max 500). Core consumes an approval for `credits.grant`

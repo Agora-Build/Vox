@@ -90,6 +90,9 @@ individual/bulk credit grants require an active admin session, `INIT_CODE`, and
 fresh TOTP or email verification bound to that exact change. Save recovery codes
 offline when shown; recovery resets the factor and invalidates remaining codes.
 Keep `INIT_CODE` after initialization and keep its value out of logs and source.
+Recovery hashes and in-flight challenges use `CREDENTIAL_ENCRYPTION_KEY` too;
+rotating that key invalidates recovery codes and pending approvals. Plan a secure
+authenticator reset/re-enrollment alongside any encryption-key rotation.
 
 For email codes, enable `notifications` and set `SMTP_HOST`, `SMTP_PORT` (587),
 `SMTP_SECURE` (false), `SMTP_USER`, `SMTP_PASSWORD`, `NOTIFICATIONS_FROM`, and

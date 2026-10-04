@@ -653,6 +653,8 @@ export interface EvalJobFilters {
 }
 
 const personalPremiumExists = sql<boolean>`EXISTS (SELECT 1 FROM personal_entitlements WHERE user_id=${users.id} AND expires_at>now())`;
+// Authenticated feature reads use the effective tier; bulk/admin directory reads
+// retain the stored tier so editing an account cannot persist a subscription.
 const effectiveUserFields = {
   ...getTableColumns(users),
   plan: sql<User["plan"]>`CASE WHEN ${users.plan}='basic' AND ${personalPremiumExists} THEN 'premium'::user_plan ELSE ${users.plan} END`,

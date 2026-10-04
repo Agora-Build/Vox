@@ -2,6 +2,8 @@ import type { RouteRegistrar, Handler } from "@vox/plugin-sdk";
 import type { CreditsService } from "./service";
 import type { PersonalCredits } from "./personal";
 import type { VerificationProof } from "@vox/plugin-sdk";
+import { z } from "zod";
+import { GrantError } from "./personal";
 
 function callerId(req: { session?: { userId?: number } }): number | null {
   return req.session?.userId ?? null;
@@ -32,8 +34,10 @@ export function registerCreditsRoutes(r: RouteRegistrar, service: CreditsService
       const result = await personal.grant(req, payload, verification as VerificationProof);
       res.status(201).json(result);
     } catch (err) {
-      const status = typeof (err as { status?: number }).status === "number" ? (err as { status: number }).status : 400;
-      res.status(status).json({ error: String(err instanceof Error ? err.message : err) });
+      const verificationStatus = (err as { status?: number }).status;
+      const status = verificationStatus === 401 || verificationStatus === 403 || verificationStatus === 429 ? verificationStatus : err instanceof GrantError || err instanceof z.ZodError ? 400 : 500;
+      if (status === 500) console.error("Protected credit grant failed");
+      res.status(status).json({ error: status === 500 ? "Credit grant failed; please retry" : err instanceof z.ZodError ? "Invalid grant request" : (err as Error).message });
     }
   };
 

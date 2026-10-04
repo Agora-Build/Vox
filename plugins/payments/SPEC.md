@@ -26,11 +26,19 @@ webhook_events and payment_reviews. Core owns effective personal entitlements;
 base roles and org benefits are never overwritten. Successful invoice payment
 extends entitlement to that paid period; failures do not invent unpaid access.
 Cancellation retains access through the paid period. Duplicate/out-of-order
-events are processed under locks; checkout credit deposits are idempotent across
+events are processed under a database-backed five-minute lease; checkout credit deposits are idempotent across
 crashes at the cross-plugin boundary. A return URL does not fulfill purchases.
+The lease spans replicas without holding a pool connection during remote reads
+or credit/entitlement service calls. Concurrent events receive 503 for Stripe to
+retry. API calls have a ten-second timeout and one retry; an abandoned lease is
+reclaimable after five minutes. Event completion is recorded after all effects,
+so a crash replays the same idempotent operations and repairs partial progress.
 
 Top-up refunds/disputes are recorded for explicit admin review, not silently
 removed from a wallet with in-flight escrow. The Usage page surfaces review state.
+Already-fulfilled credits remain spendable and Premium remains active through
+the paid period until an admin resolves the review. This is a deliberate manual
+review policy, not automatic refund/dispute reversal.
 No cash-out, recurring credits, automatic refund UI, annual plans, or sale of
 Principal/Fellow privileges in this release.
 

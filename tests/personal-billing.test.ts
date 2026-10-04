@@ -195,6 +195,18 @@ integration("personal billing and Core verification", () => {
     const otherAdmin = await signIn((await makeUser(true)).id);
     await otherAdmin.post("/api/plugins/credits/grants").send({ ...payload, verification }).expect(400);
   });
+  it("caps verification consumption across challenges for the same actor", async () => {
+    for (let index = 0; index < 4; index++) {
+      const payload = { batchId: crypto.randomUUID(), userIds: [memberId], credits: 10, reason: "Attempt budget" };
+      const verification = await approval(admin, "credits.grant", payload);
+      for (let attempt = 0; attempt < 5; attempt++) {
+        await admin.post("/api/plugins/credits/grants").send({ ...payload, verification: { ...verification, code: "wrong" } }).expect(403);
+      }
+    }
+    const payload = { batchId: crypto.randomUUID(), userIds: [memberId], credits: 10, reason: "Attempt budget" };
+    const verification = await approval(admin, "credits.grant", payload);
+    await admin.post("/api/plugins/credits/grants").send({ ...payload, verification }).expect(429);
+  });
   it("sends email through the plugin, stores only a keyed code hash, and prevents replay", async () => {
     const payload = { batchId: crypto.randomUUID(), userIds: [memberId], credits: 10, reason: "Email verified" };
     const verification = await approval(admin, "credits.grant", payload, "email");
@@ -255,6 +267,20 @@ integration("personal billing and Core verification", () => {
     expect((await member.get("/api/plugins/credits/balance")).body.credits).toBe(100);
     await member.post("/api/plugins/payments/checkout").send({ requestId: crypto.randomUUID(), kind: "topup", packs: 1, amount: 1 }).expect(400);
   });
+  it("handles a burst of webhooks without exhausting the pool and retries without double credit", async () => {
+    const purchaseId = crypto.randomUUID();
+    const catalog = (await member.get("/api/plugins/payments/usage")).body.catalog;
+    await member.post("/api/plugins/payments/checkout").send({ requestId: purchaseId, kind: "topup", packs: 1 }).expect(200);
+    const checkout = fake.sessions.get(`cs_${purchaseId}`);
+    checkout.payment_status = "paid"; checkout.payment_intent = `pi_${purchaseId}`;
+    const responses = await Promise.all(Array.from({ length: 24 }, () => webhook("checkout.session.completed", checkout)));
+    expect(responses.every((response) => [200, 503].includes(response.status))).toBe(true);
+    expect(responses.some((response) => response.status === 200)).toBe(true);
+    await webhook("checkout.session.completed", checkout).then((response) => expect(response.status).toBe(200));
+    expect((await member.get("/api/plugins/credits/balance")).body.credits).toBe(100 + catalog.topupCredits);
+    await core.pool.query("UPDATE plugin_payments.webhook_lease SET token=$1,expires_at=now()-interval '1 second' WHERE id=1", [crypto.randomUUID()]);
+    await webhook("checkout.session.completed", checkout).then((response) => expect(response.status).toBe(200));
+  });
   it("retains the original purchase snapshot after a remote timeout and catalog change", async () => {
     const purchaseId = crypto.randomUUID();
     const catalog = (await member.get("/api/plugins/payments/usage")).body.catalog;
@@ -297,6 +323,9 @@ integration("personal billing and Core verification", () => {
     const payload = { batchId: crypto.randomUUID(), userIds: [memberId, other.id], credits: 10, reason: "Partial batch" };
     const req = { session: { userId: adminId } } as any;
     await expect(personal.grant(req, payload, {} as any)).rejects.toThrow("Simulated failure");
+    const checkpoints = await core.pool.query("SELECT user_id,group_id FROM plugin_credits.grant_recipients WHERE batch_id=$1 ORDER BY user_id", [payload.batchId]);
+    expect(checkpoints.rows[0].group_id).not.toBeNull();
+    expect(checkpoints.rows[1].group_id).toBeNull();
     await personal.grant(req, payload, {} as any);
     expect(consume).toHaveBeenCalledTimes(1);
     expect(await personal.service.getBalance(memberId)).toBe(110);

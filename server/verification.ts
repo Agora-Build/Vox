@@ -45,8 +45,8 @@ async function actor(req: Request, admin = false) {
 async function reauthenticate(req: Request): Promise<void> {
   const user = await actor(req);
   if (user.passwordHash) {
-    if (typeof req.body.password !== "string" || !await verifyPassword(req.body.password, user.passwordHash)) reject("Current password required");
-  } else if (user.isAdmin && (typeof req.body.initCode !== "string" || !safeEqual(req.body.initCode, getInitCode()))) {
+    if (typeof req.body?.password !== "string" || !await verifyPassword(req.body.password, user.passwordHash)) reject("Current password required");
+  } else if (user.isAdmin && (typeof req.body?.initCode !== "string" || !safeEqual(req.body.initCode, getInitCode()))) {
     reject("Initialization code required for admin authenticator setup");
   }
 }
@@ -59,6 +59,9 @@ export const verificationService: VerificationService = {
     const client = await pool.connect();
     try {
       await client.query("BEGIN");
+      await client.query("SELECT id FROM users WHERE id=$1 FOR UPDATE", [user.id]);
+      const { rows: [budget] } = await client.query("SELECT COALESCE(sum(attempts),0)::int AS attempts FROM verification_challenges WHERE user_id=$1 AND created_at>now()-interval '15 minutes'", [user.id]);
+      if (budget.attempts >= 20) reject("Verification attempt limit reached; try again later", 429);
       const { rows: [challenge] } = await client.query(
         "SELECT * FROM verification_challenges WHERE id=$1 FOR UPDATE", [proof.challengeId]);
       if (!challenge || challenge.user_id !== user.id || challenge.session_hash !== secretHash(req.sessionID) ||
@@ -129,7 +132,7 @@ export function registerVerificationRoutes(app: Express): void {
       await client.query("BEGIN");
       const { rows: [factor] } = await client.query("SELECT * FROM user_verification_factors WHERE user_id=$1 FOR UPDATE", [user.id]);
       if (!factor || factor.enabled || new Date(factor.created_at).getTime() + 10 * 60_000 < Date.now()) reject("Start authenticator setup again");
-      const delta = typeof req.body.code === "string" && /^\d{6}$/.test(req.body.code) ? authenticator(decryptValue(factor.encrypted_secret)).validate({ token: req.body.code, window: 1 }) : null;
+      const delta = typeof req.body?.code === "string" && /^\d{6}$/.test(req.body.code) ? authenticator(decryptValue(factor.encrypted_secret)).validate({ token: req.body.code, window: 1 }) : null;
       if (delta === null) reject("Invalid authenticator code");
       const recoveryCodes = Array.from({ length: 8 }, () => crypto.randomBytes(12).toString("hex"));
       await client.query("UPDATE user_verification_factors SET enabled=true,last_step=$2,recovery_hashes=$3 WHERE user_id=$1",
@@ -146,7 +149,7 @@ export function registerVerificationRoutes(app: Express): void {
       await client.query("BEGIN");
       const { rows: [factor] } = await client.query("SELECT * FROM user_verification_factors WHERE user_id=$1 FOR UPDATE", [user.id]);
       const hashes: string[] = factor?.recovery_hashes ?? [];
-      if (!factor?.enabled || typeof req.body.recoveryCode !== "string" || !hashes.some((hash) => safeEqual(hash, secretHash(`${user.id}:${req.body.recoveryCode.trim()}`)))) reject("Invalid recovery code");
+      if (!factor?.enabled || typeof req.body?.recoveryCode !== "string" || !hashes.some((hash) => safeEqual(hash, secretHash(`${user.id}:${req.body.recoveryCode.trim()}`)))) reject("Invalid recovery code");
       await client.query("DELETE FROM user_verification_factors WHERE user_id=$1", [user.id]);
       await client.query("UPDATE verification_challenges SET consumed_at=now(),code_hash=NULL WHERE user_id=$1 AND consumed_at IS NULL", [user.id]);
       await client.query("INSERT INTO security_audit(id,user_id,action,payload_hash,method) VALUES($1,$2,'security.totp.recover',$3,'recovery')", [crypto.randomUUID(), user.id, payloadHash({})]);
@@ -156,7 +159,7 @@ export function registerVerificationRoutes(app: Express): void {
   }));
   app.post("/api/user/verification/challenges", route(async (req, res) => {
     const user = await actor(req, true);
-    const { action, payload, method } = req.body;
+    const { action, payload, method } = req.body ?? {};
     if (!ACTIONS.has(action) || !["totp", "email"].includes(method) || canonicalPayload(payload).length > 64_000) reject("Invalid verification request", 400);
     if (!isEncryptionConfigured()) reject("Server encryption must be configured first", 503);
     const id = crypto.randomUUID();

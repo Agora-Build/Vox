@@ -7313,7 +7313,9 @@ export async function registerRoutes(
         return res.status(401).json({ error: "Not authenticated" });
       }
 
-      if (user.plan !== "premium") {
+      // Personal Premium buys feature access, not the legacy cash-return right.
+      const [baseUser] = await storage.getUsersByIds([user.id]);
+      if (baseUser?.plan !== "premium") {
         return res.status(403).json({ error: "Only Premium users can request fund returns" });
       }
 
