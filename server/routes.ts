@@ -6383,8 +6383,7 @@ export async function registerRoutes(
           configObject[config.key] = config.value;
         }
       }
-      // CC-BY-4.0 credit line, present only when the loaded GeoIP data
-      // requires it (DB-IP Lite fallback) — rendered in the public footer.
+      // Required credit for the loaded GeoIP source, rendered in the footer.
       const geoipAttribution = getGeoipAttribution();
       if (geoipAttribution) configObject.geoipAttribution = geoipAttribution;
       // Read live provider state, not a constant — reflects reality even if a

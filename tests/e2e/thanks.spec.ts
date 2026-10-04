@@ -1,5 +1,6 @@
 import { test, expect } from "@playwright/test";
 import { acknowledgmentGroups } from "../../client/src/lib/acknowledgments";
+import { GEOIP_ATTRIBUTIONS } from "../../shared/geoip-attribution";
 
 test.describe("Thanks page", () => {
   test("is public and has page-specific search metadata", async ({ page }) => {
@@ -81,6 +82,32 @@ test.describe("Thanks page", () => {
     await expect(page).toHaveURL(/\/thanks#integrations$/);
     await expect(page.locator("#integrations")).toBeInViewport();
     await expect(page.locator("#integrations")).toContainText("active source depends on the deployment's configuration");
+  });
+
+  for (const source of ["dbip", "geolite2"] as const) {
+    test(`preserves the ${source} license notice in the footer, not the Thanks credits`, async ({ page }) => {
+      const credit = GEOIP_ATTRIBUTIONS[source];
+      await page.setViewportSize({ width: 375, height: 812 });
+      await page.route("**/api/config", (route) => route.fulfill({
+        json: { system_initialized: "true", geoipAttribution: credit.attribution },
+      }));
+      await page.goto("/thanks");
+      const notice = page.getByTestId("text-geoip-attribution");
+      await notice.scrollIntoViewIfNeeded();
+      await expect(notice).toContainText(`This product includes ${credit.dataName} data created by ${credit.provider}`);
+      const provider = notice.getByRole("link", { name: credit.provider, exact: true });
+      await expect(provider).toHaveAttribute("href", credit.url);
+      await expect(provider).toHaveAttribute("rel", "noopener noreferrer");
+      await expect(page.locator("main").getByRole("link", { name: /^MaxMind\b/ })).toHaveCount(0);
+      await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+    });
+  }
+
+  test("does not show a data-provider notice without an active source", async ({ page }) => {
+    await page.route("**/api/config", (route) => route.fulfill({ json: { system_initialized: "true" } }));
+    await page.goto("/thanks");
+    await expect(page.getByTestId("link-footer-thanks")).toBeVisible();
+    await expect(page.getByTestId("text-geoip-attribution")).toHaveCount(0);
   });
 
   for (const theme of ["dark", "light"]) {

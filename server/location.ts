@@ -5,7 +5,8 @@ import path from "path";
 import { storage } from "./storage";
 import { getMarketplace } from "./marketplace";
 import type { RegionCandidate } from "@shared/regions";
-import { refreshGeoipDatabases, DBIP_ATTRIBUTION, type GeoipSource } from "./geoip-refresh";
+import { refreshGeoipDatabases } from "./geoip-refresh";
+import { geoipAttributionForSource } from "@shared/geoip-attribution";
 
 export type { RegionCandidate };
 
@@ -226,8 +227,8 @@ let asnClassification: Record<string, "vpn" | "hosting"> = {};
 let asnClassificationLoaded = false;
 let warnedPrivateIp = false;
 // Derived from geoip-meta.json's `source` field (written by refreshGeoipDatabases)
-// whenever a DB is (re)loaded. DB-IP Lite is CC-BY-4.0 and needs public
-// credit; GeoLite2 does not. Exposed via /api/config → footer.
+// whenever a DB is (re)loaded. Both DB-IP Lite and GeoLite2 require public
+// attribution. Exposed via /api/config → footer.
 let geoipAttribution: string | null = null;
 
 export function getGeoipAttribution(): string | null {
@@ -244,10 +245,10 @@ async function tryOpen<T extends MmdbResponse>(names: string[], opener: (p: stri
 
 function refreshAttributionFromMeta(): void {
   try {
-    const meta = JSON.parse(readFileSync(path.join(GEOIP_DIR, "geoip-meta.json"), "utf8")) as { source?: GeoipSource };
-    geoipAttribution = meta.source === "dbip" ? DBIP_ATTRIBUTION : null;
+    const meta = JSON.parse(readFileSync(path.join(GEOIP_DIR, "geoip-meta.json"), "utf8")) as { source?: unknown };
+    geoipAttribution = geoipAttributionForSource(meta.source);
   } catch {
-    geoipAttribution = null; // no meta yet (fresh checkout, or DBs never refreshed) = no attribution required
+    geoipAttribution = null; // No source metadata is available yet.
   }
 }
 

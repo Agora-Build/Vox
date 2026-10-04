@@ -16,6 +16,7 @@ import {
 import { ThemeToggle } from "@/components/theme-toggle";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient, getQueryFn } from "@/lib/queryClient";
+import { GEOIP_ATTRIBUTIONS } from "@shared/geoip-attribution";
 
 interface AuthStatus {
   initialized: boolean;
@@ -50,7 +51,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
     queryFn: getQueryFn({ on401: "returnNull" }),
   });
 
-  // Public config: the GeoIP credit (when DB-IP Lite's CC-BY-4.0 requires it)
+  // Public config: the required credit for the loaded GeoIP data source
   // and the deployment's contact links. Each link is rendered ONLY when the
   // server sends it, so an unconfigured deployment shows no icon rather than
   // one that goes nowhere.
@@ -63,6 +64,10 @@ export default function Layout({ children }: { children: React.ReactNode }) {
     queryKey: ["/api/config"],
     staleTime: 60 * 60 * 1000,
   });
+
+  const geoipCredit = Object.values(GEOIP_ATTRIBUTIONS).find(
+    (credit) => credit.attribution === publicConfig?.geoipAttribution,
+  );
 
   const logoutMutation = useMutation({
     mutationFn: async () => {
@@ -370,12 +375,12 @@ export default function Layout({ children }: { children: React.ReactNode }) {
                 <Link href="/terms" className="hover:text-foreground transition-colors" data-testid="link-footer-terms">Terms</Link>
               </div>
             </div>
-            {/* CC-BY-4.0 credit — present only when the server loaded DB-IP data */}
-            {publicConfig?.geoipAttribution && (
+            {/* License credit for the configured data source, separate from Thanks. */}
+            {geoipCredit && (
               <p className="mt-2 text-center sm:text-left text-[11px] text-muted-foreground/70" data-testid="text-geoip-attribution">
-                This product includes IP geolocation data created by{" "}
-                <a href="https://db-ip.com" target="_blank" rel="noopener noreferrer" className="underline hover:text-foreground transition-colors">DB-IP</a>,
-                {" "}available from https://db-ip.com
+                This product includes {geoipCredit.dataName} data created by{" "}
+                <a href={geoipCredit.url} target="_blank" rel="noopener noreferrer" className="underline hover:text-foreground transition-colors">{geoipCredit.provider}</a>,
+                {" "}available from {geoipCredit.url}
               </p>
             )}
           </div>
