@@ -85,13 +85,16 @@ and `oauth`. Each owns a `plugin_<id>` PostgreSQL schema, checksum-frozen
 forward-only migrations, and a generic `/api/plugins/<id>/health` route.
 Plugin HTTP routes are namespaced; `/api/plugins` lists activated plugins.
 Migration failure aborts startup, never exposing a partial data move.
+A successful load logs exactly one line: `plugins loaded: <id, id, ...>`.
 
 Contracts use `services.require`/`services.optional`; Core provides services
 before any plugin activates. These include `vox.identity`, `vox.users`,
 `vox.verification`, `vox.encryption`, `vox.personal-entitlements`, and
 `vox.notification-data`. Plugins access Core users only through these seams;
 `vox.organizations` remains compile-time locked in
-`server/plugins/contract-checks.ts`. OAuth links live in
+`server/plugins/contract-checks.ts`. `vox.identity@1.0.0` finds/creates users,
+marks emails verified, and signs sessions in/out; its contract lives in
+`@vox/plugin-sdk` and Core implementation in `server/identity.ts`. OAuth links live in
 `plugin_oauth.identities`, copied from frozen Core provider-id columns by its
 0002 migration (fail-closed on a count mismatch). OAuth design:
 `designs/2026-09-27-oauth-plugin-design.md`.
@@ -275,7 +278,7 @@ Run `./scripts/dev-local-run.sh clean-test-data [--yes]` on a DB that has accumu
 - Common tasks: new table → schema.ts → migration → storage.ts → routes.ts; new page → `client/src/pages/` → route in `App.tsx` → `ConsoleLayout` + TanStack Query
 - Deployment guide for humans: `docs/DEPLOYMENT.md` (env vars, `VOX_PLUGINS`, Coolify, migrations, brokers, checklist) — keep it in step with this file.
 - **Notifications v1.1.0 — LIVE in prod (2026-10-04).** Coolify production uses `VOX_PLUGINS=credits,shared-agents,organizations,oauth,notifications`; all five plugin health checks passed. Preview settings were left unchanged. SMTP and notification LLM credentials are not configured; do not claim email/LLM readiness from a healthy plugin response. Personal `payments` remains disabled. Preserve this production plugin list when deploying UI-only changes.
-- **OAuth plugin — LIVE in prod (2026-09-27).** `VOX_PLUGINS=credits,shared-agents,organizations,oauth` on Coolify; GitHub sign-in on, Google off until a Google OAuth client exists (redirect URI `https://vox.agora.build/api/plugins/oauth/google/callback`, `GOOGLE_CALLBACK_URL` already set). Rollout rule for any **new plugin id**: add it to `VOX_PLUGINS` right before the release that contains it deploys — earlier, a restart of the old build crash-loops on the unknown id; later, the new build boots without the feature.
+- **OAuth rollout snapshot (2026-09-27, historical).** At rollout, Coolify used `VOX_PLUGINS=credits,shared-agents,organizations,oauth`; this is not the current plugin list. Preserve the notifications-inclusive production list above. GitHub sign-in was on, Google off until a Google OAuth client exists (redirect URI `https://vox.agora.build/api/plugins/oauth/google/callback`, `GOOGLE_CALLBACK_URL` already set). Rollout rule for any **new plugin id**: add it to `VOX_PLUGINS` right before the release that contains it deploys — earlier, a restart of the old build crash-loops on the unknown id; later, the new build boots without the feature.
 - **Plugin migrations are checksummed** (`_plugin_schema_versions`): editing one after it has run on a database stops that instance from starting (`checksum mismatch`). Add a new migration instead. Locally, if you edited one during development, reset that plugin: `DROP SCHEMA plugin_<id> CASCADE; DELETE FROM _plugin_schema_versions WHERE plugin_id = '<id>';`.
 
 ### Organizations Plugin — Release A Runbook
