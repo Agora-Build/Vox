@@ -105,7 +105,7 @@ const route = (handler: RequestHandler): RequestHandler => (req, res, next) => {
 };
 
 export function registerVerificationRoutes(app: Express): void {
-  const limiter = rateLimit({ windowMs: 15 * 60_000, limit: 20, standardHeaders: true, legacyHeaders: false });
+  const limiter = rateLimit({ windowMs: 15 * 60_000, limit: 20, standardHeaders: true, legacyHeaders: false, skip: (req) => req.method === "GET" });
   app.use("/api/user/security", requireAuth, limiter);
   app.use("/api/user/verification", requireAuth, limiter);
   app.get("/api/user/security", route(async (req, res) => {

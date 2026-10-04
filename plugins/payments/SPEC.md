@@ -26,13 +26,15 @@ webhook_events and payment_reviews. Core owns effective personal entitlements;
 base roles and org benefits are never overwritten. Successful invoice payment
 extends entitlement to that paid period; failures do not invent unpaid access.
 Cancellation retains access through the paid period. Duplicate/out-of-order
-events are processed under a database-backed five-minute lease; checkout credit deposits are idempotent across
+events are processed under per-customer database-backed five-minute leases; checkout credit deposits are idempotent across
 crashes at the cross-plugin boundary. A return URL does not fulfill purchases.
-The lease spans replicas without holding a pool connection during remote reads
-or credit/entitlement service calls. Concurrent events receive 503 for Stripe to
+Each lease spans replicas without holding a pool connection during remote reads
+or credit/entitlement service calls. Same-customer concurrent events receive 503 for Stripe to
 retry. API calls have a ten-second timeout and one retry; an abandoned lease is
 reclaimable after five minutes. Event completion is recorded after all effects,
 so a crash replays the same idempotent operations and repairs partial progress.
+Unrelated customers process concurrently. Short database operations renew and
+check lease ownership; a reclaimed lease cannot update payment state.
 
 Top-up refunds/disputes are recorded for explicit admin review, not silently
 removed from a wallet with in-flight escrow. The Usage page surfaces review state.
@@ -50,7 +52,7 @@ plan still work; purchases fail closed with 503, never simulate success.
 `STRIPE_SECRET_KEY`, `STRIPE_PERSONAL_WEBHOOK_SECRET` (separate endpoint secret),
 `APP_URL` (public HTTPS origin in production). Configure Stripe Customer Portal
 to permit cancellation and payment-method updates, not arbitrary product changes.
-Webhook subscriptions: checkout.session.completed, checkout.session.async_payment_succeeded,
+Webhook subscriptions: checkout.session.completed, checkout.session.async_payment_succeeded, checkout.session.async_payment_failed,
 checkout.session.expired, invoice.paid, invoice.payment_failed,
 customer.subscription.updated/deleted, charge.refunded and charge.dispute.created.
 Signature verification uses the Core-preserved raw request bytes. No raw events,

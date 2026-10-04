@@ -72,7 +72,7 @@ Register `https://<your-domain>/api/plugins/payments/webhook` in Stripe. It is
 separate from the existing organization endpoint `/api/webhooks/stripe` and
 does not use that endpoint's `STRIPE_WEBHOOK_SECRET`. Subscribe to:
 
-- `checkout.session.completed`, `checkout.session.async_payment_succeeded`, `checkout.session.expired`
+- `checkout.session.completed`, `checkout.session.async_payment_succeeded`, `checkout.session.async_payment_failed`, `checkout.session.expired`
 - `invoice.paid`, `invoice.payment_failed`
 - `customer.subscription.updated`, `customer.subscription.deleted`
 - `charge.refunded`, `charge.dispute.created`

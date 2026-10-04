@@ -68,7 +68,7 @@ const plugin: VoxPlugin = {
       return price.id;
     }
 
-    async function fulfillCheckout(sessionId: string) {
+    async function fulfillCheckout(sessionId: string, db: PluginDb) {
       const session = await client().checkout.sessions.retrieve(sessionId);
       if (session.payment_status !== "paid") return;
       const purchaseId = session.metadata?.vox_purchase;
@@ -76,7 +76,7 @@ const plugin: VoxPlugin = {
       // The durable webhook lease serializes effects without reserving a pool
       // connection across Stripe or cross-plugin service calls.
       {
-        const tx = ctx.db;
+        const tx = db;
         const { rows: [purchase] } = await tx.query<Purchase>("SELECT * FROM purchases WHERE id=$1", [purchaseId]);
         if (!purchase) throw new Error("Purchase not committed yet");
         const { rows: [customer] } = await tx.query<{ stripe_customer_id: string }>("SELECT stripe_customer_id FROM customers WHERE user_ref=$1", [purchase.user_ref]);
@@ -100,12 +100,12 @@ const plugin: VoxPlugin = {
       }
     }
 
-    async function syncSubscription(subscriptionId: string, paidInvoiceId?: string) {
+    async function syncSubscription(subscriptionId: string, db: PluginDb, paidInvoiceId?: string) {
       // The webhook lease, not a pooled connection, protects this live read.
       const initial = await client().subscriptions.retrieve(subscriptionId);
       const customerId = objectId(initial.customer);
       {
-        const tx = ctx.db;
+        const tx = db;
         const { rows: [customer] } = await tx.query<{ user_ref: number }>("SELECT user_ref FROM customers WHERE stripe_customer_id=$1", [customerId]);
         if (!customer) return; // organization or another application
         const subscription = await client().subscriptions.retrieve(subscriptionId, { expand: ["latest_invoice"] });
@@ -133,6 +133,18 @@ const plugin: VoxPlugin = {
           [customer.user_ref, subscription.id, subscription.status, paidThrough, subscription.cancel_at_period_end, price?.unit_amount ?? 0]);
         await entitlements.setPremium(customer.user_ref, "payments", paidThrough);
       }
+    }
+
+    function leasedDb(customerKey: string, token: string): PluginDb {
+      return {
+        schema: ctx.db.schema,
+        query: <T = unknown>(sql: string, params?: unknown[]) => ctx.db.withTransaction(async (tx) => {
+          const owned = await tx.query("UPDATE webhook_claims SET expires_at=now()+interval '5 minutes' WHERE customer_key=$1 AND token=$2 AND expires_at>now() RETURNING customer_key", [customerKey, token]);
+          if (!owned.rows.length) fail("Billing event lease expired; please retry", 503);
+          return tx.query<T>(sql, params);
+        }),
+        withTransaction: () => { throw new Error("Webhook effects use short individual transactions"); },
+      };
     }
 
     ctx.http((r) => {
@@ -237,30 +249,34 @@ const plugin: VoxPlugin = {
         const { rows: [already] } = await ctx.db.query<{ status: string }>("SELECT status FROM webhook_events WHERE id=$1", [event.id]);
         if (already.status === "processed") { res.json({ received: true }); return; }
         const lease = randomUUID();
-        const { rows: claimed } = await ctx.db.query("UPDATE webhook_lease SET token=$1,expires_at=now()+interval '5 minutes' WHERE id=1 AND (token IS NULL OR expires_at<=now()) RETURNING id", [lease]);
-        if (!claimed.length) fail("Another personal billing event is processing; please retry", 503);
+        const object = event.data.object;
+        const reviewCharge = event.type === "charge.dispute.created" ? await client().charges.retrieve(objectId((object as Stripe.Dispute).charge)!) : event.type === "charge.refunded" ? object as Stripe.Charge : null;
+        const customerKey = objectId(reviewCharge?.customer ?? (object as { customer?: unknown }).customer) ?? `event:${event.id}`;
+        const { rows: claimed } = await ctx.db.query(`INSERT INTO webhook_claims(customer_key,token,expires_at) VALUES($1,$2,now()+interval '5 minutes')
+          ON CONFLICT(customer_key) DO UPDATE SET token=EXCLUDED.token,expires_at=EXCLUDED.expires_at
+          WHERE webhook_claims.token IS NULL OR webhook_claims.expires_at<=now() RETURNING customer_key`, [customerKey, lease]);
+        if (!claimed.length) fail("Another billing event for this customer is processing; please retry", 503);
         try {
-          const tx = ctx.db;
+          const tx = leasedDb(customerKey, lease);
           const { rows: [saved] } = await tx.query<{ status: string }>("SELECT status FROM webhook_events WHERE id=$1", [event.id]);
           if (saved.status === "processed") { res.json({ received: true }); return; }
-          const object = event.data.object;
           if (event.type === "checkout.session.completed" || event.type === "checkout.session.async_payment_succeeded") {
             const checkout = object as Stripe.Checkout.Session;
-            await fulfillCheckout(checkout.id);
+            await fulfillCheckout(checkout.id, tx);
             const live = await client().checkout.sessions.retrieve(checkout.id);
             const sub = objectId(live.subscription);
-            if (sub) await syncSubscription(sub);
-          } else if (event.type === "checkout.session.expired") {
+            if (sub) await syncSubscription(sub, tx);
+          } else if (event.type === "checkout.session.expired" || event.type === "checkout.session.async_payment_failed") {
             const checkout = object as Stripe.Checkout.Session;
             await tx.query("UPDATE purchases SET status='expired' WHERE stripe_checkout_id=$1 AND status='pending'", [checkout.id]);
           } else if (event.type === "invoice.paid" || event.type === "invoice.payment_failed") {
             const invoice = object as Stripe.Invoice;
             const sub = objectId(invoice.parent?.subscription_details?.subscription);
-            if (sub) await syncSubscription(sub, event.type === "invoice.paid" ? invoice.id : undefined);
+            if (sub) await syncSubscription(sub, tx, event.type === "invoice.paid" ? invoice.id : undefined);
           } else if (event.type === "customer.subscription.updated" || event.type === "customer.subscription.deleted") {
-            await syncSubscription((object as Stripe.Subscription).id);
+            await syncSubscription((object as Stripe.Subscription).id, tx);
           } else if (event.type === "charge.refunded" || event.type === "charge.dispute.created") {
-            const charge = event.type === "charge.refunded" ? object as Stripe.Charge : await client().charges.retrieve(objectId((object as Stripe.Dispute).charge)!);
+            const charge = reviewCharge!;
             const intent = objectId(charge.payment_intent);
             const { rows: [purchase] } = await tx.query<Purchase>("UPDATE purchases SET status='review' WHERE stripe_payment_intent=$1 RETURNING *", [intent]);
             const { rows: [customer] } = await tx.query<{ user_ref: number }>("SELECT user_ref FROM customers WHERE stripe_customer_id=$1", [objectId(charge.customer)]);
@@ -269,7 +285,7 @@ const plugin: VoxPlugin = {
           }
           await tx.query("UPDATE webhook_events SET status='processed',processed_at=now() WHERE id=$1", [event.id]);
         } finally {
-          await ctx.db.query("UPDATE webhook_lease SET token=NULL,expires_at=NULL WHERE id=1 AND token=$1", [lease]);
+          await ctx.db.query("UPDATE webhook_claims SET token=NULL,expires_at=NULL WHERE customer_key=$1 AND token=$2", [customerKey, lease]);
         }
         res.json({ received: true });
       }));

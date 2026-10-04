@@ -77,6 +77,7 @@ const MIGRATIONS: Array<{ version: number; description: string; file: string | n
   { version: 51, description: "#129: brokers record whether Core can reach them", file: "0050_broker_reachability.sql" },
   { version: 52, description: "#232: index historical metric windows by creation time", file: "0051_metrics_time_index.sql", concurrentIndex: { name: "eval_results_created_at_idx", table: "eval_results", column: "created_at" } },
   { version: 53, description: "personal verification factors, approvals and entitlements", file: "0052_personal_security.sql" },
+  { version: 54, description: "timezone-aware personal security expiry", file: "0053_personal_security_timezones.sql" },
 ];
 
 const TARGET_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version;

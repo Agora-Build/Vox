@@ -278,8 +278,17 @@ integration("personal billing and Core verification", () => {
     expect(responses.some((response) => response.status === 200)).toBe(true);
     await webhook("checkout.session.completed", checkout).then((response) => expect(response.status).toBe(200));
     expect((await member.get("/api/plugins/credits/balance")).body.credits).toBe(100 + catalog.topupCredits);
-    await core.pool.query("UPDATE plugin_payments.webhook_lease SET token=$1,expires_at=now()-interval '1 second' WHERE id=1", [crypto.randomUUID()]);
+    await core.pool.query("UPDATE plugin_payments.webhook_claims SET token=$1,expires_at=now()-interval '1 second' WHERE customer_key=$2", [crypto.randomUUID(), checkout.customer]);
     await webhook("checkout.session.completed", checkout).then((response) => expect(response.status).toBe(200));
+  });
+  it("allows a new Premium checkout after a failed asynchronous payment", async () => {
+    const purchaseId = crypto.randomUUID();
+    await member.post("/api/plugins/payments/checkout").send({ requestId: purchaseId, kind: "premium", packs: 1 }).expect(200);
+    const checkout = fake.sessions.get(`cs_${purchaseId}`);
+    checkout.status = "complete";
+    await webhook("checkout.session.async_payment_failed", checkout).then((response) => expect(response.status).toBe(200));
+    expect((await core.pool.query("SELECT status FROM plugin_payments.purchases WHERE id=$1", [purchaseId])).rows[0].status).toBe("expired");
+    await member.post("/api/plugins/payments/checkout").send({ requestId: crypto.randomUUID(), kind: "premium", packs: 1 }).expect(200);
   });
   it("retains the original purchase snapshot after a remote timeout and catalog change", async () => {
     const purchaseId = crypto.randomUUID();
