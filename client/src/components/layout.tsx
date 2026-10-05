@@ -358,10 +358,10 @@ export default function Layout({ children }: { children: React.ReactNode }) {
         <div className="border-t border-border/40">
           <div className="container mx-auto px-4 py-4">
             <div className="flex flex-col sm:flex-row items-center justify-between gap-2 text-xs text-muted-foreground">
-              <div className="flex w-full flex-wrap items-center gap-x-4 gap-y-2 sm:w-auto" data-testid="footer-community-credit">
-                <p>© {new Date().getFullYear()} Vox. Built with 💖 by the community.</p>
-                <Link href="/thanks" className="hover:text-foreground transition-colors" data-testid="link-footer-thanks">Thanks</Link>
-              </div>
+              <p className="w-full sm:w-auto" data-testid="footer-community-credit">
+                © {new Date().getFullYear()} Vox. Built with 💖 by the community.{" "}
+                <Link href="/thanks" className="hover:text-foreground transition-colors" data-testid="link-footer-thanks">Thanks!</Link>
+              </p>
               <div className="flex flex-wrap items-center justify-center gap-x-4 gap-y-2">
                 {publicConfig?.githubUrl && (
                   <span className="inline-flex flex-wrap items-center justify-center gap-1.5">
