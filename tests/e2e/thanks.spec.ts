@@ -50,11 +50,23 @@ test.describe("Thanks page", () => {
     await page.setViewportSize({ width: 1280, height: 800 });
     await page.goto("/thanks");
     const credit = page.getByTestId("footer-community-credit");
-    await expect(credit).toContainText("Built with");
+    await expect(credit).toHaveText(/Vox\. Built with .+ by the community\. Thanks!$/);
     const thanks = credit.getByTestId("link-footer-thanks");
     await thanks.scrollIntoViewIfNeeded();
     await expect(thanks).toBeVisible();
+    await expect(thanks).toHaveText("Thanks!");
     const thanksBox = (await thanks.boundingBox())!;
+    const precedingText = await credit.evaluate((element) => {
+      const link = element.querySelector('[data-testid="link-footer-thanks"]')!;
+      const range = document.createRange();
+      range.selectNodeContents(element);
+      range.setEndBefore(link);
+      const rects = range.getClientRects();
+      const lastRect = rects[rects.length - 1];
+      return { right: lastRect.right, top: lastRect.top };
+    });
+    expect(Math.abs(thanksBox.y - precedingText.top)).toBeLessThan(1);
+    expect(Math.abs(thanksBox.x - precedingText.right)).toBeLessThan(1);
     const privacyBox = (await page.getByTestId("link-footer-privacy").boundingBox())!;
     expect(thanksBox.x).toBeLessThan(privacyBox.x);
   });
@@ -151,6 +163,7 @@ test.describe("Thanks page", () => {
       await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
       await page.getByTestId("link-footer-thanks").scrollIntoViewIfNeeded();
       await expect(page.getByTestId("link-footer-thanks")).toBeVisible();
+      await expect(page.getByTestId("footer-community-credit")).toHaveText(/Vox\. Built with .+ by the community\. Thanks!$/);
       await expect(page.locator("html")).toHaveClass(new RegExp(theme));
     });
   }
