@@ -1216,6 +1216,30 @@ export class DatabaseStorage {
     })[];
   }
 
+  /**
+   * The latest agent row of each non-revoked token — the one the claim route
+   * decides on — with what the claim rule reads. For the job page's "why it's
+   * waiting" (#247 review): getEvalAgentsWithTokenTier returns every agent row
+   * ever created, which a pending job page would otherwise scan every 20 s.
+   */
+  async getLatestAgentPerLiveToken(): Promise<Array<{
+    name: string; tokenId: number; state: string; lastSeenAt: Date | null; capabilities: unknown; metadata: unknown;
+    siteId: string | null; region: string | null; locationTrust: string;
+    tokenCreatedBy: number; tokenDispatchTier: string; tokenRegion: string | null; tokenSiteId: string | null; tokenIsRevoked: boolean;
+  }>> {
+    const r = await db.execute(sql`
+      SELECT DISTINCT ON (a.token_id)
+        a.name, a.token_id AS "tokenId", a.state, a.last_seen_at AS "lastSeenAt", a.capabilities, a.metadata,
+        a.site_id AS "siteId", a.region, a.location_trust AS "locationTrust",
+        t.created_by AS "tokenCreatedBy", t.dispatch_tier AS "tokenDispatchTier", t.region AS "tokenRegion",
+        t.site_id AS "tokenSiteId", t.is_revoked AS "tokenIsRevoked"
+      FROM eval_agents a JOIN eval_agent_tokens t ON t.id = a.token_id
+      WHERE t.is_revoked = false
+      ORDER BY a.token_id, a.created_at DESC
+    `);
+    return r.rows as never;
+  }
+
   async updateEvalAgent(id: number, data: Partial<EvalAgent>): Promise<EvalAgent | undefined> {
     const result = await db.update(evalAgents).set({ ...data, updatedAt: new Date() }).where(eq(evalAgents.id, id)).returning();
     return result[0];

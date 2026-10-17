@@ -72,6 +72,17 @@ describe("why a pending job waits (the claim rule over the agents online)", () =
     expect(explain(phoneJob(), [agent({ capabilities: ["phone"], tokenIsRevoked: true })]).canTake).toBe(0);
   });
 
+  it("a job sent to one agent (a marketplace dispatch) waits for that agent only", () => {
+    const sent = phoneJob({ targetTokenId: 77, targetRegion: null, targetTier: null, transport: "web" });
+    // Another agent online doesn't count; the one it was sent to is offline.
+    const w = explain(sent, [
+      agent({ tokenId: 41 }),
+      agent({ tokenId: 77, name: "Rented rig", tokenCreatedBy: 999, tokenDispatchTier: "shared", state: "offline", lastSeenAt: null }),
+    ]);
+    expect(w.message).toBe("Waiting for the one agent it was sent to: the one that matches is offline.");
+    expect(w.message).not.toContain("Rented rig");
+  });
+
   it("an analysis waits for an agent that can analyze", () => {
     const w = explain(phoneJob({ kind: "analyze", transport: "web", targetRegion: null, targetTier: null }), [agent()]);
     expect(w.message).toMatch(/^Waiting for an agent that can run analyses/);
@@ -161,6 +172,49 @@ d("the job page and the Agents page, over HTTP", () => {
     expect((await heartbeat(["phone", "analyze"])).ok).toBe(true);
     const rows = await (await fetch(`${BASE_URL}/api/eval-agents`, { headers: { Cookie: cookie } })).json() as Array<{ id: number; capabilities: string[] }>;
     expect(rows.find((a) => a.id === agentReg.id)?.capabilities).toEqual(["phone", "analyze"]);
+  });
+
+  it("only whoever can act on the job gets the explanation (#247 review)", async () => {
+    // My pending job on my PUBLIC eval flow: any signed-in user may view it,
+    // but only I (its runner and the flow's owner) or an admin may act on it.
+    const providerId = (await (await fetch(`${BASE_URL}/api/providers`)).json())[0].id;
+    const flow = await (await fetch(`${BASE_URL}/api/eval-flows`, {
+      method: "POST", headers: { "Content-Type": "application/json", Cookie: cookie },
+      body: JSON.stringify({ name: `waiting-public-${stamp}`, providerId, visibility: "public", config: { framework: "aeval" } }),
+    })).json();
+    expect(flow.id).toBeGreaterThan(0);
+    const job = await storage.createEvalJob({
+      evalFlowId: flow.id, triggerType: 2, evalSetId: null, createdBy: userId, targetTokenId: tokenId,
+      siteId: null, targetRegion: null, targetTier: null, config: {},
+      snapshot: { provider: null, evalFlow: null, evalSet: null, creatorPlan: "premium" } as any,
+      status: "pending", priority: 0, retryCount: 0, maxRetries: 3,
+    } as any);
+    jobIds.push(job.id);
+
+    const other = `waiting-other-${stamp}@example.com`;
+    const admin = ((await fetch(`${BASE_URL}/api/auth/login`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email: "admin@vox.local", password: "admin123456" }),
+    })).headers.get("set-cookie") || "").split(";")[0];
+    const { token } = await (await fetch(`${BASE_URL}/api/admin/invite`, {
+      method: "POST", headers: { "Content-Type": "application/json", Cookie: admin }, body: JSON.stringify({ email: other, plan: "premium" }),
+    })).json();
+    await fetch(`${BASE_URL}/api/auth/register`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username: `waitingother${stamp}`, password: "TestPass123!", token }),
+    });
+    const otherCookie = ((await fetch(`${BASE_URL}/api/auth/login`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email: other, password: "TestPass123!" }),
+    })).headers.get("set-cookie") || "").split(";")[0];
+    try {
+      const asOther = await fetch(`${BASE_URL}/api/eval-jobs/${job.id}/detail`, { headers: { Cookie: otherCookie } });
+      expect(asOther.status).toBe(200);               // may view it…
+      expect((await asOther.json()).waiting).toBeNull(); // …but gets no explanation
+      const asMe = await (await fetch(`${BASE_URL}/api/eval-jobs/${job.id}/detail`, { headers: { Cookie: cookie } })).json();
+      expect(asMe.waiting).toMatchObject({ message: expect.any(String) });
+    } finally {
+      await pool.query("DELETE FROM eval_jobs WHERE id = $1", [job.id]);
+      await pool.query("DELETE FROM eval_flows WHERE id = $1", [flow.id]);
+      await pool.query("DELETE FROM users WHERE email = $1", [other]);
+    }
   });
 
   it("a finished job carries no waiting explanation", async () => {

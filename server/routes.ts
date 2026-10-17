@@ -5814,7 +5814,7 @@ export async function registerRoutes(
   // page without the explanation, never fails it.
   const waitingFor = async (job: EvalJob, viewerId: number) => {
     try {
-      const rows = (await storage.getEvalAgentsWithTokenTier()).filter((a) => !a.tokenIsRevoked);
+      const rows = await storage.getLatestAgentPerLiveToken();
       const orgs = (await getOrganizations()?.getMemberships(Array.from(new Set(rows.map((a) => a.tokenCreatedBy))))) ?? new Map();
       const agents: WaitAgent[] = rows.map((a) => ({ ...a, tokenOwnerOrgId: orgs.get(a.tokenCreatedBy)?.organizationId ?? null }));
       return explainWaiting({
@@ -5826,7 +5826,8 @@ export async function registerRoutes(
         creatorOrgId: job.creatorOrgId ?? null,
         transport: job.transport ?? "web",
         kind: job.kind ?? "eval",
-        sessionInjected: (job.config as Record<string, unknown> | null)?.sessionInjection != null,
+        // As the claim SQL reads it: the key present at all, even as JSON null.
+        sessionInjected: job.config != null && typeof job.config === "object" && "sessionInjection" in (job.config as object),
         config: job.config,
       }, agents, viewerId, { onlineWithinMinutes: STALE_THRESHOLD_MINUTES });
     } catch (err) {
@@ -5891,7 +5892,11 @@ export async function registerRoutes(
         } : null,
         evalFlowName: job.snapshot?.evalFlow?.name ?? `EvalFlow #${job.evalFlowId ?? "?"}`,
         creatorName: creator?.username ?? null,
-        waiting: job.status === "pending" ? await waitingFor(job, user.id) : null,
+        // Only for whoever can act on the job — its runner, or whoever controls
+        // its eval flow (and admins): the explanation counts agents that may
+        // take it, including the creator's private ones, and quotes their aeval
+        // version. Anyone else who can view a public flow's job doesn't get it.
+        waiting: job.status === "pending" && canCancelJob(user, job, evalFlow) ? await waitingFor(job, user.id) : null,
       });
     } catch (error) {
       console.error("Error fetching job detail:", error);
