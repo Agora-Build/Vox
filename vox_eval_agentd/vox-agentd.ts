@@ -358,7 +358,9 @@ class VoxEvalAgentDaemon {
     if (!this.dialfProbeCache || now - this.dialfProbeCache.at > 30_000) {
       const probe = await probeDialf().catch(() => ({ ok: false, reason: 'probe threw' } as DialfProbe));
       if (probe.ok !== this.dialfProbeCache?.probe.ok) {
-        console.log(`[Daemon] DialF probe: ${probe.ok ? `ok (v${probe.version})` : `unavailable (${probe.reason})`}`);
+        // The socket path goes in this local log line only — not in the reason,
+        // which can reach a job's error (#250 review).
+        console.log(`[Daemon] DialF probe: ${probe.ok ? `ok (v${probe.version})` : `unavailable (${probe.reason}) [socket ${resolveDialfSocketPath()}]`}`);
       }
       this.dialfProbeCache = { at: now, probe };
     }

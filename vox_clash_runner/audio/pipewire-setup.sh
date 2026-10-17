@@ -64,6 +64,21 @@ if [ "$PULSE_READY" -ne 1 ]; then
     exit 1
 fi
 
+# WirePlumber links every stream to its sink. If it died (it exits when it
+# can't get an inotify instance, among other causes), sinks still get created
+# below and every check of them passes — but nothing is ever linked, so every
+# agent would hear and send pure silence. Fail loudly instead (#244).
+if ! kill -0 "$WIREPLUMBER_PID" 2>/dev/null; then
+    echo "[PipeWire] FATAL: WirePlumber exited during startup — no stream would ever be linked (silent agents)." >&2
+    if command -v python3 >/dev/null 2>&1 && ! python3 -c 'import ctypes,sys; sys.exit(0 if ctypes.CDLL("libc.so.6").inotify_init() >= 0 else 1)'; then
+        echo "[PipeWire] Cause: no inotify instance available to this user. Containers running as root share the" >&2
+        echo "[PipeWire]        HOST's root quota (fs.inotify.max_user_instances, $(cat /proc/sys/fs/inotify/max_user_instances 2>/dev/null || echo '?'))." >&2
+        echo "[PipeWire]        Find what holds it (stale containers, leaked browsers) or raise the limit on the host:" >&2
+        echo "[PipeWire]        sudo sysctl fs.inotify.max_user_instances=1024" >&2
+    fi
+    exit 1
+fi
+
 echo "[PipeWire] Creating virtual sinks (4-sink design)..."
 
 pactl load-module module-null-sink sink_name=Sink_A_Out sink_properties=device.description=AgentA_Output
