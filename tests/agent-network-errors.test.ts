@@ -54,6 +54,9 @@ describe("why a call to Vox failed, from real sockets", () => {
     expect(describeRequest("post", "https://vox.example/api/eval-agent/jobs/7/storage-config?leaseId=SECRET"))
       .toBe("POST https://vox.example/api/eval-agent/jobs/7/storage-config");
     expect(describeRequest(undefined, "https://vox.example/api/eval-agent/jobs")).toBe("GET https://vox.example/api/eval-agent/jobs");
+    // Nor credentials in the URL (#246 review).
+    expect(describeRequest("get", "https://ops:hunter2@vox.example:8443/api/eval-agent/jobs?leaseId=X"))
+      .toBe("GET https://vox.example:8443/api/eval-agent/jobs");
   });
 });
 

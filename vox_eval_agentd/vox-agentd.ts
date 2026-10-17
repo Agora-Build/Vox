@@ -368,6 +368,7 @@ class VoxEvalAgentDaemon {
 
       const response = await this.fetch('/api/eval-agent/register', {
         method: 'POST',
+        signal: AbortSignal.timeout(30_000), // never hang startup on a silent server
         body: JSON.stringify({ name: this.config.name, metadata, capabilities: await this.currentCapabilities() }),
       });
 
@@ -427,6 +428,9 @@ class VoxEvalAgentDaemon {
     try {
       const response = await this.fetch('/api/eval-agent/heartbeat', {
         method: 'POST',
+        // Bounded (#246 review): a Vox that accepts the connection but never
+        // answers would otherwise leave one pending request per interval.
+        signal: AbortSignal.timeout(15_000),
         body: JSON.stringify({
           agentId: this.agentId,
           leaseId: this.leaseId,
@@ -459,7 +463,8 @@ class VoxEvalAgentDaemon {
     if (!this.agentId) return [];
 
     try {
-      const response = await this.fetch(`/api/eval-agent/jobs`);
+      // Bounded, like the heartbeat: the poll fires every 10 s regardless.
+      const response = await this.fetch(`/api/eval-agent/jobs`, { signal: AbortSignal.timeout(15_000) });
       if (!response.ok) {
         this.noteJobPoll(`Vox answered ${await describeHttpFailure(response)}`);
         return [];
@@ -1729,25 +1734,22 @@ class VoxEvalAgentDaemon {
         const zipUrl = zipKey;
         console.log(`[Daemon] Uploaded artifacts.zip (${zipBody.length} bytes)`);
 
-        // Report to Vox
-        try {
-          const res = await this.fetch(`/api/eval-agent/jobs/${task.jobId}/artifacts`, {
-            method: 'POST',
-            body: JSON.stringify({ zipUrl, files: uploadedFiles, leaseId: this.leaseId }),
-            signal: AbortSignal.timeout(15000),
-          });
-          // It used to log "stored" whatever Vox answered.
-          if (res.ok) console.log(`[Daemon] Artifact URLs stored for job ${task.jobId}`);
-          else console.error(`[Daemon] Vox didn't store the artifact URLs for job ${task.jobId}: ${await describeHttpFailure(res)}`);
-        } catch (e) {
-          console.error(`[Daemon] Failed to report artifacts for job ${task.jobId}: ${e instanceof Error ? e.message : String(e)}`);
-        }
+        // Report to Vox. A refusal or a network failure throws into the
+        // retry path below (#246 review): the files are in S3, but until Vox
+        // has their keys the job page can't show them — so it isn't
+        // 'uploaded' yet, and the zip stays for the retry.
+        const res = await this.fetch(`/api/eval-agent/jobs/${task.jobId}/artifacts`, {
+          method: 'POST',
+          body: JSON.stringify({ zipUrl, files: uploadedFiles, leaseId: this.leaseId }),
+          signal: AbortSignal.timeout(15000),
+        });
+        if (!res.ok) throw new Error(`Vox didn't store the artifact URLs: ${await describeHttpFailure(res)}`);
+        console.log(`[Daemon] Artifact URLs stored for job ${task.jobId}`);
 
         // Clean up zip
         try { fs.unlinkSync(zipPath); } catch { /* ignore */ }
       }
 
-      // Mark as uploaded (even if the POST to Vox failed — files are in S3)
       await this.updateArtifactStatus(task.jobId, 'uploaded');
       console.log(`[Daemon] Artifact upload complete for job ${task.jobId} (${uploadedFiles.length} files)`);
     } catch (error: unknown) {

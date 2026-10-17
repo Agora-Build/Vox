@@ -6,8 +6,10 @@
 // request, the server, and the reason; for an HTTP error, the status and the
 // error text Vox sent back.
 //
-// This text goes to the agent's own log only (its operator's), so the full
-// detail — hostnames, addresses — is fine here.
+// The detail names the server the agent talks to — its configured Vox URL,
+// which its operator chose and which is public for a hosted Vox. A failure
+// inside a job (e.g. its session or REST step) also lands in that job's error,
+// seen by whoever ran it.
 
 /** The reason a fetch threw, from undici's `cause` when it has one. */
 export function describeFetchError(err: unknown): string {
@@ -44,9 +46,17 @@ export function describeFetchError(err: unknown): string {
   return e?.message ?? String(err);
 }
 
-/** "METHOD scheme://host/path" for a log line — never the query (it carries the lease id). */
+/**
+ * "METHOD scheme://host/path" for a log line — never the query (it carries the
+ * lease id), nor any user:password in the URL.
+ */
 export function describeRequest(method: string | undefined, url: string): string {
-  return `${(method ?? 'GET').toUpperCase()} ${url.split('?')[0]}`;
+  let shown = url.split('?')[0];
+  try {
+    const u = new URL(url);
+    shown = `${u.origin}${u.pathname}`;
+  } catch { /* not a full URL: the query is already cut */ }
+  return `${(method ?? 'GET').toUpperCase()} ${shown}`;
 }
 
 /**
