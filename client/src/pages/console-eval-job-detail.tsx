@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { ArrowLeft, Download, CheckCircle, XCircle, Loader2, Clock, RefreshCw, FileText, AlertTriangle, Phone } from "lucide-react";
+import { Alert, AlertTitle, AlertDescription } from "@/components/ui/alert";
 import { Link } from "wouter";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -22,6 +23,8 @@ interface JobDetailResponse {
   result: EvalResult | null;
   evalFlowName: string;
   creatorName: string | null;
+  /** Pending only: why it's still waiting — the claim rule run over the agents online now. */
+  waiting?: { canTake: number; busy: number; message: string } | null;
 }
 
 const STATUS_CONFIG: Record<string, { variant: "default" | "destructive" | "secondary" | "outline"; icon: React.ElementType; label: string }> = {
@@ -194,6 +197,17 @@ export default function ConsoleEvalJobDetail({ jobId }: { jobId: number }) {
           )}
         </div>
       </div>
+
+      {/* Pending: why it's still waiting. An agent only ever sees the jobs it
+          may claim, so a job nobody online may take otherwise just sits here
+          while every agent looks healthy. */}
+      {job.status === "pending" && data.waiting && (
+        <Alert data-testid="job-waiting" className={data.waiting.canTake === 0 ? "border-amber-500" : undefined}>
+          <Clock className="h-4 w-4" />
+          <AlertTitle>{data.waiting.canTake === 0 ? "No online agent can take this job" : "Waiting for an agent"}</AlertTitle>
+          <AlertDescription>{data.waiting.message}</AlertDescription>
+        </Alert>
+      )}
 
       {/* Error */}
       {job.error && (

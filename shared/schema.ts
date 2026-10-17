@@ -328,6 +328,9 @@ export const evalAgents = pgTable("eval_agents", {
   // The no-agent reaper's "an agent for this site was seen recently" lookup
   // (storage.failPendingJobsWithNoAgent). Migration 0043.
   siteLastSeenIdx: index("eval_agents_site_last_seen_idx").on(table.siteId, table.lastSeenAt),
+  // Each token's latest agent row (storage.getLatestAgentPerLiveToken — the
+  // pending job page's "why it's waiting"). Migration 0055.
+  tokenCreatedIdx: index("eval_agents_token_created_idx").on(table.tokenId, table.createdAt.desc()),
 }));
 
 export const insertEvalAgentSchema = createInsertSchema(evalAgents).omit({
