@@ -13,7 +13,7 @@ import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Switch } from "@/components/ui/switch";
 import { Pagination, PaginationContent, PaginationItem, PaginationLink, PaginationNext, PaginationPrevious, PaginationEllipsis } from "@/components/ui/pagination";
-import { ClipboardList, CheckCircle, XCircle, Loader2, Clock, CalendarClock, CalendarPlus, MousePointerClick, MoreHorizontal, Pause, Play, Pencil, Trash2, Zap, AlertTriangle, Phone } from "lucide-react";
+import { ClipboardList, CheckCircle, XCircle, Loader2, Clock, CalendarClock, CalendarPlus, MousePointerClick, MoreHorizontal, Pause, Play, Pencil, Trash2, Zap, AlertTriangle, Phone, Ban } from "lucide-react";
 import { useState } from "react";
 import { useToast } from "@/hooks/use-toast";
 import { useLocation, useSearch, Link } from "wouter";
@@ -76,6 +76,8 @@ const STATUS_CONFIG: Record<string, { variant: "default" | "destructive" | "seco
   failed: { variant: "destructive", icon: XCircle },
   running: { variant: "secondary", icon: Loader2 },
   pending: { variant: "outline", icon: Clock },
+  // A job cancelled while pending (stored as failed, cancelled_at set).
+  cancelled: { variant: "secondary", icon: Ban },
 };
 
 function ScheduledJobsBlock() {
@@ -596,7 +598,8 @@ function JobsTab() {
                 </TableHeader>
                 <TableBody>
                   {jobs.map((job) => {
-                    const cfg = STATUS_CONFIG[job.status] ?? STATUS_CONFIG.pending;
+                    const shownStatus = job.cancelledAt ? "cancelled" : job.status;
+                    const cfg = STATUS_CONFIG[shownStatus] ?? STATUS_CONFIG.pending;
                     const StatusIcon = cfg.icon;
                     return (
                       <TableRow key={job.id} data-testid={`row-job-${job.id}`}>
@@ -668,7 +671,7 @@ function JobsTab() {
                           <div className="flex flex-wrap items-center gap-1">
                             <Badge variant={cfg.variant} className="gap-1">
                               <StatusIcon className={`h-3 w-3${job.status === "running" ? " animate-spin" : ""}`} />
-                              {job.status}
+                              {shownStatus}
                             </Badge>
                             {job.responseRate != null && job.responseRate < 1 && (
                               <Badge

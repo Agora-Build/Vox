@@ -518,6 +518,12 @@ export const evalJobs = pgTable("eval_jobs", {
   // Core's call returned. Migration 0044.
   settlementDoneAt: timestamp("settlement_done_at"),
   error: text("error"),
+  // Set when someone cancelled the job while it was pending (status stays
+  // 'failed', so reapers, metrics and settlement treat it as before); the
+  // console shows it as Cancelled. A Core user id, compared as an opaque
+  // integer — no FK, like the other user-id columns since Release A. Migration 0056.
+  cancelledBy: integer("cancelled_by"),
+  cancelledAt: timestamp("cancelled_at"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 }, (table) => ({

@@ -7,6 +7,7 @@ import { parseNextCronRun } from "./cron";
 import { compareVersions } from "./aeval-seed";
 import { effectiveDispatchIdentity, agentListFilter, explainWaiting, type WaitAgent } from "./job-wait";
 import { STALE_THRESHOLD_MINUTES } from "./scheduler"; // the online window the reapers use
+import { settleEndedJobsNow } from "./settle-now";
 import { SECRET_NAME_PATTERN, collectSecretRefs, secretValueError } from "@shared/secrets";
 import { deriveScheduleStatus } from "@shared/schedule-status";
 import { regionSiteSequence } from "@shared/regions";
@@ -3649,18 +3650,7 @@ export async function registerRoutes(
       console.error(`[revoke] failing the jobs of revoked token ${tokenId} failed:`, err);
       return;
     }
-    const marketplace = getMarketplace();
-    for (const job of failed) {
-      const settlementContext = (job.snapshot as { settlementContext?: unknown } | null)?.settlementContext;
-      if (!marketplace || settlementContext === undefined) continue;
-      try {
-        await marketplace.settle({ jobId: job.id, status: job.status, hasResult: false, settlementContext });
-        await storage.markSettlementDone(job);
-      } catch (err) {
-        // The reap-settle sweep retries it.
-        console.error(`[marketplace] refunding job ${job.id} of revoked token ${tokenId} failed:`, err);
-      }
-    }
+    await settleEndedJobsNow(failed, `revoked-token ${tokenId}`);
   }
 
   app.post("/api/eval-agent-tokens/:id/revoke", requireAuth, async (req, res) => {
@@ -5897,6 +5887,10 @@ export async function registerRoutes(
         // take it, including the creator's private ones, and quotes their aeval
         // version. Anyone else who can view a public flow's job doesn't get it.
         waiting: job.status === "pending" && canCancelJob(user, job, evalFlow) ? await waitingFor(job, user.id) : null,
+        // Server-decided, so the page never offers a Cancel that would 403 (or
+        // 400 on a job that isn't pending).
+        canCancel: job.status === "pending" && canCancelJob(user, job, evalFlow),
+        cancelledByName: job.cancelledBy != null ? (await storage.getUser(job.cancelledBy))?.username ?? null : null,
       });
     } catch (error) {
       console.error("Error fetching job detail:", error);
@@ -5963,10 +5957,13 @@ export async function registerRoutes(
         return res.status(400).json({ error: "Can only cancel pending jobs" });
       }
 
-      const cancelledJob = await storage.cancelEvalJob(parseInt(id));
+      const cancelledJob = await storage.cancelEvalJob(parseInt(id), user.id);
       if (!cancelledJob) {
-        return res.status(400).json({ error: "Failed to cancel job" });
+        // Claimed (or finished) between the check above and now.
+        return res.status(400).json({ error: "Can only cancel pending jobs" });
       }
+      // A paid job's hold goes back to its renter now, not at the next sweep.
+      await settleEndedJobsNow([cancelledJob], "cancelled");
 
       res.json({ message: "Job cancelled", job: cancelledJob });
     } catch (error) {

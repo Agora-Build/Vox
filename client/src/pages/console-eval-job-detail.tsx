@@ -5,7 +5,8 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { ArrowLeft, Download, CheckCircle, XCircle, Loader2, Clock, RefreshCw, FileText, AlertTriangle, Phone } from "lucide-react";
+import { ArrowLeft, Download, CheckCircle, XCircle, Loader2, Clock, RefreshCw, FileText, AlertTriangle, Phone, Ban } from "lucide-react";
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { Alert, AlertTitle, AlertDescription } from "@/components/ui/alert";
 import { Link } from "wouter";
 import { useToast } from "@/hooks/use-toast";
@@ -25,6 +26,10 @@ interface JobDetailResponse {
   creatorName: string | null;
   /** Pending only: why it's still waiting — the claim rule run over the agents online now. */
   waiting?: { canTake: number; busy: number; message: string } | null;
+  /** Server-decided: pending, and this user may cancel it. */
+  canCancel?: boolean;
+  /** Who cancelled it, when it was cancelled while pending. */
+  cancelledByName?: string | null;
 }
 
 const STATUS_CONFIG: Record<string, { variant: "default" | "destructive" | "secondary" | "outline"; icon: React.ElementType; label: string }> = {
@@ -32,6 +37,9 @@ const STATUS_CONFIG: Record<string, { variant: "default" | "destructive" | "seco
   failed: { variant: "destructive", icon: XCircle, label: "Failed" },
   running: { variant: "secondary", icon: Loader2, label: "Running" },
   pending: { variant: "outline", icon: Clock, label: "Pending" },
+  // Not a status of its own: a job cancelled while pending is stored as
+  // failed with cancelled_at set, and shown as this instead of a red Failed.
+  cancelled: { variant: "secondary", icon: Ban, label: "Cancelled" },
 };
 
 export default function ConsoleEvalJobDetail({ jobId }: { jobId: number }) {
@@ -49,6 +57,26 @@ export default function ConsoleEvalJobDetail({ jobId }: { jobId: number }) {
   });
 
   const [snapshotOpen, setSnapshotOpen] = useState(false);
+  const [cancelOpen, setCancelOpen] = useState(false);
+
+  const cancelMutation = useMutation({
+    mutationFn: async () => {
+      await apiRequest("DELETE", `/api/eval-jobs/${jobId}`);
+    },
+    onSuccess: () => {
+      setCancelOpen(false);
+      queryClient.invalidateQueries({ queryKey: [`/api/eval-jobs/${jobId}/detail`] });
+      // Every eval-jobs list query (filters live in the key).
+      queryClient.invalidateQueries({ predicate: (q) => typeof q.queryKey[0] === "string" && q.queryKey[0].startsWith("/api/eval-jobs") });
+      toast({ title: "Job cancelled" });
+    },
+    onError: (error: Error) => {
+      setCancelOpen(false);
+      // Most likely an agent claimed it a moment ago: refresh so the page shows that.
+      queryClient.invalidateQueries({ queryKey: [`/api/eval-jobs/${jobId}/detail`] });
+      toast({ title: "Couldn't cancel the job", description: error.message, variant: "destructive" });
+    },
+  });
 
   const reuploadMutation = useMutation({
     mutationFn: async () => {
@@ -85,7 +113,7 @@ export default function ConsoleEvalJobDetail({ jobId }: { jobId: number }) {
   }
 
   const { job, result, evalFlowName, creatorName } = data;
-  const statusCfg = STATUS_CONFIG[job.status] ?? STATUS_CONFIG.pending;
+  const statusCfg = job.cancelledAt ? STATUS_CONFIG.cancelled : (STATUS_CONFIG[job.status] ?? STATUS_CONFIG.pending);
   const StatusIcon = statusCfg.icon;
 
   // Provenance from the job's immutable snapshot — correct even after the
@@ -159,6 +187,11 @@ export default function ConsoleEvalJobDetail({ jobId }: { jobId: number }) {
           </div>
         </div>
         <div className="flex items-center gap-2">
+          {job.status === "pending" && data.canCancel && (
+            <Button variant="outline" className="gap-2" onClick={() => setCancelOpen(true)} data-testid="button-cancel-job">
+              <Ban className="h-4 w-4" /> Cancel job
+            </Button>
+          )}
           {snap && (
             <Button variant="outline" className="gap-2" onClick={() => setSnapshotOpen(true)} data-testid="button-view-snapshot">
               <FileText className="h-4 w-4" /> View Eval Flow &amp; eval set
@@ -198,6 +231,28 @@ export default function ConsoleEvalJobDetail({ jobId }: { jobId: number }) {
         </div>
       </div>
 
+      <AlertDialog open={cancelOpen} onOpenChange={setCancelOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Cancel job #{job.id}?</AlertDialogTitle>
+            <AlertDialogDescription>
+              It hasn't started, so nothing runs and no agent is charged; a paid job's held credits go back right away.
+              This can't be undone — run the Eval Flow again to queue a new job.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={cancelMutation.isPending}>Keep it</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={(e) => { e.preventDefault(); cancelMutation.mutate(); }}
+              disabled={cancelMutation.isPending}
+              data-testid="button-confirm-cancel-job"
+            >
+              {cancelMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : "Cancel job"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
       {/* Pending: why it's still waiting. An agent only ever sees the jobs it
           may claim, so a job nobody online may take otherwise just sits here
           while every agent looks healthy. */}
@@ -209,8 +264,16 @@ export default function ConsoleEvalJobDetail({ jobId }: { jobId: number }) {
         </Alert>
       )}
 
-      {/* Error */}
-      {job.error && (
+      {/* Cancelled (a cancellation, not an error) / Error */}
+      {job.cancelledAt ? (
+        <Card data-testid="job-cancelled">
+          <CardContent className="pt-6">
+            <p className="text-sm text-muted-foreground">
+              Cancelled{data.cancelledByName ? ` by ${data.cancelledByName}` : ""} · {formatSmartTimestamp(job.cancelledAt)}
+            </p>
+          </CardContent>
+        </Card>
+      ) : job.error && (
         <Card className="border-destructive/50">
           <CardContent className="pt-6">
             <p className="text-sm text-destructive font-mono">{job.error}</p>
