@@ -34,6 +34,7 @@ import { fileURLToPath } from 'url';
 import { fillJobPlaceholders, jobConfigVars, secretNeedles, unresolvedSecretsError, scrubSecretsFromArtifacts, toYaml, shortSecretsError, createRedactingLineLogger, type FilledJob, type JobParts } from './placeholders';
 import { redactValues } from '../shared/credentials';
 import { summarizeAevalFailure, reduceUrlsSafely, createBoundedCapture } from './aeval-output';
+import { describeFetchError, describeRequest, describeHttpFailure, createFailureLog, sendWithRetry } from './net-errors';
 import { StringDecoder } from 'string_decoder';
 import yaml from 'js-yaml';
 import { injectStorageSession } from './session-inject';
@@ -298,17 +299,34 @@ class VoxEvalAgentDaemon {
   // HTTP helpers
   // -------------------------------------------------------------------------
 
-  private async fetch(urlPath: string, options: RequestInit = {}): Promise<Response> {
+  private async fetch(urlPath: string, options: RequestInit & { timeoutMs?: number } = {}): Promise<Response> {
     const url = `${this.config.serverUrl}${urlPath}`;
-    return fetch(url, {
-      ...options,
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${this.config.token}`,
-        ...options.headers,
-      },
-    });
+    // Every call is bounded (#246 review): a Vox that accepts the connection
+    // but never answers — or sends error headers and drips the body — must not
+    // stall the agent. 60 s unless the caller sets its own signal or a longer
+    // timeoutMs for a genuinely long call.
+    const { timeoutMs, ...init } = options;
+    try {
+      return await fetch(url, {
+        ...init,
+        signal: init.signal ?? AbortSignal.timeout(timeoutMs ?? 60_000),
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${this.config.token}`,
+          ...init.headers,
+        },
+      });
+    } catch (err) {
+      // Every call to Vox goes through here, so every log line that quotes
+      // this error says which request, to which server, and why — not
+      // undici's bare "fetch failed".
+      throw new Error(`${describeRequest(options.method, url)} failed: ${describeFetchError(err)}`, { cause: err });
+    }
   }
+
+  // The 10 s job poll logs a failure once (and when its reason changes), then
+  // once on recovery — not six lines a minute through a Vox outage.
+  private readonly noteJobPoll = createFailureLog('Job polling');
 
   // -------------------------------------------------------------------------
   // Registration & heartbeat
@@ -356,12 +374,12 @@ class VoxEvalAgentDaemon {
 
       const response = await this.fetch('/api/eval-agent/register', {
         method: 'POST',
+        signal: AbortSignal.timeout(30_000), // never hang startup on a silent server
         body: JSON.stringify({ name: this.config.name, metadata, capabilities: await this.currentCapabilities() }),
       });
 
       if (!response.ok) {
-        const error = await response.text();
-        console.error(`[Daemon] Registration failed: ${response.status} - ${error}`);
+        console.error(`[Daemon] Registration refused by Vox: ${await describeHttpFailure(response)}`);
         return false;
       }
 
@@ -384,8 +402,13 @@ class VoxEvalAgentDaemon {
         if (resetRes.ok) {
           const { reset } = await resetRes.json();
           if (reset > 0) console.log(`[Daemon] Reset ${reset} stuck artifact upload(s) to failed`);
+        } else {
+          console.warn(`[Daemon] Couldn't reset stuck artifact uploads: ${await describeHttpFailure(resetRes)}`);
         }
-      } catch { /* non-fatal */ }
+      } catch (e) {
+        // Non-fatal, but say why (#246 review).
+        console.warn(`[Daemon] Couldn't reset stuck artifact uploads: ${e instanceof Error ? e.message : String(e)}`);
+      }
 
       return true;
     } catch (error: unknown) {
@@ -416,6 +439,9 @@ class VoxEvalAgentDaemon {
     try {
       const response = await this.fetch('/api/eval-agent/heartbeat', {
         method: 'POST',
+        // Bounded (#246 review): a Vox that accepts the connection but never
+        // answers would otherwise leave one pending request per interval.
+        signal: AbortSignal.timeout(15_000),
         body: JSON.stringify({
           agentId: this.agentId,
           leaseId: this.leaseId,
@@ -428,6 +454,8 @@ class VoxEvalAgentDaemon {
       await this.exitIfSuperseded(response);
       if (response.ok) {
         console.log(`[Daemon] Heartbeat sent (state: ${this.isRunningJob ? 'occupied' : 'idle'})`);
+      } else {
+        console.error(`[Daemon] Heartbeat rejected by Vox: ${await describeHttpFailure(response)}`);
       }
     } catch (error: unknown) {
       const msg = error instanceof Error ? error.message : String(error);
@@ -446,12 +474,17 @@ class VoxEvalAgentDaemon {
     if (!this.agentId) return [];
 
     try {
-      const response = await this.fetch(`/api/eval-agent/jobs`);
-      if (!response.ok) return [];
-      return await response.json();
+      // Bounded, like the heartbeat: the poll fires every 10 s regardless.
+      const response = await this.fetch(`/api/eval-agent/jobs`, { signal: AbortSignal.timeout(15_000) });
+      if (!response.ok) {
+        this.noteJobPoll(`Vox answered ${await describeHttpFailure(response)}`);
+        return [];
+      }
+      const jobs = await response.json();
+      this.noteJobPoll(null);
+      return jobs;
     } catch (error: unknown) {
-      const msg = error instanceof Error ? error.message : String(error);
-      console.error(`[Daemon] Error fetching jobs:`, msg);
+      this.noteJobPoll(error instanceof Error ? error.message : String(error));
       return [];
     }
   }
@@ -466,7 +499,7 @@ class VoxEvalAgentDaemon {
       await this.exitIfSuperseded(response);
       const outcome = claimOutcome(response.status);
       if (outcome !== 'claimed') {
-        console.error(`[Daemon] Failed to claim job ${jobId} (${response.status})`);
+        console.error(`[Daemon] Failed to claim job ${jobId}: ${await describeHttpFailure(response)}`);
         return outcome;
       }
 
@@ -496,8 +529,7 @@ class VoxEvalAgentDaemon {
         console.log(`[Daemon] Job ${jobId} completed successfully`);
         return true;
       } else {
-        const error = await response.text();
-        console.error(`[Daemon] Failed to complete job ${jobId}: ${response.status} - ${error}`);
+        console.error(`[Daemon] Failed to complete job ${jobId}: ${await describeHttpFailure(response)}`);
         return false;
       }
     } catch (error: unknown) {
@@ -520,8 +552,7 @@ class VoxEvalAgentDaemon {
         console.log(`[Daemon] Job ${jobId} marked as failed`);
         return true;
       } else {
-        const error = await response.text();
-        console.error(`[Daemon] Failed to report job failure ${jobId}: ${response.status} - ${error}`);
+        console.error(`[Daemon] Failed to report job failure ${jobId}: ${await describeHttpFailure(response)}`);
         return false;
       }
     } catch (error: unknown) {
@@ -539,11 +570,8 @@ class VoxEvalAgentDaemon {
     try {
       const response = await this.fetch(`/api/eval-agent/jobs/${jobId}/secrets?leaseId=${encodeURIComponent(this.leaseId ?? '')}`);
       if (!response.ok) {
-        if (response.status === 500) {
-          console.warn(`[Daemon] Server encryption not configured — skipping secrets`);
-          return {};
-        }
-        console.warn(`[Daemon] Failed to fetch secrets for job ${jobId}: ${response.status}`);
+        // Vox's own error says why (it never carries a secret value).
+        console.warn(`[Daemon] Failed to fetch secrets for job ${jobId}: ${await describeHttpFailure(response)}`);
         return {};
       }
       const secrets: Record<string, string> = await response.json();
@@ -1526,14 +1554,17 @@ class VoxEvalAgentDaemon {
   // -------------------------------------------------------------------------
 
   private async updateArtifactStatus(jobId: number, status: string): Promise<void> {
+    // Non-fatal, but say why it didn't land.
     try {
-      await fetch(`${this.config.serverUrl}/api/eval-agent/jobs/${jobId}/artifact-status`, {
+      const res = await this.fetch(`/api/eval-agent/jobs/${jobId}/artifact-status`, {
         method: 'PATCH',
-        headers: { 'Authorization': `Bearer ${this.config.token}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({ status, leaseId: this.leaseId }),
         signal: AbortSignal.timeout(10000),
       });
-    } catch { /* non-fatal */ }
+      if (!res.ok) console.warn(`[Daemon] Couldn't set artifact status '${status}' for job ${jobId}: ${await describeHttpFailure(res)}`);
+    } catch (e) {
+      console.warn(`[Daemon] Couldn't set artifact status '${status}' for job ${jobId}: ${e instanceof Error ? e.message : String(e)}`);
+    }
   }
 
   private queueUpload(task: UploadTask): void {
@@ -1549,11 +1580,12 @@ class VoxEvalAgentDaemon {
   private async getS3ConfigForJob(jobId: number): Promise<S3Config | null> {
     // Try per-user config from Vox server
     try {
-      const response = await fetch(`${this.config.serverUrl}/api/eval-agent/jobs/${jobId}/storage-config?leaseId=${encodeURIComponent(this.leaseId ?? '')}`, {
-        headers: { 'Authorization': `Bearer ${this.config.token}` },
+      const response = await this.fetch(`/api/eval-agent/jobs/${jobId}/storage-config?leaseId=${encodeURIComponent(this.leaseId ?? '')}`, {
         signal: AbortSignal.timeout(10000),
       });
-      if (response.ok) {
+      if (!response.ok) {
+        console.warn(`[Daemon] Per-user storage config for job ${jobId} unavailable, using system defaults: ${await describeHttpFailure(response)}`);
+      } else {
         const data = await response.json();
         if (data.source === 'user') {
           return {
@@ -1566,7 +1598,7 @@ class VoxEvalAgentDaemon {
         }
       }
     } catch (e) {
-      console.warn(`[Daemon] Failed to fetch per-user storage config for job ${jobId}`);
+      console.warn(`[Daemon] Failed to fetch per-user storage config for job ${jobId}, using system defaults: ${e instanceof Error ? e.message : String(e)}`);
     }
 
     // Fall back to system defaults
@@ -1701,39 +1733,40 @@ class VoxEvalAgentDaemon {
       }
 
       if (fs.existsSync(zipPath)) {
-        const zipBody = fs.readFileSync(zipPath);
-        const zipKey = `${prefix}/artifacts.zip`;
-        await client.send(new PutObjectCommand({
-          Bucket: s3Config.bucket,
-          Key: zipKey,
-          Body: zipBody,
-          ContentType: 'application/zip',
-        }));
-
-        const zipUrl = zipKey;
-        console.log(`[Daemon] Uploaded artifacts.zip (${zipBody.length} bytes)`);
-
-        // Report to Vox
+        let refused: string | null;
         try {
-          await fetch(`${this.config.serverUrl}/api/eval-agent/jobs/${task.jobId}/artifacts`, {
-            method: 'POST',
-            headers: {
-              'Authorization': `Bearer ${this.config.token}`,
-              'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({ zipUrl, files: uploadedFiles, leaseId: this.leaseId }),
-            signal: AbortSignal.timeout(15000),
-          });
-          console.log(`[Daemon] Artifact URLs stored for job ${task.jobId}`);
-        } catch (e) {
-          console.error(`[Daemon] Failed to report artifacts for job ${task.jobId}`);
-        }
+          const zipBody = fs.readFileSync(zipPath);
+          const zipKey = `${prefix}/artifacts.zip`;
+          await client.send(new PutObjectCommand({
+            Bucket: s3Config.bucket,
+            Key: zipKey,
+            Body: zipBody,
+            ContentType: 'application/zip',
+          }));
+          console.log(`[Daemon] Uploaded artifacts.zip (${zipBody.length} bytes)`);
 
-        // Clean up zip
-        try { fs.unlinkSync(zipPath); } catch { /* ignore */ }
+          // Report the keys to Vox. Only this POST is retried, and only on a
+          // network failure or 5xx (#246 review) — the files are already in S3,
+          // so re-running the whole upload would send them all again, and a 4xx
+          // (refused lease or job) won't change on a retry.
+          refused = await sendWithRetry(() => this.fetch(`/api/eval-agent/jobs/${task.jobId}/artifacts`, {
+            method: 'POST',
+            body: JSON.stringify({ zipUrl: zipKey, files: uploadedFiles, leaseId: this.leaseId }),
+            signal: AbortSignal.timeout(15000),
+          }));
+        } finally {
+          try { fs.unlinkSync(zipPath); } catch { /* ignore */ }
+        }
+        if (refused) {
+          // Not 'uploaded': Vox doesn't have the keys, so the job page couldn't show the files.
+          // Its files stay in S3 unreferenced: say where, for a manual cleanup.
+          console.error(`[Daemon] Vox didn't store the artifact URLs for job ${task.jobId}: ${refused}. The uploaded files remain at s3://${s3Config.bucket}/${prefix}/`);
+          await this.updateArtifactStatus(task.jobId, 'failed');
+          return;
+        }
+        console.log(`[Daemon] Artifact URLs stored for job ${task.jobId}`);
       }
 
-      // Mark as uploaded (even if the POST to Vox failed — files are in S3)
       await this.updateArtifactStatus(task.jobId, 'uploaded');
       console.log(`[Daemon] Artifact upload complete for job ${task.jobId} (${uploadedFiles.length} files)`);
     } catch (error: unknown) {
@@ -1891,6 +1924,7 @@ class VoxEvalAgentDaemon {
         stepIndex,
         variables: normalized ? { phoneNumber: normalized } : {},
       }),
+      timeoutMs: 180_000, // Core bounds the broker's call; this only backstops it
     });
     const body = await res.json().catch(() => ({}));
     if (!res.ok) {
@@ -2052,10 +2086,11 @@ class VoxEvalAgentDaemon {
     const out = await runAnalyzeUpload({
       workDir,
       download: async (dest) => {
-        const res = await this.fetch(`/api/eval-agent/jobs/${job.id}/upload?leaseId=${encodeURIComponent(this.leaseId ?? '')}`);
+        const res = await this.fetch(`/api/eval-agent/jobs/${job.id}/upload?leaseId=${encodeURIComponent(this.leaseId ?? '')}`, {
+          timeoutMs: 600_000, // a recording can be large
+        });
         if (!res.ok || !res.body) {
-          const detail = await res.text().catch(() => '');
-          throw new Error(`could not fetch the uploaded recording: ${res.status}${detail ? ` ${detail.slice(0, 200)}` : ''}`);
+          throw new Error(`could not fetch the uploaded recording: ${res.ok ? 'empty body' : await describeHttpFailure(res)}`);
         }
         // Core states what it recorded at upload; the file must match it.
         const sizeBytes = Number(res.headers.get('content-length'));
