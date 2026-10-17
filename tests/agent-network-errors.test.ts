@@ -61,13 +61,13 @@ describe("why a call to Vox failed, from real sockets", () => {
 });
 
 describe("an HTTP error says Vox's own reason", () => {
-  it("quotes { error } from Vox, and still lets the caller read the body", async () => {
+  it("quotes { error } from Vox, and releases the response (its body is consumed)", async () => {
     const port = await listen(http.createServer((_req, res) => {
       res.writeHead(403, { "content-type": "application/json" }).end(JSON.stringify({ error: "superseded lease" }));
     }));
     const res = await fetch(`http://127.0.0.1:${port}/`);
     expect(await describeHttpFailure(res)).toBe("HTTP 403 Forbidden: superseded lease");
-    expect(await res.json()).toEqual({ error: "superseded lease" }); // body not consumed
+    expect(res.bodyUsed).toBe(true); // read and released, not left holding the connection
   });
 
   it("a non-JSON body (a proxy's error page) is quoted, collapsed and capped", async () => {
@@ -130,6 +130,27 @@ describe("#246 review: the artifact report retries only what a retry can fix", (
     expect(await sendWithRetry(async () => { calls++; return answer(403); }, { delayMs: 0 })).toBe("HTTP 403: status 403");
     expect(calls).toBe(1);
   });
+  it("a timeout is not retried: the server may still be handling the first attempt", async () => {
+    let calls = 0;
+    const timedOut = Object.assign(new Error("POST https://vox.example/x failed: no answer in time (request timed out)"), {
+      cause: Object.assign(new Error("t"), { name: "TimeoutError" }),
+    });
+    const reason = await sendWithRetry(async () => { calls++; throw timedOut; }, { delayMs: 0 });
+    expect(calls).toBe(1);
+    expect(reason).toMatch(/not retried: the server may still be handling it/);
+  });
+
+  it("a body that drips slower than it fills 4 KB is cut off by the request's timeout, not waited on", async () => {
+    const port = await listen(http.createServer((_req, res) => {
+      res.writeHead(503, { "content-type": "text/plain" });
+      res.write("slow"); // a few bytes, then nothing — never 4 KB, never the end
+    }));
+    const res = await fetch(`http://127.0.0.1:${port}/`, { signal: AbortSignal.timeout(300) });
+    const started = Date.now();
+    expect(await describeHttpFailure(res)).toBe("HTTP 503 Service Unavailable: slow");
+    expect(Date.now() - started).toBeLessThan(2000);
+  });
+
   it("a network failure is retried until the attempts run out, and says so", async () => {
     let calls = 0;
     const reason = await sendWithRetry(async () => { calls++; throw new Error("POST https://vox.example/x failed: connection refused"); }, { delayMs: 0 });

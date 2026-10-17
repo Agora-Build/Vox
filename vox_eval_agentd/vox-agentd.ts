@@ -299,15 +299,21 @@ class VoxEvalAgentDaemon {
   // HTTP helpers
   // -------------------------------------------------------------------------
 
-  private async fetch(urlPath: string, options: RequestInit = {}): Promise<Response> {
+  private async fetch(urlPath: string, options: RequestInit & { timeoutMs?: number } = {}): Promise<Response> {
     const url = `${this.config.serverUrl}${urlPath}`;
+    // Every call is bounded (#246 review): a Vox that accepts the connection
+    // but never answers — or sends error headers and drips the body — must not
+    // stall the agent. 60 s unless the caller sets its own signal or a longer
+    // timeoutMs for a genuinely long call.
+    const { timeoutMs, ...init } = options;
     try {
       return await fetch(url, {
-        ...options,
+        ...init,
+        signal: init.signal ?? AbortSignal.timeout(timeoutMs ?? 60_000),
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${this.config.token}`,
-          ...options.headers,
+          ...init.headers,
         },
       });
     } catch (err) {
@@ -396,8 +402,13 @@ class VoxEvalAgentDaemon {
         if (resetRes.ok) {
           const { reset } = await resetRes.json();
           if (reset > 0) console.log(`[Daemon] Reset ${reset} stuck artifact upload(s) to failed`);
+        } else {
+          console.warn(`[Daemon] Couldn't reset stuck artifact uploads: ${await describeHttpFailure(resetRes)}`);
         }
-      } catch { /* non-fatal */ }
+      } catch (e) {
+        // Non-fatal, but say why (#246 review).
+        console.warn(`[Daemon] Couldn't reset stuck artifact uploads: ${e instanceof Error ? e.message : String(e)}`);
+      }
 
       return true;
     } catch (error: unknown) {
@@ -1912,6 +1923,7 @@ class VoxEvalAgentDaemon {
         stepIndex,
         variables: normalized ? { phoneNumber: normalized } : {},
       }),
+      timeoutMs: 180_000, // Core bounds the broker's call; this only backstops it
     });
     const body = await res.json().catch(() => ({}));
     if (!res.ok) {
@@ -2073,10 +2085,11 @@ class VoxEvalAgentDaemon {
     const out = await runAnalyzeUpload({
       workDir,
       download: async (dest) => {
-        const res = await this.fetch(`/api/eval-agent/jobs/${job.id}/upload?leaseId=${encodeURIComponent(this.leaseId ?? '')}`);
+        const res = await this.fetch(`/api/eval-agent/jobs/${job.id}/upload?leaseId=${encodeURIComponent(this.leaseId ?? '')}`, {
+          timeoutMs: 600_000, // a recording can be large
+        });
         if (!res.ok || !res.body) {
-          const detail = await res.text().catch(() => '');
-          throw new Error(`could not fetch the uploaded recording: ${res.status}${detail ? ` ${detail.slice(0, 200)}` : ''}`);
+          throw new Error(`could not fetch the uploaded recording: ${res.ok ? 'empty body' : await describeHttpFailure(res)}`);
         }
         // Core states what it recorded at upload; the file must match it.
         const sizeBytes = Number(res.headers.get('content-length'));

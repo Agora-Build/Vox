@@ -90,6 +90,9 @@ async function readBounded(res: Response, limit = BODY_READ_LIMIT): Promise<stri
       chunks.push(value);
       got += value.length;
     }
+  } catch {
+    // The request's timeout (or a dropped connection) ended the read: keep
+    // what arrived — a partial reason beats none.
   } finally {
     reader.cancel().catch(() => {});
   }
@@ -105,15 +108,16 @@ async function readBounded(res: Response, limit = BODY_READ_LIMIT): Promise<stri
 }
 
 /**
- * "HTTP 503 Service Unavailable: <Vox's error>" for a failed response. Reads a
- * clone — so the caller can still read the body — and only its first 4 KB
- * (#246 review: a huge or dripping error body must not hang the call). Vox
- * answers errors as { error: "…" }; anything else is quoted. Sanitized.
+ * "HTTP 503 Service Unavailable: <Vox's error>" for a failed response.
+ * CONSUMES the body — its first 4 KB, then cancels the rest so the connection
+ * is released (#246 review: a clone left the original branch holding it);
+ * every caller is done with the response by then. Vox answers errors as
+ * { error: "…" }; anything else is quoted. Sanitized.
  */
 export async function describeHttpFailure(res: Response): Promise<string> {
   let said = '';
   try {
-    const text = await readBounded(res.clone());
+    const text = await readBounded(res);
     try {
       const body = JSON.parse(text) as { error?: unknown };
       said = typeof body?.error === 'string' ? body.error : text;
@@ -126,8 +130,9 @@ export async function describeHttpFailure(res: Response): Promise<string> {
 }
 
 /**
- * Send a request, retrying only what can succeed on a retry: a network
- * failure or a 5xx. A 4xx is final (a refused lease or job won't change).
+ * Send a request, retrying only what can succeed on a retry: a failed
+ * connection or a 5xx. A 4xx is final (a refused lease or job won't change),
+ * and so is a timeout (see below).
  * Returns null on success, else why it failed.
  */
 export async function sendWithRetry(
@@ -144,6 +149,12 @@ export async function sendWithRetry(
       if (res.status < 500) return last;
     } catch (e) {
       last = e instanceof Error ? e.message : String(e);
+      // Not after a timeout (#246 review): the server may still be handling
+      // the first attempt, and a second one running alongside it could do
+      // the work twice (e.g. two result rows). A refused or dropped
+      // connection never got that far.
+      const cause = (e as { cause?: { name?: string } })?.cause;
+      if (cause?.name === 'TimeoutError' || (e as { name?: string })?.name === 'TimeoutError') return `${last} (not retried: the server may still be handling it)`;
     }
     if (i < attempts) await new Promise((r) => setTimeout(r, (opts.delayMs ?? 2000) * i));
   }
