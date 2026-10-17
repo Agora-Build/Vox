@@ -139,6 +139,94 @@ wait_for_idle() {
     esac
 }
 
+# Can this user drive Docker at all? Otherwise `docker ps` fails silently below
+# (its errors are discarded), the script reports "No running container found",
+# and only fails later at `docker pull` — say it plainly, before touching anything.
+if ! docker_err=$(docker info 2>&1 >/dev/null); then
+    if echo "$docker_err" | grep -qi "permission denied"; then
+        echo "Error: no permission to use Docker as user '$(id -un)'."
+        echo "       Add the user to the docker group (sudo usermod -aG docker $(id -un), then log out"
+        echo "       and back in), or run this with sudo — but if this agent uses DialF, run it as the"
+        echo "       user running dialfd, or set DIALF_SOCKET in .env (sudo can't see that user's socket)."
+    else
+        echo "Error: can't reach the Docker daemon: $(echo "$docker_err" | head -1)"
+    fi
+    exit 1
+fi
+
+# DialF's control socket on this host, or nothing. Honors DIALF_SOCKET, then
+# looks where dialfd puts it for the invoking user — including under sudo,
+# where `id -u` is 0 but dialfd runs as the user who ran sudo (SUDO_UID).
+detect_dialf_socket() {
+    if [ -n "${DIALF_SOCKET:-}" ]; then
+        [ -S "$DIALF_SOCKET" ] && echo "$DIALF_SOCKET"
+        return 0
+    fi
+    local uid cand
+    for uid in $(id -u) ${SUDO_UID:-}; do
+        for cand in "${XDG_RUNTIME_DIR:-/run/user/$uid}/dialfd.sock" "/run/user/$uid/dialfd.sock" "/tmp/dialfd-$uid.sock"; do
+            [ -S "$cand" ] && echo "$cand" && return 0
+        done
+    done
+    [ -S /run/dialf/dialfd.sock ] && echo /run/dialf/dialfd.sock
+    return 0
+}
+
+# When no socket was found but dialfd IS running: why — most often it runs as
+# another user, whose runtime dir this user can't read (no permission).
+# Prints nothing when dialfd isn't running (every host without DialF).
+dialf_not_found_reason() {
+    local owner me
+    owner=$(ps -o user= -C dialfd 2>/dev/null | head -1 | tr -d ' ' || true)
+    [ -z "$owner" ] && return 0
+    me=$(id -un)
+    if [ "$owner" != "$me" ]; then
+        echo "dialfd is running as '$owner', but this script runs as '$me' and has no permission to see"
+        echo "its socket. Run this as '$owner' (not with sudo), or set DIALF_SOCKET=/path/to/dialfd.sock in .env."
+    else
+        echo "dialfd is running, but its socket isn't in the usual places — set DIALF_SOCKET in .env to"
+        echo "its control_socket (see ~/.config/dialf/config.yaml)."
+    fi
+}
+
+# After starting the agent with DialF mounted: what its own DialF check says
+# (the view that matters — a mounted socket can still be unusable, e.g. no
+# permission inside the container). The daemon logs it once at start.
+report_dialf_check() {
+    # $2 (optional): only logs since this time — after a restart the container
+    # still has its pre-restart log, whose DialF line is the stale answer.
+    local name="$1" since="${2:-}" line="" i
+    local since_args=()
+    [ -n "$since" ] && since_args=(--since "$since")
+    for i in $(seq 1 "${DIALF_CHECK_TRIES:-10}"); do
+        line=$(docker logs ${since_args[@]+"${since_args[@]}"} "$name" 2>&1 | grep -m1 "DialF probe:" || true)
+        [ -n "$line" ] && break
+        sleep 2
+    done
+    if [ -z "$line" ]; then
+        echo "NOTE: the agent hasn't reported its DialF check yet — see: docker logs $name 2>&1 | grep 'DialF probe'"
+    elif echo "$line" | grep -q "DialF probe: ok"; then
+        echo "DialF check inside the container: OK — this agent takes phone jobs."
+    else
+        echo "WARNING: DialF check inside the container FAILED: ${line#*DialF probe: }"
+        echo "         This agent won't take phone jobs until it passes."
+    fi
+}
+
+# The DialF socket a running container was started with (its VOX_DIALF_SOCKET), or nothing.
+container_dialf_socket() {
+    # `|| true`: under set -euo pipefail a failed inspect (container gone
+    # mid-run) would otherwise abort the whole upgrade.
+    { docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$1" 2>/dev/null || true; } | sed -n 's/^VOX_DIALF_SOCKET=//p' | head -1
+}
+
+# Inode of a path on this host / inside a container ("" if unknown). A file
+# bind mount pins the inode at container start: if dialfd restarts and
+# recreates its socket at the same path, the container keeps the dead one —
+# same path, different inode.
+host_inode() { stat -c %i "$1" 2>/dev/null || true; }
+container_inode() { docker exec "$1" stat -c %i "$2" 2>/dev/null || true; }
+
 declare -A new_containers
 
 for name in "${!images[@]}"; do
@@ -161,10 +249,88 @@ for name in "${!images[@]}"; do
 
     latest_image_id=$(docker image inspect "$image" --format='{{.Id}}')
 
-    if [ -n "$running_id" ]; then
-        running_image_id=$(docker inspect --format='{{.Image}}' "$running_id")
+    # Phone vs Agent: is dialfd here, and did the running container have it?
+    host_dialf_socket=""
+    prev_dialf_socket=""
+    if [ "$name" = "vox-eval-agentd" ]; then
+        host_dialf_socket=$(detect_dialf_socket)
+        [ -n "$running_id" ] && prev_dialf_socket=$(container_dialf_socket "$running_id")
+    fi
+    # The running container lacks the DialF mount this host now offers (e.g.
+    # dialfd wasn't running at the last upgrade): recreate it even on the same
+    # image — a mount can't be added to an existing container, and without it
+    # the agent never reports the phone capability, so phone jobs wait forever.
+    dialf_missing_in_container=""
+    if [ -n "$host_dialf_socket" ] && [ "$prev_dialf_socket" != "$host_dialf_socket" ]; then
+        dialf_missing_in_container=1
+    fi
+    # Same path, but is it still dialfd's CURRENT socket inside the container?
+    # (dialfd restarted since the container started → the mount is a dead
+    # socket, the DialF check fails, and the agent stops reporting phone.)
+    dialf_stale_in_container=""
+    if [ -n "$host_dialf_socket" ] && [ "$prev_dialf_socket" = "$host_dialf_socket" ] && [ -n "$running_id" ]; then
+        h_ino=$(host_inode "$host_dialf_socket")
+        c_ino=$(container_inode "$running_id" "$host_dialf_socket")
+        if [ -n "$h_ino" ] && [ -n "$c_ino" ] && [ "$h_ino" != "$c_ino" ]; then
+            dialf_stale_in_container=1
+        fi
+    fi
 
-        if [ "$running_image_id" == "$latest_image_id" ]; then
+    # The old container had DialF and this host no longer offers it: ask
+    # BEFORE anything is stopped. Replacing it would silently drop the phone
+    # capability — the agent keeps heartbeating, but every phone job then waits
+    # for nobody (what happened to a phone host after an upgrade, 2026-10).
+    running_image_id=""
+    [ -n "$running_id" ] && running_image_id=$(docker inspect --format='{{.Image}}' "$running_id")
+    if [ -n "$prev_dialf_socket" ] && [ -z "$host_dialf_socket" ] && [ "$running_image_id" == "$latest_image_id" ]; then
+        # Not replacing (same image), but say it: the running container's socket
+        # is gone too, so it isn't taking phone jobs either.
+        echo "WARNING: the running container was started with DialF ($prev_dialf_socket), but that"
+        echo "         socket is gone — it can't take phone jobs. Start dialfd (with the same socket"
+        echo "         path, or set DIALF_SOCKET) and re-run this, or restart the container."
+    elif [ -n "$prev_dialf_socket" ] && [ -z "$host_dialf_socket" ]; then
+        echo "WARNING: the running container was started with DialF ($prev_dialf_socket),"
+        echo "         but no dialfd socket is found now — a new container WON'T take phone jobs."
+        reason=$(dialf_not_found_reason)
+        if [ -n "$reason" ]; then echo "$reason" | sed 's/^/         /'
+        else echo "         Is dialfd running? Start it, or set DIALF_SOCKET=/path/to/dialfd.sock in .env."; fi
+        read -p "         Replace it anyway, without DialF? (y/n): " choice
+        case "$choice" in
+            y|Y ) ;;
+            * ) echo "Leaving the running $name as it is. Start dialfd (or set DIALF_SOCKET), then re-run."
+                echo "-----------------------------------"
+                continue ;;
+        esac
+    fi
+
+    if [ -n "$running_id" ]; then
+        if [ "$running_image_id" == "$latest_image_id" ] && [ -n "$dialf_missing_in_container" ]; then
+            echo "Already on the latest image, but DialF is on this host ($host_dialf_socket) and the"
+            echo "running container wasn't started with it — recreating it so it can take phone jobs."
+            if ! wait_for_idle "$running_id"; then
+                echo "Skipping $name (user chose not to force stop)."
+                echo "-----------------------------------"
+                continue
+            fi
+            echo "Stopping ${running_id:0:12}..."
+            docker stop "$running_id" > /dev/null
+            docker rm "$running_id" > /dev/null
+        elif [ "$running_image_id" == "$latest_image_id" ] && [ -n "$dialf_stale_in_container" ]; then
+            # A restart re-mounts the host path, picking up dialfd's current
+            # socket; no new container needed.
+            echo "Already on the latest image, but its DialF socket is stale: dialfd recreated"
+            echo "$host_dialf_socket since the container started. Restarting it to pick up the new one."
+            if ! wait_for_idle "$running_id"; then
+                echo "Skipping $name (user chose not to force stop)."
+            else
+                restarted_at=$(date -u +%Y-%m-%dT%H:%M:%S)
+                docker restart "$running_id" > /dev/null
+                echo "Restarted ${running_id:0:12}."
+                report_dialf_check "$running_id" "$restarted_at"
+            fi
+            echo "-----------------------------------"
+            continue
+        elif [ "$running_image_id" == "$latest_image_id" ]; then
             echo "Already running the latest image. Skipping upgrade."
             # Still ensure it auto-starts after a host reboot, even though we
             # aren't recreating it (docker update applies without a restart).
@@ -260,12 +426,7 @@ for name in "${!images[@]}"; do
         # restart-proof setup, set `control_socket` in ~/.config/dialf/config.yaml
         # to a path INSIDE the exchange dir and set DIALF_SOCKET to match.
         # ------------------------------------------------------------------
-        dialf_socket="${DIALF_SOCKET:-}"
-        if [ -z "$dialf_socket" ]; then
-            for cand in "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/dialfd.sock" "/tmp/dialfd-$(id -u).sock" "/run/dialf/dialfd.sock"; do
-                [ -S "$cand" ] && dialf_socket="$cand" && break
-            done
-        fi
+        dialf_socket="$host_dialf_socket"
         if [ -n "$dialf_socket" ] && [ -S "$dialf_socket" ]; then
             dialf_detected=1
             exchange_dir="${DIALF_EXCHANGE_DIR:-$HOME/vox-phone-exchange}"
@@ -275,6 +436,22 @@ for name in "${!images[@]}"; do
             echo "DialF detected: socket $dialf_socket mounted; exchange dir $exchange_dir"
             echo "  -> recordings are routed into the exchange automatically (per-run"
             echo "     record_dir; requires dialfd >= 0.3.16 — run 'dialf --version' to check)."
+        elif [ -n "$prev_dialf_socket" ]; then
+            echo "WARNING: continuing WITHOUT DialF — this agent won't take phone jobs until dialfd is"
+            echo "         found and this is re-run."
+        elif [ -n "${DIALF_SOCKET:-}" ]; then
+            echo "WARNING: DIALF_SOCKET=$DIALF_SOCKET is set, but nothing is listening there — is dialfd"
+            echo "         running? This agent won't take phone jobs until it is; then re-run this."
+        else
+            reason=$(dialf_not_found_reason)
+            if [ -n "$reason" ]; then
+                echo "WARNING: DialF not detected — this agent won't take phone jobs."
+                echo "$reason" | sed 's/^/         /'
+            else
+                echo "DialF not detected: this agent won't take Phone vs Agent jobs (fine if it only runs"
+                echo "web evals). To enable them, start dialfd with a phone connected and re-run this, or set"
+                echo "DIALF_SOCKET=/path/to/dialfd.sock in .env."
+            fi
         fi
 
         if ! grep -q VirtualAudio /proc/asound/cards 2>/dev/null; then
@@ -301,6 +478,7 @@ for name in "${!images[@]}"; do
     short_id="${new_container_id:0:12}"
     new_containers[$name]=$short_id
     echo "Started $name: $short_id"
+    [ "$name" = "vox-eval-agentd" ] && [ -n "$dialf_detected" ] && report_dialf_check "$name"
 
     # Post-start audio check, from INSIDE the container — the view that
     # matters. The host having the card proves nothing about the container:

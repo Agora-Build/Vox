@@ -140,14 +140,35 @@ export interface DialfProbe {
 
 interface SimInfo { slot?: number; sub_id?: number; number?: string; is_default?: boolean }
 
+/**
+ * Why the dialfd socket couldn't be opened, in words an operator can act on —
+ * a permission problem above all (the socket belongs to the user running
+ * dialfd), which used to read as a bare "dialfd socket unreachable".
+ */
+export function dialfConnectFailure(socketPath: string, err: unknown): string {
+  const code = (err as { code?: string })?.code;
+  switch (code) {
+    case 'EACCES':
+    case 'EPERM':
+      return `no permission to open the dialfd socket ${socketPath} — it belongs to the user running dialfd; run the agent (or its container) with access to it`;
+    case 'ENOENT':
+      return `no dialfd socket at ${socketPath} — dialfd isn't running, or (in Docker) the socket isn't mounted: start dialfd, then re-run vox-upgrade.sh`;
+    case 'ECONNREFUSED':
+      return `dialfd isn't listening on ${socketPath} — it stopped or restarted (in Docker: restart this container to pick up its new socket)`;
+    case 'ENOTSOCK':
+      return `${socketPath} isn't a socket — check VOX_DIALF_SOCKET / DIALF_SOCKET`;
+  }
+  return `dialfd socket unreachable at ${socketPath} (${code ?? (err instanceof Error ? err.message : String(err))})`;
+}
+
 export async function probeDialf(
   socketPath: string = resolveDialfSocketPath(),
 ): Promise<DialfProbe> {
   const client = new DialfClient(socketPath, 5_000);
   try {
     await client.connect();
-  } catch {
-    return { ok: false, reason: 'dialfd socket unreachable' };
+  } catch (e) {
+    return { ok: false, reason: dialfConnectFailure(socketPath, e) };
   }
   try {
     const info = (await client.call('server.info')) as { version?: string; ten_vad?: string };
