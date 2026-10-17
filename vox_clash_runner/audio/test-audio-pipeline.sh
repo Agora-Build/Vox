@@ -47,7 +47,20 @@ echo ""
 
 # --- 1. Start PipeWire stack ---
 echo "[1/9] Starting PipeWire stack..."
-bash /app/audio/pipewire-setup.sh 2>/dev/null
+# Preflight (#244): containers running as root share the HOST's root inotify
+# quota. When it's exhausted, WirePlumber dies and every signal check below
+# reads silence (RMS=0) — say the cause instead of reporting 7 silent checks.
+if ! python3 -c 'import ctypes,sys; sys.exit(0 if ctypes.CDLL("libc.so.6").inotify_init() >= 0 else 1)'; then
+  echo "FATAL: no inotify instance available to $(id -un) in this container — the HOST's quota for this"
+  echo "       user (fs.inotify.max_user_instances = $(cat /proc/sys/fs/inotify/max_user_instances)) is used up,"
+  echo "       so PipeWire's session manager can't start and every audio check would read silence."
+  echo "       On the host: find what holds it (stale containers, leaked browsers), or raise the limit:"
+  echo "       sudo sysctl fs.inotify.max_user_instances=1024"
+  exit 1
+fi
+
+# stderr kept: a FATAL from the setup (e.g. WirePlumber exiting) must be seen.
+bash /app/audio/pipewire-setup.sh
 source /tmp/pipewire-env.sh
 
 if [ -S "$XDG_RUNTIME_DIR/bus" ]; then

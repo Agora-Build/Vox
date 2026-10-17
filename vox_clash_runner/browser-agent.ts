@@ -96,6 +96,23 @@ export async function launchBrowserAgent(
     },
   });
 
+  // Close the browser if anything after launch fails (page won't load, a
+  // setup step throws): the caller never gets it, so nothing else could — and
+  // a long-running runner piled up a Chromium per failed match (#244).
+  let page: Page;
+  try {
+    page = await openAgentSession(browser, config, secrets);
+  } catch (err) {
+    await browser.close().catch(() => { /* already gone */ });
+    throw err;
+  }
+
+  console.log(`[BrowserAgent] "${config.name}" setup complete — voice session should be active`);
+  return { browser, page, agentConfig: config };
+}
+
+/** Open the agent's page in `browser` and run its setup steps. */
+async function openAgentSession(browser: Browser, config: AgentConfig, secrets: Record<string, string>): Promise<Page> {
   const context = await browser.newContext({
     permissions: ["microphone"],
   });
@@ -170,8 +187,7 @@ export async function launchBrowserAgent(
     }
   }
 
-  console.log(`[BrowserAgent] "${config.name}" setup complete — voice session should be active`);
-  return { browser, page, agentConfig: config };
+  return page;
 }
 
 /**
