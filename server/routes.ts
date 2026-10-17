@@ -5,6 +5,8 @@ import { z } from "zod";
 import { storage, hashToken, generateSecureToken, generateEvalAgentToken, generateBrokerRegistrationToken, mergeEvalConfig, buildJobSnapshot, validateEvalFlowConfig, validateEvalSetConfig, encryptValue, decryptValue, isEncryptionConfigured, type MetricSourceRow, type RegionQueryScope, type MetricTier } from "./storage";
 import { parseNextCronRun } from "./cron";
 import { compareVersions } from "./aeval-seed";
+import { effectiveDispatchIdentity, agentListFilter, explainWaiting, type WaitAgent } from "./job-wait";
+import { STALE_THRESHOLD_MINUTES } from "./scheduler"; // the online window the reapers use
 import { SECRET_NAME_PATTERN, collectSecretRefs, secretValueError } from "@shared/secrets";
 import { deriveScheduleStatus } from "@shared/schedule-status";
 import { regionSiteSequence } from "@shared/regions";
@@ -4046,7 +4048,7 @@ export async function registerRoutes(
         lastJobAt: a.lastJobAt,
         createdAt: a.createdAt,
         dispatchTier: a.tokenDispatchTier,
-        capabilities: (a as { capabilities?: unknown }).capabilities ?? [],
+        capabilities: a.capabilities ?? [],
       })));
     } catch (error) {
       console.error("Error fetching eval agents:", error);
@@ -4116,16 +4118,8 @@ export async function registerRoutes(
     return Array.from(new Set(raw as string[]));
   };
 
-  // Zero-trust effective dispatch identity: public agents carry their
-  // configured (admin-trusted) token region; everything else carries the
-  // agent's DETECTED region — NULL for Unverified, which structurally fails
-  // every region-pooled match. (spec: dispatch gating)
-  const effectiveDispatchIdentity = (
-    token: { siteId: string | null; region: string | null; dispatchTier: string },
-    agent: { siteId: string | null; region: string | null; locationTrust: string } | undefined,
-  ) => token.dispatchTier === "public"
-    ? { siteId: token.siteId, region: token.region, locationTrust: "trusted" }
-    : { siteId: agent?.siteId ?? null, region: agent?.region ?? null, locationTrust: agent?.locationTrust ?? "unknown" };
+  // effectiveDispatchIdentity lives in ./job-wait (shared with the waiting
+  // explanation on the job page).
 
   // Authorize a job-scoped agent endpoint against the job's OWN assigned agent
   // (not the token's latest agent — token_id isn't unique, so duplicate rows
@@ -4385,21 +4379,7 @@ export async function registerRoutes(
       // jobs whose config requires a newer version than the agent supports.
       // Also gate session-injected jobs to daemons whose registration
       // metadata declares the sessionInjection capability.
-      const agentMeta = (latestAgent?.metadata as Record<string, unknown>) ?? {};
-      const agentVersion = agentMeta.frameworkVersion as string | undefined;
-      const supportsSessionInjection = agentMeta.sessionInjection === "1";
-
-      jobs = jobs.filter((job) => {
-        const cfg = (job.config as Record<string, unknown>) ?? {};
-        // never hand a session-injected job to a daemon that can't
-        // force storage-mode — it would run the target unauthenticated.
-        if (cfg.sessionInjection && !supportsSessionInjection) return false;
-        if (agentVersion) {
-          const jobVersion = cfg.frameworkVersion as string | undefined;
-          if (jobVersion && compareVersions(jobVersion, agentVersion) > 0) return false;
-        }
-        return true;
-      });
+      jobs = jobs.filter((job) => agentListFilter(job.config, latestAgent?.metadata) == null);
 
       res.json(jobs.map(forAgentJobList));
     } catch (error) {
@@ -5829,6 +5809,32 @@ export async function registerRoutes(
   });
 
   // Get job detail with eval results and artifacts
+  // Why a pending job is still pending (job page): the claim rule run over the
+  // agents online now — see ./job-wait. Best-effort: an error here leaves the
+  // page without the explanation, never fails it.
+  const waitingFor = async (job: EvalJob, viewerId: number) => {
+    try {
+      const rows = (await storage.getEvalAgentsWithTokenTier()).filter((a) => !a.tokenIsRevoked);
+      const orgs = (await getOrganizations()?.getMemberships(Array.from(new Set(rows.map((a) => a.tokenCreatedBy))))) ?? new Map();
+      const agents: WaitAgent[] = rows.map((a) => ({ ...a, tokenOwnerOrgId: orgs.get(a.tokenCreatedBy)?.organizationId ?? null }));
+      return explainWaiting({
+        targetTokenId: job.targetTokenId ?? null,
+        targetRegion: job.targetRegion ?? null,
+        targetTier: job.targetTier ?? null,
+        siteId: job.siteId ?? null,
+        createdBy: job.createdBy ?? null,
+        creatorOrgId: job.creatorOrgId ?? null,
+        transport: job.transport ?? "web",
+        kind: job.kind ?? "eval",
+        sessionInjected: (job.config as Record<string, unknown> | null)?.sessionInjection != null,
+        config: job.config,
+      }, agents, viewerId, { onlineWithinMinutes: STALE_THRESHOLD_MINUTES });
+    } catch (err) {
+      console.error(`Explaining why job ${job.id} waits failed:`, err instanceof Error ? err.message : err);
+      return null;
+    }
+  };
+
   app.get("/api/eval-jobs/:id/detail", requireAuth, async (req, res) => {
     try {
       const user = await getCurrentUser(req);
@@ -5885,6 +5891,7 @@ export async function registerRoutes(
         } : null,
         evalFlowName: job.snapshot?.evalFlow?.name ?? `EvalFlow #${job.evalFlowId ?? "?"}`,
         creatorName: creator?.username ?? null,
+        waiting: job.status === "pending" ? await waitingFor(job, user.id) : null,
       });
     } catch (error) {
       console.error("Error fetching job detail:", error);

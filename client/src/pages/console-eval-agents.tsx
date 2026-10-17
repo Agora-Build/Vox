@@ -11,7 +11,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-import { Server, MapPin, Activity, Clock, Eye, EyeOff, Plus, Key, Copy, Check, Ban, Lock } from "lucide-react";
+import { Server, MapPin, Activity, Clock, Eye, EyeOff, Plus, Key, Copy, Check, Ban, Lock, Phone, AudioLines } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 import { formatSmartTimestamp } from "@/lib/utils";
 import { useRegionLocationOptions } from "@/hooks/use-regions";
@@ -40,6 +40,8 @@ interface EvalAgent {
   createdAt: string;
   region?: string | null;
   locationTrust?: string;
+  /** What the agent last reported on its heartbeat: "phone" (its DialF check passes), "analyze" (aeval runs there). */
+  capabilities?: string[];
 }
 
 interface EvalAgentToken {
@@ -253,6 +255,7 @@ export default function ConsoleEvalAgents() {
                   <TableHead>Region</TableHead>
                   <TableHead>Tier</TableHead>
                   <TableHead>State</TableHead>
+                  <TableHead>Capabilities</TableHead>
                   <TableHead>Build</TableHead>
                   <TableHead>Last Seen</TableHead>
                   <TableHead>Registered</TableHead>
@@ -276,6 +279,22 @@ export default function ConsoleEvalAgents() {
                     </TableCell>
                     <TableCell>
                       {getStateBadge(agent.state)}
+                    </TableCell>
+                    <TableCell data-testid={`agent-capabilities-${agent.id}`}>
+                      {/* Phone jobs go only to an agent reporting "phone" — missing
+                          here is why a phone job would wait. */}
+                      {agent.capabilities?.length ? (
+                        <div className="flex items-center gap-1">
+                          {agent.capabilities.includes("phone") && (
+                            <Badge variant="outline" className="gap-1" title="Its DialF check passes: it can take phone jobs"><Phone className="h-3 w-3" /> Phone</Badge>
+                          )}
+                          {agent.capabilities.includes("analyze") && (
+                            <Badge variant="outline" className="gap-1" title="aeval runs on its host: it can analyze uploaded recordings"><AudioLines className="h-3 w-3" /> Analyze</Badge>
+                          )}
+                        </div>
+                      ) : (
+                        <span className="text-xs text-muted-foreground" title="It reports none: no phone jobs, no analyses">None</span>
+                      )}
                     </TableCell>
                     <TableCell className="text-muted-foreground text-xs font-mono">
                       {agent.metadata?.buildTag ? (

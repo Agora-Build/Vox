@@ -1191,6 +1191,9 @@ export class DatabaseStorage {
       lastSeenAt: evalAgents.lastSeenAt,
       lastJobAt: evalAgents.lastJobAt,
       metadata: evalAgents.metadata,
+      // Missing until now: GET /api/eval-agents reported capabilities: [] for
+      // every agent, phone-capable or not.
+      capabilities: evalAgents.capabilities,
       createdAt: evalAgents.createdAt,
       updatedAt: evalAgents.updatedAt,
       tokenCreatedBy: evalAgentTokens.createdBy,
