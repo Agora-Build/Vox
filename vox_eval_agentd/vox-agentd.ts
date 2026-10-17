@@ -1759,7 +1759,8 @@ class VoxEvalAgentDaemon {
         }
         if (refused) {
           // Not 'uploaded': Vox doesn't have the keys, so the job page couldn't show the files.
-          console.error(`[Daemon] Vox didn't store the artifact URLs for job ${task.jobId}: ${refused}`);
+          // Its files stay in S3 unreferenced: say where, for a manual cleanup.
+          console.error(`[Daemon] Vox didn't store the artifact URLs for job ${task.jobId}: ${refused}. The uploaded files remain at s3://${s3Config.bucket}/${prefix}/`);
           await this.updateArtifactStatus(task.jobId, 'failed');
           return;
         }
