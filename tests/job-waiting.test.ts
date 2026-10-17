@@ -83,10 +83,6 @@ describe("why a pending job waits (the claim rule over the agents online)", () =
     expect(w.message).not.toContain("Rented rig");
   });
 
-  it("an analysis waits for an agent that can analyze", () => {
-    const w = explain(phoneJob({ kind: "analyze", transport: "web", targetRegion: null, targetTier: null }), [agent()]);
-    expect(w.message).toMatch(/^Waiting for an agent that can run analyses/);
-  });
 });
 
 describe("the jobs-list filter both the route and the explanation use", () => {

@@ -79,6 +79,7 @@ const MIGRATIONS: Array<{ version: number; description: string; file: string | n
   { version: 53, description: "personal verification factors, approvals and entitlements", file: "0052_personal_security.sql" },
   { version: 54, description: "timezone-aware personal security expiry", file: "0053_personal_security_timezones.sql" },
   { version: 55, description: "bounded personal notification data queries", file: "0054_notification_data_indexes.sql" },
+  { version: 56, description: "each token's latest agent row (pending job page)", file: "0055_eval_agents_token_index.sql" },
 ];
 
 const TARGET_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version;

@@ -108,7 +108,9 @@ export function explainWaiting(
   const all = Array.from(latestPerToken.values()).filter((a) => !a.tokenIsRevoked);
   const online = all.filter((a) => a.state !== "offline" && seenAgo(a) <= onlineMs);
 
-  const claims = (a: WaitAgent, override: { phone?: boolean; analyze?: boolean } = {}) => {
+  // (Analyses never reach here: the job page can't show them — canViewJob
+  // refuses kind = 'analyze' — so there's no analyze-specific branch.)
+  const claims = (a: WaitAgent, override: { phone?: boolean } = {}) => {
     const eff = effectiveDispatchIdentity(
       { siteId: a.tokenSiteId, region: a.tokenRegion, dispatchTier: a.tokenDispatchTier },
       { siteId: a.siteId, region: a.region, locationTrust: a.locationTrust },
@@ -122,7 +124,7 @@ export function explainWaiting(
         region: eff.region ?? undefined,
         siteId: eff.siteId ?? undefined,
         phoneCapable: override.phone ?? hasCap(a.capabilities, "phone"),
-        analyzeCapable: override.analyze ?? hasCap(a.capabilities, "analyze"),
+        analyzeCapable: hasCap(a.capabilities, "analyze"),
       },
       { tokenOwnerOrgId: a.tokenOwnerOrgId, creatorOrgId: job.creatorOrgId },
     );
@@ -161,15 +163,6 @@ export function explainWaiting(
       return {
         canTake: 0, busy: 0,
         message: `Waiting for an agent with phone capability. ${agentsWord(butForPhone.length)} would take this phone job but ${butForPhone.length === 1 ? "isn't" : "aren't"} reporting phone — an agent reports it only while its DialF check passes (dialfd running and reachable, a phone connected); its log says why ("DialF probe: unavailable (…)").${yours(mine(butForPhone))}`,
-      };
-    }
-  }
-  if (job.kind === "analyze") {
-    const butForAnalyze = online.filter((a) => claims(a, { analyze: true }));
-    if (butForAnalyze.length > 0) {
-      return {
-        canTake: 0, busy: 0,
-        message: `Waiting for an agent that can run analyses (it needs aeval on its host). ${agentsWord(butForAnalyze.length)} would take it otherwise.${yours(mine(butForAnalyze))}`,
       };
     }
   }
