@@ -28,7 +28,7 @@ case "$1" in
   image) echo "\${LATEST_IMAGE:-sha-new}" ;;
   inspect)
     case "$*" in
-      *"{{.Image}}"*) echo "\${RUNNING_IMAGE:-sha-old}" ;;
+      *"{{.Image}}"*) [ -n "\${IMAGE_INSPECT_FAIL:-}" ] && exit 1; echo "\${RUNNING_IMAGE:-sha-old}" ;;
       *"Config.Env"*) [ -n "\${INSPECT_FAIL:-}" ] && exit 1; [ -n "\${PREV_SOCK:-}" ] && echo "VOX_DIALF_SOCKET=$PREV_SOCK"; echo "AGENT_TOKEN=x" ;;
       *"RestartPolicy"*) echo "unless-stopped" ;;
       *) echo "" ;;
@@ -40,7 +40,7 @@ case "$1" in
 esac
 `;
 const STUB_PS = `#!/bin/bash
-if [ "$*" = "-o user= -C dialfd" ]; then [ -n "\${PS_DIALF_OWNER:-}" ] && echo "$PS_DIALF_OWNER"; exit 0; fi
+if [ "$*" = "-o uid= -C dialfd" ]; then [ -n "\${PS_DIALF_UID:-}" ] && echo "  $PS_DIALF_UID"; exit 0; fi
 exec /usr/bin/ps "$@"
 `;
 
@@ -115,7 +115,8 @@ describe("hosts WITH DialF", () => {
     const r = upgrade({ RUNNING_ID: "abc", RUNNING_IMAGE: "sha-new", LATEST_IMAGE: "sha-new", PREV_SOCK: sock, DIALF_SOCKET: sock, CONT_INO: "1", PROBE_LINE: "[Daemon] DialF probe: ok (v0.3.16)" });
     expect(r.out).toMatch(/DialF socket is stale/);
     expect(r.actions).toEqual(["restart"]);
-    expect(r.calls.some((c) => /^docker logs --since \S+ abc$/.test(c))).toBe(true);
+    // Unix seconds, not a bare datetime (which Docker reads as LOCAL time).
+    expect(r.calls.some((c) => /^docker logs --since \d{10} abc$/.test(c))).toBe(true);
     expect(r.out).toMatch(/DialF check inside the container: OK/);
   });
 
@@ -149,8 +150,14 @@ describe("permission problems are reported, not guessed at", () => {
   });
 
   it("dialfd runs as another user, so its socket isn't visible: says so, naming both users", () => {
-    const r = upgrade({ RUNNING_ID: "abc", RUNNING_IMAGE: "sha-old", LATEST_IMAGE: "sha-new", PS_DIALF_OWNER: "phoneuser" });
-    expect(r.out).toMatch(/dialfd is running as 'phoneuser', but this script runs as '.+' and has no permission to see/);
+    const r = upgrade({ RUNNING_ID: "abc", RUNNING_IMAGE: "sha-old", LATEST_IMAGE: "sha-new", PS_DIALF_UID: "4321" });
+    expect(r.out).toMatch(/dialfd is running as '(uid 4321|[^']+)', but this script runs as '.+' and has no permission to see/);
+  });
+
+  it("dialfd running as THIS user (by UID — a long name is truncated by ps) is not called a permission problem", () => {
+    const r = upgrade({ RUNNING_ID: "abc", RUNNING_IMAGE: "sha-old", LATEST_IMAGE: "sha-new", PS_DIALF_UID: String(process.getuid?.() ?? 1000) });
+    expect(r.out).toMatch(/dialfd is running, but its socket isn't in the usual places/);
+    expect(r.out).not.toMatch(/no permission to see/);
   });
 
   it("DIALF_SOCKET set but nothing listening: names the setting, not generic advice", () => {
@@ -163,11 +170,29 @@ describe("permission problems are reported, not guessed at", () => {
     expect(r.status).toBe(0);
     expect(r.actions).toContain("run");
   });
+
+  it("…nor does a failing image inspect (#250 review)", () => {
+    const r = upgrade({ RUNNING_ID: "abc", LATEST_IMAGE: "sha-new", IMAGE_INSPECT_FAIL: "1" });
+    expect(r.calls.some((c) => c.includes("{{.Image}}"))).toBe(true);
+    // It carries on (an unknown image counts as "not the latest") and upgrades.
+    expect(r.status).toBe(0);
+    expect(r.actions).toContain("run");
+  });
+
+  it("the DialF prompt with no terminal (EOF) answers no: the running container is left alone, the run doesn't die", () => {
+    const r = upgrade({ RUNNING_ID: "abc", RUNNING_IMAGE: "sha-old", LATEST_IMAGE: "sha-new", PREV_SOCK: "/run/user/1001/dialfd.sock" }, { answers: "" });
+    expect(r.out).toMatch(/Leaving the running vox-eval-agentd as it is/);
+    expect(r.actions).toEqual([]);
+    expect(r.status).toBe(0);
+  });
 });
 
 describe("the agent's DialF check names why it can't open the socket", () => {
   it("no socket at the path", async () => {
-    expect((await probeDialf(path.join(dir, "never-existed.sock"))).reason).toMatch(/^no dialfd socket at .*never-existed\.sock — dialfd isn't running/);
+    const reason = (await probeDialf(path.join(dir, "never-existed.sock"))).reason;
+    expect(reason).toMatch(/^no dialfd socket at the configured path — dialfd isn't running/);
+    // No host path in the reason: it can reach a marketplace job's error (#250 review).
+    expect(reason).not.toContain(dir);
   });
 
   it("a socket this user has no permission to open", async () => {
@@ -177,7 +202,9 @@ describe("the agent's DialF check names why it can't open the socket", () => {
     await new Promise((r) => s.once("listening", r));
     fs.chmodSync(locked, 0o000);
     try {
-      expect((await probeDialf(locked)).reason).toMatch(/^no permission to open the dialfd socket .*locked\.sock/);
+      const reason = (await probeDialf(locked)).reason;
+      expect(reason).toMatch(/^no permission to open the dialfd socket — it belongs to the user running dialfd/);
+      expect(reason).not.toContain(dir);
     } finally {
       s.close();
     }
@@ -188,10 +215,10 @@ describe("the agent's DialF check names why it can't open the socket", () => {
     const stale = path.join(dir, "stale.sock");
     execFileSync("python3", ["-c", `import socket; socket.socket(socket.AF_UNIX).bind(${JSON.stringify(stale)})`]);
     expect(fs.statSync(stale).isSocket()).toBe(true);
-    expect((await probeDialf(stale)).reason).toMatch(/^dialfd isn't listening on .*stale\.sock — it stopped or restarted/);
+    expect((await probeDialf(stale)).reason).toMatch(/^dialfd isn't listening on its socket — it stopped or restarted/);
   });
 
-  it("anything else still names the path and the code", () => {
-    expect(dialfConnectFailure("/s", Object.assign(new Error("boom"), { code: "EWHAT" }))).toBe("dialfd socket unreachable at /s (EWHAT)");
+  it("anything else still names the code", () => {
+    expect(dialfConnectFailure(Object.assign(new Error("boom"), { code: "EWHAT" }))).toBe("dialfd socket unreachable (EWHAT)");
   });
 });

@@ -176,11 +176,15 @@ detect_dialf_socket() {
 # another user, whose runtime dir this user can't read (no permission).
 # Prints nothing when dialfd isn't running (every host without DialF).
 dialf_not_found_reason() {
-    local owner me
-    owner=$(ps -o user= -C dialfd 2>/dev/null | head -1 | tr -d ' ' || true)
-    [ -z "$owner" ] && return 0
+    local owner_uid owner me
+    # By UID: `ps -o user=` truncates names longer than 8 characters
+    # ("longuse+"), which would read as a different user.
+    owner_uid=$(ps -o uid= -C dialfd 2>/dev/null | head -1 | tr -d ' ' || true)
+    [ -z "$owner_uid" ] && return 0
+    owner=$( (getent passwd "$owner_uid" 2>/dev/null || true) | cut -d: -f1)
+    [ -z "$owner" ] && owner="uid $owner_uid"
     me=$(id -un)
-    if [ "$owner" != "$me" ]; then
+    if [ "$owner_uid" != "$(id -u)" ]; then
         echo "dialfd is running as '$owner', but this script runs as '$me' and has no permission to see"
         echo "its socket. Run this as '$owner' (not with sudo), or set DIALF_SOCKET=/path/to/dialfd.sock in .env."
     else
@@ -281,7 +285,7 @@ for name in "${!images[@]}"; do
     # capability — the agent keeps heartbeating, but every phone job then waits
     # for nobody (what happened to a phone host after an upgrade, 2026-10).
     running_image_id=""
-    [ -n "$running_id" ] && running_image_id=$(docker inspect --format='{{.Image}}' "$running_id")
+    [ -n "$running_id" ] && running_image_id=$(docker inspect --format='{{.Image}}' "$running_id" 2>/dev/null || true)
     if [ -n "$prev_dialf_socket" ] && [ -z "$host_dialf_socket" ] && [ "$running_image_id" == "$latest_image_id" ]; then
         # Not replacing (same image), but say it: the running container's socket
         # is gone too, so it isn't taking phone jobs either.
@@ -294,7 +298,9 @@ for name in "${!images[@]}"; do
         reason=$(dialf_not_found_reason)
         if [ -n "$reason" ]; then echo "$reason" | sed 's/^/         /'
         else echo "         Is dialfd running? Start it, or set DIALF_SOCKET=/path/to/dialfd.sock in .env."; fi
-        read -p "         Replace it anyway, without DialF? (y/n): " choice
+        # No terminal (cron, `ssh host ... < /dev/null`): EOF means "no" — the
+        # safe answer — instead of set -e ending the whole run here.
+        read -p "         Replace it anyway, without DialF? (y/n): " choice || choice=n
         case "$choice" in
             y|Y ) ;;
             * ) echo "Leaving the running $name as it is. Start dialfd (or set DIALF_SOCKET), then re-run."
@@ -323,7 +329,9 @@ for name in "${!images[@]}"; do
             if ! wait_for_idle "$running_id"; then
                 echo "Skipping $name (user chose not to force stop)."
             else
-                restarted_at=$(date -u +%Y-%m-%dT%H:%M:%S)
+                # Unix seconds: unambiguous. A bare UTC datetime would be read as
+                # the client's LOCAL time, shifting the window by the TZ offset.
+                restarted_at=$(date +%s)
                 docker restart "$running_id" > /dev/null
                 echo "Restarted ${running_id:0:12}."
                 report_dialf_check "$running_id" "$restarted_at"

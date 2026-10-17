@@ -144,21 +144,26 @@ interface SimInfo { slot?: number; sub_id?: number; number?: string; is_default?
  * Why the dialfd socket couldn't be opened, in words an operator can act on —
  * a permission problem above all (the socket belongs to the user running
  * dialfd), which used to read as a bare "dialfd socket unreachable".
+ *
+ * Without the path (#250 review): the reason also reaches Core as a job error
+ * ("phone capability unavailable: …"), which a marketplace job's creator can
+ * read, and a host path names a UID and layout. The agent's own log line adds
+ * the path (see the DialF probe log in vox-agentd.ts).
  */
-export function dialfConnectFailure(socketPath: string, err: unknown): string {
+export function dialfConnectFailure(err: unknown): string {
   const code = (err as { code?: string })?.code;
   switch (code) {
     case 'EACCES':
     case 'EPERM':
-      return `no permission to open the dialfd socket ${socketPath} — it belongs to the user running dialfd; run the agent (or its container) with access to it`;
+      return 'no permission to open the dialfd socket — it belongs to the user running dialfd; run the agent (or its container) with access to it';
     case 'ENOENT':
-      return `no dialfd socket at ${socketPath} — dialfd isn't running, or (in Docker) the socket isn't mounted: start dialfd, then re-run vox-upgrade.sh`;
+      return "no dialfd socket at the configured path — dialfd isn't running, or (in Docker) the socket isn't mounted: start dialfd, then re-run vox-upgrade.sh";
     case 'ECONNREFUSED':
-      return `dialfd isn't listening on ${socketPath} — it stopped or restarted (in Docker: restart this container to pick up its new socket)`;
+      return "dialfd isn't listening on its socket — it stopped or restarted (in Docker: restart this container to pick up its new socket)";
     case 'ENOTSOCK':
-      return `${socketPath} isn't a socket — check VOX_DIALF_SOCKET / DIALF_SOCKET`;
+      return "the configured dialfd path isn't a socket — check VOX_DIALF_SOCKET / DIALF_SOCKET";
   }
-  return `dialfd socket unreachable at ${socketPath} (${code ?? (err instanceof Error ? err.message : String(err))})`;
+  return `dialfd socket unreachable (${code ?? (err instanceof Error ? err.message : String(err))})`;
 }
 
 export async function probeDialf(
@@ -168,7 +173,7 @@ export async function probeDialf(
   try {
     await client.connect();
   } catch (e) {
-    return { ok: false, reason: dialfConnectFailure(socketPath, e) };
+    return { ok: false, reason: dialfConnectFailure(e) };
   }
   try {
     const info = (await client.call('server.info')) as { version?: string; ten_vad?: string };
