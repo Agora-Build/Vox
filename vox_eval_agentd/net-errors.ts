@@ -59,15 +59,61 @@ export function describeRequest(method: string | undefined, url: string): string
   return `${(method ?? 'GET').toUpperCase()} ${shown}`;
 }
 
+const BODY_READ_LIMIT = 4096;
+
+/**
+ * Text from Vox or a proxy, made safe for a log line: control characters —
+ * ANSI/OSC escape sequences included, which could rewrite a terminal or a log
+ * viewer — removed, whitespace collapsed, capped.
+ */
+export function sanitizeRemoteText(text: string, cap = 300): string {
+  return text
+    // eslint-disable-next-line no-control-regex
+    .replace(/\x1b(?:\[[0-?]*[ -\/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)?|[@-_])/g, '') // CSI / OSC / short escapes
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, cap);
+}
+
+/** At most `limit` bytes of a body, then the rest is cancelled — never buffered whole. */
+async function readBounded(res: Response, limit = BODY_READ_LIMIT): Promise<string> {
+  const reader = res.body?.getReader();
+  if (!reader) return '';
+  const chunks: Uint8Array[] = [];
+  let got = 0;
+  try {
+    while (got < limit) {
+      const { done, value } = await reader.read();
+      if (done || !value) break;
+      chunks.push(value);
+      got += value.length;
+    }
+  } finally {
+    reader.cancel().catch(() => {});
+  }
+  const all = new Uint8Array(Math.min(got, limit));
+  let at = 0;
+  for (const c of chunks) {
+    const part = c.subarray(0, Math.min(c.length, all.length - at));
+    all.set(part, at);
+    at += part.length;
+    if (at >= all.length) break;
+  }
+  return new TextDecoder().decode(all);
+}
+
 /**
  * "HTTP 503 Service Unavailable: <Vox's error>" for a failed response. Reads a
- * clone, so the caller can still read the body. Vox answers errors as
- * { error: "…" }; anything else is quoted, whitespace-collapsed and capped.
+ * clone — so the caller can still read the body — and only its first 4 KB
+ * (#246 review: a huge or dripping error body must not hang the call). Vox
+ * answers errors as { error: "…" }; anything else is quoted. Sanitized.
  */
 export async function describeHttpFailure(res: Response): Promise<string> {
   let said = '';
   try {
-    const text = await res.clone().text();
+    const text = await readBounded(res.clone());
     try {
       const body = JSON.parse(text) as { error?: unknown };
       said = typeof body?.error === 'string' ? body.error : text;
@@ -75,8 +121,33 @@ export async function describeHttpFailure(res: Response): Promise<string> {
       said = text;
     }
   } catch { /* body unreadable — the status alone */ }
-  said = said.replace(/\s+/g, ' ').trim().slice(0, 300);
-  return `HTTP ${res.status}${res.statusText ? ` ${res.statusText}` : ''}${said ? `: ${said}` : ''}`;
+  said = sanitizeRemoteText(said);
+  return `HTTP ${res.status}${res.statusText ? ` ${sanitizeRemoteText(res.statusText, 80)}` : ''}${said ? `: ${said}` : ''}`;
+}
+
+/**
+ * Send a request, retrying only what can succeed on a retry: a network
+ * failure or a 5xx. A 4xx is final (a refused lease or job won't change).
+ * Returns null on success, else why it failed.
+ */
+export async function sendWithRetry(
+  send: () => Promise<Response>,
+  opts: { attempts?: number; delayMs?: number } = {},
+): Promise<string | null> {
+  const attempts = opts.attempts ?? 3;
+  let last = '';
+  for (let i = 1; i <= attempts; i++) {
+    try {
+      const res = await send();
+      if (res.ok) return null;
+      last = await describeHttpFailure(res);
+      if (res.status < 500) return last;
+    } catch (e) {
+      last = e instanceof Error ? e.message : String(e);
+    }
+    if (i < attempts) await new Promise((r) => setTimeout(r, (opts.delayMs ?? 2000) * i));
+  }
+  return `${last} (after ${attempts} attempts)`;
 }
 
 /**

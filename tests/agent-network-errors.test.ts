@@ -2,7 +2,7 @@ import { describe, it, expect, afterAll } from "vitest";
 import http from "http";
 import net from "net";
 import type { AddressInfo } from "net";
-import { describeFetchError, describeRequest, describeHttpFailure, createFailureLog } from "../vox_eval_agentd/net-errors";
+import { describeFetchError, describeRequest, describeHttpFailure, createFailureLog, sanitizeRemoteText, sendWithRetry } from "../vox_eval_agentd/net-errors";
 
 // The eval agent logged "[Daemon] Error fetching jobs: fetch failed" — undici's
 // bare message, with the real reason (DNS, refused, reset, timeout, TLS) hidden
@@ -95,5 +95,45 @@ describe("the 10 s job poll logs an outage once, and its recovery", () => {
       "[Daemon] Job polling failing: Vox answered HTTP 503 Service Unavailable: starting up",
     ]);
     expect(infos).toEqual(["[Daemon] Job polling recovered after 6 failed attempts"]);
+  });
+});
+
+describe("#246 review: error bodies are read bounded and logged safely", () => {
+  it("an error body that never ends doesn't hang the call: the first 4 KB, then the rest is cancelled", async () => {
+    const port = await listen(http.createServer((_req, res) => {
+      res.writeHead(502, { "content-type": "text/plain" });
+      res.write("x".repeat(8192)); // …and never res.end()
+    }));
+    const res = await fetch(`http://127.0.0.1:${port}/`);
+    const started = Date.now();
+    const said = await describeHttpFailure(res);
+    expect(Date.now() - started).toBeLessThan(2000);
+    expect(said).toMatch(/^HTTP 502 Bad Gateway: x{300}$/);
+  });
+
+  it("strips terminal escape sequences and control characters a server could send", () => {
+    expect(sanitizeRemoteText("\x1b[2J\x1b[31mforged\x1b[0m \x1b]0;title\x07line\rcarriage\x00null"))
+      .toBe("forged linecarriagenull");
+  });
+});
+
+describe("#246 review: the artifact report retries only what a retry can fix", () => {
+  const answer = (status: number) => new Response(JSON.stringify({ error: `status ${status}` }), { status });
+  it("a 5xx is retried, and success ends it", async () => {
+    const seen: number[] = [503, 200];
+    let calls = 0;
+    expect(await sendWithRetry(async () => answer(seen[calls++]), { delayMs: 0 })).toBeNull();
+    expect(calls).toBe(2);
+  });
+  it("a 4xx is final — one attempt", async () => {
+    let calls = 0;
+    expect(await sendWithRetry(async () => { calls++; return answer(403); }, { delayMs: 0 })).toBe("HTTP 403: status 403");
+    expect(calls).toBe(1);
+  });
+  it("a network failure is retried until the attempts run out, and says so", async () => {
+    let calls = 0;
+    const reason = await sendWithRetry(async () => { calls++; throw new Error("POST https://vox.example/x failed: connection refused"); }, { delayMs: 0 });
+    expect(calls).toBe(3);
+    expect(reason).toBe("POST https://vox.example/x failed: connection refused (after 3 attempts)");
   });
 });

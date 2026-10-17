@@ -34,7 +34,7 @@ import { fileURLToPath } from 'url';
 import { fillJobPlaceholders, jobConfigVars, secretNeedles, unresolvedSecretsError, scrubSecretsFromArtifacts, toYaml, shortSecretsError, createRedactingLineLogger, type FilledJob, type JobParts } from './placeholders';
 import { redactValues } from '../shared/credentials';
 import { summarizeAevalFailure, reduceUrlsSafely, createBoundedCapture } from './aeval-output';
-import { describeFetchError, describeRequest, describeHttpFailure, createFailureLog } from './net-errors';
+import { describeFetchError, describeRequest, describeHttpFailure, createFailureLog, sendWithRetry } from './net-errors';
 import { StringDecoder } from 'string_decoder';
 import yaml from 'js-yaml';
 import { injectStorageSession } from './session-inject';
@@ -1722,32 +1722,37 @@ class VoxEvalAgentDaemon {
       }
 
       if (fs.existsSync(zipPath)) {
-        const zipBody = fs.readFileSync(zipPath);
-        const zipKey = `${prefix}/artifacts.zip`;
-        await client.send(new PutObjectCommand({
-          Bucket: s3Config.bucket,
-          Key: zipKey,
-          Body: zipBody,
-          ContentType: 'application/zip',
-        }));
+        let refused: string | null;
+        try {
+          const zipBody = fs.readFileSync(zipPath);
+          const zipKey = `${prefix}/artifacts.zip`;
+          await client.send(new PutObjectCommand({
+            Bucket: s3Config.bucket,
+            Key: zipKey,
+            Body: zipBody,
+            ContentType: 'application/zip',
+          }));
+          console.log(`[Daemon] Uploaded artifacts.zip (${zipBody.length} bytes)`);
 
-        const zipUrl = zipKey;
-        console.log(`[Daemon] Uploaded artifacts.zip (${zipBody.length} bytes)`);
-
-        // Report to Vox. A refusal or a network failure throws into the
-        // retry path below (#246 review): the files are in S3, but until Vox
-        // has their keys the job page can't show them — so it isn't
-        // 'uploaded' yet, and the zip stays for the retry.
-        const res = await this.fetch(`/api/eval-agent/jobs/${task.jobId}/artifacts`, {
-          method: 'POST',
-          body: JSON.stringify({ zipUrl, files: uploadedFiles, leaseId: this.leaseId }),
-          signal: AbortSignal.timeout(15000),
-        });
-        if (!res.ok) throw new Error(`Vox didn't store the artifact URLs: ${await describeHttpFailure(res)}`);
+          // Report the keys to Vox. Only this POST is retried, and only on a
+          // network failure or 5xx (#246 review) — the files are already in S3,
+          // so re-running the whole upload would send them all again, and a 4xx
+          // (refused lease or job) won't change on a retry.
+          refused = await sendWithRetry(() => this.fetch(`/api/eval-agent/jobs/${task.jobId}/artifacts`, {
+            method: 'POST',
+            body: JSON.stringify({ zipUrl: zipKey, files: uploadedFiles, leaseId: this.leaseId }),
+            signal: AbortSignal.timeout(15000),
+          }));
+        } finally {
+          try { fs.unlinkSync(zipPath); } catch { /* ignore */ }
+        }
+        if (refused) {
+          // Not 'uploaded': Vox doesn't have the keys, so the job page couldn't show the files.
+          console.error(`[Daemon] Vox didn't store the artifact URLs for job ${task.jobId}: ${refused}`);
+          await this.updateArtifactStatus(task.jobId, 'failed');
+          return;
+        }
         console.log(`[Daemon] Artifact URLs stored for job ${task.jobId}`);
-
-        // Clean up zip
-        try { fs.unlinkSync(zipPath); } catch { /* ignore */ }
       }
 
       await this.updateArtifactStatus(task.jobId, 'uploaded');
