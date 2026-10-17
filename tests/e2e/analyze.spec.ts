@@ -128,8 +128,9 @@ test.describe("Tools → Analyze", () => {
       const reg = await admin.post("/api/eval-agent/register", { headers: { Authorization: `Bearer ${tok.token}` }, data: { name: "e2e-paid-agent", capabilities: ["analyze"] } });
       expect(reg.ok()).toBe(true);
       expect((await admin.patch(`/api/eval-agent-tokens/${tok.id}`, { data: { dispatchTier: "shared", pricePerUnit: 7 } })).ok()).toBe(true);
-      const me = await (await api.get("/api/auth/status")).json();
-      expect((await admin.post("/api/plugins/credits/grants", { data: { userId: me.user.id, credits: 50, reason: "e2e", idempotencyKey: `e2e-paid-${Date.now()}` } })).ok()).toBe(true);
+      // Every user starts with 100 welcome credits (#234) — enough for this 7-credit
+      // analysis; admin grants now need a fresh verification, so none is made.
+      expect((await (await api.get("/api/plugins/credits/balance")).json()).credits).toBe(100);
       expect((await api.put("/api/user/storage-config", {
         data: { s3Endpoint: s3[0], s3Bucket: s3[1], s3AccessKeyId: s3[2], s3SecretAccessKey: s3[3], s3Region: process.env.S3_REGION || "auto" },
       })).ok()).toBe(true);
@@ -150,7 +151,7 @@ test.describe("Tools → Analyze", () => {
 
       await pick("analyze-run-on", /7 credits per file/);
       await expect(page.getByTestId("analyze-cost")).toContainText("1 file × 7 = 7 credits");
-      await expect(page.getByTestId("analyze-cost")).toContainText("you have 50");
+      await expect(page.getByTestId("analyze-cost")).toContainText("you have 100"); // the welcome credits
       await expect(submit).toBeDisabled(); // consent first
       await page.getByTestId("analyze-consent").click();
       await expect(submit).toBeEnabled();
@@ -158,7 +159,7 @@ test.describe("Tools → Analyze", () => {
 
       const row = page.getByTestId("analyze-row").filter({ hasText: "paid.wav" });
       await expect(row).toContainText("Marketplace");
-      expect((await (await api.get("/api/plugins/credits/balance")).json()).credits).toBe(43); // 7 held
+      expect((await (await api.get("/api/plugins/credits/balance")).json()).credits).toBe(93); // 100 welcome − 7 held
     } finally {
       // Delete the queued paid analysis (the sweep refunds its hold), then tidy up.
       for (const a of await (await api.get("/api/tools/analyze")).json()) await api.delete(`/api/tools/analyze/${a.id}`);

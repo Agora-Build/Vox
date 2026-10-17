@@ -55,9 +55,14 @@ d("practical: Analyze on a marketplace agent, for credits", () => {
   let provider = "";
   let paidAgent: { tokenId: number; raw: string; agentId: number; leaseId: string };
   let plainTokenId = 0;
+  // Priced above the 100 welcome credits every user starts with (#234), for
+  // the "not enough credits" case.
+  let pricyTokenId = 0;
+  const WELCOME = 100;
   const wav = makeConversationWav();
 
-  async function renter(credits: number): Promise<{ id: number; cookie: string }> {
+  /** A new premium user with storage set up — and, since #234, exactly the 100 welcome credits. */
+  async function renter(): Promise<{ id: number; cookie: string }> {
     const stamp = `${Date.now()}${Math.floor(Math.random() * 1000)}`;
     const email = `analyze-paid-${stamp}@example.com`;
     const { token } = await (await call(admin, "POST", "/api/admin/invite", { email, plan: "premium" })).json();
@@ -71,16 +76,16 @@ d("practical: Analyze on a marketplace agent, for credits", () => {
       s3Endpoint: process.env.S3_ENDPOINT, s3Bucket: process.env.S3_BUCKET, s3Region: process.env.S3_REGION || "auto",
       s3AccessKeyId: process.env.S3_ACCESS_KEY_ID, s3SecretAccessKey: process.env.S3_SECRET_ACCESS_KEY,
     })).ok).toBe(true);
-    if (credits > 0) {
-      expect((await call(admin, "POST", "/api/plugins/credits/grants", { userId: id, credits, reason: "analyze-paid-test", idempotencyKey: `analyze-paid-${stamp}` })).ok).toBe(true);
-    }
+    // Admin grants now need a fresh TOTP/email verification (#234); the
+    // welcome deposit covers every case here, so none is made.
+    expect(await balance(cookie)).toBe(WELCOME);
     const r = { id, cookie };
     renters.push(r);
     return r;
   }
 
   /** A shared (marketplace) token whose agent reports `capabilities`. */
-  async function sharedAgent(capabilities: string[]) {
+  async function sharedAgent(capabilities: string[], price = PRICE) {
     const base = (await storage.getAllRegionLocations()).find((l) => l.isActive)!.baseId;
     const t = await (await call(admin, "POST", "/api/eval-agent-tokens", {
       name: `analyze-paid-${Date.now()}-${Math.random()}`, regionLocationBaseId: base, dispatchTier: "public",
@@ -92,7 +97,7 @@ d("practical: Analyze on a marketplace agent, for credits", () => {
     });
     expect(reg.ok).toBe(true);
     const agent = await reg.json();
-    expect((await call(admin, "PATCH", `/api/eval-agent-tokens/${t.id}`, { dispatchTier: "shared", pricePerUnit: PRICE })).ok).toBe(true);
+    expect((await call(admin, "PATCH", `/api/eval-agent-tokens/${t.id}`, { dispatchTier: "shared", pricePerUnit: price })).ok).toBe(true);
     return { tokenId: t.id as number, raw: t.token as string, agentId: agent.id as number, leaseId: agent.leaseId as string };
   }
 
@@ -107,6 +112,7 @@ d("practical: Analyze on a marketplace agent, for credits", () => {
     provider = (await storage.getAllProviders())[0].id;
     paidAgent = await sharedAgent(["analyze"]);
     plainTokenId = (await sharedAgent([])).tokenId;
+    pricyTokenId = (await sharedAgent(["analyze"], WELCOME * 10)).tokenId;
   });
 
   afterAll(async () => {
@@ -119,28 +125,28 @@ d("practical: Analyze on a marketplace agent, for credits", () => {
   });
 
   it("offers only marketplace agents that can analyze, with their price", async () => {
-    const r = await renter(0);
+    const r = await renter();
     const agents = await (await call(r.cookie, "GET", "/api/tools/analyze/agents")).json() as Array<{ tokenId: number; pricePerUnit: number }>;
     expect(agents).toContainEqual(expect.objectContaining({ tokenId: paidAgent.tokenId, pricePerUnit: PRICE }));
     expect(agents.map((a) => a.tokenId)).not.toContain(plainTokenId);
   });
 
   it("refuses without consent, for an agent that can't analyze, and without enough credits", async () => {
-    const r = await renter(0);
+    const r = await renter();
     const noConsent = await upload(r.cookie, { agent: String(paidAgent.tokenId) });
     expect(noConsent.status).toBe(400);
     expect((await noConsent.json()).error).toMatch(/consent/i);
     const cannot = await upload(r.cookie, { agent: String(plainTokenId), consent: "1" });
     expect(cannot.status).toBe(400);
     expect((await cannot.json()).error).toMatch(/can't run analyses/i);
-    const broke = await upload(r.cookie, { agent: String(paidAgent.tokenId), consent: "1" });
+    const broke = await upload(r.cookie, { agent: String(pricyTokenId), consent: "1" }); // costs more than the welcome credits
     expect(broke.status).toBe(402);
     // Nothing queued, nothing left in the bucket's way.
     expect((await pool.query("SELECT count(*)::int c FROM eval_jobs WHERE created_by = $1", [r.id])).rows[0].c).toBe(0);
   });
 
   it("holds the price at upload, runs on that agent only, and pays its operator on the result", async () => {
-    const r = await renter(100);
+    const r = await renter();
     const renterBefore = await balance(r.cookie);
 
     const up = await upload(r.cookie, { agent: String(paidAgent.tokenId), consent: "1" });
@@ -181,7 +187,7 @@ d("practical: Analyze on a marketplace agent, for credits", () => {
   }, 120_000);
 
   it("an analysis the agent fails is refunded at once, and its operator isn't paid", async () => {
-    const r = await renter(100);
+    const r = await renter();
     const renterBefore = await balance(r.cookie);
     const up = await upload(r.cookie, { agent: String(paidAgent.tokenId), consent: "1" });
     expect(up.status).toBe(201);
@@ -204,7 +210,7 @@ d("practical: Analyze on a marketplace agent, for credits", () => {
   }, 120_000);
 
   it("a paid analysis deleted while queued is refunded by the settlement sweep", async () => {
-    const r = await renter(100);
+    const r = await renter();
     const before = await balance(r.cookie);
     const up = await upload(r.cookie, { agent: String(paidAgent.tokenId), consent: "1" });
     expect(up.status).toBe(201);
@@ -221,7 +227,7 @@ d("practical: Analyze on a marketplace agent, for credits", () => {
   }, 6 * 60 * 1000);
 
   it("revoking the agent fails its queued paid analysis and refunds it at once (#214)", async () => {
-    const r = await renter(100);
+    const r = await renter();
     const before = await balance(r.cookie);
     const agentToRevoke = await sharedAgent(["analyze"]);
     const up = await upload(r.cookie, { agent: String(agentToRevoke.tokenId), consent: "1" });
@@ -238,7 +244,7 @@ d("practical: Analyze on a marketplace agent, for credits", () => {
   }, 120_000);
 
   it("deleting a finished paid analysis whose payment wasn't settled captures it first (#219)", async () => {
-    const r = await renter(100);
+    const r = await renter();
     const renterBefore = await balance(r.cookie);
     const up = await upload(r.cookie, { agent: String(paidAgent.tokenId), consent: "1" });
     expect(up.status).toBe(201);
@@ -255,7 +261,7 @@ d("practical: Analyze on a marketplace agent, for credits", () => {
   }, 120_000);
 
   it("revoking an agent while it runs a paid analysis fails it and refunds at once (#214)", async () => {
-    const r = await renter(100);
+    const r = await renter();
     const before = await balance(r.cookie);
     const agent = await sharedAgent(["analyze"]);
     const up = await upload(r.cookie, { agent: String(agent.tokenId), consent: "1" });
@@ -277,7 +283,7 @@ d("practical: Analyze on a marketplace agent, for credits", () => {
     // must capture for that result before removing it — not settle from its
     // stale 'running' read, skip the capture, and delete the result the
     // operator is owed for (leaving the sweep to refund done work).
-    const r = await renter(100);
+    const r = await renter();
     const renterBefore = await balance(r.cookie);
     const up = await upload(r.cookie, { agent: String(paidAgent.tokenId), consent: "1" });
     expect(up.status).toBe(201);
@@ -326,7 +332,7 @@ d("practical: Analyze on a marketplace agent, for credits", () => {
   it("deleting a finished paid analysis that produced no result refunds it (and pays nothing)", async () => {
     // Completion and result commit together (#94), so a completed job with no
     // result is final: the run produced none, and the renter is refunded.
-    const r = await renter(100);
+    const r = await renter();
     const before = await balance(r.cookie);
     const up = await upload(r.cookie, { agent: String(paidAgent.tokenId), consent: "1" });
     expect(up.status).toBe(201);
