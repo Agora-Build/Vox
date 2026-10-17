@@ -61,7 +61,11 @@ test("the leaderboard shows N/A, not null, for what isn't measured", async ({ pa
   // A provider of its own with one mainline result (public + mainline flow and
   // set, principal creator, public agent) that measured none of the three.
   const name = `E2E N/A Provider ${Date.now()}`;
-  const provider = await storage.createProvider({ name, sku: "convoai", description: "e2e" } as any);
+  // Created with an OLD timestamp: /api/providers lists newest first, and many
+  // suites take its first entry for their own eval flows — which would then
+  // reference this provider and make its cleanup below fail on the FK (seen
+  // when the job-cancel tests ran in parallel). Sorting last, it's never that.
+  const provider = await storage.createProvider({ name, sku: "convoai", description: "e2e", createdAt: new Date("2000-01-01T00:00:00Z") } as any);
   const scoutId = (await pool.query("SELECT id FROM users WHERE email = $1", ["scout@vox.ai"])).rows[0].id as number;
   const mainline = { visibility: "public", isMainline: true, config: {}, ownerId: scoutId };
   const job = await storage.createEvalJob({
