@@ -14,6 +14,7 @@ import { parsePlatformSetup, sessionScopeForEvalFlow, evaluateSessionRequirement
 import { regionSiteSequence } from "@shared/regions";
 import { hasOrg, sameOrg, isOwnerOrOrgManager, canAccessResource, canViewJob, canCancelJob, parseJobScope, jobListFilter } from "./permissions";
 import { getOrganizations } from "./organizations";
+import { settleEndedJobsNow } from "./settle-now";
 
 type ApiRegionLocation = Awaited<ReturnType<typeof storage.getAllRegionLocations>>[number];
 
@@ -694,7 +695,13 @@ export function registerApiV1Routes(app: Express): void {
         });
       }
 
-      await storage.cancelEvalJob(parseInt(id));
+      // null: claimed (or finished) between the check above and now.
+      const cancelled = await storage.cancelEvalJob(parseInt(id), user.id);
+      if (!cancelled) {
+        return res.status(400).json({ error: "Only pending jobs can be cancelled" });
+      }
+      // A paid job's hold goes back to its renter now, not at the next sweep.
+      await settleEndedJobsNow([cancelled], "cancelled");
       res.json({ success: true, message: "Job cancelled" });
     } catch (error) {
       console.error("API v1 - Error cancelling job:", error);

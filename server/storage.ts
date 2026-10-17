@@ -1885,18 +1885,27 @@ export class DatabaseStorage {
   }
 
   // Cancel a pending job
-  async cancelEvalJob(jobId: number): Promise<EvalJob | undefined> {
+  /**
+   * Cancel a PENDING job (a running one can't be: its agent is mid-run). The
+   * status becomes 'failed' — every reaper, metric and settlement path already
+   * knows that — and cancelled_by/at say it was a cancellation, for the
+   * console. The status guard makes a claim that wins the race leave it alone.
+   */
+  async cancelEvalJob(jobId: number, cancelledBy: number): Promise<EvalJob | undefined> {
     const job = await this.getEvalJob(jobId);
     if (!job || job.status !== 'pending') {
       return undefined;
     }
 
+    const now = new Date();
     const result = await db.update(evalJobs)
       .set({
         status: "failed",
         error: "Cancelled by user",
-        completedAt: new Date(),
-        updatedAt: new Date()
+        completedAt: now,
+        updatedAt: now,
+        cancelledBy,
+        cancelledAt: now,
       })
       .where(and(eq(evalJobs.id, jobId), eq(evalJobs.status, "pending")))
       .returning();
