@@ -184,6 +184,7 @@ COPY vox_eval_agentd/placeholders.ts /app/
 COPY vox_eval_agentd/analyze-upload.ts /app/
 COPY vox_eval_agentd/job-pick.ts /app/
 COPY vox_eval_agentd/result-defaults.ts /app/
+COPY vox_eval_agentd/net-errors.ts /app/
 COPY vox_eval_agentd/package.json /app/
 COPY shared/secrets.ts /shared/secrets.ts
 COPY shared/credentials.ts /shared/credentials.ts
