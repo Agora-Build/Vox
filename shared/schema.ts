@@ -346,6 +346,17 @@ export const evalAgents = pgTable("eval_agents", {
   // `capabilities`. Null = not reported (an older agent, or the host's answer
   // couldn't be detected).
   linkType: varchar("link_type", { length: 16 }),
+  // Agent-reported network signals (register/heartbeat `netSignals`,
+  // migration 0059): may only push the access classifier AWAY from lastmile
+  // (cloudMetadata → datacenter, publicIpOnInterface → unknown — see
+  // server/access-class.ts). Persisted (not just passed through on the beat
+  // that reported it) because the full location recheck runs only every
+  // LOCATION_RECHECK_HOURS — storing the latest value here on every beat
+  // means that recheck sees the freshest signal, not a stale one. Each field
+  // independently sticky (server/net-signals-update.ts merges); system-
+  // written only, never trusted raw from a request body beyond its own
+  // boolean fields.
+  netSignals: jsonb("net_signals").$type<{ cloudMetadata?: boolean; publicIpOnInterface?: boolean }>(),
   // System-only (migration 0058): written only by Core's location check
   // (server/location.ts → server/access-class.ts), never from a request body.
   // lastmile | datacenter | unknown; null = never checked.
@@ -372,6 +383,10 @@ export const evalAgents = pgTable("eval_agents", {
 // tags omitted for the same reason as evalFlows.tags above (drizzle-zod's
 // generic jsonb schema doesn't carry the $type<Tag[]>() cast); it starts at
 // its DB default ('[]') and is set afterwards through its own edit path.
+// netSignals is the same jsonb-$type situation (no DB default — starts NULL,
+// same as "not reported yet"); register/heartbeat set it via
+// storage.updateEvalAgent (Partial<EvalAgent>, correctly typed) instead of
+// through this insert.
 export const insertEvalAgentSchema = createInsertSchema(evalAgents).omit({
   id: true,
   createdAt: true,
@@ -379,6 +394,7 @@ export const insertEvalAgentSchema = createInsertSchema(evalAgents).omit({
   lastSeenAt: true,
   lastJobAt: true,
   tags: true,
+  netSignals: true,
   // System-only — never set through an insert built from input.
   accessClass: true,
   accessReason: true,

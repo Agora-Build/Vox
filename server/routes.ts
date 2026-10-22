@@ -28,6 +28,7 @@ import { validateTierChoice, resolveTargetedDispatch, filterDispatchableAgents }
 import { getMarketplace } from "./marketplace";
 import { isAlreadyMemberError, getOrganizations, requireOrganizations, type Membership, type OrgSecretRow } from "./organizations";
 import { fingerprintCredential, formatLastFailedHttpStatus, parseLastFailedHttpStatus } from "@shared/credentials";
+import { parseNetSignalsUpdate, mergeNetSignals, netSignalsChanged } from "./net-signals-update";
 import { sessionScopeForEvalFlow, areLoginSecretsAttested, ensureSession, stampOwnerSession, credentialKeyFor, SESSION_FRESH_MARGIN_SECONDS, classifyReferencedSecrets, findBrokeredMisuse, resolveBrokerType, type SessionNeed, detectSessionNeed, resolvableSecretSources, secretGate, evalSetMayUseSecrets, secretsJobFills, runDialogEvalSetProblem, missingEvalFlowSecrets } from "./auth-session";
 import { validateRegisterPayload, cacheBrokerMintSecret, hasBrokerMintSecret, routeToBroker, executeViaBroker, KNOWN_BROKER_TYPES, probeAndRecordBroker } from "./broker-registry";
 import { resolveRestfulTemplate } from "./restful-exec";
@@ -4347,6 +4348,12 @@ export async function registerRoutes(
       // apply it when the caller actually sent something recognizable.
       const linkTypeUpdate = parseLinkTypeUpdate(req.body.linkType);
 
+      // Agent-reported network signals (design "Where it's computed and
+      // stored", Part-2 Task 3): parsed strictly, merged with whatever was
+      // already stored (a fresh registration has nothing stored yet, so the
+      // merge is just the parsed update itself).
+      const netSignalsUpdate = parseNetSignalsUpdate(req.body.netSignals);
+
       // Use agent-provided name, or fall back to the token's name
       const agentName = name || evalAgentToken.name;
 
@@ -4359,9 +4366,12 @@ export async function registerRoutes(
       // Upsert: reuse existing agent row for this token instead of creating duplicates on restart
       const existing = await storage.getEvalAgentsByTokenId(evalAgentToken.id);
       let agent;
+      let netSignalsForCheck: typeof netSignalsUpdate | undefined;
       if (existing.length > 0) {
         agent = existing[0];
-        const agentUpdate = { name: agentName, state: "idle" as const, metadata: metadata || {}, currentLeaseId: leaseId, capabilities: capabilities ?? [], ...(linkTypeUpdate ?? {}) };
+        const mergedNetSignals = mergeNetSignals(agent.netSignals, netSignalsUpdate);
+        netSignalsForCheck = mergedNetSignals ?? undefined;
+        const agentUpdate = { name: agentName, state: "idle" as const, metadata: metadata || {}, currentLeaseId: leaseId, capabilities: capabilities ?? [], netSignals: mergedNetSignals, ...(linkTypeUpdate ?? {}) };
         await storage.updateEvalAgent(agent.id, agentUpdate);
         agent = { ...agent, ...agentUpdate };
         // A fresh registration means the prior process died; release any jobs it
@@ -4372,6 +4382,7 @@ export async function registerRoutes(
           console.log(`[eval-agent] Released ${released} orphaned running job(s) from re-registered agent ${agent.id}`);
         }
       } else {
+        netSignalsForCheck = netSignalsUpdate;
         agent = await storage.createEvalAgent({
           name: agentName,
           tokenId: evalAgentToken.id,
@@ -4384,6 +4395,13 @@ export async function registerRoutes(
           capabilities: capabilities ?? [],
           linkType: linkTypeUpdate?.linkType ?? null,
         });
+        // netSignals is omitted from InsertEvalAgent (drizzle-zod jsonb-$type
+        // limitation, same as tags — see shared/schema.ts); set it via the
+        // correctly-typed update path when a fresh registration reported one.
+        if (netSignalsUpdate !== undefined) {
+          await storage.updateEvalAgent(agent.id, { netSignals: netSignalsUpdate });
+          agent = { ...agent, netSignals: netSignalsUpdate };
+        }
       }
 
       await storage.updateEvalAgentHeartbeat(agent.id);
@@ -4407,6 +4425,7 @@ export async function registerRoutes(
           token: { id: evalAgentToken.id, dispatchTier: evalAgentToken.dispatchTier },
           ip: clientIp(req),
           immediate: true,
+          netSignals: netSignalsForCheck,
         });
       } catch (err) {
         console.error(`[location] register-time location check failed for agent ${agent.id}:`, err instanceof Error ? err.message : err);
@@ -4463,6 +4482,11 @@ export async function registerRoutes(
       // older/newer daemons), absent leaves it, explicit null clears it.
       const hbLinkType = parseLinkTypeUpdate(req.body.linkType);
 
+      // Agent-reported network signals (design "Where it's computed and
+      // stored", Part-2 Task 3): parsed strictly, merged with whatever is
+      // already stored so an unreported field stays sticky.
+      const hbNetSignalsUpdate = parseNetSignalsUpdate(req.body.netSignals);
+
       const agent = await storage.getEvalAgent(agentId);
       if (!agent || agent.tokenId !== evalAgentToken.id) {
         return res.status(403).json({ error: "Agent not found or token mismatch" });
@@ -4483,7 +4507,11 @@ export async function registerRoutes(
       const stale = !agent.locationCheckedAt
         || (Date.now() - new Date(agent.locationCheckedAt).getTime()) > LOCATION_RECHECK_HOURS * 60 * 60 * 1000;
       const pending = agent.pendingRegion != null;
-      if (ipChanged || stale || pending) {
+      // A reported signal change (e.g. cloudMetadata flips false→true) must
+      // not wait for the next scheduled recheck, same reasoning as ipChanged.
+      const signalsChanged = netSignalsChanged(agent.netSignals, hbNetSignalsUpdate);
+      const mergedNetSignals = mergeNetSignals(agent.netSignals, hbNetSignalsUpdate);
+      if (ipChanged || stale || pending || signalsChanged) {
         void runAgentLocationCheck({
           agent: {
             id: agent.id,
@@ -4495,6 +4523,7 @@ export async function registerRoutes(
           token: { id: evalAgentToken.id, dispatchTier: evalAgentToken.dispatchTier },
           ip: callerIp,
           immediate: false,
+          netSignals: mergedNetSignals ?? undefined,
         }).catch((err) => console.error(`[location] heartbeat check failed for agent ${agent.id}:`, err instanceof Error ? err.message : err));
       }
 
@@ -4510,6 +4539,9 @@ export async function registerRoutes(
       }
       if (hbLinkType !== undefined) {
         updates.linkType = hbLinkType.linkType;
+      }
+      if (hbNetSignalsUpdate !== undefined) {
+        updates.netSignals = mergedNetSignals;
       }
       if (Object.keys(updates).length > 0) {
         await storage.updateEvalAgent(agentId, updates);

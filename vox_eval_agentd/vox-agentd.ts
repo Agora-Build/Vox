@@ -43,6 +43,7 @@ import { DialfClient, probeDialf, resolveDialfSocketPath, type DialfProbe } from
 import { runPhoneJob, finishPhoneMetrics } from './phone-eval';
 import { runAnalyzeUpload, capabilitiesFor, aevalOnPath, writeLimited } from './analyze-upload';
 import { detectLinkType, withLinkType } from './link-type';
+import { NetSignalsDetector, withNetSignals } from './net-signals';
 import { claimFirstAvailable, claimOutcome, type ClaimOutcome } from './job-pick';
 import { UNMEASURED_DEFAULTS } from './result-defaults';
 import { Readable } from 'stream';
@@ -248,6 +249,10 @@ class VoxEvalAgentDaemon {
   // each pay 4 socket round-trips. A vanished DialF/phone drops the capability
   // on the next refresh (self-healing, Phase A semantics).
   private dialfProbeCache: { at: number; probe: DialfProbe } | null = null;
+
+  // Holds the cloud-metadata 10-minute cache across register + every
+  // heartbeat (design "Where it's computed and stored", Part-2 Task 3).
+  private netSignalsDetector = new NetSignalsDetector();
   // callMetadata from the current phone job, sent with completeJob.
   private lastCallMetadata: Record<string, unknown> | null = null;
 
@@ -382,6 +387,22 @@ class VoxEvalAgentDaemon {
     });
   }
 
+  /** Current network signals (design "Last mile vs datacenter"): cloud
+   *  metadata (cached 10 min) + whether the default-route interface itself
+   *  holds a public address. `VOX_PUBLIC_IP_ON_IFACE` (vox-upgrade.sh's
+   *  host-side answer, since a container only sees its own veth) wins for
+   *  the latter; neither probe ever throws. */
+  private currentNetSignals() {
+    return this.netSignalsDetector.detect({
+      fetch: (url, init) => fetch(url, init),
+      now: () => Date.now(),
+      env: process.env,
+      platform: process.platform,
+      sysRoot: '',
+      exec: (cmd) => execSync(cmd, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }),
+    });
+  }
+
   async register(): Promise<boolean> {
     console.log(`[Daemon] Registering with Vox server: ${this.config.serverUrl}`);
 
@@ -391,7 +412,7 @@ class VoxEvalAgentDaemon {
       const response = await this.fetch('/api/eval-agent/register', {
         method: 'POST',
         signal: AbortSignal.timeout(30_000), // never hang startup on a silent server
-        body: JSON.stringify(withLinkType({ name: this.config.name, metadata, capabilities: await this.currentCapabilities() }, this.currentLinkType())),
+        body: JSON.stringify(withNetSignals(withLinkType({ name: this.config.name, metadata, capabilities: await this.currentCapabilities() }, this.currentLinkType()), await this.currentNetSignals())),
       });
 
       if (!response.ok) {
@@ -458,13 +479,13 @@ class VoxEvalAgentDaemon {
         // Bounded (#246 review): a Vox that accepts the connection but never
         // answers would otherwise leave one pending request per interval.
         signal: AbortSignal.timeout(15_000),
-        body: JSON.stringify(withLinkType({
+        body: JSON.stringify(withNetSignals(withLinkType({
           agentId: this.agentId,
           leaseId: this.leaseId,
           state: this.isRunningJob ? 'occupied' : 'idle',
           metadata: this.buildMetadata(),
           capabilities: await this.currentCapabilities(),
-        }, this.currentLinkType())),
+        }, this.currentLinkType()), await this.currentNetSignals())),
       });
 
       await this.exitIfSuperseded(response);

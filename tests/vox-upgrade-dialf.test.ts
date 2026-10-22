@@ -172,6 +172,34 @@ describe("VOX_LINK_TYPE (network tags — host link detection, design 2026-10-22
   });
 });
 
+describe("VOX_PUBLIC_IP_ON_IFACE (network tags part 2 — host interface detection, design 2026-10-22)", () => {
+  it("a known VOX_PUBLIC_IP_ON_IFACE in the environment is passed to the agent container", () => {
+    const r = upgrade({ RUNNING_ID: "abc", RUNNING_IMAGE: "sha-old", LATEST_IMAGE: "sha-new", VOX_PUBLIC_IP_ON_IFACE: "true" });
+    expect(r.calls.find((c) => c.startsWith("docker run"))).toContain("VOX_PUBLIC_IP_ON_IFACE=true");
+  });
+
+  it("false is passed through too (not just truthy values)", () => {
+    const r = upgrade({ RUNNING_ID: "abc", RUNNING_IMAGE: "sha-old", LATEST_IMAGE: "sha-new", VOX_PUBLIC_IP_ON_IFACE: "false" });
+    expect(r.calls.find((c) => c.startsWith("docker run"))).toContain("VOX_PUBLIC_IP_ON_IFACE=false");
+  });
+
+  it("an invalid VOX_PUBLIC_IP_ON_IFACE is ignored — not forwarded (host_public_ip_on_iface falls through, finds nothing here)", () => {
+    const r = upgrade({ RUNNING_ID: "abc", RUNNING_IMAGE: "sha-old", LATEST_IMAGE: "sha-new", VOX_PUBLIC_IP_ON_IFACE: "maybe" });
+    expect(r.calls.find((c) => c.startsWith("docker run"))).not.toContain("VOX_PUBLIC_IP_ON_IFACE");
+  });
+
+  it("unset VOX_PUBLIC_IP_ON_IFACE and no real route (stub ip): nothing forwarded, run unaffected", () => {
+    const r = upgrade({ RUNNING_ID: "abc", RUNNING_IMAGE: "sha-old", LATEST_IMAGE: "sha-new" });
+    expect(r.status).toBe(0);
+    expect(r.calls.find((c) => c.startsWith("docker run"))).not.toContain("VOX_PUBLIC_IP_ON_IFACE");
+  });
+
+  it("not forwarded to vox-clash-runner (it doesn't report network tags)", () => {
+    const r = upgrade({ RUNNING_ID: "abc", RUNNING_IMAGE: "sha-old", LATEST_IMAGE: "sha-new", VOX_PUBLIC_IP_ON_IFACE: "true" }, { runner: true });
+    expect(r.calls.find((c) => c.startsWith("docker run"))).not.toContain("VOX_PUBLIC_IP_ON_IFACE");
+  });
+});
+
 describe("permission problems are reported, not guessed at", () => {
   it("no permission to use Docker: stops before touching any container", () => {
     const r = upgrade({ DOCKER_DENIED: "1", RUNNING_ID: "abc" });

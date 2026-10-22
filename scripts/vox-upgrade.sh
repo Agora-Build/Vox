@@ -264,6 +264,72 @@ host_link_type() {
     return 0
 }
 
+# The host's own answer for VOX_PUBLIC_IP_ON_IFACE (design "Last mile vs
+# datacenter" → access, Part-2 Task 3): does the default-route interface
+# itself hold a public (non-private) address? Reimplemented here for the same
+# reason as host_link_type above — a container would see its own veth, not
+# the host's NIC. Same precedence/test-hook pattern: VOX_PUBLIC_IP_ON_IFACE
+# already in the environment (set in .env, or a test override — this is what
+# tests/vox-upgrade-dialf.test.ts sets to stay deterministic without real
+# network access) wins outright; anything else there is ignored and real
+# detection runs. Echoes "true"/"false", or nothing if undetermined — never
+# aborts the run.
+host_public_ip_on_iface() {
+    case "${VOX_PUBLIC_IP_ON_IFACE:-}" in
+        true|false) echo "$VOX_PUBLIC_IP_ON_IFACE"; return 0 ;;
+    esac
+    local os iface out
+    os=$(uname -s 2>/dev/null || true)
+    if [ "$os" = "Linux" ]; then
+        iface=$( { ip route get 1.1.1.1 2>/dev/null || true; } | sed -n 's/.* dev \([^ ]*\).*/\1/p' | head -1)
+        [ -z "$iface" ] && return 0
+        out=$(ip -o addr show dev "$iface" 2>/dev/null || true)
+    elif [ "$os" = "Darwin" ]; then
+        iface=$( { route -n get default 2>/dev/null || true; } | sed -n 's/^ *interface: //p' | head -1)
+        [ -z "$iface" ] && return 0
+        out=$(ifconfig "$iface" 2>/dev/null || true)
+    else
+        return 0
+    fi
+    [ -z "$out" ] && return 0
+    if host_addr_is_public "$out"; then
+        echo true
+    else
+        echo false
+    fi
+}
+
+# Exit 0 if $1 (ip/ifconfig output for one interface) holds at least one
+# public IPv4 or global IPv6 address — mirrors isPublicIPv4/isPublicIPv6 in
+# vox_eval_agentd/net-signals.ts (RFC1918/CGNAT/link-local/loopback excluded
+# for v4; link-local/unique-local/loopback excluded for v6, 2000::/3 = global
+# unicast).
+host_addr_is_public() {
+    local line a b first
+    for line in $(echo "$1" | grep -oE 'inet [0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | awk '{print $2}'); do
+        a=${line%%.*}
+        b=$(echo "$line" | cut -d. -f2)
+        case "$a" in 10|127) continue ;; esac
+        [ "$a" = "172" ] && [ "$b" -ge 16 ] && [ "$b" -le 31 ] && continue
+        [ "$a" = "192" ] && [ "$b" = "168" ] && continue
+        [ "$a" = "100" ] && [ "$b" -ge 64 ] && [ "$b" -le 127 ] && continue
+        [ "$a" = "169" ] && [ "$b" = "254" ] && continue
+        return 0
+    done
+    for line in $(echo "$1" | grep -oE 'inet6 [0-9a-fA-F:]+' | awk '{print $2}' | cut -d% -f1); do
+        [ "$line" = "::1" ] && continue
+        first=$(echo "$line" | cut -d: -f1 | tr 'A-F' 'a-f')
+        case "$first" in
+            fe8*|fe9*|fea*|feb*) continue ;;
+            fc*|fd*) continue ;;
+        esac
+        case "$first" in
+            2???|3???) return 0 ;;
+        esac
+    done
+    return 1
+}
+
 # The DialF socket a running container was started with (its VOX_DIALF_SOCKET), or nothing.
 container_dialf_socket() {
     # `|| true`: under set -euo pipefail a failed inspect (container gone
@@ -473,6 +539,15 @@ for name in "${!images[@]}"; do
         # vox-clash-runner — it doesn't report network tags.
         link_type=$(host_link_type)
         [ -n "$link_type" ] && env_args+="-e VOX_LINK_TYPE=$link_type "
+
+        # Network signals (design "Last mile vs datacenter" → access): pass
+        # the HOST's own publicIpOnInterface answer in, for the same reason as
+        # link type above — inside the container the default route is the
+        # veth, not the host's NIC. Unknown → omit the flag (the daemon then
+        # reports `publicIpOnInterface: undefined` on its own container check,
+        # same end result). Not needed for vox-clash-runner.
+        public_ip_on_iface=$(host_public_ip_on_iface)
+        [ -n "$public_ip_on_iface" ] && env_args+="-e VOX_PUBLIC_IP_ON_IFACE=$public_ip_on_iface "
 
         # ------------------------------------------------------------------
         # DialF bridge (Phone vs Agent): dialfd runs on the HOST; the daemon

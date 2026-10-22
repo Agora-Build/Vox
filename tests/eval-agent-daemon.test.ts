@@ -17,6 +17,7 @@ import fs from "fs";
 import os from "os";
 import { summarizeAevalFailure, reduceUrlsToHost, reduceUrlsSafely, urlForms, createBoundedCapture } from "../vox_eval_agentd/aeval-output";
 import { detectLinkType, withLinkType } from "../vox_eval_agentd/link-type";
+import { withNetSignals } from "../vox_eval_agentd/net-signals";
 
 // Mock the parseResults function logic for testing
 function parseResults(csvContent: string): {
@@ -456,6 +457,68 @@ describe("Eval Agent Daemon - linkType on register/heartbeat (network tags)", ()
     // wire body really has no key, not `{"linkType":null}` (which would
     // CLEAR a previously reported value on Core, per parseLinkTypeUpdate).
     expect(Object.keys(body as object)).not.toContain("linkType");
+  });
+});
+
+describe("Eval Agent Daemon - netSignals on register/heartbeat (network tags part 2)", () => {
+  // Same reasoning as the linkType block above: withNetSignals is the
+  // standalone seam the real register()/sendHeartbeat() bodies are built
+  // through, so exercising it against a mock server proves the actual wire
+  // contract.
+  let app: express.Express;
+  let server: ReturnType<typeof createServer>;
+  let baseUrl: string;
+  let lastBody: Record<string, unknown> | null = null;
+
+  beforeAll(async () => {
+    app = express();
+    app.use(express.json());
+    app.post("/api/eval-agent/heartbeat", (req, res) => {
+      lastBody = req.body;
+      res.json({ success: true });
+    });
+    server = createServer(app);
+    await new Promise<void>((resolve) => {
+      server.listen(0, () => {
+        const addr = server.address();
+        if (addr && typeof addr === "object") baseUrl = `http://localhost:${addr.port}`;
+        resolve();
+      });
+    });
+  });
+
+  afterAll(async () => {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  });
+
+  async function sendHeartbeat(netSignals: { cloudMetadata?: boolean; publicIpOnInterface?: boolean }) {
+    lastBody = null;
+    const body = withNetSignals({ agentId: 1, state: "idle" as const }, netSignals);
+    const res = await fetch(`${baseUrl}/api/eval-agent/heartbeat`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    expect(res.ok).toBe(true);
+    return lastBody;
+  }
+
+  it("includes both fields when both were detected", async () => {
+    const body = await sendHeartbeat({ cloudMetadata: true, publicIpOnInterface: false });
+    expect(body).toMatchObject({ netSignals: { cloudMetadata: true, publicIpOnInterface: false } });
+  });
+
+  it("omits publicIpOnInterface when undetermined (e.g. inside a container) but still sends cloudMetadata", async () => {
+    const body = await sendHeartbeat({ cloudMetadata: false, publicIpOnInterface: undefined });
+    expect(body).toMatchObject({ netSignals: { cloudMetadata: false } });
+    expect(body?.netSignals).not.toHaveProperty("publicIpOnInterface");
+  });
+
+  it("omits netSignals entirely when nothing was detected — never sends an empty object or null", async () => {
+    const body = await sendHeartbeat({ cloudMetadata: undefined, publicIpOnInterface: undefined });
+    expect(body).not.toBeNull();
+    expect(body).not.toHaveProperty("netSignals");
+    expect(Object.keys(body as object)).not.toContain("netSignals");
   });
 });
 
