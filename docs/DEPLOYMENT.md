@@ -202,14 +202,15 @@ plugin tests to avoid their existing CREATE DATABASE race.
 | `S3_ENDPOINT` / `S3_BUCKET` / `S3_ACCESS_KEY_ID` / `S3_SECRET_ACCESS_KEY` / `S3_REGION` | Artifact storage (S3 or Cloudflare R2). Without them, uploads are off and everything else works. | — |
 | `WEB_SESSION_TTL_HOURS` | How long a minted login session stays fresh | `1` |
 | `WEB_SESSION_MINT_TIMEOUT_SECONDS` | Upper bound on minting one login session | `180` |
-| `GEOIP_DB_DIR` | Where GeoIP databases for eval-agent region detection live | `./geoip` |
+| `GEOIP_DB_DIR` | Where GeoIP databases **and** the access-classification data sources (below) live | `./geoip` |
 | `MAXMIND_LICENSE_KEY` | Fallback only; normally set in Console → Regions. Without any key, the free DB-IP Lite database is used. | — |
+| `VOX_PUBLIC_IP_ON_IFACE` | `true`/`false`. Whether the eval agent's default-route interface carries a public address directly (no home router) — one of the agent's `netSignals` used by access classification. Set by `scripts/vox-upgrade.sh`, which measures it on the **host** (a container only sees its own veth) and passes it through to the container; omitted when undetermined. Not meant to be set by hand. | — |
 | `VOX_CONTACT_EMAIL` / `VOX_GITHUB_URL` / `VOX_X_URL` | Footer contact links (the X icon is hidden when unset) | `vox@agora.build` / Vox repo / — |
 | `RATE_LIMIT_DISABLED` | `"true"` turns API rate limiting off. Never set in production. | — |
 | *(no setting)* | **Client IP behind Cloudflare.** Vox takes the caller's address from Cloudflare's `CF-Connecting-IP` only when the request really came through Cloudflare — the local proxy (Traefik) saw cloudflared or a Cloudflare edge address, or Cloudflare's edge connected directly — so per-IP rate limits and agent region detection see the real caller however many proxies are in between. A caller who reaches Traefik or the app port directly is counted by its own address, whatever headers it sends. Still keep the app's published port (e.g. `5000:5000`) firewalled from the internet: nothing should bypass Cloudflare. | — |
 | `PUBLIC_API_RATE_LIMIT_PER_MINUTE` | Requests per minute per IP for **keyless** calls to the public `/api/v1` endpoints (metrics, providers). Calls with an API key aren't counted. | `12` |
 | `VOX_STORAGE_ALLOW_PRIVATE` | `"1"` lets Tools → Analyze use a storage endpoint on a private address (e.g. MinIO on localhost). Local development only. Never set in production: Core connects to the endpoint a user types, and this guard keeps that off Core's own network. | — |
-| *(no setting)* | **Twilio Lookup for the `line` network tag.** No env var: an admin enters a Twilio Account SID + Auth Token on **Console → Regions**, stored encrypted in `systemConfig` like the MaxMind key. Without credentials, `line` is manual-only. With them, each phone eval flow's dialled number is looked up (~$0.008/number) when the flow is saved and the number changed, and the answer is cached 30 days in `number_lookups` (shared across flows/owners — about one paid lookup per number per month). A number held in a secret is never sent; a failed lookup never blocks the save. Network tags ship as Core migration v58 (`0057_network_tags.sql`): `tags`/`line_lookup` on `eval_flows`, `tags`/`link_type` on `eval_agents`, the `number_lookups` cache table, and `tags` on `eval_jobs`. | — |
+| *(no setting)* | **Twilio Lookup for the `line` network tag and the `sim` match.** No env var: an admin enters a Twilio Account SID + Auth Token on **Console → Regions**, stored encrypted in `systemConfig` like the MaxMind key. Without credentials, `line` is manual-only and `sim` is never set. With them, each phone eval flow's dialled number — and our own SIM's number, for `sim` — is looked up (~$0.008/number) when it changes, cached 30 days in `number_lookups` (shared across flows/owners — about one paid lookup per number per month). A number held in a secret is never sent; a failed lookup never blocks the save. Network tags ship as Core migration v58 (`0057_network_tags.sql`): `tags`/`line_lookup` on `eval_flows`, `tags`/`link_type` on `eval_agents`, the `number_lookups` cache table, and `tags` on `eval_jobs`. **Migration v59** (`0058_access_sim.sql`) adds `eval_agents.access_class`/`access_reason`/`access_checked_at`/`sim_carrier`/`sim_reason`/`sim_number_redacted` and `number_lookups.mcc`/`mnc`. **Migration v60** (`0059_agent_net_signals.sql`) adds `eval_agents.net_signals` jsonb for the agent-reported signals below. | — |
 
 GeoIP license attribution is separate from the curated Thanks page. The footer
 identifies the loaded source from the database header or legacy filename, using
@@ -220,6 +221,42 @@ Thanks-page entries must not remove these source-specific license notices.
 Public pages revalidate the in-memory `/api/geoip/attribution` notice once a
 minute without querying persistent configuration; `/api/config` retains its
 one-hour client cache. Admin refresh completion invalidates both queries.
+
+### Access classification data sources
+
+The `access` network tag (`lastmile` / `datacenter` / `unknown`) and location
+trust's `datacenter` class are both decided by the same pipeline
+(`server/access-class.ts`), fed by data downloaded into `GEOIP_DB_DIR` and
+refreshed in-app weekly (`server/access-data-refresh.ts`, same pattern as
+GeoIP). There is no checked-in hosting/VPN ASN list — the old 19-ASN
+`server/data/asn-classification.json` was deleted when this shipped.
+
+| Source | URL | Licence | Attribution | Refresh |
+|---|---|---|---|---|
+| X4BNet `lists_vpn` (datacenter + VPN IPv4/IPv6 ranges) | `github.com/X4BNet/lists_vpn` | MIT | MIT notice, "Copyright (c) 2024 X4B (Mathew Heard)" | Weekly, automatic |
+| client9/ipcat `datacenters.csv` | `github.com/client9/ipcat` | MIT (repo archived 2023, so the data is static) | MIT notice, Nick Galbreath / client9 | Weekly, automatic (supplemental — doesn't count toward "loaded") |
+| APNIC Labs per-AS end-user population estimates | `stats.labs.apnic.net/cgi-bin/aspop` | "(C) APNIC Pty/Ltd. Re-use with attribution permitted" | **Credited in the footer, next to the DB-IP notice** | Weekly, automatic |
+| PeeringDB `net` objects (network type: Content/Hosting vs Cable-DSL-ISP) | `peeringdb.com/api/net` | AUP restricts bulk reproduction/storage without approval; Vox is a commercial product | n/a | **Not downloaded automatically.** Needs PeeringDB's approval (contact support@peeringdb.com) for a stored bulk copy. An operator who has that approval can place an export at `GEOIP_DB_DIR/peeringdb-net.json`; when present it's loaded and used, otherwise this signal is simply absent (more `unknown`, never a wrong `lastmile`) |
+| Curated mobile-carrier ASN list | `server/data/mobile-carrier-asns.json` (checked in) | n/a — hand-curated from ARIN/APNIC registry data | n/a | Ships with the code; not downloaded |
+
+**Deploy-time behavior.** The first download happens at startup (any source
+missing or older than 7 days). Until the datacenter **and** VPN range lists
+have loaded at least once, access classification and location trust's
+`datacenter`/`trusted` results are **fail-closed** — capped to
+`low_confidence` — with retry at 15, 30, 60 minutes, then hourly, until they
+load. A fail-closed or capped check never clears an existing agent's region:
+a non-public agent simply can't *become* Verified until the data is in, but
+one that already is stays so (region, site and visibility untouched) through
+a fresh deploy or a transient download failure. Coolify's filesystem is
+ephemeral, so this window recurs on every deploy unless `GEOIP_DB_DIR` is on
+a persistent volume.
+
+**Known limit — residential proxies.** `access`/location trust both read the
+agent's `observed_ip`, which is the address of its *API calls to Core*, not
+its media path. A datacenter agent that routes its Core traffic through a
+commercial residential proxy can look like a home connection while the
+measured call still runs from the datacenter; nothing Core sees from that IP
+closes this.
 
 ### Generating Secrets
 

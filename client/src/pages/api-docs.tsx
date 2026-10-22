@@ -266,10 +266,20 @@ curl -H "Authorization: Bearer vox_live_xxxxx" "${base}/metrics/leaderboard?tier
               <p className="text-sm text-muted-foreground">
                 Add <code className="font-mono text-xs">tag=key:value</code> (repeatable) to filter by network
                 path — line provider, ISP, link type — and <code className="font-mono text-xs">groupBy=key</code>{" "}
-                to split each row by it.
+                to split each row by it. <code className="font-mono text-xs">groupBy=region</code> splits by where
+                the result was measured instead of a tag.
               </p>
               <CodeBlock>{`# mainline, filtered to calls over a Twilio line, grouped by the agent's ISP
-curl "${base}/metrics/leaderboard?tag=line:twilio&groupBy=isp"`}</CodeBlock>
+curl "${base}/metrics/leaderboard?tag=line:twilio&groupBy=isp"
+
+# mainline, last-mile connections only, grouped by region
+curl "${base}/metrics/leaderboard?tag=access:lastmile&groupBy=region"`}</CodeBlock>
+              <p className="text-sm text-muted-foreground">
+                <code className="font-mono text-xs">access</code> (<code className="font-mono text-xs">lastmile</code>
+                /<code className="font-mono text-xs">datacenter</code>/<code className="font-mono text-xs">unknown</code>)
+                and <code className="font-mono text-xs">sim</code> are set by Vox only, from its own network
+                detection — no eval flow or agent can set or override them.
+              </p>
             </CardContent>
           </Card>
         </div>

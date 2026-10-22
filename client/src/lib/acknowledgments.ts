@@ -33,6 +33,9 @@ export const acknowledgmentGroups: AcknowledgmentGroup[] = [
     description: "Open geolocation data used by Vox. The active source depends on the deployment's configuration.",
     projects: [
       { name: "DB-IP", url: "https://db-ip.com/", description: "IP geolocation data created by DB-IP, available from https://db-ip.com. Vox uses DB-IP Lite as its GeoIP fallback.", notice: { label: "CC BY 4.0", url: "https://creativecommons.org/licenses/by/4.0/" } },
+      { name: "APNIC Labs", url: "https://labs.apnic.net/", description: "Per-network end-user population estimates, used to help tell a home-ISP network from a datacenter for the access tag.", notice: { label: "(C) APNIC Pty/Ltd, re-use with attribution permitted", url: "https://stats.labs.apnic.net/" } },
+      { name: "X4BNet lists_vpn", url: "https://github.com/X4BNet/lists_vpn", description: "Datacenter and VPN IP ranges, used for the access tag and location trust.", notice: { label: "MIT, Copyright (c) 2024 X4B (Mathew Heard)", url: "https://github.com/X4BNet/lists_vpn/blob/main/LICENSE" } },
+      { name: "ipcat", url: "https://github.com/client9/ipcat", description: "A supplemental datacenter IP range list, used for the access tag.", notice: { label: "MIT, Nick Galbreath / client9", url: "https://github.com/client9/ipcat/blob/master/LICENSE" } },
     ],
   },
 ];
