@@ -7,7 +7,7 @@ import type { Request, RequestHandler } from "express";
 // stays under the general per-IP /api limit only. Mounted AFTER
 // authenticateApiKey (server/index.ts), which is what sets req.apiKeyUser.
 
-export const DEFAULT_KEYLESS_PER_MINUTE = 60;
+export const DEFAULT_KEYLESS_PER_MINUTE = 12;
 
 /** Paths under /api/v1 never limited here (the docs page must always load). */
 const EXEMPT = new Set(["/openapi.json"]);

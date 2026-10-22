@@ -63,7 +63,7 @@ info:
     ## Rate Limiting
 
     Requests **without an API key** to the public endpoints (metrics, providers) are additionally
-    limited to **60 per minute per IP** (`429`, with `RateLimit` and `Retry-After` headers).
+    limited to **12 per minute per IP** (`429`, with `RateLimit` and `Retry-After` headers).
     Requests with an API key aren't counted against that limit.
 
     In production, API requests are rate limited to 1,000 requests per 15 minutes per IP. The

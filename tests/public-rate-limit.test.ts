@@ -74,7 +74,8 @@ describe("keyless requests are rate-limited per IP", () => {
   });
 
   it("the limit is configurable, with a sane default", () => {
-    expect(keylessPerMinute({})).toBe(DEFAULT_KEYLESS_PER_MINUTE);
+    expect(DEFAULT_KEYLESS_PER_MINUTE).toBe(12);
+    expect(keylessPerMinute({})).toBe(12);
     expect(keylessPerMinute({ PUBLIC_API_RATE_LIMIT_PER_MINUTE: "120" })).toBe(120);
     for (const bad of ["0", "-5", "abc", "1.5"]) expect(keylessPerMinute({ PUBLIC_API_RATE_LIMIT_PER_MINUTE: bad })).toBe(DEFAULT_KEYLESS_PER_MINUTE);
   });
