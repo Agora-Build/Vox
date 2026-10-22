@@ -177,7 +177,11 @@ describeDb("register/heartbeat persist access (HTTP)", () => {
     tokenId = body.id;
   });
   afterAll(async () => {
-    if (tokenId) await db.update(evalAgentTokens).set({ isRevoked: true }).where(eq(evalAgentTokens.id, tokenId));
+    // Delete, not revoke: a revoked token's public agent row still holds its site sequence.
+    if (tokenId) {
+      await db.delete(evalAgents).where(eq(evalAgents.tokenId, tokenId));
+      await db.delete(evalAgentTokens).where(eq(evalAgentTokens.id, tokenId));
+    }
   });
 
   it("register stores access; a body can't set it; a stale heartbeat re-check stores it again", async () => {

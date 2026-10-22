@@ -209,7 +209,11 @@ describeDb("register/heartbeat persist netSignals (HTTP)", () => {
     cookie = (login.headers.get("set-cookie") || "").split(";")[0];
   });
   afterAll(async () => {
-    for (const id of tokenIds) await db.update(evalAgentTokens).set({ isRevoked: true }).where(eq(evalAgentTokens.id, id));
+    // Delete, not revoke: a revoked token's public agent row still holds its site sequence.
+    for (const id of tokenIds) {
+      await db.delete(evalAgents).where(eq(evalAgents.tokenId, id));
+      await db.delete(evalAgentTokens).where(eq(evalAgentTokens.id, id));
+    }
   });
 
   async function freshToken(): Promise<string> {

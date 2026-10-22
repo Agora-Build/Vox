@@ -82,7 +82,9 @@ test.describe("network tags", () => {
       await expect(page.getByTestId("eval-flow-tags-chip-codec")).toHaveText("codec:opus");
 
       await page.getByTestId("button-submit-eval-flow").click();
-      await expect(page.getByText("Eval Flow created")).toBeVisible();
+      // .first(): Radix Toast also renders a visually hidden announcement copy of
+      // the text for ~1 s, so a bare getByText can match two elements.
+      await expect(page.getByText("Eval Flow created").first()).toBeVisible();
 
       const list = (await (await page.request.get("/api/eval-flows")).json()) as Array<{ id: number; name: string; tags: Array<{ key: string; value: string }> }>;
       const flow = list.find((f) => f.name === name);
@@ -236,7 +238,6 @@ test.describe("network tags", () => {
 
   test("the Agents page badge follows location trust and access", async ({ page }) => {
     test.skip(!process.env.DATABASE_URL, "needs the dev DB");
-    test.setTimeout(60_000);
     const { pool } = await import("../../server/storage");
     const stamp = `${Date.now()}`;
     const tokenIds: number[] = [];
@@ -263,8 +264,7 @@ test.describe("network tags", () => {
       await set(unv, "low_confidence", "unknown", "v1: private-ip");
 
       await page.goto("/console/eval-agents");
-      // The shared dev DB can hold thousands of leaked test agents: allow for a long list.
-      await expect(page.getByTestId(`agent-location-badge-${lm}`)).toHaveText("Verified · last mile", { timeout: 30_000 });
+      await expect(page.getByTestId(`agent-location-badge-${lm}`)).toHaveText("Verified · last mile");
       await expect(page.getByTestId(`agent-location-badge-${dc}`)).toHaveText("Verified · datacenter");
       await expect(page.getByTestId(`agent-location-badge-${unk}`)).toHaveText("Verified");
       await expect(page.getByTestId(`agent-location-badge-${unv}`)).toHaveText("Unverified");

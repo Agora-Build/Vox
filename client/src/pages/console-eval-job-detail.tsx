@@ -15,6 +15,7 @@ import { formatSmartTimestamp, formatSite, formatRegion, toYaml } from "@/lib/ut
 import type { EvalJob, EvalResult } from "@shared/schema";
 import { EvalResultView } from "@/components/eval-result-view";
 import { formatTag, explainSystemReason, isSystemKey, type JobTag } from "@shared/tags";
+import { accessHint } from "@/lib/access-text";
 
 const TAG_SOURCE_TEXT: Record<JobTag["source"], { label: string; title: string }> = {
   flow: { label: "flow", title: "Set on the eval flow" },
@@ -26,11 +27,7 @@ const TAG_SOURCE_TEXT: Record<JobTag["source"], { label: string; title: string }
 function tagTitle(t: JobTag): string | undefined {
   const source = TAG_SOURCE_TEXT[t.source]?.title;
   if (!isSystemKey(t.key)) return source;
-  const lead = t.key === "access"
-    ? t.value === "lastmile" ? "Last mile: measured over a real home, office or mobile connection"
-      : t.value === "datacenter" ? "Datacenter: measured from a server in a datacenter or cloud"
-      : "Connection type unknown"
-    : `SIM network: ${t.value}`;
+  const lead = t.key === "access" ? accessHint(t.value) : `SIM network: ${t.value}`;
   const why = explainSystemReason(t.key, t.reason);
   return [lead + (why ? ` (${why})` : ""), source].filter(Boolean).join(". ");
 }

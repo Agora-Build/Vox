@@ -17,6 +17,7 @@ import { formatSmartTimestamp } from "@/lib/utils";
 import { useRegionLocationOptions } from "@/hooks/use-regions";
 import { TagInput } from "@/components/tag-input";
 import { formatTag, explainSystemReason, type Tag } from "@shared/tags";
+import { ACCESS_TEXT, UNKNOWN_ACCESS_TEXT } from "@/lib/access-text";
 
 interface AuthStatus {
   initialized: boolean;
@@ -144,11 +145,6 @@ function getTierBadge(tier: string) {
   );
 }
 
-const ACCESS_TEXT: Record<string, { label: string; hint: string }> = {
-  lastmile: { label: "last mile", hint: "Last mile: measured over a real home, office or mobile connection" },
-  datacenter: { label: "datacenter", hint: "Datacenter: measured from a server in a datacenter or cloud" },
-};
-
 /** A badge with its explanation in a tooltip. */
 function HintBadge({ className, hint, testId, children }: { className: string; hint: string; testId: string; children: ReactNode }) {
   return (
@@ -174,9 +170,9 @@ function getTrustBadge(agent: Pick<EvalAgent, "id" | "locationTrust" | "dispatch
   const trust = agent.locationTrust;
   // A stored trust of `datacenter` is derived from access = datacenter.
   const access = agent.accessClass ?? (trust === "datacenter" ? "datacenter" : null);
-  const text = access ? ACCESS_TEXT[access] : undefined;
+  const text = access === "lastmile" || access === "datacenter" ? ACCESS_TEXT[access] : undefined;
   const why = explainSystemReason("access", agent.accessReason);
-  const accessHint = text ? `${text.hint}${why ? ` (${why})` : ""}.` : `Connection type unknown${why ? ` (${why})` : ""}.`;
+  const accessHint = text ? `${text.hint}${why ? ` (${why})` : ""}.` : `${UNKNOWN_ACCESS_TEXT}${why ? ` (${why})` : ""}.`;
   const testId = `agent-location-badge-${agent.id}`;
   if (agent.dispatchTier === "public") {
     if (!text) return null;

@@ -3,6 +3,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { TagInput } from "@/components/tag-input";
 import { formatRegion } from "@/lib/utils";
+import { LAST_MILE_HINT, DATACENTER_HINT } from "@/lib/access-text";
 import { KNOWN_TAG_KEYS, REGION_GROUP_KEY, formatTag, parseGroupBy, parseTagFilter, type Tag } from "@shared/tags";
 
 /**
@@ -75,9 +76,6 @@ export function isEmptyGroup(groupBy: string, tagValue: string | undefined): boo
   return !tagValue || tagValue === (groupBy === REGION_GROUP_KEY ? "unattributed" : "untagged");
 }
 
-/** Explains "last mile" once, wherever it's offered. */
-export const LAST_MILE_HINT = "Measured over a real home, office or mobile connection";
-export const DATACENTER_HINT = "Measured from a server in a datacenter or cloud";
 
 export type AccessView = "all" | "lastmile" | "datacenter";
 

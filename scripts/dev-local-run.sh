@@ -866,7 +866,8 @@ clean_test_data() {
     if [ "${1:-}" != "--yes" ] && [ "${VOX_CLEAN_ASSUME_YES:-}" != "1" ]; then
         log_warn "This DELETES test data from ${DB_URL}:"
         log_warn "  eval flows/sets without a schedule (except Scout's seeded ones), the"
-        log_warn "  projects left empty, non-seed secrets, old jobs, and ALL login sessions."
+        log_warn "  projects left empty, non-seed secrets, old jobs, ALL login sessions, and"
+        log_warn "  eval agents that are revoked, a test user's, or unseen for a day (unless a job uses them)."
         printf "Type 'yes' to continue: "
         local reply=""
         read -r reply
@@ -940,6 +941,42 @@ DELETE FROM plugin_organizations.org_secrets
                          WHERE name LIKE 'r2-org-%' OR name LIKE 'abs-org-%');
 DELETE FROM plugin_organizations.organizations
       WHERE name LIKE 'r2-org-%' OR name LIKE 'abs-org-%';
+
+-- Eval agents: suites register agents and mostly only revoke the token (or
+-- leave it), so the rows pile up — ~1,950 of them were listed on
+-- /console/eval-agents here, and each public one holds a site sequence. An
+-- agent is test leakage when its token is revoked, its token belongs to a test
+-- user, or it hasn't been seen for a day (nothing heartbeats it: a running
+-- dev agent beats every few seconds and is kept). Never one a surviving job
+-- points at (eval_jobs.eval_agent_id, no ON DELETE action) — that is the
+-- provenance of a kept job. Then the tokens left without agents, if revoked
+-- or a test user's, unless a kept job targets them (target_token_id would be
+-- nulled, rewriting that job) or a shared-agents listing names them.
+CREATE TEMP TABLE leaked_agents AS
+  SELECT a.id FROM eval_agents a
+    JOIN eval_agent_tokens t ON t.id = a.token_id
+    LEFT JOIN users u ON u.id = t.created_by
+   WHERE (t.is_revoked
+          OR ((u.email LIKE '%@example.com' OR u.email LIKE '%@test.local') AND u.email <> 'stripe-e2e-fixture@test.local')
+          OR COALESCE(a.last_seen_at, a.created_at) < now() - interval '1 day')
+     AND NOT EXISTS (SELECT 1 FROM eval_jobs j WHERE j.eval_agent_id = a.id);
+DELETE FROM eval_agents WHERE id IN (SELECT id FROM leaked_agents);
+DROP TABLE leaked_agents;
+CREATE TEMP TABLE leaked_tokens AS
+  SELECT t.id FROM eval_agent_tokens t LEFT JOIN users u ON u.id = t.created_by
+   WHERE (t.is_revoked
+          OR ((u.email LIKE '%@example.com' OR u.email LIKE '%@test.local') AND u.email <> 'stripe-e2e-fixture@test.local'))
+     AND NOT EXISTS (SELECT 1 FROM eval_agents a WHERE a.token_id = t.id)
+     AND NOT EXISTS (SELECT 1 FROM eval_jobs j WHERE j.target_token_id = t.id);
+DO $$
+BEGIN
+  -- A name inside an untaken IF branch is never planned, so this is safe without the plugin.
+  IF to_regclass('plugin_shared_agents.listings') IS NOT NULL THEN
+    DELETE FROM leaked_tokens k WHERE EXISTS (SELECT 1 FROM plugin_shared_agents.listings l WHERE l.token_id = k.id);
+  END IF;
+END $$;
+DELETE FROM eval_agent_tokens WHERE id IN (SELECT id FROM leaked_tokens);
+DROP TABLE leaked_tokens;
 
 -- Test users (@example.com, @test.local): suites invite a fresh user per run and never
 -- delete it. At ~5,000 of them the unpaginated /console/users page took so

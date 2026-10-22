@@ -19,7 +19,8 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { useRegionLocations } from "@/hooks/use-regions";
-import { MetricsTagControls, useMetricsTagUrlState, appendTagParams, tagParamsKey, customTagKeys, groupLabel, isEmptyGroup, accessView, LAST_MILE_HINT } from "@/components/metrics-tag-controls";
+import { MetricsTagControls, useMetricsTagUrlState, appendTagParams, tagParamsKey, customTagKeys, groupLabel, isEmptyGroup, accessView } from "@/components/metrics-tag-controls";
+import { ACCESS_TEXT } from "@/lib/access-text";
 import { formatTag } from "@shared/tags";
 
 interface LeaderboardEntry {
@@ -255,7 +256,7 @@ export default function Leaderboard() {
                   <TableHead>Region</TableHead>
                   {showAccess && (
                     <TableHead className="text-right" data-testid="header-access">
-                      <span title={`Last mile: ${LAST_MILE_HINT.toLowerCase()}. Datacenter: measured from a server in a datacenter or cloud.`}>
+                      <span title={`${ACCESS_TEXT.lastmile.hint}. ${ACCESS_TEXT.datacenter.hint}.`}>
                         Results LM / DC
                       </span>
                     </TableHead>
