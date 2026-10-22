@@ -81,6 +81,7 @@ const MIGRATIONS: Array<{ version: number; description: string; file: string | n
   { version: 55, description: "bounded personal notification data queries", file: "0054_notification_data_indexes.sql" },
   { version: 56, description: "each token's latest agent row (pending job page)", file: "0055_eval_agents_token_index.sql" },
   { version: 57, description: "who cancelled a pending job, and when", file: "0056_eval_job_cancelled_by.sql" },
+  { version: 58, description: "network tags: eval_flows/eval_agents tags, line lookup, frozen job tags", file: "0057_network_tags.sql" },
 ];
 
 const TARGET_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version;

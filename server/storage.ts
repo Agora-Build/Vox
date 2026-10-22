@@ -606,6 +606,10 @@ export function buildJobSnapshot(
       isMainline: evalFlow.isMainline,
       ownerId: evalFlow.ownerId,
       organizationId: evalFlow.organizationId ?? null,
+      // Frozen here too (design "Freezing at claim"): editing the flow's
+      // tags/line lookup afterwards must never change a past job's snapshot.
+      tags: evalFlow.tags ?? [],
+      lineLookup: evalFlow.lineLookup ?? null,
     },
     evalSet: evalSet
       ? {

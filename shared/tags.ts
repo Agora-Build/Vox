@@ -46,6 +46,22 @@ export interface JobTag extends Tag {
   source: TagSource;
 }
 
+/**
+ * The number lookup's answer for a flow's dialled number ("Number lookup"
+ * section): value is the mapped `line` tag value, carrierName/lineType are
+ * the provider's raw answer (kept for display, not a tag in v1), lookedUpAt
+ * is when it ran, and number is the dialled number REDACTED to its last 4
+ * digits (e.g. "…1234") — the full number never leaves `number_lookups`.
+ * Stored on `eval_flows.line_lookup`; null = never looked up.
+ */
+export interface LineLookup {
+  value: string;
+  carrierName: string | null;
+  lineType: string | null;
+  lookedUpAt: string;
+  number: string;
+}
+
 /** Which board is reading a job's tags — each has its own effective-value rule. */
 export type TagBoard = "mainline" | "community" | "myEvals";
 
