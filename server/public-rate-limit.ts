@@ -1,5 +1,6 @@
 import rateLimit from "express-rate-limit";
 import type { Request, RequestHandler } from "express";
+import { clientIpKey } from "./client-ip";
 
 // Per-IP rate limit for the public v1 API's keyless requests (the metrics
 // endpoints and other endpoints that need no key). A request that carries an
@@ -26,8 +27,9 @@ export function createKeylessLimiter(opts: { enabled: boolean; perMinute: number
     limit: opts.perMinute,
     standardHeaders: "draft-7", // RateLimit + Retry-After
     legacyHeaders: false,
-    // Per client IP (req.ip — the proxy is trusted in production, so this is
-    // the caller, not the proxy); IPv6 addresses are grouped by /56 by default.
+    // Per client IP — the real caller behind Cloudflare/Traefik, not a proxy
+    // (server/client-ip.ts); IPv6 grouped by /56.
+    keyGenerator: clientIpKey,
     skip: (req) => !opts.enabled || identified(req) || EXEMPT.has(req.path),
     message: {
       error: `Too many requests without an API key: up to ${opts.perMinute} per minute per IP. ` +

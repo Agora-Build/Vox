@@ -80,3 +80,47 @@ describe("keyless requests are rate-limited per IP", () => {
     for (const bad of ["0", "-5", "abc", "1.5"]) expect(keylessPerMinute({ PUBLIC_API_RATE_LIMIT_PER_MINUTE: bad })).toBe(DEFAULT_KEYLESS_PER_MINUTE);
   });
 });
+
+import { clientIp, isPrivateAddress } from "../server/client-ip";
+
+describe("the caller's IP behind Cloudflare (server/client-ip.ts)", () => {
+  const req = (peer: string, headers: Record<string, string> = {}, ip = peer) =>
+    ({ ip, headers, socket: { remoteAddress: peer } }) as never;
+
+  it("through a private-network hop (cloudflared / Traefik), the client is CF-Connecting-IP", () => {
+    expect(clientIp(req("172.18.0.5", { "cf-connecting-ip": "203.0.113.9" }))).toBe("203.0.113.9");
+    expect(clientIp(req("::ffff:10.0.1.2", { "cf-connecting-ip": "2001:db8::7" }))).toBe("2001:db8::7");
+    expect(clientIp(req("127.0.0.1", { "cf-connecting-ip": " 198.51.100.4 " }))).toBe("198.51.100.4");
+  });
+
+  it("a caller reaching Vox directly (public peer) can't pick its identity with the header", () => {
+    expect(clientIp(req("203.0.113.50", { "cf-connecting-ip": "1.2.3.4" }))).toBe("203.0.113.50");
+  });
+
+  it("no header, or a header that isn't an IP: the address Express derived (req.ip)", () => {
+    expect(clientIp(req("172.18.0.5", {}, "198.51.100.8"))).toBe("198.51.100.8");
+    expect(clientIp(req("172.18.0.5", { "cf-connecting-ip": "not-an-ip" }, "198.51.100.8"))).toBe("198.51.100.8");
+  });
+
+  it("which addresses count as a private hop", () => {
+    for (const p of ["10.1.2.3", "172.16.0.1", "172.31.255.255", "192.168.1.1", "127.0.0.1", "169.254.1.1", "100.64.0.1", "::1", "fd12::1", "fe80::1", "::ffff:192.168.0.2"]) {
+      expect(isPrivateAddress(p)).toBe(true);
+    }
+    for (const p of ["8.8.8.8", "172.32.0.1", "172.15.0.1", "100.128.0.1", "2001:db8::1", "203.0.113.1", "", undefined]) {
+      expect(isPrivateAddress(p as string)).toBe(false);
+    }
+  });
+
+  it("the real limiter: callers behind Cloudflare get their own allowance (not one shared bucket)", async () => {
+    // This test server sees every request from 127.0.0.1 — a private hop, as
+    // cloudflared/Traefik are in production.
+    const base = await app({ enabled: true, perMinute: 2 });
+    const alice = { "CF-Connecting-IP": "203.0.113.21" };
+    const bob = { "CF-Connecting-IP": "203.0.113.22" };
+    await hit(base, undefined, alice); await hit(base, undefined, alice);
+    expect((await hit(base, undefined, alice)).status).toBe(429);
+    expect((await hit(base, undefined, bob)).status).toBe(200);
+    // Alice can't escape by varying X-Forwarded-For: Cloudflare's header decides.
+    expect((await hit(base, undefined, { ...alice, "X-Forwarded-For": "198.51.100.99" })).status).toBe(429);
+  });
+});

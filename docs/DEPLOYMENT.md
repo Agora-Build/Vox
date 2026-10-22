@@ -206,6 +206,7 @@ plugin tests to avoid their existing CREATE DATABASE race.
 | `MAXMIND_LICENSE_KEY` | Fallback only; normally set in Console → Regions. Without any key, the free DB-IP Lite database is used. | — |
 | `VOX_CONTACT_EMAIL` / `VOX_GITHUB_URL` / `VOX_X_URL` | Footer contact links (the X icon is hidden when unset) | `vox@agora.build` / Vox repo / — |
 | `RATE_LIMIT_DISABLED` | `"true"` turns API rate limiting off. Never set in production. | — |
+| *(no setting)* | **Client IP behind Cloudflare.** Vox takes the caller's address from Cloudflare's `CF-Connecting-IP` when the request arrives from a private-network hop (cloudflared, Traefik), so per-IP rate limits and agent region detection see the real caller however many proxies are in between. Keep the app's published port (e.g. `5000:5000`) firewalled from the internet: a direct caller is counted by its own address, but shouldn't bypass Cloudflare at all. | — |
 | `PUBLIC_API_RATE_LIMIT_PER_MINUTE` | Requests per minute per IP for **keyless** calls to the public `/api/v1` endpoints (metrics, providers). Calls with an API key aren't counted. | `12` |
 | `VOX_STORAGE_ALLOW_PRIVATE` | `"1"` lets Tools → Analyze use a storage endpoint on a private address (e.g. MinIO on localhost). Local development only. Never set in production: Core connects to the endpoint a user types, and this guard keeps that off Core's own network. | — |
 
