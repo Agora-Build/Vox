@@ -323,9 +323,11 @@ direction is safe. Disagreement means `unknown`, never a guess.
   pattern), stored under `GEOIP_DB_DIR`; missing data ⇒ fewer signals ⇒ more
   `unknown`, never a wrong `lastmile`. Licences and terms of each source (X4BNet,
   ipcat, PeeringDB bulk export and rate limits, APNIC) are checked before use and
-  credited on the page like DB-IP. The refreshed data also replaces the hand-picked
-  `vpn` entries of `server/data/asn-classification.json` (the file stays as a seed
-  for when no download has happened yet).
+  credited on the page like DB-IP. The hardcoded 19-ASN list
+  (`server/data/asn-classification.json`) is **deleted**: hosting/datacenter and VPN
+  detection come only from the downloaded data. Until that data has loaded once,
+  location trust stays fail-closed exactly as today (`trusted`/`datacenter` capped to
+  `low_confidence`).
 - The Agents page shows each agent's access class and reason (read-only).
 
 ### Analysis
