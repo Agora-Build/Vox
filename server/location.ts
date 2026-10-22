@@ -31,6 +31,12 @@ export interface Detection {
     lat: number | null; lon: number | null; accuracyKm: number | null;
     asn: number | null; asnOrg: string | null; signals: string[];
   };
+  /**
+   * Set when `trust` is low_confidence only because the VPN/datacenter data
+   * hasn't loaded (detection would otherwise have said trusted/datacenter).
+   * An ambiguous answer: runAgentLocationCheck records it but moves no region.
+   */
+  capped?: true;
 }
 export interface LocationNextState {
   region: string | null;      // next region baseId (null = Unverified)
@@ -420,7 +426,7 @@ export function detectLocation(ip: string, deps: DetectionDeps = liveDeps()): De
   // exactly the signal meant to catch VPN/hosting egress. Cap at
   // low_confidence instead (never region-eligible — see REGION_ELIGIBLE_TRUST).
   if (!deps.networkClassLoaded && (det.trust === "trusted" || det.trust === "datacenter")) {
-    return { trust: "low_confidence", candidate: null, source: det.source };
+    return { trust: "low_confidence", candidate: null, source: det.source, capped: true };
   }
   return det;
 }
@@ -449,13 +455,15 @@ export async function runAgentLocationCheck(opts: {
   const now = new Date();
 
   // Public tier: configured identity is trusted; detection is observability
-  // only. Same when the VPN/datacenter data hasn't loaded (first boot on an
-  // ephemeral filesystem, downloads failing): detection can't tell, so it
-  // must not move the region either way — clearing it would drop the siteId
-  // (a new sequence number on recovery) and rewrite shared listings on every
-  // deploy. Stored region, siteId and pending state are kept; an agent with
-  // no region stays Unverified (still fail closed).
-  if (opts.token.dispatchTier === "public" || !deps.networkClassLoaded) {
+  // only. Same for a result capped only because the VPN/datacenter data
+  // hasn't loaded (first boot on an ephemeral filesystem, downloads failing):
+  // detection can't tell, so it must not move the region either way —
+  // clearing it would drop the siteId (a new sequence number on recovery) and
+  // rewrite shared listings on every deploy. Stored region, siteId and pending
+  // state are kept; an agent with no region stays Unverified (still fail
+  // closed). Unambiguous outcomes — a Tor exit, private IP, no geo — still go
+  // through the transition below and fast-distrust as always.
+  if (opts.token.dispatchTier === "public" || det.capped) {
     await storage.updateEvalAgentLocationObservability(opts.agent.id, {
       locationTrust: det.trust, locationCheckedAt: now, locationSource: det.source,
     });

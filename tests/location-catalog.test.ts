@@ -191,4 +191,20 @@ describeDb("allocateSiteId + runAgentLocationCheck", () => {
     expect(row.region).toBeNull();
     expect(row.siteId).toBeNull();
   });
+
+  it("unloaded access data: a Tor exit still fast-distrusts an existing agent (region and siteId cleared)", async () => {
+    await db.update(evalAgents).set({ region: "eu-de-frankfurt", siteId: "eu-de-frankfurt-07", pendingRegion: null, pendingRegionCount: 0 })
+      .where(eq(evalAgents.id, agentId));
+    const res = await runAgentLocationCheck({
+      agent: { id: agentId, region: "eu-de-frankfurt", siteId: "eu-de-frankfurt-07", pendingRegion: null, pendingRegionCount: 0 },
+      token: { id: tokenId, dispatchTier: "private" },
+      ip: "80.150.1.1", immediate: false,
+      deps: { ...unloadedWithGeo, torExits: new Set(["80.150.1.1"]) },
+    });
+    expect(res).toEqual({ region: null, siteId: null, locationTrust: "anonymized" });
+    const row = (await db.select().from(evalAgents).where(eq(evalAgents.id, agentId)))[0];
+    expect(row.region).toBeNull();
+    expect(row.siteId).toBeNull();
+    expect(row.locationTrust).toBe("anonymized");
+  });
 });

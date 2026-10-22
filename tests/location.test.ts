@@ -215,6 +215,15 @@ describe("detectLocation with injected deps", () => {
     expect(trustedLooking.candidate).toBeNull();
     // Would-be "datacenter" classification is also unavailable to trust.
     expect(detectLocation("3.0.0.9", unloaded).trust).toBe("low_confidence");
+    // The cap says so — callers must not treat it as a real low_confidence.
+    expect(trustedLooking.capped).toBe(true);
+    expect(detectLocation("3.0.0.9", unloaded).capped).toBe(true);
+    // A Tor exit is decided by separate data: anonymized, not capped.
+    const tor = detectLocation("185.220.101.1", unloaded);
+    expect(tor.trust).toBe("anonymized");
+    expect(tor.capped).toBeUndefined();
+    // Loaded data never caps.
+    expect(detectLocation("49.36.100.1", deps).capped).toBeUndefined();
   });
   it("live deps with no access data ever loaded fail closed (first boot, every download failed)", () => {
     // getAccessData() starts empty: nothing loaded until reloadAccessData()
