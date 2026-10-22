@@ -15,8 +15,9 @@
  *      is reported and the detected isp is a satellite provider — `satellite`;
  *   6. `access` from the agent's stored classification (`access_class` +
  *      `access_reason`, written by the location check) — detected, with its
- *      reason, on every job this function tags; never classified (or a value
- *      outside the closed set) → `access:unknown` "v1: not-classified";
+ *      reason (none when none is stored), on every job this function tags;
+ *      never classified (or a value outside the closed set) →
+ *      `access:unknown` "v1: not-classified";
  *   7. `sim` from the agent's stored SIM match (`sim_carrier` + `sim_reason`,
  *      server/sim-carrier.ts) — phone jobs only, and only when there is a
  *      carrier (a mismatch or a missing side is no tag, never a guess).
@@ -106,7 +107,9 @@ export function buildJobTags(input: JobTagsInput, asnLookup: AsnLookupFn = looku
 
   const accessClass = input.agent.accessClass;
   if (accessClass && (ACCESS_VALUES as readonly string[]).includes(accessClass)) {
-    tags.push({ key: "access", value: accessClass, source: "detected", reason: input.agent.accessReason ?? NOT_CLASSIFIED_REASON });
+    // A classified agent's reason is frozen as stored; none stored → no
+    // reason (not-classified would contradict the class itself).
+    tags.push({ key: "access", value: accessClass, source: "detected", ...(input.agent.accessReason ? { reason: input.agent.accessReason } : {}) });
   } else {
     tags.push({ key: "access", value: "unknown", source: "detected", reason: NOT_CLASSIFIED_REASON });
   }

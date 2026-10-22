@@ -79,8 +79,16 @@ export async function computeSimMatch(
   report: SimReport,
   opts: { provider?: NumberLookupProvider | null } = {},
 ): Promise<SimMatch> {
+  return (await computeSimMatchDetailed(report, opts)).match;
+}
+
+/** computeSimMatch plus when the lookup it used was made (undefined: no lookup answer). */
+async function computeSimMatchDetailed(
+  report: SimReport,
+  opts: { provider?: NumberLookupProvider | null },
+): Promise<{ match: SimMatch; lookedUpAt?: Date }> {
   const simNumberRedacted = redactNumber(report.number);
-  const none = (why: string): SimMatch => ({ simCarrier: null, simReason: reason(why), simNumberRedacted });
+  const none = (why: string, lookedUpAt?: Date) => ({ match: { simCarrier: null, simReason: reason(why), simNumberRedacted }, lookedUpAt });
 
   // Nothing to compare against — don't spend a paid lookup.
   if (!report.mcc || !report.mnc) return none("no-sim-operator");
@@ -91,27 +99,32 @@ export async function computeSimMatch(
     if (answer.skipped === "invalid-number") return none("invalid-number");
     return none("lookup-failed");
   }
-  if (!answer.mcc || !answer.mnc) return none("no-lookup-codes");
+  const at = answer.lookedUpAt;
+  if (!answer.mcc || !answer.mnc) return none("no-lookup-codes", at);
 
   const phoneCode = `${report.mcc}-${report.mnc}`;
   const lookupCode = `${answer.mcc}-${answer.mnc}`;
-  if (phoneCode !== lookupCode) return none(`mismatch ${phoneCode} vs ${lookupCode}`);
+  if (phoneCode !== lookupCode) return none(`mismatch ${phoneCode} vs ${lookupCode}`, at);
 
   const slug = simFromCarrier(answer.carrierName);
   const tag = slug ? normalizeTag({ key: "sim", value: slug }) : undefined;
-  if (!tag || "error" in tag) return none(`no-lookup-carrier ${phoneCode}`);
-  return { simCarrier: tag.value, simReason: reason(`sim-match ${phoneCode}`), simNumberRedacted };
+  if (!tag || "error" in tag) return none(`no-lookup-carrier ${phoneCode}`, at);
+  return { match: { simCarrier: tag.value, simReason: reason(`sim-match ${phoneCode}`), simNumberRedacted }, lookedUpAt: at };
 }
 
 // ---- per-agent recompute memo ------------------------------------------------
 
 /**
  * What each agent's sim fields were last computed from: a hash of the report
- * (never the number itself), when, and whether the answer was definitive.
+ * (never the number itself) and when it is next due. A definitive answer is
+ * due when the lookup it used expires — CACHE_MAX_AGE_MS after that lookup's
+ * `lookedUpAt`, not after the compute, so a cached answer can't be held for
+ * up to twice the cache age; a non-definitive one (lookup off / failed) is
+ * retried after SIM_RETRY_MS.
  * In memory: after a Core restart every agent recomputes once — cheap, since
  * the lookup itself is cached in `number_lookups`.
  */
-const memo = new Map<number, { fingerprint: string; at: number; definitive: boolean }>();
+const memo = new Map<number, { fingerprint: string; dueAt: number }>();
 
 /** Tests only: forget every agent's last computation. */
 export function resetSimMemo(): void {
@@ -125,8 +138,30 @@ function fingerprintOf(report: SimReport): string {
 const NON_DEFINITIVE = new Set([reason("lookup-off"), reason("lookup-failed")]);
 
 /**
+ * Whether the agent's stored sim fields were computed for this same report:
+ * the redacted number matches and the stored reason names the same phone
+ * code (`sim-match <code>` / `mismatch <code> vs …`). The stored row is the
+ * source of truth here, so this also holds after a Core restart.
+ */
+function storedIsForReport(
+  stored: { simNumberRedacted: string | null; simReason: string | null } | undefined,
+  report: SimReport,
+): boolean {
+  if (!stored || !report.mcc || !report.mnc) return false;
+  if (stored.simNumberRedacted !== redactNumber(report.number)) return false;
+  const code = `${report.mcc}-${report.mnc}`;
+  return stored.simReason === reason(`sim-match ${code}`) || (stored.simReason ?? "").startsWith(reason(`mismatch ${code} vs `));
+}
+
+/**
  * Recompute and store an agent's sim fields when due. Returns whether it
  * recomputed. `now` exists for tests (expiry / retry without waiting).
+ *
+ * A transient lookup failure never wipes a definitive answer for the same
+ * number and code: phone jobs claimed before the retry would otherwise
+ * freeze with no `sim`, permanently. The stored fields are kept and the
+ * retry stays scheduled; definitive answers (match, mismatch, lookup off,
+ * no operator…) always overwrite.
  */
 export async function refreshAgentSim(
   agentId: number,
@@ -136,15 +171,19 @@ export async function refreshAgentSim(
   const now = opts.now ?? Date.now();
   const fingerprint = fingerprintOf(report);
   const prev = memo.get(agentId);
-  if (prev && prev.fingerprint === fingerprint) {
-    const age = now - prev.at;
-    if (age < (prev.definitive ? CACHE_MAX_AGE_MS : SIM_RETRY_MS)) return false;
-  }
+  if (prev && prev.fingerprint === fingerprint && now < prev.dueAt) return false;
   // Claimed before the await, so a burst of heartbeats computes once.
-  memo.set(agentId, { fingerprint, at: now, definitive: false });
+  memo.set(agentId, { fingerprint, dueAt: now + SIM_RETRY_MS });
   try {
-    const match = await computeSimMatch(report, { provider: opts.provider });
-    memo.set(agentId, { fingerprint, at: now, definitive: !NON_DEFINITIVE.has(match.simReason) });
+    const { match, lookedUpAt } = await computeSimMatchDetailed(report, { provider: opts.provider });
+    const definitive = !NON_DEFINITIVE.has(match.simReason);
+    const dueAt = !definitive
+      ? now + SIM_RETRY_MS
+      : (lookedUpAt ? lookedUpAt.getTime() : now) + CACHE_MAX_AGE_MS;
+    memo.set(agentId, { fingerprint, dueAt });
+    if (match.simReason === reason("lookup-failed") && storedIsForReport(await storage.getEvalAgent(agentId), report)) {
+      return true; // keep the stored answer; the retry is scheduled above
+    }
     await storage.updateEvalAgent(agentId, {
       simCarrier: match.simCarrier,
       simReason: match.simReason,

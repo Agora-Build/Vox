@@ -170,4 +170,45 @@ d("refreshAgentSim (stores on the agent; recomputes only on change / expiry)", (
     expect(await refreshAgentSim(a.id, rep, { provider: provider(), now: Date.now() + 11 * 60 * 1000 })).toBe(true);
     expect((await row(a.id)).sim_carrier).toBe("t-mobile");
   });
+  it("a transient lookup failure keeps a prior match for the same number and code — and still retries", async () => {
+    codes = () => ({ carrier: "T-Mobile USA, Inc.", mcc: "310", mnc: "260" });
+    const a = await mkAgent();
+    const rep = { number: "+15550107777", mcc: "310", mnc: "260" };
+    expect(await refreshAgentSim(a.id, rep, { provider: provider() })).toBe(true);
+    // The cached answer expires; the refresh hits a Twilio 500.
+    await pool.query("UPDATE number_lookups SET looked_up_at = $1 WHERE number = $2", [new Date(Date.now() - CACHE_MAX_AGE_MS - 60_000), rep.number]);
+    codes = () => ({ carrier: null, mcc: null, mnc: null, status: 500 });
+    const later = Date.now() + CACHE_MAX_AGE_MS + 1000;
+    expect(await refreshAgentSim(a.id, rep, { provider: provider(), now: later })).toBe(true);
+    expect(await row(a.id)).toMatchObject({ sim_carrier: "t-mobile", sim_reason: "v1: sim-match 310-260" });
+    // Same after a Core restart (memo gone): the stored row itself says what it matched.
+    resetSimMemo();
+    expect(await refreshAgentSim(a.id, rep, { provider: provider(), now: later })).toBe(true);
+    expect((await row(a.id)).sim_carrier).toBe("t-mobile");
+    // The retry is still scheduled; a definitive answer then overwrites.
+    codes = () => ({ carrier: "T-Mobile USA, Inc.", mcc: "310", mnc: "240" });
+    expect(await refreshAgentSim(a.id, rep, { provider: provider(), now: later + 11 * 60 * 1000 })).toBe(true);
+    expect(await row(a.id)).toMatchObject({ sim_carrier: null, sim_reason: "v1: mismatch 310-260 vs 310-240" });
+  });
+
+  it("a failure for a DIFFERENT number or code does not keep the old answer", async () => {
+    codes = () => ({ carrier: "T-Mobile USA, Inc.", mcc: "310", mnc: "260" });
+    const a = await mkAgent();
+    expect(await refreshAgentSim(a.id, { number: "+15550108881", mcc: "310", mnc: "260" }, { provider: provider() })).toBe(true);
+    codes = () => ({ carrier: null, mcc: null, mnc: null, status: 500 });
+    expect(await refreshAgentSim(a.id, { number: "+15550108882", mcc: "310", mnc: "260" }, { provider: provider() })).toBe(true);
+    expect(await row(a.id)).toMatchObject({ sim_carrier: null, sim_reason: "v1: lookup-failed", sim_number_redacted: "…8882" });
+  });
+
+  it("expiry runs from the cached lookup's lookedUpAt, not from when it was computed", async () => {
+    const a = await mkAgent();
+    const rep = { number: "+15550109191", mcc: "310", mnc: "260" };
+    // A lookup already 29 days old in the shared cache (e.g. made for a flow's line).
+    await pool.query(`INSERT INTO number_lookups (number, provider, carrier_name, line_type, value, mcc, mnc, looked_up_at)
+      VALUES ($1, 'twilio', 'T-Mobile USA, Inc.', 'mobile', 't-mobile', '310', '260', $2)`, [rep.number, new Date(Date.now() - 29 * 24 * 3600 * 1000)]);
+    expect(await refreshAgentSim(a.id, rep, { provider: provider() })).toBe(true);
+    expect(requests).toHaveLength(0); // served from the cache
+    expect(await refreshAgentSim(a.id, rep, { provider: provider(), now: Date.now() + 12 * 3600 * 1000 })).toBe(false);
+    expect(await refreshAgentSim(a.id, rep, { provider: provider(), now: Date.now() + 2 * 24 * 3600 * 1000 })).toBe(true);
+  });
 });

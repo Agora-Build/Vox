@@ -155,6 +155,12 @@ describe("buildJobTags (unit, injected ASN lookup)", () => {
     expect(tags.some((t) => t.key === "sim")).toBe(false);
   });
 
+  it("a valid class with no stored reason freezes with no reason (not-classified is only for a missing class)", () => {
+    const tags = buildJobTags({ job: WEB, snapshotFlow: null, agent: { ...classified, accessReason: null } }, noAsn);
+    expect(tags).toEqual([{ key: "access", value: "lastmile", source: "detected" }]);
+    expect("reason" in tags[0]).toBe(false);
+  });
+
   it("a stored access class outside the closed set freezes as unknown/not-classified", () => {
     expect(buildJobTags({ job: WEB, snapshotFlow: null, agent: { ...classified, accessClass: "home" } }, noAsn)).toEqual([UNCLASSIFIED]);
   });
