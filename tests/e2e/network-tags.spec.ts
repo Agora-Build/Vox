@@ -43,6 +43,11 @@ test.describe("network tags", () => {
       await page.getByTestId("button-create-eval-flow").click();
       await page.getByTestId("input-eval-flow-name").fill(name);
       await selectOption(page, "select-eval-flow-provider", "Custom");
+      // Phone flows say their dialled number goes to Twilio Lookup; web flows don't.
+      await expect(page.getByTestId("eval-flow-lookup-disclosure")).toHaveCount(0);
+      await selectOption(page, "select-eval-flow-transport", "Phone vs Agent");
+      await expect(page.getByTestId("eval-flow-lookup-disclosure")).toContainText("checked with Twilio Lookup");
+      await selectOption(page, "select-eval-flow-transport", "Web vs Agent");
 
       const field = page.getByTestId("eval-flow-tags-field");
       // link is a closed set: the error shows before any save.

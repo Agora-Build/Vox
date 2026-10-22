@@ -12,6 +12,9 @@ import type { LineLookup } from "@shared/tags";
  * "Look up again" for the flow's editors. A skipped lookup says why, in words.
  */
 
+/** Saving a phone flow sends its dialled number to a third party: the form says so. */
+export const LINE_LOOKUP_DISCLOSURE = "The dialled number is checked with Twilio Lookup to identify its line provider. A number stored as a secret is never sent.";
+
 export type LineLookupSkip = "not-configured" | "secret" | "no-number" | "no-carrier" | "invalid-number" | "failed";
 
 export const LINE_LOOKUP_SKIP_TEXT: Record<LineLookupSkip, string> = {

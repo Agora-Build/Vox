@@ -21,7 +21,7 @@ import { load as loadYaml } from "js-yaml";
 import type { EvalFlow as EvalFlowType, Provider, Project } from "@shared/schema";
 import type { Tag } from "@shared/tags";
 import { TagInput } from "@/components/tag-input";
-import { LineLookupPanel } from "@/components/line-lookup";
+import { LineLookupPanel, LINE_LOOKUP_DISCLOSURE } from "@/components/line-lookup";
 
 // missingSecrets (#130): set by the server only on flows the caller can fix;
 // null = couldn't be checked (organizations unavailable).
@@ -569,6 +569,9 @@ export default function ConsoleEvalFlows() {
                 <p className="text-xs text-muted-foreground">
                   Which network path this flow tests, e.g. line:twilio for the agent's phone line provider. Results can be filtered and grouped by them.
                 </p>
+                {transport === "phone" && (
+                  <p className="text-xs text-muted-foreground" data-testid="eval-flow-lookup-disclosure">{LINE_LOOKUP_DISCLOSURE}</p>
+                )}
               </div>
               <div className="space-y-2">
                 <Label>Setup Steps (stepsPrefix, YAML)</Label>
@@ -697,6 +700,9 @@ export default function ConsoleEvalFlows() {
                 testId="edit-eval-flow-tags"
                 aria-label="Eval flow tags"
               />
+              {editTransport === "phone" && (
+                <p className="text-xs text-muted-foreground" data-testid="edit-eval-flow-lookup-disclosure">{LINE_LOOKUP_DISCLOSURE}</p>
+              )}
               {editEvalFlow && editEvalFlow.transport === "phone" && (
                 <LineLookupPanel flowId={editEvalFlow.id} lineLookup={editEvalFlow.lineLookup} canLookUp />
               )}
