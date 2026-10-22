@@ -39,6 +39,10 @@ export const SENSITIVE_PATHS = new Set([
   "/api/eval-agent/jobs",        // /jobs/:id/secrets matched by startsWith
   "/api/clash-runner/secrets",
   "/api/admin/clash-runner-tokens",
+  // Twilio Lookup credentials: no response carries the Auth Token today
+  // (GET/PUT return only a masked Account SID), listed so a future change
+  // that echoes the pair can't land it in the request log.
+  "/api/admin/number-lookup/twilio",
 ]);
 
 // Hoisted: this runs on every /api request.

@@ -46,6 +46,15 @@ import {
   validateMaxmindKeyInput,
   GEOIP_DIR,
 } from "./geoip-refresh";
+import {
+  getTwilioCredentials,
+  saveTwilioCredentials,
+  clearTwilioCredentials,
+  validateTwilioCredentialsInput,
+  maskAccountSid,
+  lookupFlowLine,
+  refreshFlowLineOnSave,
+} from "./number-lookup";
 import { promises as fsp } from "fs";
 import path from "path";
 import {
@@ -1250,6 +1259,44 @@ export async function registerRoutes(
     }
   });
 
+  // ==================== NUMBER LOOKUP (line tag) CREDENTIALS ====================
+  // Twilio Lookup credentials for the `line` number lookup (server/number-lookup.ts),
+  // stored encrypted in systemConfig like the MaxMind key. The Auth Token is
+  // never returned or logged: GET reports only whether a pair is configured
+  // and a masked Account SID; PUT's response carries neither.
+
+  app.get("/api/admin/number-lookup/twilio", requireAuth, requireAdmin, async (_req, res) => {
+    try {
+      const creds = await getTwilioCredentials();
+      res.json({ configured: !!creds, accountSidMasked: creds ? maskAccountSid(creds.accountSid) : null });
+    } catch (error) {
+      console.error("Error reading Twilio lookup credentials:", error instanceof Error ? error.name : "error");
+      res.status(500).json({ error: "Failed to read Twilio lookup credentials" });
+    }
+  });
+
+  app.put("/api/admin/number-lookup/twilio", requireAuth, requireAdmin, async (req, res) => {
+    try {
+      const validated = validateTwilioCredentialsInput(req.body);
+      if (!validated.ok) return res.status(400).json({ error: validated.error });
+      await saveTwilioCredentials(validated);
+      res.json({ configured: true, accountSidMasked: maskAccountSid(validated.accountSid) });
+    } catch (error) {
+      console.error("Error saving Twilio lookup credentials:", error instanceof Error ? error.name : "error");
+      res.status(500).json({ error: "Failed to save Twilio lookup credentials" });
+    }
+  });
+
+  app.delete("/api/admin/number-lookup/twilio", requireAuth, requireAdmin, async (_req, res) => {
+    try {
+      await clearTwilioCredentials();
+      res.json({ deleted: true });
+    } catch (error) {
+      console.error("Error clearing Twilio lookup credentials:", error instanceof Error ? error.name : "error");
+      res.status(500).json({ error: "Failed to clear Twilio lookup credentials" });
+    }
+  });
+
   // ==================== USER PROFILE (SELF) ROUTES ====================
 
   // Update own display name (username)
@@ -2294,7 +2341,12 @@ export async function registerRoutes(
         ? await storage.updateEvalFlow(evalFlow.id, { tags: parsedTags.tags })
         : evalFlow;
 
-      res.json(withTags);
+      // Phone flow: look up the dialled number's line provider (design
+      // "Number lookup"). Bounded and never throws — the save already
+      // committed and must not turn into an error because of the lookup.
+      const saved = withTags ?? evalFlow;
+      const lineLookup = await refreshFlowLineOnSave(saved);
+      res.json(lineLookup !== undefined ? { ...saved, lineLookup } : saved);
     } catch (error) {
       console.error("Error creating evalFlow:", error);
       res.status(500).json({ error: "Failed to create evalFlow" });
@@ -2385,10 +2437,40 @@ export async function registerRoutes(
       }
 
       const updated = await storage.updateEvalFlow(parseInt(id), updates);
-      res.json(updated);
+      // Phone flow whose dialled number changed (or never looked up): refresh
+      // its line lookup — bounded, never throws, never fails the save. A flow
+      // moved away from phone keeps its line_lookup: harmless, the claim only
+      // freezes it from phone flows' snapshots.
+      const lineLookup = updated ? await refreshFlowLineOnSave(updated) : undefined;
+      res.json(updated && lineLookup !== undefined ? { ...updated, lineLookup } : updated);
     } catch (error) {
       console.error("Error updating evalFlow:", error);
       res.status(500).json({ error: "Failed to update evalFlow" });
+    }
+  });
+
+  // "Look up again" for a phone flow's line provider. Flow editors only (the
+  // PATCH rule — an admin is not a flow editor). Uses the 30-day per-number
+  // cache like a save does; returns { lineLookup } or { skipped: reason }.
+  app.post("/api/eval-flows/:id/line-lookup", requireAuth, async (req, res) => {
+    try {
+      const user = await getCurrentUser(req);
+      if (!user) return res.status(401).json({ error: "Not authenticated" });
+      const evalFlow = await storage.getEvalFlow(parseInt(req.params.id));
+      if (!evalFlow) return res.status(404).json({ error: "Eval Flow not found" });
+      if (!isOwnerOrOrgManager(user, evalFlow)) {
+        return res.status(403).json({ error: "Only the evalFlow's owner can edit it" });
+      }
+      if (evalFlow.transport !== "phone") {
+        return res.status(400).json({ error: "Line lookup applies to phone eval flows only" });
+      }
+      const result = await lookupFlowLine(evalFlow);
+      if ("skipped" in result) return res.json({ skipped: result.skipped });
+      await storage.updateEvalFlow(evalFlow.id, { lineLookup: result });
+      res.json({ lineLookup: result });
+    } catch (error) {
+      console.error("Error looking up evalFlow line:", error instanceof Error ? error.name : "error");
+      res.status(500).json({ error: "Failed to look up the line provider" });
     }
   });
 
