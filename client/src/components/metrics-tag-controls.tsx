@@ -13,6 +13,7 @@ const KNOWN_KEY_LABELS: Record<string, string> = {
   line: "line provider",
   isp: "network",
   link: "connection",
+  access: "last mile / datacenter",
   sim: "SIM operator",
 };
 

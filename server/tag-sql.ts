@@ -9,7 +9,7 @@
  * two together.
  */
 import { sql, type SQL, type SQLWrapper } from "drizzle-orm";
-import { KNOWN_TAG_KEYS, type Tag, type TagBoard, type TagSource } from "@shared/tags";
+import { KNOWN_TAG_KEYS, isSystemKey, type Tag, type TagBoard, type TagSource } from "@shared/tags";
 
 /** The tag key syntax (shared/tags.ts KEY_PATTERN). Keys are inlined, so this check is a guard, not a nicety. */
 const KEY_PATTERN = /^[a-z][a-z0-9-]{0,23}$/;
@@ -39,6 +39,11 @@ export function effectiveTagValueSql(tags: SQLWrapper, board: TagBoard, key: str
   const agent = firstValue(tags, key, "agent");
   const flow = firstValue(tags, key, "flow");
 
+  if (isSystemKey(key)) {
+    // access / sim, on every board: `if (isSystemKey(key)) detected` — a
+    // hand-set value can't be stored, and one that turns up is ignored.
+    return sql`${detected}`;
+  }
   if (board === "mainline") {
     if (key === "line") {
       // `if (detected) detected` → else `key === "line" && !hasDetectedLine && flow`.
@@ -47,7 +52,7 @@ export function effectiveTagValueSql(tags: SQLWrapper, board: TagBoard, key: str
       return sql`COALESCE(${detected}, ${flow})`;
     }
     if ((KNOWN_TAG_KEYS as readonly string[]).includes(key)) {
-      // isp / link / sim: detected only — a hand-set-only value stays untagged.
+      // isp / link: detected only — a hand-set-only value stays untagged.
       return sql`${detected}`;
     }
     // Custom key: `if (detected) detected` → else `agent ?? flow`.

@@ -26,6 +26,12 @@ const FIXTURES: Array<{ name: string; tags: JobTag[] | null }> = [
   { name: "hand-set + detected isp", tags: [t("isp", "att", "agent"), t("isp", "starlink", "detected")] },
   { name: "detected isp only", tags: [t("isp", "starlink", "detected")] },
   { name: "flow sim only", tags: [t("sim", "att", "flow")] },
+  // System keys (access, sim): detected only on EVERY board — a hand-set
+  // value (which no route can store) is ignored even where hand-set wins.
+  { name: "agent sim + detected sim", tags: [t("sim", "att", "agent"), t("sim", "t-mobile", "detected")] },
+  { name: "detected sim only (with reason)", tags: [{ ...t("sim", "t-mobile", "detected"), reason: "v1: sim-match 310-260" }] },
+  { name: "flow + agent access, no detected", tags: [t("access", "lastmile", "flow"), t("access", "datacenter", "agent")] },
+  { name: "agent access + detected access", tags: [t("access", "lastmile", "agent"), { ...t("access", "datacenter", "detected"), reason: "v1: dc-range" }] },
   { name: "link from all three", tags: [t("link", "wifi", "flow"), t("link", "cellular", "detected"), t("link", "ethernet", "agent")] },
   { name: "custom: flow + agent", tags: [t("codec", "opus", "flow"), t("codec", "g711", "agent")] },
   { name: "custom: flow only", tags: [t("codec", "opus", "flow")] },
@@ -43,7 +49,7 @@ const FIXTURES: Array<{ name: string; tags: JobTag[] | null }> = [
 ];
 
 const BOARDS: TagBoard[] = ["mainline", "community", "myEvals"];
-const KEYS = ["line", "isp", "link", "sim", "codec", "absent"];
+const KEYS = ["line", "isp", "link", "access", "sim", "codec", "absent"];
 
 d("tag SQL agrees with effectiveTags", () => {
   const jsonbOf = (tags: JobTag[] | null) => (tags === null ? sql`NULL::jsonb` : sql`${JSON.stringify(tags)}::jsonb`);

@@ -59,9 +59,20 @@ test.describe("network tags", () => {
       await field.press("Enter");
       await expect(page.getByTestId("eval-flow-tags-error")).toContainText("set it on the agent, not the flow");
       await expect(page.getByTestId("eval-flow-tags-chip-isp")).toHaveCount(0);
-      // ...and is never offered as a suggestion.
+      // access and sim are system-only: refused on every end, with why.
+      await field.fill("access:lastmile");
+      await field.press("Enter");
+      await expect(page.getByTestId("eval-flow-tags-error")).toContainText("access is set by Vox from the eval agent's network — it can't be set by hand");
+      await field.fill("sim:t-mobile");
+      await field.press("Enter");
+      await expect(page.getByTestId("eval-flow-tags-error")).toContainText("sim is detected from the phone's SIM and its number — it can't be set by hand");
+      await expect(page.getByTestId("eval-flow-tags-chip-access")).toHaveCount(0);
+      await expect(page.getByTestId("eval-flow-tags-chip-sim")).toHaveCount(0);
+      // ...and none of them is ever offered as a suggestion.
       await field.fill("");
       await expect(page.getByTestId("eval-flow-tags-suggestions")).not.toContainText("isp:");
+      await expect(page.getByTestId("eval-flow-tags-suggestions")).not.toContainText("access:");
+      await expect(page.getByTestId("eval-flow-tags-suggestions")).not.toContainText("sim:");
       // Normalised the same way the server does.
       await field.fill("Line : Twilio");
       await field.press("Enter");
@@ -129,6 +140,11 @@ test.describe("network tags", () => {
       // From the controls: a different filter, then grouping, mirrored into the URL.
       await page.goto("/leaderboard");
       const field = page.getByTestId("metrics-tag-filter-field");
+      // The filter (no end) still takes the system keys, and suggests access's values.
+      await field.fill("access:");
+      await expect(page.getByTestId("metrics-tag-filter-suggestions")).toContainText("access:lastmile");
+      await expect(page.getByTestId("metrics-tag-filter-suggestions")).toContainText("access:datacenter");
+      await field.fill("");
       await field.fill(`line:${TWILIO}`);
       await field.press("Enter");
       await expect(rows).toHaveCount(1);

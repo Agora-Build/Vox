@@ -155,7 +155,7 @@ export function registerApiV1Routes(app: Express): void {
       }
 
       // Hand-set tags (design "Data model"), same parser as the console route.
-      const parsedTags = parseTags(req.body.tags, { end: "flow" }); // line + custom keys; isp/link/sim belong to the agent
+      const parsedTags = parseTags(req.body.tags, { end: "flow" }); // line + custom keys; isp/link belong to the agent, access/sim to Vox
       if ("error" in parsedTags) {
         return res.status(400).json({ error: parsedTags.error });
       }
@@ -286,7 +286,7 @@ export function registerApiV1Routes(app: Express): void {
 
       // Hand-set tags: absent leaves the stored value unchanged (PATCH-style,
       // even though this is a PUT) — same parser as create.
-      const parsedTags = parseTags(req.body.tags, { end: "flow" }); // line + custom keys; isp/link/sim belong to the agent
+      const parsedTags = parseTags(req.body.tags, { end: "flow" }); // line + custom keys; isp/link belong to the agent, access/sim to Vox
       if ("error" in parsedTags) {
         return res.status(400).json({ error: parsedTags.error });
       }

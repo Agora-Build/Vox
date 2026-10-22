@@ -12,7 +12,18 @@
  *   3. the claiming agent's hand-set tags (source "agent");
  *   4. `isp` from the agent's observed IP via the ASN database (detected);
  *   5. `link` from the agent's reported link type (detected), or — when none
- *      is reported and the detected isp is a satellite provider — `satellite`.
+ *      is reported and the detected isp is a satellite provider — `satellite`;
+ *   6. `access` from the agent's stored classification (`access_class` +
+ *      `access_reason`, written by the location check) — detected, with its
+ *      reason, on every job this function tags; never classified (or a value
+ *      outside the closed set) → `access:unknown` "v1: not-classified";
+ *   7. `sim` from the agent's stored SIM match (`sim_carrier` + `sim_reason`,
+ *      server/sim-carrier.ts) — phone jobs only, and only when there is a
+ *      carrier (a mismatch or a missing side is no tag, never a guess).
+ *
+ * `access` and `sim` are system-only (shared/tags.ts SYSTEM_TAG_KEYS): a
+ * hand-set one can't be saved, and one found on a stored flow snapshot or
+ * agent row (data from before the keys were reserved) is dropped here.
  *
  * A key may appear more than once (e.g. hand-set and detected `isp`): both
  * are kept so a board's value rule (`effectiveTags`) can change later without
@@ -27,7 +38,7 @@
  * link, hand-set tags) says nothing about the path that recording traveled —
  * the same reason the claim nulls an analysis's site_id.
  */
-import { normalizeTag, ispFromAsn, isSatelliteIsp, LINK_VALUES, type JobTag, type Tag, type LineLookup } from "@shared/tags";
+import { normalizeTag, ispFromAsn, isSatelliteIsp, isSystemKey, LINK_VALUES, ACCESS_VALUES, type JobTag, type Tag, type LineLookup } from "@shared/tags";
 import { lookupAsn, type AsnLookup } from "./location";
 
 export type AsnLookupFn = (ip: string) => AsnLookup | null;
@@ -38,15 +49,28 @@ export interface JobTagsInput {
   /** `snapshot.evalFlow` of the job being claimed; tags/lineLookup are absent on pre-release snapshots. */
   snapshotFlow: { tags?: Tag[] | null; lineLookup?: LineLookup | null } | null | undefined;
   /** The claiming agent's row. `observedIp` is Core-internal — used here, never returned. */
-  agent: { tags: unknown; linkType: string | null | undefined; observedIp: string | null | undefined };
+  agent: {
+    tags: unknown;
+    linkType: string | null | undefined;
+    observedIp: string | null | undefined;
+    /** System-only columns (eval_agents.access_class/access_reason, sim_carrier/sim_reason). */
+    accessClass?: string | null;
+    accessReason?: string | null;
+    simCarrier?: string | null;
+    simReason?: string | null;
+  };
 }
+
+/** The reason frozen with `access:unknown` for an agent the location check never classified. */
+export const NOT_CLASSIFIED_REASON = "v1: not-classified";
 
 function validTags(raw: unknown): Tag[] {
   if (!Array.isArray(raw)) return [];
   const out: Tag[] = [];
   for (const item of raw) {
     const t = normalizeTag(item as Tag);
-    if (!("error" in t)) out.push(t);
+    // System keys are never hand-set; a legacy stored one is not frozen.
+    if (!("error" in t) && !isSystemKey(t.key)) out.push(t);
   }
   return out;
 }
@@ -78,6 +102,20 @@ export function buildJobTags(input: JobTagsInput, asnLookup: AsnLookupFn = looku
     tags.push({ key: "link", value: linkType, source: "detected" });
   } else if (isSatelliteIsp(isp)) {
     tags.push({ key: "link", value: "satellite", source: "detected" });
+  }
+
+  const accessClass = input.agent.accessClass;
+  if (accessClass && (ACCESS_VALUES as readonly string[]).includes(accessClass)) {
+    tags.push({ key: "access", value: accessClass, source: "detected", reason: input.agent.accessReason ?? NOT_CLASSIFIED_REASON });
+  } else {
+    tags.push({ key: "access", value: "unknown", source: "detected", reason: NOT_CLASSIFIED_REASON });
+  }
+
+  if (input.job.transport === "phone" && input.agent.simCarrier) {
+    const sim = normalizeTag({ key: "sim", value: input.agent.simCarrier });
+    if (!("error" in sim)) {
+      tags.push({ ...sim, source: "detected", ...(input.agent.simReason ? { reason: input.agent.simReason } : {}) });
+    }
   }
 
   return tags;

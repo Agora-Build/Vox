@@ -1470,7 +1470,7 @@ export class DatabaseStorage {
       // claim UPDATE itself. One statement, one commit: a claim can never
       // land without its tags (no later write a crash could skip).
       const agentRow = await client.query(
-        `SELECT tags, link_type, observed_ip FROM eval_agents WHERE id = $1`,
+        `SELECT tags, link_type, observed_ip, access_class, access_reason, sim_carrier, sim_reason FROM eval_agents WHERE id = $1`,
         [agentId],
       );
       const snapshotFlow = (selectResult.rows[0].snapshot as JobSnapshot | null)?.evalFlow ?? null;
@@ -1481,6 +1481,10 @@ export class DatabaseStorage {
           tags: agentRow.rows[0]?.tags ?? [],
           linkType: agentRow.rows[0]?.link_type ?? null,
           observedIp: agentRow.rows[0]?.observed_ip ?? null,
+          accessClass: agentRow.rows[0]?.access_class ?? null,
+          accessReason: agentRow.rows[0]?.access_reason ?? null,
+          simCarrier: agentRow.rows[0]?.sim_carrier ?? null,
+          simReason: agentRow.rows[0]?.sim_reason ?? null,
         },
       }, opts.asnLookup);
       // token_dispatch_tier + location_trust frozen, site stamped, in the same

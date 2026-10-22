@@ -2,7 +2,8 @@ import { describe, it, expect } from "vitest";
 import {
   KNOWN_TAG_KEYS, LINK_VALUES, MAX_TAGS, TAG_SUGGESTIONS,
   normalizeTag, parseTags, formatTag, tagEndError, END_TAG_KEYS, UNTAGGED_VALUE,
-  ispFromAsn, lineFromCarrier, isSatelliteIsp,
+  ispFromAsn, lineFromCarrier, simFromCarrier, isSatelliteIsp,
+  SYSTEM_TAG_KEYS, ACCESS_VALUES,
   effectiveTags, parseTagFilter, parseGroupBy,
   type Tag, type JobTag,
 } from "../shared/tags";
@@ -119,14 +120,11 @@ describe("parseTags with an end (flow vs agent)", () => {
     expect(parseTags(["line:twilio", "link:wifi"], { end: "flow" })).toEqual({
       error: "link is detected from the eval agent's network — set it on the agent, not the flow",
     });
-    expect(parseTags(["sim:att"], { end: "flow" })).toEqual({
-      error: "sim describes the eval agent's SIM card — set it on the agent, not the flow",
-    });
   });
 
-  it("an agent takes isp/link/sim + custom keys and refuses line", () => {
-    expect(parseTags(["isp:comcast", "link:wifi", "sim:att", "rack:a1"], { end: "agent" })).toEqual({
-      tags: [{ key: "isp", value: "comcast" }, { key: "link", value: "wifi" }, { key: "sim", value: "att" }, { key: "rack", value: "a1" }],
+  it("an agent takes isp/link + custom keys and refuses line", () => {
+    expect(parseTags(["isp:comcast", "link:wifi", "rack:a1"], { end: "agent" })).toEqual({
+      tags: [{ key: "isp", value: "comcast" }, { key: "link", value: "wifi" }, { key: "rack", value: "a1" }],
     });
     expect(parseTags(["Line:Twilio"], { end: "agent" })).toEqual({
       error: "line belongs to the eval flow's dialled number — set it on the flow, not the agent",
@@ -137,12 +135,63 @@ describe("parseTags with an end (flow vs agent)", () => {
     expect(parseTags(["line:twilio", "isp:att"])).toHaveProperty("tags");
   });
 
-  it("END_TAG_KEYS partitions the known keys", () => {
-    expect([...END_TAG_KEYS.flow, ...END_TAG_KEYS.agent].sort()).toEqual([...KNOWN_TAG_KEYS].sort());
+  it("END_TAG_KEYS + SYSTEM_TAG_KEYS partition the known keys", () => {
+    expect([...END_TAG_KEYS.flow, ...END_TAG_KEYS.agent, ...SYSTEM_TAG_KEYS].sort()).toEqual([...KNOWN_TAG_KEYS].sort());
     expect(tagEndError("codec", "flow")).toBeUndefined();
     expect(tagEndError("codec", "agent")).toBeUndefined();
     expect(tagEndError("line", "flow")).toBeUndefined();
     expect(tagEndError("isp", "agent")).toBeUndefined();
+  });
+});
+
+describe("system-only keys (access, sim)", () => {
+  const ACCESS_MSG = "access is set by Vox from the eval agent's network — it can't be set by hand";
+  const SIM_MSG = "sim is detected from the phone's SIM and its number — it can't be set by hand";
+
+  it("are refused on a flow and on an agent, with the same clear message", () => {
+    expect(SYSTEM_TAG_KEYS).toEqual(["access", "sim"]);
+    for (const end of ["flow", "agent"] as const) {
+      expect(parseTags(["access:lastmile"], { end })).toEqual({ error: ACCESS_MSG });
+      expect(parseTags(["sim:att"], { end })).toEqual({ error: SIM_MSG });
+      expect(parseTags(["Sim : T-Mobile"], { end })).toEqual({ error: SIM_MSG });
+      expect(tagEndError("access", end)).toBe(ACCESS_MSG);
+      expect(tagEndError("sim", end)).toBe(SIM_MSG);
+    }
+  });
+
+  it("are still valid filters (no end) — access is a closed set", () => {
+    expect(ACCESS_VALUES).toEqual(["lastmile", "datacenter", "unknown"]);
+    expect(parseTagFilter(["access:lastmile", "sim:t-mobile"])).toEqual({
+      filters: [{ key: "access", value: "lastmile" }, { key: "sim", value: "t-mobile" }],
+    });
+    expect(normalizeTag("access:home")).toEqual({ error: 'Invalid value "home" for "access": must be one of lastmile, datacenter, unknown' });
+  });
+
+  it("use the detected value on every board; a hand-set one is ignored, even where hand-set normally wins", () => {
+    const jobTags: JobTag[] = [
+      { key: "access", value: "datacenter", source: "agent" },
+      { key: "access", value: "lastmile", source: "detected", reason: "v1: mobile-asn" },
+      { key: "sim", value: "att", source: "flow" },
+      { key: "sim", value: "t-mobile", source: "detected", reason: "v1: sim-match 310-260" },
+    ];
+    for (const board of ["mainline", "community", "myEvals"] as const) {
+      expect(effectiveTags(jobTags, board)).toEqual([{ key: "access", value: "lastmile" }, { key: "sim", value: "t-mobile" }]);
+      expect(effectiveTags([{ key: "sim", value: "att", source: "agent" }, { key: "access", value: "lastmile", source: "flow" }], board)).toEqual([]);
+    }
+  });
+});
+
+describe("simFromCarrier", () => {
+  it("maps a carrier name to its radio network", () => {
+    expect(simFromCarrier("T-Mobile USA, Inc.")).toBe("t-mobile");
+    expect(simFromCarrier("AT&T Wireless")).toBe("att");
+    expect(simFromCarrier("New Cingular Wireless PCS, LLC")).toBe("att");
+    expect(simFromCarrier("Cellco Partnership dba Verizon Wireless")).toBe("verizon");
+    expect(simFromCarrier("Verizon Wireless")).toBe("verizon");
+  });
+  it("falls back to a normalized name; nothing for null", () => {
+    expect(simFromCarrier("Vodafone UK")).toBe("vodafone-uk");
+    expect(simFromCarrier(null)).toBeUndefined();
   });
 });
 
@@ -238,12 +287,11 @@ describe("effectiveTags", () => {
     expect(effectiveTags(jobTags, "mainline")).toEqual([]);
   });
 
-  it("mainline: link and sim follow the same detected-only rule", () => {
+  it("mainline: link follows the same detected-only rule", () => {
     expect(effectiveTags([{ key: "link", value: "wifi", source: "agent" }], "mainline")).toEqual([]);
     expect(effectiveTags([{ key: "link", value: "wifi", source: "detected" }], "mainline")).toEqual([
       { key: "link", value: "wifi" },
     ]);
-    expect(effectiveTags([{ key: "sim", value: "verizon", source: "agent" }], "mainline")).toEqual([]);
   });
 
   it("mainline: line falls back to the flow's hand-set value when there is no detected line", () => {
@@ -336,7 +384,7 @@ describe("parseGroupBy", () => {
 
 describe("module shape", () => {
   it("exposes the known keys, link values and suggestions", () => {
-    expect(KNOWN_TAG_KEYS).toEqual(["line", "isp", "link", "sim"]);
+    expect(KNOWN_TAG_KEYS).toEqual(["line", "isp", "link", "access", "sim"]);
     expect(LINK_VALUES).toEqual(["wifi", "ethernet", "cellular", "satellite"]);
     expect(MAX_TAGS).toBe(16);
     expect(TAG_SUGGESTIONS.line).toContain("twilio");

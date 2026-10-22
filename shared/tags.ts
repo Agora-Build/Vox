@@ -15,29 +15,50 @@
  */
 
 /** Keys with suggestions / special handling. Any other key is a free custom key. */
-export const KNOWN_TAG_KEYS = ["line", "isp", "link", "sim"] as const;
+export const KNOWN_TAG_KEYS = ["line", "isp", "link", "access", "sim"] as const;
+
+/**
+ * Keys only Vox sets — never by hand, on neither end (design "Last mile vs
+ * datacenter" and "`sim` is system-only"). `access` comes from the location
+ * check's classifier, `sim` from matching the phone's SIM operator against a
+ * lookup of our own number. Both are frozen at claim as `detected` tags, and
+ * every board reads only that detected value.
+ */
+export const SYSTEM_TAG_KEYS = ["access", "sim"] as const;
+
+/** `access` is a closed set — the classifier's three answers. */
+export const ACCESS_VALUES = ["lastmile", "datacenter", "unknown"] as const;
+export type AccessClass = (typeof ACCESS_VALUES)[number];
 
 /**
  * Which end of the path a tag describes — and so where it may be set by hand.
  * A flow describes the TARGET's side (`line`: its dialled number's provider);
- * an eval agent describes OUR vantage point (`isp`, `link`, `sim`). A known
- * key is refused on the other end at save; custom keys are allowed on both.
+ * an eval agent describes OUR vantage point (`isp`, `link`). A known key is
+ * refused on the other end at save, a system key on both; custom keys are
+ * allowed on both.
  */
 export type TagEnd = "flow" | "agent";
 
-/** Known keys each end may carry. */
+/** Known keys each end may carry by hand. */
 export const END_TAG_KEYS: Record<TagEnd, readonly string[]> = {
   flow: ["line"],
-  agent: ["isp", "link", "sim"],
+  agent: ["isp", "link"],
 };
+
+const SYSTEM_KEY_ERRORS: Record<(typeof SYSTEM_TAG_KEYS)[number], string> = {
+  access: "access is set by Vox from the eval agent's network — it can't be set by hand",
+  sim: "sim is detected from the phone's SIM and its number — it can't be set by hand",
+};
+
+export const isSystemKey = (key: string): key is (typeof SYSTEM_TAG_KEYS)[number] =>
+  (SYSTEM_TAG_KEYS as readonly string[]).includes(key);
 
 /** Why a known key can't be set on this end, or undefined when it can. */
 export function tagEndError(key: string, end: TagEnd): string | undefined {
+  if (isSystemKey(key)) return SYSTEM_KEY_ERRORS[key];
   if (!isKnownKey(key) || END_TAG_KEYS[end].includes(key)) return undefined;
   if (end === "flow") {
-    return key === "sim"
-      ? `sim describes the eval agent's SIM card — set it on the agent, not the flow`
-      : `${key} is detected from the eval agent's network — set it on the agent, not the flow`;
+    return `${key} is detected from the eval agent's network — set it on the agent, not the flow`;
   }
   return `line belongs to the eval flow's dialled number — set it on the flow, not the agent`;
 }
@@ -75,9 +96,14 @@ export interface Tag {
   value: string;
 }
 
-/** A tag as frozen on a job at claim time. */
+/**
+ * A tag as frozen on a job at claim time. `reason` is carried by system tags
+ * (`access`, `sim`): the classifier version + deciding signals, frozen with
+ * the value so a result can always say why. Boards ignore it.
+ */
 export interface JobTag extends Tag {
   source: TagSource;
+  reason?: string;
 }
 
 /**
@@ -171,6 +197,9 @@ export function normalizeTag(raw: string | Tag): Tag | { error: string } {
   if (key === "link" && !(LINK_VALUES as readonly string[]).includes(value)) {
     return { error: `Invalid value "${value}" for "link": must be one of ${LINK_VALUES.join(", ")}` };
   }
+  if (key === "access" && !(ACCESS_VALUES as readonly string[]).includes(value)) {
+    return { error: `Invalid value "${value}" for "access": must be one of ${ACCESS_VALUES.join(", ")}` };
+  }
   return { key, value };
 }
 
@@ -263,6 +292,29 @@ export function lineFromCarrier(carrierName: string | null | undefined): string 
   return normalizeFreeValue(carrierName);
 }
 
+/**
+ * Carrier-name substrings (case-insensitive) → the RADIO network a SIM rides
+ * on. A lookup of an MVNO's number (Mint, Visible, Cricket…) reports the host
+ * network's carrier, so this names the network the call actually used.
+ */
+const CARRIER_SIM_MAP: Array<[RegExp, string]> = [
+  [/t-?mobile|sprint/i, "t-mobile"],
+  [/at&t|at & t|cingular/i, "att"],
+  [/verizon|cellco/i, "verizon"],
+];
+
+/**
+ * `sim` from the number lookup's carrier name for our own SIM's number. A
+ * known network wins; otherwise the name, normalized; none → `undefined`.
+ */
+export function simFromCarrier(carrierName: string | null | undefined): string | undefined {
+  if (carrierName == null) return undefined;
+  for (const [pattern, value] of CARRIER_SIM_MAP) {
+    if (pattern.test(carrierName)) return value;
+  }
+  return normalizeFreeValue(carrierName);
+}
+
 /** Whether an `isp` value is a satellite provider — used to infer `link:satellite` when no interface can report it. */
 export function isSatelliteIsp(isp: string | undefined): boolean {
   return !!isp && SATELLITE_ISP_VALUES.has(isp);
@@ -280,6 +332,8 @@ export function isSatelliteIsp(isp: string | undefined): boolean {
  *   overriding flow.
  * - **community / myEvals**: the hand-set value when there is one (agent
  *   overriding flow), else the detected one.
+ * - **system keys** (`access`, `sim`), on every board: the detected value
+ *   only. No route can store a hand-set one; any that turns up is ignored.
  *
  * "The flow had a lookup" is derived from the job's own tags — a `line` tag
  * with `source: "detected"` — never a separate flag, because the SQL side
@@ -302,7 +356,9 @@ export function effectiveTags(jobTags: JobTag[] | null | undefined, board: TagBo
     const flow = list.find((t) => t.source === "flow");
 
     let value: string | undefined;
-    if (board === "mainline") {
+    if (isSystemKey(key)) {
+      value = detected?.value;
+    } else if (board === "mainline") {
       if (detected) {
         value = detected.value;
       } else if (key === "line" && !hasDetectedLine && flow) {
@@ -310,7 +366,7 @@ export function effectiveTags(jobTags: JobTag[] | null | undefined, board: TagBo
       } else if (!isKnownKey(key)) {
         value = agent?.value ?? flow?.value;
       }
-      // Known keys (isp/link/sim) with no detected value, and no exception
+      // Known keys (isp/link) with no detected value, and no exception
       // above, stay untagged by design — a hand-set-only value on a public
       // agent must not be able to mislabel results others rely on.
     } else {

@@ -3,7 +3,7 @@ import { X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
-import { END_TAG_KEYS, KNOWN_TAG_KEYS, LINK_VALUES, MAX_TAGS, TAG_SUGGESTIONS, formatTag, normalizeTag, tagEndError, type Tag, type TagEnd } from "@shared/tags";
+import { ACCESS_VALUES, END_TAG_KEYS, KNOWN_TAG_KEYS, LINK_VALUES, MAX_TAGS, TAG_SUGGESTIONS, formatTag, normalizeTag, tagEndError, type Tag, type TagEnd } from "@shared/tags";
 
 /**
  * Network tags as chips (designs/2026-10-22-network-tags-design.md "Console
@@ -12,13 +12,14 @@ import { END_TAG_KEYS, KNOWN_TAG_KEYS, LINK_VALUES, MAX_TAGS, TAG_SUGGESTIONS, f
  * error shows here, inline, before a save could 400. One value per key: a
  * second `isp:` replaces the first. Used by the eval flow form, the Agents
  * page and as the metrics filter. With `end`, only that end's known keys are
- * offered and accepted (the server's parseTags `end` rule); without it (the
- * metrics filter) every key is.
+ * offered and accepted (the server's parseTags `end` rule) — never the
+ * system-only `access`/`sim`, which Vox alone sets; without it (the metrics
+ * filter) every key is, so results can be filtered by them.
  */
 export interface TagInputProps {
   value: Tag[];
   onChange: (tags: Tag[]) => void;
-  /** Which end the tags describe: "flow" (line + custom keys) or "agent" (isp/link/sim + custom keys). Unset = any key (filters). */
+  /** Which end the tags describe: "flow" (line + custom keys) or "agent" (isp/link + custom keys). Unset = any key (filters). */
   end?: TagEnd;
   /** Keys suggested first (e.g. `line` on a phone flow). */
   preferredKeys?: string[];
@@ -31,9 +32,10 @@ export interface TagInputProps {
   "aria-label"?: string;
 }
 
-/** Suggested values for a known key; `link` is a closed set. */
+/** Suggested values for a known key; `link` and `access` are closed sets. */
 function valuesFor(key: string): readonly string[] {
   if (key === "link") return LINK_VALUES;
+  if (key === "access") return ACCESS_VALUES;
   return (TAG_SUGGESTIONS as Record<string, string[]>)[key] ?? [];
 }
 
