@@ -346,6 +346,18 @@ export const evalAgents = pgTable("eval_agents", {
   // `capabilities`. Null = not reported (an older agent, or the host's answer
   // couldn't be detected).
   linkType: varchar("link_type", { length: 16 }),
+  // System-only (migration 0058): written only by Core's location check
+  // (server/location.ts → server/access-class.ts), never from a request body.
+  // lastmile | datacenter | unknown; null = never checked.
+  accessClass: varchar("access_class", { length: 16 }),
+  // Classifier version + deciding signals, e.g. "v1: dc-range".
+  accessReason: text("access_reason"),
+  accessCheckedAt: timestamp("access_checked_at"),
+  // System-only: our SIM's carrier slug (phone agents), the reason, and our
+  // own number redacted to its last 4 digits — never the full number.
+  simCarrier: varchar("sim_carrier", { length: 48 }),
+  simReason: text("sim_reason"),
+  simNumberRedacted: varchar("sim_number_redacted", { length: 8 }),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 }, (table) => ({
@@ -367,6 +379,13 @@ export const insertEvalAgentSchema = createInsertSchema(evalAgents).omit({
   lastSeenAt: true,
   lastJobAt: true,
   tags: true,
+  // System-only — never set through an insert built from input.
+  accessClass: true,
+  accessReason: true,
+  accessCheckedAt: true,
+  simCarrier: true,
+  simReason: true,
+  simNumberRedacted: true,
 });
 
 export type InsertEvalAgent = z.infer<typeof insertEvalAgentSchema>;
@@ -389,6 +408,10 @@ export const numberLookups = pgTable("number_lookups", {
   // The mapped `line` tag value (shared/tags.ts `lineFromCarrier`); null when
   // the provider returned no carrier (e.g. toll-free) — stays manual-only.
   value: varchar("value", { length: 48 }),
+  // Mobile country / network code of the number (Twilio
+  // line_type_intelligence), matched against a SIM operator's codes.
+  mcc: varchar("mcc", { length: 3 }),
+  mnc: varchar("mnc", { length: 3 }),
   lookedUpAt: timestamp("looked_up_at").defaultNow().notNull(),
 });
 

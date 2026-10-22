@@ -10,6 +10,7 @@ import {
   parseIpcatCsv,
   parsePeeringdbNet,
   parseApnicAspop,
+  APNIC_MIN_COUNTRY_USERS,
   parseMobileCarrierAsns,
   createAccessData,
   loadAccessDataFromDir,
@@ -91,10 +92,20 @@ describe("parsePeeringdbNet (PeeringDB net objects)", () => {
 
 describe("parseApnicAspop (APNIC per-AS end-user estimates)", () => {
   const shares = parseApnicAspop(JSON.parse(fixture("apnic-aspop.json")));
-  it("keeps each AS's largest share of a country's users", () => {
+  it("keeps each AS's largest share of a country's users, counting only countries with ≥ APNIC_MIN_COUNTRY_USERS", () => {
+    expect(APNIC_MIN_COUNTRY_USERS).toBe(500_000);
     expect(shares.get(7922)).toBeCloseTo(17.89);
-    expect(shares.get(21928)).toBeCloseTo(9.1); // PR row beats the later, smaller US row
-    expect(shares.get(13335)).toBeCloseTo(0.03);
+    // T-Mobile's PR row (9.10%) serves only 100k users — a small-country share
+    // isn't evidence (Cloudflare reads 32% of Antarctica's 207 users) — so the
+    // US row's 7.56% stands.
+    expect(shares.get(21928)).toBeCloseTo(7.56);
+    // Known to APNIC but never big anywhere → 0, not undefined.
+    expect(shares.get(13335)).toBe(0);
+  });
+  it("keeps the max among qualifying rows regardless of order", () => {
+    const row = (AS: number, Users: number, pct: number) => ({ AS, Users, "Percent of CC Pop": pct });
+    const m = parseApnicAspop({ Data: [row(1, 600_000, 2), row(1, 9_000_000, 5), row(1, 700_000, 3)] });
+    expect(m.get(1)).toBe(5);
   });
   it("skips malformed rows", () => {
     expect(shares.size).toBe(3);

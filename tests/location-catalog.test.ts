@@ -49,10 +49,12 @@ describeDb("catalog resolution", () => {
   });
 });
 
+const noAccessSignals = { dcRange: false, peeringdbType: undefined, eyeballShare: undefined, isMobile: false };
 // Access data loaded, but no geo for any IP → low_confidence (ineligible).
 const loadedNoGeo: DetectionDeps = {
   geo: () => null, asn: () => null, torExits: new Set(),
   networkClass: () => null, networkClassLoaded: true,
+  accessSignals: () => noAccessSignals,
 };
 const geoFrankfurt: GeoLookup = {
   city: "Frankfurt am Main", countryCode: "DE", countryName: "Germany", continentCode: "EU",
@@ -63,6 +65,7 @@ const geoFrankfurt: GeoLookup = {
 const unloadedWithGeo: DetectionDeps = {
   geo: () => geoFrankfurt, asn: () => ({ asn: 3320, org: "Deutsche Telekom" }), torExits: new Set(),
   networkClass: () => null, networkClassLoaded: false,
+  accessSignals: () => noAccessSignals,
 };
 
 describeDb("allocateSiteId + runAgentLocationCheck", () => {

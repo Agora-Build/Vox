@@ -126,6 +126,8 @@ const METRICS_ROW_CEILING = 20000;
 const METRICS_ALL_MAX_DAYS = METRICS_RETENTION_DAYS;
 
 export type MetricTier = "mainline" | "community" | "myEvals";
+/** System-only access columns, written only by the location check (server/location.ts). */
+export type EvalAgentAccessFields = { accessClass: string; accessReason: string; accessCheckedAt: Date };
 export type MetricsMode = "raw" | "bucketHour" | "bucketDay";
 export type RegionQueryScope = {
   siteId?: string;
@@ -928,7 +930,7 @@ export class DatabaseStorage {
     region: string | null; siteId: string | null; locationTrust: string;
     locationCheckedAt: Date; locationSource: unknown;
     pendingRegion: string | null; pendingRegionCount: number;
-  }): Promise<void> {
+  } & EvalAgentAccessFields): Promise<void> {
     await db.update(evalAgents).set({
       region: fields.region,
       siteId: fields.siteId,
@@ -937,19 +939,26 @@ export class DatabaseStorage {
       locationSource: fields.locationSource,
       pendingRegion: fields.pendingRegion,
       pendingRegionCount: fields.pendingRegionCount,
+      accessClass: fields.accessClass,
+      accessReason: fields.accessReason,
+      accessCheckedAt: fields.accessCheckedAt,
       updatedAt: new Date(),
     }).where(eq(evalAgents.id, agentId));
   }
 
-  // Public-tier agents: configured identity (region/siteId) is trusted and never
-  // touched here — only the observability fields are recorded.
+  // Public-tier agents (and capped detections): configured identity
+  // (region/siteId) is never touched here — only the observability fields and
+  // the access class are recorded (access is computed for every agent).
   async updateEvalAgentLocationObservability(agentId: number, fields: {
     locationTrust: string; locationCheckedAt: Date; locationSource: unknown;
-  }): Promise<void> {
+  } & EvalAgentAccessFields): Promise<void> {
     await db.update(evalAgents).set({
       locationTrust: fields.locationTrust,
       locationCheckedAt: fields.locationCheckedAt,
       locationSource: fields.locationSource,
+      accessClass: fields.accessClass,
+      accessReason: fields.accessReason,
+      accessCheckedAt: fields.accessCheckedAt,
       updatedAt: new Date(),
     }).where(eq(evalAgents.id, agentId));
   }

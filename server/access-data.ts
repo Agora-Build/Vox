@@ -38,8 +38,9 @@ export interface AccessData {
   peeringdbType(asn: number): PeeringdbType | undefined;
   /**
    * APNIC Labs estimate: the largest share (percent, 0–100) of any one
-   * country's Internet users this AS serves. Undefined when APNIC has no row
-   * for the AS or the data isn't loaded.
+   * country's Internet users this AS serves, counting only countries where it
+   * serves ≥ APNIC_MIN_COUNTRY_USERS (0 when none). Undefined when APNIC has
+   * no row for the AS or the data isn't loaded.
    */
   eyeballShare(asn: number): number | undefined;
   isMobileAsn(asn: number): boolean;
@@ -255,8 +256,20 @@ export function parsePeeringdbNet(doc: unknown): Map<number, PeeringdbType> {
 }
 
 /**
+ * A country row counts toward an AS's eyeball share only when the AS serves at
+ * least this many users there. A percentage of a tiny population is noise:
+ * in the 2026-10-20 data Cloudflare reads 32% of Antarctica (207 users) and
+ * 13.5% of Afghanistan, Cogent 12% of Cape Verde (48k), UCloud 11% of the
+ * Seychelles (7k). With this floor AWS's best row is 0.37% (US, 858k users of
+ * its AES ASN) instead of 4.93% (Singapore, 253k). See access-class.ts
+ * EYEBALL_MIN_SHARE for the threshold applied on top.
+ */
+export const APNIC_MIN_COUNTRY_USERS = 500_000;
+
+/**
  * APNIC Labs aspop JSON (`cgi-bin/aspop?f=j`): one row per (AS, country).
- * Keeps, per AS, the largest "Percent of CC Pop".
+ * Keeps, per AS, the largest "Percent of CC Pop" among the countries where
+ * it serves ≥ APNIC_MIN_COUNTRY_USERS users (0 when it is never that big).
  */
 export function parseApnicAspop(doc: unknown): Map<number, number> {
   const data = (doc as { Data?: unknown } | null)?.Data;
@@ -267,8 +280,10 @@ export function parseApnicAspop(doc: unknown): Map<number, number> {
     const pct = row?.["Percent of CC Pop"];
     if (typeof asn !== "number" || !Number.isInteger(asn) || asn <= 0) continue;
     if (typeof pct !== "number" || !Number.isFinite(pct) || pct < 0) continue;
+    const users = row?.Users;
+    const share = typeof users === "number" && users >= APNIC_MIN_COUNTRY_USERS ? pct : 0;
     const prev = out.get(asn);
-    if (prev === undefined || pct > prev) out.set(asn, pct);
+    if (prev === undefined || share > prev) out.set(asn, share);
   }
   return out;
 }

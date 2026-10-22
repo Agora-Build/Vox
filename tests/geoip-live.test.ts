@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll } from "vitest";
 import { existsSync } from "fs";
 import path from "path";
 import { open, type Reader, type CityResponse, type AsnResponse } from "maxmind";
-import { detectLocation, type DetectionDeps, type GeoLookup, type AsnLookup } from "../server/location";
+import { detectLocation, accessSignalsFrom, type DetectionDeps, type GeoLookup, type AsnLookup } from "../server/location";
 import { loadAccessDataFromDir, networkClassOf } from "../server/access-data";
 
 /**
@@ -73,6 +73,7 @@ describeGeo("detection pipeline against live GeoIP databases", () => {
       geo, asn, torExits: new Set(),
       networkClass: (ip, asnNumber) => networkClassOf(access, ip, asnNumber),
       networkClassLoaded: access.loaded.datacenter && access.loaded.vpn,
+      accessSignals: accessSignalsFrom(access),
     };
   });
 

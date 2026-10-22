@@ -2,8 +2,9 @@ import { describe, it, expect } from "vitest";
 import {
   isPublicIp, classifyLocation, slugCity, macroForContinent, deriveRegionCandidate,
   haversineKm, decideLocationTransition, REGION_CHANGE_STABILITY, detectLocation,
-  liveDetectionDeps, type LocationSignals, type GeoLookup, type DetectionDeps,
+  liveDetectionDeps, accessSignalsFrom, type LocationSignals, type GeoLookup, type DetectionDeps,
 } from "../server/location";
+import type { AccessClass, AccessResult } from "../server/access-class";
 import { createAccessData, parseCidrList, networkClassOf, getAccessData } from "../server/access-data";
 
 const geoMumbai: GeoLookup = {
@@ -24,46 +25,64 @@ describe("isPublicIp", () => {
   ])("%s → %s", (ip, expected) => expect(isPublicIp(ip)).toBe(expected));
 });
 
+const acc = (access: AccessClass): AccessResult => ({ access, reason: `v1: test-${access}` });
+// Ladder under test; access defaults to unknown (the common "no evidence" case).
+const cl = (ip: string, s: LocationSignals, a: AccessResult = acc("unknown")) => classifyLocation(ip, s, a);
+
 describe("classifyLocation trust ladder (first match wins)", () => {
   it("private IP → unknown, no candidate", () => {
-    const d = classifyLocation("192.168.1.1", signals());
+    const d = cl("192.168.1.1", signals());
     expect(d.trust).toBe("unknown");
     expect(d.candidate).toBeNull();
   });
   it("Tor exit → anonymized even with clean geo", () => {
-    expect(classifyLocation("49.36.100.1", signals({ isTorExit: true })).trust).toBe("anonymized");
+    expect(cl("49.36.100.1", signals({ isTorExit: true })).trust).toBe("anonymized");
   });
   it("VPN network → anonymized", () => {
-    expect(classifyLocation("49.36.100.1", signals({ netClass: "vpn" })).trust).toBe("anonymized");
+    expect(cl("49.36.100.1", signals({ netClass: "vpn" })).trust).toBe("anonymized");
   });
   it("geo miss → low_confidence", () => {
-    expect(classifyLocation("49.36.100.1", signals({ geo: null })).trust).toBe("low_confidence");
+    expect(cl("49.36.100.1", signals({ geo: null })).trust).toBe("low_confidence");
   });
   it("no city → low_confidence", () => {
-    expect(classifyLocation("49.36.100.1", signals({ geo: { ...geoMumbai, city: undefined } })).trust).toBe("low_confidence");
+    expect(cl("49.36.100.1", signals({ geo: { ...geoMumbai, city: undefined } })).trust).toBe("low_confidence");
   });
   it("accuracy radius > 100km → low_confidence", () => {
-    expect(classifyLocation("49.36.100.1", signals({ geo: { ...geoMumbai, accuracyKm: 500 } })).trust).toBe("low_confidence");
+    expect(cl("49.36.100.1", signals({ geo: { ...geoMumbai, accuracyKm: 500 } })).trust).toBe("low_confidence");
   });
-  it("hosting network → datacenter WITH a candidate (location trusted)", () => {
-    const d = classifyLocation("3.6.100.1", signals({ netClass: "hosting" }));
+  it("access datacenter → datacenter WITH a candidate (location trusted)", () => {
+    const d = cl("3.6.100.1", signals({ netClass: "hosting" }), acc("datacenter"));
     expect(d.trust).toBe("datacenter");
     expect(d.candidate?.baseId).toBe("apac-in-mumbai");
   });
+  it("datacenter is derived from access, not from the network class alone", () => {
+    expect(cl("3.6.100.1", signals({ netClass: "hosting" }), acc("unknown")).trust).toBe("trusted");
+    expect(cl("3.6.100.1", signals(), acc("datacenter")).trust).toBe("datacenter");
+    expect(cl("49.36.100.1", signals(), acc("lastmile")).trust).toBe("trusted");
+  });
+  it("access datacenter never lifts an ineligible rung (private/Tor/VPN/no geo)", () => {
+    expect(cl("10.0.0.1", signals(), acc("datacenter")).trust).toBe("unknown");
+    expect(cl("49.36.100.1", signals({ isTorExit: true }), acc("datacenter")).trust).toBe("anonymized");
+    expect(cl("49.36.100.1", signals({ netClass: "vpn" }), acc("datacenter")).trust).toBe("anonymized");
+    expect(cl("49.36.100.1", signals({ geo: null }), acc("datacenter")).trust).toBe("low_confidence");
+  });
+  it("detection carries the access answer it was given", () => {
+    expect(cl("3.6.100.1", signals(), acc("datacenter")).access).toEqual(acc("datacenter"));
+  });
   it("clean residential → trusted with candidate", () => {
-    const d = classifyLocation("49.36.100.1", signals());
+    const d = cl("49.36.100.1", signals());
     expect(d.trust).toBe("trusted");
     expect(d.candidate).toMatchObject({ baseId: "apac-in-mumbai", macroRegionCode: "apac", countryCode: "IN" });
   });
   it("anonymized/low_confidence/unknown never carry a candidate", () => {
     for (const d of [
-      classifyLocation("49.36.100.1", signals({ isTorExit: true })),
-      classifyLocation("49.36.100.1", signals({ geo: null })),
-      classifyLocation("10.0.0.1", signals()),
+      cl("49.36.100.1", signals({ isTorExit: true })),
+      cl("49.36.100.1", signals({ geo: null })),
+      cl("10.0.0.1", signals()),
     ]) expect(d.candidate).toBeNull();
   });
   it("source never contains the raw signals objects, only scalars + signal names", () => {
-    const d = classifyLocation("49.36.100.1", signals());
+    const d = cl("49.36.100.1", signals());
     expect(d.source).toEqual({
       city: "Mumbai", countryCode: "IN", lat: 19.076, lon: 72.877,
       accuracyKm: 20, asn: 55836, asnOrg: "Reliance Jio", signals: [],
@@ -167,13 +186,17 @@ describe("detectLocation with injected deps", () => {
     datacenter: [parseCidrList("3.0.0.0/15\n")],
     vpn: [parseCidrList("1.2.3.0/24\n")],
     peeringdb: new Map([[64500, "content" as const]]),
+    apnic: new Map([[55836, 49.43]]),
+    mobileAsns: new Set([21928]),
   });
   const deps: DetectionDeps = {
-    geo: (ip) => ["49.36.100.1", "3.0.0.9", "5.5.5.5"].includes(ip) ? geoMumbai : null,
-    asn: (ip) => ip === "5.5.5.5" ? { asn: 64500, org: "CDN" } : ip === "49.36.100.1" ? { asn: 55836, org: "Jio" } : { asn: 9009, org: "M247" },
+    geo: (ip) => ["49.36.100.1", "3.0.0.9", "5.5.5.5", "172.58.1.1"].includes(ip) ? geoMumbai : null,
+    asn: (ip) => ip === "5.5.5.5" ? { asn: 64500, org: "CDN" } : ip === "49.36.100.1" ? { asn: 55836, org: "Jio" }
+      : ip === "172.58.1.1" ? { asn: 21928, org: "T-Mobile" } : { asn: 9009, org: "M247" },
     torExits: new Set(["185.220.101.1"]),
     networkClass: (ip, asn) => networkClassOf(access, ip, asn),
     networkClassLoaded: true,
+    accessSignals: accessSignalsFrom(access),
   };
   it("resolves geo+asn through deps", () => {
     const d = detectLocation("49.36.100.1", deps);
@@ -194,6 +217,47 @@ describe("detectLocation with injected deps", () => {
   });
   it("PeeringDB Content network → datacenter", () => {
     expect(detectLocation("5.5.5.5", deps).trust).toBe("datacenter");
+  });
+  it("access is computed in the same pass: datacenter range → access + trust datacenter", () => {
+    const d = detectLocation("3.0.0.9", deps);
+    expect(d.access).toEqual({ access: "datacenter", reason: "v1: dc-range" });
+    expect(d.trust).toBe("datacenter");
+  });
+  it("PeeringDB Content is its own signal, not a range hit", () => {
+    expect(detectLocation("5.5.5.5", deps).access).toEqual({ access: "datacenter", reason: "v1: pdb-content" });
+  });
+  it("access network without a residential rDNS name → unknown, location still trusted", () => {
+    const d = detectLocation("49.36.100.1", deps);
+    expect(d.access).toEqual({ access: "unknown", reason: "v1: insufficient + eyeball-asn" });
+    expect(d.trust).toBe("trusted");
+  });
+  it("access network + residential rDNS → lastmile (trusted)", () => {
+    const d = detectLocation("49.36.100.1", deps, { rdns: "abts-north-dynamic-1.100.36.49.airtelbroadband.in" });
+    expect(d.access).toEqual({ access: "lastmile", reason: "v1: eyeball-asn + residential-rdns" });
+    expect(d.trust).toBe("trusted");
+  });
+  it("server-style rDNS → access datacenter → trust datacenter", () => {
+    const d = detectLocation("49.36.100.1", deps, { rdns: "static.1.100.36.49.clients.your-server.de" });
+    expect(d.access.access).toBe("datacenter");
+    expect(d.trust).toBe("datacenter");
+  });
+  it("agent cloud metadata → datacenter; public IP on the interface blocks lastmile", () => {
+    expect(detectLocation("49.36.100.1", deps, { agent: { cloudMetadata: true } }).trust).toBe("datacenter");
+    expect(detectLocation("172.58.1.1", deps).access).toEqual({ access: "lastmile", reason: "v1: mobile-asn" });
+    expect(detectLocation("172.58.1.1", deps, { agent: { publicIpOnInterface: true } }).access.access).toBe("unknown");
+  });
+  it("Tor/VPN/private IPs read access unknown", () => {
+    expect(detectLocation("185.220.101.1", deps).access).toEqual({ access: "unknown", reason: "v1: tor" });
+    expect(detectLocation("1.2.3.4", deps).access).toEqual({ access: "unknown", reason: "v1: vpn-range" });
+    expect(detectLocation("10.1.1.1", deps).access).toEqual({ access: "unknown", reason: "v1: private-ip" });
+  });
+  it("unloaded VPN/datacenter data → access no-data (never lastmile), trust capped", () => {
+    const unloaded: DetectionDeps = { ...deps, networkClassLoaded: false };
+    const d = detectLocation("172.58.1.1", unloaded, { rdns: "cpe-1.res.rr.com" });
+    expect(d.access).toEqual({ access: "unknown", reason: "v1: no-data" });
+    expect(d.trust).toBe("low_confidence");
+    expect(d.capped).toBe(true);
+    expect(detectLocation("3.0.0.9", unloaded).access).toEqual({ access: "unknown", reason: "v1: no-data" });
   });
   it("no deps and no mmdbs on disk → graceful unknown/low_confidence, never throws", () => {
     const d = detectLocation("8.8.8.8"); // live loaders; nothing loaded in a test process

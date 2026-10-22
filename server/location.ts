@@ -6,7 +6,8 @@ import { storage } from "./storage";
 import { getMarketplace } from "./marketplace";
 import type { RegionCandidate } from "@shared/regions";
 import { refreshGeoipDatabases, type GeoipSource } from "./geoip-refresh";
-import { getAccessData, reloadAccessData, networkClassOf } from "./access-data";
+import { getAccessData, reloadAccessData, networkClassOf, type AccessData, type PeeringdbType } from "./access-data";
+import { classifyAccess, reverseDnsName, type AccessResult, type AgentNetSignals } from "./access-class";
 import { refreshAccessData, accessDataNeedsRefresh, scheduleAccessRetry, ACCESS_REFRESH_INTERVAL_MS } from "./access-data-refresh";
 import { geoipAttributionForSource } from "@shared/geoip-attribution";
 
@@ -25,6 +26,8 @@ export interface LocationSignals {
 }
 export interface Detection {
   trust: LocationTrust;
+  /** Last mile vs datacenter, computed in the same pass (server/access-class.ts). */
+  access: AccessResult;
   candidate: RegionCandidate | null; // non-null iff trust is region-eligible
   source: {
     city: string | null; countryCode: string | null;
@@ -142,7 +145,12 @@ export function deriveRegionCandidate(geo: GeoLookup): RegionCandidate | null {
 // ./location (location imports storage — cycle). Re-export it here:
 export { haversineKm } from "@shared/regions";
 
-export function classifyLocation(ip: string, signals: LocationSignals): Detection {
+/**
+ * Location trust ladder. `datacenter` is derived from the access answer
+ * (access === "datacenter"), so location trust and access never disagree;
+ * `trusted` and `datacenter` gate identically (REGION_ELIGIBLE_TRUST).
+ */
+export function classifyLocation(ip: string, signals: LocationSignals, access: AccessResult): Detection {
   const source = {
     city: signals.geo?.city ?? null,
     countryCode: signals.geo?.countryCode ?? null,
@@ -157,7 +165,7 @@ export function classifyLocation(ip: string, signals: LocationSignals): Detectio
     ],
   };
   const done = (trust: LocationTrust, candidate: RegionCandidate | null = null): Detection =>
-    ({ trust, candidate, source });
+    ({ trust, candidate, source, access });
 
   // Ladder — first match wins (spec: detection pipeline).
   if (!isPublicIp(ip)) return done("unknown");
@@ -168,7 +176,7 @@ export function classifyLocation(ip: string, signals: LocationSignals): Detectio
   }
   const candidate = deriveRegionCandidate(signals.geo);
   if (!candidate) return done("low_confidence");
-  if (signals.netClass === "hosting") return done("datacenter", candidate);
+  if (access.access === "datacenter") return done("datacenter", candidate);
   return done("trusted", candidate);
 }
 
@@ -221,6 +229,29 @@ export interface DetectionDeps {
   // open: a datacenter/VPN egress with clean geo would score "trusted" purely
   // because there was nothing to classify it against. See detectLocation.
   networkClassLoaded: boolean;
+  // Per-IP/ASN access signals from the same downloaded data (see accessSignalsFrom).
+  accessSignals: (ip: string, asn: number | undefined) => AccessSignals;
+  // Reverse DNS (first PTR name, lowercase, null on none/failure/timeout).
+  // Absent ⇒ no rDNS signal. Live: dns.reverse with RDNS_TIMEOUT_MS.
+  reverseDns?: (ip: string) => Promise<string | null>;
+}
+
+export interface AccessSignals {
+  /** Inside a datacenter IP range (X4BNet / ipcat). */
+  dcRange: boolean;
+  peeringdbType: PeeringdbType | undefined;
+  eyeballShare: number | undefined;
+  isMobile: boolean;
+}
+
+/** Access signals backed by an AccessData (the live one, or a fixture in tests). */
+export function accessSignalsFrom(data: AccessData): DetectionDeps["accessSignals"] {
+  return (ip, asn) => ({
+    dcRange: data.isDatacenterIp(ip),
+    peeringdbType: asn !== undefined ? data.peeringdbType(asn) : undefined,
+    eyeballShare: asn !== undefined ? data.eyeballShare(asn) : undefined,
+    isMobile: asn !== undefined && data.isMobileAsn(asn),
+  });
 }
 
 // Duplicated (not imported) from server/geoip-refresh.ts on purpose — see the
@@ -384,6 +415,8 @@ function liveDeps(): DetectionDeps {
     torExits,
     networkClass: (ip, asn) => networkClassOf(access, ip, asn),
     networkClassLoaded: access.loaded.datacenter && access.loaded.vpn,
+    accessSignals: accessSignalsFrom(access),
+    reverseDns: (ip) => reverseDnsName(ip),
   };
 }
 
@@ -403,8 +436,16 @@ export function lookupAsn(ip: string): AsnLookup | null {
   }
 }
 
-export function detectLocation(ip: string, deps: DetectionDeps = liveDeps()): Detection {
+export interface DetectionExtras {
+  /** Reverse-DNS name of the IP (looked up by the caller; null = none). */
+  rdns?: string | null;
+  /** Agent-reported network signals (may only push away from lastmile). */
+  agent?: AgentNetSignals;
+}
+
+export function detectLocation(ip: string, deps: DetectionDeps = liveDeps(), extras: DetectionExtras = {}): Detection {
   const bare = normalizeIp(ip);
+  const agent = extras.agent ?? {};
   if (!isPublicIp(bare)) {
     // Deployment tripwire (spec): a private IP in production means the proxy
     // hop count is likely wrong — every agent would geolocate to nothing.
@@ -412,23 +453,55 @@ export function detectLocation(ip: string, deps: DetectionDeps = liveDeps()): De
       warnedPrivateIp = true;
       console.warn(`[location] observed a private client IP (${ip}) in production — trust-proxy hop count likely misconfigured; agents will stay Unverified`);
     }
-    return classifyLocation(bare, { geo: null, asn: null, isTorExit: false, netClass: null });
+    const access = classifyAccess({
+      dataLoaded: deps.networkClassLoaded, ipPublic: false, isTor: false, netClass: null,
+      peeringdbType: undefined, eyeballShare: undefined, isMobile: false, rdns: null, agent,
+    });
+    return classifyLocation(bare, { geo: null, asn: null, isTorExit: false, netClass: null }, access);
   }
   const asnInfo = deps.asn(bare);
-  const det = classifyLocation(bare, {
-    geo: deps.geo(bare),
-    asn: asnInfo,
-    isTorExit: deps.torExits.has(bare),
-    netClass: deps.networkClass(bare, asnInfo?.asn),
+  const isTorExit = deps.torExits.has(bare);
+  const netClass = deps.networkClass(bare, asnInfo?.asn);
+  const sig = deps.accessSignals(bare, asnInfo?.asn);
+  const access = classifyAccess({
+    dataLoaded: deps.networkClassLoaded,
+    ipPublic: true,
+    isTor: isTorExit,
+    // The access rule's own split: a VPN range, else a datacenter RANGE hit
+    // (PeeringDB Content is passed separately so the reason names it).
+    netClass: netClass === "vpn" ? "vpn" : sig.dcRange ? "hosting" : null,
+    peeringdbType: sig.peeringdbType,
+    eyeballShare: sig.eyeballShare,
+    isMobile: sig.isMobile,
+    rdns: extras.rdns ?? null,
+    agent,
   });
+  const det = classifyLocation(bare, { geo: deps.geo(bare), asn: asnInfo, isTorExit, netClass }, access);
   // VPN/datacenter data never loaded — an unloaded lookup is indistinguishable
   // from a clean one, so "trusted"/"datacenter" here would be failing open on
   // exactly the signal meant to catch VPN/hosting egress. Cap at
   // low_confidence instead (never region-eligible — see REGION_ELIGIBLE_TRUST).
   if (!deps.networkClassLoaded && (det.trust === "trusted" || det.trust === "datacenter")) {
-    return { trust: "low_confidence", candidate: null, source: det.source, capped: true };
+    return { trust: "low_confidence", candidate: null, source: det.source, access: det.access, capped: true };
   }
   return det;
+}
+
+/**
+ * Reverse DNS only when its answer can change the access result: a public IP,
+ * VPN/datacenter data loaded, not a Tor exit or VPN range (those are decided
+ * without it). Bounded by RDNS_TIMEOUT_MS in the live resolver; never throws.
+ */
+async function rdnsIfItCanMatter(ip: string, deps: DetectionDeps): Promise<string | null> {
+  if (!deps.reverseDns) return null;
+  const bare = normalizeIp(ip);
+  if (!isPublicIp(bare) || !deps.networkClassLoaded || deps.torExits.has(bare)) return null;
+  if (deps.networkClass(bare, deps.asn(bare)?.asn) === "vpn") return null;
+  try {
+    return await deps.reverseDns(bare);
+  } catch {
+    return null;
+  }
 }
 
 export async function resolveCatalogRegion(candidate: RegionCandidate): Promise<string> {
@@ -449,10 +522,16 @@ export async function runAgentLocationCheck(opts: {
   immediate: boolean;
   /** Injected in tests; live loaders otherwise. */
   deps?: DetectionDeps;
+  /** Agent-reported network signals (register/heartbeat `netSignals`, Task 3). */
+  netSignals?: AgentNetSignals;
 }): Promise<{ region: string | null; siteId: string | null; locationTrust: LocationTrust }> {
   const deps = opts.deps ?? liveDeps();
-  const det = detectLocation(opts.ip ?? "", deps);
+  const rdns = await rdnsIfItCanMatter(opts.ip ?? "", deps);
+  const det = detectLocation(opts.ip ?? "", deps, { rdns, agent: opts.netSignals });
   const now = new Date();
+  // Access is system-only and computed for EVERY agent — stored on both the
+  // record-only path and the transition path below.
+  const accessFields = { accessClass: det.access.access, accessReason: det.access.reason, accessCheckedAt: now };
 
   // Public tier: configured identity is trusted; detection is observability
   // only. Same for a result capped only because the VPN/datacenter data
@@ -465,7 +544,7 @@ export async function runAgentLocationCheck(opts: {
   // through the transition below and fast-distrust as always.
   if (opts.token.dispatchTier === "public" || det.capped) {
     await storage.updateEvalAgentLocationObservability(opts.agent.id, {
-      locationTrust: det.trust, locationCheckedAt: now, locationSource: det.source,
+      locationTrust: det.trust, locationCheckedAt: now, locationSource: det.source, ...accessFields,
     });
     return { region: opts.agent.region, siteId: opts.agent.siteId, locationTrust: det.trust };
   }
@@ -480,6 +559,7 @@ export async function runAgentLocationCheck(opts: {
     region: next.region, siteId, locationTrust: det.trust,
     locationCheckedAt: now, locationSource: det.source,
     pendingRegion: next.pendingRegion, pendingRegionCount: next.pendingRegionCount,
+    ...accessFields,
   });
   if (next.changed && opts.token.dispatchTier === "shared") {
     // Shared listings advertise the agent's siteId; keep the plugin in sync.
