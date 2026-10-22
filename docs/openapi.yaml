@@ -308,7 +308,11 @@ components:
           additionalProperties: true
         tags:
           type: array
-          description: Hand-set key:value tags: `line` plus custom keys (e.g. `line:twilio`, `codec:opus`). `isp`/`link`/`sim` are refused with a 400 — they describe the eval agent and are set on the agent. Each entry is either "key:value" or {key, value}; the value `untagged` is reserved.
+          description: >-
+            Hand-set key:value tags: `line` plus custom keys (e.g. `line:twilio`,
+            `codec:opus`). `isp`/`link`/`sim` are refused with a 400 — they describe
+            the eval agent and are set on the agent. Each entry is either "key:value"
+            or {key, value}; the value `untagged` is reserved.
           items:
             type: object
             properties:
