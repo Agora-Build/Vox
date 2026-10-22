@@ -379,6 +379,16 @@ datacenter / Unverified) keeps meaning **location**, but its second word comes f
 values keep their names, but `datacenter` is now derived from `access` (see "Location
 vs access") — no gating changes, since `trusted` and `datacenter` are handled alike.
 
+## Group by region (added 2026-10-22)
+
+Region stays a separate property (not a tag), but the views can split by it:
+`groupBy=region` on the console metrics endpoints and `/api/v1/metrics/*`, and
+"Region" in the Group-by control next to the tag keys. The group value is the
+result's region — the location base of its site (e.g. `apac-in-mumbai`), or for an
+uploaded analysis its `recording_region`; results with neither group as
+`unattributed`. `region` is therefore a reserved groupBy key (not a tag key —
+tags can't use it). The region filter is unchanged.
+
 ## Out of scope (v1)
 
 - A comparison page (side-by-side distributions per tag value) — v2 on this data.
