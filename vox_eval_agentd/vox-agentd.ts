@@ -25,7 +25,7 @@
  *   node vox-agentd.js  (compiled by esbuild, configured via env vars)
  */
 
-import { spawn } from 'child_process';
+import { spawn, execSync } from 'child_process';
 import { createServer, type Server as HttpServer } from 'http';
 import fs from 'fs';
 import os from 'os';
@@ -42,6 +42,7 @@ import { normalizeDialableNumber } from '../shared/steps';
 import { DialfClient, probeDialf, resolveDialfSocketPath, type DialfProbe } from './dialf-client';
 import { runPhoneJob, finishPhoneMetrics } from './phone-eval';
 import { runAnalyzeUpload, capabilitiesFor, aevalOnPath, writeLimited } from './analyze-upload';
+import { detectLinkType, withLinkType } from './link-type';
 import { claimFirstAvailable, claimOutcome, type ClaimOutcome } from './job-pick';
 import { UNMEASURED_DEFAULTS } from './result-defaults';
 import { Readable } from 'stream';
@@ -368,6 +369,19 @@ class VoxEvalAgentDaemon {
     return capabilitiesFor({ dialf: this.dialfProbeCache.probe.ok, aeval: aevalOnPath() });
   }
 
+  /** Current network link type (design "Detection" → link), refreshed on every
+   *  register/heartbeat like capabilities — cheap, one `ip route get` exec.
+   *  `VOX_LINK_TYPE` (vox-upgrade.sh's host-side answer, since a container
+   *  only sees its own veth) wins; undefined on failure, never thrown. */
+  private currentLinkType(): ReturnType<typeof detectLinkType> {
+    return detectLinkType({
+      env: process.env,
+      platform: process.platform,
+      sysRoot: '',
+      exec: (cmd) => execSync(cmd, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }),
+    });
+  }
+
   async register(): Promise<boolean> {
     console.log(`[Daemon] Registering with Vox server: ${this.config.serverUrl}`);
 
@@ -377,7 +391,7 @@ class VoxEvalAgentDaemon {
       const response = await this.fetch('/api/eval-agent/register', {
         method: 'POST',
         signal: AbortSignal.timeout(30_000), // never hang startup on a silent server
-        body: JSON.stringify({ name: this.config.name, metadata, capabilities: await this.currentCapabilities() }),
+        body: JSON.stringify(withLinkType({ name: this.config.name, metadata, capabilities: await this.currentCapabilities() }, this.currentLinkType())),
       });
 
       if (!response.ok) {
@@ -444,13 +458,13 @@ class VoxEvalAgentDaemon {
         // Bounded (#246 review): a Vox that accepts the connection but never
         // answers would otherwise leave one pending request per interval.
         signal: AbortSignal.timeout(15_000),
-        body: JSON.stringify({
+        body: JSON.stringify(withLinkType({
           agentId: this.agentId,
           leaseId: this.leaseId,
           state: this.isRunningJob ? 'occupied' : 'idle',
           metadata: this.buildMetadata(),
           capabilities: await this.currentCapabilities(),
-        }),
+        }, this.currentLinkType())),
       });
 
       await this.exitIfSuperseded(response);

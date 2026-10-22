@@ -43,6 +43,14 @@ const STUB_PS = `#!/bin/bash
 if [ "$*" = "-o uid= -C dialfd" ]; then [ -n "\${PS_DIALF_UID:-}" ] && echo "  $PS_DIALF_UID"; exit 0; fi
 exec /usr/bin/ps "$@"
 `;
+// Shadows the real `ip` (network tags' host_link_type, Linux branch) so
+// autodetection is deterministic here regardless of the test host's actual
+// network: with no route to report, host_link_type always returns nothing
+// unless a test overrides VOX_LINK_TYPE directly (the documented, least-
+// invasive test hook — same precedence host_link_type gives a real .env).
+const STUB_IP = `#!/bin/bash
+exit 1
+`;
 
 /** Run the real script; returns its output and the docker calls it made. */
 function upgrade(env: Record<string, string>, opts: { runner?: boolean; answers?: string; script?: string } = {}) {
@@ -68,6 +76,7 @@ beforeAll(async () => {
   fs.mkdirSync(path.join(dir, "bin"));
   fs.writeFileSync(path.join(dir, "bin", "docker"), STUB_DOCKER, { mode: 0o755 });
   fs.writeFileSync(path.join(dir, "bin", "ps"), STUB_PS, { mode: 0o755 });
+  fs.writeFileSync(path.join(dir, "bin", "ip"), STUB_IP, { mode: 0o755 });
   fs.writeFileSync(path.join(dir, "agent.env"), "AGENT_TOKEN=evtest\nVOX_SERVER=http://localhost:5000\n");
   fs.writeFileSync(path.join(dir, "runner.env"), "RUNNER_TOKEN=crtest\nVOX_SERVER=http://localhost:5000\n");
   sock = path.join(dir, "dialfd.sock");
@@ -137,6 +146,29 @@ describe("hosts WITH DialF", () => {
   it("reports what the agent's own DialF check says after launch — e.g. no permission", () => {
     const r = upgrade({ RUNNING_ID: "abc", RUNNING_IMAGE: "sha-old", LATEST_IMAGE: "sha-new", DIALF_SOCKET: sock, PROBE_LINE: "[Daemon] DialF probe: unavailable (no permission to open the dialfd socket x)" });
     expect(r.out).toMatch(/WARNING: DialF check inside the container FAILED: unavailable \(no permission to open the dialfd socket x\)/);
+  });
+});
+
+describe("VOX_LINK_TYPE (network tags — host link detection, design 2026-10-22)", () => {
+  it("a known VOX_LINK_TYPE in the environment is passed to the agent container", () => {
+    const r = upgrade({ RUNNING_ID: "abc", RUNNING_IMAGE: "sha-old", LATEST_IMAGE: "sha-new", VOX_LINK_TYPE: "wifi" });
+    expect(r.calls.find((c) => c.startsWith("docker run"))).toContain("VOX_LINK_TYPE=wifi");
+  });
+
+  it("an invalid VOX_LINK_TYPE is ignored — not forwarded (host_link_type falls through, finds nothing here)", () => {
+    const r = upgrade({ RUNNING_ID: "abc", RUNNING_IMAGE: "sha-old", LATEST_IMAGE: "sha-new", VOX_LINK_TYPE: "5g" });
+    expect(r.calls.find((c) => c.startsWith("docker run"))).not.toContain("VOX_LINK_TYPE");
+  });
+
+  it("unset VOX_LINK_TYPE and no real route (stub ip): nothing forwarded, run unaffected", () => {
+    const r = upgrade({ RUNNING_ID: "abc", RUNNING_IMAGE: "sha-old", LATEST_IMAGE: "sha-new" });
+    expect(r.status).toBe(0);
+    expect(r.calls.find((c) => c.startsWith("docker run"))).not.toContain("VOX_LINK_TYPE");
+  });
+
+  it("not forwarded to vox-clash-runner (it doesn't report network tags)", () => {
+    const r = upgrade({ RUNNING_ID: "abc", RUNNING_IMAGE: "sha-old", LATEST_IMAGE: "sha-new", VOX_LINK_TYPE: "wifi" }, { runner: true });
+    expect(r.calls.find((c) => c.startsWith("docker run"))).not.toContain("VOX_LINK_TYPE");
   });
 });
 

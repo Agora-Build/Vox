@@ -16,6 +16,7 @@ import path from "path";
 import fs from "fs";
 import os from "os";
 import { summarizeAevalFailure, reduceUrlsToHost, reduceUrlsSafely, urlForms, createBoundedCapture } from "../vox_eval_agentd/aeval-output";
+import { detectLinkType, withLinkType } from "../vox_eval_agentd/link-type";
 
 // Mock the parseResults function logic for testing
 function parseResults(csvContent: string): {
@@ -392,6 +393,69 @@ describe("Eval Agent Daemon - API Communication", () => {
       .send({ agentId: registeredAgentId });
 
     expect(res.status).toBe(400);
+  });
+});
+
+describe("Eval Agent Daemon - linkType on register/heartbeat (network tags)", () => {
+  // vox-agentd.ts can't be imported directly here (its module-level main()
+  // calls process.exit on a missing token) — same reason every other test in
+  // this file mirrors daemon logic or imports a standalone module instead of
+  // the daemon file itself. withLinkType is that standalone seam: the real
+  // register()/sendHeartbeat() bodies are built through it, so exercising it
+  // against a mock server proves the actual wire contract, not a re-typed copy.
+  let app: express.Express;
+  let server: ReturnType<typeof createServer>;
+  let baseUrl: string;
+  let lastBody: Record<string, unknown> | null = null;
+
+  beforeAll(async () => {
+    app = express();
+    app.use(express.json());
+    app.post("/api/eval-agent/heartbeat", (req, res) => {
+      lastBody = req.body;
+      res.json({ success: true });
+    });
+    server = createServer(app);
+    await new Promise<void>((resolve) => {
+      server.listen(0, () => {
+        const addr = server.address();
+        if (addr && typeof addr === "object") baseUrl = `http://localhost:${addr.port}`;
+        resolve();
+      });
+    });
+  });
+
+  afterAll(async () => {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  });
+
+  async function sendHeartbeat(linkType: ReturnType<typeof detectLinkType>) {
+    lastBody = null;
+    const body = withLinkType({ agentId: 1, state: "idle" as const }, linkType);
+    const res = await fetch(`${baseUrl}/api/eval-agent/heartbeat`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    expect(res.ok).toBe(true);
+    return lastBody;
+  }
+
+  it("includes linkType in the heartbeat body when detection found one", async () => {
+    const body = await sendHeartbeat(detectLinkType({ env: { VOX_LINK_TYPE: "wifi" }, platform: "linux", sysRoot: "", exec: () => "" }));
+    expect(body).toMatchObject({ linkType: "wifi" });
+  });
+
+  it("omits linkType entirely when detection returned undefined — never sends null", async () => {
+    const body = await sendHeartbeat(
+      detectLinkType({ env: {}, platform: "linux", sysRoot: "", exec: () => { throw new Error("no ip tool"); } })
+    );
+    expect(body).not.toBeNull();
+    expect(body).not.toHaveProperty("linkType");
+    // JSON can't tell "absent" from "undefined" on its own — pin that the
+    // wire body really has no key, not `{"linkType":null}` (which would
+    // CLEAR a previously reported value on Core, per parseLinkTypeUpdate).
+    expect(Object.keys(body as object)).not.toContain("linkType");
   });
 });
 

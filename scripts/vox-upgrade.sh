@@ -217,6 +217,53 @@ report_dialf_check() {
     fi
 }
 
+# The host's network link type for VOX_LINK_TYPE (design "Detection" → link):
+# the daemon's own detectLinkType (vox_eval_agentd/link-type.ts), reimplemented
+# here in bash because a container sees its own veth, not the host's NIC — the
+# host must detect and pass its answer in. Same precedence as the daemon: a
+# VOX_LINK_TYPE already in the environment (set in .env, or a test override —
+# this doubles as the test hook: it's the least invasive way to make this
+# deterministic in tests/vox-upgrade-dialf.test.ts without real network
+# access) wins outright and skips detection. An invalid value there is
+# ignored, same as the daemon: falls through to real autodetection below
+# rather than being forwarded as-is. Echoes one of
+# wifi/ethernet/cellular/satellite, or nothing on any failure — never aborts
+# the run (every call is `|| true`-guarded, as elsewhere in this script,
+# because of `set -euo pipefail`).
+host_link_type() {
+    case "${VOX_LINK_TYPE:-}" in
+        wifi|ethernet|cellular|satellite) echo "$VOX_LINK_TYPE"; return 0 ;;
+    esac
+    local os iface driver
+    os=$(uname -s 2>/dev/null || true)
+    if [ "$os" = "Linux" ]; then
+        iface=$( { ip route get 1.1.1.1 2>/dev/null || true; } | sed -n 's/.* dev \([^ ]*\).*/\1/p' | head -1)
+        [ -z "$iface" ] && return 0
+        if [ -e "/sys/class/net/$iface/wireless" ]; then
+            echo wifi; return 0
+        fi
+        case "$iface" in
+            wwan*) echo cellular; return 0 ;;
+        esac
+        driver=""
+        if [ -L "/sys/class/net/$iface/device/driver" ]; then
+            driver=$(basename "$(readlink "/sys/class/net/$iface/device/driver" 2>/dev/null || true)")
+        fi
+        case "$driver" in
+            qmi_wwan|cdc_mbim|cdc_ether) echo cellular; return 0 ;;
+        esac
+        echo ethernet
+    elif [ "$os" = "Darwin" ]; then
+        iface=$( { route -n get default 2>/dev/null || true; } | sed -n 's/^ *interface: //p' | head -1)
+        [ -z "$iface" ] && return 0
+        if { networksetup -listallhardwareports 2>/dev/null || true; } | grep -B1 "^Device: $iface\$" | grep -q "^Hardware Port: Wi-Fi$"; then
+            echo wifi; return 0
+        fi
+        echo ethernet
+    fi
+    return 0
+}
+
 # The DialF socket a running container was started with (its VOX_DIALF_SOCKET), or nothing.
 container_dialf_socket() {
     # `|| true`: under set -euo pipefail a failed inspect (container gone
@@ -420,6 +467,12 @@ for name in "${!images[@]}"; do
         if [ -d /dev/snd ]; then
             device_args="--device /dev/snd --security-opt systempaths=unconfined"
         fi
+
+        # Network tags (design "Detection" → link): pass the HOST's own link
+        # type in, since the container only sees its own veth. Not needed for
+        # vox-clash-runner — it doesn't report network tags.
+        link_type=$(host_link_type)
+        [ -n "$link_type" ] && env_args+="-e VOX_LINK_TYPE=$link_type "
 
         # ------------------------------------------------------------------
         # DialF bridge (Phone vs Agent): dialfd runs on the HOST; the daemon

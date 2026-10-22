@@ -20,6 +20,9 @@ export const KNOWN_TAG_KEYS = ["line", "isp", "link", "sim"] as const;
 /** `link` is a closed set — a network link type isn't a matter of opinion. */
 export const LINK_VALUES = ["wifi", "ethernet", "cellular", "satellite"] as const;
 
+/** A valid `link` value — what the agent's own detection (Task 7) reports. */
+export type LinkType = (typeof LINK_VALUES)[number];
+
 /** At most this many tags on a flow / agent / job — a tag field isn't free text. */
 export const MAX_TAGS = 16;
 
