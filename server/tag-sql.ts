@@ -9,7 +9,7 @@
  * two together.
  */
 import { sql, type SQL, type SQLWrapper } from "drizzle-orm";
-import { KNOWN_TAG_KEYS, isSystemKey, type Tag, type TagBoard, type TagSource } from "@shared/tags";
+import { KNOWN_TAG_KEYS, REGION_GROUP_KEY, UNTAGGED_VALUE, isSystemKey, type Tag, type TagBoard, type TagSource } from "@shared/tags";
 
 /** The tag key syntax (shared/tags.ts KEY_PATTERN). Keys are inlined, so this check is a guard, not a nicety. */
 const KEY_PATTERN = /^[a-z][a-z0-9-]{0,23}$/;
@@ -65,4 +65,32 @@ export function effectiveTagValueSql(tags: SQLWrapper, board: TagBoard, key: str
 /** One `tag=key:value` filter: the job's effective value of `key` on `board` is `value` (NULL never matches). */
 export function tagFilterCondition(tags: SQLWrapper, board: TagBoard, filter: Tag): SQL {
   return sql`(${effectiveTagValueSql(tags, board, filter.key)}) = ${filter.value}`;
+}
+
+/**
+ * A result's region in SQL — `resultRegion` (shared/regions.ts): the
+ * recording region of an analysis, else the site's location base
+ * (`<base>-NN` → `<base>`), else NULL. Shared by the region picker and
+ * `groupBy=region`. No bound parameters (the pattern is inline), so a
+ * bucketed view can GROUP BY it.
+ */
+export function resultRegionSql(siteId: SQLWrapper, recordingRegion: SQLWrapper): SQL {
+  return sql`COALESCE(${recordingRegion}, regexp_replace(${siteId}, '-\\d+$', ''))`;
+}
+
+/**
+ * The bucketed `groupBy` value: `region` → the result's region or
+ * 'unattributed'; a tag key → its effective value or 'untagged'. JS twin:
+ * `groupValue` in server/metrics-params.ts (tests/network-tags-sql.test.ts
+ * checks they agree).
+ */
+export function groupValueSql(
+  cols: { tags: SQLWrapper; siteId: SQLWrapper; recordingRegion: SQLWrapper },
+  board: TagBoard,
+  groupBy: string,
+): SQL {
+  if (groupBy === REGION_GROUP_KEY) {
+    return sql`COALESCE(${resultRegionSql(cols.siteId, cols.recordingRegion)}, 'unattributed')`;
+  }
+  return sql`COALESCE(${effectiveTagValueSql(cols.tags, board, groupBy)}, ${sql.raw(`'${UNTAGGED_VALUE}'`)})`;
 }

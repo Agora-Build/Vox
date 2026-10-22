@@ -4,7 +4,7 @@ import {
   normalizeTag, parseTags, formatTag, tagEndError, END_TAG_KEYS, UNTAGGED_VALUE,
   ispFromAsn, lineFromCarrier, simFromCarrier, isSatelliteIsp,
   SYSTEM_TAG_KEYS, ACCESS_VALUES,
-  effectiveTags, parseTagFilter, parseGroupBy,
+  effectiveTags, parseTagFilter, parseGroupBy, REGION_GROUP_KEY, explainSystemReason,
   type Tag, type JobTag,
 } from "../shared/tags";
 
@@ -390,5 +390,45 @@ describe("module shape", () => {
     expect(TAG_SUGGESTIONS.line).toContain("twilio");
     expect(TAG_SUGGESTIONS.isp.length).toBeGreaterThan(0);
     expect(TAG_SUGGESTIONS.sim.length).toBeGreaterThan(0);
+  });
+});
+
+describe("region is a reserved groupBy key, not a tag key", () => {
+  it("refuses region as a tag key everywhere a tag is parsed", () => {
+    expect(REGION_GROUP_KEY).toBe("region");
+    const n = normalizeTag("Region:apac-in-mumbai");
+    expect(n).toHaveProperty("error");
+    expect((n as { error: string }).error).toMatch(/can't be a tag key/);
+    expect(parseTags(["region:eu"])).toHaveProperty("error");
+    expect(parseTags(["region:eu"], { end: "agent" })).toHaveProperty("error");
+    expect(parseTags([{ key: "region", value: "eu" }], { end: "flow" })).toHaveProperty("error");
+    expect(parseTagFilter("region:eu")).toHaveProperty("error");
+    // ...but a key that merely starts with it is a normal custom key.
+    expect(normalizeTag("regional:yes")).toEqual({ key: "regional", value: "yes" });
+  });
+
+  it("accepts region as a groupBy key", () => {
+    expect(parseGroupBy("region")).toEqual({ groupBy: "region" });
+    expect(parseGroupBy(" Region ")).toEqual({ groupBy: "region" });
+  });
+});
+
+describe("explainSystemReason", () => {
+  it("turns access signal names into short plain phrases", () => {
+    expect(explainSystemReason("access", "v1: mobile-asn")).toBe("mobile network");
+    expect(explainSystemReason("access", "v1: eyeball-asn + residential-rdns")).toBe("home ISP + residential address name");
+    // Two signals with the same phrase read once.
+    expect(explainSystemReason("access", "v1: eyeball-asn + pdb-access + residential-rdns")).toBe("home ISP + residential address name");
+    expect(explainSystemReason("access", "v1: dc-range")).toBe("datacenter address range");
+    expect(explainSystemReason("access", "v1: cloud-metadata")).toBe("cloud server detected");
+    expect(explainSystemReason("access", "v1: public-ip-on-iface + mobile-asn")).toBe("the agent holds a public address itself + mobile network");
+    expect(explainSystemReason("access", "v2: something-new")).toBe("something-new");
+    expect(explainSystemReason("access", null)).toBeUndefined();
+  });
+
+  it("explains sim reasons", () => {
+    expect(explainSystemReason("sim", "v1: sim-match 310-260")).toBe("The phone's SIM and a lookup of its number agree (network 310-260)");
+    expect(explainSystemReason("sim", "v1: mismatch 310-260 vs 311-480")).toBe("The phone's SIM and a lookup of its number disagree");
+    expect(explainSystemReason("sim", "v1: lookup-off")).toBe("Number lookup is off");
   });
 });

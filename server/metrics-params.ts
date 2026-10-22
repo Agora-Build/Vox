@@ -1,5 +1,6 @@
 import type { MetricTier } from "./storage";
-import { parseTagFilter, parseGroupBy, formatTag, effectiveTags, UNTAGGED_VALUE, type Tag, type JobTag, type TagBoard } from "@shared/tags";
+import { parseTagFilter, parseGroupBy, formatTag, effectiveTags, UNTAGGED_VALUE, REGION_GROUP_KEY, type Tag, type JobTag, type TagBoard } from "@shared/tags";
+import { resultRegion } from "@shared/regions";
 
 // The client-supplied knobs of a metrics view, shared by the console routes
 // (/api/metrics/*) and the public v1 API (/api/v1/metrics/*) so the two can't
@@ -79,4 +80,45 @@ export const UNTAGGED = UNTAGGED_VALUE;
  */
 export function tagGroupValue(jobTags: JobTag[] | null | undefined, board: TagBoard, key: string): string {
   return effectiveTags(jobTags, board).find((t) => t.key === key)?.value ?? UNTAGGED;
+}
+
+/**
+ * The group a row falls in under `groupBy=region` when it has no region —
+ * neither a site nor a recording region (design "Group by region").
+ */
+export const UNATTRIBUTED = "unattributed";
+
+/** The fallback group of a groupBy key: `unattributed` for region, `untagged` for a tag. */
+export function emptyGroupValue(groupBy: string): string {
+  return groupBy === REGION_GROUP_KEY ? UNATTRIBUTED : UNTAGGED;
+}
+
+/**
+ * A raw row's `groupBy` value on a board. `region` is reserved (not a tag
+ * key): the result's region — its recording region (an analysis), else its
+ * site's location base — or `unattributed`. Any other key is a tag:
+ * `tagGroupValue`. JS twin of `groupValueSql` (server/tag-sql.ts).
+ */
+export function groupValue(
+  row: { jobTags?: JobTag[] | null; siteId?: string | null; recordingRegion?: string | null },
+  board: TagBoard,
+  groupBy: string,
+): string {
+  if (groupBy === REGION_GROUP_KEY) return resultRegion(row.siteId, row.recordingRegion) ?? UNATTRIBUTED;
+  return tagGroupValue(row.jobTags, board, groupBy);
+}
+
+/**
+ * Leaderboard access columns (design "Last mile vs datacenter" → Analysis):
+ * which column a result feeds — its effective `access` (detected only, on
+ * every board) — or undefined for `unknown` / no access tag.
+ */
+export function accessColumn(jobTags: JobTag[] | null | undefined, board: TagBoard): "lastMile" | "datacenter" | undefined {
+  const access = effectiveTags(jobTags, board).find((t) => t.key === "access")?.value;
+  return access === "lastmile" ? "lastMile" : access === "datacenter" ? "datacenter" : undefined;
+}
+
+/** Access columns are added only when the view isn't already filtered to one access class. */
+export function wantsAccessColumns(tagFilters: Tag[]): boolean {
+  return !tagFilters.some((t) => t.key === "access");
 }

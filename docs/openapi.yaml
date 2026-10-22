@@ -150,8 +150,10 @@ components:
         flow without a number lookup, where the flow's value counts; on `community` and
         `mine`, a hand-set value wins over a detected one. The system-only `access`
         (`lastmile`/`datacenter`/`unknown`) and `sim` (our phone SIM's carrier, phone jobs)
-        always use the detected value, on every tier. Results from before network tags
-        match no filter.
+        always use the detected value, on every tier (e.g. `access:lastmile` keeps only
+        results measured over a real home, office or mobile connection). `region` is not a
+        tag key — use the region parameters. Results from before network tags match no
+        filter.
     TagGroupBy:
       name: groupBy
       in: query
@@ -161,7 +163,11 @@ components:
       description: >
         A tag key to split rows by its effective value (`tagValue` on each row). Results
         without that key form the `untagged` group — nothing is dropped. `untagged` is a
-        reserved value: no tag may carry it.
+        reserved value: no tag may carry it. `groupBy=access` splits by last mile /
+        datacenter / unknown. The reserved key `region` splits by the result's region
+        instead: the location base of its site (e.g. `apac-in-mumbai` for site
+        `apac-in-mumbai-01`), or for an uploaded analysis the region it was recorded in;
+        results with neither form the `unattributed` group.
   schemas:
     Tag:
       type: object
@@ -656,7 +662,8 @@ components:
           description: >
             Only with `groupBy` — the effective value of that key, or `untagged` for results
             without it. `untagged` is reserved: no tag may carry it as a value, so it always
-            means "no value".
+            means "no value". With `groupBy=region`, the result's region, or
+            `unattributed`.
           example: starlink
 
     LeaderboardEntry:
@@ -691,8 +698,52 @@ components:
           description: >
             Only with `groupBy` — the group's value for that key, or `untagged` for results
             without it (`untagged` is reserved — no tag may carry it as a value). Each
-            provider × site row is split into one row per value.
+            provider × site row is split into one row per value. With `groupBy=region`, the
+            region, or `unattributed`.
           example: starlink
+        lastMile:
+          allOf:
+            - $ref: '#/components/schemas/LeaderboardAccessColumn'
+          description: >
+            Only when no `access` tag filter is set — the same averages over this row's
+            results measured over a real home, office or mobile connection (`access:lastmile`).
+        datacenter:
+          allOf:
+            - $ref: '#/components/schemas/LeaderboardAccessColumn'
+          description: >
+            Only when no `access` tag filter is set — the same averages over this row's
+            results measured from a datacenter (`access:datacenter`). Results whose access is
+            `unknown` (or untagged) count in the row but in neither column.
+
+    LeaderboardAccessColumn:
+      type: object
+      description: One access class's share of a leaderboard row. Averages are null when it has no results.
+      properties:
+        count:
+          type: integer
+          description: How many of the row's results have this access class.
+          example: 3
+        responseLatency:
+          type: integer
+          nullable: true
+          example: 240
+        interruptLatency:
+          type: integer
+          nullable: true
+          example: 140
+        turnSuccessRate:
+          type: number
+          nullable: true
+          example: 0.95
+        networkResilience:
+          type: integer
+          nullable: true
+        naturalness:
+          type: number
+          nullable: true
+        noiseReduction:
+          type: integer
+          nullable: true
 
 paths:
   /eval-flows:

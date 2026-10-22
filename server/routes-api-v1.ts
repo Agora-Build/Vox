@@ -17,7 +17,7 @@ import { hasOrg, sameOrg, isOwnerOrOrgManager, canAccessResource, canViewJob, ca
 import { getOrganizations } from "./organizations";
 import { settleEndedJobsNow } from "./settle-now";
 import { refreshFlowLineOnSave } from "./number-lookup";
-import { parseMetricsWindow, parseMetricsTransport, parseMetricsTier, parseMetricsTags, tagGroupValue, type ApiMetricsTier } from "./metrics-params";
+import { parseMetricsWindow, parseMetricsTransport, parseMetricsTier, parseMetricsTags, groupValue, accessColumn, wantsAccessColumns, type ApiMetricsTier } from "./metrics-params";
 import type { MetricTier } from "./storage";
 
 type ApiRegionLocation = Awaited<ReturnType<typeof storage.getAllRegionLocations>>[number];
@@ -906,7 +906,8 @@ export function registerApiV1Routes(app: Express): void {
    * it always got: mainline, web, all time.
    *
    * Network tags (design 2026-10-22 "Analysis"): `tag=key:value` (repeatable,
-   * all must match the effective value on the tier's board) and `groupBy=key`.
+   * all must match the effective value on the tier's board) and `groupBy=key`
+   * — or `groupBy=region`, the result's region (reserved: not a tag key).
    */
   async function metricsView(req: Request): Promise<
     | { tier: ApiMetricsTier; storageTier: MetricTier; transport: "web" | "phone"; hoursBack?: number; userId?: number; tagFilters: Tag[]; groupBy?: string }
@@ -969,9 +970,10 @@ export function registerApiV1Routes(app: Express): void {
         noiseReduction: r.noiseReduction,
         timestamp: r.createdAt,
         // The job's effective tags on this tier's board; with groupBy, that
-        // key's value ("untagged" when it has none).
+        // key's value ("untagged" when it has none) — or with groupBy=region,
+        // the result's region ("unattributed" when it has none).
         tags: effectiveTags(r.jobTags, view.storageTier),
-        ...(view.groupBy ? { tagValue: tagGroupValue(r.jobTags, view.storageTier, view.groupBy) } : {}),
+        ...(view.groupBy ? { tagValue: groupValue(r, view.storageTier, view.groupBy) } : {}),
       }));
 
       res.json({
@@ -1008,69 +1010,90 @@ export function registerApiV1Routes(app: Express): void {
       });
 
       // Aggregate by provider and site — and, with groupBy, by that tag's
-      // effective value too ("untagged" when a result has none).
-      const providerRegionMap = new Map<string, {
-        providerId: string;
-        siteId: string | null;
-        tagValue?: string;
+      // effective value too ("untagged" when a result has none), or with
+      // groupBy=region by the result's region ("unattributed").
+      //
+      // Access columns: unless `tag=access:…` is set, each row also averages
+      // its last-mile and datacenter results separately (`lastMile`,
+      // `datacenter`, each with a `count`), from the job's frozen access tag.
+      const withAccess = wantsAccessColumns(view.tagFilters);
+      type Acc = {
+        count: number;
         responseLatencies: number[];
         interruptLatencies: number[];
         turnSuccessRates: number[];
         networkResiliences: number[];
         naturalnesses: number[];
         noiseReductions: number[];
+      };
+      const emptyAcc = (): Acc => ({
+        count: 0, responseLatencies: [], interruptLatencies: [], turnSuccessRates: [], networkResiliences: [], naturalnesses: [], noiseReductions: [],
+      });
+      const addTo = (acc: Acc, result: (typeof results)[number]) => {
+        acc.count++;
+        // Exclude NA (null) latencies — a non-responsive run must not average in
+        // as a fake-fast 0 ms.
+        if (result.responseLatencyMedian != null) acc.responseLatencies.push(result.responseLatencyMedian);
+        if (result.interruptLatencyMedian != null) acc.interruptLatencies.push(result.interruptLatencyMedian);
+        // TSR includes no-response runs as failed turns (resilience signal).
+        if (result.turnSuccessRate != null) acc.turnSuccessRates.push(result.turnSuccessRate);
+        if (result.networkResilience !== null) acc.networkResiliences.push(result.networkResilience);
+        if (result.naturalness !== null) acc.naturalnesses.push(result.naturalness);
+        if (result.noiseReduction !== null) acc.noiseReductions.push(result.noiseReduction);
+      };
+      const providerRegionMap = new Map<string, {
+        providerId: string;
+        siteId: string | null;
+        tagValue?: string;
+        all: Acc;
+        lastMile: Acc;
+        datacenter: Acc;
       }>();
 
       for (const result of results) {
-        const tagValue = view.groupBy ? tagGroupValue(result.jobTags, view.storageTier, view.groupBy) : undefined;
+        const tagValue = view.groupBy ? groupValue(result, view.storageTier, view.groupBy) : undefined;
         const key = tagValue === undefined ? `${result.providerId}-${result.siteId}` : `${result.providerId}-${result.siteId}-${tagValue}`;
         if (!providerRegionMap.has(key)) {
           providerRegionMap.set(key, {
             providerId: result.providerId,
             siteId: result.siteId,
             ...(tagValue === undefined ? {} : { tagValue }),
-            responseLatencies: [],
-            interruptLatencies: [],
-            turnSuccessRates: [],
-            networkResiliences: [],
-            naturalnesses: [],
-            noiseReductions: [],
+            all: emptyAcc(),
+            lastMile: emptyAcc(),
+            datacenter: emptyAcc(),
           });
         }
-
         const entry = providerRegionMap.get(key)!;
-        // Exclude NA (null) latencies — a non-responsive run must not average in
-        // as a fake-fast 0 ms.
-        if (result.responseLatencyMedian != null) entry.responseLatencies.push(result.responseLatencyMedian);
-        if (result.interruptLatencyMedian != null) entry.interruptLatencies.push(result.interruptLatencyMedian);
-        // TSR includes no-response runs as failed turns (resilience signal).
-        if (result.turnSuccessRate != null) entry.turnSuccessRates.push(result.turnSuccessRate);
-        if (result.networkResilience !== null) entry.networkResiliences.push(result.networkResilience);
-        if (result.naturalness !== null) entry.naturalnesses.push(result.naturalness);
-        if (result.noiseReduction !== null) entry.noiseReductions.push(result.noiseReduction);
+        addTo(entry.all, result);
+        const column = withAccess ? accessColumn(result.jobTags, view.storageTier) : undefined;
+        if (column) addTo(entry[column], result);
       }
 
       // Calculate averages and build leaderboard. Latency avg is null (NA) for an
       // empty set (all runs non-responsive) — never 0.
-      const leaderboard = Array.from(providerRegionMap.values()).map((entry) => {
-        const avg = (arr: number[]): number | null => arr.length > 0 ? Math.round(arr.reduce((a, b) => a + b, 0) / arr.length) : null;
-
-        const avgRate = (arr: number[]): number | null => arr.length > 0 ? Math.round((arr.reduce((a, b) => a + b, 0) / arr.length) * 10000) / 10000 : null;
-        return {
-          provider: entry.providerId,
-          siteId: entry.siteId,
-          ...apiRegionMetadata(entry.siteId, locations),
-          ...(entry.tagValue === undefined ? {} : { tagValue: entry.tagValue }),
-          responseLatency: avg(entry.responseLatencies),
-          interruptLatency: avg(entry.interruptLatencies),
-          turnSuccessRate: avgRate(entry.turnSuccessRates),
-          networkResilience: avg(entry.networkResiliences),
-          naturalness: entry.naturalnesses.length > 0
-            ? Math.round((entry.naturalnesses.reduce((a, b) => a + b, 0) / entry.naturalnesses.length) * 10) / 10
-            : null,
-          noiseReduction: avg(entry.noiseReductions),
-        };
+      const avg = (arr: number[]): number | null => arr.length > 0 ? Math.round(arr.reduce((a, b) => a + b, 0) / arr.length) : null;
+      const avgRate = (arr: number[]): number | null => arr.length > 0 ? Math.round((arr.reduce((a, b) => a + b, 0) / arr.length) * 10000) / 10000 : null;
+      const summarize = (acc: Acc) => ({
+        responseLatency: avg(acc.responseLatencies),
+        interruptLatency: avg(acc.interruptLatencies),
+        turnSuccessRate: avgRate(acc.turnSuccessRates),
+        networkResilience: avg(acc.networkResiliences),
+        naturalness: acc.naturalnesses.length > 0
+          ? Math.round((acc.naturalnesses.reduce((a, b) => a + b, 0) / acc.naturalnesses.length) * 10) / 10
+          : null,
+        noiseReduction: avg(acc.noiseReductions),
       });
+      const leaderboard = Array.from(providerRegionMap.values()).map((entry) => ({
+        provider: entry.providerId,
+        siteId: entry.siteId,
+        ...apiRegionMetadata(entry.siteId, locations),
+        ...(entry.tagValue === undefined ? {} : { tagValue: entry.tagValue }),
+        ...summarize(entry.all),
+        ...(withAccess ? {
+          lastMile: { ...summarize(entry.lastMile), count: entry.lastMile.count },
+          datacenter: { ...summarize(entry.datacenter), count: entry.datacenter.count },
+        } : {}),
+      }));
 
       // Sort by response latency (lower is better); NA (null) sinks to the bottom.
       leaderboard.sort((a, b) => {

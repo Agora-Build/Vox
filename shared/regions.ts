@@ -29,3 +29,23 @@ export function regionSiteSequence(region: string, baseId: string): number | nul
   if (String(sequence).padStart(2, "0") !== rawSequence) return null;
   return sequence;
 }
+
+/**
+ * The location base of a site id: `apac-in-mumbai-01` → `apac-in-mumbai`
+ * (site ids are `<location-base>-<sequence>`). Null for no site. The SQL twin
+ * is `resultRegionSql` in server/tag-sql.ts.
+ */
+export function siteBaseId(siteId: string | null | undefined): string | null {
+  if (siteId == null) return null;
+  return siteId.replace(/-\d+$/, "");
+}
+
+/**
+ * A result's region (design "Group by region"): where an uploaded analysis
+ * was recorded (`recording_region`), else the location base of the site it
+ * was measured at, else null — the same rule the metrics region picker and
+ * region filter use (an analysis has no site).
+ */
+export function resultRegion(siteId: string | null | undefined, recordingRegion: string | null | undefined): string | null {
+  return recordingRegion ?? siteBaseId(siteId);
+}

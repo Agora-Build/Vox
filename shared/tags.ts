@@ -69,6 +69,13 @@ export function tagEndError(key: string, end: TagEnd): string | undefined {
  */
 export const UNTAGGED_VALUE = "untagged";
 
+/**
+ * `groupBy=region` splits a metrics view by the result's region (design
+ * "Group by region") — a property of its own, not a tag. So no tag may use
+ * `region` as its key: `tag=region:…` and a tag group would be ambiguous.
+ */
+export const REGION_GROUP_KEY = "region";
+
 /** `link` is a closed set — a network link type isn't a matter of opinion. */
 export const LINK_VALUES = ["wifi", "ethernet", "cellular", "satellite"] as const;
 
@@ -185,6 +192,9 @@ export function normalizeTag(raw: string | Tag): Tag | { error: string } {
     return {
       error: `Invalid tag key "${keyRaw.trim()}": must start with a letter and contain only lowercase letters, digits and hyphens, up to 24 characters`,
     };
+  }
+  if (key === REGION_GROUP_KEY) {
+    return { error: `"${REGION_GROUP_KEY}" can't be a tag key — a result's region is set by where it was measured; use the region filter or Group by region` };
   }
   if (!VALUE_PATTERN.test(value)) {
     return {
@@ -409,4 +419,52 @@ export function parseGroupBy(raw: unknown): { groupBy?: string } | { error: stri
     return { error: `Invalid groupBy key "${raw.trim()}": must start with a letter and contain only lowercase letters, digits and hyphens, up to 24 characters` };
   }
   return { groupBy: key };
+}
+
+/** Short, plain phrases for the access classifier's signal names (server/access-class.ts). */
+const ACCESS_SIGNAL_TEXT: Record<string, string> = {
+  "private-ip": "no public address seen",
+  "no-data": "network data not loaded yet",
+  tor: "Tor exit",
+  "vpn-range": "VPN address range",
+  "dc-range": "datacenter address range",
+  "pdb-content": "hosting network",
+  "server-rdns": "server-style address name",
+  "cloud-metadata": "cloud server detected",
+  "mobile-asn": "mobile network",
+  "eyeball-asn": "home ISP",
+  "pdb-access": "home ISP",
+  "residential-rdns": "residential address name",
+  "public-ip-on-iface": "the agent holds a public address itself",
+  insufficient: "not enough evidence",
+};
+
+/**
+ * A system tag's frozen reason in plain words, for a tooltip — e.g.
+ * `v1: eyeball-asn + residential-rdns` → "home ISP + residential address
+ * name". Unknown signal names pass through as written; no reason → undefined.
+ */
+export function explainSystemReason(key: string, reason: string | null | undefined): string | undefined {
+  if (!reason) return undefined;
+  const body = reason.replace(/^v\d+:\s*/, "");
+  if (key === "sim") {
+    const m = /^sim-match (\S+)/.exec(body);
+    if (m) return `The phone's SIM and a lookup of its number agree (network ${m[1]})`;
+    if (body.startsWith("mismatch")) return "The phone's SIM and a lookup of its number disagree";
+    const simText: Record<string, string> = {
+      "no-sim-operator": "The phone doesn't report its SIM's operator yet",
+      "lookup-off": "Number lookup is off",
+      "lookup-failed": "Number lookup failed",
+      "invalid-number": "The phone's own number isn't a valid number",
+      "no-lookup-codes": "The lookup gave no network for the number",
+      "no-lookup-carrier": "The lookup gave no carrier name for the number",
+    };
+    return simText[body.split(" ")[0]] ?? body;
+  }
+  const phrases: string[] = [];
+  for (const signal of body.split(/\s*\+\s*/)) {
+    const text = ACCESS_SIGNAL_TEXT[signal] ?? signal;
+    if (text && !phrases.includes(text)) phrases.push(text);
+  }
+  return phrases.join(" + ");
 }

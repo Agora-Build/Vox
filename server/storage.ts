@@ -110,7 +110,7 @@ import {
 import { regionSiteSequence, haversineKm, type RegionCandidate } from "@shared/regions";
 import type { AsnLookupFn } from "./job-tags";
 import type { Tag, JobTag } from "@shared/tags";
-import { effectiveTagValueSql, tagFilterCondition } from "./tag-sql";
+import { groupValueSql, resultRegionSql, tagFilterCondition } from "./tag-sql";
 import { drizzle } from "drizzle-orm/node-postgres";
 import pkg from "pg";
 const { Pool } = pkg;
@@ -159,9 +159,11 @@ export type MetricSourceRow = Pick<EvalResult,
   // Network tags (designs/2026-10-22-network-tags-design.md "Analysis"): raw
   // rows carry their job's frozen tags (`eval_jobs.tags`, null before the
   // release) for the route to reduce to effective tags; a bucket has none.
-  // `tagValue` is the bucket's groupBy value, set only on buckets grouped by a
-  // tag (null = untagged).
-  & { jobTags?: JobTag[] | null; tagValue?: string | null };
+  // `tagValue` is the bucket's groupBy value — a tag's effective value or
+  // `untagged`, or with groupBy=region the region or `unattributed` — set only
+  // on grouped buckets. `recordingRegion` rides along on raw rows (an
+  // analysis's region) for groupBy=region.
+  & { jobTags?: JobTag[] | null; tagValue?: string | null; recordingRegion?: string | null };
 
 /** The network-tag knobs of a metrics query: AND-ed filters, and an optional groupBy key. */
 export type MetricsTagQuery = { tagFilters?: Tag[]; groupBy?: string };
@@ -1223,6 +1225,12 @@ export class DatabaseStorage {
       // listing's canEditTags flag is derived from tokenCreatedBy below.
       tags: evalAgents.tags,
       linkType: evalAgents.linkType,
+      // System-only access class + reason (location check) and the matched SIM
+      // carrier slug — for the Agents page badge. Never observedIp, netSignals
+      // or the SIM number.
+      accessClass: evalAgents.accessClass,
+      accessReason: evalAgents.accessReason,
+      simCarrier: evalAgents.simCarrier,
       createdAt: evalAgents.createdAt,
       updatedAt: evalAgents.updatedAt,
       tokenCreatedBy: evalAgentTokens.createdBy,
@@ -2432,9 +2440,12 @@ export class DatabaseStorage {
     const period = bucket === "hour"
       ? sql`date_trunc('hour', ${evalResults.createdAt})`
       : sql`date_trunc('day', ${evalResults.createdAt})`;
-    // groupBy on a bucket: one point per (period, provider, tag value). The
+    // groupBy on a bucket: one point per (period, provider, group value) — a
+    // tag's effective value, or with groupBy=region the result's region. The
     // expression is grouped on, so it is the same SQL object in both places.
-    const tagValue = tags.groupBy ? effectiveTagValueSql(evalJobs.tags, tier, tags.groupBy) : null;
+    const tagValue = tags.groupBy
+      ? groupValueSql({ tags: evalJobs.tags, siteId: evalResults.siteId, recordingRegion: evalResults.recordingRegion }, tier, tags.groupBy)
+      : null;
     const base = db.select({
       id: sql<number>`min(${evalResults.id})::int`,
       providerId: evalResults.providerId,
@@ -2457,7 +2468,7 @@ export class DatabaseStorage {
       naturalness: sql<number | null>`avg(${evalResults.naturalness})::real`,
       noiseReduction: sql<number | null>`round(avg(${evalResults.noiseReduction}))::int`,
       createdAt: sql<Date>`${period}`,
-      ...(tagValue ? { tagValue: sql<string | null>`${tagValue}` } : {}),
+      ...(tagValue ? { tagValue: sql<string>`${tagValue}` } : {}),
     }).from(evalResults);
     const rows = await this.applyTierJoins(tier, base)
       .where(and(...this.tierConditions(tier, hoursBack, userId, scope, transport, tags.tagFilters), ...(window ? [
@@ -2581,7 +2592,7 @@ export class DatabaseStorage {
     const conditions = this.tierConditions(tier, effectiveHoursBack, userId);
     // A result's region: where it was measured (its site), or, for an analyzed
     // recording, where its uploader said it was made (recording_region).
-    const region = sql<string | null>`COALESCE(${evalResults.recordingRegion}, regexp_replace(${evalResults.siteId}, '-\\d+$', ''))`;
+    const region = sql<string | null>`${resultRegionSql(evalResults.siteId, evalResults.recordingRegion)}`;
     const rows = await this.applyTierJoins(tier, db
       .select({ baseId: region })
       .from(evalResults))

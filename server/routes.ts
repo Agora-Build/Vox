@@ -8,7 +8,7 @@ import { compareVersions } from "./aeval-seed";
 import { effectiveDispatchIdentity, agentListFilter, explainWaiting, type WaitAgent } from "./job-wait";
 import { STALE_THRESHOLD_MINUTES } from "./scheduler"; // the online window the reapers use
 import { settleEndedJobsNow } from "./settle-now";
-import { parseMetricsWindow, parseMetricsTransport, parseMetricsTags, tagsCacheKey, tagGroupValue, UNTAGGED } from "./metrics-params";
+import { parseMetricsWindow, parseMetricsTransport, parseMetricsTags, tagsCacheKey, groupValue, emptyGroupValue, accessColumn, wantsAccessColumns } from "./metrics-params";
 import { clientIp } from "./client-ip"; // the real caller behind Cloudflare/Traefik
 import { SECRET_NAME_PATTERN, collectSecretRefs, secretValueError } from "@shared/secrets";
 import { parseTags, LINK_VALUES, effectiveTags, type TagBoard } from "@shared/tags";
@@ -4155,6 +4155,12 @@ export async function registerRoutes(
         tags: a.tags ?? [],
         linkType: a.linkType ?? null,
         canEditTags: !!user && user.id === a.tokenCreatedBy,
+        // Access (design "Agent badge follows access"): the class and the
+        // classifier's reason (signal names, never the IP or the agent's raw
+        // netSignals), and the matched SIM carrier slug — never the number.
+        accessClass: a.accessClass ?? null,
+        accessReason: a.accessReason ?? null,
+        simCarrier: a.simCarrier ?? null,
       })));
     } catch (error) {
       console.error("Error fetching eval agents:", error);
@@ -6235,7 +6241,8 @@ export async function registerRoutes(
   // Network tags (design 2026-10-22 "Analysis"): every row carries `tags` — its
   // job's EFFECTIVE tags on `board`, as {key, value} — or null on an hourly/
   // daily bucket (it averages many jobs). With `groupBy`, every row also
-  // carries `tagValue`: that key's effective value, or "untagged".
+  // carries `tagValue`: that key's effective value, or "untagged" — or with
+  // groupBy=region, the result's region, or "unattributed".
   async function formatMetricsResults(results: MetricSourceRow[], board: TagBoard, groupBy?: string) {
     const providerCache = new Map<string, string>();
     const [allProviders, locations] = await Promise.all([
@@ -6271,7 +6278,7 @@ export async function registerRoutes(
       evalFlowName: r.evalFlowName ?? null,
       tags: r.jobTags !== undefined ? effectiveTags(r.jobTags, board) : null,
       ...(groupBy ? {
-        tagValue: r.jobTags !== undefined ? tagGroupValue(r.jobTags, board, groupBy) : (r.tagValue ?? UNTAGGED),
+        tagValue: r.jobTags !== undefined ? groupValue(r, board, groupBy) : (r.tagValue ?? emptyGroupValue(groupBy)),
       } : {}),
     }));
   }
@@ -6462,11 +6469,16 @@ export async function registerRoutes(
       const locations = await storage.getAllRegionLocations();
 
       // Group results by (provider, site) — and, with groupBy, by that tag's
-      // effective mainline value too ("untagged" when a result has none).
-      const providerRegionMap = new Map<string, {
-        providerId: string;
-        siteId: string | null;
-        tagValue?: string;
+      // effective mainline value too ("untagged" when a result has none), or
+      // with groupBy=region by the result's region.
+      //
+      // Access columns (design "Last mile vs datacenter" → Analysis): unless
+      // the view is already filtered to one access class, every row also
+      // averages its last-mile and its datacenter results separately, from
+      // each job's frozen `access` tag (unknown / untagged feed neither).
+      const withAccess = wantsAccessColumns(tags.tagFilters);
+      type Acc = {
+        count: number;
         responseLatencies: number[];
         responseLatenciesP95: number[];
         interruptLatencies: number[];
@@ -6475,40 +6487,53 @@ export async function registerRoutes(
         networkResiliences: number[];
         naturalnesses: number[];
         noiseReductions: number[];
+      };
+      const emptyAcc = (): Acc => ({
+        count: 0, responseLatencies: [], responseLatenciesP95: [], interruptLatencies: [], interruptLatenciesP95: [],
+        turnSuccessRates: [], networkResiliences: [], naturalnesses: [], noiseReductions: [],
+      });
+      const addTo = (acc: Acc, result: (typeof results)[number]) => {
+        acc.count++;
+        // Only real (non-NA) latencies enter the averages. A non-responsive run
+        // stores null latency — excluding it keeps a dead agent out of the
+        // ranking instead of averaging it in as a fake-fast 0 ms.
+        if (result.responseLatencyMedian != null) acc.responseLatencies.push(result.responseLatencyMedian);
+        if (result.responseLatencyP95 != null) acc.responseLatenciesP95.push(result.responseLatencyP95);
+        if (result.interruptLatencyMedian != null) acc.interruptLatencies.push(result.interruptLatencyMedian);
+        if (result.interruptLatencyP95 != null) acc.interruptLatenciesP95.push(result.interruptLatencyP95);
+        // TSR INCLUDES no-response runs (a failed turn lowers it) — that's the
+        // point: it's the resilience signal, unlike latency which excludes them.
+        if (result.turnSuccessRate != null) acc.turnSuccessRates.push(result.turnSuccessRate);
+        if (result.networkResilience != null) acc.networkResiliences.push(result.networkResilience);
+        if (result.naturalness != null) acc.naturalnesses.push(result.naturalness);
+        if (result.noiseReduction != null) acc.noiseReductions.push(result.noiseReduction);
+      };
+      const providerRegionMap = new Map<string, {
+        providerId: string;
+        siteId: string | null;
+        tagValue?: string;
+        all: Acc;
+        lastMile: Acc;
+        datacenter: Acc;
       }>();
 
       for (const result of results) {
-        const tagValue = tags.groupBy ? tagGroupValue(result.jobTags, "mainline", tags.groupBy) : undefined;
+        const tagValue = tags.groupBy ? groupValue(result, "mainline", tags.groupBy) : undefined;
         const key = tagValue === undefined ? `${result.providerId}-${result.siteId}` : `${result.providerId}-${result.siteId}-${tagValue}`;
         if (!providerRegionMap.has(key)) {
           providerRegionMap.set(key, {
             providerId: result.providerId,
             siteId: result.siteId,
             ...(tagValue === undefined ? {} : { tagValue }),
-            responseLatencies: [],
-            responseLatenciesP95: [],
-            interruptLatencies: [],
-            interruptLatenciesP95: [],
-            turnSuccessRates: [],
-            networkResiliences: [],
-            naturalnesses: [],
-            noiseReductions: [],
+            all: emptyAcc(),
+            lastMile: emptyAcc(),
+            datacenter: emptyAcc(),
           });
         }
         const group = providerRegionMap.get(key)!;
-        // Only real (non-NA) latencies enter the averages. A non-responsive run
-        // stores null latency — excluding it keeps a dead agent out of the
-        // ranking instead of averaging it in as a fake-fast 0 ms.
-        if (result.responseLatencyMedian != null) group.responseLatencies.push(result.responseLatencyMedian);
-        if (result.responseLatencyP95 != null) group.responseLatenciesP95.push(result.responseLatencyP95);
-        if (result.interruptLatencyMedian != null) group.interruptLatencies.push(result.interruptLatencyMedian);
-        if (result.interruptLatencyP95 != null) group.interruptLatenciesP95.push(result.interruptLatencyP95);
-        // TSR INCLUDES no-response runs (a failed turn lowers it) — that's the
-        // point: it's the resilience signal, unlike latency which excludes them.
-        if (result.turnSuccessRate != null) group.turnSuccessRates.push(result.turnSuccessRate);
-        if (result.networkResilience != null) group.networkResiliences.push(result.networkResilience);
-        if (result.naturalness != null) group.naturalnesses.push(result.naturalness);
-        if (result.noiseReduction != null) group.noiseReductions.push(result.noiseReduction);
+        addTo(group.all, result);
+        const column = withAccess ? accessColumn(result.jobTags, "mainline") : undefined;
+        if (column) addTo(group[column], result);
       }
 
       // Returns null (NA) for an empty set — never 0, which would read as a
@@ -6520,6 +6545,16 @@ export async function registerRoutes(
         const f = 10 ** decimals;
         return Math.round(a * f) / f;
       };
+      const summarize = (acc: Acc) => ({
+        responseLatency: avgRound(acc.responseLatencies),
+        responseLatencyP95: avgRound(acc.responseLatenciesP95),
+        interruptLatency: avgRound(acc.interruptLatencies),
+        interruptLatencyP95: avgRound(acc.interruptLatenciesP95),
+        turnSuccessRate: avgRound(acc.turnSuccessRates, 4),
+        networkResilience: avgRound(acc.networkResiliences),
+        naturalness: avgRound(acc.naturalnesses, 1),
+        noiseReduction: avgRound(acc.noiseReductions),
+      });
 
       // Aggregate metrics per group
       const entries = await Promise.all(
@@ -6530,16 +6565,15 @@ export async function registerRoutes(
             provider: provider?.name || "Unknown",
             siteId: group.siteId,
             ...regionMetadata(group.siteId, locations),
-            // With groupBy only: the group's tag value (or "untagged").
+            // With groupBy only: the group's value (or "untagged" / "unattributed").
             ...(group.tagValue === undefined ? {} : { tagValue: group.tagValue }),
-            responseLatency: avgRound(group.responseLatencies),
-            responseLatencyP95: avgRound(group.responseLatenciesP95),
-            interruptLatency: avgRound(group.interruptLatencies),
-            interruptLatencyP95: avgRound(group.interruptLatenciesP95),
-            turnSuccessRate: avgRound(group.turnSuccessRates, 4),
-            networkResilience: avgRound(group.networkResiliences),
-            naturalness: avgRound(group.naturalnesses, 1),
-            noiseReduction: avgRound(group.noiseReductions),
+            ...summarize(group.all),
+            // Without an access filter only: the same averages over the row's
+            // last-mile and datacenter results, each with its result count.
+            ...(withAccess ? {
+              lastMile: { ...summarize(group.lastMile), count: group.lastMile.count },
+              datacenter: { ...summarize(group.datacenter), count: group.datacenter.count },
+            } : {}),
           };
         })
       );

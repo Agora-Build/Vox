@@ -2,7 +2,8 @@ import { describe, it, expect } from "vitest";
 import { sql } from "drizzle-orm";
 import { effectiveTags, type JobTag, type TagBoard } from "../shared/tags";
 import { db } from "../server/storage";
-import { effectiveTagValueSql, tagFilterCondition } from "../server/tag-sql";
+import { effectiveTagValueSql, tagFilterCondition, groupValueSql } from "../server/tag-sql";
+import { groupValue } from "../server/metrics-params";
 
 // The metrics filter runs in SQL (realtime has a LIMIT — filtering after it
 // would be wrong) while grouping runs in JS through `effectiveTags`. Two
@@ -80,5 +81,42 @@ d("tag SQL agrees with effectiveTags", () => {
 
   it("refuses a key that isn't tag syntax (it is inlined into the SQL)", () => {
     expect(() => effectiveTagValueSql(sql`NULL::jsonb`, "mainline", "x'; DROP TABLE users; --")).toThrow();
+  });
+});
+
+// groupBy=region (design "Group by region"): bucketed views group in SQL
+// (`groupValueSql`), raw rows and leaderboards in JS (`groupValue`). Same
+// rule twice — the recording region of an analysis, else the site's
+// location base, else "unattributed" — so the same fixtures go through both.
+d("groupBy SQL agrees with groupValue", () => {
+  const text = (v: string | null) => (v === null ? sql`NULL::text` : sql`${v}::text`);
+  const REGION_FIXTURES: Array<{ name: string; siteId: string | null; recordingRegion: string | null; want: string }> = [
+    { name: "site", siteId: "apac-in-mumbai-01", recordingRegion: null, want: "apac-in-mumbai" },
+    { name: "site, two-digit+ sequence", siteId: "na-us-seattle-112", recordingRegion: null, want: "na-us-seattle" },
+    { name: "site base containing digits", siteId: "eu-de-frankfurt2-03", recordingRegion: null, want: "eu-de-frankfurt2" },
+    { name: "analysis: recording region, no site", siteId: null, recordingRegion: "eu-de-frankfurt", want: "eu-de-frankfurt" },
+    { name: "recording region wins over a site", siteId: "na-us-seattle-01", recordingRegion: "sa-br-saopaulo", want: "sa-br-saopaulo" },
+    { name: "neither", siteId: null, recordingRegion: null, want: "unattributed" },
+  ];
+  for (const f of REGION_FIXTURES) {
+    it(`region · ${f.name}`, async () => {
+      const js = groupValue({ jobTags: null, siteId: f.siteId, recordingRegion: f.recordingRegion }, "mainline", "region");
+      const got = (await db.execute(sql`SELECT ${groupValueSql({ tags: sql`NULL::jsonb`, siteId: text(f.siteId), recordingRegion: text(f.recordingRegion) }, "mainline", "region")} AS v`)).rows[0].v;
+      expect(js).toBe(f.want);
+      expect(got).toBe(f.want);
+    });
+  }
+
+  it("a tag groupBy falls back to untagged in both", async () => {
+    for (const f of FIXTURES) {
+      for (const board of BOARDS) {
+        for (const key of KEYS) {
+          const js = groupValue({ jobTags: f.tags, siteId: "na-us-seattle-01", recordingRegion: null }, board, key);
+          const tags = f.tags === null ? sql`NULL::jsonb` : sql`${JSON.stringify(f.tags)}::jsonb`;
+          const got = (await db.execute(sql`SELECT ${groupValueSql({ tags, siteId: sql`'na-us-seattle-01'::text`, recordingRegion: sql`NULL::text` }, board, key)} AS v`)).rows[0].v;
+          expect(got, `${f.name} · ${board} · ${key}`).toBe(js);
+        }
+      }
+    }
   });
 });
