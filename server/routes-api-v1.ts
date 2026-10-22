@@ -15,6 +15,8 @@ import { regionSiteSequence } from "@shared/regions";
 import { hasOrg, sameOrg, isOwnerOrOrgManager, canAccessResource, canViewJob, canCancelJob, parseJobScope, jobListFilter } from "./permissions";
 import { getOrganizations } from "./organizations";
 import { settleEndedJobsNow } from "./settle-now";
+import { parseMetricsWindow, parseMetricsTransport, parseMetricsTier, type ApiMetricsTier } from "./metrics-params";
+import type { MetricTier } from "./storage";
 
 type ApiRegionLocation = Awaited<ReturnType<typeof storage.getAllRegionLocations>>[number];
 
@@ -863,6 +865,38 @@ export function registerApiV1Routes(app: Express): void {
    * GET /api/v1/metrics/realtime
    * Get real-time metrics (public endpoint)
    */
+  /**
+   * Which results a v1 metrics view covers: `tier` (mainline — the default —
+   * community, or mine), `transport` (web — the default — or phone; never
+   * mixed) and an optional `hours` window. mainline and community are public;
+   * mine is the caller's own private evals (the console's My Evals) and needs
+   * an API key or a signed-in session. With no parameters a request gets what
+   * it always got: mainline, web, all time.
+   */
+  async function metricsView(req: Request): Promise<
+    | { tier: ApiMetricsTier; storageTier: MetricTier; transport: "web" | "phone"; hoursBack?: number; userId?: number }
+    | { status: number; error: string }
+  > {
+    const tier = parseMetricsTier(req.query.tier);
+    if ("error" in tier) return { status: 400, error: tier.error };
+    const tp = parseMetricsTransport(req.query.transport);
+    if ("error" in tp) return { status: 400, error: tp.error };
+    const win = parseMetricsWindow(req.query.hours);
+    if ("error" in win) return { status: 400, error: win.error };
+    let userId: number | undefined;
+    if (tier.tier === "mine") {
+      const user = await getCurrentUserOrApiKeyUser(req);
+      if (!user) return { status: 401, error: "tier=mine needs an API key (Authorization: Bearer vox_live_...)" };
+      if (!user.isEnabled) return { status: 401, error: "Account is disabled" };
+      userId = user.id;
+    }
+    return { tier: tier.tier, storageTier: tier.storageTier, transport: tp.transport, hoursBack: win.hoursBack, userId };
+  }
+  /** What the response actually covers, so a client can't misread it. */
+  const viewMeta = (v: { tier: ApiMetricsTier; transport: "web" | "phone"; hoursBack?: number }) => ({
+    tier: v.tier, transport: v.transport, hours: v.hoursBack ?? null,
+  });
+
   app.get("/api/v1/metrics/realtime", async (req: Request, res: Response) => {
     try {
       const locations = await storage.getAllRegionLocations();
@@ -871,7 +905,18 @@ export function registerApiV1Routes(app: Express): void {
       if (regionScope.scope?.siteId && !(await storage.isAllocatedSite(regionScope.scope.siteId, false))) {
         return res.status(400).json({ error: "siteId must be an exact allocated site ID" });
       }
-      const results = await storage.getMainlineEvalResults(50, undefined, regionScope.scope);
+      const view = await metricsView(req);
+      if ("error" in view) return res.status(view.status).json({ error: view.error });
+      // `limit` was documented but ignored; honoured now (default 50, max 200).
+      let limit = 50;
+      if (req.query.limit !== undefined) {
+        const n = Number(req.query.limit);
+        if (!Number.isInteger(n) || n < 1 || n > 200) return res.status(400).json({ error: "limit must be an integer from 1 to 200" });
+        limit = n;
+      }
+      const results = await storage.getTierEvalResults(view.storageTier, limit, {
+        hoursBack: view.hoursBack, userId: view.userId, scope: regionScope.scope, transport: view.transport,
+      });
 
       // Transform to API format
       const metrics = results.map((r) => ({
@@ -892,6 +937,7 @@ export function registerApiV1Routes(app: Express): void {
         meta: {
           timestamp: new Date().toISOString(),
           count: metrics.length,
+          ...viewMeta(view),
         },
       });
     } catch (error) {
@@ -913,7 +959,11 @@ export function registerApiV1Routes(app: Express): void {
       if (regionScope.scope?.siteId && !(await storage.isAllocatedSite(regionScope.scope.siteId, false))) {
         return res.status(400).json({ error: "siteId must be an exact allocated site ID" });
       }
-      const results = await storage.getMainlineEvalResults(1000, undefined, regionScope.scope);
+      const view = await metricsView(req);
+      if ("error" in view) return res.status(view.status).json({ error: view.error });
+      const results = await storage.getTierEvalResults(view.storageTier, 1000, {
+        hoursBack: view.hoursBack, userId: view.userId, scope: regionScope.scope, transport: view.transport,
+      });
 
       // Aggregate by provider and site
       const providerRegionMap = new Map<string, {
@@ -998,6 +1048,7 @@ export function registerApiV1Routes(app: Express): void {
           macroRegion: macroRegion || "all",
           regionScope: requestedScopes || "all",
           count: rankedLeaderboard.length,
+          ...viewMeta(view),
         },
       });
     } catch (error) {

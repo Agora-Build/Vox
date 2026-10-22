@@ -8,6 +8,8 @@ import { compareVersions } from "./aeval-seed";
 import { effectiveDispatchIdentity, agentListFilter, explainWaiting, type WaitAgent } from "./job-wait";
 import { STALE_THRESHOLD_MINUTES } from "./scheduler"; // the online window the reapers use
 import { settleEndedJobsNow } from "./settle-now";
+import { parseMetricsWindow, parseMetricsTransport } from "./metrics-params";
+import { clientIp } from "./client-ip"; // the real caller behind Cloudflare/Traefik
 import { SECRET_NAME_PATTERN, collectSecretRefs, secretValueError } from "@shared/secrets";
 import { deriveScheduleStatus } from "@shared/schedule-status";
 import { regionSiteSequence } from "@shared/regions";
@@ -3973,7 +3975,7 @@ export async function registerRoutes(
         });
       }
       cacheBrokerMintSecret(broker.id, mintSecret);
-      storage.updateBrokerObservedIp(broker.id, req.ip ?? ""); // fire-and-forget
+      storage.updateBrokerObservedIp(broker.id, clientIp(req) ?? ""); // fire-and-forget
       storage.updateBrokerRegistrationTokenLastUsed(tok.id);
       res.json({ brokerId: broker.id, leaseId, mintSecret }); // mintSecret returned once
       // #129: check Core can reach what it advertised — heartbeats only prove
@@ -4000,7 +4002,7 @@ export async function registerRoutes(
       if (!hasBrokerMintSecret(broker.id)) return res.json({ reregister: true }); // Core cold-cache
       await storage.updateBrokerHeartbeat(broker.id);
       if (state && state !== broker.state) await storage.updateBroker(broker.id, { state });
-      storage.updateBrokerObservedIp(broker.id, req.ip ?? "");
+      storage.updateBrokerObservedIp(broker.id, clientIp(req) ?? "");
       res.json({ ok: true });
     } catch (error) {
       console.error("Error processing broker heartbeat:", error);
@@ -4203,7 +4205,7 @@ export async function registerRoutes(
       }
 
       await storage.updateEvalAgentHeartbeat(agent.id);
-      if (req.ip) void storage.updateEvalAgentObservedIp(agent.id, req.ip);
+      { const ip = clientIp(req); if (ip) void storage.updateEvalAgentObservedIp(agent.id, ip); }
 
       // Zero-trust location: detection is the ONLY region source for
       // non-public agents; registration applies immediately (fresh process).
@@ -4221,7 +4223,7 @@ export async function registerRoutes(
             pendingRegionCount: agent.pendingRegionCount ?? 0,
           },
           token: { id: evalAgentToken.id, dispatchTier: evalAgentToken.dispatchTier },
-          ip: req.ip,
+          ip: clientIp(req),
           immediate: true,
         });
       } catch (err) {
@@ -4283,8 +4285,9 @@ export async function registerRoutes(
       }
 
       await storage.updateEvalAgentHeartbeat(agentId);
-      const ipChanged = !!req.ip && req.ip !== agent.observedIp;
-      if (req.ip) void storage.updateEvalAgentObservedIp(agentId, req.ip);
+      const callerIp = clientIp(req);
+      const ipChanged = !!callerIp && callerIp !== agent.observedIp;
+      if (callerIp) void storage.updateEvalAgentObservedIp(agentId, callerIp);
 
       // Re-detect when the IP moved, the check is stale (> LOCATION_RECHECK_HOURS
       // / never ran), or a pending region change is mid-hysteresis (every beat counts it down —
@@ -4303,7 +4306,7 @@ export async function registerRoutes(
             pendingRegionCount: agent.pendingRegionCount ?? 0,
           },
           token: { id: evalAgentToken.id, dispatchTier: evalAgentToken.dispatchTier },
-          ip: req.ip,
+          ip: callerIp,
           immediate: false,
         }).catch((err) => console.error(`[location] heartbeat check failed for agent ${agent.id}:`, err instanceof Error ? err.message : err));
       }
@@ -4989,7 +4992,7 @@ export async function registerRoutes(
         // Audit trail (layer-2 foundation): who received a session bundle, when,
         // from where. Log line only — the bundle itself is never logged
         // (SENSITIVE_PATHS redacts the response body).
-        console.log(`[Session] Job ${auth.job.id}: bundle served to agent ${auth.agent.id} (token ${evalAgentToken.id}, ip ${req.ip})`);
+        console.log(`[Session] Job ${auth.job.id}: bundle served to agent ${auth.agent.id} (token ${evalAgentToken.id}, ip ${clientIp(req)})`);
         return res.json({
           required: true, status: "ready", authMode: "storage", platformId: need.platformId,
           storageState: JSON.parse(decryptValue(session!.encryptedStorageState)),
@@ -6047,26 +6050,8 @@ export async function registerRoutes(
     (key.startsWith("detail:") ? detailCache : metricsCache).set(key, data);
   }
 
-  // Parse the only client-supplied metrics knob: the time window. `hours` must be
-  // a positive integer; absent means "all time". The client `limit` is ignored —
-  // the server alone decides row counts / raw-vs-bucket (see storage.tierMetrics).
-  // Returns { hoursBack } on success, or { error } describing a 400.
-  function parseMetricsWindow(hours: unknown): { hoursBack?: number } | { error: string } {
-    if (hours === undefined) return {};
-    const parsed = Number(hours);
-    if (!Number.isInteger(parsed) || parsed <= 0) {
-      return { error: "hours must be a positive integer (omit for all time)" };
-    }
-    return { hoursBack: parsed };
-  }
-
-  // Transport partition (design 2026-09-21 §11): each metrics view is scoped to
-  // exactly one transport — web and phone are separate categories, never mixed.
-  function parseMetricsTransport(raw: unknown): { transport: "web" | "phone" } | { error: string } {
-    const t = raw === undefined ? "web" : String(raw);
-    if (t !== "web" && t !== "phone") return { error: "transport must be web or phone" };
-    return { transport: t };
-  }
+  // parseMetricsWindow / parseMetricsTransport live in ./metrics-params,
+  // shared with the public v1 API.
 
   app.get("/api/metrics/realtime", async (req, res) => {
     try {
@@ -6210,15 +6195,18 @@ export async function registerRoutes(
 
   app.get("/api/metrics/leaderboard", async (req, res) => {
     try {
-      const { hours } = req.query;
+      const win = parseMetricsWindow(req.query.hours);
+      if ("error" in win) return res.status(400).json({ error: win.error });
       const regionScope = await parseRegionQueryScope(req.query);
       if ("error" in regionScope) return res.status(400).json({ error: regionScope.error });
-      const cacheKey = `leaderboard:${hours || 'all'}:${regionScope.cacheKey}`;
+      // One transport per view (web by default), like every other metrics view.
+      const tp = parseMetricsTransport(req.query.transport);
+      if ("error" in tp) return res.status(400).json({ error: tp.error });
+      const cacheKey = `leaderboard:${win.hoursBack ?? 'all'}:${regionScope.cacheKey}:${tp.transport}`;
       const cached = getCached(cacheKey);
       if (cached) return res.json(cached);
 
-      const hoursBack = hours ? parseInt(hours as string) : undefined;
-      const results = await storage.getMainlineEvalResults(1000, hoursBack, regionScope.scope);
+      const results = await storage.getMainlineEvalResults(1000, win.hoursBack, regionScope.scope, tp.transport);
       const locations = await storage.getAllRegionLocations();
 
       // Group results by (provider, site)
@@ -8234,7 +8222,7 @@ export async function registerRoutes(
       if (isAgoraConfigured() && channelName) {
         // Stable spectator UID: derived from user ID (logged in) or IP (anonymous)
         const user = await getCurrentUser(req);
-        const identity = user ? `user:${user.id}` : `ip:${req.ip || req.headers["x-forwarded-for"] || "anon"}`;
+        const identity = user ? `user:${user.id}` : `ip:${clientIp(req) || "anon"}`;
         const uidHash = hashToken(`spectator:${identity}:${matchId}`);
         const spectatorUid = (parseInt(uidHash.slice(0, 8), 16) % 100000) + 10001;
         const spectatorToken = generateRtcToken(channelName, spectatorUid, "audience");
