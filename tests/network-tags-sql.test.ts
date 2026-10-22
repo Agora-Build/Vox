@@ -1,0 +1,78 @@
+import { describe, it, expect } from "vitest";
+import { sql } from "drizzle-orm";
+import { effectiveTags, type JobTag, type TagBoard } from "../shared/tags";
+import { db } from "../server/storage";
+import { effectiveTagValueSql, tagFilterCondition } from "../server/tag-sql";
+
+// The metrics filter runs in SQL (realtime has a LIMIT — filtering after it
+// would be wrong) while grouping runs in JS through `effectiveTags`. Two
+// implementations of one rule (designs/2026-10-22-network-tags-design.md
+// "Which value a board uses"): this suite feeds the same fixtures to both and
+// fails on any disagreement, so they can't drift.
+
+const d = process.env.DATABASE_URL ? describe : describe.skip;
+
+const t = (key: string, value: string, source: JobTag["source"]): JobTag => ({ key, value, source });
+
+const FIXTURES: Array<{ name: string; tags: JobTag[] | null }> = [
+  { name: "null (pre-release job)", tags: null },
+  { name: "empty", tags: [] },
+  { name: "flow line only (no lookup)", tags: [t("line", "twilio", "flow")] },
+  { name: "flow line + detected line", tags: [t("line", "twilio", "flow"), t("line", "bandwidth", "detected")] },
+  { name: "agent line only", tags: [t("line", "telnyx", "agent")] },
+  { name: "agent + flow line", tags: [t("line", "telnyx", "agent"), t("line", "twilio", "flow")] },
+  { name: "agent + flow + detected line", tags: [t("line", "twilio", "flow"), t("line", "bandwidth", "detected"), t("line", "telnyx", "agent")] },
+  { name: "hand-set isp only", tags: [t("isp", "att", "agent")] },
+  { name: "hand-set + detected isp", tags: [t("isp", "att", "agent"), t("isp", "starlink", "detected")] },
+  { name: "detected isp only", tags: [t("isp", "starlink", "detected")] },
+  { name: "flow sim only", tags: [t("sim", "att", "flow")] },
+  { name: "link from all three", tags: [t("link", "wifi", "flow"), t("link", "cellular", "detected"), t("link", "ethernet", "agent")] },
+  { name: "custom: flow + agent", tags: [t("codec", "opus", "flow"), t("codec", "g711", "agent")] },
+  { name: "custom: flow only", tags: [t("codec", "opus", "flow")] },
+  { name: "custom: flow + detected", tags: [t("codec", "opus", "flow"), t("codec", "pcm", "detected")] },
+  { name: "duplicate detected: first wins", tags: [t("isp", "first", "detected"), t("isp", "second", "detected")] },
+  { name: "duplicate agent: first wins", tags: [t("isp", "first", "agent"), t("isp", "second", "agent")] },
+  { name: "detected line + flow isp (lookup ≠ isp)", tags: [t("line", "bandwidth", "detected"), t("isp", "att", "flow")] },
+  {
+    name: "everything",
+    tags: [
+      t("line", "twilio", "flow"), t("codec", "opus", "flow"), t("line", "bandwidth", "detected"),
+      t("isp", "comcast", "agent"), t("isp", "att", "detected"), t("link", "wifi", "detected"),
+    ],
+  },
+];
+
+const BOARDS: TagBoard[] = ["mainline", "community", "myEvals"];
+const KEYS = ["line", "isp", "link", "sim", "codec", "absent"];
+
+d("tag SQL agrees with effectiveTags", () => {
+  const jsonbOf = (tags: JobTag[] | null) => (tags === null ? sql`NULL::jsonb` : sql`${JSON.stringify(tags)}::jsonb`);
+
+  for (const f of FIXTURES) {
+    for (const board of BOARDS) {
+      it(`${f.name} · ${board}`, async () => {
+        const expected = effectiveTags(f.tags, board);
+        for (const key of KEYS) {
+          const col = jsonbOf(f.tags);
+          // The effective value expression (used by bucketed groupBy).
+          const want = expected.find((e) => e.key === key)?.value ?? null;
+          const got = (await db.execute(sql`SELECT ${effectiveTagValueSql(col, board, key)} AS v`)).rows[0].v;
+          expect(got, `value of ${key}`).toBe(want);
+
+          // The filter predicate, for every value this fixture holds under the
+          // key (whatever its source) plus one it doesn't.
+          const values = new Set([...(f.tags ?? []).filter((x) => x.key === key).map((x) => x.value), "nomatch"]);
+          for (const value of Array.from(values)) {
+            const matches = expected.some((e) => e.key === key && e.value === value);
+            const row = (await db.execute(sql`SELECT (${tagFilterCondition(col, board, { key, value })}) IS TRUE AS m`)).rows[0];
+            expect(row.m, `filter ${key}:${value}`).toBe(matches);
+          }
+        }
+      });
+    }
+  }
+
+  it("refuses a key that isn't tag syntax (it is inlined into the SQL)", () => {
+    expect(() => effectiveTagValueSql(sql`NULL::jsonb`, "mainline", "x'; DROP TABLE users; --")).toThrow();
+  });
+});

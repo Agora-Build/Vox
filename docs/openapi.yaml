@@ -131,7 +131,44 @@ components:
       scheme: bearer
       description: API key with prefix `vox_live_`
 
+  parameters:
+    TagFilter:
+      name: tag
+      in: query
+      style: form
+      explode: true
+      schema:
+        type: array
+        items:
+          type: string
+          example: "isp:starlink"
+      description: >
+        Network tag filter, `key:value` (e.g. `line:twilio`, `isp:starlink`, `link:wifi`).
+        Repeat it to require several (all must match). Matched against each result's
+        **effective** value for the tier: on `mainline`, `line`/`isp`/`link`/`sim` use the
+        detected value only (a hand-set-only value counts as untagged), except `line` on a
+        flow without a number lookup, where the flow's value counts; on `community` and
+        `mine`, a hand-set value wins over a detected one. Results from before network tags
+        match no filter.
+    TagGroupBy:
+      name: groupBy
+      in: query
+      schema:
+        type: string
+        example: isp
+      description: >
+        A tag key to split rows by its effective value (`tagValue` on each row). Results
+        without that key form the `untagged` group — nothing is dropped.
   schemas:
+    Tag:
+      type: object
+      properties:
+        key:
+          type: string
+          example: isp
+        value:
+          type: string
+          example: starlink
     Error:
       type: object
       required:
@@ -601,6 +638,15 @@ components:
         timestamp:
           type: string
           format: date-time
+        tags:
+          type: array
+          description: The result's effective network tags for the requested tier.
+          items:
+            $ref: '#/components/schemas/Tag'
+        tagValue:
+          type: string
+          description: Only with `groupBy` — the effective value of that key, or `untagged`.
+          example: starlink
 
     LeaderboardEntry:
       type: object
@@ -629,6 +675,12 @@ components:
         noiseReduction:
           type: integer
           example: 90
+        tagValue:
+          type: string
+          description: >
+            Only with `groupBy` — the group's value for that key, or `untagged`. Each
+            provider × site row is split into one row per value.
+          example: starlink
 
 paths:
   /eval-flows:
@@ -1415,6 +1467,8 @@ paths:
             type: integer
             minimum: 1
           description: Only results from the last N hours (omit for all time).
+        - $ref: '#/components/parameters/TagFilter'
+        - $ref: '#/components/parameters/TagGroupBy'
         - name: limit
           in: query
           schema:
@@ -1452,8 +1506,17 @@ paths:
                       hours:
                         type: integer
                         nullable: true
+                      tag:
+                        type: array
+                        description: The tag filters applied, as `key:value` (empty when none).
+                        items:
+                          type: string
+                      groupBy:
+                        type: string
+                        nullable: true
+                        description: The groupBy key, or null.
         '400':
-          description: An invalid tier, transport, hours or limit
+          description: An invalid tier, transport, hours, limit, tag or groupBy
         '401':
           description: "`tier=mine` without an API key"
         '429':
@@ -1495,6 +1558,8 @@ paths:
             type: integer
             minimum: 1
           description: Only results from the last N hours (omit for all time).
+        - $ref: '#/components/parameters/TagFilter'
+        - $ref: '#/components/parameters/TagGroupBy'
         - name: siteId
           in: query
           schema:
@@ -1531,8 +1596,17 @@ paths:
                       hours:
                         type: integer
                         nullable: true
+                      tag:
+                        type: array
+                        description: The tag filters applied, as `key:value` (empty when none).
+                        items:
+                          type: string
+                      groupBy:
+                        type: string
+                        nullable: true
+                        description: The groupBy key, or null.
         '400':
-          description: An invalid tier, transport, hours or limit
+          description: An invalid tier, transport, hours, limit, tag or groupBy
         '401':
           description: "`tier=mine` without an API key"
         '429':

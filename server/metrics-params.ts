@@ -1,4 +1,5 @@
 import type { MetricTier } from "./storage";
+import { parseTagFilter, parseGroupBy, formatTag, effectiveTags, type Tag, type JobTag, type TagBoard } from "@shared/tags";
 
 // The client-supplied knobs of a metrics view, shared by the console routes
 // (/api/metrics/*) and the public v1 API (/api/v1/metrics/*) so the two can't
@@ -43,4 +44,35 @@ export function parseMetricsTier(raw: unknown): { tier: ApiMetricsTier; storageT
   if (t === "community") return { tier: t, storageTier: "community" };
   if (t === "mine") return { tier: t, storageTier: "myEvals" };
   return { error: "tier must be mainline, community or mine" };
+}
+
+/**
+ * Network-tag knobs of a metrics view (designs/2026-10-22-network-tags-design.md
+ * "Analysis"): `tag=key:value` — repeatable, every one must match the job's
+ * effective value on the view's board — and `groupBy=key`, which splits rows
+ * by that key's effective value. Both go through shared/tags.ts's parsers, so
+ * a bad value is a 400 with the same message as everywhere else.
+ */
+export function parseMetricsTags(query: { tag?: unknown; groupBy?: unknown }): { tagFilters: Tag[]; groupBy?: string } | { error: string } {
+  const tf = parseTagFilter(query.tag);
+  if ("error" in tf) return { error: tf.error };
+  const gb = parseGroupBy(query.groupBy);
+  if ("error" in gb) return { error: gb.error };
+  return { tagFilters: tf.filters, groupBy: gb.groupBy };
+}
+
+/** Cache-key part for the tag knobs. Filters are sorted: AND doesn't care about order. */
+export function tagsCacheKey(v: { tagFilters: Tag[]; groupBy?: string }): string {
+  return `tags=${v.tagFilters.map(formatTag).sort().join(",")}:groupBy=${v.groupBy ?? ""}`;
+}
+
+/** The group a row falls in when it has no effective value for the groupBy key — nothing is dropped. */
+export const UNTAGGED = "untagged";
+
+/**
+ * A row's `groupBy` value on a board: its effective value for the key, or
+ * `untagged`. JS twin of server/tag-sql.ts (both apply `effectiveTags`).
+ */
+export function tagGroupValue(jobTags: JobTag[] | null | undefined, board: TagBoard, key: string): string {
+  return effectiveTags(jobTags, board).find((t) => t.key === key)?.value ?? UNTAGGED;
 }

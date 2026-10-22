@@ -109,6 +109,8 @@ import {
 } from "@shared/schema";
 import { regionSiteSequence, haversineKm, type RegionCandidate } from "@shared/regions";
 import type { AsnLookupFn } from "./job-tags";
+import type { Tag, JobTag } from "@shared/tags";
+import { effectiveTagValueSql, tagFilterCondition } from "./tag-sql";
 import { drizzle } from "drizzle-orm/node-postgres";
 import pkg from "pg";
 const { Pool } = pkg;
@@ -151,7 +153,16 @@ export type MetricSourceRow = Pick<EvalResult,
   & { evalFlowId?: number | null; evalFlowName?: string | null }
   // Transport partition the row came from (design 2026-09-21 §11) — a constant
   // per query since transports are never mixed in one view.
-  & { transport?: "web" | "phone" };
+  & { transport?: "web" | "phone" }
+  // Network tags (designs/2026-10-22-network-tags-design.md "Analysis"): raw
+  // rows carry their job's frozen tags (`eval_jobs.tags`, null before the
+  // release) for the route to reduce to effective tags; a bucket has none.
+  // `tagValue` is the bucket's groupBy value, set only on buckets grouped by a
+  // tag (null = untagged).
+  & { jobTags?: JobTag[] | null; tagValue?: string | null };
+
+/** The network-tag knobs of a metrics query: AND-ed filters, and an optional groupBy key. */
+export type MetricsTagQuery = { tagFilters?: Tag[]; groupBy?: string };
 
 export function hashToken(token: string): string {
   return crypto.createHash('sha256').update(token).digest('hex');
@@ -2382,13 +2393,17 @@ export class DatabaseStorage {
   private joinCommunity(q: any): any { return this.joinTier(q); }
   private joinMyEvals(q: any): any { return this.joinTier(q); }
 
-  private tierConditions(tier: MetricTier, hoursBack?: number, userId?: number, scope?: RegionQueryScope, transport: "web" | "phone" = "web") {
+  private tierConditions(tier: MetricTier, hoursBack?: number, userId?: number, scope?: RegionQueryScope, transport: "web" | "phone" = "web", tagFilters: Tag[] = []) {
     const conditions = tier === "mainline" ? this.mainlineConditions(hoursBack, scope)
       : tier === "community" ? this.communityConditions(hoursBack, scope)
       : this.myEvalConditions(userId!, hoursBack, scope);
     // Transport is a hard partition, never mixed (design 2026-09-21 §11): every
     // tier view is scoped to exactly one transport; default web.
     conditions.push(eq(evalJobs.transport, transport));
+    // Network-tag filters, AND-ed, on the job's effective value for this tier's
+    // board (the tier names are the board names). In SQL, so they apply before
+    // any row limit. A job with no tags (NULL) matches no filter.
+    for (const f of tagFilters) conditions.push(tagFilterCondition(evalJobs.tags, tier, f));
     return conditions;
   }
   private applyTierJoins(tier: MetricTier, q: any): any {
@@ -2399,10 +2414,13 @@ export class DatabaseStorage {
 
   // One averaged point per (period, provider) across the selected region scope.
   // Matching the chart dimensions avoids arbitrary site selection and keeps payloads bounded.
-  private async tierBucketed(tier: MetricTier, bucket: "hour" | "day", hoursBack?: number, userId?: number, scope?: RegionQueryScope, transport: "web" | "phone" = "web", window?: MetricsWindow): Promise<MetricSourceRow[]> {
+  private async tierBucketed(tier: MetricTier, bucket: "hour" | "day", hoursBack?: number, userId?: number, scope?: RegionQueryScope, transport: "web" | "phone" = "web", window?: MetricsWindow, tags: MetricsTagQuery = {}): Promise<MetricSourceRow[]> {
     const period = bucket === "hour"
       ? sql`date_trunc('hour', ${evalResults.createdAt})`
       : sql`date_trunc('day', ${evalResults.createdAt})`;
+    // groupBy on a bucket: one point per (period, provider, tag value). The
+    // expression is grouped on, so it is the same SQL object in both places.
+    const tagValue = tags.groupBy ? effectiveTagValueSql(evalJobs.tags, tier, tags.groupBy) : null;
     const base = db.select({
       id: sql<number>`min(${evalResults.id})::int`,
       providerId: evalResults.providerId,
@@ -2425,13 +2443,14 @@ export class DatabaseStorage {
       naturalness: sql<number | null>`avg(${evalResults.naturalness})::real`,
       noiseReduction: sql<number | null>`round(avg(${evalResults.noiseReduction}))::int`,
       createdAt: sql<Date>`${period}`,
+      ...(tagValue ? { tagValue: sql<string | null>`${tagValue}` } : {}),
     }).from(evalResults);
     const rows = await this.applyTierJoins(tier, base)
-      .where(and(...this.tierConditions(tier, hoursBack, userId, scope, transport), ...(window ? [
+      .where(and(...this.tierConditions(tier, hoursBack, userId, scope, transport, tags.tagFilters), ...(window ? [
         gte(evalResults.createdAt, new Date(window.from)),
         lt(evalResults.createdAt, new Date(window.to)),
       ] : [])))
-      .groupBy(period, evalResults.providerId)
+      .groupBy(...(tagValue ? [period, evalResults.providerId, tagValue] : [period, evalResults.providerId]))
       .orderBy(desc(period), asc(evalResults.providerId))
       .limit(METRICS_ROW_CEILING + (window ? 1 : 0));
     // The query is partitioned to one transport, so it's a constant per row.
@@ -2440,17 +2459,17 @@ export class DatabaseStorage {
 
   // Applies the windowing policy (see the module-level comment). "All time"
   // always uses daily buckets and is bounded to the retention cap.
-  private async tierMetrics(tier: MetricTier, hoursBack?: number, userId?: number, scope?: RegionQueryScope, transport: "web" | "phone" = "web"): Promise<MetricSourceRow[]> {
+  private async tierMetrics(tier: MetricTier, hoursBack?: number, userId?: number, scope?: RegionQueryScope, transport: "web" | "phone" = "web", tags: MetricsTagQuery = {}): Promise<MetricSourceRow[]> {
     const effectiveHoursBack = hoursBack ?? METRICS_ALL_MAX_DAYS * 24;
     const mode = hoursBack == null ? "bucketDay" : resolveMetricsMode(hoursBack / 24);
 
     if (mode !== "raw") {
       const bucket = mode === "bucketHour" ? "hour" : "day";
-      return this.tierBucketed(tier, bucket, effectiveHoursBack, userId, scope, transport);
+      return this.tierBucketed(tier, bucket, effectiveHoursBack, userId, scope, transport, undefined, tags);
     }
 
     const rows = await this.applyTierJoins(tier, db.select().from(evalResults))
-      .where(and(...this.tierConditions(tier, effectiveHoursBack, userId, scope, transport)))
+      .where(and(...this.tierConditions(tier, effectiveHoursBack, userId, scope, transport, tags.tagFilters)))
       .orderBy(desc(evalResults.createdAt))
       .limit(METRICS_ROW_CEILING);
     // evalJobs is already inner-joined (joinTier) for tiering, so its snapshot +
@@ -2459,20 +2478,21 @@ export class DatabaseStorage {
       ...r.eval_results,
       evalFlowId: r.eval_jobs?.evalFlowId ?? null,
       evalFlowName: (r.eval_jobs?.snapshot as JobSnapshot | null)?.evalFlow?.name ?? null,
+      jobTags: r.eval_jobs?.tags ?? null,
       transport,
     })) as MetricSourceRow[];
   }
 
   // Public metrics entry points used by the realtime dashboard. They own the
   // raw-vs-bucket decision and the row ceiling — callers pass only the window.
-  getMainlineMetrics(hoursBack?: number, scope?: RegionQueryScope, transport: "web" | "phone" = "web"): Promise<MetricSourceRow[]> {
-    return this.tierMetrics("mainline", hoursBack, undefined, scope, transport);
+  getMainlineMetrics(hoursBack?: number, scope?: RegionQueryScope, transport: "web" | "phone" = "web", tags?: MetricsTagQuery): Promise<MetricSourceRow[]> {
+    return this.tierMetrics("mainline", hoursBack, undefined, scope, transport, tags);
   }
-  getCommunityMetrics(hoursBack?: number, scope?: RegionQueryScope, transport: "web" | "phone" = "web"): Promise<MetricSourceRow[]> {
-    return this.tierMetrics("community", hoursBack, undefined, scope, transport);
+  getCommunityMetrics(hoursBack?: number, scope?: RegionQueryScope, transport: "web" | "phone" = "web", tags?: MetricsTagQuery): Promise<MetricSourceRow[]> {
+    return this.tierMetrics("community", hoursBack, undefined, scope, transport, tags);
   }
-  getMyEvalMetrics(userId: number, hoursBack?: number, scope?: RegionQueryScope, transport: "web" | "phone" = "web"): Promise<MetricSourceRow[]> {
-    return this.tierMetrics("myEvals", hoursBack, userId, scope, transport);
+  getMyEvalMetrics(userId: number, hoursBack?: number, scope?: RegionQueryScope, transport: "web" | "phone" = "web", tags?: MetricsTagQuery): Promise<MetricSourceRow[]> {
+    return this.tierMetrics("myEvals", hoursBack, userId, scope, transport, tags);
   }
 
   async getMetricsDetail(tier: MetricTier, window: MetricsWindow, userId?: number, scope?: RegionQueryScope, transport: "web" | "phone" = "web"): Promise<MetricsWindow & { metrics: MetricSourceRow[]; resolution: MetricsResolution; truncated: boolean }> {
@@ -2507,6 +2527,7 @@ export class DatabaseStorage {
           createdAt: evalResults.createdAt,
           evalFlowId: evalJobs.evalFlowId,
           evalFlowName: sql<string | null>`${evalJobs.snapshot}->'evalFlow'->>'name'`,
+          jobTags: evalJobs.tags,
         }).from(evalResults))
           .where(conditions)
           .orderBy(desc(evalResults.createdAt))
@@ -2568,15 +2589,17 @@ export class DatabaseStorage {
   async getTierEvalResults(
     tier: MetricTier,
     limit: number,
-    opts: { hoursBack?: number; userId?: number; scope?: RegionQueryScope; transport?: "web" | "phone" } = {},
-  ): Promise<EvalResult[]> {
+    opts: { hoursBack?: number; userId?: number; scope?: RegionQueryScope; transport?: "web" | "phone"; tagFilters?: Tag[] } = {},
+  ): Promise<Array<EvalResult & { jobTags: JobTag[] | null }>> {
     // "My evals" without a user would compare owner = NULL and silently match nothing.
     if (tier === "myEvals" && opts.userId == null) throw new Error("getTierEvalResults: myEvals needs a userId");
     return this.applyTierJoins(tier, db.select().from(evalResults))
-      .where(and(...this.tierConditions(tier, opts.hoursBack, opts.userId, opts.scope, opts.transport ?? "web")))
+      .where(and(...this.tierConditions(tier, opts.hoursBack, opts.userId, opts.scope, opts.transport ?? "web", opts.tagFilters)))
       .orderBy(desc(evalResults.createdAt))
       .limit(limit)
-      .then((rows: any[]) => rows.map(r => r.eval_results));
+      // The job's frozen tags ride along (eval_jobs is joined for tiering anyway)
+      // so a caller can reduce them to effective tags or group by one.
+      .then((rows: any[]) => rows.map(r => ({ ...r.eval_results, jobTags: r.eval_jobs?.tags ?? null })));
   }
 
   /**

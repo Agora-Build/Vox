@@ -8,10 +8,10 @@ import { compareVersions } from "./aeval-seed";
 import { effectiveDispatchIdentity, agentListFilter, explainWaiting, type WaitAgent } from "./job-wait";
 import { STALE_THRESHOLD_MINUTES } from "./scheduler"; // the online window the reapers use
 import { settleEndedJobsNow } from "./settle-now";
-import { parseMetricsWindow, parseMetricsTransport } from "./metrics-params";
+import { parseMetricsWindow, parseMetricsTransport, parseMetricsTags, tagsCacheKey, tagGroupValue, UNTAGGED } from "./metrics-params";
 import { clientIp } from "./client-ip"; // the real caller behind Cloudflare/Traefik
 import { SECRET_NAME_PATTERN, collectSecretRefs, secretValueError } from "@shared/secrets";
-import { parseTags, LINK_VALUES } from "@shared/tags";
+import { parseTags, LINK_VALUES, effectiveTags, type TagBoard } from "@shared/tags";
 import { deriveScheduleStatus } from "@shared/schedule-status";
 import { regionSiteSequence } from "@shared/regions";
 import { parseMetricsDetailWindow } from "@shared/metrics-window";
@@ -6185,7 +6185,12 @@ export async function registerRoutes(
 
   // Helper to transform DB eval results into the format the dashboard expects.
   // Accepts both raw rows and hourly/daily bucket aggregates (both are MetricSourceRow).
-  async function formatMetricsResults(results: MetricSourceRow[]) {
+  //
+  // Network tags (design 2026-10-22 "Analysis"): every row carries `tags` — its
+  // job's EFFECTIVE tags on `board`, as {key, value} — or null on an hourly/
+  // daily bucket (it averages many jobs). With `groupBy`, every row also
+  // carries `tagValue`: that key's effective value, or "untagged".
+  async function formatMetricsResults(results: MetricSourceRow[], board: TagBoard, groupBy?: string) {
     const providerCache = new Map<string, string>();
     const [allProviders, locations] = await Promise.all([
       storage.getAllProviders(),
@@ -6218,6 +6223,10 @@ export async function registerRoutes(
       // EvalFlow identity for the hover tooltip (raw rows only; null on buckets).
       evalFlowId: r.evalFlowId ?? null,
       evalFlowName: r.evalFlowName ?? null,
+      tags: r.jobTags !== undefined ? effectiveTags(r.jobTags, board) : null,
+      ...(groupBy ? {
+        tagValue: r.jobTags !== undefined ? tagGroupValue(r.jobTags, board, groupBy) : (r.tagValue ?? UNTAGGED),
+      } : {}),
     }));
   }
 
@@ -6245,12 +6254,14 @@ export async function registerRoutes(
       if ("error" in regionScope) return res.status(400).json({ error: regionScope.error });
       const tp = parseMetricsTransport(req.query.transport);
       if ("error" in tp) return res.status(400).json({ error: tp.error });
-      const cacheKey = `realtime:${win.hoursBack ?? 'all'}:${regionScope.cacheKey}:${tp.transport}`;
+      const tags = parseMetricsTags(req.query);
+      if ("error" in tags) return res.status(400).json({ error: tags.error });
+      const cacheKey = `realtime:${win.hoursBack ?? 'all'}:${regionScope.cacheKey}:${tp.transport}:${tagsCacheKey(tags)}`;
       const cached = getCached(cacheKey);
       if (cached) return res.json(cached);
 
-      const results = await storage.getMainlineMetrics(win.hoursBack, regionScope.scope, tp.transport);
-      const data = await formatMetricsResults(results);
+      const results = await storage.getMainlineMetrics(win.hoursBack, regionScope.scope, tp.transport, tags);
+      const data = await formatMetricsResults(results, "mainline", tags.groupBy);
       setCache(cacheKey, data);
       res.json(data);
     } catch (error) {
@@ -6267,12 +6278,14 @@ export async function registerRoutes(
       if ("error" in regionScope) return res.status(400).json({ error: regionScope.error });
       const tp = parseMetricsTransport(req.query.transport);
       if ("error" in tp) return res.status(400).json({ error: tp.error });
-      const cacheKey = `community:${win.hoursBack ?? 'all'}:${regionScope.cacheKey}:${tp.transport}`;
+      const tags = parseMetricsTags(req.query);
+      if ("error" in tags) return res.status(400).json({ error: tags.error });
+      const cacheKey = `community:${win.hoursBack ?? 'all'}:${regionScope.cacheKey}:${tp.transport}:${tagsCacheKey(tags)}`;
       const cached = getCached(cacheKey);
       if (cached) return res.json(cached);
 
-      const results = await storage.getCommunityMetrics(win.hoursBack, regionScope.scope, tp.transport);
-      const data = await formatMetricsResults(results);
+      const results = await storage.getCommunityMetrics(win.hoursBack, regionScope.scope, tp.transport, tags);
+      const data = await formatMetricsResults(results, "community", tags.groupBy);
       setCache(cacheKey, data);
       res.json(data);
     } catch (error) {
@@ -6293,12 +6306,14 @@ export async function registerRoutes(
       if ("error" in regionScope) return res.status(400).json({ error: regionScope.error });
       const tp = parseMetricsTransport(req.query.transport);
       if ("error" in tp) return res.status(400).json({ error: tp.error });
-      const cacheKey = `my-evals:${user.id}:${win.hoursBack ?? 'all'}:${regionScope.cacheKey}:${tp.transport}`;
+      const tags = parseMetricsTags(req.query);
+      if ("error" in tags) return res.status(400).json({ error: tags.error });
+      const cacheKey = `my-evals:${user.id}:${win.hoursBack ?? 'all'}:${regionScope.cacheKey}:${tp.transport}:${tagsCacheKey(tags)}`;
       const cached = getCached(cacheKey);
       if (cached) return res.json(cached);
 
-      const results = await storage.getMyEvalMetrics(user.id, win.hoursBack, regionScope.scope, tp.transport);
-      const data = await formatMetricsResults(results);
+      const results = await storage.getMyEvalMetrics(user.id, win.hoursBack, regionScope.scope, tp.transport, tags);
+      const data = await formatMetricsResults(results, "myEvals", tags.groupBy);
       setCache(cacheKey, data);
       res.json(data);
     } catch (error) {
@@ -6336,7 +6351,7 @@ export async function registerRoutes(
       const cached = getCached(key);
       if (cached) return res.json(cached);
       const result = await storage.getMetricsDetail(tier, window, userId, regionScope.scope, tp.transport);
-      const data = { ...result, metrics: await formatMetricsResults(result.metrics) };
+      const data = { ...result, metrics: await formatMetricsResults(result.metrics, tier) };
       setCache(key, data);
       res.json(data);
     } catch (error) {
@@ -6386,17 +6401,23 @@ export async function registerRoutes(
       // One transport per view (web by default), like every other metrics view.
       const tp = parseMetricsTransport(req.query.transport);
       if ("error" in tp) return res.status(400).json({ error: tp.error });
-      const cacheKey = `leaderboard:${win.hoursBack ?? 'all'}:${regionScope.cacheKey}:${tp.transport}`;
+      const tags = parseMetricsTags(req.query);
+      if ("error" in tags) return res.status(400).json({ error: tags.error });
+      const cacheKey = `leaderboard:${win.hoursBack ?? 'all'}:${regionScope.cacheKey}:${tp.transport}:${tagsCacheKey(tags)}`;
       const cached = getCached(cacheKey);
       if (cached) return res.json(cached);
 
-      const results = await storage.getMainlineEvalResults(1000, win.hoursBack, regionScope.scope, tp.transport);
+      const results = await storage.getTierEvalResults("mainline", 1000, {
+        hoursBack: win.hoursBack, scope: regionScope.scope, transport: tp.transport, tagFilters: tags.tagFilters,
+      });
       const locations = await storage.getAllRegionLocations();
 
-      // Group results by (provider, site)
+      // Group results by (provider, site) — and, with groupBy, by that tag's
+      // effective mainline value too ("untagged" when a result has none).
       const providerRegionMap = new Map<string, {
         providerId: string;
         siteId: string | null;
+        tagValue?: string;
         responseLatencies: number[];
         responseLatenciesP95: number[];
         interruptLatencies: number[];
@@ -6408,11 +6429,13 @@ export async function registerRoutes(
       }>();
 
       for (const result of results) {
-        const key = `${result.providerId}-${result.siteId}`;
+        const tagValue = tags.groupBy ? tagGroupValue(result.jobTags, "mainline", tags.groupBy) : undefined;
+        const key = tagValue === undefined ? `${result.providerId}-${result.siteId}` : `${result.providerId}-${result.siteId}-${tagValue}`;
         if (!providerRegionMap.has(key)) {
           providerRegionMap.set(key, {
             providerId: result.providerId,
             siteId: result.siteId,
+            ...(tagValue === undefined ? {} : { tagValue }),
             responseLatencies: [],
             responseLatenciesP95: [],
             interruptLatencies: [],
@@ -6458,6 +6481,8 @@ export async function registerRoutes(
             provider: provider?.name || "Unknown",
             siteId: group.siteId,
             ...regionMetadata(group.siteId, locations),
+            // With groupBy only: the group's tag value (or "untagged").
+            ...(group.tagValue === undefined ? {} : { tagValue: group.tagValue }),
             responseLatency: avgRound(group.responseLatencies),
             responseLatencyP95: avgRound(group.responseLatenciesP95),
             interruptLatency: avgRound(group.interruptLatencies),

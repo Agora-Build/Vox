@@ -12,11 +12,11 @@ import { storage, mergeEvalConfig, buildJobSnapshot, validateEvalFlowConfig, val
 import { requireAuthOrApiKey, getCurrentUserOrApiKeyUser } from "./auth";
 import { parsePlatformSetup, sessionScopeForEvalFlow, evaluateSessionRequirement, getBrokeredSecretNames, ensureSession, secretGate } from "./auth-session";
 import { regionSiteSequence } from "@shared/regions";
-import { parseTags } from "@shared/tags";
+import { parseTags, effectiveTags, formatTag, type Tag } from "@shared/tags";
 import { hasOrg, sameOrg, isOwnerOrOrgManager, canAccessResource, canViewJob, canCancelJob, parseJobScope, jobListFilter } from "./permissions";
 import { getOrganizations } from "./organizations";
 import { settleEndedJobsNow } from "./settle-now";
-import { parseMetricsWindow, parseMetricsTransport, parseMetricsTier, type ApiMetricsTier } from "./metrics-params";
+import { parseMetricsWindow, parseMetricsTransport, parseMetricsTier, parseMetricsTags, tagGroupValue, type ApiMetricsTier } from "./metrics-params";
 import type { MetricTier } from "./storage";
 
 type ApiRegionLocation = Awaited<ReturnType<typeof storage.getAllRegionLocations>>[number];
@@ -893,9 +893,12 @@ export function registerApiV1Routes(app: Express): void {
    * mine is the caller's own private evals (the console's My Evals) and needs
    * an API key or a signed-in session. With no parameters a request gets what
    * it always got: mainline, web, all time.
+   *
+   * Network tags (design 2026-10-22 "Analysis"): `tag=key:value` (repeatable,
+   * all must match the effective value on the tier's board) and `groupBy=key`.
    */
   async function metricsView(req: Request): Promise<
-    | { tier: ApiMetricsTier; storageTier: MetricTier; transport: "web" | "phone"; hoursBack?: number; userId?: number }
+    | { tier: ApiMetricsTier; storageTier: MetricTier; transport: "web" | "phone"; hoursBack?: number; userId?: number; tagFilters: Tag[]; groupBy?: string }
     | { status: number; error: string }
   > {
     const tier = parseMetricsTier(req.query.tier);
@@ -904,6 +907,8 @@ export function registerApiV1Routes(app: Express): void {
     if ("error" in tp) return { status: 400, error: tp.error };
     const win = parseMetricsWindow(req.query.hours);
     if ("error" in win) return { status: 400, error: win.error };
+    const tags = parseMetricsTags(req.query);
+    if ("error" in tags) return { status: 400, error: tags.error };
     let userId: number | undefined;
     if (tier.tier === "mine") {
       const user = await getCurrentUserOrApiKeyUser(req);
@@ -911,11 +916,12 @@ export function registerApiV1Routes(app: Express): void {
       if (!user.isEnabled) return { status: 401, error: "Account is disabled" };
       userId = user.id;
     }
-    return { tier: tier.tier, storageTier: tier.storageTier, transport: tp.transport, hoursBack: win.hoursBack, userId };
+    return { tier: tier.tier, storageTier: tier.storageTier, transport: tp.transport, hoursBack: win.hoursBack, userId, tagFilters: tags.tagFilters, groupBy: tags.groupBy };
   }
   /** What the response actually covers, so a client can't misread it. */
-  const viewMeta = (v: { tier: ApiMetricsTier; transport: "web" | "phone"; hoursBack?: number }) => ({
+  const viewMeta = (v: { tier: ApiMetricsTier; transport: "web" | "phone"; hoursBack?: number; tagFilters: Tag[]; groupBy?: string }) => ({
     tier: v.tier, transport: v.transport, hours: v.hoursBack ?? null,
+    tag: v.tagFilters.map(formatTag), groupBy: v.groupBy ?? null,
   });
 
   app.get("/api/v1/metrics/realtime", async (req: Request, res: Response) => {
@@ -936,7 +942,7 @@ export function registerApiV1Routes(app: Express): void {
         limit = n;
       }
       const results = await storage.getTierEvalResults(view.storageTier, limit, {
-        hoursBack: view.hoursBack, userId: view.userId, scope: regionScope.scope, transport: view.transport,
+        hoursBack: view.hoursBack, userId: view.userId, scope: regionScope.scope, transport: view.transport, tagFilters: view.tagFilters,
       });
 
       // Transform to API format
@@ -951,6 +957,10 @@ export function registerApiV1Routes(app: Express): void {
         naturalness: r.naturalness,
         noiseReduction: r.noiseReduction,
         timestamp: r.createdAt,
+        // The job's effective tags on this tier's board; with groupBy, that
+        // key's value ("untagged" when it has none).
+        tags: effectiveTags(r.jobTags, view.storageTier),
+        ...(view.groupBy ? { tagValue: tagGroupValue(r.jobTags, view.storageTier, view.groupBy) } : {}),
       }));
 
       res.json({
@@ -983,13 +993,15 @@ export function registerApiV1Routes(app: Express): void {
       const view = await metricsView(req);
       if ("error" in view) return res.status(view.status).json({ error: view.error });
       const results = await storage.getTierEvalResults(view.storageTier, 1000, {
-        hoursBack: view.hoursBack, userId: view.userId, scope: regionScope.scope, transport: view.transport,
+        hoursBack: view.hoursBack, userId: view.userId, scope: regionScope.scope, transport: view.transport, tagFilters: view.tagFilters,
       });
 
-      // Aggregate by provider and site
+      // Aggregate by provider and site — and, with groupBy, by that tag's
+      // effective value too ("untagged" when a result has none).
       const providerRegionMap = new Map<string, {
         providerId: string;
         siteId: string | null;
+        tagValue?: string;
         responseLatencies: number[];
         interruptLatencies: number[];
         turnSuccessRates: number[];
@@ -999,11 +1011,13 @@ export function registerApiV1Routes(app: Express): void {
       }>();
 
       for (const result of results) {
-        const key = `${result.providerId}-${result.siteId}`;
+        const tagValue = view.groupBy ? tagGroupValue(result.jobTags, view.storageTier, view.groupBy) : undefined;
+        const key = tagValue === undefined ? `${result.providerId}-${result.siteId}` : `${result.providerId}-${result.siteId}-${tagValue}`;
         if (!providerRegionMap.has(key)) {
           providerRegionMap.set(key, {
             providerId: result.providerId,
             siteId: result.siteId,
+            ...(tagValue === undefined ? {} : { tagValue }),
             responseLatencies: [],
             interruptLatencies: [],
             turnSuccessRates: [],
@@ -1035,6 +1049,7 @@ export function registerApiV1Routes(app: Express): void {
           provider: entry.providerId,
           siteId: entry.siteId,
           ...apiRegionMetadata(entry.siteId, locations),
+          ...(entry.tagValue === undefined ? {} : { tagValue: entry.tagValue }),
           responseLatency: avg(entry.responseLatencies),
           interruptLatency: avg(entry.interruptLatencies),
           turnSuccessRate: avgRate(entry.turnSuccessRates),
