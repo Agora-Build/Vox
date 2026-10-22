@@ -1,0 +1,13 @@
+{
+ "copyright": "(C) APNIC Pty/Ltd. Re-use with attribution permitted",
+  "description": "Estimates of user population per AS",
+  "Date": "20/10/2026",
+  "Window": "60 Days",
+ "Data": [
+{"rank":7,"AS":7922,"Description":"COMCAST-7922 - Comcast Cable Communications, LLC","CC":"US","Users":44742222,"Percent of CC Pop":17.89,"Percent of Internet":1.0722,"Samples":30508639},
+{"rank":900,"AS":21928,"Description":"T-MOBILE-AS21928 - T-Mobile USA, Inc.","CC":"PR","Users":100000,"Percent of CC Pop":9.10,"Percent of Internet":0.0020,"Samples":5000},
+{"rank":32,"AS":21928,"Description":"T-MOBILE-AS21928 - T-Mobile USA, Inc.","CC":"US","Users":18915098,"Percent of CC Pop":7.56,"Percent of Internet":0.4533,"Samples":12865288},
+{"rank":46304,"AS":13335,"Description":"CLOUDFLARENET - Cloudflare, Inc.","CC":"SC","Users":19,"Percent of CC Pop":0.03,"Percent of Internet":0.0000,"Samples":18},
+{"rank":1,"AS":"bad","Description":"broken row","CC":"XX","Users":1,"Percent of CC Pop":"n/a"}
+  ]
+}

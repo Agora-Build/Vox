@@ -1,0 +1,4 @@
+3.0.0.0,3.1.255.255,Amazon AWS,http://www.amazon.com/aws/
+192.0.2.10,192.0.2.20,Example Hosting,http://example.com/
+192.0.2.50,192.0.2.40,Backwards Range,http://example.com/
+bad,row

@@ -2,15 +2,16 @@ import { describe, it, expect } from "vitest";
 import {
   isPublicIp, classifyLocation, slugCity, macroForContinent, deriveRegionCandidate,
   haversineKm, decideLocationTransition, REGION_CHANGE_STABILITY, detectLocation,
-  type LocationSignals, type GeoLookup, type DetectionDeps,
+  liveDetectionDeps, type LocationSignals, type GeoLookup, type DetectionDeps,
 } from "../server/location";
+import { createAccessData, parseCidrList, networkClassOf, getAccessData } from "../server/access-data";
 
 const geoMumbai: GeoLookup = {
   city: "Mumbai", countryCode: "IN", countryName: "India", continentCode: "AS",
   lat: 19.076, lon: 72.877, accuracyKm: 20,
 };
 const signals = (over: Partial<LocationSignals> = {}): LocationSignals => ({
-  geo: geoMumbai, asn: { asn: 55836, org: "Reliance Jio" }, isTorExit: false, asnClass: null, ...over,
+  geo: geoMumbai, asn: { asn: 55836, org: "Reliance Jio" }, isTorExit: false, netClass: null, ...over,
 });
 
 describe("isPublicIp", () => {
@@ -32,8 +33,8 @@ describe("classifyLocation trust ladder (first match wins)", () => {
   it("Tor exit → anonymized even with clean geo", () => {
     expect(classifyLocation("49.36.100.1", signals({ isTorExit: true })).trust).toBe("anonymized");
   });
-  it("vpn ASN → anonymized", () => {
-    expect(classifyLocation("49.36.100.1", signals({ asnClass: "vpn" })).trust).toBe("anonymized");
+  it("VPN network → anonymized", () => {
+    expect(classifyLocation("49.36.100.1", signals({ netClass: "vpn" })).trust).toBe("anonymized");
   });
   it("geo miss → low_confidence", () => {
     expect(classifyLocation("49.36.100.1", signals({ geo: null })).trust).toBe("low_confidence");
@@ -44,8 +45,8 @@ describe("classifyLocation trust ladder (first match wins)", () => {
   it("accuracy radius > 100km → low_confidence", () => {
     expect(classifyLocation("49.36.100.1", signals({ geo: { ...geoMumbai, accuracyKm: 500 } })).trust).toBe("low_confidence");
   });
-  it("hosting ASN → datacenter WITH a candidate (location trusted)", () => {
-    const d = classifyLocation("3.6.100.1", signals({ asnClass: "hosting" }));
+  it("hosting network → datacenter WITH a candidate (location trusted)", () => {
+    const d = classifyLocation("3.6.100.1", signals({ netClass: "hosting" }));
     expect(d.trust).toBe("datacenter");
     expect(d.candidate?.baseId).toBe("apac-in-mumbai");
   });
@@ -160,12 +161,19 @@ describe("decideLocationTransition", () => {
 });
 
 describe("detectLocation with injected deps", () => {
+  // Downloaded access data (server/access-data.ts) built from fixtures: a VPN
+  // range, a datacenter range and a PeeringDB Content network.
+  const access = createAccessData({
+    datacenter: [parseCidrList("3.0.0.0/15\n")],
+    vpn: [parseCidrList("1.2.3.0/24\n")],
+    peeringdb: new Map([[64500, "content" as const]]),
+  });
   const deps: DetectionDeps = {
-    geo: (ip) => ip === "49.36.100.1" ? geoMumbai : null,
-    asn: (ip) => ip === "49.36.100.1" ? { asn: 55836, org: "Jio" } : { asn: 9009, org: "M247" },
+    geo: (ip) => ["49.36.100.1", "3.0.0.9", "5.5.5.5"].includes(ip) ? geoMumbai : null,
+    asn: (ip) => ip === "5.5.5.5" ? { asn: 64500, org: "CDN" } : ip === "49.36.100.1" ? { asn: 55836, org: "Jio" } : { asn: 9009, org: "M247" },
     torExits: new Set(["185.220.101.1"]),
-    asnClass: { "9009": "vpn", "16509": "hosting" },
-    asnClassLoaded: true,
+    networkClass: (ip, asn) => networkClassOf(access, ip, asn),
+    networkClassLoaded: true,
   };
   it("resolves geo+asn through deps", () => {
     const d = detectLocation("49.36.100.1", deps);
@@ -175,11 +183,20 @@ describe("detectLocation with injected deps", () => {
   it("Tor exit set is consulted", () => {
     expect(detectLocation("185.220.101.1", deps).trust).toBe("anonymized");
   });
-  it("vpn ASN via classification map", () => {
-    expect(detectLocation("1.2.3.4", deps).trust).toBe("anonymized"); // asn 9009 → vpn
+  it("VPN range from the downloaded data → anonymized", () => {
+    expect(detectLocation("1.2.3.4", deps).trust).toBe("anonymized");
+    expect(detectLocation("1.2.3.4", deps).source.signals).toContain("net:vpn");
+  });
+  it("datacenter range from the downloaded data → datacenter", () => {
+    const d = detectLocation("3.0.0.9", deps);
+    expect(d.trust).toBe("datacenter");
+    expect(d.source.signals).toContain("net:hosting");
+  });
+  it("PeeringDB Content network → datacenter", () => {
+    expect(detectLocation("5.5.5.5", deps).trust).toBe("datacenter");
   });
   it("no deps and no mmdbs on disk → graceful unknown/low_confidence, never throws", () => {
-    const d = detectLocation("8.8.8.8"); // live loaders; CI/dev has no geoip/ dir
+    const d = detectLocation("8.8.8.8"); // live loaders; nothing loaded in a test process
     expect(["low_confidence", "unknown"]).toContain(d.trust);
   });
   it("v4-mapped v6 address is normalized before Tor/geo/ASN lookups", () => {
@@ -190,14 +207,40 @@ describe("detectLocation with injected deps", () => {
     expect(d.trust).toBe("trusted");
     expect(d.candidate?.baseId).toBe("apac-in-mumbai");
   });
-  it("ASN classification not loaded caps trusted/datacenter down to low_confidence (fail closed)", () => {
-    const unloaded: DetectionDeps = { ...deps, asnClassLoaded: false };
-    // Clean geo, no asnClass hit — would otherwise read as "trusted".
+  it("VPN/datacenter data not loaded caps trusted/datacenter down to low_confidence (fail closed)", () => {
+    const unloaded: DetectionDeps = { ...deps, networkClassLoaded: false };
+    // Clean geo, no class hit — would otherwise read as "trusted".
     const trustedLooking = detectLocation("49.36.100.1", unloaded);
     expect(trustedLooking.trust).toBe("low_confidence");
     expect(trustedLooking.candidate).toBeNull();
-    // Would-be "hosting" classification is also unavailable to trust.
-    const hostingLooking = detectLocation("1.2.3.4", { ...unloaded, asn: () => ({ asn: 16509, org: "AWS" }) });
-    expect(hostingLooking.trust).toBe("low_confidence");
+    // Would-be "datacenter" classification is also unavailable to trust.
+    expect(detectLocation("3.0.0.9", unloaded).trust).toBe("low_confidence");
+  });
+  it("live deps with no access data ever loaded fail closed (first boot, every download failed)", () => {
+    // getAccessData() starts empty: nothing loaded until reloadAccessData()
+    // reads a downloaded copy. Real geo for the IP, so only the cap can stop "trusted".
+    expect(getAccessData().loaded.datacenter).toBe(false);
+    const live = liveDetectionDeps();
+    expect(live.networkClassLoaded).toBe(false);
+    const d = detectLocation("49.36.100.1", { ...live, geo: deps.geo, asn: deps.asn });
+    expect(d.trust).toBe("low_confidence");
+    expect(d.candidate).toBeNull();
+  });
+});
+
+describe("networkClassOf", () => {
+  const access = createAccessData({
+    datacenter: [parseCidrList("3.0.0.0/15\n1.2.3.0/24\n")],
+    vpn: [parseCidrList("1.2.3.0/24\n")],
+    peeringdb: new Map([[64500, "content" as const], [7922, "access" as const]]),
+  });
+  it("VPN wins over datacenter (X4BNet's datacenter list also lists VPNs)", () => {
+    expect(networkClassOf(access, "1.2.3.4", undefined)).toBe("vpn");
+  });
+  it("datacenter range or PeeringDB Content → hosting; anything else → null", () => {
+    expect(networkClassOf(access, "3.0.0.1", 7922)).toBe("hosting");
+    expect(networkClassOf(access, "9.9.9.9", 64500)).toBe("hosting");
+    expect(networkClassOf(access, "9.9.9.9", 7922)).toBeNull();
+    expect(networkClassOf(access, "9.9.9.9", undefined)).toBeNull();
   });
 });

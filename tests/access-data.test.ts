@@ -1,0 +1,344 @@
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { readFileSync, promises as fsp } from "fs";
+import { createServer, type Server } from "http";
+import type { AddressInfo } from "net";
+import path from "path";
+import { tmpdir } from "os";
+import {
+  IpRangeSet,
+  parseCidrList,
+  parseIpcatCsv,
+  parsePeeringdbNet,
+  parseApnicAspop,
+  parseMobileCarrierAsns,
+  createAccessData,
+  loadAccessDataFromDir,
+  ACCESS_FILES,
+} from "../server/access-data";
+import { refreshAccessData, ACCESS_SOURCES, accessDataNeedsRefresh, type AccessSource } from "../server/access-data-refresh";
+
+const FIX = path.join(__dirname, "fixtures/access");
+const fixture = (name: string) => readFileSync(path.join(FIX, name), "utf8");
+
+describe("parseCidrList (X4BNet lists_vpn format)", () => {
+  it("parses IPv4 CIDRs and bare addresses, skipping comments and invalid lines", () => {
+    const parsed = parseCidrList(fixture("x4bnet-ipv4.txt"));
+    expect(parsed.v4.length).toBe(4);
+    expect(parsed.v6.length).toBe(0);
+    // "not-a-cidr" and "10.0.0.0/33" (prefix out of range)
+    expect(parsed.invalid).toBe(2);
+    const set = IpRangeSet.fromParsed([parsed]);
+    expect(set.has("3.1.255.255")).toBe(true);
+    expect(set.has("3.2.0.0")).toBe(false);
+    expect(set.has("203.0.113.7")).toBe(true);
+    expect(set.has("203.0.113.8")).toBe(false);
+    expect(set.has("10.0.0.1")).toBe(false);
+  });
+  it("masks host bits beyond the prefix (198.51.100.77/24 covers the whole /24)", () => {
+    const set = IpRangeSet.fromParsed([parseCidrList("198.51.100.77/24\n")]);
+    expect(set.has("198.51.100.0")).toBe(true);
+    expect(set.has("198.51.100.255")).toBe(true);
+    expect(set.has("198.51.101.0")).toBe(false);
+  });
+  it("parses IPv6 CIDRs, skipping invalid lines", () => {
+    const parsed = parseCidrList(fixture("x4bnet-ipv6.txt"));
+    expect(parsed.v6.length).toBe(2);
+    expect(parsed.invalid).toBe(2); // bad hex group, /129
+    const set = IpRangeSet.fromParsed([parsed]);
+    expect(set.has("2001:db8::1")).toBe(true);
+    expect(set.has("2001:db8:ffff:ffff:ffff:ffff:ffff:ffff")).toBe(true);
+    expect(set.has("2001:db9::")).toBe(false);
+    expect(set.has("2600:1fff::1")).toBe(true);
+    expect(set.has("2601::1")).toBe(false);
+  });
+  it("an HTML error page parses to zero ranges", () => {
+    const parsed = parseCidrList("<html><body>404: Not Found</body></html>\n");
+    expect(parsed.v4.length + parsed.v6.length).toBe(0);
+  });
+});
+
+describe("parseIpcatCsv (client9/ipcat datacenters.csv)", () => {
+  it("parses inclusive start,end ranges and skips backwards/garbage rows", () => {
+    const parsed = parseIpcatCsv(fixture("ipcat-datacenters.csv"));
+    expect(parsed.v4.length).toBe(2);
+    expect(parsed.invalid).toBe(2);
+    const set = IpRangeSet.fromParsed([parsed]);
+    expect(set.has("192.0.2.10")).toBe(true);
+    expect(set.has("192.0.2.20")).toBe(true);
+    expect(set.has("192.0.2.21")).toBe(false);
+    expect(set.has("192.0.2.45")).toBe(false); // the backwards range is not loaded
+  });
+});
+
+describe("parsePeeringdbNet (PeeringDB net objects)", () => {
+  const types = parsePeeringdbNet(JSON.parse(fixture("peeringdb-net.json")));
+  it("maps info_type to access/content/enterprise/other", () => {
+    expect(types.get(7922)).toBe("access");
+    expect(types.get(64500)).toBe("content");
+    expect(types.get(16509)).toBe("enterprise");
+    expect(types.get(64501)).toBe("other");
+  });
+  it("undisclosed or empty info_type is no answer, not 'other'", () => {
+    expect(types.has(22394)).toBe(false);
+    expect(types.has(64502)).toBe(false);
+  });
+  it("rejects a document without a data array", () => {
+    expect(() => parsePeeringdbNet({ error: "rate limited" })).toThrow();
+  });
+});
+
+describe("parseApnicAspop (APNIC per-AS end-user estimates)", () => {
+  const shares = parseApnicAspop(JSON.parse(fixture("apnic-aspop.json")));
+  it("keeps each AS's largest share of a country's users", () => {
+    expect(shares.get(7922)).toBeCloseTo(17.89);
+    expect(shares.get(21928)).toBeCloseTo(9.1); // PR row beats the later, smaller US row
+    expect(shares.get(13335)).toBeCloseTo(0.03);
+  });
+  it("skips malformed rows", () => {
+    expect(shares.size).toBe(3);
+  });
+  it("rejects a document without a Data array", () => {
+    expect(() => parseApnicAspop("<html>Nope</html>")).toThrow();
+  });
+});
+
+describe("mobile-carrier-asns.json", () => {
+  it("parses ASN keys and ignores _comment", () => {
+    const set = parseMobileCarrierAsns({ _comment: "x", "21928": { carrier: "T-Mobile USA" }, abc: {} });
+    expect([...set]).toEqual([21928]);
+  });
+  it("the shipped seed carries the four US carrier ASNs, each with a source", () => {
+    const raw = JSON.parse(readFileSync(path.join(process.cwd(), "server/data/mobile-carrier-asns.json"), "utf8"));
+    const set = parseMobileCarrierAsns(raw);
+    for (const asn of [21928, 6167, 22394, 20057]) expect(set.has(asn)).toBe(true);
+    expect(typeof raw._comment).toBe("string");
+    for (const key of Object.keys(raw).filter((k) => k !== "_comment")) {
+      expect(typeof raw[key].source).toBe("string");
+      expect(raw[key].source.length).toBeGreaterThan(10);
+    }
+  });
+});
+
+describe("createAccessData", () => {
+  const data = createAccessData({
+    datacenter: [parseCidrList(fixture("x4bnet-ipv4.txt")), parseCidrList(fixture("x4bnet-ipv6.txt")), parseIpcatCsv(fixture("ipcat-datacenters.csv"))],
+    vpn: [parseCidrList("198.18.0.0/15\n2a0d:5600::/29\n")],
+    peeringdb: parsePeeringdbNet(JSON.parse(fixture("peeringdb-net.json"))),
+    apnic: parseApnicAspop(JSON.parse(fixture("apnic-aspop.json"))),
+    mobileAsns: new Set([21928]),
+  });
+  it("answers membership for each source", () => {
+    expect(data.isDatacenterIp("3.0.0.1")).toBe(true);
+    expect(data.isDatacenterIp("192.0.2.15")).toBe(true); // ipcat-only range
+    expect(data.isDatacenterIp("2001:db8::5")).toBe(true);
+    expect(data.isDatacenterIp("8.8.4.4")).toBe(false);
+    expect(data.isVpnIp("198.19.1.1")).toBe(true);
+    expect(data.isVpnIp("2a0d:5600::1")).toBe(true);
+    expect(data.isVpnIp("3.0.0.1")).toBe(false);
+    expect(data.peeringdbType(64500)).toBe("content");
+    expect(data.eyeballShare(7922)).toBeCloseTo(17.89);
+    expect(data.isMobileAsn(21928)).toBe(true);
+    expect(data.isMobileAsn(7922)).toBe(false);
+    expect(data.loaded).toEqual({ datacenter: true, vpn: true, peeringdb: true, apnic: true, mobile: true });
+  });
+  it("v4-mapped IPv6 addresses are looked up as IPv4", () => {
+    expect(data.isDatacenterIp("::ffff:3.0.0.1")).toBe(true);
+    expect(data.isDatacenterIp("::ffff:8.8.4.4")).toBe(false);
+  });
+  it("garbage input is never a member", () => {
+    expect(data.isDatacenterIp("not-an-ip")).toBe(false);
+    expect(data.isVpnIp("")).toBe(false);
+  });
+  it("missing data answers undefined/false and reports itself unloaded — never a false positive", () => {
+    const empty = createAccessData({});
+    expect(empty.isDatacenterIp("3.0.0.1")).toBe(false);
+    expect(empty.isVpnIp("198.19.1.1")).toBe(false);
+    expect(empty.peeringdbType(64500)).toBeUndefined();
+    expect(empty.eyeballShare(7922)).toBeUndefined();
+    expect(empty.isMobileAsn(21928)).toBe(false);
+    expect(empty.loaded).toEqual({ datacenter: false, vpn: false, peeringdb: false, apnic: false, mobile: false });
+  });
+  it("an ASN absent from loaded data is undefined, not zero", () => {
+    expect(data.eyeballShare(64999)).toBeUndefined();
+    expect(data.peeringdbType(64999)).toBeUndefined();
+  });
+});
+
+describe("range lookup performance", () => {
+  it("10k lookups against 100k+ IPv4 and 100k IPv6 ranges finish fast", () => {
+    const v4: Array<[number, number]> = [];
+    for (let i = 0; i < 120_000; i++) {
+      const start = (i * 35_791) >>> 0; // spread across the space, step > range width
+      v4.push([start, start + 255]);
+    }
+    const v6: Array<[bigint, bigint]> = [];
+    for (let i = 0; i < 100_000; i++) {
+      const start = (0x2001n << 112n) + (BigInt(i) << 80n);
+      v6.push([start, start + (1n << 64n) - 1n]);
+    }
+    const set = IpRangeSet.fromRanges(v4, v6);
+    expect(set.size).toBe(220_000);
+    const probes4: string[] = [];
+    const probes6: string[] = [];
+    for (let i = 0; i < 5_000; i++) {
+      const n = ((i * 2_654_435_761) >>> 0);
+      probes4.push(`${n >>> 24}.${(n >>> 16) & 255}.${(n >>> 8) & 255}.${n & 255}`);
+      probes6.push(`2001:${(i % 65536).toString(16)}::${i.toString(16)}`);
+    }
+    const t0 = performance.now();
+    let hits = 0;
+    for (const p of probes4) if (set.has(p)) hits++;
+    for (const p of probes6) if (set.has(p)) hits++;
+    const elapsed = performance.now() - t0;
+    expect(elapsed).toBeLessThan(200);
+    // Sanity: the answers are right, not just fast.
+    expect(set.has("0.0.0.255")).toBe(true);
+    expect(set.has("0.0.1.0")).toBe(false);
+    expect(set.has("2001:0:1::1")).toBe(true); // i=1 → the 2001:0:1::/64 range
+    expect(hits).toBeGreaterThan(0);
+  });
+  it("overlapping and adjacent ranges merge correctly", () => {
+    const set = IpRangeSet.fromRanges([[10, 20], [15, 30], [31, 40], [100, 100]], []);
+    expect(set.has("0.0.0.10")).toBe(true);
+    expect(set.has("0.0.0.25")).toBe(true);
+    expect(set.has("0.0.0.40")).toBe(true);
+    expect(set.has("0.0.0.41")).toBe(false);
+    expect(set.has("0.0.0.9")).toBe(false);
+    expect(set.has("0.0.0.100")).toBe(true);
+    expect(set.has("0.0.0.99")).toBe(false);
+  });
+});
+
+// ---------------- refresh (download path) ----------------
+
+describe("refreshAccessData", () => {
+  let server: Server;
+  let base = "";
+  let failing = new Set<string>();
+  const routes: Record<string, string> = {
+    "/dc4": fixture("x4bnet-ipv4.txt"),
+    "/dc6": fixture("x4bnet-ipv6.txt"),
+    "/vpn4": "198.18.0.0/15\n",
+    "/vpn6": "2a0d:5600::/29\n",
+    "/ipcat": fixture("ipcat-datacenters.csv"),
+    "/apnic": fixture("apnic-aspop.json"),
+    "/html": "<html>Nope. Not going to do this!</html>",
+  };
+  const sources = (): AccessSource[] => ACCESS_SOURCES.map((s) => ({
+    ...s,
+    url: `${base}${({ "datacenter-ipv4": "/dc4", "datacenter-ipv6": "/dc6", "vpn-ipv4": "/vpn4", "vpn-ipv6": "/vpn6", "ipcat": "/ipcat", "apnic": "/apnic" } as Record<string, string>)[s.id]}`,
+    minEntries: 1,
+  }));
+
+  beforeAll(async () => {
+    server = createServer((req, res) => {
+      const url = req.url ?? "";
+      if (failing.has(url)) { res.writeHead(500); res.end("boom"); return; }
+      const body = routes[url];
+      if (body === undefined) { res.writeHead(404); res.end(); return; }
+      res.writeHead(200); res.end(body);
+    });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
+    base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  });
+  afterAll(() => new Promise<void>((r) => server.close(() => r())));
+
+  async function freshDir(): Promise<string> {
+    return fsp.mkdtemp(path.join(tmpdir(), "access-data-"));
+  }
+
+  it("downloads every source, writes files and loads them", async () => {
+    failing = new Set();
+    const dir = await freshDir();
+    const result = await refreshAccessData({ dir, sources: sources(), now: new Date("2026-10-22T00:00:00Z") });
+    expect(result.ok).toBe(true);
+    for (const s of ACCESS_SOURCES) expect(result.sources[s.id]?.ok).toBe(true);
+    const data = await loadAccessDataFromDir(dir);
+    expect(data.isDatacenterIp("3.0.0.1")).toBe(true);
+    expect(data.isDatacenterIp("192.0.2.15")).toBe(true);
+    expect(data.isVpnIp("198.19.0.1")).toBe(true);
+    expect(data.eyeballShare(7922)).toBeCloseTo(17.89);
+    expect(data.loaded.datacenter).toBe(true);
+    expect(data.loaded.vpn).toBe(true);
+    const meta = JSON.parse(await fsp.readFile(path.join(dir, ACCESS_FILES.meta), "utf8"));
+    expect(meta.sources["datacenter-ipv4"].fetchedAt).toBe("2026-10-22T00:00:00.000Z");
+    expect(accessDataNeedsRefresh(dir, new Date("2026-10-23T00:00:00Z"))).toBe(false);
+    expect(accessDataNeedsRefresh(dir, new Date("2026-10-30T00:00:01Z"))).toBe(true);
+  });
+
+  it("a failed download keeps the previous copy and reports the failure", async () => {
+    failing = new Set();
+    const dir = await freshDir();
+    await refreshAccessData({ dir, sources: sources(), now: new Date("2026-10-22T00:00:00Z") });
+    failing = new Set(["/dc4"]);
+    const result = await refreshAccessData({ dir, sources: sources(), now: new Date("2026-10-29T00:00:00Z") });
+    expect(result.ok).toBe(false);
+    expect(result.sources["datacenter-ipv4"]?.ok).toBe(false);
+    expect(result.sources["datacenter-ipv4"]?.error).toMatch(/500/);
+    expect(result.sources["vpn-ipv4"]?.ok).toBe(true);
+    const data = await loadAccessDataFromDir(dir);
+    expect(data.isDatacenterIp("3.0.0.1")).toBe(true); // old copy still there
+    const meta = JSON.parse(await fsp.readFile(path.join(dir, ACCESS_FILES.meta), "utf8"));
+    expect(meta.sources["datacenter-ipv4"].fetchedAt).toBe("2026-10-22T00:00:00.000Z");
+    expect(meta.sources["vpn-ipv4"].fetchedAt).toBe("2026-10-29T00:00:00.000Z");
+  });
+
+  it("a download that doesn't parse (HTML error page) is rejected and never replaces the old copy", async () => {
+    failing = new Set();
+    const dir = await freshDir();
+    await refreshAccessData({ dir, sources: sources(), now: new Date("2026-10-22T00:00:00Z") });
+    const bad = sources().map((s) => (s.id === "datacenter-ipv4" || s.id === "apnic" ? { ...s, url: `${base}/html` } : s));
+    const result = await refreshAccessData({ dir, sources: bad, now: new Date("2026-10-29T00:00:00Z") });
+    expect(result.sources["datacenter-ipv4"]?.ok).toBe(false);
+    expect(result.sources["apnic"]?.ok).toBe(false);
+    const data = await loadAccessDataFromDir(dir);
+    expect(data.isDatacenterIp("3.0.0.1")).toBe(true);
+    expect(data.eyeballShare(7922)).toBeCloseTo(17.89);
+    const leftovers = (await fsp.readdir(dir)).filter((f) => f.startsWith(".tmp-"));
+    expect(leftovers).toEqual([]);
+  });
+
+  it("a download below a source's minimum entry count is rejected", async () => {
+    failing = new Set();
+    const dir = await freshDir();
+    const strict = sources().map((s) => (s.id === "vpn-ipv4" || s.id === "datacenter-ipv6" ? { ...s, minEntries: 1000 } : s));
+    const result = await refreshAccessData({ dir, sources: strict, now: new Date("2026-10-22T00:00:00Z") });
+    expect(result.sources["vpn-ipv4"]?.ok).toBe(false);
+    expect(result.sources["datacenter-ipv6"]?.ok).toBe(false);
+    const data = await loadAccessDataFromDir(dir);
+    // One list of a pair missing ⇒ that data is not loaded (location trust stays capped)…
+    expect(data.loaded.vpn).toBe(false);
+    expect(data.loaded.datacenter).toBe(false);
+    // …though the ranges that did load still answer.
+    expect(data.isDatacenterIp("3.0.0.1")).toBe(true);
+    expect(data.isVpnIp("2a0d:5600::1")).toBe(true);
+  });
+
+  it("with no copy on disk and every download failing, nothing loads and nothing throws", async () => {
+    failing = new Set(Object.keys(routes));
+    const dir = await freshDir();
+    const result = await refreshAccessData({ dir, sources: sources() });
+    expect(result.ok).toBe(false);
+    const data = await loadAccessDataFromDir(dir);
+    expect(data.loaded.datacenter).toBe(false);
+    expect(data.loaded.vpn).toBe(false);
+    expect(accessDataNeedsRefresh(dir, new Date())).toBe(true);
+  });
+
+  it("a missing directory is created", async () => {
+    failing = new Set();
+    const dir = path.join(await freshDir(), "nested", "geoip");
+    const result = await refreshAccessData({ dir, sources: sources() });
+    expect(result.ok).toBe(true);
+  });
+
+  it("an operator-supplied PeeringDB export in the directory is loaded (never downloaded)", async () => {
+    failing = new Set();
+    const dir = await freshDir();
+    await fsp.writeFile(path.join(dir, ACCESS_FILES.peeringdb), fixture("peeringdb-net.json"));
+    const data = await loadAccessDataFromDir(dir);
+    expect(data.peeringdbType(7922)).toBe("access");
+    expect(data.loaded.peeringdb).toBe(true);
+    expect(ACCESS_SOURCES.some((s) => s.file === ACCESS_FILES.peeringdb)).toBe(false);
+  });
+});

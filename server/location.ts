@@ -6,6 +6,8 @@ import { storage } from "./storage";
 import { getMarketplace } from "./marketplace";
 import type { RegionCandidate } from "@shared/regions";
 import { refreshGeoipDatabases, type GeoipSource } from "./geoip-refresh";
+import { getAccessData, reloadAccessData, networkClassOf } from "./access-data";
+import { refreshAccessData, accessDataNeedsRefresh, ACCESS_REFRESH_INTERVAL_MS } from "./access-data-refresh";
 import { geoipAttributionForSource } from "@shared/geoip-attribution";
 
 export type { RegionCandidate };
@@ -19,7 +21,7 @@ export interface LocationSignals {
   geo: GeoLookup | null;
   asn: AsnLookup | null;
   isTorExit: boolean;
-  asnClass: "vpn" | "hosting" | null;
+  netClass: "vpn" | "hosting" | null;
 }
 export interface Detection {
   trust: LocationTrust;
@@ -145,7 +147,7 @@ export function classifyLocation(ip: string, signals: LocationSignals): Detectio
     asnOrg: signals.asn?.org ?? null,
     signals: [
       ...(signals.isTorExit ? ["tor-exit"] : []),
-      ...(signals.asnClass ? [`asn:${signals.asnClass}`] : []),
+      ...(signals.netClass ? [`net:${signals.netClass}`] : []),
     ],
   };
   const done = (trust: LocationTrust, candidate: RegionCandidate | null = null): Detection =>
@@ -153,14 +155,14 @@ export function classifyLocation(ip: string, signals: LocationSignals): Detectio
 
   // Ladder — first match wins (spec: detection pipeline).
   if (!isPublicIp(ip)) return done("unknown");
-  if (signals.isTorExit || signals.asnClass === "vpn") return done("anonymized");
+  if (signals.isTorExit || signals.netClass === "vpn") return done("anonymized");
   if (!signals.geo || !signals.geo.city
     || (signals.geo.accuracyKm !== undefined && signals.geo.accuracyKm > MAX_CITY_ACCURACY_KM)) {
     return done("low_confidence");
   }
   const candidate = deriveRegionCandidate(signals.geo);
   if (!candidate) return done("low_confidence");
-  if (signals.asnClass === "hosting") return done("datacenter", candidate);
+  if (signals.netClass === "hosting") return done("datacenter", candidate);
   return done("trusted", candidate);
 }
 
@@ -204,13 +206,15 @@ export interface DetectionDeps {
   geo: (ip: string) => GeoLookup | null;
   asn: (ip: string) => AsnLookup | null;
   torExits: ReadonlySet<string>;
-  asnClass: Readonly<Record<string, "vpn" | "hosting">>;
-  // Whether the ASN classification map actually loaded. An EMPTY map looks
-  // identical to a LOADED-BUT-CLEAN map to every lookup below — without this
-  // flag, a failed/missing asn-classification.json fails open: a
-  // datacenter/VPN egress with clean geo would score "trusted" purely
+  // VPN / hosting class of an IP (+ its ASN) from the downloaded access data
+  // (server/access-data.ts: X4BNet/ipcat ranges, PeeringDB Content).
+  networkClass: (ip: string, asn: number | undefined) => "vpn" | "hosting" | null;
+  // Whether the VPN + datacenter data actually loaded. Unloaded data answers
+  // null for every IP, identical to a LOADED-BUT-CLEAN lookup — without this
+  // flag a first boot (or every download failing with no copy on disk) fails
+  // open: a datacenter/VPN egress with clean geo would score "trusted" purely
   // because there was nothing to classify it against. See detectLocation.
-  asnClassLoaded: boolean;
+  networkClassLoaded: boolean;
 }
 
 // Duplicated (not imported) from server/geoip-refresh.ts on purpose — see the
@@ -223,8 +227,6 @@ const GEOIP_REFRESH_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000;
 let cityReader: Reader<CityResponse> | null = null;
 let asnReader: Reader<AsnResponse> | null = null;
 let torExits: Set<string> = new Set();
-let asnClassification: Record<string, "vpn" | "hosting"> = {};
-let asnClassificationLoaded = false;
 let warnedPrivateIp = false;
 // Derived from loaded readers, with geoip-meta.json as a fallback for an
 // unrecognized database header. Both DB-IP Lite and GeoLite2 require public
@@ -307,11 +309,25 @@ export function startLocationServices(): void {
   })();
   setInterval(() => { void refreshGeoipDatabases({ reload: reloadGeoReaders }); }, GEOIP_REFRESH_INTERVAL_MS).unref();
 
-  try {
-    asnClassification = JSON.parse(readFileSync(path.join(process.cwd(), "server/data/asn-classification.json"), "utf8"));
-    delete (asnClassification as Record<string, unknown>)._comment;
-    asnClassificationLoaded = true;
-  } catch { console.log("[location] asn-classification.json not readable — ASN class signals disabled"); }
+  // Network access data (VPN/datacenter ranges, APNIC, mobile ASNs): load
+  // what's on disk, download when missing or older than 7 days, weekly after.
+  // Until the VPN + datacenter lists have loaded, detectLocation caps trust
+  // at low_confidence (fail closed).
+  const refreshAccess = async () => {
+    const result = await refreshAccessData();
+    if (Object.values(result.sources).some((s) => s?.ok)) await reloadAccessData(GEOIP_DIR);
+  };
+  void (async () => {
+    const data = await reloadAccessData(GEOIP_DIR);
+    if (!data.loaded.datacenter || !data.loaded.vpn) {
+      console.log("[location] VPN/datacenter data not loaded — location trust capped at low_confidence until downloaded");
+    }
+    if (accessDataNeedsRefresh(GEOIP_DIR)) {
+      console.log("[location] access data refresh triggered at startup (missing or older than 7 days)");
+      await refreshAccess();
+    }
+  })().catch((err) => console.error(`[location] access data startup failed: ${err instanceof Error ? err.message : String(err)}`));
+  setInterval(() => { void refreshAccess().catch(() => {}); }, ACCESS_REFRESH_INTERVAL_MS).unref();
   const refreshTor = async () => {
     try {
       const res = await fetch("https://check.torproject.org/torbulkexitlist");
@@ -328,7 +344,13 @@ export function startLocationServices(): void {
   setInterval(refreshTor, 12 * 60 * 60 * 1000).unref();
 }
 
+/** The live detection deps (exported for tests: proves the fail-closed default). */
+export function liveDetectionDeps(): DetectionDeps {
+  return liveDeps();
+}
+
 function liveDeps(): DetectionDeps {
+  const access = getAccessData();
   return {
     geo: (ip) => {
       const hit = cityReader?.get(ip);
@@ -348,8 +370,8 @@ function liveDeps(): DetectionDeps {
       return hit ? { asn: hit.autonomous_system_number, org: hit.autonomous_system_organization } : null;
     },
     torExits,
-    asnClass: asnClassification,
-    asnClassLoaded: asnClassificationLoaded,
+    networkClass: (ip, asn) => networkClassOf(access, ip, asn),
+    networkClassLoaded: access.loaded.datacenter && access.loaded.vpn,
   };
 }
 
@@ -378,20 +400,20 @@ export function detectLocation(ip: string, deps: DetectionDeps = liveDeps()): De
       warnedPrivateIp = true;
       console.warn(`[location] observed a private client IP (${ip}) in production — trust-proxy hop count likely misconfigured; agents will stay Unverified`);
     }
-    return classifyLocation(bare, { geo: null, asn: null, isTorExit: false, asnClass: null });
+    return classifyLocation(bare, { geo: null, asn: null, isTorExit: false, netClass: null });
   }
   const asnInfo = deps.asn(bare);
   const det = classifyLocation(bare, {
     geo: deps.geo(bare),
     asn: asnInfo,
     isTorExit: deps.torExits.has(bare),
-    asnClass: asnInfo?.asn !== undefined ? deps.asnClass[String(asnInfo.asn)] ?? null : null,
+    netClass: deps.networkClass(bare, asnInfo?.asn),
   });
-  // ASN classification never loaded — an empty map is indistinguishable from
-  // a clean lookup, so "trusted"/"datacenter" here would be failing open on
+  // VPN/datacenter data never loaded — an unloaded lookup is indistinguishable
+  // from a clean one, so "trusted"/"datacenter" here would be failing open on
   // exactly the signal meant to catch VPN/hosting egress. Cap at
   // low_confidence instead (never region-eligible — see REGION_ELIGIBLE_TRUST).
-  if (!deps.asnClassLoaded && (det.trust === "trusted" || det.trust === "datacenter")) {
+  if (!deps.networkClassLoaded && (det.trust === "trusted" || det.trust === "datacenter")) {
     return { trust: "low_confidence", candidate: null, source: det.source };
   }
   return det;
