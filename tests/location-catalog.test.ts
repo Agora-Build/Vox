@@ -90,11 +90,25 @@ describeDb("allocateSiteId + runAgentLocationCheck", () => {
   });
 
   it("allocateSiteId hands out sequential ids and bumps next_sequence", async () => {
-    const before = await storage.getRegionLocationByBaseId("eu-de-frankfurt");
-    const siteId = await storage.allocateSiteId("eu-de-frankfurt");
-    expect(siteId).toBe(`eu-de-frankfurt-${String(before!.nextSequence).padStart(2, "0")}`);
-    const after = await storage.getRegionLocationByBaseId("eu-de-frankfurt");
-    expect(after!.nextSequence).toBe(before!.nextSequence + 1);
+    // Own region-location row, not the shared eu-de-frankfurt base (review fix
+    // round 1): eu-de-frankfurt's next_sequence is bumped by other tests/files
+    // running concurrently, so a before/after read of it here raced them too
+    // (same root cause as the "no renumber" test below). A dedicated,
+    // uniquely-named row no other test touches makes the sequence/bump
+    // assertion self-contained.
+    const [seqRow] = await db.insert(regionLocations).values({
+      baseId: `zz-loc-seq-${Date.now()}`, displayName: "Seq Test", city: "Seq Test",
+      countryCode: "ZZ", countryName: "Seq Test", macroRegionCode: "zz", macroRegionName: "Seq Test",
+      latitude: 0, longitude: 0,
+    }).returning();
+    try {
+      const first = await storage.allocateSiteId(seqRow.baseId);
+      expect(first).toBe(`${seqRow.baseId}-01`);
+      const second = await storage.allocateSiteId(seqRow.baseId);
+      expect(second).toBe(`${seqRow.baseId}-02`);
+    } finally {
+      await db.delete(regionLocations).where(eq(regionLocations.id, seqRow.id));
+    }
   });
 
   it("runAgentLocationCheck immediate-assigns for a private agent (stub deps unavailable → uses stored detection path)", async () => {
@@ -161,23 +175,34 @@ describeDb("allocateSiteId + runAgentLocationCheck", () => {
     await db.update(evalAgents).set({
       region: "eu-de-frankfurt", siteId: "eu-de-frankfurt-07", pendingRegion: "eu-fr-paris", pendingRegionCount: 2,
     }).where(eq(evalAgents.id, agentId));
-    const before = await storage.getRegionLocationByBaseId("eu-de-frankfurt");
-    for (const immediate of [true, false]) {
-      const res = await runAgentLocationCheck({
-        agent: { id: agentId, region: "eu-de-frankfurt", siteId: "eu-de-frankfurt-07", pendingRegion: "eu-fr-paris", pendingRegionCount: 2 },
-        token: { id: tokenId, dispatchTier: "private" },
-        ip: "80.150.1.1", immediate, deps: unloadedWithGeo,
-      });
-      expect(res).toEqual({ region: "eu-de-frankfurt", siteId: "eu-de-frankfurt-07", locationTrust: "low_confidence" });
+    // Spy, not the global eu-de-frankfurt next_sequence counter (review fix
+    // round 1): that counter is shared across every test file that allocates
+    // a site id there, and the full suite runs files in parallel — reading
+    // before/after it here raced location-access.test.ts and
+    // net-signals-core.test.ts allocating from the same base concurrently,
+    // failing intermittently though nothing here is actually wrong.
+    // "No renumber" instead asserts directly on the thing that would move
+    // the counter: allocateSiteId must never be called.
+    const allocateSpy = vi.spyOn(storage, "allocateSiteId");
+    try {
+      for (const immediate of [true, false]) {
+        const res = await runAgentLocationCheck({
+          agent: { id: agentId, region: "eu-de-frankfurt", siteId: "eu-de-frankfurt-07", pendingRegion: "eu-fr-paris", pendingRegionCount: 2 },
+          token: { id: tokenId, dispatchTier: "private" },
+          ip: "80.150.1.1", immediate, deps: unloadedWithGeo,
+        });
+        expect(res).toEqual({ region: "eu-de-frankfurt", siteId: "eu-de-frankfurt-07", locationTrust: "low_confidence" });
+      }
+      expect(allocateSpy).not.toHaveBeenCalled();
+    } finally {
+      allocateSpy.mockRestore();
     }
     const row = (await db.select().from(evalAgents).where(eq(evalAgents.id, agentId)))[0];
     expect(row.region).toBe("eu-de-frankfurt");
-    expect(row.siteId).toBe("eu-de-frankfurt-07");
+    expect(row.siteId).toBe("eu-de-frankfurt-07"); // unchanged — proves no renumber too
     expect(row.pendingRegion).toBe("eu-fr-paris");
     expect(row.pendingRegionCount).toBe(2);
     expect(row.locationTrust).toBe("low_confidence"); // observability still recorded
-    const after = await storage.getRegionLocationByBaseId("eu-de-frankfurt");
-    expect(after!.nextSequence).toBe(before!.nextSequence); // no site id handed out
   });
 
   it("unloaded access data: a new agent with no region stays Unverified (fail closed)", async () => {

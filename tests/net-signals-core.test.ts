@@ -231,9 +231,20 @@ describeDb("register/heartbeat persist netSignals (HTTP)", () => {
       body: JSON.stringify({ name: "Net Signals Agent", metadata: {}, netSignals: { cloudMetadata: true, bogus: "x" } }),
     });
     expect(reg.ok).toBe(true);
-    const { id: agentId, leaseId } = await reg.json();
+    const regBody = await reg.json();
+    const { id: agentId, leaseId } = regBody;
+    // netSignals is internal (drives the classifier, never exposed) — stored
+    // on the agent but absent from the register response and from the public
+    // agents list (review fix round 1, Minor).
+    expect(regBody).not.toHaveProperty("netSignals");
     let r = (await db.select().from(evalAgents).where(eq(evalAgents.id, agentId)))[0];
     expect(r.netSignals).toEqual({ cloudMetadata: true });
+
+    const listRes = await fetch(`${BASE_URL}/api/eval-agents`, { headers: { Cookie: cookie } });
+    expect(listRes.ok).toBe(true);
+    const listed = (await listRes.json()).find((a: { id: number }) => a.id === agentId);
+    expect(listed).toBeTruthy();
+    expect(listed).not.toHaveProperty("netSignals");
 
     // Junk-only body: ignored entirely, leaves the stored value alone.
     const hbJunk = await fetch(`${BASE_URL}/api/eval-agent/heartbeat`, {
