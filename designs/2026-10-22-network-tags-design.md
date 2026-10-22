@@ -30,7 +30,7 @@ measured over Ethernet", "Starlink vs everything else".
 | End | Tags | Who knows | Detected? |
 |---|---|---|---|
 | **Target** — the agent under test | `line` (Twilio, Bandwidth, Telnyx, Vonage, Plivo…), custom | the eval flow's owner | `line` by number lookup (below), when configured |
-| **Vantage point** — our eval agent | `isp` (AT&T, Comcast, Starlink…), `link` (wifi / ethernet / cellular / satellite), `sim` (our SIM's carrier, phone), custom | the agent's host | `isp`, `link` yes; `sim` once DialF reports it |
+| **Vantage point** — our eval agent | `isp` (AT&T, Comcast, Starlink…), `link` (wifi / ethernet / cellular / satellite), custom; system-only `sim` (our SIM's carrier) and `access` | the agent's host | `isp`, `link` yes (correctable); `sim`, `access` system-only — see below |
 
 A flow runs on many agents, so vantage tags can't live on the flow; the line
 provider describes the target, so it can't live on the agent.
@@ -297,6 +297,41 @@ lastmile" and "disagreement → unknown"); range-list and PeeringDB parsers on
 fixture files; rDNS patterns on real-world example names; reserved-key refusal on
 both ends; claim freezing; filter/groupBy on `access`; daemon metadata probe and
 `VOX_PUBLIC_IP_ON_IFACE`; e2e toggle. Mutation-check the rule.
+
+## `sim` is system-only — detected on both sides, must match (added 2026-10-22)
+
+`sim` (our own phone's SIM carrier — the calling side of phone tests) is set only by
+the system, like `access`: refused on flows and agents, absent from the tag editor.
+Agents keep `isp`/`link` (correctable) + custom keys.
+
+| Side | Source | Gives |
+|---|---|---|
+| Phone | DialF reads the SIM card (needs a DialF addition: `sims.list` today returns slot / number / default only) | operator name + network code (MCC-MNC, e.g. 310-260) |
+| Core | Twilio Lookup of our SIM's own number (the agent reads it from DialF `sims.list`, as for `${phoneNumber}`; reported on register/heartbeat with the operator) — same provider, cache and credentials as the `line` lookup | carrier name + network code |
+
+- **Match** — compared by network code, not by name → `sim:<carrier>` (detected),
+  value from the Core side's carrier name through the `lineFromCarrier`-style map
+  (radio network, e.g. a Mint Mobile SIM → `t-mobile`, since MVNO SIMs and numbers
+  both report the host network's code).
+- **Mismatch or either side missing** → no `sim` tag. Never a guess.
+- Stored on the agent (`eval_agents.sim_carrier`, system-only, recomputed when the
+  reported number/operator changes or the 30-day lookup cache expires) and frozen
+  at claim as a `detected` tag — phone jobs only.
+- **Limit:** both inputs reach Core through the agent. A modified agent could report
+  a different real number plus a matching operator; Core's lookup is of a real number
+  so it can't invent a carrier, but it can't prove which SIM is in the phone.
+- Privacy: our number is stored redacted (last 4) on the agent; the full number lives
+  only in the `number_lookups` cache key, as for `line`.
+
+## Agent badge follows `access` (added 2026-10-22)
+
+The Eval Agents page's location badge (zero-trust region: Verified / Verified ·
+datacenter / Unverified) keeps meaning **location**, but its second word comes from
+`access` instead of region trust's 12-ASN `datacenter` class:
+**Verified · last mile**, **Verified · datacenter**, **Verified** (access unknown),
+**Unverified**. One classification for both. Stored `location_trust` values are
+unchanged in this release (the Community trust gate reads them); retiring its
+`datacenter` value in favour of `access` is a later cleanup.
 
 ## Out of scope (v1)
 
