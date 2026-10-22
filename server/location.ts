@@ -353,6 +353,22 @@ function liveDeps(): DetectionDeps {
   };
 }
 
+/**
+ * ASN of one IP from the shipped ASN database — for the detected `isp` tag
+ * frozen at claim (server/job-tags.ts). Null when the database isn't loaded,
+ * the IP isn't public, or the reader rejects it: no answer, never a throw,
+ * because a claim must not fail over a missing tag.
+ */
+export function lookupAsn(ip: string): AsnLookup | null {
+  const bare = normalizeIp(ip);
+  if (!isPublicIp(bare)) return null;
+  try {
+    return liveDeps().asn(bare);
+  } catch {
+    return null;
+  }
+}
+
 export function detectLocation(ip: string, deps: DetectionDeps = liveDeps()): Detection {
   const bare = normalizeIp(ip);
   if (!isPublicIp(bare)) {

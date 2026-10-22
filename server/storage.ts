@@ -108,6 +108,7 @@ import {
   brokers,
 } from "@shared/schema";
 import { regionSiteSequence, haversineKm, type RegionCandidate } from "@shared/regions";
+import type { AsnLookupFn } from "./job-tags";
 import { drizzle } from "drizzle-orm/node-postgres";
 import pkg from "pg";
 const { Pool } = pkg;
@@ -1390,7 +1391,14 @@ export class DatabaseStorage {
     jobId: number,
     agentId: number,
     identity: { id: number; siteId: string | null; region: string | null; dispatchTier: string; createdBy: number; ownerOrgId: number | null; locationTrust: string; phoneCapable?: boolean; analyzeCapable?: boolean },
+    // Tests inject the ASN lookup (no mmdb needed); production uses the
+    // shipped ASN database via job-tags' default (server/location.ts lookupAsn).
+    opts: { asnLookup?: AsnLookupFn } = {},
   ): Promise<EvalJob | undefined> {
+    // Loaded lazily: job-tags → location → storage would otherwise be an
+    // import cycle (storage imports no server module at the top). By claim
+    // time every module is initialised, so this resolves from the cache.
+    const { buildJobTags } = await import("./job-tags");
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
@@ -1435,6 +1443,25 @@ export class DatabaseStorage {
         await client.query('ROLLBACK');
         return undefined;
       }
+      // Network tags (design "Freezing at claim"): computed in TS — the ASN
+      // lookup is an in-memory mmdb read the SQL can't do — from the job row
+      // just locked above (its FROZEN snapshot, never the live flow) and the
+      // claiming agent's row read on the same transaction, then written by the
+      // claim UPDATE itself. One statement, one commit: a claim can never
+      // land without its tags (no later write a crash could skip).
+      const agentRow = await client.query(
+        `SELECT tags, link_type, observed_ip FROM eval_agents WHERE id = $1`,
+        [agentId],
+      );
+      const snapshotFlow = (selectResult.rows[0].snapshot as JobSnapshot | null)?.evalFlow ?? null;
+      const jobTags = buildJobTags({
+        snapshotFlow,
+        agent: {
+          tags: agentRow.rows[0]?.tags ?? [],
+          linkType: agentRow.rows[0]?.link_type ?? null,
+          observedIp: agentRow.rows[0]?.observed_ip ?? null,
+        },
+      }, opts.asnLookup);
       // token_dispatch_tier + location_trust frozen, site stamped, in the same
       // atomic update: a pooled job (site_id NULL) records the claiming agent's
       // concrete site, and the job's trust is fixed at the moment it's claimed.
@@ -1449,10 +1476,11 @@ export class DatabaseStorage {
              site_id = CASE WHEN kind = 'analyze' THEN NULL
                             WHEN target_region IS NOT NULL THEN $4
                             ELSE COALESCE(site_id, $4) END,
-             location_trust = $5
+             location_trust = $5,
+             tags = $6::jsonb
          WHERE id = $2
          RETURNING *`,
-        [agentId, jobId, identity.dispatchTier, identity.siteId, identity.locationTrust]
+        [agentId, jobId, identity.dispatchTier, identity.siteId, identity.locationTrust, JSON.stringify(jobTags)]
       );
       await client.query('COMMIT');
       return snakeToCamel(updateResult.rows[0]) as EvalJob;
