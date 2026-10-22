@@ -93,8 +93,12 @@ describe("the caller's IP behind Cloudflare (server/client-ip.ts)", () => {
     expect(clientIp(req("127.0.0.1", { "cf-connecting-ip": " 198.51.100.4 " }))).toBe("198.51.100.4");
   });
 
-  it("a caller reaching Vox directly (public peer) can't pick its identity with the header", () => {
+  it("a caller reaching Vox directly (public peer) can't pick its identity — with either header", () => {
     expect(clientIp(req("203.0.113.50", { "cf-connecting-ip": "1.2.3.4" }))).toBe("203.0.113.50");
+    // On a directly exposed server `trust proxy` would make req.ip whatever
+    // X-Forwarded-For the client sent; a public peer's own address wins.
+    expect(clientIp(req("203.0.113.50", { "x-forwarded-for": "1.2.3.4" }, "1.2.3.4"))).toBe("203.0.113.50");
+    expect(clientIp(req("::ffff:203.0.113.51", {}, "9.9.9.9"))).toBe("203.0.113.51");
   });
 
   it("no header, or a header that isn't an IP: the address Express derived (req.ip)", () => {

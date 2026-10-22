@@ -9,12 +9,17 @@ import { ipKeyGenerator } from "express-rate-limit";
 // — every per-IP rate limit becomes one shared bucket, and GeoIP region
 // detection sees the server's network, not the agent's.
 //
-// Cloudflare puts the real client in CF-Connecting-IP on every request and
-// overwrites any value a client sends, so through Cloudflare it can't be
-// forged. It's believed only when the request reached Vox from a private
-// network peer (cloudflared or Traefik on the server): a caller hitting the
-// published port directly comes from a public address and is counted as
-// itself — it can't pick its own identity with the header.
+// Two cases, by who opened the connection to Vox:
+//  - a PRIVATE-network peer (cloudflared, Traefik, any proxy on the server's
+//    network): a proxy. The client is Cloudflare's CF-Connecting-IP — set on
+//    every request, overwriting any value a client sends, so it can't be forged
+//    through Cloudflare — or, without it, the address the proxy forwarded
+//    (req.ip, via `trust proxy`).
+//  - a PUBLIC peer: there's no proxy in front — that peer IS the caller. Its
+//    socket address is used and every forwarded header ignored, so a caller
+//    can't pick its own identity with CF-Connecting-IP or X-Forwarded-For
+//    (`trust proxy` alone would believe a client-sent X-Forwarded-For on a
+//    directly exposed server).
 
 /** Loopback, private (RFC 1918 / unique-local), link-local and CGNAT addresses. */
 export function isPrivateAddress(raw: string | undefined): boolean {
@@ -33,9 +38,14 @@ export function isPrivateAddress(raw: string | undefined): boolean {
 }
 
 export function clientIp(req: Pick<Request, "ip" | "headers" | "socket">): string | undefined {
+  const peer = req.socket?.remoteAddress;
+  // No socket address (shouldn't happen on a live request): what Express derived.
+  if (!peer) return req.ip;
+  // A public peer is the caller itself: no proxy, so no forwarded header counts.
+  if (!isPrivateAddress(peer)) return peer.startsWith("::ffff:") ? peer.slice(7) : peer;
   const cf = req.headers["cf-connecting-ip"];
   const value = typeof cf === "string" ? cf.trim() : undefined;
-  if (value && net.isIP(value) && isPrivateAddress(req.socket?.remoteAddress)) return value;
+  if (value && net.isIP(value)) return value;
   return req.ip;
 }
 

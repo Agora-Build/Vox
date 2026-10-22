@@ -195,8 +195,11 @@ d("v1 metrics: tier, transport, hours", () => {
   it("the console leaderboard is one transport per view too (it mixed them as well)", async () => {
     const row = (data: Array<{ provider?: string; providerId?: string; responseLatency?: number | null }>) =>
       data.find((x) => (x.providerId ?? x.provider) === providerId);
-    const web = await get("/api/metrics/leaderboard");
-    const phone = await get("/api/metrics/leaderboard?transport=phone");
+    // An hours window no other suite uses: the console leaderboard is cached by
+    // its parameters, and another suite's earlier request (built before these
+    // fixtures existed) would otherwise be served from the cache.
+    const web = await get("/api/metrics/leaderboard?hours=87613");
+    const phone = await get("/api/metrics/leaderboard?hours=87613&transport=phone");
     const pick = (b: unknown) => (Array.isArray(b) ? b : (b as { data: unknown[] }).data) as Array<{ provider?: string; providerId?: string; responseLatency?: number | null }>;
     expect(row(pick(web.body))).toBeDefined();
     expect(row(pick(phone.body))).toBeDefined();
