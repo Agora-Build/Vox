@@ -2495,12 +2495,12 @@ export class DatabaseStorage {
     return this.tierMetrics("myEvals", hoursBack, userId, scope, transport, tags);
   }
 
-  async getMetricsDetail(tier: MetricTier, window: MetricsWindow, userId?: number, scope?: RegionQueryScope, transport: "web" | "phone" = "web"): Promise<MetricsWindow & { metrics: MetricSourceRow[]; resolution: MetricsResolution; truncated: boolean }> {
+  async getMetricsDetail(tier: MetricTier, window: MetricsWindow, userId?: number, scope?: RegionQueryScope, transport: "web" | "phone" = "web", tagFilters: Tag[] = []): Promise<MetricsWindow & { metrics: MetricSourceRow[]; resolution: MetricsResolution; truncated: boolean }> {
     if (tier === "myEvals" && userId == null) throw new Error("My Evals detail requires a user");
     let resolution: MetricsResolution = metricsDetailResolution(window.to - window.from);
     const retentionHours = METRICS_RETENTION_DAYS * 24;
     if (resolution === "raw") {
-      const conditions = and(...this.tierConditions(tier, retentionHours, userId, scope, transport),
+      const conditions = and(...this.tierConditions(tier, retentionHours, userId, scope, transport, tagFilters),
         gte(evalResults.createdAt, new Date(window.from)),
         lt(evalResults.createdAt, new Date(window.to)));
       // Probe only IDs so dense windows skip transferring raw chart rows entirely.
@@ -2547,11 +2547,11 @@ export class DatabaseStorage {
       return { from: Math.floor(window.from / unit) * unit, to: Math.ceil(window.to / unit) * unit };
     };
     let actualWindow = align(resolution);
-    let rows = await this.tierBucketed(tier, resolution, retentionHours, userId, scope, transport, actualWindow);
+    let rows = await this.tierBucketed(tier, resolution, retentionHours, userId, scope, transport, actualWindow, { tagFilters });
     if (rows.length > METRICS_ROW_CEILING && resolution === "hour") {
       resolution = "day";
       actualWindow = align(resolution);
-      rows = await this.tierBucketed(tier, resolution, retentionHours, userId, scope, transport, actualWindow);
+      rows = await this.tierBucketed(tier, resolution, retentionHours, userId, scope, transport, actualWindow, { tagFilters });
     }
     return { ...actualWindow, metrics: rows.slice(0, METRICS_ROW_CEILING), resolution, truncated: rows.length > METRICS_ROW_CEILING };
   }

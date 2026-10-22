@@ -6347,10 +6347,13 @@ export async function registerRoutes(
       if ("error" in regionScope) return res.status(400).json({ error: regionScope.error });
       const tp = parseMetricsTransport(req.query.transport);
       if ("error" in tp) return res.status(400).json({ error: tp.error });
-      const key = `detail:${tier}:${userId ?? ""}:${window.from}:${window.to}:${regionScope.cacheKey}:${tp.transport}`;
+      // Tag filters only (no groupBy): a filtered chart's zoom must stay filtered.
+      const tf = parseMetricsTags({ tag: req.query.tag });
+      if ("error" in tf) return res.status(400).json({ error: tf.error });
+      const key = `detail:${tier}:${userId ?? ""}:${window.from}:${window.to}:${regionScope.cacheKey}:${tp.transport}:${tagsCacheKey({ tagFilters: tf.tagFilters })}`;
       const cached = getCached(key);
       if (cached) return res.json(cached);
-      const result = await storage.getMetricsDetail(tier, window, userId, regionScope.scope, tp.transport);
+      const result = await storage.getMetricsDetail(tier, window, userId, regionScope.scope, tp.transport, tf.tagFilters);
       const data = { ...result, metrics: await formatMetricsResults(result.metrics, tier) };
       setCache(key, data);
       res.json(data);
