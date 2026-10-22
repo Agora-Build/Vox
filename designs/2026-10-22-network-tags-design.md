@@ -249,7 +249,26 @@ serves homes, offices and colocation on one network number.
 | Agent: public IP directly on the default interface (no home router) | agent / host | `unknown` (an office server may have one — not proof of a datacenter) |
 | Agent: link `wifi`/`cellular`, or a private home-router / carrier-NAT gateway | agent | consistent with last mile — never proof on its own |
 
-### Decision rule (Core, `server/access-class.ts`)
+### Location vs access — one pipeline, two answers
+
+Location (region/site) stays a **separate property**, not a tag: it routes jobs
+(region targeting, claim matching) and files results under a site ID, with its own
+hierarchy and trust ladder. Tags only describe a result for analysis. They answer
+different questions — location trust: *can we believe where this agent is?*;
+access: *is there an end-user last mile?* — and diverge often (a home on 5G home
+internet is last mile but GeoIP-low-confidence; an unlisted VPS is location-trusted
+but a datacenter). So location trust is not used as the last-mile signal.
+
+But there is **one classifier**: the existing location check (`server/location.ts`,
+run on register, IP change and every `LOCATION_RECHECK_HOURS`) computes both region
++ trust **and** access in the same pass, with all signals in one place next to the
+GeoIP and Tor checks. Location trust's `datacenter` value is then derived from
+`access = datacenter` instead of its own 12-ASN list, so the two can never disagree.
+This changes no gating: `trusted` and `datacenter` are treated identically everywhere
+(`REGION_ELIGIBLE_TRUST`, the Community gate in `storage.ts`); only the badge tells
+them apart. `access` is surfaced for analysis as a system-only detected tag.
+
+### Decision rule (Core, in the location pipeline: `server/access-class.ts` called from `server/location.ts`)
 
 1. Tor / VPN → `unknown`.
 2. Any datacenter signal (range, hosting ASN, PeeringDB Content/Hosting, server-style rDNS, cloud metadata) → `datacenter`.
@@ -264,9 +283,9 @@ direction is safe. Disagreement means `unknown`, never a guess.
 
 ### Where it's computed and stored
 
-- Reverse DNS and range checks are too slow for the claim transaction, so Core
-  classifies the agent when its location is checked (register, IP change, and the
-  existing `LOCATION_RECHECK_HOURS` cadence on heartbeat) and stores it on the agent:
+- Reverse DNS and range checks are too slow for the claim transaction, so the
+  location check computes access (register, IP change, and the existing
+  `LOCATION_RECHECK_HOURS` cadence on heartbeat) and stores it on the agent:
   `eval_agents.access_class` + `access_reason` (system-only; never writable through
   any route). At claim, `buildJobTags` freezes it as a `detected` tag
   `access:<class>` (same transaction as today). Analyze jobs still get `[]`.
@@ -330,8 +349,8 @@ datacenter / Unverified) keeps meaning **location**, but its second word comes f
 `access` instead of region trust's 12-ASN `datacenter` class:
 **Verified · last mile**, **Verified · datacenter**, **Verified** (access unknown),
 **Unverified**. One classification for both. Stored `location_trust` values are
-unchanged in this release (the Community trust gate reads them); retiring its
-`datacenter` value in favour of `access` is a later cleanup.
+values keep their names, but `datacenter` is now derived from `access` (see "Location
+vs access") — no gating changes, since `trusted` and `datacenter` are handled alike.
 
 ## Out of scope (v1)
 
