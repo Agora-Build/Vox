@@ -218,6 +218,86 @@ No env var, no plugin; lookup is configured in the console. Results from before 
 - E2E: tag a flow, filter and group the leaderboard.
 - Mutation-check each rule.
 
+## Last mile vs datacenter (`access`) — added 2026-10-22
+
+**Why.** A result measured from a home or office connection is what real end users
+experience: it has a **last mile** (Wi-Fi, cable/DSL/fibre access, a home router).
+A result measured from a server in a datacenter doesn't. Last mile counts more, so
+every result says which it was. The ISP name alone can't tell: AT&T (AS7018)
+serves homes, offices and colocation on one network number.
+
+### Decisions (made in discussion)
+
+| Question | Decision |
+|---|---|
+| Name | `access:lastmile` · `access:datacenter` · `access:unknown` ("datacenter", not "hosted": cloud, VPS, colo and dedicated servers all live in one; an office server doesn't — and it matches region trust's existing `datacenter` class). |
+| Who sets it | **Only the system.** `access` is a reserved key: refused on flows and agents, absent from the tag editor. |
+| How it's valued | Every view can show the split: a toggle **All / Last mile / Datacenter** (default **All**, console and API) and last-mile vs datacenter side by side per provider row. |
+| Where | Same branch and release as network tags. |
+
+### Signals
+
+| Signal | Measured by | Pushes toward |
+|---|---|---|
+| Tor exit or `vpn` ASN (existing) | Core | `unknown` — the real path is hidden |
+| Agent IP inside a **datacenter IP range** (public hosting/cloud range lists, by range not only ASN — catches an access ISP's colo ranges when listed), or an existing `hosting` ASN | Core | `datacenter` |
+| **PeeringDB network type** of the ASN: Content / Hosting | Core | `datacenter` |
+| PeeringDB type Cable/DSL/ISP (access network) | Core | `lastmile` evidence |
+| **Reverse DNS** of the IP matches a residential/access pattern (`lightspeed`, `res.`, `pool-`, `cpe-`, `dsl`, `cable`, `dyn`, `fios`, `broadband`, …) | Core | `lastmile` evidence |
+| Reverse DNS matches a server/colo pattern (`static.…hosting`, `colo`, `vps`, `server`, `dedicated`, …) | Core | `datacenter` |
+| Agent: a **cloud metadata service** answers (169.254.169.254 / metadata.google.internal) | agent | `datacenter` |
+| Agent: public IP directly on the default interface (no home router) | agent / host | `unknown` (an office server may have one — not proof of a datacenter) |
+| Agent: link `wifi`/`cellular`, or a private home-router / carrier-NAT gateway | agent | consistent with last mile — never proof on its own |
+
+### Decision rule (Core, `server/access-class.ts`)
+
+1. Tor / VPN → `unknown`.
+2. Any datacenter signal (range, hosting ASN, PeeringDB Content/Hosting, server-style rDNS, cloud metadata) → `datacenter`.
+3. Core has last-mile evidence (PeeringDB access network **or** residential rDNS) **and** the agent reports nothing contrary (no public IP on the interface) → `lastmile`.
+4. Otherwise → `unknown`.
+
+**Only Core can earn `lastmile`.** Agent signals can only push a result to
+`datacenter` or `unknown`, never to `lastmile` — so a modified agent can't dress a
+server up as last mile (its IP still sits in a datacenter range or lacks access
+evidence). Nobody gains by faking "datacenter", so trusting the agent in that
+direction is safe. Disagreement means `unknown`, never a guess.
+
+### Where it's computed and stored
+
+- Reverse DNS and range checks are too slow for the claim transaction, so Core
+  classifies the agent when its location is checked (register, IP change, and the
+  existing `LOCATION_RECHECK_HOURS` cadence on heartbeat) and stores it on the agent:
+  `eval_agents.access_class` + `access_reason` (system-only; never writable through
+  any route). At claim, `buildJobTags` freezes it as a `detected` tag
+  `access:<class>` (same transaction as today). Analyze jobs still get `[]`.
+- Agent signals travel on register/heartbeat as `netSignals: { cloudMetadata, publicIpOnInterface }`
+  (omitted when unknown). In a container the interface is a veth, so `vox-upgrade.sh`
+  measures `publicIpOnInterface` on the host and passes `VOX_PUBLIC_IP_ON_IFACE`;
+  the metadata probe works from inside a container (short timeout, once per beat
+  at most every 10 minutes).
+- Data: the datacenter range list and PeeringDB network types are downloaded and
+  refreshed in-app weekly next to the GeoIP databases (`server/geoip-refresh.ts`
+  pattern), stored under `GEOIP_DB_DIR`; missing data ⇒ fewer signals ⇒ more
+  `unknown`, never a wrong `lastmile`. Licences of each list are checked before use
+  and credited like DB-IP.
+- The Agents page shows each agent's access class and reason (read-only).
+
+### Analysis
+
+`access` is an ordinary detected tag, so the existing machinery serves it:
+`tag=access:lastmile` filters, `groupBy=access` splits. The console toggle maps to
+that filter (default All); the Leaderboard adds last-mile and datacenter columns
+per provider row. The v1 API: same `tag`/`groupBy` (default unchanged = all).
+`access` uses the detected value on every board (no hand-set value can exist).
+
+### Testing
+
+Decision-rule unit tests per signal combination (incl. "agent can never earn
+lastmile" and "disagreement → unknown"); range-list and PeeringDB parsers on
+fixture files; rDNS patterns on real-world example names; reserved-key refusal on
+both ends; claim freezing; filter/groupBy on `access`; daemon metadata probe and
+`VOX_PUBLIC_IP_ON_IFACE`; e2e toggle. Mutation-check the rule.
+
 ## Out of scope (v1)
 
 - A comparison page (side-by-side distributions per tag value) — v2 on this data.
