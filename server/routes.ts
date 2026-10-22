@@ -29,6 +29,7 @@ import { getMarketplace } from "./marketplace";
 import { isAlreadyMemberError, getOrganizations, requireOrganizations, type Membership, type OrgSecretRow } from "./organizations";
 import { fingerprintCredential, formatLastFailedHttpStatus, parseLastFailedHttpStatus } from "@shared/credentials";
 import { parseNetSignalsUpdate, mergeNetSignals, netSignalsChanged } from "./net-signals-update";
+import { noteSimReport } from "./sim-carrier";
 import { sessionScopeForEvalFlow, areLoginSecretsAttested, ensureSession, stampOwnerSession, credentialKeyFor, SESSION_FRESH_MARGIN_SECONDS, classifyReferencedSecrets, findBrokeredMisuse, resolveBrokerType, type SessionNeed, detectSessionNeed, resolvableSecretSources, secretGate, evalSetMayUseSecrets, secretsJobFills, runDialogEvalSetProblem, missingEvalFlowSecrets } from "./auth-session";
 import { validateRegisterPayload, cacheBrokerMintSecret, hasBrokerMintSecret, routeToBroker, executeViaBroker, KNOWN_BROKER_TYPES, probeAndRecordBroker } from "./broker-registry";
 import { resolveRestfulTemplate } from "./restful-exec";
@@ -2285,7 +2286,7 @@ export async function registerRoutes(
       // Hand-set tags describing the TARGET under test (design "Data model").
       // Validated with the one shared parser so the client, Core and the
       // agent can't disagree on what counts as a valid tag.
-      const parsedTags = parseTags(req.body.tags, { end: "flow" }); // line + custom keys; isp/link/sim belong to the agent
+      const parsedTags = parseTags(req.body.tags, { end: "flow" }); // line + custom keys; isp/link belong to the agent, access/sim to Vox
       if ("error" in parsedTags) {
         return res.status(400).json({ error: parsedTags.error });
       }
@@ -2381,7 +2382,7 @@ export async function registerRoutes(
       }
       // Tags, same validator as create. Absent (`undefined`) leaves the
       // stored tags unchanged — this is a PATCH, not a replace-all.
-      const parsedTags = parseTags(req.body.tags, { end: "flow" }); // line + custom keys; isp/link/sim belong to the agent
+      const parsedTags = parseTags(req.body.tags, { end: "flow" }); // line + custom keys; isp/link belong to the agent, access/sim to Vox
       if ("error" in parsedTags) {
         return res.status(400).json({ error: parsedTags.error });
       }
@@ -4189,7 +4190,8 @@ export async function registerRoutes(
       if (req.body?.tags === undefined) {
         return res.status(400).json({ error: "tags is required — send [] to clear" });
       }
-      // The agent end: isp/link/sim + custom keys; `line` belongs to the flow.
+      // The agent end: isp/link + custom keys; `line` belongs to the flow and
+      // access/sim are system-only (shared/tags.ts SYSTEM_TAG_KEYS).
       const parsedTags = parseTags(req.body.tags, { end: "agent" });
       if ("error" in parsedTags) {
         return res.status(400).json({ error: parsedTags.error });
@@ -4406,6 +4408,9 @@ export async function registerRoutes(
 
       await storage.updateEvalAgentHeartbeat(agent.id);
       { const ip = clientIp(req); if (ip) void storage.updateEvalAgentObservedIp(agent.id, ip); }
+      // Our SIM (phone agents, design "`sim` is system-only"): matched in the
+      // background — a lookup must never hold registration up.
+      noteSimReport(agent.id, req.body.sim);
 
       // Zero-trust location: detection is the ONLY region source for
       // non-public agents; registration applies immediately (fresh process).
@@ -4546,6 +4551,9 @@ export async function registerRoutes(
       if (Object.keys(updates).length > 0) {
         await storage.updateEvalAgent(agentId, updates);
       }
+      // Our SIM: recomputed in the background only when the report changed or
+      // the lookup expired (server/sim-carrier.ts) — never delays the beat.
+      noteSimReport(agent.id, req.body.sim);
 
       res.json({ message: "Heartbeat received" });
     } catch (error) {

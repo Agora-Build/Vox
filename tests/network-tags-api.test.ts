@@ -171,7 +171,7 @@ d("network tags: hand-set tags and link type through the API", () => {
       body: JSON.stringify({ name: `ntags-v1-${stamp}`, providerId, visibility: "public", tags: ["sim:att"] }),
     });
     expect(v1Create.status).toBe(400);
-    expect(v1Create.body.error).toContain("set it on the agent");
+    expect(v1Create.body.error).toBe("sim is detected from the phone's SIM and its number — it can't be set by hand");
 
     const v1Put = await jsonFetch(`${BASE_URL}/api/v1/eval-flows/${flowIds[0]}`, {
       method: "PUT", cookie: userA.cookie, body: JSON.stringify({ tags: ["isp:comcast"] }),
@@ -180,6 +180,28 @@ d("network tags: hand-set tags and link type through the API", () => {
     expect(v1Put.body.error).toContain("set it on the agent");
 
     // Nothing was written by the refused saves.
+    expect((await storage.getEvalFlow(flowIds[0]))!.tags).toEqual([{ key: "codec", value: "g711" }]);
+  });
+
+  it("a flow refuses the system-only keys (access, sim) — console and v1, create and edit", async () => {
+    const ACCESS_MSG = "access is set by Vox from the eval agent's network — it can't be set by hand";
+    const SIM_MSG = "sim is detected from the phone's SIM and its number — it can't be set by hand";
+    const create = await jsonFetch(`${BASE_URL}/api/eval-flows`, {
+      method: "POST", cookie: userA.cookie,
+      body: JSON.stringify({ name: `ntags-acc-${stamp}`, providerId, visibility: "public", tags: ["access:lastmile"] }),
+    });
+    expect(create.status).toBe(400);
+    expect(create.body.error).toBe(ACCESS_MSG);
+    const patch = await jsonFetch(`${BASE_URL}/api/eval-flows/${flowIds[0]}`, {
+      method: "PATCH", cookie: userA.cookie, body: JSON.stringify({ tags: ["sim:t-mobile"] }),
+    });
+    expect(patch.status).toBe(400);
+    expect(patch.body.error).toBe(SIM_MSG);
+    const v1Put = await jsonFetch(`${BASE_URL}/api/v1/eval-flows/${flowIds[0]}`, {
+      method: "PUT", cookie: userA.cookie, body: JSON.stringify({ tags: ["access:datacenter"] }),
+    });
+    expect(v1Put.status).toBe(400);
+    expect(v1Put.body.error).toBe(ACCESS_MSG);
     expect((await storage.getEvalFlow(flowIds[0]))!.tags).toEqual([{ key: "codec", value: "g711" }]);
   });
 
@@ -298,6 +320,55 @@ d("network tags: hand-set tags and link type through the API", () => {
       });
       expect(res.status).toBe(400);
       expect(res.body.error).toBe("line belongs to the eval flow's dialled number — set it on the flow, not the agent");
+    });
+
+    it("PATCH /api/eval-agents/:id/tags: access and sim are system-only — 400, nothing written", async () => {
+      const before = (await storage.getEvalAgent(agentId))?.tags;
+      const sim = await jsonFetch(`${BASE_URL}/api/eval-agents/${agentId}/tags`, {
+        method: "PATCH", cookie: userA.cookie, body: JSON.stringify({ tags: ["isp:comcast", "sim:att"] }),
+      });
+      expect(sim.status).toBe(400);
+      expect(sim.body.error).toBe("sim is detected from the phone's SIM and its number — it can't be set by hand");
+      const access = await jsonFetch(`${BASE_URL}/api/eval-agents/${agentId}/tags`, {
+        method: "PATCH", cookie: userA.cookie, body: JSON.stringify({ tags: ["access:lastmile"] }),
+      });
+      expect(access.status).toBe(400);
+      expect(access.body.error).toBe("access is set by Vox from the eval agent's network — it can't be set by hand");
+      expect((await storage.getEvalAgent(agentId))?.tags).toEqual(before);
+    });
+
+    it("register/heartbeat `sim`: a number with no operator code records no-sim-operator, redacted; junk is ignored", async () => {
+      const number = `+1555${String(Date.now()).slice(-7)}`;
+      const waitFor = async (pred: (a: any) => boolean) => {
+        for (let i = 0; i < 50; i++) {
+          const a = await storage.getEvalAgent(agentId);
+          if (a && pred(a)) return a;
+          await new Promise((r) => setTimeout(r, 100));
+        }
+        return storage.getEvalAgent(agentId);
+      };
+      const hb = await jsonFetch(`${BASE_URL}/api/eval-agent/heartbeat`, {
+        method: "POST", headers: { Authorization: `Bearer ${tokenValue}` },
+        body: JSON.stringify({ agentId, leaseId, state: "idle", sim: { number } }),
+      });
+      expect(hb.status).toBe(200);
+      const a = await waitFor((x) => x.simReason === "v1: no-sim-operator");
+      expect(a?.simReason).toBe("v1: no-sim-operator");
+      expect(a?.simCarrier).toBeNull();
+      expect(a?.simNumberRedacted).toBe(`…${number.slice(-4)}`);
+      expect(JSON.stringify(a)).not.toContain(number.slice(1));
+
+      // Junk never 400s and never writes.
+      await pool.query(`UPDATE eval_agents SET sim_reason = 'sentinel' WHERE id = $1`, [agentId]);
+      for (const sim of ["+15550000000", { number: "not-a-number", mcc: "310", mnc: "260" }, [1, 2], 42]) {
+        const r = await jsonFetch(`${BASE_URL}/api/eval-agent/heartbeat`, {
+          method: "POST", headers: { Authorization: `Bearer ${tokenValue}` },
+          body: JSON.stringify({ agentId, leaseId, state: "idle", sim }),
+        });
+        expect(r.status).toBe(200);
+      }
+      await new Promise((r) => setTimeout(r, 500));
+      expect((await storage.getEvalAgent(agentId))?.simReason).toBe("sentinel");
     });
 
     it("PATCH /api/eval-agents/:id/tags: the token's creator can set normalized tags", async () => {

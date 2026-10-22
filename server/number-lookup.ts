@@ -28,6 +28,9 @@ import { db, storage, encryptValue, decryptValue, isEncryptionConfigured, parseS
 export const LOOKUP_TIMEOUT_MS = 10_000;
 export const CACHE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 export const TWILIO_CONFIG_KEY = "twilio_lookup_credentials";
+/** Mobile country code: 3 digits. Mobile network code: 2 or 3 digits. */
+export const MCC_RE = /^[0-9]{3}$/;
+export const MNC_RE = /^[0-9]{2,3}$/;
 const TWILIO_BASE_URL = "https://lookups.twilio.com";
 
 export type LineSkipReason =
@@ -41,7 +44,7 @@ export type LineLookupResult = LineLookup | { skipped: LineSkipReason };
 
 /** What a lookup service answered for one E.164 number. */
 export type ProviderAnswer =
-  | { kind: "ok"; carrierName: string | null; lineType: string | null }
+  | { kind: "ok"; carrierName: string | null; lineType: string | null; mcc?: string | null; mnc?: string | null }
   | { kind: "invalid-number" }
   | { kind: "failed"; reason: string };
 
@@ -84,7 +87,10 @@ export class TwilioLookupProvider implements NumberLookupProvider {
       if (!res.ok) return { kind: "failed", reason: `HTTP ${res.status}` };
       const body = (await res.json()) as {
         valid?: boolean;
-        line_type_intelligence?: { carrier_name?: string | null; type?: string | null } | null;
+        line_type_intelligence?: {
+          carrier_name?: string | null; type?: string | null;
+          mobile_country_code?: string | null; mobile_network_code?: string | null;
+        } | null;
       };
       if (body?.valid === false) return { kind: "invalid-number" };
       const lti = body?.line_type_intelligence ?? null;
@@ -92,6 +98,10 @@ export class TwilioLookupProvider implements NumberLookupProvider {
         kind: "ok",
         carrierName: typeof lti?.carrier_name === "string" && lti.carrier_name.trim() ? lti.carrier_name : null,
         lineType: typeof lti?.type === "string" ? lti.type.slice(0, 32) : null,
+        // The number's network code — what a SIM operator's MCC-MNC is
+        // matched against (server/sim-carrier.ts). Malformed → null.
+        mcc: typeof lti?.mobile_country_code === "string" && MCC_RE.test(lti.mobile_country_code) ? lti.mobile_country_code : null,
+        mnc: typeof lti?.mobile_network_code === "string" && MNC_RE.test(lti.mobile_network_code) ? lti.mobile_network_code : null,
       };
     } catch (err) {
       // The URL holds the number but never a credential (Basic auth header).
@@ -213,37 +223,36 @@ export function dialledNumber(config: unknown): { number: string } | { skipped: 
 
 // ---- lookup ------------------------------------------------------------------
 
-function toLineLookup(row: { value: string | null; carrierName: string | null; lineType: string | null; lookedUpAt: Date }, e164: string): LineLookupResult {
-  if (!row.value) return { skipped: "no-carrier" };
-  return {
-    value: row.value,
-    carrierName: row.carrierName,
-    lineType: row.lineType,
-    lookedUpAt: row.lookedUpAt.toISOString(),
-    number: redactNumber(e164),
-  };
+/** One number's cached answer (a `number_lookups` row, as returned to callers). */
+export interface NumberAnswer {
+  carrierName: string | null;
+  lineType: string | null;
+  /** The mapped `line` value (lineFromCarrier); null = no carrier. */
+  value: string | null;
+  mcc: string | null;
+  mnc: string | null;
+  lookedUpAt: Date;
 }
+export type NumberLookupResult = NumberAnswer | { skipped: "not-configured" | "invalid-number" | "failed" };
 
 /**
- * Look up the line provider behind a flow's dialled number. Never throws.
- * `provider` undefined = the configured one (null when no credentials);
- * tests inject a TwilioLookupProvider pointed at a stub.
+ * Look one E.164 number up — cache-first (`number_lookups`, CACHE_MAX_AGE_MS),
+ * else the provider, writing the answer back. Shared by the flow `line` path
+ * and our own SIM's number (server/sim-carrier.ts): same provider, cache and
+ * credentials. Never throws; never logs the full number.
+ * `provider` undefined = the configured one (null when no credentials).
  */
-export async function lookupFlowLine(
-  flow: { config: unknown },
+export async function lookupNumber(
+  e164: string,
   opts: { provider?: NumberLookupProvider | null } = {},
-): Promise<LineLookupResult> {
+): Promise<NumberLookupResult> {
   try {
-    const dialled = dialledNumber(flow.config);
-    if ("skipped" in dialled) return dialled;
-    const e164 = dialled.number;
-
     const provider = opts.provider !== undefined ? opts.provider : await defaultLookupProvider();
     if (!provider) return { skipped: "not-configured" };
 
     const [cached] = await db.select().from(numberLookups).where(eq(numberLookups.number, e164));
     if (cached && Date.now() - cached.lookedUpAt.getTime() < CACHE_MAX_AGE_MS) {
-      return toLineLookup(cached, e164);
+      return { carrierName: cached.carrierName, lineType: cached.lineType, value: cached.value, mcc: cached.mcc, mnc: cached.mnc, lookedUpAt: cached.lookedUpAt };
     }
 
     const answer = await provider.lookup(e164);
@@ -261,17 +270,48 @@ export async function lookupFlowLine(
       // No carrier (toll-free…) is cached too, as value null: the answer
       // won't change within the month, and each lookup is paid.
       value: lineFromCarrier(answer.carrierName) ?? null,
+      mcc: answer.mcc ?? null,
+      mnc: answer.mnc ?? null,
       lookedUpAt: new Date(),
     };
     await db.insert(numberLookups).values(row).onConflictDoUpdate({
       target: numberLookups.number,
-      set: { provider: row.provider, carrierName: row.carrierName, lineType: row.lineType, value: row.value, lookedUpAt: row.lookedUpAt },
+      set: { provider: row.provider, carrierName: row.carrierName, lineType: row.lineType, value: row.value, mcc: row.mcc, mnc: row.mnc, lookedUpAt: row.lookedUpAt },
     });
-    return toLineLookup(row, e164);
+    return { carrierName: row.carrierName, lineType: row.lineType, value: row.value, mcc: row.mcc, mnc: row.mnc, lookedUpAt: row.lookedUpAt };
   } catch (err) {
     console.warn(`[number-lookup] lookup failed (${err instanceof Error ? err.name : "error"})`);
     return { skipped: "failed" };
   }
+}
+
+/**
+ * Look up the line provider behind a flow's dialled number. Never throws.
+ * `provider` undefined = the configured one (null when no credentials);
+ * tests inject a TwilioLookupProvider pointed at a stub.
+ */
+export async function lookupFlowLine(
+  flow: { config: unknown },
+  opts: { provider?: NumberLookupProvider | null } = {},
+): Promise<LineLookupResult> {
+  let dialled: ReturnType<typeof dialledNumber>;
+  try {
+    dialled = dialledNumber(flow.config);
+  } catch {
+    return { skipped: "failed" };
+  }
+  if ("skipped" in dialled) return dialled;
+  const e164 = dialled.number;
+  const answer = await lookupNumber(e164, opts);
+  if ("skipped" in answer) return answer;
+  if (!answer.value) return { skipped: "no-carrier" };
+  return {
+    value: answer.value,
+    carrierName: answer.carrierName,
+    lineType: answer.lineType,
+    lookedUpAt: answer.lookedUpAt.toISOString(),
+    number: redactNumber(e164),
+  };
 }
 
 /**

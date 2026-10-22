@@ -39,7 +39,7 @@ import { StringDecoder } from 'string_decoder';
 import yaml from 'js-yaml';
 import { injectStorageSession } from './session-inject';
 import { normalizeDialableNumber } from '../shared/steps';
-import { DialfClient, probeDialf, resolveDialfSocketPath, type DialfProbe } from './dialf-client';
+import { DialfClient, probeDialf, resolveDialfSocketPath, withSim, type DialfProbe } from './dialf-client';
 import { runPhoneJob, finishPhoneMetrics } from './phone-eval';
 import { runAnalyzeUpload, capabilitiesFor, aevalOnPath, writeLimited } from './analyze-upload';
 import { detectLinkType, withLinkType } from './link-type';
@@ -374,6 +374,15 @@ class VoxEvalAgentDaemon {
     return capabilitiesFor({ dialf: this.dialfProbeCache.probe.ok, aeval: aevalOnPath() });
   }
 
+  /** Our SIM's number + operator code for Core's `sim` match (design "`sim`
+   *  is system-only") — from the probe `currentCapabilities` just refreshed,
+   *  and only while that probe is OK; undefined (field omitted) otherwise,
+   *  including on today's DialF, whose sims.list carries no operator. */
+  private currentSim() {
+    const probe = this.dialfProbeCache?.probe;
+    return probe?.ok ? probe.sim : undefined;
+  }
+
   /** Current network link type (design "Detection" → link), refreshed on every
    *  register/heartbeat like capabilities — cheap, one `ip route get` exec.
    *  `VOX_LINK_TYPE` (vox-upgrade.sh's host-side answer, since a container
@@ -412,7 +421,7 @@ class VoxEvalAgentDaemon {
       const response = await this.fetch('/api/eval-agent/register', {
         method: 'POST',
         signal: AbortSignal.timeout(30_000), // never hang startup on a silent server
-        body: JSON.stringify(withNetSignals(withLinkType({ name: this.config.name, metadata, capabilities: await this.currentCapabilities() }, this.currentLinkType()), await this.currentNetSignals())),
+        body: JSON.stringify(withSim(withNetSignals(withLinkType({ name: this.config.name, metadata, capabilities: await this.currentCapabilities() }, this.currentLinkType()), await this.currentNetSignals()), this.currentSim())),
       });
 
       if (!response.ok) {
@@ -479,13 +488,13 @@ class VoxEvalAgentDaemon {
         // Bounded (#246 review): a Vox that accepts the connection but never
         // answers would otherwise leave one pending request per interval.
         signal: AbortSignal.timeout(15_000),
-        body: JSON.stringify(withNetSignals(withLinkType({
+        body: JSON.stringify(withSim(withNetSignals(withLinkType({
           agentId: this.agentId,
           leaseId: this.leaseId,
           state: this.isRunningJob ? 'occupied' : 'idle',
           metadata: this.buildMetadata(),
           capabilities: await this.currentCapabilities(),
-        }, this.currentLinkType()), await this.currentNetSignals())),
+        }, this.currentLinkType()), await this.currentNetSignals()), this.currentSim())),
       });
 
       await this.exitIfSuperseded(response);

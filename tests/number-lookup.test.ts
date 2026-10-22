@@ -22,6 +22,7 @@ import { storage, pool } from "../server/storage";
 import {
   TwilioLookupProvider,
   lookupFlowLine,
+  lookupNumber,
   refreshFlowLineOnSave,
   dialledNumber,
   toE164,
@@ -171,6 +172,34 @@ d("lookupFlowLine (stub Twilio, isolated DB)", () => {
     const row = await pool.query("SELECT value, looked_up_at FROM number_lookups WHERE number = $1", ["+15550103333"]);
     expect(row.rows[0].value).toBe("telnyx");
     expect(Date.now() - new Date(row.rows[0].looked_up_at).getTime()).toBeLessThan(60_000);
+  });
+
+  it("stores the number's MCC/MNC from line_type_intelligence", async () => {
+    reply = (n) => twilioOk(n, "T-Mobile USA, Inc.", "mobile");
+    await lookupFlowLine(phoneFlow('- type: call.dial\n  number: "+15550109999"\n'), { provider: provider() });
+    const row = await pool.query("SELECT mcc, mnc FROM number_lookups WHERE number = $1", ["+15550109999"]);
+    expect(row.rows[0]).toEqual({ mcc: "310", mnc: "100" });
+  });
+
+  it("drops a malformed MCC/MNC rather than storing it", async () => {
+    reply = (n) => ({ status: 200, body: { phone_number: n, valid: true, line_type_intelligence: { carrier_name: "X", type: "mobile", mobile_country_code: "31a", mobile_network_code: "1234" } } });
+    await lookupFlowLine(phoneFlow('- type: call.dial\n  number: "+15550109998"\n'), { provider: provider() });
+    const row = await pool.query("SELECT mcc, mnc FROM number_lookups WHERE number = $1", ["+15550109998"]);
+    expect(row.rows[0]).toEqual({ mcc: null, mnc: null });
+  });
+
+  it("lookupNumber: cache-first, shared with the line path, returns the codes", async () => {
+    reply = (n) => twilioOk(n, "T-Mobile USA, Inc.", "mobile");
+    const a = await lookupNumber("+15550201111", { provider: provider() });
+    expect(a).toMatchObject({ carrierName: "T-Mobile USA, Inc.", lineType: "mobile", mcc: "310", mnc: "100" });
+    const b = await lookupNumber("+15550201111", { provider: provider() });
+    expect(b).toMatchObject({ mcc: "310", mnc: "100" });
+    expect(requests).toHaveLength(1);
+    expect(await lookupNumber("+15550201112", { provider: null })).toEqual({ skipped: "not-configured" });
+    reply = () => ({ status: 404, body: {} });
+    expect(await lookupNumber("+15550201113", { provider: provider() })).toEqual({ skipped: "invalid-number" });
+    reply = () => ({ status: 500, body: {} });
+    expect(await lookupNumber("+15550201114", { provider: provider() })).toEqual({ skipped: "failed" });
   });
 
   it("never sends a number held in a secret", async () => {
