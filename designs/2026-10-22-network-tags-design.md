@@ -230,7 +230,7 @@ serves homes, offices and colocation on one network number.
 
 | Question | Decision |
 |---|---|
-| Name | `access:lastmile` · `access:datacenter` · `access:unknown` ("datacenter", not "hosted": cloud, VPS, colo and dedicated servers all live in one; an office server doesn't — and it matches region trust's existing `datacenter` class). |
+| Name | `access:lastmile` · `access:datacenter` · `access:unknown` (cloud, VPS, colo and dedicated servers all live in a datacenter; an office server doesn't — and it matches region trust's existing `datacenter` class). |
 | Who sets it | **Only the system.** `access` is a reserved key: refused on flows and agents, absent from the tag editor. |
 | How it's valued | Every view can show the split: a toggle **All / Last mile / Datacenter** (default **All**, console and API) and last-mile vs datacenter side by side per provider row. |
 | Where | Same branch and release as network tags. |
