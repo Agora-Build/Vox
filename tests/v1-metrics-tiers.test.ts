@@ -191,7 +191,8 @@ d("v1 metrics: tier, transport, hours", () => {
   });
 
   it("bad values are refused", async () => {
-    for (const q of ["tier=everything", "transport=carrier-pigeon", "hours=0", "hours=x"]) {
+    // A huge hours used to pass validation and then fail building the Date: 500.
+    for (const q of ["tier=everything", "transport=carrier-pigeon", "hours=0", "hours=x", "hours=100000000000000000000", "hours=1000001"]) {
       expect((await get(`/api/v1/metrics/realtime?${q}`)).status).toBe(400);
       expect((await get(`/api/v1/metrics/leaderboard?${q}`)).status).toBe(400);
     }

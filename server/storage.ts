@@ -2534,6 +2534,8 @@ export class DatabaseStorage {
     limit: number,
     opts: { hoursBack?: number; userId?: number; scope?: RegionQueryScope; transport?: "web" | "phone" } = {},
   ): Promise<EvalResult[]> {
+    // "My evals" without a user would compare owner = NULL and silently match nothing.
+    if (tier === "myEvals" && opts.userId == null) throw new Error("getTierEvalResults: myEvals needs a userId");
     return this.applyTierJoins(tier, db.select().from(evalResults))
       .where(and(...this.tierConditions(tier, opts.hoursBack, opts.userId, opts.scope, opts.transport ?? "web")))
       .orderBy(desc(evalResults.createdAt))

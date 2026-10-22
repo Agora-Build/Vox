@@ -4,15 +4,19 @@ import type { MetricTier } from "./storage";
 // (/api/metrics/*) and the public v1 API (/api/v1/metrics/*) so the two can't
 // disagree about what a window, a transport or a tier means.
 
+/** Longest window accepted: ~114 years — anything larger can't make a valid Date. */
+export const MAX_METRICS_HOURS = 1_000_000;
+
 /**
- * The time window. `hours` must be a positive integer; absent means "all
- * time". Returns { hoursBack } on success, or { error } describing a 400.
+ * The time window. `hours` must be a positive integer up to MAX_METRICS_HOURS;
+ * absent means "all time". Returns { hoursBack } on success, or { error }
+ * describing a 400.
  */
 export function parseMetricsWindow(hours: unknown): { hoursBack?: number } | { error: string } {
   if (hours === undefined) return {};
   const parsed = Number(hours);
-  if (!Number.isInteger(parsed) || parsed <= 0) {
-    return { error: "hours must be a positive integer (omit for all time)" };
+  if (!Number.isInteger(parsed) || parsed <= 0 || parsed > MAX_METRICS_HOURS) {
+    return { error: `hours must be a positive integer up to ${MAX_METRICS_HOURS} (omit for all time)` };
   }
   return { hoursBack: parsed };
 }
