@@ -3,7 +3,7 @@ import { X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
-import { KNOWN_TAG_KEYS, LINK_VALUES, MAX_TAGS, TAG_SUGGESTIONS, formatTag, normalizeTag, type Tag } from "@shared/tags";
+import { END_TAG_KEYS, KNOWN_TAG_KEYS, LINK_VALUES, MAX_TAGS, TAG_SUGGESTIONS, formatTag, normalizeTag, tagEndError, type Tag, type TagEnd } from "@shared/tags";
 
 /**
  * Network tags as chips (designs/2026-10-22-network-tags-design.md "Console
@@ -11,11 +11,15 @@ import { KNOWN_TAG_KEYS, LINK_VALUES, MAX_TAGS, TAG_SUGGESTIONS, formatTag, norm
  * shared/tags.ts's normalizeTag — the same check the server runs — so an
  * error shows here, inline, before a save could 400. One value per key: a
  * second `isp:` replaces the first. Used by the eval flow form, the Agents
- * page and as the metrics filter.
+ * page and as the metrics filter. With `end`, only that end's known keys are
+ * offered and accepted (the server's parseTags `end` rule); without it (the
+ * metrics filter) every key is.
  */
 export interface TagInputProps {
   value: Tag[];
   onChange: (tags: Tag[]) => void;
+  /** Which end the tags describe: "flow" (line + custom keys) or "agent" (isp/link/sim + custom keys). Unset = any key (filters). */
+  end?: TagEnd;
   /** Keys suggested first (e.g. `line` on a phone flow). */
   preferredKeys?: string[];
   placeholder?: string;
@@ -36,8 +40,9 @@ function valuesFor(key: string): readonly string[] {
 export function TagInput({
   value,
   onChange,
+  end,
   preferredKeys = [],
-  placeholder = "key:value, e.g. line:twilio",
+  placeholder = end === "agent" ? "key:value, e.g. isp:starlink" : "key:value, e.g. line:twilio",
   disabled,
   maxTags = MAX_TAGS,
   className,
@@ -60,6 +65,11 @@ export function TagInput({
     const t = normalizeTag(trimmed);
     if ("error" in t) {
       setError(`${t.error}.`);
+      return;
+    }
+    const endError = end ? tagEndError(t.key, end) : undefined;
+    if (endError) {
+      setError(`${endError}.`);
       return;
     }
     const replacing = value.some((v) => v.key === t.key);
@@ -92,12 +102,14 @@ export function TagInput({
     const idx = text.indexOf(":");
     if (idx < 0) {
       const prefix = text.trim().toLowerCase();
-      const keys = Array.from(new Set([...preferredKeys, ...KNOWN_TAG_KEYS]));
+      const known = end ? END_TAG_KEYS[end] : KNOWN_TAG_KEYS;
+      const keys = Array.from(new Set([...preferredKeys, ...known])).filter((k) => known.includes(k));
       return keys
         .filter((k) => k.startsWith(prefix) && !value.some((v) => v.key === k))
         .map((k) => ({ label: `${k}:`, apply: () => { setText(`${k}:`); setError(null); } }));
     }
     const key = text.slice(0, idx).trim().toLowerCase();
+    if (end && tagEndError(key, end)) return [];
     const prefix = text.slice(idx + 1).trim().toLowerCase();
     return valuesFor(key)
       .filter((v) => v.startsWith(prefix))

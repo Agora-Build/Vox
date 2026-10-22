@@ -1,5 +1,5 @@
 import type { MetricTier } from "./storage";
-import { parseTagFilter, parseGroupBy, formatTag, effectiveTags, type Tag, type JobTag, type TagBoard } from "@shared/tags";
+import { parseTagFilter, parseGroupBy, formatTag, effectiveTags, UNTAGGED_VALUE, type Tag, type JobTag, type TagBoard } from "@shared/tags";
 
 // The client-supplied knobs of a metrics view, shared by the console routes
 // (/api/metrics/*) and the public v1 API (/api/v1/metrics/*) so the two can't
@@ -66,8 +66,12 @@ export function tagsCacheKey(v: { tagFilters: Tag[]; groupBy?: string }): string
   return `tags=${v.tagFilters.map(formatTag).sort().join(",")}:groupBy=${v.groupBy ?? ""}`;
 }
 
-/** The group a row falls in when it has no effective value for the groupBy key — nothing is dropped. */
-export const UNTAGGED = "untagged";
+/**
+ * The group a row falls in when it has no effective value for the groupBy key
+ * — nothing is dropped. Reserved: normalizeTag refuses it as a tag value, so a
+ * real tag can never be mistaken for this group.
+ */
+export const UNTAGGED = UNTAGGED_VALUE;
 
 /**
  * A row's `groupBy` value on a board: its effective value for the key, or

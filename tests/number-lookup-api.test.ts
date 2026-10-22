@@ -138,6 +138,38 @@ d("number lookup API", () => {
     expect(patched.body.lineLookup).toBeNull();
   });
 
+  it("v1 PUT that changes the dialled number refreshes the lookup — a stale answer is cleared (finding 3)", async () => {
+    const created = await jsonFetch(`${BASE_URL}/api/eval-flows`, {
+      method: "POST", cookie: users[0].cookie,
+      body: JSON.stringify({
+        name: `nlapi-v1-${stamp}`, providerId, visibility: "public", transport: "phone",
+        config: { stepsPrefix: '- type: call.dial\n  number: "+1 (555) 010-1234"\n', stepsSuffix: "- type: call.hangup\n" },
+      }),
+    });
+    expect(created.status).toBe(200);
+    flowIds.push(created.body.id);
+    // An answer for the number the flow dials now (…1234).
+    const stale = { value: "twilio", carrierName: "Twilio", lineType: "nonFixedVoip", lookedUpAt: "2026-10-22T00:00:00.000Z", number: "…1234" };
+    await pool.query("UPDATE eval_flows SET line_lookup = $2::jsonb WHERE id = $1", [created.body.id, JSON.stringify(stale)]);
+
+    // Same number through v1: the answer still describes it — kept.
+    const same = await jsonFetch(`${BASE_URL}/api/v1/eval-flows/${created.body.id}`, {
+      method: "PUT", cookie: users[0].cookie, body: JSON.stringify({ description: "unchanged number" }),
+    });
+    expect(same.status).toBe(200);
+    expect((await storage.getEvalFlow(created.body.id))!.lineLookup).toEqual(stale);
+
+    // New number, no credentials configured: the old answer is for a number
+    // the flow no longer dials — cleared, not frozen onto future jobs.
+    const put = await jsonFetch(`${BASE_URL}/api/v1/eval-flows/${created.body.id}`, {
+      method: "PUT", cookie: users[0].cookie,
+      body: JSON.stringify({ config: { stepsPrefix: '- type: call.dial\n  number: "+1 (555) 010-9876"\n', stepsSuffix: "- type: call.hangup\n" } }),
+    });
+    expect(put.status).toBe(200);
+    expect(put.body.data.lineLookup).toBeNull();
+    expect((await storage.getEvalFlow(created.body.id))!.lineLookup).toBeNull();
+  });
+
   it("Look up again: editors only, reports why it was skipped", async () => {
     const id = flowIds[0];
     const url = `${BASE_URL}/api/eval-flows/${id}/line-lookup`;

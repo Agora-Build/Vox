@@ -16,6 +16,7 @@ import { parseTags, effectiveTags, formatTag, type Tag } from "@shared/tags";
 import { hasOrg, sameOrg, isOwnerOrOrgManager, canAccessResource, canViewJob, canCancelJob, parseJobScope, jobListFilter } from "./permissions";
 import { getOrganizations } from "./organizations";
 import { settleEndedJobsNow } from "./settle-now";
+import { refreshFlowLineOnSave } from "./number-lookup";
 import { parseMetricsWindow, parseMetricsTransport, parseMetricsTier, parseMetricsTags, tagGroupValue, type ApiMetricsTier } from "./metrics-params";
 import type { MetricTier } from "./storage";
 
@@ -154,7 +155,7 @@ export function registerApiV1Routes(app: Express): void {
       }
 
       // Hand-set tags (design "Data model"), same parser as the console route.
-      const parsedTags = parseTags(req.body.tags);
+      const parsedTags = parseTags(req.body.tags, { end: "flow" }); // line + custom keys; isp/link/sim belong to the agent
       if ("error" in parsedTags) {
         return res.status(400).json({ error: parsedTags.error });
       }
@@ -212,7 +213,12 @@ export function registerApiV1Routes(app: Express): void {
         ? await storage.updateEvalFlow(evalFlow.id, { tags: parsedTags.tags })
         : evalFlow;
 
-      res.status(201).json({ data: withTags });
+      // Same save-time line lookup as the console create — bounded, never
+      // throws. (v1 create always stores `web` today, so it's a no-op until
+      // v1 learns transport; kept so the two paths can't drift.)
+      const saved = withTags ?? evalFlow;
+      const lineLookup = await refreshFlowLineOnSave(saved);
+      res.status(201).json({ data: lineLookup !== undefined ? { ...saved, lineLookup } : saved });
     } catch (error) {
       console.error("API v1 - Error creating evalFlow:", error);
       res.status(500).json({ error: "Failed to create evalFlow" });
@@ -280,7 +286,7 @@ export function registerApiV1Routes(app: Express): void {
 
       // Hand-set tags: absent leaves the stored value unchanged (PATCH-style,
       // even though this is a PUT) — same parser as create.
-      const parsedTags = parseTags(req.body.tags);
+      const parsedTags = parseTags(req.body.tags, { end: "flow" }); // line + custom keys; isp/link/sim belong to the agent
       if ("error" in parsedTags) {
         return res.status(400).json({ error: parsedTags.error });
       }
@@ -300,7 +306,12 @@ export function registerApiV1Routes(app: Express): void {
         ...(req.body.tags !== undefined ? { tags: parsedTags.tags } : {}),
       });
 
-      res.json({ data: updated });
+      // Phone flow whose dialled number changed (or never looked up): refresh
+      // its line lookup, as the console PATCH does — bounded, never throws,
+      // never fails the save; a changed number that can't be looked up clears
+      // the old answer.
+      const lineLookup = updated ? await refreshFlowLineOnSave(updated) : undefined;
+      res.json({ data: updated && lineLookup !== undefined ? { ...updated, lineLookup } : updated });
     } catch (error) {
       console.error("API v1 - Error updating evalFlow:", error);
       res.status(500).json({ error: "Failed to update evalFlow" });

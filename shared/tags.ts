@@ -17,6 +17,37 @@
 /** Keys with suggestions / special handling. Any other key is a free custom key. */
 export const KNOWN_TAG_KEYS = ["line", "isp", "link", "sim"] as const;
 
+/**
+ * Which end of the path a tag describes — and so where it may be set by hand.
+ * A flow describes the TARGET's side (`line`: its dialled number's provider);
+ * an eval agent describes OUR vantage point (`isp`, `link`, `sim`). A known
+ * key is refused on the other end at save; custom keys are allowed on both.
+ */
+export type TagEnd = "flow" | "agent";
+
+/** Known keys each end may carry. */
+export const END_TAG_KEYS: Record<TagEnd, readonly string[]> = {
+  flow: ["line"],
+  agent: ["isp", "link", "sim"],
+};
+
+/** Why a known key can't be set on this end, or undefined when it can. */
+export function tagEndError(key: string, end: TagEnd): string | undefined {
+  if (!isKnownKey(key) || END_TAG_KEYS[end].includes(key)) return undefined;
+  if (end === "flow") {
+    return key === "sim"
+      ? `sim describes the eval agent's SIM card — set it on the agent, not the flow`
+      : `${key} is detected from the eval agent's network — set it on the agent, not the flow`;
+  }
+  return `line belongs to the eval flow's dialled number — set it on the flow, not the agent`;
+}
+
+/**
+ * The value every metrics `groupBy` uses for results WITHOUT the key, so no
+ * tag may carry it — a real `isp:untagged` would be indistinguishable.
+ */
+export const UNTAGGED_VALUE = "untagged";
+
 /** `link` is a closed set — a network link type isn't a matter of opinion. */
 export const LINK_VALUES = ["wifi", "ethernet", "cellular", "satellite"] as const;
 
@@ -134,6 +165,9 @@ export function normalizeTag(raw: string | Tag): Tag | { error: string } {
       error: `Invalid tag value "${valueRaw.trim()}" for "${key}": must start with a letter or digit and contain only lowercase letters, digits, "." and "-", up to 48 characters`,
     };
   }
+  if (value === UNTAGGED_VALUE) {
+    return { error: `"${UNTAGGED_VALUE}" is reserved for results without the tag — use another value for "${key}"` };
+  }
   if (key === "link" && !(LINK_VALUES as readonly string[]).includes(value)) {
     return { error: `Invalid value "${value}" for "link": must be one of ${LINK_VALUES.join(", ")}` };
   }
@@ -144,8 +178,10 @@ export function normalizeTag(raw: string | Tag): Tag | { error: string } {
  * Normalize a whole tag list: strings or `{key,value}` objects, deduped by
  * key (last one wins), capped at `MAX_TAGS` distinct keys. Any invalid entry
  * fails the whole list — a flow/agent either saves cleanly or not at all.
+ * With `end`, a known key belonging to the other end is refused too
+ * (`tagEndError`); without it (e.g. a list already stored) every key passes.
  */
-export function parseTags(raw: unknown): { tags: Tag[] } | { error: string } {
+export function parseTags(raw: unknown, opts: { end?: TagEnd } = {}): { tags: Tag[] } | { error: string } {
   if (raw == null) return { tags: [] };
   if (!Array.isArray(raw)) return { error: "Tags must be an array" };
   const byKey = new Map<string, string>();
@@ -155,6 +191,10 @@ export function parseTags(raw: unknown): { tags: Tag[] } | { error: string } {
     }
     const t = normalizeTag(item as string | Tag);
     if ("error" in t) return t;
+    if (opts.end) {
+      const endError = tagEndError(t.key, opts.end);
+      if (endError) return { error: endError };
+    }
     byKey.set(t.key, t.value); // Map.set on an existing key keeps its original position — "last wins" on value only.
   }
   if (byKey.size > MAX_TAGS) return { error: `Too many tags: at most ${MAX_TAGS} allowed` };

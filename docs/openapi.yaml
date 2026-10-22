@@ -158,7 +158,8 @@ components:
         example: isp
       description: >
         A tag key to split rows by its effective value (`tagValue` on each row). Results
-        without that key form the `untagged` group — nothing is dropped.
+        without that key form the `untagged` group — nothing is dropped. `untagged` is a
+        reserved value: no tag may carry it.
   schemas:
     Tag:
       type: object
@@ -263,7 +264,7 @@ components:
           example: {}
         tags:
           type: array
-          description: Hand-set key:value tags describing the target under test (e.g. line provider, ISP, link type).
+          description: Hand-set key:value tags describing the target under test — `line` (its phone provider) plus custom keys. `isp`/`link`/`sim` describe the eval agent and are set on the agent.
           items:
             type: object
             properties:
@@ -307,7 +308,7 @@ components:
           additionalProperties: true
         tags:
           type: array
-          description: Hand-set key:value tags (e.g. line provider, ISP, link type). Each entry is either "key:value" or {key, value}.
+          description: Hand-set key:value tags: `line` plus custom keys (e.g. `line:twilio`, `codec:opus`). `isp`/`link`/`sim` are refused with a 400 — they describe the eval agent and are set on the agent. Each entry is either "key:value" or {key, value}; the value `untagged` is reserved.
           items:
             type: object
             properties:
@@ -332,7 +333,7 @@ components:
           additionalProperties: true
         tags:
           type: array
-          description: Hand-set key:value tags. Omit to leave the stored tags unchanged.
+          description: Hand-set key:value tags, same rule as create (`line` plus custom keys). Omit to leave the stored tags unchanged.
           items:
             type: object
             properties:
@@ -645,7 +646,10 @@ components:
             $ref: '#/components/schemas/Tag'
         tagValue:
           type: string
-          description: Only with `groupBy` — the effective value of that key, or `untagged`.
+          description: >
+            Only with `groupBy` — the effective value of that key, or `untagged` for results
+            without it. `untagged` is reserved: no tag may carry it as a value, so it always
+            means "no value".
           example: starlink
 
     LeaderboardEntry:
@@ -678,7 +682,8 @@ components:
         tagValue:
           type: string
           description: >
-            Only with `groupBy` — the group's value for that key, or `untagged`. Each
+            Only with `groupBy` — the group's value for that key, or `untagged` for results
+            without it (`untagged` is reserved — no tag may carry it as a value). Each
             provider × site row is split into one row per value.
           example: starlink
 

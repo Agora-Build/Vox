@@ -104,13 +104,13 @@ d("network tags: hand-set tags and link type through the API", () => {
       method: "POST", cookie: userA.cookie,
       body: JSON.stringify({
         name: `ntags-flow-${stamp}`, providerId, visibility: "public",
-        tags: [" Line : Twilio ", "isp:ATT"],
+        tags: [" Line : Twilio ", "Codec:Opus"],
       }),
     });
     expect(created.status).toBe(200);
     flowIds.push(created.body.id);
     expect(created.body.tags).toEqual(
-      expect.arrayContaining([{ key: "line", value: "twilio" }, { key: "isp", value: "att" }]),
+      expect.arrayContaining([{ key: "line", value: "twilio" }, { key: "codec", value: "opus" }]),
     );
     expect(created.body.tags.length).toBe(2);
 
@@ -138,10 +138,10 @@ d("network tags: hand-set tags and link type through the API", () => {
 
     const patched = await jsonFetch(`${BASE_URL}/api/eval-flows/${flowIds[0]}`, {
       method: "PATCH", cookie: userA.cookie,
-      body: JSON.stringify({ tags: ["link:wifi"] }),
+      body: JSON.stringify({ tags: ["codec:g711"] }),
     });
     expect(patched.status).toBe(200);
-    expect(patched.body.tags).toEqual([{ key: "link", value: "wifi" }]);
+    expect(patched.body.tags).toEqual([{ key: "codec", value: "g711" }]);
 
     // PATCH without `tags` must leave the stored tags unchanged.
     const untouched = await jsonFetch(`${BASE_URL}/api/eval-flows/${flowIds[0]}`, {
@@ -149,7 +149,38 @@ d("network tags: hand-set tags and link type through the API", () => {
       body: JSON.stringify({ description: "no tags field here" }),
     });
     expect(untouched.status).toBe(200);
-    expect(untouched.body.tags).toEqual([{ key: "link", value: "wifi" }]);
+    expect(untouched.body.tags).toEqual([{ key: "codec", value: "g711" }]);
+  });
+
+  it("a flow refuses the agent's known keys (isp/link/sim) with a 400 naming the agent — console and v1 (finding 4)", async () => {
+    const createIsp = await jsonFetch(`${BASE_URL}/api/eval-flows`, {
+      method: "POST", cookie: userA.cookie,
+      body: JSON.stringify({ name: `ntags-isp-${stamp}`, providerId, visibility: "public", tags: ["isp:att"] }),
+    });
+    expect(createIsp.status).toBe(400);
+    expect(createIsp.body.error).toBe("isp is detected from the eval agent's network — set it on the agent, not the flow");
+
+    const patchLink = await jsonFetch(`${BASE_URL}/api/eval-flows/${flowIds[0]}`, {
+      method: "PATCH", cookie: userA.cookie, body: JSON.stringify({ tags: ["line:twilio", "link:wifi"] }),
+    });
+    expect(patchLink.status).toBe(400);
+    expect(patchLink.body.error).toContain("set it on the agent");
+
+    const v1Create = await jsonFetch(`${BASE_URL}/api/v1/eval-flows`, {
+      method: "POST", cookie: userA.cookie,
+      body: JSON.stringify({ name: `ntags-v1-${stamp}`, providerId, visibility: "public", tags: ["sim:att"] }),
+    });
+    expect(v1Create.status).toBe(400);
+    expect(v1Create.body.error).toContain("set it on the agent");
+
+    const v1Put = await jsonFetch(`${BASE_URL}/api/v1/eval-flows/${flowIds[0]}`, {
+      method: "PUT", cookie: userA.cookie, body: JSON.stringify({ tags: ["isp:comcast"] }),
+    });
+    expect(v1Put.status).toBe(400);
+    expect(v1Put.body.error).toContain("set it on the agent");
+
+    // Nothing was written by the refused saves.
+    expect((await storage.getEvalFlow(flowIds[0]))!.tags).toEqual([{ key: "codec", value: "g711" }]);
   });
 
   it("refuses a PATCH from someone who isn't the evalFlow's owner (403, reuses the existing edit rule)", async () => {
@@ -260,6 +291,15 @@ d("network tags: hand-set tags and link type through the API", () => {
       expect(res.status).toBe(400);
     });
 
+    it("PATCH /api/eval-agents/:id/tags: line belongs to the flow — 400 (finding 4)", async () => {
+      const res = await jsonFetch(`${BASE_URL}/api/eval-agents/${agentId}/tags`, {
+        method: "PATCH", cookie: userA.cookie,
+        body: JSON.stringify({ tags: ["isp:comcast", "line:twilio"] }),
+      });
+      expect(res.status).toBe(400);
+      expect(res.body.error).toBe("line belongs to the eval flow's dialled number — set it on the flow, not the agent");
+    });
+
     it("PATCH /api/eval-agents/:id/tags: the token's creator can set normalized tags", async () => {
       const res = await jsonFetch(`${BASE_URL}/api/eval-agents/${agentId}/tags`, {
         method: "PATCH", cookie: userA.cookie,
@@ -268,6 +308,19 @@ d("network tags: hand-set tags and link type through the API", () => {
       expect(res.status).toBe(200);
       const agent = await storage.getEvalAgent(agentId);
       expect(agent?.tags).toEqual([{ key: "isp", value: "comcast" }]);
+    });
+
+    it("PATCH /api/eval-agents/:id/tags without a tags field is a 400, never a silent clear (finding 6)", async () => {
+      for (const body of [{}, { tag: ["isp:comcast"] }]) {
+        const res = await jsonFetch(`${BASE_URL}/api/eval-agents/${agentId}/tags`, {
+          method: "PATCH", cookie: userA.cookie, body: JSON.stringify(body),
+        });
+        expect(res.status).toBe(400);
+        expect(res.body.error).toBe("tags is required — send [] to clear");
+      }
+      const noBody = await jsonFetch(`${BASE_URL}/api/eval-agents/${agentId}/tags`, { method: "PATCH", cookie: userA.cookie });
+      expect(noBody.status).toBe(400);
+      expect((await storage.getEvalAgent(agentId))?.tags).toEqual([{ key: "isp", value: "comcast" }]);
     });
 
     it("GET /api/eval-agents exposes tags/linkType/canEditTags and never observedIp", async () => {

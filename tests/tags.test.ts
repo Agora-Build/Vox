@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   KNOWN_TAG_KEYS, LINK_VALUES, MAX_TAGS, TAG_SUGGESTIONS,
-  normalizeTag, parseTags, formatTag,
+  normalizeTag, parseTags, formatTag, tagEndError, END_TAG_KEYS, UNTAGGED_VALUE,
   ispFromAsn, lineFromCarrier, isSatelliteIsp,
   effectiveTags, parseTagFilter, parseGroupBy,
   type Tag, type JobTag,
@@ -102,6 +102,58 @@ describe("parseTags", () => {
     const r = parseTags(entries);
     expect(r).not.toHaveProperty("error");
     if ("tags" in r) expect(r.tags).toHaveLength(MAX_TAGS);
+  });
+});
+
+describe("parseTags with an end (flow vs agent)", () => {
+  it("a flow takes line + custom keys", () => {
+    expect(parseTags(["line:twilio", "codec:opus"], { end: "flow" })).toEqual({
+      tags: [{ key: "line", value: "twilio" }, { key: "codec", value: "opus" }],
+    });
+  });
+
+  it("a flow refuses the agent's known keys with a message naming the right end", () => {
+    expect(parseTags(["isp:starlink"], { end: "flow" })).toEqual({
+      error: "isp is detected from the eval agent's network — set it on the agent, not the flow",
+    });
+    expect(parseTags(["line:twilio", "link:wifi"], { end: "flow" })).toEqual({
+      error: "link is detected from the eval agent's network — set it on the agent, not the flow",
+    });
+    expect(parseTags(["sim:att"], { end: "flow" })).toEqual({
+      error: "sim describes the eval agent's SIM card — set it on the agent, not the flow",
+    });
+  });
+
+  it("an agent takes isp/link/sim + custom keys and refuses line", () => {
+    expect(parseTags(["isp:comcast", "link:wifi", "sim:att", "rack:a1"], { end: "agent" })).toEqual({
+      tags: [{ key: "isp", value: "comcast" }, { key: "link", value: "wifi" }, { key: "sim", value: "att" }, { key: "rack", value: "a1" }],
+    });
+    expect(parseTags(["Line:Twilio"], { end: "agent" })).toEqual({
+      error: "line belongs to the eval flow's dialled number — set it on the flow, not the agent",
+    });
+  });
+
+  it("without an end every key passes (stored lists, filters)", () => {
+    expect(parseTags(["line:twilio", "isp:att"])).toHaveProperty("tags");
+  });
+
+  it("END_TAG_KEYS partitions the known keys", () => {
+    expect([...END_TAG_KEYS.flow, ...END_TAG_KEYS.agent].sort()).toEqual([...KNOWN_TAG_KEYS].sort());
+    expect(tagEndError("codec", "flow")).toBeUndefined();
+    expect(tagEndError("codec", "agent")).toBeUndefined();
+    expect(tagEndError("line", "flow")).toBeUndefined();
+    expect(tagEndError("isp", "agent")).toBeUndefined();
+  });
+});
+
+describe("the reserved value untagged", () => {
+  it("normalizeTag refuses it on any key (it names the no-value group)", () => {
+    expect(UNTAGGED_VALUE).toBe("untagged");
+    expect(normalizeTag("isp:untagged")).toEqual({ error: '"untagged" is reserved for results without the tag — use another value for "isp"' });
+    expect(normalizeTag({ key: "codec", value: " Untagged " })).toHaveProperty("error");
+    expect(parseTags(["line:untagged"])).toHaveProperty("error");
+    // A value merely containing it is fine.
+    expect(normalizeTag("isp:untagged-isp")).toEqual({ key: "isp", value: "untagged-isp" });
   });
 });
 

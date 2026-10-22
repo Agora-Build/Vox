@@ -563,6 +563,7 @@ export default function ConsoleEvalFlows() {
                   value={tags}
                   onChange={setTags}
                   preferredKeys={transport === "phone" ? ["line"] : []}
+                  end="flow"
                   testId="eval-flow-tags"
                   aria-label="Eval flow tags"
                 />
@@ -697,6 +698,7 @@ export default function ConsoleEvalFlows() {
                 value={editTags}
                 onChange={setEditTags}
                 preferredKeys={editTransport === "phone" ? ["line"] : []}
+                end="flow"
                 testId="edit-eval-flow-tags"
                 aria-label="Eval flow tags"
               />

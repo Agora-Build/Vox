@@ -98,7 +98,7 @@ function AgentTagsCell({ agent }: { agent: EvalAgent }) {
                 Describe this agent's network, e.g. isp:starlink or link:wifi. Each job also records the link type and internet provider detected at the time. For isp and link, Mainline uses the detected values; a hand-set one counts on Community and My Evals.
               </DialogDescription>
             </DialogHeader>
-            <TagInput value={draft} onChange={setDraft} preferredKeys={["isp", "link"]} testId="agent-tags-input" aria-label="Agent tags" />
+            <TagInput value={draft} onChange={setDraft} end="agent" preferredKeys={["isp", "link"]} testId="agent-tags-input" aria-label="Agent tags" />
             <DialogFooter>
               <Button variant="outline" onClick={() => setOpen(false)}>Cancel</Button>
               <Button onClick={() => save.mutate()} disabled={save.isPending} data-testid="button-save-agent-tags">Save tags</Button>

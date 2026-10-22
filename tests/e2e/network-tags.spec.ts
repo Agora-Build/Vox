@@ -54,6 +54,14 @@ test.describe("network tags", () => {
       await field.fill("link:carrier-pigeon");
       await field.press("Enter");
       await expect(page.getByTestId("eval-flow-tags-error")).toContainText("must be one of wifi, ethernet, cellular, satellite");
+      // A flow takes line + custom keys: isp belongs to the agent (same rule as the server).
+      await field.fill("isp:starlink");
+      await field.press("Enter");
+      await expect(page.getByTestId("eval-flow-tags-error")).toContainText("set it on the agent, not the flow");
+      await expect(page.getByTestId("eval-flow-tags-chip-isp")).toHaveCount(0);
+      // ...and is never offered as a suggestion.
+      await field.fill("");
+      await expect(page.getByTestId("eval-flow-tags-suggestions")).not.toContainText("isp:");
       // Normalised the same way the server does.
       await field.fill("Line : Twilio");
       await field.press("Enter");
