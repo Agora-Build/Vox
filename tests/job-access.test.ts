@@ -166,6 +166,8 @@ async function flowWithJob(owner: Session, runner: Session, visibility: "public"
   let ownerKey: string;
   let publicJobRunByOther: number;
   let privateJob: number;
+  let ownerPublicJob: number;
+  let otherPrivateJob: number;
 
   beforeAll(async () => {
     admin = await login(ADMIN_EMAIL, ADMIN_PASSWORD);
@@ -181,7 +183,11 @@ async function flowWithJob(owner: Session, runner: Session, visibility: "public"
     publicJobRunByOther = await flowWithJob(owner, other, "public");
     // A PRIVATE flow's job, run by its owner.
     privateJob = await flowWithJob(owner, owner, "private");
-  }, 60_000);
+    // The other two arms of the view rule, for `other`: a public flow it
+    // neither owns nor ran, and its own private flow.
+    ownerPublicJob = await flowWithJob(owner, owner, "public");
+    otherPrivateJob = await flowWithJob(other, other, "private");
+  }, 90_000);
 
   const viaConsole = (s: Session, id: number) => call(s, "GET", `/api/eval-jobs/${id}`).then((r) => r.status);
   const viaApi = (key: string, id: number) =>
@@ -294,23 +300,21 @@ async function flowWithJob(owner: Session, runner: Session, visibility: "public"
     }
   });
 
+  // Only this suite's own jobs are opened: the visible list also carries
+  // other suites' fixtures, which those suites delete in their afterAll while
+  // this runs (vitest runs files in parallel against the one dev DB) — a job
+  // listed and then deleted answers 404, a state change, not a rule mismatch.
+  // Our fixtures cover every arm of the view rule: ran it, owns the flow,
+  // public flow (neither).
   it("everything a visible list shows can also be opened on its own", async () => {
-    const { ids } = await apiList(otherKey, "visible");
-    expect(ids.length).toBeGreaterThan(0);
-    const { pool } = await import("../server/storage");
-    for (const id of ids.slice(0, 15)) {
-      const status = await viaApi(otherKey, id);
-      if (status === 403) {
-        // The sample includes other suites' jobs, which they clean up while
-        // this runs: a flow deleted or made private between the list and the
-        // open is a real state change, not a rule mismatch. A 403 on a job
-        // whose flow is STILL public is a mismatch and fails.
-        const { rows } = await pool.query(
-          `SELECT f.visibility FROM eval_jobs j LEFT JOIN eval_flows f ON f.id = j.eval_flow_id WHERE j.id = $1`, [id]);
-        expect(rows[0]?.visibility, `job ${id}: listed as visible, refused while its flow is still public`).not.toBe("public");
-        continue;
-      }
-      expect(status).toBe(200);
+    const mine = [publicJobRunByOther, ownerPublicJob, otherPrivateJob];
+    for (const list of [await apiList(otherKey, "visible"), await consoleList(other, "visible")]) {
+      expect(list.ids).toEqual(expect.arrayContaining(mine));
+      expect(list.ids).not.toContain(privateJob);
+    }
+    for (const id of mine) {
+      expect(await viaApi(otherKey, id), `job ${id} via API`).toBe(200);
+      expect(await viaConsole(other, id), `job ${id} via console`).toBe(200);
     }
   });
 
