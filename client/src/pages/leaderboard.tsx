@@ -19,6 +19,8 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { useRegionLocations } from "@/hooks/use-regions";
+import { MetricsTagControls, useMetricsTagUrlState, appendTagParams, tagParamsKey, customTagKeys, groupLabel } from "@/components/metrics-tag-controls";
+import { formatTag } from "@shared/tags";
 
 interface LeaderboardEntry {
   rank: number;
@@ -40,6 +42,8 @@ interface LeaderboardEntry {
   naturalness: number | null;
   noiseReduction: number | null;
   compositeScore: number;
+  /** With groupBy: this row's value of the grouped tag ("untagged" when none). */
+  tagValue?: string;
 }
 
 type SortField = "rank" | "responseLatency" | "interruptLatency" | "turnSuccessRate" | "networkResilience" | "naturalness" | "noiseReduction";
@@ -58,16 +62,18 @@ export default function Leaderboard() {
   const [timeRange, setTimeRange] = useState<string>("168"); // 7 days default
   const [selectedEntry, setSelectedEntry] = useState<LeaderboardEntry | null>(null);
   const { data: regionLocations } = useRegionLocations();
+  const { tagFilters, setTagFilters, groupBy, setGroupBy } = useMetricsTagUrlState();
 
   const regionScopeKey = [...regionScopes].sort().join(",");
   const { data: leaderboardData, isLoading } = useQuery<LeaderboardEntry[]>({
-    queryKey: ['/api/metrics/leaderboard', timeRange, regionScopeKey],
+    queryKey: ['/api/metrics/leaderboard', timeRange, regionScopeKey, tagParamsKey(tagFilters, groupBy)],
     queryFn: async () => {
       const params = new URLSearchParams();
       if (timeRange !== "all") {
         params.set("hours", timeRange);
       }
       appendRegionScopes(params, regionScopes);
+      appendTagParams(params, tagFilters, groupBy);
       const res = await fetch(`/api/metrics/leaderboard?${params}`);
       if (!res.ok) throw new Error("Failed to fetch leaderboard");
       return res.json();
@@ -181,6 +187,13 @@ export default function Leaderboard() {
             value={regionScopes}
             onChange={setRegionScopes}
           />
+          <MetricsTagControls
+            tagFilters={tagFilters}
+            onTagFiltersChange={setTagFilters}
+            groupBy={groupBy}
+            onGroupByChange={setGroupBy}
+            customKeys={customTagKeys(undefined, [...tagFilters.map((t) => t.key), groupBy])}
+          />
         </div>
       </div>
 
@@ -189,6 +202,8 @@ export default function Leaderboard() {
           <CardTitle>Performance Rankings</CardTitle>
           <CardDescription>
             {regionLabel} • {timeRangeLabel} - Ranked by composite score (mainline data only)
+            {tagFilters.length > 0 && <> • Tagged {tagFilters.map(formatTag).join(", ")}</>}
+            {groupBy && <> • Grouped by {groupBy}</>}
           </CardDescription>
         </CardHeader>
         <CardContent className="overflow-x-auto">
@@ -215,6 +230,7 @@ export default function Leaderboard() {
                   </TableHead>
                   <TableHead>Provider</TableHead>
                   <TableHead>Region</TableHead>
+                  {groupBy && <TableHead className="font-mono" data-testid="header-group">{groupBy}</TableHead>}
                   <TableHead className="text-right">
                     <Button
                       variant="ghost"
@@ -287,7 +303,7 @@ export default function Leaderboard() {
               <TableBody>
                 {filteredAndSortedData.map((entry) => (
                   <TableRow
-                    key={`${entry.provider}-${entry.siteId}`}
+                    key={`${entry.provider}-${entry.siteId}-${entry.tagValue ?? ""}`}
                     data-testid={`row-leaderboard-${entry.rank}`}
                     className="cursor-pointer hover:bg-muted/50"
                     onClick={() => setSelectedEntry(entry)}
@@ -305,6 +321,13 @@ export default function Leaderboard() {
                         {entry.regionLabel || formatSite(entry.siteId)}
                       </Badge>
                     </TableCell>
+                    {groupBy && (
+                      <TableCell data-testid={`text-group-${entry.rank}`}>
+                        <Badge variant={entry.tagValue && entry.tagValue !== "untagged" ? "secondary" : "outline"} className="font-mono font-normal">
+                          {groupLabel(groupBy, entry.tagValue)}
+                        </Badge>
+                      </TableCell>
+                    )}
                     <TableCell className="text-right font-mono" data-testid={`text-response-${entry.rank}`}>
                       <div>{naNum(entry.responseLatency)}</div>
                       <div className="text-xs text-muted-foreground">P95: {naNum(entry.responseLatencyP95)}</div>
@@ -333,7 +356,7 @@ export default function Leaderboard() {
             </Table>
           ) : (
             <div className="text-center py-8 text-muted-foreground">
-              No data available for {regionLabel}
+              No data available for {regionLabel}{tagFilters.length > 0 ? ` tagged ${tagFilters.map(formatTag).join(", ")}` : ""}
             </div>
           )}
         </CardContent>
@@ -372,6 +395,7 @@ export default function Leaderboard() {
             </DialogTitle>
             <DialogDescription>
               Performance metrics for {selectedEntry ? selectedEntry.regionLabel || formatSite(selectedEntry.siteId) : ""} region
+              {selectedEntry && groupBy && <> · {groupLabel(groupBy, selectedEntry.tagValue)}</>}
             </DialogDescription>
           </DialogHeader>
           {selectedEntry && (

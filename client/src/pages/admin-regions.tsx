@@ -15,6 +15,7 @@ import { useRegionLocations } from "@/hooks/use-regions";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import type { RegionLocation } from "@/lib/utils";
 import { GEOIP_ATTRIBUTIONS } from "@shared/geoip-attribution";
+import { TwilioLookupCard } from "@/components/twilio-lookup-card";
 
 type GeoipDatabaseInfo = {
   name: "City" | "ASN";
@@ -319,6 +320,8 @@ export default function AdminRegions() {
           )}
         </CardContent>
       </Card>
+
+      <TwilioLookupCard />
 
       <div className="border">
         <Table>
