@@ -76,7 +76,6 @@ export function isEmptyGroup(groupBy: string, tagValue: string | undefined): boo
   return !tagValue || tagValue === (groupBy === REGION_GROUP_KEY ? "unattributed" : "untagged");
 }
 
-
 export type AccessView = "all" | "lastmile" | "datacenter";
 
 /** Which access class the tag filters are narrowed to — the toggle's state. */
