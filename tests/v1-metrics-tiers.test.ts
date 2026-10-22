@@ -157,6 +157,18 @@ d("v1 metrics: tier, transport, hours", () => {
     expect(mine(phone.body.data)).toEqual(["mine-phone"]);
   });
 
+  it("tier=mine from a disabled account's still-open session → 401", async () => {
+    expect((await get("/api/v1/metrics/realtime?tier=mine", { cookie: meCookie })).status).toBe(200);
+    await pool.query("UPDATE users SET is_enabled = false WHERE id = $1", [meId]);
+    try {
+      const r = await get("/api/v1/metrics/realtime?tier=mine", { cookie: meCookie });
+      expect(r.status).toBe(401);
+      expect(r.body.error).toMatch(/disabled/);
+    } finally {
+      await pool.query("UPDATE users SET is_enabled = true WHERE id = $1", [meId]);
+    }
+  });
+
   it("the leaderboard takes the same parameters, and the default is unchanged", async () => {
     const row = (data: Array<{ provider: string; responseLatency: number | null }>) => data.find((x) => x.provider === providerId);
     expect(row((await get("/api/v1/metrics/leaderboard")).body.data)?.responseLatency).toBe(900);
@@ -184,6 +196,8 @@ d("v1 metrics: tier, transport, hours", () => {
       expect((await get(`/api/v1/metrics/leaderboard?${q}`)).status).toBe(400);
     }
     for (const q of ["limit=0", "limit=201", "limit=x"]) expect((await get(`/api/v1/metrics/realtime?${q}`)).status).toBe(400);
+    // The console leaderboard validates hours the same way (it parseInt'ed anything).
+    for (const q of ["hours=0", "hours=x"]) expect((await get(`/api/metrics/leaderboard?${q}`)).status).toBe(400);
   });
 
   it("realtime honours the documented limit (it was ignored)", async () => {

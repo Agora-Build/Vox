@@ -887,6 +887,7 @@ export function registerApiV1Routes(app: Express): void {
     if (tier.tier === "mine") {
       const user = await getCurrentUserOrApiKeyUser(req);
       if (!user) return { status: 401, error: "tier=mine needs an API key (Authorization: Bearer vox_live_...)" };
+      if (!user.isEnabled) return { status: 401, error: "Account is disabled" };
       userId = user.id;
     }
     return { tier: tier.tier, storageTier: tier.storageTier, transport: tp.transport, hoursBack: win.hoursBack, userId };

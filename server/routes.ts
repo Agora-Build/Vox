@@ -6195,18 +6195,18 @@ export async function registerRoutes(
 
   app.get("/api/metrics/leaderboard", async (req, res) => {
     try {
-      const { hours } = req.query;
+      const win = parseMetricsWindow(req.query.hours);
+      if ("error" in win) return res.status(400).json({ error: win.error });
       const regionScope = await parseRegionQueryScope(req.query);
       if ("error" in regionScope) return res.status(400).json({ error: regionScope.error });
       // One transport per view (web by default), like every other metrics view.
       const tp = parseMetricsTransport(req.query.transport);
       if ("error" in tp) return res.status(400).json({ error: tp.error });
-      const cacheKey = `leaderboard:${hours || 'all'}:${regionScope.cacheKey}:${tp.transport}`;
+      const cacheKey = `leaderboard:${win.hoursBack ?? 'all'}:${regionScope.cacheKey}:${tp.transport}`;
       const cached = getCached(cacheKey);
       if (cached) return res.json(cached);
 
-      const hoursBack = hours ? parseInt(hours as string) : undefined;
-      const results = await storage.getMainlineEvalResults(1000, hoursBack, regionScope.scope, tp.transport);
+      const results = await storage.getMainlineEvalResults(1000, win.hoursBack, regionScope.scope, tp.transport);
       const locations = await storage.getAllRegionLocations();
 
       // Group results by (provider, site)

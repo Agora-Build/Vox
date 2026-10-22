@@ -9,17 +9,19 @@ import { ipKeyGenerator } from "express-rate-limit";
 // — every per-IP rate limit becomes one shared bucket, and GeoIP region
 // detection sees the server's network, not the agent's.
 //
-// Two cases, by who opened the connection to Vox:
+// CF-Connecting-IP is Cloudflare's: set on every request it forwards,
+// overwriting any value a client sends. It counts only when the request really
+// came from Cloudflare — anyone can send the header to a server they reach
+// directly. By who opened the connection to Vox:
+//  - a PUBLIC peer: in Cloudflare's published ranges → CF-Connecting-IP (Vox
+//    exposed behind Cloudflare's proxy); otherwise that peer IS the caller, and
+//    no forwarded header counts (`trust proxy` alone would believe a
+//    client-sent X-Forwarded-For on a directly exposed server).
 //  - a PRIVATE-network peer (cloudflared, Traefik, any proxy on the server's
-//    network): a proxy. The client is Cloudflare's CF-Connecting-IP — set on
-//    every request, overwriting any value a client sends, so it can't be forged
-//    through Cloudflare — or, without it, the address the proxy forwarded
-//    (req.ip, via `trust proxy`).
-//  - a PUBLIC peer: there's no proxy in front — that peer IS the caller. Its
-//    socket address is used and every forwarded header ignored, so a caller
-//    can't pick its own identity with CF-Connecting-IP or X-Forwarded-For
-//    (`trust proxy` alone would believe a client-sent X-Forwarded-For on a
-//    directly exposed server).
+//    network): a proxy, and req.ip (via `trust proxy`) is the address it saw.
+//    If that is Cloudflare — a private hop (cloudflared) or Cloudflare's ranges
+//    — the client is CF-Connecting-IP. Anything else (a caller reaching
+//    Traefik directly, CF header or not) is identified by that address.
 
 /** Loopback, private (RFC 1918 / unique-local), link-local and CGNAT addresses. */
 export function isPrivateAddress(raw: string | undefined): boolean {
@@ -37,16 +39,49 @@ export function isPrivateAddress(raw: string | undefined): boolean {
   return false;
 }
 
+// https://www.cloudflare.com/ips/ (they change rarely; a missing new range only
+// means those requests fall back to the proxy's address, never a spoof).
+const CLOUDFLARE_RANGES = new net.BlockList();
+for (const r of ["173.245.48.0/20", "103.21.244.0/22", "103.22.200.0/22", "103.31.4.0/22", "141.101.64.0/18",
+  "108.162.192.0/18", "190.93.240.0/20", "188.114.96.0/20", "197.234.240.0/22", "198.41.128.0/17",
+  "162.158.0.0/15", "104.16.0.0/13", "104.24.0.0/14", "172.64.0.0/13", "131.0.72.0/22"]) {
+  const [a, n] = r.split("/"); CLOUDFLARE_RANGES.addSubnet(a, Number(n), "ipv4");
+}
+for (const r of ["2400:cb00::/32", "2606:4700::/32", "2803:f800::/32", "2405:b500::/32", "2405:8100::/32",
+  "2a06:98c0::/29", "2c0f:f248::/32"]) {
+  const [a, n] = r.split("/"); CLOUDFLARE_RANGES.addSubnet(a, Number(n), "ipv6");
+}
+
+const unmap = (ip: string) => (ip.startsWith("::ffff:") ? ip.slice(7) : ip);
+
+export function isCloudflareAddress(raw: string | undefined): boolean {
+  if (!raw) return false;
+  const ip = unmap(raw);
+  const family = net.isIPv4(ip) ? "ipv4" : net.isIPv6(ip) ? "ipv6" : null;
+  return family !== null && CLOUDFLARE_RANGES.check(ip, family);
+}
+
+function cfConnectingIp(req: Pick<Request, "headers">): string | undefined {
+  const cf = req.headers["cf-connecting-ip"];
+  const value = typeof cf === "string" ? cf.trim() : undefined;
+  return value && net.isIP(value) ? value : undefined;
+}
+
 export function clientIp(req: Pick<Request, "ip" | "headers" | "socket">): string | undefined {
   const peer = req.socket?.remoteAddress;
   // No socket address (shouldn't happen on a live request): what Express derived.
   if (!peer) return req.ip;
-  // A public peer is the caller itself: no proxy, so no forwarded header counts.
-  if (!isPrivateAddress(peer)) return peer.startsWith("::ffff:") ? peer.slice(7) : peer;
-  const cf = req.headers["cf-connecting-ip"];
-  const value = typeof cf === "string" ? cf.trim() : undefined;
-  if (value && net.isIP(value)) return value;
-  return req.ip;
+  if (!isPrivateAddress(peer)) {
+    // Straight from Cloudflare's edge: its header names the client.
+    if (isCloudflareAddress(peer)) return cfConnectingIp(req) ?? unmap(peer);
+    // No proxy in front: the peer is the caller, and no forwarded header counts.
+    return unmap(peer);
+  }
+  // Through a local proxy: believe Cloudflare's header only if what the proxy
+  // saw was Cloudflare — a private hop (cloudflared) or Cloudflare's edge.
+  const seen = req.ip ? unmap(req.ip) : undefined;
+  if (seen && !isPrivateAddress(seen) && !isCloudflareAddress(seen)) return seen;
+  return cfConnectingIp(req) ?? seen;
 }
 
 /** Rate-limit key for the caller's address (IPv6 grouped by /56, as the library recommends). */

@@ -81,16 +81,41 @@ describe("keyless requests are rate-limited per IP", () => {
   });
 });
 
-import { clientIp, isPrivateAddress } from "../server/client-ip";
+import { clientIp, isPrivateAddress, isCloudflareAddress } from "../server/client-ip";
 
 describe("the caller's IP behind Cloudflare (server/client-ip.ts)", () => {
   const req = (peer: string, headers: Record<string, string> = {}, ip = peer) =>
     ({ ip, headers, socket: { remoteAddress: peer } }) as never;
 
   it("through a private-network hop (cloudflared / Traefik), the client is CF-Connecting-IP", () => {
+    // The proxy saw a private hop (cloudflared → Traefik → Vox) …
     expect(clientIp(req("172.18.0.5", { "cf-connecting-ip": "203.0.113.9" }))).toBe("203.0.113.9");
     expect(clientIp(req("::ffff:10.0.1.2", { "cf-connecting-ip": "2001:db8::7" }))).toBe("2001:db8::7");
     expect(clientIp(req("127.0.0.1", { "cf-connecting-ip": " 198.51.100.4 " }))).toBe("198.51.100.4");
+    // … or Cloudflare's edge (orange-cloud → Traefik → Vox).
+    expect(clientIp(req("172.18.0.5", { "cf-connecting-ip": "203.0.113.9" }, "162.158.1.20"))).toBe("203.0.113.9");
+    expect(clientIp(req("172.18.0.5", { "cf-connecting-ip": "203.0.113.9" }, "2606:4700::1"))).toBe("203.0.113.9");
+  });
+
+  it("a caller reaching the local proxy directly can't pick its identity with CF-Connecting-IP", () => {
+    // Traefik reachable on the server's public IP: the proxy saw the caller's
+    // real (non-Cloudflare) address, so the forged header is ignored.
+    expect(clientIp(req("172.18.0.5", { "cf-connecting-ip": "1.2.3.4" }, "203.0.113.60"))).toBe("203.0.113.60");
+    expect(clientIp(req("172.18.0.5", { "cf-connecting-ip": "1.2.3.4" }, "::ffff:203.0.113.61"))).toBe("203.0.113.61");
+  });
+
+  it("Vox exposed straight to Cloudflare's edge: the header names the client", () => {
+    expect(clientIp(req("104.16.5.5", { "cf-connecting-ip": "203.0.113.70" }))).toBe("203.0.113.70");
+    expect(clientIp(req("104.16.5.5"))).toBe("104.16.5.5");
+  });
+
+  it("which addresses are Cloudflare's", () => {
+    for (const p of ["173.245.48.1", "104.16.0.1", "104.27.255.255", "172.64.0.1", "::ffff:162.158.0.1", "2606:4700::1", "2a06:98c7::1"]) {
+      expect(isCloudflareAddress(p)).toBe(true);
+    }
+    for (const p of ["104.15.255.255", "172.72.0.1", "8.8.8.8", "2001:db8::1", "10.0.0.1", "", undefined, "nope"]) {
+      expect(isCloudflareAddress(p as string)).toBe(false);
+    }
   });
 
   it("a caller reaching Vox directly (public peer) can't pick its identity — with either header", () => {
@@ -124,7 +149,15 @@ describe("the caller's IP behind Cloudflare (server/client-ip.ts)", () => {
     await hit(base, undefined, alice); await hit(base, undefined, alice);
     expect((await hit(base, undefined, alice)).status).toBe(429);
     expect((await hit(base, undefined, bob)).status).toBe(200);
-    // Alice can't escape by varying X-Forwarded-For: Cloudflare's header decides.
-    expect((await hit(base, undefined, { ...alice, "X-Forwarded-For": "198.51.100.99" })).status).toBe(429);
+    // Through cloudflared → Traefik, the proxy reports a private hop: still Alice.
+    expect((await hit(base, undefined, { ...alice, "X-Forwarded-For": "10.0.0.9" })).status).toBe(429);
+  });
+
+  it("the real limiter: a caller hitting the proxy directly can't mint allowances with a forged CF header", async () => {
+    const base = await app({ enabled: true, perMinute: 2 });
+    // X-Forwarded-For here stands in for what Traefik appends: the address it saw.
+    const direct = (forged: string) => ({ "X-Forwarded-For": "203.0.113.80", "CF-Connecting-IP": forged });
+    await hit(base, undefined, direct("1.1.1.1")); await hit(base, undefined, direct("2.2.2.2"));
+    expect((await hit(base, undefined, direct("3.3.3.3"))).status).toBe(429); // one bucket: its real address
   });
 });
