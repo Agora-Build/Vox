@@ -285,8 +285,10 @@ export async function lookupFlowLine(
  * future jobs), or undefined when nothing was written. Never throws, and
  * gives up after LOOKUP_TIMEOUT_MS so a save is never held longer.
  *
- * A flow whose transport moved away from phone keeps its line_lookup: it's
- * harmless, as the claim only reads phone flows' snapshots.
+ * A flow whose transport moved away from phone keeps its line_lookup, and
+ * buildJobSnapshot still copies it onto that flow's web jobs: harmless, as
+ * the claim emits a detected `line` only for a job whose stamped
+ * `eval_jobs.transport` is phone (server/job-tags.ts).
  */
 export async function refreshFlowLineOnSave(
   flow: Pick<EvalFlow, "id" | "transport" | "config" | "lineLookup">,

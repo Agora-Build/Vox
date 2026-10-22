@@ -1466,6 +1466,7 @@ export class DatabaseStorage {
       );
       const snapshotFlow = (selectResult.rows[0].snapshot as JobSnapshot | null)?.evalFlow ?? null;
       const jobTags = buildJobTags({
+        job: { kind: selectResult.rows[0].kind, transport: selectResult.rows[0].transport },
         snapshotFlow,
         agent: {
           tags: agentRow.rows[0]?.tags ?? [],

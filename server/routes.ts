@@ -2439,8 +2439,9 @@ export async function registerRoutes(
       const updated = await storage.updateEvalFlow(parseInt(id), updates);
       // Phone flow whose dialled number changed (or never looked up): refresh
       // its line lookup — bounded, never throws, never fails the save. A flow
-      // moved away from phone keeps its line_lookup: harmless, the claim only
-      // freezes it from phone flows' snapshots.
+      // moved away from phone keeps its line_lookup (job snapshots still copy
+      // it): harmless, the claim emits a detected `line` only for jobs whose
+      // stamped transport is phone (server/job-tags.ts).
       const lineLookup = updated ? await refreshFlowLineOnSave(updated) : undefined;
       res.json(updated && lineLookup !== undefined ? { ...updated, lineLookup } : updated);
     } catch (error) {

@@ -20,6 +20,10 @@ const starlinkAsn: AsnLookupFn = () => ({ asn: 14593, org: "SpaceX Services, Inc
 const attAsn: AsnLookupFn = () => ({ asn: 7018, org: "AT&T Services, Inc." });
 const noAsn: AsnLookupFn = () => null;
 
+const PHONE = { kind: "eval", transport: "phone" };
+const WEB = { kind: "eval", transport: "web" };
+const ANALYZE = { kind: "analyze", transport: "web" };
+
 const lookup = (value: string): LineLookup => ({
   value, carrierName: "Twilio - SMS/MMS-SVR", lineType: "nonFixedVoip",
   lookedUpAt: "2026-10-22T00:00:00.000Z", number: "…1234",
@@ -28,6 +32,7 @@ const lookup = (value: string): LineLookup => ({
 describe("buildJobTags (unit, injected ASN lookup)", () => {
   it("orders flow, detected line, agent, detected isp, detected link", () => {
     const tags = buildJobTags({
+      job: PHONE,
       snapshotFlow: { tags: [{ key: "line", value: "bandwidth" }, { key: "codec", value: "opus" }], lineLookup: lookup("twilio") },
       agent: { tags: [{ key: "isp", value: "comcast" }], linkType: "wifi", observedIp: "203.0.113.7" },
     }, attAsn);
@@ -43,6 +48,7 @@ describe("buildJobTags (unit, injected ASN lookup)", () => {
 
   it("keeps an agent hand-set tag even when it repeats a detected key", () => {
     const tags = buildJobTags({
+      job: PHONE,
       snapshotFlow: null,
       agent: { tags: [{ key: "link", value: "ethernet" }], linkType: "wifi", observedIp: "203.0.113.7" },
     }, noAsn);
@@ -54,23 +60,23 @@ describe("buildJobTags (unit, injected ASN lookup)", () => {
 
   it("no IP → no detected isp (and the lookup is not even asked)", () => {
     const spy = vi.fn(attAsn);
-    const tags = buildJobTags({ snapshotFlow: null, agent: { tags: [], linkType: null, observedIp: null } }, spy);
+    const tags = buildJobTags({ job: PHONE, snapshotFlow: null, agent: { tags: [], linkType: null, observedIp: null } }, spy);
     expect(tags).toEqual([]);
     expect(spy).not.toHaveBeenCalled();
   });
 
   it("no ASN answer → no detected isp", () => {
-    expect(buildJobTags({ snapshotFlow: null, agent: { tags: [], linkType: null, observedIp: "203.0.113.7" } }, noAsn)).toEqual([]);
+    expect(buildJobTags({ job: PHONE, snapshotFlow: null, agent: { tags: [], linkType: null, observedIp: "203.0.113.7" } }, noAsn)).toEqual([]);
   });
 
   it("unmapped ASN falls back to the normalised org name", () => {
-    const tags = buildJobTags({ snapshotFlow: null, agent: { tags: [], linkType: null, observedIp: "203.0.113.7" } },
+    const tags = buildJobTags({ job: PHONE, snapshotFlow: null, agent: { tags: [], linkType: null, observedIp: "203.0.113.7" } },
       () => ({ asn: 64512, org: "Example Fiber Co" }));
     expect(tags).toEqual([{ key: "isp", value: "example-fiber-co", source: "detected" }]);
   });
 
   it("satellite ISP with no link reported → link:satellite detected", () => {
-    const tags = buildJobTags({ snapshotFlow: null, agent: { tags: [], linkType: null, observedIp: "203.0.113.7" } }, starlinkAsn);
+    const tags = buildJobTags({ job: PHONE, snapshotFlow: null, agent: { tags: [], linkType: null, observedIp: "203.0.113.7" } }, starlinkAsn);
     expect(tags).toEqual([
       { key: "isp", value: "starlink", source: "detected" },
       { key: "link", value: "satellite", source: "detected" },
@@ -78,7 +84,7 @@ describe("buildJobTags (unit, injected ASN lookup)", () => {
   });
 
   it("a reported link wins over the satellite inference", () => {
-    const tags = buildJobTags({ snapshotFlow: null, agent: { tags: [], linkType: "ethernet", observedIp: "203.0.113.7" } }, starlinkAsn);
+    const tags = buildJobTags({ job: PHONE, snapshotFlow: null, agent: { tags: [], linkType: "ethernet", observedIp: "203.0.113.7" } }, starlinkAsn);
     expect(tags).toEqual([
       { key: "isp", value: "starlink", source: "detected" },
       { key: "link", value: "ethernet", source: "detected" },
@@ -86,11 +92,35 @@ describe("buildJobTags (unit, injected ASN lookup)", () => {
   });
 
   it("old snapshot without tags/lineLookup → no flow tags", () => {
-    expect(buildJobTags({ snapshotFlow: { name: "old" } as any, agent: { tags: [], linkType: null, observedIp: null } }, noAsn)).toEqual([]);
+    expect(buildJobTags({ job: PHONE, snapshotFlow: { name: "old" } as any, agent: { tags: [], linkType: null, observedIp: null } }, noAsn)).toEqual([]);
+  });
+
+  it("a web job with a leftover number lookup gets no detected line (finding 2)", () => {
+    const tags = buildJobTags({
+      job: WEB,
+      snapshotFlow: { tags: [{ key: "line", value: "bandwidth" }], lineLookup: lookup("twilio") },
+      agent: { tags: [], linkType: "wifi", observedIp: null },
+    }, noAsn);
+    expect(tags).toEqual([
+      { key: "line", value: "bandwidth", source: "flow" },
+      { key: "link", value: "wifi", source: "detected" },
+    ]);
+  });
+
+  it("an analysis gets no tags at all — not even the agent's vantage point (finding 1)", () => {
+    const spy = vi.fn(attAsn);
+    const tags = buildJobTags({
+      job: ANALYZE,
+      snapshotFlow: { tags: [{ key: "codec", value: "opus" }], lineLookup: lookup("twilio") },
+      agent: { tags: [{ key: "isp", value: "comcast" }], linkType: "wifi", observedIp: "203.0.113.7" },
+    }, spy);
+    expect(tags).toEqual([]);
+    expect(spy).not.toHaveBeenCalled();
   });
 
   it("drops malformed stored values rather than freezing them", () => {
     const tags = buildJobTags({
+      job: PHONE,
       snapshotFlow: { tags: [{ key: "Bad Key!", value: "x" }, { key: "line", value: "twilio" }] as any, lineLookup: null },
       agent: { tags: "nope" as any, linkType: "carrier-pigeon", observedIp: null },
     }, noAsn);
@@ -134,18 +164,22 @@ d("claim freezes eval_jobs.tags (integration, both claim paths)", () => {
     return a;
   };
 
-  const mkJob = async (fields: { targetTokenId?: number; targetRegion?: string; targetTier?: string }) =>
+  // Phone by default: the detected `line` is frozen only onto phone jobs
+  // (the stamped eval_jobs.transport, taken from snapshot.transport).
+  const mkJob = async (fields: { targetTokenId?: number; targetRegion?: string; targetTier?: string; transport?: "web" | "phone"; kind?: "eval" | "analyze" }) =>
     storage.createEvalJob({
       evalFlowId: flowId, triggerType: 2, evalSetId: null, createdBy: 2, creatorOrgId: null,
       siteId: null, targetTokenId: fields.targetTokenId ?? null,
       targetRegion: fields.targetRegion ?? null, targetTier: fields.targetTier ?? null,
-      config: {}, snapshot: buildJobSnapshot(await liveFlow(), null, null, "principal"),
+      kind: fields.kind ?? "eval",
+      config: {}, snapshot: { ...buildJobSnapshot(await liveFlow(), null, null, "principal"), transport: fields.transport ?? "phone" },
       status: "pending", priority: 0, retryCount: 0, maxRetries: 3,
     } as any);
 
   const identity = (tok: any) => ({
     id: tok.id, siteId: tok.siteId, region: tok.region, dispatchTier: tok.dispatchTier,
     createdBy: tok.createdBy, ownerOrgId: null, locationTrust: "trusted",
+    phoneCapable: true, analyzeCapable: true,
   });
 
   const allSources = [
@@ -217,6 +251,29 @@ d("claim freezes eval_jobs.tags (integration, both claim paths)", () => {
       { key: "isp", value: "starlink", source: "detected" },
       { key: "link", value: "satellite", source: "detected" },
     ]);
+  });
+
+  it("a web job whose snapshot carries a leftover lineLookup gets no detected line (finding 2)", async () => {
+    const tok = await mkToken(`tags-web-${Date.now()}`, "na-us-ashburn-06");
+    const agent = await mkAgent(tok.id, tok.siteId!, { tags: [], linkType: "wifi", ip: null });
+    const job = await mkJob({ targetTokenId: tok.id, transport: "web" });
+    expect(job.transport).toBe("web");
+    const claimed = await storage.claimEvalJob(job.id, agent.id, identity(tok), { asnLookup: attAsn });
+    expect(claimed?.tags).toEqual([
+      { key: "line", value: "bandwidth", source: "flow" },
+      { key: "link", value: "wifi", source: "detected" },
+    ]);
+  });
+
+  it("an analysis claim freezes no tags — the agent's vantage point isn't the recording's (finding 1)", async () => {
+    const tok = await mkToken(`tags-an-${Date.now()}`, "na-us-ashburn-07");
+    const agent = await mkAgent(tok.id, tok.siteId!, { tags: [{ key: "isp", value: "comcast" }], linkType: "wifi", ip: "203.0.113.10" });
+    const job = await mkJob({ kind: "analyze", transport: "web" });
+    const claimed = await storage.claimEvalJob(job.id, agent.id, identity(tok), { asnLookup: attAsn });
+    expect(claimed).toBeDefined();
+    expect(claimed?.siteId ?? null).toBeNull();
+    expect(claimed?.tags).toEqual([]);
+    expect(await storedTags(job.id)).toEqual([]);
   });
 
   it("a job whose snapshot predates tags gets only agent/detected tags", async () => {
