@@ -242,7 +242,9 @@ serves homes, offices and colocation on one network number.
 | Tor exit or `vpn` ASN (existing) | Core | `unknown` — the real path is hidden |
 | Agent IP inside a **datacenter IP range** (public hosting/cloud range lists, by range not only ASN — catches an access ISP's colo ranges when listed), or an existing `hosting` ASN | Core | `datacenter` |
 | **PeeringDB network type** of the ASN: Content / Hosting | Core | `datacenter` |
-| PeeringDB type Cable/DSL/ISP (access network) | Core | `lastmile` evidence |
+| PeeringDB type Cable/DSL/ISP (access network) | Core | `lastmile` evidence (describes the network, not the line — never enough alone) |
+| **APNIC end-user estimates** per ASN (free, labs.apnic.net): a large share of end users and no server presence → access network | Core | `lastmile` evidence (the stronger access-network signal) |
+| **Mobile carrier ASN** (APNIC/PeeringDB + a curated list: T-Mobile, Verizon Wireless, AT&T Mobility, …) — carrier-NAT IPs carry no servers | Core | `lastmile` on its own |
 | **Reverse DNS** of the IP matches a residential/access pattern (`lightspeed`, `res.`, `pool-`, `cpe-`, `dsl`, `cable`, `dyn`, `fios`, `broadband`, …) | Core | `lastmile` evidence |
 | Reverse DNS matches a server/colo pattern (`static.…hosting`, `colo`, `vps`, `server`, `dedicated`, …) | Core | `datacenter` |
 | Agent: a **cloud metadata service** answers (169.254.169.254 / metadata.google.internal) | agent | `datacenter` |
@@ -272,8 +274,30 @@ them apart. `access` is surfaced for analysis as a system-only detected tag.
 
 1. Tor / VPN → `unknown`.
 2. Any datacenter signal (range, hosting ASN, PeeringDB Content/Hosting, server-style rDNS, cloud metadata) → `datacenter`.
-3. Core has last-mile evidence (PeeringDB access network **or** residential rDNS) **and** the agent reports nothing contrary (no public IP on the interface) → `lastmile`.
+3. No datacenter signal, the agent reports nothing contrary (no public IP on the interface), **and either**
+   - a **mobile carrier** ASN, **or**
+   - **two independent Core signals**: an access network (APNIC end-user estimate or PeeringDB Cable/DSL/ISP) **and** a residential reverse-DNS name
+   → `lastmile`.
 4. Otherwise → `unknown`.
+
+A false `lastmile` hurts more than a missing one — last mile is the valued class —
+so one weak signal is never enough: an AT&T colocation server with a generic
+reverse-DNS name (access network, no residential name) stays `unknown`.
+
+**Public agents too.** Access is detected for every agent, including public ones
+whose region an admin configures. Most of today's agents are likely datacenter, so
+expect the Last mile view to start small and much to read `unknown` — honest, not a bug.
+
+**Classifier version.** The reason frozen with each job carries a version and the
+signals that decided it (e.g. `v1: eyeball-asn + residential-rdns`, `v1: dc-range`),
+so when data or rules improve, older results stay explainable and comparable.
+
+**Known limit — residential proxies.** `observed_ip` is the address of the agent's
+API calls to Core, not of its media path. A datacenter agent that routes its Core
+traffic through a commercial residential proxy looks like a home connection while
+the measured call still runs from the datacenter. Region trust has the same limit
+today; nothing Core sees from that IP can fully close it. A later step could
+cross-check the media path's source address where the target platform reports it.
 
 **Only Core can earn `lastmile`.** Agent signals can only push a result to
 `datacenter` or `unknown`, never to `lastmile` — so a modified agent can't dress a
@@ -294,11 +318,14 @@ direction is safe. Disagreement means `unknown`, never a guess.
   measures `publicIpOnInterface` on the host and passes `VOX_PUBLIC_IP_ON_IFACE`;
   the metadata probe works from inside a container (short timeout, once per beat
   at most every 10 minutes).
-- Data: the datacenter range list and PeeringDB network types are downloaded and
-  refreshed in-app weekly next to the GeoIP databases (`server/geoip-refresh.ts`
+- Data: the datacenter range list, PeeringDB network types and APNIC end-user
+  estimates are downloaded and refreshed in-app weekly next to the GeoIP databases (`server/geoip-refresh.ts`
   pattern), stored under `GEOIP_DB_DIR`; missing data ⇒ fewer signals ⇒ more
-  `unknown`, never a wrong `lastmile`. Licences of each list are checked before use
-  and credited like DB-IP.
+  `unknown`, never a wrong `lastmile`. Licences and terms of each source (X4BNet,
+  ipcat, PeeringDB bulk export and rate limits, APNIC) are checked before use and
+  credited on the page like DB-IP. The refreshed data also replaces the hand-picked
+  `vpn` entries of `server/data/asn-classification.json` (the file stays as a seed
+  for when no download has happened yet).
 - The Agents page shows each agent's access class and reason (read-only).
 
 ### Analysis
