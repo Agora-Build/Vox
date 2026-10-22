@@ -227,6 +227,41 @@ curl -H "Authorization: Bearer vox_live_xxxxx" "${base}/jobs?scope=visible"`}</C
                 Responses are <code className="font-mono text-xs">{`{ "data": ..., "meta": ... }`}</code>;
                 errors are <code className="font-mono text-xs">{`{ "error": "..." }`}</code>. Requests
                 are rate limited to 1,000 per 15 minutes in production (account routes such as sign-in: 20).
+                Calls <strong>without a key</strong> to the public endpoints are also limited to 12 per minute
+                per IP — send a key and they aren&apos;t counted.
+              </p>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <div className="flex items-center gap-3">
+                <Badge variant="outline" className="h-7 w-7 rounded-full flex items-center justify-center shrink-0">5</Badge>
+                <CardTitle className="text-lg">Read the boards</CardTitle>
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <p className="text-sm text-muted-foreground">
+                <code className="font-mono text-xs">/metrics/realtime</code> (recent results) and{" "}
+                <code className="font-mono text-xs">/metrics/leaderboard</code> (averages per provider and
+                site) take <code className="font-mono text-xs">tier</code>,{" "}
+                <code className="font-mono text-xs">transport</code> and{" "}
+                <code className="font-mono text-xs">hours</code>. Mainline and community are public — no key;
+                your own private evals need one.
+              </p>
+              <CodeBlock>{`# mainline, web — the default (no key)
+curl "${base}/metrics/leaderboard"
+
+# community evals, phone, last 7 days (no key)
+curl "${base}/metrics/realtime?tier=community&transport=phone&hours=168"
+
+# your own private evals (key required)
+curl -H "Authorization: Bearer vox_live_xxxxx" "${base}/metrics/leaderboard?tier=mine"`}</CodeBlock>
+              <p className="text-sm text-muted-foreground">
+                Web and phone results are never mixed: <code className="font-mono text-xs">transport</code> is{" "}
+                <code className="font-mono text-xs">web</code> unless you ask for{" "}
+                <code className="font-mono text-xs">phone</code>. The response&apos;s{" "}
+                <code className="font-mono text-xs">meta</code> says which tier, transport and window it covers.
               </p>
             </CardContent>
           </Card>
