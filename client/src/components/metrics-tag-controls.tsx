@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { TagInput } from "@/components/tag-input";
-import { KNOWN_TAG_KEYS, formatTag, parseGroupBy, parseTagFilter, type Tag } from "@shared/tags";
+import { formatRegion } from "@/lib/utils";
+import { KNOWN_TAG_KEYS, REGION_GROUP_KEY, formatTag, parseGroupBy, parseTagFilter, type Tag } from "@shared/tags";
 
 /**
  * The network-tag knobs of a metrics view (designs/2026-10-22-network-tags-design.md
@@ -60,9 +62,61 @@ export function customTagKeys(rows: Array<{ tags?: Tag[] | null }> | undefined, 
   return Array.from(keys).sort();
 }
 
-/** How a grouped row names its group: `isp:starlink`, or `isp: untagged`. */
+/** How a grouped row names its group: `isp:starlink`, `isp: untagged`, or a region's name. */
 export function groupLabel(groupBy: string, tagValue: string | undefined): string {
+  if (groupBy === REGION_GROUP_KEY) {
+    return !tagValue || tagValue === "unattributed" ? "No region" : formatRegion(tagValue);
+  }
   return !tagValue || tagValue === "untagged" ? `${groupBy}: untagged` : `${groupBy}:${tagValue}`;
+}
+
+/** Whether a grouped row is in its key's fallback group (`untagged` / `unattributed`). */
+export function isEmptyGroup(groupBy: string, tagValue: string | undefined): boolean {
+  return !tagValue || tagValue === (groupBy === REGION_GROUP_KEY ? "unattributed" : "untagged");
+}
+
+/** Explains "last mile" once, wherever it's offered. */
+export const LAST_MILE_HINT = "Measured over a real home, office or mobile connection";
+export const DATACENTER_HINT = "Measured from a server in a datacenter or cloud";
+
+export type AccessView = "all" | "lastmile" | "datacenter";
+
+/** Which access class the tag filters are narrowed to — the toggle's state. */
+export function accessView(tagFilters: Tag[]): AccessView {
+  const v = tagFilters.find((t) => t.key === "access")?.value;
+  return v === "lastmile" || v === "datacenter" ? v : "all";
+}
+
+/** The tag filters with the access filter set to `view` (All removes it). */
+export function withAccessView(tagFilters: Tag[], view: AccessView): Tag[] {
+  const rest = tagFilters.filter((t) => t.key !== "access");
+  return view === "all" ? rest : [...rest, { key: "access", value: view }];
+}
+
+/**
+ * All / Last mile / Datacenter — a shortcut for the `access` tag filter
+ * (design "Last mile vs datacenter" → Analysis), so it shares the tag
+ * filter's URL state.
+ */
+export function AccessToggle({ tagFilters, onTagFiltersChange }: { tagFilters: Tag[]; onTagFiltersChange: (tags: Tag[]) => void }) {
+  const view = accessView(tagFilters);
+  // Native title tooltips: a Radix Tooltip trigger would overwrite each
+  // item's data-state (on/off), which drives its pressed styling.
+  return (
+    <ToggleGroup
+      type="single"
+      variant="outline"
+      size="sm"
+      value={view}
+      onValueChange={(v) => { if (v) onTagFiltersChange(withAccessView(tagFilters, v as AccessView)); }}
+      aria-label="Connection"
+      data-testid="access-toggle"
+    >
+      <ToggleGroupItem value="all" data-testid="access-toggle-all" title="Every result">All</ToggleGroupItem>
+      <ToggleGroupItem value="lastmile" data-testid="access-toggle-lastmile" title={LAST_MILE_HINT}>Last mile</ToggleGroupItem>
+      <ToggleGroupItem value="datacenter" data-testid="access-toggle-datacenter" title={DATACENTER_HINT}>Datacenter</ToggleGroupItem>
+    </ToggleGroup>
+  );
 }
 
 const NONE = "__none__";
@@ -80,9 +134,11 @@ export function MetricsTagControls({
   onGroupByChange: (key: string | undefined) => void;
   customKeys: string[];
 }) {
-  const keys = [...KNOWN_TAG_KEYS, ...customKeys.filter((k) => !(KNOWN_TAG_KEYS as readonly string[]).includes(k))];
+  // `region` is offered once, on its own (it isn't a tag key) — never again as a "custom key".
+  const keys = [...KNOWN_TAG_KEYS, ...customKeys.filter((k) => !(KNOWN_TAG_KEYS as readonly string[]).includes(k) && k !== REGION_GROUP_KEY)];
   return (
     <>
+      <AccessToggle tagFilters={tagFilters} onTagFiltersChange={onTagFiltersChange} />
       <TagInput
         value={tagFilters}
         onChange={onTagFiltersChange}
@@ -97,6 +153,7 @@ export function MetricsTagControls({
         </SelectTrigger>
         <SelectContent>
           <SelectItem value={NONE}>No grouping</SelectItem>
+          <SelectItem value={REGION_GROUP_KEY} data-testid="group-by-region">Group by region</SelectItem>
           {keys.map((k) => (
             <SelectItem key={k} value={k} data-testid={`group-by-${k}`}>
               Group by {k}{KNOWN_KEY_LABELS[k] ? ` (${KNOWN_KEY_LABELS[k]})` : ""}

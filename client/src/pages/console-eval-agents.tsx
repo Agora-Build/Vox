@@ -16,7 +16,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import { formatSmartTimestamp } from "@/lib/utils";
 import { useRegionLocationOptions } from "@/hooks/use-regions";
 import { TagInput } from "@/components/tag-input";
-import { formatTag, type Tag } from "@shared/tags";
+import { formatTag, explainSystemReason, type Tag } from "@shared/tags";
 
 interface AuthStatus {
   initialized: boolean;
@@ -50,6 +50,11 @@ interface EvalAgent {
   linkType?: string | null;
   /** Server-decided: this user is the agent's operator and may edit its tags. */
   canEditTags?: boolean;
+  /** System-only: lastmile | datacenter | unknown (null = not checked yet), and the classifier's reason. */
+  accessClass?: string | null;
+  accessReason?: string | null;
+  /** Phone agents: our SIM's carrier slug, when the SIM and a lookup of its number agree. */
+  simCarrier?: string | null;
 }
 
 /**
@@ -139,11 +144,56 @@ function getTierBadge(tier: string) {
   );
 }
 
-function getTrustBadge(trust?: string, tier?: string) {
-  if (tier === "public") return null; // configured, no badge needed
-  if (trust === "trusted") return <Badge variant="outline" className="text-green-600 border-green-600">Verified</Badge>;
-  if (trust === "datacenter") return <Badge variant="outline" className="text-green-600 border-green-600">Verified · datacenter</Badge>;
-  return <Badge variant="outline" className="text-yellow-600 border-yellow-600">Unverified</Badge>;
+const ACCESS_TEXT: Record<string, { label: string; hint: string }> = {
+  lastmile: { label: "last mile", hint: "Last mile: measured over a real home, office or mobile connection" },
+  datacenter: { label: "datacenter", hint: "Datacenter: measured from a server in a datacenter or cloud" },
+};
+
+/** A badge with its explanation in a tooltip. */
+function HintBadge({ className, hint, testId, children }: { className: string; hint: string; testId: string; children: ReactNode }) {
+  return (
+    <TooltipProvider>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Badge variant="outline" className={`cursor-default whitespace-nowrap ${className}`} data-testid={testId}>{children}</Badge>
+        </TooltipTrigger>
+        <TooltipContent side="bottom" className="max-w-xs text-xs">{hint}</TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
+  );
+}
+
+/**
+ * The location badge (design "Agent badge follows access"): Verified ·
+ * last mile / Verified · datacenter / Verified (access unknown) / Unverified.
+ * The first word is location trust, the second the access class; the tooltip
+ * says why in plain words. Public agents are configured by an admin, so they
+ * carry no location badge — only an access chip when it's known.
+ */
+function getTrustBadge(agent: Pick<EvalAgent, "id" | "locationTrust" | "dispatchTier" | "accessClass" | "accessReason">) {
+  const trust = agent.locationTrust;
+  // A stored trust of `datacenter` is derived from access = datacenter.
+  const access = agent.accessClass ?? (trust === "datacenter" ? "datacenter" : null);
+  const text = access ? ACCESS_TEXT[access] : undefined;
+  const why = explainSystemReason("access", agent.accessReason);
+  const accessHint = text ? `${text.hint}${why ? ` (${why})` : ""}.` : `Connection type unknown${why ? ` (${why})` : ""}.`;
+  const testId = `agent-location-badge-${agent.id}`;
+  if (agent.dispatchTier === "public") {
+    if (!text) return null;
+    return <HintBadge className="text-muted-foreground" hint={accessHint} testId={testId}>{text.label.charAt(0).toUpperCase() + text.label.slice(1)}</HintBadge>;
+  }
+  if (trust === "trusted" || trust === "datacenter") {
+    return (
+      <HintBadge className="text-green-600 border-green-600" hint={`Location confirmed from its network address. ${accessHint}`} testId={testId}>
+        {text ? `Verified · ${text.label}` : "Verified"}
+      </HintBadge>
+    );
+  }
+  return (
+    <HintBadge className="text-yellow-600 border-yellow-600" hint="Its location couldn't be confirmed from its network address." testId={testId}>
+      Unverified
+    </HintBadge>
+  );
 }
 
 function getStateBadge(state: string) {
@@ -341,7 +391,7 @@ export default function ConsoleEvalAgents() {
                     <TableCell>
                       <div className="flex items-center gap-1.5">
                         {getTierBadge(agent.dispatchTier)}
-                        {getTrustBadge(agent.locationTrust, agent.dispatchTier)}
+                        {getTrustBadge(agent)}
                       </div>
                     </TableCell>
                     <TableCell>
@@ -353,7 +403,7 @@ export default function ConsoleEvalAgents() {
                       {agent.capabilities?.length ? (
                         <div className="flex items-center gap-1">
                           {agent.capabilities.includes("phone") && (
-                            <Badge variant="outline" className="gap-1" title="Its DialF check passes: it can take phone jobs"><Phone className="h-3 w-3" /> Phone</Badge>
+                            <Badge variant="outline" className="gap-1" title={`Its DialF check passes: it can take phone jobs${agent.simCarrier ? `. SIM network: ${agent.simCarrier}` : ""}`}><Phone className="h-3 w-3" /> Phone</Badge>
                           )}
                           {agent.capabilities.includes("analyze") && (
                             <Badge variant="outline" className="gap-1" title="aeval runs on its host: it can analyze uploaded recordings"><AudioLines className="h-3 w-3" /> Analyze</Badge>

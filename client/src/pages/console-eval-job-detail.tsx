@@ -14,13 +14,26 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import { formatSmartTimestamp, formatSite, formatRegion, toYaml } from "@/lib/utils";
 import type { EvalJob, EvalResult } from "@shared/schema";
 import { EvalResultView } from "@/components/eval-result-view";
-import { formatTag, type JobTag } from "@shared/tags";
+import { formatTag, explainSystemReason, isSystemKey, type JobTag } from "@shared/tags";
 
 const TAG_SOURCE_TEXT: Record<JobTag["source"], { label: string; title: string }> = {
   flow: { label: "flow", title: "Set on the eval flow" },
   agent: { label: "agent", title: "Set by the agent's operator" },
   detected: { label: "detected", title: "Detected when the agent took the job" },
 };
+
+/** A tag's tooltip: where it came from, and for a system tag (access, sim) why — in plain words. */
+function tagTitle(t: JobTag): string | undefined {
+  const source = TAG_SOURCE_TEXT[t.source]?.title;
+  if (!isSystemKey(t.key)) return source;
+  const lead = t.key === "access"
+    ? t.value === "lastmile" ? "Last mile: measured over a real home, office or mobile connection"
+      : t.value === "datacenter" ? "Datacenter: measured from a server in a datacenter or cloud"
+      : "Connection type unknown"
+    : `SIM network: ${t.value}`;
+  const why = explainSystemReason(t.key, t.reason);
+  return [lead + (why ? ` (${why})` : ""), source].filter(Boolean).join(". ");
+}
 
 interface AuthStatus {
   user: { id: number; isAdmin: boolean } | null;
@@ -198,7 +211,7 @@ export default function ConsoleEvalJobDetail({ jobId }: { jobId: number }) {
                 {job.tags.length === 0 ? (
                   <span className="text-xs text-muted-foreground">none</span>
                 ) : job.tags.map((t, i) => (
-                  <Badge key={`${t.key}-${t.source}-${i}`} variant={t.source === "detected" ? "outline" : "secondary"} className="gap-1 font-mono font-normal" title={TAG_SOURCE_TEXT[t.source]?.title}>
+                  <Badge key={`${t.key}-${t.source}-${i}`} variant={t.source === "detected" ? "outline" : "secondary"} className="gap-1 font-mono font-normal" title={tagTitle(t)} data-testid={`job-tag-${t.key}-${t.source}`}>
                     {formatTag(t)}
                     <span className="font-sans text-[10px] uppercase tracking-wide text-muted-foreground">{TAG_SOURCE_TEXT[t.source]?.label ?? t.source}</span>
                   </Badge>

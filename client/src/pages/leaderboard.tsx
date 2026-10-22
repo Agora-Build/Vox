@@ -19,7 +19,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { useRegionLocations } from "@/hooks/use-regions";
-import { MetricsTagControls, useMetricsTagUrlState, appendTagParams, tagParamsKey, customTagKeys, groupLabel } from "@/components/metrics-tag-controls";
+import { MetricsTagControls, useMetricsTagUrlState, appendTagParams, tagParamsKey, customTagKeys, groupLabel, isEmptyGroup, accessView, LAST_MILE_HINT } from "@/components/metrics-tag-controls";
 import { formatTag } from "@shared/tags";
 
 interface LeaderboardEntry {
@@ -44,6 +44,26 @@ interface LeaderboardEntry {
   compositeScore: number;
   /** With groupBy: this row's value of the grouped tag ("untagged" when none). */
   tagValue?: string;
+  /** Without an access filter: the same averages over the row's last-mile / datacenter results. */
+  lastMile?: AccessColumn;
+  datacenter?: AccessColumn;
+}
+
+interface AccessColumn {
+  count: number;
+  responseLatency: number | null;
+  interruptLatency: number | null;
+  turnSuccessRate: number | null;
+}
+
+/** "820 / 610" — last mile / datacenter; a side with no results shows a dash. */
+function AccessSplit({ lm, dc, format, testId }: { lm?: AccessColumn; dc?: AccessColumn; format: (c: AccessColumn) => string; testId: string }) {
+  const side = (c?: AccessColumn) => (c && c.count > 0 ? format(c) : "–");
+  return (
+    <div className="text-xs text-muted-foreground" data-testid={testId} title="Last mile / datacenter">
+      {side(lm)} / {side(dc)}
+    </div>
+  );
 }
 
 type SortField = "rank" | "responseLatency" | "interruptLatency" | "turnSuccessRate" | "networkResilience" | "naturalness" | "noiseReduction";
@@ -65,6 +85,8 @@ export default function Leaderboard() {
   const { tagFilters, setTagFilters, groupBy, setGroupBy } = useMetricsTagUrlState();
 
   const regionScopeKey = [...regionScopes].sort().join(",");
+  // All (no access filter): each row also shows its last-mile / datacenter split.
+  const showAccess = accessView(tagFilters) === "all";
   const { data: leaderboardData, isLoading } = useQuery<LeaderboardEntry[]>({
     queryKey: ['/api/metrics/leaderboard', timeRange, regionScopeKey, tagParamsKey(tagFilters, groupBy)],
     queryFn: async () => {
@@ -204,6 +226,7 @@ export default function Leaderboard() {
             {regionLabel} • {timeRangeLabel} - Ranked by composite score (mainline data only)
             {tagFilters.length > 0 && <> • Tagged {tagFilters.map(formatTag).join(", ")}</>}
             {groupBy && <> • Grouped by {groupBy}</>}
+            {showAccess && <> • Under each value: last mile / datacenter</>}
           </CardDescription>
         </CardHeader>
         <CardContent className="overflow-x-auto">
@@ -230,6 +253,13 @@ export default function Leaderboard() {
                   </TableHead>
                   <TableHead>Provider</TableHead>
                   <TableHead>Region</TableHead>
+                  {showAccess && (
+                    <TableHead className="text-right" data-testid="header-access">
+                      <span title={`Last mile: ${LAST_MILE_HINT.toLowerCase()}. Datacenter: measured from a server in a datacenter or cloud.`}>
+                        Results LM / DC
+                      </span>
+                    </TableHead>
+                  )}
                   {groupBy && <TableHead className="font-mono" data-testid="header-group">{groupBy}</TableHead>}
                   <TableHead className="text-right">
                     <Button
@@ -321,9 +351,14 @@ export default function Leaderboard() {
                         {entry.regionLabel || formatSite(entry.siteId)}
                       </Badge>
                     </TableCell>
+                    {showAccess && (
+                      <TableCell className="text-right font-mono text-xs" data-testid={`text-access-count-${entry.rank}`}>
+                        {entry.lastMile?.count ?? 0} / {entry.datacenter?.count ?? 0}
+                      </TableCell>
+                    )}
                     {groupBy && (
                       <TableCell data-testid={`text-group-${entry.rank}`}>
-                        <Badge variant={entry.tagValue && entry.tagValue !== "untagged" ? "secondary" : "outline"} className="font-mono font-normal">
+                        <Badge variant={isEmptyGroup(groupBy, entry.tagValue) ? "outline" : "secondary"} className="font-mono font-normal">
                           {groupLabel(groupBy, entry.tagValue)}
                         </Badge>
                       </TableCell>
@@ -331,12 +366,17 @@ export default function Leaderboard() {
                     <TableCell className="text-right font-mono" data-testid={`text-response-${entry.rank}`}>
                       <div>{naNum(entry.responseLatency)}</div>
                       <div className="text-xs text-muted-foreground">P95: {naNum(entry.responseLatencyP95)}</div>
+                      {showAccess && <AccessSplit lm={entry.lastMile} dc={entry.datacenter} format={(c) => naNum(c.responseLatency)} testId={`text-response-access-${entry.rank}`} />}
                     </TableCell>
                     <TableCell className="text-right font-mono" data-testid={`text-interrupt-${entry.rank}`}>
                       <div>{naNum(entry.interruptLatency)}</div>
                       <div className="text-xs text-muted-foreground">P95: {naNum(entry.interruptLatencyP95)}</div>
+                      {showAccess && <AccessSplit lm={entry.lastMile} dc={entry.datacenter} format={(c) => naNum(c.interruptLatency)} testId={`text-interrupt-access-${entry.rank}`} />}
                     </TableCell>
-                    <TableCell className="text-right font-mono font-semibold" data-testid={`text-turn-success-${entry.rank}`}>{naPct(entry.turnSuccessRate)}</TableCell>
+                    <TableCell className="text-right font-mono" data-testid={`text-turn-success-${entry.rank}`}>
+                      <div className="font-semibold">{naPct(entry.turnSuccessRate)}</div>
+                      {showAccess && <AccessSplit lm={entry.lastMile} dc={entry.datacenter} format={(c) => naPct(c.turnSuccessRate)} testId={`text-turn-success-access-${entry.rank}`} />}
+                    </TableCell>
                     <TableCell className="text-right w-[150px]">
                       <div className="flex items-center justify-end gap-2">
                         <span className="font-mono text-xs" data-testid={`text-network-${entry.rank}`}>{naNum(entry.networkResilience, "%")}</span>
