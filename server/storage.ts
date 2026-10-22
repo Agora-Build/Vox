@@ -2524,12 +2524,30 @@ export class DatabaseStorage {
 
   // Raw, limit-controlled tier queries — kept for the leaderboard / API v1
   // callers that request a fixed count and don't need the span policy.
-  async getMainlineEvalResults(limit: number = 50, hoursBack?: number, scope?: RegionQueryScope): Promise<EvalResult[]> {
-    return this.joinMainline(db.select().from(evalResults))
-      .where(and(...this.mainlineConditions(hoursBack, scope)))
+  /**
+   * The newest eval results of one tier, for exactly one transport (design
+   * §11: web and phone are never mixed). The same tier conditions as every
+   * console metrics view. `userId` is required for the myEvals tier.
+   */
+  async getTierEvalResults(
+    tier: MetricTier,
+    limit: number,
+    opts: { hoursBack?: number; userId?: number; scope?: RegionQueryScope; transport?: "web" | "phone" } = {},
+  ): Promise<EvalResult[]> {
+    return this.applyTierJoins(tier, db.select().from(evalResults))
+      .where(and(...this.tierConditions(tier, opts.hoursBack, opts.userId, opts.scope, opts.transport ?? "web")))
       .orderBy(desc(evalResults.createdAt))
       .limit(limit)
       .then((rows: any[]) => rows.map(r => r.eval_results));
+  }
+
+  /**
+   * Mainline results for ONE transport (web by default). It used to apply no
+   * transport filter at all, so the public v1 realtime/leaderboard and the
+   * console leaderboard would have mixed phone results into web ones.
+   */
+  async getMainlineEvalResults(limit: number = 50, hoursBack?: number, scope?: RegionQueryScope, transport: "web" | "phone" = "web"): Promise<EvalResult[]> {
+    return this.getTierEvalResults("mainline", limit, { hoursBack, scope, transport });
   }
 
   async getCommunityEvalResults(limit: number = 50, hoursBack?: number): Promise<EvalResult[]> {

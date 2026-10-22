@@ -8,6 +8,7 @@ import { compareVersions } from "./aeval-seed";
 import { effectiveDispatchIdentity, agentListFilter, explainWaiting, type WaitAgent } from "./job-wait";
 import { STALE_THRESHOLD_MINUTES } from "./scheduler"; // the online window the reapers use
 import { settleEndedJobsNow } from "./settle-now";
+import { parseMetricsWindow, parseMetricsTransport } from "./metrics-params";
 import { SECRET_NAME_PATTERN, collectSecretRefs, secretValueError } from "@shared/secrets";
 import { deriveScheduleStatus } from "@shared/schedule-status";
 import { regionSiteSequence } from "@shared/regions";
@@ -6047,26 +6048,8 @@ export async function registerRoutes(
     (key.startsWith("detail:") ? detailCache : metricsCache).set(key, data);
   }
 
-  // Parse the only client-supplied metrics knob: the time window. `hours` must be
-  // a positive integer; absent means "all time". The client `limit` is ignored —
-  // the server alone decides row counts / raw-vs-bucket (see storage.tierMetrics).
-  // Returns { hoursBack } on success, or { error } describing a 400.
-  function parseMetricsWindow(hours: unknown): { hoursBack?: number } | { error: string } {
-    if (hours === undefined) return {};
-    const parsed = Number(hours);
-    if (!Number.isInteger(parsed) || parsed <= 0) {
-      return { error: "hours must be a positive integer (omit for all time)" };
-    }
-    return { hoursBack: parsed };
-  }
-
-  // Transport partition (design 2026-09-21 §11): each metrics view is scoped to
-  // exactly one transport — web and phone are separate categories, never mixed.
-  function parseMetricsTransport(raw: unknown): { transport: "web" | "phone" } | { error: string } {
-    const t = raw === undefined ? "web" : String(raw);
-    if (t !== "web" && t !== "phone") return { error: "transport must be web or phone" };
-    return { transport: t };
-  }
+  // parseMetricsWindow / parseMetricsTransport live in ./metrics-params,
+  // shared with the public v1 API.
 
   app.get("/api/metrics/realtime", async (req, res) => {
     try {
@@ -6213,12 +6196,15 @@ export async function registerRoutes(
       const { hours } = req.query;
       const regionScope = await parseRegionQueryScope(req.query);
       if ("error" in regionScope) return res.status(400).json({ error: regionScope.error });
-      const cacheKey = `leaderboard:${hours || 'all'}:${regionScope.cacheKey}`;
+      // One transport per view (web by default), like every other metrics view.
+      const tp = parseMetricsTransport(req.query.transport);
+      if ("error" in tp) return res.status(400).json({ error: tp.error });
+      const cacheKey = `leaderboard:${hours || 'all'}:${regionScope.cacheKey}:${tp.transport}`;
       const cached = getCached(cacheKey);
       if (cached) return res.json(cached);
 
       const hoursBack = hours ? parseInt(hours as string) : undefined;
-      const results = await storage.getMainlineEvalResults(1000, hoursBack, regionScope.scope);
+      const results = await storage.getMainlineEvalResults(1000, hoursBack, regionScope.scope, tp.transport);
       const locations = await storage.getAllRegionLocations();
 
       // Group results by (provider, site)

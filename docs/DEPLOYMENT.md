@@ -206,6 +206,7 @@ plugin tests to avoid their existing CREATE DATABASE race.
 | `MAXMIND_LICENSE_KEY` | Fallback only; normally set in Console → Regions. Without any key, the free DB-IP Lite database is used. | — |
 | `VOX_CONTACT_EMAIL` / `VOX_GITHUB_URL` / `VOX_X_URL` | Footer contact links (the X icon is hidden when unset) | `vox@agora.build` / Vox repo / — |
 | `RATE_LIMIT_DISABLED` | `"true"` turns API rate limiting off. Never set in production. | — |
+| `PUBLIC_API_RATE_LIMIT_PER_MINUTE` | Requests per minute per IP for **keyless** calls to the public `/api/v1` endpoints (metrics, providers). Calls with an API key aren't counted. | `60` |
 | `VOX_STORAGE_ALLOW_PRIVATE` | `"1"` lets Tools → Analyze use a storage endpoint on a private address (e.g. MinIO on localhost). Local development only. Never set in production: Core connects to the endpoint a user types, and this guard keeps that off Core's own network. | — |
 
 GeoIP license attribution is separate from the curated Thanks page. The footer

@@ -7,6 +7,7 @@ import { createServer } from "http";
 import session from "express-session";
 import connectPgSimple from "connect-pg-simple";
 import rateLimit from "express-rate-limit";
+import { createKeylessLimiter, keylessPerMinute } from "./public-rate-limit";
 import { authenticateApiKey } from "./auth";
 import { identityService } from "./identity";
 import { verificationService, registerVerificationRoutes, setVerificationNotifications } from "./verification";
@@ -140,6 +141,11 @@ app.use("/api/user/change-password", authLimiter);
 
 // API key authentication middleware (checks Bearer token for vox_live_ prefix)
 app.use(authenticateApiKey);
+
+// Keyless requests to the public v1 API (metrics, providers…) are limited per
+// IP; a request with an API key or a session isn't counted here. After
+// authenticateApiKey, which is what tells them apart.
+app.use("/api/v1", createKeylessLimiter({ enabled: !rateLimitDisabled && isProduction, perMinute: keylessPerMinute() }));
 
 // Moved to server/log.ts (so the background workers can log without importing
 // this entry point); re-exported here to keep the existing import path valid.
