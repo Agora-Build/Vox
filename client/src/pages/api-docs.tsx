@@ -263,6 +263,13 @@ curl -H "Authorization: Bearer vox_live_xxxxx" "${base}/metrics/leaderboard?tier
                 <code className="font-mono text-xs">phone</code>. The response&apos;s{" "}
                 <code className="font-mono text-xs">meta</code> says which tier, transport and window it covers.
               </p>
+              <p className="text-sm text-muted-foreground">
+                Add <code className="font-mono text-xs">tag=key:value</code> (repeatable) to filter by network
+                path — line provider, ISP, link type — and <code className="font-mono text-xs">groupBy=key</code>{" "}
+                to split each row by it.
+              </p>
+              <CodeBlock>{`# mainline, filtered to calls over a Twilio line, grouped by the agent's ISP
+curl "${base}/metrics/leaderboard?tag=line:twilio&groupBy=isp"`}</CodeBlock>
             </CardContent>
           </Card>
         </div>

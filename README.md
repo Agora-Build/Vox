@@ -293,8 +293,8 @@ curl -H "Authorization: Bearer vox_live_xxxxxxxxxxxx" \
 | `GET /api/v1/results` | Yes | List results (with P95) |
 | `GET /api/v1/results/:id` | Yes | Result details |
 | `GET /api/v1/providers` | No | All providers |
-| `GET /api/v1/metrics/realtime` | No (`tier=mine`: Yes) | Recent results — `tier=mainline` (default) · `community` · `mine`, `transport=web` (default) · `phone`, `hours`, `limit` |
-| `GET /api/v1/metrics/leaderboard` | No (`tier=mine`: Yes) | Averages per provider and site — same `tier` / `transport` / `hours` |
+| `GET /api/v1/metrics/realtime` | No (`tier=mine`: Yes) | Recent results — `tier=mainline` (default) · `community` · `mine`, `transport=web` (default) · `phone`, `hours`, `limit`, `tag=key:value` (repeatable), `groupBy=key` |
+| `GET /api/v1/metrics/leaderboard` | No (`tier=mine`: Yes) | Averages per provider and site — same `tier` / `transport` / `hours` / `tag` / `groupBy` |
 
 Keyless calls to the public endpoints are limited to 12 per minute per IP (`PUBLIC_API_RATE_LIMIT_PER_MINUTE`); calls with an API key aren't counted. Full reference: `/api-docs`.
 
