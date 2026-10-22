@@ -2,7 +2,7 @@ import { describe, it, expect, afterAll, beforeAll, vi } from "vitest";
 import { eq, like } from "drizzle-orm";
 import { storage, db, hashToken } from "../server/storage";
 import { evalAgents, evalAgentTokens, regionLocations } from "../shared/schema";
-import { resolveCatalogRegion, runAgentLocationCheck } from "../server/location";
+import { resolveCatalogRegion, runAgentLocationCheck, type DetectionDeps, type GeoLookup } from "../server/location";
 import { setMarketplace, getMarketplace, type EvalMarketplace } from "../server/marketplace";
 
 const describeDb = process.env.DATABASE_URL ? describe : describe.skip;
@@ -48,6 +48,22 @@ describeDb("catalog resolution", () => {
     })).toBe("zz-is-reykjavik");
   });
 });
+
+// Access data loaded, but no geo for any IP → low_confidence (ineligible).
+const loadedNoGeo: DetectionDeps = {
+  geo: () => null, asn: () => null, torExits: new Set(),
+  networkClass: () => null, networkClassLoaded: true,
+};
+const geoFrankfurt: GeoLookup = {
+  city: "Frankfurt am Main", countryCode: "DE", countryName: "Germany", continentCode: "EU",
+  lat: 50.11, lon: 8.68, accuracyKm: 20,
+};
+// VPN/datacenter data never loaded (first boot / every download failed) —
+// with real geo that would otherwise read "trusted".
+const unloadedWithGeo: DetectionDeps = {
+  geo: () => geoFrankfurt, asn: () => ({ asn: 3320, org: "Deutsche Telekom" }), torExits: new Set(),
+  networkClass: () => null, networkClassLoaded: false,
+};
 
 describeDb("allocateSiteId + runAgentLocationCheck", () => {
   let tokenId: number;
@@ -125,6 +141,7 @@ describeDb("allocateSiteId + runAgentLocationCheck", () => {
         agent: { id: agentId, region: "na-us-seattle", siteId: "na-us-seattle-01", pendingRegion: null, pendingRegionCount: 0 },
         token: { id: tokenId, dispatchTier: "shared" },
         ip: "8.8.8.8", immediate: true,
+        deps: loadedNoGeo,
       });
       expect(res.region).toBeNull();
       expect(warnSpy).toHaveBeenCalledWith(
@@ -135,5 +152,43 @@ describeDb("allocateSiteId + runAgentLocationCheck", () => {
       warnSpy.mockRestore();
       setMarketplace(null);
     }
+  });
+
+  it("unloaded access data: an existing agent's region, siteId and pending state are kept (no clear, no renumber)", async () => {
+    await db.update(evalAgents).set({
+      region: "eu-de-frankfurt", siteId: "eu-de-frankfurt-07", pendingRegion: "eu-fr-paris", pendingRegionCount: 2,
+    }).where(eq(evalAgents.id, agentId));
+    const before = await storage.getRegionLocationByBaseId("eu-de-frankfurt");
+    for (const immediate of [true, false]) {
+      const res = await runAgentLocationCheck({
+        agent: { id: agentId, region: "eu-de-frankfurt", siteId: "eu-de-frankfurt-07", pendingRegion: "eu-fr-paris", pendingRegionCount: 2 },
+        token: { id: tokenId, dispatchTier: "private" },
+        ip: "80.150.1.1", immediate, deps: unloadedWithGeo,
+      });
+      expect(res).toEqual({ region: "eu-de-frankfurt", siteId: "eu-de-frankfurt-07", locationTrust: "low_confidence" });
+    }
+    const row = (await db.select().from(evalAgents).where(eq(evalAgents.id, agentId)))[0];
+    expect(row.region).toBe("eu-de-frankfurt");
+    expect(row.siteId).toBe("eu-de-frankfurt-07");
+    expect(row.pendingRegion).toBe("eu-fr-paris");
+    expect(row.pendingRegionCount).toBe(2);
+    expect(row.locationTrust).toBe("low_confidence"); // observability still recorded
+    const after = await storage.getRegionLocationByBaseId("eu-de-frankfurt");
+    expect(after!.nextSequence).toBe(before!.nextSequence); // no site id handed out
+  });
+
+  it("unloaded access data: a new agent with no region stays Unverified (fail closed)", async () => {
+    await db.update(evalAgents).set({ region: null, siteId: null, pendingRegion: null, pendingRegionCount: 0 })
+      .where(eq(evalAgents.id, agentId));
+    const res = await runAgentLocationCheck({
+      agent: { id: agentId, region: null, siteId: null, pendingRegion: null, pendingRegionCount: 0 },
+      token: { id: tokenId, dispatchTier: "private" },
+      ip: "80.150.1.1", immediate: true, deps: unloadedWithGeo,
+    });
+    expect(res.region).toBeNull();
+    expect(res.siteId).toBeNull();
+    const row = (await db.select().from(evalAgents).where(eq(evalAgents.id, agentId)))[0];
+    expect(row.region).toBeNull();
+    expect(row.siteId).toBeNull();
   });
 });

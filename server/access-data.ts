@@ -298,14 +298,17 @@ export interface AccessDataInputs {
 
 /** Builds an AccessData from parsed inputs (fixtures in tests, files on disk in production). */
 export function createAccessData(inputs: AccessDataInputs): AccessData {
-  const dc = inputs.datacenter && inputs.datacenter.length > 0 ? IpRangeSet.fromParsed(inputs.datacenter) : null;
-  const vpn = inputs.vpn && inputs.vpn.length > 0 ? IpRangeSet.fromParsed(inputs.vpn) : null;
+  // A source that parsed to zero entries (an error page that slipped through,
+  // an emptied file) is not loaded — counting it would turn off the
+  // fail-closed cap while every lookup still answers "clean".
+  const dc = inputs.datacenter ? IpRangeSet.fromParsed(inputs.datacenter) : null;
+  const vpn = inputs.vpn ? IpRangeSet.fromParsed(inputs.vpn) : null;
   const loaded: AccessDataLoaded = {
-    datacenter: dc !== null && (inputs.datacenterComplete ?? true),
-    vpn: vpn !== null && (inputs.vpnComplete ?? true),
-    peeringdb: inputs.peeringdb !== undefined,
-    apnic: inputs.apnic !== undefined,
-    mobile: inputs.mobileAsns !== undefined,
+    datacenter: dc !== null && dc.size > 0 && (inputs.datacenterComplete ?? true),
+    vpn: vpn !== null && vpn.size > 0 && (inputs.vpnComplete ?? true),
+    peeringdb: (inputs.peeringdb?.size ?? 0) > 0,
+    apnic: (inputs.apnic?.size ?? 0) > 0,
+    mobile: (inputs.mobileAsns?.size ?? 0) > 0,
   };
   return {
     isDatacenterIp: (ip) => dc?.has(ip) ?? false,
@@ -365,7 +368,7 @@ async function readOptional<T>(file: string, parse: (text: string) => T, label: 
 /** Reads whatever access data exists in `dir`; never throws. */
 export async function loadAccessDataFromDir(dir: string, mobilePath: string = MOBILE_CARRIER_ASNS_PATH): Promise<AccessData> {
   const f = (name: string) => path.join(dir, name);
-  const [dc4, dc6, vpn4, vpn6, ipcat, apnic, peeringdb, mobile] = await Promise.all([
+  const [rawDc4, rawDc6, rawVpn4, rawVpn6, rawIpcat, apnic, peeringdb, mobile] = await Promise.all([
     readOptional(f(ACCESS_FILES.datacenterV4), parseCidrList, "datacenter IPv4 list"),
     readOptional(f(ACCESS_FILES.datacenterV6), parseCidrList, "datacenter IPv6 list"),
     readOptional(f(ACCESS_FILES.vpnV4), parseCidrList, "VPN IPv4 list"),
@@ -376,6 +379,9 @@ export async function loadAccessDataFromDir(dir: string, mobilePath: string = MO
     readOptional(mobilePath, (t) => parseMobileCarrierAsns(JSON.parse(t)), "mobile-carrier ASN list"),
   ]);
   const present = <T>(xs: Array<T | undefined>): T[] => xs.filter((x): x is T => x !== undefined);
+  // A list file that parsed to zero ranges is as good as missing.
+  const ranges = (p: ParsedRanges | undefined) => (p && p.v4.length + p.v6.length > 0 ? p : undefined);
+  const [dc4, dc6, vpn4, vpn6, ipcat] = [rawDc4, rawDc6, rawVpn4, rawVpn6, rawIpcat].map(ranges);
   return createAccessData({
     datacenter: present([dc4, dc6, ipcat]),
     datacenterComplete: dc4 !== undefined && dc6 !== undefined,

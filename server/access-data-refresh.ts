@@ -19,6 +19,35 @@ import { ACCESS_FILES, parseCidrList, parseIpcatCsv, parseApnicAspop } from "./a
 
 export const ACCESS_STALE_MS = 7 * 24 * 60 * 60 * 1000;
 export const ACCESS_REFRESH_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000;
+export const ACCESS_RETRY_BASE_MS = 15 * 60 * 1000;
+export const ACCESS_RETRY_MAX_MS = 60 * 60 * 1000;
+
+/** Delay before retry number `attempt` (0-based): 15 → 30 → 60 minutes, then every 60. */
+export function accessRetryDelayMs(attempt: number): number {
+  return Math.min(ACCESS_RETRY_BASE_MS * 2 ** attempt, ACCESS_RETRY_MAX_MS);
+}
+
+/**
+ * Retries `attempt` with backoff until it reports the VPN + datacenter lists
+ * loaded (true); a throw counts as not loaded. Used at startup when no usable
+ * copy exists, so the fail-closed window is bounded by the backoff rather than
+ * the weekly timer. `schedule` is injectable for tests.
+ */
+export function scheduleAccessRetry(
+  attempt: () => Promise<boolean>,
+  schedule: (fn: () => Promise<void>, ms: number) => void = (fn, ms) => { setTimeout(() => { void fn(); }, ms).unref(); },
+  attemptNumber = 0,
+): void {
+  schedule(async () => {
+    let loaded = false;
+    try {
+      loaded = await attempt();
+    } catch (err) {
+      console.error(`[access-data] retry ${attemptNumber + 1} failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    if (!loaded) scheduleAccessRetry(attempt, schedule, attemptNumber + 1);
+  }, accessRetryDelayMs(attemptNumber));
+}
 
 export type AccessSourceId = "datacenter-ipv4" | "datacenter-ipv6" | "vpn-ipv4" | "vpn-ipv6" | "ipcat" | "apnic";
 

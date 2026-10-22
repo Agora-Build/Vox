@@ -15,7 +15,9 @@ import {
   loadAccessDataFromDir,
   ACCESS_FILES,
 } from "../server/access-data";
-import { refreshAccessData, ACCESS_SOURCES, accessDataNeedsRefresh, type AccessSource } from "../server/access-data-refresh";
+import {
+  refreshAccessData, ACCESS_SOURCES, accessDataNeedsRefresh, accessRetryDelayMs, scheduleAccessRetry, type AccessSource,
+} from "../server/access-data-refresh";
 
 const FIX = path.join(__dirname, "fixtures/access");
 const fixture = (name: string) => readFileSync(path.join(FIX, name), "utf8");
@@ -157,6 +159,16 @@ describe("createAccessData", () => {
     expect(empty.eyeballShare(7922)).toBeUndefined();
     expect(empty.isMobileAsn(21928)).toBe(false);
     expect(empty.loaded).toEqual({ datacenter: false, vpn: false, peeringdb: false, apnic: false, mobile: false });
+  });
+  it("inputs that parsed to zero entries do not count as loaded", () => {
+    const hollow = createAccessData({
+      datacenter: [parseCidrList("<html>404</html>")],
+      vpn: [parseCidrList("")],
+      peeringdb: new Map(),
+      apnic: new Map(),
+      mobileAsns: new Set(),
+    });
+    expect(hollow.loaded).toEqual({ datacenter: false, vpn: false, peeringdb: false, apnic: false, mobile: false });
   });
   it("an ASN absent from loaded data is undefined, not zero", () => {
     expect(data.eyeballShare(64999)).toBeUndefined();
@@ -325,6 +337,27 @@ describe("refreshAccessData", () => {
     expect(accessDataNeedsRefresh(dir, new Date())).toBe(true);
   });
 
+  it("files on disk that parse to zero entries do not count as loaded", async () => {
+    const dir = await freshDir();
+    for (const f of [ACCESS_FILES.datacenterV4, ACCESS_FILES.datacenterV6, ACCESS_FILES.vpnV4, ACCESS_FILES.vpnV6]) {
+      await fsp.writeFile(path.join(dir, f), "<html>Not Found</html>\n");
+    }
+    await fsp.writeFile(path.join(dir, ACCESS_FILES.apnic), JSON.stringify({ Data: [] }));
+    const data = await loadAccessDataFromDir(dir);
+    expect(data.loaded.datacenter).toBe(false);
+    expect(data.loaded.vpn).toBe(false);
+    expect(data.loaded.apnic).toBe(false);
+  });
+
+  it("one list of a pair parsing to zero ranges leaves that pair unloaded", async () => {
+    const dir = await freshDir();
+    await fsp.writeFile(path.join(dir, ACCESS_FILES.datacenterV4), "<html>Not Found</html>\n");
+    await fsp.writeFile(path.join(dir, ACCESS_FILES.datacenterV6), fixture("x4bnet-ipv6.txt"));
+    const data = await loadAccessDataFromDir(dir);
+    expect(data.isDatacenterIp("2001:db8::1")).toBe(true);
+    expect(data.loaded.datacenter).toBe(false);
+  });
+
   it("a missing directory is created", async () => {
     failing = new Set();
     const dir = path.join(await freshDir(), "nested", "geoip");
@@ -340,5 +373,31 @@ describe("refreshAccessData", () => {
     expect(data.peeringdbType(7922)).toBe("access");
     expect(data.loaded.peeringdb).toBe(true);
     expect(ACCESS_SOURCES.some((s) => s.file === ACCESS_FILES.peeringdb)).toBe(false);
+  });
+});
+
+describe("startup retry until the VPN/datacenter lists load", () => {
+  it("backs off 15 → 30 → 60 minutes and stays at 60", () => {
+    expect([0, 1, 2, 3, 10].map((n) => accessRetryDelayMs(n) / 60_000)).toEqual([15, 30, 60, 60, 60]);
+  });
+  it("retries until an attempt loads the data, then stops", async () => {
+    const delays: number[] = [];
+    const pending: Array<() => Promise<void> | void> = [];
+    const outcomes = [false, false, false, true];
+    let attempts = 0;
+    scheduleAccessRetry(async () => outcomes[attempts++], (fn, ms) => { delays.push(ms); pending.push(fn); });
+    while (pending.length) await pending.shift()!();
+    expect(attempts).toBe(4);
+    expect(delays.map((ms) => ms / 60_000)).toEqual([15, 30, 60, 60]);
+  });
+  it("an attempt that throws counts as not loaded and is retried", async () => {
+    const delays: number[] = [];
+    const pending: Array<() => Promise<void> | void> = [];
+    let attempts = 0;
+    scheduleAccessRetry(async () => { attempts++; if (attempts === 1) throw new Error("network down"); return true; },
+      (fn, ms) => { delays.push(ms); pending.push(fn); });
+    while (pending.length) await pending.shift()!();
+    expect(attempts).toBe(2);
+    expect(delays.length).toBe(2);
   });
 });

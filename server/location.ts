@@ -7,7 +7,7 @@ import { getMarketplace } from "./marketplace";
 import type { RegionCandidate } from "@shared/regions";
 import { refreshGeoipDatabases, type GeoipSource } from "./geoip-refresh";
 import { getAccessData, reloadAccessData, networkClassOf } from "./access-data";
-import { refreshAccessData, accessDataNeedsRefresh, ACCESS_REFRESH_INTERVAL_MS } from "./access-data-refresh";
+import { refreshAccessData, accessDataNeedsRefresh, scheduleAccessRetry, ACCESS_REFRESH_INTERVAL_MS } from "./access-data-refresh";
 import { geoipAttributionForSource } from "@shared/geoip-attribution";
 
 export type { RegionCandidate };
@@ -313,6 +313,7 @@ export function startLocationServices(): void {
   // what's on disk, download when missing or older than 7 days, weekly after.
   // Until the VPN + datacenter lists have loaded, detectLocation caps trust
   // at low_confidence (fail closed).
+  const accessClassLoaded = () => { const d = getAccessData(); return d.loaded.datacenter && d.loaded.vpn; };
   const refreshAccess = async () => {
     const result = await refreshAccessData();
     if (Object.values(result.sources).some((s) => s?.ok)) await reloadAccessData(GEOIP_DIR);
@@ -324,7 +325,12 @@ export function startLocationServices(): void {
     }
     if (accessDataNeedsRefresh(GEOIP_DIR)) {
       console.log("[location] access data refresh triggered at startup (missing or older than 7 days)");
-      await refreshAccess();
+      await refreshAccess().catch(() => {});
+    }
+    if (!accessClassLoaded()) {
+      // No usable copy: retry with backoff (15 → 60 min) until the VPN and
+      // datacenter lists load, rather than waiting for the weekly timer.
+      scheduleAccessRetry(async () => { await refreshAccess(); return accessClassLoaded(); });
     }
   })().catch((err) => console.error(`[location] access data startup failed: ${err instanceof Error ? err.message : String(err)}`));
   setInterval(() => { void refreshAccess().catch(() => {}); }, ACCESS_REFRESH_INTERVAL_MS).unref();
@@ -435,12 +441,21 @@ export async function runAgentLocationCheck(opts: {
   token: { id: number; dispatchTier: string };
   ip: string | undefined;
   immediate: boolean;
+  /** Injected in tests; live loaders otherwise. */
+  deps?: DetectionDeps;
 }): Promise<{ region: string | null; siteId: string | null; locationTrust: LocationTrust }> {
-  const det = detectLocation(opts.ip ?? "");
+  const deps = opts.deps ?? liveDeps();
+  const det = detectLocation(opts.ip ?? "", deps);
   const now = new Date();
 
-  if (opts.token.dispatchTier === "public") {
-    // Configured identity is trusted; detection is observability only.
+  // Public tier: configured identity is trusted; detection is observability
+  // only. Same when the VPN/datacenter data hasn't loaded (first boot on an
+  // ephemeral filesystem, downloads failing): detection can't tell, so it
+  // must not move the region either way — clearing it would drop the siteId
+  // (a new sequence number on recovery) and rewrite shared listings on every
+  // deploy. Stored region, siteId and pending state are kept; an agent with
+  // no region stays Unverified (still fail closed).
+  if (opts.token.dispatchTier === "public" || !deps.networkClassLoaded) {
     await storage.updateEvalAgentLocationObservability(opts.agent.id, {
       locationTrust: det.trust, locationCheckedAt: now, locationSource: det.source,
     });
