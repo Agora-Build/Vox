@@ -102,12 +102,38 @@ describe("detectLinkType — linux", () => {
     expect(result).toBe("ethernet");
   });
 
-  it("ethernet: no driver symlink at all still falls through to ethernet", () => {
+  it("ethernet: a hardware device with no driver symlink still falls through to ethernet", () => {
     makeIface("eth0");
+    fs.mkdirSync(path.join(sysRoot, "sys", "class", "net", "eth0", "device"));
     const result = detectLinkType(
       deps({ exec: execFake({ "ip route get 1.1.1.1": "1.1.1.1 via 192.168.1.1 dev eth0 src 192.168.1.5" }) })
     );
     expect(result).toBe("ethernet");
+  });
+
+  it("virtual interface (a container's veth: no sysfs device entry) → undefined, not a fabricated ethernet", () => {
+    // What `docker run` shows: /sys/class/net/eth0 → ../../devices/virtual/net/eth0, no `device`.
+    makeIface("eth0");
+    const result = detectLinkType(
+      deps({ exec: execFake({ "ip route get 1.1.1.1": "1.1.1.1 via 172.17.0.1 dev eth0 src 172.17.0.2 uid 0" }) })
+    );
+    expect(result).toBeUndefined();
+  });
+
+  it("virtual interface on a host (bridge / tunnel) → undefined too", () => {
+    makeIface("br0");
+    const result = detectLinkType(
+      deps({ exec: execFake({ "ip route get 1.1.1.1": "1.1.1.1 via 192.168.1.1 dev br0 src 192.168.1.5" }) })
+    );
+    expect(result).toBeUndefined();
+  });
+
+  it("in a container, VOX_LINK_TYPE (from vox-upgrade.sh's host detection) still wins over the veth", () => {
+    makeIface("eth0");
+    const result = detectLinkType(
+      deps({ env: { VOX_LINK_TYPE: "wifi" }, exec: execFake({ "ip route get 1.1.1.1": "1.1.1.1 via 172.17.0.1 dev eth0" }) })
+    );
+    expect(result).toBe("wifi");
   });
 
   it("exec throws (no default route / ip missing) → undefined, never throws", () => {
@@ -131,6 +157,7 @@ describe("detectLinkType — env override", () => {
 
   it("an invalid VOX_LINK_TYPE is ignored — falls through to real detection", () => {
     makeIface("eth0");
+    makeDriverSymlink("eth0", "e1000e");
     const result = detectLinkType(
       deps({
         env: { VOX_LINK_TYPE: "5g" },

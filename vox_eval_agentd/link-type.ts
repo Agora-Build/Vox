@@ -17,7 +17,9 @@
  * receives (`parseLinkTypeUpdate` in server/routes.ts).
  *
  * Any detection failure — no default route, an unsupported platform, a
- * failed exec, a missing /sys entry — returns `undefined`, never throws.
+ * failed exec, a missing /sys entry, a virtual default-route interface (no
+ * sysfs `device`: a container's veth, a bridge, a tunnel — the real link is
+ * behind it) — returns `undefined`, never throws.
  * The caller must then OMIT the field on the wire rather than send `null`:
  * `null` means "clear the stored value" to Core, `undefined` here means
  * "couldn't tell this time," which should leave the last known value alone.
@@ -67,6 +69,15 @@ function detectLinux(sysRoot: string, exec: DetectLinkTypeDeps["exec"]): LinkTyp
   const ifaceDir = path.join(sysRoot, "/sys/class/net", iface);
   if (fs.existsSync(path.join(ifaceDir, "wireless"))) return "wifi";
   if (/^wwan/.test(iface)) return "cellular";
+
+  // A virtual interface — a container's veth, a bridge, a VPN tunnel — has
+  // no backing hardware, so sysfs gives it no `device` entry (its
+  // /sys/class/net/<if> points into /sys/devices/virtual/net/; a real NIC's
+  // points into its bus, e.g. pci0000:00/.../net/eno2, and has `device`).
+  // Inside a container the default route is always the veth, so without
+  // VOX_LINK_TYPE there is nothing to tell the host's real link from:
+  // report nothing rather than fabricate "ethernet".
+  if (!fs.existsSync(path.join(ifaceDir, "device"))) return undefined;
 
   let driver: string | undefined;
   try {
