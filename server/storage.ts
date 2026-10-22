@@ -1198,6 +1198,10 @@ export class DatabaseStorage {
       // Missing until now: GET /api/eval-agents reported capabilities: [] for
       // every agent, phone-capable or not.
       capabilities: evalAgents.capabilities,
+      // Hand-set tags + reported link type (design "Data model") — the public
+      // listing's canEditTags flag is derived from tokenCreatedBy below.
+      tags: evalAgents.tags,
+      linkType: evalAgents.linkType,
       createdAt: evalAgents.createdAt,
       updatedAt: evalAgents.updatedAt,
       tokenCreatedBy: evalAgentTokens.createdBy,

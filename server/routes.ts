@@ -11,6 +11,7 @@ import { settleEndedJobsNow } from "./settle-now";
 import { parseMetricsWindow, parseMetricsTransport } from "./metrics-params";
 import { clientIp } from "./client-ip"; // the real caller behind Cloudflare/Traefik
 import { SECRET_NAME_PATTERN, collectSecretRefs, secretValueError } from "@shared/secrets";
+import { parseTags, LINK_VALUES } from "@shared/tags";
 import { deriveScheduleStatus } from "@shared/schedule-status";
 import { regionSiteSequence } from "@shared/regions";
 import { parseMetricsDetailWindow } from "@shared/metrics-window";
@@ -2232,6 +2233,14 @@ export async function registerRoutes(
       if (transport !== undefined && !["web", "phone"].includes(transport)) {
         return res.status(400).json({ error: "Invalid transport" });
       }
+
+      // Hand-set tags describing the TARGET under test (design "Data model").
+      // Validated with the one shared parser so the client, Core and the
+      // agent can't disagree on what counts as a valid tag.
+      const parsedTags = parseTags(req.body.tags);
+      if ("error" in parsedTags) {
+        return res.status(400).json({ error: parsedTags.error });
+      }
       const cleanName = String(name).trim();
 
       if (!providerId) {
@@ -2279,7 +2288,13 @@ export async function registerRoutes(
         config: config || {},
       });
 
-      res.json(evalFlow);
+      // tags is omitted from InsertEvalFlow (drizzle-zod typing, see schema.ts)
+      // — set it via its own update, same path as PATCH, when the caller sent any.
+      const withTags = req.body.tags !== undefined
+        ? await storage.updateEvalFlow(evalFlow.id, { tags: parsedTags.tags })
+        : evalFlow;
+
+      res.json(withTags);
     } catch (error) {
       console.error("Error creating evalFlow:", error);
       res.status(500).json({ error: "Failed to create evalFlow" });
@@ -2311,6 +2326,12 @@ export async function registerRoutes(
       if (transport !== undefined && !["web", "phone"].includes(transport)) {
         return res.status(400).json({ error: "Invalid transport" });
       }
+      // Tags, same validator as create. Absent (`undefined`) leaves the
+      // stored tags unchanged — this is a PATCH, not a replace-all.
+      const parsedTags = parseTags(req.body.tags);
+      if ("error" in parsedTags) {
+        return res.status(400).json({ error: parsedTags.error });
+      }
       // Steps vocabulary is transport-scoped, so validate the RESULTING pair:
       // a new config against the (possibly changed) transport, and — when only
       // the transport flips — the existing config against the new mode.
@@ -2335,6 +2356,7 @@ export async function registerRoutes(
       if (name && String(name).trim()) updates.name = String(name).trim();
       if (description !== undefined) updates.description = description;
       if (config) updates.config = config;
+      if (req.body.tags !== undefined) updates.tags = parsedTags.tags;
       if (providerId !== undefined) {
         const provider = await storage.getProvider(providerId);
         if (!provider) {
@@ -4041,10 +4063,57 @@ export async function registerRoutes(
         createdAt: a.createdAt,
         dispatchTier: a.tokenDispatchTier,
         capabilities: a.capabilities ?? [],
+        // Hand-set tags + reported link type (design "Data model"); editable
+        // only by the TOKEN's creator (its operator) — never an admin, same
+        // rule as PATCH /api/eval-agents/:id/tags. Never observedIp — that
+        // stays Core-internal (see the comment on the eval_agents column).
+        tags: a.tags ?? [],
+        linkType: a.linkType ?? null,
+        canEditTags: !!user && user.id === a.tokenCreatedBy,
       })));
     } catch (error) {
       console.error("Error fetching eval agents:", error);
       res.status(500).json({ error: "Failed to fetch eval agents" });
+    }
+  });
+
+  // Hand-set tags are a correction/addition to the agent's VANTAGE-POINT
+  // detection (design "Data model"), so only the agent's OPERATOR — the
+  // creator of its token — may set them. Not the agent's own owner field
+  // (there isn't one; eval_agents has no ownerId), not an org manager, and
+  // NOT an admin (permission model: admin powers are user mgmt + provider
+  // config + delete-moderation only, never a super-editor over someone
+  // else's resource).
+  app.patch("/api/eval-agents/:id/tags", requireAuth, async (req, res) => {
+    try {
+      const user = await getCurrentUser(req);
+      if (!user) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+
+      const agent = await storage.getEvalAgent(parseInt(req.params.id));
+      if (!agent) {
+        return res.status(404).json({ error: "Eval agent not found" });
+      }
+
+      const token = await storage.getEvalAgentToken(agent.tokenId);
+      if (!token || token.createdBy !== user.id) {
+        return res.status(403).json({ error: "Only the agent's token creator can edit its tags" });
+      }
+
+      const parsedTags = parseTags(req.body.tags);
+      if ("error" in parsedTags) {
+        return res.status(400).json({ error: parsedTags.error });
+      }
+
+      const updated = await storage.updateEvalAgent(agent.id, { tags: parsedTags.tags });
+      // Minimal shape, not the full row — same "no observedIp, ever" rule as
+      // the public listing applies here too, even though this caller IS the
+      // operator (observed_ip stays Core-internal everywhere, by design).
+      res.json({ id: updated?.id ?? agent.id, tags: updated?.tags ?? parsedTags.tags });
+    } catch (error) {
+      console.error("Error updating eval agent tags:", error);
+      res.status(500).json({ error: "Failed to update eval agent tags" });
     }
   });
 
@@ -4110,6 +4179,24 @@ export async function registerRoutes(
     return Array.from(new Set(raw as string[]));
   };
 
+  // Reported link type (design "Detection" / "Data model"), refreshed each
+  // register/heartbeat like capabilities — but unlike capabilities, an
+  // invalid value is never a 400: it's ignored silently (old/new agents
+  // interoperate; a daemon on a future LINK_VALUES member must not break
+  // today's Core). Returns undefined = field absent, leave the stored value
+  // unchanged; { linkType: null } = explicit clear; { linkType: <value> } =
+  // a recognized value to store. An unrecognized non-null string also
+  // returns undefined (ignored, keep old value) — never a sentinel, since
+  // there's no error case to report.
+  const parseLinkTypeUpdate = (raw: unknown): { linkType: string | null } | undefined => {
+    if (raw === undefined) return undefined;
+    if (raw === null) return { linkType: null };
+    if (typeof raw === "string" && (LINK_VALUES as readonly string[]).includes(raw)) {
+      return { linkType: raw };
+    }
+    return undefined;
+  };
+
   // effectiveDispatchIdentity lives in ./job-wait (shared with the waiting
   // explanation on the job page).
 
@@ -4167,6 +4254,11 @@ export async function registerRoutes(
         return res.status(400).json({ error: "Unknown capability" });
       }
 
+      // Reported link type (design "Detection"): absent on a fresh row just
+      // means null (not reported); on an upsert into an existing agent, only
+      // apply it when the caller actually sent something recognizable.
+      const linkTypeUpdate = parseLinkTypeUpdate(req.body.linkType);
+
       // Use agent-provided name, or fall back to the token's name
       const agentName = name || evalAgentToken.name;
 
@@ -4181,8 +4273,9 @@ export async function registerRoutes(
       let agent;
       if (existing.length > 0) {
         agent = existing[0];
-        await storage.updateEvalAgent(agent.id, { name: agentName, state: "idle", metadata: metadata || {}, currentLeaseId: leaseId, capabilities: capabilities ?? [] });
-        agent = { ...agent, name: agentName, state: "idle" as const, metadata: metadata || {}, currentLeaseId: leaseId, capabilities: capabilities ?? [] };
+        const agentUpdate = { name: agentName, state: "idle" as const, metadata: metadata || {}, currentLeaseId: leaseId, capabilities: capabilities ?? [], ...(linkTypeUpdate ?? {}) };
+        await storage.updateEvalAgent(agent.id, agentUpdate);
+        agent = { ...agent, ...agentUpdate };
         // A fresh registration means the prior process died; release any jobs it
         // was still running so they re-queue instead of hanging as "running"
         // forever (the heartbeat reaper misses them — this agent looks alive).
@@ -4201,6 +4294,7 @@ export async function registerRoutes(
           metadata: metadata || {},
           currentLeaseId: leaseId,
           capabilities: capabilities ?? [],
+          linkType: linkTypeUpdate?.linkType ?? null,
         });
       }
 
@@ -4276,6 +4370,11 @@ export async function registerRoutes(
         return res.status(400).json({ error: "Unknown capability" });
       }
 
+      // Reported link type (design "Detection"): a LINK_VALUES member updates
+      // it, an unrecognized string is ignored with no error (interop with
+      // older/newer daemons), absent leaves it, explicit null clears it.
+      const hbLinkType = parseLinkTypeUpdate(req.body.linkType);
+
       const agent = await storage.getEvalAgent(agentId);
       if (!agent || agent.tokenId !== evalAgentToken.id) {
         return res.status(403).json({ error: "Agent not found or token mismatch" });
@@ -4320,6 +4419,9 @@ export async function registerRoutes(
       }
       if (hbCapabilities !== undefined) {
         updates.capabilities = hbCapabilities;
+      }
+      if (hbLinkType !== undefined) {
+        updates.linkType = hbLinkType.linkType;
       }
       if (Object.keys(updates).length > 0) {
         await storage.updateEvalAgent(agentId, updates);

@@ -12,6 +12,7 @@ import { storage, mergeEvalConfig, buildJobSnapshot, validateEvalFlowConfig, val
 import { requireAuthOrApiKey, getCurrentUserOrApiKeyUser } from "./auth";
 import { parsePlatformSetup, sessionScopeForEvalFlow, evaluateSessionRequirement, getBrokeredSecretNames, ensureSession, secretGate } from "./auth-session";
 import { regionSiteSequence } from "@shared/regions";
+import { parseTags } from "@shared/tags";
 import { hasOrg, sameOrg, isOwnerOrOrgManager, canAccessResource, canViewJob, canCancelJob, parseJobScope, jobListFilter } from "./permissions";
 import { getOrganizations } from "./organizations";
 import { settleEndedJobsNow } from "./settle-now";
@@ -151,6 +152,12 @@ export function registerApiV1Routes(app: Express): void {
       if (!name) {
         return res.status(400).json({ error: "Name is required" });
       }
+
+      // Hand-set tags (design "Data model"), same parser as the console route.
+      const parsedTags = parseTags(req.body.tags);
+      if ("error" in parsedTags) {
+        return res.status(400).json({ error: parsedTags.error });
+      }
       // Same save-time gate as the console route (v1 previously skipped it —
       // every config rule was bypassable through this endpoint).
       if (config !== undefined && config !== null) {
@@ -199,7 +206,13 @@ export function registerApiV1Routes(app: Express): void {
         config: config || {},
       });
 
-      res.status(201).json({ data: evalFlow });
+      // tags is omitted from InsertEvalFlow (drizzle-zod typing); set via its
+      // own update, same as the console route, only when the caller sent any.
+      const withTags = req.body.tags !== undefined
+        ? await storage.updateEvalFlow(evalFlow.id, { tags: parsedTags.tags })
+        : evalFlow;
+
+      res.status(201).json({ data: withTags });
     } catch (error) {
       console.error("API v1 - Error creating evalFlow:", error);
       res.status(500).json({ error: "Failed to create evalFlow" });
@@ -265,6 +278,13 @@ export function registerApiV1Routes(app: Express): void {
         if (!v.valid) return res.status(400).json({ error: v.error });
       }
 
+      // Hand-set tags: absent leaves the stored value unchanged (PATCH-style,
+      // even though this is a PUT) — same parser as create.
+      const parsedTags = parseTags(req.body.tags);
+      if ("error" in parsedTags) {
+        return res.status(400).json({ error: parsedTags.error });
+      }
+
       // Visibility check
       if (visibility === "private" && user.plan === "basic") {
         return res.status(403).json({
@@ -277,6 +297,7 @@ export function registerApiV1Routes(app: Express): void {
         description: description ?? evalFlow.description,
         visibility: visibility ?? evalFlow.visibility,
         config: config ?? evalFlow.config,
+        ...(req.body.tags !== undefined ? { tags: parsedTags.tags } : {}),
       });
 
       res.json({ data: updated });

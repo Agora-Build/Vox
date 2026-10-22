@@ -224,6 +224,19 @@ components:
           type: object
           additionalProperties: true
           example: {}
+        tags:
+          type: array
+          description: Hand-set key:value tags describing the target under test (e.g. line provider, ISP, link type).
+          items:
+            type: object
+            properties:
+              key:
+                type: string
+                example: "isp"
+              value:
+                type: string
+                example: "att"
+          example: [{ key: "line", value: "twilio" }]
         createdAt:
           type: string
           format: date-time
@@ -255,6 +268,17 @@ components:
         config:
           type: object
           additionalProperties: true
+        tags:
+          type: array
+          description: Hand-set key:value tags (e.g. line provider, ISP, link type). Each entry is either "key:value" or {key, value}.
+          items:
+            type: object
+            properties:
+              key:
+                type: string
+              value:
+                type: string
+          example: [{ key: "line", value: "twilio" }]
 
     EvalFlowUpdate:
       type: object
@@ -269,6 +293,16 @@ components:
         config:
           type: object
           additionalProperties: true
+        tags:
+          type: array
+          description: Hand-set key:value tags. Omit to leave the stored tags unchanged.
+          items:
+            type: object
+            properties:
+              key:
+                type: string
+              value:
+                type: string
 
     EvalSet:
       type: object
