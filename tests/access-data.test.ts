@@ -15,9 +15,11 @@ import {
   createAccessData,
   loadAccessDataFromDir,
   ACCESS_FILES,
+  v4CoverageShare,
 } from "../server/access-data";
 import {
   refreshAccessData, ACCESS_SOURCES, accessDataNeedsRefresh, accessRetryDelayMs, scheduleAccessRetry, type AccessSource,
+  downloadAccessFile, MAX_VPN_V4_SHARE, MAX_DATACENTER_V4_SHARE,
 } from "../server/access-data-refresh";
 
 const FIX = path.join(__dirname, "fixtures/access");
@@ -57,6 +59,49 @@ describe("parseCidrList (X4BNet lists_vpn format)", () => {
   it("an HTML error page parses to zero ranges", () => {
     const parsed = parseCidrList("<html><body>404: Not Found</body></html>\n");
     expect(parsed.v4.length + parsed.v6.length).toBe(0);
+  });
+});
+
+// A `0.0.0.0/0` (or /1) line in the VPN list would mark every IP vpn →
+// anonymized → every region cleared. No real range is wider than /9 (v4) or
+// /24 (v6) in today's data; anything wider than /8 or /16 is dropped.
+describe("over-broad ranges are dropped as invalid", () => {
+  it("IPv4 prefixes shorter than /8 are invalid; /8 itself is kept", () => {
+    const parsed = parseCidrList("0.0.0.0/0\n128.0.0.0/1\n10.0.0.0/7\n44.0.0.0/8\n203.0.113.0/24\n");
+    expect(parsed.invalid).toBe(3);
+    const set = IpRangeSet.fromParsed([parsed]);
+    expect(set.has("8.8.8.8")).toBe(false);
+    expect(set.has("200.1.2.3")).toBe(false);
+    expect(set.has("44.200.0.1")).toBe(true);
+    expect(set.has("203.0.113.9")).toBe(true);
+  });
+  it("IPv6 prefixes shorter than /16 are invalid; /16 itself is kept", () => {
+    const parsed = parseCidrList("::/0\n2000::/3\n2a00::/15\n2a0d::/16\n");
+    expect(parsed.invalid).toBe(3);
+    const set = IpRangeSet.fromParsed([parsed]);
+    expect(set.has("2601:646::1")).toBe(false);
+    expect(set.has("2a0d:1::1")).toBe(true);
+  });
+  it("an ipcat row wider than a /8 is invalid", () => {
+    const parsed = parseIpcatCsv("0.0.0.0,255.255.255.255,Everything,x\n3.0.0.0,3.255.255.255,AWS,x\n");
+    expect(parsed.invalid).toBe(1);
+    expect(parsed.v4).toEqual([[0x03000000, 0x03ffffff]]);
+  });
+  it("a VPN list carrying 0.0.0.0/0 does not mark an ordinary address vpn", async () => {
+    const dir = await fsp.mkdtemp(path.join(tmpdir(), "access-broad-"));
+    await fsp.writeFile(path.join(dir, ACCESS_FILES.vpnV4), "0.0.0.0/0\n198.18.0.0/15\n");
+    await fsp.writeFile(path.join(dir, ACCESS_FILES.vpnV6), "::/0\n2a0d:5600::/29\n");
+    const data = await loadAccessDataFromDir(dir);
+    expect(data.isVpnIp("73.15.20.1")).toBe(false);
+    expect(data.isVpnIp("2601:646::1")).toBe(false);
+    expect(data.isVpnIp("198.19.0.1")).toBe(true);
+  });
+});
+
+describe("v4CoverageShare", () => {
+  it("is the merged share of the IPv4 space, overlaps counted once", () => {
+    expect(v4CoverageShare(parseCidrList("10.0.0.0/8\n10.1.0.0/16\n11.0.0.0/8\n"))).toBeCloseTo(2 / 256, 10);
+    expect(v4CoverageShare(parseCidrList(""))).toBe(0);
   });
 });
 
@@ -337,6 +382,60 @@ describe("refreshAccessData", () => {
     expect(data.isVpnIp("2a0d:5600::1")).toBe(true);
   });
 
+  // Thirteen /8s = 5.08% of the IPv4 space; fifty-two = 20.3%.
+  const slash8s = (n: number, from = 1) => Array.from({ length: n }, (_, i) => `${from + i}.0.0.0/8`).join("\n") + "\n";
+
+  it("a VPN list covering more than its ceiling (5%) is refused and the previous copy kept", async () => {
+    failing = new Set();
+    const dir = await freshDir();
+    await refreshAccessData({ dir, sources: sources(), now: new Date("2026-10-22T00:00:00Z") });
+    routes["/vpn4-broad"] = slash8s(13, 60);
+    try {
+      const broad = sources().map((s) => (s.id === "vpn-ipv4" ? { ...s, url: `${base}/vpn4-broad` } : s));
+      const result = await refreshAccessData({ dir, sources: broad, now: new Date("2026-10-29T00:00:00Z") });
+      expect(MAX_VPN_V4_SHARE).toBe(0.05);
+      expect(result.sources["vpn-ipv4"]?.ok).toBe(false);
+      expect(result.sources["vpn-ipv4"]?.error).toMatch(/5\.1% of the IPv4 space, above the 5% ceiling/);
+      const data = await loadAccessDataFromDir(dir);
+      expect(data.isVpnIp("65.1.2.3")).toBe(false); // the broad list never landed
+      expect(data.isVpnIp("198.19.0.1")).toBe(true); // the old copy still answers
+    } finally {
+      delete routes["/vpn4-broad"];
+    }
+  });
+
+  it("a VPN list just under its ceiling is accepted", async () => {
+    failing = new Set();
+    const dir = await freshDir();
+    routes["/vpn4-12"] = slash8s(12, 60); // 4.7%
+    try {
+      const ok = sources().map((s) => (s.id === "vpn-ipv4" ? { ...s, url: `${base}/vpn4-12` } : s));
+      const result = await refreshAccessData({ dir, sources: ok, now: new Date("2026-10-22T00:00:00Z") });
+      expect(result.sources["vpn-ipv4"]?.ok).toBe(true);
+    } finally {
+      delete routes["/vpn4-12"];
+    }
+  });
+
+  it("a datacenter list (X4BNet or ipcat) covering more than 20% is refused", async () => {
+    failing = new Set();
+    const dir = await freshDir();
+    routes["/dc4-broad"] = slash8s(52, 100);
+    routes["/ipcat-broad"] = Array.from({ length: 52 }, (_, i) => `${100 + i}.0.0.0,${100 + i}.255.255.255,X,x`).join("\n") + "\n";
+    try {
+      const broad = sources().map((s) => (s.id === "datacenter-ipv4" ? { ...s, url: `${base}/dc4-broad` }
+        : s.id === "ipcat" ? { ...s, url: `${base}/ipcat-broad` } : s));
+      const result = await refreshAccessData({ dir, sources: broad, now: new Date("2026-10-22T00:00:00Z") });
+      expect(MAX_DATACENTER_V4_SHARE).toBe(0.2);
+      expect(result.sources["datacenter-ipv4"]?.ok).toBe(false);
+      expect(result.sources["ipcat"]?.ok).toBe(false);
+      expect(result.sources["datacenter-ipv4"]?.error).toMatch(/above the 20% ceiling/);
+    } finally {
+      delete routes["/dc4-broad"];
+      delete routes["/ipcat-broad"];
+    }
+  });
+
   it("with no copy on disk and every download failing, nothing loads and nothing throws", async () => {
     failing = new Set(Object.keys(routes));
     const dir = await freshDir();
@@ -410,5 +509,36 @@ describe("startup retry until the VPN/datacenter lists load", () => {
     while (pending.length) await pending.shift()!();
     expect(attempts).toBe(2);
     expect(delays.length).toBe(2);
+  });
+});
+
+describe("downloadAccessFile byte cap", () => {
+  let server: Server;
+  let base = "";
+  beforeAll(async () => {
+    server = createServer((req, res) => {
+      if (req.url === "/declared") { res.writeHead(200, { "Content-Length": "5000" }); res.end("x".repeat(5000)); return; }
+      if (req.url === "/chunked") {
+        // No Content-Length: the cap must hold while streaming.
+        res.writeHead(200);
+        for (let i = 0; i < 10; i++) res.write("y".repeat(500));
+        res.end();
+        return;
+      }
+      res.writeHead(200); res.end("1.2.3.0/24\n");
+    });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
+    base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  });
+  afterAll(() => new Promise<void>((r) => server.close(() => r())));
+
+  it("a declared Content-Length above the cap is refused before reading", async () => {
+    await expect(downloadAccessFile(`${base}/declared`, { maxBytes: 1000 })).rejects.toThrow(/5000 bytes, above the 1000-byte cap/);
+  });
+  it("a body without Content-Length is cut off once it passes the cap", async () => {
+    await expect(downloadAccessFile(`${base}/chunked`, { maxBytes: 1000 })).rejects.toThrow(/passed the 1000-byte cap/);
+  });
+  it("a body under the cap is returned whole", async () => {
+    expect((await downloadAccessFile(`${base}/small`, { maxBytes: 1000 })).toString()).toBe("1.2.3.0/24\n");
   });
 });

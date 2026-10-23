@@ -184,6 +184,16 @@ function merge<T extends number | bigint>(sorted: Array<[T, T]>, touches: (end: 
 
 // ==================== Parsers ====================
 
+/**
+ * The widest prefix a list line may carry. A `0.0.0.0/0`, `::/0` or /1 line
+ * in the VPN list would mark every IP vpn → anonymized → every region cleared
+ * and every site renumbered; no real provider range is that wide (the widest
+ * in the 2026-10-22 data: datacenter v4 /9, ipcat /10, datacenter v6 /24,
+ * VPN v4 /17, VPN v6 /29). Wider lines are dropped as invalid.
+ */
+export const MIN_V4_PREFIX = 8;
+export const MIN_V6_PREFIX = 16;
+
 /** X4BNet lists_vpn format: one CIDR (or bare address) per line, `#` comments. */
 export function parseCidrList(text: string): ParsedRanges {
   const out: ParsedRanges = { v4: [], v6: [], invalid: 0 };
@@ -197,7 +207,7 @@ export function parseCidrList(text: string): ParsedRanges {
     const v4 = ipv4ToInt(addr);
     if (v4 !== null) {
       const prefix = prefixText === null ? 32 : Number(prefixText);
-      if (prefix > 32) { out.invalid++; continue; }
+      if (prefix > 32 || prefix < MIN_V4_PREFIX) { out.invalid++; continue; }
       const hostBits = 32 - prefix;
       const size = 2 ** hostBits;
       const start = Math.floor(v4 / size) * size; // mask host bits
@@ -207,7 +217,7 @@ export function parseCidrList(text: string): ParsedRanges {
     const v6 = ipv6ToBigInt(addr);
     if (v6 !== null) {
       const prefix = prefixText === null ? 128 : Number(prefixText);
-      if (prefix > 128) { out.invalid++; continue; }
+      if (prefix > 128 || prefix < MIN_V6_PREFIX) { out.invalid++; continue; }
       const hostMask = (N_1 << BigInt(128 - prefix)) - N_1;
       const start = v6 & (MAX_V6 ^ hostMask);
       out.v6.push([start, start | hostMask]);
@@ -227,7 +237,8 @@ export function parseIpcatCsv(text: string): ParsedRanges {
     const [a, b] = line.split(",");
     const start = ipv4ToInt((a ?? "").trim());
     const end = ipv4ToInt((b ?? "").trim());
-    if (start === null || end === null || start > end) { out.invalid++; continue; }
+    // Wider than a /MIN_V4_PREFIX is as implausible here as in a CIDR list.
+    if (start === null || end === null || start > end || end - start >= 2 ** (32 - MIN_V4_PREFIX)) { out.invalid++; continue; }
     out.v4.push([start, end]);
   }
   return out;
@@ -296,6 +307,23 @@ export function parseMobileCarrierAsns(doc: unknown): Set<number> {
     if (/^\d+$/.test(key)) out.add(Number(key));
   }
   return out;
+}
+
+/** Share (0–1) of the whole IPv4 space the ranges cover, overlaps counted once. */
+export function v4CoverageShare(parsed: ParsedRanges): number {
+  const sorted = parsed.v4.slice().sort((a, b) => a[0] - b[0]);
+  let total = 0;
+  let cur: [number, number] | null = null;
+  for (const [s, e] of sorted) {
+    if (cur && s <= cur[1] + 1) {
+      if (e > cur[1]) cur[1] = e;
+    } else {
+      if (cur) total += cur[1] - cur[0] + 1;
+      cur = [s, e];
+    }
+  }
+  if (cur) total += cur[1] - cur[0] + 1;
+  return total / 2 ** 32;
 }
 
 // ==================== AccessData ====================
