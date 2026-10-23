@@ -292,21 +292,26 @@ host_public_ip_on_iface() {
         return 0
     fi
     [ -z "$out" ] && return 0
-    if host_addr_is_public "$out"; then
-        echo true
-    else
-        echo false
-    fi
+    # IPv6-only (no IPv4 on the interface): undetermined, nothing echoed.
+    local rc=0
+    host_addr_is_public "$out" || rc=$?
+    case "$rc" in
+        0) echo true ;;
+        1) echo false ;;
+    esac
+    return 0
 }
 
 # Exit 0 if $1 (ip/ifconfig output for one interface) holds at least one
-# public IPv4 or global IPv6 address — mirrors isPublicIPv4/isPublicIPv6 in
-# vox_eval_agentd/net-signals.ts (RFC1918/CGNAT/link-local/loopback excluded
-# for v4; link-local/unique-local/loopback excluded for v6, 2000::/3 = global
-# unicast).
+# public IPv4 address, 1 if it has IPv4 but none public, 2 if it has no IPv4
+# at all — mirrors hasPublicAddress in vox_eval_agentd/net-signals.ts
+# (RFC1918/CGNAT/link-local/loopback excluded). IPv6 is deliberately ignored:
+# dual-stack home ISPs and IPv6 mobile hotspots give every device a global
+# 2000::/3 address, so it says nothing about a home router.
 host_addr_is_public() {
-    local line a b first
+    local line a b seen=""
     for line in $(echo "$1" | grep -oE 'inet [0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | awk '{print $2}'); do
+        seen=1
         a=${line%%.*}
         b=$(echo "$line" | cut -d. -f2)
         case "$a" in 10|127) continue ;; esac
@@ -316,18 +321,8 @@ host_addr_is_public() {
         [ "$a" = "169" ] && [ "$b" = "254" ] && continue
         return 0
     done
-    for line in $(echo "$1" | grep -oE 'inet6 [0-9a-fA-F:]+' | awk '{print $2}' | cut -d% -f1); do
-        [ "$line" = "::1" ] && continue
-        first=$(echo "$line" | cut -d: -f1 | tr 'A-F' 'a-f')
-        case "$first" in
-            fe8*|fe9*|fea*|feb*) continue ;;
-            fc*|fd*) continue ;;
-        esac
-        case "$first" in
-            2???|3???) return 0 ;;
-        esac
-    done
-    return 1
+    [ -n "$seen" ] && return 1
+    return 2
 }
 
 # The DialF socket a running container was started with (its VOX_DIALF_SOCKET), or nothing.

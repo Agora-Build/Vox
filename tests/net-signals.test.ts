@@ -25,55 +25,93 @@ import {
 // Cloud metadata
 // ---------------------------------------------------------------------------
 
-/** A fake fetch keyed by URL: "ok" → status 200, "unauthorized" → status 401
- *  (still an answer — AWS IMDSv1 without a token), "timeout"/absent → throws
- *  (simulating a real timeout/connection failure without any real wait). */
-function fakeFetch(outcomes: Record<string, "ok" | "unauthorized" | "timeout">): FetchLike {
-  return async (url) => {
-    const outcome = outcomes[url] ?? "timeout";
-    if (outcome === "ok") return { status: 200 };
-    if (outcome === "unauthorized") return { status: 401 };
-    throw new Error("timed out");
+type Answer = { status: number; headers?: Record<string, string>; body?: string } | "timeout";
+
+/** A response-shaped object, as the probes read it (status, headers, text()). */
+function respond(a: Exclude<Answer, "timeout">) {
+  const headers = Object.fromEntries(Object.entries(a.headers ?? {}).map(([k, v]) => [k.toLowerCase(), v]));
+  return { status: a.status, headers: { get: (n: string) => headers[n.toLowerCase()] ?? null }, text: async () => a.body ?? "" };
+}
+
+/** A fake fetch keyed by "METHOD URL" (GET when no method); absent/"timeout" →
+ *  throws, simulating a timeout/connection failure without any real wait.
+ *  Records each call's init so tests can check what was sent. */
+function fakeFetch(answers: Record<string, Answer>, calls: Array<{ key: string; init: Parameters<FetchLike>[1] }> = []): FetchLike {
+  return async (url, init) => {
+    const key = `${init.method ?? "GET"} ${url}`;
+    calls.push({ key, init });
+    const a = answers[key] ?? "timeout";
+    if (a === "timeout") throw new Error("timed out");
+    return respond(a);
   };
 }
 
-const AWS_URL = "http://169.254.169.254/latest/meta-data/";
-const AZURE_URL = "http://169.254.169.254/metadata/instance?api-version=2021-02-01";
-const GCP_URL = "http://metadata.google.internal/computeMetadata/v1/";
+const AWS_TOKEN = "PUT http://169.254.169.254/latest/api/token";
+const AWS_META = "GET http://169.254.169.254/latest/meta-data/";
+const AZURE = "GET http://169.254.169.254/metadata/instance?api-version=2021-02-01";
+const GCP = "GET http://metadata.google.internal/computeMetadata/v1/";
+const ALL = [AWS_TOKEN, AWS_META, AZURE, GCP];
+const everyProbe = (a: Answer) => Object.fromEntries(ALL.map((k) => [k, a]));
+const probe = (answers: Record<string, Answer>) => probeCloudMetadata({ fetch: fakeFetch(answers), now: () => 0 });
 
-describe("probeCloudMetadata", () => {
-  it("AWS answers 200 → true", async () => {
-    const result = await probeCloudMetadata({ fetch: fakeFetch({ [AWS_URL]: "ok" }), now: () => 0 });
-    expect(result).toBe(true);
+describe("probeCloudMetadata — only a provider's signature counts", () => {
+  it("AWS IMDSv2: the token PUT answered 200 with a token → true, with the TTL header sent", async () => {
+    const calls: Array<{ key: string; init: Parameters<FetchLike>[1] }> = [];
+    const fetch = fakeFetch({ [AWS_TOKEN]: { status: 200, body: "AQAEAHnEXAMPLEtoken_abc123-xyz==" } }, calls);
+    expect(await probeCloudMetadata({ fetch, now: () => 0 })).toBe(true);
+    expect(calls.find((c) => c.key === AWS_TOKEN)?.init.headers).toEqual({ "X-aws-ec2-metadata-token-ttl-seconds": "21600" });
   });
 
-  it("AWS answers 401 (IMDSv1 without a token) → still true: a metadata service answered", async () => {
-    const result = await probeCloudMetadata({ fetch: fakeFetch({ [AWS_URL]: "unauthorized" }), now: () => 0 });
-    expect(result).toBe(true);
+  it("AWS IMDSv1: a meta-data listing naming instance-id → true", async () => {
+    expect(await probe({ [AWS_META]: { status: 200, body: "ami-id\nhostname\ninstance-id\nlocal-ipv4\n" } })).toBe(true);
   });
 
-  it("Azure answers → true", async () => {
-    const result = await probeCloudMetadata({ fetch: fakeFetch({ [AZURE_URL]: "ok" }), now: () => 0 });
-    expect(result).toBe(true);
+  it("AWS 401 alone (no token, no listing) is no longer enough → false", async () => {
+    expect(await probe({ [AWS_TOKEN]: { status: 401 }, [AWS_META]: { status: 401 } })).toBe(false);
   });
 
-  it("GCP answers → true", async () => {
-    const result = await probeCloudMetadata({ fetch: fakeFetch({ [GCP_URL]: "ok" }), now: () => 0 });
-    expect(result).toBe(true);
+  it("Azure: 200 with a compute object → true", async () => {
+    expect(await probe({ [AZURE]: { status: 200, body: JSON.stringify({ compute: { vmId: "x" }, network: {} }) } })).toBe(true);
   });
 
-  it("all three fail/time out → false", async () => {
-    const result = await probeCloudMetadata({ fetch: fakeFetch({}), now: () => 0 });
-    expect(result).toBe(false);
+  it("Azure: 200 JSON without compute → false", async () => {
+    expect(await probe({ [AZURE]: { status: 200, body: JSON.stringify({ ok: true }) } })).toBe(false);
+  });
+
+  it("GCP: 200 with Metadata-Flavor: Google → true", async () => {
+    expect(await probe({ [GCP]: { status: 200, headers: { "Metadata-Flavor": "Google" }, body: "instance/\nproject/\n" } })).toBe(true);
+  });
+
+  it("GCP: 200 without the Metadata-Flavor header → false", async () => {
+    expect(await probe({ [GCP]: { status: 200, body: "instance/\nproject/\n" } })).toBe(false);
+  });
+
+  it("a transparent proxy answering every URL 200 with an HTML page → false", async () => {
+    expect(await probe(everyProbe({ status: 200, headers: { "Content-Type": "text/html" }, body: "<!doctype html><html><body>Blocked by policy</body></html>" }))).toBe(false);
+  });
+
+  it("a captive portal answering every URL 302 → false, and redirects are never followed", async () => {
+    const calls: Array<{ key: string; init: Parameters<FetchLike>[1] }> = [];
+    const fetch = fakeFetch(everyProbe({ status: 302, headers: { Location: "http://portal.example/login" } }), calls);
+    expect(await probeCloudMetadata({ fetch, now: () => 0 })).toBe(false);
+    expect(calls.every((c) => c.init.redirect === "manual")).toBe(true);
+  });
+
+  it("an NXDOMAIN-hijacking ISP's search page (200, HTML) on the GCP name → false", async () => {
+    expect(await probe({ [GCP]: { status: 200, body: "<html>Did you mean metadata.google.com?</html>" } })).toBe(false);
+  });
+
+  it("all probes fail/time out → false", async () => {
+    expect(await probe({})).toBe(false);
   });
 });
 
 describe("CloudMetadataCache", () => {
   it("caches a positive result for 10 minutes — the second call within the window never calls fetch again", async () => {
     let calls = 0;
-    const fetch: FetchLike = async (url) => {
+    const fetch: FetchLike = async (url, init) => {
       calls++;
-      return url === AWS_URL ? { status: 200 } : (() => { throw new Error("timeout"); })();
+      return `${init.method ?? "GET"} ${url}` === AWS_META ? respond({ status: 200, body: "instance-id\n" }) : (() => { throw new Error("timeout"); })();
     };
     let now = 0;
     const cache = new CloudMetadataCache();
@@ -89,9 +127,9 @@ describe("CloudMetadataCache", () => {
 
   it("re-probes once the 10-minute cache expires", async () => {
     let calls = 0;
-    const fetch: FetchLike = async (url) => {
+    const fetch: FetchLike = async (url, init) => {
       calls++;
-      return url === AWS_URL ? { status: 200 } : (() => { throw new Error("timeout"); })();
+      return `${init.method ?? "GET"} ${url}` === AWS_META ? respond({ status: 200, body: "instance-id\n" }) : (() => { throw new Error("timeout"); })();
     };
     let now = 0;
     const cache = new CloudMetadataCache();
@@ -261,7 +299,27 @@ describe("detectPublicIpOnInterface — linux address classification", () => {
     expect(result).toBe(false);
   });
 
-  it("global IPv6 (2000::/3) → true", () => {
+  // IPv6 says nothing about a home router: dual-stack home ISPs and IPv6
+  // mobile hotspots give every device a global 2000::/3 address.
+  it("home dual-stack: RFC1918 IPv4 + global IPv6 → false (only IPv4 counts)", () => {
+    makeIfaceWithDevice("eth0");
+    const result = detectPublicIpOnInterface(
+      deps({
+        exec: execFake({
+          ...ROUTE,
+          "ip -o addr show dev eth0": [
+            `2: eth0    inet 192.168.1.5/24 brd 192.168.1.255 scope global dynamic eth0`,
+            `2: eth0    inet6 2601:646:8a00:1f0::5/128 scope global dynamic`,
+            `2: eth0    inet6 2601:646:8a00:1f0:1c2b:3dff:fe4e:5f60/64 scope global dynamic mngtmpaddr`,
+            `2: eth0    inet6 fe80::1c2b:3dff:fe4e:5f60/64 scope link`,
+          ].join("\n"),
+        }),
+      })
+    );
+    expect(result).toBe(false);
+  });
+
+  it("IPv6-only host (global IPv6, no IPv4 at all) → undefined: nothing to judge by, so no claim either way", () => {
     makeIfaceWithDevice("eth0");
     const result = detectPublicIpOnInterface(
       deps({
@@ -271,10 +329,23 @@ describe("detectPublicIpOnInterface — linux address classification", () => {
         }),
       })
     );
-    expect(result).toBe(true);
+    expect(result).toBeUndefined();
   });
 
-  it("link-local IPv6 (fe80::/10) only → false", () => {
+  it("macOS dual-stack (ifconfig): private IPv4 + global IPv6 → false", () => {
+    const result = detectPublicIpOnInterface(
+      deps({
+        platform: "darwin",
+        exec: execFake({
+          "route -n get default": "   route to: default\n  gateway: 192.168.1.1\n  interface: en0\n",
+          "ifconfig en0": "en0: flags=8863<UP>\n\tinet6 2600:1700:abcd::12 prefixlen 64 autoconf secured\n\tinet 192.168.1.20 netmask 0xffffff00 broadcast 192.168.1.255\n",
+        }),
+      })
+    );
+    expect(result).toBe(false);
+  });
+
+  it("link-local IPv6 (fe80::/10) only → undefined (no IPv4 to judge by)", () => {
     makeIfaceWithDevice("eth0");
     const result = detectPublicIpOnInterface(
       deps({
@@ -284,7 +355,7 @@ describe("detectPublicIpOnInterface — linux address classification", () => {
         }),
       })
     );
-    expect(result).toBe(false);
+    expect(result).toBeUndefined();
   });
 
   it("RFC1918 10.x.x.x and 172.16-31.x.x both read as private", () => {

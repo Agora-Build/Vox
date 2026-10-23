@@ -194,6 +194,26 @@ describe("VOX_PUBLIC_IP_ON_IFACE (network tags part 2 — host interface detecti
     expect(r.calls.find((c) => c.startsWith("docker run"))).not.toContain("VOX_PUBLIC_IP_ON_IFACE");
   });
 
+  // The script's own address classifier, run on its own (extracted from the
+  // real script): only IPv4 counts. Dual-stack homes and IPv6 hotspots hold
+  // global 2000::/3 addresses, which say nothing about a home router.
+  const classify = (out: string) => {
+    const fn = fs.readFileSync(SCRIPT, "utf8").match(/^host_addr_is_public\(\) \{[\s\S]*?^\}/m)?.[0];
+    expect(fn).toBeTruthy();
+    return spawnSync("bash", ["-c", `${fn}\nhost_addr_is_public "$1"`, "_", out], { encoding: "utf8" }).status;
+  };
+  it("host_addr_is_public: public IPv4 → 0, private/CGNAT IPv4 → 1", () => {
+    expect(classify("2: eth0    inet 203.0.113.5/24 scope global eth0")).toBe(0);
+    expect(classify("2: eth0    inet 192.168.1.5/24 scope global eth0")).toBe(1);
+    expect(classify("2: eth0    inet 100.90.1.5/10 scope global eth0")).toBe(1);
+  });
+  it("host_addr_is_public: home dual-stack (RFC1918 v4 + global v6) → 1, not public", () => {
+    expect(classify("2: eth0    inet 192.168.1.5/24 scope global eth0\n2: eth0    inet6 2601:646:8a00:1f0::5/128 scope global dynamic")).toBe(1);
+  });
+  it("host_addr_is_public: IPv6-only host → 2 (undetermined), so nothing is forwarded", () => {
+    expect(classify("2: eth0    inet6 2001:db8::1/64 scope global")).toBe(2);
+  });
+
   it("not forwarded to vox-clash-runner (it doesn't report network tags)", () => {
     const r = upgrade({ RUNNING_ID: "abc", RUNNING_IMAGE: "sha-old", LATEST_IMAGE: "sha-new", VOX_PUBLIC_IP_ON_IFACE: "true" }, { runner: true });
     expect(r.calls.find((c) => c.startsWith("docker run"))).not.toContain("VOX_PUBLIC_IP_ON_IFACE");

@@ -7,11 +7,13 @@
  * Two independent signals, both only ever able to push Core's classifier
  * AWAY from "lastmile" (server/access-class.ts):
  * - `cloudMetadata`: true if a cloud provider's instance-metadata service
- *   answers at all — even a 401 (AWS IMDSv1 without a token) still proves a
- *   metadata service is there to answer.
+ *   answers WITH ITS SIGNATURE (AWS IMDSv2 token / meta-data listing, Azure
+ *   `compute` JSON, GCP `Metadata-Flavor: Google`) — never merely "something
+ *   answered", which a proxy or captive portal also does.
  * - `publicIpOnInterface`: true if the default-route interface itself holds
- *   a public (non-private) address — a NAT'd lastmile host never sees this,
- *   a server with a routable IP directly on the NIC does.
+ *   a public IPv4 address — a NAT'd lastmile host never sees this, a server
+ *   with a routable IP directly on the NIC does. IPv6 is ignored (see
+ *   hasPublicAddress).
  *
  * Injectable (fetch/env/platform/sysRoot/exec/clock) so detection never
  * touches the real network or filesystem in tests — same shape as
@@ -40,12 +42,19 @@ export interface NetSignals {
 // Cloud metadata
 // ---------------------------------------------------------------------------
 
+/** The slice of a fetch Response the probes read (global `fetch` satisfies it). */
+export interface ProbeResponse {
+  status: number;
+  headers: { get(name: string): string | null };
+  text(): Promise<string>;
+}
+
 /** Fetch-shaped: real usage passes global `fetch`; tests pass a fake that
  *  resolves/rejects per probe without any real network or timer wait. */
 export type FetchLike = (
   url: string,
-  init: { headers?: Record<string, string>; signal?: AbortSignal }
-) => Promise<{ status: number }>;
+  init: { method?: string; headers?: Record<string, string>; signal?: AbortSignal; redirect?: "manual" }
+) => Promise<ProbeResponse>;
 
 export interface CloudMetadataDeps {
   fetch: FetchLike;
@@ -54,28 +63,74 @@ export interface CloudMetadataDeps {
 }
 
 const PROBE_TIMEOUT_MS = 500;
+/** Bodies are read only to check a provider signature; nothing real is longer. */
+const MAX_PROBE_BODY = 64 * 1024;
 export const CLOUD_METADATA_CACHE_MS = 10 * 60 * 1000;
 
 interface CloudMetadataProbeSpec {
   url: string;
+  method?: string;
   headers?: Record<string, string>;
+  /** True only when the answer carries the provider's own signature. */
+  accept: (res: ProbeResponse, body: () => Promise<string>) => Promise<boolean>;
 }
 
-// AWS IMDSv1 may 401 (token required under IMDSv2) — a 401 still proves a
-// metadata service answered, so only a thrown error (timeout, connection
-// refused, DNS failure) counts as "no answer" for any of these three.
+// "Something answered" is NOT proof: a transparent proxy, a captive portal or
+// an ISP that hijacks NXDOMAIN answers these URLs too (200 HTML, 302 to a
+// login page), and would mark an office or home agent datacenter. Each probe
+// therefore requires what only the real metadata service sends:
+//   - AWS: IMDSv2 — a PUT for a session token answered 200 with a bare token,
+//     or (IMDSv1 hosts) a meta-data listing that names `instance-id`;
+//   - Azure: 200 with a JSON document that has a `compute` object;
+//   - GCP: the `Metadata-Flavor: Google` response header.
+const AWS_TOKEN_RE = /^[A-Za-z0-9_+/=-]{16,512}$/;
 const CLOUD_METADATA_PROBES: readonly CloudMetadataProbeSpec[] = [
-  { url: "http://169.254.169.254/latest/meta-data/" }, // AWS
-  { url: "http://169.254.169.254/metadata/instance?api-version=2021-02-01", headers: { Metadata: "true" } }, // Azure
-  { url: "http://metadata.google.internal/computeMetadata/v1/", headers: { "Metadata-Flavor": "Google" } }, // GCP
+  {
+    url: "http://169.254.169.254/latest/api/token", // AWS IMDSv2
+    method: "PUT",
+    headers: { "X-aws-ec2-metadata-token-ttl-seconds": "21600" },
+    accept: async (res, body) => res.status === 200 && AWS_TOKEN_RE.test((await body()).trim()),
+  },
+  {
+    url: "http://169.254.169.254/latest/meta-data/", // AWS IMDSv1
+    accept: async (res, body) => res.status === 200 && /^instance-id$/m.test(await body()),
+  },
+  {
+    url: "http://169.254.169.254/metadata/instance?api-version=2021-02-01", // Azure
+    headers: { Metadata: "true" },
+    accept: async (res, body) => {
+      if (res.status !== 200) return false;
+      try {
+        const doc = JSON.parse(await body()) as { compute?: unknown };
+        return typeof doc?.compute === "object" && doc.compute !== null;
+      } catch {
+        return false;
+      }
+    },
+  },
+  {
+    url: "http://metadata.google.internal/computeMetadata/v1/", // GCP
+    headers: { "Metadata-Flavor": "Google" },
+    accept: async (res) => res.status === 200 && res.headers.get("metadata-flavor") === "Google",
+  },
 ];
 
 async function probeOnce(fetchFn: FetchLike, probe: CloudMetadataProbeSpec): Promise<boolean> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), PROBE_TIMEOUT_MS);
   try {
-    const res = await fetchFn(probe.url, { headers: probe.headers, signal: controller.signal });
-    return typeof res.status === "number";
+    // Never follow a redirect: a metadata service doesn't send one, a captive
+    // portal does (302 → its login page).
+    const res = await fetchFn(probe.url, { method: probe.method, headers: probe.headers, signal: controller.signal, redirect: "manual" });
+    let read = false;
+    const body = async () => { read = true; return (await res.text()).slice(0, MAX_PROBE_BODY); };
+    try {
+      return await probe.accept(res, body);
+    } finally {
+      // Consume an unread body so the connection is released (the abort
+      // timer, still armed here, bounds it).
+      if (!read) await res.text().catch(() => "");
+    }
   } catch {
     return false;
   } finally {
@@ -83,8 +138,9 @@ async function probeOnce(fetchFn: FetchLike, probe: CloudMetadataProbeSpec): Pro
   }
 }
 
-/** One pass over all three cloud-metadata probes, uncached. Any of the three
- *  answering (status code, including 401) → true; all failing/timing out → false. */
+/** One pass over the cloud-metadata probes, uncached: true only when one
+ *  answers with its provider's signature; anything else (no answer, an error,
+ *  a proxy's or captive portal's page) → false. */
 export async function probeCloudMetadata(deps: CloudMetadataDeps): Promise<boolean> {
   const results = await Promise.all(CLOUD_METADATA_PROBES.map((probe) => probeOnce(deps.fetch, probe)));
   return results.some(Boolean);
@@ -152,20 +208,18 @@ function isPublicIPv4(ip: string): boolean {
   return true;
 }
 
-function isPublicIPv6(ip: string): boolean {
-  const normalized = ip.toLowerCase();
-  if (normalized === "::1") return false; // loopback
-  if (/^fe[89ab][0-9a-f]:/.test(normalized)) return false; // link-local, fe80::/10
-  if (/^f[cd][0-9a-f]{2}:/.test(normalized)) return false; // unique local, fc00::/7
-  const firstHextet = parseInt(normalized.split(":")[0] || "", 16);
-  if (Number.isNaN(firstHextet)) return false;
-  return firstHextet >= 0x2000 && firstHextet <= 0x3fff; // global unicast, 2000::/3
-}
-
-function hasPublicAddress(out: string): boolean {
+/**
+ * IPv4 only. A global IPv6 address on the NIC says nothing about a home
+ * router: dual-stack home ISPs (Comcast, AT&T, Spectrum, Fios…) and IPv6
+ * mobile hotspots hand every device a global 2000::/3 address, so counting v6
+ * would stop every such lastmile host from ever earning lastmile.
+ * No IPv4 address at all (an IPv6-only host) → undefined: nothing to judge by,
+ * and "false" would claim a NAT we can't see either.
+ */
+function hasPublicAddress(out: string): boolean | undefined {
   const v4 = [...out.matchAll(/\binet\s+(\d+\.\d+\.\d+\.\d+)/g)].map((m) => m[1]);
-  const v6 = [...out.matchAll(/\binet6\s+([0-9a-fA-F:]+)/g)].map((m) => m[1].split("%")[0]);
-  return v4.some(isPublicIPv4) || v6.some(isPublicIPv6);
+  if (v4.length === 0) return undefined;
+  return v4.some(isPublicIPv4);
 }
 
 function detectLinuxPublicIp(deps: PublicIpDeps): boolean | undefined {
