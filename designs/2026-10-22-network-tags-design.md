@@ -239,16 +239,16 @@ serves homes, offices and colocation on one network number.
 
 | Signal | Measured by | Pushes toward |
 |---|---|---|
-| Tor exit or `vpn` ASN (existing) | Core | `unknown` — the real path is hidden |
-| Agent IP inside a **datacenter IP range** (public hosting/cloud range lists, by range not only ASN — catches an access ISP's colo ranges when listed), or an existing `hosting` ASN | Core | `datacenter` |
-| **PeeringDB network type** of the ASN: Content / Hosting | Core | `datacenter` |
+| Tor exit or an IP in the **VPN range list** (X4BNet) | Core | `unknown` — the real path is hidden |
+| Agent IP inside a **datacenter IP range** (X4BNet + ipcat hosting/cloud range lists, by range not ASN — catches an access ISP's colo ranges when listed) | Core | `datacenter` |
+| **PeeringDB network type** of the ASN: Content (only when an operator supplies a PeeringDB export — its AUP rules out downloading one) | Core | `datacenter` |
 | PeeringDB type Cable/DSL/ISP (access network) | Core | `lastmile` evidence (describes the network, not the line — never enough alone) |
 | **APNIC end-user estimates** per ASN (free, labs.apnic.net): a large share of end users and no server presence → access network | Core | `lastmile` evidence (the stronger access-network signal) |
 | **Mobile carrier ASN** (APNIC/PeeringDB + a curated list: T-Mobile, Verizon Wireless, AT&T Mobility, …) — carrier-NAT IPs carry no servers | Core | `lastmile` on its own |
 | **Reverse DNS** of the IP matches a residential/access pattern (`lightspeed`, `res.`, `pool-`, `cpe-`, `dsl`, `cable`, `dyn`, `fios`, `broadband`, …) | Core | `lastmile` evidence |
 | Reverse DNS matches a server/colo pattern (`static.…hosting`, `colo`, `vps`, `server`, `dedicated`, …) | Core | `datacenter` |
-| Agent: a **cloud metadata service** answers (169.254.169.254 / metadata.google.internal) | agent | `datacenter` |
-| Agent: public IP directly on the default interface (no home router) | agent / host | `unknown` (an office server may have one — not proof of a datacenter) |
+| Agent: a **cloud metadata service** answers *with its provider's signature* (AWS IMDSv2 token or an `instance-id` listing, Azure JSON with `compute`, GCP `Metadata-Flavor: Google`; redirects not followed) — a bare HTTP answer is not enough, since transparent proxies, captive portals and NXDOMAIN-hijacking ISPs answer too | agent | `datacenter` |
+| Agent: public **IPv4** directly on the default interface (no home router). IPv6 is ignored: dual-stack home ISPs and IPv6 hotspots give every device a global address; an IPv6-only interface reports nothing | agent / host | `unknown` (an office server may have one — not proof of a datacenter) |
 | Agent: link `wifi`/`cellular`, or a private home-router / carrier-NAT gateway | agent | consistent with last mile — never proof on its own |
 
 ### Location vs access — one pipeline, two answers
@@ -273,7 +273,7 @@ them apart. `access` is surfaced for analysis as a system-only detected tag.
 ### Decision rule (Core, in the location pipeline: `server/access-class.ts` called from `server/location.ts`)
 
 1. Tor / VPN → `unknown`.
-2. Any datacenter signal (range, hosting ASN, PeeringDB Content/Hosting, server-style rDNS, cloud metadata) → `datacenter`.
+2. Any datacenter signal (a datacenter IP range — X4BNet / ipcat; PeeringDB Content, only when an operator supplies the export; server-style rDNS; cloud metadata) → `datacenter`. (There is no hosting-ASN list any more — it was deleted with the downloaded data's arrival.)
 3. No datacenter signal, the agent reports nothing contrary (no public IP on the interface), **and either**
    - a **mobile carrier** ASN, **or**
    - **two independent Core signals**: an access network (APNIC end-user estimate or PeeringDB Cable/DSL/ISP) **and** a residential reverse-DNS name
@@ -298,6 +298,13 @@ traffic through a commercial residential proxy looks like a home connection whil
 the measured call still runs from the datacenter. Region trust has the same limit
 today; nothing Core sees from that IP can fully close it. A later step could
 cross-check the media path's source address where the target platform reports it.
+
+**Known limit — the moment after an IP change.** A heartbeat from a new IP starts
+the re-check fire-and-forget (a slow catalog write must not delay the beat), so a
+job claimed in that brief window — typically milliseconds, at most one rDNS
+timeout (1.5 s) plus a couple of row writes — freezes the access (and trust) the
+agent had for its *previous* IP. The next claim sees the new answer. Closing it
+would mean blocking the claim on rDNS, which the claim path deliberately never does.
 
 **Only Core can earn `lastmile`.** Agent signals can only push a result to
 `datacenter` or `unknown`, never to `lastmile` — so a modified agent can't dress a
@@ -325,9 +332,20 @@ direction is safe. Disagreement means `unknown`, never a guess.
   ipcat, PeeringDB bulk export and rate limits, APNIC) are checked before use and
   credited on the page like DB-IP. The hardcoded 19-ASN list
   (`server/data/asn-classification.json`) is **deleted**: hosting/datacenter and VPN
-  detection come only from the downloaded data. Until that data has loaded once,
-  location trust stays fail-closed exactly as today (`trusted`/`datacenter` capped to
-  `low_confidence`).
+  detection come only from the downloaded data. A list line wider than /8 (IPv4) or
+  /16 (IPv6) is dropped as invalid (a `0.0.0.0/0` in the VPN list would anonymize
+  everyone), and a refresh refuses a download covering more than 5% of the IPv4
+  space (VPN list; 0.07% today) or 20% (datacenter lists; 9.2% today) or larger
+  than 64 MB, keeping the previous copy.
+- Until that data has loaded once, a check that would have read `trusted`/`datacenter`
+  is **capped** — and a capped check writes nothing: not the region, not trust, not
+  access, not the check time. The stored answer stands (an agent that was Verified
+  stays Verified, and jobs claimed meanwhile freeze its last real answer), an agent
+  that never had one stays Unverified (fail closed), and because the check time
+  doesn't advance the next heartbeat re-checks, so the first beat after the data
+  loads classifies it. Likewise an access answer of `no-data` (public IP, data
+  unloaded) leaves the stored access and check time alone while unambiguous trust
+  outcomes (Tor, no geo) are still written.
 - The Agents page shows each agent's access class and reason (read-only).
 
 ### Analysis
@@ -368,6 +386,13 @@ Agents keep `isp`/`link` (correctable) + custom keys.
 - **Limit:** both inputs reach Core through the agent. A modified agent could report
   a different real number plus a matching operator; Core's lookup is of a real number
   so it can't invent a carrier, but it can't prove which SIM is in the phone.
+- **Spending:** for the same reason a token holder could make every heartbeat a paid
+  lookup of a fresh number. Core acts on `sim` only from agents whose current
+  capabilities include `phone`, allows one uncached lookup per agent per 24 h and
+  500 a day overall (`SIM_LOOKUPS_PER_DAY`); past a cap the answer is a
+  non-definitive `v1: rate-limited`, handled like `lookup-failed` (a stored answer
+  for the same number and code is kept; retried after 10 minutes). Cache hits are
+  free and never counted; a failed provider call is refunded.
 - Privacy: our number is stored redacted (last 4) on the agent; the full number lives
   only in the `number_lookups` cache key, as for `line`.
 

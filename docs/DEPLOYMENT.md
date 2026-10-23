@@ -210,7 +210,7 @@ plugin tests to avoid their existing CREATE DATABASE race.
 | *(no setting)* | **Client IP behind Cloudflare.** Vox takes the caller's address from Cloudflare's `CF-Connecting-IP` only when the request really came through Cloudflare — the local proxy (Traefik) saw cloudflared or a Cloudflare edge address, or Cloudflare's edge connected directly — so per-IP rate limits and agent region detection see the real caller however many proxies are in between. A caller who reaches Traefik or the app port directly is counted by its own address, whatever headers it sends. Still keep the app's published port (e.g. `5000:5000`) firewalled from the internet: nothing should bypass Cloudflare. | — |
 | `PUBLIC_API_RATE_LIMIT_PER_MINUTE` | Requests per minute per IP for **keyless** calls to the public `/api/v1` endpoints (metrics, providers). Calls with an API key aren't counted. | `12` |
 | `VOX_STORAGE_ALLOW_PRIVATE` | `"1"` lets Tools → Analyze use a storage endpoint on a private address (e.g. MinIO on localhost). Local development only. Never set in production: Core connects to the endpoint a user types, and this guard keeps that off Core's own network. | — |
-| *(no setting)* | **Twilio Lookup for the `line` network tag and the `sim` match.** No env var: an admin enters a Twilio Account SID + Auth Token on **Console → Regions**, stored encrypted in `systemConfig` like the MaxMind key. Without credentials, `line` is manual-only and `sim` is never set. With them, each phone eval flow's dialled number — and our own SIM's number, for `sim` — is looked up (~$0.008/number) when it changes, cached 30 days in `number_lookups` (shared across flows/owners — about one paid lookup per number per month). A number held in a secret is never sent; a failed lookup never blocks the save. Network tags ship as Core migration v58 (`0057_network_tags.sql`): `tags`/`line_lookup` on `eval_flows`, `tags`/`link_type` on `eval_agents`, the `number_lookups` cache table, and `tags` on `eval_jobs`. **Migration v59** (`0058_access_sim.sql`) adds `eval_agents.access_class`/`access_reason`/`access_checked_at`/`sim_carrier`/`sim_reason`/`sim_number_redacted` and `number_lookups.mcc`/`mnc`. **Migration v60** (`0059_agent_net_signals.sql`) adds `eval_agents.net_signals` jsonb for the agent-reported signals below. | — |
+| *(no setting)* | **Twilio Lookup for the `line` network tag and the `sim` match.** No env var: an admin enters a Twilio Account SID + Auth Token on **Console → Regions**, stored encrypted in `systemConfig` like the MaxMind key. Without credentials, `line` is manual-only and `sim` is never set. With them, each phone eval flow's dialled number — and our own SIM's number, for `sim` (phone-capable agents only; at most one uncached number per agent per day and 500 SIM lookups a day overall) — is looked up (~$0.008/number) when it changes, cached 30 days in `number_lookups` (shared across flows/owners — about one paid lookup per number per month). A number held in a secret is never sent; a failed lookup never blocks the save. Network tags ship as Core migration v58 (`0057_network_tags.sql`): `tags`/`line_lookup` on `eval_flows`, `tags`/`link_type` on `eval_agents`, the `number_lookups` cache table, and `tags` on `eval_jobs`. **Migration v59** (`0058_access_sim.sql`) adds `eval_agents.access_class`/`access_reason`/`access_checked_at`/`sim_carrier`/`sim_reason`/`sim_number_redacted` and `number_lookups.mcc`/`mnc`. **Migration v60** (`0059_agent_net_signals.sql`) adds `eval_agents.net_signals` jsonb for the agent-reported signals below. | — |
 
 GeoIP license attribution is separate from the curated Thanks page. The footer
 identifies the loaded source from the database header or legacy filename, using
@@ -241,15 +241,21 @@ GeoIP). There is no checked-in hosting/VPN ASN list — the old 19-ASN
 
 **Deploy-time behavior.** The first download happens at startup (any source
 missing or older than 7 days). Until the datacenter **and** VPN range lists
-have loaded at least once, access classification and location trust's
-`datacenter`/`trusted` results are **fail-closed** — capped to
-`low_confidence` — with retry at 15, 30, 60 minutes, then hourly, until they
-load. A fail-closed or capped check never clears an existing agent's region:
-a non-public agent simply can't *become* Verified until the data is in, but
-one that already is stays so (region, site and visibility untouched) through
-a fresh deploy or a transient download failure. Coolify's filesystem is
+have loaded at least once, a check that would read `datacenter`/`trusted`
+is **capped** (fail closed), with downloads retried at 15, 30, 60 minutes,
+then hourly, until they load. A capped check writes nothing — not the region,
+not location trust, not access, not the check time: a non-public agent simply
+can't *become* Verified until the data is in, but one that already is stays
+so (region, site, badge and the trust/access its claimed jobs freeze all
+untouched) through a fresh deploy or a transient download failure, and the
+first heartbeat after the data loads re-checks it. Coolify's filesystem is
 ephemeral, so this window recurs on every deploy unless `GEOIP_DB_DIR` is on
 a persistent volume.
+
+**Download validation.** A list line wider than /8 (IPv4) or /16 (IPv6) is
+dropped as invalid, and a refresh refuses — keeping the previous copy — a
+download larger than 64 MB or one covering more than 5% of the IPv4 space
+(VPN list; 0.07% in October 2026) or 20% (datacenter lists; 9.2%).
 
 **Known limit — residential proxies.** `access`/location trust both read the
 agent's `observed_ip`, which is the address of its *API calls to Core*, not
