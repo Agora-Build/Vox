@@ -233,7 +233,7 @@ export interface NumberAnswer {
   mnc: string | null;
   lookedUpAt: Date;
 }
-export type NumberLookupResult = NumberAnswer | { skipped: "not-configured" | "invalid-number" | "failed" };
+export type NumberLookupResult = NumberAnswer | { skipped: "not-configured" | "invalid-number" | "failed" | "rate-limited" };
 
 /**
  * Look one E.164 number up — cache-first (`number_lookups`, CACHE_MAX_AGE_MS),
@@ -244,7 +244,15 @@ export type NumberLookupResult = NumberAnswer | { skipped: "not-configured" | "i
  */
 export async function lookupNumber(
   e164: string,
-  opts: { provider?: NumberLookupProvider | null } = {},
+  opts: {
+    provider?: NumberLookupProvider | null;
+    /**
+     * Asked right before a PAID provider call (never for a cache hit); false
+     * → `{ skipped: "rate-limited" }` and no call. The SIM path uses it to
+     * cap what an agent's reports can spend (server/sim-carrier.ts).
+     */
+    allowProviderCall?: () => boolean;
+  } = {},
 ): Promise<NumberLookupResult> {
   try {
     const provider = opts.provider !== undefined ? opts.provider : await defaultLookupProvider();
@@ -254,6 +262,7 @@ export async function lookupNumber(
     if (cached && Date.now() - cached.lookedUpAt.getTime() < CACHE_MAX_AGE_MS) {
       return { carrierName: cached.carrierName, lineType: cached.lineType, value: cached.value, mcc: cached.mcc, mnc: cached.mnc, lookedUpAt: cached.lookedUpAt };
     }
+    if (opts.allowProviderCall && !opts.allowProviderCall()) return { skipped: "rate-limited" };
 
     const answer = await provider.lookup(e164);
     if (answer.kind === "invalid-number") return { skipped: "invalid-number" };
@@ -303,7 +312,8 @@ export async function lookupFlowLine(
   if ("skipped" in dialled) return dialled;
   const e164 = dialled.number;
   const answer = await lookupNumber(e164, opts);
-  if ("skipped" in answer) return answer;
+  // No gate is passed here, so "rate-limited" can't happen; mapped for the type.
+  if ("skipped" in answer) return answer.skipped === "rate-limited" ? { skipped: "failed" } : { skipped: answer.skipped };
   if (!answer.value) return { skipped: "no-carrier" };
   return {
     value: answer.value,

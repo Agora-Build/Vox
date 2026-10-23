@@ -4416,7 +4416,7 @@ export async function registerRoutes(
       { const ip = clientIp(req); if (ip) void storage.updateEvalAgentObservedIp(agent.id, ip); }
       // Our SIM (phone agents, design "`sim` is system-only"): matched in the
       // background — a lookup must never hold registration up.
-      noteSimReport(agent.id, req.body.sim);
+      void noteSimReport(agent.id, req.body.sim, capabilities ?? []);
 
       // Zero-trust location: detection is the ONLY region source for
       // non-public agents; registration applies immediately (fresh process).
@@ -4561,7 +4561,7 @@ export async function registerRoutes(
       }
       // Our SIM: recomputed in the background only when the report changed or
       // the lookup expired (server/sim-carrier.ts) — never delays the beat.
-      noteSimReport(agent.id, req.body.sim);
+      void noteSimReport(agent.id, req.body.sim, hbCapabilities ?? agent.capabilities);
 
       res.json({ message: "Heartbeat received" });
     } catch (error) {

@@ -16,7 +16,7 @@ await vi.hoisted(async () => {
 });
 import { storage, pool } from "../server/storage";
 import { TwilioLookupProvider, CACHE_MAX_AGE_MS } from "../server/number-lookup";
-import { parseSimReport, computeSimMatch, refreshAgentSim, resetSimMemo } from "../server/sim-carrier";
+import { parseSimReport, computeSimMatch, refreshAgentSim, resetSimMemo, noteSimReport, SIM_LOOKUPS_PER_DAY, SIM_AGENT_LOOKUP_WINDOW_MS, SIM_RETRY_MS } from "../server/sim-carrier";
 
 const SID = "AC" + "0123456789abcdef0123456789abcdef";
 
@@ -196,8 +196,112 @@ d("refreshAgentSim (stores on the agent; recomputes only on change / expiry)", (
     const a = await mkAgent();
     expect(await refreshAgentSim(a.id, { number: "+15550108881", mcc: "310", mnc: "260" }, { provider: provider() })).toBe(true);
     codes = () => ({ carrier: null, mcc: null, mnc: null, status: 500 });
-    expect(await refreshAgentSim(a.id, { number: "+15550108882", mcc: "310", mnc: "260" }, { provider: provider() })).toBe(true);
+    // A day later: within the day a second new number would be rate-limited before any call.
+    expect(await refreshAgentSim(a.id, { number: "+15550108882", mcc: "310", mnc: "260" }, { provider: provider(), now: Date.now() + SIM_AGENT_LOOKUP_WINDOW_MS + 1000 })).toBe(true);
     expect(await row(a.id)).toMatchObject({ sim_carrier: null, sim_reason: "v1: lookup-failed", sim_number_redacted: "…8882" });
+  });
+
+  it("same number, different codes, then a failure: the answer computed for the OTHER code is not kept", async () => {
+    codes = () => ({ carrier: "T-Mobile USA, Inc.", mcc: "310", mnc: "260" });
+    const a = await mkAgent();
+    const n = "+15550108111";
+    expect(await refreshAgentSim(a.id, { number: n, mcc: "310", mnc: "260" }, { provider: provider() })).toBe(true);
+    expect((await row(a.id)).sim_carrier).toBe("t-mobile");
+    // Same number, the phone now reports another code (cache hit, no paid call).
+    expect(await refreshAgentSim(a.id, { number: n, mcc: "310", mnc: "240" }, { provider: provider() })).toBe(true);
+    expect((await row(a.id)).sim_reason).toBe("v1: mismatch 310-240 vs 310-260");
+    // Back to the first code with the cache expired and Twilio failing: the
+    // stored answer was for 310-240, so it is not kept as if it were 310-260's.
+    await pool.query("UPDATE number_lookups SET looked_up_at = $1 WHERE number = $2", [new Date(Date.now() - CACHE_MAX_AGE_MS - 60_000), n]);
+    codes = () => ({ carrier: null, mcc: null, mnc: null, status: 500 });
+    expect(await refreshAgentSim(a.id, { number: n, mcc: "310", mnc: "260" }, { provider: provider(), now: Date.now() + SIM_AGENT_LOOKUP_WINDOW_MS + 1000 })).toBe(true);
+    expect(await row(a.id)).toMatchObject({ sim_carrier: null, sim_reason: "v1: lookup-failed", sim_number_redacted: "…8111" });
+  });
+
+  it("an agent gets one uncached lookup a day: a second new number is rate-limited, with no paid call", async () => {
+    codes = () => ({ carrier: "T-Mobile USA, Inc.", mcc: "310", mnc: "260" });
+    const a = await mkAgent();
+    const t0 = Date.now();
+    expect(await refreshAgentSim(a.id, { number: "+15550102001", mcc: "310", mnc: "260" }, { provider: provider(), now: t0 })).toBe(true);
+    expect(requests).toHaveLength(1);
+    expect(await refreshAgentSim(a.id, { number: "+15550102002", mcc: "310", mnc: "260" }, { provider: provider(), now: t0 + 1000 })).toBe(true);
+    expect(requests).toHaveLength(1); // no second paid call
+    expect(await row(a.id)).toMatchObject({ sim_carrier: null, sim_reason: "v1: rate-limited", sim_number_redacted: "…2002" });
+    // A number already in the cache still answers (cache hits are free and uncounted).
+    expect(await refreshAgentSim(a.id, { number: "+15550102001", mcc: "310", mnc: "260" }, { provider: provider(), now: t0 + 2000 })).toBe(true);
+    expect((await row(a.id)).sim_carrier).toBe("t-mobile");
+    expect(requests).toHaveLength(1);
+    // A day later the new number may be looked up.
+    expect(await refreshAgentSim(a.id, { number: "+15550102002", mcc: "310", mnc: "260" }, { provider: provider(), now: t0 + SIM_AGENT_LOOKUP_WINDOW_MS + 1000 })).toBe(true);
+    expect(requests).toHaveLength(2);
+    expect((await row(a.id)).sim_carrier).toBe("t-mobile");
+  });
+
+  it("rate-limited keeps a stored answer for the same number and code (like lookup-failed) and is retried", async () => {
+    codes = () => ({ carrier: "T-Mobile USA, Inc.", mcc: "310", mnc: "260" });
+    const a = await mkAgent();
+    const t0 = Date.now();
+    const rep = { number: "+15550103001", mcc: "310", mnc: "260" };
+    await refreshAgentSim(a.id, { number: "+15550103999", mcc: "310", mnc: "260" }, { provider: provider(), now: t0 }); // today's paid lookup
+    expect(requests).toHaveLength(1);
+    // rep's number is already cached (free), close to expiry.
+    await pool.query(`INSERT INTO number_lookups (number, provider, carrier_name, line_type, value, mcc, mnc, looked_up_at)
+      VALUES ($1, 'twilio', 'T-Mobile USA, Inc.', 'mobile', 't-mobile', '310', '260', $2)`, [rep.number, new Date(t0 - CACHE_MAX_AGE_MS + 3600_000)]);
+    expect(await refreshAgentSim(a.id, rep, { provider: provider(), now: t0 + 1000 })).toBe(true);
+    expect((await row(a.id)).sim_carrier).toBe("t-mobile");
+    // The cache expires within the same day: the refresh would be a second paid call → rate-limited.
+    await pool.query("UPDATE number_lookups SET looked_up_at = $1 WHERE number = $2", [new Date(Date.now() - CACHE_MAX_AGE_MS - 60_000), rep.number]);
+    const later = t0 + 2 * 3600_000;
+    expect(await refreshAgentSim(a.id, rep, { provider: provider(), now: later })).toBe(true);
+    expect(requests).toHaveLength(1);
+    expect(await row(a.id)).toMatchObject({ sim_carrier: "t-mobile", sim_reason: "v1: sim-match 310-260" });
+    // Retried after SIM_RETRY_MS, not a month later.
+    expect(await refreshAgentSim(a.id, rep, { provider: provider(), now: later + 1000 })).toBe(false);
+    expect(await refreshAgentSim(a.id, rep, { provider: provider(), now: later + SIM_RETRY_MS + 1 })).toBe(true);
+  });
+
+  it(`the whole SIM path has a daily budget (default SIM_LOOKUPS_PER_DAY = ${SIM_LOOKUPS_PER_DAY}) across agents`, async () => {
+    expect(SIM_LOOKUPS_PER_DAY).toBe(500);
+    codes = () => ({ carrier: "T-Mobile USA, Inc.", mcc: "310", mnc: "260" });
+    const [a, b, c] = [await mkAgent(), await mkAgent(), await mkAgent()];
+    const t0 = Date.now();
+    const opts = { provider: provider(), now: t0, lookupsPerDay: 2 };
+    await refreshAgentSim(a.id, { number: "+15550104001", mcc: "310", mnc: "260" }, opts);
+    await refreshAgentSim(b.id, { number: "+15550104002", mcc: "310", mnc: "260" }, opts);
+    await refreshAgentSim(c.id, { number: "+15550104003", mcc: "310", mnc: "260" }, opts);
+    expect(requests).toHaveLength(2);
+    expect((await row(c.id)).sim_reason).toBe("v1: rate-limited");
+    // The next day's budget is fresh.
+    await refreshAgentSim(c.id, { number: "+15550104003", mcc: "310", mnc: "260" }, { ...opts, now: t0 + 24 * 3600_000 + 1 });
+    expect(requests).toHaveLength(3);
+    expect((await row(c.id)).sim_carrier).toBe("t-mobile");
+  });
+
+  it("a failed provider call is not counted: the retry after SIM_RETRY_MS may call again the same day", async () => {
+    codes = () => ({ carrier: null, mcc: null, mnc: null, status: 500 });
+    const a = await mkAgent();
+    const t0 = Date.now();
+    const rep = { number: "+15550106001", mcc: "310", mnc: "260" };
+    expect(await refreshAgentSim(a.id, rep, { provider: provider(), now: t0 })).toBe(true);
+    expect((await row(a.id)).sim_reason).toBe("v1: lookup-failed");
+    codes = () => ({ carrier: "T-Mobile USA, Inc.", mcc: "310", mnc: "260" });
+    expect(await refreshAgentSim(a.id, rep, { provider: provider(), now: t0 + SIM_RETRY_MS + 1 })).toBe(true);
+    expect(requests).toHaveLength(2);
+    expect((await row(a.id)).sim_carrier).toBe("t-mobile");
+  });
+
+  it("noteSimReport acts only for agents whose current capabilities include phone", async () => {
+    codes = () => ({ carrier: "T-Mobile USA, Inc.", mcc: "310", mnc: "260" });
+    const a = await mkAgent();
+    const sim = { number: "+15550105001", mcc: "310", mnc: "260" };
+    for (const caps of [[], ["analyze"], undefined, null, "phone"]) {
+      await noteSimReport(a.id, sim, caps, { provider: provider() });
+    }
+    expect(requests).toHaveLength(0);
+    expect((await row(a.id)).sim_reason).toBeNull();
+    await noteSimReport(a.id, sim, ["analyze", "phone"], { provider: provider() });
+    expect(requests).toHaveLength(1);
+    expect((await row(a.id)).sim_carrier).toBe("t-mobile");
   });
 
   it("expiry runs from the cached lookup's lookedUpAt, not from when it was computed", async () => {

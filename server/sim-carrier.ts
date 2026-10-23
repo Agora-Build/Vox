@@ -21,7 +21,9 @@
  *   "…1234") and never logged; it lives only as the `number_lookups` key.
  * - Never blocks a heartbeat: routes call `noteSimReport`, fire-and-forget.
  * - Recomputed only when the report changes, the 30-day lookup cache expires,
- *   or a non-definitive answer (lookup off / failed) is due a retry.
+ *   or a non-definitive answer (lookup off / failed / rate-limited) is due a retry.
+ * - Only phone agents' reports count, and the paid lookup is capped (one
+ *   uncached number per agent per day, SIM_LOOKUPS_PER_DAY overall).
  *
  * Limit (from the design): both inputs arrive through the agent; a modified
  * agent could report another real number plus its matching code. The lookup
@@ -33,8 +35,19 @@ import { storage } from "./storage";
 import { lookupNumber, redactNumber, CACHE_MAX_AGE_MS, MCC_RE, MNC_RE, type NumberLookupProvider } from "./number-lookup";
 
 export const SIM_MATCHER_VERSION = "v1";
-/** A non-definitive answer (lookup off / failed) is retried after this long. */
+/** A non-definitive answer (lookup off / failed / rate-limited) is retried after this long. */
 export const SIM_RETRY_MS = 10 * 60 * 1000;
+/**
+ * Spending caps on the paid lookup. Both inputs come from the agent, so any
+ * token holder could report a fresh valid number every heartbeat and make
+ * each one a paid Twilio call. A real SIM's number doesn't change: one
+ * uncached lookup per agent per day is plenty, and the whole SIM path may
+ * spend at most SIM_LOOKUPS_PER_DAY a day. Past either cap the answer is a
+ * non-definitive `rate-limited` (handled like `lookup-failed`). Cache hits
+ * (`number_lookups`) are never counted. In memory: a Core restart resets them.
+ */
+export const SIM_AGENT_LOOKUP_WINDOW_MS = 24 * 60 * 60 * 1000;
+export const SIM_LOOKUPS_PER_DAY = 500;
 
 const E164_RE = /^\+[1-9][0-9]{6,14}$/;
 const MAX_OPERATOR_NAME = 64;
@@ -85,7 +98,7 @@ export async function computeSimMatch(
 /** computeSimMatch plus when the lookup it used was made (undefined: no lookup answer). */
 async function computeSimMatchDetailed(
   report: SimReport,
-  opts: { provider?: NumberLookupProvider | null },
+  opts: { provider?: NumberLookupProvider | null; allowProviderCall?: () => boolean },
 ): Promise<{ match: SimMatch; lookedUpAt?: Date }> {
   const simNumberRedacted = redactNumber(report.number);
   const none = (why: string, lookedUpAt?: Date) => ({ match: { simCarrier: null, simReason: reason(why), simNumberRedacted }, lookedUpAt });
@@ -97,6 +110,7 @@ async function computeSimMatchDetailed(
   if ("skipped" in answer) {
     if (answer.skipped === "not-configured") return none("lookup-off");
     if (answer.skipped === "invalid-number") return none("invalid-number");
+    if (answer.skipped === "rate-limited") return none("rate-limited");
     return none("lookup-failed");
   }
   const at = answer.lookedUpAt;
@@ -126,16 +140,53 @@ async function computeSimMatchDetailed(
  */
 const memo = new Map<number, { fingerprint: string; dueAt: number }>();
 
-/** Tests only: forget every agent's last computation. */
+/** Tests only: forget every agent's last computation and the spending caps. */
 export function resetSimMemo(): void {
   memo.clear();
+  agentPaidLookupAt.clear();
+  budget = { windowStart: 0, used: 0 };
 }
 
 function fingerprintOf(report: SimReport): string {
   return createHash("sha256").update(`${report.number}|${report.mcc ?? ""}|${report.mnc ?? ""}`).digest("hex");
 }
 
-const NON_DEFINITIVE = new Set([reason("lookup-off"), reason("lookup-failed")]);
+const NON_DEFINITIVE = new Set([reason("lookup-off"), reason("lookup-failed"), reason("rate-limited")]);
+/** Non-definitive answers that keep a stored answer for the same report. */
+const KEEPS_STORED = new Set([reason("lookup-failed"), reason("rate-limited")]);
+
+/** When each agent last caused a paid lookup, and the global day's count. */
+const agentPaidLookupAt = new Map<number, number>();
+let budget = { windowStart: 0, used: 0 };
+
+/**
+ * The spending gate for one agent at `now`. `allow` reserves the call (so
+ * concurrent reports can't both pass); `refund` hands it back when the
+ * provider call failed — a failed lookup answers nothing, and the retry after
+ * SIM_RETRY_MS must not wait a day.
+ */
+function paidLookupGate(agentId: number, now: number, lookupsPerDay: number) {
+  let reserved: { prev: number | undefined } | null = null;
+  return {
+    allow: (): boolean => {
+      const last = agentPaidLookupAt.get(agentId);
+      if (last !== undefined && now - last < SIM_AGENT_LOOKUP_WINDOW_MS) return false;
+      if (now - budget.windowStart >= 24 * 60 * 60 * 1000) budget = { windowStart: now, used: 0 };
+      if (budget.used >= lookupsPerDay) return false;
+      budget.used++;
+      reserved = { prev: last };
+      agentPaidLookupAt.set(agentId, now);
+      return true;
+    },
+    refund: (): void => {
+      if (!reserved) return;
+      if (budget.used > 0) budget.used--;
+      if (reserved.prev === undefined) agentPaidLookupAt.delete(agentId);
+      else agentPaidLookupAt.set(agentId, reserved.prev);
+      reserved = null;
+    },
+  };
+}
 
 /**
  * Whether the agent's stored sim fields were computed for this same report:
@@ -155,7 +206,8 @@ function storedIsForReport(
 
 /**
  * Recompute and store an agent's sim fields when due. Returns whether it
- * recomputed. `now` exists for tests (expiry / retry without waiting).
+ * recomputed. `now` and `lookupsPerDay` exist for tests (expiry / retry
+ * without waiting; the daily budget without 500 lookups).
  *
  * A transient lookup failure never wipes a definitive answer for the same
  * number and code: phone jobs claimed before the retry would otherwise
@@ -166,7 +218,7 @@ function storedIsForReport(
 export async function refreshAgentSim(
   agentId: number,
   report: SimReport,
-  opts: { provider?: NumberLookupProvider | null; now?: number } = {},
+  opts: { provider?: NumberLookupProvider | null; now?: number; lookupsPerDay?: number } = {},
 ): Promise<boolean> {
   const now = opts.now ?? Date.now();
   const fingerprint = fingerprintOf(report);
@@ -175,13 +227,15 @@ export async function refreshAgentSim(
   // Claimed before the await, so a burst of heartbeats computes once.
   memo.set(agentId, { fingerprint, dueAt: now + SIM_RETRY_MS });
   try {
-    const { match, lookedUpAt } = await computeSimMatchDetailed(report, { provider: opts.provider });
+    const gate = paidLookupGate(agentId, now, opts.lookupsPerDay ?? SIM_LOOKUPS_PER_DAY);
+    const { match, lookedUpAt } = await computeSimMatchDetailed(report, { provider: opts.provider, allowProviderCall: gate.allow });
+    if (match.simReason === reason("lookup-failed")) gate.refund();
     const definitive = !NON_DEFINITIVE.has(match.simReason);
     const dueAt = !definitive
       ? now + SIM_RETRY_MS
       : (lookedUpAt ? lookedUpAt.getTime() : now) + CACHE_MAX_AGE_MS;
     memo.set(agentId, { fingerprint, dueAt });
-    if (match.simReason === reason("lookup-failed") && storedIsForReport(await storage.getEvalAgent(agentId), report)) {
+    if (KEEPS_STORED.has(match.simReason) && storedIsForReport(await storage.getEvalAgent(agentId), report)) {
       return true; // keep the stored answer; the retry is scheduled above
     }
     await storage.updateEvalAgent(agentId, {
@@ -198,13 +252,22 @@ export async function refreshAgentSim(
 
 /**
  * Route entry point (register/heartbeat): parse the body's `sim` and, when it
- * is a report, refresh in the background. Never blocks, never throws, never
- * logs the number.
+ * is a report from an agent whose current capabilities include `phone` (only
+ * a phone agent has a SIM — anyone else's report is ignored, never looked
+ * up), refresh in the background. Never blocks, never throws, never logs the
+ * number. The returned promise (always resolved) exists for tests; routes
+ * don't wait on it.
  */
-export function noteSimReport(agentId: number, raw: unknown): void {
+export function noteSimReport(
+  agentId: number,
+  raw: unknown,
+  capabilities: unknown,
+  opts: { provider?: NumberLookupProvider | null; now?: number } = {},
+): Promise<void> {
+  if (!Array.isArray(capabilities) || !capabilities.includes("phone")) return Promise.resolve();
   const report = parseSimReport(raw);
-  if (!report) return;
-  void refreshAgentSim(agentId, report).catch((err) =>
+  if (!report) return Promise.resolve();
+  return refreshAgentSim(agentId, report, opts).then(() => undefined, (err) =>
     console.error(`[sim] agent ${agentId}: sim check failed (${err instanceof Error ? err.name : "error"})`),
   );
 }
