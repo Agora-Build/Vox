@@ -928,39 +928,46 @@ export class DatabaseStorage {
     return result[0];
   }
 
+  // `locationCheckedAt` and the access fields are optional: a check made while
+  // the VPN/datacenter data is unloaded leaves them as they were, so the next
+  // heartbeat re-checks instead of waiting out LOCATION_RECHECK_HOURS.
   async updateEvalAgentLocation(agentId: number, fields: {
     region: string | null; siteId: string | null; locationTrust: string;
-    locationCheckedAt: Date; locationSource: unknown;
+    locationCheckedAt?: Date; locationSource: unknown;
     pendingRegion: string | null; pendingRegionCount: number;
-  } & EvalAgentAccessFields): Promise<void> {
+  } & Partial<EvalAgentAccessFields>): Promise<void> {
     await db.update(evalAgents).set({
       region: fields.region,
       siteId: fields.siteId,
       locationTrust: fields.locationTrust,
-      locationCheckedAt: fields.locationCheckedAt,
+      ...(fields.locationCheckedAt ? { locationCheckedAt: fields.locationCheckedAt } : {}),
       locationSource: fields.locationSource,
       pendingRegion: fields.pendingRegion,
       pendingRegionCount: fields.pendingRegionCount,
-      accessClass: fields.accessClass,
-      accessReason: fields.accessReason,
-      accessCheckedAt: fields.accessCheckedAt,
+      ...(fields.accessClass !== undefined ? {
+        accessClass: fields.accessClass,
+        accessReason: fields.accessReason,
+        accessCheckedAt: fields.accessCheckedAt,
+      } : {}),
       updatedAt: new Date(),
     }).where(eq(evalAgents.id, agentId));
   }
 
-  // Public-tier agents (and capped detections): configured identity
-  // (region/siteId) is never touched here — only the observability fields and
-  // the access class are recorded (access is computed for every agent).
+  // Public-tier agents: configured identity (region/siteId) is never touched
+  // here — only the observability fields and the access class are recorded
+  // (access is computed for every agent). Optional fields as above.
   async updateEvalAgentLocationObservability(agentId: number, fields: {
-    locationTrust: string; locationCheckedAt: Date; locationSource: unknown;
-  } & EvalAgentAccessFields): Promise<void> {
+    locationTrust: string; locationCheckedAt?: Date; locationSource: unknown;
+  } & Partial<EvalAgentAccessFields>): Promise<void> {
     await db.update(evalAgents).set({
       locationTrust: fields.locationTrust,
-      locationCheckedAt: fields.locationCheckedAt,
+      ...(fields.locationCheckedAt ? { locationCheckedAt: fields.locationCheckedAt } : {}),
       locationSource: fields.locationSource,
-      accessClass: fields.accessClass,
-      accessReason: fields.accessReason,
-      accessCheckedAt: fields.accessCheckedAt,
+      ...(fields.accessClass !== undefined ? {
+        accessClass: fields.accessClass,
+        accessReason: fields.accessReason,
+        accessCheckedAt: fields.accessCheckedAt,
+      } : {}),
       updatedAt: new Date(),
     }).where(eq(evalAgents.id, agentId));
   }

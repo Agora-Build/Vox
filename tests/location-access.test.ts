@@ -70,11 +70,14 @@ describeDb("runAgentLocationCheck persists access", () => {
     await db.delete(evalAgentTokens).where(eq(evalAgentTokens.id, publicTokenId));
   });
 
-  it("a datacenter range makes trust datacenter (region-eligible) and stores access datacenter", async () => {
+  it("a datacenter range makes trust datacenter (region-eligible) and stores access datacenter — with no DNS lookup", async () => {
+    const deps = makeDeps();
     const res = await runAgentLocationCheck({
       agent: { id: agentId, ...fresh }, token: { id: privateTokenId, dispatchTier: "private" },
-      ip: DC_IP, immediate: true, deps: makeDeps(),
+      ip: DC_IP, immediate: true, deps,
     });
+    // A datacenter range decides access on its own; the name can't change it.
+    expect(deps.rdnsCalls).toEqual([]);
     expect(res.locationTrust).toBe("datacenter");
     expect(res.region).not.toBeNull();
     const r = await row();
@@ -121,18 +124,34 @@ describeDb("runAgentLocationCheck persists access", () => {
     expect(r.accessCheckedAt).not.toBeNull();
   });
 
-  it("capped result (data unloaded) stores access unknown / no-data, never lastmile, without a DNS lookup", async () => {
+  it("capped result (data unloaded) writes no access (never lastmile, never no-data) and makes no DNS lookup", async () => {
     const deps = makeDeps({ networkClassLoaded: false });
     const res = await runAgentLocationCheck({
-      agent: { id: agentId, ...fresh }, token: { id: privateTokenId, dispatchTier: "private" },
+      agent: { id: agentId, ...fresh, locationTrust: "unknown" }, token: { id: privateTokenId, dispatchTier: "private" },
       ip: DT_IP, immediate: true, deps,
     });
-    expect(res.locationTrust).toBe("low_confidence");
+    expect(res.locationTrust).toBe("unknown"); // the stored answer — a capped check changes nothing
     expect(deps.rdnsCalls).toEqual([]);
     const r = await row();
-    expect(r.accessClass).toBe("unknown");
-    expect(r.accessReason).toBe("v1: no-data");
-    expect(r.accessCheckedAt).not.toBeNull();
+    expect(r.accessClass).toBeNull();
+    expect(r.accessReason).toBeNull();
+    expect(r.accessCheckedAt).toBeNull();
+  });
+
+  it("public tier, data unloaded: the stored trust, access and check time are kept", async () => {
+    const checkedAt = new Date(Date.now() - 3 * 60 * 60 * 1000);
+    await db.update(evalAgents).set({ locationTrust: "datacenter", locationCheckedAt: checkedAt, accessClass: "datacenter", accessReason: "v1: dc-range", accessCheckedAt: checkedAt })
+      .where(eq(evalAgents.id, agentId));
+    const res = await runAgentLocationCheck({
+      agent: { id: agentId, region: "na-us-seattle", siteId: "na-us-seattle-01", pendingRegion: null, pendingRegionCount: 0, locationTrust: "datacenter" },
+      token: { id: publicTokenId, dispatchTier: "public" },
+      ip: DC_IP, immediate: false, deps: makeDeps({ networkClassLoaded: false }),
+    });
+    expect(res).toEqual({ region: "na-us-seattle", siteId: "na-us-seattle-01", locationTrust: "datacenter" });
+    const r = await row();
+    expect(r.locationTrust).toBe("datacenter");
+    expect(r.accessClass).toBe("datacenter");
+    expect(r.locationCheckedAt?.getTime()).toBe(checkedAt.getTime());
   });
 
   it("Tor exit / private IP: stored unknown and no DNS lookup", async () => {

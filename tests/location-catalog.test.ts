@@ -113,6 +113,7 @@ describeDb("allocateSiteId + runAgentLocationCheck", () => {
 
   it("runAgentLocationCheck immediate-assigns for a private agent (stub deps unavailable → uses stored detection path)", async () => {
     // No mmdbs in dev: a public IP classifies low_confidence/unknown → stays Unverified.
+    const before = (await db.select().from(evalAgents).where(eq(evalAgents.id, agentId)))[0];
     const res = await runAgentLocationCheck({
       agent: { id: agentId, region: null, siteId: null, pendingRegion: null, pendingRegionCount: 0 },
       token: { id: tokenId, dispatchTier: "private" },
@@ -123,7 +124,9 @@ describeDb("allocateSiteId + runAgentLocationCheck", () => {
     expect(["low_confidence", "unknown"]).toContain(res.locationTrust);
     const row = (await db.select().from(evalAgents).where(eq(evalAgents.id, agentId)))[0];
     expect(row.locationTrust).toBe(res.locationTrust);
-    expect(row.locationCheckedAt).not.toBeNull();
+    // The test process has no VPN/datacenter data loaded, so access is
+    // "no-data" — no answer: the check time is left for the next beat.
+    expect(row.locationCheckedAt?.getTime()).toBe(before.locationCheckedAt?.getTime());
   });
 
   it("public tier: observability only — region/siteId untouched", async () => {
@@ -171,9 +174,12 @@ describeDb("allocateSiteId + runAgentLocationCheck", () => {
     }
   });
 
-  it("unloaded access data: an existing agent's region, siteId and pending state are kept (no clear, no renumber)", async () => {
+  it("unloaded access data: an existing agent's region, siteId, pending state, trust, access and check time are all kept", async () => {
+    const checkedAt = new Date(Date.now() - 3 * 60 * 60 * 1000); // stale: the next beat re-checks
     await db.update(evalAgents).set({
       region: "eu-de-frankfurt", siteId: "eu-de-frankfurt-07", pendingRegion: "eu-fr-paris", pendingRegionCount: 2,
+      locationTrust: "trusted", locationCheckedAt: checkedAt,
+      accessClass: "lastmile", accessReason: "v1: eyeball-asn + residential-rdns", accessCheckedAt: checkedAt,
     }).where(eq(evalAgents.id, agentId));
     // Spy, not the global eu-de-frankfurt next_sequence counter (review fix
     // round 1): that counter is shared across every test file that allocates
@@ -187,11 +193,11 @@ describeDb("allocateSiteId + runAgentLocationCheck", () => {
     try {
       for (const immediate of [true, false]) {
         const res = await runAgentLocationCheck({
-          agent: { id: agentId, region: "eu-de-frankfurt", siteId: "eu-de-frankfurt-07", pendingRegion: "eu-fr-paris", pendingRegionCount: 2 },
+          agent: { id: agentId, region: "eu-de-frankfurt", siteId: "eu-de-frankfurt-07", pendingRegion: "eu-fr-paris", pendingRegionCount: 2, locationTrust: "trusted" },
           token: { id: tokenId, dispatchTier: "private" },
           ip: "80.150.1.1", immediate, deps: unloadedWithGeo,
         });
-        expect(res).toEqual({ region: "eu-de-frankfurt", siteId: "eu-de-frankfurt-07", locationTrust: "low_confidence" });
+        expect(res).toEqual({ region: "eu-de-frankfurt", siteId: "eu-de-frankfurt-07", locationTrust: "trusted" });
       }
       expect(allocateSpy).not.toHaveBeenCalled();
     } finally {
@@ -202,7 +208,59 @@ describeDb("allocateSiteId + runAgentLocationCheck", () => {
     expect(row.siteId).toBe("eu-de-frankfurt-07"); // unchanged — proves no renumber too
     expect(row.pendingRegion).toBe("eu-fr-paris");
     expect(row.pendingRegionCount).toBe(2);
-    expect(row.locationTrust).toBe("low_confidence"); // observability still recorded
+    // A capped check is no answer: the badge keeps saying Verified, jobs
+    // claimed meanwhile freeze trusted/lastmile (not low_confidence/unknown),
+    // and the check time doesn't advance, so the next heartbeat re-checks.
+    expect(row.locationTrust).toBe("trusted");
+    expect(row.accessClass).toBe("lastmile");
+    expect(row.accessReason).toBe("v1: eyeball-asn + residential-rdns");
+    expect(row.locationCheckedAt?.getTime()).toBe(checkedAt.getTime());
+    expect(row.accessCheckedAt?.getTime()).toBe(checkedAt.getTime());
+  });
+
+  it("the first check after the data loads classifies a capped agent and advances the check time", async () => {
+    const checkedAt = new Date(Date.now() - 3 * 60 * 60 * 1000);
+    await db.update(evalAgents).set({
+      region: null, siteId: null, pendingRegion: null, pendingRegionCount: 0,
+      locationTrust: "unknown", locationCheckedAt: checkedAt, accessClass: null, accessReason: null, accessCheckedAt: null,
+    }).where(eq(evalAgents.id, agentId));
+    const agent = { id: agentId, region: null, siteId: null, pendingRegion: null, pendingRegionCount: 0, locationTrust: "unknown" };
+    // Data unloaded: nothing written.
+    const capped = await runAgentLocationCheck({ agent, token: { id: tokenId, dispatchTier: "private" }, ip: "80.150.1.1", immediate: false, deps: unloadedWithGeo });
+    expect(capped.locationTrust).toBe("unknown");
+    let row = (await db.select().from(evalAgents).where(eq(evalAgents.id, agentId)))[0];
+    expect(row.locationCheckedAt?.getTime()).toBe(checkedAt.getTime());
+    expect(row.accessClass).toBeNull();
+    // Data loaded (same agent, next beat): classified at once.
+    const loaded = await runAgentLocationCheck({
+      agent, token: { id: tokenId, dispatchTier: "private" }, ip: "80.150.1.1", immediate: false,
+      deps: { ...unloadedWithGeo, networkClassLoaded: true },
+    });
+    expect(loaded.locationTrust).toBe("trusted");
+    row = (await db.select().from(evalAgents).where(eq(evalAgents.id, agentId)))[0];
+    expect(row.locationTrust).toBe("trusted");
+    expect(row.accessClass).toBe("unknown");
+    expect(row.accessReason).toBe("v1: insufficient");
+    expect(row.locationCheckedAt!.getTime()).toBeGreaterThan(checkedAt.getTime());
+  });
+
+  it("unloaded access data, no geo (not capped): trust is written, but access and the check time stay as they were", async () => {
+    const checkedAt = new Date(Date.now() - 3 * 60 * 60 * 1000);
+    await db.update(evalAgents).set({
+      region: null, siteId: null, pendingRegion: null, pendingRegionCount: 0,
+      locationTrust: "trusted", locationCheckedAt: checkedAt, accessClass: "datacenter", accessReason: "v1: dc-range", accessCheckedAt: checkedAt,
+    }).where(eq(evalAgents.id, agentId));
+    const res = await runAgentLocationCheck({
+      agent: { id: agentId, region: null, siteId: null, pendingRegion: null, pendingRegionCount: 0, locationTrust: "trusted" },
+      token: { id: tokenId, dispatchTier: "private" }, ip: "80.150.1.1", immediate: false,
+      deps: { ...unloadedWithGeo, geo: () => null },
+    });
+    expect(res.locationTrust).toBe("low_confidence");
+    const row = (await db.select().from(evalAgents).where(eq(evalAgents.id, agentId)))[0];
+    expect(row.locationTrust).toBe("low_confidence");
+    expect(row.accessClass).toBe("datacenter");
+    expect(row.accessReason).toBe("v1: dc-range");
+    expect(row.locationCheckedAt?.getTime()).toBe(checkedAt.getTime());
   });
 
   it("unloaded access data: a new agent with no region stays Unverified (fail closed)", async () => {

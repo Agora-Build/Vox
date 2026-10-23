@@ -1,4 +1,4 @@
-import { REGION_ELIGIBLE_TRUST, type LocationTrust } from "@shared/schema";
+import { REGION_ELIGIBLE_TRUST, locationTrustValues, type LocationTrust } from "@shared/schema";
 import { open as maxmindOpen, type Reader, type Response as MmdbResponse, type CityResponse, type AsnResponse } from "maxmind";
 import { readFileSync } from "fs";
 import path from "path";
@@ -7,7 +7,7 @@ import { getMarketplace } from "./marketplace";
 import type { RegionCandidate } from "@shared/regions";
 import { refreshGeoipDatabases, type GeoipSource } from "./geoip-refresh";
 import { getAccessData, reloadAccessData, networkClassOf, type AccessData, type PeeringdbType } from "./access-data";
-import { classifyAccess, reverseDnsName, type AccessResult, type AgentNetSignals } from "./access-class";
+import { classifyAccess, reverseDnsName, ACCESS_CLASSIFIER_VERSION, type AccessResult, type AgentNetSignals } from "./access-class";
 import { refreshAccessData, accessDataNeedsRefresh, scheduleAccessRetry, ACCESS_REFRESH_INTERVAL_MS } from "./access-data-refresh";
 import { geoipAttributionForSource } from "@shared/geoip-attribution";
 
@@ -489,14 +489,19 @@ export function detectLocation(ip: string, deps: DetectionDeps = liveDeps(), ext
 
 /**
  * Reverse DNS only when its answer can change the access result: a public IP,
- * VPN/datacenter data loaded, not a Tor exit or VPN range (those are decided
- * without it). Bounded by RDNS_TIMEOUT_MS in the live resolver; never throws.
+ * VPN/datacenter data loaded, not a Tor exit, VPN range, datacenter range or
+ * hosting network (those are decided without it — a datacenter signal wins
+ * before any name is looked at). Bounded by RDNS_TIMEOUT_MS in the live
+ * resolver; never throws.
  */
 async function rdnsIfItCanMatter(ip: string, deps: DetectionDeps): Promise<string | null> {
   if (!deps.reverseDns) return null;
   const bare = normalizeIp(ip);
   if (!isPublicIp(bare) || !deps.networkClassLoaded || deps.torExits.has(bare)) return null;
-  if (deps.networkClass(bare, deps.asn(bare)?.asn) === "vpn") return null;
+  const asn = deps.asn(bare)?.asn;
+  if (deps.networkClass(bare, asn) !== null) return null; // vpn, or hosting (dc range / PeeringDB Content)
+  const sig = deps.accessSignals(bare, asn);
+  if (sig.dcRange || sig.peeringdbType === "content") return null;
   try {
     return await deps.reverseDns(bare);
   } catch {
@@ -516,7 +521,11 @@ export async function resolveCatalogRegion(candidate: RegionCandidate): Promise<
 // periodic re-checks (immediate=false).
 
 export async function runAgentLocationCheck(opts: {
-  agent: { id: number; region: string | null; siteId: string | null; pendingRegion: string | null; pendingRegionCount: number };
+  agent: {
+    id: number; region: string | null; siteId: string | null; pendingRegion: string | null; pendingRegionCount: number;
+    /** The stored trust — what a capped check (data unloaded) reports back, since it changes nothing. */
+    locationTrust?: string | null;
+  };
   token: { id: number; dispatchTier: string };
   ip: string | undefined;
   immediate: boolean;
@@ -529,22 +538,41 @@ export async function runAgentLocationCheck(opts: {
   const rdns = await rdnsIfItCanMatter(opts.ip ?? "", deps);
   const det = detectLocation(opts.ip ?? "", deps, { rdns, agent: opts.netSignals });
   const now = new Date();
-  // Access is system-only and computed for EVERY agent — stored on both the
-  // record-only path and the transition path below.
-  const accessFields = { accessClass: det.access.access, accessReason: det.access.reason, accessCheckedAt: now };
 
-  // Public tier: configured identity is trusted; detection is observability
-  // only. Same for a result capped only because the VPN/datacenter data
-  // hasn't loaded (first boot on an ephemeral filesystem, downloads failing):
-  // detection can't tell, so it must not move the region either way —
-  // clearing it would drop the siteId (a new sequence number on recovery) and
-  // rewrite shared listings on every deploy. Stored region, siteId and pending
-  // state are kept; an agent with no region stays Unverified (still fail
-  // closed). Unambiguous outcomes — a Tor exit, private IP, no geo — still go
-  // through the transition below and fast-distrust as always.
-  if (opts.token.dispatchTier === "public" || det.capped) {
+  // A result capped only because the VPN/datacenter data hasn't loaded (first
+  // boot on an ephemeral filesystem, downloads failing) is no answer at all,
+  // so it writes NOTHING: not the region (clearing it would drop the siteId —
+  // a new sequence number on recovery — and rewrite shared listings on every
+  // deploy), and not trust, access or locationCheckedAt either. Writing
+  // low_confidence / access unknown would make the badge say Unverified and
+  // freeze location_trust=low_confidence + access:unknown into every job
+  // claimed meanwhile (kept out of Community for good), and advancing
+  // locationCheckedAt would hold that for up to LOCATION_RECHECK_HOURS after
+  // the data loads. Untouched, the stored answer stands and the next heartbeat
+  // re-checks. An agent that never had an answer stays Unverified (still fail
+  // closed). The observed IP is recorded by the routes either way.
+  // Unambiguous outcomes — a Tor exit, private IP, no geo — are not capped and
+  // still fast-distrust below.
+  if (det.capped) {
+    const stored = opts.agent.locationTrust;
+    const locationTrust = (locationTrustValues as readonly string[]).includes(stored ?? "") ? stored as LocationTrust : "unknown";
+    return { region: opts.agent.region, siteId: opts.agent.siteId, locationTrust };
+  }
+
+  // Access is system-only and computed for EVERY agent — stored on both the
+  // record-only path and the transition path below. Except "no-data" (a public
+  // IP while the data is unloaded): like a capped trust it is no answer, so the
+  // stored access and locationCheckedAt are left alone and the next heartbeat
+  // re-checks once the data is there.
+  const accessNoData = det.access.access === "unknown" && det.access.reason === `${ACCESS_CLASSIFIER_VERSION}: no-data`;
+  const checked = accessNoData
+    ? {}
+    : { locationCheckedAt: now, accessClass: det.access.access, accessReason: det.access.reason, accessCheckedAt: now };
+
+  // Public tier: configured identity is trusted; detection is observability only.
+  if (opts.token.dispatchTier === "public") {
     await storage.updateEvalAgentLocationObservability(opts.agent.id, {
-      locationTrust: det.trust, locationCheckedAt: now, locationSource: det.source, ...accessFields,
+      locationTrust: det.trust, locationSource: det.source, ...checked,
     });
     return { region: opts.agent.region, siteId: opts.agent.siteId, locationTrust: det.trust };
   }
@@ -557,9 +585,9 @@ export async function runAgentLocationCheck(opts: {
   }
   await storage.updateEvalAgentLocation(opts.agent.id, {
     region: next.region, siteId, locationTrust: det.trust,
-    locationCheckedAt: now, locationSource: det.source,
+    locationSource: det.source,
     pendingRegion: next.pendingRegion, pendingRegionCount: next.pendingRegionCount,
-    ...accessFields,
+    ...checked,
   });
   if (next.changed && opts.token.dispatchTier === "shared") {
     // Shared listings advertise the agent's siteId; keep the plugin in sync.
