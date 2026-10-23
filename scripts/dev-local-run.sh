@@ -964,7 +964,7 @@ DELETE FROM plugin_organizations.organizations
 --   tier / dispatch / secrets suites: tp-%, t-admin-%, t-team-%, t13-%,
 --     tt-schema-%, tt-mint-%, rt-own-%, r2-agent-%, r2-team-%, SCG %,
 --     Secrets Test %, Secrets Class Withhold %, session-ep-agent-%,
---     shared-agent-%, reap-%, zt-%
+--     shared-agent-%, runtime-shared-agent-%, reap-%, zt-%
 --   analyze / paid / revoke: analyze-paid-%, analyze-api-agent-%,
 --     cancel-paid-%, e2e-paid-%, revoke-listing-%
 --   network tags / access (part 2): Access Agent, Access Token %,
@@ -988,6 +988,7 @@ INSERT INTO fixture_agent_names VALUES
   ('rt-own-%'), ('r2-agent-%'), ('r2-team-%'), ('SCG %'), ('Secrets Test %'),
   ('Secrets Class Withhold %'), ('session-ep-agent-%'), ('shared-agent-%'), ('reap-%'), ('zt-%'),
   ('analyze-paid-%'), ('analyze-api-agent-%'), ('cancel-paid-%'), ('e2e-paid-%'), ('revoke-listing-%'),
+  ('runtime-shared-agent-%'),
   ('Access Agent'), ('Access Token %'), ('Net Signals %'), ('ntags-%'), ('ntr-%'), ('e2e-access-%'),
   ('e2e lastmile %'), ('e2e datacenter %'), ('e2e unknown %'), ('e2e unverified %');
 CREATE TEMP TABLE leaked_agents AS
@@ -1003,22 +1004,39 @@ CREATE TEMP TABLE leaked_agents AS
      AND NOT EXISTS (SELECT 1 FROM eval_jobs j WHERE j.eval_agent_id = a.id);
 DELETE FROM eval_agents WHERE id IN (SELECT id FROM leaked_agents);
 DROP TABLE leaked_agents;
-DROP TABLE fixture_agent_names;
+-- Tokens: revoked or a test user's, or — once no agent uses them — named like
+-- a suite fixture (most suites mint as admin and never revoke). The last arm
+-- matters: 15,171 admin-minted fixture tokens (Multi-Region-NA, Admin Public
+-- Token, ... ~36 per gate run since August) made /console/eval-agents render a
+-- 15k-row token table — ~11 s before anything on the page appeared, so the
+-- E2E badge test's 5 s expectations failed (final-fix #11). Ten minutes of age
+-- keeps a token a suite running right now has minted but not yet registered.
 CREATE TEMP TABLE leaked_tokens AS
-  SELECT t.id FROM eval_agent_tokens t LEFT JOIN users u ON u.id = t.created_by
+  SELECT t.id,
+         (t.name NOT LIKE 'Local-Eval-Agent%'
+          AND EXISTS (SELECT 1 FROM fixture_agent_names f WHERE t.name LIKE f.pattern)) AS fixture
+    FROM eval_agent_tokens t LEFT JOIN users u ON u.id = t.created_by
    WHERE (t.is_revoked
-          OR ((u.email LIKE '%@example.com' OR u.email LIKE '%@test.local') AND u.email <> 'stripe-e2e-fixture@test.local'))
+          OR ((u.email LIKE '%@example.com' OR u.email LIKE '%@test.local') AND u.email <> 'stripe-e2e-fixture@test.local')
+          OR (t.created_at < now() - interval '10 minutes'
+              AND t.name NOT LIKE 'Local-Eval-Agent%'
+              AND EXISTS (SELECT 1 FROM fixture_agent_names f WHERE t.name LIKE f.pattern)))
      AND NOT EXISTS (SELECT 1 FROM eval_agents a WHERE a.token_id = t.id)
      AND NOT EXISTS (SELECT 1 FROM eval_jobs j WHERE j.target_token_id = t.id);
 DO $$
 BEGIN
   -- A name inside an untaken IF branch is never planned, so this is safe without the plugin.
   IF to_regclass('plugin_shared_agents.listings') IS NOT NULL THEN
-    DELETE FROM leaked_tokens k WHERE EXISTS (SELECT 1 FROM plugin_shared_agents.listings l WHERE l.token_id = k.id);
+    -- A listing keeps its token, unless both are a suite's fixture (nothing
+    -- references a listing row; the shared-agents suites leave ~1,000).
+    DELETE FROM leaked_tokens k WHERE NOT k.fixture
+       AND EXISTS (SELECT 1 FROM plugin_shared_agents.listings l WHERE l.token_id = k.id);
+    DELETE FROM plugin_shared_agents.listings l WHERE l.token_id IN (SELECT id FROM leaked_tokens);
   END IF;
 END $$;
 DELETE FROM eval_agent_tokens WHERE id IN (SELECT id FROM leaked_tokens);
 DROP TABLE leaked_tokens;
+DROP TABLE fixture_agent_names;
 
 -- Test users (@example.com, @test.local): suites invite a fresh user per run and never
 -- delete it. At ~5,000 of them the unpaginated /console/users page took so
