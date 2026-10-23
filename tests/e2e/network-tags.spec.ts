@@ -218,6 +218,15 @@ test.describe("network tags", () => {
       await expect(page).toHaveURL(new RegExp(`tag=run%3A${RUN}`)); // other filters stay
       await expect(rows).toContainText("1520");
 
+      // A filter the toggle has no button for (access:unknown): no button is
+      // pressed — not All — and the split columns stay hidden.
+      await page.goto(`/leaderboard?tag=run%3A${RUN}&tag=access%3Aunknown`);
+      await expect(page.getByTestId("metrics-tag-filter-chip-access")).toHaveText("access:unknown");
+      for (const v of ["all", "lastmile", "datacenter"]) {
+        await expect(page.getByTestId(`access-toggle-${v}`)).toHaveAttribute("data-state", "off");
+      }
+      await expect(page.getByTestId("header-access")).toHaveCount(0);
+
       // Real-time reads the same URL state.
       await page.goto("/realtime?tag=access%3Adatacenter");
       await expect(page.getByTestId("access-toggle-datacenter")).toHaveAttribute("data-state", "on");

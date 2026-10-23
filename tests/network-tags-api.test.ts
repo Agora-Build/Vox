@@ -347,9 +347,20 @@ d("network tags: hand-set tags and link type through the API", () => {
         }
         return storage.getEvalAgent(agentId);
       };
+      // Only a phone agent has a SIM: a report from an agent without the
+      // `phone` capability is ignored (never looked up — each lookup is paid).
+      await pool.query(`UPDATE eval_agents SET sim_reason = NULL, sim_carrier = NULL, sim_number_redacted = NULL WHERE id = $1`, [agentId]);
+      const noPhone = await jsonFetch(`${BASE_URL}/api/eval-agent/heartbeat`, {
+        method: "POST", headers: { Authorization: `Bearer ${tokenValue}` },
+        body: JSON.stringify({ agentId, leaseId, state: "idle", capabilities: [], sim: { number } }),
+      });
+      expect(noPhone.status).toBe(200);
+      await new Promise((r) => setTimeout(r, 500));
+      expect((await storage.getEvalAgent(agentId))?.simReason).toBeNull();
+
       const hb = await jsonFetch(`${BASE_URL}/api/eval-agent/heartbeat`, {
         method: "POST", headers: { Authorization: `Bearer ${tokenValue}` },
-        body: JSON.stringify({ agentId, leaseId, state: "idle", sim: { number } }),
+        body: JSON.stringify({ agentId, leaseId, state: "idle", capabilities: ["phone"], sim: { number } }),
       });
       expect(hb.status).toBe(200);
       const a = await waitFor((x) => x.simReason === "v1: no-sim-operator");
@@ -363,12 +374,17 @@ d("network tags: hand-set tags and link type through the API", () => {
       for (const sim of ["+15550000000", { number: "not-a-number", mcc: "310", mnc: "260" }, [1, 2], 42]) {
         const r = await jsonFetch(`${BASE_URL}/api/eval-agent/heartbeat`, {
           method: "POST", headers: { Authorization: `Bearer ${tokenValue}` },
-          body: JSON.stringify({ agentId, leaseId, state: "idle", sim }),
+          body: JSON.stringify({ agentId, leaseId, state: "idle", capabilities: ["phone"], sim }),
         });
         expect(r.status).toBe(200);
       }
       await new Promise((r) => setTimeout(r, 500));
       expect((await storage.getEvalAgent(agentId))?.simReason).toBe("sentinel");
+      // Back to no capabilities, as the rest of this file expects.
+      await jsonFetch(`${BASE_URL}/api/eval-agent/heartbeat`, {
+        method: "POST", headers: { Authorization: `Bearer ${tokenValue}` },
+        body: JSON.stringify({ agentId, leaseId, state: "idle", capabilities: [] }),
+      });
     });
 
     it("PATCH /api/eval-agents/:id/tags: the token's creator can set normalized tags", async () => {

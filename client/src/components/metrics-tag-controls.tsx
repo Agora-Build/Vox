@@ -4,6 +4,7 @@ import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { TagInput } from "@/components/tag-input";
 import { formatRegion } from "@/lib/utils";
 import { LAST_MILE_HINT, DATACENTER_HINT } from "@/lib/access-text";
+import { accessView, withAccessView, type AccessView } from "@/lib/access-view";
 import { KNOWN_TAG_KEYS, REGION_GROUP_KEY, formatTag, parseGroupBy, parseTagFilter, type Tag } from "@shared/tags";
 
 /**
@@ -76,19 +77,7 @@ export function isEmptyGroup(groupBy: string, tagValue: string | undefined): boo
   return !tagValue || tagValue === (groupBy === REGION_GROUP_KEY ? "unattributed" : "untagged");
 }
 
-export type AccessView = "all" | "lastmile" | "datacenter";
-
-/** Which access class the tag filters are narrowed to — the toggle's state. */
-export function accessView(tagFilters: Tag[]): AccessView {
-  const v = tagFilters.find((t) => t.key === "access")?.value;
-  return v === "lastmile" || v === "datacenter" ? v : "all";
-}
-
-/** The tag filters with the access filter set to `view` (All removes it). */
-export function withAccessView(tagFilters: Tag[], view: AccessView): Tag[] {
-  const rest = tagFilters.filter((t) => t.key !== "access");
-  return view === "all" ? rest : [...rest, { key: "access", value: view }];
-}
+export { accessView, showAccessSplit, withAccessView, type AccessView } from "@/lib/access-view";
 
 /**
  * All / Last mile / Datacenter — a shortcut for the `access` tag filter
@@ -104,7 +93,7 @@ export function AccessToggle({ tagFilters, onTagFiltersChange }: { tagFilters: T
       type="single"
       variant="outline"
       size="sm"
-      value={view}
+      value={view === "other" ? "" : view}
       onValueChange={(v) => { if (v) onTagFiltersChange(withAccessView(tagFilters, v as AccessView)); }}
       aria-label="Connection"
       data-testid="access-toggle"

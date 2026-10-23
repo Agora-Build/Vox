@@ -19,7 +19,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { useRegionLocations } from "@/hooks/use-regions";
-import { MetricsTagControls, useMetricsTagUrlState, appendTagParams, tagParamsKey, customTagKeys, groupLabel, isEmptyGroup, accessView } from "@/components/metrics-tag-controls";
+import { MetricsTagControls, useMetricsTagUrlState, appendTagParams, tagParamsKey, customTagKeys, groupLabel, isEmptyGroup, showAccessSplit } from "@/components/metrics-tag-controls";
 import { ACCESS_TEXT } from "@/lib/access-text";
 import { formatTag } from "@shared/tags";
 
@@ -87,7 +87,7 @@ export default function Leaderboard() {
 
   const regionScopeKey = [...regionScopes].sort().join(",");
   // All (no access filter): each row also shows its last-mile / datacenter split.
-  const showAccess = accessView(tagFilters) === "all";
+  const showAccess = showAccessSplit(tagFilters);
   const { data: leaderboardData, isLoading } = useQuery<LeaderboardEntry[]>({
     queryKey: ['/api/metrics/leaderboard', timeRange, regionScopeKey, tagParamsKey(tagFilters, groupBy)],
     queryFn: async () => {
