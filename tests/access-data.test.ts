@@ -16,10 +16,11 @@ import {
   loadAccessDataFromDir,
   ACCESS_FILES,
   v4CoverageShare,
+  v6CoverageShare,
 } from "../server/access-data";
 import {
   refreshAccessData, ACCESS_SOURCES, accessDataNeedsRefresh, accessRetryDelayMs, scheduleAccessRetry, type AccessSource,
-  downloadAccessFile, MAX_VPN_V4_SHARE, MAX_DATACENTER_V4_SHARE,
+  downloadAccessFile, MAX_VPN_V4_SHARE, MAX_DATACENTER_V4_SHARE, MAX_VPN_V6_SHARE, MAX_DATACENTER_V6_SHARE,
 } from "../server/access-data-refresh";
 
 const FIX = path.join(__dirname, "fixtures/access");
@@ -102,6 +103,17 @@ describe("v4CoverageShare", () => {
   it("is the merged share of the IPv4 space, overlaps counted once", () => {
     expect(v4CoverageShare(parseCidrList("10.0.0.0/8\n10.1.0.0/16\n11.0.0.0/8\n"))).toBeCloseTo(2 / 256, 10);
     expect(v4CoverageShare(parseCidrList(""))).toBe(0);
+  });
+});
+
+describe("v6CoverageShare", () => {
+  it("is the merged share of 2000::/3, overlaps counted once, outside 2000::/3 ignored", () => {
+    // A /16 inside 2000::/3 is 2^-13 of it; a nested /32 adds nothing.
+    expect(v6CoverageShare(parseCidrList("2a00::/16\n2a00:1::/32\n"))).toBeCloseTo(2 ** -13, 12);
+    // fc00::/7 (ULA) and ::/16 lie outside 2000::/3 and don't count.
+    expect(v6CoverageShare(parseCidrList("fc00::/16\n0::/16\n"))).toBe(0);
+    expect(v6CoverageShare(parseCidrList("2a00::/16\n2b00::/16\n"))).toBeCloseTo(2 * 2 ** -13, 12);
+    expect(v6CoverageShare(parseCidrList(""))).toBe(0);
   });
 });
 
@@ -433,6 +445,61 @@ describe("refreshAccessData", () => {
     } finally {
       delete routes["/dc4-broad"];
       delete routes["/ipcat-broad"];
+    }
+  });
+
+  // n distinct /16s inside 2a00::/8 — each 2^-13 (0.0122%) of 2000::/3.
+  const v6Slash16s = (n: number) => Array.from({ length: n }, (_, i) => `2a${(i + 1).toString(16).padStart(2, "0")}::/16`).join("\n") + "\n";
+
+  it("a VPN v6 list covering a large share of 2000::/3 (many /16s) is refused, previous copy kept", async () => {
+    failing = new Set();
+    const dir = await freshDir();
+    await refreshAccessData({ dir, sources: sources(), now: new Date("2026-10-22T00:00:00Z") });
+    routes["/vpn6-broad"] = v6Slash16s(40);
+    try {
+      const broad = sources().map((s) => (s.id === "vpn-ipv6" ? { ...s, url: `${base}/vpn6-broad` } : s));
+      const result = await refreshAccessData({ dir, sources: broad, now: new Date("2026-10-29T00:00:00Z") });
+      expect(MAX_VPN_V6_SHARE).toBe(0.000005);
+      expect(result.sources["vpn-ipv6"]?.ok).toBe(false);
+      expect(result.sources["vpn-ipv6"]?.error).toMatch(/of 2000::\/3 \(global IPv6 unicast\), above the 0\.00050% ceiling/);
+      const data = await loadAccessDataFromDir(dir);
+      expect(data.isVpnIp("2a05:1::1")).toBe(false); // the broad list never landed
+      expect(data.isVpnIp("2a0d:5600::1")).toBe(true); // the old copy still answers
+    } finally {
+      delete routes["/vpn6-broad"];
+    }
+  });
+
+  it("a VPN v6 list of one residential-size /20 is refused; a /29 like today's is accepted", async () => {
+    failing = new Set();
+    const dir = await freshDir();
+    routes["/vpn6-isp"] = "2601::/20\n";
+    routes["/vpn6-small"] = "2a0d:5600::/29\n2a0d:5700::/29\n";
+    try {
+      const isp = sources().map((s) => (s.id === "vpn-ipv6" ? { ...s, url: `${base}/vpn6-isp` } : s));
+      expect((await refreshAccessData({ dir, sources: isp, now: new Date("2026-10-22T00:00:00Z") })).sources["vpn-ipv6"]?.ok).toBe(false);
+      const small = sources().map((s) => (s.id === "vpn-ipv6" ? { ...s, url: `${base}/vpn6-small` } : s));
+      expect((await refreshAccessData({ dir, sources: small, now: new Date("2026-10-22T00:00:00Z") })).sources["vpn-ipv6"]?.ok).toBe(true);
+    } finally {
+      delete routes["/vpn6-isp"];
+      delete routes["/vpn6-small"];
+    }
+  });
+
+  it("a datacenter v6 list containing a /16 is refused; today's real-shaped fixture is accepted", async () => {
+    failing = new Set();
+    const dir = await freshDir();
+    routes["/dc6-broad"] = routes["/dc6"] + v6Slash16s(1);
+    try {
+      const broad = sources().map((s) => (s.id === "datacenter-ipv6" ? { ...s, url: `${base}/dc6-broad` } : s));
+      const result = await refreshAccessData({ dir, sources: broad, now: new Date("2026-10-22T00:00:00Z") });
+      expect(MAX_DATACENTER_V6_SHARE).toBe(0.00005);
+      expect(result.sources["datacenter-ipv6"]?.ok).toBe(false);
+      expect(result.sources["datacenter-ipv6"]?.error).toMatch(/above the 0\.0050% ceiling/);
+      const plain = await refreshAccessData({ dir, sources: sources(), now: new Date("2026-10-22T00:00:00Z") });
+      expect(plain.sources["datacenter-ipv6"]?.ok).toBe(true);
+    } finally {
+      delete routes["/dc6-broad"];
     }
   });
 

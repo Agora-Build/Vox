@@ -326,6 +326,42 @@ export function v4CoverageShare(parsed: ParsedRanges): number {
   return total / 2 ** 32;
 }
 
+/** 2000::/3, the globally routable unicast space every real IPv6 list lives in. */
+const V6_GLOBAL_START = BigInt(0x2000) << BigInt(112);
+const V6_GLOBAL_END = (BigInt(0x4000) << BigInt(112)) - N_1;
+const V6_GLOBAL_SIZE = V6_GLOBAL_END - V6_GLOBAL_START + N_1; // 2^125
+
+/**
+ * Share (0–1) of the globally routable IPv6 unicast space (2000::/3) the
+ * ranges cover, overlaps counted once and anything outside 2000::/3 ignored.
+ * Measured against 2000::/3 rather than all 2^128 addresses: the whole space
+ * is so large that even a list marking every allocated network would read
+ * as ~0%, while 2000::/3 is where every real address (and every RIR
+ * allocation) lives. Returned as a float — exact enough at these magnitudes.
+ */
+export function v6CoverageShare(parsed: ParsedRanges): number {
+  const clipped: [bigint, bigint][] = [];
+  for (const [s, e] of parsed.v6) {
+    const lo = s > V6_GLOBAL_START ? s : V6_GLOBAL_START;
+    const hi = e < V6_GLOBAL_END ? e : V6_GLOBAL_END;
+    if (lo <= hi) clipped.push([lo, hi]);
+  }
+  clipped.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
+  let total = BigInt(0);
+  let cur: [bigint, bigint] | null = null;
+  for (const [s, e] of clipped) {
+    if (cur && s <= cur[1] + N_1) {
+      if (e > cur[1]) cur[1] = e;
+    } else {
+      if (cur) total += cur[1] - cur[0] + N_1;
+      cur = [s, e];
+    }
+  }
+  if (cur) total += cur[1] - cur[0] + N_1;
+  // Scale to keep precision through Number(): parts per 10^12.
+  return Number((total * BigInt(1e12)) / V6_GLOBAL_SIZE) / 1e12;
+}
+
 // ==================== AccessData ====================
 
 export interface AccessDataInputs {

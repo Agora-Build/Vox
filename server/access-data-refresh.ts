@@ -15,7 +15,7 @@
 import path from "path";
 import { promises as fsp, readFileSync, existsSync } from "fs";
 import { GEOIP_DIR, DOWNLOAD_TIMEOUT_MS } from "./geoip-refresh";
-import { ACCESS_FILES, parseCidrList, parseIpcatCsv, parseApnicAspop, v4CoverageShare } from "./access-data";
+import { ACCESS_FILES, parseCidrList, parseIpcatCsv, parseApnicAspop, v4CoverageShare, v6CoverageShare } from "./access-data";
 
 export const ACCESS_STALE_MS = 7 * 24 * 60 * 60 * 1000;
 export const ACCESS_REFRESH_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000;
@@ -67,11 +67,16 @@ export interface AccessSource {
    */
   maxV4Share?: number;
   v4Share?: (text: string) => number;
+  /** IPv6 range lists: same guard, measured as a share of 2000::/3 (the
+   *  globally routable unicast space) — see v6CoverageShare. */
+  maxV6Share?: number;
+  v6Share?: (text: string) => number;
 }
 
 const X4B = "https://raw.githubusercontent.com/X4BNet/lists_vpn/main/output";
 const cidrCount = (t: string) => { const p = parseCidrList(t); return p.v4.length + p.v6.length; };
 const cidrShare = (t: string) => v4CoverageShare(parseCidrList(t));
+const cidrShareV6 = (t: string) => v6CoverageShare(parseCidrList(t));
 
 /**
  * Coverage ceilings, from the 2026-10-22 data: the datacenter v4 list covers
@@ -84,13 +89,27 @@ const cidrShare = (t: string) => v4CoverageShare(parseCidrList(t));
 export const MAX_VPN_V4_SHARE = 0.05;
 export const MAX_DATACENTER_V4_SHARE = 0.2;
 
+/**
+ * IPv6 ceilings, as a share of 2000::/3, from the 2026-10-27 data: the
+ * datacenter v6 list (8,752 CIDRs, widest a /24) covers 0.00126% of 2000::/3,
+ * the VPN v6 list (498 CIDRs, widest a /29) 0.000113%. IPv6 networks are
+ * tiny next to 2000::/3 — one large home ISP's /20 (Comcast's 2601::/20) is
+ * 0.00076%, a single /16 0.0122% — so the ceilings are set against those:
+ * - VPN 0.0005% (~4× today), below one home-ISP /20: a VPN list that swallowed
+ *   a big residential block is refused (a hit clears the region).
+ * - Datacenter 0.005% (~4× today), below a single /16: room for growth, but a
+ *   list with a /16 in it, or one that absorbed a handful of ISP /20s, is refused.
+ */
+export const MAX_VPN_V6_SHARE = 0.000005;
+export const MAX_DATACENTER_V6_SHARE = 0.00005;
+
 // Floors sit well under today's sizes (2026-10-22: datacenter v4 44.6k CIDRs,
 // v6 8.8k, vpn v4 10.9k, vpn v6 498, ipcat 3.4k rows, APNIC 46k rows / 39.7k ASNs).
 export const ACCESS_SOURCES: readonly AccessSource[] = [
   { id: "datacenter-ipv4", url: `${X4B}/datacenter/ipv4.txt`, file: ACCESS_FILES.datacenterV4, minEntries: 5000, count: cidrCount, maxV4Share: MAX_DATACENTER_V4_SHARE, v4Share: cidrShare },
-  { id: "datacenter-ipv6", url: `${X4B}/datacenter/ipv6.txt`, file: ACCESS_FILES.datacenterV6, minEntries: 500, count: cidrCount },
+  { id: "datacenter-ipv6", url: `${X4B}/datacenter/ipv6.txt`, file: ACCESS_FILES.datacenterV6, minEntries: 500, count: cidrCount, maxV6Share: MAX_DATACENTER_V6_SHARE, v6Share: cidrShareV6 },
   { id: "vpn-ipv4", url: `${X4B}/vpn/ipv4.txt`, file: ACCESS_FILES.vpnV4, minEntries: 1000, count: cidrCount, maxV4Share: MAX_VPN_V4_SHARE, v4Share: cidrShare },
-  { id: "vpn-ipv6", url: `${X4B}/vpn/ipv6.txt`, file: ACCESS_FILES.vpnV6, minEntries: 20, count: cidrCount },
+  { id: "vpn-ipv6", url: `${X4B}/vpn/ipv6.txt`, file: ACCESS_FILES.vpnV6, minEntries: 20, count: cidrCount, maxV6Share: MAX_VPN_V6_SHARE, v6Share: cidrShareV6 },
   {
     id: "ipcat",
     url: "https://raw.githubusercontent.com/client9/ipcat/master/datacenters.csv",
@@ -239,6 +258,12 @@ async function doRefresh(deps: AccessRefreshDeps): Promise<AccessRefreshResult> 
         const share = source.v4Share(text);
         if (share > source.maxV4Share) {
           throw new Error(`download covers ${(share * 100).toFixed(1)}% of the IPv4 space, above the ${(source.maxV4Share * 100).toFixed(0)}% ceiling`);
+        }
+      }
+      if (source.maxV6Share !== undefined && source.v6Share) {
+        const share = source.v6Share(text);
+        if (share > source.maxV6Share) {
+          throw new Error(`download covers ${(share * 100).toPrecision(3)}% of 2000::/3 (global IPv6 unicast), above the ${(source.maxV6Share * 100).toPrecision(2)}% ceiling`);
         }
       }
       await fsp.writeFile(tmpPath, body);
